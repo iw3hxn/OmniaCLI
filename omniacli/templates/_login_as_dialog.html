@@ -1,0 +1,84 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{# Log in as: drawn once on the server page, it opens for the buttons
+   data-login-as (users, url, key). It lists the instance's users; a click
+   makes that user's session and opens Odoo with it in a new tab (loginas.py). -#}
+<dialog id="login-as-dialog">
+  <form method="dialog">
+    <h2 id="login-as-title" style="margin-bottom: 4px"></h2>
+    <p class="muted" style="margin-top: 0">Odoo opens in a new tab as the user you choose: their password is not read nor
+      changed. Who asks and as whom is in the access log.</p>
+    <input type="search" id="login-as-filter" placeholder="Filter by name or login" style="width: 100%">
+    <div id="login-as-users" class="scroll" style="max-height: 45vh; margin: 8px 0"></div>
+    <p id="login-as-error" class="error"></p>
+    <div class="actions">
+      <button type="button" id="login-as-cancel">Close</button>
+    </div>
+  </form>
+</dialog>
+<script>
+(function () {
+  const dialog = document.getElementById("login-as-dialog");
+  const list = document.getElementById("login-as-users");
+  const filter = document.getElementById("login-as-filter");
+  const errorBox = document.getElementById("login-as-error");
+  let target = null, users = [];
+
+  function draw() {
+    const words = filter.value.toLowerCase().split(/\s+/).filter(Boolean);
+    list.replaceChildren();
+    for (const u of users) {
+      const text = `${u.name} ${u.login}`.toLowerCase();
+      if (!words.every((w) => text.includes(w))) continue;
+      const row = document.createElement("button");
+      row.type = "button";
+      row.style.cssText = "display: block; width: 100%; text-align: left; margin: 2px 0";
+      const tags = [u.internal ? "" : "portal", u.admin ? "administrator" : ""].filter(Boolean).join(", ");
+      const info = document.createElement("span");
+      info.className = "muted mono";
+      info.textContent = ` ${u.login}${tags ? " · " + tags : ""}`;
+      row.append(u.name, info);
+      row.addEventListener("click", () => open(u));
+      list.appendChild(row);
+    }
+  }
+
+  async function open(user) {
+    errorBox.textContent = "";
+    // opened now, in the click: a tab opened after the answer is a popup the browser blocks
+    const tab = window.open("about:blank", "_blank");
+    const resp = await fetch(target.url, {
+      method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
+      body: JSON.stringify({id: user.id})}).catch(() => null);
+    const data = resp ? await resp.json().catch(() => ({})) : {};
+    if (!resp || !resp.ok || !data.url) {
+      if (tab) tab.close();
+      errorBox.textContent = data.error || data.detail || "No session made";
+      return;
+    }
+    if (tab) { tab.opener = null; tab.location = data.url; } else { window.location = data.url; }
+    dialog.close();
+  }
+
+  filter.addEventListener("input", draw);
+  document.getElementById("login-as-cancel").addEventListener("click", () => dialog.close());
+  document.querySelectorAll("[data-login-as]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      target = JSON.parse(button.dataset.loginAs);
+      document.getElementById("login-as-title").textContent = `Log in as a user of ${target.key}`;
+      errorBox.textContent = ""; filter.value = ""; users = [];
+      list.replaceChildren(document.createTextNode("Reading the users…"));
+      dialog.showModal();
+      const resp = await fetch(target.users, {headers: {Accept: "application/json"}}).catch(() => null);
+      const data = resp ? await resp.json().catch(() => ({})) : {};
+      if (!resp || !resp.ok) {
+        list.replaceChildren();
+        errorBox.textContent = data.error || data.detail || "The users cannot be read";
+        return;
+      }
+      users = data.users || [];
+      draw();
+      filter.focus();
+    });
+  });
+})();
+</script>

@@ -148,6 +148,9 @@ GB = 1024 ** 3
 NGINX_SITES = Path("/etc/nginx/conf.d")
 LETSENCRYPT = Path("/etc/letsencrypt/live")
 OWN_CERTS = Path("/etc/omniacli/certs")
+# the service's settings: the address OmniaCLI listens on (OMNIACLI_HOST,
+# OMNIACLI_PORT), which the workspaces' sites pass the Log in as links to
+SERVICE_DEFAULTS = Path("/etc/default/omniacli")
 EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,63}")
 # a certificate with its chain and its key, on the standard input
 MAX_PEM = 256 * 1024
@@ -1200,6 +1203,27 @@ def _hash_bucket(dump: str) -> None:
                  f"server_names_hash_bucket_size {workspaceweb.HASH_BUCKET};\n")
 
 
+def omniacli_address(defaults: Path = SERVICE_DEFAULTS) -> str:
+    """host:port of the OmniaCLI service, from its settings (root's file):
+    127.0.0.1:8090 unless they say otherwise; a service listening on every
+    address (0.0.0.0, ::) is reached on 127.0.0.1."""
+    values = {}
+    try:
+        for line in defaults.read_text().splitlines():
+            key, sep, value = line.strip().partition("=")
+            if sep and key in ("OMNIACLI_HOST", "OMNIACLI_PORT"):
+                values[key] = value.strip().strip("\"'")
+    except OSError:
+        pass
+    host = values.get("OMNIACLI_HOST") or "127.0.0.1"
+    port = values.get("OMNIACLI_PORT") or "8090"
+    if host in ("0.0.0.0", "::", "[::]") or not re.fullmatch(r"[A-Za-z0-9.:\[\]-]{1,64}", host):
+        host = "127.0.0.1"
+    if not (port.isdigit() and 1 <= int(port) <= 65535):
+        port = "8090"
+    return f"{host}:{port}"
+
+
 def web(name: str, storage: str, spec_json: str) -> dict:
     image, mount = workspace(name, storage)
     path = NGINX_SITES / f"omniacli-{name}.conf"
@@ -1226,12 +1250,13 @@ def web(name: str, storage: str, spec_json: str) -> dict:
     acme.mkdir(mode=0o755, exist_ok=True)
     ipv6 = Path("/proc/net/if_inet6").exists()
     tls = _tls(name, spec["certificate"])
-    made["nginx"] = _put_site(path, workspaceweb.conf_text(name, sites, tls, ipv6))
+    omniacli = omniacli_address()
+    made["nginx"] = _put_site(path, workspaceweb.conf_text(name, sites, tls, ipv6, omniacli))
     if spec["certificate"] == "letsencrypt":
         made["certificate_error"] = _certbot(name, names)
         if made["certificate_error"] is None and tls is None:
             tls = _tls(name, spec["certificate"])
-            made["nginx"] = _put_site(path, workspaceweb.conf_text(name, sites, tls, ipv6))
+            made["nginx"] = _put_site(path, workspaceweb.conf_text(name, sites, tls, ipv6, omniacli))
     elif tls is None:
         made["certificate_error"] = "no certificate of the customer's yet: upload it"
     made["https"] = tls is not None

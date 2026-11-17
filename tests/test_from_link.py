@@ -119,7 +119,7 @@ async def test_what_is_no_backup_is_refused_with_the_instance_intact(here, env, 
 async def test_passwords_set_to_admin(here, env):
     odoo_version(env, "test", 18)
     page = (await here.get("/servers/srv?view=both", headers=as_user("admin"))).text
-    assert 'data-option="reset_passwords" checked' in page and 'data-option="load_only" >' in page
+    assert 'data-option="reset_passwords" >' in page and 'data-option="load_only" >' in page
     resp = await here.post(URL, headers=as_user("dev", post=True), json={"neutralize": True, "reset_passwords": True})
     job = await wait(here, resp.json()["job"])
     assert job["status"] == "success", job

@@ -22,7 +22,7 @@ Saved in <span class="mono">{{ log_file }}</span>, the failed logins in <span cl
     {% for e in entries %}
     <tr>
       <td class="mono">{{ e.time | replace("T", " ") }}</td>
-      <td class="{{ 'error' if e.event == 'failed' }}">{{ {"login": "Login", "logout": "Logout", "failed": "Failed login", "mcp": "MCP call", "shell": "Shell", "action": "Action", "download": "Download"}.get(e.event, e.event) }}</td>
+      <td class="{{ 'error' if e.event == 'failed' }}">{{ {"login": "Login", "logout": "Logout", "failed": "Failed login", "mcp": "MCP call", "shell": "Shell", "action": "Action", "download": "Download", "login-as": "Log in as"}.get(e.event, e.event) }}</td>
       <td>{{ e.name or "—" }}</td>
       <td>{{ {"user": "login page", "link": "link", "token": "MCP token (API)", "mcp": "MCP", "burst": "many attempts"}.get(e.kind, e.kind) }}</td>
       <td class="mono">{{ e.ip }}</td>

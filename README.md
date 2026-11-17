@@ -140,7 +140,7 @@ stopped with *Stop job*.
 | Merge test to production | | ✓ | backup production, merge, push, update modules, restart production |
 | Weight and room | ✓ | ✓ | the Backup, Copy production to test and Copy from link dialogs show, for a new backup, its weight (the database on disk less the binary columns left out, its dump: that size plus once more the binary rows kept, which pg_dump writes in hex, the filestore when it is in the backup) and, disk by disk, whether its restore fits on the instance that receives it: the zip in its backup folder, the backup unpacked (Odoo's restore unpacks it first: beside the zip, see **Restore**; with `run_as` in `/var/tmp`), PostgreSQL's data folder (`SHOW data_directory`; not a superuser: `pg_lsclusters` by the port; PostgreSQL on another machine: not checked, and said so) and the filestore, against the room free there plus the database and filestore the restore drops first. The estimates are on the high side (the zip is not counted compressed); the dialogs warn, they do not refuse. Copy from link asks the weight to the OmniaCLI there through the link (an older one, or a puller, tells none) |
 | Copy production to test | ✓ → | ✓ | a popup asks which backup of production: a new one (**shared with production** by default, see below; or with the filestore; or without it, test has no attachments) or one already made; then stop test, `click-odoo-restoredb --copy --force --neutralize` into the test database (drops it and its filestore first; `--neutralize` from Odoo 16: no scheduled actions, no outgoing mail), `click-odoo-update`, start test. **Without binary columns** empties, in the new backup, the columns ticked in production's last Backup dialog (none chosen yet: those of at least 10 MB). **Filestore shared with production**: the backup is made without filestore, and after the restore test's filestore (`<data_dir>/filestore/<db>`) is a tree of hard links to production's files, made by the test's venv python as its `run_as` user: no extra disk space, test reads every attachment, and what test writes or deletes does not touch production's files (Odoo never rewrites a filestore file, it only writes new ones and unlinks). Refused, before anything is touched, when an Odoo config sets no `data_dir` or the two filestores are not on the same filesystem, or the test user may not link production's files (`fs.protected_hardlinks`). Refused when production and test run different Odoo versions, and on Odoo 20+ (click-odoo-restoredb refuses it). A systemd test needs its Start/Stop sudoers lines; an init.d one is not stopped, it is restarted at the end |
-| Copy from link | ✓ (admin) | ✓ | for an instance with a **Database from link**: a popup asks which backup of that instance of the linked OmniaCLI: a new one, made there now (with or without the filestore; an OmniaCLI there older than 2026.1.12 makes it with the filestore), or one already there; whether to neutralize; whether to set every user's password to `admin` (on by default: after the restore `click-odoo` runs `odoo/reset_passwords.py`, which writes the pbkdf2_sha512 hash in SQL, so no password policy refuses it; in `password` from Odoo 12, in `password_crypt` on Odoo 10 and 11 with auth_crypt; refused before anything is touched when the Odoo version is unknown); whether to **only load the database** (off by default, for development: the instance is not stopped, its modules are not updated and it is not restarted; Odoo's drop of the database ends its connections); and for a production its database name, typed. The zip is downloaded into this instance's backups as `<link>_<file>` (through `<file>.part`: a cut download leaves nothing), then restored as above: stop, `click-odoo-restoredb --copy --force [--neutralize]`, the passwords, `click-odoo-update`, start. Refused, before anything is touched, when the backup's `manifest.json` names another Odoo version than the instance's. What comes from the other machine is checked before anything is touched: a file that is no backup fails the job, also in a schedule, with the instance and its database intact |
+| Copy from link | ✓ (admin) | ✓ | for an instance with a **Database from link**: a popup asks which backup of that instance of the linked OmniaCLI: a new one, made there now (with or without the filestore; an OmniaCLI there older than 2026.1.12 makes it with the filestore), or one already there; whether to neutralize; whether to set every user's password to `admin` (off by default: **Log in as**, below, opens the copy as any of its users with their passwords kept; when ticked, after the restore `click-odoo` runs `odoo/reset_passwords.py`, which writes the pbkdf2_sha512 hash in SQL, so no password policy refuses it; in `password` from Odoo 12, in `password_crypt` on Odoo 10 and 11 with auth_crypt; refused before anything is touched when the Odoo version is unknown); whether to **only load the database** (off by default, for development: the instance is not stopped, its modules are not updated and it is not restarted; Odoo's drop of the database ends its connections); and for a production its database name, typed. The zip is downloaded into this instance's backups as `<link>_<file>` (through `<file>.part`: a cut download leaves nothing), then restored as above: stop, `click-odoo-restoredb --copy --force [--neutralize]`, the passwords, `click-odoo-update`, start. Refused, before anything is touched, when the backup's `manifest.json` names another Odoo version than the instance's. What comes from the other machine is checked before anything is touched: a file that is no backup fails the job, also in a schedule, with the instance and its database intact |
 | Restore | ✓ (admin) | ✓ (admin) | for a type that can restore, an admin who logs in: a popup asks for a zip from this computer (uploaded into the instance's backups through a `.part` file; refused when it is not a zip, or a file of that name is there, or less than 1 GiB would stay free) or one of the instance's backups, with the choices of Copy from link and, for a production, its database name typed. Refused before anything is touched when the zip has no `dump.sql`. Then as Copy from link: stop, `click-odoo-restoredb --copy --force [--neutralize]`, the passwords, `click-odoo-update`, start. Odoo unpacks the zip before loading it: OmniaCLI gives `click-odoo-restoredb` a `TMPDIR` on the disk of the backups, a folder `.restore-…` (mode 700) beside the zip, not `/tmp` on the system's disk; with `run_as`, the private folder in `/var/tmp` where the zip is staged. Removed at the end, failed or not. A zip without `manifest.json` (an Odoo.sh one) is not compared with the instance's Odoo version: the job warns. Not on native Odoo 20 and later (click-odoo-restoredb refuses it). An admin's because a `dump.sql` goes through `psql`, whose `\!` runs commands as the instance's user |
 | Log | ✓ | ✓ | `tail -F` of the Odoo log in the browser, with an "errors only" filter; of a compose instance, `docker compose logs` of its service (see below) |
 
@@ -1677,6 +1677,58 @@ omniacli package-verify --public-key ed25519:... ApiClient.exe   # with ApiClien
 The public key goes in the instances' form; the private one stays on the
 build machine, with a copy offline. A lost private key means a new key and
 the new public key on every instance; a stolen one, the same at once.
+
+## Log in as
+
+**Log in as…**, next to an instance's address on the server page, opens
+Odoo as one of its users, without their password and without a module in
+Odoo: the support's way into a customer's instance, and the way into a
+copy of production (the copies keep the users' passwords: setting them all
+to `admin` is now off by default). A test is a developer's, a production an
+admin's, of a user who logs in here (not a token nor a link). Odoo 16 and
+later, native (click-odoo in its venv) or in Docker Compose (the helper's
+`login`).
+
+1. The dialog lists the instance's active users (internal and portal),
+   read by `omniacli/odoo/login_session.py` run in the instance: by
+   `click-odoo` as the instance's `run_as`, or by `odoo shell` in the
+   running Odoo container, its text given by the root helper (the
+   package's file, never the caller's).
+2. A click makes that user's session in Odoo's own session store
+   (`<data_dir>/sessions`), as Odoo does at a login: its token is made of
+   the user's password hash, so a password changed later ends it; nothing
+   is written in the database and no password is read in clear or changed.
+3. Odoo's session cookie must be set on the instance's own name. OmniaCLI
+   answers one path there, `/.omniacli/login`, which the instance's nginx
+   passes to OmniaCLI: the new tab opens
+   `https://<instance>/.omniacli/login?t=<token>`, OmniaCLI checks the token
+   (60 seconds, used once, only on that host: the session id never travels
+   in a URL), sets the cookie `session_id` (HttpOnly, Secure) and sends the
+   browser to Odoo (`/odoo`, `/web` before Odoo 18).
+
+Who asked, as whom, on which instance and when the link was opened go to
+the access log (event `login-as`). Inside Odoo the user acts as themself:
+no module marks "X as Y" in the chatter, and the session does not ask the
+user's second factor.
+
+The instance needs its **Domain name** over https (server form). The
+workspaces' nginx sites pass the path by themselves (to the address of
+`/etc/default/omniacli`, 127.0.0.1:8090 unless it says otherwise: publish
+the workspace again after a change). Another nginx needs these lines in the
+instance's `server` block of port 443:
+
+```nginx
+location = /.omniacli/login {
+    proxy_pass http://127.0.0.1:8090;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+On a development machine an instance at `http://localhost:<port>` works
+without nginx when OmniaCLI is opened at `localhost` too: a browser keeps
+cookies by name, not by port.
 
 ## MCP interface
 

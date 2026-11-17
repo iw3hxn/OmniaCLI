@@ -17,7 +17,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-from ..plugin_api import Instance, Job, JobFailed, as_user, base_env, capture, run
+from ..plugin_api import Instance, Job, JobFailed, as_user, base_env, capture, login_answer, run
 
 # pip may build packages from source (psycopg2, lxml...)
 PIP_TIMEOUT = 1800
@@ -34,6 +34,9 @@ CLI_PACKAGE = "click-odoo-contrib"
 LINK_SCRIPT = Path(__file__).with_name("link_filestore.py")
 # what click-odoo runs to set every user's password to admin
 PASSWORDS_SCRIPT = Path(__file__).with_name("reset_passwords.py")
+# the Log in as button: a session of a user made in Odoo's own store
+LOGIN_SCRIPT = Path(__file__).with_name("login_session.py")
+LOGIN_TIMEOUT = 120
 # what click-odoo runs around a module update: a neutralized database keeps
 # its crons off
 CRON_GUARD_SCRIPT = Path(__file__).with_name("cron_guard.py")
@@ -574,6 +577,27 @@ async def reset_passwords(job: Job, instance: Instance, major: int) -> None:
         await run(job, as_user(instance.run_as, cmd, env), env=env)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
+
+
+async def login_session(instance: Instance, request: str) -> dict:
+    """click-odoo runs login_session.py on the instance's database, as the
+    user the instance runs as (the sessions are its files): the users, or a
+    new session of one (see login_session.py)."""
+    opts = instance.options
+    env = odoo_env(instance)
+    # a copy of the script any user may read, in a folder only OmniaCLI writes to
+    staging = Path(tempfile.mkdtemp(prefix="omniacli-login-", dir=BACKUP_STAGING))
+    try:
+        staging.chmod(0o755)
+        script = staging / LOGIN_SCRIPT.name
+        shutil.copyfile(LOGIN_SCRIPT, script)
+        script.chmod(0o644)
+        cmd = [opts.venv_bin / "click-odoo", "-c", opts.odoo_config, "-d", opts.database,
+               "--log-level", "critical", script, request]
+        code, out = await capture(as_user(instance.run_as, cmd, env), env=env, timeout=LOGIN_TIMEOUT)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    return login_answer(code, out)
 
 
 async def share_filestore(job: Job, instance: Instance, src: Path, dst: Path, check: bool = False) -> None:

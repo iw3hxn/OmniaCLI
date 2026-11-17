@@ -65,6 +65,12 @@ command of the caller's, and runs docker with an environment of its own:
                                          /var/lib/odoo and of the same user,
                                          who links (link_filestore.py merge),
                                          never root: the containers write there
+    login <odoo service> <db> users|<user id>
+                                         in the running service, odoo shell
+                                         runs odoo/login_session.py (its text
+                                         on the input, the helper's own file,
+                                         never the caller's): the users, or
+                                         a new session of one (its sid)
 
 A database name is [A-Za-z0-9_.-], a module [a-z0-9_]; a service must be one
 of the project's. They reach the container's shell as its arguments, never
@@ -103,7 +109,7 @@ ACTIONS = {
     "pull": [["pull"], ["up", "-d"]],
 }
 # the actions that take arguments (commands())
-WITH_ARGUMENTS = ("logs", "version", "port", "dump", "load", "update", "psql", "init", "link-filestore")
+WITH_ARGUMENTS = ("logs", "version", "port", "dump", "load", "update", "psql", "init", "link-filestore", "login")
 DATABASE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,62}")
 MODULE = re.compile(r"[a-z0-9][a-z0-9_]{0,99}")
 LANGUAGE = re.compile(r"[a-z]{2,3}_[A-Z]{2}")
@@ -162,6 +168,8 @@ SCRIPTS = {
                         f'python3 {TOOLS_MOUNT}/bin/click-odoo-update -d "$1"; ' + CRONS_AFTER,
     "update-modules": ODOO_DB + CRONS_BEFORE + 'odoo -d "$1" -u "$2" --stop-after-init --no-http; ' + CRONS_AFTER,
     "psql": 'exec psql -U "${POSTGRES_USER:-postgres}" "$1"',
+    # odoo shell reads the script from its input; quiet, the answer is its last line
+    "login": ODOO_DB + 'OMNIACLI_LOGIN="$2" exec odoo shell -d "$1" --no-http --log-level=critical',
 }
 _ENV_LINE = re.compile(r"\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=")
 # logs: a service's output with the time of each line, the last N lines or
@@ -173,6 +181,10 @@ SINCE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z")
 # and the script that links, run as the owner of the filestore (never root)
 ODOO_DATA = "/var/lib/odoo"
 LINK_SCRIPT = Path(__file__).parent / "odoo" / "link_filestore.py"
+# login: the script odoo shell runs, given on its input by the helper (a file
+# of the package, root's), the request in OMNIACLI_LOGIN, never in its text
+LOGIN_SCRIPT = Path(__file__).parent / "odoo" / "login_session.py"
+LOGIN_REQUEST = re.compile(r"users|[1-9][0-9]{0,9}")
 
 
 class HelperError(Exception):
@@ -372,6 +384,12 @@ def commands(project: Path, action: str, args: list[str]) -> list[list[str]]:
         return [["run", "--rm", "-T", service(project, args[0]), "odoo", "-d", _database(args[1]),
                  "-i", ",".join(modules), "--stop-after-init", "--without-demo=all", "--no-http",
                  *(["--load-language", args[3]] if args[3:] else [])]]
+    if action == "login":
+        # login <odoo service> <database> users|<user id>: in the running
+        # service, as its user (Odoo's sessions are its files)
+        if len(args) != 3 or not LOGIN_REQUEST.fullmatch(args[2]):
+            raise HelperError("usage: login <service> <database> users|<user id>")
+        return [_script(service(project, args[0]), "login", _database(args[1]), args[2])]
     if action == "psql":
         # psql <database service> <database>: on a terminal, the web shell's
         if len(args) != 2:
@@ -469,8 +487,11 @@ def run(argv: list[str]) -> int:
         raise HelperError(f"{project} is not safe from user {name}:\n  " + "\n  ".join(found))
     if action == "link-filestore":
         return link_filestore(project, args, uid, groups)
+    # login: the script on the input of odoo shell, the helper's own file;
+    # the other actions keep the caller's input (load reads its zip there)
+    extra = {"input": LOGIN_SCRIPT.read_bytes()} if action == "login" else {}
     for cmd in commands(project, action, args):
-        code = subprocess.run(compose(project, *cmd), env=ENV, cwd=project).returncode
+        code = subprocess.run(compose(project, *cmd), env=ENV, cwd=project, **extra).returncode
         if code:
             return code
     return 0

@@ -31,6 +31,7 @@
     <div class="server-head" style="padding: 0 0 8px; border: 0">
       <h2><span class="role {{ inst.role }}">{{ inst.role }}</span>
         {% if inst.web_url %}<a class="web-link mono" href="{{ inst.web_url }}" target="_blank" rel="noopener" title="Open {{ inst.web_url }} in a new tab">{{ inst.web_url }} ↗</a>{% endif %}
+        {% if login_as[inst.key] %}<button type="button" style="font-size: 13px; margin-left: 8px" data-login-as='{{ login_as[inst.key] | tojson }}' title="Open Odoo as one of its users, without their password">Log in as…</button>{% endif %}
         {% if busy[inst.key] %}{% set running_job = busy_job[inst.key] %}<span class="status running" style="font-size: 13px"> · {% if running_job %}<a href="{{ prefix }}/jobs/{{ running_job.id }}" style="color: inherit; text-decoration: underline" title="Open the job: {{ running_job.title }}">job running</a>{% else %}job running{% endif %}</span>{% endif %}</h2>
     {% if can_restart %}
     {% set off = "disabled" if busy[inst.key] else "" %}
@@ -245,6 +246,7 @@
 {% if from_link %}{% include "_from_link_dialog.html" %}{% endif %}
 {% if can_act %}{% include "_backup_dialog.html" %}{% include "_pull_dialog.html" %}{% endif %}
 {% if restore_file %}{% include "_restore_dialog.html" %}{% endif %}
+{% if login_as %}{% include "_login_as_dialog.html" %}{% endif %}
 {% include "_charts.html" %}
 {{ console_script() }}
 <script>

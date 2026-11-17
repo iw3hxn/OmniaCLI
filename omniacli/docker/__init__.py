@@ -58,6 +58,7 @@ from ..plugin_api import (
     ServicePlugin,
     backup_into,
     capture,
+    login_answer,
     restart,
     run,
     start,
@@ -371,6 +372,13 @@ class DockerPlugin(ServicePlugin):
     def db_shell_as_service(self, instance: Instance) -> bool:
         # through the helper, as postgres in the database's container
         return False
+
+    async def login_session(self, instance: Instance, request: str) -> dict:
+        # odoo shell in the running Odoo service, through the helper
+        opts = instance.options
+        code, out = await capture(instance.restart.command("login", opts.odoo_service, opts.database, request),
+                                  timeout=HELPER_TIMEOUT)
+        return login_answer(code, out)
 
     def fields(self) -> list[Field]:
         return [

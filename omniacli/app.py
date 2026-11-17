@@ -37,6 +37,7 @@ from starlette.requests import ClientDisconnect, HTTPConnection
 from . import (backupchoices, checks, private, restoreroom, consumer, disks, gitcredentials, linkcopy, listgroups, ops, packages, plugins, pluginstore, puller, publisher,
                schedules, selflog, sshlinks, shell, stacktemplates, templatestore, tunnel, workspacehelper, workspaceops)
 from .accesslog import AccessLog
+from . import loginas
 from .diskhistory import DiskHistory, DiskRecorder
 from .auth import ROLES as ACCESS_ROLES
 from .auth import WORKSPACE_ROLE, Authenticator, Principal, hash_password, hash_token, new_token, verify_password
@@ -370,6 +371,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         lambda: settings.options, link_headers,
         lambda user, detail: access_log.record("tunnel", "user", user, "", detail))
     limiter = LoginLimiter()
+    # the links of the Log in as button (loginas.py)
+    login_tickets = loginas.LoginTickets()
     # the pullers this instance relays: their state next to the jobs
     pullers = puller.PullerHub(settings, settings.jobs_dir.parent / "pullers")
 
@@ -673,6 +676,26 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         app.add_route(path, public_file, methods=["GET"])
     app.add_route("/login", login, methods=["GET", "POST"])
 
+    async def login_as_landing(request: Request):
+        """/.omniacli/login?t=<token>, opened on the instance's own host (its
+        nginx passes the path here): Odoo's session cookie set on that host,
+        then Odoo's home. A token is used once, on the host it was made for."""
+        host = request.headers.get("host", "")
+        ticket = login_tickets.take(request.query_params.get("t", ""), host)
+        ip = request.client.host if request.client else ""
+        headers = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
+        if ticket is None:
+            access_log.record("failed", "user", "", ip, f"log in as: no valid link on {host}"[:200])
+            return HTMLResponse("This link to log in has been used, has expired or belongs to another address: "
+                                "ask OmniaCLI for a new one.", status_code=403, headers=headers)
+        access_log.record("login-as", "user", ticket.who, ip, f"opened: {ticket.detail}"[:300])
+        response = RedirectResponse(ticket.home, status.HTTP_303_SEE_OTHER, headers=headers)
+        response.set_cookie(loginas.ODOO_COOKIE, ticket.sid, max_age=loginas.COOKIE_SECONDS, httponly=True,
+                            samesite="lax", secure=ticket.home.startswith("https://"), path="/")
+        return response
+
+    app.add_route(loginas.LOGIN_PATH, login_as_landing, methods=["GET"])
+
     @app.post("/logout")
     async def logout(request: Request, me: Principal = Depends(current_user)):
         sessions.drop(request.cookies.get(COOKIE))
@@ -887,6 +910,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     "upload": f"{prefix_of(request)}/api/servers/{srv.name}/{i.role}/backups/upload",
                     "backups": f"{prefix_of(request)}/api/servers/{srv.name}/{i.role}/backups",
                     "database": str(i.plugin.describe(i).get("database") or i.key) if i.role == "production" else ""}
+        # Log in as: a user who logs in here, with the role it needs
+        login_as_buttons = {}
+        for i in shown:
+            if i.plugin.has_login and me.kind == "user" and me.can(from_link_role(i)):
+                api = f"{prefix_of(request)}/api/servers/{srv.name}/{i.role}/login-as"
+                login_as_buttons[i.key] = {"users": f"{api}/users", "url": api, "key": i.key}
         # Git pull: with more than one thing to pull, the dialog chooses which
         pull_choices = {}
         for i in shown:
@@ -902,6 +931,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             "server.html",
             {
                 "from_link": from_link,
+                "login_as": login_as_buttons,
                 "pull_choices": pull_choices,
                 "restore_file": restore_file,
                 "restore_fields": [_field_dict(f) for f in plugin.restore_fields()] if plugin else [],
@@ -1736,6 +1766,64 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     def refuse(message: str, code: int = status.HTTP_400_BAD_REQUEST):
         return JSONResponse({"error": message}, status_code=code)
+
+    def login_as_target(request: Request, instance: Instance, user: Principal) -> tuple[str, str]:
+        """Who may log in as a user of instance (a production is an admin's,
+        a test a developer's, a user who logs in here), and where: the base
+        URL the browser opens /.omniacli/login at and the instance's own base
+        URL. Raises HTTPException when it cannot."""
+        if not instance.plugin.has_login:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"{instance.key} cannot log in as a user")
+        if user.kind != "user":
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Only a user who logs in here may log in as a user")
+        if not user.can(from_link_role(instance)):
+            raise HTTPException(status.HTTP_403_FORBIDDEN,
+                                f"The {from_link_role(instance)} role is required for a production")
+        web = instance.web_url or ""
+        parts = urlsplit(web)
+        if parts.scheme == "https" and parts.hostname:
+            # the instance's nginx passes /.omniacli/login to OmniaCLI
+            base = f"https://{parts.netloc}"
+            return base, base
+        if parts.hostname in ("localhost", "127.0.0.1") and request.url.hostname == parts.hostname:
+            # this machine: the browser keeps cookies by name, not by port, so
+            # OmniaCLI's own page sets Odoo's cookie for the same localhost
+            return f"{request.url.scheme}://{request.headers.get('host', parts.hostname)}", f"http://{parts.netloc}"
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            "Log in as needs the instance's Domain name over https (server form, Edit), "
+                            "with its nginx passing /.omniacli/login to OmniaCLI (README, Log in as); "
+                            f"the instance is opened at {web or 'no address'}")
+
+    @app.get("/api/servers/{server}/{role}/login-as/users")
+    async def login_as_users(request: Request, server: str, role: str, user: Principal = Depends(developer)):
+        """The users of the instance one may log in as."""
+        instance = get_instance(server, role)
+        login_as_target(request, instance, user)
+        found = await instance.plugin.login_session(instance, "users")
+        if "error" in found:
+            return refuse(found["error"], status.HTTP_502_BAD_GATEWAY)
+        return {"users": found.get("users") or []}
+
+    @app.post("/api/servers/{server}/{role}/login-as")
+    async def login_as(request: Request, server: str, role: str, payload: dict = Body(...),
+                       user: Principal = Depends(developer)):
+        """A session of the user chosen ({"id": n}) in the instance's store,
+        and the link that hands it to the browser: {"url"}."""
+        instance = get_instance(server, role)
+        base, odoo_base = login_as_target(request, instance, user)
+        uid = payload.get("id")
+        if not isinstance(uid, int) or isinstance(uid, bool) or uid < 1:
+            return refuse("id: the id of a user of the instance")
+        made = await instance.plugin.login_session(instance, str(uid))
+        if "error" in made or not isinstance(made.get("sid"), str):
+            return refuse(made.get("error") or "no session made", status.HTTP_502_BAD_GATEWAY)
+        detail = f"{instance.key} as {made.get('login')} (id {uid})"
+        home = odoo_base + loginas.safe_home(made.get("home"))
+        token = login_tickets.issue(made["sid"], urlsplit(base).netloc, home, user.name, detail)
+        access_log.record("login-as", user.kind, user.name, request.client.host if request.client else "",
+                          f"asked: {detail}")
+        return {"url": f"{base}{loginas.LOGIN_PATH}?t={token}", "login": made.get("login"),
+                "seconds": loginas.TOKEN_SECONDS}
 
     @app.post("/api/servers/save", dependencies=[Depends(admin)])
     async def config_save(payload: dict = Body(...)):

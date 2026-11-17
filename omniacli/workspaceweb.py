@@ -17,6 +17,8 @@ MAX_BODY = "200m"
 TIMEOUT = "720s"
 # server_names_hash_bucket_size: names up to about 250 characters
 HASH_BUCKET = 256
+# the path of the Log in as links (loginas.LOGIN_PATH), passed to OmniaCLI
+LOGIN_PATH = "/.omniacli/login"
 
 _HEADERS = (
     ("Host", "$host"),
@@ -31,10 +33,13 @@ def _headers(indent: str) -> list[str]:
     return [f"{indent}proxy_set_header {name} {value};" for name, value in _HEADERS]
 
 
-def conf_text(workspace: str, sites: list[dict], tls: tuple[str, str] | None, ipv6: bool) -> str:
+def conf_text(workspace: str, sites: list[dict], tls: tuple[str, str] | None, ipv6: bool,
+              omniacli: str | None = None) -> str:
     """sites: [{instance, role, names, http_port, websocket_port}]. Port 80
     answers the challenges and sends the rest to https; without a
-    certificate yet (tls None) it answers 503, and there is no 443."""
+    certificate yet (tls None) it answers 503, and there is no 443.
+    omniacli: the address OmniaCLI listens on (127.0.0.1:8090): each name
+    passes it LOGIN_PATH, the links of Log in as (loginas.py)."""
     names = [n for site in sites for n in site["names"]]
     out = [f"# written by omniacli workspace-helper: the names of workspace {workspace}.",
            "# Changed here, it is written again at the workspace's next change.", ""]
@@ -63,6 +68,10 @@ def conf_text(workspace: str, sites: list[dict], tls: tuple[str, str] | None, ip
                 "        proxy_set_header Upgrade $http_upgrade;",
                 '        proxy_set_header Connection "upgrade";',
                 "    }",
+                *([f"    location = {LOGIN_PATH} {{",
+                   f"        proxy_pass http://{omniacli};",
+                   *_headers("        "),
+                   "    }"] if omniacli else []),
                 "    location / {",
                 f"        proxy_pass http://127.0.0.1:{site['http_port']};",
                 *_headers("        "),

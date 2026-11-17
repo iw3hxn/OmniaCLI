@@ -32,6 +32,7 @@ Docker Compose (has_compose), the service whose output is its log
 from __future__ import annotations
 
 import inspect
+import json
 import os
 import re
 import sys
@@ -69,7 +70,7 @@ __all__ = [
     "ConfigError", "Instance", "Repository", "Server", "Job", "JobFailed",
     "run", "capture", "as_user", "backup_into", "restart", "start", "stop", "service_state", "base_env", "system_user",
     "ROLES", "SERVER_NAME", "USER_NAME", "Field", "FormButton", "Action", "ActionRefused", "Host",
-    "Discovered", "COMPOSE_TOOLS",
+    "Discovered", "COMPOSE_TOOLS", "login_answer",
 ]
 
 
@@ -445,6 +446,15 @@ class ServicePlugin(ABC):
         only when it runs as somebody else."""
         return True
 
+    async def login_session(self, instance: Instance, request: str) -> dict:
+        """Log in as a user of the instance without the user's password
+        (the Log in as button): request "users" answers {"users": [{"id",
+        "login", "name", "internal", "admin"}]}, a user's id answers a new
+        session of that user in the instance's own store, {"sid", "id",
+        "login", "name", "home"} (home: the path the browser opens after);
+        {"error": text} when it cannot. Only for a type that overrides it."""
+        raise NotImplementedError
+
     def own_user_code(self, instance: Instance) -> str | None:
         """On a server, what of the instance's code runs as OmniaCLI's own
         user and how to avoid it (a warning of the checks). None: nothing
@@ -529,6 +539,30 @@ class ServicePlugin(ABC):
     def has_restore(self) -> bool:
         return type(self).restore is not ServicePlugin.restore
 
+    @property
+    def has_login(self) -> bool:
+        return type(self).login_session is not ServicePlugin.login_session
+
+
+# the answer of omniacli/odoo/login_session.py: its last line OMNIACLI-LOGIN <json>
+LOGIN_MARK = "OMNIACLI-LOGIN "
+
+
+def login_answer(code: int, out: str) -> dict:
+    """What login_session.py answered, from the output of the command that
+    ran it (Odoo's own lines before it); an error when there is none."""
+    for line in reversed(out.splitlines()):
+        if line.startswith(LOGIN_MARK):
+            try:
+                data = json.loads(line[len(LOGIN_MARK):])
+            except ValueError:
+                break
+            if isinstance(data, dict):
+                return data
+            break
+    tail = " | ".join(out.splitlines()[-5:])
+    return {"error": f"no answer (exit code {code}): {tail}"[:500]}
+
 
 # the methods a plugin must write as async def
 async def restore_fetched(job: Job, instance: Instance, backup_zip: Path, options: dict) -> None:
@@ -542,7 +576,7 @@ async def restore_fetched(job: Job, instance: Instance, backup_zip: Path, option
 
 
 ASYNC_METHODS = ("checks", "after_pull", "backup", "backup_choices", "backup_estimate", "restore_room", "restore",
-                 "before_start", "dev_setup", "discover")
+                 "before_start", "dev_setup", "discover", "login_session")
 _ID = re.compile(r"[a-z][a-z0-9_-]{0,31}")
 
 

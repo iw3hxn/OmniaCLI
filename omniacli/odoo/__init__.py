@@ -344,6 +344,9 @@ class OdooPlugin(ServicePlugin):
     def db_shell_as_service(self, instance: Instance) -> bool:
         return instance.run_as is None
 
+    async def login_session(self, instance: Instance, request: str) -> dict:
+        return await ops.login_session(instance, request)
+
     def own_user_code(self, instance: Instance) -> str | None:
         if instance.restart.type == "process":
             return ("Odoo itself runs as OmniaCLI's user, so a module's code reaches OmniaCLI's files, "
@@ -476,7 +479,9 @@ class OdooPlugin(ServicePlugin):
     def restore_fields(self) -> list[Field]:
         return [Field("neutralize", "Neutralize (Odoo 16 and later): no scheduled actions, no outgoing mail",
                       kind="checkbox", default=True),
-                Field("reset_passwords", "Every user's password set to admin", kind="checkbox", default=True),
+                # off by default: Log in as opens the copy as any user, the passwords kept
+                Field("reset_passwords", "Every user's password set to admin (Log in as needs no password)",
+                      kind="checkbox", default=False),
                 Field("load_only", "Only load the database: not stopped, no module update, no restart "
                       "(development)", kind="checkbox", default=False)]
 

@@ -101,8 +101,8 @@ class AccessLog:
         return True
 
     def record(self, event: str, kind: str, name: str, ip: str = "", detail: str = "") -> None:
-        """event: login, logout, failed, mcp, shell, tunnel, action or
-        download; kind: user, link, token or mcp."""
+        """event: login, logout, failed, mcp, shell, tunnel, action,
+        download or login-as; kind: user, link, token or mcp."""
         with self._lock:
             if event != "failed":
                 self._write(self.path, event, kind, name, ip, detail)
