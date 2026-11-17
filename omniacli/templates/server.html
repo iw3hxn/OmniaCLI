@@ -323,6 +323,61 @@
 {% endfor %}
 </div>
 
+{% if stagings and (stagings.can or stagings.rows or stagings.parent) %}
+<style>
+.stg-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.stg-row { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--border);
+  border-radius: var(--r); background: var(--panel-2); flex-wrap: wrap; }
+.stg-row .stg-name { font-weight: 600; flex: 1; min-width: 180px; }
+.stg-row .stg-name small { display: block; font-weight: 400; color: var(--muted); font-size: 12px; }
+.stg-date { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 13px; }
+.stg-branch { color: var(--muted); margin-right: 4px; }
+</style>
+<section class="panel" id="stagings">
+  <div class="inst-head">
+    <h2>{{ _("Stagings") }}</h2>
+    {% if stagings.can %}<button type="button" class="primary" id="staging-new">+ {{ _("New staging") }}</button>{% endif %}
+  </div>
+  {% if stagings.parent %}
+  <div class="banner info">{{ _("This is a staging of {parent}, copied on {date}.", parent=stagings.parent.parent, date=stagings.parent.created.replace("T", " ")[:16]) }}
+    <a href="{{ prefix }}/servers/{{ stagings.parent.parent }}">{{ _("Open {parent}", parent=stagings.parent.parent) }}</a></div>
+  {% endif %}
+  {% if stagings.can %}<p class="muted" style="margin: 4px 0 0">{{ _("A copy of production as it is now, neutralized (no scheduled actions, no outgoing mail), beside it: to try an update or a module without touching production.") }}</p>{% endif %}
+  {% if stagings.rows %}
+  <div class="stg-list">
+    {% for s in stagings.rows %}
+    <div class="stg-row">
+      <span class="stg-name"><span class="stg-branch">↳</span><a href="{{ prefix }}/servers/{{ s.server }}">{{ s.server }}</a>
+        <small>{{ _("from backup {name}", name=s.backup) }}</small></span>
+      <span class="badge info">{{ _("Staging") }}</span>
+      <span class="stg-date" title="{{ s.created }}">{{ _("copied on {date}", date=s.created.replace("T", " ")[:16]) }}</span>
+      {% if s.url %}<a class="button" href="{{ s.url }}" target="_blank" rel="noopener">{{ _("Open Odoo") }}</a>{% endif %}
+      <a class="button" href="{{ prefix }}/servers/{{ s.server }}">{{ _("Manage") }}</a>
+    </div>
+    {% endfor %}
+  </div>
+  {% elif stagings.can %}
+  <p class="muted" style="margin-top: 10px">{{ _("No staging yet.") }}</p>
+  {% endif %}
+  <p id="staging-error" class="error"></p>
+</section>
+{% if stagings.can %}
+<script>
+document.getElementById("staging-new").addEventListener("click", async (event) => {
+  const button = event.currentTarget, error = document.getElementById("staging-error");
+  if (!confirm({{ _("Make a new staging of {server}: a copy of its production as it is now, neutralized, beside it?", server=server.name) | tojson }})) return;
+  button.disabled = true; error.textContent = "";
+  const resp = await fetch({{ (prefix ~ "/api/servers/" ~ server.name ~ "/stagings") | tojson }},
+                           {method: "POST", headers: {Accept: "application/json"}}).catch(() => null);
+  const data = resp ? await resp.json().catch(() => ({})) : {};
+  button.disabled = false;
+  if (!resp || !resp.ok || !data.job) { error.textContent = data.error || data.detail || {{ _("Refused") | tojson }}; return; }
+  location.href = `{{ prefix }}/jobs/${data.job}`;
+});
+</script>
+{% endif %}
+{% endif %}
+
 <section class="panel">
   <div class="inst-head">
     <h2>{{ _("Last jobs of {server}", server=server.name) }}</h2>

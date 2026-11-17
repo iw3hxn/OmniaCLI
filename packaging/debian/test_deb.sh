@@ -166,7 +166,7 @@ curl "${API[@]}" localhost:8090/api/access/users/save \
   -d '{"name": "luca", "role": "user", "password": "luca-pass-1", "new": true}' | has '"ok":true' || fail "user luca not saved"
 login luca luca-pass-1
 LUCA=(-s -b /tmp/cookies-luca -H "Origin: http://localhost:8090")
-curl -s -b /tmp/cookies-luca localhost:8090/servers/demo | has "service active" || fail "service state not shown"
+curl -s -b /tmp/cookies-luca localhost:8090/servers/demo | has "title=\"service: active\"" || fail "service state not shown"
 for action in stop start restart; do
     PID_BEFORE="$(systemctl show -p MainPID --value odoo-dummy)"
     LOCATION="$(curl "${LUCA[@]}" -o /dev/null -w '%{redirect_url}' -X POST localhost:8090/servers/demo/production/$action)"

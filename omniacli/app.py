@@ -39,7 +39,7 @@ from starlette.requests import ClientDisconnect, HTTPConnection
 from . import (backupchoices, checks, private, restoreroom, consumer, disks, gitcredentials, linkcopy, listgroups, ops, packages, plugins, pluginstore, puller, publisher,
                schedules, selflog, sshlinks, shell, stacktemplates, templatestore, tunnel, workspacehelper, workspaceops)
 from .accesslog import AccessLog
-from . import i18n, loginas, machines
+from . import i18n, loginas, machines, stagings
 from .diskhistory import DiskHistory, DiskRecorder
 from .auth import ROLES as ACCESS_ROLES
 from .auth import WORKSPACE_ROLE, Authenticator, Principal, hash_password, hash_token, new_token, verify_password
@@ -982,6 +982,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             {
                 "from_link": from_link,
                 "login_as": login_as_buttons,
+                # its stagings (made beside it in its workspace), or the one it is a staging of
+                "stagings": {"rows": staging_rows(srv.name), "can": workspace_of(srv.name) is not None
+                             and srv.production is not None,
+                             "parent": stagings.load(stagings_file).get(srv.name)} if request.state.user.can("admin") else None,
                 "pull_choices": pull_choices,
                 "restore_file": restore_file,
                 "restore_fields": [_field_dict(f) for f in plugin.restore_fields()] if plugin else [],
@@ -2488,6 +2492,32 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
              else int(ws.limits["instances"]) - len([n for n in ws.servers if n in settings.servers])},
         )
 
+    async def make_instance(job, ws: Workspace, instance: str, template, values: dict):
+        """The job of a new instance of ws (its server already in ws.servers):
+        made, written in the servers file, its names published; its server
+        out of ws again when it fails."""
+        name = workspaceops.server_name(ws, instance)
+        try:
+            data = await workspaceops.create_instance(job, ws, instance, template, values)
+            parsed = parse_servers({name: {**data, "status": "active"}}, settings.logs_dir)[name]
+            async with config_lock:
+                error = await store({**settings.servers, name: parsed})
+            if error is not None:
+                raise JobFailed(f"the instance runs, but the servers file was not written: {error.body.decode()}")
+        except BaseException:
+            await rename_in_workspaces(name, None)
+            raise
+        job.result = {"server": name}
+        job.log(f"Server {name}: production at http://127.0.0.1:{parsed.production.options.http_port}, "
+                f"test at http://127.0.0.1:{parsed.test.options.http_port}")
+        current = settings.workspaces.get(ws.name)
+        if current is not None and current.domain:
+            try:
+                await workspaceops.publish(job, current)
+            except JobFailed as exc:
+                job.log(f"The instance runs, its names are not published: {exc}")
+        return parsed
+
     @app.post("/api/workspaces/{workspace}/instances/create", dependencies=[Depends(admin)])
     async def instance_create(workspace: str, payload: dict = Body(...), me: Principal = Depends(current_user)):
         """A new instance of the workspace, production and test, from a
@@ -2526,25 +2556,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 return refused
 
         async def action(job):
-            try:
-                data = await workspaceops.create_instance(job, ws, instance, template, values)
-                parsed = parse_servers({name: {**data, "status": "active"}}, settings.logs_dir)[name]
-                async with config_lock:
-                    error = await store({**settings.servers, name: parsed})
-                if error is not None:
-                    raise JobFailed(f"the instance runs, but the servers file was not written: {error.body.decode()}")
-            except BaseException:
-                await rename_in_workspaces(name, None)
-                raise
-            job.result = {"server": name}
-            job.log(f"Server {name}: production at http://127.0.0.1:{parsed.production.options.http_port}, "
-                    f"test at http://127.0.0.1:{parsed.test.options.http_port}")
-            current = settings.workspaces.get(ws.name)
-            if current is not None and current.domain:
-                try:
-                    await workspaceops.publish(job, current)
-                except JobFailed as exc:
-                    job.log(f"The instance runs, its names are not published: {exc}")
+            await make_instance(job, ws, instance, template, values)
 
         job = jobs.submit(f"Create {name} from {template.name}", [f"{name}/production", f"{name}/test"],
                           f"manual: {me}", action, workspace=ws.name)
@@ -2619,6 +2631,82 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if ws is not None:
                 await store_workspaces({**settings.workspaces, name: dataclasses.replace(ws, main=QUICK_INSTANCE)})
         return {**made, "workspace": name, "server": workspaceops.server_name(found[name], QUICK_INSTANCE)}
+
+    # --- stagings: dated copies of a production beside it (stagings.py) -----
+
+    stagings_file = (settings.links_file or settings.servers_file).parent / stagings.FILE
+
+    def workspace_of(server: str) -> tuple[Workspace, str] | None:
+        """The workspace that made server, and its instance name there."""
+        for ws in settings.workspaces.values():
+            if server in ws.servers and server.startswith(f"{ws.name}-"):
+                return ws, server[len(ws.name) + 1:]
+        return None
+
+    def staging_rows(server: str) -> list[dict]:
+        """The stagings of server, the newest first, with what the page shows."""
+        rows = []
+        for name, info in stagings.load(stagings_file).items():
+            srv = settings.servers.get(name)
+            if info.get("parent") == server and srv is not None and srv.production is not None:
+                rows.append({"server": name, "created": info.get("created", ""), "backup": info.get("backup", ""),
+                             "url": srv.production.domain, "port": srv.production.plugin.web_port(srv.production),
+                             "busy": server_busy(name)})
+        return sorted(rows, key=lambda r: r["created"], reverse=True)
+
+    @app.get("/api/servers/{server}/stagings", dependencies=[Depends(admin)])
+    async def staging_list(server: str):
+        return {"stagings": staging_rows(server), "can": workspace_of(server) is not None,
+                "parent": stagings.load(stagings_file).get(server, {}).get("parent")}
+
+    @app.post("/api/servers/{server}/stagings", dependencies=[Depends(admin)])
+    async def staging_create(server: str, me: Principal = Depends(current_user)):
+        """A new staging of server's production: an instance beside it in its
+        workspace, from the same template, its production loaded with a
+        backup of server's production made now, neutralized, its test
+        stopped; recorded with its parent and its date."""
+        srv = settings.servers.get(server)
+        if srv is None or srv.production is None:
+            return refuse(f"No server {server} with a production", status.HTTP_404_NOT_FOUND)
+        found = workspace_of(server)
+        if found is None:
+            return refuse(f"{server} was not made in a workspace: a staging is made beside an instance of a workspace")
+        ws, instance = found
+        template = await asyncio.to_thread(instance_template, ws, instance)
+        if template is None:
+            return refuse(f"The template {server} was made from is not on this machine any more")
+        if server_busy(server):
+            return refuse(f"{server} is busy: wait for its job")
+        now = datetime.datetime.now()
+        async with workspaces_lock:
+            ws = settings.workspaces[ws.name]
+            taken = {n[len(ws.name) + 1:] for n in ws.servers}
+            new_instance = stagings.instance_name(instance, now, taken)
+            name = workspaceops.server_name(ws, new_instance)
+            mine = [n for n in ws.servers if n in settings.servers]
+            if ws.limits.get("instances") and len(mine) >= ws.limits["instances"]:
+                return refuse(f"Workspace {ws.name} has its {int(ws.limits['instances'])} instances already")
+            refused = await store_workspaces({**settings.workspaces,
+                                              ws.name: dataclasses.replace(ws, servers=[*ws.servers, name])})
+            if refused:
+                return refused
+
+        async def action(job):
+            made = await make_instance(job, settings.workspaces[ws.name], new_instance, template, {})
+            prod = settings.servers[server].production
+            backup_zip = await ops.backup_into(job, prod, backup_folder(prod), {"no_filestore": False})
+            target = settings.servers[name].production
+            await target.plugin.restore(job, target, backup_zip, {"neutralize": True})
+            job.log(f"--- {name}: its test stopped, a staging needs its production only")
+            await ops.stop(job, settings.servers[name].test)
+            data = stagings.load(stagings_file)
+            data[name] = {"parent": server, "created": now.isoformat(timespec="seconds"), "backup": backup_zip.name}
+            await asyncio.to_thread(stagings.save, stagings_file, data)
+            job.result = {"server": name, "port": made.production.options.http_port}
+
+        job = jobs.submit(f"Staging {name} of {server}", [f"{server}/production", f"{name}/production", f"{name}/test"],
+                          f"manual: {me}", action, workspace=ws.name)
+        return {"job": job.id, "server": name}
 
     @app.post("/api/workspaces/{workspace}/instances/delete", dependencies=[Depends(admin)])
     async def instance_delete(workspace: str, payload: dict = Body(...), me: Principal = Depends(current_user)):

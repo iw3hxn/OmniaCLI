@@ -654,3 +654,77 @@ async def test_a_new_odoo_by_its_version_only(workspaces, client, env, monkeypat
 
 async def _space_small():
     return space_of(5, {}, root="main")
+
+
+async def test_a_dated_staging_beside_a_production(workspaces, client, env, monkeypatch, tmp_path):
+    """As Cloudpepper's stagings: an instance beside the parent in its
+    workspace, its production a neutralized copy of the parent's made now,
+    its test stopped, recorded with its parent and date; several a day."""
+    import datetime
+    from pathlib import Path
+
+    from omniacli import ops, stacktemplates, stagings, workspaceops
+
+    settings = env["settings"]
+    template = stacktemplates.load_template(Path(__file__).parent.parent / "templates" / "odoo-19")
+    monkeypatch.setattr(workspaceops, "templates", lambda: {template.name: template})
+    settings.storage_roots = {"main": str(tmp_path)}
+    ws = settings.workspaces["acme"]
+    ws.storage, ws.limits = "main", {"disk_gb": 50}
+    monkeypatch.setattr(workspaceops, "storage_path", lambda w: tmp_path)
+    (tmp_path / "acme" / "odoo").mkdir(parents=True)
+    (tmp_path / "acme" / "odoo" / "instance.json").write_text(json.dumps({"template": "odoo-19"}))
+    ports = iter(range(20000, 20100, 2))
+
+    async def create_instance(job, w, instance, tpl, values):
+        port = next(ports)
+        return {"type": "docker", **{role: {
+            "database": instance.replace("-", "_"), "odoo_service": "odoo", "db_service": "db", "http_port": port + i,
+            "update_modules": True, "restart": {"type": "compose", "service": str(tmp_path / instance / role), "sudo": True},
+            "repositories": []} for i, role in enumerate(("production", "test"))}}
+
+    async def publish(job, w):
+        return {}
+    steps = []
+
+    async def backup_into(job, instance, folder, options):
+        steps.append(("backup", instance.key, options))
+        return tmp_path / "odoo_20261117.zip"
+
+    async def stop(job, instance):
+        steps.append(("stop", instance.key))
+    monkeypatch.setattr(workspaceops, "create_instance", create_instance)
+    monkeypatch.setattr(workspaceops, "publish", publish)
+    monkeypatch.setattr(ops, "backup_into", backup_into)
+    monkeypatch.setattr(ops, "stop", stop)
+    resp = await client.post("/api/workspaces/acme/instances/create", headers=post_as("mario"),
+                             json={"instance": "odoo", "template": "odoo-19"})
+    assert (await wait_job(client, resp.json()["job"]))["status"] == "success"
+    plugin = type(settings.servers["acme-odoo"].production.plugin)
+
+    async def restore(self, job, instance, backup_zip, options):
+        steps.append(("restore", instance.key, backup_zip.name, options))
+    monkeypatch.setattr(plugin, "restore", restore)
+    # srv was not made in a workspace: no staging beside it
+    assert (await client.post("/api/servers/srv/stagings", headers=POST)).status_code == 400
+    assert (await client.post("/api/servers/acme-odoo/stagings", headers=post_as("mario"))).status_code == 403
+    today = datetime.date.today().strftime("%Y%m%d")
+    made = []
+    for _ in range(2):
+        resp = await client.post("/api/servers/acme-odoo/stagings", headers=POST)
+        assert resp.status_code == 200, resp.text
+        job = await wait_job(client, resp.json()["job"])
+        assert job["status"] == "success", job["lines"]
+        made.append(resp.json()["server"])
+    assert made == [f"acme-odoo-stg-{today}", f"acme-odoo-stg-{today}-2"]
+    assert steps[:3] == [("backup", "acme-odoo/production", {"no_filestore": False}),
+                         ("restore", f"{made[0]}/production", "odoo_20261117.zip", {"neutralize": True}),
+                         ("stop", f"{made[0]}/test")]
+    listed = (await client.get("/api/servers/acme-odoo/stagings", headers={"Authorization": AUTH})).json()
+    assert [s["server"] for s in listed["stagings"]] == list(reversed(made)) or \
+        sorted(s["server"] for s in listed["stagings"]) == sorted(made)
+    assert all(s["created"].startswith(datetime.date.today().isoformat()) for s in listed["stagings"])
+    record = stagings.load((settings.links_file or settings.servers_file).parent / stagings.FILE)
+    assert record[made[0]]["parent"] == "acme-odoo" and record[made[0]]["backup"] == "odoo_20261117.zip"
+    assert (await client.get(f"/api/servers/{made[0]}/stagings", headers={"Authorization": AUTH})).json()["parent"] == "acme-odoo"
+    assert settings.workspaces["acme"].servers == ["srv", "acme-odoo", *made]
