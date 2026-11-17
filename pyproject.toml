@@ -39,7 +39,7 @@ omniacli = "omniacli.cli:main"
 packages = ["omniacli", "omniacli.odoo", "omniacli.docker"]
 
 [tool.setuptools.package-data]
-omniacli = ["templates/*.html", "static/*", "provision.sh"]
+omniacli = ["templates/*.html", "static/*", "provision.sh", "i18n/*/*.json"]
 "omniacli.odoo" = ["templates/*.html"]
 
 [tool.pytest.ini_options]

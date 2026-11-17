@@ -29,7 +29,7 @@ import httpx
 import jinja2
 from fastapi import Body, Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketException, status
 from fastapi.exception_handlers import http_exception_handler
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
@@ -38,7 +38,7 @@ from starlette.requests import ClientDisconnect, HTTPConnection
 from . import (backupchoices, checks, private, restoreroom, consumer, disks, gitcredentials, linkcopy, listgroups, ops, packages, plugins, pluginstore, puller, publisher,
                schedules, selflog, sshlinks, shell, stacktemplates, templatestore, tunnel, workspacehelper, workspaceops)
 from .accesslog import AccessLog
-from . import loginas, machines
+from . import i18n, loginas, machines
 from .diskhistory import DiskHistory, DiskRecorder
 from .auth import ROLES as ACCESS_ROLES
 from .auth import WORKSPACE_ROLE, Authenticator, Principal, hash_password, hash_token, new_token, verify_password
@@ -96,12 +96,24 @@ from .scheduler import AutoUpdater
 from .sessions import COOKIE, LIFETIME, LoginLimiter, SessionStore
 
 
+def request_language(request: HTTPConnection) -> str:
+    """The language of the page (i18n.py): the cookie, else the browser's."""
+    return i18n.choose(request.cookies.get(i18n.COOKIE), request.headers.get("accept-language"))
+
+
 def _page_context(request: Request) -> dict:
     """In every template: prefix, the path the pages are served under (a
     linked instance's, empty otherwise), and what the caller may do."""
     user = getattr(request.state, "user", None)
     settings = getattr(request.app.state, "settings", None)
+    lang = request_language(request)
     return {
+        # the language (i18n.py): _() for the template's own texts, tr() for
+        # what the code made (an error, a job's line)
+        "lang": lang,
+        "languages": i18n.LANGUAGES,
+        "_": functools.partial(i18n.gettext, lang),
+        "tr": functools.partial(i18n.tr, lang),
         "prefix": getattr(request.state, "prefix", ""),
         # the text size the consoles (logs, terminals) open with: the Options
         # page's, within its limits (_console.html)
@@ -696,6 +708,40 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return response
 
     app.add_route(loginas.LOGIN_PATH, login_as_landing, methods=["GET"])
+
+    async def choose_language(request: Request):
+        """/language/<code>?next=<page>: the language of the pages in this
+        browser (a cookie of a year), also before the login."""
+        code = request.path_params["code"]
+        response = RedirectResponse(_next_path(request.query_params.get("next", "/")), status.HTTP_303_SEE_OTHER)
+        if code in i18n.LANGUAGES:
+            response.set_cookie(i18n.COOKIE, code, max_age=365 * 24 * 3600, httponly=True, samesite="lax",
+                                secure=request.url.scheme == "https", path="/")
+        return response
+
+    app.add_route("/language/{code}", choose_language, methods=["GET"])
+
+    @app.middleware("http")
+    async def translate_errors(request: Request, call_next):
+        """The error of a JSON answer (refused, 4xx, 5xx: {"error"} or
+        {"detail"}) in the caller's language; the code says it in English."""
+        response = await call_next(request)
+        lang = request_language(request)
+        if (lang == i18n.DEFAULT or response.status_code < 400
+                or "application/json" not in response.headers.get("content-type", "")):
+            return response
+        body = b"".join([chunk async for chunk in response.body_iterator])
+        try:
+            data = json.loads(body)
+        except ValueError:
+            data = None
+        if isinstance(data, dict):
+            for key in ("error", "detail"):
+                if isinstance(data.get(key), str):
+                    data[key] = i18n.tr(lang, data[key])
+            body = json.dumps(data).encode()
+        headers = {k: v for k, v in response.headers.items() if k.lower() != "content-length"}
+        return Response(body, status_code=response.status_code, headers=headers, media_type="application/json")
 
     @app.post("/logout")
     async def logout(request: Request, me: Principal = Depends(current_user)):
@@ -3248,6 +3294,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         # the body is passed on raw: ask only the encodings the browser accepts
         # (httpx would ask gzip by itself, and an nginx there would gzip)
         headers["accept-encoding"] = request.headers.get("accept-encoding", "identity")
+        # the pages there in this browser's language (its cookie is this site's)
+        headers["accept-language"] = request_language(request)
         headers.update(link_headers(link, me.name, me.role))
         url = "/" + path + (f"?{request.url.query}" if request.url.query else "")
         outgoing = client.build_request(request.method, url, headers=headers,

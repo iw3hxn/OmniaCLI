@@ -1,6 +1,6 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
 <!doctype html>
-<html lang="en">
+<html lang="{{ lang }}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -19,7 +19,7 @@ window.OmniaLogin = window.OmniaLogin || (function () {
   function expired(method) {
     if (leaving) return;
     const read = !method || ["GET", "HEAD"].includes(method.toUpperCase());
-    if (!read && !confirm("Your login has expired: log in again?\n\nWhat is not saved on this page is lost.")) return;
+    if (!read && !confirm({{ _("Your login has expired: log in again?\n\nWhat is not saved on this page is lost.") | tojson }})) return;
     leaving = true;
     location.assign("/login?next=" + encodeURIComponent(location.pathname + location.search));
   }
@@ -39,64 +39,106 @@ window.OmniaLogin = window.OmniaLogin || (function () {
 /* light: the OmniaSolutions colours (www.omniasolutions.website), with
    installed fonts close to its Archivo and Sometype Mono (no web
    fonts are fetched); dark: the original OmniaCLI look */
+/* the design tokens: light (the OmniaSolutions red on neutral greys) and
+   dark; one font stack and one radius for both, installed fonts only */
 :root {
-  --bg: #FAFAF9; --panel: #FFFFFF; --text: #161616; --muted: #6B6B6B;
-  --border: #E5E5E5; --accent: #DC2626; --ok: #15803D; --err: #991B1B;
-  --warn: #B45309; --code-bg: #0A0A0A; --code-text: #E5E5E5;
-  --series-1: #161616; --series-2: #DC2626; --test: #161616; --prod: #DC2626;
+  --bg: #F5F6F8; --panel: #FFFFFF; --panel-2: #F9FAFB; --text: #111827; --muted: #6B7280;
+  --border: #E4E7EC; --border-strong: #D0D5DD; --accent: #DC2626; --accent-soft: #FEF2F2;
+  --ok: #15803D; --ok-soft: #ECFDF3; --err: #B42318; --err-soft: #FEF3F2; --warn: #B54708; --warn-soft: #FFFAEB;
+  --info: #1D4ED8; --info-soft: #EFF6FF;
+  --code-bg: #0B0F17; --code-text: #E5E7EB;
+  --series-1: #111827; --series-2: #DC2626; --test: #1D4ED8; --prod: #DC2626;
   /* the shares on a chart (OmniaCharts lines c2..c8): categorical slots 2-8,
      checked with the dataviz validator on #FFFFFF; the legend shows each value */
   --cat-2: #eb6834; --cat-3: #1baf7a; --cat-4: #eda100; --cat-5: #e87ba4;
   --cat-6: #008300; --cat-7: #6250d6; --cat-8: #e34948;
   --start: #15803D; --stop: #DC2626; --restart: #1D4ED8; --light-green: #16A34A; --purple: #7E22CE;
-  --r: 0; --r-lg: 0;
-  --font: "Helvetica Neue", Helvetica, Arial, "Nimbus Sans", "Liberation Sans", sans-serif;
-  --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace;
-  --head-bg: rgba(250, 250, 249, .85);
+  --r: 8px; --r-lg: 12px;
+  --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .08);
+  --shadow-lg: 0 12px 32px rgba(16, 24, 40, .16);
+  --font: Inter, "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, "Liberation Sans", sans-serif;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+  --side-bg: #0F172A; --side-text: #CBD5E1; --side-muted: #64748B; --side-hover: #1E293B; --side-current: #FFFFFF;
+  --head-bg: var(--panel);
   color-scheme: light;
 }
 :root[data-theme="dark"] {
-    --bg: #12151c; --panel: #1b2029; --text: #e3e7ee; --muted: #98a2b3;
-    --border: #2d3442; --accent: #6d9bff; --ok: #4cc283; --err: #ff6b6b;
-    --warn: #f0a443; --code-bg: #0b0e14; --code-text: #d6dbe4;
-    --series-1: #3987e5; --series-2: #f08a3c; --test: var(--accent); --prod: var(--err);
-    --cat-2: #d95926; --cat-3: #199e70; --cat-4: #c98500; --cat-5: #d55181;
-    --cat-6: #008300; --cat-7: #9085e9; --cat-8: #e66767;
-    --start: var(--ok); --stop: var(--err); --restart: #6d9bff; --light-green: #86efac; --purple: #c084fc;
-    --r: 6px; --r-lg: 8px; --font: system-ui, -apple-system, "Segoe UI", sans-serif;
-    --mono: ui-monospace, "DejaVu Sans Mono", monospace; --head-bg: var(--panel);
+  --bg: #0E1117; --panel: #161B22; --panel-2: #1C222B; --text: #E6EAF0; --muted: #98A2B3;
+  --border: #2A313C; --border-strong: #3A4350; --accent: #F87171; --accent-soft: #2A1517;
+  --ok: #4ADE80; --ok-soft: #0F2A1A; --err: #F87171; --err-soft: #2A1517; --warn: #FBBF24; --warn-soft: #2A2110;
+  --info: #7AA2FF; --info-soft: #141E33;
+  --code-bg: #0A0D12; --code-text: #D6DBE4;
+  --series-1: #7AA2FF; --series-2: #F59E5B; --test: #7AA2FF; --prod: #F87171;
+  --cat-2: #d95926; --cat-3: #199e70; --cat-4: #c98500; --cat-5: #d55181;
+  --cat-6: #008300; --cat-7: #9085e9; --cat-8: #e66767;
+  --start: var(--ok); --stop: var(--err); --restart: #7AA2FF; --light-green: #86efac; --purple: #c084fc;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .4); --shadow-lg: 0 12px 32px rgba(0, 0, 0, .5);
+  --side-bg: #0A0D12; --side-text: #C3CAD5; --side-muted: #6B7685; --side-hover: #161B22; --side-current: #FFFFFF;
   color-scheme: dark;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #12151c; --panel: #1b2029; --text: #e3e7ee; --muted: #98a2b3;
-    --border: #2d3442; --accent: #6d9bff; --ok: #4cc283; --err: #ff6b6b;
-    --warn: #f0a443; --code-bg: #0b0e14; --code-text: #d6dbe4;
-    --series-1: #3987e5; --series-2: #f08a3c; --test: var(--accent); --prod: var(--err);
+    --bg: #0E1117; --panel: #161B22; --panel-2: #1C222B; --text: #E6EAF0; --muted: #98A2B3;
+    --border: #2A313C; --border-strong: #3A4350; --accent: #F87171; --accent-soft: #2A1517;
+    --ok: #4ADE80; --ok-soft: #0F2A1A; --err: #F87171; --err-soft: #2A1517; --warn: #FBBF24; --warn-soft: #2A2110;
+    --info: #7AA2FF; --info-soft: #141E33;
+    --code-bg: #0A0D12; --code-text: #D6DBE4;
+    --series-1: #7AA2FF; --series-2: #F59E5B; --test: #7AA2FF; --prod: #F87171;
     --cat-2: #d95926; --cat-3: #199e70; --cat-4: #c98500; --cat-5: #d55181;
     --cat-6: #008300; --cat-7: #9085e9; --cat-8: #e66767;
-    --start: var(--ok); --stop: var(--err); --restart: #6d9bff; --light-green: #86efac; --purple: #c084fc;
-    --r: 6px; --r-lg: 8px; --font: system-ui, -apple-system, "Segoe UI", sans-serif;
-    --mono: ui-monospace, "DejaVu Sans Mono", monospace; --head-bg: var(--panel);
+    --start: var(--ok); --stop: var(--err); --restart: #7AA2FF; --light-green: #86efac; --purple: #c084fc;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4); --shadow-lg: 0 12px 32px rgba(0, 0, 0, .5);
+    --side-bg: #0A0D12; --side-text: #C3CAD5; --side-muted: #6B7685; --side-hover: #161B22; --side-current: #FFFFFF;
     color-scheme: dark;
   }
 }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 body { margin: 0; background: var(--bg); color: var(--text);
-  font: 14px/1.45 var(--font); -webkit-font-smoothing: antialiased; }
-header { display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: center; padding: 12px 20px;
-  background: var(--head-bg); border-bottom: 1px solid var(--border);
-  position: sticky; top: 0; z-index: 10; backdrop-filter: blur(12px); }
-header strong { font-size: 16px; }
-.brand { display: inline-flex; align-items: center; gap: 8px; font-weight: 800; letter-spacing: -.01em; }
-.brand img { width: 22px; height: 22px; }
-.brand-name span { color: var(--accent); }
-.head-end { margin-left: auto; display: flex; align-items: center; gap: 14px; }
-.theme-toggle { padding: 3px 9px; font-size: 15px; line-height: 1; }
-.logout { margin: 0; } .logout-button { padding: 3px 10px; }
-.link-bar { padding: 8px 20px; background: var(--accent); color: var(--bg); }
-.link-bar a { color: var(--bg); text-decoration: underline; }
+  font: 14px/1.5 var(--font); -webkit-font-smoothing: antialiased; }
+/* the page: the menu on the left, the content on the right */
+.shell { display: grid; grid-template-columns: 232px minmax(0, 1fr); min-height: 100vh; }
+.sidebar { position: sticky; top: 0; height: 100vh; overflow-y: auto; display: flex; flex-direction: column;
+  background: var(--side-bg); color: var(--side-text); padding: 16px 12px; gap: 4px; z-index: 10; }
+.brand { display: flex; align-items: center; gap: 10px; padding: 4px 10px 14px; font-weight: 800; font-size: 17px;
+  letter-spacing: -.01em; color: var(--side-current); text-decoration: none; }
+.brand img { width: 26px; height: 26px; border-radius: 6px; }
+.brand-name span { color: #F87171; }
+.nav-section { font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--side-muted); padding: 14px 10px 4px; }
+.nav-link { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: var(--r);
+  color: var(--side-text); text-decoration: none; font-size: 14px; }
+.nav-link:hover { background: var(--side-hover); color: var(--side-current); }
+.nav-link[aria-current="page"] { background: var(--side-hover); color: var(--side-current); font-weight: 600;
+  box-shadow: inset 3px 0 0 #F87171; }
+.nav-link .icon { width: 16px; height: 16px; opacity: .8; }
+.side-end { margin-top: auto; padding-top: 14px; border-top: 1px solid var(--side-hover); display: flex;
+  flex-direction: column; gap: 8px; }
+.side-account { display: flex; align-items: center; gap: 10px; padding: 4px 10px; color: var(--side-text);
+  text-decoration: none; }
+.side-account:hover { color: var(--side-current); }
+.avatar { width: 28px; height: 28px; border-radius: 50%; background: #F87171; color: #fff; display: grid;
+  place-items: center; font-weight: 700; font-size: 13px; flex: none; text-transform: uppercase; }
+.side-tools { display: flex; gap: 6px; align-items: center; padding: 0 10px; flex-wrap: wrap; }
+.side-tools button, .side-tools .button, .side-tools select { background: transparent; color: var(--side-text);
+  border: 1px solid var(--side-hover); box-shadow: none; padding: 4px 9px; font-size: 13px; width: auto; }
+.side-tools button:hover, .side-tools .button:hover { background: var(--side-hover); color: var(--side-current);
+  border-color: var(--side-hover); }
+.lang-switch { display: inline-flex; border: 1px solid var(--side-hover); border-radius: var(--r); overflow: hidden; }
+.lang-switch a { padding: 4px 9px; font-size: 12px; font-weight: 600; color: var(--side-muted); text-decoration: none; }
+.lang-switch a[aria-current="true"] { background: var(--side-hover); color: var(--side-current); }
+.logout { margin: 0; }
+.side-toggle { display: none; }
+.content { min-width: 0; display: flex; flex-direction: column; }
+.link-bar { padding: 8px 24px; background: var(--accent); color: #fff; font-size: 13px; }
+.link-bar a { color: #fff; text-decoration: underline; }
+@media (max-width: 900px) {
+  .shell { grid-template-columns: 1fr; }
+  .sidebar { position: sticky; height: auto; max-height: 100vh; flex-direction: column; padding: 10px 12px; }
+  .side-toggle { display: inline-flex; position: absolute; right: 12px; top: 10px; }
+  .sidebar:not(.open) > :not(.brand):not(.side-toggle) { display: none; }
+  .brand { padding-bottom: 4px; }
+}
 .ok { color: var(--ok); }
 details.group { margin-bottom: 16px; }
 details.group > summary { cursor: pointer; margin-bottom: 8px; }
@@ -124,12 +166,13 @@ header a:hover { color: var(--accent); }
   background: var(--panel); border: 1px solid var(--border); border-top-width: 0; }
 .menu-items a:first-child { border-top-width: 1px; border-radius: var(--r) var(--r) 0 0; }
 .menu-items a:last-child { border-radius: 0 0 var(--r) var(--r); }
-main { padding: 20px; max-width: 1400px; margin: 0 auto; }
-a { color: var(--accent); }
-h1 { font-size: 20px; margin: 0 0 16px; }
-h2 { font-size: 17px; margin: 0; }
+main { padding: 28px 32px; max-width: 1440px; width: 100%; margin: 0 auto; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+h1 { font-size: 24px; font-weight: 700; letter-spacing: -.02em; margin: 0 0 18px; }
+h2 { font-size: 16px; font-weight: 650; margin: 0; }
 .server { background: var(--panel); border: 1px solid var(--border);
-  border-radius: var(--r-lg); margin-bottom: 20px; }
+  border-radius: var(--r-lg); margin-bottom: 20px; box-shadow: var(--shadow); }
 .server-head { display: flex; justify-content: space-between; align-items: center;
   padding: 12px 16px; border-bottom: 1px solid var(--border); gap: 12px; flex-wrap: wrap; }
 .instances { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); }
@@ -140,21 +183,34 @@ h2 { font-size: 17px; margin: 0; }
 dl { display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px; margin: 10px 0; }
 dt { color: var(--muted); } dd { margin: 0; overflow-wrap: anywhere; }
 table { border-collapse: collapse; width: 100%; }
-th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--border);
+th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border);
   vertical-align: top; }
-th { color: var(--muted); font-weight: 500; }
+th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .04em;
+  background: var(--panel-2); }
+tbody tr:hover td, table tr:hover > td { background: color-mix(in srgb, var(--panel-2) 70%, transparent); }
 code, .mono { font-family: var(--mono); font-size: 12.5px; }
-.actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
 .actions form { margin: 0; }
-button, .button { font: inherit; padding: 5px 12px; border-radius: var(--r); cursor: pointer;
-  border: 1px solid var(--border); background: var(--panel); color: var(--text);
-  text-decoration: none; display: inline-block; }
-button:hover, .button:hover { border-color: var(--accent); color: var(--accent); }
-button.danger { border-color: var(--err); color: var(--err); }
-button:disabled { opacity: .5; cursor: not-allowed; }
+button, .button { font: inherit; font-weight: 500; padding: 6px 13px; border-radius: var(--r); cursor: pointer;
+  border: 1px solid var(--border-strong); background: var(--panel); color: var(--text);
+  text-decoration: none; display: inline-flex; align-items: center; gap: 6px; box-shadow: var(--shadow);
+  transition: background .15s, border-color .15s, color .15s; line-height: 1.35; }
+button:hover, .button:hover { background: var(--panel-2); border-color: var(--border-strong); color: var(--text);
+  text-decoration: none; }
+button:focus-visible, .button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent); outline-offset: 2px; }
+button.primary, .button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary:hover, .button.primary:hover { background: color-mix(in srgb, var(--accent) 88%, #000);
+  border-color: color-mix(in srgb, var(--accent) 88%, #000); color: #fff; }
+button.danger { border-color: color-mix(in srgb, var(--err) 45%, var(--border)); color: var(--err); }
+button.danger:hover:not(:disabled) { background: var(--err-soft); border-color: var(--err); color: var(--err); }
+button.ghost { background: none; border-color: transparent; box-shadow: none; }
+button:disabled, .button[aria-disabled="true"] { opacity: .45; cursor: not-allowed; }
 .status { font-weight: 600; }
 .status.success { color: var(--ok); } .status.failed, .status.interrupted, .status.stopped, .error { color: var(--err); }
 .status.running, .status.queued { color: var(--warn); }
+.status::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: currentColor;
+  margin-right: 6px; vertical-align: 1px; }
 .muted { color: var(--muted); }
 pre.console { background: var(--code-bg); color: var(--code-text); padding: 12px;
   border-radius: var(--r); overflow: auto; white-space: pre-wrap; word-break: break-all;
@@ -180,16 +236,25 @@ body.console-expanded { overflow: hidden; }
 .with-button.one-line { flex-wrap: nowrap; } .with-button.one-line > input { flex: 1; min-width: 0; } .with-button.one-line > button { flex-shrink: 0; }
 .pip-buttons { display: flex; gap: 8px; } .pip-buttons[hidden] { display: none; }
 .conf-notes { margin-top: 10px; font-size: 13px; } .conf-notes p { margin: 2px 0; }
-input[type=text], input[type=number], input[type=search], select { font: inherit; padding: 5px 8px; width: 100%;
-  border: 1px solid var(--border); border-radius: var(--r); background: var(--bg); color: var(--text); }
+input[type=text], input[type=number], input[type=search], input[type=url], input[type=password], input[type=email],
+select, textarea { font: inherit; padding: 7px 10px; width: 100%;
+  border: 1px solid var(--border-strong); border-radius: var(--r); background: var(--panel); color: var(--text);
+  transition: border-color .15s, box-shadow .15s; }
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
 .job-filter select, .job-filter input { width: auto; } .job-filter input { min-width: min(16em, 100%); }
 fieldset { border: 1px solid var(--border); border-radius: var(--r-lg); margin: 0 0 16px; padding: 12px 16px; }
 legend { padding: 0 6px; }
 .repos td { padding: 4px; } .repos input { min-width: 90px; }
-.banner { padding: 10px 14px; border-radius: var(--r); margin-bottom: 14px; border: 1px solid var(--err); color: var(--err); }
+.banner { padding: 12px 16px; border-radius: var(--r); margin-bottom: 16px; border: 1px solid var(--err);
+  color: var(--err); background: var(--err-soft); }
+.banner.info { border-color: var(--info); color: var(--info); background: var(--info-soft); }
+.banner.ok { border-color: var(--ok); color: var(--ok); background: var(--ok-soft); }
+.banner.warn { border-color: var(--warn); color: var(--warn); background: var(--warn-soft); }
 dialog { border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--panel);
-  color: var(--text); width: min(640px, calc(100vw - 32px)); padding: 18px 20px; }
-dialog::backdrop { background: rgba(0, 0, 0, .45); }
+  color: var(--text); width: min(640px, calc(100vw - 32px)); padding: 22px 24px; box-shadow: var(--shadow-lg); }
+dialog::backdrop { background: rgba(15, 23, 42, .55); backdrop-filter: blur(2px); }
+dialog h2 { font-size: 18px; margin-bottom: 8px; }
 .addon-list { max-height: 45vh; overflow: auto; border: 1px solid var(--border);
   border-radius: var(--r); padding: 6px 10px; margin-bottom: 10px; }
 .addon-group { font-weight: 600; color: var(--muted); margin: 8px 0 4px; font-size: 12px;
@@ -198,9 +263,9 @@ dialog::backdrop { background: rgba(0, 0, 0, .45); }
 .addon-version { white-space: pre; } .addon.addon-newer, .addon.addon-newer .addon-version { color: var(--err); }
 .instance-grid { display: grid; gap: 16px; grid-template-columns: repeat(var(--cols, 1), minmax(0, 1fr)); }
 .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-.tile { border: 1px solid var(--border); border-radius: var(--r-lg); padding: 8px 12px; }
-.tile-label { color: var(--muted); font-size: 12px; }
-.tile-value { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.tile { border: 1px solid var(--border); border-radius: var(--r-lg); padding: 12px 14px; background: var(--panel-2); }
+.tile-label { color: var(--muted); font-size: 12px; font-weight: 500; }
+.tile-value { font-size: 24px; font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
 .chart-title { font-size: 13px; font-weight: 600; margin: 12px 0 4px; }
 .chart-box { position: relative; }
 svg.chart { width: 100%; height: 160px; display: block; }
@@ -304,7 +369,7 @@ svg.spark { width: 160px; height: 28px; display: block; }
 @media (prefers-reduced-motion: reduce) {
   .runner *, .job-done, .thumb, .danger-sign, .toast { animation: none !important; }
 }
-.site-foot { max-width: 1400px; margin: 0 auto; padding: 8px 20px 20px; font-size: 12px; }
+.site-foot { max-width: 1440px; width: 100%; margin: auto auto 0; padding: 12px 32px 24px; font-size: 12px; }
 .help { max-width: 900px; line-height: 1.6; }
 .help h2 { font-size: 19px; margin: 28px 0 8px; padding-top: 8px; border-top: 1px solid var(--border); }
 .help h3 { font-size: 15px; margin: 20px 0 6px; }
@@ -383,21 +448,32 @@ a.disk-compact { color: inherit; text-decoration: none; } a.disk-compact:hover .
 .view-buttons .view-production .icon { color: var(--prod); } .view-buttons .view-test .icon { color: var(--test); }
 .config-main td { border-bottom: 0; padding-bottom: 2px; }
 .config-actions td { padding-top: 4px; padding-bottom: 12px; }
-.badge { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--border); }
-.badge.active { color: var(--ok); border-color: var(--ok); }
-.badge.draft { color: var(--warn); border-color: var(--warn); }
+.badge { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; padding: 2px 9px;
+  border-radius: 999px; border: 1px solid transparent; background: var(--panel-2); color: var(--muted); }
+.badge.active, .badge.ok { color: var(--ok); background: var(--ok-soft); }
+.badge.draft, .badge.warn { color: var(--warn); background: var(--warn-soft); }
+.badge.error { color: var(--err); background: var(--err-soft); }
+.badge.info { color: var(--info); background: var(--info-soft); }
 .button.current { border-color: var(--accent); color: var(--accent); font-weight: 600; }
 summary { cursor: pointer; color: var(--muted); }
 @media (max-width: 1000px) { .instance-grid { grid-template-columns: 1fr; } }
-.crumbs ol { list-style: none; display: flex; flex-wrap: wrap; gap: 6px; margin: -6px 0 14px; padding: 0;
+.crumbs ol { list-style: none; display: flex; flex-wrap: wrap; gap: 6px; margin: -8px 0 10px; padding: 0;
   font-size: 13px; color: var(--muted); }
 .crumbs li + li::before { content: "›"; margin-right: 6px; }
 .crumbs a { color: var(--accent); text-decoration: none; }
 .crumbs a:hover { text-decoration: underline; }
 .crumbs [aria-current] { color: var(--text); }
-.panel { background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 16px; }
+.panel { background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 20px;
+  box-shadow: var(--shadow); }
+.panel + .panel, section.panel { margin-bottom: 16px; }
+.page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+  margin-bottom: 20px; }
+.page-head h1 { margin: 0; }
+.page-head p { margin: 4px 0 0; color: var(--muted); max-width: 70ch; }
+.stack { display: flex; flex-direction: column; gap: 16px; }
 @media (max-width: 700px) {
   main { padding: 16px; }
+  h1 { font-size: 20px; }
   .instances { grid-template-columns: 1fr; }
   .instance { border-right: 0; border-bottom: 1px solid var(--border); }
   .scroll { overflow-x: auto; }
@@ -405,46 +481,56 @@ summary { cursor: pointer; color: var(--muted); }
 </style>
 </head>
 <body>
-<header>
-  <strong><a class="brand" href="{{ prefix }}/"><img src="/icon-180.png" alt=""><span class="brand-name">Omnia<span>CLI</span></span></a></strong>
-  <a href="{{ prefix }}/">Dashboard</a>
-  <a href="{{ prefix }}/jobs">Jobs</a>
-  {% if puller_connections and not prefix %}<div class="menu">
-    <button type="button" class="menu-label" aria-haspopup="true" title="Instances operated through a relay">Pullers ▾</button>
-    <div class="menu-items">
-      {% for c in puller_connections %}<a href="/pullers/connections/{{ c }}">{{ c }}</a>{% endfor %}
+{% set here = request.url.path if request else "" %}
+{% macro nav(path, label, title="") -%}
+<a class="nav-link"{% if here == prefix ~ path or (path != "/" and here.startswith(prefix ~ path ~ "/")) %} aria-current="page"{% endif %}{% if title %} title="{{ title }}"{% endif %} href="{{ prefix }}{{ path }}">{{ label }}</a>
+{%- endmacro %}
+<div class="shell">
+<aside class="sidebar" id="sidebar">
+  <a class="brand" href="{{ prefix }}/"><img src="/icon-180.png" alt=""><span class="brand-name">Omnia<span>CLI</span></span></a>
+  <button type="button" class="side-toggle" aria-controls="sidebar" aria-expanded="false" aria-label="{{ _('Menu') }}">☰</button>
+  {{ nav("/", _("Dashboard")) }}
+  {{ nav("/jobs", _("Jobs")) }}
+  {% if puller_connections and not prefix %}
+  <div class="nav-section" title="{{ _('Instances operated through a relay') }}">{{ _("Pullers") }}</div>
+  {% for c in puller_connections %}<a class="nav-link" href="/pullers/connections/{{ c }}">{{ c }}</a>{% endfor %}
+  {% endif %}
+  {% if not scoped and (is_admin or (can_act and account and not prefix)) %}
+  <div class="nav-section">{{ _("Configure") }}</div>
+  {% if is_admin %}{{ nav("/config", _("Servers")) }}
+  {{ nav("/machines", _("Machines")) }}
+  {{ nav("/links", _("Links")) }}
+  {{ nav("/pullers", _("Pullers")) }}
+  {{ nav("/schedules", _("Schedules")) }}{% endif %}
+  {% if can_act and account and not prefix %}{{ nav("/tunnels", _("Tunnels")) }}{% endif %}
+  {% endif %}
+  {% if is_admin and not scoped %}
+  <div class="nav-section">{{ _("Settings") }}</div>
+  {{ nav("/users", _("Users")) }}
+  {{ nav("/workspaces", _("Workspaces")) }}
+  {{ nav("/credentials", _("Git credentials"), _("The git credentials of the servers and workspaces")) }}
+  {{ nav("/plugins", _("Plugins")) }}
+  {{ nav("/options", _("Options")) }}
+  {{ nav("/omniacli/log", _("Log"), _("OmniaCLI's own log")) }}
+  {% endif %}
+  {% if my_workspaces %}<div class="nav-section">{{ _("Your workspaces") }}</div>
+  {% for ws in my_workspaces %}{{ nav("/workspaces/" ~ ws, ws) }}{% endfor %}{% endif %}
+  {% if can_act and not scoped %}<div class="nav-section"></div>{{ nav("/help", _("Help")) }}{% endif %}
+  <div class="side-end">
+    {% if account %}<a class="side-account" href="{{ prefix }}/account" title="{{ _('Your account and password') }}">
+      <span class="avatar">{{ account[:1] }}</span><span>{{ account }}</span></a>{% endif %}
+    <div class="side-tools">
+      {# the language is this browser's: a linked instance's pages follow it (the link passes it) #}
+      {% if not prefix %}<span class="lang-switch" role="group" aria-label="{{ _('Language') }}">
+        {% for code, name in languages.items() %}<a href="/language/{{ code }}?next={{ (here ~ ('?' ~ request.url.query if request and request.url.query else '')) | urlencode }}" title="{{ name }}"
+          {% if code == lang %}aria-current="true"{% endif %}>{{ code | upper }}</a>{% endfor %}
+      </span>{% endif %}
+      <button type="button" class="theme-toggle" id="theme-toggle"></button>
+      {% if account %}<form method="post" action="/logout" class="logout"><button class="logout-button">{{ _("Log out") }}</button></form>{% endif %}
     </div>
-  </div>{% endif %}
-  {% if not scoped and (is_admin or (can_act and account and not prefix)) %}<div class="menu">
-    <button type="button" class="menu-label" aria-haspopup="true">Configure ▾</button>
-    <div class="menu-items">
-      {% if is_admin %}<a href="{{ prefix }}/config">Servers</a>
-      <a href="{{ prefix }}/links">Links</a>
-      <a href="{{ prefix }}/machines">Machines</a>
-      <a href="{{ prefix }}/pullers">Pullers</a>
-      <a href="{{ prefix }}/schedules">Schedules</a>{% endif %}
-      {% if can_act and account and not prefix %}<a href="/tunnels">Tunnels</a>{% endif %}
-    </div>
-  </div>{% endif %}
-  {% if is_admin and not scoped %}<div class="menu">
-    <button type="button" class="menu-label" aria-haspopup="true">Settings ▾</button>
-    <div class="menu-items">
-      <a href="{{ prefix }}/plugins">Plugins</a>
-      <a href="{{ prefix }}/users">Users</a>
-      <a href="{{ prefix }}/workspaces">Workspaces</a>
-      <a href="{{ prefix }}/credentials" title="The git credentials of the servers and workspaces">Git credentials</a>
-      <a href="{{ prefix }}/omniacli/log" title="OmniaCLI's own log">Log</a>
-      <a href="{{ prefix }}/options">Options</a>
-    </div>
-  </div>{% endif %}
-  {% if can_act and not scoped %}<a href="{{ prefix }}/help">Help</a>{% endif %}
-  {% for ws in my_workspaces %}<a href="{{ prefix }}/workspaces/{{ ws }}" title="Your workspace {{ ws }}">{{ ws }}</a>{% endfor %}
-  <span class="head-end">
-    {% if account %}<a href="{{ prefix }}/account" title="Your account and password">{{ account }}</a>
-    <form method="post" action="/logout" class="logout"><button class="logout-button">Log out</button></form>{% endif %}
-    <button type="button" class="theme-toggle" id="theme-toggle"></button>
-  </span>
-</header>
+  </div>
+</aside>
+<div class="content">
 <script>
 // a page shown again from the browser's cache (Back) is drawn anew: its
 // buttons and states are those of now, not of when it was left
@@ -458,7 +544,7 @@ window.addEventListener("pageshow", (event) => { if (event.persisted) location.r
   const label = () => {
     const dark = current() === "dark";
     button.textContent = dark ? "☀" : "☾";
-    button.title = button.ariaLabel = dark ? "Light theme (OmniaSolutions)" : "Dark theme";
+    button.title = button.ariaLabel = dark ? {{ _("Light theme") | tojson }} : {{ _("Dark theme") | tojson }};
   };
   label();
   button.addEventListener("click", () => {
@@ -469,13 +555,25 @@ window.addEventListener("pageshow", (event) => { if (event.persisted) location.r
 })();
 </script>
 {% if prefix.startswith("/links/") %}
-<div class="link-bar">Linked instance <strong>{{ prefix.rsplit("/", 1)[1] }}</strong> · its pages, acting with its link · <a href="/">back to your OmniaCLI</a></div>
+<div class="link-bar">{{ _("Linked instance") }} <strong>{{ prefix.rsplit("/", 1)[1] }}</strong> · {{ _("its pages, acting with its link") }} · <a href="/">{{ _("back to your OmniaCLI") }}</a></div>
 {% endif %}
 <main>
 {% block crumbs %}{% endblock %}
 {% block content %}{% endblock %}
 </main>
-<footer class="site-foot muted">OmniaCLI {{ version }} · © 2026 OmniaSolutions S.n.c di Boscolo Matteo &amp; C · free software under the
+<footer class="site-foot muted">OmniaCLI {{ version }} · © 2026 OmniaSolutions S.n.c di Boscolo Matteo &amp; C · {{ _("free software under the") }}
   <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">GNU AGPL v3</a></footer>
+</div>
+</div>
+<script>
+(function () {
+  // the menu on a narrow screen: folded, opened by its button
+  const side = document.getElementById("sidebar"), toggle = side.querySelector(".side-toggle");
+  toggle.addEventListener("click", () => {
+    const open = side.classList.toggle("open");
+    toggle.setAttribute("aria-expanded", String(open));
+  });
+})();
+</script>
 </body>
 </html>
