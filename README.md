@@ -1686,16 +1686,23 @@ or Debian 11, 12 or 13 (amd64), given by its address and an SSH user, ends
 linked to this OmniaCLI with its workspaces ready, in about 10 to 20
 minutes.
 
-1. **Make the key** once: OmniaCLI's provisioning key
-   (`id_ed25519_provision` in `ssh/` next to the links file), another key
-   than the links' one. On the new machine, as root, add it to
-   `~/.ssh/authorized_keys` (the page prints the line); a user other than
-   root needs `sudo` without a password.
-2. **Fetch host key** and compare its fingerprint with
-   `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` run there: ssh accepts
-   no other key, and reads no configuration, agent or `known_hosts` of
-   OmniaCLI's user.
-3. **Prepare and link** starts a job: `omniacli/provision.sh` runs there as
+1. **On the server, as root, paste the command** the page shows (its
+   **Copy** button): it adds OmniaCLI's provisioning key
+   (`id_ed25519_provision` in `ssh/` next to the links file, made when the
+   page is first opened; another key than the links' one) to
+   `~/.ssh/authorized_keys`.
+2. **Its address**, then **Add the server**. The rest has its default, under
+   **Advanced options**: the name from the address (`erp.acme.it` →
+   `erp-acme-it`, `-2` beside one already there), port 22, `root` (another
+   user needs `sudo` without a password), the host key accepted on the first
+   connection as ssh asks to (or **Fetch host key** there, to compare its
+   fingerprint with `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` run on
+   the server first), the package, the firewall. ssh then accepts no other
+   host key, and reads no configuration, agent or `known_hosts` of
+   OmniaCLI's user. The key is tried before anything starts: a server that
+   does not accept it yet, a user without `sudo`, an address that does not
+   answer are said on the form, and no job is made.
+3. A job then prepares it: `omniacli/provision.sh` runs there as
    root, its text and its values on bash's input (never on a command line):
    - the system checked (supported, amd64, no site of apache), its updates,
      and the security updates every day (unattended-upgrades);

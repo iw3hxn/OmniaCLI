@@ -30,12 +30,35 @@ def test_the_form_is_checked():
     assert (machine.name, machine.host, machine.port, machine.user) == ("acme-cloud", "203.0.113.10", 22, "root")
     assert machine.package_url == machines.PACKAGE_URL and machine.firewall
     for key, bad in (("name", "Acme Cloud"), ("host", "a host; rm"), ("port", "ssh"), ("port", 70000),
-                     ("user", "root; id"), ("host_key", ""), ("package_url", "http://example.com/x.deb"),
+                     ("user", "root; id"), ("host_key", "not a key"), ("package_url", "http://example.com/x.deb"),
                      ("package_url", "https://example.com/x.deb'; id")):
         with pytest.raises(machines.MachineError):
             machines.Machine.parse({**FORM, key: bad}, "central")
     assert machines.Machine.parse({**FORM, "firewall": False}, "Not A Name!").here == "omniacli"
     assert machines.here_name("Omnia-Server.example.com") == "omnia-server"
+    # only the address: the name from it, port 22, root, the host key read later
+    bare = machines.Machine.parse({"host": "ERP.acme.it"}, "central")
+    assert (bare.name, bare.port, bare.user, bare.host_key) == ("erp-acme-it", 22, "root", "")
+    assert machines.name_from_host("203.0.113.10") == "203-0-113-10"
+    assert machines.name_from_host("2001:db8::1") == "2001-db8-1"
+
+
+@pytest.mark.parametrize("said, told", [
+    ("root@203.0.113.10: Permission denied (publickey).", "run the command of step 1"),
+    ("sudo: a password is required", "deploy needs sudo without a password"),
+    ("ssh: connect to host 203.0.113.10 port 22: Connection refused", "No SSH server on 203.0.113.10:22"),
+    ("kex_exchange_identification: something odd", "failed: kex_exchange_identification: something odd"),
+])
+async def test_the_access_is_tried_first_and_said_plainly(tmp_path, said, told):
+    sshlinks.key_file(tmp_path, sshlinks.PROVISION_KEY_NAME).write_text("key")
+    fake = tmp_path / "ssh-fake"
+    fake.write_text(f"#!/bin/sh\necho '{said}' >&2\nexit 255\n")
+    fake.chmod(0o755)
+    machine = machines.Machine.parse({**FORM, "user": "deploy"}, "c")
+    with pytest.raises(machines.MachineError, match=told):
+        await machines.check_access(machine, tmp_path, ssh=str(fake))
+    fake.write_text("#!/bin/sh\nexit 0\n")
+    await machines.check_access(machine, tmp_path, ssh=str(fake))
 
 
 def test_ssh_reads_only_the_key_and_the_host_key_given(tmp_path):
@@ -106,7 +129,16 @@ async def client(env, monkeypatch):
     async def ensure_key(folder, name=sshlinks.KEY_NAME):
         return f"ssh-ed25519 AAAA {name}@here"
 
+    async def fetch_host_key(host, port):
+        return HOST_KEY
+
+    async def check_access(machine, ssh_folder, ssh="ssh"):
+        if machine.host == "198.51.100.9":
+            raise machines.MachineError("The server does not accept OmniaCLI's key yet: run the command of step 1 there, as root")
+
     monkeypatch.setattr(sshlinks, "ensure_key", ensure_key)
+    monkeypatch.setattr(sshlinks, "fetch_host_key", fetch_host_key)
+    monkeypatch.setattr(machines, "check_access", check_access)
     monkeypatch.setattr(machines, "LINK_WAIT", 1)
     app = create_app(env["settings"])
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=BasicAsSession(app)),
@@ -133,11 +165,13 @@ async def test_an_admin_adds_a_machine(client, monkeypatch):
 
     monkeypatch.setattr(machines, "provision", provision)
     page = await client.get("/machines", headers=as_user("admin"))
-    assert page.status_code == 200 and "Make the key" in page.text
+    # the provisioning key is made with the page: the command is there to copy
+    assert page.status_code == 200 and "id_ed25519_provision@here" in page.text and "copyable" in page.text
     assert (await client.get("/machines", headers=as_user("dev"))).status_code == 403
     post = {**as_user("admin", post=True), "Accept": "application/json"}
     assert (await client.post("/api/machines/add", headers={**as_user("dev", post=True)}, json=FORM)).status_code == 403
-    assert (await client.post("/api/machines/add", headers=post, json={**FORM, "host_key": ""})).status_code == 400
+    refused = await client.post("/api/machines/add", headers=post, json={"host": "198.51.100.9"})
+    assert refused.status_code == 400 and "step 1" in refused.json()["error"]
     resp = await client.post("/api/machines/add", headers=post, json=FORM)
     assert resp.status_code == 200, resp.text
     job = await wait(client, resp.json()["job"])
@@ -150,3 +184,10 @@ async def test_an_admin_adds_a_machine(client, monkeypatch):
     assert hash_token(saved["token"]) == ran[0][2]
     again = await client.post("/api/machines/add", headers=post, json=FORM)
     assert again.status_code == 400 and "already exists" in again.json()["error"]
+    # only the address: named from it, the host key read; the same address again gets -2
+    for expected in ("203-0-113-10", "203-0-113-10-2"):
+        resp = await client.post("/api/machines/add", headers=post, json={"host": "203.0.113.10"})
+        assert resp.status_code == 200, resp.text
+        await wait(client, resp.json()["job"])
+        saved = yaml.safe_load(client.settings.links_file.read_text())["links"][expected]
+        assert saved["ssh"]["host_key"] == HOST_KEY

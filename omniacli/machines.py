@@ -6,7 +6,11 @@ linked to this OmniaCLI.
 
 1. The admin puts OmniaCLI's provisioning key (sshlinks.PROVISION_KEY_NAME,
    not the links' key) in the root's authorized_keys there, or of a user
-   with sudo without a password, and confirms the server's host key.
+   with sudo without a password, and gives the server's address: the rest
+   has its default (the name from the address, port 22, root, the host key
+   read on the first connection, as ssh asks to accept it) and may be
+   changed under the form's advanced options. check_access tries the key
+   before anything is prepared.
 2. A job runs provision.sh there through ssh (its text on bash's input,
    nothing copied there first): updates, nginx, certbot, Docker, OmniaCLI
    from its package with the workspaces allowed, a user that may only
@@ -20,6 +24,7 @@ the provisioning key and the host key the admin confirmed."""
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import re
 import shlex
@@ -73,27 +78,35 @@ class Machine:
 
     @classmethod
     def parse(cls, data: dict, here: str) -> "Machine":
-        name = str(data.get("name") or "").strip()
-        if not LINK_NAME.fullmatch(name):
-            raise MachineError("Name: a-z, 0-9, - and _, 32 at most, as the link is named")
         host = str(data.get("host") or "").strip()
         if not SSH_HOST.fullmatch(host):
             raise MachineError(f"{host!r} is not a host name or an IP address")
+        name = str(data.get("name") or "").strip() or name_from_host(host)
+        if not LINK_NAME.fullmatch(name):
+            raise MachineError("Name: a-z, 0-9, - and _, 32 at most, as the link is named")
         port = data.get("port") or 22
         if isinstance(port, bool) or not str(port).isdigit() or not 1 <= int(port) <= 65535:
             raise MachineError(f"{port!r} is not a port")
         user = str(data.get("user") or "root").strip()
         if not SSH_USER.fullmatch(user):
             raise MachineError(f"{user!r} is not a user name")
+        # blank: read on the first connection (the add endpoint does)
         host_key = str(data.get("host_key") or "").strip()
-        if not SSH_HOST_KEY.fullmatch(host_key):
-            raise MachineError("Fetch the server's host key and compare its fingerprint first")
+        if host_key and not SSH_HOST_KEY.fullmatch(host_key):
+            raise MachineError("The server's host key is not a key")
         package_url = str(data.get("package_url") or PACKAGE_URL).strip()
         if not re.fullmatch(r"https://[^\s'\"]+", package_url):
             raise MachineError("Package: an https:// address of an omniacli .deb")
         if not LINK_NAME.fullmatch(here):
             here = "omniacli"
         return cls(name, host, int(port), user, host_key, package_url, bool(data.get("firewall", True)), here)
+
+
+def name_from_host(host: str) -> str:
+    """A link's name from the machine's address: erp.acme.it → erp-acme-it,
+    203.0.113.10 → 203-0-113-10."""
+    name = re.sub(r"[^a-z0-9]+", "-", host.lower()).strip("-")[:32].rstrip("-")
+    return name if LINK_NAME.fullmatch(name or "") else "machine"
 
 
 def ssh_command(machine: Machine, key: Path, known_hosts: Path, remote: str, ssh: str = "ssh") -> list[str]:
@@ -124,6 +137,46 @@ def script_input(machine: Machine, link_line: str, token_hash: str) -> bytes:
     args = [machine.package_url, str(machine.port), "1" if machine.firewall else "0", LINK_USER,
             machine.here, token_hash, base64.b64encode(link_line.encode()).decode()]
     return f"set -- {shlex.join(args)}\n".encode() + PROVISION_SCRIPT.read_bytes()
+
+
+# what ssh says, and what the admin is told to do about it
+ACCESS_ERRORS = (
+    ("Permission denied", "The server does not accept OmniaCLI's key yet: run the command of step 1 there, as root"),
+    ("password is required", "{user} needs sudo without a password there, or use root"),
+    ("Connection refused", "No SSH server on {host}:{port}"),
+    ("timed out", "{host}:{port} does not answer: check the address, the port and the provider's firewall"),
+    ("Could not resolve", "{host} is not a known name"),
+    ("No route to host", "{host}:{port} does not answer: check the address, the port and the provider's firewall"),
+)
+
+
+async def check_access(machine: Machine, ssh_folder: Path, ssh: str = "ssh") -> None:
+    """Try the provisioning key on the machine (and sudo -n for another user
+    than root): MachineError, said for the admin, when it does not work."""
+    key = sshlinks.key_file(ssh_folder, sshlinks.PROVISION_KEY_NAME)
+    if not key.is_file():
+        raise MachineError("No provisioning key yet: reload the page")
+    with tempfile.TemporaryDirectory(prefix="omniacli-machine-") as folder:
+        known_hosts = Path(folder) / "known_hosts"
+        known_hosts.write_text(f"omniacli-machine-{machine.name} {machine.host_key}\n")
+        remote = "true" if machine.user == "root" else "sudo -n true"
+        proc = await asyncio.create_subprocess_exec(
+            *ssh_command(machine, key, known_hosts, remote, ssh),
+            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+        try:
+            _, err = await asyncio.wait_for(proc.communicate(), 40)
+        except asyncio.TimeoutError:
+            proc.kill()
+            err = b"timed out"
+    if proc.returncode == 0:
+        return
+    said = err.decode(errors="replace")
+    for mark, message in ACCESS_ERRORS:
+        if mark in said:
+            raise MachineError(message.format(user=machine.user, host=machine.host, port=machine.port))
+    lines = [line for line in said.splitlines() if line.strip()]
+    reason = lines[-1] if lines else "no answer"
+    raise MachineError(f"SSH to {machine.host}:{machine.port} failed: {reason}")
 
 
 def link_of(machine: Machine, token: str) -> LinkTarget:

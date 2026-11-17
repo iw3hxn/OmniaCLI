@@ -3223,8 +3223,13 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     @app.get("/machines", dependencies=[Depends(admin)])
     async def machines_page(request: Request):
+        # the provisioning key, made the first time the page is opened: one step less
+        try:
+            provision_key = await sshlinks.ensure_key(ssh_tunnels.folder, sshlinks.PROVISION_KEY_NAME)
+        except (sshlinks.SshError, OSError):
+            provision_key = None
         return _TEMPLATES.TemplateResponse(request, "machines.html", {
-            "provision_key": sshlinks.public_key(ssh_tunnels.folder, sshlinks.PROVISION_KEY_NAME),
+            "provision_key": provision_key,
             "package_url": machines.PACKAGE_URL, "link_user": machines.LINK_USER,
             "machines": [{"name": link.name, "host": link.ssh.host, "status": ssh_tunnels.status(link.name)}
                          for link in settings.link_targets.values()
@@ -3250,10 +3255,26 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             machine = machines.Machine.parse(payload, machines.here_name(socket.gethostname()))
         except machines.MachineError as exc:
             return refuse(str(exc))
+        if not str(payload.get("name") or "").strip():
+            # the name from the address: another one beside it gets -2, -3...
+            base, number = machine.name, 2
+            while machine.name in settings.link_targets:
+                machine = dataclasses.replace(machine, name=f"{base[:29]}-{number}")
+                number += 1
         if machine.name in settings.link_targets:
             return refuse(f"A link named {machine.name} already exists")
+        if not machine.host_key:
+            # as ssh does on a first connection; given under the advanced options, only that one
+            try:
+                machine = dataclasses.replace(
+                    machine, host_key=await sshlinks.fetch_host_key(machine.host, machine.port))
+            except sshlinks.SshError as exc:
+                return refuse(str(exc))
         try:
+            await machines.check_access(machine, ssh_tunnels.folder)
             link_public = await sshlinks.ensure_key(ssh_tunnels.folder)
+        except machines.MachineError as exc:
+            return refuse(str(exc))
         except (sshlinks.SshError, OSError) as exc:
             return refuse(str(exc), 500)
         token = new_token()
