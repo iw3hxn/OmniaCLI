@@ -310,6 +310,7 @@
  "the Package of the .deb, e.g. api-server": "il Package del .deb, es. api-server",
  "the customer's server, which shows its SSH port": "il server del cliente, che espone la sua porta SSH",
  "the link's name here": "il nome del collegamento qui",
+ "the link's name here: lowercase letters, digits, - and _ (Acme Cloud becomes acme-cloud)": "il nome del collegamento qui: lettere minuscole, cifre, - e _ (Acme Cloud diventa acme-cloud)",
  "the project's folder, e.g. /srv/odooplm-19": "la cartella del progetto, es. /srv/odooplm-19",
  "token (empty: keep the saved one)": "token (vuoto: resta quello salvato)",
  "token from its Users page": "token dalla sua pagina Utenti",

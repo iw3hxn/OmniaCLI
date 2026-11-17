@@ -137,6 +137,7 @@
  "Modules installed at the creation": "Moduli installati alla creazione",
  "Modules, comma separated": "Moduli, separati da virgola",
  "Name: a-z, 0-9, - and _, 32 at most, as the link is named": "Nome: a-z, 0-9, - e _, al massimo 32, come si chiama il collegamento",
+ "Name: lowercase letters, digits, - and _, 32 at most": "Nome: lettere minuscole, cifre, - e _, al massimo 32",
  "Names of workspace {name}": "Nomi del workspace {name}",
  "Neutralize (Odoo 16 and later): no scheduled actions, no outgoing mail": "Neutralizza (da Odoo 16 in poi): niente azioni pianificate, niente posta in uscita",
  "Neutralize: no scheduled actions, no outgoing mail": "Neutralizza: niente azioni pianificate, niente posta in uscita",

@@ -29,7 +29,9 @@ def test_the_form_is_checked():
     machine = machines.Machine.parse(FORM, "central")
     assert (machine.name, machine.host, machine.port, machine.user) == ("acme-cloud", "203.0.113.10", 22, "root")
     assert machine.package_url == machines.PACKAGE_URL and machine.firewall
-    for key, bad in (("name", "Acme Cloud"), ("host", "a host; rm"), ("port", "ssh"), ("port", 70000),
+    assert machines.Machine.parse({**FORM, "name": " Acme Cloud "}, "c").name == "acme-cloud"
+    assert machines.Machine.parse({**FORM, "name": "Inaria"}, "c").name == "inaria"
+    for key, bad in (("name", "x" * 33), ("host", "a host; rm"), ("port", "ssh"), ("port", 70000),
                      ("user", "root; id"), ("host_key", "not a key"), ("package_url", "http://example.com/x.deb"),
                      ("package_url", "https://example.com/x.deb'; id")):
         with pytest.raises(machines.MachineError):

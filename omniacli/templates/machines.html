@@ -47,8 +47,8 @@
       <summary>{{ _("Advanced options") }}</summary>
       <div class="form-grid">
         <label for="m-name">{{ _("Name") }}</label>
-        <div><input type="text" id="m-name" class="mono" pattern="[a-z0-9][a-z0-9_\-]{0,31}" placeholder="{{ _('from the address') }}">
-          <span class="muted field-help">{{ _("the link's name here") }}</span></div>
+        <div><input type="text" id="m-name" class="mono" maxlength="32" placeholder="{{ _('from the address') }}">
+          <span class="muted field-help">{{ _("the link's name here: lowercase letters, digits, - and _ (Acme Cloud becomes acme-cloud)") }}</span></div>
         <label for="m-port">{{ _("SSH port") }}</label>
         <div><input type="number" id="m-port" class="mono" min="1" max="65535" value="22"></div>
         <label for="m-user">{{ _("SSH user") }}</label>

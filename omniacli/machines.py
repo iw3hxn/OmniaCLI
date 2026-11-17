@@ -81,9 +81,11 @@ class Machine:
         host = str(data.get("host") or "").strip()
         if not SSH_HOST.fullmatch(host):
             raise MachineError(f"{host!r} is not a host name or an IP address")
-        name = str(data.get("name") or "").strip() or name_from_host(host)
+        # as typed, made a link's name: Acme Cloud → acme-cloud
+        given = re.sub(r"[^a-z0-9_-]+", "-", str(data.get("name") or "").strip().lower()).strip("-_")
+        name = given or name_from_host(host)
         if not LINK_NAME.fullmatch(name):
-            raise MachineError("Name: a-z, 0-9, - and _, 32 at most, as the link is named")
+            raise MachineError("Name: lowercase letters, digits, - and _, 32 at most")
         port = data.get("port") or 22
         if isinstance(port, bool) or not str(port).isdigit() or not 1 <= int(port) <= 65535:
             raise MachineError(f"{port!r} is not a port")
