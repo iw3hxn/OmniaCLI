@@ -90,9 +90,9 @@
       <details class="muted" style="margin-top: 4px"><summary>{{ _("Add a storage (another real disk)") }}</summary>
         <ol style="margin: 4px 0; padding-left: 20px">
           <li>{{ _("As root, make on the disk a folder of root's that nobody else may write (letters, digits and . _ -, no symbolic link). The folders above it may be anyone's: OmniaCLI binds it on a path of root's and checks at every boot that it is still the same folder:") }}
-            <pre class="mono">install -d -o root -g root -m 755 /media/disk2/omniacli</pre></li>
+            <pre class="mono copyable">install -d -o root -g root -m 755 /media/disk2/omniacli</pre></li>
           <li>{{ _("Add it to workspaces.storage in {file} (root's) with a name (a-z 0-9 -), which the workspaces use. The storages listed replace the default, so keep those already used:", file=system_config) }}
-            <pre class="mono">workspaces:
+            <pre class="mono copyable">workspaces:
   storage:
 {% for r, folder in storage_roots.items() %}    {{ r }}: {{ folder }}
 {% endfor %}    disk2: /media/disk2/omniacli</pre></li>

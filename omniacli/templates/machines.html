@@ -10,7 +10,7 @@
 .step-num { flex: none; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center;
   background: var(--accent); color: #fff; font-weight: 700; font-size: 13px; }
 .steps .field-help { display: block; font-size: 13px; margin-top: 3px; }
-.steps pre.mono { white-space: pre-wrap; word-break: break-all; }
+.steps pre.mono { white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 700px) { .steps .form-grid { grid-template-columns: 1fr; } }
 </style>
 <div class="page-head">
@@ -28,7 +28,7 @@
   <h2 class="step-head"><span class="step-num">1</span> {{ _("Let OmniaCLI in") }}</h2>
   {% if provision_key %}
   <p>{{ _("On the new machine, as root, add OmniaCLI's provisioning key to root's keys (or to a user with sudo without a password):") }}</p>
-  <pre class="mono" id="machine-key-line">mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '{{ provision_key }}' &gt;&gt; ~/.ssh/authorized_keys</pre>
+  <pre class="console mono copyable" id="machine-key-line">mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '{{ provision_key }}' &gt;&gt; ~/.ssh/authorized_keys</pre>
   <p class="muted">{{ _("This key prepares machines only; the links use another one, which may only forward to OmniaCLI. Take it out of authorized_keys once the machine is ready if you want: the link does not need it.") }}</p>
   {% else %}
   <p>{{ _("OmniaCLI has no provisioning key yet.") }}</p>

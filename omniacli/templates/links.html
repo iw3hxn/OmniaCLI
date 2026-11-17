@@ -43,7 +43,7 @@
   <h2>{{ _("This OmniaCLI's SSH key") }}</h2>
   {% if public_key %}
   <p class="muted">{{ _("Its public key, for the customers' servers (the line of each link below limits it to that link's forward):") }}</p>
-  <pre class="console mono">{{ public_key }}</pre>
+  <pre class="console mono copyable">{{ public_key }}</pre>
   {% else %}
   <p class="muted">{{ _("None yet: it is made for the links through SSH.") }}</p>
   <button type="button" id="make-key">{{ _("Make the key") }}</button>
@@ -83,9 +83,9 @@
         {{ ssh_fields(link, "ssh-" ~ loop.index) }}
         {% if s %}
         <p class="muted">{{ _("On that server, as root: the user {user}, and in its ~/.ssh/authorized_keys this line (the forward to {target} only: no command, no shell, no files):", user=link.ssh.user, target=link.remote[0] ~ ":" ~ link.remote[1]) }}</p>
-        {% if s.line %}<pre class="console mono">{{ s.line }}</pre>{% else %}<p class="error">{{ _("Make OmniaCLI's SSH key first (above).") }}</p>{% endif %}
+        {% if s.line %}<pre class="console mono copyable">{{ s.line }}</pre>{% else %}<p class="error">{{ _("Make OmniaCLI's SSH key first (above).") }}</p>{% endif %}
         <p class="muted">{{ _("Better also this block at the end of /etc/ssh/sshd_config, then {command}: it also refuses a forward from that server back here (-R), which the line alone allows.", command="sshd -t && systemctl reload ssh") }}</p>
-        <pre class="console mono">{{ s.block }}</pre>
+        <pre class="console mono copyable">{{ s.block }}</pre>
         {% endif %}
       </td>
     </tr>

@@ -41,7 +41,7 @@
   <li>{{ _("Press <strong>Create link token</strong> and copy the token. It is shown <strong>only once</strong>; the remote keeps only its hash. If it is lost, revoke the link and create a new one.") | safe }}</li>
 </ol>
 <p>{{ _("Without the web interface, on the remote's shell:") | safe }}</p>
-<pre class="console mono">omniacli new-link-token omniasolutions --role developer</pre>
+<pre class="console mono copyable">omniacli new-link-token omniasolutions --role developer</pre>
 <p>{{ _("It prints the token and a line to add under <code>auth.links</code> of the main configuration (<code>/etc/omniacli/omniacli.yaml</code> for the package); restart OmniaCLI afterwards (<code>sudo systemctl restart omniacli</code>): the main configuration is read at startup only.") | safe }}</p>
 
 <h3>{{ _("Step 2 — on your machine: trust the remote's certificate") | safe }}</h3>
@@ -51,7 +51,7 @@
   <li>{{ _("<strong>A self-signed certificate, or one from the customer's own CA</strong>: save that certificate (or the CA's) on your machine and give its path as the link's <strong>CA file</strong>.") | safe }}</li>
 </ul>
 <p>{{ _("To save a self-signed certificate (replace host and port):") | safe }}</p>
-<pre class="console mono">openssl s_client -connect 192.0.2.10:8443 &lt;/dev/null 2&gt;/dev/null \
+<pre class="console mono copyable">openssl s_client -connect 192.0.2.10:8443 &lt;/dev/null 2&gt;/dev/null \
   | openssl x509 &gt; /etc/omniacli/192.0.2.10.pem
 openssl x509 -in /etc/omniacli/192.0.2.10.pem -noout -subject -ext subjectAltName -fingerprint -sha256</pre>
 <p>{{ _("<strong>Check the fingerprint</strong> against the one read on the remote itself (<code>sudo openssl x509 -in &lt;nginx certificate&gt; -noout -fingerprint -sha256</code>): what <code>openssl s_client</code> downloads is whatever answers on that address. The file must be readable by the user that runs OmniaCLI (<code>omniacli</code> for the package).") | safe }}</p>
@@ -85,7 +85,7 @@ openssl x509 -in /etc/omniacli/192.0.2.10.pem -noout -subject -ext subjectAltNam
 <section id="mcp">
 <h2>{{ _("2. The MCP server") | safe }}</h2>
 <p>{{ _("OmniaCLI serves an MCP endpoint (streamable HTTP) for AI clients such as Claude Code:") | safe }}</p>
-<pre class="console mono">{{ base_url }}/mcp</pre>
+<pre class="console mono copyable">{{ base_url }}/mcp</pre>
 <p>{{ _("A client authenticates with a <strong>bearer token</strong>, never with a user's password. Every call is listed in the <strong>Access log</strong> (Users page, admins), with the token, the address and the tool.") | safe }}</p>
 
 <h3>{{ _("Token roles") | safe }}</h3>
@@ -105,12 +105,12 @@ openssl x509 -in /etc/omniacli/192.0.2.10.pem -noout -subject -ext subjectAltNam
 </ol>
 <p class="banner warn">{{ _("The <code>sha256$…</code> value in the users file is the token's <strong>hash</strong>, not the token: the token cannot be recovered from it, and a client that sends it is refused. A lost token is revoked and created again.") | safe }}</p>
 <p>{{ _("Without the web interface, on the server's shell:") | safe }}</p>
-<pre class="console mono">omniacli new-token dev-laptop --role admin</pre>
+<pre class="console mono copyable">omniacli new-token dev-laptop --role admin</pre>
 <p>{{ _("It prints the token and a line to add under <code>auth.tokens</code> of the main configuration; restart OmniaCLI afterwards.") | safe }}</p>
 
 <h3>{{ _("Step 2 — add the server to the client") | safe }}</h3>
 <p>{{ _("In Claude Code, on the machine of the client:") | safe }}</p>
-<pre class="console mono">claude mcp add --scope user --transport http omniacli {{ base_url }}/mcp \
+<pre class="console mono copyable">claude mcp add --scope user --transport http omniacli {{ base_url }}/mcp \
   --header "Authorization: Bearer &lt;token&gt;"</pre>
 <ul>
   <li>{{ _("<code>--scope user</code> makes it available in every project; without it, it is registered for the folder the command runs in only.") | safe }}</li>
@@ -121,7 +121,7 @@ openssl x509 -in /etc/omniacli/192.0.2.10.pem -noout -subject -ext subjectAltNam
 
 <h3>{{ _("Downloading a backup") | safe }}</h3>
 <p>{{ _("<code>backup</code>, <code>backup_test</code> and <code>list_backups</code> answer with a <code>download</code> path. The zip (database dump and filestore) is an HTTP GET on that path with the same header:") | safe }}</p>
-<pre class="console mono">curl -fH "Authorization: Bearer &lt;token&gt;" -o backup.zip \
+<pre class="console mono copyable">curl -fH "Authorization: Bearer &lt;token&gt;" -o backup.zip \
   {{ base_url }}/backups/&lt;server&gt;/&lt;role&gt;/&lt;file&gt;.zip</pre>
 <p>{{ _("Add <code>--cacert &lt;certificate&gt;</code> for a self-signed certificate.") | safe }}</p>
 
@@ -203,12 +203,12 @@ openssl x509 -in /etc/omniacli/192.0.2.10.pem -noout -subject -ext subjectAltNam
   <li>{{ _("<code>.env</code> may not set <code>COMPOSE_FILE</code>, <code>COMPOSE_PATH_SEPARATOR</code> or <code>COMPOSE_PROJECT_DIRECTORY</code>, which make docker compose read other files.") | safe }}</li>
 </ul>
 <p>{{ _("A file is writable by its owner (who may change its mode) and through the group or other write bit that applies; ACLs are not read. The <strong>Service</strong> check makes the same checks as OmniaCLI's user and prints, for each problem, the command that fixes it. Secure a project so:") | safe }}</p>
-<pre class="console mono">chown -R root: /srv/odooplm-19
+<pre class="console mono copyable">chown -R root: /srv/odooplm-19
 chmod -R go-w /srv/odooplm-19</pre>
 <p>{{ _("The folders the project mounts (<code>./config</code>, <code>./addons-extra</code>...) are not checked: who writes them controls Odoo inside its container, not the machine.") | safe }}</p>
 <h3>{{ _("Docker Compose: the log") | safe }}</h3>
 <p>{{ _("An Odoo in a container writes its log to its output, which docker keeps: the Log page, the <code>read_log</code> tool and the <strong>Log</strong> check read it with <code>docker compose logs</code> of the service the type names (for Odoo, its service), through the helper: the last 300 lines, then every 2 seconds the lines written since the last one read, by their time. How much log there is, docker decides: with its default driver (<code>json-file</code>) and no limit the log grows for ever, and when its container is made again (a changed <code>.env</code> or image, <code>down</code>) the lines before are gone; the page keeps showing the ones it has and goes on with the new container's. Limit it in the compose file:") | safe }}</p>
-<pre class="console mono">services:
+<pre class="console mono copyable">services:
   odoo:
     logging:
       options:
@@ -229,7 +229,7 @@ chmod -R go-w /srv/odooplm-19</pre>
 </table>
 <p>{{ _("The database connection is the one the official Odoo image's entrypoint makes, from the container's <code>HOST</code>, <code>PORT</code>, <code>USER</code> and <code>PASSWORD</code>; a <code>db_host</code>... in the Odoo config still wins. No image has to carry click-odoo-contrib: OmniaCLI mounts its own.") | safe }}</p>
 <p>{{ _("The sudoers lines go in <code>/etc/sudoers.d/omniacli</code> (the package installs it with examples, all commented); a failed check prints the exact lines. Examples, with your service names and paths:") | safe }}</p>
-<pre class="console mono">omniacli ALL=(root) NOPASSWD: /usr/bin/systemctl --no-ask-password restart odoo-customer-test
+<pre class="console mono copyable">omniacli ALL=(root) NOPASSWD: /usr/bin/systemctl --no-ask-password restart odoo-customer-test
 omniacli ALL=(root) NOPASSWD: /usr/bin/systemctl --no-ask-password start odoo-customer-test
 omniacli ALL=(root) NOPASSWD: /usr/bin/systemctl --no-ask-password stop odoo-customer-test
 omniacli ALL=(root) NOPASSWD: /etc/init.d/odoo-customer-test restart
