@@ -177,7 +177,7 @@ async def check_access(machine: Machine, ssh_folder: Path, ssh: str = "ssh") -> 
         if mark in said:
             raise MachineError(message.format(user=machine.user, host=machine.host, port=machine.port))
     lines = [line for line in said.splitlines() if line.strip()]
-    reason = lines[-1] if lines else "no answer"
+    reason = lines[-1] if lines else f"ssh ended with code {proc.returncode} and said nothing"
     raise MachineError(f"SSH to {machine.host}:{machine.port} failed: {reason}")
 
 
