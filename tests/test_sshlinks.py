@@ -160,8 +160,11 @@ def _alive(pid: int) -> bool:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
-    # a zombie is not alive
-    return "zombie" not in Path(f"/proc/{pid}/status").read_text().lower()
+    # a zombie is not alive; one reaped between the two looks is gone
+    try:
+        return "zombie" not in Path(f"/proc/{pid}/status").read_text().lower()
+    except (FileNotFoundError, ProcessLookupError):
+        return False
 
 
 @pytest.mark.skipif(not shutil.which("ssh-keygen"), reason="no ssh-keygen")
