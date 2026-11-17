@@ -1,0 +1,107 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{% extends "base.html" %}
+{% block title %}Machines · OmniaCLI{% endblock %}
+{% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
+{{ crumbs([("Dashboard", "/"), ("Machines", None)]) }}
+{% endblock %}
+{% block content %}
+<h1>Machines</h1>
+<p class="muted">A clean Ubuntu (22.04, 24.04) or Debian (11, 12, 13) server, prepared from here: its updates, nginx,
+certbot, Docker, OmniaCLI with the workspaces, a firewall, then linked to this OmniaCLI through SSH. Its workspaces and
+instances are then made from its pages, opened here through the link. About 10 to 20 minutes.</p>
+
+<section class="panel">
+  <h2>1. Let OmniaCLI in</h2>
+  {% if provision_key %}
+  <p>On the new machine, as root, add OmniaCLI's provisioning key to root's keys (or to a user with
+    <span class="mono">sudo</span> without a password):</p>
+  <pre class="mono" id="machine-key-line" style="white-space: pre-wrap; word-break: break-all">mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '{{ provision_key }}' &gt;&gt; ~/.ssh/authorized_keys</pre>
+  <p class="muted">This key prepares machines only; the links use another one, which may only forward to OmniaCLI.
+    Take it out of <span class="mono">authorized_keys</span> once the machine is ready if you want: the link does not
+    need it.</p>
+  {% else %}
+  <p>OmniaCLI has no provisioning key yet.</p>
+  <button type="button" id="machine-make-key">Make the key</button>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <h2>2. The machine</h2>
+  <form id="machine-form" class="form-grid">
+    <label for="m-name">Name</label>
+    <div><input type="text" id="m-name" class="mono" required pattern="[a-z0-9][a-z0-9_\-]{0,31}" placeholder="acme-cloud">
+      <span class="muted">the link's name here</span></div>
+    <label for="m-host">Address</label>
+    <div><input type="text" id="m-host" class="mono" required placeholder="203.0.113.10">
+      <span class="muted">its public IPv4 address or name</span></div>
+    <label for="m-port">SSH port</label>
+    <div><input type="number" id="m-port" class="mono" min="1" max="65535" value="22"></div>
+    <label for="m-user">SSH user</label>
+    <div><input type="text" id="m-user" class="mono" value="root">
+      <span class="muted">root, or a user with sudo without a password</span></div>
+    <label>Server's key</label>
+    <div><input type="hidden" id="m-host-key">
+      <span id="m-fingerprint" class="mono">not fetched</span>
+      <button type="button" id="m-fetch">Fetch host key</button>
+      <span class="muted">compare it with <span class="mono">ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</span>
+        run on that server: only this key is accepted</span></div>
+    <label for="m-package">OmniaCLI package</label>
+    <div><input type="url" id="m-package" class="mono" value="{{ package_url }}" style="width: 100%"></div>
+    <label for="m-firewall">Firewall</label>
+    <div><label><input type="checkbox" id="m-firewall" checked> only SSH, 80 and 443 open (ufw)</label></div>
+    <div></div>
+    <div><button type="submit" class="primary" {{ "disabled" if not provision_key }}>Prepare and link</button>
+      <span id="machine-error" class="error"></span></div>
+  </form>
+</section>
+
+{% if machines %}
+<section class="panel">
+  <h2>Prepared machines</h2>
+  <table>
+    <tr><th>Name</th><th>Address</th><th>Link</th></tr>
+    {% for m in machines %}
+    <tr><td><a href="{{ prefix }}/links/{{ m.name }}/">{{ m.name }}</a></td><td class="mono">{{ m.host }}</td>
+      <td>{{ m.status.state if m.status else "not started" }}{% if m.status and m.status.detail %} · {{ m.status.detail }}{% endif %}</td></tr>
+    {% endfor %}
+  </table>
+</section>
+{% endif %}
+
+<script>
+(function () {
+  const error = document.getElementById("machine-error");
+  async function post(url, body) {
+    const resp = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
+                                   body: JSON.stringify(body || {})}).catch(() => null);
+    const data = resp ? await resp.json().catch(() => ({})) : {};
+    return {ok: !!resp && resp.ok && data.ok !== false, data};
+  }
+  const make = document.getElementById("machine-make-key");
+  if (make) make.addEventListener("click", async () => {
+    const {ok, data} = await post("{{ prefix }}/api/machines/key");
+    if (ok) location.reload(); else error.textContent = data.error || "The key cannot be made";
+  });
+  document.getElementById("m-fetch").addEventListener("click", async () => {
+    error.textContent = "";
+    const host = document.getElementById("m-host").value.trim();
+    const {ok, data} = await post("{{ prefix }}/api/links/ssh/host-key",
+                                  {host, port: Number(document.getElementById("m-port").value) || 22});
+    if (!ok) { error.textContent = data.error || "The host key cannot be read"; return; }
+    document.getElementById("m-host-key").value = data.host_key;
+    document.getElementById("m-fingerprint").textContent = data.fingerprint;
+  });
+  document.getElementById("machine-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    error.textContent = "";
+    const value = (id) => document.getElementById(id).value.trim();
+    const {ok, data} = await post("{{ prefix }}/api/machines/add", {
+      name: value("m-name"), host: value("m-host"), port: Number(value("m-port")) || 22, user: value("m-user"),
+      host_key: value("m-host-key"), package_url: value("m-package"),
+      firewall: document.getElementById("m-firewall").checked});
+    if (!ok || !data.job) { error.textContent = data.error || data.detail || "Refused"; return; }
+    location.href = `{{ prefix }}/jobs/${data.job}`;
+  });
+})();
+</script>
+{% endblock %}

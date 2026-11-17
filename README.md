@@ -1678,6 +1678,47 @@ The public key goes in the instances' form; the private one stays on the
 build machine, with a copy offline. A lost private key means a new key and
 the new public key on every instance; a stolen one, the same at once.
 
+## Machines
+
+**Configure › Machines** (`/machines`, the machine's admins) prepares a
+new server from here, as Cloudpepper does: a clean Ubuntu 22.04 or 24.04
+or Debian 11, 12 or 13 (amd64), given by its address and an SSH user, ends
+linked to this OmniaCLI with its workspaces ready, in about 10 to 20
+minutes.
+
+1. **Make the key** once: OmniaCLI's provisioning key
+   (`id_ed25519_provision` in `ssh/` next to the links file), another key
+   than the links' one. On the new machine, as root, add it to
+   `~/.ssh/authorized_keys` (the page prints the line); a user other than
+   root needs `sudo` without a password.
+2. **Fetch host key** and compare its fingerprint with
+   `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` run there: ssh accepts
+   no other key, and reads no configuration, agent or `known_hosts` of
+   OmniaCLI's user.
+3. **Prepare and link** starts a job: `omniacli/provision.sh` runs there as
+   root, its text and its values on bash's input (never on a command line):
+   - the system checked (supported, amd64, no site of apache), its updates,
+     and the security updates every day (unattended-upgrades);
+   - nginx, certbot, Docker and its compose plugin (Debian 12 has none of
+     its own: there it says so);
+   - OmniaCLI from its package (by default the latest release's
+     `OmniaCLI.deb`, any https address of an omniacli `.deb`), with
+     `OMNIACLI_WORKSPACES=1`;
+   - the link back, as **Links through SSH** describes it: a user
+     `omniacli-link` whose key may only forward to OmniaCLI (the
+     `authorized_keys` line and the `Match User` block, `sshd -t` first),
+     and the link's token hash in OmniaCLI's users file there, as admin
+     (the token itself is only here);
+   - with **Firewall** (on by default), ufw with SSH, 80 and 443 only.
+
+   Every step can run again. Then the link is saved here, through SSH, and
+   the job waits for that OmniaCLI to answer through it.
+
+The machine is then on the Dashboard under **Linked**, and its pages
+(Workspaces, its instances) open here through the link. The provisioning
+key may be taken out of root's `authorized_keys` there: the link does not
+use it.
+
 ## Log in as
 
 **Log in as…**, next to an instance's address on the server page, opens

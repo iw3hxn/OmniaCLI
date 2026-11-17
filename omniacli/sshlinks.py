@@ -33,6 +33,9 @@ from .config import SSH_HOST_KEY, ConfigError, LinkTarget, check_ssh_address
 _logger = logging.getLogger(__name__)
 
 KEY_NAME = "id_ed25519"
+# the key that prepares a new machine as its root (machines.py): another key,
+# so the links' key stays the one that only forwards
+PROVISION_KEY_NAME = "id_ed25519_provision"
 # the client (tests put a fake one here)
 SSH_COMMAND = "ssh"
 # within these an ssh that runs is listening, or it is restarted
@@ -51,21 +54,21 @@ class SshError(Exception):
     """What an admin is told: a key that cannot be made or fetched."""
 
 
-def key_file(folder: Path) -> Path:
-    return Path(folder) / KEY_NAME
+def key_file(folder: Path, name: str = KEY_NAME) -> Path:
+    return Path(folder) / name
 
 
-def public_key(folder: Path) -> str | None:
+def public_key(folder: Path, name: str = KEY_NAME) -> str | None:
     """OmniaCLI's public key, None until it is made."""
     try:
-        return (key_file(folder).with_suffix(".pub")).read_text(encoding="utf-8").strip() or None
+        return (key_file(folder, name).with_suffix(".pub")).read_text(encoding="utf-8").strip() or None
     except OSError:
         return None
 
 
-async def ensure_key(folder: Path) -> str:
+async def ensure_key(folder: Path, name: str = KEY_NAME) -> str:
     """OmniaCLI's public key, made the first time (folder 700, key 600)."""
-    found = public_key(folder)
+    found = public_key(folder, name)
     if found:
         return found
     folder = Path(folder)
@@ -73,12 +76,12 @@ async def ensure_key(folder: Path) -> str:
     folder.chmod(0o700)
     proc = await asyncio.create_subprocess_exec(
         "ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", f"omniacli@{socket.gethostname()}",
-        "-f", str(key_file(folder)), stdin=asyncio.subprocess.DEVNULL,
+        "-f", str(key_file(folder, name)), stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
     out, _ = await proc.communicate()
     if proc.returncode:
         raise SshError(f"ssh-keygen failed: {out.decode(errors='replace').strip()}")
-    found = public_key(folder)
+    found = public_key(folder, name)
     if not found:
         raise SshError("ssh-keygen made no public key")
     return found

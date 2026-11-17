@@ -16,6 +16,7 @@ import os
 import pwd
 import re
 import shutil
+import socket
 import tempfile
 import time
 import zipfile
@@ -37,7 +38,7 @@ from starlette.requests import ClientDisconnect, HTTPConnection
 from . import (backupchoices, checks, private, restoreroom, consumer, disks, gitcredentials, linkcopy, listgroups, ops, packages, plugins, pluginstore, puller, publisher,
                schedules, selflog, sshlinks, shell, stacktemplates, templatestore, tunnel, workspacehelper, workspaceops)
 from .accesslog import AccessLog
-from . import loginas
+from . import loginas, machines
 from .diskhistory import DiskHistory, DiskRecorder
 from .auth import ROLES as ACCESS_ROLES
 from .auth import WORKSPACE_ROLE, Authenticator, Principal, hash_password, hash_token, new_token, verify_password
@@ -3138,13 +3139,17 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     @app.post("/api/links/{name}/test")
     async def link_target_test(name: str, me: Principal = Depends(admin)):
         """Ask the other instance who we are there: its version and our role."""
-        link = a_link(name)
+        return await probe_link(a_link(name), me.name, me.role)
+
+    async def probe_link(link: LinkTarget, who: str, role: str) -> dict:
+        """The other instance's /api/info through the link: {"ok", ...}."""
+        name = link.name
         tunnel = ssh_tunnels.status(name) if link.ssh is not None else None
         if tunnel is not None and tunnel["state"] != "up":
             return {"ok": False, "error": f"SSH tunnel {tunnel['state']}: {tunnel['detail'] or 'starting'}"}
         try:
             resp = await link_clients.client(link).get(
-                "/api/info", headers=link_headers(link, me.name, me.role), timeout=LIST_TIMEOUT)
+                "/api/info", headers=link_headers(link, who, role), timeout=LIST_TIMEOUT)
         except httpx.HTTPError as exc:
             return {"ok": False, "error": describe_error(exc)}
         if resp.status_code == 401:
@@ -3156,6 +3161,69 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if not info or info.get("app") != "OmniaCLI":
             return {"ok": False, "error": f"no OmniaCLI with links there (HTTP {resp.status_code})"}
         return {"ok": True, **info}
+
+    # --- machines prepared from here (machines.py) ------------------------
+
+    @app.get("/machines", dependencies=[Depends(admin)])
+    async def machines_page(request: Request):
+        return _TEMPLATES.TemplateResponse(request, "machines.html", {
+            "provision_key": sshlinks.public_key(ssh_tunnels.folder, sshlinks.PROVISION_KEY_NAME),
+            "package_url": machines.PACKAGE_URL, "link_user": machines.LINK_USER,
+            "machines": [{"name": link.name, "host": link.ssh.host, "status": ssh_tunnels.status(link.name)}
+                         for link in settings.link_targets.values()
+                         if link.ssh is not None and link.ssh.user == machines.LINK_USER],
+        })
+
+    @app.post("/api/machines/key", dependencies=[Depends(admin)])
+    async def machines_key():
+        """The key that prepares a machine as its root, made the first time."""
+        try:
+            return {"ok": True, "public_key": await sshlinks.ensure_key(ssh_tunnels.folder,
+                                                                      sshlinks.PROVISION_KEY_NAME)}
+        except (sshlinks.SshError, OSError) as exc:
+            return refuse(str(exc), 500)
+
+    @app.post("/api/machines/add")
+    async def machines_add(request: Request, payload: dict = Body(...), me: Principal = Depends(admin)):
+        """A job: the machine prepared through SSH (provision.sh), then linked
+        here through SSH, its OmniaCLI trusting this one as admin."""
+        if me.kind != "user" or me.scoped:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Only an admin of this machine who logs in here")
+        try:
+            machine = machines.Machine.parse(payload, machines.here_name(socket.gethostname()))
+        except machines.MachineError as exc:
+            return refuse(str(exc))
+        if machine.name in settings.link_targets:
+            return refuse(f"A link named {machine.name} already exists")
+        try:
+            link_public = await sshlinks.ensure_key(ssh_tunnels.folder)
+        except (sshlinks.SshError, OSError) as exc:
+            return refuse(str(exc), 500)
+        token = new_token()
+
+        async def action(job):
+            await machines.provision(job, machine, ssh_folder=ssh_tunnels.folder, link_public_key=link_public,
+                                     token_hash=hash_token(token))
+            job.log(f"--- the link {machine.name}, through SSH as {machines.LINK_USER}")
+            async with links_lock:
+                if machine.name in settings.link_targets:
+                    raise JobFailed(f"a link named {machine.name} was made meanwhile: not replaced")
+                failed = await store_links({**settings.link_targets, machine.name: machines.link_of(machine, token)})
+                if failed is not None:
+                    raise JobFailed(f"the link cannot be saved: {failed.body.decode(errors='replace')}")
+            found = {"ok": False, "error": "not tried"}
+            for _ in range(machines.LINK_WAIT):
+                await asyncio.sleep(1)
+                found = await probe_link(settings.link_targets[machine.name], me.name, me.role)
+                if found.get("ok"):
+                    break
+            if not found.get("ok"):
+                raise JobFailed(f"the machine is prepared, its link does not answer yet: {found.get('error')}")
+            job.log(f"linked: OmniaCLI {found.get('version', '?')} there, this one {found.get('role', '?')} there")
+            job.result = {"link": machine.name}
+
+        job = jobs.submit(f"Add machine {machine.name} ({machine.host})", [], me.name, action)
+        return {"job": job.id}
 
     def link_failure(request: Request, link: LinkTarget, message: str):
         """A link that cannot answer: JSON for the pages' scripts, a page otherwise."""
