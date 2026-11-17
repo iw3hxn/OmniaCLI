@@ -72,7 +72,9 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           cp "dist/omniacli_${VERSION}_all.deb" dist/OmniaCLI.deb
-          gh release upload "$TAG" "dist/omniacli_${VERSION}_all.deb" dist/OmniaCLI.deb --clobber
+          cp "dist/omniacli-workspaces_${VERSION}_all.deb" dist/OmniaCLI-workspaces.deb
+          gh release upload "$TAG" "dist/omniacli_${VERSION}_all.deb" dist/OmniaCLI.deb \
+            "dist/omniacli-workspaces_${VERSION}_all.deb" dist/OmniaCLI-workspaces.deb --clobber
       - uses: actions/upload-artifact@v4
         with:
           name: deb

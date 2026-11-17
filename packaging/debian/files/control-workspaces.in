@@ -1,0 +1,20 @@
+Package: omniacli-workspaces
+Version: @VERSION@
+Architecture: all
+Maintainer: OmniaSolutions <matteo.boscolo@omniasolutions.eu>
+Installed-Size: @SIZE@
+Depends: omniacli (= @VERSION@), nginx, certbot
+Recommends: docker.io | docker-ce, docker-compose-v2 | docker-compose-plugin | docker-compose (>= 2)
+Section: admin
+Priority: optional
+Description: what OmniaCLI's workspaces need on the machine
+ The customers' workspaces of OmniaCLI (README, Workspaces) publish each
+ instance on its domain through nginx, with a certificate of Let's Encrypt
+ made and renewed by certbot, and run the instances in Docker Compose. This
+ package installs nginx and certbot, and Docker with its compose plugin when
+ the machine has none (docker.io or Docker's own docker-ce satisfy it).
+ Debian 12 has no compose plugin of its own (its docker-compose is 1.29): there
+ install Docker's docker-ce and docker-compose-plugin.
+ .
+ It changes no setting: the workspaces are still allowed with
+ OMNIACLI_WORKSPACES=1 in /etc/default/omniacli.

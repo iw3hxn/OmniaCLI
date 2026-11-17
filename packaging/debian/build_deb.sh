@@ -152,10 +152,22 @@ sed -e "s/@VERSION@/$VERSION/" -e "s/@SIZE@/$SIZE/" "$FILES/control.in" > "$PKG/
 DEB="$WORK/omniacli_${VERSION}_all.deb"
 dpkg-deb --root-owner-group -Zxz --build "$PKG" "$DEB" >/dev/null || die "dpkg-deb failed"
 
+# omniacli-workspaces: no files of its own, only what the workspaces need on
+# the machine (nginx, certbot, docker), so that a machine without workspaces
+# never gets them with an upgrade of omniacli
+WPKG="$WORK/pkg-workspaces"
+install -d "$WPKG/DEBIAN" "$WPKG/usr/share/doc/omniacli-workspaces"
+install -m 644 "$PKG/usr/share/doc/omniacli/copyright" "$WPKG/usr/share/doc/omniacli-workspaces/copyright"
+WSIZE="$(du -sk --exclude=DEBIAN "$WPKG" | cut -f1)"
+sed -e "s/@VERSION@/$VERSION/" -e "s/@SIZE@/$WSIZE/" "$FILES/control-workspaces.in" > "$WPKG/DEBIAN/control"
+WDEB="$WORK/omniacli-workspaces_${VERSION}_all.deb"
+dpkg-deb --root-owner-group -Zxz --build "$WPKG" "$WDEB" >/dev/null || die "dpkg-deb failed (omniacli-workspaces)"
+
 if [ -n "$check" ]; then
     mkdir -p "$check"
-    cp -f "$DEB" "$check/"
+    cp -f "$DEB" "$WDEB" "$check/"
     echo "Package: $check/$(basename "$DEB")"
+    echo "Package: $check/$(basename "$WDEB")"
     exit 0
 fi
 
@@ -164,18 +176,24 @@ mkdir -p "$ARTEFACTS"
 # a release is the download, named without version so its link does not change
 if [ -n "$release" ]; then
     published="$ARTEFACTS/OmniaCLI.deb"
+    wpublished="$ARTEFACTS/OmniaCLI-workspaces.deb"
 else
     published="$ARTEFACTS/$(basename "$DEB")"
+    wpublished="$ARTEFACTS/$(basename "$WDEB")"
 fi
 cp -f "$DEB" "$published"
+cp -f "$WDEB" "$wpublished"
 echo "Package: $published ($VERSION)"
+echo "Package: $wpublished ($VERSION)"
 
 git -C "$ROOT" tag "$TAG_PREFIX$VERSION" "$COMMIT" \
     && echo "tagged $TAG_PREFIX$VERSION on OmniaCLI $BRANCH ${COMMIT:0:8}"
 
-# the share keeps this test package and the three before it
-ls "$ARTEFACTS" | grep -E '^omniacli_[0-9.]+_all\.deb$' | sort -V \
-    | grep -vx "$(basename "$DEB")" | head -n -3 | while read -r old; do
-        rm -f "${ARTEFACTS:?}/${old:?}"
-        echo "$old removed from the share"
-    done
+# the share keeps this test package and the three before it, of each package
+for package in omniacli omniacli-workspaces; do
+    ls "$ARTEFACTS" | grep -E "^${package}_[0-9.]+_all\.deb$" | sort -V \
+        | grep -vx "${package}_${VERSION}_all.deb" | head -n -3 | while read -r old; do
+            rm -f "${ARTEFACTS:?}/${old:?}"
+            echo "$old removed from the share"
+        done
+done

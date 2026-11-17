@@ -1161,8 +1161,22 @@ The certificate, one for all the names of the workspace:
   renewing it is the customer's.
 
 A workspace without a domain or without instances has no site, and its
-certificate of Let's Encrypt is deleted. nginx and certbot are the
-machine's (`apt install nginx certbot`): the package does not install them.
+certificate of Let's Encrypt is deleted. nginx, certbot and Docker come with
+the second package of every release, `omniacli-workspaces`
+(`OmniaCLI-workspaces.deb`), which only depends on them: omniacli itself
+does not, so a machine without workspaces never gets them with an upgrade.
+
+```bash
+sudo apt install ./OmniaCLI.deb ./OmniaCLI-workspaces.deb
+```
+
+Docker and its compose plugin are recommended, not required: `docker.io`
+or Docker's own `docker-ce` (already there: kept), and `docker-compose-v2`,
+`docker-compose-plugin` or `docker-compose` 2 or newer. Checked on Ubuntu
+22.04 and 24.04 and Debian 13; Debian 12 has only docker-compose 1.29, so
+there `docker compose` needs Docker's own `docker-ce` and
+`docker-compose-plugin`. The package changes no setting: the workspaces are
+still allowed with `OMNIACLI_WORKSPACES=1` (below).
 
 A user of workspaces reaches, of a server of its workspaces: the server
 page, its log, start, stop, restart, and with its role there pull, update,
