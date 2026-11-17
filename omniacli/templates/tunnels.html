@@ -1,66 +1,78 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
 {% extends "base.html" %}
-{% block title %}Tunnels · OmniaCLI{% endblock %}
+{% block title %}{{ _("Tunnels") }} · OmniaCLI{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
-{{ crumbs([("Dashboard", "/"), ("Tunnels", None)]) }}
+{{ crumbs([(_("Dashboard"), "/"), (_("Tunnels"), None)]) }}
 {% endblock %}
 {% block content %}
-<h1>Tunnels</h1>
-<p class="muted">A tunnel opens a port of this machine (<span class="mono">{{ options.tunnel_bind }}</span>,
-ports <span class="mono">{{ options.tunnel_ports }}</span>) that reaches the web interface of an instance of a
-linked OmniaCLI, through the link: for when this OmniaCLI reaches it and your browser does not.
-{% if options.tunnel_bind.startswith("127.") or options.tunnel_bind == "::1" %}Only a browser on this machine reaches it.{% endif %}
-It closes when you close it, when OmniaCLI stops, or after {{ options.tunnel_idle_hours }} h without traffic.
-Anyone who reaches the port reaches the instance's own login: the tunnel adds no login of its own.
-The browser keeps a site's cookies by address, not by port: two tunnels open at once share Odoo's login.</p>
+{% set roles = {"production": _("production"), "test": _("test")} %}
+<div class="page-head">
+  <div>
+    <h1>{{ _("Tunnels") }}</h1>
+    <p>{{ _("A port of this machine that reaches the web interface of an instance of a linked OmniaCLI, through the link: for when this OmniaCLI reaches it and your browser does not.") }}</p>
+  </div>
+</div>
 <div id="error" class="banner" hidden></div>
-<div class="panel">
+<div class="stack">
+<section class="panel">
+  <h2 style="margin-bottom: 12px">{{ _("Open a tunnel") }}</h2>
   <form id="open" class="form-grid">
-    <label for="server">Linked server</label>
+    <label for="server">{{ _("Linked server") }}</label>
     <div>
       <select id="server" required>
         {% for srv in servers %}<option value="{{ srv.link }}" data-server="{{ srv.name }}" data-roles="{{ srv.roles | join(' ') }}">{{ srv.label }}</option>{% endfor %}
       </select>
-      <span class="muted">The link to the other OmniaCLI, then the server there that holds the instance.</span>
+      <span class="muted">{{ _("The link to the other OmniaCLI, then the server there that holds the instance.") }}</span>
     </div>
-    <label for="role">Instance</label>
+    <label for="role">{{ _("Instance") }}</label>
     <div>
       <select id="role"></select>
-      <span class="muted">Which instance of that server the tunnel reaches.</span>
+      <span class="muted">{{ _("Which instance of that server the tunnel reaches.") }}</span>
     </div>
     <span></span>
     <div>
-      <button type="submit" {% if not servers %}disabled{% endif %}>Open tunnel</button>
-      {% if not servers %}<span class="muted">No server of a link answers{% for e in errors %} · {{ e.link }}: {{ e.error }}{% endfor %}.</span>{% endif %}
+      <button type="submit" class="primary" {% if not servers %}disabled{% endif %}>{{ _("Open tunnel") }}</button>
+      {% if not servers %}<span class="muted">{{ _("No server of a link answers") }}{% for e in errors %} · {{ e.link }}: {{ tr(e.error) }}{% endfor %}.</span>{% endif %}
     </div>
   </form>
-</div>
-<div class="panel">
+</section>
+<section class="panel">
+  <h2 style="margin-bottom: 12px">{{ _("Open tunnels") }}</h2>
   <div class="scroll">
   <table>
-    <tr><th>Instance</th><th>Address</th><th>Opened by</th><th>Last traffic</th><th>Connections</th><th></th></tr>
+    <tr><th>{{ _("Instance") }}</th><th>{{ _("Address") }}</th><th>{{ _("Opened by") }}</th><th>{{ _("Last traffic") }}</th><th>{{ _("Connections") }}</th><th></th></tr>
     {% for t in tunnels %}
     <tr>
-      <td>{{ t.link }} › {{ t.server }} <span class="role {{ t.role }}">{{ t.role }}</span></td>
+      <td>{{ t.link }} › {{ t.server }} <span class="role {{ t.role }}">{{ roles.get(t.role, t.role) }}</span></td>
       <td><a class="mono" href="{{ t.url }}" target="_blank" rel="noopener">{{ t.url }}</a></td>
       <td>{{ t.owner }}</td>
-      <td class="mono" data-time="{{ t.last_active }}"></td>
+      <td class="mono muted" data-time="{{ t.last_active }}"></td>
       <td class="mono">{{ t.connections }}</td>
-      <td>{% if t.can_close %}<button type="button" class="danger" data-close="{{ t.id }}">Close</button>{% endif %}</td>
+      <td>{% if t.can_close %}<button type="button" class="danger" data-close="{{ t.id }}">{{ _("Close") }}</button>{% endif %}</td>
     </tr>
     {% else %}
-    <tr><td colspan="6" class="muted">No tunnel open.</td></tr>
+    <tr><td colspan="6" class="muted">{{ _("No tunnel open.") }}</td></tr>
     {% endfor %}
   </table>
   </div>
+</section>
+<details class="panel">
+  <summary>{{ _("How a tunnel works") }}</summary>
+  <p class="muted" style="margin-bottom: 0">{{ _("The tunnels listen on") }} <span class="mono">{{ options.tunnel_bind }}</span>, {{ _("ports") }} <span class="mono">{{ options.tunnel_ports }}</span>.
+  {% if options.tunnel_bind.startswith("127.") or options.tunnel_bind == "::1" %}{{ _("Only a browser on this machine reaches it.") }}{% endif %}
+  {{ _("It closes when you close it, when OmniaCLI stops, or after {hours} h without traffic.", hours=options.tunnel_idle_hours) }}
+  {{ _("Anyone who reaches the port reaches the instance's own login: the tunnel adds no login of its own.") }}
+  {{ _("The browser keeps a site's cookies by address, not by port: two tunnels open at once share Odoo's login.") }}</p>
+</details>
 </div>
 <script>
 (function () {
+  const ROLES = {{ roles | tojson }};
   const errorBox = document.getElementById("error");
   const server = document.getElementById("server"), role = document.getElementById("role");
   const roles = () => {
     const option = server.selectedOptions[0];
-    role.replaceChildren(...(option ? option.dataset.roles.split(" ") : []).map((r) => new Option(r, r)));
+    role.replaceChildren(...(option ? option.dataset.roles.split(" ") : []).map((r) => new Option(ROLES[r] || r, r)));
   };
   server.addEventListener("change", roles);
   roles();
@@ -72,7 +84,7 @@ The browser keeps a site's cookies by address, not by port: two tunnels open at 
                                    body: JSON.stringify(body || {})}).catch(() => null);
     const data = resp ? await resp.json().catch(() => ({})) : {};
     if (!resp || !resp.ok) {
-      errorBox.textContent = data.error || data.detail || (resp ? "Error " + resp.status : "OmniaCLI cannot be reached");
+      errorBox.textContent = data.error || data.detail || (resp ? {{ _("Error") | tojson }} + " " + resp.status : {{ _("OmniaCLI cannot be reached") | tojson }});
       errorBox.hidden = false;
       return null;
     }
@@ -81,10 +93,10 @@ The browser keeps a site's cookies by address, not by port: two tunnels open at 
   document.getElementById("open").addEventListener("submit", async (ev) => {
     ev.preventDefault();
     const button = ev.submitter;
-    button.disabled = true; button.textContent = "Opening…";
+    button.disabled = true; button.textContent = {{ _("Opening…") | tojson }};
     const option = server.selectedOptions[0];
     const data = await post("/api/tunnels/open", {link: option.value, server: option.dataset.server, role: role.value});
-    button.disabled = false; button.textContent = "Open tunnel";
+    button.disabled = false; button.textContent = {{ _("Open tunnel") | tojson }};
     if (data) location.reload();
   });
   for (const button of document.querySelectorAll("[data-close]")) {

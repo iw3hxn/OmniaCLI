@@ -1,122 +1,137 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
 {% extends "base.html" %}
-{% block title %}Schedules · OmniaCLI{% endblock %}
+{% block title %}{{ _("Schedules") }} · OmniaCLI{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
-{{ crumbs([("Dashboard", "/"), ("Schedules", None)]) }}
+{{ crumbs([(_("Dashboard"), "/"), (_("Schedules"), None)]) }}
 {% endblock %}
 {% block content %}
-{% from "_list.html" import list_search, item %}
+{% from "_list.html" import list_search, item with context %}
 {% include "_list.html" %}
-<h1>Schedules</h1>
-<p class="muted">Actions run on an instance at the times of a crontab expression (minute hour day month weekday,
-this computer's time): a git pull of its repositories, a copy of a linked instance's database (as
-<strong>Copy from link</strong>), a Python script of <span class="mono">{{ scripts_dir }}</span>, each step optional,
-in this order. A run that finds a job on the instance is skipped; runs missed while OmniaCLI is stopped are not made up.
-Saved in <span class="mono">{{ schedules_file }}</span>.</p>
-{% if load_error %}<div class="banner">{{ load_error }}: OmniaCLI runs no schedule until it is saved again.</div>{% endif %}
+<div class="page-head">
+  <div><h1>{{ _("Schedules") }}</h1>
+    <p>{{ _("Actions run on an instance at the times of a crontab expression: a git pull, a copy from a link, a Python script.") }}</p></div>
+  <div class="actions" style="margin: 0"><button type="button" id="new" class="primary">{{ _("New schedule") }}</button></div>
+</div>
+<details class="muted" style="margin-bottom: 16px">
+  <summary>{{ _("More") }}</summary>
+  <p>{{ _("The crontab expression is minute hour day month weekday, in this computer's time.") }}
+    {{ _("The steps: a git pull of its repositories, a copy of a linked instance's database (as Copy from link), a Python script of {folder}; each one optional, in this order.", folder=scripts_dir) }}
+    {{ _("A run that finds a job on the instance is skipped; runs missed while OmniaCLI is stopped are not made up.") }}
+    {{ _("Saved in {file}.", file=schedules_file) }}</p>
+</details>
+{% if load_error %}<div class="banner">{{ _("{error}: OmniaCLI runs no schedule until it is saved again.", error=tr(load_error)) }}</div>{% endif %}
 <div id="error" class="banner" hidden></div>
 
-{{ list_search("schedules", "Search schedule, instance, step, user…", request.query_params.get("q", "")) }}
-<div class="panel scroll">
+<section class="panel">
+{{ list_search("schedules", _("Search schedule, instance, step, user…"), request.query_params.get("q", "")) }}
+<div class="scroll">
 <table data-list="schedules">
-  <thead><tr><th>Name</th><th>Instance</th><th>When</th><th>Steps</th><th>As</th><th>Last run</th><th></th></tr></thead>
+  <thead><tr><th>{{ _("Name") }}</th><th>{{ _("Instance") }}</th><th>{{ _("When") }}</th><th>{{ _("Steps") }}</th><th>{{ _("As") }}</th><th>{{ _("Last run") }}</th><th></th></tr></thead>
   {% for s in schedules %}
   {% set last = s.runs[0] if s.runs else None %}
   {# the schedule and its history: one item of the list widget #}
   <tbody {{ item(s.name ~ " " ~ s.data.instance ~ " " ~ (s.steps | join(" ")) ~ " " ~ s.user) }}>
   <tr>
-    <td><strong>{{ s.name }}</strong>{% if not s.data.enabled %} <span class="badge draft">off</span>{% endif %}</td>
+    <td><strong>{{ s.name }}</strong>{% if not s.data.enabled %} <span class="badge draft">{{ _("off") }}</span>{% endif %}</td>
     <td><a href="{{ prefix }}/servers/{{ s.data.instance.split('/')[0] }}?view={{ s.data.instance.split('/')[1] }}">{{ s.data.instance }}</a>
-      {% if not s.live %}<span class="error" title="The server is a draft or no longer exists">not live</span>{% endif %}</td>
-    <td><span class="mono">{{ s.data.cron }}</span>{% if s.next %}<br><span class="muted" title="Next runs: {{ s.next | join(', ') }}">next {{ s.next[0] }}</span>{% endif %}</td>
-    <td>{{ s.steps | join(", ") }}</td>
-    <td>{{ s.user }}</td>
-    <td>{% if last %}<span class="status {{ last.status }}">{{ last.status }}</span>
+      {% if not s.live %}<span class="badge error" title="{{ _("The server is a draft or no longer exists") }}">{{ _("not live") }}</span>{% endif %}</td>
+    <td><span class="mono">{{ s.data.cron }}</span>{% if s.next %}<br><span class="muted" title="{{ _("Next runs: {times}", times=s.next | join(', ')) }}">{{ _("next {time}", time=s.next[0]) }}</span>{% endif %}</td>
+    <td>{% for step in s.steps %}{{ tr(step) }}{{ ", " if not loop.last }}{% endfor %}</td>
+    <td>{{ tr(s.user) }}</td>
+    <td>{% if last %}<span class="status {{ last.status }}">{{ tr(last.status) }}</span>
       {% if last.job %}<a href="{{ prefix }}/jobs/{{ last.job }}">{{ last.time | replace("T", " ") }}</a>{% else %}{{ last.time | replace("T", " ") }}{% endif %}
-      {% if last.message %}<br><span class="muted">{{ last.message }}</span>{% endif %}{% else %}<span class="muted">never</span>{% endif %}</td>
+      {% if last.message %}<br><span class="muted">{{ tr(last.message) }}</span>{% endif %}{% else %}<span class="muted">{{ _("never") }}</span>{% endif %}</td>
     <td><span class="run-buttons">
-      <button type="button" data-run="{{ s.name }}" title="Run the steps now, enabled or not">Run now</button>
-      <button type="button" data-edit="{{ s.name }}">Edit</button>
-      <button type="button" class="danger" data-delete="{{ s.name }}">Delete</button></span></td>
+      <button type="button" data-run="{{ s.name }}" title="{{ _("Run the steps now, enabled or not") }}">{{ _("Run now") }}</button>
+      <button type="button" data-edit="{{ s.name }}">{{ _("Edit") }}</button>
+      <button type="button" class="danger" data-delete="{{ s.name }}">{{ _("Delete") }}</button></span></td>
   </tr>
   {% if s.runs %}
   <tr><td colspan="7" style="padding-top: 0">
-    <details><summary class="muted">History: the last {{ s.runs | length }} of {{ s.data.history }}</summary>
+    <details><summary class="muted">{{ _("History: the last {count} of {total}", count=s.runs | length, total=s.data.history) }}</summary>
     <table>
-      <tr><th>Time</th><th>Trigger</th><th>Status</th><th>Job</th><th>Message</th></tr>
+      <tr><th>{{ _("Time") }}</th><th>{{ _("Trigger") }}</th><th>{{ _("Status") }}</th><th>{{ _("Job") }}</th><th>{{ _("Message") }}</th></tr>
       {% for r in s.runs %}
-      <tr><td class="mono">{{ r.time | replace("T", " ") }}</td><td>{{ r.trigger }}</td><td class="status {{ r.status }}">{{ r.status }}</td>
-        <td>{% if r.job %}<a href="{{ prefix }}/jobs/{{ r.job }}">{{ r.job }}</a>{% endif %}</td><td class="error">{{ r.message }}</td></tr>
+      <tr><td class="mono">{{ r.time | replace("T", " ") }}</td><td>{{ tr(r.trigger) }}</td><td class="status {{ r.status }}">{{ tr(r.status) }}</td>
+        <td>{% if r.job %}<a href="{{ prefix }}/jobs/{{ r.job }}">{{ r.job }}</a>{% endif %}</td><td class="error">{{ tr(r.message) }}</td></tr>
       {% endfor %}
     </table></details>
   </td></tr>
   {% endif %}
   </tbody>
   {% else %}
-  <tr><td colspan="7" class="muted">No schedules yet.</td></tr>
+  <tr><td colspan="7" class="muted">{{ _("No schedules yet.") }}</td></tr>
   {% endfor %}
 </table>
 </div>
-<div class="actions"><button type="button" id="new">New schedule</button></div>
+</section>
 
-<form id="form" class="panel" hidden style="margin-top: 16px">
+<form id="form" class="panel" hidden>
   <h2 id="form-title"></h2>
   <div class="form-grid">
-    <label for="f-name">Name</label><input type="text" id="f-name" placeholder="letters, digits and . _ -">
-    <label for="f-enabled">Enabled</label><input type="checkbox" id="f-enabled">
-    <label for="f-instance">Instance</label>
-    <select id="f-instance">{% for key, t in targets.items() %}<option value="{{ key }}">{{ key }}{{ "" if t.live else " (draft)" }}</option>{% endfor %}</select>
-    <label for="f-cron">When (crontab)</label>
-    <div><input type="text" id="f-cron" class="mono" placeholder="0 2 * * *  (every day at 02:00)">
+    <label for="f-name">{{ _("Name") }}</label><input type="text" id="f-name" placeholder="{{ _("letters, digits and . _ -") }}">
+    <label for="f-enabled">{{ _("Enabled") }}</label><input type="checkbox" id="f-enabled">
+    <label for="f-instance">{{ _("Instance") }}</label>
+    <select id="f-instance">{% for key, t in targets.items() %}<option value="{{ key }}">{{ key }}{{ "" if t.live else " (" ~ _("draft") ~ ")" }}</option>{% endfor %}</select>
+    <label for="f-cron">{{ _("When (crontab)") }}</label>
+    <div><input type="text" id="f-cron" class="mono" placeholder="{{ _("0 2 * * *  (every day at 02:00)") }}">
       <div class="muted" id="f-next" style="margin-top: 4px"></div></div>
-    <label for="f-user">Acting as</label>
-    <input type="text" id="f-user" placeholder="empty: {{ default_user }}" title="The name in the jobs, and the user the linked OmniaCLI is told acts there">
-    <label for="f-history">History</label>
-    <input type="number" id="f-history" min="1" title="How many runs the history keeps">
+    <label for="f-user">{{ _("Acting as") }}</label>
+    <div><input type="text" id="f-user" placeholder="{{ _("empty: {user}", user=default_user) }}">
+      <div class="muted field-help">{{ _("The name in the jobs, and the user the linked OmniaCLI is told acts there") }}</div></div>
+    <label for="f-history">{{ _("History") }}</label>
+    <div><input type="number" id="f-history" min="1">
+      <div class="muted field-help">{{ _("How many runs the history keeps") }}</div></div>
   </div>
 
-  <h3>1. Git pull</h3>
-  <label><input type="checkbox" id="f-pull"> Pull the instance's repositories</label>
-  <p class="muted" style="margin: 4px 0 0">Alone: the modules are updated and the instance restarted only when something new came (as the auto update).
-  With the copy: no restart, the restore that follows updates the modules and starts it.</p>
+  <h3>{{ _("1. Git pull") }}</h3>
+  <label><input type="checkbox" id="f-pull"> {{ _("Pull the instance's repositories") }}</label>
+  <p class="muted" style="margin: 4px 0 0">{{ _("Alone: the modules are updated and the instance restarted only when something new came (as the auto update).") }}
+  {{ _("With the copy: no restart, the restore that follows updates the modules and starts it.") }}</p>
 
-  <h3>2. Copy from link</h3>
-  <label id="copy-row"><input type="checkbox" id="f-copy"> Back up an instance of a linked OmniaCLI, download it and restore it here</label>
+  <h3>{{ _("2. Copy from link") }}</h3>
+  <label id="copy-row"><input type="checkbox" id="f-copy"> {{ _("Back up an instance of a linked OmniaCLI, download it and restore it here") }}</label>
   <p class="muted" id="copy-off" hidden style="margin: 4px 0 0"></p>
   <div id="copy-box" class="form-grid" style="margin-top: 8px">
-    <label for="f-link">Link</label>
+    <label for="f-link">{{ _("Link") }}</label>
     <select id="f-link">{% for l in links %}<option value="{{ l }}">{{ l }}</option>{% endfor %}
-      {% for c in connections %}<option value="puller:{{ c }}">{{ c }} (puller)</option>{% endfor %}</select>
-    <label for="f-src-server">Server there</label>
-    <div><select id="f-src-server" title="A server of the instance's type there, with its databases"></select>
+      {% for c in connections %}<option value="puller:{{ c }}">{{ c }} ({{ _("puller") }})</option>{% endfor %}</select>
+    <label for="f-src-server">{{ _("Server there") }}</label>
+    <div><select id="f-src-server" title="{{ _("A server of the instance's type there, with its databases") }}"></select>
       <p class="muted" id="f-src-note" hidden style="margin: 4px 0 0"></p></div>
-    <label for="f-src-role">Its role</label>
+    <label for="f-src-role">{{ _("Its role") }}</label>
     <select id="f-src-role"></select>
-    <label>Backup there</label><div id="f-backup-options"></div>
-    <label>Restore here</label><div id="f-restore-options"></div>
-    <label for="f-keep">Backups kept here</label>
-    <input type="number" id="f-keep" min="1" title="The zips of this link in the instance's backups, the new one included: the older ones are deleted before the new backup starts">
+    <label>{{ _("Backup there") }}</label><div id="f-backup-options"></div>
+    <label>{{ _("Restore here") }}</label><div id="f-restore-options"></div>
+    <label for="f-keep">{{ _("Backups kept here") }}</label>
+    <div><input type="number" id="f-keep" min="1">
+      <div class="muted field-help">{{ _("The zips of this link in the instance's backups, the new one included: the older ones are deleted before the new backup starts") }}</div></div>
   </div>
 
-  <h3>3. Python script</h3>
-  <label><input type="checkbox" id="f-script" {{ "" if scripts else "disabled" }}> Run a script of <span class="mono">{{ scripts_dir }}</span></label>
-  {% if not scripts %}<p class="muted" style="margin: 4px 0 0">There is no .py file in that folder: put one there to choose it.</p>{% endif %}
+  <h3>{{ _("3. Python script") }}</h3>
+  <label><input type="checkbox" id="f-script" {{ "" if scripts else "disabled" }}> {{ _("Run a script of {folder}", folder=scripts_dir) }}</label>
+  {% if not scripts %}<p class="muted" style="margin: 4px 0 0">{{ _("There is no .py file in that folder: put one there to choose it.") }}</p>{% endif %}
   <div id="script-box" class="form-grid" style="margin-top: 8px">
-    <label for="f-script-name">Script</label>
+    <label for="f-script-name">{{ _("Script") }}</label>
     <select id="f-script-name">{% for name in scripts %}<option value="{{ name }}">{{ name }}</option>{% endfor %}</select>
-    <label for="f-args">Arguments</label><input type="text" id="f-args" class="mono" placeholder="as on a command line">
+    <label for="f-args">{{ _("Arguments") }}</label><input type="text" id="f-args" class="mono" placeholder="{{ _("as on a command line") }}">
   </div>
-  <p class="muted" style="margin: 4px 0 0">Run with the instance's python (Odoo: its venv's, as its run as user), in its first repository's folder,
-  with OMNIACLI_SERVER, OMNIACLI_ROLE, OMNIACLI_REPOSITORIES (JSON name: path) and, for Odoo, OMNIACLI_DATABASE and OMNIACLI_ODOO_CONFIG.
-  Its output goes to the job; an exit code other than 0 fails it.</p>
+  <details class="muted" style="margin: 4px 0 0"><summary>{{ _("More") }}</summary>
+  <p>{{ _("Run with the instance's python (Odoo: its venv's, as its run as user), in its first repository's folder, with {variables} and, for Odoo, {odoo_variables}.", variables="OMNIACLI_SERVER, OMNIACLI_ROLE, OMNIACLI_REPOSITORIES (JSON name: path)", odoo_variables="OMNIACLI_DATABASE, OMNIACLI_ODOO_CONFIG") }}
+  {{ _("Its output goes to the job; an exit code other than 0 fails it.") }}</p></details>
 
   <div class="actions">
-    <button type="submit">Save</button>
-    <button type="button" id="cancel">Cancel</button>
+    <button type="submit" class="primary">{{ _("Save") }}</button>
+    <button type="button" id="cancel">{{ _("Cancel") }}</button>
   </div>
 </form>
 
 {% include "_link_source.html" %}
+{% set field_texts = namespace(d={}) %}
+{% for t in targets.values() %}{% for f in (t.backup_fields or []) + (t.restore_fields or []) %}
+{% for text in [f.label, f.help, f.placeholder] if text %}{% if field_texts.d.update({text: tr(text)}) %}{% endif %}{% endfor %}
+{% endfor %}{% endfor %}
+<style>#form .field-help { font-size: 13px; margin-top: 3px; } #form h3 { font-size: 14px; margin: 18px 0 6px; }</style>
 <script>
 (function () {
   const SCHEDULES = {{ schedules | map(attribute="data") | list | tojson }};
@@ -129,6 +144,9 @@ Saved in <span class="mono">{{ schedules_file }}</span>.</p>
   const $ = (id) => document.getElementById(id);
   const form = $("form"), errorBox = $("error");
   let original = null;
+  // the texts of the types' backup and restore fields (the code's), in the page's language
+  const TEXTS = {{ field_texts.d | tojson }};
+  const tx = (text) => TEXTS[text] || text;
 
   function showError(message) {
     errorBox.textContent = message; errorBox.hidden = !message;
@@ -138,7 +156,7 @@ Saved in <span class="mono">{{ schedules_file }}</span>.</p>
     const resp = await fetch(prefix + url, {method: "POST", headers: {"Content-Type": "application/json"},
                                             body: JSON.stringify(body || {})});
     const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) throw new Error(data.error || data.detail || ("Error " + resp.status));
+    if (!resp.ok) throw new Error(data.error || data.detail || {{ _("Error {status}") | tojson }}.replace("{status}", resp.status));
     return data;
   }
 
@@ -147,20 +165,20 @@ Saved in <span class="mono">{{ schedules_file }}</span>.</p>
     holder.replaceChildren();
     for (const f of fields) {
       const label = document.createElement("label"), input = document.createElement("input");
-      label.style.display = "block"; label.title = f.help || "";
+      label.style.display = "block"; label.title = tx(f.help || "");
       input.dataset.key = f.key;
       if (f.kind === "checkbox") {
         input.type = "checkbox";
         input.checked = values && f.key in values ? !!values[f.key] : !!f.default;
-        label.append(input, " " + f.label);
+        label.append(input, " " + tx(f.label));
       } else {
-        input.type = "text"; input.placeholder = f.placeholder || "";
+        input.type = "text"; input.placeholder = tx(f.placeholder || "");
         input.value = values && f.key in values ? (values[f.key] ?? "") : (f.default ?? "");
-        label.append(f.label + " ", input);
+        label.append(tx(f.label) + " ", input);
       }
       holder.appendChild(label);
     }
-    if (!fields.length) holder.innerHTML = '<span class="muted">none</span>';
+    if (!fields.length) { const none = document.createElement("span"); none.className = "muted"; none.textContent = {{ _("none") | tojson }}; holder.replaceChildren(none); }
   }
   function optionValues(holder) {
     const out = {};
@@ -176,8 +194,8 @@ Saved in <span class="mono">{{ schedules_file }}</span>.</p>
     $("f-copy").disabled = !canCopy;
     if (!canCopy) $("f-copy").checked = false;
     $("copy-off").hidden = canCopy;
-    $("copy-off").textContent = !target.has_restore ? "This instance's type cannot restore a database."
-      : "No link nor puller connection here: add one on the Links or the Pullers page.";
+    $("copy-off").textContent = !target.has_restore ? {{ _("This instance's type cannot restore a database.") | tojson }}
+      : {{ _("No link nor puller connection here: add one on the Links or the Pullers page.") | tojson }};
     $("copy-box").hidden = !$("f-copy").checked;
     $("script-box").hidden = !$("f-script").checked;
   }
@@ -200,7 +218,7 @@ Saved in <span class="mono">{{ schedules_file }}</span>.</p>
     if (!cron) { out.textContent = ""; return; }
     const resp = await fetch(prefix + "/api/schedules/next?cron=" + encodeURIComponent(cron));
     const data = await resp.json().catch(() => ({}));
-    out.textContent = resp.ok ? "Next: " + data.next.join(", ") : (data.error || "");
+    out.textContent = resp.ok ? {{ _("Next: {times}") | tojson }}.replace("{times}", data.next.join(", ")) : (data.error || "");
     out.classList.toggle("error", !resp.ok);
   }
   $("f-cron").addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(preview, 300); });
@@ -208,7 +226,7 @@ Saved in <span class="mono">{{ schedules_file }}</span>.</p>
   function open(name) {
     const s = name === null ? null : SCHEDULES[NAMES.indexOf(name)];
     original = name;
-    $("form-title").textContent = s ? `Edit ${name}` : "New schedule";
+    $("form-title").textContent = s ? {{ _("Edit {name}") | tojson }}.replace("{name}", name) : {{ _("New schedule") | tojson }};
     $("f-name").value = name || "";
     $("f-enabled").checked = s ? s.enabled : true;
     $("f-instance").value = s ? s.instance : $("f-instance").options[0]?.value || "";
@@ -259,14 +277,14 @@ Saved in <span class="mono">{{ schedules_file }}</span>.</p>
   });
   for (const b of document.querySelectorAll("[data-delete]")) {
     b.onclick = async () => {
-      if (!confirm(`Delete the schedule ${b.dataset.delete} and its history?`)) return;
+      if (!confirm({{ _("Delete the schedule {name} and its history?") | tojson }}.replace("{name}", b.dataset.delete))) return;
       try { await post("/api/schedules/delete", {name: b.dataset.delete}); location.reload(); }
       catch (err) { showError(err.message); }
     };
   }
   for (const b of document.querySelectorAll("[data-run]")) {
     b.onclick = async () => {
-      if (!confirm(`Run ${b.dataset.run} now?`)) return;
+      if (!confirm({{ _("Run {name} now?") | tojson }}.replace("{name}", b.dataset.run))) return;
       try { const data = await post(`/api/schedules/${encodeURIComponent(b.dataset.run)}/run`);
             location.href = `${prefix}/jobs/${data.job}`; }
       catch (err) { showError(err.message); }

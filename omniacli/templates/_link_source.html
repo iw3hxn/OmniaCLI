@@ -8,10 +8,20 @@
 // link answers, each named with its databases, and the roles of the chosen
 // one. current ({server, role}) stays chosen; a choice the link no longer
 // lists (or one it cannot be asked about) stays, marked, and note says why.
+var LINK_SOURCE_TEXTS = {{ {
+  "puller": _("the instance the puller serves"),
+  "cannot": _("Cannot read the servers of {link} ({error}): the saved choice is kept."),
+  "notOn": _("{server} (not on {link})"),
+  "noServer": _("{link} has no {type} server {server}: choose one of its servers."),
+  "none": _("no {type} server on {link}"),
+} | tojson }};
 async function fillLinkSource({prefix, link, type, server, role, current, note}) {
+  const T = LINK_SOURCE_TEXTS;
+  const fill = (text, values) => text.replace(/\{(\w+)\}/g, (m, k) => (k in values ? String(values[k]) : m))
+    .replace(/  +/g, " ");
   const seq = server._seq = (server._seq || 0) + 1;
   if (link && link.startsWith("puller:")) {
-    server.replaceChildren(new Option("the instance the puller serves", ""));
+    server.replaceChildren(new Option(T.puller, ""));
     role.replaceChildren();
     server.disabled = role.disabled = true;
     if (note) note.hidden = true;
@@ -29,7 +39,7 @@ async function fillLinkSource({prefix, link, type, server, role, current, note})
       servers = (Array.isArray(data) ? data : data.servers || [])
         .filter(s => s && s.name && (!type || s.type === type));
     } catch (err) {
-      problem = `Cannot read the servers of ${link} (${err.message}): the saved choice is kept.`;
+      problem = fill(T.cannot, {link, error: err.message});
     }
   }
   if (seq !== server._seq) return;  // a newer fill started meanwhile
@@ -41,10 +51,10 @@ async function fillLinkSource({prefix, link, type, server, role, current, note})
     server.add(new Option(dbs ? `${s.name} (${dbs})` : s.name, s.name));
   }
   if (current.server && !known[current.server]) {
-    server.add(new Option(`${current.server} (not on ${link})`, current.server));
-    if (!problem && link) problem = `${link} has no ${type || ""} server ${current.server}: choose one of its servers.`;
+    server.add(new Option(fill(T.notOn, {server: current.server, link}), current.server));
+    if (!problem && link) problem = fill(T.noServer, {link, type: type || "", server: current.server});
   }
-  if (!server.options.length) server.add(new Option(link ? `no ${type || ""} server on ${link}` : "", ""));
+  if (!server.options.length) server.add(new Option(link ? fill(T.none, {type: type || "", link}) : "", ""));
   if (current.server) server.value = current.server;
   function roles() {
     const s = known[server.value], chosen = role.value || current.role || "production";

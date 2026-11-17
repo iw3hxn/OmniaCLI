@@ -1,0 +1,20 @@
+{
+ "-c {config}: relative, and its working directory cannot be read": "-c {config}: relativo, e la sua cartella di lavoro non si può leggere",
+ "-d {database}: choose the database": "-d {database}: scegli il database",
+ "Odoo runs as root: run_as root lets OmniaCLI run its venv as root": "Odoo gira come root: run_as root fa eseguire a OmniaCLI il suo venv come root",
+ "no -c: Odoo reads {config}": "nessun -c: Odoo legge {config}",
+ "no logfile: Odoo logs to its standard output (the journal of its unit): OmniaCLI needs a log file, set logfile in the Odoo config": "nessun logfile: Odoo scrive il log sull'output standard (il journal della sua unità): OmniaCLI ha bisogno di un file di log, imposta logfile nella configurazione di Odoo",
+ "odoo-bin {command}: not the server": "odoo-bin {command}: non è il server",
+ "python {python}: no path, set the venv's bin folder by hand": "python {python}: senza percorso, imposta a mano la cartella bin del venv",
+ "runs inside the unit {unit}, which is not its own (started by hand from a shell of that service?): set its service by hand": "gira dentro l'unità {unit}, che non è la sua (avviato a mano da una shell di quel servizio?): imposta il suo servizio a mano",
+ "started by hand as {user}: set its systemd service": "avviato a mano come {user}: imposta il suo servizio systemd",
+ "started by hand: OmniaCLI may start it itself (restart type process) once it is stopped, or set its systemd service": "avviato a mano: OmniaCLI può avviarlo da sé (tipo di riavvio process) dopo averlo fermato, oppure imposta il suo servizio systemd",
+ "the command uses variables (an EnvironmentFile?): what they hold is not read here": "il comando usa delle variabili (un EnvironmentFile?): il loro contenuto qui non viene letto",
+ "{error}: the user running OmniaCLI ({user}) must read it (e.g. sudo adduser {user} {owner})": "{error}: l'utente che esegue OmniaCLI ({user}) deve poterlo leggere (es. sudo adduser {user} {owner})",
+ "{path} is in no git repository (installed by a package?): OmniaCLI updates only what is in git": "{path} non è in nessun repository git (installato da un pacchetto?): OmniaCLI aggiorna solo ciò che è in git",
+ "{path} not found": "{path} non trovato",
+ "{python} is not in a venv: click-odoo-contrib must be installed for it": "{python} non è in un venv: va installato click-odoo-contrib per lui",
+ "{script} started without a python on the command line: set the venv's bin folder by hand": "{script} avviato senza un python sulla riga di comando: imposta a mano la cartella bin del venv",
+ "{script}: relative and in no repository of the addons_path: set odoo-bin by hand": "{script}: relativo e in nessun repository dell'addons_path: imposta odoo-bin a mano",
+ "{value} (command line)": "{value} (riga di comando)"
+}

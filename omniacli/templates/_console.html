@@ -2,7 +2,7 @@
 {# The consoles: every log and every terminal of the interface is one of
    these widgets, so they all have the same bar and behave the same.
 
-   {% from "_console.html" import logbox, terminal, console_script %}
+   {% from "_console.html" import logbox, terminal, console_script with context %}
    {{ logbox(key, tags, height) }}   a log: tags to filter by (combined),
                                      text filter, Follow, text size, Expand
    {{ terminal(key, height) }}       a terminal (xterm.js) on a WebSocket
@@ -23,10 +23,10 @@
 
 {% macro _tools() -%}
 <span class="console-tools">
-  <button type="button" class="console-smaller" title="Smaller text (kept in this browser for this kind of console)">A−</button>
-  <span class="console-size mono muted" title="Text size in pixels"></span>
-  <button type="button" class="console-larger" title="Larger text (kept in this browser for this kind of console)">A+</button>
-  <button type="button" class="console-expand" title="Fill the browser window">Expand</button>
+  <button type="button" class="console-smaller" title="{{ _('Smaller text (kept in this browser for this kind of console)') }}">A−</button>
+  <span class="console-size mono muted" title="{{ _('Text size in pixels') }}"></span>
+  <button type="button" class="console-larger" title="{{ _('Larger text (kept in this browser for this kind of console)') }}">A+</button>
+  <button type="button" class="console-expand" title="{{ _('Fill the browser window') }}">{{ _("Expand") }}</button>
 </span>
 {%- endmacro %}
 
@@ -38,11 +38,11 @@ data-font-min="{{ console_font_sizes[0] }}" data-font-max="{{ console_font_sizes
 {% macro logbox(key, tags=LOG_TAGS, height="70vh") -%}
 <div {{ _box_attrs(key) }}>
   <div class="console-bar">
-    <span class="console-tags" title="Show only the lines of the chosen tags (none chosen: every line)">
+    <span class="console-tags" title="{{ _('Show only the lines of the chosen tags (none chosen: every line)') }}">
       {% for tag in tags %}<button type="button" class="console-tag tag-{{ tag }}" data-tag="{{ tag }}" aria-pressed="false">{{ tag }}</button>{% endfor %}
     </span>
-    <input type="search" class="console-search" placeholder="Filter text" aria-label="Show only the lines with this text">
-    <label><input type="checkbox" class="console-follow" checked> Follow</label>
+    <input type="search" class="console-search" placeholder="{{ _('Filter text') }}" aria-label="{{ _('Show only the lines with this text') }}">
+    <label><input type="checkbox" class="console-follow" checked> {{ _("Follow") }}</label>
     <span class="console-state muted"></span>
     {{ _tools() }}
   </div>
@@ -54,8 +54,8 @@ data-font-min="{{ console_font_sizes[0] }}" data-font-max="{{ console_font_sizes
 <link rel="stylesheet" href="{{ prefix }}/static/xterm.css">
 <div {{ _box_attrs(key) }}>
   <div class="console-bar">
-    <span class="console-state muted">Connecting…</span>
-    <button type="button" class="console-again" hidden>Open a new shell</button>
+    <span class="console-state muted">{{ _("Connecting…") }}</span>
+    <button type="button" class="console-again" hidden>{{ _("Open a new shell") }}</button>
     {{ _tools() }}
   </div>
   <div class="console-term" style="height: {{ height }}"></div>
@@ -68,6 +68,17 @@ data-font-min="{{ console_font_sizes[0] }}" data-font-max="{{ console_font_sizes
 {% macro console_script() -%}
 <script>
 const OmniaConsole = (function () {
+  // the texts in the page's language, their {names} filled by fill()
+  const T = {{ {
+    "expand": _("Expand"), "restore": _("Restore"), "back": _("Back to the page"), "esc": _("Back to the page (Esc)"),
+    "fill": _("Fill the browser window"),
+    "nothing": _("Nothing to upload: drop files (a mail: save it as .eml, then drop that)"),
+    "tooBig": _("{file}: more than {max} MiB, not uploaded"), "uploading": _("Uploading {file}: {percent}%"),
+    "connecting": _("Connecting…"), "connected": _("Connected"), "closedWhy": _("Closed: {reason}"),
+    "refused": _("Closed: refused or connection lost (login expired? a proxy without WebSocket?)"),
+    "closed": _("Closed ({code})"),
+  } | tojson }};
+  const fill = (text, values) => text.replace(/\{(\w+)\}/g, (m, k) => (k in values ? String(values[k]) : m));
   const store = {
     get(key) { try { return localStorage.getItem(key); } catch (e) { return null; } },
     set(key, value) { try { localStorage.setItem(key, value); } catch (e) { /* not kept */ } },
@@ -96,8 +107,8 @@ const OmniaConsole = (function () {
       box.classList.toggle("expanded", on);
       document.body.classList.toggle("console-expanded", on);
       expanded = on ? box : null;
-      button.textContent = on ? "Restore" : "Expand";
-      button.title = on ? "Back to the page" + (escape ? " (Esc)" : "") : "Fill the browser window";
+      button.textContent = on ? T.restore : T.expand;
+      button.title = on ? (escape ? T.esc : T.back) : T.fill;
       requestAnimationFrame(resized);
     };
     box.collapse = () => expand(false);
@@ -209,18 +220,18 @@ const OmniaConsole = (function () {
       const files = [...ev.dataTransfer.files];
       const before = state.textContent;
       if (!files.length) {
-        state.textContent = "Nothing to upload: drop files (a mail: save it as .eml, then drop that)";
+        state.textContent = T.nothing;
         return;
       }
       const paths = [], errors = [];
       for (const file of files) {
         if (file.size > drop.max) {
-          errors.push(`${file.name}: more than ${drop.max >> 20} MiB, not uploaded`);
+          errors.push(fill(T.tooBig, {file: file.name, max: drop.max >> 20}));
           continue;
         }
         try {
           const data = await OmniaUpload.send(drop.upload, file, {
-            progress: (p) => { state.textContent = `Uploading ${file.name}: ${Math.round(p)}%`; }});
+            progress: (p) => { state.textContent = fill(T.uploading, {file: file.name, percent: Math.round(p)}); }});
           paths.push(data.path);
         } catch (e) {
           errors.push(`${file.name}: ${e.message}`);
@@ -253,17 +264,16 @@ const OmniaConsole = (function () {
     fit.fit();
     function connect() {
       again.hidden = true;
-      state.textContent = "Connecting…";
+      state.textContent = T.connecting;
       socket = new WebSocket(url);
       socket.binaryType = "arraybuffer";
-      socket.onopen = () => { state.textContent = "Connected"; resize(); term.focus(); };
+      socket.onopen = () => { state.textContent = T.connected; resize(); term.focus(); };
       socket.onmessage = (ev) => term.write(typeof ev.data === "string" ? ev.data : new Uint8Array(ev.data));
       socket.onclose = (ev) => {
         // 1006 without a reason: refused at the handshake (login expired, or
         // a proxy that does not pass WebSockets on) or the connection lost
-        state.textContent = ev.reason ? `Closed: ${ev.reason}`
-          : ev.code === 1006 ? "Closed: refused or connection lost (login expired? a proxy without WebSocket?)"
-          : `Closed (${ev.code})`;
+        state.textContent = ev.reason ? fill(T.closedWhy, {reason: ev.reason})
+          : ev.code === 1006 ? T.refused : fill(T.closed, {code: ev.code});
         again.hidden = false;
         // refused at the handshake: the page itself tells whether the login expired
         // (as JSON: an expired login answers 401, not the login form)
@@ -283,6 +293,10 @@ const OmniaConsole = (function () {
 // tab is hidden. No connection stays open, so pages never wait for a free one.
 const OmniaLog = (function () {
   const MAX_LINES = 5000, EVERY = 2000;
+  const T = {{ {
+    "rotated": _("----- log file rotated or truncated -----"), "error": _("Error {status}"),
+    "updated": _("updated {time}"), "unreachable": _("not reachable, retrying…"), "lazy": _("loads when visible"),
+  } | tojson }};
   function attach(box, url) {
     const widget = OmniaConsole.log(box, OmniaConsole.levels(), MAX_LINES);
     let pos = null, inode = null, timer = null, visible = false, busy = false;
@@ -295,14 +309,14 @@ const OmniaLog = (function () {
         const q = pos === null ? "" : `?pos=${pos}&inode=${inode}`;
         const resp = await fetch(url + q);
         const data = await resp.json();
-        if (!resp.ok) { widget.state.textContent = data.error || ("error " + resp.status); again = 10000; }
+        if (!resp.ok) { widget.state.textContent = data.error || T.error.replace("{status}", resp.status); again = 10000; }
         else {
-          widget.add([...(data.rotated ? ["----- log file rotated or truncated -----"] : []), ...data.lines]);
+          widget.add([...(data.rotated ? [T.rotated] : []), ...data.lines]);
           pos = data.pos; inode = data.inode;
-          widget.state.textContent = "updated " + new Date().toLocaleTimeString();
+          widget.state.textContent = T.updated.replace("{time}", new Date().toLocaleTimeString());
           if (data.more) again = 0;
         }
-      } catch (e) { widget.state.textContent = "not reachable, retrying…"; again = 5000; }
+      } catch (e) { widget.state.textContent = T.unreachable; again = 5000; }
       busy = false;
       schedule(again);
     }
@@ -312,7 +326,7 @@ const OmniaLog = (function () {
       if (visible) schedule(0);
     }).observe(widget.out);
     document.addEventListener("visibilitychange", () => { if (!document.hidden) schedule(0); });
-    widget.state.textContent = "loads when visible";
+    widget.state.textContent = T.lazy;
   }
   return {attach};
 })();

@@ -11,29 +11,29 @@
   <form method="dialog" id="from-link-form">
     <h2 id="from-link-title" style="margin-bottom: 4px"></h2>
     <p class="muted" id="from-link-sub" style="margin-top: 0"></p>
-    <label><input type="radio" name="backup" value="" checked> A new backup there, now</label>
+    <label><input type="radio" name="backup" value="" checked> {{ _("A new backup there, now") }}</label>
     {% for f in backup_fields if f.kind == "checkbox" %}
-    <label style="display: block; margin-left: 22px" title="{{ f.help }}"><input type="checkbox" data-backup-option="{{ f.key }}" {{ "checked" if f.default }}> {{ f.label | lower }}</label>
+    <label style="display: block; margin-left: 22px" title="{{ tr(f.help) }}"><input type="checkbox" data-backup-option="{{ f.key }}" {{ "checked" if f.default }}> {{ tr(f.label) | lower }}</label>
     {% endfor %}
     <div id="from-link-room" style="margin-left: 22px"></div>
     <div id="from-link-backups" class="scroll" style="max-height: 35vh; margin: 6px 0"></div>
     <div id="from-link-options">
       {% for f in restore_fields %}
       {% if f.kind == "checkbox" %}
-      <label style="display: block; margin-top: 6px"><input type="checkbox" data-option="{{ f.key }}" {{ "checked" if f.default }}> {{ f.label }}</label>
+      <label style="display: block; margin-top: 6px"><input type="checkbox" data-option="{{ f.key }}" {{ "checked" if f.default }}> {{ tr(f.label) }}</label>
       {% else %}
-      <label style="display: block; margin-top: 6px">{{ f.label }} <input type="text" data-option="{{ f.key }}" value="{{ f.default or '' }}" placeholder="{{ f.placeholder }}"></label>
+      <label style="display: block; margin-top: 6px">{{ tr(f.label) }} <input type="text" data-option="{{ f.key }}" value="{{ f.default or '' }}" placeholder="{{ tr(f.placeholder) }}"></label>
       {% endif %}
       {% endfor %}
     </div>
     <div id="from-link-confirm" hidden style="margin-top: 10px">
-      <label>A production database is replaced: type <strong class="mono" id="from-link-db"></strong> to go on
+      <label>{{ _("A production database is replaced. To go on, type its name:") }} <strong class="mono" id="from-link-db"></strong>
         <input type="text" id="from-link-typed" autocomplete="off" class="mono" style="display: block; margin-top: 4px"></label>
     </div>
     <p id="from-link-error" class="error"></p>
     <div class="actions">
-      <button type="submit" class="danger">Copy here</button>
-      <button type="button" id="from-link-cancel">Cancel</button>
+      <button type="submit" class="danger">{{ _("Copy here") }}</button>
+      <button type="button" id="from-link-cancel">{{ _("Cancel") }}</button>
     </div>
   </form>
 </dialog>
@@ -44,6 +44,26 @@
   const errorBox = document.getElementById("from-link-error");
   const typed = document.getElementById("from-link-typed");
   let target = null, key = "", estimate = null, opened = 0;
+  const T = {
+    noAnswer: {{ _("no answer") | tojson }},
+    loading: {{ _("Loading the backups there…") | tojson }},
+    cannotList: {{ _("Could not list the backups there: {error}") | tojson }},
+    none: {{ _("No backups there yet.") | tojson }},
+    title: {{ _("Copy from link into {key}") | tojson }},
+    sub: {{ _("{label}: backed up there, downloaded into the backups of {key}, then restored here (its database and filestore are dropped first).") | tojson }},
+    subPuller: {{ _("{label}: a new backup there comes through the relay into the backups of {key}, then is restored here (its database is dropped first).") | tojson }},
+    room: {{ _("the restore into {key} here") | tojson }},
+    relay: {{ _("a relay tells no weight of the backup there") | tojson }},
+    noLink: {{ _("no link {link} here") | tojson }},
+    older: {{ _("the OmniaCLI there tells no weight of a backup (an older version)") | tojson }},
+    pullerOnly: {{ _("A puller brings a new backup only.") | tojson }},
+    addLink: {{ _("There is no link {link} here: add it on the Links page.") | tojson }},
+    type: {{ _("Type {database} to go on.") | tojson }},
+    theBackup: {{ _("the backup {backup}") | tojson }}, aNew: {{ _("a new backup") | tojson }},
+    drop: {{ _("Drop the database of {key} and load {what} of {label} into it?") | tojson }},
+    error: {{ _("Error {status}") | tojson }},
+  };
+  const esc = (text) => { const span = document.createElement("span"); span.className = "muted"; span.textContent = text; return span; };
   const backupOptions = [...dialog.querySelectorAll("[data-backup-option]")];
   const roomBox = document.getElementById("from-link-room");
   const room = omniaRoom(roomBox);
@@ -67,7 +87,7 @@
       const resp = await fetch(url, {headers: {Accept: "application/json"}});
       const data = await resp.json().catch(() => null);
       if (!resp.ok) return {error: (data && (data.error || data.detail)) || "HTTP " + resp.status};
-      return data || {error: "no answer"};
+      return data || {error: T.noAnswer};
     } catch (e) { return {error: e.message}; }
   }
   // the choices of a new backup: not for one already there
@@ -79,7 +99,7 @@
     : b >= 1048576 ? (b / 1048576).toFixed(1) + " MiB" : Math.max(1, Math.round(b / 1024)) + " KiB";
 
   async function load() {
-    list.innerHTML = '<span class="muted">Loading the backups there…</span>';
+    list.replaceChildren(esc(T.loading));
     let files;
     try {
       const resp = await fetch(`{{ prefix }}/links/${target.link}/api/servers/${target.server}/${target.role}/backups`,
@@ -89,9 +109,9 @@
         throw new Error(data.error || data.detail || "HTTP " + resp.status);
       }
       files = await resp.json();
-    } catch (e) { list.textContent = "Could not list the backups there: " + e.message; return; }
+    } catch (e) { list.textContent = T.cannotList.replace("{error}", e.message); return; }
     list.replaceChildren();
-    if (!files.length) { list.innerHTML = '<span class="muted">No backups there yet.</span>'; return; }
+    if (!files.length) { list.replaceChildren(esc(T.none)); return; }
     for (const f of files) {
       const label = document.createElement("label");
       label.style.display = "block";
@@ -109,10 +129,8 @@
   for (const button of document.querySelectorAll("[data-from-link]")) {
     button.onclick = () => {
       target = JSON.parse(button.dataset.fromLink); key = button.dataset.key;
-      document.getElementById("from-link-title").textContent = `Copy from link into ${key}`;
-      document.getElementById("from-link-sub").textContent =
-        `${target.label}: backed up there, downloaded into the backups of ${key}, then restored here `
-        + "(its database and filestore are dropped first).";
+      document.getElementById("from-link-title").textContent = T.title.replace("{key}", key);
+      document.getElementById("from-link-sub").textContent = T.sub.replace("{label}", target.label).replace("{key}", key);
       dialog.querySelector('input[name=backup][value=""]').checked = true;
       for (const box of backupOptions) { box.disabled = false; box.checked = box.defaultChecked; }
       document.getElementById("from-link-confirm").hidden = !target.database;
@@ -122,12 +140,12 @@
       estimate = null; room.reset(true); updateRoom();
       const [here, hereRole] = key.split("/");
       json(`{{ prefix }}/api/servers/${encodeURIComponent(here)}/${encodeURIComponent(hereRole)}/restore/room`)
-        .then((data) => { if (mine === opened) room.room(data, `the restore into ${key} here`); });
-      const there = target.puller ? Promise.resolve({error: "a relay tells no weight of the backup there"})
-        : !target.known ? Promise.resolve({error: `no link ${target.link} here`})
+        .then((data) => { if (mine === opened) room.room(data, T.room.replace("{key}", key)); });
+      const there = target.puller ? Promise.resolve({error: T.relay})
+        : !target.known ? Promise.resolve({error: T.noLink.replace("{link}", target.link)})
         : json(`{{ prefix }}/links/${target.link}/api/servers/${target.server}/${target.role}/backup/estimate`)
           .then((d) => d.error && /404|Not Found/.test(d.error)
-            ? {error: "the OmniaCLI there tells no weight of a backup (an older version)"} : d);
+            ? {error: T.older} : d);
       there.then((data) => {
         if (mine !== opened) return;
         estimate = data; room.estimate(data); updateRoom();
@@ -135,12 +153,10 @@
       dialog.showModal();
       if (target.puller) {
         // a puller brings a new backup only: the relay keeps none
-        document.getElementById("from-link-sub").textContent =
-          `${target.label}: a new backup there comes through the relay into the backups of ${key}, then is `
-          + "restored here (its database is dropped first).";
-        list.innerHTML = '<span class="muted">A puller brings a new backup only.</span>';
+        document.getElementById("from-link-sub").textContent = T.subPuller.replace("{label}", target.label).replace("{key}", key);
+        list.replaceChildren(esc(T.pullerOnly));
       } else if (target.known) load();
-      else list.textContent = `There is no link ${target.link} here: add it on the Links page.`;
+      else list.textContent = T.addLink.replace("{link}", target.link);
     };
   }
   document.getElementById("from-link-form").addEventListener("submit", async (ev) => {
@@ -152,18 +168,18 @@
     }
     if (!backup) for (const box of backupOptions) body[box.dataset.backupOption] = box.checked;
     if (target.database) {
-      if (typed.value.trim() !== target.database) { errorBox.textContent = `Type ${target.database} to go on.`; return; }
+      if (typed.value.trim() !== target.database) { errorBox.textContent = T.type.replace("{database}", target.database); return; }
       body.confirm = typed.value.trim();
     } else {
-      const what = backup ? `the backup ${backup}` : "a new backup";
-      if (!confirm(`Drop the database of ${key} and load ${what} of ${target.label} into it?`)) return;
+      const what = backup ? T.theBackup.replace("{backup}", backup) : T.aNew;
+      if (!confirm(T.drop.replace("{key}", key).replace("{what}", what).replace("{label}", target.label))) return;
     }
     const resp = await fetch(target.url, {
       method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body),
     });
     const data = await resp.json().catch(() => ({}));
     if (resp.ok) { location.href = "{{ prefix }}/jobs/" + data.job; return; }
-    errorBox.textContent = data.error || data.detail || ("Error " + resp.status);
+    errorBox.textContent = data.error || data.detail || T.error.replace("{status}", resp.status);
   });
 })();
 </script>

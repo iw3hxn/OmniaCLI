@@ -1,27 +1,28 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
 {% extends "base.html" %}
-{% block title %}Discover · OmniaCLI{% endblock %}
+{% block title %}{{ _("Discover") }} · OmniaCLI{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
-{{ crumbs([("Dashboard", "/"), ("Servers", "/config"), ("Discover", None)]) }}
+{{ crumbs([(_("Dashboard"), "/"), (_("Servers"), "/config"), (_("Discover"), None)]) }}
 {% endblock %}
 {% block content %}
-<h1>Discover</h1>
-<p class="muted">The instances running on this machine, and the systemd units that start one (stopped ones too),
-read from the processes and from systemd. Choose the ones to add, give each a server name and a role: they are
-saved as <strong>drafts</strong>, two instances with the same name as the production and the test of one server.
-Then open each draft, complete what the notes say and run <strong>Test &amp; activate</strong>.
-Nothing on the machine is changed.</p>
-<div id="error" class="banner" hidden></div>
-<div class="panel">
-  <div class="actions" style="margin: 0">
-    <button type="button" id="search">Search</button>
-    <button type="button" id="save" hidden>Create drafts</button>
+<div class="page-head">
+  <div><h1>{{ _("Discover") }}</h1>
+    <p>{{ _("The instances running on this machine, and the systemd units that start one: add them as drafts.") }}</p></div>
+  <div class="actions" style="margin: 0; align-items: center">
     <span id="status" class="muted"></span>
+    <button type="button" id="search" class="primary">{{ _("Search") }}</button>
+    <button type="button" id="save" class="primary" hidden>{{ _("Create drafts") }}</button>
   </div>
 </div>
-<div id="found"></div>
+<details class="muted" style="margin-bottom: 16px">
+  <summary>{{ _("More") }}</summary>
+  <p>{{ _("Read from the processes and from systemd, stopped units too. Choose the ones to add, give each a server name and a role: they are saved as drafts, two instances with the same name as the production and the test of one server.") }}
+    {{ _("Then open each draft, complete what the notes say and run Test & activate. Nothing on the machine is changed.") }}</p>
+</details>
+<div id="error" class="banner" hidden></div>
+<div id="found" class="stack"></div>
 <style>
-.found-item { margin-bottom: 12px; }
+.found-item { margin: 0; }
 .found-item h2 { font-size: 1rem; margin: 0 0 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .found-item dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 0 0 8px; }
 .found-item dt { color: var(--muted); }
@@ -35,6 +36,11 @@ Nothing on the machine is changed.</p>
   const errorBox = document.getElementById("error"), status = document.getElementById("status");
   const list = document.getElementById("found"), save = document.getElementById("save");
   let found = [];
+  // the labels of the facts the plugins send (the API answers in English); the rest is shown as it comes
+  const TEXTS = {{ {"Command": _("Command"), "User": _("User"), "State": _("State"), "Database": _("Database"),
+                    "HTTP port": _("HTTP port"), "Gevent port": _("Gevent port"), "Odoo config": _("Odoo config"),
+                    "Venv bin": _("Venv bin"), "production": _("production"), "test": _("test")} | tojson }};
+  const tx = (text) => TEXTS[text] || text;
 
   function el(tag, attrs, ...children) {
     const node = document.createElement(tag);
@@ -51,12 +57,12 @@ Nothing on the machine is changed.</p>
     const taken = new Set(data.names);
     list.replaceChildren();
     if (!found.length) {
-      list.append(el("div", {class: "panel muted"}, "No instance found on this machine."));
+      list.append(el("div", {class: "panel muted"}, {{ _("No instance found on this machine.") | tojson }}));
       return;
     }
     found.forEach((item, i) => {
       if (item.error) {
-        list.append(el("div", {class: "panel found-item"}, el("span", {class: "error"}, `${item.type_label}: ${item.error}`)));
+        list.append(el("div", {class: "panel found-item"}, el("span", {class: "error"}, `${item.type_label}: ${tx(item.error)}`)));
         return;
       }
       const usable = !item.skip && !item.known;
@@ -64,27 +70,27 @@ Nothing on the machine is changed.</p>
       for (let n = 2; taken.has(name); n++) name = `${item.name}_${n}`;
       const box = el("div", {class: "panel found-item" + (usable ? "" : " off"), "data-i": i});
       const head = el("h2", {},
-        el("input", {type: "checkbox", "data-k": "use", checked: usable, disabled: !usable, "aria-label": "Add"}),
+        el("input", {type: "checkbox", "data-k": "use", checked: usable, disabled: !usable, "aria-label": {{ _("Add") | tojson }}}),
         el("span", {}, `${item.type_label} · ${item.label}`),
-        el("span", {class: "muted"}, item.facts.find((f) => f[0] === "State")?.[1] || ""));
-      if (item.known) head.append(el("span", {class: "badge active"}, `already ${item.known}`));
-      if (item.skip) head.append(el("span", {class: "badge draft"}, `skipped: ${item.skip}`));
+        el("span", {class: "muted"}, tx(item.facts.find((f) => f[0] === "State")?.[1] || "")));
+      if (item.known) head.append(el("span", {class: "badge ok"}, {{ _("already {name}") | tojson }}.replace("{name}", item.known)));
+      if (item.skip) head.append(el("span", {class: "badge warn"}, {{ _("skipped: {reason}") | tojson }}.replace("{reason}", tx(item.skip))));
       box.append(head);
       const facts = el("dl");
       for (const [label, value] of item.facts) {
-        if (label !== "State") facts.append(el("dt", {}, label), el("dd", {class: "mono"}, value));
+        if (label !== "State") facts.append(el("dt", {}, tx(label)), el("dd", {class: "mono"}, value));
       }
       if (item.instance.repositories) {
-        facts.append(el("dt", {}, "Repositories"),
-          el("dd", {class: "mono"}, item.instance.repositories.map((r) => `${r.name} (${r.branch || "no branch"})`).join(", ") || "none"));
+        facts.append(el("dt", {}, {{ _("Repositories") | tojson }}),
+          el("dd", {class: "mono"}, item.instance.repositories.map((r) => `${r.name} (${r.branch || {{ _("no branch") | tojson }}})`).join(", ") || {{ _("none") | tojson }}));
       }
       box.append(facts);
-      if (item.notes.length) box.append(el("ul", {}, ...item.notes.map((n) => el("li", {}, n))));
+      if (item.notes.length) box.append(el("ul", {}, ...item.notes.map((n) => el("li", {}, tx(n)))));
       if (usable) {
-        const select = el("select", {"data-k": "role", "aria-label": "Role"}, ...roles.map((r) => new Option(r, r)));
+        const select = el("select", {"data-k": "role", "aria-label": {{ _("Role") | tojson }}}, ...roles.map((r) => new Option(tx(r), r)));
         box.append(el("div", {class: "actions", style: "margin: 0"},
-          el("label", {}, "Server name ", el("input", {type: "text", class: "mono", "data-k": "name", value: name, required: true})),
-          el("label", {}, "Role ", select)));
+          el("label", {}, {{ _("Server name") | tojson }} + " ", el("input", {type: "text", class: "mono", "data-k": "name", value: name, required: true})),
+          el("label", {}, {{ _("Role") | tojson }} + " ", select)));
       }
       list.append(box);
     });
@@ -93,11 +99,11 @@ Nothing on the machine is changed.</p>
 
   document.getElementById("search").addEventListener("click", async (ev) => {
     const button = ev.currentTarget;
-    errorBox.hidden = true; button.disabled = true; status.textContent = "Searching…";
+    errorBox.hidden = true; button.disabled = true; status.textContent = {{ _("Searching…") | tojson }};
     const resp = await fetch(`${prefix}/api/servers/discover`).catch(() => null);
     const data = resp ? await resp.json().catch(() => ({})) : {};
     button.disabled = false; status.textContent = "";
-    if (!resp || !resp.ok) return fail(data.error || data.detail || (resp ? "Error " + resp.status : "OmniaCLI cannot be reached"));
+    if (!resp || !resp.ok) return fail(data.error || data.detail || (resp ? {{ _("Error {status}") | tojson }}.replace("{status}", resp.status) : {{ _("OmniaCLI cannot be reached") | tojson }}));
     render(data);
   });
 
@@ -110,17 +116,17 @@ Nothing on the machine is changed.</p>
       items.push({name: box.querySelector('[data-k="name"]').value.trim(), role: box.querySelector('[data-k="role"]').value,
                   type: item.type, instance: item.instance});
     }
-    if (!items.length) return fail("Choose at least one instance");
+    if (!items.length) return fail({{ _("Choose at least one instance") | tojson }});
     save.disabled = true;
     const resp = await fetch(`${prefix}/api/servers/discover`, {method: "POST", headers: {"Content-Type": "application/json"},
                                                                 body: JSON.stringify({items})}).catch(() => null);
     const data = resp ? await resp.json().catch(() => ({})) : {};
     save.disabled = false;
-    if (!resp || !resp.ok) return fail(data.error || data.detail || (resp ? "Error " + resp.status : "OmniaCLI cannot be reached"));
-    list.replaceChildren(el("div", {class: "panel"}, el("p", {}, "Drafts created: open each one to complete it."),
+    if (!resp || !resp.ok) return fail(data.error || data.detail || (resp ? {{ _("Error {status}") | tojson }}.replace("{status}", resp.status) : {{ _("OmniaCLI cannot be reached") | tojson }}));
+    list.replaceChildren(el("div", {class: "panel"}, el("p", {}, {{ _("Drafts created: open each one to complete it.") | tojson }}),
       el("ul", {}, ...data.created.map((c) => el("li", {},
         el("a", {href: `${prefix}/config/${encodeURIComponent(c.name)}/edit`}, c.name),
-        c.error ? el("span", {class: "muted"}, ` · incomplete: ${c.error}`) : null)))));
+        c.error ? el("span", {class: "muted"}, " · " + {{ _("incomplete: {error}") | tojson }}.replace("{error}", tx(c.error))) : null)))));
     save.hidden = true;
   });
 })();

@@ -1,44 +1,62 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
 {% extends "base.html" %}
-{% block title %}{{ job.title }} · OmniaCLI{% endblock %}
+{% block title %}{{ tr(job.title) }} · OmniaCLI{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
 {% set ns = namespace(servers=[]) %}
 {% for key in job.instances %}{% set name = key.split("/")[0] %}{% if name not in ns.servers %}{% set ns.servers = ns.servers + [name] %}{% endif %}{% endfor %}
 {% if ns.servers | length == 1 and ns.servers[0] not in live %}
-  {{ crumbs([("Jobs", "/jobs"), (ns.servers[0], "/jobs?server=" ~ (ns.servers[0] | urlencode)), (job.title, None)]) }}
+  {{ crumbs([(_("Jobs"), "/jobs"), (ns.servers[0], "/jobs?server=" ~ (ns.servers[0] | urlencode)), (tr(job.title), None)]) }}
 {% elif ns.servers | length == 1 %}
   {% set name = ns.servers[0] %}
   {% set view = job.instances[0].split("/")[1] if job.instances | length == 1 else "both" %}
-  {{ crumbs([("Dashboard", "/"), (name, "/servers/" ~ name),
-             ({"production": "Production", "test": "Test", "both": "Both"}[view], "/servers/" ~ name ~ "?view=" ~ view),
-             (job.title, None)]) }}
+  {{ crumbs([(_("Dashboard"), "/"), (name, "/servers/" ~ name),
+             ({"production": _("production") | capitalize, "test": _("test") | capitalize, "both": _("Both")}[view], "/servers/" ~ name ~ "?view=" ~ view),
+             (tr(job.title), None)]) }}
 {% else %}
-  {{ crumbs([("Jobs", "/jobs"), (job.title, None)]) }}
+  {{ crumbs([(_("Jobs"), "/jobs"), (tr(job.title), None)]) }}
 {% endif %}
 {% endblock %}
 {% block content %}
 {% from "_icons.html" import runner %}
 {% from "_console.html" import logbox, console_script, JOB_TAGS with context %}
-<h1 style="overflow-wrap: anywhere">{{ job.title }}</h1>
+{% set states = {"queued": _("queued"), "running": _("running"), "success": _("success"), "failed": _("failed"),
+                 "interrupted": _("interrupted"), "stopped": _("stopped")} %}
+{% set texts = {"queued": _("Queued: waiting for another job on the same instance"), "running": _("Running…"),
+                "interrupted": _("Interrupted: OmniaCLI stopped while it ran"), "stopped": _("Stopped by an administrator"),
+                "failed": _("Failed: see the error and the log below")} %}
+<div class="page-head">
+  <div>
+    <h1 style="overflow-wrap: anywhere">{{ tr(job.title) }}</h1>
+    <p>{{ _("A job of OmniaCLI: its state, its steps and its log, live while it runs.") }}</p>
+  </div>
+  {% if is_admin and job.status in ("queued", "running") %}
+  <div class="actions" style="margin: 0">
+    <form method="post" action="{{ prefix }}/jobs/{{ job.id }}/stop" id="stop-form"
+          onsubmit="return confirm({{ _('Stop this job? Its program is ended (SIGTERM, SIGKILL after 10 s); what the job did before stays done, a step cut halfway stays halfway.') | tojson | forceescape }})">
+      <button class="danger btn-stop">{{ _("Stop job") }}</button>
+    </form>
+  </div>
+  {% endif %}
+</div>
 {# the job's state at a glance: a runner while it runs, a thumbs up when it
    succeeds, a danger sign when it fails #}
 <div class="job-state" id="job-state" data-status="{{ job.status }}" role="status" aria-live="polite">
   <div class="job-running">
     {{ runner() }}
-    <span class="job-state-text">{{ "Queued: waiting for another job on the same instance" if job.status == "queued" else "Running…" }}</span>
+    <span class="job-state-text">{{ texts.queued if job.status == "queued" else texts.running }}</span>
   </div>
   <div class="job-done">
     <svg class="thumb" viewBox="0 0 24 24" aria-hidden="true">
       <path d="M2 10h4v11H2zM8 21h9.2c.9 0 1.6-.6 1.9-1.4l2.4-7.2c.4-1.3-.6-2.6-1.9-2.6H14l1-4.6c.2-1-.3-2-1.2-2.4-.5-.2-1.1 0-1.4.4L8 9.6z"/>
     </svg>
-    <span class="job-state-text">Done: the job succeeded</span>
+    <span class="job-state-text">{{ _("Done: the job succeeded") }}</span>
   </div>
   <div class="job-failed">
     <svg class="danger-sign" viewBox="0 0 24 24" aria-hidden="true">
       <path d="M12 2.5 1.5 21h21z" stroke-linejoin="round"/>
       <path class="danger-mark" d="M12 9v5.5M12 17.2v.3" stroke-linecap="round"/>
     </svg>
-    <span class="job-state-text">{{ {"interrupted": "Interrupted: OmniaCLI stopped while it ran", "stopped": "Stopped by an administrator"}.get(job.status, "Failed: see the error and the log below") }}</span>
+    <span class="job-state-text">{{ texts.get(job.status, texts.failed) if job.status in ("interrupted", "stopped") else texts.failed }}</span>
   </div>
 </div>
 {# the steps of a job that has them (result.progress: a copy from a link, a backup for
@@ -90,28 +108,23 @@
 }
 </style>
 <div class="steps" id="steps" hidden aria-live="polite"></div>
-{% if is_admin and job.status in ("queued", "running") %}
-<form method="post" action="{{ prefix }}/jobs/{{ job.id }}/stop" id="stop-form" class="actions"
-      onsubmit="return confirm('Stop this job? Its program is ended (SIGTERM, SIGKILL after 10 s); what the job did before stays done, a step cut halfway stays halfway.')">
-  <button class="btn-stop">Stop job</button>
-</form>
-{% endif %}
-<div class="panel">
+<section class="panel">
   <dl>
-    <dt>Status</dt><dd class="status {{ job.status }}" id="status">{{ job.status }}</dd>
-    <dt>Started by</dt><dd>{{ job.source }}</dd>
-    <dt>Instances</dt><dd>{{ job.instances | join(", ") }}</dd>
-    <dt>Created</dt><dd class="mono">{{ job.created }}</dd>
-    <dt>Finished</dt><dd class="mono" id="finished">{{ job.finished or "" }}</dd>
-    <dt>Duration</dt><dd id="duration">{{ job.duration }}</dd>
-    <dt>Error</dt><dd class="error" id="error">{{ job.error or "" }}</dd>
+    <dt>{{ _("Status") }}</dt><dd class="status {{ job.status }}" id="status">{{ states.get(job.status, job.status) }}</dd>
+    <dt>{{ _("Started by") }}</dt><dd>{{ tr(job.source) }}</dd>
+    <dt>{{ _("Instances") }}</dt><dd class="mono">{{ job.instances | join(", ") }}</dd>
+    <dt>{{ _("Created") }}</dt><dd class="mono muted">{{ job.created }}</dd>
+    <dt>{{ _("Finished") }}</dt><dd class="mono muted" id="finished">{{ job.finished or "" }}</dd>
+    <dt>{{ _("Duration") }}</dt><dd id="duration">{{ job.duration }}</dd>
+    <dt>{{ _("Error") }}</dt><dd class="error" id="error" data-raw="{{ job.error or '' }}">{{ tr(job.error) }}</dd>
   </dl>
   <p id="download" hidden></p>
   <div id="log">{{ logbox("job", JOB_TAGS, "60vh") }}</div>
-</div>
+</section>
 {{ console_script() }}
 <script>
 (function () {
+  const STATES = {{ states | tojson }}, TEXTS = {{ texts | tojson }};
   const log = OmniaConsole.log(document.querySelector("#log .console-box"), OmniaConsole.jobLines(), 0);
   let next = 0;
   async function poll() {
@@ -125,11 +138,13 @@
     log.add(data.lines);
     next = data.next;
     const st = document.getElementById("status");
-    st.textContent = data.status; st.className = "status " + data.status;
+    st.textContent = STATES[data.status] || data.status; st.className = "status " + data.status;
     showState(data.status);
     document.getElementById("finished").textContent = data.finished || "";
     document.getElementById("duration").textContent = data.duration || "";
-    document.getElementById("error").textContent = data.error || "";
+    // the error as the page drew it (translated) while the job's own text is the same
+    const err = document.getElementById("error");
+    if ((data.error || "") !== err.dataset.raw) { err.textContent = data.error || ""; err.dataset.raw = data.error || ""; }
     if ({{ can_act | tojson }} && data.status === "success" && data.result && data.result.download) offerDownload(data.result);
     if (data.result && data.result.progress) showSteps(data.result.progress, data.status);
     const done = ["success", "failed", "interrupted", "stopped"].includes(data.status);
@@ -143,9 +158,10 @@
     const box = document.getElementById("job-state");
     box.dataset.status = "failed";
     box.querySelector(".job-failed .job-state-text").textContent =
-      `This job can no longer be read here (${code === 404 ? "it is gone" : "not open to you any more"}): its state is unknown`;
+      code === 404 ? {{ _("This job can no longer be read here (it is gone): its state is unknown") | tojson }}
+      : {{ _("This job can no longer be read here (not open to you any more): its state is unknown") | tojson }};
     const st = document.getElementById("status");
-    st.textContent = "unknown"; st.className = "status";
+    st.textContent = {{ _("unknown") | tojson }}; st.className = "status";
   }
   // the animated state: changed only when the status changes, so each
   // animation plays once
@@ -153,10 +169,7 @@
     const box = document.getElementById("job-state");
     if (box.dataset.status === status) return;
     box.dataset.status = status;
-    const text = {queued: "Queued: waiting for another job on the same instance", running: "Running…",
-                  interrupted: "Interrupted: OmniaCLI stopped while it ran",
-                  stopped: "Stopped by an administrator",
-                  failed: "Failed: see the error and the log below"}[status];
+    const text = TEXTS[status];
     if (text) box.querySelector(status === "queued" || status === "running" ? ".job-running .job-state-text"
                                 : ".job-failed .job-state-text").textContent = text;
   }
@@ -209,7 +222,7 @@
         lastBytes = {done, t: now};
         bar.className = "step-bar" + (state === "active" ? (total ? " moving" : " unknown") : "");
         if (total) fill.style.width = Math.min(100, done / total * 100).toFixed(1) + "%";
-        const left = total && speed > 0 ? ` · ${clock((total - done) / speed)} left` : "";
+        const left = total && speed > 0 ? " · " + {{ _("{time} left") | tojson }}.replace("{time}", clock((total - done) / speed)) : "";
         figures.textContent = total
           ? `${sizeText(done)} / ${sizeText(total)} · ${Math.floor(done / total * 100)}% · ${sizeText(speed)}/s${left}`
           : `${sizeText(done)} · ${sizeText(speed)}/s`;
@@ -243,7 +256,7 @@
     const b = result.size;
     const size = b >= 1073741824 ? (b / 1073741824).toFixed(2) + " GiB"
       : b >= 1048576 ? (b / 1048576).toFixed(1) + " MiB" : Math.max(1, Math.round(b / 1024)) + " KiB";
-    a.className = "button"; a.textContent = `Download ${result.file} (${size})`;
+    a.className = "button primary"; a.textContent = {{ _("Download {file} ({size})") | tojson }}.replace("{file}", result.file).replace("{size}", size);
     box.appendChild(a); box.hidden = false;
     const params = new URLSearchParams(location.search);
     if (params.get("download") === "1") {

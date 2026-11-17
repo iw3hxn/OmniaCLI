@@ -1,372 +1,234 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
 {% extends "base.html" %}
-{% block title %}Help · OmniaCLI{% endblock %}
+{% block title %}{{ _("Help") }} · OmniaCLI{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
-{{ crumbs([("Dashboard", "/"), ("Help", None)]) }}
+{{ crumbs([(_("Dashboard"), "/"), (_("Help"), None)]) }}
 {% endblock %}
 {% block content %}
 <div class="help">
-<h1>Help</h1>
-<p class="muted">How to operate another OmniaCLI through a <strong>link</strong>, how to connect an AI client to the
-<strong>MCP server</strong>, and what every field of the server form means. The addresses, names and paths below are
-examples: replace them with yours. The steps marked <em>admin</em> need the admin role on the instance where they are done.</p>
+<div class="page-head">
+  <div>
+    <h1>{{ _("Help") }}</h1>
+    <p>{{ _("How to operate another OmniaCLI through a <strong>link</strong>, how to connect an AI client to the <strong>MCP server</strong>, and what every field of the server form means. The addresses, names and paths below are examples: replace them with yours. The steps marked <em>admin</em> need the admin role on the instance where they are done.") | safe }}</p>
+  </div>
+</div>
 <nav class="panel help-toc">
-  <strong>Contents</strong>
+  <strong>{{ _("Contents") }}</strong>
   <ol>
-    <li><a href="#links">Links to other OmniaCLI instances</a></li>
-    <li><a href="#mcp">The MCP server</a></li>
-    <li><a href="#servers">Adding a server: the fields and the configurations</a></li>
+    <li>{{ _('<a href="#links">Links to other OmniaCLI instances</a>') | safe }}</li>
+    <li>{{ _('<a href="#mcp">The MCP server</a>') | safe }}</li>
+    <li>{{ _('<a href="#servers">Adding a server: the fields and the configurations</a>') | safe }}</li>
   </ol>
 </nav>
 
 <section id="links">
-<h2>1. Links to other OmniaCLI instances</h2>
-<p>A link lets the users of <strong>your</strong> OmniaCLI see and operate the servers of <strong>another</strong>
-OmniaCLI (a customer's machine, for example) from your own pages. Below, <em>the remote</em> is the instance you want
-to reach, <em>your instance</em> is the one you log in to.</p>
+<h2>{{ _("1. Links to other OmniaCLI instances") | safe }}</h2>
+<p>{{ _("A link lets the users of <strong>your</strong> OmniaCLI see and operate the servers of <strong>another</strong> OmniaCLI (a customer's machine, for example) from your own pages. Below, <em>the remote</em> is the instance you want to reach, <em>your instance</em> is the one you log in to.") | safe }}</p>
 
-<h3>What a link gives you</h3>
+<h3>{{ _("What a link gives you") | safe }}</h3>
 <ul>
-  <li>The remote's live servers on your Dashboard, as <span class="mono">&lt;link&gt; › &lt;server&gt;</span>, with
-    their load, state and Start / Stop / Restart buttons. A link that does not answer is shown as an error above the
-    list.</li>
-  <li>The remote's pages under <span class="mono">/links/&lt;link&gt;/</span> on your instance, with a bar that says
-    which instance you are on. Every action runs on the remote and is recorded there as
-    <span class="mono">manual: link &lt;its name for you&gt; (&lt;your user&gt;)</span>.</li>
-  <li>You act there with the <strong>lower</strong> of your role on your instance and the link's role on the remote.</li>
-  <li>Only users who log in with a password use links; MCP tokens do not.</li>
-  <li>Draft servers of the remote are not listed: a link shows its active servers only.</li>
+  <li>{{ _("The remote's live servers on your Dashboard, as <code>&lt;link&gt; › &lt;server&gt;</code>, with their load, state and Start / Stop / Restart buttons. A link that does not answer is shown as an error above the list.") | safe }}</li>
+  <li>{{ _("The remote's pages under <code>/links/&lt;link&gt;/</code> on your instance, with a bar that says which instance you are on. Every action runs on the remote and is recorded there as <code>manual: link &lt;its name for you&gt; (&lt;your user&gt;)</code>.") | safe }}</li>
+  <li>{{ _("You act there with the <strong>lower</strong> of your role on your instance and the link's role on the remote.") | safe }}</li>
+  <li>{{ _("Only users who log in with a password use links; MCP tokens do not.") | safe }}</li>
+  <li>{{ _("Draft servers of the remote are not listed: a link shows its active servers only.") | safe }}</li>
 </ul>
 
-<h3>Step 1 — on the remote: create the link token <em>(admin)</em></h3>
+<h3>{{ _("Step 1 — on the remote: create the link token <em>(admin)</em>") | safe }}</h3>
 <ol>
-  <li>Open the remote's <strong>Users</strong> page, section <strong>Links</strong>.</li>
-  <li>Name the link after who connects, for example <span class="mono">omniasolutions</span>, and choose its role:
-    <strong>user</strong> (watch, restart, start and stop Odoo), <strong>developer</strong> (also pull, update,
-    backup, pip) or <strong>admin</strong> (everything).</li>
-  <li>Press <strong>Create link token</strong> and copy the token. It is shown <strong>only once</strong>; the remote
-    keeps only its hash. If it is lost, revoke the link and create a new one.</li>
+  <li>{{ _("Open the remote's <strong>Users</strong> page, section <strong>Links</strong>.") | safe }}</li>
+  <li>{{ _("Name the link after who connects, for example <code>omniasolutions</code>, and choose its role: <strong>user</strong> (watch, restart, start and stop Odoo), <strong>developer</strong> (also pull, update, backup, pip) or <strong>admin</strong> (everything).") | safe }}</li>
+  <li>{{ _("Press <strong>Create link token</strong> and copy the token. It is shown <strong>only once</strong>; the remote keeps only its hash. If it is lost, revoke the link and create a new one.") | safe }}</li>
 </ol>
-<p>Without the web interface, on the remote's shell:</p>
+<p>{{ _("Without the web interface, on the remote's shell:") | safe }}</p>
 <pre class="console mono">omniacli new-link-token omniasolutions --role developer</pre>
-<p>It prints the token and a line to add under <span class="mono">auth.links</span> of the main configuration
-(<span class="mono">/etc/omniacli/omniacli.yaml</span> for the package); restart OmniaCLI afterwards
-(<span class="mono">sudo systemctl restart omniacli</span>): the main configuration is read at startup only.</p>
+<p>{{ _("It prints the token and a line to add under <code>auth.links</code> of the main configuration (<code>/etc/omniacli/omniacli.yaml</code> for the package); restart OmniaCLI afterwards (<code>sudo systemctl restart omniacli</code>): the main configuration is read at startup only.") | safe }}</p>
 
-<h3>Step 2 — on your machine: trust the remote's certificate</h3>
-<p>Your instance checks the remote's HTTPS certificate. It must name the host of the URL in its
-<em>subjectAltName</em>: the IP address when the URL uses an IP, the DNS name otherwise.</p>
+<h3>{{ _("Step 2 — on your machine: trust the remote's certificate") | safe }}</h3>
+<p>{{ _("Your instance checks the remote's HTTPS certificate. It must name the host of the URL in its <em>subjectAltName</em>: the IP address when the URL uses an IP, the DNS name otherwise.") | safe }}</p>
 <ul>
-  <li><strong>A certificate from a public CA</strong> (Let's Encrypt and the like): nothing to do, leave the CA file
-    empty.</li>
-  <li><strong>A self-signed certificate, or one from the customer's own CA</strong>: save that certificate (or the CA's)
-    on your machine and give its path as the link's <strong>CA file</strong>.</li>
+  <li>{{ _("<strong>A certificate from a public CA</strong> (Let's Encrypt and the like): nothing to do, leave the CA file empty.") | safe }}</li>
+  <li>{{ _("<strong>A self-signed certificate, or one from the customer's own CA</strong>: save that certificate (or the CA's) on your machine and give its path as the link's <strong>CA file</strong>.") | safe }}</li>
 </ul>
-<p>To save a self-signed certificate (replace host and port):</p>
+<p>{{ _("To save a self-signed certificate (replace host and port):") | safe }}</p>
 <pre class="console mono">openssl s_client -connect 192.0.2.10:8443 &lt;/dev/null 2&gt;/dev/null \
   | openssl x509 &gt; /etc/omniacli/192.0.2.10.pem
 openssl x509 -in /etc/omniacli/192.0.2.10.pem -noout -subject -ext subjectAltName -fingerprint -sha256</pre>
-<p><strong>Check the fingerprint</strong> against the one read on the remote itself
-(<span class="mono">sudo openssl x509 -in &lt;nginx certificate&gt; -noout -fingerprint -sha256</span>): what
-<span class="mono">openssl s_client</span> downloads is whatever answers on that address. The file must be readable by
-the user that runs OmniaCLI (<span class="mono">omniacli</span> for the package).</p>
+<p>{{ _("<strong>Check the fingerprint</strong> against the one read on the remote itself (<code>sudo openssl x509 -in &lt;nginx certificate&gt; -noout -fingerprint -sha256</code>): what <code>openssl s_client</code> downloads is whatever answers on that address. The file must be readable by the user that runs OmniaCLI (<code>omniacli</code> for the package).") | safe }}</p>
 
-<h3>Step 3 — on your instance: add the link <em>(admin)</em></h3>
-<p>Open the <strong>Links</strong> page and fill in the last row:</p>
+<h3>{{ _("Step 3 — on your instance: add the link <em>(admin)</em>") | safe }}</h3>
+<p>{{ _("Open the <strong>Links</strong> page and fill in the last row:") | safe }}</p>
 <table class="help-table">
-  <tr><th>Field</th><th>Value</th></tr>
-  <tr><td>Link</td><td>a name: letters, digits, <span class="mono">. _ -</span>. It becomes part of the URLs
-    (<span class="mono">/links/&lt;name&gt;/</span>), so the customer's name is a good choice.</td></tr>
-  <tr><td>URL</td><td>the remote's address, <span class="mono">https://host[:port][/path]</span>, for example
-    <span class="mono">https://192.0.2.10:8443</span>. An <span class="mono">http://</span> URL is accepted but the
-    token travels in clear: use it only through a VPN or an SSH tunnel.</td></tr>
-  <tr><td>Token</td><td>the token of step 1.</td></tr>
-  <tr><td>CA file</td><td>empty for a public CA, otherwise the path of step 2.</td></tr>
+  <tr><th>{{ _("Field") | safe }}</th><th>{{ _("Value") | safe }}</th></tr>
+  <tr><td>{{ _("Link") | safe }}</td><td>{{ _("a name: letters, digits, <code>. _ -</code>. It becomes part of the URLs (<code>/links/&lt;name&gt;/</code>), so the customer's name is a good choice.") | safe }}</td></tr>
+  <tr><td>URL</td><td>{{ _("the remote's address, <code>https://host[:port][/path]</code>, for example <code>https://192.0.2.10:8443</code>. An <code>http://</code> URL is accepted but the token travels in clear: use it only through a VPN or an SSH tunnel.") | safe }}</td></tr>
+  <tr><td>Token</td><td>{{ _("the token of step 1.") | safe }}</td></tr>
+  <tr><td>{{ _("CA file") | safe }}</td><td>{{ _("empty for a public CA, otherwise the path of step 2.") | safe }}</td></tr>
 </table>
-<p>Press <strong>Add link</strong>, then <strong>Test link</strong>: it shows the remote's OmniaCLI version and the role
-you get there. The links and their tokens are saved in the links file of your instance, readable by its owner only.</p>
+<p>{{ _("Press <strong>Add link</strong>, then <strong>Test link</strong>: it shows the remote's OmniaCLI version and the role you get there. The links and their tokens are saved in the links file of your instance, readable by its owner only.") | safe }}</p>
 
-<h3>When it does not work</h3>
+<h3>{{ _("When it does not work") | safe }}</h3>
 <table class="help-table">
-  <tr><th>What you see</th><th>Why</th></tr>
-  <tr><td>the other instance refused the token</td><td>wrong or revoked token: create a new one on the remote and
-    paste it in the Token field (an empty Token field keeps the saved one).</td></tr>
-  <tr><td>cannot connect (… certificate verify failed …)</td><td>the certificate is not trusted (step 2), or it does not
-    name the host of the URL.</td></tr>
-  <tr><td>cannot connect / no answer in time</td><td>address, port, firewall, or the remote is down.</td></tr>
-  <tr><td>no OmniaCLI with links there</td><td>the URL reaches something else: check host, port and path.</td></tr>
-  <tr><td>"Not available: that OmniaCLI is older"</td><td>the remote runs an older OmniaCLI: its servers are listed,
-    but not the newer parts of the Dashboard (state, buttons, machine charts, disks). Update it.</td></tr>
+  <tr><th>{{ _("What you see") | safe }}</th><th>{{ _("Why") | safe }}</th></tr>
+  <tr><td>the other instance refused the token</td><td>{{ _("wrong or revoked token: create a new one on the remote and paste it in the Token field (an empty Token field keeps the saved one).") | safe }}</td></tr>
+  <tr><td>cannot connect (… certificate verify failed …)</td><td>{{ _("the certificate is not trusted (step 2), or it does not name the host of the URL.") | safe }}</td></tr>
+  <tr><td>cannot connect / no answer in time</td><td>{{ _("address, port, firewall, or the remote is down.") | safe }}</td></tr>
+  <tr><td>no OmniaCLI with links there</td><td>{{ _("the URL reaches something else: check host, port and path.") | safe }}</td></tr>
+  <tr><td>{{ _('"Not available: that OmniaCLI is older"') | safe }}</td><td>{{ _("the remote runs an older OmniaCLI: its servers are listed, but not the newer parts of the Dashboard (state, buttons, machine charts, disks). Update it.") | safe }}</td></tr>
 </table>
-<p>Behind nginx, the remote must pass on the request headers <span class="mono">Authorization</span> and
-<span class="mono">X-OmniaCLI-*</span>; nginx passes request headers on by default.</p>
+<p>{{ _("Behind nginx, the remote must pass on the request headers <code>Authorization</code> and <code>X-OmniaCLI-*</code>; nginx passes request headers on by default.") | safe }}</p>
 
-<h3>Removing a link</h3>
-<p>On the remote, <strong>Revoke</strong> it on the Users page: it stops working at once. On your instance,
-<strong>Delete</strong> it on the Links page.</p>
+<h3>{{ _("Removing a link") | safe }}</h3>
+<p>{{ _("On the remote, <strong>Revoke</strong> it on the Users page: it stops working at once. On your instance, <strong>Delete</strong> it on the Links page.") | safe }}</p>
 </section>
 
 <section id="mcp">
-<h2>2. The MCP server</h2>
-<p>OmniaCLI serves an MCP endpoint (streamable HTTP) for AI clients such as Claude Code:</p>
+<h2>{{ _("2. The MCP server") | safe }}</h2>
+<p>{{ _("OmniaCLI serves an MCP endpoint (streamable HTTP) for AI clients such as Claude Code:") | safe }}</p>
 <pre class="console mono">{{ base_url }}/mcp</pre>
-<p>A client authenticates with a <strong>bearer token</strong>, never with a user's password. Every call is listed in
-the <strong>Access log</strong> (Users page, admins), with the token, the address and the tool.</p>
+<p>{{ _("A client authenticates with a <strong>bearer token</strong>, never with a user's password. Every call is listed in the <strong>Access log</strong> (Users page, admins), with the token, the address and the tool.") | safe }}</p>
 
-<h3>Token roles</h3>
+<h3>{{ _("Token roles") | safe }}</h3>
 <table class="help-table">
-  <tr><th>Role</th><th>The client may</th></tr>
-  <tr><td>user</td><td>read: <span class="mono">list_servers</span>, <span class="mono">server_status</span>,
-    <span class="mono">read_log</span>, <span class="mono">list_jobs</span>, <span class="mono">get_job</span>,
-    <span class="mono">pending_updates</span>, <span class="mono">dev_setup</span></td></tr>
-  <tr><td>developer</td><td>also <span class="mono">update_test</span> (git pull, update of the changed modules and
-    restart of a <strong>test</strong> instance) and <span class="mono">backup_test</span>, and download backups</td></tr>
-  <tr><td>admin</td><td>also <span class="mono">backup</span> and <span class="mono">list_backups</span> of any instance
-    (production too), <span class="mono">read_server</span> (a server's whole configuration) and
-    <span class="mono">add_draft_server</span> (a new server, always a draft). With an admin token,
-    <span class="mono">dev_setup</span>, <span class="mono">backup</span> and <span class="mono">list_backups</span> also
-    reach the draft servers.</td></tr>
+  <tr><th>{{ _("Role") | safe }}</th><th>{{ _("The client may") | safe }}</th></tr>
+  <tr><td>{{ _("user") | safe }}</td><td>{{ _("read: <code>list_servers</code>, <code>server_status</code>, <code>read_log</code>, <code>list_jobs</code>, <code>get_job</code>, <code>pending_updates</code>, <code>dev_setup</code>") | safe }}</td></tr>
+  <tr><td>{{ _("developer") | safe }}</td><td>{{ _("also <code>update_test</code> (git pull, update of the changed modules and restart of a <strong>test</strong> instance) and <code>backup_test</code>, and download backups") | safe }}</td></tr>
+  <tr><td>{{ _("admin") | safe }}</td><td>{{ _("also <code>backup</code> and <code>list_backups</code> of any instance (production too), <code>read_server</code> (a server's whole configuration) and <code>add_draft_server</code> (a new server, always a draft). With an admin token, <code>dev_setup</code>, <code>backup</code> and <code>list_backups</code> also reach the draft servers.") | safe }}</td></tr>
 </table>
-<p>A client sees only the tools of its role. A token saved without a role (before roles existed) is a
-<strong>developer</strong>. The role can be changed at any time on the Users page; it applies to the next call.
-No token makes a draft server live: that is <strong>Test &amp; activate</strong> on the web interface, by an admin.</p>
+<p>{{ _("A client sees only the tools of its role. A token saved without a role (before roles existed) is a <strong>developer</strong>. The role can be changed at any time on the Users page; it applies to the next call. No token makes a draft server live: that is <strong>Test &amp; activate</strong> on the web interface, by an admin.") | safe }}</p>
 
-<h3>Step 1 — create the token <em>(admin)</em></h3>
+<h3>{{ _("Step 1 — create the token <em>(admin)</em>") | safe }}</h3>
 <ol>
-  <li>Open the <strong>Users</strong> page, section <strong>MCP tokens</strong>.</li>
-  <li>Name it after the client, for example <span class="mono">dev-laptop</span>, choose its role and press
-    <strong>Create MCP token</strong>.</li>
-  <li>Copy the token: a string of about 43 letters, digits, <span class="mono">-</span> and
-    <span class="mono">_</span>. It is shown <strong>only once</strong>.</li>
+  <li>{{ _("Open the <strong>Users</strong> page, section <strong>MCP tokens</strong>.") | safe }}</li>
+  <li>{{ _("Name it after the client, for example <code>dev-laptop</code>, choose its role and press <strong>Create MCP token</strong>.") | safe }}</li>
+  <li>{{ _("Copy the token: a string of about 43 letters, digits, <code>-</code> and <code>_</code>. It is shown <strong>only once</strong>.") | safe }}</li>
 </ol>
-<p class="banner" style="border-color: var(--warn); color: var(--text)">The
-<span class="mono">sha256$…</span> value in the users file is the token's <strong>hash</strong>, not the token: the
-token cannot be recovered from it, and a client that sends it is refused. A lost token is revoked and created again.</p>
-<p>Without the web interface, on the server's shell:</p>
+<p class="banner warn">{{ _("The <code>sha256$…</code> value in the users file is the token's <strong>hash</strong>, not the token: the token cannot be recovered from it, and a client that sends it is refused. A lost token is revoked and created again.") | safe }}</p>
+<p>{{ _("Without the web interface, on the server's shell:") | safe }}</p>
 <pre class="console mono">omniacli new-token dev-laptop --role admin</pre>
-<p>It prints the token and a line to add under <span class="mono">auth.tokens</span> of the main configuration; restart
-OmniaCLI afterwards.</p>
+<p>{{ _("It prints the token and a line to add under <code>auth.tokens</code> of the main configuration; restart OmniaCLI afterwards.") | safe }}</p>
 
-<h3>Step 2 — add the server to the client</h3>
-<p>In Claude Code, on the machine of the client:</p>
+<h3>{{ _("Step 2 — add the server to the client") | safe }}</h3>
+<p>{{ _("In Claude Code, on the machine of the client:") | safe }}</p>
 <pre class="console mono">claude mcp add --scope user --transport http omniacli {{ base_url }}/mcp \
   --header "Authorization: Bearer &lt;token&gt;"</pre>
 <ul>
-  <li><span class="mono">--scope user</span> makes it available in every project; without it, it is registered for the
-    folder the command runs in only.</li>
-  <li>To replace it: <span class="mono">claude mcp remove omniacli</span> (in the same scope), then add it again.</li>
-  <li>Check with <span class="mono">claude mcp list</span>, or <span class="mono">/mcp</span> inside a session.</li>
-  <li>Over HTTPS with a self-signed certificate, the client must trust that certificate as well (step 2 of the
-    links); how depends on the client.</li>
+  <li>{{ _("<code>--scope user</code> makes it available in every project; without it, it is registered for the folder the command runs in only.") | safe }}</li>
+  <li>{{ _("To replace it: <code>claude mcp remove omniacli</code> (in the same scope), then add it again.") | safe }}</li>
+  <li>{{ _("Check with <code>claude mcp list</code>, or <code>/mcp</code> inside a session.") | safe }}</li>
+  <li>{{ _("Over HTTPS with a self-signed certificate, the client must trust that certificate as well (step 2 of the links); how depends on the client.") | safe }}</li>
 </ul>
 
-<h3>Downloading a backup</h3>
-<p><span class="mono">backup</span>, <span class="mono">backup_test</span> and <span class="mono">list_backups</span>
-answer with a <span class="mono">download</span> path. The zip (database dump and filestore) is an HTTP GET on that
-path with the same header:</p>
+<h3>{{ _("Downloading a backup") | safe }}</h3>
+<p>{{ _("<code>backup</code>, <code>backup_test</code> and <code>list_backups</code> answer with a <code>download</code> path. The zip (database dump and filestore) is an HTTP GET on that path with the same header:") | safe }}</p>
 <pre class="console mono">curl -fH "Authorization: Bearer &lt;token&gt;" -o backup.zip \
   {{ base_url }}/backups/&lt;server&gt;/&lt;role&gt;/&lt;file&gt;.zip</pre>
-<p>Add <span class="mono">--cacert &lt;certificate&gt;</span> for a self-signed certificate.</p>
+<p>{{ _("Add <code>--cacert &lt;certificate&gt;</code> for a self-signed certificate.") | safe }}</p>
 
-<h3>When it does not work</h3>
+<h3>{{ _("When it does not work") | safe }}</h3>
 <table class="help-table">
-  <tr><th>What you see</th><th>Why</th></tr>
-  <tr><td>HTTP 401, "Server rejected the configured Authorization header"</td><td>the client sends a wrong token: the
-    hash instead of the token, a part of it, or a revoked one. The Access log shows these calls as
-    <em>Failed login</em> through MCP.</td></tr>
-  <tr><td>"… needs an MCP token with role …"</td><td>the token's role is too low for that tool: change it on the Users
-    page.</td></tr>
-  <tr><td>"… is a draft: not live until Test &amp; activate …"</td><td>the tool works on active servers only; with an
-    admin token, <span class="mono">dev_setup</span>, <span class="mono">backup</span> and
-    <span class="mono">list_backups</span> reach drafts too.</td></tr>
-  <tr><td>"… is a draft saved incomplete: …"</td><td>the draft misses settings: complete it on the Servers page.</td></tr>
-  <tr><td>404 on <span class="mono">/mcp</span></td><td>OmniaCLI runs on Python older than 3.10, without the MCP
-    library. The package always installs a Python that has it.</td></tr>
+  <tr><th>{{ _("What you see") | safe }}</th><th>{{ _("Why") | safe }}</th></tr>
+  <tr><td>{{ _('HTTP 401, "Server rejected the configured Authorization header"') | safe }}</td><td>{{ _("the client sends a wrong token: the hash instead of the token, a part of it, or a revoked one. The Access log shows these calls as <em>Failed login</em> through MCP.") | safe }}</td></tr>
+  <tr><td>{{ _('"… needs an MCP token with role …"') | safe }}</td><td>{{ _("the token's role is too low for that tool: change it on the Users page.") | safe }}</td></tr>
+  <tr><td>{{ _('"… is a draft: not live until Test &amp; activate …"') | safe }}</td><td>{{ _("the tool works on active servers only; with an admin token, <code>dev_setup</code>, <code>backup</code> and <code>list_backups</code> reach drafts too.") | safe }}</td></tr>
+  <tr><td>{{ _('"… is a draft saved incomplete: …"') | safe }}</td><td>{{ _("the draft misses settings: complete it on the Servers page.") | safe }}</td></tr>
+  <tr><td>{{ _("404 on <code>/mcp</code>") | safe }}</td><td>{{ _("OmniaCLI runs on Python older than 3.10, without the MCP library. The package always installs a Python that has it.") | safe }}</td></tr>
 </table>
 </section>
 
 <section id="servers">
-<h2>3. Adding a server: the fields and the configurations</h2>
-<p>The <strong>Servers</strong> page (admins) lists every server, live or draft, with <strong>New server</strong>,
-<strong>Edit</strong>, <strong>Clone</strong> (the configuration only: no database, no files), <strong>Set to
-draft</strong> and <strong>Delete</strong> (the configuration only: databases and files are not touched). A server is a
-<strong>name</strong> and up to two <strong>instances</strong>, <em>production</em> and <em>test</em>: tick the ones
-it has, at least one.</p>
+<h2>{{ _("3. Adding a server: the fields and the configurations") | safe }}</h2>
+<p>{{ _("The <strong>Servers</strong> page (admins) lists every server, live or draft, with <strong>New server</strong>, <strong>Edit</strong>, <strong>Clone</strong> (the configuration only: no database, no files), <strong>Set to draft</strong> and <strong>Delete</strong> (the configuration only: databases and files are not touched). A server is a <strong>name</strong> and up to two <strong>instances</strong>, <em>production</em> and <em>test</em>: tick the ones it has, at least one.") | safe }}</p>
 
-<h3>Draft and live</h3>
+<h3>{{ _("Draft and live") | safe }}</h3>
 <ul>
-  <li><strong>Save as draft</strong> saves without any check, also incomplete. A draft is not live: it is not on the
-    Dashboard, has no actions and no auto update.</li>
-  <li><strong>Save, test &amp; activate</strong> (or <strong>Test &amp; activate</strong> on the Servers page) runs the
-    checks: config and paths readable, click-odoo scripts in the venv and Odoo importable, the database reachable,
-    every repository on its branch without local changes, the service found, sudo allowed, production and test on
-    separate databases and working copies, the backup folder writable. If they all pass, the server goes live; the dialog lists each check.
-    A database that does not exist yet, or an empty one, is only a warning: <strong>Start</strong> and <strong>Restart</strong> refuse it until a
-    backup is restored with <strong>Restore</strong> (admin): a zip from this computer, or one of the instance's backups; a production needs its database name typed.</li>
-  <li>On a live server, <strong>Test &amp; save</strong> saves the change only if every check passes, otherwise the
-    server stays as it was; <strong>Save as draft</strong> takes it offline.</li>
-  <li>A server with a running job cannot be edited or deleted. Every save keeps the previous servers file as
-    <span class="mono">.bak</span>.</li>
+  <li>{{ _("<strong>Save as draft</strong> saves without any check, also incomplete. A draft is not live: it is not on the Dashboard, has no actions and no auto update.") | safe }}</li>
+  <li>{{ _("<strong>Save, test &amp; activate</strong> (or <strong>Test &amp; activate</strong> on the Servers page) runs the checks: config and paths readable, click-odoo scripts in the venv and Odoo importable, the database reachable, every repository on its branch without local changes, the service found, sudo allowed, production and test on separate databases and working copies, the backup folder writable. If they all pass, the server goes live; the dialog lists each check. A database that does not exist yet, or an empty one, is only a warning: <strong>Start</strong> and <strong>Restart</strong> refuse it until a backup is restored with <strong>Restore</strong> (admin): a zip from this computer, or one of the instance's backups; a production needs its database name typed.") | safe }}</li>
+  <li>{{ _("On a live server, <strong>Test &amp; save</strong> saves the change only if every check passes, otherwise the server stays as it was; <strong>Save as draft</strong> takes it offline.") | safe }}</li>
+  <li>{{ _("A server with a running job cannot be edited or deleted. Every save keeps the previous servers file as <code>.bak</code>.") | safe }}</li>
 </ul>
 
-<h3>The server</h3>
+<h3>{{ _("The server") | safe }}</h3>
 <table class="help-table">
-  <tr><th>Field</th><th>Meaning</th></tr>
-  <tr><td>Name</td><td>letters, digits, <span class="mono">. _ -</span>, starting with a letter or a digit. It is part
-    of the URLs and of the backup folders, for example <span class="mono">CUSTOMER_V18</span>.</td></tr>
+  <tr><th>{{ _("Field") | safe }}</th><th>{{ _("Meaning") | safe }}</th></tr>
+  <tr><td>{{ _("Name") | safe }}</td><td>{{ _("letters, digits, <code>. _ -</code>, starting with a letter or a digit. It is part of the URLs and of the backup folders, for example <code>CUSTOMER_V18</code>.") | safe }}</td></tr>
 </table>
 
-<h3>Each instance</h3>
-<p>Fill in <strong>Odoo config file</strong> first and press <strong>Reload</strong>: OmniaCLI reads the database
-(<span class="mono">db_name</span>, or an exact <span class="mono">^name$</span> <span class="mono">dbfilter</span>),
-the log file (<span class="mono">logfile</span>) and the git repositories that hold the
-<span class="mono">addons_path</span> folders, with their branch and remote. What it cannot find is listed under the
-fields.</p>
+<h3>{{ _("Each instance") | safe }}</h3>
+<p>{{ _("Fill in <strong>Odoo config file</strong> first and press <strong>Reload</strong>: OmniaCLI reads the database (<code>db_name</code>, or an exact <code>^name$</code> <code>dbfilter</code>), the log file (<code>logfile</code>) and the git repositories that hold the <code>addons_path</code> folders, with their branch and remote. What it cannot find is listed under the fields.") | safe }}</p>
 <table class="help-table">
-  <tr><th>Field</th><th>Meaning</th></tr>
-  <tr><td>Database</td><td>the Odoo database of the instance: modules are updated and backups taken on it.</td></tr>
-  <tr><td>Odoo config file</td><td>the <span class="mono">odoo.conf</span> the instance runs with, for example
-    <span class="mono">/etc/odoo/customer-test.conf</span>.</td></tr>
-  <tr><td>Log file</td><td>the Odoo log shown on the Log page and read by <span class="mono">read_log</span>. With
-    restart type <em>process</em> it is set by OmniaCLI (Odoo's output, in its logs folder). With Docker Compose
-    there is none: the log is the output of the type's service, see below.</td></tr>
-  <tr><td>Venv bin</td><td>the <span class="mono">bin</span> folder of the virtualenv that runs this Odoo, for example
-    <span class="mono">/opt/odoo/venvs/odoo18/bin</span>. OmniaCLI runs <span class="mono">click-odoo-update</span> and
-    <span class="mono">click-odoo-backupdb</span> from it; <strong>pip requirements</strong> and <strong>pip
-    click-odoo</strong> install into it.</td></tr>
-  <tr><td>Claude folder</td><td>optional, development machines only: a folder of this computer. The instance's page then has a <strong>Claude</strong>
-    button: a shell of the user running OmniaCLI in that folder, that runs <span class="mono">claude</span> first and
-    stays open after it. Claude Code must be installed and logged in for that user.</td></tr>
-  <tr><td>Run as</td><td>the system user of the Odoo service (often <span class="mono">odoo</span>). The venv's
-    programs (update, backup, pip, checks) run as that user with <span class="mono">sudo -n -u</span>, so they reach the
-    database, the filestore and the venv as Odoo does. Empty: as the user running OmniaCLI. Git always runs as
-    OmniaCLI's user. Not with restart type <em>process</em>.</td></tr>
-  <tr><td>Database from link</td><td>optional: a link of the Links page, a server of that linked instance and its role
-    (for example <span class="mono">customer</span>, <span class="mono">erp</span>, production). The instance's page then has
-    <strong>Copy from link</strong>: a backup made there (new or already there) is downloaded into this instance's backups
-    and restored into its database, which is dropped first. A production needs the admin role and its database name
-    typed. Without a Database from link, or with a link no longer on the Links page, the button is there but
-    disabled, and its tooltip says what to set.</td></tr>
-  <tr><td>HTTP port</td><td>restart type <em>process</em> only: the port Odoo listens on, passed as
-    <span class="mono">--http-port</span> (<span class="mono">--xmlrpc-port</span> before Odoo 11), which wins over the
-    config. Empty: the port of the config. It applies at the next Start or Restart.</td></tr>
-  <tr><td>odoo-bin</td><td>the <span class="mono">odoo-bin</span> used by <strong>Update modules</strong> (a chosen
-    list of modules) and by restart type <em>process</em>. Empty: the first repository that has one.</td></tr>
-  <tr><td>Restart with</td><td>how Odoo is restarted, started and stopped: see the four configurations below.</td></tr>
-  <tr><td>Service name</td><td>the systemd unit or the init.d script, for example
-    <span class="mono">odoo-customer-test</span>; with Docker Compose, the project's folder, for example
-    <span class="mono">/srv/odooplm-19</span>.</td></tr>
-  <tr><td>Use sudo -n</td><td>run the service command through <span class="mono">sudo -n</span> (no password prompt:
-    sudoers must allow it, see below).</td></tr>
-  <tr><td>Update changed modules</td><td>after a pull, update the modules whose files changed
-    (<span class="mono">click-odoo-update</span>, which keeps a hash of every installed module in the database).</td></tr>
-  <tr><td>Auto update</td><td>check the remotes every <strong>Every (minutes)</strong>; when there are new commits,
-    pull, update the changed modules and restart. An Odoo someone stopped stays stopped.</td></tr>
-  <tr><td>Every (minutes)</td><td>the interval of the auto update check, 1 or more (default 10).</td></tr>
-  <tr><td>Time window</td><td><span class="mono">HH:MM-HH:MM</span>: the auto update runs only inside it; a window
-    may cross midnight (<span class="mono">20:00-06:00</span>). Empty: always.</td></tr>
+  <tr><th>{{ _("Field") | safe }}</th><th>{{ _("Meaning") | safe }}</th></tr>
+  <tr><td>Database</td><td>{{ _("the Odoo database of the instance: modules are updated and backups taken on it.") | safe }}</td></tr>
+  <tr><td>{{ _("Odoo config file") | safe }}</td><td>{{ _("the <code>odoo.conf</code> the instance runs with, for example <code>/etc/odoo/customer-test.conf</code>.") | safe }}</td></tr>
+  <tr><td>{{ _("Log file") | safe }}</td><td>{{ _("the Odoo log shown on the Log page and read by <code>read_log</code>. With restart type <em>process</em> it is set by OmniaCLI (Odoo's output, in its logs folder). With Docker Compose there is none: the log is the output of the type's service, see below.") | safe }}</td></tr>
+  <tr><td>Venv bin</td><td>{{ _("the <code>bin</code> folder of the virtualenv that runs this Odoo, for example <code>/opt/odoo/venvs/odoo18/bin</code>. OmniaCLI runs <code>click-odoo-update</code> and <code>click-odoo-backupdb</code> from it; <strong>pip requirements</strong> and <strong>pip click-odoo</strong> install into it.") | safe }}</td></tr>
+  <tr><td>{{ _("Claude folder") | safe }}</td><td>{{ _("optional, development machines only: a folder of this computer. The instance's page then has a <strong>Claude</strong> button: a shell of the user running OmniaCLI in that folder, that runs <code>claude</code> first and stays open after it. Claude Code must be installed and logged in for that user.") | safe }}</td></tr>
+  <tr><td>{{ _("Run as") | safe }}</td><td>{{ _("the system user of the Odoo service (often <code>odoo</code>). The venv's programs (update, backup, pip, checks) run as that user with <code>sudo -n -u</code>, so they reach the database, the filestore and the venv as Odoo does. Empty: as the user running OmniaCLI. Git always runs as OmniaCLI's user. Not with restart type <em>process</em>.") | safe }}</td></tr>
+  <tr><td>{{ _("Database from link") | safe }}</td><td>{{ _("optional: a link of the Links page, a server of that linked instance and its role (for example <code>customer</code>, <code>erp</code>, production). The instance's page then has <strong>Copy from link</strong>: a backup made there (new or already there) is downloaded into this instance's backups and restored into its database, which is dropped first. A production needs the admin role and its database name typed. Without a Database from link, or with a link no longer on the Links page, the button is there but disabled, and its tooltip says what to set.") | safe }}</td></tr>
+  <tr><td>{{ _("HTTP port") | safe }}</td><td>{{ _("restart type <em>process</em> only: the port Odoo listens on, passed as <code>--http-port</code> (<code>--xmlrpc-port</code> before Odoo 11), which wins over the config. Empty: the port of the config. It applies at the next Start or Restart.") | safe }}</td></tr>
+  <tr><td>odoo-bin</td><td>{{ _("the <code>odoo-bin</code> used by <strong>Update modules</strong> (a chosen list of modules) and by restart type <em>process</em>. Empty: the first repository that has one.") | safe }}</td></tr>
+  <tr><td>{{ _("Restart with") | safe }}</td><td>{{ _("how Odoo is restarted, started and stopped: see the four configurations below.") | safe }}</td></tr>
+  <tr><td>{{ _("Service name") | safe }}</td><td>{{ _("the systemd unit or the init.d script, for example <code>odoo-customer-test</code>; with Docker Compose, the project's folder, for example <code>/srv/odooplm-19</code>.") | safe }}</td></tr>
+  <tr><td>{{ _("Use sudo -n") | safe }}</td><td>{{ _("run the service command through <code>sudo -n</code> (no password prompt: sudoers must allow it, see below).") | safe }}</td></tr>
+  <tr><td>{{ _("Update changed modules") | safe }}</td><td>{{ _("after a pull, update the modules whose files changed (<code>click-odoo-update</code>, which keeps a hash of every installed module in the database).") | safe }}</td></tr>
+  <tr><td>{{ _("Auto update") | safe }}</td><td>{{ _("check the remotes every <strong>Every (minutes)</strong>; when there are new commits, pull, update the changed modules and restart. An Odoo someone stopped stays stopped.") | safe }}</td></tr>
+  <tr><td>{{ _("Every (minutes)") | safe }}</td><td>{{ _("the interval of the auto update check, 1 or more (default 10).") | safe }}</td></tr>
+  <tr><td>{{ _("Time window") | safe }}</td><td>{{ _("<code>HH:MM-HH:MM</code>: the auto update runs only inside it; a window may cross midnight (<code>20:00-06:00</code>). Empty: always.") | safe }}</td></tr>
 </table>
 
-<h3>Repositories</h3>
+<h3>{{ _("Repositories") | safe }}</h3>
 <table class="help-table">
-  <tr><th>Column</th><th>Meaning</th></tr>
-  <tr><td>Name</td><td>unique in the instance. A test repository needs a production repository of the same name:
-    <strong>Merge test to production</strong> pairs them by name.</td></tr>
-  <tr><td>Path</td><td>the git working copy on this machine.</td></tr>
-  <tr><td>Remote</td><td>the git remote to pull from (default <span class="mono">origin</span>).</td></tr>
-  <tr><td>Branch</td><td>the branch the working copy must be on: a pull is
-    <span class="mono">git pull --ff-only &lt;remote&gt; &lt;branch&gt;</span>, and it is refused when the working copy is
-    on another branch.</td></tr>
+  <tr><th>{{ _("Column") | safe }}</th><th>{{ _("Meaning") | safe }}</th></tr>
+  <tr><td>{{ _("Name") | safe }}</td><td>{{ _("unique in the instance. A test repository needs a production repository of the same name: <strong>Merge test to production</strong> pairs them by name.") | safe }}</td></tr>
+  <tr><td>{{ _("Path") | safe }}</td><td>{{ _("the git working copy on this machine.") | safe }}</td></tr>
+  <tr><td>Remote</td><td>{{ _("the git remote to pull from (default <code>origin</code>).") | safe }}</td></tr>
+  <tr><td>Branch</td><td>{{ _("the branch the working copy must be on: a pull is <code>git pull --ff-only &lt;remote&gt; &lt;branch&gt;</code>, and it is refused when the working copy is on another branch.") | safe }}</td></tr>
 </table>
-<p>With more than one repository (or a package), <strong>Git pull</strong> and <strong>Git pull + restart</strong> open a
-dialog that lists them with the commits each would bring (a <span class="mono">git fetch</span>), ticked when there are
-some: <strong>Pull selected</strong> pulls the ticked ones, <strong>Pull all</strong> every one. The auto update, the
-schedules and <span class="mono">update_test</span> always pull every repository.</p>
-<p>A working copy with uncommitted changes is refused by a pull, except on a <strong>test instance without auto
-update</strong>: there someone may be working, so the changes are kept (and git refuses to overwrite them).</p>
+<p>{{ _("With more than one repository (or a package), <strong>Git pull</strong> and <strong>Git pull + restart</strong> open a dialog that lists them with the commits each would bring (a <code>git fetch</code>), ticked when there are some: <strong>Pull selected</strong> pulls the ticked ones, <strong>Pull all</strong> every one. The auto update, the schedules and <code>update_test</code> always pull every repository.") | safe }}</p>
+<p>{{ _("A working copy with uncommitted changes is refused by a pull, except on a <strong>test instance without auto update</strong>: there someone may be working, so the changes are kept (and git refuses to overwrite them).") | safe }}</p>
 
-<h3>The four restart configurations</h3>
+<h3>{{ _("The four restart configurations") | safe }}</h3>
 <table class="help-table">
-  <tr><th>Restart with</th><th>What OmniaCLI does</th><th>Needs</th></tr>
-  <tr><td>systemd</td><td><span class="mono">systemctl --no-ask-password restart|start|stop &lt;service&gt;</span>; the
-    pages show the unit's state, with Start and Stop.</td><td>with sudo, a sudoers line per command and service.</td></tr>
-  <tr><td>init.d</td><td><span class="mono">/etc/init.d/&lt;service&gt; restart</span>; Restart only, the state is
-    unknown.</td><td>with sudo, a sudoers line.</td></tr>
-  <tr><td>process</td><td>OmniaCLI starts <span class="mono">odoo-bin -c &lt;config&gt;</span> itself, in the instance's
-    venv, and stops it with a signal; Odoo outlives a restart of OmniaCLI. It refuses to start when another process
-    already runs with the same config. No service name, no Run as.</td><td>nothing: it runs as OmniaCLI's user.</td></tr>
-  <tr><td>Docker Compose</td><td><span class="mono">docker compose --project-directory &lt;folder&gt;</span>, always
-    through the root helper <span class="mono">omniacli compose-helper</span> (see below): Restart is
-    <span class="mono">up -d</span> (a changed <span class="mono">.env</span> or image makes its containers again) then
-    <span class="mono">restart</span>, Start <span class="mono">up -d</span>, Stop <span class="mono">stop</span>; the
-    pages show the project's state (<span class="mono">ps -a</span>: active when every container runs, partial,
-    inactive). Only for a type that runs in Docker Compose.</td><td>with sudo, one sudoers line per project folder;
-    without sudo, OmniaCLI's user in group docker (which is as good as root).</td></tr>
+  <tr><th>{{ _("Restart with") | safe }}</th><th>{{ _("What OmniaCLI does") | safe }}</th><th>{{ _("Needs") | safe }}</th></tr>
+  <tr><td>systemd</td><td>{{ _("<code>systemctl --no-ask-password restart|start|stop &lt;service&gt;</code>; the pages show the unit's state, with Start and Stop.") | safe }}</td><td>{{ _("with sudo, a sudoers line per command and service.") | safe }}</td></tr>
+  <tr><td>init.d</td><td>{{ _("<code>/etc/init.d/&lt;service&gt; restart</code>; Restart only, the state is unknown.") | safe }}</td><td>{{ _("with sudo, a sudoers line.") | safe }}</td></tr>
+  <tr><td>process</td><td>{{ _("OmniaCLI starts <code>odoo-bin -c &lt;config&gt;</code> itself, in the instance's venv, and stops it with a signal; Odoo outlives a restart of OmniaCLI. It refuses to start when another process already runs with the same config. No service name, no Run as.") | safe }}</td><td>{{ _("nothing: it runs as OmniaCLI's user.") | safe }}</td></tr>
+  <tr><td>Docker Compose</td><td>{{ _("<code>docker compose --project-directory &lt;folder&gt;</code>, always through the root helper <code>omniacli compose-helper</code> (see below): Restart is <code>up -d</code> (a changed <code>.env</code> or image makes its containers again) then <code>restart</code>, Start <code>up -d</code>, Stop <code>stop</code>; the pages show the project's state (<code>ps -a</code>: active when every container runs, partial, inactive). Only for a type that runs in Docker Compose.") | safe }}</td><td>{{ _("with sudo, one sudoers line per project folder; without sudo, OmniaCLI's user in group docker (which is as good as root).") | safe }}</td></tr>
 </table>
-<h3>Docker Compose: who may change the project is root</h3>
-<p>Docker runs as root what a project's files say: whoever may change them may mount the whole machine into a
-container (one <span class="mono">compose.override.yaml</span> is enough) and is root through every
-<span class="mono">up -d</span>. So OmniaCLI never runs docker itself: it runs
-<span class="mono">omniacli compose-helper &lt;folder&gt; &lt;action&gt;</span>, which takes a fixed list of actions
-and, as root, refuses a project that the user who called sudo could change:</p>
+<h3>{{ _("Docker Compose: who may change the project is root") | safe }}</h3>
+<p>{{ _("Docker runs as root what a project's files say: whoever may change them may mount the whole machine into a container (one <code>compose.override.yaml</code> is enough) and is root through every <code>up -d</code>. So OmniaCLI never runs docker itself: it runs <code>omniacli compose-helper &lt;folder&gt; &lt;action&gt;</code>, which takes a fixed list of actions and, as root, refuses a project that the user who called sudo could change:") | safe }}</p>
 <ul>
-  <li>the project's folder, and every folder above it up to <span class="mono">/</span> (one that may be written may
-    put another folder in its place; a sticky one, as <span class="mono">/tmp</span>, only when the folder is that
-    user's), must not be writable by that user; the folder may not be reached through a symbolic link;</li>
-  <li>nor <span class="mono">compose.yaml</span>, <span class="mono">compose.yml</span>,
-    <span class="mono">docker-compose.yaml</span>, <span class="mono">docker-compose.yml</span>, their
-    <span class="mono">.override.yaml</span>/<span class="mono">.override.yml</span> (docker compose reads them by
-    itself) and <span class="mono">.env</span>; none may be a symbolic link;</li>
-  <li><span class="mono">.env</span> may not set <span class="mono">COMPOSE_FILE</span>,
-    <span class="mono">COMPOSE_PATH_SEPARATOR</span> or <span class="mono">COMPOSE_PROJECT_DIRECTORY</span>, which make
-    docker compose read other files.</li>
+  <li>{{ _("the project's folder, and every folder above it up to <code>/</code> (one that may be written may put another folder in its place; a sticky one, as <code>/tmp</code>, only when the folder is that user's), must not be writable by that user; the folder may not be reached through a symbolic link;") | safe }}</li>
+  <li>{{ _("nor <code>compose.yaml</code>, <code>compose.yml</code>, <code>docker-compose.yaml</code>, <code>docker-compose.yml</code>, their <code>.override.yaml</code>/<code>.override.yml</code> (docker compose reads them by itself) and <code>.env</code>; none may be a symbolic link;") | safe }}</li>
+  <li>{{ _("<code>.env</code> may not set <code>COMPOSE_FILE</code>, <code>COMPOSE_PATH_SEPARATOR</code> or <code>COMPOSE_PROJECT_DIRECTORY</code>, which make docker compose read other files.") | safe }}</li>
 </ul>
-<p>A file is writable by its owner (who may change its mode) and through the group or other write bit that applies;
-ACLs are not read. The <strong>Service</strong> check makes the same checks as OmniaCLI's user and prints, for each
-problem, the command that fixes it. Secure a project so:</p>
+<p>{{ _("A file is writable by its owner (who may change its mode) and through the group or other write bit that applies; ACLs are not read. The <strong>Service</strong> check makes the same checks as OmniaCLI's user and prints, for each problem, the command that fixes it. Secure a project so:") | safe }}</p>
 <pre class="console mono">chown -R root: /srv/odooplm-19
 chmod -R go-w /srv/odooplm-19</pre>
-<p>The folders the project mounts (<span class="mono">./config</span>, <span class="mono">./addons-extra</span>...) are
-not checked: who writes them controls Odoo inside its container, not the machine.</p>
-<h3>Docker Compose: the log</h3>
-<p>An Odoo in a container writes its log to its output, which docker keeps: the Log page, the
-<span class="mono">read_log</span> tool and the <strong>Log</strong> check read it with
-<span class="mono">docker compose logs</span> of the service the type names (for Odoo, its service), through the
-helper: the last 300 lines, then every 2 seconds the lines written since the last one read, by their time. How much
-log there is, docker decides: with its default driver (<span class="mono">json-file</span>) and no limit the log
-grows for ever, and when its container is made again (a changed <span class="mono">.env</span> or image,
-<span class="mono">down</span>) the lines before are gone; the page keeps showing the ones it has and goes on with
-the new container's. Limit it in the compose file:</p>
+<p>{{ _("The folders the project mounts (<code>./config</code>, <code>./addons-extra</code>...) are not checked: who writes them controls Odoo inside its container, not the machine.") | safe }}</p>
+<h3>{{ _("Docker Compose: the log") | safe }}</h3>
+<p>{{ _("An Odoo in a container writes its log to its output, which docker keeps: the Log page, the <code>read_log</code> tool and the <strong>Log</strong> check read it with <code>docker compose logs</code> of the service the type names (for Odoo, its service), through the helper: the last 300 lines, then every 2 seconds the lines written since the last one read, by their time. How much log there is, docker decides: with its default driver (<code>json-file</code>) and no limit the log grows for ever, and when its container is made again (a changed <code>.env</code> or image, <code>down</code>) the lines before are gone; the page keeps showing the ones it has and goes on with the new container's. Limit it in the compose file:") | safe }}</p>
 <pre class="console mono">services:
   odoo:
     logging:
       options:
         max-size: "50m"
         max-file: "5"</pre>
-<h3>Docker Compose: what the helper does</h3>
-<p><span class="mono">omniacli compose-helper &lt;folder&gt; &lt;action&gt;</span> takes these actions and nothing else
-(a service must be one of the project's, a database name <span class="mono">[A-Za-z0-9_.-]</span>, a module
-<span class="mono">[a-z0-9_]</span>):</p>
+<h3>{{ _("Docker Compose: what the helper does") | safe }}</h3>
+<p>{{ _("<code>omniacli compose-helper &lt;folder&gt; &lt;action&gt;</code> takes these actions and nothing else (a service must be one of the project's, a database name <code>[A-Za-z0-9_.-]</code>, a module <code>[a-z0-9_]</code>):") | safe }}</p>
 <table class="help-table">
-  <tr><th>Action</th><th>Runs</th></tr>
-  <tr><td>start, stop, restart, state</td><td><span class="mono">up -d</span>; <span class="mono">stop</span>;
-    <span class="mono">up -d</span> then <span class="mono">restart</span>; <span class="mono">ps -a</span></td></tr>
-  <tr><td>pull</td><td><span class="mono">pull</span>, then <span class="mono">up -d</span></td></tr>
-  <tr><td>logs</td><td>the service's output, the last lines or those since a time</td></tr>
-  <tr><td>port, version</td><td>where the machine publishes a port; <span class="mono">odoo --version</span></td></tr>
-  <tr><td>dump</td><td><span class="mono">odoo db dump</span> (with or without filestore), the zip to the output</td></tr>
-  <tr><td>load</td><td>the zip from the input, <span class="mono">odoo db load --force</span>, neutralized or not</td></tr>
-  <tr><td>update</td><td><span class="mono">click-odoo-update</span> in a container of its own with OmniaCLI's tools
-    mounted read only, or <span class="mono">odoo -u</span> of the modules named; on a neutralized database the
-    scheduled actions that were off are off again afterwards</td></tr>
-  <tr><td>psql</td><td><span class="mono">psql</span> in the database service, for the web shell</td></tr>
+  <tr><th>{{ _("Action") | safe }}</th><th>{{ _("Runs") | safe }}</th></tr>
+  <tr><td>start, stop, restart, state</td><td>{{ _("<code>up -d</code>; <code>stop</code>; <code>up -d</code> then <code>restart</code>; <code>ps -a</code>") | safe }}</td></tr>
+  <tr><td>pull</td><td>{{ _("<code>pull</code>, then <code>up -d</code>") | safe }}</td></tr>
+  <tr><td>logs</td><td>{{ _("the service's output, the last lines or those since a time") | safe }}</td></tr>
+  <tr><td>port, version</td><td>{{ _("where the machine publishes a port; <code>odoo --version</code>") | safe }}</td></tr>
+  <tr><td>dump</td><td>{{ _("<code>odoo db dump</code> (with or without filestore), the zip to the output") | safe }}</td></tr>
+  <tr><td>load</td><td>{{ _("the zip from the input, <code>odoo db load --force</code>, neutralized or not") | safe }}</td></tr>
+  <tr><td>update</td><td>{{ _("<code>click-odoo-update</code> in a container of its own with OmniaCLI's tools mounted read only, or <code>odoo -u</code> of the modules named; on a neutralized database the scheduled actions that were off are off again afterwards") | safe }}</td></tr>
+  <tr><td>psql</td><td>{{ _("<code>psql</code> in the database service, for the web shell") | safe }}</td></tr>
 </table>
-<p>The database connection is the one the official Odoo image's entrypoint makes, from the container's
-<span class="mono">HOST</span>, <span class="mono">PORT</span>, <span class="mono">USER</span> and
-<span class="mono">PASSWORD</span>; a <span class="mono">db_host</span>... in the Odoo config still wins. No image has to
-carry click-odoo-contrib: OmniaCLI mounts its own.</p>
-<p>The sudoers lines go in <span class="mono">/etc/sudoers.d/omniacli</span> (the package installs it with examples,
-all commented); a failed check prints the exact lines. Examples, with your service names and paths:</p>
+<p>{{ _("The database connection is the one the official Odoo image's entrypoint makes, from the container's <code>HOST</code>, <code>PORT</code>, <code>USER</code> and <code>PASSWORD</code>; a <code>db_host</code>... in the Odoo config still wins. No image has to carry click-odoo-contrib: OmniaCLI mounts its own.") | safe }}</p>
+<p>{{ _("The sudoers lines go in <code>/etc/sudoers.d/omniacli</code> (the package installs it with examples, all commented); a failed check prints the exact lines. Examples, with your service names and paths:") | safe }}</p>
 <pre class="console mono">omniacli ALL=(root) NOPASSWD: /usr/bin/systemctl --no-ask-password restart odoo-customer-test
 omniacli ALL=(root) NOPASSWD: /usr/bin/systemctl --no-ask-password start odoo-customer-test
 omniacli ALL=(root) NOPASSWD: /usr/bin/systemctl --no-ask-password stop odoo-customer-test
@@ -374,39 +236,17 @@ omniacli ALL=(root) NOPASSWD: /etc/init.d/odoo-customer-test restart
 omniacli ALL=(root) NOPASSWD: /opt/omniacli/venv/bin/omniacli compose-helper /srv/odooplm-19 *
 omniacli ALL=(odoo) NOPASSWD:SETENV: /opt/odoo/venvs/odoo18/bin/
 omniacli ALL=(odoo) NOPASSWD:SETENV: /usr/bin/psql</pre>
-<p>The last two lines are for <strong>Run as</strong> <span class="mono">odoo</span>: the first allows the programs of
-that venv folder, and <span class="mono">SETENV</span> passes <span class="mono">PYTHONPATH</span>; the second lets the
-psql page connect as <span class="mono">odoo</span> (PostgreSQL's peer login), <span class="mono">SETENV</span> passing
-its <span class="mono">PG*</span> variables. Check a sudoers file with
-<span class="mono">sudo visudo -cf /etc/sudoers.d/omniacli</span>.</p>
-<p>On a development workstation, whose repositories and configs belong to you, the whole service may run as your
-user: <span class="mono">OMNIACLI_USER=&lt;user&gt;</span> in <span class="mono">/etc/default/omniacli</span>, then
-<span class="mono">sudo dpkg-reconfigure omniacli</span>. The sudoers lines then name that user, and the machine counts
-as a development one.</p>
-<p><strong>Kind of machine.</strong> On a <em>server</em> nobody opens a shell of OmniaCLI's own user: no Shell, no
-Claude, and psql only where it runs as another user (Run as, Docker). On a <em>development</em> machine nothing is
-restricted. Root sets it with <span class="mono">machine: server</span> or <span class="mono">machine: development</span>
-in the main configuration, then restarts OmniaCLI. Without that line a machine with
-<span class="mono">OMNIACLI_USER</span> is a development one, any other a server. The Options page shows it.</p>
+<p>{{ _("The last two lines are for <strong>Run as</strong> <code>odoo</code>: the first allows the programs of that venv folder, and <code>SETENV</code> passes <code>PYTHONPATH</code>; the second lets the psql page connect as <code>odoo</code> (PostgreSQL's peer login), <code>SETENV</code> passing its <code>PG*</code> variables. Check a sudoers file with <code>sudo visudo -cf /etc/sudoers.d/omniacli</code>.") | safe }}</p>
+<p>{{ _("On a development workstation, whose repositories and configs belong to you, the whole service may run as your user: <code>OMNIACLI_USER=&lt;user&gt;</code> in <code>/etc/default/omniacli</code>, then <code>sudo dpkg-reconfigure omniacli</code>. The sudoers lines then name that user, and the machine counts as a development one.") | safe }}</p>
+<p>{{ _("<strong>Kind of machine.</strong> On a <em>server</em> nobody opens a shell of OmniaCLI's own user: no Shell, no Claude, and psql only where it runs as another user (Run as, Docker). On a <em>development</em> machine nothing is restricted. Root sets it with <code>machine: server</code> or <code>machine: development</code> in the main configuration, then restarts OmniaCLI. Without that line a machine with <code>OMNIACLI_USER</code> is a development one, any other a server. The Options page shows it.") | safe }}</p>
 
-<h3>Typical configurations</h3>
+<h3>{{ _("Typical configurations") | safe }}</h3>
 <ul>
-  <li><strong>A customer server with a systemd service per instance</strong>: production and test, restart
-    <em>systemd</em> with sudo, Run as the Odoo user, auto update on test (for example every 10 minutes), off on
-    production; production gets the tested commits with <strong>Merge test to production</strong>, which backs it up
-    first.</li>
-  <li><strong>A development or demo machine</strong>: one test instance, restart <em>process</em>, an HTTP port per
-    instance when several run on the same machine; no sudo needed.</li>
-  <li><strong>An old server with init.d scripts</strong>: restart <em>init.d</em>; Restart only, no Start and Stop.</li>
-  <li><strong>An Odoo 18 or later in Docker Compose</strong> (a DockerOdooPLM stack, or the official image): type
-    <em>Odoo (Docker Compose)</em>, restart <em>Docker Compose</em> with the project's folder, the database, the Odoo
-    and database services (<span class="mono">odoo</span> and <span class="mono">db</span> by default), the port the
-    machine publishes Odoo on; the repositories are the addons folders the project mounts. The project must be
-    root's (see above). Backup and restore use <span class="mono">odoo db</span>, the update of the changed modules
-    <span class="mono">click-odoo-update</span> with OmniaCLI's own tools; <strong>Pull image</strong> gets a newer
-    image. Not yet: Copy production to test, passwords to admin, a shared filestore.</li>
-  <li><strong>A test instance someone develops on</strong>: auto update off, so a pull keeps their uncommitted
-    changes.</li>
+  <li>{{ _("<strong>A customer server with a systemd service per instance</strong>: production and test, restart <em>systemd</em> with sudo, Run as the Odoo user, auto update on test (for example every 10 minutes), off on production; production gets the tested commits with <strong>Merge test to production</strong>, which backs it up first.") | safe }}</li>
+  <li>{{ _("<strong>A development or demo machine</strong>: one test instance, restart <em>process</em>, an HTTP port per instance when several run on the same machine; no sudo needed.") | safe }}</li>
+  <li>{{ _("<strong>An old server with init.d scripts</strong>: restart <em>init.d</em>; Restart only, no Start and Stop.") | safe }}</li>
+  <li>{{ _("<strong>An Odoo 18 or later in Docker Compose</strong> (a DockerOdooPLM stack, or the official image): type <em>Odoo (Docker Compose)</em>, restart <em>Docker Compose</em> with the project's folder, the database, the Odoo and database services (<code>odoo</code> and <code>db</code> by default), the port the machine publishes Odoo on; the repositories are the addons folders the project mounts. The project must be root's (see above). Backup and restore use <code>odoo db</code>, the update of the changed modules <code>click-odoo-update</code> with OmniaCLI's own tools; <strong>Pull image</strong> gets a newer image. Not yet: Copy production to test, passwords to admin, a shared filestore.") | safe }}</li>
+  <li>{{ _("<strong>A test instance someone develops on</strong>: auto update off, so a pull keeps their uncommitted changes.") | safe }}</li>
 </ul>
 </section>
 </div>

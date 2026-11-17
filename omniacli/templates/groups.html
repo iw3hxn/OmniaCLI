@@ -1,43 +1,45 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
 {% extends "base.html" %}
-{% block title %}Groups · OmniaCLI{% endblock %}
+{% block title %}{{ _("Groups") }} · OmniaCLI{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
-{{ crumbs([("Dashboard", "/"), ("Groups", None)]) }}
+{{ crumbs([(_("Dashboard"), "/"), (_("Groups"), None)]) }}
 {% endblock %}
 {% block content %}
-<h1>Groups</h1>
-<p class="muted">The headings of the Dashboard's lists, in this order, each with its subgroups. One member per line:
-a name of the list (<span class="mono">srv</span>), or a pattern of names (<span class="mono">acme-*</span>,
-<span class="mono">*</span> all of them; <span class="mono">?</span> one character). An item shows under the first
-group that has it, itself or in a subgroup, then under the first of its subgroups that has it; the others under
-"Others". Saved in <span class="mono">{{ groups_file }}</span>.</p>
+<div class="page-head">
+  <div><h1>{{ _("Groups") }}</h1>
+    <p>{{ _("The headings of the Dashboard's lists, in this order, each with its subgroups.") }}</p></div>
+  <div class="actions"><button type="button" class="primary save-top">{{ _("Save") }}</button>
+    <a class="button" href="{{ prefix }}/">{{ _("Cancel") }}</a></div>
+</div>
+<details class="panel" style="margin-bottom: 16px"><summary>{{ _("How members are matched") }}</summary>
+<p class="muted" style="margin-bottom: 0">{{ _("One member per line: a name of the list (srv), or a pattern of names (acme-*; * all of them; ? one character). An item shows under the first group that has it, itself or in a subgroup, then under the first of its subgroups that has it; the others under Others.") }}
+{{ _("Saved in {path}.", path=groups_file) }}</p></details>
 <div id="error" class="banner" hidden></div>
-{% for list, title in (("servers", "Servers"), ("links", "Linked")) %}
+{% for list, title in (("servers", _("Servers")), ("links", _("Linked"))) %}
 <section class="panel group-list" id="{{ list }}" data-list-name="{{ list }}" style="margin-bottom: 16px">
   <h2 style="margin-top: 0">{{ title }}</h2>
   <div class="groups"></div>
-  <div class="actions"><button type="button" class="add-top">Add group</button></div>
-  <p class="muted" style="margin-bottom: 4px">{{ "Servers" if list == "servers" else "Linked instances" }} known now
-  (click one to add it to the last group you edited):</p>
+  <div class="actions"><button type="button" class="add-top">{{ _("Add group") }}</button></div>
+  <p class="muted" style="margin-bottom: 4px">{{ _("Servers known now (click one to add it to the last group you edited):") if list == "servers" else _("Linked instances known now (click one to add it to the last group you edited):") }}</p>
   <div class="actions known">
     {% for key in known[list] %}<button type="button" class="mono" data-member="{{ key }}">{{ key }}</button>
-    {% else %}<span class="muted">none yet</span>{% endfor %}
+    {% else %}<span class="muted">{{ _("none yet") }}</span>{% endfor %}
   </div>
 </section>
 {% endfor %}
 <div class="actions">
-  <button type="button" id="save">Save</button>
-  <a class="button" href="{{ prefix }}/">Cancel</a>
+  <button type="button" class="primary" id="save">{{ _("Save") }}</button>
+  <a class="button" href="{{ prefix }}/">{{ _("Cancel") }}</a>
 </div>
 <template id="group-template">
   <fieldset class="group-box">
-    <legend><input type="text" class="name" placeholder="group name" aria-label="Group name"></legend>
-    <textarea class="members mono" rows="3" placeholder="one member per line" aria-label="Members"></textarea>
+    <legend><input type="text" class="name" placeholder="{{ _("group name") }}" aria-label="{{ _("Group name") }}"></legend>
+    <textarea class="members mono" rows="3" placeholder="{{ _("one member per line") }}" aria-label="{{ _("Members") }}"></textarea>
     <div class="actions" style="margin: 8px 0 0">
-      <button type="button" class="up" title="Move up">↑</button>
-      <button type="button" class="down" title="Move down">↓</button>
-      <button type="button" class="add-sub">Add subgroup</button>
-      <button type="button" class="danger remove">Remove</button>
+      <button type="button" class="up" title="{{ _("Move up") }}" aria-label="{{ _("Move up") }}">↑</button>
+      <button type="button" class="down" title="{{ _("Move down") }}" aria-label="{{ _("Move down") }}">↓</button>
+      <button type="button" class="add-sub">{{ _("Add subgroup") }}</button>
+      <button type="button" class="danger remove">{{ _("Remove") }}</button>
     </div>
     <div class="subgroups" style="margin-left: 18px"></div>
   </fieldset>
@@ -85,7 +87,7 @@ group that has it, itself or in a subgroup, then under the first of its subgroup
       };
     }
   }
-  document.getElementById("save").onclick = async () => {
+  const save = async () => {
     const body = {lists: Object.fromEntries([...document.querySelectorAll(".group-list")].map(
       (section) => [section.dataset.listName, collect(section.querySelector(".groups"))]))};
     const resp = await fetch("{{ prefix }}/api/groups/save", {method: "POST",
@@ -93,10 +95,12 @@ group that has it, itself or in a subgroup, then under the first of its subgroup
     const data = await resp.json().catch(() => ({}));
     if (resp.ok) { location.href = "{{ prefix }}/"; return; }
     const errorBox = document.getElementById("error");
-    errorBox.textContent = data.error || data.detail || ("Error " + resp.status);
+    errorBox.textContent = data.error || data.detail || {{ _("Error {status}") | tojson }}.replace("{status}", resp.status);
     errorBox.hidden = false;
     window.scrollTo(0, 0);
   };
+  document.getElementById("save").onclick = save;
+  document.querySelector(".save-top").onclick = save;
 })();
 </script>
 {% endblock %}

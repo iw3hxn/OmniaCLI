@@ -2,55 +2,62 @@
 {% extends "base.html" %}
 {% block title %}{{ name }} · OmniaCLI{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
-{{ crumbs([("Dashboard", "/"), ("Pullers", "/pullers" if is_admin else None), (name, None)]) }}
+{{ crumbs([(_("Dashboard"), "/"), (_("Pullers"), "/pullers" if is_admin else None), (name, None)]) }}
 {% endblock %}
 {% block content %}
-<div class="server-head" style="padding: 0 0 14px; border: 0">
-  <h1 style="margin: 0">{{ name }} <span class="muted" style="font-weight: 400; font-size: 15px">puller <span class="mono">{{ connection.puller }}</span> on <span class="mono">{{ connection.link }}</span></span></h1>
+<div class="page-head">
+  <div>
+    <h1>{{ name }}</h1>
+    <p>{{ _("The instance a producer publishes through the puller {puller} on {link}, operated from here.", puller=connection.puller, link=connection.link) }}</p>
+  </div>
 </div>
-<p class="muted">The instance the producer of this puller publishes, as its reports tell it: they come through the relay, so what is shown may be some seconds old.
-A command waits on the relay until the producer takes it (10 minutes at most), and runs only if the producer exposes it, within its hours.
-<span id="key-note"></span></p>
+<p class="muted" style="margin-top: -8px">{{ _("What is shown comes through the relay, so it may be some seconds old.") }} <span id="key-note"></span></p>
+<details style="margin-bottom: 16px">
+  <summary>{{ _("More") }}</summary>
+  <p class="muted">{{ _("The instance the producer of this puller publishes, as its reports tell it: they come through the relay, so what is shown may be some seconds old.") }}
+    {{ _("A command waits on the relay until the producer takes it (10 minutes at most), and runs only if the producer exposes it, within its hours.") }}</p>
+</details>
 <div id="error" class="banner" hidden></div>
+<div class="stack">
 <section class="panel">
-  <div class="server-head" style="padding: 0 0 8px; border: 0">
-    <h2 id="title">Waiting for the first report…</h2>
-  </div>
-  <p id="facts" class="muted" style="margin-top: 0"></p>
+  <h2 id="title">{{ _("Waiting for the first report…") }}</h2>
+  <p id="facts" class="muted" style="margin: 6px 0 0"></p>
   <div class="actions" id="buttons">
-    {% for c in commands %}<button type="button" data-command="{{ c }}" disabled>{{ c | capitalize }}</button>{% endfor %}
+    {% for c in commands %}<button type="button" data-command="{{ c }}" disabled>{{ tr(c | capitalize) }}</button>{% endfor %}
   </div>
-  <div id="backup-options" hidden style="margin: 4px 0 8px"></div>
+  <div id="backup-options" hidden style="margin: 8px 0 0"></div>
 </section>
 
-<div class="instance-grid" style="--cols: 2; margin-top: 16px">
+<div class="instance-grid" style="--cols: 2">
   <section class="panel">
-    <h3 class="chart-title">CPU of the instance, % of one core</h3>
-    <div class="chart-box"><svg class="chart" data-chart="cpu" role="img" aria-label="CPU of the instance"></svg><div class="chart-tip" hidden></div></div>
-    <h3 class="chart-title">Memory of the instance, MiB resident</h3>
-    <div class="chart-box"><svg class="chart" data-chart="mem" role="img" aria-label="Memory of the instance"></svg><div class="chart-tip" hidden></div></div>
-    <h3 class="chart-title">CPU of the machine, % of all cores</h3>
-    <div class="chart-box"><svg class="chart" data-chart="machine" role="img" aria-label="CPU of the machine"></svg><div class="chart-tip" hidden></div></div>
-    <label class="muted">Shown: <select id="range" aria-label="Time shown">
-      <option value="3600">the last hour</option><option value="86400">the last day</option>
-      <option value="604800">the last 7 days</option></select></label>
+    <h2>{{ _("Load") }}</h2>
+    <h3 class="chart-title">{{ _("CPU of the instance, % of one core") }}</h3>
+    <div class="chart-box"><svg class="chart" data-chart="cpu" role="img" aria-label="{{ _('CPU of the instance') }}"></svg><div class="chart-tip" hidden></div></div>
+    <h3 class="chart-title">{{ _("Memory of the instance, MiB resident") }}</h3>
+    <div class="chart-box"><svg class="chart" data-chart="mem" role="img" aria-label="{{ _('Memory of the instance') }}"></svg><div class="chart-tip" hidden></div></div>
+    <h3 class="chart-title">{{ _("CPU of the machine, % of all cores") }}</h3>
+    <div class="chart-box"><svg class="chart" data-chart="machine" role="img" aria-label="{{ _('CPU of the machine') }}"></svg><div class="chart-tip" hidden></div></div>
+    <label class="muted">{{ _("Shown:") }} <select id="range" aria-label="{{ _('Time shown') }}" style="width: auto">
+      <option value="3600">{{ _("the last hour") }}</option><option value="86400">{{ _("the last day") }}</option>
+      <option value="604800">{{ _("the last 7 days") }}</option></select></label>
   </section>
   <section class="panel">
-    <h3 class="chart-title">Disks</h3>
-    <div id="disks"><span class="muted">Waiting for the first report…</span></div>
-    <h3 class="chart-title" style="margin-top: 16px">Commands sent from here</h3>
-    <div class="scroll"><table id="sent"><tr><th>When</th><th>Command</th><th>By</th><th>Answer</th></tr></table></div>
+    <h2>{{ _("Disks") }}</h2>
+    <div id="disks" style="margin-top: 10px"><span class="muted">{{ _("Waiting for the first report…") }}</span></div>
+    <h3 class="chart-title" style="margin-top: 16px">{{ _("Commands sent from here") }}</h3>
+    <div class="scroll"><table id="sent"><tr><th>{{ _("When") }}</th><th>{{ _("Command") }}</th><th>{{ _("By") }}</th><th>{{ _("Answer") }}</th></tr></table></div>
   </section>
 </div>
 
-<section class="panel" style="margin-top: 16px">
-  <h3 class="chart-title">Jobs there</h3>
-  <div class="scroll"><table id="jobs"><tr><th>Job</th><th>Status</th><th>Started by</th><th>Started</th><th></th></tr></table></div>
+<section class="panel">
+  <h2>{{ _("Jobs there") }}</h2>
+  <div class="scroll" style="margin-top: 10px"><table id="jobs"><tr><th>{{ _("Job") }}</th><th>{{ _("Status") }}</th><th>{{ _("Started by") }}</th><th>{{ _("Started") }}</th><th></th></tr></table></div>
   <div id="job-box" hidden style="margin-top: 12px">
     <h3 class="chart-title" id="job-title"></h3>
     <pre class="console mono" id="job-log" style="max-height: 50vh; overflow: auto; white-space: pre-wrap"></pre>
   </div>
 </section>
+</div>
 {% include "_charts.html" %}
 {% include "_disk.html" %}
 <script>
@@ -58,7 +65,24 @@ A command waits on the relay until the producer takes it (10 minutes at most), a
   const base = "{{ prefix }}/api/connections/{{ name | urlencode }}";
   const $ = (id) => document.getElementById(id);
   const canAct = {{ can_act | tojson }}, isAdmin = {{ is_admin | tojson }}, account = {{ account | tojson }};
-  const when = (t) => t ? new Date(t * 1000).toLocaleString() : "never";
+  const when = (t) => t ? new Date(t * 1000).toLocaleString() : {{ _("never") | tojson }};
+  const T = {{ {
+    "cannot": _("Cannot read the connection: {error}"), "withKey": _("With the puller's key: the relay cannot read nor change what passes."),
+    "noKey": _("No key: what passes is in clear on the relay."), "jobRunning": _("job running"),
+    "facts": _("Report of {at}; producer last seen by the relay {seen}; OmniaCLI {version} there"),
+    "encrypted": _(", encrypted"), "clear": _(", in clear"), "seen": _("Producer last seen by the relay: {seen}."),
+    "noReport": _("No report yet"), "notExposed": _("{command} is not exposed by the producer"),
+    "developer": _("The developer role is needed"), "loginHere": _("Only a user who logs in here sends commands"),
+    "taken": _("Taken {window} by the producer's clock"), "backupOption": _("backup {option}"),
+    "noDisks": _("No disks in the report."), "waiting": _("waiting for the producer"),
+    "startedJob": _("started job {job}"), "done": _("done"), "log": _("Log"), "stop": _("Stop"),
+    "askStop": _("Ask the producer to stop {job}?"), "error": _("Error {status}"),
+    "confirm": _("{command} {instance} through the puller?"),
+    "commands": {"backup": tr("Backup"), "start": tr("Start"), "stop": tr("Stop"), "restart": tr("Restart")},
+    "statuses": {"success": _("success"), "failed": _("failed"), "stopped": _("stopped"), "interrupted": _("interrupted"),
+                 "running": _("running"), "queued": _("queued")}
+  } | tojson }};
+  const fill = (text, values) => text.replace(/\{(\w+)\}/g, (all, key) => key in values ? String(values[key]) : all);
   let latest = {}, shownJob = null, jobNext = 0;
 
   function showError(message) { $("error").textContent = message; $("error").hidden = !message; }
@@ -71,26 +95,25 @@ A command waits on the relay until the producer takes it (10 minutes at most), a
       const resp = await fetch(base, {headers: {Accept: "application/json"}});
       data = await resp.json();
       if (!resp.ok) throw new Error(data.error || data.detail || "HTTP " + resp.status);
-    } catch (e) { showError("Cannot read the connection: " + e.message); return; }
+    } catch (e) { showError(fill(T.cannot, {error: e.message})); return; }
     showError(data.status.ok === false ? `${data.status.error} (${when(data.status.at)})` : "");
-    $("key-note").textContent = data.has_key ? "With the puller's key: the relay cannot read nor change what passes."
-      : "No key: what passes is in clear on the relay.";
+    $("key-note").textContent = data.has_key ? T.withKey : T.noKey;
     latest = data.latest || {};
     const seen = data.relay.producer ? data.relay.producer.seen : null;
     if (latest.instance) {
-      $("title").textContent = `${latest.instance} · ${latest.label || latest.type} · ${latest.state}${latest.busy ? " · job running" : ""}`;
-      $("facts").textContent = `Report of ${when(latest.at)}; producer last seen by the relay ${when(seen)}; `
-        + `OmniaCLI ${latest.omniacli || "?"} there` + (latest.encrypted ? ", encrypted" : ", in clear");
+      $("title").textContent = `${latest.instance} · ${latest.label || latest.type} · ${T.statuses[latest.state] || latest.state}${latest.busy ? " · " + T.jobRunning : ""}`;
+      $("facts").textContent = fill(T.facts, {at: when(latest.at), seen: when(seen), version: latest.omniacli || "?"})
+        + (latest.encrypted ? T.encrypted : T.clear);
     } else {
-      $("facts").textContent = `Producer last seen by the relay: ${when(seen)}.`;
+      $("facts").textContent = fill(T.seen, {seen: when(seen)});
     }
     for (const button of document.querySelectorAll("[data-command]")) {
       const c = button.dataset.command, rule = (latest.commands || {})[c];
       const allowed = account && (c === "backup" ? canAct : true);
       button.disabled = !rule || !rule.enabled || !allowed;
-      button.title = !rule ? "No report yet" : !rule.enabled ? `${c} is not exposed by the producer`
-        : !allowed ? (account ? "The developer role is needed" : "Only a user who logs in here sends commands")
-        : `Taken ${rule.window} by the producer's clock`;
+      button.title = !rule ? T.noReport : !rule.enabled ? fill(T.notExposed, {command: T.commands[c] || c})
+        : !allowed ? (account ? T.developer : T.loginHere)
+        : fill(T.taken, {window: rule.window});
     }
     const options = $("backup-options");
     if (!options.dataset.filled && (latest.backup_fields || []).length) {
@@ -98,14 +121,14 @@ A command waits on the relay until the producer takes it (10 minutes at most), a
       for (const f of latest.backup_fields.filter((f) => f.kind === "checkbox")) {
         const label = document.createElement("label"), box = document.createElement("input");
         box.type = "checkbox"; box.dataset.option = f.key; box.checked = !!f.default;
-        label.append(box, " backup " + f.label.toLowerCase()); label.style.marginRight = "12px";
+        label.append(box, " " + fill(T.backupOption, {option: f.label.toLowerCase()})); label.style.marginRight = "12px";
         options.appendChild(label);
       }
       options.hidden = false;
     }
     const disks = $("disks");
     disks.replaceChildren();
-    if (!(latest.disks || []).length) OmniaDisk.message(disks, "No disks in the report.");
+    if (!(latest.disks || []).length) OmniaDisk.message(disks, T.noDisks);
     for (const d of latest.disks || []) {
       const item = document.createElement("div");
       OmniaDisk.render(item, {label: d.mount, title: `${d.device} (${d.type})`, used: d.used, free: d.free, total: d.total,
@@ -117,22 +140,22 @@ A command waits on the relay until the producer takes it (10 minutes at most), a
       const row = sent.insertRow();
       cell(row, when(c.at)); cell(row, c.action, "mono"); cell(row, c.by);
       const a = c.answer;
-      cell(row, !a ? "waiting for the producer" : a.ok ? (a.job ? `started job ${a.job}` : "done") : a.error,
+      cell(row, !a ? T.waiting : a.ok ? (a.job ? fill(T.startedJob, {job: a.job}) : T.done) : a.error,
            !a ? "muted" : a.ok ? "ok" : "error");
     }
     const jobs = $("jobs"); clear(jobs);
     for (const j of data.jobs) {
       const row = jobs.insertRow();
-      cell(row, j.title || j.id); cell(row, j.status || "?", j.status === "success" ? "ok" : ["failed", "stopped", "interrupted"].includes(j.status) ? "error" : "");
+      cell(row, j.title || j.id); cell(row, T.statuses[j.status] || j.status || "?", j.status === "success" ? "ok" : ["failed", "stopped", "interrupted"].includes(j.status) ? "error" : "");
       cell(row, j.source || ""); cell(row, j.started || "");
       const td = row.insertCell();
-      const show = document.createElement("button"); show.type = "button"; show.textContent = "Log";
+      const show = document.createElement("button"); show.type = "button"; show.textContent = T.log;
       show.onclick = () => { shownJob = j.id; jobNext = 0; $("job-log").textContent = ""; $("job-box").hidden = false;
                              $("job-title").textContent = j.title || j.id; readJob(); };
       td.appendChild(show);
       if (isAdmin && account && ["running", "queued"].includes(j.status)) {
-        const stop = document.createElement("button"); stop.type = "button"; stop.className = "danger"; stop.textContent = "Stop";
-        stop.onclick = () => { if (confirm(`Ask the producer to stop ${j.title || j.id}?`)) send("stop-job", {job: j.id}); };
+        const stop = document.createElement("button"); stop.type = "button"; stop.className = "danger"; stop.textContent = T.stop;
+        stop.onclick = () => { if (confirm(fill(T.askStop, {job: j.title || j.id}))) send("stop-job", {job: j.id}); };
         td.appendChild(stop);
       }
     }
@@ -154,13 +177,13 @@ A command waits on the relay until the producer takes it (10 minutes at most), a
     const resp = await fetch(`${base}/commands`, {method: "POST", headers: {"Content-Type": "application/json"},
                                                   body: JSON.stringify({action, params: params || {}})});
     const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) { showError(data.error || data.detail || "Error " + resp.status); return; }
+    if (!resp.ok) { showError(data.error || data.detail || fill(T.error, {status: resp.status})); return; }
     refresh();
   }
   for (const button of document.querySelectorAll("[data-command]")) {
     button.onclick = () => {
       const c = button.dataset.command;
-      if (!confirm(`${c} ${latest.instance || "{{ name }}"} through the puller?`)) return;
+      if (!confirm(fill(T.confirm, {command: T.commands[c] || c, instance: latest.instance || {{ name | tojson }}}))) return;
       const params = {};
       if (c === "backup") for (const box of $("backup-options").querySelectorAll("[data-option]")) params[box.dataset.option] = box.checked;
       send(c, params);

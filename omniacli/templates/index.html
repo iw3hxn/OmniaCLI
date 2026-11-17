@@ -2,8 +2,27 @@
 {% extends "base.html" %}
 {% block content %}
 {% from "_icons.html" import icon, runner %}
-{% from "_load.html" import machine_row %}
-{% from "_list.html" import list_search, grouped, item %}
+{% from "_load.html" import machine_row with context %}
+{% from "_list.html" import list_search, grouped, item with context %}
+{# a job's status: its words and its badge (Last jobs, the summary, the script below) #}
+{% set job_status = {"queued": _("queued"), "running": _("running"), "success": _("success"), "failed": _("failed"),
+                     "interrupted": _("interrupted"), "stopped": _("stopped")} %}
+{% set job_badge = {"queued": "warn", "running": "warn", "success": "ok", "failed": "error", "interrupted": "error", "stopped": "error"} %}
+<style>
+.dash-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; font-size: 13px; margin-right: auto; }
+.dash-summary .last-job { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow-wrap: anywhere; }
+.fold-head .fold-title { display: flex; align-items: center; gap: 8px 16px; flex-wrap: wrap; min-width: 0; }
+.machine-top-label { font-weight: 600; white-space: nowrap; }
+/* Last jobs: the status as a badge, the runner in it while the job runs */
+#last-jobs td.job-status { white-space: nowrap; }
+#last-jobs td.job-status::before { display: none; }
+#last-jobs td.job-status .badge .runner.mini { margin-right: 0; }
+</style>
+<div class="page-head">
+  <div><h1>{{ _("Dashboard") }}</h1>
+    <p>{{ _("Your servers and their state, the load of the machine, the last jobs.") }}</p></div>
+  {% if machine %}<div class="actions"><a class="button" href="{{ prefix }}/disks">{{ _("Disks") }}</a></div>{% endif %}
+</div>
 {# the widgets first: the lists below use them as they are drawn #}
 {% include "_charts.html" %}
 {% include "_disk.html" %}
@@ -15,24 +34,25 @@
 {% if machine %}
 <div class="panel machine-top">
   <div class="machine-top-row" role="button" tabindex="0" aria-expanded="false" aria-controls="machine-detail"
-       title="Open the load of this machine"><span class="fold-icon" aria-hidden="true">▸</span>{{ machine_row("", "this machine") }}<span class="muted machine-top-close" hidden>Close</span></div>
+       title="{{ _("Open the load of this machine") }}"><span class="fold-icon" aria-hidden="true">▸</span><span class="machine-top-label">{{ _("This machine") }}</span>{{ machine_row("", _("this machine")) }}<span class="muted machine-top-close" hidden>{{ _("Close") }}</span></div>
   <div id="machine-detail" hidden>
-<p class="muted" style="margin: 10px 0 0">The whole machine, last hour: every Odoo instance, PostgreSQL and the rest together. On the CPU chart, over the total, the share of PostgreSQL (every cluster) and of each instance of the active servers, in percent of the whole machine; an instance whose processes OmniaCLI cannot find (Docker: see its workspace) has no line.</p>
+<p class="muted" style="margin: 10px 0 0">{{ _("The whole machine, last hour: every Odoo instance, PostgreSQL and the rest together.") }}</p>
+<details style="margin: 4px 0 0"><summary>{{ _("More") }}</summary><p class="muted" style="margin: 4px 0 0">{{ _("On the CPU chart, over the total, the share of PostgreSQL (every cluster) and of each instance of the active servers, in percent of the whole machine; an instance whose processes OmniaCLI cannot find (Docker: see its workspace) has no line.") }}</p></details>
 <div class="machine-grid">
   <section class="panel machine-panel" data-link="">
     <div class="tiles">
-      <div class="tile"><div class="tile-label">CPU now</div><div class="tile-value" data-tile="cpu">–</div></div>
-      <div class="tile"><div class="tile-label">Received</div><div class="tile-value" data-tile="rx">–</div></div>
-      <div class="tile"><div class="tile-label">Sent</div><div class="tile-value" data-tile="tx">–</div></div>
+      <div class="tile"><div class="tile-label">{{ _("CPU now") }}</div><div class="tile-value" data-tile="cpu">–</div></div>
+      <div class="tile"><div class="tile-label">{{ _("Received") }}</div><div class="tile-value" data-tile="rx">–</div></div>
+      <div class="tile"><div class="tile-label">{{ _("Sent") }}</div><div class="tile-value" data-tile="tx">–</div></div>
     </div>
     <p class="muted machine-state" style="margin: 6px 0 0"></p>
-    <h3 class="chart-title">CPU, % of all <span class="cores">?</span></h3>
-    <div class="chart-box"><svg class="chart" data-chart="cpu" role="img" aria-label="CPU of this machine over the last hour"></svg><div class="chart-tip" hidden></div></div>
+    <h3 class="chart-title">{{ _("CPU, % of all") }} <span class="cores">?</span></h3>
+    <div class="chart-box"><svg class="chart" data-chart="cpu" role="img" aria-label="{{ _("CPU of this machine over the last hour") }}"></svg><div class="chart-tip" hidden></div></div>
     <div class="chart-legend" data-legend="cpu"></div>
-    <h3 class="chart-title">Network, per second <span class="muted" style="font-weight: 400"><span class="key s1"></span>received<span class="key s2"></span>sent</span></h3>
-    <div class="chart-box"><svg class="chart" data-chart="net" role="img" aria-label="Network traffic of this machine over the last hour"></svg><div class="chart-tip" hidden></div></div>
-    <h3 class="chart-title">Disks, free space</h3>
-    <div class="disk-list"><span class="muted">Loading…</span></div>
+    <h3 class="chart-title">{{ _("Network, per second") }} <span class="muted" style="font-weight: 400"><span class="key s1"></span>{{ _("received") }}<span class="key s2"></span>{{ _("sent") }}</span></h3>
+    <div class="chart-box"><svg class="chart" data-chart="net" role="img" aria-label="{{ _("Network traffic of this machine over the last hour") }}"></svg><div class="chart-tip" hidden></div></div>
+    <h3 class="chart-title">{{ _("Disks, free space") }}</h3>
+    <div class="disk-list"><span class="muted">{{ _("Loading…") }}</span></div>
   </section>
 </div>
   </div>
@@ -42,11 +62,29 @@
    come to the Dashboard for is a server or a link to work on; it opens a
    folded section, or group, that holds a match (_list.html) #}
 {% set searched = "servers linked" if machine and machine_links else "servers" %}
-{% if total + (machine_links | length if machine else 0) > 1 or q %}{{ list_search(searched, "Search server, linked instance, workspace, group, database, branch…", q, wide=true) }}{% endif %}
+{% if total + (machine_links | length if machine else 0) > 1 or q %}{{ list_search(searched, _("Search server, linked instance, workspace, group, database, branch…"), q, wide=true) }}{% endif %}
+{# the summary of Servers, in its heading (seen also when it is folded): its
+   instances by state, the last job; as the page was drawn #}
+{% set count = namespace(running=0, stopped=0, unknown=0) %}
+{% for row in rows %}{% for role in row.roles %}{% set st = row.state.get(role) %}
+{% if st == "running" %}{% set count.running = count.running + 1 %}{% elif st == "stopped" %}{% set count.stopped = count.stopped + 1 %}{% else %}{% set count.unknown = count.unknown + 1 %}{% endif %}
+{% endfor %}{% endfor %}
 <section class="fold" data-fold="servers">
 <div class="fold-head">
-  <h1><button type="button" class="fold-toggle" aria-expanded="true"><span class="fold-icon" aria-hidden="true">▾</span>Servers</button></h1>
-  {% if is_admin and not prefix %}<a class="button" href="/groups">Edit groups</a>{% endif %}
+  <div class="fold-title">
+  <h2><button type="button" class="fold-toggle" aria-expanded="true"><span class="fold-icon" aria-hidden="true">▾</span>{{ _("Servers") }}</button></h2>
+  {% if rows or jobs %}<div class="dash-summary">
+    {% if rows %}
+    <span class="badge ok">{{ _("1 instance running") if count.running == 1 else _("{n} instances running", n=count.running) }}</span>
+    {% if count.stopped %}<span class="badge error">{{ _("1 instance stopped") if count.stopped == 1 else _("{n} instances stopped", n=count.stopped) }}</span>{% endif %}
+    {% if count.unknown %}<span class="badge warn" title="{{ _("OmniaCLI cannot read the state of their service") }}">{{ _("1 instance in an unknown state") if count.unknown == 1 else _("{n} instances in an unknown state", n=count.unknown) }}</span>{% endif %}
+    {% endif %}
+    {% if jobs %}{% set last = jobs[0] %}<span class="last-job"><span class="muted">{{ _("Last job") }}</span>
+      <a href="{{ prefix }}/jobs/{{ last.id }}">{{ tr(last.title) }}</a>
+      <span class="badge {{ job_badge.get(last.status, '') }}">{{ job_status.get(last.status, last.status) }}</span></span>{% endif %}
+  </div>{% endif %}
+  </div>
+  {% if is_admin and not prefix %}<a class="button" href="/groups">{{ _("Edit groups") }}</a>{% endif %}
 </div>
 <div class="fold-body"><div class="fold-inner">
 <div id="server-sections" data-list="servers">
@@ -57,11 +95,11 @@
 {% if dashboard_workspaces %}
 <section class="fold" data-fold="workspaces">
 <div class="fold-head">
-  <h1><button type="button" class="fold-toggle" aria-expanded="true"><span class="fold-icon" aria-hidden="true">▾</span>Workspaces</button></h1>
-  <a class="button" href="{{ prefix }}/workspaces?new=1">New workspace</a>
+  <h2><button type="button" class="fold-toggle" aria-expanded="true"><span class="fold-icon" aria-hidden="true">▾</span>{{ _("Workspaces") }}</button></h2>
+  <a class="button" href="{{ prefix }}/workspaces?new=1">{{ _("New workspace") }}</a>
 </div>
 <div class="fold-body"><div class="fold-inner">
-{% if dashboard_workspaces | length > 1 %}{{ list_search("workspaces", "Search workspace, domain, storage, server…") }}{% endif %}
+{% if dashboard_workspaces | length > 1 %}{{ list_search("workspaces", _("Search workspace, domain, storage, server…")) }}{% endif %}
 {% with workspaces = dashboard_workspaces %}{% include "_workspaces_list.html" %}{% endwith %}
 </div></div>
 </section>
@@ -69,11 +107,11 @@
 {% if machine and machine_links %}
 <section class="fold" data-fold="linked">
 <div class="fold-head">
-  <h1><button type="button" class="fold-toggle" aria-expanded="true"><span class="fold-icon" aria-hidden="true">▾</span>Linked</button></h1>
-  {% if is_admin and not prefix %}<a class="button" href="/groups#links">Edit groups</a>{% endif %}
+  <h2><button type="button" class="fold-toggle" aria-expanded="true"><span class="fold-icon" aria-hidden="true">▾</span>{{ _("Linked") }}</button></h2>
+  {% if is_admin and not prefix %}<a class="button" href="/groups#links">{{ _("Edit groups") }}</a>{% endif %}
 </div>
 <div class="fold-body"><div class="fold-inner">
-<p class="muted" style="margin-top: 0">The machine of each linked instance, through its link: CPU and network of the last 15 minutes, its disks. A name opens it.</p>
+<p class="muted" style="margin-top: 0">{{ _("The machine of each linked instance, through its link: CPU and network of the last 15 minutes, its disks. A name opens it.") }}</p>
 {% macro linked_table(links) %}
 <div class="panel" data-list-box><div class="scroll">
 <table class="linked-rows">
@@ -92,27 +130,27 @@
 {% if load_workspaces %}
 <section class="fold" data-fold="my-workspaces">
 <div class="fold-head">
-  <h1><button type="button" class="fold-toggle" aria-expanded="true"><span class="fold-icon" aria-hidden="true">▾</span>{{ "Your workspace" if load_workspaces | length == 1 else "Your workspaces" }}</button></h1>
+  <h2><button type="button" class="fold-toggle" aria-expanded="true"><span class="fold-icon" aria-hidden="true">▾</span>{{ _("Your workspace") if load_workspaces | length == 1 else _("Your workspaces") }}</button></h2>
 </div>
 <div class="fold-body"><div class="fold-inner">
-<p class="muted" style="margin-top: 0">What the workspace's containers use, last hour, against its limits. Network: the traffic of its projects' networks, not the traffic inside one project.</p>
+<p class="muted" style="margin-top: 0">{{ _("What the workspace's containers use, last hour, against its limits. Network: the traffic of its projects' networks, not the traffic inside one project.") }}</p>
 <div class="machine-grid">
   {% for name, ws_role in load_workspaces %}
   <section class="panel ws-load-panel" data-ws="{{ name }}">
     <h2 style="margin: 0 0 8px">{% if ws_role == "admin" %}<a href="{{ prefix }}/workspaces/{{ name | urlencode }}">{{ name }}</a>{% else %}{{ name }}{% endif %}</h2>
     <div class="tiles">
-      <div class="tile"><div class="tile-label">CPU now</div><div class="tile-value" data-tile="cpu">–</div></div>
-      <div class="tile"><div class="tile-label">Memory</div><div class="tile-value" data-tile="mem">–</div></div>
-      <div class="tile"><div class="tile-label">Received</div><div class="tile-value" data-tile="in">–</div></div>
-      <div class="tile"><div class="tile-label">Sent</div><div class="tile-value" data-tile="out">–</div></div>
+      <div class="tile"><div class="tile-label">{{ _("CPU now") }}</div><div class="tile-value" data-tile="cpu">–</div></div>
+      <div class="tile"><div class="tile-label">{{ _("Memory") }}</div><div class="tile-value" data-tile="mem">–</div></div>
+      <div class="tile"><div class="tile-label">{{ _("Received") }}</div><div class="tile-value" data-tile="in">–</div></div>
+      <div class="tile"><div class="tile-label">{{ _("Sent") }}</div><div class="tile-value" data-tile="out">–</div></div>
     </div>
     <p class="muted ws-load-state" style="margin: 6px 0 0"></p>
-    <h3 class="chart-title">CPU, cores <span class="muted ws-cpu-limit" style="font-weight: 400"></span></h3>
-    <div class="chart-box"><svg class="chart" data-chart="cpu" role="img" aria-label="CPU of workspace {{ name }} over the last hour"></svg><div class="chart-tip" hidden></div></div>
-    <h3 class="chart-title">Network, per second <span class="muted" style="font-weight: 400"><span class="key s1"></span>received<span class="key s2"></span>sent</span></h3>
-    <div class="chart-box"><svg class="chart" data-chart="net" role="img" aria-label="Network traffic of workspace {{ name }} over the last hour"></svg><div class="chart-tip" hidden></div></div>
-    <h3 class="chart-title">Disk</h3>
-    <div class="ws-disk"><span class="muted">Loading…</span></div>
+    <h3 class="chart-title">{{ _("CPU, cores") }} <span class="muted ws-cpu-limit" style="font-weight: 400"></span></h3>
+    <div class="chart-box"><svg class="chart" data-chart="cpu" role="img" aria-label="{{ _("CPU of workspace {name} over the last hour", name=name) }}"></svg><div class="chart-tip" hidden></div></div>
+    <h3 class="chart-title">{{ _("Network, per second") }} <span class="muted" style="font-weight: 400"><span class="key s1"></span>{{ _("received") }}<span class="key s2"></span>{{ _("sent") }}</span></h3>
+    <div class="chart-box"><svg class="chart" data-chart="net" role="img" aria-label="{{ _("Network traffic of workspace {name} over the last hour", name=name) }}"></svg><div class="chart-tip" hidden></div></div>
+    <h3 class="chart-title">{{ _("Disk") }}</h3>
+    <div class="ws-disk"><span class="muted">{{ _("Loading…") }}</span></div>
   </section>
   {% endfor %}
 </div>
@@ -121,8 +159,8 @@
 {% endif %}
 <section class="fold" data-fold="jobs">
 <div class="fold-head">
-  <h1><button type="button" class="fold-toggle" aria-expanded="true"><span class="fold-icon" aria-hidden="true">▾</span>Last jobs</button></h1>
-  
+  <h2><button type="button" class="fold-toggle" aria-expanded="true"><span class="fold-icon" aria-hidden="true">▾</span>{{ _("Last jobs") }}</button></h2>
+  <a class="button" href="{{ prefix }}/jobs">{{ _("All jobs") }}</a>
 </div>
 <div class="fold-body"><div class="fold-inner">
 <div class="panel" id="last-jobs">{% include "_jobs_table.html" %}</div>
@@ -131,6 +169,25 @@
 </div></div>
 </section>
 <script>
+// the texts of the Dashboard's scripts, in the page's language
+const DASH_T = {
+  status: {{ job_status | tojson }}, badge: {{ job_badge | tojson }},
+  noJobs: {{ _("No job of these servers among the last ones.") | tojson }},
+  finishedOk: {{ _("finished: success") | tojson }}, close: {{ _("Close") | tojson }},
+  http: {{ _("No answer: HTTP {status}") | tojson }}, noAnswer: {{ _("No answer.") | tojson }},
+  older: {{ _("Not available: that OmniaCLI is older.") | tojson }}, noDisks: {{ _("No disks found.") | tojson }},
+  core: {{ _("{n} core") | tojson }}, cores: {{ _("{n} cores") | tojson }},
+  others: {{ _("{n} other instances") | tojson }}, total: {{ _("total {value}") | tojson }}, totalLabel: {{ _("Total") | tojson }},
+  traffic: {{ _("received {rx} · sent {tx}") | tojson }},
+  spark: {{ _("{cpu}% CPU, {mem} MiB, {procs} processes") | tojson }},
+  open: {{ _("Open the load of this machine") | tojson }}, shut: {{ _("Close the load of this machine") | tojson }},
+  limit: {{ _("(limit {n})") | tojson }}, noLimit: {{ _("(no limit)") | tojson }},
+  wsTip: {{ _("{cores} cores · {mem} MiB") | tojson }},
+  idle: {{ _("Nothing running in this workspace now.") | tojson }},
+  noBridges: {{ _("Network: its projects' networks are not known yet (looked at once a minute).") | tojson }},
+  noSamples: {{ _("No samples yet.") | tojson }},
+};
+const dashFill = (text, values) => text.replace(/\{(\w+)\}/g, (all, k) => (k in values ? values[k] : all));
 (function () {
   // the sections fold and unfold; each viewer's choice is kept in this browser
   for (const fold of document.querySelectorAll(".fold")) {
@@ -190,7 +247,7 @@
         if (!data) continue;
         const series = (data.instances[row.dataset.key] || {points: []}).points;
         OmniaLoad.cpu(row.querySelector(".load-cpu"), series,
-                      {title: (p) => `${p.cpu}% CPU, ${p.mem} MiB, ${p.procs} processes`});
+                      {title: (p) => dashFill(DASH_T.spark, p)});
       }
     } catch (e) { /* next round */ }
   }
@@ -242,7 +299,7 @@
     let none = document.getElementById("last-jobs-none");
     if (searching && !shown) {
       if (!none) {
-        none = text("p", "muted list-empty", "No job of these servers among the last ones.");
+        none = text("p", "muted list-empty", DASH_T.noJobs);
         none.id = "last-jobs-none";
         table.closest("#last-jobs").after(none);
       }
@@ -253,8 +310,12 @@
     if (event.target.id === "server-sections") filterJobs();
   });
   const polled = new Set();  // the sources polled once: their first answer only sets seen
+  // a cell's status is its class (its text is in the page's language)
+  const statusOf = (td) => Object.keys(DASH_T.status).find((st) => td.classList.contains(st)) || td.textContent.trim();
   for (const tr of document.querySelectorAll("#last-jobs tr[data-job]")) {
-    seen["|" + tr.dataset.job] = tr.querySelector(".job-status").textContent.trim();
+    const st = tr.querySelector(".job-status");
+    seen["|" + tr.dataset.job] = statusOf(st);
+    statusCell(st, statusOf(st));  // drawn as a badge
   }
   polled.add("");
   const text = (tag, cls, value) => { const el = document.createElement(tag); if (cls) el.className = cls; el.textContent = value || ""; return el; };
@@ -263,8 +324,11 @@
 
   function statusCell(td, status) {
     td.className = "status " + status + " job-status";
-    td.innerHTML = (status === "running" ? runnerHtml : "");
-    td.appendChild(document.createTextNode(status));
+    const badge = document.createElement("span");
+    badge.className = "badge " + (DASH_T.badge[status] || "");
+    badge.innerHTML = (status === "running" ? runnerHtml : "");
+    badge.appendChild(document.createTextNode(DASH_T.status[status] || status));
+    td.replaceChildren(badge);
   }
 
   function tableRow(job) {
@@ -303,7 +367,7 @@
         filterJobs();
       }
       const st = tr.querySelector(".job-status");
-      if (st.textContent.trim() !== job.status) statusCell(st, job.status);
+      if (statusOf(st) !== job.status) statusCell(st, job.status);
       tr.querySelector(".job-finished").textContent = job.finished || "";
       tr.querySelector(".job-duration").textContent = job.duration || "";
       tr.querySelector(".job-error").textContent = job.error || "";
@@ -321,9 +385,9 @@
     const body = text("div", "toast-body");
     const title = text("a", "toast-title", (link ? link + " › " : "") + job.title);
     title.href = base + "/jobs/" + job.id;
-    body.append(title, text("div", "toast-text", ok ? "finished: success" : job.status + (job.error ? ": " + job.error : "")));
+    body.append(title, text("div", "toast-text", ok ? DASH_T.finishedOk : (DASH_T.status[job.status] || job.status) + (job.error ? ": " + job.error : "")));
     const close = text("button", "toast-close", "×");
-    close.type = "button"; close.setAttribute("aria-label", "Close");
+    close.type = "button"; close.setAttribute("aria-label", DASH_T.close);
     close.onclick = () => box.remove();
     box.append(body, close);
     document.getElementById("toasts").appendChild(box);
@@ -377,15 +441,15 @@
     let data;
     try {
       const resp = await fetch(`${base}/api/metrics?machine_only=1&since=${from}`);
-      if (!resp.ok) { state.textContent = "No answer: HTTP " + resp.status; return; }
+      if (!resp.ok) { state.textContent = dashFill(DASH_T.http, {status: resp.status}); return; }
       data = await resp.json();
-    } catch (e) { state.textContent = "No answer."; return; }
-    if (!data.machine) { state.textContent = "Not available: that OmniaCLI is older."; return; }
+    } catch (e) { state.textContent = DASH_T.noAnswer; return; }
+    if (!data.machine) { state.textContent = DASH_T.older; return; }
     state.textContent = "";
     const points = series.get(panel).concat(data.machine).slice(-720);
     series.set(panel, points);
     if (points.length) since.set(panel, points[points.length - 1].t);
-    panel.querySelector(".cores").textContent = data.cores + (data.cores === 1 ? " core" : " cores");
+    panel.querySelector(".cores").textContent = dashFill(data.cores === 1 ? DASH_T.core : DASH_T.cores, {n: data.cores});
     // over the total: PostgreSQL and each instance, in percent of the whole
     // machine too; more than six instances: five, and the others together
     const keys = [...new Set(points.flatMap((p) => Object.keys(p.instances || {})))].sort();
@@ -394,17 +458,17 @@
     const lines = [];
     if (points.some((p) => p.pg !== null && p.pg !== undefined)) lines.push({label: "PostgreSQL", cls: "c2", value: (p) => p.pg});
     own.forEach((k, i) => lines.push({label: k, cls: "c" + (3 + i), value: (p) => share(p, k)}));
-    if (others.length) lines.push({label: `${others.length} other instances`, cls: "c8",
+    if (others.length) lines.push({label: dashFill(DASH_T.others, {n: others.length}), cls: "c8",
       value: (p) => (p.instances ? others.reduce((sum, k) => sum + (p.instances[k] || 0), 0) : null)});
     const pct = (v) => (v === null || v === undefined ? "–" : v.toFixed(1) + "%");
     OmniaCharts.draw(panel.querySelector('[data-chart="cpu"]'), points, "cpu",
       {unit: "%", minMax: 10, format: (v) => v.toFixed(0), lines,
-       tip: (p) => [`total ${pct(p.cpu)}`, ...lines.map((l) => `${l.label} ${pct(l.value(p))}`)].join(" · ")});
+       tip: (p) => [dashFill(DASH_T.total, {value: pct(p.cpu)}), ...lines.map((l) => `${l.label} ${pct(l.value(p))}`)].join(" · ")});
     const now = points[points.length - 1];
-    OmniaCharts.legend(panel.querySelector('[data-legend="cpu"]'), now ? [{label: "Total", cls: "s1", value: pct(now.cpu)},
+    OmniaCharts.legend(panel.querySelector('[data-legend="cpu"]'), now ? [{label: DASH_T.totalLabel, cls: "s1", value: pct(now.cpu)},
       ...lines.map((l) => ({label: l.label, cls: l.cls, value: pct(l.value(now))}))] : []);
     OmniaCharts.draw(panel.querySelector('[data-chart="net"]'), points, "rx",
-      {also: "tx", minMax: 1024, format: rate, padLeft: 70, tip: (p) => `received ${rate(p.rx)} · sent ${rate(p.tx)}`});
+      {also: "tx", minMax: 1024, format: rate, padLeft: 70, tip: (p) => dashFill(DASH_T.traffic, {rx: rate(p.rx), tx: rate(p.tx)})});
     const last = points[points.length - 1];
     if (last) {
       panel.querySelector('[data-tile="cpu"]').textContent = last.cpu === null ? "–" : last.cpu.toFixed(1) + "%";
@@ -430,11 +494,11 @@
     try {
       const resp = await fetch(base + "/api/disks");
       if (resp.ok) disks = (await resp.json()).disks;
-      else error = resp.status === 404 ? "Not available: that OmniaCLI is older." : "No answer: HTTP " + resp.status;
-    } catch (e) { error = "No answer."; }
+      else error = resp.status === 404 ? DASH_T.older : dashFill(DASH_T.http, {status: resp.status});
+    } catch (e) { error = DASH_T.noAnswer; }
     // the folded section's row: the disks' compact widgets (_load.html)
     if (!link) OmniaLoad.machineDisks(document.querySelector(".machine-top .machine-row"), disks, base);
-    if (!disks || !disks.length) { OmniaDisk.message(list, error || "No disks found.", !!error); return; }
+    if (!disks || !disks.length) { OmniaDisk.message(list, error || DASH_T.noDisks, !!error); return; }
     list.replaceChildren();
     for (const d of disks) {
       const item = document.createElement("div");
@@ -456,7 +520,7 @@
   const set = (open) => {
     detail.hidden = !open;
     row.setAttribute("aria-expanded", String(open));
-    row.title = open ? "Close the load of this machine" : "Open the load of this machine";
+    row.title = open ? DASH_T.shut : DASH_T.open;
     row.querySelector(".fold-icon").textContent = open ? "▾" : "▸";
     // open: the panel shows the load, the row's own charts would only repeat it
     row.querySelector(".machine-row").hidden = open;
@@ -492,9 +556,9 @@
     let data;
     try {
       const resp = await fetch(`{{ prefix }}/api/workspaces/${encodeURIComponent(name)}/load?since=${from}`);
-      if (!resp.ok) { state.textContent = "No answer: HTTP " + resp.status; return; }
+      if (!resp.ok) { state.textContent = dashFill(DASH_T.http, {status: resp.status}); return; }
       data = await resp.json();
-    } catch (e) { state.textContent = "No answer."; return; }
+    } catch (e) { state.textContent = DASH_T.noAnswer; return; }
     state.textContent = "";
     // CPU comes in percent of one core: shown in cores
     const fresh = data.points.map((p) => ({...p, cores: p.cpu === null ? null : p.cpu / 100}));
@@ -502,11 +566,11 @@
     series.set(panel, points);
     if (points.length) since.set(panel, points[points.length - 1].t);
     const limits = data.limits || {};
-    panel.querySelector(".ws-cpu-limit").textContent = limits.cpus ? `(limit ${limits.cpus})` : "(no limit)";
+    panel.querySelector(".ws-cpu-limit").textContent = limits.cpus ? dashFill(DASH_T.limit, {n: limits.cpus}) : DASH_T.noLimit;
     OmniaCharts.draw(panel.querySelector('[data-chart="cpu"]'), points, "cores",
-      {minMax: 0.1, format: (v) => v.toFixed(v < 1 ? 2 : 1), tip: (p) => `${p.cores.toFixed(2)} cores · ${p.mem ?? "–"} MiB`});
+      {minMax: 0.1, format: (v) => v.toFixed(v < 1 ? 2 : 1), tip: (p) => dashFill(DASH_T.wsTip, {cores: p.cores.toFixed(2), mem: p.mem ?? "–"})});
     OmniaCharts.draw(panel.querySelector('[data-chart="net"]'), points, "in",
-      {also: "out", minMax: 1024, format: rate, padLeft: 70, tip: (p) => `received ${rate(p.in)} · sent ${rate(p.out)}`});
+      {also: "out", minMax: 1024, format: rate, padLeft: 70, tip: (p) => dashFill(DASH_T.traffic, {rx: rate(p.in), tx: rate(p.out)})});
     const last = points[points.length - 1];
     if (last) {
       const tile = (k, text) => { panel.querySelector(`[data-tile="${k}"]`).textContent = text; };
@@ -514,10 +578,10 @@
       tile("mem", last.mem === null ? "–" : (last.mem / 1024).toFixed(1) + (limits.memory_gb ? " / " + limits.memory_gb : "") + " GB");
       tile("in", last.in === null ? "–" : rate(last.in));
       tile("out", last.out === null ? "–" : rate(last.out));
-      if (last.cpu === null && last.mem === null) state.textContent = "Nothing running in this workspace now.";
-      else if (!last.bridges) state.textContent = "Network: its projects' networks are not known yet (looked at once a minute).";
+      if (last.cpu === null && last.mem === null) state.textContent = DASH_T.idle;
+      else if (!last.bridges) state.textContent = DASH_T.noBridges;
     } else {
-      state.textContent = "No samples yet.";
+      state.textContent = DASH_T.noSamples;
     }
     if (!withDisk) return;
     const box = panel.querySelector(".ws-disk");

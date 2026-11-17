@@ -1,17 +1,24 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
 {% extends "base.html" %}
-{% block title %}Jobs · OmniaCLI{% endblock %}
+{% block title %}{{ _("Jobs") }} · OmniaCLI{% endblock %}
 {% block content %}
-<h1>Jobs</h1>
-<form class="actions job-filter" method="get" action="{{ prefix }}/jobs" style="margin: 0 0 12px">
-  <select name="server" aria-label="Server" onchange="this.form.submit()">
-    <option value="">All servers</option>
-    {% for name in servers %}<option value="{{ name }}" {% if name == server %}selected{% endif %}>{{ name }}</option>{% endfor %}
-  </select>
-  <input type="search" name="q" value="{{ q }}" placeholder="Search title, user, error…" aria-label="Search">
-  <button>Search</button>
-  {% if server or q %}<a class="button" href="{{ prefix }}/jobs">Clear</a>{% endif %}
-</form>
-<p class="muted">{{ total }} job{{ "" if total == 1 else "s" }}{% if total > jobs | length %}, the last {{ jobs | length }} shown{% endif %}.</p>
-<div class="panel">{% include "_jobs_table.html" %}</div>
+<div class="page-head">
+  <div>
+    <h1>{{ _("Jobs") }}</h1>
+    <p>{{ _("Every pull, update, backup and restart, with who started it and how it ended.") }}</p>
+  </div>
+</div>
+<section class="panel">
+  <form class="actions job-filter" method="get" action="{{ prefix }}/jobs" style="margin: 0 0 12px">
+    <select name="server" aria-label="{{ _('Server') }}" onchange="this.form.submit()">
+      <option value="">{{ _("All servers") }}</option>
+      {% for name in servers %}<option value="{{ name }}" {% if name == server %}selected{% endif %}>{{ name }}</option>{% endfor %}
+    </select>
+    <input type="search" name="q" value="{{ q }}" placeholder="{{ _('Search title, user, error…') }}" aria-label="{{ _('Search') }}">
+    <button class="primary">{{ _("Search") }}</button>
+    {% if server or q %}<a class="button" href="{{ prefix }}/jobs">{{ _("Clear") }}</a>{% endif %}
+  </form>
+  <p class="muted" style="margin: 0 0 10px">{% if total == 1 %}{{ _("1 job") }}{% else %}{{ _("{count} jobs", count=total) }}{% endif %}{% if total > jobs | length %}, {{ _("the last {count} shown", count=jobs | length) }}{% endif %}.</p>
+  {% include "_jobs_table.html" %}
+</section>
 {% endblock %}

@@ -27,23 +27,23 @@
     {% for f in backup_fields %}
     <div {% if f.shown_with %}data-shown-with="{{ f.shown_with }}" style="margin-left: 22px"{% endif %}>
     {% if f.kind == "checkbox" %}
-    <label style="display: block; margin-top: 6px"><input type="checkbox" name="{{ f.key }}" data-default="{{ 1 if f.default else 0 }}" {{ "checked" if f.default }}> {{ f.label }}</label>
+    <label style="display: block; margin-top: 6px"><input type="checkbox" name="{{ f.key }}" data-default="{{ 1 if f.default else 0 }}" {{ "checked" if f.default }}> {{ tr(f.label) }}</label>
     {% elif f.kind == "checklist" %}
-    <p style="margin: 6px 0 2px">{{ f.label }} <span class="muted" data-checklist-state="{{ f.key }}"></span></p>
+    <p style="margin: 6px 0 2px">{{ tr(f.label) }} <span class="muted" data-checklist-state="{{ f.key }}"></span></p>
     <input type="hidden" name="{{ f.key }}">
     <input type="hidden" name="{{ f.key }}__shown">
     <div data-checklist="{{ f.key }}" data-threshold="{{ f.threshold }}"></div>
     {% else %}
-    <label style="display: block; margin-top: 6px">{{ f.label }} <input type="{{ 'number' if f.kind == 'number' else 'text' }}" {% if f.kind == "number" %}min="0" step="any" style="width: 7em"{% endif %} name="{{ f.key }}" data-default="{{ f.default if f.default is not none else '' }}" value="{{ f.default if f.default is not none else '' }}" placeholder="{{ f.placeholder }}"></label>
+    <label style="display: block; margin-top: 6px">{{ tr(f.label) }} <input type="{{ 'number' if f.kind == 'number' else 'text' }}" {% if f.kind == "number" %}min="0" step="any" style="width: 7em"{% endif %} name="{{ f.key }}" data-default="{{ f.default if f.default is not none else '' }}" value="{{ f.default if f.default is not none else '' }}" placeholder="{{ tr(f.placeholder) }}"></label>
     {% endif %}
-    {% if f.help %}<p class="muted" style="margin: 2px 0 0 22px; font-size: 13px">{{ f.help }}</p>{% endif %}
+    {% if f.help %}<p class="muted" style="margin: 2px 0 0 22px; font-size: 13px">{{ tr(f.help) }}</p>{% endif %}
     </div>
     {% endfor %}
     <div id="backup-room"></div>
     <p class="muted" id="backup-remembered" style="font-size: 13px" hidden></p>
     <div class="actions">
-      <button type="submit" id="backup-submit">{{ icon("backup") }}Back up</button>
-      <button type="button" id="backup-cancel">Cancel</button>
+      <button type="submit" id="backup-submit">{{ icon("backup") }}{{ _("Back up") }}</button>
+      <button type="button" id="backup-cancel">{{ _("Cancel") }}</button>
     </div>
   </form>
 </dialog>
@@ -52,6 +52,16 @@
   const dialog = document.getElementById("backup-dialog");
   const form = document.getElementById("backup-form");
   const MB = 1048576;
+  const T = {
+    reading: {{ _("· reading the database…") | tojson }}, none: {{ _("· none holds data") | tojson }},
+    title: {{ _("Backup {key}") | tojson }}, titleDownload: {{ _("Backup {key} + download") | tojson }},
+    download: {{ _("The zip is downloaded when the backup is ready.") | tojson }},
+    stays: {{ _("The zip stays in the instance's backups.") | tojson }},
+    room: {{ _("a restore into {key} on this machine") | tojson }},
+    last: {{ _("The choices of the last backup ({when}).") | tojson }},
+    lastBy: {{ _("The choices of the last backup ({when}, {user}).") | tojson }},
+    noAnswer: {{ _("no answer") | tojson }},
+  };
   let opened = 0;           // an answer for a dialog opened again since is dropped
   let estimate = null;      // the estimate's answer, null until it comes
   let remembered = {values: {}, shown: {}};
@@ -95,7 +105,7 @@
     // the rows from the estimate: ticked as the rule above says
     const entry = lists[key];
     const state = form.querySelector(`[data-checklist-state="${CSS.escape(key)}"]`);
-    if (estimate === null) { state.textContent = "· reading the database…"; state.className = "muted"; return; }
+    if (estimate === null) { state.textContent = T.reading; state.className = "muted"; return; }
     if (estimate.error) { state.textContent = "· " + estimate.error; state.className = "error"; return; }
     entry.rows = (estimate.lists || {})[key] || [];
     entry.loaded = true;
@@ -105,7 +115,7 @@
       value: row.value, label: row.label, detail: row.detail ? " · " + row.detail : "",
       checked: chosen.has(row.value) || (!shown.has(row.value) && bytes !== null && row.size >= bytes),
     })));
-    state.textContent = entry.rows.length ? "" : "· none holds data"; state.className = "muted";
+    state.textContent = entry.rows.length ? "" : T.none; state.className = "muted";
   }
   form.addEventListener("change", (ev) => {
     if (ev.target.type === "checkbox" && form.querySelector(`[data-shown-with="${CSS.escape(ev.target.name)}"]`)) {
@@ -140,7 +150,7 @@
       const resp = await fetch(url, {headers: {Accept: "application/json"}});
       const data = await resp.json().catch(() => null);
       if (!resp.ok) return {error: (data && (data.error || data.detail)) || "HTTP " + resp.status};
-      return data || {error: "no answer"};
+      return data || {error: T.noAnswer};
     } catch (e) { return {error: e.message}; }
   }
   for (const button of document.querySelectorAll("[data-backup]")) {
@@ -159,12 +169,11 @@
       room.reset(true);
       const note = document.getElementById("backup-remembered");
       note.hidden = true;
-      document.getElementById("backup-title").textContent = `Backup ${button.dataset.key}` + (download ? " + download" : "");
-      document.getElementById("backup-sub").textContent = download
-        ? "The zip is downloaded when the backup is ready." : "The zip stays in the instance's backups.";
+      document.getElementById("backup-title").textContent = (download ? T.titleDownload : T.title).replace("{key}", button.dataset.key);
+      document.getElementById("backup-sub").textContent = download ? T.download : T.stays;
       dialog.showModal();
       json(`${api}/restore/room`).then((data) => {
-        if (mine === opened) room.room(data, `a restore into ${button.dataset.key} on this machine`);
+        if (mine === opened) room.room(data, T.room.replace("{key}", button.dataset.key));
       });
       const data = await json(`${api}/backup/estimate`);
       if (mine !== opened) return;
@@ -172,8 +181,8 @@
       if (data.remembered && data.remembered.saved) {
         remembered = data.remembered;
         fill(remembered.values || {});
-        note.textContent = `The choices of the last backup (${remembered.saved.replace("T", " ")}`
-          + (remembered.user ? `, ${remembered.user}` : "") + ").";
+        const when = remembered.saved.replace("T", " ");
+        note.textContent = (remembered.user ? T.lastBy.replace("{user}", remembered.user) : T.last).replace("{when}", when);
         note.hidden = false;
       }
       showFields();

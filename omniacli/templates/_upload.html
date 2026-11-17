@@ -24,10 +24,10 @@ window.OmniaUpload = window.OmniaUpload || {
         if (window.OmniaLogin && OmniaLogin.isExpired(xhr.status, xhr.getResponseHeader("X-OmniaCLI-Login")))
           OmniaLogin.expired("POST");
         if (xhr.status < 300) resolve(data);
-        else reject(new Error(data.error || data.detail || "Error " + xhr.status));
+        else reject(new Error(data.error || data.detail || {{ _("Error {status}") | tojson }}.replace("{status}", xhr.status)));
       };
-      xhr.onerror = () => reject(new Error("The upload failed: OmniaCLI cannot be reached"));
-      xhr.onabort = () => reject(new Error("The upload was cancelled"));
+      xhr.onerror = () => reject(new Error({{ _("The upload failed: OmniaCLI cannot be reached") | tojson }}));
+      xhr.onabort = () => reject(new Error({{ _("The upload was cancelled") | tojson }}));
       xhr.send(file);
     });
     sending.abort = () => xhr.abort();

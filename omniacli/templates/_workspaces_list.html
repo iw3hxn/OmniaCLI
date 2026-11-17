@@ -4,26 +4,26 @@
    (_disk.html); a click opens its form. The Workspaces page and the
    Dashboard show it; workspaces: app.workspace_rows. Needs _charts.html,
    _disk.html, _load.html and _list.html included before it. #}
-{% from "_load.html" import cpu as load_cpu, net as load_net %}
-{% from "_list.html" import item %}
+{% from "_load.html" import cpu as load_cpu, net as load_net with context %}
+{% from "_list.html" import item with context %}
 <div class="panel" data-list-box>
   <div class="scroll">
   <table id="ws-list" data-list="workspaces">
-    <tr><th>Workspace</th><th>Domain</th><th>Servers</th><th>CPU (cores)</th><th>Memory</th>
-      <th title="what its containers receive and send, on the bridges of its projects">Network in / out</th>
-      <th>Disk used / limit</th><th title="the real disk under its storage, with what the workspaces were promised there">Real disk</th></tr>
+    <tr><th>{{ _("Workspace") }}</th><th>{{ _("Domain") }}</th><th>{{ _("Servers") }}</th><th>{{ _("CPU (cores)") }}</th><th>{{ _("Memory") }}</th>
+      <th title="{{ _("what its containers receive and send, on the bridges of its projects") }}">{{ _("Network in / out") }}</th>
+      <th>{{ _("Disk used / limit") }}</th><th title="{{ _("the real disk under its storage, with what the workspaces were promised there") }}">{{ _("Real disk") }}</th></tr>
     {% for ws in workspaces %}
-    <tr class="ws-row" data-ws="{{ ws.name }}" tabindex="0" style="cursor: pointer" title="Edit {{ ws.name }}"
+    <tr class="ws-row" data-ws="{{ ws.name }}" tabindex="0" style="cursor: pointer" title="{{ _("Edit {name}", name=ws.name) }}"
         {{ item([ws.name, ws.label, ws.domain, ws.storage, ws.servers | join(" ")] | join(" ")) }}>
       <td><strong>{{ ws.name }}</strong>{% if ws.label %} <span class="muted">{{ ws.label }}</span>{% endif %}
-        {% if ws.storage_problem %} <span class="error" title="{{ ws.storage_problem }}">⚠ unusable</span>{% endif %}</td>
+        {% if ws.storage_problem %} <span class="badge error" title="{{ tr(ws.storage_problem) }}">⚠ {{ _("unusable") }}</span>{% endif %}</td>
       <td class="mono">{{ ws.domain or "" }}</td>
       <td class="mono">{{ ws.instances_count }}</td>
       <td class="cpu">{{ load_cpu(ws.name) }}</td><td class="mono mem">…</td><td class="net">{{ load_net(ws.name) }}</td>
       <td class="mono disk">…</td><td class="mono free">…</td>
     </tr>
     {% else %}
-    <tr><td colspan="8" class="muted">No workspace yet: New workspace makes one.</td></tr>
+    <tr><td colspan="8" class="muted">{{ _("No workspace yet: New workspace makes one.") }}</td></tr>
     {% endfor %}
   </table>
   </div>
@@ -31,6 +31,13 @@
 <script>
 (function () {
   const all = {{ workspaces | tojson }};
+  const T = {
+    cores: {{ _("{n} cores") | tojson }}, coresOf: {{ _("{n} cores of {limit}") | tojson }},
+    noNetwork: {{ _("its projects' networks are not known yet (looked at once a minute)") | tojson }},
+    error: {{ _("Error {status}") | tojson }}, noAnswer: {{ _("No answer.") | tojson }},
+    notThere: {{ _("not there") | tojson }}, noStorage: {{ _("no storage") | tojson }}, noDisk: {{ _("no disk yet") | tojson }},
+  };
+  const fill = OmniaLoad.fill;
   const byName = Object.fromEntries(all.map((w) => [w.name, w]));
   const rows = [...document.querySelectorAll("#ws-list .ws-row")];
   if (!rows.length) return;
@@ -55,12 +62,12 @@
         const cores = points.map((p) => ({...p, cores: p.cpu === null ? null : p.cpu / 100}));
         OmniaLoad.cpu(row.querySelector(".load-cpu"), cores,
                       {key: "cores", minMax: 0.1, text: (p) => p.cores.toFixed(2) + (limits.cpus ? ` / ${limits.cpus}` : ""),
-                       title: (p) => `${p.cores.toFixed(2)} cores` + (limits.cpus ? ` of ${limits.cpus}` : "")});
+                       title: (p) => fill(limits.cpus ? T.coresOf : T.cores, {n: p.cores.toFixed(2), limit: limits.cpus})});
         const p = (data.workspaces || {})[name] || {};
         row.querySelector(".mem").textContent = (p.mem == null ? "—" : (p.mem / 1024).toFixed(2))
           + (limits.memory_gb ? ` / ${limits.memory_gb}` : "") + " GB";
         OmniaLoad.net(row.querySelector(".load-net"), points,
-                      {rx: "in", tx: "out", none: "its projects' networks are not known yet (looked at once a minute)"});
+                      {rx: "in", tx: "out", none: T.noNetwork});
       }
     }
     setTimeout(showLoad, 5000);
@@ -69,17 +76,17 @@
   async function showDisks() {
     const resp = await fetch("{{ prefix }}/api/workspaces/space").catch(() => null);
     const data = resp ? await resp.json().catch(() => ({})) : {};
-    if (!resp || !resp.ok) data.error = data.error || data.detail || (resp ? "Error " + resp.status : "No answer.");
+    if (!resp || !resp.ok) data.error = data.error || data.detail || (resp ? fill(T.error, {status: resp.status}) : T.noAnswer);
     for (const row of rows) {
       const ws = byName[row.dataset.ws], limit = (ws.limits || {}).disk_gb;
       const r = data.error ? null : ((data.roots || {})[ws.storage] || {})[ws.name];
       const cell = row.querySelector(".disk"), free = row.querySelector(".free");
-      if (!r) { OmniaDisk.message(cell, data.error ? "?" : (ws.storage ? "not there" : "no storage"), !!data.error);
+      if (!r) { OmniaDisk.message(cell, data.error ? "?" : (ws.storage ? T.notThere : T.noStorage), !!data.error);
         cell.title = data.error || ""; OmniaDisk.message(free, "—"); continue; }
       const total = limit ? limit * 1073741824 : r.own_size;
       if (total) OmniaDisk.render(cell, {label: ws.name, used: r.own_used, total,
                                          forecast: (data.forecasts || {})[ws.name]}, {compact: true});
-      else OmniaDisk.message(cell, "no disk yet");
+      else OmniaDisk.message(cell, T.noDisk);
       OmniaDisk.render(free, OmniaDisk.realDisk(data, ws.storage), {compact: true});
     }
     setTimeout(showDisks, 60000);

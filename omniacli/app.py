@@ -1996,7 +1996,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return _TEMPLATES.TemplateResponse(request, "discover.html", {"roles": ROLES})
 
     @app.get("/api/servers/discover", dependencies=[Depends(admin)])
-    async def discover_list():
+    async def discover_list(request: Request):
         """What every plugin finds on this machine (Discover page)."""
         known = [i for s in settings.servers.values() for i in s.instances.values()]
         found = []
@@ -2008,6 +2008,17 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 found.append({"type": name, "type_label": plugin.label, "error": str(exc)})
                 continue
             found.extend({"type": name, "type_label": plugin.label, **item.to_dict()} for item in items)
+        # what the page shows as text, in its language (the values stay as they are)
+        lang = request_language(request)
+        for item in found:
+            for key in ("notes", "missing"):
+                if isinstance(item.get(key), list):
+                    item[key] = [i18n.tr(lang, text) if isinstance(text, str) else text for text in item[key]]
+            if isinstance(item.get("facts"), list):
+                item["facts"] = [[i18n.tr(lang, f[0]), i18n.tr(lang, f[1])] if isinstance(f, (list, tuple)) and len(f) == 2
+                                 else f for f in item["facts"]]
+            if isinstance(item.get("error"), str):
+                item["error"] = i18n.tr(lang, item["error"])
         return {"found": found, "names": sorted(settings.servers)}
 
     @app.post("/api/servers/discover", dependencies=[Depends(admin)])

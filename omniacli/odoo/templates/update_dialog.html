@@ -6,22 +6,22 @@
     <h2 id="update-title" style="margin-bottom: 4px"></h2>
     <p class="muted" id="update-sub" style="margin-top: 0"></p>
     <label><input type="radio" name="mode" value="changed" checked>
-      Changed modules only <span class="muted">(automatic, click-odoo-update)</span></label><br>
-    <label><input type="radio" name="mode" value="chosen"> These modules <span class="muted">(odoo-bin -u)</span></label>
+      {{ _("Changed modules only") }} <span class="muted">({{ _("automatic") }}, click-odoo-update)</span></label><br>
+    <label><input type="radio" name="mode" value="chosen"> {{ _("These modules") }} <span class="muted">(odoo-bin -u)</span></label>
     <div id="chosen-box">
       <div id="addon-recent" class="actions" style="margin: 8px 0" hidden></div>
-      <input type="text" id="addon-filter" placeholder="Filter modules…" style="margin: 8px 0">
-      <div id="addon-list" class="addon-list"><span class="muted">Loading…</span></div>
+      <input type="text" id="addon-filter" placeholder="{{ _('Filter modules…') }}" style="margin: 8px 0">
+      <div id="addon-list" class="addon-list"><span class="muted">{{ _("Loading…") }}</span></div>
       <p class="muted" id="addon-versions" style="margin: -4px 0 8px"></p>
-      <label>Other modules, comma separated
-        <input type="text" id="addon-extra" placeholder="e.g. base"></label>
+      <label>{{ _("Other modules, comma separated") }}
+        <input type="text" id="addon-extra" placeholder="{{ _('e.g. base') }}"></label>
       <p class="muted" id="addon-count"></p>
     </div>
-    <label><input type="checkbox" id="update-restart"> Restart the service after the update</label>
+    <label><input type="checkbox" id="update-restart"> {{ _("Restart the service after the update") }}</label>
     <p id="update-error" class="error"></p>
     <div class="actions">
-      <button type="submit" value="ok" class="danger">Update</button>
-      <button type="button" id="update-cancel">Cancel</button>
+      <button type="submit" value="ok" class="danger">{{ _("Update") }}</button>
+      <button type="button" id="update-cancel">{{ _("Cancel") }}</button>
     </div>
   </form>
 </dialog>
@@ -35,6 +35,23 @@
   const chosenBox = document.getElementById("chosen-box");
   const recentBox = document.getElementById("addon-recent");
   let target = null;
+  const T = {{ {
+    "recent": _("Recent:"), "choose": _("Choose these modules"), "selected": _("{n} selected: {modules}"),
+    "notRead": _("Versions not read: {error}"), "error": _("Error {status}"), "notInstalled": _("not installed"),
+    "newerOnDisk": _("newer on disk: {installed} → {available}"),
+    "newerOne": _("1 installed module with a newer version on disk (in red)"),
+    "newerMany": _("{n} installed modules with a newer version on disk (in red)"),
+    "noneNewer": _("No installed module has a newer version on disk"),
+    "loading": _("Loading…"), "inRepos": _("In the instance's repositories"),
+    "others": _("Other modules in the addons path"), "noModules": _("No modules found in the addons path."),
+    "noOdooBin": _("odoo-bin not found: set it in the configuration to update chosen modules."),
+    "readingVersions": _("Reading the versions…"),
+    "title": _("Update modules {key}"), "database": _("Database {database}"),
+    "atLeastOne": _("Choose at least one module."), "changed": _("the changed modules"),
+    "confirm": _("Update {what} on {key} (database {database})?"),
+  } | tojson }};
+  const fill = (text, values) => text.replace(/\{(\w+)\}/g, (m, k) => (k in values ? String(values[k]) : m));
+  const muted = (text) => { const span = document.createElement("span"); span.className = "muted"; span.textContent = text; return span; };
 
   // The last choices of modules of each instance, kept in this browser only
   // (a viewer's convenience): the newest first, at most RECENT_MAX.
@@ -68,11 +85,11 @@
     recentBox.hidden = !recent.length;
     if (!recent.length) return;
     const label = document.createElement("span");
-    label.className = "muted"; label.style.alignSelf = "center"; label.textContent = "Recent:";
+    label.className = "muted"; label.style.alignSelf = "center"; label.textContent = T.recent;
     recentBox.appendChild(label);
     for (const modules of recent) {
       const button = document.createElement("button");
-      button.type = "button"; button.textContent = modules.join(", "); button.title = "Choose these modules";
+      button.type = "button"; button.textContent = modules.join(", "); button.title = T.choose;
       button.onclick = () => applyRecent(modules);
       recentBox.appendChild(button);
     }
@@ -87,7 +104,7 @@
   function refresh() {
     chosenBox.style.opacity = mode() === "chosen" ? 1 : 0.45;
     const n = chosen().length;
-    document.getElementById("addon-count").textContent = n ? n + " selected: " + chosen().join(", ") : "";
+    document.getElementById("addon-count").textContent = n ? fill(T.selected, {n, modules: chosen().join(", ")}) : "";
   }
   function group(title, addons) {
     if (!addons.length) return;
@@ -112,9 +129,9 @@
     try {
       const resp = await fetch(`{{ prefix }}/x/odoo/servers/${asked.server}/${asked.role}/addons/versions`);
       data = await resp.json().catch(() => ({}));
-      if (!resp.ok) throw new Error(data.error || ("Error " + resp.status));
+      if (!resp.ok) throw new Error(data.error || fill(T.error, {status: resp.status}));
     } catch (e) {
-      if (target === asked) document.getElementById("addon-versions").textContent = "Versions not read: " + e.message;
+      if (target === asked) document.getElementById("addon-versions").textContent = fill(T.notRead, {error: e.message});
       return;
     }
     if (target !== asked) return;  // the dialog was opened again for another instance
@@ -125,30 +142,29 @@
       const span = label.querySelector(".addon-version");
       label.classList.toggle("addon-newer", !!(m && m.newer));
       if (!m) { span.textContent = ""; continue; }
-      if (!m.installed) span.textContent = "  not installed";
+      if (!m.installed) span.textContent = "  " + T.notInstalled;
       else if (m.available && m.available !== m.installed) span.textContent = `  ${m.installed} → ${m.available}`;
       else span.textContent = "  " + m.installed;
       if (m.newer) newer += 1;
-      label.title = m.newer ? `${label.dataset.path}\nnewer on disk: ${m.installed} → ${m.available}` : label.dataset.path;
+      label.title = m.newer ? label.dataset.path + "\n" + fill(T.newerOnDisk, {installed: m.installed, available: m.available}) : label.dataset.path;
     }
     document.getElementById("addon-versions").textContent =
-      newer ? `${newer} installed module${newer > 1 ? "s" : ""} with a newer version on disk (in red)`
-            : "No installed module has a newer version on disk";
+      newer ? (newer > 1 ? fill(T.newerMany, {n: newer}) : T.newerOne) : T.noneNewer;
   }
   async function load() {
     const asked = target;
-    list.innerHTML = '<span class="muted">Loading…</span>';
+    list.replaceChildren(muted(T.loading));
     document.getElementById("addon-versions").textContent = "";
     const resp = await fetch(`{{ prefix }}/x/odoo/servers/${target.server}/${target.role}/addons`);
     const data = await resp.json();
     if (target !== asked) return;
     list.innerHTML = "";
-    group("In the instance's repositories", data.addons.filter((a) => a.in_repository));
-    group("Other modules in the addons path", data.addons.filter((a) => !a.in_repository));
-    if (!data.addons.length) list.innerHTML = '<span class="muted">No modules found in the addons path.</span>';
-    if (!data.odoo_bin) errorBox.textContent = "odoo-bin not found: set it in the configuration to update chosen modules.";
+    group(T.inRepos, data.addons.filter((a) => a.in_repository));
+    group(T.others, data.addons.filter((a) => !a.in_repository));
+    if (!data.addons.length) list.replaceChildren(muted(T.noModules));
+    if (!data.odoo_bin) errorBox.textContent = T.noOdooBin;
     if (data.addons.length) {
-      document.getElementById("addon-versions").textContent = "Reading the versions…";
+      document.getElementById("addon-versions").textContent = T.readingVersions;
       loadVersions(asked);
     }
   }
@@ -164,8 +180,8 @@
     button.onclick = () => {
       const [server, role] = button.dataset.key.split("/");
       target = {server, role, url: button.dataset.url, database: JSON.parse(button.dataset.info).database};
-      document.getElementById("update-title").textContent = `Update modules ${target.server}/${target.role}`;
-      document.getElementById("update-sub").textContent = `Database ${target.database}`;
+      document.getElementById("update-title").textContent = fill(T.title, {key: `${target.server}/${target.role}`});
+      document.getElementById("update-sub").textContent = fill(T.database, {database: target.database});
       dialog.querySelector("input[value=changed]").checked = true;
       filter.value = ""; extra.value = ""; errorBox.textContent = "";
       document.getElementById("update-restart").checked = false;
@@ -176,9 +192,9 @@
     ev.preventDefault();
     const body = {mode: mode(), modules: mode() === "chosen" ? chosen() : [],
                   restart: document.getElementById("update-restart").checked};
-    if (body.mode === "chosen" && !body.modules.length) { errorBox.textContent = "Choose at least one module."; return; }
-    const what = body.mode === "chosen" ? body.modules.join(", ") : "the changed modules";
-    if (!confirm(`Update ${what} on ${target.server}/${target.role} (database ${target.database})?`)) return;
+    if (body.mode === "chosen" && !body.modules.length) { errorBox.textContent = T.atLeastOne; return; }
+    const what = body.mode === "chosen" ? body.modules.join(", ") : T.changed;
+    if (!confirm(fill(T.confirm, {what, key: `${target.server}/${target.role}`, database: target.database}))) return;
     const resp = await fetch(target.url, {
       method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body),
     });
@@ -188,7 +204,7 @@
       location.href = "{{ prefix }}/jobs/" + data.job;
       return;
     }
-    errorBox.textContent = data.error || ("Error " + resp.status);
+    errorBox.textContent = data.error || fill(T.error, {status: resp.status});
   });
 })();
 </script>

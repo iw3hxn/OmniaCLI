@@ -6,7 +6,7 @@
   {# the outcome stays in sight beside the button, however long the list is #}
   <div class="actions" style="position: sticky; bottom: -18px; align-items: center; margin-bottom: -18px; padding: 10px 0 18px; background: var(--panel)">
     <p id="checks-summary" style="flex: 1 1 200px; margin: 0"></p>
-    <button type="button" onclick="document.getElementById('checks-dialog').close()">Close</button>
+    <button type="button" onclick="document.getElementById('checks-dialog').close()">{{ _("Close") }}</button>
   </div>
 </dialog>
 <script>
@@ -17,7 +17,11 @@ const OmniaChecks = {
     const s = document.getElementById("checks-summary");
     s.textContent = summary; s.className = ok ? "status success" : "status failed";
     const table = document.getElementById("checks-table");
-    table.innerHTML = "<tr><th></th><th>Where</th><th>Check</th><th>Result</th></tr>";
+    table.replaceChildren();
+    const head = table.insertRow();
+    for (const text of ["", {{ _("Where") | tojson }}, {{ _("Check") | tojson }}, {{ _("Result") | tojson }}]) {
+      const th = document.createElement("th"); th.textContent = text; head.appendChild(th);
+    }
     for (const c of checks) {
       const tr = document.createElement("tr");
       const mark = c.ok ? "✓" : (c.level === "warning" ? "!" : "✗");

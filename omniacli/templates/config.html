@@ -1,53 +1,59 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
 {% extends "base.html" %}
-{% block title %}Servers · OmniaCLI{% endblock %}
+{% block title %}{{ _("Servers") }} · OmniaCLI{% endblock %}
 {% block content %}
-{% from "_list.html" import list_search, item %}
+{% from "_list.html" import list_search, item with context %}
 {% include "_list.html" %}
-<h1>Servers</h1>
-<p class="muted">Servers are saved in <span class="mono">{{ servers_file }}</span> (the previous version is kept as <span class="mono">.bak</span>).
-A new or cloned server is a <strong>draft</strong>: it goes live only when <strong>Test &amp; activate</strong> passes its checks.</p>
-<div id="error" class="banner" hidden></div>
-<div class="panel">
-  {{ list_search("config-servers", "Search server, database, repository, branch…", request.query_params.get("q", "")) }}
-  <div class="actions" style="margin: 0 0 12px">
-    <a class="button" href="{{ prefix }}/config/new">New server</a>
-    <a class="button" href="{{ prefix }}/config/discover" title="Find the instances running on this machine and add them as drafts">Discover</a>
+<div class="page-head">
+  <div><h1>{{ _("Servers") }}</h1>
+    <p>{{ _("The servers OmniaCLI operates: a new or cloned one is a draft until Test & activate passes its checks.") }}</p></div>
+  <div class="actions" style="margin: 0">
+    <a class="button primary" href="{{ prefix }}/config/new">{{ _("New server") }}</a>
+    <a class="button" href="{{ prefix }}/config/discover" title="{{ _("Find the instances running on this machine and add them as drafts") }}">{{ _("Discover") }}</a>
   </div>
+</div>
+<div id="error" class="banner" hidden></div>
+<section class="panel">
+  {{ list_search("config-servers", _("Search server, database, repository, branch…"), request.query_params.get("q", "")) }}
   <div class="scroll">
   <table data-list="config-servers">
-    <thead><tr><th>Server</th><th>Status</th><th>Instances</th><th>Repositories</th></tr></thead>
+    <thead><tr><th>{{ _("Server") }}</th><th>{{ _("Status") }}</th><th>{{ _("Instances") }}</th><th>{{ _("Repositories") }}</th></tr></thead>
     {% for server in servers %}
     {% set search %}{{ server.name }} {{ server.type }} {{ server.status }}{% for inst in server.instances.values() %} {{ inst.plugin.search_text(inst) | join(" ") }}{% for repo in inst.repositories %} {{ repo.name }} {{ repo.branch }}{% endfor %}{% endfor %}{% endset %}
     {# the server and its actions: one item of the list widget #}
     <tbody {{ item(search) }}>
     <tr class="config-main">
       <td><strong>{{ server.name }}</strong></td>
-      <td>{% if server.missing_plugin %}<span class="badge draft">No plugin</span>{% else %}<span class="badge {{ server.status }}">{{ "Active" if server.active else "Draft" }}</span>{% endif %}</td>
-      <td>{% for role, inst in server.instances.items() %}<span class="role {{ role }}">{{ role }}</span> <span class="mono">{{ inst.plugin.search_text(inst) | join(" ") }}</span><br>{% endfor %}
-        {% if server.missing_plugin %}<span class="error">Type {{ server.type }}: {{ server.error }}</span>
-        {% elif server.error %}<span class="error">Incomplete: {{ server.error }}</span>{% endif %}</td>
+      <td>{% if server.missing_plugin %}<span class="badge draft">{{ _("No plugin") }}</span>{% else %}<span class="badge {{ server.status }}">{{ _("Active") if server.active else _("Draft") }}</span>{% endif %}</td>
+      <td>{% for role, inst in server.instances.items() %}<span class="role {{ role }}">{{ tr(role) }}</span> <span class="mono">{{ inst.plugin.search_text(inst) | join(" ") }}</span><br>{% endfor %}
+        {% if server.missing_plugin %}<span class="error">{{ _("Type {type}: {error}", type=server.type, error=tr(server.error)) }}</span>
+        {% elif server.error %}<span class="error">{{ _("Incomplete: {error}", error=tr(server.error)) }}</span>{% endif %}</td>
       <td>{% for role, inst in server.instances.items() %}{{ inst.repositories | map(attribute="name") | join(", ") }}<br>{% endfor %}</td>
     </tr>
     {# the actions: a second row, under the server #}
     <tr class="config-actions">
       <td colspan="4">
         <div class="actions" style="margin: 0">
-          <button type="button" class="{{ 'btn-test' if server.active else 'btn-activate' }}" data-test="{{ server.name }}">{{ "Test" if server.active else "Test & activate" }}</button>
-          {% if not server.missing_plugin %}<a class="button btn-edit" href="{{ prefix }}/config/{{ server.name }}/edit">Edit</a>
-          <a class="button btn-clone" href="{{ prefix }}/config/{{ server.name }}/clone">Clone</a>{% endif %}
-          {% if server.active %}<button type="button" data-deactivate="{{ server.name }}" {% if busy[server.name] %}disabled title="A job is running"{% endif %}>Set to draft</button>{% endif %}
-          <button class="danger" data-name="{{ server.name }}" {% if busy[server.name] %}disabled title="A job is running"{% endif %}>Delete</button>
+          <button type="button" class="{{ 'btn-test' if server.active else 'btn-activate' }}" data-test="{{ server.name }}">{{ _("Test") if server.active else _("Test & activate") }}</button>
+          {% if not server.missing_plugin %}<a class="button btn-edit" href="{{ prefix }}/config/{{ server.name }}/edit">{{ _("Edit") }}</a>
+          <a class="button btn-clone" href="{{ prefix }}/config/{{ server.name }}/clone">{{ _("Clone") }}</a>{% endif %}
+          {% if server.active %}<button type="button" data-deactivate="{{ server.name }}" {% if busy[server.name] %}disabled title="{{ _("A job is running") }}"{% endif %}>{{ _("Set to draft") }}</button>{% endif %}
+          <button class="danger" data-name="{{ server.name }}" {% if busy[server.name] %}disabled title="{{ _("A job is running") }}"{% endif %}>{{ _("Delete") }}</button>
         </div>
       </td>
     </tr>
     </tbody>
     {% else %}
-    <tr><td colspan="4" class="muted">No servers yet: create one with "New server".</td></tr>
+    <tr><td colspan="4" class="muted">{{ _("No servers yet: create one with New server.") }}</td></tr>
     {% endfor %}
   </table>
   </div>
-</div>
+</section>
+<details class="muted">
+  <summary>{{ _("More") }}</summary>
+  <p>{{ _("Servers are saved in {file} (the previous version is kept as .bak).", file=servers_file) }}
+    {{ _("A new or cloned server is a draft: it goes live only when Test & activate passes its checks.") }}</p>
+</details>
 {% include "_checks_dialog.html" %}
 <script>
 const errorBox = document.getElementById("error");
@@ -58,34 +64,35 @@ async function post(url, body) {
   const resp = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"},
                                  body: JSON.stringify(body || {})});
   const data = await resp.json().catch(() => ({}));
-  if (!resp.ok) { errorBox.textContent = data.error || ("Error " + resp.status); errorBox.hidden = false; return null; }
+  if (!resp.ok) { errorBox.textContent = data.error || {{ _("Error {status}") | tojson }}.replace("{status}", resp.status); errorBox.hidden = false; return null; }
   return data;
 }
 for (const button of document.querySelectorAll("button[data-name]")) {
   button.addEventListener("click", async () => {
     const name = button.dataset.name;
-    if (!confirm("Delete the configuration of server " + name + "? Databases and files are not touched.")) return;
+    if (!confirm({{ _("Delete the configuration of server {name}? Databases and files are not touched.") | tojson }}.replace("{name}", name))) return;
     if (await post("{{ prefix }}/api/servers/delete", {name})) location.reload();
   });
 }
 for (const button of document.querySelectorAll("button[data-deactivate]")) {
   button.addEventListener("click", async () => {
     const name = button.dataset.deactivate;
-    if (!confirm("Take server " + name + " offline (draft)? Its auto update stops and no action can run on it.")) return;
+    if (!confirm({{ _("Take server {name} offline (draft)? Its auto update stops and no action can run on it.") | tojson }}.replace("{name}", name))) return;
     if (await post(`{{ prefix }}/api/servers/${encodeURIComponent(name)}/deactivate`)) location.reload();
   });
 }
 for (const button of document.querySelectorAll("button[data-test]")) {
   button.addEventListener("click", async () => {
     const name = button.dataset.test, label = button.textContent;
-    button.disabled = true; button.textContent = "Checking…";
+    button.disabled = true; button.textContent = {{ _("Checking…") | tojson }};
     const data = await post(`{{ prefix }}/api/servers/${encodeURIComponent(name)}/test`);
     button.disabled = false; button.textContent = label;
     if (!data) return;
     const summary = data.ok
-      ? (data.status === "active" ? "All checks passed: the server is live." : "All checks passed.")
-      : "Some checks failed: the server " + (data.status === "active" ? "stays live, fix the settings." : "stays a draft.");
-    OmniaChecks.show("Checks of " + name, data.checks, summary, data.ok, () => location.reload());
+      ? (data.status === "active" ? {{ _("All checks passed: the server is live.") | tojson }} : {{ _("All checks passed.") | tojson }})
+      : (data.status === "active" ? {{ _("Some checks failed: the server stays live, fix the settings.") | tojson }}
+                                  : {{ _("Some checks failed: the server stays a draft.") | tojson }});
+    OmniaChecks.show({{ _("Checks of {name}") | tojson }}.replace("{name}", name), data.checks, summary, data.ok, () => location.reload());
   });
 }
 </script>

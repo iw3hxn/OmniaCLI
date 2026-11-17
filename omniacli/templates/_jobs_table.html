@@ -1,21 +1,23 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
 {% from "_icons.html" import runner %}
+{# the status stays the job's own word (running, success...): the Dashboard's
+   script reads it from the cell to see a job change #}
 <div class="scroll">
 <table>
-  <tr><th>Job</th><th>Server</th><th>Status</th><th>Started by</th><th>Created</th><th>Finished</th><th>Duration</th><th>Error</th></tr>
+  <tr><th>{{ _("Job") }}</th><th>{{ _("Server") }}</th><th>{{ _("Status") }}</th><th>{{ _("Started by") }}</th><th>{{ _("Created") }}</th><th>{{ _("Finished") }}</th><th>{{ _("Duration") }}</th><th>{{ _("Error") }}</th></tr>
   {% for job in jobs %}
   <tr data-job="{{ job.id }}" data-servers="{{ job.servers | join(' ') }}">
-    <td><a href="{{ prefix }}/jobs/{{ job.id }}">{{ job.title }}</a></td>
-    <td>{% for name in job.servers %}<a href="{{ prefix }}/jobs?server={{ name | urlencode }}" title="Jobs of {{ name }}">{{ name }}</a>{% if not loop.last %}, {% endif %}{% endfor %}</td>
-    <td class="status {{ job.status }} job-status">{% if job.status == "running" %}{{ runner("mini") }}{% endif %}{{ job.status }}</td>
-    <td>{{ job.source }}</td>
-    <td class="mono">{{ job.created }}</td>
-    <td class="mono job-finished">{{ job.finished or "" }}</td>
+    <td><a href="{{ prefix }}/jobs/{{ job.id }}">{{ tr(job.title) }}</a></td>
+    <td>{% for name in job.servers %}<a href="{{ prefix }}/jobs?server={{ name | urlencode }}" title="{{ _('Jobs of {name}', name=name) }}">{{ name }}</a>{% if not loop.last %}, {% endif %}{% endfor %}</td>
+    <td class="status {{ job.status }} job-status" data-status="{{ job.status }}">{% if job.status == "running" %}{{ runner("mini") }}{% endif %}{{ job.status }}</td>
+    <td>{{ tr(job.source) }}</td>
+    <td class="mono muted" style="white-space: nowrap">{{ job.created }}</td>
+    <td class="mono muted job-finished" style="white-space: nowrap">{{ job.finished or "" }}</td>
     <td class="job-duration">{{ job.duration }}</td>
-    <td class="error job-error">{{ job.error or "" }}</td>
+    <td class="error job-error">{{ tr(job.error) }}</td>
   </tr>
   {% else %}
-  <tr><td colspan="8" class="muted">{{ "No jobs match." if server or q else "No jobs yet." }}</td></tr>
+  <tr><td colspan="8" class="muted">{{ _("No jobs match.") if server or q else _("No jobs yet.") }}</td></tr>
   {% endfor %}
 </table>
 </div>

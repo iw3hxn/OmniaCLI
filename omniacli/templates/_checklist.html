@@ -21,7 +21,7 @@ window.omniaChecklist = window.omniaChecklist || function (holder, {name = "", o
   const allBox = document.createElement("input");
   allBox.type = "checkbox";
   const strong = document.createElement("strong");
-  strong.textContent = "Select all";
+  strong.textContent = {{ _("Select all") | tojson }};
   allLabel.append(allBox, " ", strong);
   const rowsBox = document.createElement("div");
   rowsBox.style.cssText = "max-height: 45vh; overflow-y: auto";

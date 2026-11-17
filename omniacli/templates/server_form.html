@@ -1,85 +1,137 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
 {% extends "base.html" %}
-{% block title %}{{ title }} · OmniaCLI{% endblock %}
+{% block title %}{{ tr(title) }} · OmniaCLI{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
-{{ crumbs([("Servers", "/config"), (title, None)]) }}
+{{ crumbs([(_("Servers"), "/config"), (tr(title), None)]) }}
 {% endblock %}
 {% block content %}
-<h1>{{ title }}</h1>
+<style>
+.server-form .form-grid { grid-template-columns: minmax(150px, max-content) minmax(0, 1fr); align-items: start; }
+.server-form .form-grid > label { padding-top: 7px; }
+.server-form .field-help { font-size: 13px; margin-top: 3px; }
+.server-form h3 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
+  margin: 20px 0 10px; padding-top: 14px; border-top: 1px solid var(--border); }
+.server-form .role-box > h2 label { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+.server-form .role-box > h2 .role { font-size: 14px; }
+.server-form .form-actions { position: sticky; bottom: 0; background: var(--bg); padding: 12px 0; margin: 0; z-index: 2; }
+@media (max-width: 700px) { .server-form .form-grid { grid-template-columns: 1fr; } .server-form .form-grid > label { padding-top: 0; } }
+</style>
+<div class="page-head">
+  <div><h1>{{ tr(title) }}</h1>
+    <p>{{ _("A server: its production and test instances, how they restart and update, and their repositories.") }}</p></div>
+</div>
 <div id="error" class="banner" hidden></div>
-<form id="form" autocomplete="off">
-  <fieldset>
-    <legend>Server</legend>
+<form id="form" class="server-form" autocomplete="off">
+  <section class="panel">
+    <h2 style="margin-bottom: 14px">{{ _("General") }}</h2>
     <div class="form-grid">
-      <label for="name">Name</label>
-      <input type="text" id="name" required pattern="[A-Za-z0-9][A-Za-z0-9._\-]*"
-             title="Letters, digits, '.', '_' and '-'">
-      <label for="type">Type</label>
-      <select id="type" title="The plugin that serves the server; an existing server keeps its type"></select>
+      <label for="name">{{ _("Name") }}</label>
+      <div><input type="text" id="name" required pattern="[A-Za-z0-9][A-Za-z0-9._\-]*"
+             title="{{ _("Letters, digits, '.', '_' and '-'") }}">
+        <div class="muted field-help">{{ _("Letters, digits, '.', '_' and '-'") }}</div></div>
+      <label for="type">{{ _("Type") }}</label>
+      <div><select id="type"></select>
+        <div class="muted field-help">{{ _("The plugin that serves the server; an existing server keeps its type") }}</div></div>
     </div>
-  </fieldset>
+  </section>
   <div id="roles"></div>
-  <div class="actions">
+  <div class="actions form-actions">
     {% if model.active %}
-    <button type="submit" data-activate="1" class="danger">Test &amp; save</button>
-    <button type="submit" data-activate="0">Save as draft (takes it offline)</button>
+    <button type="submit" data-activate="1" class="primary">{{ _("Test & save") }}</button>
+    <button type="submit" data-activate="0">{{ _("Save as draft (takes it offline)") }}</button>
     {% else %}
-    <button type="submit" data-activate="1" class="danger">Save, test &amp; activate</button>
-    <button type="submit" data-activate="0">Save as draft</button>
+    <button type="submit" data-activate="1" class="primary">{{ _("Save, test & activate") }}</button>
+    <button type="submit" data-activate="0">{{ _("Save as draft") }}</button>
     {% endif %}
-    <button type="button" id="check" title="Run the checks on what the form holds: nothing is saved, the form stays open">Test</button>
-    <a class="button" href="{{ prefix }}/config">Cancel</a>
+    <button type="button" id="check" title="{{ _("Run the checks on what the form holds: nothing is saved, the form stays open") }}">{{ _("Test") }}</button>
+    <a class="button" href="{{ prefix }}/config">{{ _("Cancel") }}</a>
   </div>
-  <p class="muted">{% if model.active %}This server is live: the change is saved only if every check passes, otherwise it stays as it is.{% else %}A draft is not live: no dashboard, no actions, no auto update.{% endif %}</p>
+  <p class="muted">{% if model.active %}{{ _("This server is live: the change is saved only if every check passes, otherwise it stays as it is.") }}{% else %}{{ _("A draft is not live: no dashboard, no actions, no auto update.") }}{% endif %}</p>
 </form>
 {% include "_checks_dialog.html" %}
 
+{% macro field(label, key, help="", placeholder="", kind="text", cls="mono") -%}
+<label>{{ label }}</label>
+<div>{% if kind == "checkbox" %}<input type="checkbox" data-k="{{ key }}">{% else %}<input type="{{ kind }}" data-k="{{ key }}"{% if cls %} class="{{ cls }}"{% endif %}{% if kind == "number" %} min="1"{% endif %}{% if placeholder %} placeholder="{{ placeholder }}"{% endif %}>{% endif %}
+  {%- if help %}<div class="muted field-help">{{ help }}</div>{% endif %}</div>
+{%- endmacro %}
 <template id="role-template">
-  <fieldset class="role-box">
-    <legend><label><input type="checkbox" class="enabled"> <span class="role"></span></label></legend>
+  <section class="panel role-box">
+    <h2><label><input type="checkbox" class="enabled"> <span class="role"></span></label></h2>
     <div class="body">
+      <h3>{{ _("Instance") }}</h3>
       {# the plugin's fields, drawn by the script from the type #}
       <div class="form-grid plugin-fields"></div>
+      <div class="conf-notes" hidden></div>
+
+      <h3>{{ _("Service") }}</h3>
       <div class="form-grid">
-        <label>Log file</label><input type="text" data-k="log_file" class="mono">
-        <label>Run as (system user)</label><input type="text" data-k="run_as" class="mono" placeholder="empty: the user running OmniaCLI" title="The type's programs (for Odoo: update, backup, pip, checks) run as this user through sudo -n -u: the user of the service. Not with restart type process.">
-        <label>Domain name</label><input type="text" data-k="domain" class="mono" placeholder="empty: localhost at the instance's port" title="Where the instance is opened, the link of the server page and of the Dashboard: erp.example.com (opened with https) or a whole http(s):// URL">
-        <label>Claude folder</label><input type="text" data-k="claude_dir" class="mono" placeholder="empty: no Claude button" title="Development machines only. A folder of this computer: the Claude button of the server page opens a shell there and runs claude, as the user running OmniaCLI">
-        <label>Package URL</label><input type="text" data-k="package.url" class="mono" placeholder="empty: no package" title="https:// URL of a Debian package (…/api-server.deb), next to its signed manifest .json and .json.sig: a pull installs it when a newer version is published and signed by the public key. Its own scripts may stop and start the service during the install, also a stopped one">
-        <label>Package name</label><input type="text" data-k="package.name" class="mono" placeholder="the Package of the .deb, e.g. api-server" title="The name dpkg knows it by: a .deb of another package is refused">
-        <label>Package public key</label><input type="text" data-k="package.public_key" class="mono" placeholder="ed25519:… (omniacli package-key prints it)" title="The key the checksum file must be signed with: an unsigned or otherwise signed package is not installed">
-        <label>Restart with</label>
-        <select data-k="restart.type"><option value="systemd">systemd</option><option value="initd">init.d</option><option value="process" class="process-option">OmniaCLI starts it itself</option><option value="compose" class="compose-option">Docker Compose</option></select>
-        <label>Service name</label><input type="text" data-k="restart.service">
-        <label>Use sudo -n</label><input type="checkbox" data-k="restart.sudo">
-        <label>Auto update</label><input type="checkbox" data-k="auto_update.enabled">
-        <label>Every (minutes)</label><input type="number" min="1" data-k="auto_update.interval_minutes">
-        <label>Time window</label><input type="text" data-k="auto_update.window" placeholder="HH:MM-HH:MM, empty = always">
-        <label class="from-link-row">Database from link</label>
-        <div class="from-link-row with-button" title="Copy from link: an instance of a linked OmniaCLI whose backups are restored into this one">
-          <select data-k="from_link.link" class="from-link-link"><option value="">none</option></select>
-          <select data-k="from_link.server" class="from-link-server" title="A server of the same type there, with its databases"></select>
-          <select data-k="from_link.role" class="from-link-role"></select>
+        <label>{{ _("Restart with") }}</label>
+        <div><select data-k="restart.type"><option value="systemd">systemd</option><option value="initd">init.d</option><option value="process" class="process-option">{{ _("OmniaCLI starts it itself") }}</option><option value="compose" class="compose-option">Docker Compose</option></select></div>
+        {{ field(_("Service name"), "restart.service", cls="") }}
+        {{ field(_("Use sudo -n"), "restart.sudo", kind="checkbox") }}
+        {{ field(_("Run as (system user)"), "run_as", _("The type's programs (for Odoo: update, backup, pip, checks) run as this user through sudo -n -u: the user of the service. Not with restart type process."), _("empty: the user running OmniaCLI")) }}
+        {{ field(_("Log file"), "log_file") }}
+      </div>
+
+      <h3>{{ _("Access") }}</h3>
+      <div class="form-grid">
+        {{ field(_("Domain name"), "domain", _("Where the instance is opened, the link of the server page and of the Dashboard: erp.example.com (opened with https) or a whole http(s):// URL"), _("empty: localhost at the instance's port")) }}
+        {{ field(_("Claude folder"), "claude_dir", _("Development machines only. A folder of this computer: the Claude button of the server page opens a shell there and runs claude, as the user running OmniaCLI"), _("empty: no Claude button")) }}
+      </div>
+
+      <h3>{{ _("Updates") }}</h3>
+      <div class="form-grid">
+        {{ field(_("Auto update"), "auto_update.enabled", kind="checkbox") }}
+        {{ field(_("Every (minutes)"), "auto_update.interval_minutes", kind="number") }}
+        {{ field(_("Time window"), "auto_update.window", placeholder=_("HH:MM-HH:MM, empty = always"), cls="") }}
+        {{ field(_("Package URL"), "package.url", _("https:// URL of a Debian package (…/api-server.deb), next to its signed manifest .json and .json.sig: a pull installs it when a newer version is published and signed by the public key. Its own scripts may stop and start the service during the install, also a stopped one"), _("empty: no package")) }}
+        {{ field(_("Package name"), "package.name", _("The name dpkg knows it by: a .deb of another package is refused"), _("the Package of the .deb, e.g. api-server")) }}
+        {{ field(_("Package public key"), "package.public_key", _("The key the checksum file must be signed with: an unsigned or otherwise signed package is not installed"), _("ed25519:… (omniacli package-key prints it)")) }}
+      </div>
+
+      <div class="from-link-row">
+        <h3>{{ _("Database from link") }}</h3>
+        <div class="with-button">
+          <select data-k="from_link.link" class="from-link-link" aria-label="{{ _("Link") }}"><option value="">{{ _("none") }}</option></select>
+          <select data-k="from_link.server" class="from-link-server" aria-label="{{ _("Server there") }}" title="{{ _("A server of the same type there, with its databases") }}"></select>
+          <select data-k="from_link.role" class="from-link-role" aria-label="{{ _("Its role") }}"></select>
           <span class="muted from-link-note" hidden></span>
         </div>
+        <div class="muted field-help">{{ _("Copy from link: an instance of a linked OmniaCLI whose backups are restored into this one") }}</div>
       </div>
-      <div class="conf-notes" hidden></div>
-      <h3 style="font-size: 14px; margin: 16px 0 6px">Repositories</h3>
+
+      <h3>{{ _("Repositories") }}</h3>
       <div class="scroll">
       <table class="repos">
-        <thead><tr><th>Name</th><th>Path</th><th>Remote</th><th>Branch</th><th></th></tr></thead>
+        <thead><tr><th>{{ _("Name") }}</th><th>{{ _("Path") }}</th><th>{{ _("Remote") }}</th><th>{{ _("Branch") }}</th><th></th></tr></thead>
         <tbody></tbody>
       </table>
       </div>
-      <div class="actions"><button type="button" class="add-repo">Add repository</button></div>
+      <div class="actions"><button type="button" class="add-repo">{{ _("Add repository") }}</button></div>
     </div>
-  </fieldset>
+  </section>
 </template>
 
 {% include "_link_source.html" %}
+{% set plugin_texts = namespace(d={"production": _("production"), "test": _("test")}) %}
+{% for type in model.types.values() %}
+{% if type.label and plugin_texts.d.update({type.label: tr(type.label)}) %}{% endif %}
+{% for f in type.fields %}
+{% for text in [f.label, f.help, f.placeholder, f.disabled_placeholder] + (f.choices | map("last") | list)
+     + (f.buttons | map(attribute="label") | list) + (f.buttons | map(attribute="title") | list)
+     + (f.buttons | map(attribute="confirm") | list) if text %}{% if plugin_texts.d.update({text: tr(text)}) %}{% endif %}{% endfor %}
+{% endfor %}
+{% endfor %}
 <script>
 const MODEL = {{ model | tojson }};
 const ROLES = ["production", "test"];
+// the texts of the plugins (their types' and fields' labels, helps,
+// placeholders, choices and buttons) and the roles, in the page's language
+const TEXTS = {{ plugin_texts.d | tojson }};
+const tx = (text) => (text && TEXTS[text]) || text;
+const ERROR = (status) => {{ _("Error {status}") | tojson }}.replace("{status}", status);
+const UNREACHABLE = {{ _("OmniaCLI cannot be reached") | tojson }};
 // the core's settings of an instance; the plugin's come from its fields
 const DEFAULTS = {
   log_file: "", run_as: "", domain: "", claude_dir: "", from_link: {link: "", server: "", role: "production"},
@@ -91,7 +143,7 @@ const DEFAULTS = {
 // keys left out when empty (the others are sent, empty, so that the checks name them)
 const OPTIONAL = ["auto_update.window", "run_as", "domain", "claude_dir"];
 const typeSelect = document.getElementById("type");
-for (const [name, type] of Object.entries(MODEL.types)) typeSelect.add(new Option(type.label, name));
+for (const [name, type] of Object.entries(MODEL.types)) typeSelect.add(new Option(tx(type.label), name));
 typeSelect.value = MODEL.server.type || MODEL.default_type;
 if (!typeSelect.value) typeSelect.selectedIndex = 0;
 // an existing server keeps its type (a clone may change it)
@@ -113,10 +165,10 @@ function repoRow(tbody, repo) {
     td.appendChild(input); tr.appendChild(td);
   }
   const td = document.createElement("td"), read = document.createElement("button"), del = document.createElement("button");
-  read.type = "button"; read.textContent = "Branches";
-  read.title = "Read the branches of the remote and choose one from a list";
+  read.type = "button"; read.textContent = {{ _("Branches") | tojson }};
+  read.title = {{ _("Read the branches of the remote and choose one from a list") | tojson }};
   read.onclick = () => readBranches(tr, read);
-  del.type = "button"; del.textContent = "Remove"; del.onclick = () => tr.remove();
+  del.type = "button"; del.textContent = {{ _("Remove") | tojson }}; del.onclick = () => tr.remove();
   td.style.whiteSpace = "nowrap"; td.append(read, " ", del); tr.appendChild(td); tbody.appendChild(tr);
 }
 
@@ -133,18 +185,18 @@ async function readBranches(tr, button) {
   }).catch(() => null);
   button.disabled = false;
   const data = resp ? await resp.json().catch(() => ({})) : {};
-  if (!resp || !resp.ok) { alert(data.error || (resp ? "Error " + resp.status : "OmniaCLI cannot be reached")); return; }
+  if (!resp || !resp.ok) { alert(data.error || (resp ? ERROR(resp.status) : UNREACHABLE)); return; }
   const old = tr.querySelector('[data-r="branch"]');
   const chosen = old.value.trim() || data.current;
   const select = document.createElement("select");
   select.dataset.r = "branch";
   for (const branch of data.branches) {
-    select.add(new Option(branch === data.current ? branch + " (checked out)" : branch, branch));
+    select.add(new Option(branch === data.current ? branch + " " + {{ _("(checked out)") | tojson }} : branch, branch));
   }
   if (chosen && !data.branches.includes(chosen)) {
-    select.add(new Option(chosen + " (not on the remote)", chosen), 0);
+    select.add(new Option(chosen + " " + {{ _("(not on the remote)") | tojson }}, chosen), 0);
   }
-  if (!select.options.length) { alert("The remote has no branches"); return; }
+  if (!select.options.length) { alert({{ _("The remote has no branches") | tojson }}); return; }
   select.value = chosen || select.options[0].value;
   select.title = data.note || "";
   old.replaceWith(select);
@@ -158,11 +210,11 @@ function pluginFields(box, role, values) {
   grid.replaceChildren();
   for (const field of currentType().fields) {
     const label = document.createElement("label");
-    label.textContent = field.label;
+    label.textContent = tx(field.label);
     let input;
     if (field.kind === "select") {
       input = document.createElement("select");
-      for (const [value, text] of field.choices) input.add(new Option(text, value));
+      for (const [value, text] of field.choices) input.add(new Option(tx(text), value));
     } else {
       input = document.createElement("input");
       input.type = field.kind === "checkbox" ? "checkbox" : field.kind === "number" ? "number" : "text";
@@ -171,8 +223,7 @@ function pluginFields(box, role, values) {
     }
     input.dataset.k = field.key;
     input.dataset.plugin = "1";
-    input.placeholder = field.placeholder || "";
-    if (field.help) input.title = field.help;
+    input.placeholder = tx(field.placeholder) || "";
     const value = values && field.key in values ? values[field.key] : field.default;
     if (input.type === "checkbox") input.checked = !!value; else input.value = value == null ? "" : value;
     let cell = input;
@@ -183,7 +234,7 @@ function pluginFields(box, role, values) {
       cell.appendChild(input);
       for (const spec of field.buttons) {
         const button = document.createElement("button");
-        button.type = "button"; button.textContent = spec.label; button.title = spec.title || "";
+        button.type = "button"; button.textContent = tx(spec.label); button.title = tx(spec.title) || "";
         button.onclick = () => formButton(box, role, spec, button);
         cell.appendChild(button);
         if (spec.only_with_value) {
@@ -192,6 +243,12 @@ function pluginFields(box, role, values) {
           show();
         }
       }
+    }
+    // the help: muted, under the field
+    if (field.help) {
+      const wrap = document.createElement("div"), help = document.createElement("div");
+      help.className = "muted field-help"; help.textContent = tx(field.help);
+      wrap.append(cell, help); cell = wrap;
     }
     grid.append(label, cell);
   }
@@ -204,7 +261,7 @@ for (const role of ROLES) {
   const box = document.getElementById("role-template").content.firstElementChild.cloneNode(true);
   const data = MODEL.server[role];
   const values = data || DEFAULTS;
-  box.querySelector(".role").textContent = role;
+  box.querySelector(".role").textContent = tx(role);
   box.querySelector(".role").classList.add(role);
   const enabled = box.querySelector(".enabled"), body = box.querySelector(".body");
   enabled.checked = !!data || (!MODEL.original && Object.keys(MODEL.server).length === 0);
@@ -239,9 +296,9 @@ function linkFields(box, saved) {
   const select = box.querySelector(".from-link-link");
   const current = saved.puller ? "puller:" + saved.puller : saved.link || "";
   for (const name of MODEL.links) select.add(new Option(name, name));
-  for (const name of MODEL.connections) select.add(new Option(name + " (puller)", "puller:" + name));
+  for (const name of MODEL.connections) select.add(new Option(name + " (" + {{ _("puller") | tojson }} + ")", "puller:" + name));
   if (current && ![...select.options].some(o => o.value === current)) {
-    select.add(new Option(current.replace(/^puller:/, "") + (saved.puller ? " (no such puller connection)" : " (no such link)"), current));
+    select.add(new Option(current.replace(/^puller:/, "") + " " + (saved.puller ? {{ _("(no such puller connection)") | tojson }} : {{ _("(no such link)") | tojson }}), current));
   }
   select.value = current;
   const server = box.querySelector(".from-link-server"), role = box.querySelector(".from-link-role");
@@ -263,13 +320,13 @@ function processFields(box) {
   const restartType = box.querySelector('[data-k="restart.type"]');
   const type = currentType();
   box.querySelector(".process-option").disabled = !type.has_process;
-  box.querySelector(".process-option").textContent = `OmniaCLI starts ${type.label || "it"} itself`;
+  box.querySelector(".process-option").textContent = type.label ? {{ _("OmniaCLI starts {name} itself") | tojson }}.replace("{name}", tx(type.label)) : {{ _("OmniaCLI starts it itself") | tojson }};
   if (!type.has_process && restartType.value === "process") restartType.value = "systemd";
   // compose: only a type that runs in a compose project; the service is its folder
   box.querySelector(".compose-option").disabled = !type.has_compose;
   if (!type.has_compose && restartType.value === "compose") restartType.value = "systemd";
   box.querySelector('[data-k="restart.service"]').placeholder =
-    restartType.value === "compose" ? "the project's folder, e.g. /srv/odooplm-19" : "";
+    restartType.value === "compose" ? {{ _("the project's folder, e.g. /srv/odooplm-19") | tojson }} : "";
   const process = restartType.value === "process";
   for (const key of ["restart.service", "restart.sudo", "log_file", "run_as"]) {
     box.querySelector(`[data-k="${key}"]`).disabled = process;
@@ -285,14 +342,15 @@ function processFields(box) {
     const input = box.querySelector(`[data-plugin][data-k="${field.key}"]`);
     const on = field.restart_types.includes(restartType.value);
     input.disabled = !on;
-    input.placeholder = on ? field.placeholder || "" : field.disabled_placeholder || "";
+    input.placeholder = on ? tx(field.placeholder) || "" : tx(field.disabled_placeholder) || "";
     if (!on) { if (input.type === "checkbox") input.checked = false; else input.value = ""; }
   }
-  box.querySelector('[data-k="log_file"]').placeholder = process ? `${type.label}'s output, in ` + MODEL.logs_dir
-    : compose ? "docker compose logs of the service" : "";
+  box.querySelector('[data-k="log_file"]').placeholder = process
+    ? {{ _("{name}'s output, in {folder}") | tojson }}.replace("{name}", tx(type.label)).replace("{folder}", MODEL.logs_dir)
+    : compose ? {{ _("docker compose logs of the service") | tojson }} : "";
   if (process) box.querySelector('[data-k="log_file"]').value = "";
   // OmniaCLI stops its own process with a signal, which it may not send to another user
-  box.querySelector('[data-k="run_as"]').placeholder = process ? "not with restart type process" : "empty: the user running OmniaCLI";
+  box.querySelector('[data-k="run_as"]').placeholder = process ? {{ _("not with restart type process") | tojson }} : {{ _("empty: the user running OmniaCLI") | tojson }};
 }
 
 function showError(text) {
@@ -308,7 +366,7 @@ function showError(text) {
 // with the same path keeps its name: it pairs test with production).
 async function formButton(box, role, spec, button) {
   const values = roleValues(box);
-  if (spec.confirm && !confirm(spec.confirm.replace(/\{(\w+)\}/g, (all, key) => values[key] ?? ""))) return;
+  if (spec.confirm && !confirm(tx(spec.confirm).replace(/\{(\w+)\}/g, (all, key) => values[key] ?? ""))) return;
   // opened now: a tab opened after the answer may be blocked; closed if no job comes
   const tab = spec.confirm ? window.open("", "_blank") : null;
   button.disabled = true;
@@ -322,7 +380,7 @@ async function formButton(box, role, spec, button) {
   const line = (text, cls) => { const p = document.createElement("p"); p.textContent = text; if (cls) p.className = cls; notes.appendChild(p); };
   if (!resp || !resp.ok) {
     if (tab) tab.close();
-    const text = data.error || data.detail || (resp ? "Error " + resp.status : "The server does not answer");
+    const text = data.error || data.detail || (resp ? ERROR(resp.status) : {{ _("The server does not answer") | tojson }});
     // a button that fills shows its error under the fields, one that starts a job at the top
     if (!spec.confirm) { notes.hidden = false; notes.replaceChildren(); line(text, "error"); }
     else showError(text);
@@ -352,9 +410,9 @@ async function formButton(box, role, spec, button) {
     }
     tbody.replaceChildren();
     for (const repo of data.repositories) repoRow(tbody, {...repo, name: names[repo.path] || repo.name});
-    loaded.push(data.repositories.length + " repositories");
+    loaded.push({{ _("{count} repositories") | tojson }}.replace("{count}", data.repositories.length));
   }
-  line(loaded.length ? "Loaded " + loaded.join(", ") + "." : "Nothing loaded.", loaded.length ? "status success" : "");
+  line(loaded.length ? {{ _("Loaded {what}.") | tojson }}.replace("{what}", loaded.join(", ")) : {{ _("Nothing loaded.") | tojson }}, loaded.length ? "status success" : "");
   for (const note of data.notes || []) line(note, "muted");
 }
 
@@ -415,17 +473,17 @@ document.getElementById("check").addEventListener("click", async (ev) => {
   button.disabled = false;
   const data = resp ? await resp.json().catch(() => ({})) : {};
   if (resp && resp.ok && data.checks) {
-    OmniaChecks.show("Test", data.checks,
-      (data.ok ? "All checks passed." : "Some checks failed.") + " Nothing was saved.", data.ok);
+    OmniaChecks.show({{ _("Test") | tojson }}, data.checks,
+      data.ok ? {{ _("All checks passed. Nothing was saved.") | tojson }} : {{ _("Some checks failed. Nothing was saved.") | tojson }}, data.ok);
     return;
   }
-  showError(data.error || (resp ? "Error " + resp.status : "OmniaCLI cannot be reached"));
+  showError(data.error || (resp ? ERROR(resp.status) : UNREACHABLE));
 });
 
 document.getElementById("form").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   const activate = ev.submitter ? ev.submitter.dataset.activate === "1" : false;
-  if (!activate && MODEL.active && !confirm("Save as draft? The server goes offline: no actions and no auto update until Test & activate.")) return;
+  if (!activate && MODEL.active && !confirm({{ _("Save as draft? The server goes offline: no actions and no auto update until Test & activate.") | tojson }})) return;
   for (const b of document.querySelectorAll("button[type=submit]")) b.disabled = true;
   const server = formServer();
   const resp = await fetch("{{ prefix }}/api/servers/save", {
@@ -437,13 +495,13 @@ document.getElementById("form").addEventListener("submit", async (ev) => {
   if (resp.ok && !data.checks) { location.href = "{{ prefix }}/config"; return; }
   if (data.checks) {
     const ok = resp.ok && data.status === "active";
-    const summary = ok ? "All checks passed: the server is live."
-      : resp.ok ? "Saved as a draft: some checks failed, fix them and save again or use Test & activate."
+    const summary = ok ? {{ _("All checks passed: the server is live.") | tojson }}
+      : resp.ok ? {{ _("Saved as a draft: some checks failed, fix them and save again or use Test & activate.") | tojson }}
       : data.error;
-    OmniaChecks.show("Checks", data.checks, summary, ok, () => { if (resp.ok) location.href = "{{ prefix }}/config"; });
+    OmniaChecks.show({{ _("Checks") | tojson }}, data.checks, summary, ok, () => { if (resp.ok) location.href = "{{ prefix }}/config"; });
     return;
   }
-  showError(data.error || ("Error " + resp.status));
+  showError(data.error || ERROR(resp.status));
 });
 </script>
 {% endblock %}

@@ -1,197 +1,234 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
 {% extends "base.html" %}
-{% from "_credentials.html" import credentials_table, credentials_script %}
+{% from "_credentials.html" import credentials_table, credentials_script with context %}
 {% block title %}{{ ws.name }} · OmniaCLI{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
-{{ crumbs([("Dashboard", "/"), ("Workspace " ~ ws.name, None)]) }}
+{{ crumbs([(_("Dashboard"), "/"), (_("Workspace {name}", name=ws.name), None)]) }}
 {% endblock %}
 {% block content %}
-<h1>Workspace {{ ws.name }}{% if ws.label %} <span class="muted">· {{ ws.label }}</span>{% endif %}</h1>
-<p class="muted">The users of this workspace and their role here: <strong>user</strong> watches and restarts,
-starts and stops, <strong>developer</strong> also pulls, updates and backs up, <strong>admin</strong> also manages
-these users. A user created here sees this workspace's servers only.</p>
+{% set new_instance = not storage_problem and can_create and not (instances_left is not none and instances_left <= 0) and templates %}
+<style>
+select.role { text-transform: none; letter-spacing: 0; font-size: inherit; font-weight: inherit; }
+.add-repo { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 6px; margin-top: 8px; }
+.add-repo .repo-url { grid-column: 1 / -1; }
+.repo-list { margin-top: 4px; }
+.ws-names { margin: 8px 0 0; }
+</style>
+<div class="page-head">
+  <div>
+    <h1>{{ _("Workspace {name}", name=ws.name) }}{% if ws.label %} <span class="muted">· {{ ws.label }}</span>{% endif %}</h1>
+    <p>{{ _("Your instances, their names on the web, the git credentials and the users of this workspace.") }}</p>
+  </div>
+  {% if new_instance %}<div class="actions"><a class="button primary" href="#new-instance-panel">{{ _("New instance") }}</a></div>{% endif %}
+</div>
 <div id="error" class="banner" hidden></div>
-<h2>Disk</h2>
-<div class="panel" style="margin-bottom: 16px"><div id="ws-disk"><span class="muted">Loading…</span></div></div>
-<h2>Instances</h2>
-<p class="muted">Each instance has a production and a test, made from a template, on the workspace's disk.
-A new database has the user <strong>admin</strong> with password <strong>admin</strong>: change it at the first login.</p>
-<div class="panel" style="margin-bottom: 16px">
+<div class="stack">
+<section class="panel">
+  <h2>{{ _("Disk") }}</h2>
+  <div id="ws-disk" style="margin-top: 10px"><span class="muted">{{ _("Loading…") }}</span></div>
+</section>
+
+<section class="panel">
+  <h2>{{ _("Instances") }}</h2>
+  <p class="muted">{{ _("Each instance has a production and a test, made from a template, on the workspace's disk.") }}</p>
   <div class="scroll">
   <table>
-    <tr><th>Server</th><th></th></tr>
+    <tr><th>{{ _("Server") }}</th><th></th></tr>
     {% for name in servers %}
     <tr data-server="{{ name }}">
       <td><a href="{{ prefix }}/servers/{{ name }}"><strong>{{ name }}</strong></a>
         {% set roles = repositories.get(name) or {} %}
-        <div class="muted" style="margin-top: 4px">Repositories:
+        <div class="muted repo-list">{{ _("Repositories:") }}
           {% for r in roles.get("production", []) %}<span class="mono">{{ r.name }}</span>
-            (production {{ r.branch }}{% for t in roles.get("test", []) if t.name == r.name %}, test {{ t.branch }}{% endfor %})
+            ({{ _("production") }} {{ r.branch }}{% for t in roles.get("test", []) if t.name == r.name %}, {{ _("test") }} {{ t.branch }}{% endfor %})
             <button type="button" class="danger" data-remove-repo data-name="{{ r.name }}"
-                    title="Out of the odoo.conf of production and test, its clones deleted">×</button>{% if not loop.last %}, {% endif %}
-          {% else %}none{% endfor %}</div>
-        <div class="add-repo" style="margin-top: 6px">
-          <input type="text" class="mono repo-url" placeholder="https://github.com/acme/odoo-custom.git" aria-label="Repository address" size="40">
-          <input type="text" class="mono repo-production" placeholder="production branch" aria-label="Production branch" size="12">
-          <input type="text" class="mono repo-test" placeholder="test branch" aria-label="Test branch" size="12">
-          <input type="text" class="mono repo-name" placeholder="name (folder)" aria-label="Name" size="12">
-          <button type="button" data-add-repo>Add repository</button>
+                    title="{{ _('Out of the odoo.conf of production and test, its clones deleted') }}"
+                    aria-label="{{ _('Remove {name}', name=r.name) }}">×</button>{% if not loop.last %}, {% endif %}
+          {% else %}{{ _("none") }}{% endfor %}</div>
+        <div class="add-repo">
+          <input type="text" class="mono repo-url" placeholder="https://github.com/acme/odoo-custom.git" aria-label="{{ _('Repository address') }}" size="40">
+          <input type="text" class="mono repo-production" placeholder="{{ _('production branch') }}" aria-label="{{ _('Production branch') }}" size="12">
+          <input type="text" class="mono repo-test" placeholder="{{ _('test branch') }}" aria-label="{{ _('Test branch') }}" size="12">
+          <input type="text" class="mono repo-name" placeholder="{{ _('name (folder)') }}" aria-label="{{ _('Name') }}" size="12">
+          <button type="button" data-add-repo>{{ _("Add repository") }}</button>
         </div>
         {% for role, info in (parameters.get(name) or {}).items() if info %}
-        <details style="margin-top: 6px" class="params" data-role="{{ role }}">
-          <summary>Odoo parameters of {{ role }}</summary>
+        <details style="margin-top: 8px" class="params" data-role="{{ role }}">
+          <summary>{{ _("Odoo parameters of {role}", role=tr(role)) }}</summary>
           <div class="form-grid" style="margin-top: 6px">
             {% for p in info.parameters %}
-            <label for="p-{{ name }}-{{ role }}-{{ p.name }}">{{ p.label }}</label>
+            <label for="p-{{ name }}-{{ role }}-{{ p.name }}">{{ tr(p.label) }}</label>
             {% if p.type == "bool" %}
             <input type="checkbox" id="p-{{ name }}-{{ role }}-{{ p.name }}" data-param="{{ p.name }}" {% if p.value %}checked{% endif %}>
             {% elif p.type == "password" %}
             <input type="password" id="p-{{ name }}-{{ role }}-{{ p.name }}" data-param="{{ p.name }}" autocomplete="new-password"
-                   placeholder="{{ 'saved: empty keeps it' if p.set else 'none' }}">
+                   placeholder="{{ _('saved: empty keeps it') if p.set else _('none') }}">
             {% elif p.type in ("int", "mb") %}
             <input type="number" class="mono" id="p-{{ name }}-{{ role }}-{{ p.name }}" data-param="{{ p.name }}" value="{{ p.value }}"
                    {% if p.min is not none %}min="{{ p.min }}"{% endif %} {% if p.max is not none %}max="{{ p.max }}"{% endif %}
-                   title="{{ p.min }} to {{ p.max }}">
+                   title="{{ _('allowed: {min} to {max}', min=p.min, max=p.max) }}">
             {% else %}
             <input type="text" class="mono" id="p-{{ name }}-{{ role }}-{{ p.name }}" data-param="{{ p.name }}" value="{{ p.value }}">
             {% endif %}
             {% endfor %}
-            <label for="p-{{ name }}-{{ role }}-debug">Debug log</label>
+            <label for="p-{{ name }}-{{ role }}-debug">{{ _("Debug log") }}</label>
             <input type="checkbox" id="p-{{ name }}-{{ role }}-debug" class="debug" {% if info.debug %}checked{% endif %}>
           </div>
-          <p class="muted">With 0 workers Odoo is threaded: it does not apply the CPU time of a request. Saved, the
-          role's odoo.conf is written again and the role restarted.</p>
-          <div class="actions"><button type="button" data-save-params>Save and restart {{ role }}</button></div>
+          <p class="muted">{{ _("With 0 workers Odoo is threaded: it does not apply the CPU time of a request. Saved, the role's odoo.conf is written again and the role restarted.") }}</p>
+          <div class="actions"><button type="button" data-save-params>{{ _("Save and restart {role}", role=tr(role)) }}</button></div>
         </details>
         {% endfor %}</td>
-      <td><button type="button" class="danger" data-remove-instance>Remove</button></td>
+      <td><button type="button" class="danger" data-remove-instance>{{ _("Remove") }}</button></td>
     </tr>
     {% else %}
-    <tr><td colspan="2" class="muted">No instances yet.</td></tr>
+    <tr><td colspan="2" class="muted">{{ _("No instances yet.") }}</td></tr>
     {% endfor %}
   </table>
   </div>
+</section>
+
+<section class="panel" id="new-instance-panel">
+  <h2>{{ _("New instance") }}</h2>
   {% if storage_problem %}
-  <div class="banner">This workspace cannot be used: {{ storage_problem }}.</div>
+  <div class="banner" style="margin: 10px 0 0">{{ _("This workspace cannot be used: {problem}.", problem=tr(storage_problem)) }}</div>
   {% elif not can_create %}
-  <p class="muted">New instances need a storage and a disk limit for the workspace: the machine's administrators set them.</p>
+  <p class="muted">{{ _("New instances need a storage and a disk limit for the workspace: the machine's administrators set them.") }}</p>
   {% elif instances_left is not none and instances_left <= 0 %}
-  <p class="muted">The workspace has all the instances its limit allows.</p>
+  <p class="muted">{{ _("The workspace has all the instances its limit allows.") }}</p>
   {% elif not templates %}
-  <p class="muted">No template is installed on this machine.</p>
+  <p class="muted">{{ _("No template is installed on this machine.") }}</p>
   {% else %}
-  <h3>New instance</h3>
+  <p class="muted">{{ _("A production and a test made from a template. A new database has the user admin with password admin: change it at the first login.") }}</p>
   <div class="form-grid" id="new-instance">
-    <label for="instance-name">Name</label>
-    <input type="text" id="instance-name" class="mono" placeholder="a-z 0-9 -: the server is {{ ws.name }}-&lt;name&gt;">
-    <label for="instance-template">Template</label>
-    <select id="instance-template">{% for t in templates %}<option value="{{ t.name }}">{{ t.label }} ({{ t.version }})</option>{% endfor %}</select>
+    <label for="instance-name">{{ _("Name") }}</label>
+    <input type="text" id="instance-name" class="mono" placeholder="{{ _('a-z 0-9 -: the server is {server}', server=ws.name ~ '-<name>') }}">
+    <label for="instance-template">{{ _("Template") }}</label>
+    <select id="instance-template">{% for t in templates %}<option value="{{ t.name }}">{{ tr(t.label) }} ({{ t.version }})</option>{% endfor %}</select>
   </div>
   <div class="form-grid" id="template-fields" style="margin-top: 8px"></div>
-  <div class="actions"><button type="button" id="create-instance">Create</button></div>
+  <div class="actions"><button type="button" class="primary" id="create-instance">{{ _("Create") }}</button></div>
   {% endif %}
-</div>
-<h2>Names</h2>
-<div class="panel" style="margin-bottom: 16px" id="names">
+</section>
+
+<section class="panel" id="names">
+  <h2>{{ _("Names and certificate") }}</h2>
   {% if not ws.domain %}
-  <p class="muted">The workspace has no domain yet: the machine's administrators set it.</p>
+  <p class="muted">{{ _("The workspace has no domain yet: the machine's administrators set it.") }}</p>
   {% else %}
-  <p class="muted">Under <strong>{{ ws.domain }}</strong>: the main instance answers on <span class="mono">{{ ws.domain }}</span>
-  and <span class="mono">test.{{ ws.domain }}</span>, every instance on <span class="mono">&lt;instance&gt;.{{ ws.domain }}</span>
-  and <span class="mono">&lt;instance&gt;.test.{{ ws.domain }}</span>, a subdomain on <span class="mono">&lt;sub&gt;.{{ ws.domain }}</span>
-  and <span class="mono">&lt;sub&gt;.test.{{ ws.domain }}</span>. Each name needs a DNS record pointing to this machine,
-  and the certificate of Let's Encrypt port 80 open to the internet.</p>
+  <p class="muted">{{ _("The instances answer under {domain}; each name needs a DNS record pointing to this machine.", domain=ws.domain) }}</p>
+  <details>
+    <summary>{{ _("More") }}</summary>
+    <dl class="ws-names">
+      <dt>{{ _("Main instance") }}</dt><dd class="mono">{{ ws.domain }}, test.{{ ws.domain }}</dd>
+      <dt>{{ _("Every instance") }}</dt><dd class="mono">&lt;instance&gt;.{{ ws.domain }}, &lt;instance&gt;.test.{{ ws.domain }}</dd>
+      <dt>{{ _("A subdomain") }}</dt><dd class="mono">&lt;sub&gt;.{{ ws.domain }}, &lt;sub&gt;.test.{{ ws.domain }}</dd>
+    </dl>
+    <p class="muted">{{ _("Each name needs a DNS record pointing to this machine, and the certificate of Let's Encrypt port 80 open to the internet.") }}</p>
+  </details>
   {% if sites %}
-  <div class="scroll">
+  <div class="scroll" style="margin-top: 10px">
   <table>
-    <tr><th>Instance</th><th>Role</th><th>Names</th></tr>
+    <tr><th>{{ _("Instance") }}</th><th>{{ _("Role") }}</th><th>{{ _("Names") }}</th></tr>
     {% for site in sites %}
-    <tr><td>{{ site.instance }}</td><td>{{ site.role }}</td>
+    <tr><td>{{ site.instance }}</td><td>{{ tr(site.role) }}</td>
       <td class="mono">{% for n in site.names %}<a href="https://{{ n }}/" target="_blank" rel="noopener">{{ n }}</a>{% if not loop.last %}<br>{% endif %}{% endfor %}</td></tr>
     {% endfor %}
   </table>
   </div>
   {% endif %}
-  <div class="form-grid" style="margin-top: 8px">
-    <label for="main-instance">Main instance</label>
-    <select id="main-instance"><option value="">(none)</option>
+  <div class="form-grid" style="margin-top: 12px">
+    <label for="main-instance">{{ _("Main instance") }}</label>
+    <select id="main-instance"><option value="">{{ _("(none)") }}</option>
       {% for i in instances %}<option {% if i == ws.main %}selected{% endif %}>{{ i }}</option>{% endfor %}</select>
-    <label for="certificate">Certificate</label>
+    <label for="certificate">{{ _("Certificate") }}</label>
     <select id="certificate">
-      <option value="letsencrypt" {% if ws.certificate == "letsencrypt" %}selected{% endif %}>Let's Encrypt (made and renewed by this machine)</option>
-      <option value="own" {% if ws.certificate == "own" %}selected{% endif %}>the customer's own</option>
+      <option value="letsencrypt" {% if ws.certificate == "letsencrypt" %}selected{% endif %}>{{ _("Let's Encrypt (made and renewed by this machine)") }}</option>
+      <option value="own" {% if ws.certificate == "own" %}selected{% endif %}>{{ _("the customer's own") }}</option>
     </select>
   </div>
-  <h3>Subdomains</h3>
+  <h3>{{ _("Subdomains") }}</h3>
   <div class="scroll">
   <table id="subdomains">
-    <tr><th>Subdomain</th><th>Instance</th><th></th></tr>
+    <tr><th>{{ _("Subdomain") }}</th><th>{{ _("Instance") }}</th><th></th></tr>
     {% for sub, target in ws.subdomains.items() %}
-    <tr data-sub><td><input type="text" class="mono sub" value="{{ sub }}" aria-label="Subdomain"></td>
-      <td><select class="target" aria-label="Instance of the subdomain">{% for i in instances %}<option {% if i == target %}selected{% endif %}>{{ i }}</option>{% endfor %}</select></td>
-      <td><button type="button" class="danger" data-drop-sub>Remove</button></td></tr>
+    <tr data-sub><td><input type="text" class="mono sub" value="{{ sub }}" aria-label="{{ _('Subdomain') }}"></td>
+      <td><select class="target" aria-label="{{ _('Instance of the subdomain') }}">{% for i in instances %}<option {% if i == target %}selected{% endif %}>{{ i }}</option>{% endfor %}</select></td>
+      <td><button type="button" class="danger" data-drop-sub>{{ _("Remove") }}</button></td></tr>
     {% endfor %}
   </table>
   </div>
   <div class="actions">
-    {% if instances %}<button type="button" id="add-sub">Add subdomain</button>{% endif %}
-    <button type="button" id="save-names">Save and publish</button>
-    {% if instances %}<button type="button" id="publish-names">Publish again</button>{% endif %}
+    {% if instances %}<button type="button" id="add-sub">{{ _("Add subdomain") }}</button>{% endif %}
+    <button type="button" id="save-names">{{ _("Save and publish") }}</button>
+    {% if instances %}<button type="button" id="publish-names">{{ _("Publish again") }}</button>{% endif %}
   </div>
   {% if ws.certificate == "own" %}
-  <h3>The customer's certificate</h3>
-  <p class="muted">PEM: the certificate with its chain, and its private key (not protected by a passphrase).
-  It should list every name above.</p>
+  <h3>{{ _("The customer's certificate") }}</h3>
+  <p class="muted">{{ _("PEM: the certificate with its chain, and its private key (not protected by a passphrase). It should list every name above.") }}</p>
   <div class="form-grid">
-    <label for="own-cert">Certificate</label>
+    <label for="own-cert">{{ _("Certificate") }}</label>
     <textarea id="own-cert" class="mono" rows="6" placeholder="-----BEGIN CERTIFICATE-----"></textarea>
-    <label for="own-key">Private key</label>
+    <label for="own-key">{{ _("Private key") }}</label>
     <textarea id="own-key" class="mono" rows="6" placeholder="-----BEGIN PRIVATE KEY-----"></textarea>
   </div>
-  <div class="actions"><button type="button" id="upload-cert">Upload and publish</button></div>
+  <div class="actions"><button type="button" id="upload-cert">{{ _("Upload and publish") }}</button></div>
   {% endif %}
   {% endif %}
-</div>
-<h2>Git credentials</h2>
-<div class="panel" style="margin-bottom: 16px">
-  <p class="muted">The user and token OmniaCLI uses for a host (github.com, bitbucket.org…) to reach the customer's
-  repositories of every instance of the workspace. The token is never shown again; it never reaches the
-  repositories nor the containers.</p>
+</section>
+
+<section class="panel">
+  <h2>{{ _("Git credentials") }}</h2>
+  <p class="muted">{{ _("The user and token OmniaCLI uses for a host (github.com, bitbucket.org…) to reach the customer's repositories of every instance of the workspace. The token is never shown again; it never reaches the repositories nor the containers.") }}</p>
   {{ credentials_table(credentials, prefix ~ "/api/workspaces/" ~ (ws.name | urlencode) ~ "/credentials/", {},
-                       "workspace " ~ ws.name) }}
-</div>
-<h2>Users</h2>
-<div class="panel">
-  <div class="scroll">
+                       _("workspace {name}", name=ws.name)) }}
+</section>
+
+<section class="panel">
+  <h2>{{ _("Users") }}</h2>
+  <p class="muted">{{ _("A user created here sees this workspace's servers only.") }}</p>
+  <details>
+    <summary>{{ _("The roles") }}</summary>
+    <dl>
+      <dt>{{ _("user") }}</dt><dd>{{ _("watches and restarts, starts and stops") }}</dd>
+      <dt>{{ _("developer") }}</dt><dd>{{ _("also pulls, updates and backs up") }}</dd>
+      <dt>{{ _("admin") }}</dt><dd>{{ _("also manages these users") }}</dd>
+    </dl>
+  </details>
+  <div class="scroll" style="margin-top: 10px">
   <table>
-    <tr><th>User</th><th>Role</th><th>New password</th><th></th></tr>
+    <tr><th>{{ _("User") }}</th><th>{{ _("Role") }}</th><th>{{ _("New password") }}</th><th></th></tr>
     {% for m in members %}
     <tr data-user="{{ m.name }}">
-      <td><strong>{{ m.name }}</strong>{% if m.name == me %} <span class="muted">(you)</span>{% endif %}
-        {% if not m.only_here %}<br><span class="muted">also elsewhere: its password is the machine's administrator's</span>{% endif %}</td>
-      <td><select class="role" aria-label="Role of {{ m.name }}" {% if m.name == me %}disabled title="You cannot change your own role"{% endif %}>
-        {% for r in roles %}<option {% if r == m.role %}selected{% endif %}>{{ r }}</option>{% endfor %}</select></td>
-      <td>{% if m.only_here %}<input type="password" class="password" autocomplete="new-password" placeholder="unchanged" aria-label="New password of {{ m.name }}">{% endif %}</td>
+      <td><strong>{{ m.name }}</strong>{% if m.name == me %} <span class="muted">{{ _("(you)") }}</span>{% endif %}
+        {% if not m.only_here %}<br><span class="muted">{{ _("also elsewhere: its password is the machine's administrator's") }}</span>{% endif %}</td>
+      <td><select class="role" aria-label="{{ _('Role of {name}', name=m.name) }}" {% if m.name == me %}disabled title="{{ _('You cannot change your own role') }}"{% endif %}>
+        {% for r in roles %}<option value="{{ r }}" {% if r == m.role %}selected{% endif %}>{{ tr(r) }}</option>{% endfor %}</select></td>
+      <td>{% if m.only_here %}<input type="password" class="password" autocomplete="new-password" placeholder="{{ _('unchanged') }}" aria-label="{{ _('New password of {name}', name=m.name) }}">{% endif %}</td>
       <td><div class="actions" style="margin: 0">
-        <button type="button" data-save>Save</button>
-        {% if m.name != me %}<button type="button" class="danger" data-delete>Remove</button>{% endif %}
+        <button type="button" data-save>{{ _("Save") }}</button>
+        {% if m.name != me %}<button type="button" class="danger" data-delete>{{ _("Remove") }}</button>{% endif %}
       </div></td>
     </tr>
     {% else %}
-    <tr><td colspan="4" class="muted">No users yet.</td></tr>
+    <tr><td colspan="4" class="muted">{{ _("No users yet.") }}</td></tr>
     {% endfor %}
     <tr>
-      <td><input type="text" id="new-user" placeholder="new user" aria-label="New user name"></td>
-      <td><select id="new-user-role" aria-label="Role of the new user">{% for r in roles %}<option {% if r == "user" %}selected{% endif %}>{{ r }}</option>{% endfor %}</select></td>
-      <td><input type="password" id="new-user-password" autocomplete="new-password" placeholder="password, {{ min_password }}+ characters" aria-label="Password of the new user"></td>
-      <td><button type="button" id="add-user">Add user</button></td>
+      <td><input type="text" id="new-user" placeholder="{{ _('new user') }}" aria-label="{{ _('New user name') }}"></td>
+      <td><select id="new-user-role" aria-label="{{ _('Role of the new user') }}">{% for r in roles %}<option value="{{ r }}" {% if r == "user" %}selected{% endif %}>{{ tr(r) }}</option>{% endfor %}</select></td>
+      <td><input type="password" id="new-user-password" autocomplete="new-password" placeholder="{{ _('password, {count}+ characters', count=min_password) }}" aria-label="{{ _('Password of the new user') }}"></td>
+      <td><button type="button" id="add-user">{{ _("Add user") }}</button></td>
     </tr>
   </table>
   </div>
+</section>
 </div>
+{# the template fields' labels (template.json), in the page's language #}
+{% set field_labels = {} %}
+{% for t in templates %}{% for f in t.fields %}{% if field_labels.update({f.label: tr(f.label)}) %}{% endif %}{% endfor %}{% endfor %}
 <script>
 (function () {
   const errorBox = document.getElementById("error");
+  const errorText = (status) => {{ _("Error {status}") | tojson }}.replace("{status}", status);
   const base = "{{ prefix }}/api/workspaces/{{ ws.name | urlencode }}/members/";
   async function post(url, body) {
     errorBox.hidden = true;
@@ -199,7 +236,7 @@ A new database has the user <strong>admin</strong> with password <strong>admin</
       headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) {
-      errorBox.textContent = data.error || data.detail || ("Error " + resp.status);
+      errorBox.textContent = data.error || data.detail || errorText(resp.status);
       errorBox.hidden = false;
       return null;
     }
@@ -215,7 +252,7 @@ A new database has the user <strong>admin</strong> with password <strong>admin</
   for (const button of document.querySelectorAll("[data-delete]")) {
     button.onclick = async () => {
       const name = button.closest("tr").dataset.user;
-      if (!confirm(`Remove ${name} from {{ ws.name }}? A user of this workspace only is deleted.`)) return;
+      if (!confirm({{ _("Remove {name} from {workspace}? A user of this workspace only is deleted.", name="{name}", workspace=ws.name) | tojson }}.replace("{name}", name))) return;
       if (await post("delete", {name})) location.reload();
     };
   }
@@ -225,7 +262,7 @@ A new database has the user <strong>admin</strong> with password <strong>admin</
     const resp = await fetch(wsBase + url, {method: "POST",
       headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
     const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) { errorBox.textContent = data.error || data.detail || ("Error " + resp.status); errorBox.hidden = false; return null; }
+    if (!resp.ok) { errorBox.textContent = data.error || data.detail || errorText(resp.status); errorBox.hidden = false; return null; }
     return data;
   }
   for (const button of document.querySelectorAll("[data-add-repo]")) {
@@ -253,7 +290,8 @@ A new database has the user <strong>admin</strong> with password <strong>admin</
   for (const button of document.querySelectorAll("[data-remove-repo]")) {
     button.onclick = async () => {
       const server = button.closest("tr").dataset.server, name = button.dataset.name;
-      if (!confirm(`Remove ${name} from ${server}, production and test? Its clones are deleted; the modules installed from it stop working.`)) return;
+      if (!confirm({{ _("Remove {name} from {server}, production and test? Its clones are deleted; the modules installed from it stop working.") | tojson }}
+                   .replace("{name}", name).replace("{server}", server))) return;
       const data = await postWs("repositories/remove", {server, name});
       if (data) location.href = "{{ prefix }}/jobs/" + data.job;
     };
@@ -261,12 +299,13 @@ A new database has the user <strong>admin</strong> with password <strong>admin</
   for (const button of document.querySelectorAll("[data-remove-instance]")) {
     button.onclick = async () => {
       const server = button.closest("tr").dataset.server;
-      if (!confirm(`Remove ${server}? Its production and test, their databases and files are deleted.`)) return;
+      if (!confirm({{ _("Remove {server}? Its production and test, their databases and files are deleted.") | tojson }}.replace("{server}", server))) return;
       const data = await postWs("instances/delete", {server});
       if (data) location.href = "{{ prefix }}/jobs/" + data.job;
     };
   }
   const templates = {{ templates | tojson }};
+  const fieldLabels = {{ field_labels | tojson }};
   const fieldsBox = document.getElementById("template-fields"), templateSelect = document.getElementById("instance-template");
   function drawFields() {
     if (!fieldsBox) return;
@@ -274,11 +313,11 @@ A new database has the user <strong>admin</strong> with password <strong>admin</
     const t = templates.find((x) => x.name === templateSelect.value);
     for (const f of t ? t.fields : []) {
       const label = document.createElement("label");
-      label.textContent = f.label;
+      label.textContent = fieldLabels[f.label] || f.label;
       let input;
       if (f.choices.length) {
         input = document.createElement("select");
-        for (const c of f.choices) { const o = document.createElement("option"); o.value = c; o.textContent = c || "(none)"; input.appendChild(o); }
+        for (const c of f.choices) { const o = document.createElement("option"); o.value = c; o.textContent = c || {{ _("(none)") | tojson }}; input.appendChild(o); }
       } else {
         input = document.createElement("input");
         input.type = "text";
@@ -286,7 +325,7 @@ A new database has the user <strong>admin</strong> with password <strong>admin</
       }
       input.value = f.default;
       input.dataset.field = f.name;
-      input.setAttribute("aria-label", f.label);
+      input.setAttribute("aria-label", label.textContent);
       fieldsBox.append(label, input);
     }
   }
@@ -310,12 +349,12 @@ A new database has the user <strong>admin</strong> with password <strong>admin</
     const row = subTable.insertRow(-1);
     row.dataset.sub = "";
     const input = document.createElement("input");
-    input.type = "text"; input.className = "mono sub"; input.setAttribute("aria-label", "Subdomain");
+    input.type = "text"; input.className = "mono sub"; input.setAttribute("aria-label", {{ _("Subdomain") | tojson }});
     const select = document.createElement("select");
-    select.className = "target"; select.setAttribute("aria-label", "Instance of the subdomain");
+    select.className = "target"; select.setAttribute("aria-label", {{ _("Instance of the subdomain") | tojson }});
     for (const i of instances) { const o = document.createElement("option"); o.textContent = i; select.appendChild(o); }
     const drop = document.createElement("button");
-    drop.type = "button"; drop.className = "danger"; drop.dataset.dropSub = ""; drop.textContent = "Remove";
+    drop.type = "button"; drop.className = "danger"; drop.dataset.dropSub = ""; drop.textContent = {{ _("Remove") | tojson }};
     row.insertCell().appendChild(input); row.insertCell().appendChild(select); row.insertCell().appendChild(drop);
     bindDrop(row);
   };
@@ -340,7 +379,8 @@ A new database has the user <strong>admin</strong> with password <strong>admin</
     const data = await postWs("web/certificate", {certificate: document.getElementById("own-cert").value,
                                                   key: document.getElementById("own-key").value});
     if (!data) return;
-    alert(`Certificate valid until ${data.not_after}, for: ${(data.names || []).join(", ") || "no DNS name"}`);
+    alert({{ _("Certificate valid until {date}, for: {names}") | tojson }}.replace("{date}", data.not_after)
+          .replace("{names}", (data.names || []).join(", ") || {{ _("no DNS name") | tojson }}));
     location.href = "{{ prefix }}/jobs/" + data.job;
   };
   document.getElementById("add-user").onclick = async () => {
@@ -360,9 +400,9 @@ A new database has the user <strong>admin</strong> with password <strong>admin</
     let data;
     try {
       const resp = await fetch("{{ prefix }}/api/workspaces/" + encodeURIComponent(name) + "/load?since=" + Math.floor(Date.now() / 1000));
-      if (!resp.ok) { OmniaDisk.message(box, "No answer: HTTP " + resp.status, true); return; }
+      if (!resp.ok) { OmniaDisk.message(box, {{ _("No answer: HTTP {status}") | tojson }}.replace("{status}", resp.status), true); return; }
       data = await resp.json();
-    } catch (e) { OmniaDisk.message(box, "No answer.", true); return; }
+    } catch (e) { OmniaDisk.message(box, {{ _("No answer.") | tojson }}, true); return; }
     OmniaDisk.workspace(box, name, data);
   }
   show();

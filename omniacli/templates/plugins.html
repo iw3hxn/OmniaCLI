@@ -1,54 +1,79 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
 {% extends "base.html" %}
-{% block title %}Plugins · OmniaCLI{% endblock %}
+{% block title %}{{ _("Plugins") }} · OmniaCLI{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
-{{ crumbs([("Dashboard", "/"), ("Plugins", None)]) }}
+{{ crumbs([(_("Dashboard"), "/"), (_("Plugins"), None)]) }}
 {% endblock %}
 {% block content %}
-{% from "_list.html" import list_search, item %}
+{% from "_list.html" import list_search, item with context %}
 {% include "_list.html" %}
-<h1>Plugins</h1>
-<p class="muted">A plugin adds a type of server. Those of the installed Python packages are found by their entry
-point of the group <span class="mono">{{ group }}</span>; this OmniaCLI has plugin API <span class="mono">{{ api_version }}</span>.
-A plugin that does not pass its checks is disabled: OmniaCLI works without it, and the servers of its type are kept
-as they are, without actions, until it is back.</p>
-{{ list_search("plugins", "Search type, name, source…") }}
-<div class="panel">
+<div class="page-head">
+  <div>
+    <h1>{{ _("Plugins") }}</h1>
+    <p>{{ _("A plugin adds a type of server: those installed here, and those published for download.") }}</p>
+  </div>
+  <div class="actions" style="margin: 0">
+    <button type="button" id="restart" {% if not systemd %}disabled title="{{ _('OmniaCLI is not run by systemd here: restart it yourself') }}"{% endif %}>{{ _("Restart OmniaCLI") }}</button>
+  </div>
+</div>
+<div id="store-error" class="banner" hidden></div>
+<div class="stack">
+<section class="panel">
+  <h2 style="margin-bottom: 4px">{{ _("Installed") }}</h2>
+  <p class="muted" style="margin: 0 0 12px">{{ _("Plugin API of this OmniaCLI:") }} <span class="mono">{{ api_version }}</span>.
+  {{ _("A plugin that does not pass its checks is disabled: OmniaCLI works without it, and the servers of its type are kept as they are, without actions, until it is back.") }}</p>
+  <details style="margin-bottom: 12px">
+    <summary>{{ _("How plugins are found") }}</summary>
+    <p class="muted" style="margin: 6px 0 0">{{ _("Those of the installed Python packages are found by their entry point of the group") }} <span class="mono">{{ group }}</span>.</p>
+  </details>
+  {{ list_search("plugins", _("Search type, name, source…")) }}
   <div class="scroll">
   <table data-list="plugins">
-    <tr><th>Type</th><th>Name</th><th>State</th><th>From</th><th>Servers</th></tr>
+    <tr><th>{{ _("Type") }}</th><th>{{ _("Name") }}</th><th>{{ _("State") }}</th><th>{{ _("From") }}</th><th>{{ _("Servers") }}</th></tr>
     {% for info in found %}
     <tr {{ item(info.name ~ " " ~ (info.plugin.label if info.plugin else "") ~ " " ~ info.source ~ " " ~ ("loaded" if info.plugin else "disabled")) }}>
       <td class="mono">{{ info.name }}</td>
-      <td>{{ info.plugin.label if info.plugin else "" }}</td>
-      <td>{% if info.plugin %}<span class="badge active">Loaded</span>{% if route_errors.get(info.name) %}<br><span class="error">Its routes are not served: {{ route_errors[info.name] }}</span>{% endif %}{% else %}<span class="badge draft">Disabled</span><br><span class="error">{{ info.error }}</span>{% endif %}</td>
-      <td>{{ info.source }}{% if info.version %} <span class="mono">{{ info.version }}</span>{% endif %}<br><span class="muted mono">{{ info.target }}</span></td>
+      <td>{{ tr(info.plugin.label) if info.plugin else "" }}</td>
+      <td>{% if info.plugin %}<span class="badge ok">{{ _("Loaded") }}</span>{% if route_errors.get(info.name) %}<br><span class="error">{{ _("Its routes are not served:") }} {{ tr(route_errors[info.name]) }}</span>{% endif %}{% else %}<span class="badge warn">{{ _("Disabled") }}</span><br><span class="error">{{ tr(info.error) }}</span>{% endif %}</td>
+      <td>{{ tr(info.source) }}{% if info.version %} <span class="mono">{{ info.version }}</span>{% endif %}<br><span class="muted mono">{{ info.target }}</span></td>
       <td>{{ count.get(info.name, 0) }}</td>
     </tr>
     {% else %}
-    <tr><td colspan="5" class="muted">No plugins.</td></tr>
+    <tr><td colspan="5" class="muted">{{ _("No plugins.") }}</td></tr>
     {% endfor %}
   </table>
   </div>
-</div>
-<h2 style="margin-top: 24px">Published for download</h2>
-<p class="muted">The plugins listed by <span class="mono">{{ source.index }}</span>, believed only when their signed manifest verifies with
-<span class="mono">plugins.public_key</span> of the main configuration{% if not source.public_key %} (<strong>not set</strong>: nothing can be installed){% endif %}.
-<strong>Install</strong> downloads one, checks it, and installs it through the root helper; it is loaded when OmniaCLI restarts, and installed again at every upgrade.
-The helper needs, in <span class="mono">/etc/sudoers.d/omniacli</span>:</p>
-<pre class="console mono" style="white-space: pre-wrap">{{ sudoers }}</pre>
-<div id="store-error" class="banner" hidden></div>
-<div class="panel">
+</section>
+{% if missing %}
+<section class="panel">
+  <h2 style="margin-bottom: 12px">{{ _("Servers without their plugin") }}</h2>
   <div class="scroll">
-  <table id="store">
-    <tr><th>Type</th><th>Name</th><th>Published</th><th>Here</th><th></th></tr>
-    <tr><td colspan="5" class="muted">Reading the index…</td></tr>
+  <table>
+    <tr><th>{{ _("Server") }}</th><th>{{ _("Type") }}</th><th>{{ _("Why") }}</th></tr>
+    {% for srv in missing %}
+    <tr><td><strong>{{ srv.name }}</strong></td><td class="mono">{{ srv.type }}</td><td class="error">{{ tr(srv.error) }}</td></tr>
+    {% endfor %}
   </table>
   </div>
-</div>
-<div class="actions">
-  <button type="button" id="restart" {% if not systemd %}disabled title="OmniaCLI is not run by systemd here: restart it yourself"{% endif %}>Restart OmniaCLI</button>
-  <span class="muted">to load a plugin just installed: running jobs must end first</span>
+</section>
+{% endif %}
+<section class="panel">
+  <h2 style="margin-bottom: 4px">{{ _("Published for download") }}</h2>
+  <p class="muted" style="margin: 0 0 12px">{{ _("The plugins listed by") }} <span class="mono">{{ source.index }}</span>, {{ _("believed only when their signed manifest verifies with") }}
+  <span class="mono">plugins.public_key</span> {{ _("of the main configuration") }}{% if not source.public_key %} (<strong>{{ _("not set: nothing can be installed") }}</strong>){% endif %}.
+  {{ _("Install downloads one, checks it, and installs it through the root helper; it is loaded when OmniaCLI restarts, and installed again at every upgrade.") }}</p>
+  <details style="margin-bottom: 12px">
+    <summary>{{ _("The line the helper needs in") }} <span class="mono">/etc/sudoers.d/omniacli</span></summary>
+    <pre class="console mono" style="white-space: pre-wrap; margin-top: 8px">{{ sudoers }}</pre>
+  </details>
+  <div class="scroll">
+  <table id="store">
+    <tr><th>{{ _("Type") }}</th><th>{{ _("Name") }}</th><th>{{ _("Published") }}</th><th>{{ _("Here") }}</th><th></th></tr>
+    <tr><td colspan="5" class="muted">{{ _("Reading the index…") }}</td></tr>
+  </table>
+  </div>
+  <p class="muted" style="margin: 12px 0 0; font-size: 13px">{{ _("Restart OmniaCLI to load a plugin just installed: running jobs must end first.") }}</p>
+</section>
 </div>
 <script>
 (function () {
@@ -59,51 +84,40 @@ The helper needs, in <span class="mono">/etc/sudoers.d/omniacli</span>:</p>
     const resp = await fetch("{{ prefix }}/api/plugins/available", {headers: {Accept: "application/json"}});
     const data = await resp.json().catch(() => ({}));
     while (table.rows.length > 1) table.deleteRow(1);
-    if (!resp.ok) { show(data.error || data.detail || "Error " + resp.status); return; }
-    if (!data.plugins.length) { cell(table.insertRow(), "The index lists no plugins.", "muted").colSpan = 5; return; }
+    if (!resp.ok) { show(data.error || data.detail || {{ _("Error") | tojson }} + " " + resp.status); return; }
+    if (!data.plugins.length) { cell(table.insertRow(), {{ _("The index lists no plugins.") | tojson }}, "muted").colSpan = 5; return; }
     for (const p of data.plugins) {
       const row = table.insertRow();
       cell(row, p.name, "mono"); cell(row, p.label + (p.description ? " — " + p.description : ""));
-      cell(row, p.error ? p.error : `${p.version}${p.built ? ", built " + p.built : ""}`, p.error ? "error" : "mono");
-      cell(row, p.installed || "not installed", p.installed ? "mono" : "muted");
+      cell(row, p.error ? p.error : p.version + (p.built ? ", " + {{ _("built {date}") | tojson }}.replace("{date}", p.built) : ""), p.error ? "error" : "mono");
+      cell(row, p.installed || {{ _("not installed") | tojson }}, p.installed ? "mono" : "muted");
       const td = row.insertCell();
       if (!p.error && p.installed !== p.version) {
         const button = document.createElement("button");
-        button.type = "button"; button.textContent = p.installed ? "Update" : "Install";
+        button.type = "button"; button.textContent = p.installed ? {{ _("Update") | tojson }} : {{ _("Install") | tojson }};
         button.onclick = async () => {
-          if (!confirm(`${button.textContent} the plugin ${p.name} ${p.version}?`)) return;
+          if (!confirm((p.installed ? {{ _("Update the plugin {name} {version}?") | tojson }} : {{ _("Install the plugin {name} {version}?") | tojson }}).replace("{name}", p.name).replace("{version}", p.version))) return;
           show("");
           const r = await fetch(`{{ prefix }}/api/plugins/${encodeURIComponent(p.name)}/install`, {method: "POST"});
           const d = await r.json().catch(() => ({}));
-          if (r.ok) location.href = "{{ prefix }}/jobs/" + d.job; else show(d.error || d.detail || "Error " + r.status);
+          if (r.ok) location.href = "{{ prefix }}/jobs/" + d.job; else show(d.error || d.detail || {{ _("Error") | tojson }} + " " + r.status);
         };
         td.appendChild(button);
       }
     }
   }
   document.getElementById("restart").onclick = async () => {
-    if (!confirm("Restart OmniaCLI? The pages answer again in a few seconds.")) return;
+    if (!confirm({{ _("Restart OmniaCLI? The pages answer again in a few seconds.") | tojson }})) return;
     show("");
     const r = await fetch("{{ prefix }}/api/omniacli/restart", {method: "POST"});
     const d = await r.json().catch(() => ({}));
-    if (!r.ok) { show(d.error || d.detail || "Error " + r.status); return; }
-    show("OmniaCLI is restarting…");
+    if (!r.ok) { show(d.error || d.detail || {{ _("Error") | tojson }} + " " + r.status); return; }
+    show({{ _("OmniaCLI is restarting…") | tojson }});
     setTimeout(() => location.reload(), 8000);
   };
   load();
 })();
 </script>
-{% if missing %}
-<h2>Servers without their plugin</h2>
-<div class="panel">
-  <table>
-    <tr><th>Server</th><th>Type</th><th>Why</th></tr>
-    {% for srv in missing %}
-    <tr><td><strong>{{ srv.name }}</strong></td><td class="mono">{{ srv.type }}</td><td class="error">{{ srv.error }}</td></tr>
-    {% endfor %}
-  </table>
-</div>
-{% endif %}
 <script>
   // the list's search (_list.html)
   OmniaList.attach(document.querySelector('[data-list="plugins"]'));

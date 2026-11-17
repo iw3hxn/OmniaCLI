@@ -5,13 +5,12 @@
 <dialog id="login-as-dialog">
   <form method="dialog">
     <h2 id="login-as-title" style="margin-bottom: 4px"></h2>
-    <p class="muted" style="margin-top: 0">Odoo opens in a new tab as the user you choose: their password is not read nor
-      changed. Who asks and as whom is in the access log.</p>
-    <input type="search" id="login-as-filter" placeholder="Filter by name or login" style="width: 100%">
+    <p class="muted" style="margin-top: 0">{{ _("Odoo opens in a new tab as the user you choose: their password is not read nor changed. Who asks and as whom is in the access log.") }}</p>
+    <input type="search" id="login-as-filter" placeholder="{{ _('Filter by name or login') }}" style="width: 100%">
     <div id="login-as-users" class="scroll" style="max-height: 45vh; margin: 8px 0"></div>
     <p id="login-as-error" class="error"></p>
     <div class="actions">
-      <button type="button" id="login-as-cancel">Close</button>
+      <button type="button" id="login-as-cancel">{{ _("Close") }}</button>
     </div>
   </form>
 </dialog>
@@ -22,6 +21,11 @@
   const filter = document.getElementById("login-as-filter");
   const errorBox = document.getElementById("login-as-error");
   let target = null, users = [];
+  const T = {
+    portal: {{ _("portal") | tojson }}, admin: {{ _("administrator") | tojson }},
+    noSession: {{ _("No session made") | tojson }}, title: {{ _("Log in as a user of {key}") | tojson }},
+    reading: {{ _("Reading the users…") | tojson }}, unreadable: {{ _("The users cannot be read") | tojson }},
+  };
 
   function draw() {
     const words = filter.value.toLowerCase().split(/\s+/).filter(Boolean);
@@ -32,7 +36,7 @@
       const row = document.createElement("button");
       row.type = "button";
       row.style.cssText = "display: block; width: 100%; text-align: left; margin: 2px 0";
-      const tags = [u.internal ? "" : "portal", u.admin ? "administrator" : ""].filter(Boolean).join(", ");
+      const tags = [u.internal ? "" : T.portal, u.admin ? T.admin : ""].filter(Boolean).join(", ");
       const info = document.createElement("span");
       info.className = "muted mono";
       info.textContent = ` ${u.login}${tags ? " · " + tags : ""}`;
@@ -52,7 +56,7 @@
     const data = resp ? await resp.json().catch(() => ({})) : {};
     if (!resp || !resp.ok || !data.url) {
       if (tab) tab.close();
-      errorBox.textContent = data.error || data.detail || "No session made";
+      errorBox.textContent = data.error || data.detail || T.noSession;
       return;
     }
     if (tab) { tab.opener = null; tab.location = data.url; } else { window.location = data.url; }
@@ -64,15 +68,15 @@
   document.querySelectorAll("[data-login-as]").forEach((button) => {
     button.addEventListener("click", async () => {
       target = JSON.parse(button.dataset.loginAs);
-      document.getElementById("login-as-title").textContent = `Log in as a user of ${target.key}`;
+      document.getElementById("login-as-title").textContent = T.title.replace("{key}", target.key);
       errorBox.textContent = ""; filter.value = ""; users = [];
-      list.replaceChildren(document.createTextNode("Reading the users…"));
+      list.replaceChildren(document.createTextNode(T.reading));
       dialog.showModal();
       const resp = await fetch(target.users, {headers: {Accept: "application/json"}}).catch(() => null);
       const data = resp ? await resp.json().catch(() => ({})) : {};
       if (!resp || !resp.ok) {
         list.replaceChildren();
-        errorBox.textContent = data.error || data.detail || "The users cannot be read";
+        errorBox.textContent = data.error || data.detail || T.unreadable;
         return;
       }
       users = data.users || [];

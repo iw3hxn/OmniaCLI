@@ -1,20 +1,30 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
 {% extends "base.html" %}
-{% block title %}Account · OmniaCLI{% endblock %}
+{% block title %}{{ _("Account") }} · OmniaCLI{% endblock %}
 {% block content %}
-<h1>{{ name }}</h1>
-<p class="muted">Role: <strong>{{ role }}</strong>.{% for ws, ws_role in workspaces %}{% if loop.first %} Workspaces:{% endif %} <strong>{{ ws }}</strong> ({{ ws_role }}){{ "," if not loop.last }}{% endfor %}</p>
+{% set role_names = {"user": _("user"), "developer": _("developer"), "admin": _("admin"), "workspace": _("workspace")} %}
+<div class="page-head">
+  <div>
+    <h1>{{ name }}</h1>
+    <p>{{ _("Your account: your role and your password.") }}</p>
+  </div>
+</div>
+<div class="stack" style="max-width: 520px">
+<section class="panel">
+  <h2>{{ _("Access") }}</h2>
+  <p class="muted" style="margin-bottom: 0">{{ _("Role:") }} <strong>{{ role_names.get(role, role) }}</strong>{% for ws, ws_role in workspaces %}{% if loop.first %}<br>{{ _("Workspaces:") }}{% endif %} <strong>{{ ws }}</strong> ({{ role_names.get(ws_role, ws_role) }}){{ "," if not loop.last }}{% endfor %}</p>
+</section>
 {% if fixed %}
-<p>Your user is set in the main configuration file: its password is changed there (<span class="mono">omniacli hash-password</span>).</p>
+<div class="banner info">{{ _("Your user is set in the main configuration file: its password is changed there") }} (<span class="mono">omniacli hash-password</span>).</div>
 {% else %}
 <div id="error" class="banner" hidden></div>
-<div id="done" class="panel" hidden><p>Password changed. The browser asks for the new one at the next page.</p></div>
-<form class="panel" id="password-form" style="max-width: 420px">
-  <h2 style="margin-top: 0">Change password</h2>
-  <p><label>Current password<br><input type="password" id="current" autocomplete="current-password" required></label></p>
-  <p><label>New password (at least 8 characters)<br><input type="password" id="password" autocomplete="new-password" minlength="8" required></label></p>
-  <p><label>New password again<br><input type="password" id="again" autocomplete="new-password" minlength="8" required></label></p>
-  <button>Change password</button>
+<div id="done" class="banner ok" hidden>{{ _("Password changed. The browser asks for the new one at the next page.") }}</div>
+<form class="panel" id="password-form">
+  <h2 style="margin-bottom: 12px">{{ _("Change password") }}</h2>
+  <p><label>{{ _("Current password") }}<br><input type="password" id="current" autocomplete="current-password" required></label></p>
+  <p><label>{{ _("New password (at least 8 characters)") }}<br><input type="password" id="password" autocomplete="new-password" minlength="8" required></label></p>
+  <p><label>{{ _("New password again") }}<br><input type="password" id="again" autocomplete="new-password" minlength="8" required></label></p>
+  <button class="primary">{{ _("Change password") }}</button>
 </form>
 <script>
 document.getElementById("password-form").onsubmit = async (event) => {
@@ -23,16 +33,17 @@ document.getElementById("password-form").onsubmit = async (event) => {
   errorBox.hidden = true;
   const password = document.getElementById("password").value;
   if (password !== document.getElementById("again").value) {
-    errorBox.textContent = "The two new passwords differ"; errorBox.hidden = false; return;
+    errorBox.textContent = {{ _("The two new passwords differ") | tojson }}; errorBox.hidden = false; return;
   }
   const resp = await fetch("{{ prefix }}/api/account/password", {method: "POST",
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify({current: document.getElementById("current").value, password})});
   const data = await resp.json().catch(() => ({}));
-  if (!resp.ok) { errorBox.textContent = data.error || data.detail || ("Error " + resp.status); errorBox.hidden = false; return; }
+  if (!resp.ok) { errorBox.textContent = data.error || data.detail || ({{ _("Error") | tojson }} + " " + resp.status); errorBox.hidden = false; return; }
   document.getElementById("password-form").hidden = true;
   document.getElementById("done").hidden = false;
 };
 </script>
 {% endif %}
+</div>
 {% endblock %}

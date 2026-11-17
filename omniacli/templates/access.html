@@ -1,37 +1,49 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
 {% extends "base.html" %}
-{% block title %}Access log · OmniaCLI{% endblock %}
+{% block title %}{{ _("Access log") }} · OmniaCLI{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
-{{ crumbs([("Dashboard", "/"), ("Users", "/users"), ("Access log", None)]) }}
+{{ crumbs([(_("Dashboard"), "/"), (_("Users"), "/users"), (_("Access log"), None)]) }}
 {% endblock %}
 {% block content %}
-<h1>Access log</h1>
-<p class="muted">A user's <strong>login</strong> and <strong>logout</strong> are those of the login page; a link or an MCP token logs in with its first request after 30 minutes without requests from the same address;
-a <strong>failed</strong> login is a wrong password or token; every <strong>MCP</strong> call is listed with its method and tool, every <strong>action</strong> with what was asked and the answer, every <strong>download</strong> of a backup with its file.
-Saved in <span class="mono">{{ log_file }}</span>, the failed logins in <span class="mono">{{ failed_file }}</span>.</p>
-<form class="actions job-filter" method="get" action="{{ prefix }}/access" style="margin: 0 0 12px">
-  <input type="search" name="q" value="{{ q }}" placeholder="Search user, address, event, tool…" aria-label="Search">
-  <button>Search</button>
-  {% if q %}<a class="button" href="{{ prefix }}/access">Clear</a>{% endif %}
-</form>
-<p class="muted">{{ total }} entr{{ "y" if total == 1 else "ies" }}{% if total > entries | length %}, the last {{ entries | length }} shown{% endif %}.</p>
-<div class="panel">
+{% set events = {"login": _("Login"), "logout": _("Logout"), "failed": _("Failed login"), "mcp": _("MCP call"),
+                 "shell": _("Shell"), "action": _("Action"), "download": _("Download"), "login-as": _("Log in as")} %}
+{% set kinds = {"user": _("login page"), "link": _("link"), "token": _("MCP token (API)"), "mcp": _("MCP"),
+                "burst": _("many attempts")} %}
+{% set badges = {"failed": "error", "login": "ok", "logout": "", "action": "info", "login-as": "warn"} %}
+<div class="page-head">
+  <div>
+    <h1>{{ _("Access log") }}</h1>
+    <p>{{ _("Who logged in, from where, and what they asked: logins, MCP calls, actions and downloads.") }}</p>
+  </div>
+</div>
+<section class="panel">
+  <form class="actions job-filter" method="get" action="{{ prefix }}/access" style="margin: 0 0 12px">
+    <input type="search" name="q" value="{{ q }}" placeholder="{{ _('Search user, address, event, tool…') }}" aria-label="{{ _('Search') }}">
+    <button class="primary">{{ _("Search") }}</button>
+    {% if q %}<a class="button" href="{{ prefix }}/access">{{ _("Clear") }}</a>{% endif %}
+  </form>
+  <p class="muted" style="margin: 0 0 10px">{% if total == 1 %}{{ _("1 entry") }}{% else %}{{ _("{count} entries", count=total) }}{% endif %}{% if total > entries | length %}, {{ _("the last {count} shown", count=entries | length) }}{% endif %}.</p>
   <div class="scroll">
   <table>
-    <tr><th>Date and time</th><th>Event</th><th>Who</th><th>Through</th><th>Address</th><th>Detail</th></tr>
+    <tr><th>{{ _("Date and time") }}</th><th>{{ _("Event") }}</th><th>{{ _("Who") }}</th><th>{{ _("Through") }}</th><th>{{ _("Address") }}</th><th>{{ _("Detail") }}</th></tr>
     {% for e in entries %}
     <tr>
-      <td class="mono">{{ e.time | replace("T", " ") }}</td>
-      <td class="{{ 'error' if e.event == 'failed' }}">{{ {"login": "Login", "logout": "Logout", "failed": "Failed login", "mcp": "MCP call", "shell": "Shell", "action": "Action", "download": "Download", "login-as": "Log in as"}.get(e.event, e.event) }}</td>
+      <td class="mono muted" style="white-space: nowrap">{{ e.time | replace("T", " ") }}</td>
+      <td class="{{ 'error' if e.event == 'failed' }}"><span class="badge {{ badges.get(e.event, '') }}">{{ events.get(e.event, e.event) }}</span></td>
       <td>{{ e.name or "—" }}</td>
-      <td>{{ {"user": "login page", "link": "link", "token": "MCP token (API)", "mcp": "MCP", "burst": "many attempts"}.get(e.kind, e.kind) }}</td>
+      <td>{{ kinds.get(e.kind, e.kind) }}</td>
       <td class="mono">{{ e.ip }}</td>
-      <td class="mono">{% if e.kind == "link" and e.detail and e.event not in ("failed", "shell", "action", "download") %}acting for {{ e.detail }}{% else %}{{ e.detail }}{% endif %}</td>
+      <td class="mono">{% if e.kind == "link" and e.detail and e.event not in ("failed", "shell", "action", "download") %}{{ _("acting for {name}", name=e.detail) }}{% else %}{{ e.detail }}{% endif %}</td>
     </tr>
     {% else %}
-    <tr><td colspan="6" class="muted">{{ "No entries match." if q else "No accesses logged yet." }}</td></tr>
+    <tr><td colspan="6" class="muted">{{ _("No entries match.") if q else _("No accesses logged yet.") }}</td></tr>
     {% endfor %}
   </table>
   </div>
-</div>
+</section>
+<details class="panel">
+  <summary>{{ _("What is logged, and where") }}</summary>
+  <p class="muted" style="margin-bottom: 0">{{ _("A user's login and logout are those of the login page; a link or an MCP token logs in with its first request after 30 minutes without requests from the same address; a failed login is a wrong password or token; every MCP call is listed with its method and tool, every action with what was asked and the answer, every download of a backup with its file.") }}
+  {{ _("Saved in") }} <span class="mono">{{ log_file }}</span>, {{ _("the failed logins in") }} <span class="mono">{{ failed_file }}</span>.</p>
+</details>
 {% endblock %}

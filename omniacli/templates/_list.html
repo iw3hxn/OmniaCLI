@@ -40,7 +40,7 @@ data-list-item data-text="{{ text | lower }}"
 {% for section in sections %}
 {% if section.name %}
 <details class="group list-group level-{{ level }}" open data-group="{{ path ~ '/' ~ section.name }}">
-  <summary><h2>{{ section.name }} <span class="muted list-count">({{ section.count }})</span></h2></summary>
+  <summary><h2>{{ (_("Others") if _ is defined else section.name) if section.name == "Others" else section.name }} <span class="muted list-count">({{ section.count }})</span></h2></summary>
   {% if section["items"] %}{{ render(section["items"]) }}{% endif %}
   {{ grouped(section.groups, render, id, path ~ "/" ~ section.name, level + 1) }}
 </details>
@@ -49,8 +49,11 @@ data-list-item data-text="{{ text | lower }}"
 {% endif %}
 {% endfor %}
 {%- endmacro %}
+{# the script runs where the file is included (with _()); an import of its macros skips it #}
+{% if _ is defined %}
 <script>
 const OmniaList = (function () {
+  const T = {shown: {{ _("{left} of {all}") | tojson }}, none: {{ _("Nothing matches.") | tojson }}};
   const words = (text) => text.toLowerCase().split(/\s+/).filter(Boolean);
   const storeKey = (root, path) => `omniacli.list.${root.dataset.list}.${path}`;
   // the field that searches a list: its data-list-search names it, maybe among others
@@ -93,7 +96,7 @@ const OmniaList = (function () {
         all += its.length;
         left += [...its].filter((i) => !i.hidden).length;
       }
-      note.textContent = wanted.length ? `${left} of ${all}` : "";
+      note.textContent = wanted.length ? T.shown.replace("{left}", left).replace("{all}", all) : "";
     }
     // "Nothing matches" after the list (a table holds no paragraph)
     let empty = document.querySelector(`[data-list-empty="${root.dataset.list}"]`);
@@ -104,7 +107,7 @@ const OmniaList = (function () {
         empty.dataset.listEmpty = root.dataset.list;
         root.after(empty);
       }
-      empty.textContent = "Nothing matches.";
+      empty.textContent = T.none;
     } else if (empty) empty.remove();
     root.dispatchEvent(new CustomEvent("omnialist:shown", {bubbles: true, detail: {searching: wanted.length > 0, shown}}));
   }
@@ -144,3 +147,4 @@ const OmniaList = (function () {
   return {attach, apply: (root) => { if (root) { folds(root); apply(root); } }};
 })();
 </script>
+{% endif %}

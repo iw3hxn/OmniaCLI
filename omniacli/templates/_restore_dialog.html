@@ -5,26 +5,26 @@
 <dialog id="restore-dialog">
   <form method="dialog" id="restore-form">
     <h2 id="restore-title" style="margin-bottom: 4px"></h2>
-    <p class="muted" style="margin-top: 0">The instance's database and filestore are dropped first, then the backup is loaded.</p>
-    <label><input type="radio" name="restore-source" value="" checked> A zip from this computer</label>
+    <p class="muted" style="margin-top: 0">{{ _("The instance's database and filestore are dropped first, then the backup is loaded.") }}</p>
+    <label><input type="radio" name="restore-source" value="" checked> {{ _("A zip from this computer") }}</label>
     <input type="file" id="restore-file" accept=".zip" style="display: block; margin: 4px 0 8px 22px">
     <div id="restore-backups" class="scroll" style="max-height: 35vh; margin: 6px 0"></div>
     {% for f in restore_fields %}
     {% if f.kind == "checkbox" %}
-    <label style="display: block; margin-top: 6px"><input type="checkbox" data-restore-option="{{ f.key }}" {{ "checked" if f.default }}> {{ f.label }}</label>
+    <label style="display: block; margin-top: 6px"><input type="checkbox" data-restore-option="{{ f.key }}" {{ "checked" if f.default }}> {{ tr(f.label) }}</label>
     {% else %}
-    <label style="display: block; margin-top: 6px">{{ f.label }} <input type="text" data-restore-option="{{ f.key }}" value="{{ f.default or '' }}" placeholder="{{ f.placeholder }}"></label>
+    <label style="display: block; margin-top: 6px">{{ tr(f.label) }} <input type="text" data-restore-option="{{ f.key }}" value="{{ f.default or '' }}" placeholder="{{ tr(f.placeholder) }}"></label>
     {% endif %}
     {% endfor %}
     <div id="restore-confirm" hidden style="margin-top: 10px">
-      <label>A production database is replaced: type <strong class="mono" id="restore-db"></strong> to go on
+      <label>{{ _("A production database is replaced. To go on, type its name:") }} <strong class="mono" id="restore-db"></strong>
         <input type="text" id="restore-typed" autocomplete="off" class="mono" style="display: block; margin-top: 4px"></label>
     </div>
     <progress id="restore-progress" max="100" value="0" hidden style="width: 100%; margin-top: 10px"></progress>
     <p id="restore-error" class="error"></p>
     <div class="actions">
-      <button type="submit" class="danger" id="restore-go">Restore</button>
-      <button type="button" id="restore-cancel">Cancel</button>
+      <button type="submit" class="danger" id="restore-go">{{ _("Restore") }}</button>
+      <button type="button" id="restore-cancel">{{ _("Cancel") }}</button>
     </div>
   </form>
 </dialog>
@@ -39,6 +39,12 @@
   const progress = document.getElementById("restore-progress");
   const go = document.getElementById("restore-go");
   let target = null, key = "", sending = null;
+  const T = {
+    title: {{ _("Restore into {key}") | tojson }}, choose: {{ _("Choose a zip, or one of the backups.") | tojson }},
+    type: {{ _("Type {database} to go on.") | tojson }},
+    drop: {{ _("Drop the database of {key} and load {backup} into it?") | tojson }},
+    error: {{ _("Error {status}") | tojson }},
+  };
   const sizeText = (b) => b >= 1073741824 ? (b / 1073741824).toFixed(2) + " GiB"
     : b >= 1048576 ? (b / 1048576).toFixed(1) + " MiB" : Math.max(1, Math.round(b / 1024)) + " KiB";
 
@@ -72,7 +78,7 @@
   for (const button of document.querySelectorAll("[data-restore-file]")) {
     button.onclick = () => {
       target = JSON.parse(button.dataset.restoreFile); key = button.dataset.key;
-      document.getElementById("restore-title").textContent = `Restore into ${key}`;
+      document.getElementById("restore-title").textContent = T.title.replace("{key}", key);
       document.getElementById("restore-form").reset();
       document.getElementById("restore-confirm").hidden = !target.database;
       document.getElementById("restore-db").textContent = target.database;
@@ -86,15 +92,15 @@
     errorBox.textContent = "";
     let backup = dialog.querySelector("input[name=restore-source]:checked").value;
     const file = backup ? null : fileInput.files[0];
-    if (!backup && !file) { errorBox.textContent = "Choose a zip, or one of the backups."; return; }
+    if (!backup && !file) { errorBox.textContent = T.choose; return; }
     const body = {};
     for (const input of dialog.querySelectorAll("[data-restore-option]")) {
       body[input.dataset.restoreOption] = input.type === "checkbox" ? input.checked : input.value.trim();
     }
     if (target.database) {
-      if (typed.value.trim() !== target.database) { errorBox.textContent = `Type ${target.database} to go on.`; return; }
+      if (typed.value.trim() !== target.database) { errorBox.textContent = T.type.replace("{database}", target.database); return; }
       body.confirm = typed.value.trim();
-    } else if (!confirm(`Drop the database of ${key} and load ${backup || file.name} into it?`)) return;
+    } else if (!confirm(T.drop.replace("{key}", key).replace("{backup}", backup || file.name))) return;
     go.disabled = true;
     try {
       if (file) {
@@ -105,7 +111,7 @@
         method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({...body, backup}),
       });
       const data = await resp.json().catch(() => ({}));
-      if (!resp.ok) throw new Error(data.error || data.detail || "Error " + resp.status);
+      if (!resp.ok) throw new Error(data.error || data.detail || T.error.replace("{status}", resp.status));
       location.href = "{{ prefix }}/jobs/" + data.job;
     } catch (e) {
       errorBox.textContent = e.message; go.disabled = false; progress.hidden = true;

@@ -1,72 +1,88 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
 {% extends "base.html" %}
-{% block title %}Machines · OmniaCLI{% endblock %}
+{% block title %}{{ _("Machines") }} · OmniaCLI{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
-{{ crumbs([("Dashboard", "/"), ("Machines", None)]) }}
+{{ crumbs([(_("Dashboard"), "/"), (_("Machines"), None)]) }}
 {% endblock %}
 {% block content %}
-<h1>Machines</h1>
-<p class="muted">A clean Ubuntu (22.04, 24.04) or Debian (11, 12, 13) server, prepared from here: its updates, nginx,
-certbot, Docker, OmniaCLI with the workspaces, a firewall, then linked to this OmniaCLI through SSH. Its workspaces and
-instances are then made from its pages, opened here through the link. About 10 to 20 minutes.</p>
+<style>
+.steps .step-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.step-num { flex: none; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--accent); color: #fff; font-weight: 700; font-size: 13px; }
+.steps .field-help { display: block; font-size: 13px; margin-top: 3px; }
+.steps pre.mono { white-space: pre-wrap; word-break: break-all; }
+@media (max-width: 700px) { .steps .form-grid { grid-template-columns: 1fr; } }
+</style>
+<div class="page-head">
+  <div><h1>{{ _("Machines") }}</h1>
+    <p>{{ _("A clean Ubuntu or Debian server, prepared from here and linked to this OmniaCLI through SSH.") }}</p></div>
+</div>
+<details class="muted" style="margin-bottom: 16px">
+  <summary>{{ _("More") }}</summary>
+  <p>{{ _("Ubuntu 22.04 or 24.04, Debian 11, 12 or 13. Prepared: its updates, nginx, certbot, Docker, OmniaCLI with the workspaces, a firewall, then the link through SSH.") }}
+    {{ _("Its workspaces and instances are then made from its pages, opened here through the link. About 10 to 20 minutes.") }}</p>
+</details>
 
+<div class="stack steps">
 <section class="panel">
-  <h2>1. Let OmniaCLI in</h2>
+  <h2 class="step-head"><span class="step-num">1</span> {{ _("Let OmniaCLI in") }}</h2>
   {% if provision_key %}
-  <p>On the new machine, as root, add OmniaCLI's provisioning key to root's keys (or to a user with
-    <span class="mono">sudo</span> without a password):</p>
-  <pre class="mono" id="machine-key-line" style="white-space: pre-wrap; word-break: break-all">mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '{{ provision_key }}' &gt;&gt; ~/.ssh/authorized_keys</pre>
-  <p class="muted">This key prepares machines only; the links use another one, which may only forward to OmniaCLI.
-    Take it out of <span class="mono">authorized_keys</span> once the machine is ready if you want: the link does not
-    need it.</p>
+  <p>{{ _("On the new machine, as root, add OmniaCLI's provisioning key to root's keys (or to a user with sudo without a password):") }}</p>
+  <pre class="mono" id="machine-key-line">mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '{{ provision_key }}' &gt;&gt; ~/.ssh/authorized_keys</pre>
+  <p class="muted">{{ _("This key prepares machines only; the links use another one, which may only forward to OmniaCLI. Take it out of authorized_keys once the machine is ready if you want: the link does not need it.") }}</p>
   {% else %}
-  <p>OmniaCLI has no provisioning key yet.</p>
-  <button type="button" id="machine-make-key">Make the key</button>
+  <p>{{ _("OmniaCLI has no provisioning key yet.") }}</p>
+  <button type="button" id="machine-make-key" class="primary">{{ _("Make the key") }}</button>
   {% endif %}
 </section>
 
 <section class="panel">
-  <h2>2. The machine</h2>
+  <h2 class="step-head"><span class="step-num">2</span> {{ _("The machine") }}</h2>
   <form id="machine-form" class="form-grid">
-    <label for="m-name">Name</label>
+    <label for="m-name">{{ _("Name") }}</label>
     <div><input type="text" id="m-name" class="mono" required pattern="[a-z0-9][a-z0-9_\-]{0,31}" placeholder="acme-cloud">
-      <span class="muted">the link's name here</span></div>
-    <label for="m-host">Address</label>
+      <span class="muted field-help">{{ _("the link's name here") }}</span></div>
+    <label for="m-host">{{ _("Address") }}</label>
     <div><input type="text" id="m-host" class="mono" required placeholder="203.0.113.10">
-      <span class="muted">its public IPv4 address or name</span></div>
-    <label for="m-port">SSH port</label>
+      <span class="muted field-help">{{ _("its public IPv4 address or name") }}</span></div>
+    <label for="m-port">{{ _("SSH port") }}</label>
     <div><input type="number" id="m-port" class="mono" min="1" max="65535" value="22"></div>
-    <label for="m-user">SSH user</label>
+    <label for="m-user">{{ _("SSH user") }}</label>
     <div><input type="text" id="m-user" class="mono" value="root">
-      <span class="muted">root, or a user with sudo without a password</span></div>
-    <label>Server's key</label>
+      <span class="muted field-help">{{ _("root, or a user with sudo without a password") }}</span></div>
+    <label>{{ _("Server's key") }}</label>
     <div><input type="hidden" id="m-host-key">
-      <span id="m-fingerprint" class="mono">not fetched</span>
-      <button type="button" id="m-fetch">Fetch host key</button>
-      <span class="muted">compare it with <span class="mono">ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</span>
-        run on that server: only this key is accepted</span></div>
-    <label for="m-package">OmniaCLI package</label>
+      <span id="m-fingerprint" class="mono">{{ _("not fetched") }}</span>
+      <button type="button" id="m-fetch">{{ _("Fetch host key") }}</button>
+      <span class="muted field-help">{{ _("Compare it with {command} run on that server: only this key is accepted.", command="ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub") }}</span></div>
+    <label for="m-package">{{ _("OmniaCLI package") }}</label>
     <div><input type="url" id="m-package" class="mono" value="{{ package_url }}" style="width: 100%"></div>
-    <label for="m-firewall">Firewall</label>
-    <div><label><input type="checkbox" id="m-firewall" checked> only SSH, 80 and 443 open (ufw)</label></div>
+    <label for="m-firewall">{{ _("Firewall") }}</label>
+    <div><label><input type="checkbox" id="m-firewall" checked> {{ _("only SSH, 80 and 443 open (ufw)") }}</label></div>
     <div></div>
-    <div><button type="submit" class="primary" {{ "disabled" if not provision_key }}>Prepare and link</button>
+    <div><button type="submit" class="primary" {{ "disabled" if not provision_key }}>{{ _("Prepare and link") }}</button>
       <span id="machine-error" class="error"></span></div>
   </form>
 </section>
 
-{% if machines %}
 <section class="panel">
-  <h2>Prepared machines</h2>
+  <h2 class="step-head"><span class="step-num">3</span> {{ _("Prepared machines") }}</h2>
+  <p class="muted">{{ _("Prepare and link opens the job of the preparation; the machine is then listed here with its link.") }}</p>
+  {% if machines %}
+  <div class="scroll">
   <table>
-    <tr><th>Name</th><th>Address</th><th>Link</th></tr>
+    <tr><th>{{ _("Name") }}</th><th>{{ _("Address") }}</th><th>{{ _("Link") }}</th></tr>
     {% for m in machines %}
     <tr><td><a href="{{ prefix }}/links/{{ m.name }}/">{{ m.name }}</a></td><td class="mono">{{ m.host }}</td>
-      <td>{{ m.status.state if m.status else "not started" }}{% if m.status and m.status.detail %} · {{ m.status.detail }}{% endif %}</td></tr>
+      <td>{% if m.status %}<span class="badge {{ 'ok' if m.status.state == 'up' else ('warn' if m.status.state == 'starting' else 'error') }}">{{ tr(m.status.state) }}</span>{% else %}<span class="badge">{{ _("not started") }}</span>{% endif %}{% if m.status and m.status.detail %} <span class="muted">{{ tr(m.status.detail) }}</span>{% endif %}</td></tr>
     {% endfor %}
   </table>
+  </div>
+  {% else %}
+  <p class="muted">{{ _("No machines prepared yet.") }}</p>
+  {% endif %}
 </section>
-{% endif %}
+</div>
 
 <script>
 (function () {
@@ -80,14 +96,14 @@ instances are then made from its pages, opened here through the link. About 10 t
   const make = document.getElementById("machine-make-key");
   if (make) make.addEventListener("click", async () => {
     const {ok, data} = await post("{{ prefix }}/api/machines/key");
-    if (ok) location.reload(); else error.textContent = data.error || "The key cannot be made";
+    if (ok) location.reload(); else error.textContent = data.error || {{ _("The key cannot be made") | tojson }};
   });
   document.getElementById("m-fetch").addEventListener("click", async () => {
     error.textContent = "";
     const host = document.getElementById("m-host").value.trim();
     const {ok, data} = await post("{{ prefix }}/api/links/ssh/host-key",
                                   {host, port: Number(document.getElementById("m-port").value) || 22});
-    if (!ok) { error.textContent = data.error || "The host key cannot be read"; return; }
+    if (!ok) { error.textContent = data.error || {{ _("The host key cannot be read") | tojson }}; return; }
     document.getElementById("m-host-key").value = data.host_key;
     document.getElementById("m-fingerprint").textContent = data.fingerprint;
   });
@@ -99,7 +115,7 @@ instances are then made from its pages, opened here through the link. About 10 t
       name: value("m-name"), host: value("m-host"), port: Number(value("m-port")) || 22, user: value("m-user"),
       host_key: value("m-host-key"), package_url: value("m-package"),
       firewall: document.getElementById("m-firewall").checked});
-    if (!ok || !data.job) { error.textContent = data.error || data.detail || "Refused"; return; }
+    if (!ok || !data.job) { error.textContent = data.error || data.detail || {{ _("Refused") | tojson }}; return; }
     location.href = `{{ prefix }}/jobs/${data.job}`;
   });
 })();

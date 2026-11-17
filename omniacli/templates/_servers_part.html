@@ -1,6 +1,6 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
-{% from "_load.html" import cpu as load_cpu %}
-{% from "_list.html" import grouped, item %}
+{% from "_load.html" import cpu as load_cpu with context %}
+{% from "_list.html" import grouped, item with context %}
 {# The server tables of the Dashboard: this instance's servers, in the
    groups of the servers list (the list widget, _list.html), rendered with
    the page and again by /dashboard/servers when a job starts or ends. #}
@@ -9,7 +9,7 @@
 <div class="panel" data-list-box>
   <div class="scroll">
   <table class="server-rows">
-    <tr><th>Server</th><th>Workspace</th><th>Odoo, CPU of the last 15 minutes</th></tr>
+    <tr><th>{{ _("Server") }}</th><th>{{ _("Workspace") }}</th><th>{{ _("Odoo, CPU of the last 15 minutes") }}</th></tr>
     {% for row in rows %}
     <tr {{ item(row.text) }} data-server="{{ row.name }}">
       <td><div class="server-name"><a href="{{ row.base }}/servers/{{ row.name }}"><strong>{{ row.label }}</strong></a>
@@ -17,17 +17,18 @@
           {# the instance itself, at its domain or on localhost, in a new tab;
              its page here when its address is not known #}
           {% for role in ("production", "test") if role in row.roles %}
-          {% if row.web.get(role) %}<a class="button view-{{ role }}" href="{{ row.web[role] }}" target="_blank" rel="noopener" title="Open {{ row.web[role] }} in a new tab">{{ icon(role) }}{{ role | capitalize }}</a>
-          {% else %}<a class="button view-{{ role }}" href="{{ row.base }}/servers/{{ row.name }}?view={{ role }}" title="{{ role | capitalize }} of {{ row.label }}">{{ icon(role) }}{{ role | capitalize }}</a>{% endif %}
+          {% set role_label = (_("production") if role == "production" else _("test")) | capitalize %}
+          {% if row.web.get(role) %}<a class="button view-{{ role }}" href="{{ row.web[role] }}" target="_blank" rel="noopener" title="{{ _("Open {url} in a new tab", url=row.web[role]) }}">{{ icon(role) }}{{ role_label }}</a>
+          {% else %}<a class="button view-{{ role }}" href="{{ row.base }}/servers/{{ row.name }}?view={{ role }}" title="{{ _("Production of {name}", name=row.label) if role == "production" else _("Test of {name}", name=row.label) }}">{{ icon(role) }}{{ role_label }}</a>{% endif %}
           {% endfor %}
         </span></div>
         {# shown and hidden by the Dashboard as jobs start and end #}
-        {% for role in row.roles %}<span class="job-busy" data-link="{{ row.link }}" data-busy="{{ row.name }}/{{ role }}" {% if not row.busy[role] %}hidden{% endif %}><br><span class="status running">{{ runner("mini") }}job running on {{ role }}</span></span>{% endfor %}</td>
+        {% for role in row.roles %}<span class="job-busy" data-link="{{ row.link }}" data-busy="{{ row.name }}/{{ role }}" {% if not row.busy[role] %}hidden{% endif %}><br><span class="status running">{{ runner("mini") }}{{ _("job running on production") if role == "production" else _("job running on test") }}</span></span>{% endfor %}</td>
       <td>{% if row.workspace %}{% if is_admin %}<a href="{{ prefix }}/workspaces?edit={{ row.workspace | urlencode }}">{{ row.workspace }}</a>{% else %}{{ row.workspace }}{% endif %}{% else %}<span class="muted">—</span>{% endif %}</td>
       <td class="sparks">
         {% for role in row.roles %}
         <div class="spark-row" data-link="{{ row.link }}" data-key="{{ row.name }}/{{ role }}">
-          <span class="role {{ role }}">{{ "Prod" if role == "production" else "Test" }}</span>
+          <span class="role {{ role }}">{{ _("Prod") if role == "production" else _("test") | capitalize }}</span>
           {{ load_cpu(row.label ~ " " ~ role) }}
           {% set st = row.state.get(role) %}
           {% if st %}
@@ -35,23 +36,23 @@
           {% set rt = row.restart.get(role, "") %}
           {% set url = row.base ~ "/servers/" ~ row.name ~ "/" ~ role %}
           {% set off = "disabled" if row.busy[role] else "" %}
-          {% set what = row.label ~ " " ~ role %}
-          <span class="run-state {{ st }}" title="Odoo {{ st if st != 'unknown' else 'state unknown' }}">{{ {"running": "running", "stopped": "stopped"}.get(st, "?") }}</span>
+          {% set what = row.label ~ " " ~ (_("production") if role == "production" else _("test")) %}
+          <span class="run-state {{ st }}" title="{{ {"running": _("Odoo running"), "stopped": _("Odoo stopped")}.get(st, _("Odoo state unknown")) }}">{{ {"running": _("running"), "stopped": _("stopped")}.get(st, "?") }}</span>
           {% if can_restart %}
           <span class="run-buttons">
             {% if st != "running" and rt in ("process", "systemd", "compose") %}
-            <form method="post" action="{{ url }}/{{ 'restart' if rt == 'process' else 'start' }}" onsubmit="return confirm('Start Odoo of {{ what }}?')">
+            <form method="post" action="{{ url }}/{{ 'restart' if rt == 'process' else 'start' }}" onsubmit='return confirm({{ _("Start Odoo of {name}?", name=what) | tojson }})'>
               <input type="hidden" name="next" value="{{ prefix }}/">
-              <button class="icon-btn btn-start" title="Start" aria-label="Start {{ what }}" {{ off }}>{{ icon("start") }}</button></form>
+              <button class="icon-btn btn-start" title="{{ _("Start") }}" aria-label="{{ _("Start {name}", name=what) }}" {{ off }}>{{ icon("start") }}</button></form>
             {% endif %}
             {% if st != "stopped" and rt in ("process", "systemd", "compose") %}
-            <form method="post" action="{{ url }}/stop" onsubmit="return confirm('Stop Odoo of {{ what }}? It stays stopped, also for the auto update, until Start.')">
+            <form method="post" action="{{ url }}/stop" onsubmit='return confirm({{ _("Stop Odoo of {name}? It stays stopped, also for the auto update, until Start.", name=what) | tojson }})'>
               <input type="hidden" name="next" value="{{ prefix }}/">
-              <button class="icon-btn btn-stop" title="Stop" aria-label="Stop {{ what }}" {{ off }}>{{ icon("stop") }}</button></form>
+              <button class="icon-btn btn-stop" title="{{ _("Stop") }}" aria-label="{{ _("Stop {name}", name=what) }}" {{ off }}>{{ icon("stop") }}</button></form>
             {% endif %}
             {% if rt != "process" or st == "running" %}
-            <form method="post" action="{{ url }}/restart" onsubmit="return confirm('Restart Odoo of {{ what }}?')">
-              <button class="icon-btn btn-restart" title="Restart" aria-label="Restart {{ what }}" {{ off }}>{{ icon("restart") }}</button></form>
+            <form method="post" action="{{ url }}/restart" onsubmit='return confirm({{ _("Restart Odoo of {name}?", name=what) | tojson }})'>
+              <button class="icon-btn btn-restart" title="{{ _("Restart") }}" aria-label="{{ _("Restart {name}", name=what) }}" {{ off }}>{{ icon("restart") }}</button></form>
             {% endif %}
           </span>
           {% endif %}
@@ -68,5 +69,6 @@
 {% if rows %}
 {{ grouped(sections, server_table, "servers") }}
 {% else %}
-<div class="panel"><p class="muted" style="margin: 0">No live servers.{% if is_admin %} Add one in <a href="{{ prefix }}/config">Servers</a>, then use Test &amp; activate.{% endif %}</p></div>
+<div class="panel"><p class="muted" style="margin: 0">{{ _("No live servers.") }}{% if is_admin %} {{ _("Add one in Servers, then use Test & activate.") }}</p>
+  <div class="actions"><a class="button primary" href="{{ prefix }}/config">{{ _("Open Servers") }}</a></div>{% else %}</p>{% endif %}</div>
 {% endif %}

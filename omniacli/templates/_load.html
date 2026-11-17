@@ -19,27 +19,41 @@
        disks, base), OmniaLoad.state(row, text): fill a machine_row
      OmniaLoad.watch(row): a machine_row that fetches its own load, every
        5 s, and its disks every minute (a linked instance, through its link)
-     OmniaLoad.rate(bytes): bytes per second as text #}
+     OmniaLoad.rate(bytes): bytes per second as text
+   The macros translate when imported "with context" (they need _()); else
+   they stay in English. #}
 {% macro cpu(label) -%}
-<span class="load-cpu"><svg class="spark" width="120" height="28" role="img" aria-label="CPU of {{ label }}, recent minutes"></svg><span class="mono load-value">–</span></span>
+<span class="load-cpu"><svg class="spark" width="120" height="28" role="img" aria-label="{{ _("CPU of {name}, recent minutes", name=label) if _ is defined else "CPU of " ~ label ~ ", recent minutes" }}"></svg><span class="mono load-value">–</span></span>
 {%- endmacro %}
 {% macro net(label) -%}
-<span class="load-net"><svg class="spark" width="120" height="28" role="img" aria-label="Network traffic of {{ label }}, recent minutes"></svg><span class="mono load-value">–</span></span>
+<span class="load-net"><svg class="spark" width="120" height="28" role="img" aria-label="{{ _("Network traffic of {name}, recent minutes", name=label) if _ is defined else "Network traffic of " ~ label ~ ", recent minutes" }}"></svg><span class="mono load-value">–</span></span>
 {%- endmacro %}
 {% macro disks() -%}
 <span class="load-disks">–</span>
 {%- endmacro %}
 {% macro machine_row(link, label) -%}
 <span class="machine-row" data-link="{{ link }}">
-  <span class="sum-item"><span class="muted">CPU</span>{{ cpu(label) }}</span>
-  <span class="sum-item"><span class="muted">Network</span>{{ net(label) }}</span>
-  <span class="sum-item"><span class="muted">Disks</span>{{ disks() }}</span>
+  <span class="sum-item"><span class="muted">{{ _("CPU") if _ is defined else "CPU" }}</span>{{ cpu(label) }}</span>
+  <span class="sum-item"><span class="muted">{{ _("Network") if _ is defined else "Network" }}</span>{{ net(label) }}</span>
+  <span class="sum-item"><span class="muted">{{ _("Disks") if _ is defined else "Disks" }}</span>{{ disks() }}</span>
   <span class="muted machine-row-state"></span>
 </span>
 {%- endmacro %}
+{# the script runs where the file is included (with _()); an import of its macros skips it #}
+{% if _ is defined %}
 <script>
 const OmniaLoad = (function () {
   const WINDOW = 15 * 60;
+  const T = {
+    none: {{ _("no samples yet") | tojson }},
+    traffic: {{ _("received {rx}, sent {tx}") | tojson }},
+    core: {{ _("{cpu}% of {cores} core") | tojson }},
+    cores: {{ _("{cpu}% of {cores} cores") | tojson }},
+    http: {{ _("No answer: HTTP {status}") | tojson }},
+    older: {{ _("Not available: that OmniaCLI is older.") | tojson }},
+    noAnswer: {{ _("No answer.") | tojson }},
+  };
+  const fill = (text, values) => text.replace(/\{(\w+)\}/g, (all, k) => (k in values ? values[k] : all));
   const rate = (b) => b === null || b === undefined ? "–" : b >= 1048576 ? (b / 1048576).toFixed(1) + " MiB/s"
     : b >= 1024 ? (b / 1024).toFixed(0) + " KiB/s" : b.toFixed(0) + " B/s";
   const lastWith = (points, key) => points.filter((p) => p[key] !== null && p[key] !== undefined).pop();
@@ -49,7 +63,7 @@ const OmniaLoad = (function () {
     OmniaCharts.draw(el.querySelector("svg"), points, key, {spark: true, minMax: opts.minMax || 10});
     const last = lastWith(points, key), value = el.querySelector(".load-value");
     value.textContent = last ? (opts.text ? opts.text(last) : last[key].toFixed(0) + "%") : "–";
-    el.title = last ? (opts.title ? opts.title(last) : `${last[key]}% CPU`) : "no samples yet";
+    el.title = last ? (opts.title ? opts.title(last) : `${last[key]}% CPU`) : T.none;
   }
   function net(el, points, opts) {
     opts = opts || {};
@@ -57,7 +71,7 @@ const OmniaLoad = (function () {
     OmniaCharts.draw(el.querySelector("svg"), points, rx, {spark: true, also: tx, minMax: 1024});
     const last = lastWith(points, rx), value = el.querySelector(".load-value");
     value.textContent = last ? "↓" + rate(last[rx]) + " ↑" + rate(last[tx]) : "–";
-    el.title = last ? `received ${rate(last[rx])}, sent ${rate(last[tx])}` : (opts.none || "no samples yet");
+    el.title = last ? fill(T.traffic, {rx: rate(last[rx]), tx: rate(last[tx])}) : (opts.none || T.none);
   }
   function disks(el, list) {
     el.replaceChildren();
@@ -74,7 +88,7 @@ const OmniaLoad = (function () {
                                      href: "forecast" in d ? base + "/disks#" + encodeURIComponent(d.mount) : null});
   function machine(row, points, cores) {
     const recent = points.filter((p) => p.t >= Date.now() / 1000 - WINDOW);
-    cpu(row.querySelector(".load-cpu"), recent, {title: (p) => `${p.cpu}% of ${cores} ${cores === 1 ? "core" : "cores"}`});
+    cpu(row.querySelector(".load-cpu"), recent, {title: (p) => fill(cores === 1 ? T.core : T.cores, {cpu: p.cpu, cores})});
     net(row.querySelector(".load-net"), recent);
   }
   const machineDisks = (row, found, base) =>
@@ -86,14 +100,14 @@ const OmniaLoad = (function () {
     async function metrics() {
       try {
         const resp = await fetch(`${base}/api/metrics?machine_only=1&since=${since || Math.floor(Date.now() / 1000) - WINDOW}`);
-        if (!resp.ok) { state(row, "No answer: HTTP " + resp.status); return; }
+        if (!resp.ok) { state(row, fill(T.http, {status: resp.status})); return; }
         const data = await resp.json();
-        if (!data.machine) { state(row, "Not available: that OmniaCLI is older."); return; }
+        if (!data.machine) { state(row, T.older); return; }
         state(row, "");
         points = points.concat(data.machine).slice(-180);
         if (points.length) since = points[points.length - 1].t;
         machine(row, points, data.cores);
-      } catch (e) { state(row, "No answer."); }
+      } catch (e) { state(row, T.noAnswer); }
     }
     async function diskList() {
       try {
@@ -105,6 +119,7 @@ const OmniaLoad = (function () {
     setInterval(() => { if (!document.hidden) metrics(); }, 5000);
     setInterval(() => { if (!document.hidden) diskList(); }, 60000);
   }
-  return {cpu, net, disks, machineDisk, machine, machineDisks, state, watch, rate};
+  return {cpu, net, disks, machineDisk, machine, machineDisks, state, watch, rate, fill};
 })();
 </script>
+{% endif %}
