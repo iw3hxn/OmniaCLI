@@ -1,0 +1,112 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{# New instance, as Cloudpepper's Add instance: the Odoo version is the one
+   choice; a name, a domain and a language are optional (POST /api/instances/new:
+   a workspace of its own, its production and test from the template odoo-<major>). -#}
+<style>
+#new-instance { width: min(620px, calc(100vw - 32px)); padding: 0; }
+#new-instance form { margin: 0; }
+.ni-head { padding: 20px 24px 4px; }
+.ni-head h2 { margin: 0 0 4px; }
+.ni-body { padding: 12px 24px 4px; }
+.ni-versions { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px; margin: 6px 0 16px; }
+.ni-version { position: relative; display: block; cursor: pointer; border: 1px solid var(--border); border-radius: var(--r-lg);
+  padding: 14px 12px; text-align: center; background: var(--panel-2); transition: border-color .12s, box-shadow .12s; }
+.ni-version:hover { border-color: var(--border-strong); }
+.ni-version input { position: absolute; opacity: 0; pointer-events: none; }
+.ni-version b { display: block; font-size: 26px; line-height: 1.1; }
+.ni-version span { font-size: 12px; color: var(--muted); }
+.ni-version:has(input:checked) { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); background: var(--panel); }
+.ni-version:has(input:checked) b { color: var(--accent); }
+.ni-version:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ni-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.ni-fields label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+.ni-fields input, .ni-fields select { width: 100%; }
+.ni-fields .wide { grid-column: 1 / -1; }
+.ni-help { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.ni-foot { display: flex; justify-content: flex-end; align-items: center; gap: 8px; padding: 16px 24px 20px; }
+.ni-foot .error { margin: 0 auto 0 0; font-size: 13px; }
+.ni-foot button { padding: 8px 16px; }
+@media (max-width: 600px) { .ni-fields { grid-template-columns: 1fr; } }
+</style>
+<dialog id="new-instance" aria-labelledby="ni-title">
+  <form id="ni-form" novalidate>
+    <div class="ni-head">
+      <h2 id="ni-title">{{ _("New instance") }}</h2>
+      <p class="muted" style="margin: 0">{{ _("Choose the Odoo version: OmniaCLI makes its database, its containers, its disk and its test copy.") }}</p>
+    </div>
+    <div class="ni-body">
+      <div class="ni-versions" id="ni-versions" role="radiogroup" aria-label="{{ _('Odoo version') }}"></div>
+      <details>
+        <summary class="muted" style="cursor: pointer; font-size: 13px">{{ _("Name, domain and language (optional)") }}</summary>
+        <div class="ni-fields" style="margin-top: 12px">
+          <div><label for="ni-name">{{ _("Name") }}</label>
+            <input type="text" id="ni-name" class="mono" maxlength="32" placeholder="odoo19" autocomplete="off"></div>
+          <div><label for="ni-language">{{ _("Language") }}</label>
+            <select id="ni-language">
+              <option value="">English</option><option value="it_IT" {{ "selected" if lang == "it" }}>Italiano</option><option value="de_DE">Deutsch</option>
+              <option value="fr_FR">Français</option><option value="es_ES">Español</option>
+            </select></div>
+          <div class="wide"><label for="ni-domain">{{ _("Domain") }}</label>
+            <input type="text" id="ni-domain" class="mono" placeholder="erp.example.com" autocomplete="off" spellcheck="false">
+            <div class="ni-help">{{ _("Its DNS name pointing to this server, ports 80 and 443 open: production answers there with HTTPS, its test on test.<domain>. Empty: added later from its workspace.") }}</div></div>
+        </div>
+      </details>
+    </div>
+    <div class="ni-foot">
+      <p id="ni-error" class="error" role="alert"></p>
+      <button type="button" id="ni-cancel">{{ _("Cancel") }}</button>
+      <button type="submit" class="primary" id="ni-create">{{ _("Create the instance") }}</button>
+    </div>
+  </form>
+</dialog>
+<script>
+(function () {
+  const PREFIX = {{ prefix | tojson }};
+  const T = {creating: {{ _("Creating…") | tojson }}, create: {{ _("Create the instance") | tojson }},
+             refused: {{ _("Refused") | tojson }}, none: {{ _("No Odoo template on this machine") | tojson }},
+             community: {{ _("Community") | tojson }}};
+  const dialog = document.getElementById("new-instance"), versions = document.getElementById("ni-versions");
+  const error = document.getElementById("ni-error"), create = document.getElementById("ni-create");
+  const nameField = document.getElementById("ni-name");
+  let loaded = false;
+  async function load() {
+    const resp = await fetch(`${PREFIX}/api/instances/versions`, {headers: {Accept: "application/json"}}).catch(() => null);
+    const data = resp && resp.ok ? await resp.json().catch(() => ({})) : {};
+    versions.replaceChildren();
+    for (const [i, v] of (data.versions || []).entries()) {
+      const input = Object.assign(document.createElement("input"), {type: "radio", name: "ni-version", value: String(v.major), checked: i === 0});
+      input.addEventListener("change", () => { nameField.placeholder = `odoo${v.major}`; });
+      const card = document.createElement("label");
+      card.className = "ni-version"; card.title = v.label;
+      const big = document.createElement("b"); big.textContent = `${v.major}.0`;
+      const small = document.createElement("span"); small.textContent = `Odoo · ${T.community}`;
+      card.append(input, big, small);
+      versions.append(card);
+    }
+    if (!versions.children.length) { error.textContent = T.none; create.disabled = true; }
+    else nameField.placeholder = `odoo${data.versions[0].major}`;
+    loaded = true;
+  }
+  document.querySelectorAll("[data-new-instance]").forEach((b) => b.addEventListener("click", async () => {
+    error.textContent = "";
+    dialog.showModal();
+    if (!loaded) await load();
+  }));
+  document.getElementById("ni-cancel").addEventListener("click", () => dialog.close());
+  document.getElementById("ni-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const picked = versions.querySelector("input:checked");
+    if (!picked) return;
+    error.textContent = ""; create.disabled = true; create.textContent = T.creating;
+    const resp = await fetch(`${PREFIX}/api/instances/new`, {
+      method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
+      body: JSON.stringify({version: picked.value, name: nameField.value.trim(),
+                            domain: document.getElementById("ni-domain").value.trim(),
+                            language: document.getElementById("ni-language").value})}).catch(() => null);
+    const data = resp ? await resp.json().catch(() => ({})) : {};
+    create.disabled = false; create.textContent = T.create;
+    if (!resp || !resp.ok || !data.job) { error.textContent = data.error || data.detail || T.refused; return; }
+    location.href = `${PREFIX}/jobs/${data.job}`;
+  });
+})();
+</script>

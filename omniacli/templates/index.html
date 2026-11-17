@@ -21,8 +21,12 @@
 <div class="page-head">
   <div><h1>{{ _("Dashboard") }}</h1>
     <p>{{ _("Your servers and their state, the load of the machine, the last jobs.") }}</p></div>
-  {% if machine %}<div class="actions"><a class="button" href="{{ prefix }}/disks">{{ _("Disks") }}</a></div>{% endif %}
+  <div class="actions">
+    {% if machine %}<a class="button" href="{{ prefix }}/disks">{{ _("Disks") }}</a>{% endif %}
+    {% if quick_instance %}<button type="button" class="primary" data-new-instance>+ {{ _("New instance") }}</button>{% endif %}
+  </div>
 </div>
+{% if quick_instance %}{% include "_new_instance_dialog.html" %}{% endif %}
 {# the widgets first: the lists below use them as they are drawn #}
 {% include "_charts.html" %}
 {% include "_disk.html" %}

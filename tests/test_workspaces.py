@@ -590,3 +590,67 @@ async def test_workspaceops_create_instance(monkeypatch):
     with pytest.raises(JobFailed, match="no storage"):
         await workspaceops.create_instance(Job(id="l", title="t", instances=[], source="s"),
                                            Workspace("beta"), "main", template, values)
+
+
+async def test_a_new_odoo_by_its_version_only(workspaces, client, env, monkeypatch, tmp_path):
+    """As Cloudpepper's Add instance: the version is enough; its workspace is
+    made on the first storage with a disk the real one allows, its domain's
+    production on the domain itself."""
+    from pathlib import Path
+
+    from omniacli import stacktemplates, workspaceops
+
+    settings = env["settings"]
+    root = Path(__file__).parent.parent / "templates"
+    found = {n: stacktemplates.load_template(root / n) for n in ("odoo-18", "odoo-19", "odooplm-20")}
+    monkeypatch.setattr(workspaceops, "templates", lambda: found)
+    asked = []
+
+    async def create_instance(job, ws, instance, tpl, values):
+        asked.append((ws.name, ws.limits, instance, tpl.name, values))
+        return {"type": "docker", **{role: {
+            "database": instance, "odoo_service": "odoo", "db_service": "db", "http_port": port,
+            "update_modules": True, "restart": {"type": "compose", "service": str(tmp_path / role), "sudo": True},
+            "repositories": []} for role, port in (("production", 20000), ("test", 20002))}}
+
+    async def publish(job, ws):
+        return {}
+
+    async def space():
+        return space_of(500, {}, root="main")
+    monkeypatch.setattr(workspaceops, "create_instance", create_instance)
+    monkeypatch.setattr(workspaceops, "publish", publish)
+    monkeypatch.setattr(workspaceops, "space", space)
+    settings.storage_roots = {}
+    versions = (await client.get("/api/instances/versions", headers={"Authorization": AUTH})).json()
+    assert [v["major"] for v in versions["versions"]] == [19, 18] and not versions["storage"]
+    resp = await client.post("/api/instances/new", headers=POST, json={"version": "19"})
+    assert resp.status_code == 400 and "No storage" in resp.json()["error"]
+    settings.storage_roots = {"main": "/s"}
+    assert (await client.post("/api/instances/new", headers=POST, json={"version": "15"})).status_code == 400
+    assert (await client.post("/api/instances/new", headers=post_as("mario"), json={"version": "19"})).status_code == 403
+    resp = await client.post("/api/instances/new", headers=POST,
+                             json={"version": "19", "domain": "odoo.inaria.example", "language": "it_IT"})
+    assert resp.status_code == 200, resp.text
+    assert (resp.json()["workspace"], resp.json()["server"]) == ("odoo19", "odoo19-odoo")
+    job = await wait_job(client, resp.json()["job"])
+    assert job["status"] == "success", job["lines"]
+    assert asked[-1] == ("odoo19", {"disk_gb": 200}, "odoo", "odoo-19",
+                         {"IMAGE": "odoo:19.0", "INIT_MODULES": "base", "INIT_LANG": "it_IT"})
+    ws = settings.workspaces["odoo19"]
+    assert (ws.domain, ws.main, ws.storage, ws.servers) == ("odoo.inaria.example", "odoo", "main", ["odoo19-odoo"])
+    # the same version again: a name of its own
+    resp = await client.post("/api/instances/new", headers=POST, json={"version": "19"})
+    assert resp.json()["workspace"] == "odoo19-2"
+    # a name given and taken: refused, nothing made
+    resp = await client.post("/api/instances/new", headers=POST, json={"version": "18", "name": "odoo19"})
+    assert resp.status_code == 400 and "already exists" in resp.json()["error"]
+    # a disk too small for one more
+    monkeypatch.setattr(workspaceops, "space", lambda: _space_small())
+    resp = await client.post("/api/instances/new", headers=POST, json={"version": "18"})
+    assert resp.status_code == 400 and "Not enough room" in resp.json()["error"]
+    assert "odoo18" not in settings.workspaces
+
+
+async def _space_small():
+    return space_of(5, {}, root="main")

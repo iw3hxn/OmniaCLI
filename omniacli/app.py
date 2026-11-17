@@ -890,6 +890,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             "linked_sections": listgroups.sections(linked, settings.groups.get("links", []), lambda r: r["name"]),
             # the workspaces of this machine, as on the Workspaces page
             "dashboard_workspaces": workspace_rows() if shown is None and me.can("admin") else [],
+            # New instance (a version only): the machine's admins, workspaces allowed here
+            "quick_instance": shown is None and me.can("admin") and bool(settings.storage_roots),
             "jobs": visible_jobs(me, jobs.recent(len(jobs.jobs)))[:10],
             # a user of workspaces: the load of each of its workspaces instead
             "load_workspaces": sorted((ws, role) for ws, role in me.workspaces if ws in settings.workspaces) if me.scoped else [],
@@ -2547,6 +2549,76 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         job = jobs.submit(f"Create {name} from {template.name}", [f"{name}/production", f"{name}/test"],
                           f"manual: {me}", action, workspace=ws.name)
         return {"job": job.id}
+
+    # --- a new Odoo by its version only, as Cloudpepper's Add instance ------
+
+    QUICK_INSTANCE = "odoo"
+    QUICK_DISK_GB = (10, 200)
+
+    @app.get("/api/instances/versions", dependencies=[Depends(admin)])
+    async def quick_versions():
+        """The Odoo versions a new instance may have: the templates odoo-<major> here."""
+        found = await asyncio.to_thread(workspaceops.templates)
+        majors = sorted((int(n.split("-", 1)[1]) for n in found if re.fullmatch(r"odoo-\d+", n)), reverse=True)
+        return {"versions": [{"major": m, "label": found[f"odoo-{m}"].label} for m in majors],
+                "storage": bool(settings.storage_roots)}
+
+    @app.post("/api/instances/new", dependencies=[Depends(admin)])
+    async def quick_instance(payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """A new Odoo given its version (and, if wanted, a name, a domain and a
+        language): a workspace of its own on the first storage, with a disk as
+        large as the real disk allows (at most QUICK_DISK_GB), then its
+        production and test from the template odoo-<version>; with a domain
+        its production answers there and its test on test.<domain>."""
+        major = str(payload.get("version") or "").strip()
+        template = f"odoo-{major}"
+        if template not in await asyncio.to_thread(workspaceops.templates):
+            return refuse(f"No Odoo {major} here (no template {template})")
+        if not settings.storage_roots:
+            return refuse(f"No storage for workspaces on this machine: {workspaceops.HELPERS_HINT}")
+        given = re.sub(r"[^a-z0-9-]+", "-", str(payload.get("name") or "").strip().lower()).strip("-")[:32]
+        name = given or f"odoo{major}"
+        if not WORKSPACE_NAME.fullmatch(name):
+            return refuse("A name is 1-32 lower case letters, digits and -")
+        if given and name in settings.workspaces:
+            return refuse(f"A workspace named {name} already exists")
+        base, number = name, 2
+        while name in settings.workspaces:
+            name, number = f"{base[:29]}-{number}", number + 1
+        domain = str(payload.get("domain") or "").strip().lower().rstrip(".")
+        storage = next(iter(settings.storage_roots))
+        try:
+            room = workspaceops.room(await workspaceops.space(), settings.workspaces, storage, None)
+        except workspaceops.SpaceError as exc:
+            return refuse(f"The room of the disks cannot be read: {exc}", status.HTTP_502_BAD_GATEWAY)
+        allowed = int((room or {}).get("allowed", 0) * 0.9 / workspaceops.GB)
+        if allowed < QUICK_DISK_GB[0]:
+            return refuse(f"Not enough room on the disk for a new instance: {allowed} GB, "
+                          f"{QUICK_DISK_GB[0]} GB at least")
+        data = {"label": str(payload.get("label") or name).strip()[:100], "domain": domain, "storage": storage,
+                "limits": {"disk_gb": min(allowed, QUICK_DISK_GB[1])}, "servers": [], "members": {}}
+        async with workspaces_lock:
+            try:
+                found = parse_workspaces({**{n: ws.to_dict() for n, ws in settings.workspaces.items()}, name: data},
+                                         settings.storage_roots)
+            except ConfigError as exc:
+                return refuse(str(exc))
+            refused = await store_workspaces(found)
+            if refused:
+                return refused
+        language = str(payload.get("language") or "")
+        made = await instance_create(name, {"instance": QUICK_INSTANCE, "template": template,
+                                            "values": {"INIT_LANG": language} if language else {}}, me)
+        if not isinstance(made, dict):
+            async with workspaces_lock:
+                await store_workspaces({n: ws for n, ws in settings.workspaces.items() if n != name})
+            return made
+        # its production on the domain itself, its test on test.<domain>
+        async with workspaces_lock:
+            ws = settings.workspaces.get(name)
+            if ws is not None:
+                await store_workspaces({**settings.workspaces, name: dataclasses.replace(ws, main=QUICK_INSTANCE)})
+        return {**made, "workspace": name, "server": workspaceops.server_name(found[name], QUICK_INSTANCE)}
 
     @app.post("/api/workspaces/{workspace}/instances/delete", dependencies=[Depends(admin)])
     async def instance_delete(workspace: str, payload: dict = Body(...), me: Principal = Depends(current_user)):
