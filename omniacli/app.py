@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import datetime
 import functools
 import importlib.metadata
 import importlib.util
@@ -86,7 +87,7 @@ from .config import (
     server_text,
     server_to_dict,
 )
-from .jobs import JobFailed, JobManager, filter_jobs
+from .jobs import SUCCESS, JobFailed, JobManager, filter_jobs
 from .plugin_api import ENTRY_POINT_GROUP, PLUGIN_API, ActionRefused, Host, restore_fetched
 from .pullcrypto import new_key
 from .links import LIST_TIMEOUT, LinkClients, describe_error, link_headers, proxy_websocket
@@ -3231,10 +3232,37 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return _TEMPLATES.TemplateResponse(request, "machines.html", {
             "provision_key": provision_key,
             "package_url": machines.PACKAGE_URL, "link_user": machines.LINK_USER,
-            "machines": [{"name": link.name, "host": link.ssh.host, "status": ssh_tunnels.status(link.name)}
-                         for link in settings.link_targets.values()
-                         if link.ssh is not None and link.ssh.user == machines.LINK_USER],
+            "machines": machine_cards(),
         })
+
+    def machine_cards() -> list[dict]:
+        """The machines linked from here (their link's user is LINK_USER) and
+        the ones being prepared, each with its add job when there is one: the
+        last of that name, running, or failed in the last three days."""
+        cards: dict[str, dict] = {}
+        for link in settings.link_targets.values():
+            if link.ssh is not None and link.ssh.user == machines.LINK_USER:
+                tunnel = ssh_tunnels.status(link.name) or {}
+                cards[link.name] = {"name": link.name, "host": link.ssh.host, "port": link.ssh.port, "linked": True,
+                                    "state": tunnel.get("state") or "down", "detail": tunnel.get("detail") or ""}
+        recent = (datetime.datetime.now() - datetime.timedelta(days=3)).isoformat(timespec="seconds")
+        seen: set[str] = set()
+        for job in jobs.recent(len(jobs.jobs)):
+            found = machines.JOB_TITLE.fullmatch(job.title)
+            if found is None or found[1] in seen:
+                continue
+            seen.add(found[1])
+            if job.status == SUCCESS or (job.finished_flag and job.created < recent):
+                continue
+            card = cards.setdefault(found[1], {"name": found[1], "host": found[2], "port": None, "linked": False,
+                                               "state": "", "detail": ""})
+            card["job"] = {"id": job.id, "status": job.status, "error": job.error, "created": job.created,
+                           "step": machines.progress(job.lines), "steps": len(machines.STEPS)}
+        return sorted(cards.values(), key=lambda c: c["name"])
+
+    @app.get("/api/machines", dependencies=[Depends(admin)])
+    async def machines_json():
+        return {"machines": machine_cards()}
 
     @app.post("/api/machines/key", dependencies=[Depends(admin)])
     async def machines_key():

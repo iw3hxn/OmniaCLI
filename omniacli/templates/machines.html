@@ -1,4 +1,7 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{# Machines: the servers prepared from here as cards (their state through
+   the link, their load and disk read through it), the ones being prepared
+   with their steps, and Add a server in a dialog of two steps (machines.py). -#}
 {% extends "base.html" %}
 {% block title %}{{ _("Machines") }} · OmniaCLI{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
@@ -6,118 +9,457 @@
 {% endblock %}
 {% block content %}
 <style>
-.steps .step-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
-.step-num { flex: none; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center;
-  background: var(--accent); color: #fff; font-weight: 700; font-size: 13px; }
-.steps .field-help { display: block; font-size: 13px; margin-top: 3px; }
-.steps pre.mono { white-space: pre-wrap; overflow-wrap: anywhere; }
-.machine-go { display: flex; gap: 8px; max-width: 560px; }
-.machine-go input { flex: 1; min-width: 0; font-size: 16px; }
-.advanced { margin-top: 12px; }
-.advanced > summary { cursor: pointer; color: var(--muted); }
-.advanced .form-grid { margin-top: 12px; }
-@media (max-width: 700px) { .steps .form-grid { grid-template-columns: 1fr; } }
+.m-summary { display: flex; gap: 18px; flex-wrap: wrap; color: var(--muted); font-size: 13px; margin: -6px 0 18px; }
+.m-summary b { color: var(--text); font-size: 15px; margin-right: 4px; }
+.m-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 16px; }
+.mcard { background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow);
+  display: flex; flex-direction: column; transition: box-shadow .15s, border-color .15s; min-width: 0; }
+.mcard:hover { box-shadow: var(--shadow-lg); border-color: var(--border-strong); }
+.mcard-head { display: flex; align-items: center; gap: 12px; padding: 16px 16px 12px; }
+.mcard-icon { flex: none; width: 40px; height: 40px; border-radius: 10px; display: grid; place-items: center;
+  background: var(--panel-2); border: 1px solid var(--border); color: var(--muted); }
+.mcard-title { min-width: 0; flex: 1; }
+.mcard-title h3 { margin: 0; font-size: 16px; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mcard-title h3 a { color: var(--text); text-decoration: none; }
+.mcard-title h3 a:hover { color: var(--accent); }
+.mcard-title .mono { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+.m-state { flex: none; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600;
+  padding: 3px 10px; border-radius: 999px; background: var(--panel-2); color: var(--muted); border: 1px solid var(--border); }
+.m-state i { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.m-state.up { color: var(--ok); background: var(--ok-soft); border-color: transparent; }
+.m-state.starting, .m-state.preparing { color: var(--warn); background: var(--warn-soft); border-color: transparent; }
+.m-state.preparing i, .m-state.starting i { animation: m-pulse 1.2s ease-in-out infinite; }
+.m-state.down, .m-state.failed { color: var(--err); background: var(--err-soft); border-color: transparent; }
+@keyframes m-pulse { 50% { opacity: .25; } }
+.mcard-body { padding: 4px 16px 14px; flex: 1; display: flex; flex-direction: column; gap: 12px; }
+.m-meters { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.m-meter { background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--r); padding: 8px 10px; min-width: 0; }
+.m-meter .label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; }
+.m-meter .value { font-size: 18px; font-weight: 700; line-height: 1.3; font-variant-numeric: tabular-nums; }
+.m-meter .value small { font-size: 12px; font-weight: 500; color: var(--muted); margin-left: 2px; }
+.m-bar { height: 5px; border-radius: 3px; background: var(--border); overflow: hidden; margin-top: 6px; }
+.m-bar > span { display: block; height: 100%; width: 0; background: var(--ok); border-radius: 3px; transition: width .4s; }
+.m-bar > span.warn { background: var(--warn); } .m-bar > span.err { background: var(--err); }
+.m-spark { display: block; width: 100%; height: 22px; margin-top: 4px; color: var(--accent); }
+.m-facts { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; color: var(--muted); }
+.m-skeleton { height: 64px; border-radius: var(--r); background: linear-gradient(90deg, var(--panel-2), var(--border), var(--panel-2));
+  background-size: 200% 100%; animation: m-shine 1.4s linear infinite; }
+@keyframes m-shine { to { background-position: -200% 0; } }
+.m-note { font-size: 12px; color: var(--muted); }
+.m-error { font-size: 13px; color: var(--err); background: var(--err-soft); border-radius: var(--r); padding: 8px 10px;
+  overflow-wrap: anywhere; }
+.m-progress .m-step { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; }
+.m-progress .m-step b { font-weight: 600; }
+.m-progress .m-bar { height: 7px; }
+.m-progress .m-bar > span { background: var(--accent); }
+.m-dots { display: flex; gap: 4px; margin-top: 8px; }
+.m-dots i { flex: 1; height: 3px; border-radius: 2px; background: var(--border); }
+.m-dots i.done { background: var(--accent); } .m-dots i.now { background: var(--accent); opacity: .45; animation: m-pulse 1.2s infinite; }
+.mcard-foot { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--border); }
+.mcard-foot .grow { flex: 1; }
+.mcard-foot .button, .mcard-foot button { padding: 5px 11px; font-size: 13px; }
+.m-more { position: relative; }
+.m-more > summary { list-style: none; cursor: pointer; padding: 4px 9px; border-radius: var(--r); border: 1px solid transparent;
+  color: var(--muted); font-weight: 700; letter-spacing: 1px; }
+.m-more > summary::-webkit-details-marker { display: none; }
+.m-more > summary:hover, .m-more[open] > summary { border-color: var(--border); background: var(--panel-2); color: var(--text); }
+.m-more-items { position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 20; min-width: 220px; padding: 6px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--r); box-shadow: var(--shadow-lg); }
+.m-more-items button { display: block; width: 100%; text-align: left; border: 0; box-shadow: none; background: none; padding: 7px 10px; }
+.m-more-items button:hover { background: var(--panel-2); }
+.m-more-items button.danger { color: var(--err); }
+.m-empty { text-align: center; padding: 48px 24px; }
+.m-empty-icon { width: 72px; height: 72px; margin: 0 auto 16px; border-radius: 20px; display: grid; place-items: center;
+  background: var(--accent-soft); color: var(--accent); }
+.m-empty h2 { font-size: 20px; margin: 0 0 6px; }
+.m-empty p { color: var(--muted); max-width: 520px; margin: 0 auto 20px; }
+.m-features { display: flex; justify-content: center; gap: 10px 22px; flex-wrap: wrap; margin-top: 26px; font-size: 13px; color: var(--muted); }
+.m-features span::before { content: "✓"; color: var(--ok); font-weight: 700; margin-right: 6px; }
+#add-dialog { width: min(660px, calc(100vw - 32px)); padding: 0; }
+#add-dialog form { margin: 0; }
+.w-head { padding: 20px 24px 0; }
+.w-head h2 { margin: 0 0 14px; }
+.w-steps { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--muted); }
+.w-steps span { display: inline-flex; align-items: center; gap: 8px; }
+.w-steps b { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 12px;
+  border: 1px solid var(--border-strong); color: var(--muted); }
+.w-steps span.on { color: var(--text); font-weight: 600; }
+.w-steps span.on b { background: var(--accent); border-color: var(--accent); color: #fff; }
+.w-steps span.done b { background: var(--ok); border-color: var(--ok); color: #fff; }
+.w-steps hr { flex: 0 0 36px; border: 0; border-top: 1px solid var(--border-strong); margin: 0; }
+.w-body { padding: 18px 24px 8px; }
+.w-body p { margin: 0 0 10px; }
+.w-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; }
+.w-chips span { font-size: 12px; padding: 3px 9px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--border); color: var(--muted); }
+.w-tip { font-size: 13px; color: var(--muted); }
+.w-tip code { font-family: var(--mono); background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
+.w-address { display: grid; grid-template-columns: 1fr 110px; gap: 10px; }
+.w-address label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 5px; }
+.w-address input { width: 100%; font-size: 16px; padding: 10px 12px; }
+.w-advanced { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
+.w-advanced > summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.w-advanced .form-grid { margin-top: 12px; }
+.w-advanced .field-help { display: block; font-size: 12px; margin-top: 3px; }
+.w-foot { display: flex; justify-content: space-between; gap: 8px; padding: 16px 24px 20px; }
+.w-foot .error { margin: 0; align-self: center; flex: 1; font-size: 13px; }
+.w-foot button { padding: 8px 16px; }
+@media (max-width: 600px) {
+  .m-grid { grid-template-columns: 1fr; }
+  .w-address { grid-template-columns: 1fr; }
+  .w-advanced .form-grid { grid-template-columns: 1fr; }
+}
 </style>
+
 <div class="page-head">
   <div><h1>{{ _("Machines") }}</h1>
-    <p>{{ _("Add a clean Ubuntu or Debian server: OmniaCLI installs everything there and links it here.") }}</p></div>
+    <p>{{ _("The servers OmniaCLI prepared and manages: open one to see its workspaces and instances.") }}</p></div>
+  <div class="actions"><button type="button" class="primary" data-add-machine {{ "disabled" if not provision_key }}>+ {{ _("Add a server") }}</button></div>
 </div>
+{% if not provision_key %}<div class="banner">{{ _("OmniaCLI's key cannot be made: see its log.") }}</div>{% endif %}
 
-<div class="stack steps">
-<section class="panel">
-  <h2 class="step-head"><span class="step-num">1</span> {{ _("On the server, as root, paste this command") }}</h2>
-  {% if provision_key %}
-  <pre class="console mono copyable" id="machine-key-line">mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '{{ provision_key }}' &gt;&gt; ~/.ssh/authorized_keys</pre>
-  <p class="muted">{{ _("It lets OmniaCLI in with its key, nothing else. Ubuntu 22.04 or 24.04, Debian 11, 12 or 13.") }}</p>
-  {% else %}
-  <p class="error">{{ _("OmniaCLI's key cannot be made: see its log.") }}</p>
-  {% endif %}
-</section>
+<div class="m-summary" id="m-summary" hidden></div>
+<div class="m-grid" id="m-grid"></div>
 
-<section class="panel">
-  <h2 class="step-head"><span class="step-num">2</span> {{ _("Its address") }}</h2>
-  <form id="machine-form">
-    <div class="machine-go">
-      <input type="text" id="m-host" class="mono" required placeholder="203.0.113.10" aria-label="{{ _('Address') }}" autocomplete="off">
-      <button type="submit" class="primary" {{ "disabled" if not provision_key }}>{{ _("Add the server") }}</button>
-    </div>
-    <p id="machine-error" class="error"></p>
-    <p class="muted">{{ _("Updates, nginx, certbot, Docker, OmniaCLI and a firewall are installed there, then it appears here with its link. About 10 to 20 minutes, followed in its job.") }}</p>
-    <details class="advanced">
-      <summary>{{ _("Advanced options") }}</summary>
-      <div class="form-grid">
-        <label for="m-name">{{ _("Name") }}</label>
-        <div><input type="text" id="m-name" class="mono" maxlength="32" placeholder="{{ _('from the address') }}">
-          <span class="muted field-help">{{ _("the link's name here: lowercase letters, digits, - and _ (Acme Cloud becomes acme-cloud)") }}</span></div>
-        <label for="m-port">{{ _("SSH port") }}</label>
-        <div><input type="number" id="m-port" class="mono" min="1" max="65535" value="22"></div>
-        <label for="m-user">{{ _("SSH user") }}</label>
-        <div><input type="text" id="m-user" class="mono" value="root">
-          <span class="muted field-help">{{ _("root, or a user with sudo without a password") }}</span></div>
-        <label>{{ _("Server's key") }}</label>
-        <div><input type="hidden" id="m-host-key">
-          <span id="m-fingerprint" class="mono">{{ _("accepted on the first connection") }}</span>
-          <button type="button" id="m-fetch">{{ _("Fetch host key") }}</button>
-          <span class="muted field-help">{{ _("To check it, compare it with {command} run on that server: only this key is then accepted.", command="ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub") }}</span></div>
-        <label for="m-package">{{ _("OmniaCLI package") }}</label>
-        <div><input type="url" id="m-package" class="mono" value="{{ package_url }}" style="width: 100%"></div>
-        <label for="m-firewall">{{ _("Firewall") }}</label>
-        <div><label><input type="checkbox" id="m-firewall" checked> {{ _("only SSH, 80 and 443 open (ufw)") }}</label></div>
-      </div>
-    </details>
-  </form>
-</section>
-
-{% if machines %}
-<section class="panel">
-  <h2>{{ _("Prepared machines") }}</h2>
-  <div class="scroll">
-  <table>
-    <tr><th>{{ _("Name") }}</th><th>{{ _("Address") }}</th><th>{{ _("Link") }}</th></tr>
-    {% for m in machines %}
-    <tr><td><a href="{{ prefix }}/links/{{ m.name }}/">{{ m.name }}</a></td><td class="mono">{{ m.host }}</td>
-      <td>{% if m.status %}<span class="badge {{ 'ok' if m.status.state == 'up' else ('warn' if m.status.state == 'starting' else 'error') }}">{{ tr(m.status.state) }}</span>{% else %}<span class="badge">{{ _("not started") }}</span>{% endif %}{% if m.status and m.status.detail %} <span class="muted">{{ tr(m.status.detail) }}</span>{% endif %}</td></tr>
-    {% endfor %}
-  </table>
+<section class="panel m-empty" id="m-empty" hidden>
+  <div class="m-empty-icon"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01M11 7.5h6M11 16.5h6"/></svg></div>
+  <h2>{{ _("No servers yet") }}</h2>
+  <p>{{ _("Add a clean Ubuntu or Debian server: OmniaCLI installs everything there and links it here, in about 15 minutes.") }}</p>
+  <button type="button" class="primary" data-add-machine {{ "disabled" if not provision_key }}>+ {{ _("Add your first server") }}</button>
+  <div class="m-features">
+    <span>{{ _("Docker and nginx") }}</span><span>{{ _("Automatic HTTPS") }}</span>
+    <span>{{ _("Firewall and security updates") }}</span><span>{{ _("Linked through SSH") }}</span>
   </div>
 </section>
-{% endif %}
-</div>
+
+<dialog id="add-dialog" aria-labelledby="add-title">
+  <form id="machine-form" novalidate>
+    <div class="w-head">
+      <h2 id="add-title">{{ _("Add a server") }}</h2>
+      <div class="w-steps" aria-hidden="true">
+        <span data-step-tab="1"><b>1</b>{{ _("Let OmniaCLI in") }}</span><hr>
+        <span data-step-tab="2"><b>2</b>{{ _("Its address") }}</span>
+      </div>
+    </div>
+
+    <div class="w-body" data-step="1">
+      <p>{{ _("On the server, as root, paste this command") }}:</p>
+      {% if provision_key %}
+      <pre class="console mono copyable" id="machine-key-line" style="white-space: pre-wrap; overflow-wrap: anywhere">mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '{{ provision_key }}' &gt;&gt; ~/.ssh/authorized_keys</pre>
+      {% endif %}
+      <p class="w-tip">{{ _("It lets OmniaCLI in with its key, nothing else.") }} {{ _("Logged in as another user? Run {command} first.", command="<code>sudo -i</code>") | safe }}</p>
+      <div class="w-chips"><span>Ubuntu 22.04 · 24.04</span><span>Debian 11 · 12 · 13</span><span>amd64</span><span>{{ _("a clean server") }}</span></div>
+    </div>
+
+    <div class="w-body" data-step="2" hidden>
+      <div class="w-address">
+        <div><label for="m-host">{{ _("Address") }}</label>
+          <input type="text" id="m-host" class="mono" placeholder="203.0.113.10" autocomplete="off" spellcheck="false"></div>
+        <div><label for="m-port">{{ _("SSH port") }}</label>
+          <input type="number" id="m-port" class="mono" min="1" max="65535" value="22"></div>
+      </div>
+      <p class="w-tip" style="margin-top: 10px">{{ _("Updates, nginx, certbot, Docker, OmniaCLI and a firewall are installed there, then it appears here with its link. About 10 to 20 minutes.") }}</p>
+      <details class="w-advanced">
+        <summary>{{ _("Advanced options") }}</summary>
+        <div class="form-grid">
+          <label for="m-name">{{ _("Name") }}</label>
+          <div><input type="text" id="m-name" class="mono" maxlength="32" placeholder="{{ _('from the address') }}">
+            <span class="muted field-help">{{ _("the link's name here: lowercase letters, digits, - and _ (Acme Cloud becomes acme-cloud)") }}</span></div>
+          <label for="m-user">{{ _("SSH user") }}</label>
+          <div><input type="text" id="m-user" class="mono" value="root">
+            <span class="muted field-help">{{ _("root, or a user with sudo without a password") }}</span></div>
+          <label>{{ _("Server's key") }}</label>
+          <div><input type="hidden" id="m-host-key">
+            <span id="m-fingerprint" class="mono">{{ _("accepted on the first connection") }}</span>
+            <button type="button" id="m-fetch">{{ _("Fetch host key") }}</button>
+            <span class="muted field-help">{{ _("To check it, compare it with {command} run on that server: only this key is then accepted.", command="ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub") }}</span></div>
+          <label for="m-package">{{ _("OmniaCLI package") }}</label>
+          <div><input type="url" id="m-package" class="mono" value="{{ package_url }}" style="width: 100%"></div>
+          <label for="m-firewall">{{ _("Firewall") }}</label>
+          <div><label><input type="checkbox" id="m-firewall" checked> {{ _("only SSH, 80 and 443 open (ufw)") }}</label></div>
+        </div>
+      </details>
+    </div>
+
+    <div class="w-foot">
+      <button type="button" id="w-back">{{ _("Cancel") }}</button>
+      <p id="machine-error" class="error" role="alert"></p>
+      <button type="submit" class="primary" id="w-next">{{ _("Next") }} →</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="remove-dialog" aria-labelledby="remove-title" style="width: min(480px, calc(100vw - 32px))">
+  <form method="dialog">
+    <h2 id="remove-title"></h2>
+    <p class="muted">{{ _("Only its link here is removed: the server, its OmniaCLI and its instances stay as they are, and it can be added again.") }}</p>
+    <div class="actions" style="justify-content: flex-end">
+      <button value="cancel">{{ _("Cancel") }}</button>
+      <button value="remove" class="danger">{{ _("Remove") }}</button>
+    </div>
+  </form>
+</dialog>
 
 <script>
 (function () {
-  const error = document.getElementById("machine-error");
+  const PREFIX = {{ prefix | tojson }};
+  const T = {
+    up: {{ _("Online") | tojson }}, starting: {{ _("Starting") | tojson }}, down: {{ _("Offline") | tojson }},
+    preparing: {{ _("Preparing") | tojson }}, failed: {{ _("Not prepared") | tojson }},
+    open: {{ _("Open") | tojson }}, workspaces: {{ _("Workspaces") | tojson }}, log: {{ _("See the log") | tojson }},
+    retry: {{ _("Try again") | tojson }}, test: {{ _("Test the link") | tojson }}, remove: {{ _("Remove from the list") | tojson }},
+    removeTitle: {{ _("Remove {name} from the list?") | tojson }}, cpu: {{ _("CPU") | tojson }}, disk: {{ _("Disk") | tojson }},
+    cores: {{ _("{count} cores") | tojson }}, instances: {{ _("{count} instances") | tojson }}, instance: {{ _("1 instance") | tojson }},
+    of: {{ _("of {total}") | tojson }}, step: {{ _("Step {n} of {total}") | tojson }}, since: {{ _("for {minutes} min") | tojson }},
+    unreachable: {{ _("Its OmniaCLI does not answer through the link") | tojson }}, linkOk: {{ _("The link answers") | tojson }},
+    servers: {{ _("servers") | tojson }}, online: {{ _("online") | tojson }}, preparingN: {{ _("being prepared") | tojson }},
+    next: {{ _("Next") | tojson }}, add: {{ _("Add the server") | tojson }}, connecting: {{ _("Connecting…") | tojson }},
+    cancel: {{ _("Cancel") | tojson }}, back: {{ _("Back") | tojson }}, refused: {{ _("Refused") | tojson }},
+    noHostKey: {{ _("The host key cannot be read") | tojson }}, addressFirst: {{ _("Write the server's address") | tojson }},
+    version: {{ _("OmniaCLI {version}") | tojson }},
+    steps: [{{ _("Connecting") | tojson }}, {{ _("The system") | tojson }}, {{ _("Updates") | tojson }},
+            {{ _("nginx, certbot and Docker") | tojson }}, "OmniaCLI", {{ _("The link back") | tojson }},
+            {{ _("The link's token") | tojson }}, {{ _("The firewall") | tojson }}, {{ _("The link") | tojson }}],
+  };
+  const grid = document.getElementById("m-grid"), empty = document.getElementById("m-empty");
+  const summary = document.getElementById("m-summary");
+  const stats = {};   // name: what its OmniaCLI said through the link, kept between redraws
+  let cards = {{ machines | tojson }};
+
+  const el = (tag, attrs = {}, ...children) => {
+    const node = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) {
+      if (k === "class") node.className = v; else if (k === "text") node.textContent = v;
+      else if (k.startsWith("on")) node.addEventListener(k.slice(2), v); else node.setAttribute(k, v);
+    }
+    node.append(...children.filter((c) => c !== null && c !== undefined));
+    return node;
+  };
+  const fill = (text, values) => text.replace(/\{(\w+)\}/g, (m, k) => (k in values ? values[k] : m));
+  const svg = (markup) => { const box = document.createElement("span"); box.innerHTML = markup; return box.firstChild; };
+  const ICON = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>';
+
+  function stateOf(card) {
+    if (card.job && ["queued", "running"].includes(card.job.status)) return "preparing";
+    if (card.job && !card.linked) return "failed";
+    return card.state === "up" ? "up" : card.state === "starting" ? "starting" : "down";
+  }
+  const level = (percent) => (percent >= 90 ? "err" : percent >= 75 ? "warn" : "");
+  function meter(label, value, unit, percent, extra) {
+    const bar = el("span", {class: level(percent)}); bar.style.width = `${Math.min(100, Math.max(0, percent))}%`;
+    return el("div", {class: "m-meter"}, el("div", {class: "label", text: label}),
+              el("div", {class: "value"}, String(value), el("small", {text: unit})), el("div", {class: "m-bar"}, bar), extra);
+  }
+  function spark(points) {
+    if (points.length < 2) return null;
+    const w = 120, h = 22, max = Math.max(5, ...points);
+    const d = points.map((p, i) => `${(i / (points.length - 1) * w).toFixed(1)},${(h - 1 - p / max * (h - 2)).toFixed(1)}`).join(" ");
+    return svg(`<svg class="m-spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true"><polyline fill="none" stroke="currentColor" stroke-width="1.5" points="${d}"/></svg>`);
+  }
+
+  function body(card, state) {
+    const box = el("div", {class: "mcard-body"});
+    if (state === "preparing" || state === "failed") {
+      const job = card.job, n = job.step + 1, total = job.steps;
+      const minutes = Math.max(1, Math.round((Date.now() - new Date(job.created).getTime()) / 60000));
+      const bar = el("span"); bar.style.width = `${Math.round(n / total * 100)}%`;
+      const dots = el("div", {class: "m-dots"});
+      for (let i = 0; i < total; i++) dots.append(el("i", {class: i < job.step ? "done" : i === job.step && state === "preparing" ? "now" : ""}));
+      box.append(el("div", {class: "m-progress"},
+        el("div", {class: "m-step"}, el("b", {text: T.steps[job.step] || ""}),
+           el("span", {class: "muted", text: state === "preparing" ? fill(T.since, {minutes}) : fill(T.step, {n, total})})),
+        state === "preparing" ? el("div", {class: "m-bar"}, bar) : null, dots));
+      if (state === "failed" && job.error) box.append(el("div", {class: "m-error", text: job.error}));
+      return box;
+    }
+    if (state !== "up") {
+      if (card.detail) box.append(el("div", {class: "m-error", text: card.detail}));
+      return box;
+    }
+    const s = stats[card.name];
+    if (!s) { box.append(el("div", {class: "m-skeleton"})); return box; }
+    if (s.error) { box.append(el("div", {class: "m-error", text: s.error})); return box; }
+    const meters = el("div", {class: "m-meters"});
+    if (s.cpu !== null) meters.append(meter(T.cpu, Math.round(s.cpu), "%", s.cpu, spark(s.cpuSeries)));
+    if (s.disk) meters.append(meter(T.disk, Math.round(s.disk.percent), "%", s.disk.percent,
+      el("div", {class: "m-note", style: "margin-top: 4px", text: `${s.disk.used} ${fill(T.of, {total: s.disk.total})}`})));
+    box.append(meters);
+    const facts = el("div", {class: "m-facts"});
+    if (s.instances !== null) facts.append(el("span", {text: s.instances === 1 ? T.instance : fill(T.instances, {count: s.instances})}));
+    if (s.cores) facts.append(el("span", {text: fill(T.cores, {count: s.cores})}));
+    if (s.version) facts.append(el("span", {text: fill(T.version, {version: s.version})}));
+    box.append(facts);
+    return box;
+  }
+
+  function foot(card, state) {
+    const row = el("div", {class: "mcard-foot"});
+    const base = `${PREFIX}/links/${encodeURIComponent(card.name)}/`;
+    if (card.job && state !== "up") row.append(el("a", {class: "button", href: `${PREFIX}/jobs/${card.job.id}`, text: T.log}));
+    if (state === "failed") row.append(el("button", {type: "button", class: "primary", text: T.retry, onclick: () => openWizard(card)}));
+    if (card.linked && state !== "preparing") {
+      row.append(el("a", {class: "button primary", href: base, text: T.open}),
+                 el("a", {class: "button", href: `${base}workspaces`, text: T.workspaces}));
+    }
+    row.append(el("span", {class: "grow"}));
+    if (card.linked) {
+      const items = el("div", {class: "m-more-items"},
+        el("button", {type: "button", text: T.test, onclick: (e) => testLink(card, e.target)}),
+        el("button", {type: "button", class: "danger", text: T.remove, onclick: () => askRemove(card)}));
+      row.append(el("details", {class: "m-more"}, el("summary", {"aria-label": "…", text: "⋯"}), items));
+    }
+    return row;
+  }
+
+  function draw() {
+    grid.replaceChildren();
+    empty.hidden = cards.length > 0;
+    const counts = {up: 0, preparing: 0};
+    for (const card of cards) {
+      const state = stateOf(card);
+      if (state in counts) counts[state] += 1;
+      const address = card.port && card.port !== 22 ? `${card.host}:${card.port}` : card.host;
+      const name = card.linked ? el("a", {href: `${PREFIX}/links/${encodeURIComponent(card.name)}/`, text: card.name}) : card.name;
+      grid.append(el("article", {class: "mcard", "data-machine": card.name},
+        el("div", {class: "mcard-head"}, el("div", {class: "mcard-icon"}, svg(ICON)),
+           el("div", {class: "mcard-title"}, el("h3", {}, name), el("span", {class: "mono", text: address})),
+           el("span", {class: `m-state ${state}`}, el("i"), T[state])),
+        body(card, state), foot(card, state)));
+    }
+    summary.hidden = cards.length === 0;
+    summary.replaceChildren(
+      el("span", {}, el("b", {text: String(cards.length)}), T.servers),
+      el("span", {}, el("b", {text: String(counts.up)}), T.online),
+      counts.preparing ? el("span", {}, el("b", {text: String(counts.preparing)}), T.preparingN) : "");
+  }
+
+  async function getJson(url) {
+    const resp = await fetch(url, {headers: {Accept: "application/json"}}).catch(() => null);
+    if (!resp || !resp.ok) return null;
+    return resp.json().catch(() => null);
+  }
+  function bytes(n) {
+    const units = ["B", "KB", "MB", "GB", "TB"]; let i = 0;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i += 1; }
+    return `${n >= 10 || i === 0 ? Math.round(n) : n.toFixed(1)} ${units[i]}`;
+  }
+  // its OmniaCLI's own answers, through the link (the link proxy): version, load, disk, instances
+  async function loadStats(card) {
+    const base = `${PREFIX}/links/${encodeURIComponent(card.name)}/api`;
+    const [info, metrics, disks, servers] = await Promise.all([
+      getJson(`${base}/info`), getJson(`${base}/metrics?machine_only=true`), getJson(`${base}/disks`), getJson(`${base}/servers`)]);
+    if (!info) { stats[card.name] = {error: T.unreachable}; return; }
+    const points = ((metrics && metrics.machine) || []).map((p) => p.cpu).filter((v) => v !== null && v !== undefined);
+    const recent = points.slice(-6);
+    const all = (disks && disks.disks) || [];
+    const root = all.find((d) => d.mount === "/") || all[0];
+    stats[card.name] = {
+      version: info.version, cores: metrics && metrics.cores,
+      cpu: recent.length ? recent.reduce((a, b) => a + b, 0) / recent.length : null, cpuSeries: points.slice(-60),
+      disk: root ? {percent: root.used / root.total * 100, used: bytes(root.used), total: bytes(root.total)} : null,
+      instances: Array.isArray(servers) ? servers.reduce((n, s) => n + Object.keys(s.instances || {}).length, 0) : null,
+    };
+  }
+  async function refreshStats() {
+    await Promise.all(cards.filter((c) => c.linked && stateOf(c) === "up").map(loadStats));
+    draw();
+  }
+  let timer = null, rounds = 0;
+  async function refresh() {
+    clearTimeout(timer);
+    const data = await getJson(`${PREFIX}/api/machines`);
+    if (data) {
+      const before = new Set(cards.filter((c) => stateOf(c) === "up").map((c) => c.name));
+      cards = data.machines;
+      rounds += 1;
+      // the load every 30 s, a machine just online at once
+      if (rounds % 2 === 0 || cards.some((c) => stateOf(c) === "up" && !before.has(c.name))) await refreshStats();
+      else draw();
+    }
+    timer = setTimeout(refresh, cards.some((c) => ["preparing", "starting"].includes(stateOf(c))) ? 3000 : 15000);
+  }
+
   async function post(url, body) {
     const resp = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
                                    body: JSON.stringify(body || {})}).catch(() => null);
     const data = resp ? await resp.json().catch(() => ({})) : {};
     return {ok: !!resp && resp.ok && data.ok !== false, data};
   }
-  document.getElementById("m-fetch").addEventListener("click", async () => {
-    error.textContent = "";
-    const host = document.getElementById("m-host").value.trim();
-    const {ok, data} = await post("{{ prefix }}/api/links/ssh/host-key",
-                                  {host, port: Number(document.getElementById("m-port").value) || 22});
-    if (!ok) { error.textContent = data.error || {{ _("The host key cannot be read") | tojson }}; return; }
-    document.getElementById("m-host-key").value = data.host_key;
-    document.getElementById("m-fingerprint").textContent = data.fingerprint;
+  async function testLink(card, button) {
+    const {data} = await post(`${PREFIX}/api/links/${encodeURIComponent(card.name)}/test`);
+    button.textContent = data.ok ? `✓ ${T.linkOk}` : `✗ ${data.error || T.unreachable}`;
+  }
+  const removeDialog = document.getElementById("remove-dialog");
+  let removing = null;
+  function askRemove(card) {
+    removing = card;
+    document.getElementById("remove-title").textContent = fill(T.removeTitle, {name: card.name});
+    removeDialog.returnValue = "";
+    removeDialog.showModal();
+  }
+  removeDialog.addEventListener("close", async () => {
+    if (removeDialog.returnValue !== "remove" || !removing) return;
+    await post(`${PREFIX}/api/links/delete`, {name: removing.name});
+    delete stats[removing.name]; removing = null;
+    refresh();
   });
-  document.getElementById("machine-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
+
+  // Add a server: two steps in a dialog
+  const dialog = document.getElementById("add-dialog"), form = document.getElementById("machine-form");
+  const error = document.getElementById("machine-error"), next = document.getElementById("w-next"), back = document.getElementById("w-back");
+  const field = (id) => document.getElementById(id);
+  let step = 1;
+  function show(n) {
+    step = n;
+    form.querySelectorAll("[data-step]").forEach((b) => { b.hidden = b.dataset.step !== String(n); });
+    form.querySelectorAll("[data-step-tab]").forEach((t) => {
+      const i = Number(t.dataset.stepTab);
+      t.className = i === n ? "on" : i < n ? "done" : "";
+      t.querySelector("b").textContent = i < n ? "✓" : String(i);
+    });
+    next.textContent = n === 1 ? `${T.next} →` : T.add;
+    back.textContent = n === 1 ? T.cancel : `← ${T.back}`;
     error.textContent = "";
-    const submit = event.target.querySelector("button[type=submit]"), label = submit.textContent;
-    submit.disabled = true; submit.textContent = {{ _("Connecting…") | tojson }};
-    const value = (id) => document.getElementById(id).value.trim();
-    const {ok, data} = await post("{{ prefix }}/api/machines/add", {
-      name: value("m-name"), host: value("m-host"), port: Number(value("m-port")) || 22, user: value("m-user"),
-      host_key: value("m-host-key"), package_url: value("m-package"),
-      firewall: document.getElementById("m-firewall").checked});
-    if (!ok || !data.job) {
-      submit.disabled = false; submit.textContent = label;
-      error.textContent = data.error || data.detail || {{ _("Refused") | tojson }}; return;
+    if (n === 2) field("m-host").focus();
+  }
+  function openWizard(card) {
+    form.reset(); field("m-host-key").value = "";
+    if (card) {
+      field("m-host").value = card.host || ""; field("m-name").value = card.name || "";
+      if (card.port) field("m-port").value = card.port;
     }
-    location.href = `{{ prefix }}/jobs/${data.job}`;
+    dialog.showModal();
+    show(card ? 2 : 1);
+  }
+  document.querySelectorAll("[data-add-machine]").forEach((b) => b.addEventListener("click", () => openWizard(null)));
+  back.addEventListener("click", () => { if (step === 1) dialog.close(); else show(1); });
+  field("m-host").addEventListener("input", () => { field("m-host-key").value = ""; });
+  field("m-fetch").addEventListener("click", async () => {
+    error.textContent = "";
+    const {ok, data} = await post(`${PREFIX}/api/links/ssh/host-key`,
+                                  {host: field("m-host").value.trim(), port: Number(field("m-port").value) || 22});
+    if (!ok) { error.textContent = data.error || T.noHostKey; return; }
+    field("m-host-key").value = data.host_key;
+    field("m-fingerprint").textContent = data.fingerprint;
   });
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (step === 1) { show(2); return; }
+    const value = (id) => field(id).value.trim();
+    if (!value("m-host")) { error.textContent = T.addressFirst; field("m-host").focus(); return; }
+    error.textContent = "";
+    next.disabled = true; back.disabled = true; next.textContent = T.connecting;
+    const {ok, data} = await post(`${PREFIX}/api/machines/add`, {
+      name: value("m-name"), host: value("m-host"), port: Number(value("m-port")) || 22, user: value("m-user") || "root",
+      host_key: value("m-host-key"), package_url: value("m-package"), firewall: field("m-firewall").checked});
+    next.disabled = false; back.disabled = false; next.textContent = T.add;
+    if (!ok || !data.job) { error.textContent = data.error || data.detail || T.refused; return; }
+    dialog.close();
+    await refresh();
+  });
+
+  draw();
+  refreshStats();
+  timer = setTimeout(refresh, 3000);
 })();
 </script>
 {% endblock %}

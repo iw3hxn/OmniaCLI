@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import os
 import re
 import shlex
 import tempfile
@@ -38,8 +39,10 @@ from .jobs import Job, JobFailed
 from .ops import run
 
 PROVISION_SCRIPT = Path(__file__).with_name("provision.sh")
-# the package of the latest release, as the README's Quick start installs it
-PACKAGE_URL = "https://github.com/OmniaGit/OmniaCLI/releases/latest/download/OmniaCLI.deb"
+# the package of the latest release, as the README's Quick start installs it;
+# OMNIACLI_PACKAGE_URL in OmniaCLI's environment: another one (a fork's)
+PACKAGE_URL = os.environ.get("OMNIACLI_PACKAGE_URL") or \
+    "https://github.com/OmniaGit/OmniaCLI/releases/latest/download/OmniaCLI.deb"
 # the user on the new machine whose key may only forward to OmniaCLI
 LINK_USER = "omniacli-link"
 # OmniaCLI there, as the package installs it: the link's URL through SSH
@@ -49,6 +52,28 @@ PROVISION_TIMEOUT = 3600
 # seconds the link has to answer once saved (the tunnel starts within 25)
 LINK_WAIT = 60
 LINK_NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
+# the add job's title (app.py), read back for the machine's card
+JOB_TITLE = re.compile(r"Add machine (\S+) \((.+)\)")
+# the job's steps, by the "--- " lines provision.sh (step) and app.py write;
+# a mark ending with a space is a prefix
+STEPS = ("prepare ", "the system", "updates", "nginx, certbot and Docker", "OmniaCLI", "the link back",
+         "the link's token", "the firewall", "the link ")
+
+
+def progress(lines: list[str]) -> int:
+    """The index in STEPS of the last step a job's log reached (0: none yet)."""
+    reached = 0
+    for line in lines:
+        text = line.split(" ", 1)[-1]
+        if not text.startswith("--- "):
+            continue
+        what = text[4:]
+        found = next((i for i, mark in enumerate(STEPS) if what == mark), None)
+        if found is None:
+            found = next((i for i, mark in enumerate(STEPS) if mark.endswith(" ") and what.startswith(mark)), None)
+        if found is not None:
+            reached = max(reached, found)
+    return reached
 
 
 def here_name(hostname: str) -> str:

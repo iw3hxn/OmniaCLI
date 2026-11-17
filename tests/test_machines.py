@@ -169,6 +169,7 @@ async def test_an_admin_adds_a_machine(client, monkeypatch):
     page = await client.get("/machines", headers=as_user("admin"))
     # the provisioning key is made with the page: the command is there to copy
     assert page.status_code == 200 and "id_ed25519_provision@here" in page.text and "copyable" in page.text
+    assert (await client.get("/api/machines", headers=as_user("dev"))).status_code == 403
     assert (await client.get("/machines", headers=as_user("dev"))).status_code == 403
     post = {**as_user("admin", post=True), "Accept": "application/json"}
     assert (await client.post("/api/machines/add", headers={**as_user("dev", post=True)}, json=FORM)).status_code == 403
@@ -193,3 +194,16 @@ async def test_an_admin_adds_a_machine(client, monkeypatch):
         await wait(client, resp.json()["job"])
         saved = yaml.safe_load(client.settings.links_file.read_text())["links"][expected]
         assert saved["ssh"]["host_key"] == HOST_KEY
+    # the cards: the machines linked, each with its last add job when it did not end well
+    cards = {c["name"]: c for c in (await client.get("/api/machines", headers=as_user("admin"))).json()["machines"]}
+    assert set(cards) == {"acme-cloud", "203-0-113-10", "203-0-113-10-2"}
+    assert cards["acme-cloud"]["linked"] and cards["acme-cloud"]["job"]["status"] == "failed"
+    assert cards["acme-cloud"]["job"]["step"] == len(machines.STEPS) - 1
+
+
+def test_the_progress_of_an_add_job():
+    lines = ["10:00:00 --- prepare root@h:22 (host key x)", "10:00:01 --- the system", "10:00:02 some output",
+             "10:01:00 --- updates", "10:03:00 --- the link back"]
+    assert machines.STEPS[machines.progress(lines)] == "the link back"
+    assert machines.progress([]) == 0
+    assert machines.STEPS[machines.progress(lines + ["10:05:00 --- the link acme, through SSH as omniacli-link"])] == "the link "
