@@ -113,7 +113,7 @@ def test_shell_refusals(env):
 def test_shell_page_and_button(env):
     app = create_app(env["settings"])
     with TestClient(app) as c:
-        page = c.get("/servers/srv", headers=browser(app, "dev")).text
+        page = c.get("/servers/srv?view=test", headers=browser(app, "dev")).text
         assert 'href="/servers/srv/test/shell" target="_blank"' in page
         assert "/shell" not in c.get("/servers/srv", headers=browser(app, "viewer")).text
         page = c.get("/servers/srv/test/shell", headers=browser(app, "dev"))

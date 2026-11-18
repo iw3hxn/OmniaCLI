@@ -80,6 +80,7 @@ from .config import (
     save_links,
     save_options,
     save_publications,
+    apply_sites,
     web_names,
     save_pullers,
     save_servers,
@@ -912,8 +913,6 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             "machine": shown is None,
             "machine_links": links,
             "linked_sections": listgroups.sections(linked, settings.groups.get("links", []), lambda r: r["name"]),
-            # the workspaces of this machine, as on the Workspaces page
-            "dashboard_workspaces": workspace_rows() if shown is None and me.can("admin") else [],
             # New instance (a version only): the machine's admins, workspaces allowed here
             "quick_instance": shown is None and me.can("admin") and bool(settings.storage_roots),
             "jobs": visible_jobs(me, jobs.recent(len(jobs.jobs)))[:10],
@@ -929,13 +928,20 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return _TEMPLATES.TemplateResponse(request, "_servers_part.html", context)
 
     @app.get("/servers/{server}")
-    async def server_page(request: Request, server: str, view: str = "both"):
+    async def server_page(request: Request, server: str, view: str = "production"):
+        """An instance's page (UX-003, UX-004 of docs/ux): one copy at a time,
+        its production by default; its test at ?view=test; a staging shows
+        its production only (its test is stopped, it is not offered)."""
         srv = active_server(server)
-        roles = [r for r in ("production", "test") if r in srv.instances]
-        if view in srv.instances:
-            roles = [view]
-        elif view != "both":
-            raise HTTPException(status.HTTP_404_NOT_FOUND, f"No instance {server}/{view}")
+        staging_of = stagings.load(stagings_file).get(srv.name)
+        if view == "both" or (staging_of and view == "test" and srv.production is not None):
+            view = "production"
+        if view not in srv.instances:
+            if view == "production" and srv.instances:
+                view = next(iter(srv.instances))
+            else:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, f"No instance {server}/{view}")
+        roles = [view]
         shown = [srv.instances[r] for r in roles]
         me = request.state.user
         base = f"{prefix_of(request)}/servers/{srv.name}"
@@ -1006,16 +1012,23 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             {
                 "from_link": from_link,
                 "login_as": login_as_buttons,
-                # its stagings (made beside it in its workspace), or the one it is a staging of
-                "stagings": {"rows": staging_rows(srv.name), "can": workspace_of(srv.name) is not None
-                             and srv.production is not None,
-                             "parent": stagings.load(stagings_file).get(srv.name)} if request.state.user.can("admin") else None,
+                # its copies: its test and its stagings (made beside it in its
+                # workspace); or the production it is a staging of
+                "stagings": {"rows": await staging_states(staging_rows(srv.name)),
+                             "can": request.state.user.can("admin") and workspace_of(srv.name) is not None
+                             and srv.production is not None and not staging_of,
+                             # what it is a copy of, at the address the page names it by
+                             "parent": staging_of and {**staging_of, "url": getattr(
+                                 (settings.servers.get(staging_of.get("parent")) or srv).production, "web_url", None)},
+                             "workspace": (workspace_of(srv.name) or (None,))[0]},
+                "is_admin_here": request.state.user.can("admin"),
+                "test_state": await run_state(srv.test) if srv.test is not None and view != "test" else None,
                 "pull_choices": pull_choices,
                 "restore_file": restore_file,
                 "restore_fields": [_field_dict(f) for f in plugin.restore_fields()] if plugin else [],
                 "backup_fields": [_field_dict(f) for f in plugin.backup_fields()] if plugin else [],
                 "server": srv,
-                "view": view if view in srv.instances else "both",
+                "view": view,
                 "instances": shown,
                 "buttons": buttons,
                 "server_buttons": server_buttons,
@@ -1033,7 +1046,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 # a systemd service: its ActiveState, None when unknown
                 "service_state": dict(zip([i.key for i in shown],
                                           await asyncio.gather(*(ops.service_state(i) for i in shown)))),
-                "jobs": [j for j in jobs.recent(200) if any(k.startswith(f"{server}/") for k in j.instances)][:10],
+                "jobs": [j for j in jobs.recent(200) if any(k.startswith(f"{server}/") for k in j.instances)][:5],
             },
         )
 
@@ -1054,6 +1067,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         shown = visible_servers(request.state.user)
         live = [srv for srv in settings.active_servers() if shown is None or srv.name in shown]
         states = await run_states(live)
+        known = stagings.load(stagings_file)
         return [
             {
                 "name": srv.name,
@@ -1068,11 +1082,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                         "state": states[inst.key],
                         "restart": inst.restart.type,
                         "port": inst.plugin.web_port(inst),
-                        # the domain set for it, None: none
-                        "url": inst.domain,
+                        # its address: its domain, else its workspace's name for it; None: none
+                        "url": inst.domain or inst.site,
                     }
                     for role, inst in srv.instances.items()
                 },
+                # a staging: the production it is a copy of, and when (stagings.py)
+                "parent": known.get(srv.name, {}).get("parent", ""),
+                "created": known.get(srv.name, {}).get("created", ""),
             }
             for srv in live
         ]
@@ -1999,6 +2016,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         """Write the servers file and make it current (OSError when it cannot)."""
         save_servers(settings.servers_file, servers)
         settings.servers = servers
+        apply_sites(settings.servers, settings.workspaces)
         gitcredentials.bind(settings)
         await updater.reload()
 
@@ -2133,6 +2151,15 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 return refuse(f"No server {name}", status.HTTP_404_NOT_FOUND)
             if server_busy(name):
                 return refuse(f"A job is running on {name}: try again when it ends")
+            # an instance a workspace made: its line alone would leave its
+            # containers running and its data on the disk (18/11/2026: a
+            # staging taken off here kept 2 containers up). It is deleted
+            # from its page; the line alone only when asked for by name
+            made_by = next((ws for ws in settings.workspaces.values()
+                            if ws.storage and name in ws.servers and name.startswith(f"{ws.name}-")), None)
+            if made_by is not None and payload.get("configuration_only") is not True:
+                return refuse(f"{name} is an instance of workspace {made_by.name}: delete it from its page, which "
+                              f"removes its containers and its data too")
             servers = {k: v for k, v in settings.servers.items() if k != name}
             error = await store(servers)
             if error:
@@ -2154,6 +2181,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         except OSError as exc:
             return refuse(f"Cannot write {settings.workspaces_file}: {exc}", 500)
         settings.workspaces = found
+        apply_sites(settings.servers, settings.workspaces)
         gitcredentials.bind(settings)
         return None
 
@@ -2538,8 +2566,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             await rename_in_workspaces(name, None)
             raise
         job.result = {"server": name}
-        job.log(f"Server {name}: production at http://127.0.0.1:{parsed.production.options.http_port}, "
-                f"test at http://127.0.0.1:{parsed.test.options.http_port}")
+        job.log(f"Server {name}: production at http://127.0.0.1:{parsed.production.options.http_port}"
+                + (f", test at http://127.0.0.1:{parsed.test.options.http_port}" if parsed.test else ""))
         current = settings.workspaces.get(ws.name)
         if current is not None and current.domain:
             try:
@@ -2680,9 +2708,15 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             srv = settings.servers.get(name)
             if info.get("parent") == server and srv is not None and srv.production is not None:
                 rows.append({"server": name, "created": info.get("created", ""), "backup": info.get("backup", ""),
-                             "url": srv.production.domain, "port": srv.production.plugin.web_port(srv.production),
+                             "url": srv.production.web_url, "port": srv.production.plugin.web_port(srv.production),
                              "busy": server_busy(name)})
         return sorted(rows, key=lambda r: r["created"], reverse=True)
+
+    async def staging_states(rows: list[dict]) -> list[dict]:
+        """rows of staging_rows with the run state of each one's production."""
+        found = [settings.servers[r["server"]].production for r in rows]
+        states = await asyncio.gather(*(run_state(i) for i in found))
+        return [{**r, "state": st} for r, st in zip(rows, states)]
 
     @app.get("/api/servers/{server}/stagings", dependencies=[Depends(admin)])
     async def staging_list(server: str):
@@ -2727,8 +2761,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             backup_zip = await ops.backup_into(job, prod, backup_folder(prod), {"no_filestore": False})
             target = settings.servers[name].production
             await target.plugin.restore(job, target, backup_zip, {"neutralize": True})
-            job.log(f"--- {name}: its test stopped, a staging needs its production only")
-            await ops.stop(job, settings.servers[name].test)
+            if settings.servers[name].test is not None:
+                job.log(f"--- {name}: its test stopped, a staging needs its production only")
+                await ops.stop(job, settings.servers[name].test)
             data = stagings.load(stagings_file)
             data[name] = {"parent": server, "created": now.isoformat(timespec="seconds"), "backup": backup_zip.name}
             await asyncio.to_thread(stagings.save, stagings_file, data)
@@ -2759,6 +2794,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 raise JobFailed(f"the instance is removed, but the servers file was not written: {error.body.decode()}")
             await rename_in_workspaces(name, None)
             job.log(f"Server {name} removed")
+            # a staging is no longer one; the stagings of a removed parent stay, saying whose copy they were
+            known = stagings.load(stagings_file)
+            if known.pop(name, None) is not None:
+                await asyncio.to_thread(stagings.save, stagings_file, known)
             current = settings.workspaces.get(ws.name)
             if current is not None:
                 try:
@@ -4207,6 +4246,43 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return await run.send(action, params, me.name)
         except consumer.ConsumerError as exc:
             return refuse(str(exc), status.HTTP_502_BAD_GATEWAY)
+
+    # --- Settings: the places the bar on top does not name ----------------
+
+    @app.get("/settings", dependencies=[Depends(developer)])
+    async def settings_page(request: Request, me: Principal = Depends(current_user)):
+        """What the sidebar listed before (docs/ux/REVIEW-2026-11-18.md): each
+        place with what it is for, the admins' ones for the admins."""
+        lang = request_language(request)
+        t = functools.partial(i18n.gettext, lang)
+        admin_here = me.can("admin") and not me.scoped
+
+        def group(title, *cards):
+            found = [{"path": path, "title": title_, "text": text} for path, title_, text, shown in cards if shown]
+            return {"title": title, "cards": found} if found else None
+
+        groups = [
+            group(t("Activity"),
+                  ("/jobs", t("Jobs"), t("Every action OmniaCLI ran, with its steps and its log"), True),
+                  ("/disks", t("Disks"), t("The disks of this machine, their free space and when they fill up"), not me.scoped),
+                  ("/omniacli/log", t("Log"), t("OmniaCLI's own log"), admin_here)),
+            group(t("Servers and links"),
+                  ("/config", t("Servers by hand"), t("The servers' configuration, field by field: for the instances OmniaCLI did not make"), admin_here),
+                  ("/links", t("Links"), t("Other OmniaCLI reached from here, and the tokens they use"), admin_here),
+                  ("/groups", t("Groups"), t("The groups the instances and the linked OmniaCLI are arranged in"), admin_here),
+                  ("/pullers", t("Pullers"), t("Instances operated through a relay"), admin_here),
+                  ("/schedules", t("Schedules"), t("Actions run at set times: backups, updates, restarts"), admin_here),
+                  ("/tunnels", t("Tunnels"), t("Ports of the instances reached from your computer"), me.kind == "user" and not getattr(request.state, "prefix", ""))),
+            group(t("People and access"),
+                  ("/users", t("Users"), t("Who logs in, with which role"), admin_here),
+                  ("/workspaces", t("Workspaces"), t("Customers' closed parts of the machine: their instances, users, limits and names"), admin_here),
+                  ("/credentials", t("Git credentials"), t("The git credentials of the servers and workspaces"), admin_here)),
+            group(t("System"),
+                  ("/plugins", t("Plugins"), t("What OmniaCLI knows how to run, besides Odoo"), admin_here),
+                  ("/options", t("Options"), t("Consoles, tunnels and the other options of this OmniaCLI"), admin_here),
+                  ("/help", t("Help"), t("How OmniaCLI works, section by section"), True)),
+        ]
+        return _TEMPLATES.TemplateResponse(request, "settings.html", {"groups": [g for g in groups if g]})
 
     # --- options of the system ------------------------------------------
 

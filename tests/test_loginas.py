@@ -133,9 +133,12 @@ async def test_a_production_is_an_admins(here):
     assert urlsplit(resp.json()["url"]).netloc == PRODUCTION
     # the button: for whom may use it
     page = (await here.get("/servers/srv", headers=as_user("dev"))).text
+    assert "data-login-as=" not in page
+    page = (await here.get("/servers/srv?view=test", headers=as_user("dev"))).text
     assert page.count("data-login-as=") == 1 and "login-as-dialog" in page
-    page = (await here.get("/servers/srv", headers=as_user("admin"))).text
-    assert page.count("data-login-as=") == 2
+    for view in ("production", "test"):
+        page = (await here.get(f"/servers/srv?view={view}", headers=as_user("admin"))).text
+        assert page.count("data-login-as=") == 1
     page = (await here.get("/servers/srv", headers=as_user("viewer"))).text
     assert "data-login-as=" not in page
 

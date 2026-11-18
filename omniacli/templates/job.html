@@ -9,7 +9,7 @@
 {% elif ns.servers | length == 1 %}
   {% set name = ns.servers[0] %}
   {% set view = job.instances[0].split("/")[1] if job.instances | length == 1 else "both" %}
-  {{ crumbs([(_("Dashboard"), "/"), (name, "/servers/" ~ name),
+  {{ crumbs([(_("Instances"), "/"), (name, "/servers/" ~ name),
              ({"production": _("production") | capitalize, "test": _("test") | capitalize, "both": _("Both")}[view], "/servers/" ~ name ~ "?view=" ~ view),
              (tr(job.title), None)]) }}
 {% else %}

@@ -76,7 +76,8 @@ async def wait(client, job_id):
 
 
 async def test_a_new_backup_there_restored_here(here, env):
-    page = (await here.get("/servers/srv?view=both", headers=as_user("admin"))).text
+    page = (await here.get("/servers/srv", headers=as_user("admin"))).text
+    page += (await here.get("/servers/srv?view=test", headers=as_user("admin"))).text
     assert page.count("data-from-link=") == 2 and '<dialog id="from-link-dialog">' in page
     assert "Neutralize (Odoo 16 and later)" in page
 
@@ -193,7 +194,8 @@ async def test_who_may_and_what_is_refused(here, env):
     # a production is an admin's, with its database typed
     resp = await here.post("/servers/srv/production/from-link", headers=as_user("dev", post=True), json={})
     assert resp.status_code == 403
-    page = (await here.get("/servers/srv?view=both", headers=as_user("dev"))).text
+    page = (await here.get("/servers/srv", headers=as_user("dev"))).text
+    page += (await here.get("/servers/srv?view=test", headers=as_user("dev"))).text
     assert page.count("data-from-link=") == 1
     resp = await here.post("/servers/srv/production/from-link", headers=as_user("admin", post=True), json={})
     assert resp.status_code == 400 and "Type DB_production" in resp.json()["error"]

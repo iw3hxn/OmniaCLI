@@ -110,7 +110,7 @@ async def test_a_workspace_user_sees_its_servers_only(workspaces, client, env):
     page = (await client.get("/", headers=basic("mario"))).text
     assert "/servers/srv" in page and "This machine" not in page
     assert "/config" not in page and "/users" not in page and 'href="/workspaces/acme"' in page
-    page = (await client.get("/servers/srv", headers=basic("mario"))).text
+    page = (await client.get("/servers/srv?view=test", headers=basic("mario"))).text
     assert "/servers/srv/test/restart" in page and "/test/shell" not in page and "/test/psql" not in page
     assert [s["name"] for s in (await client.get("/api/servers", headers=basic("mario"))).json()] == ["srv"]
     metrics = (await client.get("/api/metrics", headers=basic("mario"))).json()
@@ -425,6 +425,21 @@ async def test_cpu_and_memory_applied_when_changed(workspaces, client, env, monk
     assert applied[-1] == {"cpus": 2}
 
 
+async def test_an_instance_a_workspace_made_is_not_taken_off_by_its_line_alone(workspaces, client, env):
+    """18/11/2026: a staging taken off Configure › Servers kept its containers up."""
+    settings = env["settings"]
+    server = server_to_dict(settings.servers["srv"])
+    resp = await client.post("/api/servers/save", headers=POST, json={"original": "srv", "name": "acme-main", "server": server})
+    assert resp.status_code == 200, resp.text
+    settings.workspaces["acme"].storage = "default"
+    resp = await client.post("/api/servers/delete", headers=POST, json={"name": "acme-main"})
+    assert resp.status_code == 400 and "delete it from its page" in resp.json()["error"]
+    assert "acme-main" in settings.servers and settings.workspaces["acme"].servers == ["acme-main"]
+    # the line alone, asked for by name (an expert's repair)
+    resp = await client.post("/api/servers/delete", headers=POST, json={"name": "acme-main", "configuration_only": True})
+    assert resp.status_code == 200 and "acme-main" not in settings.servers
+
+
 async def test_servers_keep_or_leave_their_workspace(workspaces, client, env):
     settings = env["settings"]
     server = server_to_dict(settings.servers["srv"])
@@ -557,8 +572,7 @@ async def test_workspaceops_create_instance(monkeypatch):
     template = stacktemplates.load_template(Path(__file__).parent.parent / "templates" / "odooplm-20")
     ws = Workspace("acme", storage="/srv/omniacli", limits={"disk_gb": 20, "cpus": 2})
     made = {"database": "main", "odoo_service": "odoo", "db_service": "db",
-            "roles": {"production": {"folder": "/srv/omniacli/acme/main/production", "http_port": 20000},
-                      "test": {"folder": "/srv/omniacli/acme/main/test", "http_port": 20002}}}
+            "roles": {"production": {"folder": "/srv/omniacli/acme/main/production", "http_port": 20000}}}
     captured, ran = [], []
 
     async def capture(cmd, **kw):
@@ -577,11 +591,13 @@ async def test_workspaceops_create_instance(monkeypatch):
     data = await workspaceops.create_instance(Job(id="j", title="t", instances=[], source="s"), ws, "main", template, values)
     assert [c[4:7] for c in captured] == [["disk", "acme", "/srv/omniacli"], ["limits", "acme", "2"],
                                           ["create", "acme", "/srv/omniacli"]]
-    assert captured[0][-1] == "20" and captured[1][-1] == "0" and json.loads(captured[2][-1]) == values
+    # its production only: the copies to try things on are stagings beside it
+    assert captured[0][-1] == "20" and captured[1][-1] == "0"
+    assert json.loads(captured[2][-1]) == {**values, "_roles": ["production"]}
     assert ran[0][-6:] == ["/srv/omniacli/acme/main/production", "init", "odoo", "main", "plm", "it_IT"]
-    assert ran[1][-2:] == ["/srv/omniacli/acme/main/production", "start"] and ran[3][-1] == "start"
+    assert ran[1][-2:] == ["/srv/omniacli/acme/main/production", "start"] and len(ran) == 2
     assert data["production"]["restart"] == {"type": "compose", "service": "/srv/omniacli/acme/main/production", "sudo": True}
-    assert data["test"]["http_port"] == 20002
+    assert "test" not in data
     ran.clear()
     fail_init = True
     with pytest.raises(JobFailed):
@@ -730,7 +746,7 @@ async def test_a_dated_staging_beside_a_production(workspaces, client, env, monk
     for name in made:
         row = page[page.index(f'data-server="{name}"'):]
         row = row[:row.index("</tr>")]
-        assert 'class="staging-row" data-parent="acme-odoo"' in row and "↳" in row and "Staging" in row
+        assert 'staging-row" data-parent="acme-odoo"' in row and "↳" in row and "Staging" in row
         assert "view-test" not in row and f'data-key="{name}/test"' not in row
     assert all(s["created"].startswith(datetime.date.today().isoformat()) for s in listed["stagings"])
     record = stagings.load((settings.links_file or settings.servers_file).parent / stagings.FILE)

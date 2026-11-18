@@ -2,7 +2,7 @@
 {% extends "base.html" %}
 {% block title %}{{ _("Users") }} · OmniaCLI{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
-{{ crumbs([(_("Dashboard"), "/"), (_("Users"), None)]) }}
+{{ crumbs([(_("Settings"), "/settings"), (_("Users"), None)]) }}
 {% endblock %}
 {% block content %}
 {% from "_list.html" import list_search, item with context %}

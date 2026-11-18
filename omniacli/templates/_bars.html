@@ -1,0 +1,75 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{# A machine's load as three bars, as Cloudpepper's server cards: CPU, RAM,
+   disk (docs/ux/REVIEW-2026-11-18.md). Markup: bars(base, long), base "" is
+   this machine, "/links/<name>" a linked one; long: the amounts (4.6 / 8 GB)
+   besides the percent. Script (include this file once): every element
+   .load-bars fills itself, every 10 s (the disk every minute); an element
+   [data-bars-free] in the same [data-bars-scope] gets the free disk space. #}
+{% macro bars(base, long=false) -%}
+<div class="load-bars" data-base="{{ base }}" {% if long %}data-long="1"{% endif %}>
+  <span>{{ _("CPU") }}</span><span class="bar"><i data-bar="cpu"></i></span><span class="muted bar-value" data-value="cpu">–</span>
+  <span>{{ _("RAM") }}</span><span class="bar"><i data-bar="ram"></i></span><span class="muted bar-value" data-value="ram">–</span>
+  <span>{{ _("Disk") }}</span><span class="bar"><i data-bar="disk"></i></span><span class="muted bar-value" data-value="disk">–</span>
+</div>
+{%- endmacro %}
+{% if _ is defined %}
+<style>
+.load-bars { display: grid; grid-template-columns: max-content 1fr max-content; gap: 8px 14px; align-items: center; font-size: 14px; }
+.load-bars .bar { height: 10px; border-radius: 99px; background: var(--panel-2); overflow: hidden; border: 1px solid var(--border); }
+.load-bars .bar i { display: block; height: 100%; width: 0; background: var(--ok); border-radius: 99px; transition: width .4s; }
+.load-bars .bar i.warn { background: var(--warn); } .load-bars .bar i.error { background: var(--err); }
+.load-bars .bar-value { font-variant-numeric: tabular-nums; white-space: nowrap; }
+</style>
+<script>
+const OmniaBars = (function () {
+  const GB = 1073741824;
+  const gb = (bytes) => (bytes / GB).toLocaleString(undefined, {maximumFractionDigits: bytes < 10 * GB ? 1 : 0});
+  const level = (pct) => (pct >= 90 ? "error" : pct >= 75 ? "warn" : "");
+  function set(box, key, pct, text) {
+    const bar = box.querySelector(`[data-bar="${key}"]`), value = box.querySelector(`[data-value="${key}"]`);
+    if (pct === null || pct === undefined) { value.textContent = "–"; return; }
+    bar.style.width = Math.min(100, Math.max(1, pct)) + "%";
+    bar.className = level(pct);
+    value.textContent = text;
+  }
+  async function load(box) {
+    const base = box.dataset.base, long = !!box.dataset.long;
+    try {
+      const resp = await fetch(`${base}/api/metrics?machine_only=1&since=${Math.floor(Date.now() / 1000) - 60}`);
+      const data = resp.ok ? await resp.json() : null;
+      const last = data && data.machine && data.machine.length ? data.machine[data.machine.length - 1] : null;
+      if (last) {
+        set(box, "cpu", last.cpu, last.cpu === null ? "–" : Math.round(last.cpu) + "%");
+        if (last.ram_total) {
+          const pct = last.ram / last.ram_total * 100;
+          set(box, "ram", pct, long ? `${gb(last.ram * 1048576)} / ${gb(last.ram_total * 1048576)} GB` : Math.round(pct) + "%");
+        }
+        box.dispatchEvent(new CustomEvent("omniabars:cores", {bubbles: true, detail: {cores: data.cores}}));
+      }
+    } catch (e) { /* the next round */ }
+  }
+  async function disk(box) {
+    try {
+      const resp = await fetch(`${box.dataset.base}/api/disks`);
+      if (!resp.ok) return;
+      const disks = (await resp.json()).disks || [];
+      // the disk of / (else the biggest): where the instances live, as Cloudpepper's
+      const d = disks.find((x) => x.mount === "/") || disks.sort((a, b) => b.total - a.total)[0];
+      if (!d) return;
+      const pct = d.used / d.total * 100;
+      set(box, "disk", pct, box.dataset.long ? `${gb(d.used)} / ${gb(d.total)} GB` : Math.round(pct) + "%");
+      const scope = box.closest("[data-bars-scope]");
+      const free = scope && scope.querySelector("[data-bars-free]");
+      if (free) free.textContent = gb(d.free) + " GB";
+    } catch (e) { /* the next round */ }
+  }
+  function watch(box) {
+    load(box); disk(box);
+    setInterval(() => { if (!document.hidden) load(box); }, 10000);
+    setInterval(() => { if (!document.hidden) disk(box); }, 60000);
+  }
+  document.addEventListener("DOMContentLoaded", () => document.querySelectorAll(".load-bars").forEach(watch));
+  return {watch};
+})();
+</script>
+{% endif %}

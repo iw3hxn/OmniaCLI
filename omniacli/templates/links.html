@@ -2,7 +2,7 @@
 {% extends "base.html" %}
 {% block title %}{{ _("Links") }} · OmniaCLI{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
-{{ crumbs([(_("Dashboard"), "/"), (_("Links"), None)]) }}
+{{ crumbs([(_("Settings"), "/settings"), (_("Links"), None)]) }}
 {% endblock %}
 {% macro ssh_fields(link, prefix) -%}
 {# the SSH server a link goes through: empty host, no SSH #}

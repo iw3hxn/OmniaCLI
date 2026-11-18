@@ -11,7 +11,7 @@ import pytest
 
 from omniacli import workspacehelper, workspaceops, workspaceweb
 from omniacli.composehelper import HelperError
-from omniacli.config import ConfigError, Workspace, parse_workspaces, server_to_dict, web_names
+from omniacli.config import ConfigError, Workspace, apply_sites, parse_servers, parse_workspaces, server_to_dict, web_names
 
 from .test_app import POST, client, wait_job  # noqa: F401 - the client fixture
 from .test_stacktemplates import root  # noqa: F401 - the root fixture
@@ -29,6 +29,42 @@ def test_web_names():
     assert [s["names"] for s in web_names("acme.it", ["shop"])] == [["shop.acme.it"], ["shop.test.acme.it"]]
     with pytest.raises(ConfigError, match="longer"):
         web_names("a" * 60 + "." + "b" * 60 + "." + "c" * 60 + "." + "d" * 60 + ".it", ["main"])
+
+
+def test_web_names_of_a_staging_and_of_a_production_alone():
+    # a staging answers under its production's name, as Cloudpepper's
+    sites = web_names("inaria.media", ["odoo", "odoo-stg-20261117", "odoo-stg-20261117-2"])
+    assert [(s["instance"], s["role"], s["names"]) for s in sites] == [
+        ("odoo", "production", ["odoo.inaria.media"]),
+        ("odoo", "test", ["odoo.test.inaria.media"]),
+        ("odoo-stg-20261117", "production", ["stg-20261117.odoo.inaria.media"]),
+        ("odoo-stg-20261117", "test", ["stg-20261117.odoo.test.inaria.media"]),
+        ("odoo-stg-20261117-2", "production", ["stg-20261117-2.odoo.inaria.media"]),
+        ("odoo-stg-20261117-2", "test", ["stg-20261117-2.odoo.test.inaria.media"])]
+    # an instance with its production only has no test names
+    roles = {"odoo": ("production",), "odoo-stg-20261118": ("production",)}
+    assert [(s["instance"], s["role"], s["names"]) for s in web_names("inaria.media", list(roles), "odoo", None, roles)] == [
+        ("odoo", "production", ["inaria.media", "odoo.inaria.media"]),
+        ("odoo-stg-20261118", "production", ["stg-20261118.inaria.media"])]
+    # an instance named like a staging whose production is not there is an instance
+    assert web_names("acme.it", ["x-stg-20261117"])[0]["names"] == ["x-stg-20261117.acme.it"]
+
+
+def test_an_instance_of_a_workspace_opens_at_its_name():
+    def one(**extra):
+        return {"production": {"database": "db", "odoo_config": "/c", "log_file": "/l", "venv_bin": "/b",
+                               "restart": {"type": "initd", "service": "odoo"},
+                               "repositories": [{"name": "o", "path": "/o", "branch": "x"}], **extra}}
+    servers = parse_servers({"inaria-odoo": one(), "inaria-odoo-stg-20261117": one(), "own": one(domain="erp.own.it")})
+    workspaces = parse_workspaces({"inaria": {"domain": "inaria.media", "servers": ["inaria-odoo", "inaria-odoo-stg-20261117"]}})
+    apply_sites(servers, workspaces)
+    assert servers["inaria-odoo"].production.web_url == "https://odoo.inaria.media"
+    assert servers["inaria-odoo-stg-20261117"].production.web_url == "https://stg-20261117.odoo.inaria.media"
+    assert servers["own"].production.web_url == "https://erp.own.it"
+    # not written in the servers file: the workspace's domain decides it
+    assert "domain" not in server_to_dict(servers["inaria-odoo"])["production"]
+    apply_sites(servers, {})
+    assert servers["inaria-odoo"].production.site is None
 
 
 def test_parse_the_names():

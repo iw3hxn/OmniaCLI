@@ -121,6 +121,22 @@ def machine_counters(proc: Path = Path("/proc"), net: Path = Path("/sys/class/ne
     return busy, total, rx, tx
 
 
+def machine_memory(proc: Path = Path("/proc")) -> tuple[int, int] | None:
+    """(MiB in use, MiB in all) of the machine: what is not available to a
+    new program (MemTotal - MemAvailable), as free's "used"; None: unknown."""
+    found = {}
+    try:
+        for line in (proc / "meminfo").read_text().splitlines():
+            key, _, value = line.partition(":")
+            if key in ("MemTotal", "MemAvailable"):
+                found[key] = int(value.split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+    if len(found) < 2 or not found["MemTotal"]:
+        return None
+    return round((found["MemTotal"] - found["MemAvailable"]) / 1024), round(found["MemTotal"] / 1024)
+
+
 def slice_counters(base: Path) -> tuple[float, int] | None:
     """(CPU seconds used so far, anonymous memory in bytes) of a cgroup."""
     stat, memory = _read(base / "cpu.stat"), _read(base / "memory.stat")
@@ -250,6 +266,9 @@ class Sampler:
             "rx": round(max(rx, 0) / seconds),
             "tx": round(max(tx, 0) / seconds),
         }
+        # the memory in use and in all, MiB (None: unknown)
+        memory = machine_memory()
+        point["ram"], point["ram_total"] = memory if memory else (None, None)
         if pg is not None and pg_previous is not None and now > pg_previous[0]:
             point["pg"] = self._share(max(pg - pg_previous[1], 0) / (now - pg_previous[0]) * 100)
         self.machine.append(point)

@@ -1,70 +1,42 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
-{% from "_load.html" import cpu as load_cpu with context %}
 {% from "_list.html" import grouped, item with context %}
-{# The server tables of the Dashboard: this instance's servers, in the
-   groups of the servers list (the list widget, _list.html), rendered with
-   the page and again by /dashboard/servers when a job starts or ends. #}
-{% from "_icons.html" import icon, runner %}
+{# The instances of the server's page (docs/ux/REVIEW-2026-11-18.md, mockup 2):
+   each production at its address, its test and its stagings right under it
+   as Cloudpepper's ↳ children; a row opens its page, no buttons in the rows.
+   Rendered with the page and again by /dashboard/servers when a job starts or ends. #}
+{% from "_icons.html" import runner %}
+{% macro host(url, name) %}{% if url and "://localhost" not in url and "://127.0.0.1" not in url %}{{ url.split("://", 1)[-1] }}{% else %}{{ name }}{% endif %}{% endmacro %}
+{% macro state(st, busy) -%}
+{% if busy %}<span class="state-dot busy">{{ runner("mini") }}{{ _("Job running") }}</span>
+{% else %}<span class="state-dot {{ st }}">{{ {"running": _("Running"), "stopped": _("Stopped")}.get(st, _("State unknown")) }}</span>{% endif %}
+{%- endmacro %}
 {% macro server_table(rows) %}
-<div class="panel" data-list-box>
+<div data-list-box>
   <div class="scroll">
   <table class="server-rows">
-    <tr><th>{{ _("Server") }}</th><th>{{ _("Workspace") }}</th><th>{{ _("Odoo, CPU of the last 15 minutes") }}</th></tr>
+    <tr><th>{{ _("Address") }}</th><th>{{ _("State") }}</th><th class="hide-sm">{{ _("Copied on") }}</th></tr>
     {% for row in rows %}
-    {# a staging right under its parent, as Cloudpepper's ↳ children: its
-       production only (its test is stopped, kept on its own page) #}
-    {% set roles = ["production"] if row.parent and "production" in row.roles else row.roles %}
-    <tr {{ item(row.text) }} data-server="{{ row.name }}"{% if row.parent %} class="staging-row" data-parent="{{ row.parent }}"{% endif %}>
-      <td><div class="server-name">{% if row.parent %}<span class="staging-mark" aria-hidden="true">↳</span>{% endif %}<a href="{{ row.base }}/servers/{{ row.name }}"><strong>{{ row.label }}</strong></a>
-        {% if row.parent %}<span class="badge info" title="{{ _("Staging of {name}", name=row.parent) }}">{{ _("Staging") }}</span>{% if row.created %}<span class="muted staging-date">{{ _("copied on {date}", date=row.created) }}</span>{% endif %}{% endif %}
-        <span class="view-buttons">
-          {# the instance itself, at its domain or on localhost, in a new tab;
-             its page here when its address is not known #}
-          {% for role in ("production", "test") if role in roles %}
-          {% set role_label = (_("production") if role == "production" else _("test")) | capitalize %}
-          {% if row.web.get(role) %}<a class="button view-{{ role }}" href="{{ row.web[role] }}" target="_blank" rel="noopener" title="{{ _("Open {url} in a new tab", url=row.web[role]) }}">{{ icon(role) }}{{ role_label }}</a>
-          {% else %}<a class="button view-{{ role }}" href="{{ row.base }}/servers/{{ row.name }}?view={{ role }}" title="{{ _("Production of {name}", name=row.label) if role == "production" else _("Test of {name}", name=row.label) }}">{{ icon(role) }}{{ role_label }}</a>{% endif %}
-          {% endfor %}
-        </span></div>
-        {# shown and hidden by the Dashboard as jobs start and end #}
-        {% for role in roles %}<span class="job-busy" data-link="{{ row.link }}" data-busy="{{ row.name }}/{{ role }}" {% if not row.busy[role] %}hidden{% endif %}><br><span class="status running">{{ runner("mini") }}{{ _("job running on production") if role == "production" else _("job running on test") }}</span></span>{% endfor %}</td>
-      <td>{% if row.workspace %}{% if is_admin %}<a href="{{ prefix }}/workspaces?edit={{ row.workspace | urlencode }}">{{ row.workspace }}</a>{% else %}{{ row.workspace }}{% endif %}{% else %}<span class="muted">—</span>{% endif %}</td>
-      <td class="sparks">
-        {% for role in roles %}
-        <div class="spark-row" data-link="{{ row.link }}" data-key="{{ row.name }}/{{ role }}">
-          <span class="role {{ role }}">{{ _("Prod") if role == "production" else _("test") | capitalize }}</span>
-          {{ load_cpu(row.label ~ " " ~ role) }}
-          {% set st = row.state.get(role) %}
-          {% if st %}
-          {# the same buttons as on the server page, as icons #}
-          {% set rt = row.restart.get(role, "") %}
-          {% set url = row.base ~ "/servers/" ~ row.name ~ "/" ~ role %}
-          {% set off = "disabled" if row.busy[role] else "" %}
-          {% set what = row.label ~ " " ~ (_("production") if role == "production" else _("test")) %}
-          <span class="run-state {{ st }}" title="{{ {"running": _("Odoo running"), "stopped": _("Odoo stopped")}.get(st, _("Odoo state unknown")) }}">{{ {"running": _("running"), "stopped": _("stopped")}.get(st, "?") }}</span>
-          {% if can_restart %}
-          <span class="run-buttons">
-            {% if st != "running" and rt in ("process", "systemd", "compose") %}
-            <form method="post" action="{{ url }}/{{ 'restart' if rt == 'process' else 'start' }}" onsubmit='return confirm({{ _("Start Odoo of {name}?", name=what) | tojson }})'>
-              <input type="hidden" name="next" value="{{ prefix }}/">
-              <button class="icon-btn btn-start" title="{{ _("Start") }}" aria-label="{{ _("Start {name}", name=what) }}" {{ off }}>{{ icon("start") }}</button></form>
-            {% endif %}
-            {% if st != "stopped" and rt in ("process", "systemd", "compose") %}
-            <form method="post" action="{{ url }}/stop" onsubmit='return confirm({{ _("Stop Odoo of {name}? It stays stopped, also for the auto update, until Start.", name=what) | tojson }})'>
-              <input type="hidden" name="next" value="{{ prefix }}/">
-              <button class="icon-btn btn-stop" title="{{ _("Stop") }}" aria-label="{{ _("Stop {name}", name=what) }}" {{ off }}>{{ icon("stop") }}</button></form>
-            {% endif %}
-            {% if rt != "process" or st == "running" %}
-            <form method="post" action="{{ url }}/restart" onsubmit='return confirm({{ _("Restart Odoo of {name}?", name=what) | tojson }})'>
-              <button class="icon-btn btn-restart" title="{{ _("Restart") }}" aria-label="{{ _("Restart {name}", name=what) }}" {{ off }}>{{ icon("restart") }}</button></form>
-            {% endif %}
-          </span>
-          {% endif %}
-          {% endif %}
-        </div>
-        {% endfor %}
-      </td>
+    {% set page = row.base ~ "/servers/" ~ row.name %}
+    {% if "production" in row.roles %}
+    <tr {{ item(row.text) }} data-server="{{ row.name }}" data-href="{{ page }}" class="click-row{{ ' staging-row' if row.parent }}"{% if row.parent %} data-parent="{{ row.parent }}"{% endif %}
+        title="{{ _('Open its page: its environments, backups, log') }}">
+      <td>{% if row.parent %}<span class="staging-mark" aria-hidden="true">↳</span>{% endif %}<a href="{{ page }}"><strong>{{ host(row.web.get("production"), row.label) }}</strong></a>
+        {% if row.parent %}<span class="badge info" title="{{ _("Staging of {name}", name=row.parent) }}">{{ _("Staging") }}</span>{% else %}<span class="badge ok">{{ _("Production") }}</span>{% endif %}
+        {% if host(row.web.get("production"), row.label) != row.label %}<span class="muted row-name hide-sm">{{ row.label }}</span>{% endif %}
+        <span class="job-busy" data-link="{{ row.link }}" data-busy="{{ row.name }}/production" hidden></span></td>
+      <td>{{ state(row.state.get("production"), row.busy.get("production")) }}</td>
+      <td class="muted when hide-sm">{% if row.created %}{{ row.created[8:10] }}/{{ row.created[5:7] }}/{{ row.created[0:4] }} {{ row.created[11:16] }}{% else %}—{% endif %}</td>
     </tr>
+    {% endif %}
+    {% if "test" in row.roles and not row.parent %}
+    <tr {{ item(row.text ~ " test") }} data-server="{{ row.name }}" data-href="{{ page }}?view=test" class="click-row staging-row" title="{{ _('Open the page of its test') }}">
+      <td>{% if "production" in row.roles %}<span class="staging-mark" aria-hidden="true">↳</span>{% endif %}<a href="{{ page }}?view=test"><strong>{{ host(row.web.get("test"), row.label) }}</strong></a>
+        <span class="badge test-badge">Test</span>
+        <span class="job-busy" data-link="{{ row.link }}" data-busy="{{ row.name }}/test" hidden></span></td>
+      <td>{{ state(row.state.get("test"), row.busy.get("test")) }}</td>
+      <td class="muted when hide-sm">—</td>
+    </tr>
+    {% endif %}
     {% endfor %}
   </table>
   </div>
@@ -73,6 +45,5 @@
 {% if rows %}
 {{ grouped(sections, server_table, "servers") }}
 {% else %}
-<div class="panel"><p class="muted" style="margin: 0">{{ _("No live servers.") }}{% if is_admin %} {{ _("Add one in Servers, then use Test & activate.") }}</p>
-  <div class="actions"><a class="button primary" href="{{ prefix }}/config">{{ _("Open Servers") }}</a></div>{% else %}</p>{% endif %}</div>
+<p class="muted" style="margin: 0">{{ _("No live servers.") }}{% if is_admin %} {{ _("Add one in Servers, then use Test & activate.") }}{% endif %}</p>
 {% endif %}

@@ -74,15 +74,18 @@ async def apply_limits(job: Job, ws: Workspace) -> dict:
 
 async def create_instance(job: Job, ws: Workspace, instance: str, template: stacktemplates.Template,
                           values: dict[str, str]) -> dict:
-    """The disk, the two projects, their databases, started: the server's
-    data for the servers file (production and test, type docker)."""
+    """The disk, the project of its production, its database, started: the
+    server's data for the servers file (its production, type docker). The
+    copies to try things on are stagings beside it (stagings.py), as
+    Cloudpepper's, not a test of its own."""
     if not ws.storage or not ws.limits.get("disk_gb"):
         raise JobFailed(f"workspace {ws.name} has no storage or no disk limit: the machine's admins set them")
     job.log(f"--- the disk of workspace {ws.name} ({ws.limits['disk_gb']:g} GB, in {ws.storage})")
     await _helper(job, "disk", ws.name, ws.storage, str(int(ws.limits["disk_gb"])))
     await apply_limits(job, ws)
     job.log(f"--- instance {instance} from template {template.name} {template.version}")
-    made = await _helper(job, "create", ws.name, ws.storage, instance, template.name, json.dumps(values))
+    made = await _helper(job, "create", ws.name, ws.storage, instance, template.name,
+                         json.dumps({**values, "_roles": ["production"]}))
     try:
         modules = values.get("INIT_MODULES") or "base"
         language = values.get("INIT_LANG") or ""
@@ -95,7 +98,7 @@ async def create_instance(job: Job, ws: Workspace, instance: str, template: stac
         job.log(f"--- the creation failed: instance {instance} removed")
         await run(job, helper("remove", ws.name, ws.storage, instance), check=False, timeout=HELPER_TIMEOUT)
         raise
-    job.log("The new databases have the user admin with password admin: change it at the first login.")
+    job.log("The new database has the user admin with password admin: change it at the first login.")
     return {
         "type": "docker",
         **{role: {"database": made["database"], "odoo_service": made["odoo_service"],

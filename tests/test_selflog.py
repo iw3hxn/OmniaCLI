@@ -41,7 +41,7 @@ async def test_own_log_page(client, env):  # noqa: F811
     assert again.json()["lines"] == []
     page = await client.get("/omniacli/log", headers={"Authorization": AUTH})
     assert page.status_code == 200 and str(env["settings"].logs_dir / "omniacli.log") in page.text
-    assert 'href="/omniacli/log"' in page.text
+    assert 'href="/omniacli/log"' in (await client.get("/settings", headers={"Authorization": AUTH})).text
     developer = {"Authorization": "Basic " + base64.b64encode(f"dev:{PASSWORD}".encode()).decode()}
     assert (await client.get("/api/omniacli/log", headers=developer)).status_code == 403
     assert (await client.get("/omniacli/log", headers=developer)).status_code == 403

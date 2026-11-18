@@ -1,0 +1,25 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{% extends "base.html" %}
+{% block title %}{{ _("Settings") }} · OmniaCLI{% endblock %}
+{% block content %}
+{# Settings: what the bar on top does not name (docs/ux/REVIEW-2026-11-18.md),
+   each place with one line on what it is for #}
+<style>
+.settings-group { margin: 0 0 22px; }
+.settings-group h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px; }
+.settings-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+.settings-card { display: block; padding: 14px 16px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-lg);
+  color: var(--text); box-shadow: var(--shadow); }
+.settings-card:hover { border-color: var(--accent); text-decoration: none; }
+.settings-card strong { display: block; margin-bottom: 2px; }
+.settings-card span { color: var(--muted); font-size: 13px; }
+</style>
+<div class="page-head"><div><h1>{{ _("Settings") }}</h1></div></div>
+{% macro card(path, title, text) %}<a class="settings-card" href="{{ prefix }}{{ path }}"><strong>{{ title }}</strong><span>{{ text }}</span></a>{% endmacro %}
+{% for group in groups %}
+<section class="settings-group">
+  <h2>{{ group.title }}</h2>
+  <div class="settings-cards">{% for c in group.cards %}{{ card(c.path, c.title, c.text) }}{% endfor %}</div>
+</section>
+{% endfor %}
+{% endblock %}

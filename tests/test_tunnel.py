@@ -159,7 +159,7 @@ def test_tunnel_through_a_link(env, tmp_path, customer):
         assert 'href="/tunnels"' not in page
         # each select says what it chooses
         assert '<label for="server">Linked server</label>' in page and '<label for="role">Instance</label>' in page
-        assert 'href="/tunnels"' in c.get("/tunnels", headers=browser(mine, "dev")).text
+        assert 'href="/tunnels"' in c.get("/settings", headers=browser(mine, "dev")).text
         # a user may open one (the link's role capped to user is enough there)
         resp = c.post("/api/tunnels/open", json={"link": "cliente", "server": "srv", "role": "test"},
                       headers=browser(mine, "viewer"))

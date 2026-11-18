@@ -282,6 +282,18 @@ def test_create_and_remove(root, monkeypatch):
     workspacehelper.remove("acme", str(storage), "main")
     assert [c[-3:] for c in downs] == [["down", "-v", "--remove-orphans"]] * 2
     assert not (storage / "acme" / "main").exists()
+    # production alone (what OmniaCLI asks now: the copies are stagings)
+    made = workspacehelper.create("acme", str(storage), "solo", "odooplm-20", json.dumps({"_roles": ["production"]}))
+    assert list(made["roles"]) == ["production"] and "_roles" not in made["values"]
+    assert (storage / "acme" / "solo" / "production" / ".env").is_file() and not (storage / "acme" / "solo" / "test").exists()
+    assert workspacehelper.instances_on_disk(storage / "acme") == ["solo"]
+    assert workspacehelper.roles_on_disk(storage / "acme", ["solo"]) == {"solo": ("production",)}
+    for roles in (["test"], "production", ["production", "dev"]):
+        with pytest.raises(HelperError, match="with production in it"):
+            workspacehelper.create("acme", str(storage), "other", "odooplm-20", json.dumps({"_roles": roles}))
+    downs.clear()
+    workspacehelper.remove("acme", str(storage), "solo")
+    assert len(downs) == 1 and not (storage / "acme" / "solo").exists()
 
 
 def test_the_template_is_refused_when_the_caller_may_change_it(root, monkeypatch, tmp_path):

@@ -96,30 +96,26 @@ window.OmniaLogin = window.OmniaLogin || (function () {
 [hidden] { display: none !important; }
 body { margin: 0; background: var(--bg); color: var(--text);
   font: 14px/1.5 var(--font); -webkit-font-smoothing: antialiased; }
-/* the page: the menu on the left, the content on the right */
-.shell { display: grid; grid-template-columns: 232px minmax(0, 1fr); min-height: 100vh; }
-.sidebar { position: sticky; top: 0; height: 100vh; overflow-y: auto; display: flex; flex-direction: column;
-  background: var(--side-bg); color: var(--side-text); padding: 16px 12px; gap: 4px; z-index: 10; }
-.brand { display: flex; align-items: center; gap: 10px; padding: 4px 10px 14px; font-weight: 800; font-size: 17px;
-  letter-spacing: -.01em; color: var(--side-current); text-decoration: none; }
+/* the page: a bar on top with the few places (Server, Instances, Settings:
+   docs/ux/REVIEW-2026-11-18.md), the content under it */
+.shell { display: flex; flex-direction: column; min-height: 100vh; }
+.topbar { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 28px; height: 56px; padding: 0 24px;
+  background: var(--side-bg); color: var(--side-text); }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 17px; letter-spacing: -.01em;
+  color: var(--side-current); text-decoration: none; flex: none; }
 .brand img { width: 26px; height: 26px; border-radius: 6px; }
 .brand-name span { color: #F87171; }
-.nav-section { font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
-  color: var(--side-muted); padding: 14px 10px 4px; }
-.nav-link { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: var(--r);
-  color: var(--side-text); text-decoration: none; font-size: 14px; }
-.nav-link:hover { background: var(--side-hover); color: var(--side-current); }
-.nav-link[aria-current="page"] { background: var(--side-hover); color: var(--side-current); font-weight: 600;
-  box-shadow: inset 3px 0 0 #F87171; }
-.nav-link .icon { width: 16px; height: 16px; opacity: .8; }
-.side-end { margin-top: auto; padding-top: 14px; border-top: 1px solid var(--side-hover); display: flex;
-  flex-direction: column; gap: 8px; }
-.side-account { display: flex; align-items: center; gap: 10px; padding: 4px 10px; color: var(--side-text);
-  text-decoration: none; }
-.side-account:hover { color: var(--side-current); }
+.topnav { display: flex; gap: 4px; min-width: 0; overflow-x: auto; }
+.nav-link { padding: 7px 12px; border-radius: var(--r); color: var(--side-text); text-decoration: none; font-size: 14px;
+  font-weight: 500; white-space: nowrap; }
+.nav-link:hover { background: var(--side-hover); color: var(--side-current); text-decoration: none; }
+.nav-link[aria-current="page"] { color: var(--side-current); font-weight: 650; box-shadow: inset 0 -2px 0 #F87171; border-radius: 0; }
+.top-end { margin-left: auto; display: flex; align-items: center; gap: 10px; flex: none; }
+.side-account { display: flex; align-items: center; gap: 8px; color: var(--side-text); text-decoration: none; }
+.side-account:hover { color: var(--side-current); text-decoration: none; }
 .avatar { width: 28px; height: 28px; border-radius: 50%; background: #F87171; color: #fff; display: grid;
   place-items: center; font-weight: 700; font-size: 13px; flex: none; text-transform: uppercase; }
-.side-tools { display: flex; gap: 6px; align-items: center; padding: 0 10px; flex-wrap: wrap; }
+.side-tools { display: flex; gap: 6px; align-items: center; }
 .side-tools button, .side-tools .button, .side-tools select { background: transparent; color: var(--side-text);
   border: 1px solid var(--side-hover); box-shadow: none; padding: 4px 9px; font-size: 13px; width: auto; }
 .side-tools button:hover, .side-tools .button:hover { background: var(--side-hover); color: var(--side-current);
@@ -128,17 +124,26 @@ body { margin: 0; background: var(--bg); color: var(--text);
 .lang-switch a { padding: 4px 9px; font-size: 12px; font-weight: 600; color: var(--side-muted); text-decoration: none; }
 .lang-switch a[aria-current="true"] { background: var(--side-hover); color: var(--side-current); }
 .logout { margin: 0; }
-.side-toggle { display: none; }
-.content { min-width: 0; display: flex; flex-direction: column; }
+.content { min-width: 0; display: flex; flex-direction: column; flex: 1; }
 .link-bar { padding: 8px 24px; background: var(--accent); color: #fff; font-size: 13px; }
 .link-bar a { color: #fff; text-decoration: underline; }
 @media (max-width: 900px) {
-  .shell { grid-template-columns: 1fr; }
-  .sidebar { position: sticky; height: auto; max-height: 100vh; flex-direction: column; padding: 10px 12px; }
-  .side-toggle { display: inline-flex; position: absolute; right: 12px; top: 10px; }
-  .sidebar:not(.open) > :not(.brand):not(.side-toggle) { display: none; }
-  .brand { padding-bottom: 4px; }
+  .topbar { gap: 12px; padding: 0 12px; }
+  .side-account span:not(.avatar), .brand-name { display: none; }
 }
+@media (max-width: 560px) {
+  .lang-switch, .logout { display: none; }
+}
+/* the state of an instance, a dot and a word (Cloudpepper's); the kinds of copies */
+.state-dot { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; color: var(--text); font-weight: 600; }
+.state-dot::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
+.state-dot.running::before { background: var(--ok); } .state-dot.stopped::before { background: var(--err); }
+.state-dot.busy::before { background: var(--warn); } .state-dot .runner { display: none; }
+.badge.test-badge { color: var(--test); background: var(--panel-2); }
+tr.click-row { cursor: pointer; }
+.staging-mark { color: var(--muted); margin-right: 6px; }
+.row-name { font-size: 13px; margin-left: 6px; }
+@media (max-width: 700px) { .hide-sm { display: none; } }
 .ok { color: var(--ok); }
 details.group { margin-bottom: 16px; }
 details.group > summary { cursor: pointer; margin-bottom: 8px; }
@@ -447,13 +452,8 @@ a.disk-compact { color: inherit; text-decoration: none; } a.disk-compact:hover .
 .server-rows td { vertical-align: middle; }
 .server-rows .run-state { white-space: nowrap; }
 .server-rows tr.staging-row > td:first-child { padding-left: 28px; }
-.staging-mark { color: var(--muted); margin-right: -6px; }
-.staging-date { font-size: 12px; }
-.server-name { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; }
-.view-buttons { display: inline-flex; flex-wrap: wrap; gap: 6px; }
-.view-buttons .button { padding: 3px 9px; font-size: 13px; display: inline-flex; align-items: center; }
-.view-buttons .icon { margin-right: 5px; }
-.view-buttons .view-production .icon { color: var(--prod); } .view-buttons .view-test .icon { color: var(--test); }
+.server-rows td { vertical-align: middle; }
+.server-rows .badge { margin-left: 8px; }
 .config-main td { border-bottom: 0; padding-bottom: 2px; }
 .config-actions td { padding-top: 4px; padding-bottom: 12px; }
 .badge { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; padding: 2px 9px;
@@ -498,38 +498,27 @@ summary { cursor: pointer; color: var(--muted); }
 {% macro nav(path, label, title="") -%}
 <a class="nav-link"{% if here == prefix ~ path or (path != "/" and here.startswith(prefix ~ path ~ "/")) %} aria-current="page"{% endif %}{% if title %} title="{{ title }}"{% endif %} href="{{ prefix }}{{ path }}">{{ label }}</a>
 {%- endmacro %}
+{% set settings_paths = ["/settings", "/config", "/links", "/pullers", "/schedules", "/tunnels", "/users", "/workspaces",
+                         "/credentials", "/plugins", "/options", "/omniacli/log", "/help", "/jobs", "/disks", "/groups", "/access"] %}
+{% set path = here[prefix | length:] %}{% set place = namespace(settings=false) %}
+{% for sp in settings_paths %}{% if path == sp or path.startswith(sp ~ "/") %}{% set place.settings = true %}{% endif %}{% endfor %}
 <div class="shell">
-<aside class="sidebar" id="sidebar">
+<header class="topbar">
   <a class="brand" href="{{ prefix }}/"><img src="/icon-180.png" alt=""><span class="brand-name">Omnia<span>CLI</span></span></a>
-  <button type="button" class="side-toggle" aria-controls="sidebar" aria-expanded="false" aria-label="{{ _('Menu') }}">☰</button>
-  {{ nav("/", _("Dashboard")) }}
-  {{ nav("/jobs", _("Jobs")) }}
-  {% if puller_connections and not prefix %}
-  <div class="nav-section" title="{{ _('Instances operated through a relay') }}">{{ _("Pullers") }}</div>
-  {% for c in puller_connections %}<a class="nav-link" href="/pullers/connections/{{ c }}">{{ c }}</a>{% endfor %}
-  {% endif %}
-  {% if not scoped and (is_admin or (can_act and account and not prefix)) %}
-  <div class="nav-section">{{ _("Configure") }}</div>
-  {% if is_admin %}{{ nav("/config", _("Servers")) }}
-  {{ nav("/machines", _("Machines")) }}
-  {{ nav("/links", _("Links")) }}
-  {{ nav("/pullers", _("Pullers")) }}
-  {{ nav("/schedules", _("Schedules")) }}{% endif %}
-  {% if can_act and account and not prefix %}{{ nav("/tunnels", _("Tunnels")) }}{% endif %}
-  {% endif %}
-  {% if is_admin and not scoped %}
-  <div class="nav-section">{{ _("Settings") }}</div>
-  {{ nav("/users", _("Users")) }}
-  {{ nav("/workspaces", _("Workspaces")) }}
-  {{ nav("/credentials", _("Git credentials"), _("The git credentials of the servers and workspaces")) }}
-  {{ nav("/plugins", _("Plugins")) }}
-  {{ nav("/options", _("Options")) }}
-  {{ nav("/omniacli/log", _("Log"), _("OmniaCLI's own log")) }}
-  {% endif %}
-  {% if my_workspaces %}<div class="nav-section">{{ _("Your workspaces") }}</div>
-  {% for ws in my_workspaces %}{{ nav("/workspaces/" ~ ws, ws) }}{% endfor %}{% endif %}
-  {% if can_act and not scoped %}<div class="nav-section"></div>{{ nav("/help", _("Help")) }}{% endif %}
-  <div class="side-end">
+  <nav class="topnav" aria-label="{{ _('Menu') }}">
+    {% if is_admin and not scoped and not prefix %}<a class="nav-link" href="/machines" {% if here.startswith("/machines") %}aria-current="page"{% endif %}
+       title="{{ _('The machines OmniaCLI manages, with their load') }}">{{ _("Servers") }}</a>
+    {% elif prefix.startswith("/links/") %}<a class="nav-link" href="/machines" {% if here == prefix ~ "/" %}aria-current="page"{% endif %}
+       title="{{ _('The machines OmniaCLI manages, with their load') }}">{{ _("Servers") }}</a>{% endif %}
+    <a class="nav-link" href="{{ prefix }}/#instances" {% if here.startswith(prefix ~ "/servers/") or (here == "/" and not prefix) %}aria-current="page"{% endif %}
+       title="{{ _('The Odoo instances of this machine, with their stagings') }}">{{ _("Instances") }}</a>
+    {% for ws in my_workspaces %}{{ nav("/workspaces/" ~ ws, ws) }}{% endfor %}
+    {# the instances operated through a relay (consumer.py): every user sees them #}
+    {% if not prefix %}{% for c in puller_connections %}<a class="nav-link" title="{{ _('Instances operated through a relay') }}" href="/pullers/connections/{{ c }}">{{ c }}</a>{% endfor %}{% endif %}
+    {% if can_act and not scoped %}<a class="nav-link" href="{{ prefix }}/settings" {% if place.settings %}aria-current="page"{% endif %}
+       title="{{ _('Users, git credentials, schedules, links, pullers, plugins, options, the jobs and the log') }}">{{ _("Settings") }}</a>{% endif %}
+  </nav>
+  <div class="top-end">
     {% if account %}<a class="side-account" href="{{ prefix }}/account" title="{{ _('Your account and password') }}">
       <span class="avatar">{{ account[:1] }}</span><span>{{ account }}</span></a>{% endif %}
     <div class="side-tools">
@@ -542,7 +531,7 @@ summary { cursor: pointer; color: var(--muted); }
       {% if account %}<form method="post" action="/logout" class="logout"><button class="logout-button">{{ _("Log out") }}</button></form>{% endif %}
     </div>
   </div>
-</aside>
+</header>
 <div class="content">
 <script>
 // a page shown again from the browser's cache (Back) is drawn anew: its
@@ -567,9 +556,6 @@ window.addEventListener("pageshow", (event) => { if (event.persisted) location.r
   });
 })();
 </script>
-{% if prefix.startswith("/links/") %}
-<div class="link-bar">{{ _("Linked instance") }} <strong>{{ prefix.rsplit("/", 1)[1] }}</strong> · {{ _("its pages, acting with its link") }} · <a href="/">{{ _("back to your OmniaCLI") }}</a></div>
-{% endif %}
 <main>
 {% block crumbs %}{% endblock %}
 {% block content %}{% endblock %}
@@ -580,12 +566,6 @@ window.addEventListener("pageshow", (event) => { if (event.persisted) location.r
 </div>
 <script>
 (function () {
-  // the menu on a narrow screen: folded, opened by its button
-  const side = document.getElementById("sidebar"), toggle = side.querySelector(".side-toggle");
-  toggle.addEventListener("click", () => {
-    const open = side.classList.toggle("open");
-    toggle.setAttribute("aria-expanded", String(open));
-  });
   // pre.copyable: a Copy button; navigator.clipboard needs https or localhost, else the old way
   const COPY = {{ _("Copy") | tojson }}, COPIED = {{ _("Copied") | tojson }};
   async function copy(text) {

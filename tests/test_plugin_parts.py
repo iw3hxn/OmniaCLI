@@ -167,7 +167,7 @@ def test_the_parts_are_checked():
 
 async def test_actions_on_the_server_page(rich_client, env, rich):
     c = rich_client
-    page = (await c.get("/servers/d?view=both", headers={"Authorization": AUTH})).text
+    page = (await c.get("/servers/d?view=test", headers={"Authorization": AUTH})).text
     # a plain button with its question, the core's dialog of params, the plugin's dialog
     assert 'action="/servers/d/test/x/rich/wave"' in page and "return confirm(\"Wave?\")" in page
     assert 'action="/servers/d/test/x/rich/brew"' in page and 'name="count"' in page and "Large" in page

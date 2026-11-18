@@ -9,105 +9,80 @@
                      "interrupted": _("interrupted"), "stopped": _("stopped")} %}
 {% set job_badge = {"queued": "warn", "running": "warn", "success": "ok", "failed": "error", "interrupted": "error", "stopped": "error"} %}
 <style>
-.dash-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; font-size: 13px; margin-right: auto; }
-.dash-summary .last-job { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow-wrap: anywhere; }
-.fold-head .fold-title { display: flex; align-items: center; gap: 8px 16px; flex-wrap: wrap; min-width: 0; }
-.machine-top-label { font-weight: 600; white-space: nowrap; }
-/* Last jobs: the status as a badge, the runner in it while the job runs */
-#last-jobs td.job-status { white-space: nowrap; }
-#last-jobs td.job-status::before { display: none; }
-#last-jobs td.job-status .badge .runner.mini { margin-right: 0; }
+/* the server's page (docs/ux/REVIEW-2026-11-18.md, mockup 2): its facts, three
+   numbers, its load as bars, its instances with their stagings under them */
+.srv-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px 20px; flex-wrap: wrap; margin-bottom: 14px; }
+.srv-head h1 { margin: 0 0 6px; }
+.back-link { display: inline-block; font-size: 14px; color: var(--muted); margin-bottom: 6px; }
+.facts { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: center; color: var(--muted); font-size: 14px; }
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin: 6px 0 16px; overflow-x: auto; }
+.tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; box-shadow: none;
+  padding: 10px 14px; color: var(--muted); font-weight: 600; white-space: nowrap; }
+.tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+.stat-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 16px; }
+.stat { background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 14px 18px; box-shadow: var(--shadow); }
+.stat small { color: var(--muted); font-size: 13px; } .stat b { display: block; font-size: 28px; font-weight: 700; }
+.section-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 10px; }
+.last-action { color: var(--muted); margin: 4px 0 0; }
+.last-action .status::before { display: none; }
+@media (max-width: 700px) { .stat-row { grid-template-columns: 1fr; } }
 </style>
-<div class="page-head">
-  <div><h1>{{ _("Dashboard") }}</h1>
-    <p>{{ _("Your servers and their state, the load of the machine, the last jobs.") }}</p></div>
+{% set count = namespace(instances=0, stagings=0) %}
+{% for row in rows %}{% if row.parent %}{% set count.stagings = count.stagings + 1 %}{% else %}{% set count.instances = count.instances + 1 %}{% endif %}{% endfor %}
+{% set linked_name = prefix.rsplit("/", 1)[1] if prefix.startswith("/links/") else "" %}
+<div class="srv-head">
+  <div>
+    {% if linked_name %}<a class="back-link" href="/machines">‹ {{ _("All the servers") }}</a>{% endif %}
+    <h1>{{ linked_name or (_("This machine") if machine else _("Instances")) }}</h1>
+    <div class="facts">
+      {% if linked_name %}<span class="state-dot running">{{ _("Connected") }}</span>{% endif %}
+      <span class="cores-fact" hidden></span>
+      {% if machine %}<span>OmniaCLI {{ version }}</span>{% endif %}
+    </div>
+  </div>
   <div class="actions">
-    {% if machine %}<a class="button" href="{{ prefix }}/disks">{{ _("Disks") }}</a>{% endif %}
-    {% if quick_instance %}<button type="button" class="primary" data-new-instance>+ {{ _("New instance") }}</button>{% endif %}
+    {% if machine %}<a class="button" href="{{ prefix }}/disks" title="{{ _('The disks of this machine, their free space and when they fill up') }}">{{ _("Disks") }}</a>{% endif %}
   </div>
 </div>
 {% if quick_instance %}{% include "_new_instance_dialog.html" %}{% endif %}
-{# the widgets first: the lists below use them as they are drawn #}
 {% include "_charts.html" %}
 {% include "_disk.html" %}
 {% include "_load.html" %}
 {% include "_list.html" %}
-{# this machine: its load in one line, at the top (_load.html); a click on it
-   opens its whole load below (the last hour, its disks) in its place, the
-   line hidden (the same load twice), again closes it #}
+{% include "_bars.html" %}
+{% from "_bars.html" import bars with context %}
 {% if machine %}
-<div class="panel machine-top">
-  <div class="machine-top-row" role="button" tabindex="0" aria-expanded="false" aria-controls="machine-detail"
-       title="{{ _("Open the load of this machine") }}"><span class="fold-icon" aria-hidden="true">▸</span><span class="machine-top-label">{{ _("This machine") }}</span>{{ machine_row("", _("this machine")) }}<span class="muted machine-top-close" hidden>{{ _("Close") }}</span></div>
-  <div id="machine-detail" hidden>
-<p class="muted" style="margin: 10px 0 0">{{ _("The whole machine, last hour: every Odoo instance, PostgreSQL and the rest together.") }}</p>
-<details style="margin: 4px 0 0"><summary>{{ _("More") }}</summary><p class="muted" style="margin: 4px 0 0">{{ _("On the CPU chart, over the total, the share of PostgreSQL (every cluster) and of each instance of the active servers, in percent of the whole machine; an instance whose processes OmniaCLI cannot find (Docker: see its workspace) has no line.") }}</p></details>
-<div class="machine-grid">
-  <section class="panel machine-panel" data-link="">
-    <div class="tiles">
-      <div class="tile"><div class="tile-label">{{ _("CPU now") }}</div><div class="tile-value" data-tile="cpu">–</div></div>
-      <div class="tile"><div class="tile-label">{{ _("Received") }}</div><div class="tile-value" data-tile="rx">–</div></div>
-      <div class="tile"><div class="tile-label">{{ _("Sent") }}</div><div class="tile-value" data-tile="tx">–</div></div>
-    </div>
-    <p class="muted machine-state" style="margin: 6px 0 0"></p>
-    <h3 class="chart-title">{{ _("CPU, % of all") }} <span class="cores">?</span></h3>
-    <div class="chart-box"><svg class="chart" data-chart="cpu" role="img" aria-label="{{ _("CPU of this machine over the last hour") }}"></svg><div class="chart-tip" hidden></div></div>
-    <div class="chart-legend" data-legend="cpu"></div>
-    <h3 class="chart-title">{{ _("Network, per second") }} <span class="muted" style="font-weight: 400"><span class="key s1"></span>{{ _("received") }}<span class="key s2"></span>{{ _("sent") }}</span></h3>
-    <div class="chart-box"><svg class="chart" data-chart="net" role="img" aria-label="{{ _("Network traffic of this machine over the last hour") }}"></svg><div class="chart-tip" hidden></div></div>
-    <h3 class="chart-title">{{ _("Disks, free space") }}</h3>
-    <div class="disk-list"><span class="muted">{{ _("Loading…") }}</span></div>
-  </section>
-</div>
-  </div>
-</div>
+<nav class="tabs" role="tablist" aria-label="{{ _('Sections of the server') }}">
+  <button type="button" role="tab" data-tab="overview" aria-selected="true">{{ _("Overview") }}</button>
+  <button type="button" role="tab" data-tab="monitor">{{ _("Monitoring") }}</button>
+</nav>
 {% endif %}
-{# one search for Servers and Linked, under this machine's row: what you
-   come to the Dashboard for is a server or a link to work on; it opens a
-   folded section, or group, that holds a match (_list.html) #}
+<section class="tab-panel" data-panel="overview" data-bars-scope>
+{% if machine %}
+<div class="stat-row">
+  <div class="stat"><small>{{ _("Odoo instances") }}</small><b>{{ count.instances }}</b></div>
+  <div class="stat"><small>{{ _("Stagings") }}</small><b>{{ count.stagings }}</b></div>
+  <div class="stat"><small>{{ _("Free space") }}</small><b data-bars-free>–</b></div>
+</div>
+<div class="panel">{{ bars(prefix, long=true) }}</div>
+{% endif %}
+{# one search for the instances and Linked together, once the lists are long (more than 8 rows) #}
 {% set searched = "servers linked" if machine and machine_links else "servers" %}
-{% if total + (machine_links | length if machine else 0) > 1 or q %}{{ list_search(searched, _("Search server, linked instance, workspace, group, database, branch…"), q, wide=true) }}{% endif %}
-{# the summary of Servers, in its heading (seen also when it is folded): its
-   instances by state, the last job; as the page was drawn #}
-{% set count = namespace(running=0, stopped=0, unknown=0) %}
-{% for row in rows %}{% for role in row.roles %}{% set st = row.state.get(role) %}
-{% if st == "running" %}{% set count.running = count.running + 1 %}{% elif st == "stopped" %}{% set count.stopped = count.stopped + 1 %}{% else %}{% set count.unknown = count.unknown + 1 %}{% endif %}
-{% endfor %}{% endfor %}
-<section class="fold" data-fold="servers">
-<div class="fold-head">
-  <div class="fold-title">
-  <h2><button type="button" class="fold-toggle" aria-expanded="true"><span class="fold-icon" aria-hidden="true">▾</span>{{ _("Servers") }}</button></h2>
-  {% if rows or jobs %}<div class="dash-summary">
-    {% if rows %}
-    <span class="badge ok">{{ _("1 instance running") if count.running == 1 else _("{n} instances running", n=count.running) }}</span>
-    {% if count.stopped %}<span class="badge error">{{ _("1 instance stopped") if count.stopped == 1 else _("{n} instances stopped", n=count.stopped) }}</span>{% endif %}
-    {% if count.unknown %}<span class="badge warn" title="{{ _("OmniaCLI cannot read the state of their service") }}">{{ _("1 instance in an unknown state") if count.unknown == 1 else _("{n} instances in an unknown state", n=count.unknown) }}</span>{% endif %}
-    {% endif %}
-    {% if jobs %}{% set last = jobs[0] %}<span class="last-job"><span class="muted">{{ _("Last job") }}</span>
-      <a href="{{ prefix }}/jobs/{{ last.id }}">{{ tr(last.title) }}</a>
-      <span class="badge {{ job_badge.get(last.status, '') }}">{{ job_status.get(last.status, last.status) }}</span></span>{% endif %}
-  </div>{% endif %}
+<div class="panel" id="instances">
+  <div class="section-head"><h2>{{ _("Odoo instances") }}</h2>
+    {% if quick_instance %}<button type="button" class="primary" data-new-instance title="{{ _('A new Odoo instance from its version only: OmniaCLI makes its database, containers, disk and address') }}">+ {{ _("New instance") }}</button>{% endif %}
   </div>
-  {% if is_admin and not prefix %}<a class="button" href="/groups">{{ _("Edit groups") }}</a>{% endif %}
+  {% if total + (machine_links | length if machine else 0) > 8 or q %}{{ list_search(searched, _("Search instance, address, database, branch…"), q, wide=true) }}{% endif %}
+  <div id="server-sections" data-list="servers">
+  {% include "_servers_part.html" %}
+  </div>
 </div>
-<div class="fold-body"><div class="fold-inner">
-<div id="server-sections" data-list="servers">
-{% include "_servers_part.html" %}
-</div>
-</div></div>
-</section>
-{% if dashboard_workspaces %}
-<section class="fold" data-fold="workspaces">
-<div class="fold-head">
-  <h2><button type="button" class="fold-toggle" aria-expanded="true"><span class="fold-icon" aria-hidden="true">▾</span>{{ _("Workspaces") }}</button></h2>
-  <a class="button" href="{{ prefix }}/workspaces?new=1">{{ _("New workspace") }}</a>
-</div>
-<div class="fold-body"><div class="fold-inner">
-{% if dashboard_workspaces | length > 1 %}{{ list_search("workspaces", _("Search workspace, domain, storage, server…")) }}{% endif %}
-{% with workspaces = dashboard_workspaces %}{% include "_workspaces_list.html" %}{% endwith %}
-</div></div>
-</section>
-{% endif %}
+{% set outcome = {"success": _("done"), "failed": _("failed"), "running": _("running"), "queued": _("queued"), "interrupted": _("interrupted"), "stopped": _("stopped")} %}
+<p class="last-action">{% if jobs %}{% set job = jobs[0] %}{{ _("Last action:") }} <a href="{{ prefix }}/jobs/{{ job.id }}">{{ tr(job.title) }}</a>
+  · <span class="status {{ job.status }}">{{ outcome.get(job.status, job.status) }}</span>{% if job.duration %} · {{ job.duration }}{% endif %} · {{ job.created[8:10] }}/{{ job.created[5:7] }} {{ job.created[11:16] }}
+  · {% endif %}<a href="{{ prefix }}/jobs">{{ _("all the actions") }}</a></p>
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<template id="mini-runner">{{ runner("mini") }}</template>
 {% if machine and machine_links %}
 <section class="fold" data-fold="linked">
 <div class="fold-head">
@@ -129,6 +104,29 @@
 {% endmacro %}
 <div id="linked" data-list="linked">{{ grouped(linked_sections, linked_table, "linked") }}</div>
 </div></div>
+</section>
+{% endif %}
+</section>
+{% if machine %}
+<section class="tab-panel" data-panel="monitor" hidden>
+<p class="muted" style="margin: 0 0 10px">{{ _("The whole machine, last hour: every Odoo instance, PostgreSQL and the rest together.") }}</p>
+<div class="machine-grid">
+  <section class="panel machine-panel" data-link="">
+    <div class="tiles">
+      <div class="tile"><div class="tile-label">{{ _("CPU now") }}</div><div class="tile-value" data-tile="cpu">–</div></div>
+      <div class="tile"><div class="tile-label">{{ _("Received") }}</div><div class="tile-value" data-tile="rx">–</div></div>
+      <div class="tile"><div class="tile-label">{{ _("Sent") }}</div><div class="tile-value" data-tile="tx">–</div></div>
+    </div>
+    <p class="muted machine-state" style="margin: 6px 0 0"></p>
+    <h3 class="chart-title">{{ _("CPU, % of all") }} <span class="cores">?</span></h3>
+    <div class="chart-box"><svg class="chart" data-chart="cpu" role="img" aria-label="{{ _("CPU of this machine over the last hour") }}"></svg><div class="chart-tip" hidden></div></div>
+    <div class="chart-legend" data-legend="cpu"></div>
+    <h3 class="chart-title">{{ _("Network, per second") }} <span class="muted" style="font-weight: 400"><span class="key s1"></span>{{ _("received") }}<span class="key s2"></span>{{ _("sent") }}</span></h3>
+    <div class="chart-box"><svg class="chart" data-chart="net" role="img" aria-label="{{ _("Network traffic of this machine over the last hour") }}"></svg><div class="chart-tip" hidden></div></div>
+    <h3 class="chart-title">{{ _("Disks, free space") }}</h3>
+    <div class="disk-list"><span class="muted">{{ _("Loading…") }}</span></div>
+  </section>
+</div>
 </section>
 {% endif %}
 {% if load_workspaces %}
@@ -161,17 +159,6 @@
 </div></div>
 </section>
 {% endif %}
-<section class="fold" data-fold="jobs">
-<div class="fold-head">
-  <h2><button type="button" class="fold-toggle" aria-expanded="true"><span class="fold-icon" aria-hidden="true">▾</span>{{ _("Last jobs") }}</button></h2>
-  <a class="button" href="{{ prefix }}/jobs">{{ _("All jobs") }}</a>
-</div>
-<div class="fold-body"><div class="fold-inner">
-<div class="panel" id="last-jobs">{% include "_jobs_table.html" %}</div>
-<template id="mini-runner">{{ runner("mini") }}</template>
-<div class="toasts" id="toasts" aria-live="polite"></div>
-</div></div>
-</section>
 <script>
 // the texts of the Dashboard's scripts, in the page's language
 const DASH_T = {
@@ -479,8 +466,6 @@ const dashFill = (text, values) => text.replace(/\{(\w+)\}/g, (all, k) => (k in 
       panel.querySelector('[data-tile="rx"]').textContent = rate(last.rx);
       panel.querySelector('[data-tile="tx"]').textContent = rate(last.tx);
     }
-    // the folded section's row: the last 15 minutes (_load.html)
-    if (!link) OmniaLoad.machine(document.querySelector('.machine-top .machine-row'), points, data.cores);
   }
   const refresh = () => panels.forEach((p) => show(p));
   refresh();
@@ -500,8 +485,6 @@ const dashFill = (text, values) => text.replace(/\{(\w+)\}/g, (all, k) => (k in 
       if (resp.ok) disks = (await resp.json()).disks;
       else error = resp.status === 404 ? DASH_T.older : dashFill(DASH_T.http, {status: resp.status});
     } catch (e) { error = DASH_T.noAnswer; }
-    // the folded section's row: the disks' compact widgets (_load.html)
-    if (!link) OmniaLoad.machineDisks(document.querySelector(".machine-top .machine-row"), disks, base);
     if (!disks || !disks.length) { OmniaDisk.message(list, error || DASH_T.noDisks, !!error); return; }
     list.replaceChildren();
     for (const d of disks) {
@@ -517,31 +500,30 @@ const dashFill = (text, values) => text.replace(/\{(\w+)\}/g, (all, k) => (k in 
 </script>
 <script>
 (function () {
-  // this machine's row opens and closes its whole load; each viewer's choice is kept in this browser
-  const row = document.querySelector(".machine-top-row"), detail = document.getElementById("machine-detail");
-  if (!row) return;
-  const key = "omniacli.fold.machine";
-  const set = (open) => {
-    detail.hidden = !open;
-    row.setAttribute("aria-expanded", String(open));
-    row.title = open ? DASH_T.shut : DASH_T.open;
-    row.querySelector(".fold-icon").textContent = open ? "▾" : "▸";
-    // open: the panel shows the load, the row's own charts would only repeat it
-    row.querySelector(".machine-row").hidden = open;
-    row.querySelector(".machine-top-close").hidden = !open;
-    // the charts drawn while hidden had no size: again at their size
-    if (open) window.dispatchEvent(new Event("resize"));
-  };
-  try { set(localStorage.getItem(key) === "open"); } catch (e) { set(false); }
-  const toggle = (e) => {
-    // a disk of the row is a link to its history: followed, not a toggle
-    if (e.target.closest("a")) return;
-    const open = detail.hidden;
-    set(open);
-    try { localStorage.setItem(key, open ? "open" : "closed"); } catch (err) { /* no storage */ }
-  };
-  row.addEventListener("click", toggle);
-  row.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(e); } });
+  // the tabs: the one in the address (#monitor) or Overview; the charts drawn
+  // while hidden have no size, so they are drawn again when shown
+  const tabs = [...document.querySelectorAll(".tabs [data-tab]")];
+  function show(name) {
+    if (!tabs.some((t) => t.dataset.tab === name)) name = "overview";
+    for (const t of tabs) t.setAttribute("aria-selected", String(t.dataset.tab === name));
+    for (const p of document.querySelectorAll(".tab-panel")) p.hidden = p.dataset.panel !== name;
+    if (name === "monitor") window.dispatchEvent(new Event("resize"));
+  }
+  for (const t of tabs) t.addEventListener("click", () => { history.replaceState(null, "", "#" + t.dataset.tab); show(t.dataset.tab); });
+  if (tabs.length) show(location.hash === "#monitor" ? "monitor" : "overview");
+  // a row of the instances opens its page (its link too, for the keyboard and a new tab)
+  const list = document.getElementById("server-sections");
+  if (list) list.addEventListener("click", (e) => {
+    const tr = e.target.closest("tr.click-row");
+    if (tr && !e.target.closest("a, button")) location.href = tr.dataset.href;
+  });
+  // the cores of the machine, once its load answers
+  document.addEventListener("omniabars:cores", (e) => {
+    const fact = document.querySelector(".cores-fact");
+    if (!fact || !e.detail.cores) return;
+    fact.textContent = dashFill(e.detail.cores === 1 ? DASH_T.core : DASH_T.cores, {n: e.detail.cores});
+    fact.hidden = false;
+  });
 })();
 </script>
 {% if load_workspaces %}

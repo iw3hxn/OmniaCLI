@@ -13,6 +13,7 @@ import httpx
 import pytest
 
 from omniacli.app import create_app
+from omniacli.metrics import machine_memory
 from omniacli.odoo import ops as odoo_ops
 from omniacli.logtail import read_since
 
@@ -64,8 +65,11 @@ async def test_requires_auth(client):
     assert (await client.get("/", headers={"Authorization": bad})).status_code == 401
     resp = await client.get("/", headers={"Authorization": AUTH})
     assert resp.status_code == 200 and 'href="/servers/srv"><strong>srv</strong>' in resp.text
+    # one copy at a time (docs/ux UX-003): production by default, its test at ?view=test
     resp = await client.get("/servers/srv?view=both", headers={"Authorization": AUTH})
-    assert resp.status_code == 200 and "DB_production" in resp.text and "DB_test" in resp.text
+    assert resp.status_code == 200 and "DB_production" in resp.text and "DB_test" not in resp.text
+    resp = await client.get("/servers/srv?view=test", headers={"Authorization": AUTH})
+    assert resp.status_code == 200 and "DB_test" in resp.text
 
 
 async def test_post_needs_same_origin(client):
@@ -486,18 +490,21 @@ async def test_metrics_api(client, env):
     assert set(point) == {"t", "cpu", "mem", "procs"}
     machine = data["machine"][-1]
     # the shares: PostgreSQL's (None where there is none), the instances measured
-    assert set(machine) - {"instances"} == {"t", "cpu", "pg", "rx", "tx"} and 0 <= machine["cpu"] <= 100
+    assert set(machine) - {"instances"} == {"t", "cpu", "pg", "rx", "tx", "ram", "ram_total"} and 0 <= machine["cpu"] <= 100
     only = (await client.get("/api/metrics?machine_only=1", headers={"Authorization": AUTH})).json()
     assert only["instances"] == {} and only["machine"]
     page = (await client.get("/", headers={"Authorization": AUTH})).text
-    # this machine: one row at the top, before Servers; a click opens its whole load (the panel, hidden)
-    top = page.index('<div class="machine-top-row" role="button"')
-    assert top < page.index('<span class="machine-row" data-link="">') < page.index('data-fold="servers"')
-    assert top < page.index('<div id="machine-detail" hidden>') < page.index(
-        '<section class="panel machine-panel" data-link="">') < page.index('data-fold="servers"')
-    assert 'data-fold="machine"' not in page and 'localStorage.getItem(key) === "open"' in page
-    # open, the row's charts hidden: the panel shows the same load
-    assert 'row.querySelector(".machine-row").hidden = open;' in page and '<span class="muted machine-top-close" hidden>Close</span>' in page
+    # this machine: its load as bars over its instances (Overview), the whole last hour in Monitoring
+    assert page.index('<div class="load-bars" data-base=""') < page.index('id="instances"')
+    assert page.index('data-panel="monitor" hidden') < page.index('<section class="panel machine-panel" data-link="">')
+
+
+def test_machine_memory(tmp_path):
+    (tmp_path / "meminfo").write_text("MemTotal:        8000000 kB\nMemFree:          100000 kB\nMemAvailable:    3200000 kB\n")
+    assert machine_memory(tmp_path) == (4688, 7812)
+    (tmp_path / "meminfo").write_text("MemTotal: 8000000 kB\n")
+    assert machine_memory(tmp_path) is None
+    assert machine_memory(tmp_path / "none") is None
 
 
 def test_machine_counters(tmp_path):
@@ -557,7 +564,7 @@ async def test_disks_api(client, env, monkeypatch):
     assert "backups" in root["holds"] and "srv/test log" in root["holds"]
     assert found[1]["holds"] == ["OmniaCLI jobs"]
     page = await client.get("/", headers={"Authorization": AUTH})
-    assert 'class="load-disks"' in page.text and "/api/disks" in page.text
+    assert 'class="load-bars"' in page.text and "/api/disks" in page.text
 
 
 LOGIN_HEADERS = {"Origin": f"http://{HOST}", "Content-Type": "application/x-www-form-urlencoded"}
@@ -780,8 +787,11 @@ async def test_dashboard_state_buttons_and_odoo_link(client, env):
     test = env["settings"].instance("srv", "test")
     test.options.odoo_config.write_text("[options]\nhttp_port = 8123\n")
     page = (await client.get("/", headers={"Authorization": AUTH})).text
-    # systemd units the test machine does not have: state unknown, every button
-    assert 'class="run-state unknown"' in page
+    # systemd units the test machine does not have: state unknown; no buttons in the rows (UX-002),
+    # a row opens its page, its test under its production
+    assert 'class="state-dot unknown"' in page and 'data-href="/servers/srv?view=test"' in page
+    assert 'action="/servers/srv/test/' not in page
+    page = (await client.get("/servers/srv?view=test", headers={"Authorization": AUTH})).text
     for action in ("start", "stop", "restart"):
         assert f'action="/servers/srv/test/{action}"' in page, action
     assert 'href="http://localhost:8123" target="_blank"' in page
@@ -794,16 +804,16 @@ async def test_dashboard_state_buttons_and_odoo_link(client, env):
 async def test_web_link_follows_the_domain(client, env):
     test = env["settings"].instance("srv", "test")
     test.options.odoo_config.write_text("[options]\nhttp_port = 8123\n")
-    page = (await client.get("/servers/srv", headers={"Authorization": AUTH})).text
-    assert 'class="web-link mono" href="http://localhost:8123"' in page
-    assert 'class="button view-test" href="http://localhost:8123" target="_blank"' in (
-        await client.get("/", headers={"Authorization": AUTH})).text
+    page = (await client.get("/servers/srv?view=test", headers={"Authorization": AUTH})).text
+    # Open Odoo, on localhost too (a developer's machine)
+    assert 'class="button primary" href="http://localhost:8123" target="_blank"' in page
     test.domain = "https://test.example.com"
-    page = (await client.get("/servers/srv", headers={"Authorization": AUTH})).text
-    assert 'class="web-link mono" href="https://test.example.com"' in page
+    page = (await client.get("/servers/srv?view=test", headers={"Authorization": AUTH})).text
+    assert 'class="button primary" href="https://test.example.com" target="_blank"' in page
+    assert "<h1>test.example.com" in page
+    # the Dashboard names it by its address
     page = (await client.get("/", headers={"Authorization": AUTH})).text
-    # the button of the server's row opens the instance
-    assert 'class="button view-test" href="https://test.example.com" target="_blank"' in page
+    assert "<strong>test.example.com</strong>" in page
     servers = (await client.get("/api/servers", headers={"Authorization": AUTH})).json()
     assert servers[0]["instances"]["test"]["url"] == "https://test.example.com"
 
@@ -811,9 +821,11 @@ async def test_help_for_developers_and_admins(client):
     for user in ("admin", "dev"):
         page = await client.get("/help", headers={"Authorization": basic(user)})
         assert page.status_code == 200 and "Create link token" in page.text, user
-        assert f"http://{HOST}/mcp" in page.text and 'href="/help"' in page.text
+        assert f"http://{HOST}/mcp" in page.text
+        assert 'href="/help"' in (await client.get("/settings", headers={"Authorization": basic(user)})).text
     assert (await client.get("/help", headers={"Authorization": basic("viewer")})).status_code == 403
-    assert 'href="/help"' not in (await client.get("/", headers={"Authorization": basic("viewer")})).text
+    assert (await client.get("/settings", headers={"Authorization": basic("viewer")})).status_code == 403
+    assert 'href="/settings"' not in (await client.get("/", headers={"Authorization": basic("viewer")})).text
 
 
 async def test_dashboard_follows_jobs(client, env):
@@ -829,9 +841,8 @@ async def test_dashboard_follows_jobs(client, env):
     assert set(job) == {"id", "title", "status", "instances", "servers", "source", "created", "finished", "duration", "error"}
     assert data["busy"] == []
     page = (await client.get("/", headers={"Authorization": AUTH})).text
-    # each job row names its servers, each server row its server: the
-    # Dashboard's search shows the jobs of the servers it finds
-    assert f'<tr data-job="{job_id}" data-servers="srv">' in page and 'data-server="srv"' in page
+    # the last action, in one line (the jobs are on their page)
+    assert f'Last action: <a href="/jobs/{job_id}">' in page and 'data-server="srv"' in page
 
 
 async def test_start_stop_go_back_to_the_page(client, env):
@@ -906,7 +917,7 @@ async def test_breadcrumbs(client, env):
         return re.findall(r'<(?:a href="([^"]*)"|span aria-current="page")>([^<]*)<', nav)
 
     get = lambda url: client.get(url, headers={"Authorization": AUTH})
-    assert crumbs((await get("/servers/srv?view=test")).text) == [("/", "Dashboard"), ("/servers/srv", "srv"), ("", "Test")]
+    assert crumbs((await get("/servers/srv?view=test")).text) == [("/", "Instances"), ("/servers/srv", "srv"), ("", "Test")]
     assert crumbs((await get("/servers/srv/production/log")).text)[-2:] == [
         ("/servers/srv?view=production", "Production"), ("", "Log")]
     assert crumbs((await get("/config/srv/edit")).text) == [("/config", "Servers"), ("", "Edit srv")]
@@ -914,7 +925,7 @@ async def test_breadcrumbs(client, env):
     job_id = resp.headers["location"].rsplit("/", 1)[1]
     await wait_job(client, job_id)
     assert crumbs((await get(f"/jobs/{job_id}")).text) == [
-        ("/", "Dashboard"), ("/servers/srv", "srv"), ("/servers/srv?view=test", "Test"), ("", "Git pull srv/test")]
+        ("/", "Instances"), ("/servers/srv", "srv"), ("/servers/srv?view=test", "Test"), ("", "Git pull srv/test")]
     # a server set to draft (or deleted) has no page: the crumb goes to its jobs
     env["settings"].servers["srv"].status = "draft"
     assert crumbs((await get(f"/jobs/{job_id}")).text) == [
@@ -997,8 +1008,8 @@ async def test_stop_button(client, env):
     get = lambda url: client.get(url, headers={"Authorization": AUTH})
     # a systemd service whose state is unknown (no such unit here): both
     page = (await get("/servers/srv?view=test")).text
-    assert "/servers/srv/test/start" in page and "/servers/srv/test/stop" in page
-    assert "service state unknown" in page
+    assert "/servers/srv/test/restart" in page and "/servers/srv/test/stop" in page
+    assert "State unknown" in page
     resp = await client.post("/servers/srv/test/stop", headers=POST)
     assert (await wait_job(client, resp.headers["location"].rsplit("/", 1)[1]))["status"] == "success"
     assert "stop odoo-test" in env["calls"].read_text()
@@ -1059,11 +1070,12 @@ async def test_servers_filter(client, env):
     })
 
     page = (await get("/")).text
-    assert 'data-list-search="servers"' in page and 'href="/servers/other"' in page and 'href="/servers/srv"' in page
+    # two instances: no search (it comes with more than eight, or with ?q=)
+    assert 'data-list-search="servers"' not in page and 'href="/servers/other"' in page and 'href="/servers/srv"' in page
     # the list widget searches in the browser: each row carries its text, in
     # lower case (database, repositories, branches), and ?q= fills the field
     texts = re.findall(r'<tr data-list-item data-text="([^"]*)"', page)
-    assert len(texts) == 2 and any("other_test" in t and "addons" in t for t in texts)
+    assert len(texts) == 4 and any("other_test" in t and "addons" in t for t in texts)
     page = (await get("/?q=other_TEST")).text
     assert 'data-list-search="servers" value="other_TEST"' in page and 'href="/servers/srv"' in page
 
@@ -1075,16 +1087,16 @@ def basic(user):
 async def test_user_role_watches_and_restarts(client, env):
     get = lambda url: client.get(url, headers={"Authorization": basic("viewer")})
     post = lambda url: client.post(url, headers={"Authorization": basic("viewer"), "Origin": f"http://{HOST}"})
-    page = (await get("/servers/srv?view=both")).text
-    assert "/servers/srv/test/log" in page and "/pull" not in page and "Merge test to production" not in page
+    page = (await get("/servers/srv?view=test")).text
+    assert "/servers/srv/test/log" in page and "/pull" not in page and "Bring to production" not in page
     # settings, paths and repositories: developers and admins only
-    assert "Settings and repositories" not in page and "odoo.conf" not in page
-    assert "Settings and repositories" in (await client.get("/servers/srv", headers={"Authorization": basic("dev")})).text
-    assert "Backup" not in page and "/config\">Servers<" not in page and "/x/odoo/pip-cli" not in page
+    assert 'data-tab="settings"' not in page and "odoo.conf" not in page
+    assert 'data-tab="settings"' in (await client.get("/servers/srv", headers={"Authorization": basic("dev")})).text
+    assert "data-backup=" not in page and 'data-tab="backups"' not in page and "/config\">Servers<" not in page and "/x/odoo/pip-cli" not in page
     assert 'data-action="odoo.update"' not in page
     for action in ("restart", "start", "stop"):
-        for role in ("production", "test"):
-            assert f"/servers/srv/{role}/{action}" in page, (role, action)
+        assert f"/servers/srv/test/{action}" in page, action
+        assert f"/servers/srv/production/{action}" in (await get("/servers/srv")).text, action
         resp = await post(f"/servers/srv/production/{action}")
         assert resp.status_code == 303, action
         data = await wait_job(client, resp.headers["location"].rsplit("/", 1)[1])
@@ -1104,8 +1116,8 @@ async def test_user_role_watches_and_restarts(client, env):
 
 async def test_developer_role_acts_but_does_not_configure(client, env):
     headers = {"Authorization": basic("dev"), "Origin": f"http://{HOST}"}
-    page = (await client.get("/servers/srv?view=both", headers=headers)).text
-    assert "/servers/srv/test/pull" in page and "Merge test to production" not in page
+    page = (await client.get("/servers/srv?view=test", headers=headers)).text
+    assert "/servers/srv/test/pull" in page and "Bring to production" not in page
     assert "/config\">Servers<" not in page
     resp = await client.post("/servers/srv/test/pull", headers=headers)
     assert resp.status_code == 303
@@ -1120,14 +1132,15 @@ async def test_developer_role_acts_but_does_not_configure(client, env):
 
 
 async def test_admin_sees_everything(client):
-    page = (await client.get("/servers/srv?view=both", headers={"Authorization": AUTH})).text
-    assert "Merge test to production" in page and "/config\">Servers<" in page and "/servers/srv/test/pull" in page
+    page = (await client.get("/servers/srv?view=test", headers={"Authorization": AUTH})).text
+    assert "Bring to production" in page and "/servers/srv/test/pull" in page
+    assert 'href="/config"' in (await client.get("/settings", headers={"Authorization": AUTH})).text
 
 
 async def test_link_serves_prefixed_pages_and_acts(client, env):
     link = {"Authorization": f"Bearer {LINK_TOKEN}", "X-OmniaCLI-Prefix": "/links/cliente",
             "X-OmniaCLI-User": "devuser"}
-    page = (await client.get("/servers/srv?view=both", headers=link)).text
+    page = (await client.get("/servers/srv?view=test", headers=link)).text
     # two repositories: the pull dialog's button carries the prefixed URL
     assert '"url": "/links/cliente/servers/srv/test/pull"' in page
     assert 'href="/links/cliente/jobs?server=srv"' in page and 'data-log="/links/cliente/api/' in page
@@ -1139,19 +1152,20 @@ async def test_link_serves_prefixed_pages_and_acts(client, env):
     assert data["source"] == "manual: link omnia (devuser)"
     # no page links outside the prefix (the icons are the same on every
     # instance, and the linked instance bar links back to the linking one)
-    unprefixed = re.compile(r'(?:href|action|data-url|data-log)="/(?!links/cliente/|favicon|icon-180|")'
+    unprefixed = re.compile(r'(?:href|action|data-url|data-log)="/(?!links/cliente/|favicon|icon-180|machines"|")'
                             r'|fetch\(\s*["`]/(?!links/cliente/)')
     for url in ("/", "/jobs", f"/jobs/{data['id']}", "/servers/srv/test/log", "/servers/srv?view=test"):
         page = (await client.get(url, headers=link)).text
         assert not unprefixed.findall(page), (url, unprefixed.findall(page))
-        assert page.count('href="/"') == 1, url  # the bar's link back only
+        # back to the linking OmniaCLI: its Servers, in the bar (no red band any more)
+        assert page.count('href="/"') == 0 and 'class="nav-link" href="/machines"' in page, url
     resp = await client.get("/api/servers/srv/test/backups", headers=link)
     assert resp.status_code == 200
     # the link's role is developer
     assert (await client.post("/servers/srv/merge", headers=link)).status_code == 403
     # a prefix or user that is not a plain path or name is ignored
     bad = {**link, "X-OmniaCLI-Prefix": "//evil.example/x\"onload=\"", "X-OmniaCLI-User": "a b<c>"}
-    page = (await client.get("/servers/srv?view=both", headers=bad)).text
+    page = (await client.get("/servers/srv?view=test", headers=bad)).text
     assert '"url": "/servers/srv/test/pull"' in page and "evil" not in page
     resp = await client.post("/servers/srv/test/pull", headers=bad)
     data = await wait_job(client, resp.headers["location"].rsplit("/", 1)[1])
@@ -1201,7 +1215,7 @@ async def access(client, path, body, user="admin", password=PASSWORD):
 async def test_users_page_and_web_user(client, env):
     settings = client.app.state.settings
     page = (await client.get("/users", headers={"Authorization": AUTH})).text
-    assert ">Users</a>" in page and "<strong>viewer</strong>" in page and "main config" in page
+    assert "<h1>Users" in page and "<strong>viewer</strong>" in page and "main config" in page
     resp = await access(client, "users/save", {"name": "anna", "role": "developer", "password": "anna-pass-1", "new": True})
     assert resp.status_code == 200, resp.text
     # the file holds the hash, readable by its owner only
@@ -1406,8 +1420,8 @@ async def test_servers_page_groups(client, env):
     settings = client.app.state.settings
     headers = {"Authorization": AUTH, "Origin": f"http://{HOST}"}
     page = (await client.get("/", headers=headers)).text
-    assert 'class="group"' not in page and 'href="/groups">Edit groups' in page
-    assert "Edit groups" not in (await client.get("/", headers={"Authorization": basic("dev")})).text
+    assert 'class="group"' not in page and 'href="/groups"' in (await client.get("/settings", headers=headers)).text
+    assert 'href="/groups"' not in (await client.get("/settings", headers={"Authorization": basic("dev")})).text
     page = (await client.get("/groups", headers=headers)).text
     assert 'data-member="srv"' in page
     assert (await client.get("/groups", headers={"Authorization": basic("dev")})).status_code == 403
@@ -1446,14 +1460,16 @@ async def test_job_running_links_to_the_job(client, env):
             if job.status == "running":
                 break
             await asyncio.sleep(0.01)
+        page = (await client.get("/servers/srv?view=test", headers={"Authorization": AUTH})).text
+        assert f'<a href="/jobs/{job.id}">held</a>' in page and 'class="job-band"' in page
+        # production is idle: no band on its page, its copy Test says it is busy
         page = (await client.get("/servers/srv", headers={"Authorization": AUTH})).text
-        assert f'<a href="/jobs/{job.id}"' in page and "Open the job: held" in page
-        assert page.count("job running</a>") == 1  # test only, production is idle
+        assert 'class="job-band"' not in page and 'state-dot busy' in page
     finally:
         release.set()
     await wait_job(client, job.id)
     page = (await client.get("/servers/srv", headers={"Authorization": AUTH})).text
-    assert "job running" not in page.split('class="instance-grid"', 1)[1].split("<script", 1)[0]
+    assert 'class="job-band"' not in page and "state-dot busy" not in page
 
 
 async def test_the_footer_says_the_version(client):
@@ -1481,7 +1497,7 @@ async def test_package_update_is_confirmed_with_its_scripts_named(client, env):
     # two repositories and the package: in both buttons of the pull dialog, as its note
     assert page.count(warning) == 2
     assert '"note": "' + warning in page and '"label": "package api-server"' in page
-    assert "its own scripts may stop and start odoo-test during an update, also a stopped one" in page
+    assert "Installs the new version of the package api-server" not in page  # repositories too: a pull
     # the Dashboard and the Servers page with such an instance
     for path in ("/", "/dashboard/servers", "/config"):
         resp = await client.get(path, headers={"Authorization": AUTH})

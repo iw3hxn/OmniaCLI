@@ -27,7 +27,7 @@ def odoo_version(env, role, major):
 
 
 async def test_copy_with_a_new_backup(client, env):
-    page = (await client.get("/servers/srv", headers={"Authorization": AUTH})).text
+    page = (await client.get("/servers/srv?view=test", headers={"Authorization": AUTH})).text
     assert 'data-action="odoo.copy-production" data-url="/servers/srv/x/odoo/copy-production"' in page
     assert "<dialog id=\"copy-dialog\">" in page
 

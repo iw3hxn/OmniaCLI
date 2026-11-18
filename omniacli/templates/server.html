@@ -2,389 +2,362 @@
 {% extends "base.html" %}
 {% block title %}{{ server.name }} · OmniaCLI{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
-{{ crumbs([(_("Dashboard"), "/"), (server.name, "/servers/" ~ server.name),
-           ({"production": _("Production"), "test": "Test", "both": _("Both")}[view], None)]) }}
+{% set parent = stagings.parent.parent if stagings and stagings.parent else "" %}
+{% set parent_url = (stagings.parent.url or "") if parent else "" %}
+{% set parent_name = parent_url.split("://", 1)[-1] if parent_url and "://localhost" not in parent_url and "://127.0.0.1" not in parent_url else parent %}
+{% set own = instances[0].web_url or "" if instances else "" %}
+{% set own_name = own.split("://", 1)[-1] if own and "://localhost" not in own and "://127.0.0.1" not in own else server.name %}
+{% if parent %}{{ crumbs([(_("Instances"), "/"), (parent_name, "/servers/" ~ parent), (own_name, None)]) }}
+{% elif view == "test" %}{{ crumbs([(_("Instances"), "/"), (server.name, "/servers/" ~ server.name), ("Test", None)]) }}
+{% else %}{{ crumbs([(_("Instances"), "/"), (own_name, None)]) }}{% endif %}
 {% endblock %}
 {% block content %}
 {% from "_icons.html" import icon %}
 {% from "_actions.html" import action_button with context %}
 {% from "_console.html" import logbox, console_script with context %}
+{# an ISO time as the page shows it: 17/11/2026 22:48 #}
+{% macro when(iso) %}{% if iso %}{{ iso[8:10] }}/{{ iso[5:7] }}/{{ iso[0:4] }} {{ iso[11:16] }}{% else %}—{% endif %}{% endmacro %}
+{# an instance's address without its scheme; none (localhost): its server's name #}
+{% macro host_of(url, name) %}{% if url and "://localhost" not in url and "://127.0.0.1" not in url %}{{ url.split("://", 1)[-1] }}{% else %}{{ name }}{% endif %}{% endmacro %}
+{% macro state_word(st) %}<span class="state-dot {{ st }}" title="{{ {'running': _('Odoo answers'), 'stopped': _('Odoo is stopped: Start brings it back'), 'busy': _('A job is working on it')}.get(st, _('OmniaCLI cannot read the state of its service')) }}">{{ {"running": _("Running"), "stopped": _("Stopped"), "busy": _("Job running")}.get(st, _("State unknown")) }}</span>{% endmacro %}
 <style>
-/* the server page: the instance's frequent actions in a row, the rare ones
-   in a More menu; the actions on both instances apart, in red */
-.view-switch { display: inline-flex; gap: 6px; flex-wrap: wrap; }
-.danger-zone { display: inline-flex; gap: 8px; flex-wrap: wrap; align-items: center; padding-left: 12px;
-  border-left: 1px solid var(--border); }
-.danger-zone form { margin: 0; }
-.inst-head { display: flex; justify-content: space-between; align-items: center; gap: 8px 12px; flex-wrap: wrap;
-  margin-bottom: 10px; }
-.inst-head h2 { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; }
-.inst-head .web-link { margin-left: 0; }
-.inst-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 14px; }
-.inst-actions form { margin: 0; }
-.state-control { display: inline-flex; flex-wrap: wrap; gap: 8px; align-items: center; padding-right: 12px;
-  margin-right: 4px; border-right: 1px solid var(--border); }
-.state-control .badge { white-space: nowrap; }
+/* an instance's page (docs/ux/UX-001, UX-003/004): one copy at a time, one
+   primary action for its state, the rest in More, the details in tabs */
+.inst-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px 20px; flex-wrap: wrap; margin-bottom: 14px; }
+.inst-top h1 { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 6px; }
+.facts { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: center; color: var(--muted); font-size: 14px; }
+.facts a { color: inherit; }
+.facts .mono { font-size: 13px; }
+.head-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.head-actions form, .head-actions > span { margin: 0; }
+.state-dot { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; color: var(--text); font-weight: 600; }
+.state-dot::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+.state-dot.running::before { background: var(--ok); } .state-dot.stopped::before { background: var(--err); }
+.state-dot.busy::before { background: var(--warn); }
+.badge.test-badge { color: var(--test); background: var(--panel-2); }
+.job-band { display: flex; align-items: center; gap: 10px; margin: 0 0 14px; padding: 10px 14px; border-radius: var(--r);
+  border: 1px solid var(--border); background: var(--warn-soft); color: var(--text); }
 .more-menu { position: relative; }
 .more-menu > summary { list-style: none; color: var(--text); }
 .more-menu > summary::-webkit-details-marker { display: none; }
 .more-menu[open] > summary { border-color: var(--accent); }
 .more-items { position: absolute; right: 0; top: calc(100% + 6px); z-index: 15; display: flex; flex-direction: column;
-  gap: 4px; width: max-content; min-width: 240px; max-width: min(340px, calc(100vw - 32px)); padding: 8px;
+  gap: 4px; width: max-content; min-width: 250px; max-width: min(360px, calc(100vw - 32px)); padding: 8px;
   background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow-lg); }
 .more-items form, .more-items > span { margin: 0; display: block; }
 .more-items button, .more-items .button { width: 100%; justify-content: flex-start; box-shadow: none; }
 .more-title { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted);
   padding: 6px 4px 2px; }
 .more-title.danger-title { color: var(--err); border-top: 1px solid var(--border); margin-top: 6px; padding-top: 10px; }
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin: 6px 0 16px; overflow-x: auto; }
+.tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; box-shadow: none;
+  padding: 10px 14px; color: var(--muted); font-weight: 600; white-space: nowrap; }
+.tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+.tab-panel[hidden] { display: none; }
+.copies td, .copies th, .last-jobs td, .last-jobs th { vertical-align: middle; }
+.copies .when, .last-jobs .when { white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--muted); }
+.note-box { border-left: 3px solid var(--info); background: var(--info-soft); padding: 10px 14px; border-radius: var(--r); margin: 0 0 14px; }
+.last-action { color: var(--muted); margin: 4px 0 0; }
+.last-action .status::before { display: none; }
+.row-open { text-align: right; white-space: nowrap; }
+.button.small { padding: 3px 10px; font-size: 13px; }
+.section-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 8px; }
+.section-head h2 { margin: 0; }
 @media (max-width: 700px) {
-  .danger-zone { padding-left: 0; border-left: 0; }
+  .hide-sm { display: none; }
   .more-menu[open] { flex-basis: 100%; }
   .more-items { position: static; width: 100%; max-width: none; margin-top: 6px; box-shadow: var(--shadow); }
   .tiles { grid-template-columns: 1fr 1fr 1fr; }
   .tile-value { font-size: 18px; }
 }
 </style>
-<div class="page-head">
+{% set inst = instances[0] %}
+{# its state: running, stopped or unknown #}
+{% if inst.restart.type == "process" %}
+  {% set pid = running.get(inst.key) %}{% set st = "running" if pid else "stopped" %}
+{% else %}
+  {% set state = service_state.get(inst.key) %}
+  {% set st = "unknown" if state is none else ("running" if state in ("active", "activating", "reloading") else ("stopped" if state in ("inactive", "failed", "deactivating") else "unknown")) %}
+{% endif %}
+{% set is_busy = busy[inst.key] %}
+{% set off = "disabled" if is_busy else "" %}
+{% set base = prefix ~ "/servers/" ~ server.name ~ "/" ~ inst.role %}
+{% set here = prefix ~ "/servers/" ~ server.name ~ ("?view=test" if view == "test" else "") %}
+{% set who = server.name ~ (" (test)" if view == "test" else "") %}
+{% set is_staging = stagings and stagings.parent %}
+{% set rt = inst.restart.type %}
+{% set backup_here = can_act and inst.plugin.has_backup %}
+{% set package_only = inst.package and not inst.repositories %}
+{% set package_note = _("A new {name} is installed with its own scripts: they may stop and start the service {service} by themselves, also if it is stopped now.", name=inst.package.name, service=inst.restart.service) if inst.package else "" %}
+{% set update_help = (_("Installs the new version of the package {name} and restarts; its own scripts may stop and start the service by themselves.", name=inst.package.name) if package_only else _("Downloads the new code of the repositories (git pull), updates the changed Odoo modules when its settings say so, and restarts. With more than one repository it asks which first. It makes no backup before: for a big change press Backup. Not available while a job works on this instance.")) %}
+{% set merge = is_admin and view == "test" and server.production and not is_staging %}
+
+{% set title = host_of(inst.web_url, server.name) %}
+{# Open Odoo at its address; on localhost too (a developer's machine, Matteo's instances by hand) #}
+{% set opens = inst.web_url %}
+<div class="inst-top instance-panel" data-key="{{ inst.key }}">
   <div>
-    <h1>{{ server.name }}</h1>
-    <p>{{ _("Start, update and back up the instances of this server, and follow their load and log.") }}</p>
-  </div>
-  <div class="actions" style="margin: 0">
-    <nav class="view-switch" aria-label="{{ _('Instances shown') }}">
-    {% if server.test %}<a class="button {{ 'current' if view == 'test' }}" href="{{ prefix }}/servers/{{ server.name }}?view=test">Test</a>{% endif %}
-    {% if server.production %}<a class="button {{ 'current' if view == 'production' }}" href="{{ prefix }}/servers/{{ server.name }}?view=production">{{ _("Production") }}</a>{% endif %}
-    {% if server.test and server.production %}<a class="button {{ 'current' if view == 'both' }}" href="{{ prefix }}/servers/{{ server.name }}?view=both">{{ _("Both") }}</a>{% endif %}
-    </nav>
-    {# the actions on production and test together: apart, in red #}
-    {% set server_off = "disabled" if busy.values() | select | list else "" %}
-    {% set merge = is_admin and server.test and server.production %}
-    {% if merge or server_buttons.values() | select | list %}
-    <div class="danger-zone">
-    {% if merge %}<form method="post" action="{{ prefix }}/servers/{{ server.name }}/merge"
-          onsubmit='return confirm({{ _("Back up production, merge the commits deployed on test into production, push, update modules and restart production {server}?", server=server.name) | tojson }})'>
-      <button class="danger" {% if busy[server.production.key] or busy[server.test.key] %}disabled title="{{ _('A job is running') }}"{% endif %}>{{ _("Merge test to production") }}</button>
-    </form>{% endif %}
-    {# the plugin's actions on the whole server #}
-    {% for group, found in server_buttons.items() %}{% for b in found %}{{ action_button(b, server_off, "danger") }}{% endfor %}{% endfor %}
+    <h1>{{ title }}
+      {% if view == "test" %}<span class="badge test-badge" title="{{ _('The test copy of this instance: try the code here, then bring it to production') }}">Test</span>
+      {% elif is_staging %}<span class="badge info" title="{{ _('A dated, neutralized copy of a production') }}">{{ _("Staging") }}</span>
+      {% else %}<span class="badge ok" title="{{ _('The instance its users work on') }}">{{ _("Production") }}</span>{% endif %}</h1>
+    <div class="facts">
+      {{ state_word("busy" if is_busy else st) }}
+      <span>{{ tr(inst.plugin.label) }}</span>
+      {% if title != server.name %}<span title="{{ _('Its name in OmniaCLI') }}">{{ _("server {name}", name=server.name) }}</span>{% endif %}
+      {% set database = inst.plugin.describe(inst).database %}{% if database %}<span>{{ _("database {name}", name=database) }}</span>{% endif %}
     </div>
-    {% endif %}
   </div>
-</div>
 
-<div class="instance-grid" style="--cols: {{ instances | length }}">
-{% for inst in instances %}
-  {# the instance's state: running, stopped or unknown #}
-  {% if inst.restart.type == "process" %}
-    {% set pid = running.get(inst.key) %}
-    {% set run_class, run_text = ("ok", _("running")) if pid else ("error", _("stopped")) %}
-    {% set run_title = _("started by OmniaCLI, pid {pid}", pid=pid) if pid else "" %}
-  {% else %}
-    {% set state = service_state.get(inst.key) %}
-    {% set up = state in ("active", "activating", "reloading") %}
-    {% set compose = inst.restart.type == "compose" %}
-    {% if state is none %}
-      {% set run_class, run_text = "", (_("project state unknown") if compose else _("service state unknown")) %}
+  {% if can_restart %}
+  <div class="head-actions">
+    {# one primary: Start when stopped, else Open Odoo at its address (Cloudpepper's); Update and the rest beside it #}
+    {% if opens and st != "stopped" %}<a class="button primary" href="{{ inst.web_url }}" target="_blank" rel="noopener" title="{{ _('Opens {url} in a new tab', url=inst.web_url) }}">{{ _("Open Odoo") }} ↗</a>{% endif %}
+    {% if login_as[inst.key] %}<button type="button" data-login-as='{{ login_as[inst.key] | tojson }}' title="{{ _('Opens Odoo in a new tab as one of its users, without their password.') }}">{{ _("Log in as…") }}</button>{% endif %}
+    {% if st == "stopped" %}
+    <form method="post" action="{{ base }}/{{ 'restart' if rt == 'process' else 'start' }}" onsubmit='return confirm({{ _("Start Odoo of {name}?", name=who) | tojson }})'>
+      <input type="hidden" name="next" value="{{ here }}">
+      <button class="{{ '' if is_busy else 'primary' }}" {{ off }} title="{{ _('Starts Odoo of {name}.', name=who) }}">{{ icon("start") }}{{ _("Start") }}</button></form>
+    {% endif %}
+    {% if can_act and st != "stopped" %}
+    {% if pull_choices[inst.key] %}
+    <button type="button" class="{{ '' if is_busy or opens else 'primary' }}" {{ off }} data-pull='{{ dict(pull_choices[inst.key], url=base ~ "/pull-restart", title=_("Pull, deploy and restart {key}", key=inst.key), note=package_note) | tojson }}'
+            title="{{ update_help }}">{{ icon("github") }}{{ _("Update") }}</button>
     {% else %}
-      {% set run_class, run_text = ("ok", _("running")) if up else ("error", _("stopped")) %}
+    <form method="post" action="{{ base }}/pull-restart"
+          onsubmit='return confirm({{ (_("Pull, deploy and restart {key}?", key=inst.key) ~ ("\n\n" ~ package_note if package_note else "")) | tojson }})'>
+      <button class="{{ '' if is_busy or opens else 'primary' }}" {{ off }} title="{{ update_help }}">{{ icon("github") }}{{ _("Update") }}</button></form>
     {% endif %}
-    {% set run_title = (_("project: {state}", state=tr(state)) if compose else _("service: {state}", state=tr(state))) if state else "" %}
-  {% endif %}
-  {% set run_badge %}<span class="badge {{ run_class }}" {% if run_title %}title="{{ run_title }}"{% endif %}>{{ run_text }}</span>{% endset %}
-  <section class="panel instance-panel" data-key="{{ inst.key }}">
-    <div class="inst-head">
-      <h2><span class="role {{ inst.role }}">{{ _("production") if inst.role == "production" else inst.role }}</span>
-        {% if inst.web_url %}<a class="web-link mono" href="{{ inst.web_url }}" target="_blank" rel="noopener" title="{{ _('Open {url} in a new tab', url=inst.web_url) }}">{{ inst.web_url }} ↗</a>{% endif %}
-        {% if busy[inst.key] %}{% set running_job = busy_job[inst.key] %}<span class="status running" style="font-size: 13px">{% if running_job %}<a href="{{ prefix }}/jobs/{{ running_job.id }}" style="color: inherit; text-decoration: underline" title="{{ _('Open the job: {title}', title=tr(running_job.title)) }}">{{ _("job running") }}</a>{% else %}{{ _("job running") }}{% endif %}</span>{% endif %}</h2>
-      <div style="display: flex; gap: 8px; align-items: center">
-        {% if not can_restart %}{{ run_badge }}{% endif %}
-        {% if login_as[inst.key] %}<button type="button" data-login-as='{{ login_as[inst.key] | tojson }}' title="{{ _('Open Odoo as one of its users, without their password') }}">{{ _("Log in as…") }}</button>{% endif %}
-      </div>
-    </div>
-    {% if can_restart %}
-    {% set off = "disabled" if busy[inst.key] else "" %}
-    {% set base = prefix ~ "/servers/" ~ server.name ~ "/" ~ inst.role %}
-    {% set what = tr(inst.plugin.label) %}
-    <div class="inst-actions">
-      {# the state and its control: every role #}
-      <div class="state-control">
-      {{ run_badge }}
-      {% if inst.restart.type == "process" %}
-      {% if not pid %}
-      <form method="post" action="{{ base }}/restart" onsubmit='return confirm({{ _("Start {what} of {key}?", what=what, key=inst.key) | tojson }})'>
-        <input type="hidden" name="next" value="{{ prefix }}/servers/{{ server.name }}?view={{ view }}">
-        <button class="btn-start" {{ off }}>{{ icon("start") }}{{ _("Start") }}</button></form>
-      {% else %}
-      <form method="post" action="{{ base }}/stop"
-            onsubmit='return confirm({{ _("Stop {what} of {key}? It stays stopped, also for the auto update, until Start.", what=what, key=inst.key) | tojson }})'>
-        <input type="hidden" name="next" value="{{ prefix }}/servers/{{ server.name }}?view={{ view }}">
-        <button class="btn-stop" {{ off }}>{{ icon("stop") }}{{ _("Stop") }}</button></form>
-      {% endif %}
-      {% elif inst.restart.type in ("systemd", "compose") %}
-      {# state unknown: both #}
-      {% if not up %}
-      <form method="post" action="{{ base }}/start"
-            onsubmit='return confirm({{ _("Start the service {service} of {key}?", service=inst.restart.service, key=inst.key) | tojson }})'>
-        <input type="hidden" name="next" value="{{ prefix }}/servers/{{ server.name }}?view={{ view }}">
-        <button class="btn-start" {{ off }}>{{ icon("start") }}{{ _("Start") }}</button></form>
-      {% endif %}
-      {% if up or state is none %}
-      <form method="post" action="{{ base }}/stop"
-            onsubmit='return confirm({{ _("Stop the service {service} of {key}? It stays stopped, also for the auto update, until Start.", service=inst.restart.service, key=inst.key) | tojson }})'>
-        <input type="hidden" name="next" value="{{ prefix }}/servers/{{ server.name }}?view={{ view }}">
-        <button class="btn-stop" {{ off }}>{{ icon("stop") }}{{ _("Stop") }}</button></form>
-      {% endif %}
-      {% endif %}
-      </div>
-      {# Restart: the instance's primary action #}
-      {% if inst.restart.type == "process" %}
-      {% if pid %}
-      <form method="post" action="{{ base }}/restart" onsubmit='return confirm({{ _("Restart {what} of {key}?", what=what, key=inst.key) | tojson }})'>
-        <button class="primary" {{ off }}>{{ icon("restart") }}{{ _("Restart") }}</button></form>
-      {% endif %}
-      {% else %}
-      <form method="post" action="{{ base }}/restart"
-            onsubmit='return confirm({{ _("Restart the service {service} of {key}?", service=inst.restart.service, key=inst.key) | tojson }})'>
-        <button class="primary" {{ off }}>{{ icon("restart") }}{{ _("Restart") }}</button></form>
-      {% endif %}
-      {% if can_act %}
-      {# an instance installed from a package only: the same pull, which installs it #}
-      {% set package_only = inst.package and not inst.repositories %}
-      {% set pull_label = _("Update package") if package_only else _("Git pull") %}
-      {% set pull_restart_label = _("Update package + restart") if package_only else _("Git pull + restart") %}
-      {# a package's own scripts (prerm, postinst) may stop and start its
-         service: OmniaCLI cannot keep a stopped one stopped, so it says so #}
-      {% set package_note = _("A new {name} is installed with its own scripts: they may stop and start the service {service} by themselves, also if it is stopped now.", name=inst.package.name, service=inst.restart.service) if inst.package else "" %}
-      {% set pull_title = _("Update package {key}", key=inst.key) if package_only else _("Git pull {key}", key=inst.key) %}
-      {% if pull_choices[inst.key] %}
-      {# more than one thing to pull: the pull dialog chooses which (_pull_dialog.html) #}
-      <button type="button" {{ off }} data-pull='{{ dict(pull_choices[inst.key], url=base ~ "/pull-restart", title=_("Pull, deploy and restart {key}", key=inst.key), note=package_note) | tojson }}'
-              title="{{ _('Choose the repositories to pull, then deploy and restart') }}">{{ icon("github") }}{{ pull_restart_label }}</button>
-      {% else %}
-      <form method="post" action="{{ base }}/pull-restart"
-            onsubmit='return confirm({{ (_("Pull, deploy and restart {key}?", key=inst.key) ~ ("\n\n" ~ package_note if package_note else "")) | tojson }})'>
-        <button {{ off }}>{{ icon("github") }}{{ pull_restart_label }}</button></form>
-      {% endif %}
-      {% endif %}
-      {# the plugin's actions of the git group (Update modules) stand here #}
-      {% for b in buttons[inst.key].git %}{{ action_button(b, off) }}{% endfor %}
-      {% set backup_here = can_act and inst.plugin.has_backup %}
-      {% if backup_here %}
-      {# the choices of the backup (Odoo: without filestore) in its dialog #}
-      <button type="button" {{ off }} data-backup="{{ base }}/backup" data-download="0" data-key="{{ inst.key }}">{{ icon("backup") }}{{ _("Backup") }}</button>
-      {% endif %}
-
-      {# the rare ones: in the More menu #}
-      {% set show_psql = can_act and not scoped and inst.plugin.db_shell(inst) and (own_user_shells or not inst.plugin.db_shell_as_service(inst)) %}
-      {% set shells = can_act and not scoped and (own_user_shells or show_psql) %}
-      {% set others = [] %}{% for group, found in buttons[inst.key].items() if group not in core_groups and found %}{% set _x = others.append(group) %}{% endfor %}
-      {% if can_act or buttons[inst.key].service or buttons[inst.key].backup or others or shells or from_link[inst.key] or restore_file[inst.key] %}
-      <details class="more-menu">
-        <summary class="button">{{ _("More") }} ▾</summary>
-        <div class="more-items">
-          {% if can_act or buttons[inst.key].service %}
-          <div class="more-title">{{ _("Service and code") }}</div>
-          {% if can_act %}
-          {% if pull_choices[inst.key] %}
-          <button type="button" {{ off }} data-pull='{{ dict(pull_choices[inst.key], url=base ~ "/pull", title=pull_title, note=package_note) | tojson }}'
-                  title="{{ _('Choose the repositories to pull') }}">{{ icon("github") }}{{ pull_label }}</button>
-          {% else %}
-          <form method="post" action="{{ base }}/pull"
-                {% if inst.package %}onsubmit='return confirm({{ (pull_title ~ "?\n\n" ~ package_note) | tojson }})'{% endif %}>
-            <button {{ off }}{% if inst.package %} title="{{ _('Also installs the package {name} when a newer signed version is published', name=inst.package.name) }}"{% endif %}>{{ icon("github") }}{{ pull_label }}</button></form>
-          {% endif %}
-          {% endif %}
-          {% for b in buttons[inst.key].service %}{{ action_button(b, off) }}{% endfor %}
-          {% endif %}
-          {% for group in others %}
-          <div class="more-title">{{ _("Python") if group == "python" else tr(group) }}</div>
-          {% for b in buttons[inst.key][group] %}{{ action_button(b, off) }}{% endfor %}
-          {% endfor %}
-          {% if backup_here or buttons[inst.key].backup %}
-          <div class="more-title">{{ _("Backups") }}</div>
-          {% if backup_here %}
-          <button type="button" {{ off }} data-backup="{{ base }}/backup" data-download="1" data-key="{{ inst.key }}" title="{{ _('Back up, then download the zip') }}">{{ icon("download") }}{{ _("Backup + download") }}</button>
-          {% endif %}
-          {% for b in buttons[inst.key].backup %}{{ action_button(b, off) }}{% endfor %}
-          {% endif %}
-          {% if shells %}
-          {# a login shell on the server, in a new tab (not for a user of
-             workspaces: a shell of this machine); on a server nothing that runs
-             as OmniaCLI's own user #}
-          <div class="more-title">{{ _("Consoles") }}</div>
-          {% if own_user_shells %}
-          <a class="button" href="{{ base }}/shell" target="_blank" rel="noopener" title="{{ _('A shell of the user running OmniaCLI, in {path}', path=inst.repositories[0].path if inst.repositories else _('its home')) }}">{{ icon("terminal") }}Shell</a>
-          {% if inst.claude_dir %}
-          <a class="button" href="{{ base }}/claude" target="_blank" rel="noopener" title="{{ _('A shell of the user running OmniaCLI in {path}, running claude', path=inst.claude_dir) }}">{{ icon("terminal") }}Claude</a>
-          {% endif %}
-          {% endif %}
-          {% if show_psql %}
-          <a class="button" href="{{ base }}/psql" target="_blank" rel="noopener" title="{{ _('psql on {database}, as the instance connects to it', database=inst.plugin.describe(inst).database or _('the database')) }}">{{ icon("terminal") }}psql</a>
-          {% endif %}
-          {% endif %}
-          {% if from_link[inst.key] or restore_file[inst.key] %}
-          {# what replaces the instance's database: apart, in red #}
-          <div class="more-title danger-title">{{ _("Replace the database") }}</div>
-          {% if from_link[inst.key] and from_link[inst.key].disabled %}
-          {# the tooltip on the span around the disabled button #}
-          <span title="{{ tr(from_link[inst.key].disabled) }}"><button type="button" class="danger" disabled>{{ icon("download") }}{{ _("Copy from link") }}</button></span>
-          {% elif from_link[inst.key] %}
-          <button type="button" class="danger" {{ off }} data-from-link='{{ from_link[inst.key] | tojson }}' data-key="{{ inst.key }}"
-                  title="{{ _('Back up {label}, download it and restore it into {key}', label=from_link[inst.key].label, key=inst.key) }}">{{ icon("download") }}{{ _("Copy from link") }}</button>
-          {% endif %}
-          {% if restore_file[inst.key] %}
-          <button type="button" class="danger" {{ off }} data-restore-file='{{ restore_file[inst.key] | tojson }}' data-key="{{ inst.key }}"
-                  title="{{ _('Restore a backup into {key}: a zip from this computer, or one of its backups', key=inst.key) }}">{{ icon("backup") }}{{ _("Restore") }}</button>
-          {% endif %}
-          {% endif %}
-        </div>
-      </details>
-      {% endif %}
-    </div>
     {% endif %}
-    <div class="tiles">
-      <div class="tile"><div class="tile-label">{{ _("CPU now") }}</div><div class="tile-value" data-tile="cpu">–</div></div>
-      <div class="tile"><div class="tile-label">{{ _("Memory") }}</div><div class="tile-value" data-tile="mem">–</div></div>
-      <div class="tile"><div class="tile-label">{{ _("Processes") }}</div><div class="tile-value" data-tile="procs">–</div></div>
-    </div>
-    <p class="muted source" style="margin: 6px 0 10px"></p>
-    <h3 class="chart-title">{{ _("CPU, % of one core") }} <span class="muted" style="font-weight: 400">· {{ _("this machine has") }} <span class="cores">?</span></span></h3>
-    <div class="chart-box"><svg class="chart" data-chart="cpu" role="img" aria-label="{{ _('CPU of {key} over the last hour', key=inst.key) }}"></svg><div class="chart-tip" hidden></div></div>
-    <h3 class="chart-title">{{ _("Memory, MiB resident") }}</h3>
-    <div class="chart-box"><svg class="chart" data-chart="mem" role="img" aria-label="{{ _('Memory of {key} over the last hour', key=inst.key) }}"></svg><div class="chart-tip" hidden></div></div>
-
-    {% if can_act %}
-    <details class="backups" style="margin-top: 12px" data-url="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}/backups">
-      <summary>{{ _("Backups") }}</summary>
-      <div class="backup-list muted">{{ _("Loading…") }}</div>
-    </details>
+    {% if not can_act and st != "stopped" and (rt != "process" or pid) %}
+    <form method="post" action="{{ base }}/restart" onsubmit='return confirm({{ _("Restart Odoo of {name}?", name=who) | tojson }})'>
+      <input type="hidden" name="next" value="{{ here }}">
+      <button class="{{ '' if is_busy or opens else 'primary' }}" {{ off }} title="{{ _('Restarts Odoo: whoever is connected loses the connection for a few seconds. It changes neither the code nor the database.') }}">{{ icon("restart") }}{{ _("Restart") }}</button></form>
+    {% endif %}
+    {% if merge %}
+    <form method="post" action="{{ prefix }}/servers/{{ server.name }}/merge"
+          onsubmit='return confirm({{ _("Back up production, merge the commits deployed on test into production, push, update modules and restart production {server}?", server=server.name) | tojson }})'>
+      <span title="{{ _('Backs up production, merges into its repositories the commits running now on test (the tried commit, not the tip of the branch), pushes them, updates the modules and restarts production. It stops if test has uncommitted changes or unpushed commits. Not available while a job works on production or test.') }}">
+      <button class="danger" {% if busy[server.production.key] or busy[server.test.key] %}disabled{% endif %}>{{ _("Bring to production…") }}</button></span></form>
     {% endif %}
 
-    {# settings, paths and repositories: not for the role user #}
-    {% if can_act %}
-    <details style="margin-top: 12px">
-      <summary>{{ _("Settings and repositories") }}</summary>
-      <dl>
-        <dt>{{ _("Type") }}</dt><dd>{{ tr(inst.plugin.label) }}</dd>
-        {% for label, value, kind in settings_rows[inst.key] %}
-        <dt>{{ tr(label) }}</dt>
-        {% if kind == "checkbox" %}<dd>{{ _("yes") if value else _("no") }}</dd>
-        {% elif value is none or value == "" %}<dd class="muted">–</dd>
-        {% else %}<dd class="{{ 'mono' if kind in ('path', 'number') }}">{{ value }}</dd>{% endif %}
-        {% endfor %}
-        <dt>{{ _("Log") }}</dt><dd class="mono">{{ inst.log_label }}</dd>
-        {% if inst.restart.type == "process" %}
-        <dt>{{ tr(inst.plugin.label) }}</dt><dd>{% if running.get(inst.key) %}{{ _("started by OmniaCLI: running, pid") }} <span class="mono">{{ running[inst.key] }}</span>{% else %}{{ _("started by OmniaCLI:") }} <span class="muted">{{ _("stopped") }}</span>{% endif %}</dd>
+    {# the rare ones: More #}
+    {% set show_psql = can_act and not scoped and inst.plugin.db_shell(inst) and (own_user_shells or not inst.plugin.db_shell_as_service(inst)) %}
+    {% set shells = can_act and not scoped and (own_user_shells or show_psql) %}
+    {% set others = [] %}{% for group, found in buttons[inst.key].items() if group not in core_groups and found %}{% set _x = others.append(group) %}{% endfor %}
+    {% set server_wide = server_buttons.values() | select | list and view == "test" and not is_staging %}
+    {% set delete_staging = is_staging and is_admin_here and stagings.workspace %}
+    <details class="more-menu">
+      <summary class="button" title="{{ _('The other actions: stop, code, backups, consoles, replacing the database') }}">{{ _("More") }} ▾</summary>
+      <div class="more-items">
+        {% if can_act and st != "stopped" and (rt != "process" or pid) %}
+        <form method="post" action="{{ base }}/restart" onsubmit='return confirm({{ _("Restart Odoo of {name}?", name=who) | tojson }})'>
+          <input type="hidden" name="next" value="{{ here }}">
+          <button {{ off }} title="{{ _('Restarts Odoo: whoever is connected loses the connection for a few seconds. It changes neither the code nor the database.') }}">{{ icon("restart") }}{{ _("Restart") }}</button></form>
+        {% endif %}
+        {% if st == "unknown" and rt in ("process", "systemd", "compose") %}
+        <form method="post" action="{{ base }}/{{ 'restart' if rt == 'process' else 'start' }}" onsubmit='return confirm({{ _("Start Odoo of {name}?", name=who) | tojson }})'>
+          <input type="hidden" name="next" value="{{ here }}">
+          <button {{ off }} title="{{ _('Starts Odoo of {name}.', name=who) }}">{{ icon("start") }}{{ _("Start") }}</button></form>
+        {% endif %}
+        {% if st != "stopped" and rt in ("process", "systemd", "compose") %}
+        <form method="post" action="{{ base }}/stop" onsubmit='return confirm({{ _("Stop Odoo of {name}? It stays stopped, also for the auto update, until Start.", name=who) | tojson }})'>
+          <input type="hidden" name="next" value="{{ here }}">
+          <button {{ off }} title="{{ _('Stops Odoo. It stays stopped, also for the auto update, until you press Start.') }}">{{ icon("stop") }}{{ _("Stop") }}</button></form>
+        {% endif %}
+        {% if can_act %}
+        <div class="more-title">{{ _("Code") }}</div>
+        {% for b in buttons[inst.key].git %}{{ action_button(b, off) }}{% endfor %}
+        {% if pull_choices[inst.key] %}
+        <button type="button" {{ off }} data-pull='{{ dict(pull_choices[inst.key], url=base ~ "/pull", title=_("Git pull {key}", key=inst.key), note=package_note) | tojson }}'
+                title="{{ _('Downloads the new code without restarting: Odoo keeps the code of before until it is restarted.') }}">{{ icon("github") }}{{ _("Git pull only") }}</button>
         {% else %}
-        <dt>{{ _("Service") }}</dt><dd class="mono">{{ inst.restart.type }}: {{ inst.restart.service }}</dd>
+        <form method="post" action="{{ base }}/pull" {% if inst.package %}onsubmit='return confirm({{ package_note | tojson }})'{% endif %}>
+          <button {{ off }} title="{{ _('Downloads the new code without restarting: Odoo keeps the code of before until it is restarted.') }}">{{ icon("github") }}{{ _("Update package") if package_only else _("Git pull only") }}</button></form>
         {% endif %}
-        {% if inst.package %}
-        {% set pkg = package_state[inst.key] %}
-        <dt>{{ _("Package") }}</dt>
-        <dd><span class="mono">{{ inst.package.name }}</span>{% if pkg.version %} {{ pkg.version }}{% endif %}
-          <span class="muted">{{ _("from") }}</span> <span class="mono">{{ inst.package.url }}</span>
-          {% if pkg.installed %}<br><span class="muted">{{ _("installed by OmniaCLI {when}", when=pkg.installed) }}</span>{% endif %}
-          <br><span class="muted">{% if inst.auto_update.enabled %}{{ _("its own scripts may stop and start {service} during an update, also a stopped one, and the auto update installs it", service=inst.restart.service) }}{% else %}{{ _("its own scripts may stop and start {service} during an update, also a stopped one", service=inst.restart.service) }}{% endif %}</span></dd>
         {% endif %}
-        <dt>{{ _("Auto update") }}</dt>
-        <dd>
-          {% if inst.auto_update.enabled %}
-            {{ _("every {minutes} min, {window}", minutes=inst.auto_update.interval_minutes, window=tr(inst.auto_update.window_label())) }}
-            {% set st = auto_state.get(inst.key) %}
-            {% if st %}<br><span class="{{ 'error' if st.error else 'muted' }}">{{ st.checked }}: {{ tr(st.message) }}</span>{% endif %}
-          {% else %}<span class="muted">{{ _("no") }}</span>{% endif %}
-        </dd>
-      </dl>
-      <div class="scroll">
-      <table>
-        <tr><th>{{ _("Repository") }}</th><th>{{ _("Branch") }}</th><th>{{ _("Last commit") }}</th></tr>
-        {% for repo in inst.repositories %}
-        {% set st = repo_status[inst.key][loop.index0] %}
-        <tr>
-          <td><span title="{{ repo.path }}">{{ repo.name }}</span></td>
-          {% if st.error %}
-          <td colspan="2" class="error">{{ tr(st.error) }}</td>
-          {% else %}
-          <td class="mono {{ 'error' if st.branch != repo.branch }}"
-              {% if st.branch != repo.branch %}title="{{ _('expected {branch}', branch=repo.branch) }}"{% endif %}>{{ st.branch }}</td>
-          <td><span class="mono">{{ st.sha }}</span> <span class="muted">{{ st.date }}</span><br>{{ st.subject }}</td>
-          {% endif %}
-        </tr>
+        {% if buttons[inst.key].service %}{% for b in buttons[inst.key].service %}{{ action_button(b, off) }}{% endfor %}{% endif %}
+        {% for group in others %}
+        <div class="more-title">{{ _("Python") if group == "python" else tr(group) }}</div>
+        {% for b in buttons[inst.key][group] %}{{ action_button(b, off) }}{% endfor %}
         {% endfor %}
-      </table>
+        {% if backup_here or buttons[inst.key].backup %}
+        <div class="more-title">{{ _("Backups") }}</div>
+        {% if backup_here %}
+        <button type="button" {{ off }} data-backup="{{ base }}/backup" data-download="0" data-key="{{ inst.key }}"
+                title="{{ _('Saves database and filestore in a zip on this machine; the dialog has the choices, for example without filestore. The file shows in the Backups tab.') }}">{{ icon("backup") }}{{ _("Back up now") }}</button>
+        <button type="button" {{ off }} data-backup="{{ base }}/backup" data-download="1" data-key="{{ inst.key }}" title="{{ _('Makes a backup and downloads the zip as soon as it is ready.') }}">{{ icon("download") }}{{ _("Backup and download") }}</button>
+        {% endif %}
+        {% for b in buttons[inst.key].backup %}{{ action_button(b, off) }}{% endfor %}
+        {% endif %}
+        {% if shells %}
+        <div class="more-title">{{ _("Consoles") }}</div>
+        {% if own_user_shells %}
+        <a class="button" href="{{ base }}/shell" target="_blank" rel="noopener" title="{{ _('A shell of the user running OmniaCLI, in {path}', path=inst.repositories[0].path if inst.repositories else _('its home')) }}">{{ icon("terminal") }}Shell</a>
+        {% if inst.claude_dir %}<a class="button" href="{{ base }}/claude" target="_blank" rel="noopener" title="{{ _('A shell of the user running OmniaCLI in {path}, running claude', path=inst.claude_dir) }}">{{ icon("terminal") }}Claude</a>{% endif %}
+        {% endif %}
+        {% if show_psql %}<a class="button" href="{{ base }}/psql" target="_blank" rel="noopener" title="{{ _('psql on {database}, as the instance connects to it', database=inst.plugin.describe(inst).database or _('the database')) }}">{{ icon("terminal") }}psql</a>{% endif %}
+        {% endif %}
+        {% set delete_instance = not is_staging and view == "production" and is_admin_here and stagings and stagings.workspace %}
+        {% if from_link[inst.key] or restore_file[inst.key] or server_wide or delete_staging or delete_instance %}
+        <div class="more-title danger-title">{{ _("Replace the database") if from_link[inst.key] or restore_file[inst.key] else _("Danger") }}</div>
+        {% if server_wide %}{% for group, found in server_buttons.items() %}{% for b in found %}{{ action_button(b, "disabled" if busy.values() | select | list else "", "danger") }}{% endfor %}{% endfor %}{% endif %}
+        {% if from_link[inst.key] and from_link[inst.key].disabled %}
+        <span title="{{ tr(from_link[inst.key].disabled) }}"><button type="button" class="danger" disabled>{{ icon("download") }}{{ _("Copy from link") }}</button></span>
+        {% elif from_link[inst.key] %}
+        <button type="button" class="danger" {{ off }} data-from-link='{{ from_link[inst.key] | tojson }}' data-key="{{ inst.key }}"
+                title="{{ _('Back up {label}, download it and restore it into {key}', label=from_link[inst.key].label, key=inst.key) }}">{{ icon("download") }}{{ _("Copy from link") }}</button>
+        {% endif %}
+        {% if restore_file[inst.key] %}
+        <button type="button" class="danger" {{ off }} data-restore-file='{{ restore_file[inst.key] | tojson }}' data-key="{{ inst.key }}"
+                title="{{ _('Replaces the database with a zip of its backups or one from your computer. To confirm, the name of the database is written. Admins only.') }}">{{ icon("backup") }}{{ _("Restore a backup…") }}</button>
+        {% endif %}
+        {% if delete_instance %}
+        {% if stagings.rows %}<span title="{{ _('Delete its stagings first: they are copies of it') }}"><button type="button" class="danger" disabled>{{ _("Delete the instance…") }}</button></span>
+        {% else %}<button type="button" class="danger" id="instance-delete" {{ off }}
+                title="{{ _('Deletes this instance: containers, database, files and folders, then removes it from the list. It cannot be undone.') }}">{{ _("Delete the instance…") }}</button>{% endif %}
+        {% endif %}
+        {% if delete_staging %}
+        <button type="button" class="danger" id="staging-delete" {{ off }}
+                title="{{ _('Deletes this staging: containers, database, files and folders, then removes it from the list. The production it was copied from does not change. It cannot be undone.') }}">{{ _("Delete the staging…") }}</button>
+        {% endif %}
+        {% endif %}
       </div>
     </details>
-    {% endif %}
-
-    <h3 class="chart-title" style="margin-top: 16px">{{ _("Log") }} <span class="muted mono" style="font-weight: 400">{{ inst.log_label }}</span></h3>
-    <div class="log-panel" data-log="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}/log">
-      {{ logbox("server-log", height="45vh" if instances | length == 1 else "38vh") }}</div>
-  </section>
-{% endfor %}
+  </div>
+  {% elif login_as[inst.key] %}
+  <div class="head-actions"><button type="button" data-login-as='{{ login_as[inst.key] | tojson }}' title="{{ _('Opens Odoo in a new tab as one of its users, without their password.') }}">{{ _("Log in as…") }}</button></div>
+  {% endif %}
 </div>
 
-{% if stagings and (stagings.can or stagings.rows or stagings.parent) %}
-<style>
-.stg-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
-.stg-row { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--border);
-  border-radius: var(--r); background: var(--panel-2); flex-wrap: wrap; }
-.stg-row .stg-name { font-weight: 600; flex: 1; min-width: 180px; }
-.stg-row .stg-name small { display: block; font-weight: 400; color: var(--muted); font-size: 12px; }
-.stg-date { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 13px; }
-.stg-branch { color: var(--muted); margin-right: 4px; }
-</style>
-<section class="panel" id="stagings">
-  <div class="inst-head">
-    <h2>{{ _("Stagings") }}</h2>
-    {% if stagings.can %}<button type="button" class="primary" id="staging-new">+ {{ _("New staging") }}</button>{% endif %}
-  </div>
-  {% if stagings.parent %}
-  <div class="banner info">{{ _("This is a staging of {parent}, copied on {date}.", parent=stagings.parent.parent, date=stagings.parent.created.replace("T", " ")[:16]) }}
-    <a href="{{ prefix }}/servers/{{ stagings.parent.parent }}">{{ _("Open {parent}", parent=stagings.parent.parent) }}</a></div>
-  {% endif %}
-  {% if stagings.can %}<p class="muted" style="margin: 4px 0 0">{{ _("A copy of production as it is now, neutralized (no scheduled actions, no outgoing mail), beside it: to try an update or a module without touching production.") }}</p>{% endif %}
-  {% if stagings.rows %}
-  <div class="stg-list">
-    {% for s in stagings.rows %}
-    <div class="stg-row">
-      <span class="stg-name"><span class="stg-branch">↳</span><a href="{{ prefix }}/servers/{{ s.server }}">{{ s.server }}</a>
-        <small>{{ _("from backup {name}", name=s.backup) }}</small></span>
-      <span class="badge info">{{ _("Staging") }}</span>
-      <span class="stg-date" title="{{ s.created }}">{{ _("copied on {date}", date=s.created.replace("T", " ")[:16]) }}</span>
-      {% if s.url %}<a class="button" href="{{ s.url }}" target="_blank" rel="noopener">{{ _("Open Odoo") }}</a>{% endif %}
-      <a class="button" href="{{ prefix }}/servers/{{ s.server }}">{{ _("Manage") }}</a>
-    </div>
-    {% endfor %}
-  </div>
-  {% elif stagings.can %}
-  <p class="muted" style="margin-top: 10px">{{ _("No staging yet.") }}</p>
-  {% endif %}
-  <p id="staging-error" class="error"></p>
-</section>
-{% if stagings.can %}
-<script>
-document.getElementById("staging-new").addEventListener("click", async (event) => {
-  const button = event.currentTarget, error = document.getElementById("staging-error");
-  if (!confirm({{ _("Make a new staging of {server}: a copy of its production as it is now, neutralized, beside it?", server=server.name) | tojson }})) return;
-  button.disabled = true; error.textContent = "";
-  const resp = await fetch({{ (prefix ~ "/api/servers/" ~ server.name ~ "/stagings") | tojson }},
-                           {method: "POST", headers: {Accept: "application/json"}}).catch(() => null);
-  const data = resp ? await resp.json().catch(() => ({})) : {};
-  button.disabled = false;
-  if (!resp || !resp.ok || !data.job) { error.textContent = data.error || data.detail || {{ _("Refused") | tojson }}; return; }
-  location.href = `{{ prefix }}/jobs/${data.job}`;
-});
-</script>
+{% if is_busy %}{% set running_job = busy_job[inst.key] %}
+<div class="job-band" role="status">{{ _("Job running:") }} {% if running_job %}<a href="{{ prefix }}/jobs/{{ running_job.id }}">{{ tr(running_job.title) }}</a>{% endif %} — {{ _("the buttons come back when it ends.") }}</div>
 {% endif %}
+<p id="page-error" class="error" role="alert"></p>
+
+{% set show_envs = view == "production" and not is_staging and (server.test or (stagings and (stagings.rows or stagings.can))) %}
+{% if is_staging %}
+<div class="note-box">{{ _("Copy of") }} <a href="{{ prefix }}/servers/{{ parent }}">{{ host_of(stagings.parent.url, parent) }}</a> {{ _("of {date}", date=when(stagings.parent.created)) }}, {{ _("neutralized: no outgoing mail, no scheduled actions.") }}</div>
+{% endif %}
+<nav class="tabs" role="tablist" aria-label="{{ _('Sections of the instance') }}">
+  <button type="button" role="tab" data-tab="overview" aria-selected="true">{{ _("Environments") if show_envs else _("Overview") }}</button>
+  {% if can_act %}<button type="button" role="tab" data-tab="backups">{{ _("Backups") }}</button>{% endif %}
+  <button type="button" role="tab" data-tab="log">{{ _("Log") }}</button>
+  <button type="button" role="tab" data-tab="monitor" hidden>{{ _("Monitoring") }}</button>
+  {% if can_act %}<button type="button" role="tab" data-tab="settings">{{ _("Settings") }}</button>{% endif %}
+</nav>
+
+<section class="tab-panel" data-panel="overview">
+  {% if show_envs %}
+  <div class="panel">
+    <div class="section-head">
+      <h2>{{ _("Environments") }}</h2>
+      {% if stagings and stagings.can %}<button type="button" id="staging-new" {{ off }}
+        title="{{ _('A copy of production as it is now, neutralized (no outgoing mail, no scheduled actions), at an address of its own. Production stays on. Not available while a job works on production.') }}">+ {{ _("New staging") }}</button>{% endif %}
+    </div>
+    <div class="scroll"><table class="copies">
+      <tr><th>{{ _("Address") }}</th><th>{{ _("Type") }}</th><th class="hide-sm">{{ _("Copied on") }}</th><th>{{ _("State") }}</th><th class="hide-sm"></th></tr>
+      <tr><td><strong>{{ title }}</strong></td><td><span class="badge ok">{{ _("Production") }}</span></td><td class="when hide-sm">—</td>
+          <td>{{ state_word("busy" if is_busy else st) }}</td>
+          <td class="row-open hide-sm">{% if opens %}<a class="button small" href="{{ inst.web_url }}" target="_blank" rel="noopener" title="{{ _('Opens {url} in a new tab', url=inst.web_url) }}">{{ _("Open") }} ↗</a>{% endif %}</td></tr>
+      {% if server.test %}
+      <tr><td>↳ <a href="{{ prefix }}/servers/{{ server.name }}?view=test"><strong>{{ host_of(server.test.web_url, "Test") }}</strong></a></td>
+          <td><span class="badge test-badge">Test</span></td><td class="when hide-sm">—</td>
+          <td>{{ state_word("busy" if busy[server.test.key] else test_state) }}</td>
+          <td class="row-open hide-sm">{% if host_of(server.test.web_url, "") %}<a class="button small" href="{{ server.test.web_url }}" target="_blank" rel="noopener" title="{{ _('Opens {url} in a new tab', url=server.test.web_url) }}">{{ _("Open") }} ↗</a>{% endif %}</td></tr>
+      {% endif %}
+      {% for s in stagings.rows if stagings %}
+      <tr><td>↳ <a href="{{ prefix }}/servers/{{ s.server }}"><strong>{{ host_of(s.url, s.server) }}</strong></a></td>
+          <td><span class="badge info">{{ _("Staging") }}</span></td><td class="when hide-sm">{{ when(s.created) }}</td>
+          <td>{{ state_word("busy" if s.busy else s.state) }}</td>
+          <td class="row-open hide-sm">{% if host_of(s.url, "") %}<a class="button small" href="{{ s.url }}" target="_blank" rel="noopener" title="{{ _('Opens {url} in a new tab', url=s.url) }}">{{ _("Open") }} ↗</a>{% endif %}</td></tr>
+      {% endfor %}
+    </table></div>
+    {% if stagings and stagings.can and not stagings.rows %}<p class="muted" style="margin: 8px 0 0">{{ _("No staging: a staging is a dated copy of production, to try an update without touching it.") }}</p>{% endif %}
+  </div>
+  {% endif %}
+  {% set outcome = {"success": _("done"), "failed": _("failed"), "running": _("running"), "queued": _("queued"), "interrupted": _("interrupted"), "stopped": _("stopped")} %}
+  <p class="last-action">{% if jobs %}{% set job = jobs[0] %}{{ _("Last action:") }} <a href="{{ prefix }}/jobs/{{ job.id }}">{{ tr(job.title) }}</a>
+    · <span class="status {{ job.status }}">{{ outcome.get(job.status, job.status) }}</span>{% if job.duration %} · {{ job.duration }}{% endif %} · {{ when(job.created) }}
+    {% if job.error %}<br><span class="error">{{ tr(job.error) | truncate(160) }}</span>{% endif %}
+    · {% else %}{{ _("No jobs yet.") }} {% endif %}<a href="{{ prefix }}/jobs?server={{ server.name | urlencode }}">{{ _("all the actions") }}</a></p>
+</section>
+
+<section class="tab-panel panel" data-panel="log" hidden>
+  <div class="log-panel" data-log="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}/log">{{ logbox("server-log", height="60vh") }}</div>
+</section>
+
+{% if can_act %}
+<section class="tab-panel panel" data-panel="backups" hidden data-url="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}/backups">
+  <div class="backup-list muted">{{ _("Loading…") }}</div>
+</section>
 {% endif %}
 
-<section class="panel">
-  <div class="inst-head">
-    <h2>{{ _("Last jobs of {server}", server=server.name) }}</h2>
-    <a href="{{ prefix }}/jobs?server={{ server.name | urlencode }}">{{ _("All jobs of {server}", server=server.name) }}</a>
+<section class="tab-panel panel instance-charts" data-panel="monitor" hidden>
+  <div class="tiles">
+    <div class="tile"><div class="tile-label">{{ _("CPU now") }}</div><div class="tile-value" data-tile="cpu">–</div></div>
+    <div class="tile"><div class="tile-label">{{ _("Memory") }}</div><div class="tile-value" data-tile="mem">–</div></div>
+    <div class="tile"><div class="tile-label">{{ _("Processes") }}</div><div class="tile-value" data-tile="procs">–</div></div>
   </div>
-  {% include "_jobs_table.html" %}
+  <p class="muted source" style="margin: 6px 0 10px"></p>
+  <h3 class="chart-title">{{ _("CPU, % of one core") }} <span class="muted" style="font-weight: 400">· {{ _("this machine has") }} <span class="cores">?</span></span></h3>
+  <div class="chart-box"><svg class="chart" data-chart="cpu" role="img" aria-label="{{ _('CPU of {key} over the last hour', key=inst.key) }}"></svg><div class="chart-tip" hidden></div></div>
+  <h3 class="chart-title">{{ _("Memory, MiB resident") }}</h3>
+  <div class="chart-box"><svg class="chart" data-chart="mem" role="img" aria-label="{{ _('Memory of {key} over the last hour', key=inst.key) }}"></svg><div class="chart-tip" hidden></div></div>
 </section>
+
+{% if can_act %}
+<section class="tab-panel panel" data-panel="settings" hidden>
+  <dl>
+    <dt>{{ _("Type") }}</dt><dd>{{ tr(inst.plugin.label) }}</dd>
+    {% for label, value, kind in settings_rows[inst.key] %}
+    <dt>{{ tr(label) }}</dt>
+    {% if kind == "checkbox" %}<dd>{{ _("yes") if value else _("no") }}</dd>
+    {% elif value is none or value == "" %}<dd class="muted">–</dd>
+    {% else %}<dd class="{{ 'mono' if kind in ('path', 'number') }}">{{ value }}</dd>{% endif %}
+    {% endfor %}
+    <dt>{{ _("Log") }}</dt><dd class="mono">{{ inst.log_label }}</dd>
+    {% if rt == "process" %}
+    <dt>{{ tr(inst.plugin.label) }}</dt><dd>{% if pid %}{{ _("started by OmniaCLI: running, pid") }} <span class="mono">{{ pid }}</span>{% else %}{{ _("started by OmniaCLI:") }} <span class="muted">{{ _("stopped") }}</span>{% endif %}</dd>
+    {% else %}
+    <dt>{{ _("Service") }}</dt><dd class="mono">{{ rt }}: {{ inst.restart.service }}</dd>
+    {% endif %}
+    {% if inst.package %}
+    {% set pkg = package_state[inst.key] %}
+    <dt>{{ _("Package") }}</dt>
+    <dd><span class="mono">{{ inst.package.name }}</span>{% if pkg.version %} {{ pkg.version }}{% endif %}
+      <span class="muted">{{ _("from") }}</span> <span class="mono">{{ inst.package.url }}</span>
+      {% if pkg.installed %}<br><span class="muted">{{ _("installed by OmniaCLI {when}", when=pkg.installed) }}</span>{% endif %}</dd>
+    {% endif %}
+    <dt>{{ _("Auto update") }}</dt>
+    <dd>
+      {% if inst.auto_update.enabled %}
+        {{ _("every {minutes} min, {window}", minutes=inst.auto_update.interval_minutes, window=tr(inst.auto_update.window_label())) }}
+        {% set ast = auto_state.get(inst.key) %}
+        {% if ast %}<br><span class="{{ 'error' if ast.error else 'muted' }}">{{ ast.checked }}: {{ tr(ast.message) }}</span>{% endif %}
+      {% else %}<span class="muted">{{ _("no") }}</span>{% endif %}
+    </dd>
+  </dl>
+  <div class="scroll">
+  <table>
+    <tr><th>{{ _("Repository") }}</th><th>{{ _("Branch") }}</th><th>{{ _("Last commit") }}</th></tr>
+    {% for repo in inst.repositories %}
+    {% set rs = repo_status[inst.key][loop.index0] %}
+    <tr>
+      <td><span title="{{ repo.path }}">{{ repo.name }}</span></td>
+      {% if rs.error %}<td colspan="2" class="error">{{ tr(rs.error) }}</td>
+      {% else %}
+      <td class="mono {{ 'error' if rs.branch != repo.branch }}" {% if rs.branch != repo.branch %}title="{{ _('expected {branch}', branch=repo.branch) }}"{% endif %}>{{ rs.branch }}</td>
+      <td><span class="mono">{{ rs.sha }}</span> <span class="muted">{{ rs.date }}</span><br>{{ rs.subject }}</td>
+      {% endif %}
+    </tr>
+    {% else %}
+    <tr><td colspan="3" class="muted">{{ _("No repository: the code is the image's.") }}</td></tr>
+    {% endfor %}
+  </table>
+  </div>
+</section>
+{% endif %}
 
 {% for dialog in dialogs %}{% include dialog %}{% endfor %}
 {% if from_link %}{% include "_from_link_dialog.html" %}{% endif %}
@@ -396,6 +369,7 @@ document.getElementById("staging-new").addEventListener("click", async (event) =
 <script>
 (function () {
   const panels = [...document.querySelectorAll(".instance-panel")];
+  const charts = document.querySelector(".instance-charts");
   const series = {};
   let since = 0;
   const T = {
@@ -403,27 +377,45 @@ document.getElementById("staging-new").addEventListener("click", async (event) =
     core: {{ _("{n} core") | tojson }}, cores: {{ _("{n} cores") | tojson }},
     emptyList: {{ _("No backups yet.") | tojson }}, file: {{ _("File") | tojson }}, date: {{ _("Date") | tojson }},
     size: {{ _("Size") | tojson }}, listFailed: {{ _("Could not load the backups.") | tojson }},
+    refused: {{ _("Refused") | tojson }},
   };
+
+  // the tabs: the one in the address (#log) or Overview
+  const tabs = [...document.querySelectorAll(".tabs [data-tab]")];
+  function show(name) {
+    if (!tabs.some((t) => t.dataset.tab === name && !t.hidden)) name = "overview";
+    for (const t of tabs) t.setAttribute("aria-selected", String(t.dataset.tab === name));
+    for (const p of document.querySelectorAll(".tab-panel")) p.hidden = p.dataset.panel !== name;
+    if (name === "backups") loadBackups();
+    if (name === "monitor") { since = 0; for (const k in series) delete series[k]; refresh(); }
+  }
+  for (const t of tabs) t.addEventListener("click", () => { history.replaceState(null, "", "#" + t.dataset.tab); show(t.dataset.tab); });
+
   async function refresh() {
     let data;
     try {
       const resp = await fetch(`{{ prefix }}/api/metrics?server={{ server.name | urlencode }}&since=${since}`);
-      if (!resp.ok) return;  // a refusal (an expired login: OmniaLogin leaves the page)
+      if (!resp.ok) return;
       data = await resp.json();
     } catch (e) { return; }
     for (const panel of panels) {
       const info = data.instances[panel.dataset.key];
       if (!info) continue;
       const points = (series[panel.dataset.key] = (series[panel.dataset.key] || []).concat(info.points).slice(-720));
-      panel.querySelector(".source").textContent = info.source ? T.measured.replace("{source}", info.source) : "";
-      panel.querySelector(".cores").textContent = (data.cores === 1 ? T.core : T.cores).replace("{n}", data.cores);
-      OmniaCharts.draw(panel.querySelector('[data-chart="cpu"]'), points, "cpu", {unit: "%", minMax: 10, format: (v) => v.toFixed(0)});
-      OmniaCharts.draw(panel.querySelector('[data-chart="mem"]'), points, "mem", {unit: " MiB", format: (v) => v.toFixed(0)});
+      // the Monitoring tab: only once something is measured
+      const measured = points.some((p) => p.cpu !== null || p.mem > 0 || p.procs > 0);
+      const tab = tabs.find((t) => t.dataset.tab === "monitor");
+      if (tab && measured && tab.hidden) { tab.hidden = false; if (location.hash === "#monitor") show("monitor"); }
+      if (!charts || charts.hidden) continue;
+      charts.querySelector(".source").textContent = info.source ? T.measured.replace("{source}", info.source) : "";
+      charts.querySelector(".cores").textContent = (data.cores === 1 ? T.core : T.cores).replace("{n}", data.cores);
+      OmniaCharts.draw(charts.querySelector('[data-chart="cpu"]'), points, "cpu", {unit: "%", minMax: 10, format: (v) => v.toFixed(0)});
+      OmniaCharts.draw(charts.querySelector('[data-chart="mem"]'), points, "mem", {unit: " MiB", format: (v) => v.toFixed(0)});
       const last = points[points.length - 1];
       if (last) {
-        panel.querySelector('[data-tile="cpu"]').textContent = last.cpu === null ? "–" : last.cpu.toFixed(1) + "%";
-        panel.querySelector('[data-tile="mem"]').textContent = last.mem.toFixed(0) + " MiB";
-        panel.querySelector('[data-tile="procs"]').textContent = last.procs;
+        charts.querySelector('[data-tile="cpu"]').textContent = last.cpu === null ? "–" : last.cpu.toFixed(1) + "%";
+        charts.querySelector('[data-tile="mem"]').textContent = last.mem.toFixed(0) + " MiB";
+        charts.querySelector('[data-tile="procs"]').textContent = last.procs;
       }
     }
     const all = Object.values(series).flat();
@@ -431,49 +423,74 @@ document.getElementById("staging-new").addEventListener("click", async (event) =
   }
   refresh();
   setInterval(() => { if (!document.hidden) refresh(); }, 5000);
-  window.addEventListener("resize", () => { since = 0; for (const k in series) delete series[k]; refresh(); });
 
-  // a More menu closes on a click outside it, and when another opens
+  // a More menu closes on a click outside it, and on Escape
   document.addEventListener("click", (ev) => {
-    for (const menu of document.querySelectorAll("details.more-menu[open]")) {
-      if (!menu.contains(ev.target)) menu.open = false;
-    }
+    for (const menu of document.querySelectorAll("details.more-menu[open]")) if (!menu.contains(ev.target)) menu.open = false;
   });
   document.addEventListener("keydown", (ev) => {
     if (ev.key !== "Escape" || document.querySelector("dialog[open]")) return;
     for (const menu of document.querySelectorAll("details.more-menu[open]")) menu.open = false;
   });
 
-  // the backup list loads when it is opened
+  // the Backups tab loads its list when it is opened
   const sizeText = (b) => b >= 1073741824 ? (b / 1073741824).toFixed(2) + " GiB"
     : b >= 1048576 ? (b / 1048576).toFixed(1) + " MiB" : Math.max(1, Math.round(b / 1024)) + " KiB";
-  for (const box of document.querySelectorAll("details.backups")) {
-    box.addEventListener("toggle", async () => {
-      if (!box.open) return;
-      const list = box.querySelector(".backup-list");
-      try {
-        const files = await (await fetch(box.dataset.url)).json();
-        if (!files.length) { list.textContent = T.emptyList; return; }
-        const table = document.createElement("table");
-        const head = table.insertRow();
-        for (const text of [T.file, T.date, T.size]) {
-          const th = document.createElement("th"); th.textContent = text; head.appendChild(th);
-        }
-        for (const f of files) {
-          const tr = table.insertRow();
-          const a = document.createElement("a");
-          a.href = f.download; a.textContent = f.file; a.setAttribute("download", f.file);
-          tr.insertCell().appendChild(a);
-          tr.insertCell().textContent = new Date(f.time * 1000).toLocaleString();
-          tr.insertCell().textContent = sizeText(f.size);
-        }
-        list.className = "backup-list scroll"; list.textContent = ""; list.appendChild(table);
-      } catch (e) { list.textContent = T.listFailed; }
-    });
+  async function loadBackups() {
+    const box = document.querySelector('[data-panel="backups"]');
+    if (!box) return;
+    const list = box.querySelector(".backup-list");
+    try {
+      const files = await (await fetch(box.dataset.url)).json();
+      if (!files.length) { list.textContent = T.emptyList; return; }
+      const table = document.createElement("table");
+      const head = table.insertRow();
+      for (const text of [T.file, T.date, T.size]) { const th = document.createElement("th"); th.textContent = text; head.appendChild(th); }
+      for (const f of files) {
+        const tr = table.insertRow();
+        const a = document.createElement("a");
+        a.href = f.download; a.textContent = f.file; a.setAttribute("download", f.file);
+        tr.insertCell().appendChild(a);
+        tr.insertCell().textContent = new Date(f.time * 1000).toLocaleString();
+        tr.insertCell().textContent = sizeText(f.size);
+      }
+      list.className = "backup-list scroll"; list.textContent = ""; list.appendChild(table);
+    } catch (e) { list.textContent = T.listFailed; }
   }
 
-  // a job of this server started or ended: the page again, so that its
-  // buttons (disabled while a job runs) and the service state are those of now
+  // a new staging, a staging deleted: a job, followed on its page
+  async function post(url, body, confirmText) {
+    if (!confirmText) return;
+    const error = document.getElementById("page-error");
+    error.textContent = "";
+    const resp = await fetch(url, {method: "POST", headers: {Accept: "application/json", "Content-Type": "application/json"},
+                                   body: JSON.stringify(body || {})}).catch(() => null);
+    const data = resp ? await resp.json().catch(() => ({})) : {};
+    if (!resp || !resp.ok || !data.job) { error.textContent = data.error || data.detail || T.refused; return; }
+    location.href = `{{ prefix }}/jobs/${data.job}`;
+  }
+  const newStaging = document.getElementById("staging-new");
+  if (newStaging) newStaging.addEventListener("click", () => post(
+    {{ (prefix ~ "/api/servers/" ~ server.name ~ "/stagings") | tojson }}, {},
+    confirm({{ _("Make a new staging of {server}: a copy of its production as it is now, neutralized, beside it?", server=server.name) | tojson }})));
+  const deleteInstance = document.getElementById("instance-delete");
+  {% if stagings and not stagings.parent and stagings.workspace %}
+  if (deleteInstance) deleteInstance.addEventListener("click", () => {
+    const typed = prompt({{ _("Delete the instance {name}: containers, database and files. It cannot be undone. Write its name to confirm.", name=server.name) | tojson }});
+    post({{ (prefix ~ "/api/workspaces/" ~ stagings.workspace.name ~ "/instances/delete") | tojson }}, {server: {{ server.name | tojson }}},
+         typed === {{ server.name | tojson }});
+  });
+  {% endif %}
+  const deleteStaging = document.getElementById("staging-delete");
+  {% if stagings and stagings.parent and stagings.workspace %}
+  if (deleteStaging) deleteStaging.addEventListener("click", () => {
+    const typed = prompt({{ _("Delete the staging {name}: containers, database and files. It cannot be undone. Write its name to confirm.", name=server.name) | tojson }});
+    post({{ (prefix ~ "/api/workspaces/" ~ stagings.workspace.name ~ "/instances/delete") | tojson }}, {server: {{ server.name | tojson }}},
+         typed === {{ server.name | tojson }});
+  });
+  {% endif %}
+
+  // a job of this server started or ended: the page again, with its buttons and state of now
   let busyBefore = null;
   async function watchJobs() {
     try {
@@ -488,9 +505,8 @@ document.getElementById("staging-new").addEventListener("click", async (event) =
   }
   watchJobs();
 
-  for (const panel of document.querySelectorAll(".log-panel")) {
-    OmniaLog.attach(panel.querySelector(".console-box"), panel.dataset.log);
-  }
+  for (const panel of document.querySelectorAll(".log-panel")) OmniaLog.attach(panel.querySelector(".console-box"), panel.dataset.log);
+  show((location.hash || "#overview").slice(1));
 })();
 </script>
 {% endblock %}

@@ -93,19 +93,18 @@ async def test_the_dashboard_shows_the_links_in_linked(mine):
     # link's error shows there; each link has its row in Linked
     page = (await mine.get("/", headers=as_user("admin"))).text
     assert "cliente › srv" not in page and "data-lazy" not in page and "Link <strong>down</strong>" not in page
-    # this machine's row on top; each link has its row in Linked, with the
-    # same load widgets (_load.html)
-    assert page.count('class="machine-row"') == 3 and page.index('data-link=""') < page.index('data-fold="servers"')
-    assert page.index('data-fold="servers"') < page.index('data-fold="linked"') < page.index('data-fold="jobs"')
+    # each link has its row in Linked, under the instances, with the same
+    # load widgets (_load.html); this machine's load is the bars on top
+    assert page.count('class="machine-row"') == 2 and page.index('id="instances"') < page.index('data-fold="linked"')
     for link in ("cliente", "down"):
         assert f'<a href="/links/{link}/"><strong>{link}</strong></a>' in page
         assert f'<span class="machine-row" data-link="{link}">' in page
-    assert page.count('class="load-cpu"') >= 3 and page.count('class="load-net"') == 3
-    # the linked rows are searched as every list (_list.html)
-    # one search, under this machine's row, for Servers and Linked together
-    assert 'data-list-search="servers linked"' in page and 'id="linked" data-list="linked"' in page
-    assert page.index('data-link=""') < page.index('data-list-search="servers linked"') < page.index('data-fold="servers"')
-    assert 'data-list-search="servers"' not in page and 'data-list-search="linked"' not in page
+    assert page.count('class="load-cpu"') == 2 and page.count('class="load-net"') == 2
+    # the linked rows are a list (_list.html); a few rows: no search, ?q= brings
+    # one for the instances and Linked together
+    assert 'id="linked" data-list="linked"' in page and "data-list-search=" not in page
+    page = (await mine.get("/?q=cli", headers=as_user("admin"))).text
+    assert page.index('data-list-search="servers linked"') < page.index('id="server-sections"') < page.index('data-fold="linked"')
     page = (await mine.get("/dashboard/servers", headers=as_user("admin"))).text
     assert "cliente" not in page and "down" not in page
     # tokens do not see the links
@@ -116,19 +115,20 @@ async def test_the_dashboard_shows_the_links_in_linked(mine):
 async def test_proxied_pages_and_actions(mine):
     resp = await mine.get("/links/cliente", headers=as_user("admin"))
     assert resp.status_code == 307 and resp.headers["location"] == "/links/cliente/"
-    page = (await mine.get("/links/cliente/servers/srv?view=both", headers=as_user("admin"))).text
-    assert "Linked instance <strong>cliente</strong>" in page
+    page = (await mine.get("/links/cliente/servers/srv?view=test", headers=as_user("admin"))).text
+    # its pages, with the bar of this one: Servers leads back here
+    assert 'class="nav-link" href="/machines"' in page and 'href="/links/cliente/"' in page
     # two repositories: the pull dialog's button carries the prefixed URL
     assert '"url": "/links/cliente/servers/srv/test/pull"' in page
     # the link is a developer there: no merge even for an admin here
-    assert "Merge test to production" not in page
+    assert "Bring to production" not in page
 
     resp = await mine.post("/links/cliente/servers/srv/test/pull", headers=as_user("dev", post=True))
     assert resp.status_code == 303 and resp.headers["location"].startswith("/links/cliente/jobs/")
     data = await wait_remote_job(mine, resp.headers["location"].rsplit("/", 1)[1])
     assert data["status"] == "success" and data["source"] == "manual: link omnia (dev)"
     job = (await mine.get(resp.headers["location"], headers=as_user("dev"))).text
-    assert "Linked instance" in job
+    assert 'class="nav-link" href="/machines"' in job and "/links/cliente/" in job
 
     # without the Origin of this instance, this instance refuses the POST
     assert (await mine.post("/links/cliente/servers/srv/test/pull", headers=as_user("dev"))).status_code == 403
@@ -137,7 +137,7 @@ async def test_proxied_pages_and_actions(mine):
 async def test_role_here_caps_the_link(mine):
     page = (await mine.get("/links/cliente/servers/srv?view=both", headers=as_user("viewer"))).text
     # the role user there: no actions but restart, no settings
-    assert "Linked instance <strong>cliente</strong>" in page and "/pull" not in page
+    assert 'class="nav-link" href="/machines"' in page and "/pull" not in page
     assert "Settings and repositories" not in page
     resp = await mine.post("/links/cliente/servers/srv/test/pull", headers=as_user("viewer", post=True))
     assert resp.status_code == 403
@@ -206,7 +206,8 @@ async def test_groups_of_the_linked(mine):
     body = {"lists": {"links": [{"name": "Customers", "members": ["cli*"]}]}}
     assert (await mine.post("/api/groups/save", json=body, headers=headers)).json() == {"ok": True}
     page = (await mine.get("/", headers=headers)).text
-    linked = page[page.index('data-fold="linked"'):page.index('data-fold="jobs"')]
+    linked = page[page.index('data-fold="linked"'):]
+    linked = linked[:linked.index("</section>")]
     # cliente under Customers, down under Others
     assert linked.index("<h2>Customers") < linked.index('data-link="cliente"') < linked.index("<h2>Others")
     assert linked.index("<h2>Others") < linked.index('data-link="down"')

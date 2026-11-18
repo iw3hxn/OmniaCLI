@@ -3,7 +3,7 @@
 {% set name = {"claude": "Claude", "psql": "psql"}.get(kind, "Shell") %}
 {% block title %}{{ name }} {{ instance.key }} · OmniaCLI{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
-{{ crumbs([(_("Dashboard"), "/"), (instance.server, "/servers/" ~ instance.server),
+{{ crumbs([(_("Instances"), "/"), (instance.server, "/servers/" ~ instance.server),
            ({"production": _("production"), "test": _("test")}.get(instance.role, instance.role) | capitalize, "/servers/" ~ instance.server ~ "?view=" ~ instance.role),
            (name, None)]) }}
 {% endblock %}

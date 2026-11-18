@@ -4,9 +4,7 @@
    with their steps, and Add a server in a dialog of two steps (machines.py). -#}
 {% extends "base.html" %}
 {% block title %}{{ _("Machines") }} · OmniaCLI{% endblock %}
-{% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
-{{ crumbs([(_("Dashboard"), "/"), (_("Machines"), None)]) }}
-{% endblock %}
+{% block crumbs %}{% endblock %}
 {% block content %}
 <style>
 .m-summary { display: flex; gap: 18px; flex-wrap: wrap; color: var(--muted); font-size: 13px; margin: -6px 0 18px; }
@@ -111,8 +109,7 @@
 </style>
 
 <div class="page-head">
-  <div><h1>{{ _("Machines") }}</h1>
-    <p>{{ _("The servers OmniaCLI prepared and manages: open one to see its workspaces and instances.") }}</p></div>
+  <div><h1>{{ _("Servers") }}</h1></div>
   <div class="actions"><button type="button" class="primary" data-add-machine {{ "disabled" if not provision_key }}>+ {{ _("Add a server") }}</button></div>
 </div>
 {% if not provision_key %}<div class="banner">{{ _("OmniaCLI's key cannot be made: see its log.") }}</div>{% endif %}
@@ -215,7 +212,8 @@
     next: {{ _("Next") | tojson }}, add: {{ _("Add the server") | tojson }}, connecting: {{ _("Connecting…") | tojson }},
     cancel: {{ _("Cancel") | tojson }}, back: {{ _("Back") | tojson }}, refused: {{ _("Refused") | tojson }},
     noHostKey: {{ _("The host key cannot be read") | tojson }}, addressFirst: {{ _("Write the server's address") | tojson }},
-    version: {{ _("OmniaCLI {version}") | tojson }},
+    version: {{ _("OmniaCLI {version}") | tojson }}, ram: {{ _("RAM") | tojson }}, here: {{ _("This machine") | tojson }},
+    stagings: {{ _("{count} stagings") | tojson }}, staging: {{ _("1 staging") | tojson }},
     steps: [{{ _("Connecting") | tojson }}, {{ _("The system") | tojson }}, {{ _("Updates") | tojson }},
             {{ _("nginx, certbot and Docker") | tojson }}, "OmniaCLI", {{ _("The link back") | tojson }},
             {{ _("The link's token") | tojson }}, {{ _("The firewall") | tojson }}, {{ _("The link") | tojson }}],
@@ -224,6 +222,9 @@
   const summary = document.getElementById("m-summary");
   const stats = {};   // name: what its OmniaCLI said through the link, kept between redraws
   let cards = {{ machines | tojson }};
+  // this machine, first: its instances are this OmniaCLI's own (Matteo's, by hand, or its workspaces)
+  const HERE = {name: "", local: true, linked: true, state: "up", host: location.hostname, port: null};
+  const baseOf = (card) => (card.local ? PREFIX : `${PREFIX}/links/${encodeURIComponent(card.name)}`);
 
   const el = (tag, attrs = {}, ...children) => {
     const node = document.createElement(tag);
@@ -280,11 +281,13 @@
     if (s.error) { box.append(el("div", {class: "m-error", text: s.error})); return box; }
     const meters = el("div", {class: "m-meters"});
     if (s.cpu !== null) meters.append(meter(T.cpu, Math.round(s.cpu), "%", s.cpu, spark(s.cpuSeries)));
+    if (s.ram !== null) meters.append(meter(T.ram, Math.round(s.ram), "%", s.ram));
     if (s.disk) meters.append(meter(T.disk, Math.round(s.disk.percent), "%", s.disk.percent,
       el("div", {class: "m-note", style: "margin-top: 4px", text: `${s.disk.used} ${fill(T.of, {total: s.disk.total})}`})));
     box.append(meters);
     const facts = el("div", {class: "m-facts"});
     if (s.instances !== null) facts.append(el("span", {text: s.instances === 1 ? T.instance : fill(T.instances, {count: s.instances})}));
+    if (s.stagings) facts.append(el("span", {text: s.stagings === 1 ? T.staging : fill(T.stagings, {count: s.stagings})}));
     if (s.cores) facts.append(el("span", {text: fill(T.cores, {count: s.cores})}));
     if (s.version) facts.append(el("span", {text: fill(T.version, {version: s.version})}));
     box.append(facts);
@@ -293,15 +296,14 @@
 
   function foot(card, state) {
     const row = el("div", {class: "mcard-foot"});
-    const base = `${PREFIX}/links/${encodeURIComponent(card.name)}/`;
+    const base = `${baseOf(card)}/`;
     if (card.job && state !== "up") row.append(el("a", {class: "button", href: `${PREFIX}/jobs/${card.job.id}`, text: T.log}));
     if (state === "failed") row.append(el("button", {type: "button", class: "primary", text: T.retry, onclick: () => openWizard(card)}));
     if (card.linked && state !== "preparing") {
-      row.append(el("a", {class: "button primary", href: base, text: T.open}),
-                 el("a", {class: "button", href: `${base}workspaces`, text: T.workspaces}));
+      row.append(el("a", {class: "button primary", href: base, text: T.open}));
     }
     row.append(el("span", {class: "grow"}));
-    if (card.linked) {
+    if (card.linked && !card.local) {
       const items = el("div", {class: "m-more-items"},
         el("button", {type: "button", text: T.test, onclick: (e) => testLink(card, e.target)}),
         el("button", {type: "button", class: "danger", text: T.remove, onclick: () => askRemove(card)}));
@@ -314,11 +316,11 @@
     grid.replaceChildren();
     empty.hidden = cards.length > 0;
     const counts = {up: 0, preparing: 0};
-    for (const card of cards) {
+    for (const card of [HERE, ...cards]) {
       const state = stateOf(card);
-      if (state in counts) counts[state] += 1;
+      if (state in counts && !card.local) counts[state] += 1;
       const address = card.port && card.port !== 22 ? `${card.host}:${card.port}` : card.host;
-      const name = card.linked ? el("a", {href: `${PREFIX}/links/${encodeURIComponent(card.name)}/`, text: card.name}) : card.name;
+      const name = card.linked ? el("a", {href: `${baseOf(card)}/`, text: card.local ? T.here : card.name}) : card.name;
       grid.append(el("article", {class: "mcard", "data-machine": card.name},
         el("div", {class: "mcard-head"}, el("div", {class: "mcard-icon"}, svg(ICON)),
            el("div", {class: "mcard-title"}, el("h3", {}, name), el("span", {class: "mono", text: address})),
@@ -344,23 +346,27 @@
   }
   // its OmniaCLI's own answers, through the link (the link proxy): version, load, disk, instances
   async function loadStats(card) {
-    const base = `${PREFIX}/links/${encodeURIComponent(card.name)}/api`;
+    const base = `${baseOf(card)}/api`;
     const [info, metrics, disks, servers] = await Promise.all([
       getJson(`${base}/info`), getJson(`${base}/metrics?machine_only=true`), getJson(`${base}/disks`), getJson(`${base}/servers`)]);
     if (!info) { stats[card.name] = {error: T.unreachable}; return; }
     const points = ((metrics && metrics.machine) || []).map((p) => p.cpu).filter((v) => v !== null && v !== undefined);
     const recent = points.slice(-6);
+    const ramPoint = ((metrics && metrics.machine) || []).filter((p) => p.ram_total).pop();
     const all = (disks && disks.disks) || [];
     const root = all.find((d) => d.mount === "/") || all[0];
     stats[card.name] = {
       version: info.version, cores: metrics && metrics.cores,
       cpu: recent.length ? recent.reduce((a, b) => a + b, 0) / recent.length : null, cpuSeries: points.slice(-60),
       disk: root ? {percent: root.used / root.total * 100, used: bytes(root.used), total: bytes(root.total)} : null,
-      instances: Array.isArray(servers) ? servers.reduce((n, s) => n + Object.keys(s.instances || {}).length, 0) : null,
+      ram: ramPoint ? ramPoint.ram / ramPoint.ram_total * 100 : null,
+      // an instance is a production; its stagings (and a test of before) are its copies
+      instances: Array.isArray(servers) ? servers.filter((x) => !x.parent).length : null,
+      stagings: Array.isArray(servers) ? servers.filter((x) => x.parent).length : 0,
     };
   }
   async function refreshStats() {
-    await Promise.all(cards.filter((c) => c.linked && stateOf(c) === "up").map(loadStats));
+    await Promise.all([HERE, ...cards].filter((c) => c.linked && stateOf(c) === "up").map(loadStats));
     draw();
   }
   let timer = null, rounds = 0;

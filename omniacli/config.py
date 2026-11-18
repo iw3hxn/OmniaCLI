@@ -194,6 +194,9 @@ class Instance:
     # the base URL users open the instance at (its domain name); None: this
     # computer's localhost at the port the plugin knows
     domain: str | None = None
+    # the address the instance's workspace publishes it on (apply_sites), when
+    # it has no domain of its own; not in the servers file
+    site: str | None = field(default=None, compare=False)
     # the folder the Claude button of the server page opens a shell in, to
     # run claude there; None: no button
     claude_dir: Path | None = None
@@ -206,10 +209,11 @@ class Instance:
 
     @property
     def web_url(self) -> str | None:
-        """Where the instance's web interface is opened: its domain, else
-        http://localhost:<port>; None when neither is known."""
-        if self.domain:
-            return self.domain
+        """Where the instance's web interface is opened: its domain, else its
+        workspace's name for it, else http://localhost:<port>; None when none
+        is known."""
+        if self.domain or self.site:
+            return self.domain or self.site
         port = self.plugin.web_port(self)
         return f"http://localhost:{port}" if port else None
 
@@ -1122,21 +1126,58 @@ def parse_workspaces(data, storage_roots=()) -> dict[str, Workspace]:
     return found
 
 
-def web_names(domain: str, instances, main: str = "", subdomains: dict[str, str] | None = None) -> list[dict]:
+# a staging's instance (stagings.py): <its production's instance>-stg-<yyyymmdd>[-n]
+STAGING_INSTANCE = re.compile(r"(?P<parent>.+)-stg-(?P<stamp>\d{8}(?:-\d+)?)")
+
+
+def web_names(domain: str, instances, main: str = "", subdomains: dict[str, str] | None = None,
+              roles: dict[str, tuple[str, ...]] | None = None) -> list[dict]:
     """The names each instance and role of a workspace answers on:
     [{instance, role, names}], production first. The main instance takes
     <domain> and test.<domain>; every instance <instance>.<domain> and
-    <instance>.test.<domain>; a subdomain <sub>.<domain> and <sub>.test.<domain>."""
-    found = []
-    for instance in instances:
+    <instance>.test.<domain>; a subdomain <sub>.<domain> and <sub>.test.<domain>.
+    A staging of an instance there answers on stg-<date>.<its first name>,
+    as Cloudpepper's. roles: {instance: the roles it has}, both by default
+    (an instance with its production only has no test names)."""
+    found, first = [], {}
+    instances = list(instances)
+    stagings = {i: m for i in instances if (m := STAGING_INSTANCE.fullmatch(i)) and m["parent"] in instances}
+    for instance in sorted(instances, key=lambda i: i in stagings):
         subs = [sub for sub, target in (subdomains or {}).items() if target == instance]
         for role, base in (("production", domain), ("test", f"{TEST_LABEL}.{domain}")):
-            names = ([base] if instance == main else []) + [f"{label}.{base}" for label in (instance, *subs)]
+            if roles is not None and role not in roles.get(instance, ()):
+                continue
+            if instance in stagings:
+                parent = first.get((stagings[instance]["parent"], role))
+                if parent is None:
+                    continue
+                names = [f"stg-{stagings[instance]['stamp']}.{parent}"]
+            else:
+                names = ([base] if instance == main else []) + [f"{label}.{base}" for label in (instance, *subs)]
             long = [n for n in names if len(n) > 253]
             if long:
                 raise ConfigError(f"{long[0]} is longer than a domain name may be (253)")
+            first[(instance, role)] = names[0]
             found.append({"instance": instance, "role": role, "names": names})
     return found
+
+
+def apply_sites(servers: dict, workspaces: dict) -> None:
+    """The address of each instance of a workspace with a domain (Instance.site):
+    https on the first of its names, what nginx serves it on."""
+    for srv in servers.values():
+        for inst in srv.instances.values():
+            inst.site = None
+    for ws in workspaces.values():
+        if not ws.domain:
+            continue
+        here = {i: tuple(servers[f"{ws.name}-{i}"].instances) for i in ws.instances() if f"{ws.name}-{i}" in servers}
+        try:
+            sites = web_names(ws.domain, list(here), ws.main, ws.subdomains, here)
+        except ConfigError:
+            continue
+        for site in sites:
+            servers[f"{ws.name}-{site['instance']}"].instances[site["role"]].site = f"https://{site['names'][0]}"
 
 
 def load_workspaces(path: Path, storage_roots=()) -> dict[str, Workspace]:
@@ -1671,6 +1712,7 @@ def parse_settings(data: dict, base_dir: Path = Path(".")) -> Settings:
         fixed=fixed,
     )
     settings.set_web_access(load_access(users_file))
+    apply_sites(settings.servers, settings.workspaces)
     return settings
 
 

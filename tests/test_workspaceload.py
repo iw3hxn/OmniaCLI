@@ -150,19 +150,18 @@ def test_the_series_of_a_workspace():
     assert sampler.workspace_series("none") == []
 
 
-async def test_the_dashboard_lists_the_workspaces(workspaces, client):  # noqa: F811
+async def test_the_workspaces_are_in_settings_not_on_the_dashboard(workspaces, client):  # noqa: F811
+    """The server's page shows its instances (docs/ux/REVIEW-2026-11-18.md);
+    the workspaces are a place of Settings, for the machine's admins."""
     from .test_app import basic as machine_user
 
     page = (await client.get("/", headers={"Authorization": AUTH})).text
-    # Workspaces, after Servers: the list of the Workspaces page itself, searched as every list
-    assert page.index('data-fold="servers"') < page.index('data-fold="workspaces"')
+    assert 'data-fold="workspaces"' not in page and 'href="/servers/srv"' in page
+    assert 'href="/workspaces"' in (await client.get("/settings", headers={"Authorization": AUTH})).text
+    page = (await client.get("/workspaces", headers={"Authorization": AUTH})).text
     assert 'class="ws-row" data-ws="acme"' in page and 'id="ws-list" data-list="workspaces"' in page
-    # each server tells its workspace: srv is acme's
-    row = page[page.index('href="/servers/srv"'):]
-    assert '<a href="/workspaces?edit=acme">acme</a>' in row[:row.index("</tr>")]
-    # a developer of the machine: its servers, no workspaces (they are the admins')
-    page = (await client.get("/", headers={"Authorization": machine_user("dev")})).text
-    assert 'data-fold="workspaces"' not in page and "<th>Workspace</th>" in page
+    # a developer of the machine: no workspaces (they are the admins')
+    assert 'href="/workspaces"' not in (await client.get("/settings", headers={"Authorization": machine_user("dev")})).text
 
 
 async def test_every_list_is_searched_by_the_list_widget(workspaces, client):  # noqa: F811

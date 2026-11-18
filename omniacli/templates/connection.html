@@ -2,7 +2,7 @@
 {% extends "base.html" %}
 {% block title %}{{ name }} · OmniaCLI{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
-{{ crumbs([(_("Dashboard"), "/"), (_("Pullers"), "/pullers" if is_admin else None), (name, None)]) }}
+{{ crumbs([(_("Settings"), "/settings"), (_("Pullers"), "/pullers" if is_admin else None), (name, None)]) }}
 {% endblock %}
 {% block content %}
 <div class="page-head">

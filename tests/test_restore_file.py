@@ -82,7 +82,8 @@ def test_the_error_line_is_the_exception_not_the_caret():
 
 
 async def test_upload_then_restore(here, env):
-    page = (await here.get("/servers/srv?view=both", headers=as_user("admin"))).text
+    page = (await here.get("/servers/srv", headers=as_user("admin"))).text
+    page += (await here.get("/servers/srv?view=test", headers=as_user("admin"))).text
     assert page.count("data-restore-file=") == 2 and '<dialog id="restore-dialog">' in page
 
     resp = await here.post(UPLOAD, params={"name": "my backup (1).zip"}, headers=as_user("admin", post=True),

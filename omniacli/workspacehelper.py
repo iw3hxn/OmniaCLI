@@ -915,6 +915,10 @@ def _owner(spec: str) -> tuple[int, int]:
     return int(uid), int(gid)
 
 
+# the key of create's values that says which roles it makes, never a template's
+ROLES_KEY = "_roles"
+
+
 def create(name: str, storage: str, instance: str, template_name: str, values_json: str) -> dict:
     image, mount = workspace(name, storage)
     _name("instance", instance)
@@ -932,15 +936,21 @@ def create(name: str, storage: str, instance: str, template_name: str, values_js
         raise HelperError("the values are not JSON") from None
     if not isinstance(given, dict):
         raise HelperError("the values are not a JSON object")
+    # the roles made: production alone (an instance with its stagings), or
+    # both as before; not given, both (an OmniaCLI of before asking)
+    roles = given.pop(ROLES_KEY, list(ROLES))
+    if not isinstance(roles, list) or "production" not in roles or not set(roles) <= set(ROLES):
+        raise HelperError(f"{ROLES_KEY} is a list of roles with production in it ({', '.join(ROLES)})")
+    roles = [r for r in ROLES if r in roles]
     try:
         values = template.values({str(k): str(v) for k, v in given.items()})
     except stacktemplates.TemplateError as exc:
         raise HelperError(str(exc)) from None
     _, caller_uid, _ = caller()
-    ports = pick_ports(2 * len(ROLES))
+    ports = pick_ports(2 * len(roles))
     if not firewall_in_place():
         firewall("on")
-    subnets = pick_subnets(len(ROLES))
+    subnets = pick_subnets(len(roles))
     database = instance.replace("-", "_")
     made = {"workspace": name, "instance": instance, "template": template.name, "version": template.version,
             "database": database, "odoo_service": template.odoo_service, "db_service": template.db_service,
@@ -949,7 +959,7 @@ def create(name: str, storage: str, instance: str, template_name: str, values_js
     try:
         _write(folder / INSTANCE_FILE, json.dumps({"template": template.name, "version": template.version,
                                                    "database": database}) + "\n")
-        for index, role in enumerate(ROLES):
+        for index, role in enumerate(roles):
             project = folder / role
             project.mkdir(mode=0o755)
             # the customer's repositories of the role: OmniaCLI's user clones there
@@ -1091,10 +1101,15 @@ def _env(project: Path) -> dict[str, str]:
 
 
 def instances_on_disk(mount: Path) -> list[str]:
-    """The instances of a mounted workspace: <instance>/<role>/.env of every role."""
+    """The instances of a mounted workspace: <instance>/production/.env (its
+    test, <instance>/test/.env, is there or not: roles_on_disk)."""
     return sorted(p.name for p in mount.iterdir()
                   if WORKSPACE_NAME.fullmatch(p.name) and not p.is_symlink() and p.is_dir()
-                  and all((p / role / ".env").is_file() for role in ROLES))
+                  and (p / "production" / ".env").is_file())
+
+
+def roles_on_disk(mount: Path, instances: list[str]) -> dict[str, tuple[str, ...]]:
+    return {i: tuple(role for role in ROLES if (mount / i / role / ".env").is_file()) for i in instances}
 
 
 def web_spec(spec_json: str, instances: list[str]) -> dict:
@@ -1128,7 +1143,7 @@ def web_spec(spec_json: str, instances: list[str]) -> dict:
 
 def _sites(mount: Path, spec: dict, instances: list[str]) -> list[dict]:
     try:
-        sites = web_names(spec["domain"], instances, spec["main"], spec["subdomains"])
+        sites = web_names(spec["domain"], instances, spec["main"], spec["subdomains"], roles_on_disk(mount, instances))
     except ConfigError as exc:
         raise HelperError(str(exc)) from None
     for site in sites:
