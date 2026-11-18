@@ -987,7 +987,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         # Log in as: a user who logs in here, with the role it needs
         login_as_buttons = {}
         for i in shown:
-            if i.plugin.has_login and me.kind == "user" and me.can(from_link_role(i)):
+            if i.plugin.has_login and acts_for_a_person(me) and me.can(from_link_role(i)):
                 api = f"{prefix_of(request)}/api/servers/{srv.name}/{i.role}/login-as"
                 login_as_buttons[i.key] = {"users": f"{api}/users", "url": api, "key": i.key}
         # Git pull: with more than one thing to pull, the dialog chooses which
@@ -1845,6 +1845,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     def refuse(message: str, code: int = status.HTTP_400_BAD_REQUEST):
         return JSONResponse({"error": message}, status_code=code)
 
+    def acts_for_a_person(user: Principal) -> bool:
+        """A user who logs in here, or a linked OmniaCLI acting for one of its
+        users (its pages through the link): not a token, not a link alone."""
+        return user.kind == "user" or (user.kind == "link" and bool(user.on_behalf))
+
     def login_as_target(request: Request, instance: Instance, user: Principal) -> tuple[str, str]:
         """Who may log in as a user of instance (a production is an admin's,
         a test a developer's, a user who logs in here), and where: the base
@@ -1852,8 +1857,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         URL. Raises HTTPException when it cannot."""
         if not instance.plugin.has_login:
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"{instance.key} cannot log in as a user")
-        if user.kind != "user":
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "Only a user who logs in here may log in as a user")
+        if not acts_for_a_person(user):
+            raise HTTPException(status.HTTP_403_FORBIDDEN,
+                                "Only a person may log in as a user: one who logs in here, or through a link")
         if not user.can(from_link_role(instance)):
             raise HTTPException(status.HTTP_403_FORBIDDEN,
                                 f"The {from_link_role(instance)} role is required for a production")
@@ -1897,8 +1903,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return refuse(made.get("error") or "no session made", status.HTTP_502_BAD_GATEWAY)
         detail = f"{instance.key} as {made.get('login')} (id {uid})"
         home = odoo_base + loginas.safe_home(made.get("home"))
-        token = login_tickets.issue(made["sid"], urlsplit(base).netloc, home, user.name, detail)
-        access_log.record("login-as", user.kind, user.name, request.client.host if request.client else "",
+        token = login_tickets.issue(made["sid"], urlsplit(base).netloc, home, str(user), detail)
+        access_log.record("login-as", user.kind, str(user), request.client.host if request.client else "",
                           f"asked: {detail}")
         return {"url": f"{base}{loginas.LOGIN_PATH}?t={token}", "login": made.get("login"),
                 "seconds": loginas.TOKEN_SECONDS}

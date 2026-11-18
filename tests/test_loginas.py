@@ -20,6 +20,8 @@ from omniacli.odoo import OdooPlugin
 from omniacli.odoo import ops as odoo_ops
 from omniacli.plugin_api import login_answer
 
+from omniacli.auth import hash_token
+
 from .conftest import USER_HASH, BasicAsSession
 from .test_links import HOST, as_user
 
@@ -54,7 +56,8 @@ async def here(env, tmp_path, monkeypatch):
     (conf / "servers.yaml").write_text(yaml.safe_dump(servers))
     settings = parse_settings({
         "auth": {"users": {"admin": USER_HASH, "dev": {"password": USER_HASH, "role": "developer"},
-                           "viewer": {"password": USER_HASH, "role": "user"}}},
+                           "viewer": {"password": USER_HASH, "role": "user"}},
+                 "links": {"mine": {"token": hash_token("a-link-token"), "role": "admin"}}},
         "backup_dir": str(tmp_path / "here-backups"), "jobs_dir": str(tmp_path / "here" / "jobs"),
         "servers_file": "servers.yaml",
     }, base_dir=conf)
@@ -107,6 +110,18 @@ async def test_a_link_opened_on_another_host_is_refused_and_spent(here):
     right = await here.get(f"{url.path}?{url.query}", headers={"Host": TEST})
     assert right.status_code == 403
     assert (await here.get(f"{loginas.LOGIN_PATH}?t=made-up", headers={"Host": TEST})).status_code == 403
+
+
+async def test_a_person_through_a_link_logs_in_as_a_user(here):
+    """The pages of a machine seen through a link: its OmniaCLI acts for one
+    of the other's users, who may log in as a user; the link alone may not."""
+    link = {"Authorization": "Bearer a-link-token", "Accept": "application/json"}
+    resp = await here.post(api("production"), headers={**link, "x-omniacli-user": "carlo"}, json={"id": 2})
+    assert resp.status_code == 200, resp.text
+    assert urlsplit(resp.json()["url"]).netloc == PRODUCTION
+    assert (await here.post(api("production"), headers=link, json={"id": 2})).status_code == 403
+    page = (await here.get("/servers/srv", headers={**link, "x-omniacli-user": "carlo"})).text
+    assert "data-login-as" in page
 
 
 async def test_a_production_is_an_admins(here):
