@@ -222,6 +222,9 @@ async def publish(job: Job, ws: Workspace) -> dict:
     for name in made.get("names", []):
         job.log(("https://" if made.get("https") else "http://") + name)
     job.log(f"nginx: {made.get('nginx')}")
+    if made.get("without_dns"):
+        job.log("Not in DNS yet, so not in the certificate (point them to this machine, then publish again): "
+                + ", ".join(made["without_dns"]))
     if made.get("certificate_error"):
         job.log(f"The certificate is not there yet: {made['certificate_error']}")
     return made

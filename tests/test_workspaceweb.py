@@ -134,6 +134,8 @@ def web_root(root, monkeypatch, tmp_path):
             return subprocess.CompletedProcess(cmd, state["certbot"], "", "Challenge failed for domain main.acme.it")
         return real_run(cmd, **kw)
     monkeypatch.setattr(workspacehelper.subprocess, "run", run)
+    state["dns"] = None  # every name resolves; else the set that does
+    monkeypatch.setattr(workspacehelper, "_resolves", lambda host: state["dns"] is None or host in state["dns"])
     return {**root, "tmp": tmp_path, "web": state, "site": tmp_path / "nginx" / "omniacli-acme.conf"}
 
 
@@ -156,6 +158,19 @@ def test_helper_web_letsencrypt(web_root):
     assert "20001" not in site and "ssl_certificate " + str(web_root["tmp"] / "letsencrypt" / "omniacli-acme") in site
     assert (web_root["tmp"] / "nginx" / "omniacli.conf").read_text().endswith("server_names_hash_bucket_size 256;\n")
     assert ["systemctl", "reload", "nginx"] in web_root["calls"] or ["systemctl", "is-active", "nginx"] in web_root["calls"]
+
+
+def test_helper_web_certificate_of_the_names_in_dns(web_root):
+    """A name with no DNS record yet does not fail the others' certificate."""
+    storage, state = str(web_root["storage"]), web_root["web"]
+    state["dns"] = {"acme.it", "main.acme.it"}
+    made = workspacehelper.web("acme", storage, spec())
+    certbot = [c for c in state["commands"] if c[0].endswith("certbot")][0]
+    assert [certbot[i + 1] for i, a in enumerate(certbot) if a == "-d"] == ["acme.it", "main.acme.it"]
+    assert made["without_dns"] == ["test.acme.it", "main.test.acme.it"] and made["https"]
+    state["dns"], state["commands"] = set(), []
+    made = workspacehelper.web("acme", storage, spec())
+    assert "in DNS yet" in made["certificate_error"] and not [c for c in state["commands"] if c[0].endswith("certbot")]
 
 
 def test_helper_web_refusals_and_rollback(web_root):

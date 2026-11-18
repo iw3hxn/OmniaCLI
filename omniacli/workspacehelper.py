@@ -1177,6 +1177,14 @@ def _put_site(path: Path, text: str | None) -> str:
     return _nginx_reload()
 
 
+def _resolves(host: str) -> bool:
+    """host has an address in DNS: Let's Encrypt can reach it."""
+    try:
+        return bool(socket.getaddrinfo(host, 80, proto=socket.IPPROTO_TCP))
+    except (OSError, UnicodeError):
+        return False
+
+
 def _certbot(name: str, names: list[str]) -> str | None:
     """Let's Encrypt's certificate for names: None, or why it failed."""
     email = str((_system().get("workspaces") or {}).get("acme_email") or "")
@@ -1253,7 +1261,12 @@ def web(name: str, storage: str, spec_json: str) -> dict:
     omniacli = omniacli_address()
     made["nginx"] = _put_site(path, workspaceweb.conf_text(name, sites, tls, ipv6, omniacli))
     if spec["certificate"] == "letsencrypt":
-        made["certificate_error"] = _certbot(name, names)
+        # one name with no DNS record would fail the whole certificate: it is
+        # asked for the names that resolve, the others are said (on http until
+        # their record is there and the site is published again)
+        known = [n for n in names if _resolves(n)]
+        made["without_dns"] = [n for n in names if n not in known]
+        made["certificate_error"] = _certbot(name, known) if known else "no name of the workspace is in DNS yet"
         if made["certificate_error"] is None and tls is None:
             tls = _tls(name, spec["certificate"])
             made["nginx"] = _put_site(path, workspaceweb.conf_text(name, sites, tls, ipv6, omniacli))
