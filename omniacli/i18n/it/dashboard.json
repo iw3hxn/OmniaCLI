@@ -111,6 +111,7 @@
  "Servers": "Server",
  "Servers known now (click one to add it to the last group you edited):": "Server noti adesso (clicca su uno per aggiungerlo all'ultimo gruppo modificato):",
  "Size": "Dimensione",
+ "Staging of {name}": "Staging di {name}",
  "Start": "Avvia",
  "Start Odoo of {name}?": "Avviare Odoo di {name}?",
  "Start {name}": "Avvia {name}",

@@ -860,12 +860,36 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             }
             for srv in live
         ]
+        rows = nest_stagings(rows)
         groups = settings.groups.get("servers", []) if shown is None else []
         for row in rows:
-            # the search finds a server by its workspace and its groups too
-            row["text"] += " " + " ".join([row["workspace"], *group_names(groups, row["name"])])
-        return {"rows": rows, "sections": listgroups.sections(rows, groups, lambda r: r["name"]),
+            # the search finds a server by its workspace and its groups too;
+            # a staging is in its parent's groups, under it
+            row["text"] += " " + " ".join([row["workspace"], *group_names(groups, row["parent"] or row["name"])])
+        return {"rows": rows, "sections": listgroups.sections(rows, groups, lambda r: r["parent"] or r["name"]),
                 "total": len(rows), "q": q}
+
+    def nest_stagings(rows: list[dict]) -> list[dict]:
+        """rows with each staging right under its parent, the newest first, as
+        Cloudpepper's ↳ children: "parent" and "created" on every row (empty
+        for one that is no staging, or whose parent is not shown)."""
+        known = stagings.load(stagings_file)
+        names = {row["name"] for row in rows}
+        children: dict[str, list[dict]] = {}
+        for row in rows:
+            info = known.get(row["name"]) or {}
+            parent = info.get("parent", "")
+            row["parent"] = parent if parent in names and parent != row["name"] else ""
+            row["created"] = str(info.get("created", ""))[:16].replace("T", " ")
+            if row["parent"]:
+                row["text"] += " " + row["parent"] + " staging"
+                children.setdefault(row["parent"], []).append(row)
+        out = []
+        for row in rows:
+            if not row["parent"]:
+                out.append(row)
+                out += sorted(children.get(row["name"], []), key=lambda r: r["created"], reverse=True)
+        return out
 
     def group_names(groups: list, key: str) -> list[str]:
         """The names of the groups that hold key, from the top down."""

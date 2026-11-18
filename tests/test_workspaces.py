@@ -723,6 +723,15 @@ async def test_a_dated_staging_beside_a_production(workspaces, client, env, monk
     listed = (await client.get("/api/servers/acme-odoo/stagings", headers={"Authorization": AUTH})).json()
     assert [s["server"] for s in listed["stagings"]] == list(reversed(made)) or \
         sorted(s["server"] for s in listed["stagings"]) == sorted(made)
+    # the Dashboard: each staging right under its parent, with its date and only its production
+    page = (await client.get("/", headers={"Authorization": AUTH})).text
+    at = [page.index(f'data-server="{name}"') for name in ("acme-odoo", *made)]
+    assert at[0] < min(at[1:])
+    for name in made:
+        row = page[page.index(f'data-server="{name}"'):]
+        row = row[:row.index("</tr>")]
+        assert 'class="staging-row" data-parent="acme-odoo"' in row and "↳" in row and "Staging" in row
+        assert "view-test" not in row and f'data-key="{name}/test"' not in row
     assert all(s["created"].startswith(datetime.date.today().isoformat()) for s in listed["stagings"])
     record = stagings.load((settings.links_file or settings.servers_file).parent / stagings.FILE)
     assert record[made[0]]["parent"] == "acme-odoo" and record[made[0]]["backup"] == "odoo_20261117.zip"

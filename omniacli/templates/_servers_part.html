@@ -11,22 +11,26 @@
   <table class="server-rows">
     <tr><th>{{ _("Server") }}</th><th>{{ _("Workspace") }}</th><th>{{ _("Odoo, CPU of the last 15 minutes") }}</th></tr>
     {% for row in rows %}
-    <tr {{ item(row.text) }} data-server="{{ row.name }}">
-      <td><div class="server-name"><a href="{{ row.base }}/servers/{{ row.name }}"><strong>{{ row.label }}</strong></a>
+    {# a staging right under its parent, as Cloudpepper's ↳ children: its
+       production only (its test is stopped, kept on its own page) #}
+    {% set roles = ["production"] if row.parent and "production" in row.roles else row.roles %}
+    <tr {{ item(row.text) }} data-server="{{ row.name }}"{% if row.parent %} class="staging-row" data-parent="{{ row.parent }}"{% endif %}>
+      <td><div class="server-name">{% if row.parent %}<span class="staging-mark" aria-hidden="true">↳</span>{% endif %}<a href="{{ row.base }}/servers/{{ row.name }}"><strong>{{ row.label }}</strong></a>
+        {% if row.parent %}<span class="badge info" title="{{ _("Staging of {name}", name=row.parent) }}">{{ _("Staging") }}</span>{% if row.created %}<span class="muted staging-date">{{ _("copied on {date}", date=row.created) }}</span>{% endif %}{% endif %}
         <span class="view-buttons">
           {# the instance itself, at its domain or on localhost, in a new tab;
              its page here when its address is not known #}
-          {% for role in ("production", "test") if role in row.roles %}
+          {% for role in ("production", "test") if role in roles %}
           {% set role_label = (_("production") if role == "production" else _("test")) | capitalize %}
           {% if row.web.get(role) %}<a class="button view-{{ role }}" href="{{ row.web[role] }}" target="_blank" rel="noopener" title="{{ _("Open {url} in a new tab", url=row.web[role]) }}">{{ icon(role) }}{{ role_label }}</a>
           {% else %}<a class="button view-{{ role }}" href="{{ row.base }}/servers/{{ row.name }}?view={{ role }}" title="{{ _("Production of {name}", name=row.label) if role == "production" else _("Test of {name}", name=row.label) }}">{{ icon(role) }}{{ role_label }}</a>{% endif %}
           {% endfor %}
         </span></div>
         {# shown and hidden by the Dashboard as jobs start and end #}
-        {% for role in row.roles %}<span class="job-busy" data-link="{{ row.link }}" data-busy="{{ row.name }}/{{ role }}" {% if not row.busy[role] %}hidden{% endif %}><br><span class="status running">{{ runner("mini") }}{{ _("job running on production") if role == "production" else _("job running on test") }}</span></span>{% endfor %}</td>
+        {% for role in roles %}<span class="job-busy" data-link="{{ row.link }}" data-busy="{{ row.name }}/{{ role }}" {% if not row.busy[role] %}hidden{% endif %}><br><span class="status running">{{ runner("mini") }}{{ _("job running on production") if role == "production" else _("job running on test") }}</span></span>{% endfor %}</td>
       <td>{% if row.workspace %}{% if is_admin %}<a href="{{ prefix }}/workspaces?edit={{ row.workspace | urlencode }}">{{ row.workspace }}</a>{% else %}{{ row.workspace }}{% endif %}{% else %}<span class="muted">—</span>{% endif %}</td>
       <td class="sparks">
-        {% for role in row.roles %}
+        {% for role in roles %}
         <div class="spark-row" data-link="{{ row.link }}" data-key="{{ row.name }}/{{ role }}">
           <span class="role {{ role }}">{{ _("Prod") if role == "production" else _("test") | capitalize }}</span>
           {{ load_cpu(row.label ~ " " ~ role) }}
