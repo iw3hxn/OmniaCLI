@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>inaria · OmniaCLI (disegno)</title><link rel="stylesheet" href="mock.css"></head>
+<body>
+<header class="top">
+  <span class="brand">Omnia<span>CLI</span></span>
+  <nav><a class="on" href="1-server.html">Server</a><a href="#istanze">Istanze</a><a href="#" data-say="Backup: non disegnato in questo giro.">Backup</a><a href="#" data-say="Impostazioni: utenti, credenziali git, pianificazioni, puller, plugin, opzioni, log.">Impostazioni</a></nav>
+  <span class="me hide-sm">Carlo · admin</span>
+</header>
+<main>
+  <a class="back" href="1-server.html">‹ Tutti i server</a>
+  <div class="head">
+    <div><h1>inaria</h1>
+      <div class="facts"><span class="dot">Connesso</span><span class="mono">45.13.146.195</span><span>Ubuntu 24.04</span><span>4 core</span><span>OmniaCLI 2026.1.5403</span></div></div>
+    <div class="btns">
+      <div class="menu"><button data-menu title="Le azioni rare sul server">⋯</button>
+        <div>
+          <button data-say="Apre una shell di root sul server, in una nuova scheda.">Console del server</button>
+          <button data-say="Aggiorna OmniaCLI sul server all'ultima versione pubblicata.">Aggiorna OmniaCLI</button>
+          <hr><button class="danger" data-say="Toglie inaria dall'elenco: le sue istanze restano accese, sul server non cambia niente.">Togli dall'elenco…</button>
+        </div></div>
+    </div>
+  </div>
+
+  <nav class="tabs"><a class="on" href="#">Panoramica</a><a href="#" data-say="Monitoraggio: grafici di CPU, RAM, disco e rete dell'ultima settimana.">Monitoraggio</a><a href="#" data-say="Backup: quelli di tutte le istanze del server, con lo spazio che occupano.">Backup</a><a href="#" data-say="Impostazioni del server: indirizzo, porta SSH, e-mail per i certificati, chiavi.">Impostazioni</a></nav>
+
+  <div class="stats">
+    <div class="stat"><small>Istanze Odoo</small><b>1</b></div>
+    <div class="stat"><small>Staging</small><b>1</b></div>
+    <div class="stat"><small>Spazio libero</small><b>52 GB</b></div>
+  </div>
+
+  <div class="panel">
+    <div class="bars">
+      <span>CPU</span><span class="bar"><i style="width: 6%"></i></span><span class="muted">6%</span>
+      <span>RAM</span><span class="bar"><i class="warn" style="width: 58%"></i></span><span class="muted">4,6 / 8 GB</span>
+      <span>Disco</span><span class="bar"><i style="width: 34%"></i></span><span class="muted">27 / 80 GB</span>
+    </div>
+    <div class="updated">aggiornato alle 06:52:10 ⟳</div>
+  </div>
+
+  <div class="panel" id="istanze">
+    <div class="panel-head"><h2>Istanze Odoo</h2>
+      <button class="primary" data-open="new" title="Crea un'istanza Odoo scegliendo solo la versione: database, contenitori, disco e indirizzo li prepara OmniaCLI.">+ Nuova istanza</button></div>
+    <table>
+      <tr><th>Indirizzo</th><th>Stato</th><th class="hide-sm">Odoo</th><th class="hide-sm">Copiata il</th></tr>
+      <tr class="click" data-href="3-istanza.html" title="Apri l'istanza: i suoi ambienti, backup, log">
+        <td><a href="3-istanza.html"><b>odoo.inaria.media</b></a> <span class="badge prod">Produzione</span></td>
+        <td><span class="dot">In esecuzione</span></td><td class="hide-sm">19.0</td><td class="hide-sm muted">—</td></tr>
+      <tr class="click child" data-href="4-staging.html" title="Apri la staging">
+        <td>↳ <a href="4-staging.html">stg-20261117.odoo.inaria.media</a> <span class="badge stg">Staging</span></td>
+        <td><span class="dot">In esecuzione</span></td><td class="hide-sm">19.0</td><td class="hide-sm muted">17/11/2026 22:48</td></tr>
+    </table>
+  </div>
+  <div class="lastjob">Ultima azione: <a href="#" data-say="Apre il job: i suoi passi e il log.">Nomi pubblicati con HTTPS</a> · riuscita · oggi 05:27</div>
+</main>
+
+<dialog id="new">
+  <h2>Nuova istanza</h2>
+  <p class="muted" style="margin-top: 0">Scegli la versione. Il resto lo fa OmniaCLI.</p>
+  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px">
+    <button class="primary" style="justify-content: center; padding: 18px; font-size: 22px">19.0</button>
+    <button style="justify-content: center; padding: 18px; font-size: 22px">18.0</button>
+  </div>
+  <p class="muted" style="font-size: 13px">Indirizzo: <span class="mono">odoo19.odoo.inaria.media</span> · <a href="#" data-say="Nome, dominio e lingua, facoltativi.">cambia</a></p>
+  <div class="foot"><button data-close>Annulla</button><button class="primary" data-close>Crea l'istanza</button></div>
+</dialog>
+<div class="mocknote">Disegno statico: righe e pulsanti mostrano dove porta ogni clic.</div>
+<script src="mock.js"></script>
+</body></html>

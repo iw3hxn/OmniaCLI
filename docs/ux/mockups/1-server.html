@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Server · OmniaCLI (disegno)</title><link rel="stylesheet" href="mock.css"></head>
+<body>
+<header class="top">
+  <span class="brand">Omnia<span>CLI</span></span>
+  <nav><a class="on" href="1-server.html">Server</a><a href="2-inaria.html#istanze">Istanze</a><a href="#" data-say="Backup: tutti i backup delle istanze, per server. Non disegnato in questo giro.">Backup</a><a href="#" data-say="Impostazioni: utenti, credenziali git, pianificazioni, puller, plugin, opzioni, log di OmniaCLI e la configurazione a mano dei server. Tutto ciò che oggi è nella barra laterale.">Impostazioni</a></nav>
+  <span class="me hide-sm">Carlo · admin</span>
+</header>
+<main>
+  <div class="head">
+    <div><h1>Server</h1><div class="facts"><span>2 server</span><span>2 online</span></div></div>
+    <div class="btns"><button class="primary" data-open="add" title="Prepara una nuova macchina: OmniaCLI vi si collega via SSH con la sua chiave e vi installa ciò che serve.">+ Aggiungi un server</button></div>
+  </div>
+
+  <div class="cards">
+    <a class="card" href="2-inaria.html" title="Apri inaria: le sue istanze, il suo carico, i suoi backup">
+      <h3>inaria <span class="dot">Online</span></h3>
+      <div class="facts"><span class="mono">odoo.inaria.media</span><span>Ubuntu 24.04</span><span>4 core</span></div>
+      <div class="bars">
+        <span>CPU</span><span class="bar"><i style="width: 6%"></i></span><span class="muted">6%</span>
+        <span>RAM</span><span class="bar"><i class="warn" style="width: 58%"></i></span><span class="muted">58%</span>
+        <span>Disco</span><span class="bar"><i style="width: 34%"></i></span><span class="muted">34%</span>
+      </div>
+      <p class="muted" style="margin: 12px 0 0; font-size: 14px">1 istanza · 1 staging · Odoo 19.0</p>
+    </a>
+    <a class="card" href="#" data-say="Questa macchina: le istanze di Matteo configurate a mano, nella stessa forma.">
+      <h3>Questa macchina <span class="dot">Online</span></h3>
+      <div class="facts"><span class="mono">localhost</span><span>Ubuntu 24.04</span><span>16 core</span></div>
+      <div class="bars">
+        <span>CPU</span><span class="bar"><i style="width: 12%"></i></span><span class="muted">12%</span>
+        <span>RAM</span><span class="bar"><i style="width: 41%"></i></span><span class="muted">41%</span>
+        <span>Disco</span><span class="bar"><i style="width: 62%"></i></span><span class="muted">62%</span>
+      </div>
+      <p class="muted" style="margin: 12px 0 0; font-size: 14px">3 istanze · Odoo 18.0, 19.0</p>
+    </a>
+  </div>
+</main>
+
+<dialog id="add">
+  <h2>Aggiungi un server</h2>
+  <p class="muted" style="margin-top: 0">Due passi. Il resto lo fa OmniaCLI (Docker, nginx, certificati, firewall).</p>
+  <p><b>1.</b> Sul server, da root, incolla:</p>
+  <pre class="mono" style="background: var(--panel-2); padding: 10px; border-radius: 8px; white-space: pre-wrap">mkdir -p ~/.ssh &amp;&amp; echo 'ssh-ed25519 AAAA… omniacli' &gt;&gt; ~/.ssh/authorized_keys</pre>
+  <p><b>2.</b> L'indirizzo del server</p>
+  <input style="width: 100%; padding: 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel-2); color: var(--text)" placeholder="erp.cliente.it">
+  <div class="foot"><button data-close>Annulla</button><button class="primary" data-close>Aggiungi</button></div>
+</dialog>
+<div class="mocknote">Disegno statico, dati di inaria del 18/11/2026: i pulsanti non agiscono.</div>
+<script src="mock.js"></script>
+</body></html>

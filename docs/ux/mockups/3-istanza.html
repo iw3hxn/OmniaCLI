@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>odoo.inaria.media · OmniaCLI (disegno)</title><link rel="stylesheet" href="mock.css"></head>
+<body>
+<header class="top">
+  <span class="brand">Omnia<span>CLI</span></span>
+  <nav><a href="1-server.html">Server</a><a class="on" href="2-inaria.html#istanze">Istanze</a><a href="#" data-say="Backup: non disegnato in questo giro.">Backup</a><a href="#" data-say="Impostazioni: utenti, credenziali git, pianificazioni, puller, plugin, opzioni, log.">Impostazioni</a></nav>
+  <span class="me hide-sm">Carlo · admin</span>
+</header>
+<main>
+  <a class="back" href="2-inaria.html">‹ inaria</a>
+  <div class="head">
+    <div><h1>odoo.inaria.media <span class="badge prod">Produzione</span></h1>
+      <div class="facts"><span class="dot">In esecuzione</span><span>Odoo 19.0 Community</span><span>server inaria</span><span>database odoo</span></div></div>
+    <div class="btns">
+      <a class="button primary" href="#" data-say="Apre https://odoo.inaria.media in una nuova scheda." title="Apre https://odoo.inaria.media in una nuova scheda">Apri Odoo ↗</a>
+      <button data-open="loginas" title="Apre Odoo in una nuova scheda come uno dei suoi utenti, senza la sua password">Entra come…</button>
+      <button data-open="update" title="Scarica il codice nuovo (git pull), aggiorna i moduli cambiati e riavvia. Non fa un backup prima.">Aggiorna</button>
+      <div class="menu"><button data-menu title="Le altre azioni">Altro ▾</button>
+        <div>
+          <button data-say="Riavvia Odoo: chi è collegato perde la connessione per qualche secondo.">Riavvia</button>
+          <button data-say="Ferma Odoo finché non premi Avvia.">Ferma</button>
+          <button data-say="Fa un backup adesso; lo trovi nella scheda Backup.">Backup adesso</button>
+          <button data-say="Aggiorna i moduli che scegli (-u), senza scaricare codice.">Aggiorna moduli…</button>
+          <button data-say="Apre psql sul database, in una nuova scheda.">Console database</button>
+          <hr>
+          <button class="danger" data-say="Sostituisce il database con un backup: va scritto il nome del database per confermare.">Ripristina un backup…</button>
+          <button class="danger" data-say="Elimina l'istanza con le sue staging: contenitori, database e file. Va scritto l'indirizzo per confermare.">Elimina l'istanza…</button>
+        </div></div>
+    </div>
+  </div>
+
+  <nav class="tabs"><a class="on" href="#">Ambienti</a><a href="#" data-say="Backup: elenco con data e dimensione, Scarica e Ripristina su ognuno.">Backup</a><a href="#" data-say="Log: il log di Odoo in diretta, con filtro.">Log</a><a href="#" data-say="Monitoraggio: CPU e memoria di questa istanza.">Monitoraggio</a><a href="#" data-say="Impostazioni: repository e branch, moduli aggiornati da soli, lavoratori, aggiornamento automatico.">Impostazioni</a></nav>
+
+  <div class="panel">
+    <div class="panel-head"><h2>Ambienti</h2>
+      <button data-open="stg" title="Una copia della produzione di adesso, neutralizzata (niente posta in uscita, niente azioni pianificate), a un suo indirizzo. La produzione resta accesa.">+ Nuova staging</button></div>
+    <table>
+      <tr><th>Indirizzo</th><th>Tipo</th><th class="hide-sm">Copiata il</th><th>Stato</th><th class="hide-sm"></th></tr>
+      <tr>
+        <td><b>odoo.inaria.media</b></td><td><span class="badge prod">Produzione</span></td><td class="hide-sm muted">—</td>
+        <td><span class="dot">In esecuzione</span></td>
+        <td class="hide-sm" style="text-align: right; white-space: nowrap"><a class="button small" href="#" data-say="Apre https://odoo.inaria.media">Apri ↗</a> <button class="small" data-open="loginas">Entra come…</button></td></tr>
+      <tr class="click" data-href="4-staging.html">
+        <td>↳ <a href="4-staging.html">stg-20261117.odoo.inaria.media</a></td><td><span class="badge stg">Staging</span></td><td class="hide-sm muted">17/11/2026 22:48</td>
+        <td><span class="dot">In esecuzione</span></td>
+        <td class="hide-sm" style="text-align: right; white-space: nowrap"><a class="button small" href="#" data-say="Apre https://stg-20261117.odoo.inaria.media">Apri ↗</a> <button class="small" data-open="loginas">Entra come…</button></td></tr>
+    </table>
+  </div>
+  <div class="lastjob">Ultima azione: <a href="#" data-say="Apre il job: i suoi passi e il log.">Staging del 17/11 creata</a> · riuscita · 1 min 30 s · ieri 22:49 · <a href="#" data-say="Tutte le azioni su questa istanza.">tutte</a></div>
+</main>
+
+<dialog id="loginas">
+  <h2>Entra come…</h2>
+  <p class="muted" style="margin-top: 0">Odoo si apre in una nuova scheda come l'utente scelto, senza la sua password. Resta scritto nel registro.</p>
+  <div class="userlist">
+    <button data-close>Administrator <span class="muted">admin</span></button>
+    <button data-close>Mario Rossi <span class="muted">mario</span></button>
+  </div>
+  <div class="foot"><button data-close>Annulla</button></div>
+</dialog>
+<dialog id="stg">
+  <h2>Nuova staging</h2>
+  <p>Copia la produzione di adesso in <b class="mono">stg-20261118.odoo.inaria.media</b>, neutralizzata: niente posta in uscita né azioni pianificate. Circa 2 minuti; la produzione resta accesa.</p>
+  <div class="foot"><button data-close>Annulla</button><button class="primary" data-close>Crea la staging</button></div>
+</dialog>
+<dialog id="update">
+  <h2>Aggiorna odoo.inaria.media</h2>
+  <p>Scarica il codice nuovo, aggiorna i moduli cambiati e riavvia. Chi è collegato perde la connessione per qualche secondo.</p>
+  <label style="display: flex; gap: 8px; align-items: center"><input type="checkbox" checked> Fai prima un backup</label>
+  <div class="foot"><button data-close>Annulla</button><button class="primary" data-close>Aggiorna</button></div>
+</dialog>
+<div class="mocknote">Disegno statico: «Apri Odoo» è il solo pulsante principale; il resto sta in «Altro».</div>
+<script src="mock.js"></script>
+</body></html>

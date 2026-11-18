@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Staging 17/11 · OmniaCLI (disegno)</title><link rel="stylesheet" href="mock.css"></head>
+<body>
+<header class="top">
+  <span class="brand">Omnia<span>CLI</span></span>
+  <nav><a href="1-server.html">Server</a><a class="on" href="2-inaria.html#istanze">Istanze</a><a href="#" data-say="Backup: non disegnato in questo giro.">Backup</a><a href="#" data-say="Impostazioni.">Impostazioni</a></nav>
+  <span class="me hide-sm">Carlo · admin</span>
+</header>
+<main>
+  <a class="back" href="3-istanza.html">‹ odoo.inaria.media</a>
+  <div class="head">
+    <div><h1>stg-20261117.odoo.inaria.media <span class="badge stg">Staging</span></h1>
+      <div class="facts"><span class="dot">In esecuzione</span><span>Odoo 19.0 Community</span><span>server inaria</span></div></div>
+    <div class="btns">
+      <a class="button primary" href="#" data-say="Apre https://stg-20261117.odoo.inaria.media in una nuova scheda.">Apri Odoo ↗</a>
+      <button data-say="Come sulla produzione: scegli l'utente, Odoo si apre come lui.">Entra come…</button>
+      <button data-say="Scarica il codice del branch di staging e riavvia la staging.">Aggiorna</button>
+      <div class="menu"><button data-menu>Altro ▾</button>
+        <div>
+          <button data-say="Ricopia dentro questa staging la produzione di adesso, neutralizzata. Il database attuale della staging si perde.">Ricopia dalla produzione…</button>
+          <button data-say="Porta in produzione i commit provati su questa staging: backup della produzione, merge, aggiornamento moduli, riavvio.">Porta in produzione…</button>
+          <button data-say="Riavvia la staging.">Riavvia</button>
+          <button data-say="Ferma la staging: non consuma più RAM finché non la avvii.">Ferma</button>
+          <hr>
+          <button class="danger" data-say="Elimina la staging: contenitori, database e file, tutto insieme. Va scritto il suo nome. La produzione non cambia.">Elimina la staging…</button>
+        </div></div>
+    </div>
+  </div>
+  <div class="note">Copia di <a href="3-istanza.html">odoo.inaria.media</a> del <b>17/11/2026 22:48</b>, neutralizzata: niente posta in uscita né azioni pianificate.</div>
+
+  <nav class="tabs"><a class="on" href="#">Panoramica</a><a href="#" data-say="Backup della staging.">Backup</a><a href="#" data-say="Log di Odoo della staging.">Log</a><a href="#" data-say="Repository e branch della staging.">Impostazioni</a></nav>
+  <div class="panel">
+    <div class="bars">
+      <span>CPU</span><span class="bar"><i style="width: 2%"></i></span><span class="muted">2%</span>
+      <span>RAM</span><span class="bar"><i style="width: 12%"></i></span><span class="muted">980 MB</span>
+      <span>Database</span><span class="bar"><i style="width: 4%"></i></span><span class="muted">120 MB</span>
+    </div>
+  </div>
+  <div class="lastjob">Ultima azione: <a href="#" data-say="Apre il job.">Staging creata</a> · riuscita · 1 min 30 s · ieri 22:49</div>
+</main>
+<div class="mocknote">Disegno statico: una staging ha la stessa forma della produzione, con «Copia di…» e «Elimina la staging».</div>
+<script src="mock.js"></script>
+</body></html>
