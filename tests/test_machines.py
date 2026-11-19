@@ -37,6 +37,9 @@ def test_the_form_is_checked():
         with pytest.raises(machines.MachineError):
             machines.Machine.parse({**FORM, key: bad}, "central")
     assert machines.Machine.parse({**FORM, "firewall": False}, "Not A Name!").here == "omniacli"
+    assert machines.Machine.parse(FORM, "c").kind == "clean"
+    with pytest.raises(machines.MachineError, match="clean or existing"):
+        machines.Machine.parse({**FORM, "kind": "cloudpepper"}, "c")
     assert machines.here_name("Omnia-Server.example.com") == "omnia-server"
     # only the address: the name from it, port 22, root, the host key read later
     bare = machines.Machine.parse({"host": "ERP.acme.it"}, "central")
@@ -84,7 +87,11 @@ def test_the_values_reach_bash_on_its_input(tmp_path):
     args = shlex.split(first)
     assert args[:2] == ["set", "--"]
     assert args[2:] == [machines.PACKAGE_URL, "22", "1", machines.LINK_USER, "central", "sha256$abc",
-                        base64.b64encode(line.encode()).decode()]
+                        base64.b64encode(line.encode()).decode(), "clean"]
+    # a server that already runs Odoo: no firewall, whatever the form says
+    existing = machines.Machine.parse({**FORM, "kind": "existing", "firewall": True}, "central")
+    args = shlex.split(machines.script_input(existing, line, "h").decode().partition("\n")[0])
+    assert args[4] == "0" and args[-1] == "existing"
     assert script == machines.PROVISION_SCRIPT.read_text()
     # the script is read whole before it runs: what it runs cannot eat the rest of its input
     assert script.rstrip().endswith('main "$@" </dev/null')
@@ -198,7 +205,7 @@ async def test_an_admin_adds_a_machine(client, monkeypatch):
     cards = {c["name"]: c for c in (await client.get("/api/machines", headers=as_user("admin"))).json()["machines"]}
     assert set(cards) == {"acme-cloud", "203-0-113-10", "203-0-113-10-2"}
     assert cards["acme-cloud"]["linked"] and cards["acme-cloud"]["job"]["status"] == "failed"
-    assert cards["acme-cloud"]["job"]["step"] == len(machines.STEPS) - 1
+    assert machines.STEPS[cards["acme-cloud"]["job"]["step"]] == "the link "
 
 
 def test_the_progress_of_an_add_job():
@@ -207,3 +214,17 @@ def test_the_progress_of_an_add_job():
     assert machines.STEPS[machines.progress(lines)] == "the link back"
     assert machines.progress([]) == 0
     assert machines.STEPS[machines.progress(lines + ["10:05:00 --- the link acme, through SSH as omniacli-link"])] == "the link "
+
+
+def test_what_discover_found_becomes_productions():
+    found = [
+        {"type": "odoo", "label": "process 1, unit odona-shop", "name": "shop", "instance": {"database": "shop"}},
+        {"type": "odoo", "label": "unit odona-shop-old", "name": "shop", "instance": {"database": "shop"}},
+        {"type": "odoo", "label": "process 2", "name": "c", "instance": {}, "skip": "in a container"},
+        {"type": "odoo", "label": "unit odoo", "name": "erp", "instance": {}, "known": "erp/production"},
+        {"type": "generic", "error": "boom"},
+    ]
+    items = machines.instances_to_add(found, {"erp"})
+    assert [(i["name"], i["role"], i["type"]) for i in items] == [
+        ("shop", "production", "odoo"), ("shop-2", "production", "odoo")]
+    assert items[0]["instance"] == {"database": "shop"}

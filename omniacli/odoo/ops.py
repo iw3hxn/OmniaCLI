@@ -208,6 +208,19 @@ def _shebang_python(script: Path) -> Path | None:
     return Path(words[0]) if words else None
 
 
+# the venvs OmniaCLI makes, as root, for an Odoo run by a python outside a
+# venv (Odoo's Debian package): they see that python's packages and add
+# click-odoo-contrib, the system's python untouched (omniacli/adopt.py)
+ADOPTED_VENVS = Path("/opt/omniacli/odoo-venvs")
+
+
+def adopted_venv(python: Path, base: Path | None = None) -> Path:
+    """The venv adopt.py makes for python: /usr/bin/python3 → <base>/usr-bin-python3."""
+    # by the real file: /usr/bin/python3 and /usr/bin/python3.10 are one python
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", os.path.realpath(python)).strip("-")
+    return (base or ADOPTED_VENVS) / name
+
+
 def odoo_root(odoo_bin: Path) -> Path:
     """The folder holding the odoo package: odoo-bin's own in a checkout, the
     python's site-packages for Odoo installed as a package (the Debian
@@ -282,15 +295,25 @@ def locate_odoo_bin(odoo_bin: Path | None, folders: list[Path]) -> Path | None:
     return None
 
 
-def addons_paths(instance: Instance) -> list[Path]:
-    """The addons_path of the instance's Odoo config, then Odoo's own addons."""
+def _addons_path(odoo_config) -> str:
     parser = configparser.ConfigParser(interpolation=None)
     try:
-        parser.read(instance.options.odoo_config, encoding="utf-8")
-        raw = parser.get("options", "addons_path", fallback="")
+        parser.read(odoo_config, encoding="utf-8")
+        return parser.get("options", "addons_path", fallback="")
     except (configparser.Error, OSError, UnicodeDecodeError):
-        raw = ""
-    paths = [Path(p.strip()) for p in raw.replace("\n", ",").split(",") if p.strip()]
+        return ""
+
+
+def addons_paths_of(odoo_config) -> list[Path]:
+    """The folders of an Odoo config's addons_path (none when unreadable)."""
+    raw = _addons_path(odoo_config)
+    return [Path(p.strip()) for p in raw.replace("\n", ",").split(",") if p.strip()]
+
+
+def addons_paths(instance: Instance) -> list[Path]:
+    """The addons_path of the instance's Odoo config, then Odoo's own addons."""
+    raw = _addons_path(instance.options.odoo_config)
+    paths = addons_paths_of(instance.options.odoo_config)
     odoo_bin = find_odoo_bin(instance)
     if odoo_bin is not None:
         root = odoo_root(odoo_bin)

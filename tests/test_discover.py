@@ -7,6 +7,7 @@ import stat
 import pytest
 
 from omniacli.odoo import discover
+from omniacli.odoo import ops as odoo_ops
 from omniacli.plugin_api import Discovered, system_user
 
 from .conftest import PASSWORD, commit, sh
@@ -267,3 +268,19 @@ async def test_discover_api(client, env, monkeypatch):  # noqa: F811
     # only an admin
     developer = {"Authorization": "Basic " + base64.b64encode(f"dev:{PASSWORD}".encode()).decode()}
     assert (await client.get(url, headers=developer)).status_code == 403
+
+
+async def test_discover_takes_the_venv_add_a_server_made(machine, monkeypatch):
+    """Odoo run by a python outside a venv (Odoo's Debian package): a note
+    says how to give it click-odoo; once adopt.py made its venv, that venv."""
+    monkeypatch.setattr(odoo_ops, "ADOPTED_VENVS", machine["tmp"] / "adopted")
+    (machine["venv"] / "pyvenv.cfg").unlink()
+    prod = next(d for d in await discover.discover([], machine["proc"]) if d.label.startswith("process 100"))
+    assert prod.instance["venv_bin"] == str(machine["venv"] / "bin")
+    assert any("--system-site-packages" in n for n in prod.notes)
+    adopted = odoo_ops.adopted_venv(machine["venv"] / "bin" / "python")
+    (adopted / "bin").mkdir(parents=True)
+    (adopted / "bin" / "python").write_text("")
+    prod = next(d for d in await discover.discover([], machine["proc"]) if d.label.startswith("process 100"))
+    assert prod.instance["venv_bin"] == str(adopted / "bin")
+    assert not any("--system-site-packages" in n for n in prod.notes)

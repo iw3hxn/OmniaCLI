@@ -28,7 +28,7 @@ from pathlib import Path
 
 from ..plugin_api import SERVER_NAME, ConfigError, Discovered, Instance, capture, system_user
 from . import odooconf
-from .ops import locate_odoo_bin, odoo_major, odoo_root
+from .ops import adopted_venv, locate_odoo_bin, odoo_major, odoo_root
 
 PROC = Path("/proc")
 # the scripts that start Odoo: odoo-bin from git, odoo of the Debian package,
@@ -341,7 +341,11 @@ async def describe(item: Started, known: list[Instance]) -> Discovered:
     venv_bin = None
     if python and os.path.isabs(python):
         venv_bin = Path(python).parent
-        if not (venv_bin.parent / "pyvenv.cfg").is_file():
+        adopted = adopted_venv(Path(python))
+        if not (venv_bin.parent / "pyvenv.cfg").is_file() and (adopted / "bin" / "python").is_file():
+            # the venv Add a server made for it (adopt.py): click-odoo there
+            venv_bin = adopted / "bin"
+        elif not (venv_bin.parent / "pyvenv.cfg").is_file():
             # the system python (Odoo's Debian package): a venv of OmniaCLI's
             # own that sees its packages takes click-odoo, the system's untouched
             notes.append(f"{python} is not in a venv: click-odoo-contrib must be installed for it, or in a "

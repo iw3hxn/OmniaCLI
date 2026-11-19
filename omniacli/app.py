@@ -3502,6 +3502,48 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         except (sshlinks.SshError, OSError) as exc:
             return refuse(str(exc), 500)
 
+    async def add_found_instances(job, link: LinkTarget, me: Principal) -> None:
+        """A machine that already runs Odoo: what Discover finds there, saved
+        there as the productions of its servers and activated (Test &
+        activate), through the link; a check that fails is said, the server
+        stays a draft there to complete."""
+        job.log("--- the instances in OmniaCLI")
+        client, headers = link_clients.client(link), link_headers(link, me.name, me.role)
+        try:
+            resp = await client.get("/api/servers/discover", headers=headers, timeout=120)
+            data = resp.json() if resp.status_code == 200 else {}
+        except (httpx.HTTPError, ValueError) as exc:
+            raise JobFailed(f"Discover there: {describe_error(exc) if isinstance(exc, httpx.HTTPError) else exc}")
+        found = data.get("found") or []
+        for item in found:
+            if item.get("skip") or item.get("known"):
+                job.log(f"{item.get('label', '?')}: left out ({item.get('skip') or 'already there as ' + item['known']})")
+        items = machines.instances_to_add(found, set(data.get("names") or []))
+        if not items:
+            job.log("no Odoo to add there: its instances can be added by hand (Configure › Servers › Discover)")
+            return
+        try:
+            resp = await client.post("/api/servers/discover", json={"items": items}, headers=headers, timeout=60)
+            saved = resp.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise JobFailed(f"the instances cannot be saved there: {exc}")
+        if not saved.get("ok"):
+            raise JobFailed(f"the instances cannot be saved there: {saved.get('error')}")
+        for item in items:
+            name = item["name"]
+            try:
+                resp = await client.post(f"/api/servers/{name}/test", headers=headers, timeout=300)
+                report = resp.json()
+            except (httpx.HTTPError, ValueError) as exc:
+                job.log(f"{name}: Test & activate not run ({exc}): it stays a draft there")
+                continue
+            if report.get("ok"):
+                job.log(f"{name}: active")
+                continue
+            failed = [c for c in report.get("checks") or [] if not c.get("ok") and c.get("level") != "warning"]
+            job.log(f"{name}: a draft there, to complete: " +
+                    "; ".join(f"{c.get('name')}: {c.get('detail')}" for c in failed))
+
     @app.post("/api/machines/add")
     async def machines_add(request: Request, payload: dict = Body(...), me: Principal = Depends(admin)):
         """A job: the machine prepared through SSH (provision.sh), then linked
@@ -3555,6 +3597,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if not found.get("ok"):
                 raise JobFailed(f"the machine is prepared, its link does not answer yet: {found.get('error')}")
             job.log(f"linked: OmniaCLI {found.get('version', '?')} there, this one {found.get('role', '?')} there")
+            if machine.kind == "existing":
+                await add_found_instances(job, settings.link_targets[machine.name], me)
             job.result = {"link": machine.name}
 
         job = jobs.submit(f"Add machine {machine.name} ({machine.host})", [], me.name, action)

@@ -8,7 +8,13 @@
 # line, which ps shows):
 #
 #   set -- <package URL> <SSH port> <firewall 1|0> <link user> <link name> <link token hash> \
-#          <authorized_keys line of the link, base64>
+#          <authorized_keys line of the link, base64> <clean|existing>
+#
+# clean: a new machine, as below. existing: a machine that already runs Odoo
+# (a Cloudpepper server, one installed by hand): nothing of it is upgraded,
+# installed beside it or closed (no nginx, Docker, workspaces nor firewall);
+# OmniaCLI and the link back as below, then its Odoo made ready for
+# OmniaCLI (omniacli/adopt.py: read access by ACLs, click-odoo, sudoers).
 #
 # 1. the system: a supported one, its updates, unattended upgrades;
 # 2. what the workspaces need: nginx, certbot, Docker with its compose plugin;
@@ -33,6 +39,7 @@ main() {
     LINK_NAME="$5"
     LINK_HASH="$6"
     LINK_LINE="$(printf '%s' "$7" | base64 -d)"
+    MODE="${8:-clean}"
     export DEBIAN_FRONTEND=noninteractive
     APT_OPTIONS=(-y -q -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
 
@@ -48,29 +55,38 @@ main() {
         *) fail "$PRETTY_NAME is not supported: Ubuntu 22.04 or 24.04, Debian 11, 12 or 13" ;;
     esac
     [ "$(dpkg --print-architecture)" = amd64 ] || fail "$(dpkg --print-architecture): amd64 only"
-    # a machine that already serves the web is not a clean one: its sites would meet the workspaces'
-    for site in /etc/apache2/sites-enabled/*; do
-        [ -e "$site" ] && fail "apache serves sites here ($site): a clean machine is needed"
-    done
-
-    step "updates"
-    apt-get update -q
-    apt-get upgrade "${APT_OPTIONS[@]}"
-    apt-get install "${APT_OPTIONS[@]}" ca-certificates curl ufw unattended-upgrades
-    # the security updates by themselves, every day
-    printf 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n' \
-        > /etc/apt/apt.conf.d/20auto-upgrades
-
-    step "nginx, certbot and Docker"
-    apt-get install "${APT_OPTIONS[@]}" nginx certbot
-    command -v docker >/dev/null || apt-get install "${APT_OPTIONS[@]}" docker.io
-    if ! docker compose version >/dev/null 2>&1; then
-        for compose in docker-compose-v2 docker-compose-plugin; do
-            apt-get install "${APT_OPTIONS[@]}" "$compose" >/dev/null 2>&1 && break
+    if [ "$MODE" = clean ]; then
+        # a machine that already serves the web is not a clean one: its sites would meet the workspaces'
+        for site in /etc/apache2/sites-enabled/*; do
+            [ -e "$site" ] && fail "apache serves sites here ($site): a clean machine is needed, or choose a server that already has Odoo"
         done
     fi
-    docker compose version 2>/dev/null \
-        || echo "WARNING: no docker compose here (Debian 12: install Docker's docker-ce and docker-compose-plugin)"
+
+    if [ "$MODE" = existing ]; then
+        # what OmniaCLI itself needs, nothing upgraded: the machine is someone's at work
+        step "updates"
+        apt-get update -q
+        apt-get install "${APT_OPTIONS[@]}" ca-certificates curl acl python3-venv
+    else
+        step "updates"
+        apt-get update -q
+        apt-get upgrade "${APT_OPTIONS[@]}"
+        apt-get install "${APT_OPTIONS[@]}" ca-certificates curl ufw unattended-upgrades
+        # the security updates by themselves, every day
+        printf 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n' \
+            > /etc/apt/apt.conf.d/20auto-upgrades
+
+        step "nginx, certbot and Docker"
+        apt-get install "${APT_OPTIONS[@]}" nginx certbot
+        command -v docker >/dev/null || apt-get install "${APT_OPTIONS[@]}" docker.io
+        if ! docker compose version >/dev/null 2>&1; then
+            for compose in docker-compose-v2 docker-compose-plugin; do
+                apt-get install "${APT_OPTIONS[@]}" "$compose" >/dev/null 2>&1 && break
+            done
+        fi
+        docker compose version 2>/dev/null \
+            || echo "WARNING: no docker compose here (Debian 12: install Docker's docker-ce and docker-compose-plugin)"
+    fi
 
     step "OmniaCLI"
     work="$(mktemp -d)"
@@ -78,8 +94,10 @@ main() {
     curl -fsSL --retry 3 -o "$work/omniacli.deb" "$PACKAGE_URL" || fail "cannot download $PACKAGE_URL"
     [ "$(dpkg-deb -f "$work/omniacli.deb" Package 2>/dev/null)" = omniacli ] || fail "$PACKAGE_URL is no omniacli package"
     apt-get install "${APT_OPTIONS[@]}" "$work/omniacli.deb"
-    grep -q '^OMNIACLI_WORKSPACES=1' /etc/default/omniacli || echo OMNIACLI_WORKSPACES=1 >> /etc/default/omniacli
-    dpkg-reconfigure -f noninteractive omniacli
+    if [ "$MODE" = clean ]; then
+        grep -q '^OMNIACLI_WORKSPACES=1' /etc/default/omniacli || echo OMNIACLI_WORKSPACES=1 >> /etc/default/omniacli
+        dpkg-reconfigure -f noninteractive omniacli
+    fi
 
     step "the link back"
     if ! id "$LINK_USER" >/dev/null 2>&1; then
@@ -132,7 +150,15 @@ PY
     for _ in $(seq 60); do curl -s -o /dev/null http://127.0.0.1:8090/ && break; sleep 1; done
     curl -s -o /dev/null http://127.0.0.1:8090/ || fail "OmniaCLI does not answer on 127.0.0.1:8090"
 
-    if [ "$FIREWALL" = 1 ]; then
+    if [ "$MODE" = existing ]; then
+        step "the Odoo instances"
+        /opt/omniacli/venv/bin/python -I -m omniacli.adopt "${service_user:-omniacli}"
+        # the service reads the configs with the access just given
+        systemctl restart omniacli
+        for _ in $(seq 60); do curl -s -o /dev/null http://127.0.0.1:8090/ && break; sleep 1; done
+    fi
+
+    if [ "$FIREWALL" = 1 ] && [ "$MODE" = clean ]; then
         step "the firewall"
         ufw allow "$SSH_PORT/tcp" >/dev/null
         ufw allow 80/tcp >/dev/null

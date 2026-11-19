@@ -39,7 +39,14 @@ Analysis of 19/11/2026 on `95.179.220.4` (my.cloudpepper.io server
 | Copy production to test, staging | **no** | one instance, not Docker |
 | Restore, Copy from link | yes | the Odoo version is read from the package's `odoo/release.py` (`odoo_root`): 15, checked on the server |
 
-## Steps (as root, to approve one by one)
+## From the interface (since 19/11/2026)
+
+**Servers › Add a server**, step 1 **Odoo already runs there**: the steps
+below are what the job does (`provision.sh existing`, `omniacli.adopt`,
+Discover and Test & activate through the link). See the README, Machines,
+"A server that already has Odoo".
+
+## Steps (what the job does, as root)
 
 1. **The package**: copy `omniacli_<version>_all.deb` of the fork, then
    `apt install ./omniacli_<version>_all.deb`. It creates the user

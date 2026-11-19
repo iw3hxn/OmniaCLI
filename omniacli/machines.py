@@ -57,7 +57,12 @@ JOB_TITLE = re.compile(r"Add machine (\S+) \((.+)\)")
 # the job's steps, by the "--- " lines provision.sh (step) and app.py write;
 # a mark ending with a space is a prefix
 STEPS = ("prepare ", "the system", "updates", "nginx, certbot and Docker", "OmniaCLI", "the link back",
-         "the link's token", "the firewall", "the link ")
+         "the link's token", "the Odoo instances", "the firewall", "the link ", "the instances in OmniaCLI")
+# what the machine has: clean (a new one: everything installed, workspaces,
+# firewall) or existing (it already runs Odoo, a Cloudpepper server: only
+# OmniaCLI and the link added, its Odoo made ready by adopt.py, then found
+# by Discover and activated through the link)
+KINDS = ("clean", "existing")
 
 
 def progress(lines: list[str]) -> int:
@@ -100,6 +105,7 @@ class Machine:
     firewall: bool = True
     # the name this OmniaCLI has in the users file there (its auth.links)
     here: str = "omniacli"
+    kind: str = "clean"
 
     @classmethod
     def parse(cls, data: dict, here: str) -> "Machine":
@@ -126,7 +132,12 @@ class Machine:
             raise MachineError("Package: an https:// address of an omniacli .deb")
         if not LINK_NAME.fullmatch(here):
             here = "omniacli"
-        return cls(name, host, int(port), user, host_key, package_url, bool(data.get("firewall", True)), here)
+        kind = str(data.get("kind") or "clean")
+        if kind not in KINDS:
+            raise MachineError(f"{kind!r}: the server is clean or existing")
+        # a machine at work keeps its firewall as it is
+        firewall = bool(data.get("firewall", True)) and kind == "clean"
+        return cls(name, host, int(port), user, host_key, package_url, firewall, here, kind)
 
 
 def name_from_host(host: str) -> str:
@@ -162,7 +173,7 @@ def script_input(machine: Machine, link_line: str, token_hash: str) -> bytes:
     """provision.sh with its arguments set in front of it (set --): they reach
     bash on its input, never a command line, which ps and the job log show."""
     args = [machine.package_url, str(machine.port), "1" if machine.firewall else "0", LINK_USER,
-            machine.here, token_hash, base64.b64encode(link_line.encode()).decode()]
+            machine.here, token_hash, base64.b64encode(link_line.encode()).decode(), machine.kind]
     return f"set -- {shlex.join(args)}\n".encode() + PROVISION_SCRIPT.read_bytes()
 
 
@@ -230,3 +241,23 @@ async def provision(job: Job, machine: Machine, ssh_folder: Path, link_public_ke
                 f"{sshlinks.fingerprint(machine.host_key)}), OmniaCLI from {machine.package_url}")
         with open(stdin, "rb") as script:
             await run(job, cmd, timeout=PROVISION_TIMEOUT, stdin=script)
+
+
+def instances_to_add(found: list[dict], taken: set[str]) -> list[dict]:
+    """What Discover found on an existing machine, as the items its OmniaCLI
+    saves (POST /api/servers/discover): each Odoo it can add, as the
+    production of a server named after its database (-2, -3... beside a
+    name taken). Those it cannot add (in a container, already there) are
+    left out: the job says so."""
+    items, names = [], set(taken)
+    for item in found:
+        if item.get("skip") or item.get("known") or item.get("error") or not isinstance(item.get("instance"), dict):
+            continue
+        base = item.get("name") or "odoo"
+        name, number = base, 2
+        while name in names:
+            name, number = f"{base}-{number}", number + 1
+        names.add(name)
+        items.append({"name": name, "role": "production", "type": item.get("type") or "odoo",
+                      "instance": item["instance"]})
+    return items

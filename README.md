@@ -1726,6 +1726,42 @@ The machine is then on the Dashboard under **Linked**, and its pages
 key may be taken out of root's `authorized_keys` there: the link does not
 use it.
 
+### A server that already has Odoo
+
+Step 1 of **Add a server** asks what is on it. **Odoo already runs there**
+(a Cloudpepper server, one installed by hand) changes the job: nothing of
+the machine is upgraded, installed beside it or closed, and it takes about
+5 minutes.
+
+1. `provision.sh existing`: `apt-get update` and only what OmniaCLI needs
+   (`acl`, `python3-venv`, `curl`), OmniaCLI from its package without the
+   workspaces, the link back as above; no nginx, Docker nor firewall.
+2. `python -m omniacli.adopt omniacli`, as root, for every Odoo that
+   **Discover** finds there (a process or a systemd unit), changing nothing
+   of Odoo:
+   - read access for OmniaCLI's user to its Odoo config, its log folder
+     (the logs to come too) and its addons, by ACLs: the folders' modes,
+     owners and groups stay as they are;
+   - click-odoo: Odoo run by a python outside a venv (Odoo's Debian package,
+     as on Cloudpepper's servers) gets a venv of its own in
+     `/opt/omniacli/odoo-venvs/` that sees that python's packages, the
+     system's python untouched; a venv without click-odoo gets it, as its
+     owner;
+   - its sudoers lines in `/etc/sudoers.d/omniacli-instances`, checked by
+     `visudo` first: the venv and psql as the user Odoo runs as, restart,
+     start and stop of its unit.
+
+   Odoo run as root, in a container or without a unit is said and left out.
+3. Through the link, Discover there, each Odoo saved as the production of
+   a server named after its database, and **Test & activate**: the job says
+   which are active and, for the others, the checks that failed (they stay
+   drafts there, to complete).
+
+Odoo installed as a package has no `odoo/release.py` next to its
+`/usr/bin/odoo`: its version is read from the odoo package of the script's
+python (`/usr/lib/python3/dist-packages`), so update, restore and copy know
+it. Its code is the package's: OmniaCLI pulls nothing there.
+
 ## Log in as
 
 **Log in as…**, next to an instance's address on the server page, opens

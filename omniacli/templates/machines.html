@@ -94,6 +94,12 @@
 .w-address { display: grid; grid-template-columns: 1fr 110px; gap: 10px; }
 .w-address label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 5px; }
 .w-address input { width: 100%; font-size: 16px; padding: 10px 12px; }
+.w-kind { border: 0; padding: 0; margin: 0 0 16px; display: grid; gap: 8px; }
+.w-kind legend { font-weight: 600; margin-bottom: 8px; padding: 0; }
+.w-kind label { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; cursor: pointer; }
+.w-kind label:has(input:checked) { border-color: var(--accent); background: var(--panel-2); }
+.w-kind label > span { display: grid; gap: 2px; }
+.w-kind input { margin-top: 3px; }
 .w-advanced { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
 .w-advanced > summary { cursor: pointer; color: var(--muted); font-size: 13px; }
 .w-advanced .form-grid { margin-top: 12px; }
@@ -139,12 +145,21 @@
     </div>
 
     <div class="w-body" data-step="1">
+      <fieldset class="w-kind">
+        <legend>{{ _("What is on the server?") }}</legend>
+        <label><input type="radio" name="m-kind" value="clean" checked>
+          <span><strong>{{ _("Nothing yet") }}</strong>
+          <span class="muted">{{ _("A clean server: OmniaCLI installs what the new instances need.") }}</span></span></label>
+        <label><input type="radio" name="m-kind" value="existing">
+          <span><strong>{{ _("Odoo already runs there") }}</strong>
+          <span class="muted">{{ _("For example a Cloudpepper server: OmniaCLI joins it, finds its instances and operates them, the rest stays as it is.") }}</span></span></label>
+      </fieldset>
       <p>{{ _("On the server, as root, paste this command") }}:</p>
       {% if provision_key %}
       <pre class="console mono copyable" id="machine-key-line" style="white-space: pre-wrap; overflow-wrap: anywhere">mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '{{ provision_key }}' &gt;&gt; ~/.ssh/authorized_keys</pre>
       {% endif %}
       <p class="w-tip">{{ _("It lets OmniaCLI in with its key, nothing else.") }} {{ _("Logged in as another user? Run {command} first.", command="<code>sudo -i</code>") | safe }}</p>
-      <div class="w-chips"><span>Ubuntu 22.04 · 24.04</span><span>Debian 11 · 12 · 13</span><span>amd64</span><span>{{ _("a clean server") }}</span></div>
+      <div class="w-chips"><span>Ubuntu 22.04 · 24.04</span><span>Debian 11 · 12 · 13</span><span>amd64</span><span data-kind-only="clean">{{ _("a clean server") }}</span></div>
     </div>
 
     <div class="w-body" data-step="2" hidden>
@@ -154,7 +169,8 @@
         <div><label for="m-port">{{ _("SSH port") }}</label>
           <input type="number" id="m-port" class="mono" min="1" max="65535" value="22"></div>
       </div>
-      <p class="w-tip" style="margin-top: 10px">{{ _("Updates, nginx, certbot, Docker, OmniaCLI and a firewall are installed there, then it appears here with its link. About 10 to 20 minutes.") }}</p>
+      <p class="w-tip" style="margin-top: 10px" data-kind-only="clean">{{ _("Updates, nginx, certbot, Docker, OmniaCLI and a firewall are installed there, then it appears here with its link. About 10 to 20 minutes.") }}</p>
+      <p class="w-tip" style="margin-top: 10px" data-kind-only="existing" hidden>{{ _("Only OmniaCLI is installed there, nothing is upgraded and the firewall stays as it is; its Odoo instances get read access and the permissions OmniaCLI needs, and appear here active. About 5 minutes.") }}</p>
       <details class="w-advanced">
         <summary>{{ _("Advanced options") }}</summary>
         <div class="form-grid">
@@ -171,8 +187,8 @@
             <span class="muted field-help">{{ _("To check it, compare it with {command} run on that server: only this key is then accepted.", command="ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub") }}</span></div>
           <label for="m-package">{{ _("OmniaCLI package") }}</label>
           <div><input type="url" id="m-package" class="mono" value="{{ package_url }}" style="width: 100%"></div>
-          <label for="m-firewall">{{ _("Firewall") }}</label>
-          <div><label><input type="checkbox" id="m-firewall" checked> {{ _("only SSH, 80 and 443 open (ufw)") }}</label></div>
+          <label for="m-firewall" data-kind-only="clean">{{ _("Firewall") }}</label>
+          <div data-kind-only="clean"><label><input type="checkbox" id="m-firewall" checked> {{ _("only SSH, 80 and 443 open (ufw)") }}</label></div>
         </div>
       </details>
     </div>
@@ -216,7 +232,8 @@
     stagings: {{ _("{count} stagings") | tojson }}, staging: {{ _("1 staging") | tojson }},
     steps: [{{ _("Connecting") | tojson }}, {{ _("The system") | tojson }}, {{ _("Updates") | tojson }},
             {{ _("nginx, certbot and Docker") | tojson }}, "OmniaCLI", {{ _("The link back") | tojson }},
-            {{ _("The link's token") | tojson }}, {{ _("The firewall") | tojson }}, {{ _("The link") | tojson }}],
+            {{ _("The link's token") | tojson }}, {{ _("The Odoo instances") | tojson }}, {{ _("The firewall") | tojson }},
+            {{ _("The link") | tojson }}, {{ _("The instances in OmniaCLI") | tojson }}],
   };
   const grid = document.getElementById("m-grid"), empty = document.getElementById("m-empty");
   const summary = document.getElementById("m-summary");
@@ -433,11 +450,17 @@
       field("m-host").value = card.host || ""; field("m-name").value = card.name || "";
       if (card.port) field("m-port").value = card.port;
     }
+    showKind();
     dialog.showModal();
     show(card ? 2 : 1);
   }
   document.querySelectorAll("[data-add-machine]").forEach((b) => b.addEventListener("click", () => openWizard(null)));
   back.addEventListener("click", () => { if (step === 1) dialog.close(); else show(1); });
+  const kind = () => (form.querySelector('input[name="m-kind"]:checked') || {}).value || "clean";
+  function showKind() {
+    form.querySelectorAll("[data-kind-only]").forEach((e) => { e.hidden = e.dataset.kindOnly !== kind(); });
+  }
+  form.querySelectorAll('input[name="m-kind"]').forEach((r) => r.addEventListener("change", showKind));
   field("m-host").addEventListener("input", () => { field("m-host-key").value = ""; });
   field("m-fetch").addEventListener("click", async () => {
     error.textContent = "";
@@ -456,7 +479,8 @@
     next.disabled = true; back.disabled = true; next.textContent = T.connecting;
     const {ok, data} = await post(`${PREFIX}/api/machines/add`, {
       name: value("m-name"), host: value("m-host"), port: Number(value("m-port")) || 22, user: value("m-user") || "root",
-      host_key: value("m-host-key"), package_url: value("m-package"), firewall: field("m-firewall").checked});
+      host_key: value("m-host-key"), package_url: value("m-package"), firewall: field("m-firewall").checked,
+      kind: kind()});
     next.disabled = false; back.disabled = false; next.textContent = T.add;
     if (!ok || !data.job) { error.textContent = data.error || data.detail || T.refused; return; }
     dialog.close();
