@@ -1,8 +1,12 @@
 # Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C
 # SPDX-License-Identifier: AGPL-3.0-or-later
+import asyncio
+import gc
 import io
 import os
 import subprocess
+import sys
+import threading
 import zipfile
 from pathlib import Path
 
@@ -247,3 +251,30 @@ class BasicAsSession:
                     headers.append((b"cookie", f"{COOKIE}={self._cookies[key]}".encode()))
                 scope = dict(scope, headers=headers)
         await self.app(scope, receive, send)
+
+
+# a test still running after HANG_SECONDS: the asyncio tasks not done are
+# printed with where each one waits (a task that does not end when it is
+# cancelled hangs the loop's closing, which faulthandler shows only as select)
+HANG_SECONDS = 240
+
+
+def _dump_tasks(nodeid: str) -> None:
+    out = sys.__stderr__
+    print(f"\n=== {nodeid}: still running after {HANG_SECONDS} s; the asyncio tasks not done:", file=out)
+    for obj in gc.get_objects():
+        if isinstance(obj, asyncio.Task) and not obj.done():
+            print(repr(obj), file=out)
+            obj.print_stack(file=out)
+    out.flush()
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_protocol(item, nextitem):
+    timer = threading.Timer(HANG_SECONDS, _dump_tasks, args=(item.nodeid,))
+    timer.daemon = True
+    timer.start()
+    try:
+        yield
+    finally:
+        timer.cancel()
