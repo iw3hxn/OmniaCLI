@@ -250,6 +250,7 @@
   {% if can_act %}<button type="button" role="tab" data-tab="backups">{{ _("Backups") }}</button>{% endif %}
   <button type="button" role="tab" data-tab="log">{{ _("Log") }}</button>
   <button type="button" role="tab" data-tab="monitor" hidden>{{ _("Monitoring") }}</button>
+  {% if can_act and stagings and stagings.workspace %}<button type="button" role="tab" data-tab="addons">{{ _("Addons") }}</button>{% endif %}
   {% if can_act and inst.type == "odoo" %}<button type="button" role="tab" data-tab="odoo-config">{{ _("Odoo config") }}</button>{% endif %}
   {% if can_act %}<button type="button" role="tab" data-tab="settings">{{ _("Settings") }}</button>{% endif %}
 </nav>
@@ -314,6 +315,60 @@
 </section>
 
 {% if can_act %}
+{% if can_act and stagings and stagings.workspace %}
+{# the repositories of addons of a workspace's instance: each from its URL on its branch, updated (pull) or
+   removed one by one; a new one cloned with the workspace's git credentials, named in its odoo.conf, restarted #}
+<section class="tab-panel panel" data-panel="addons" hidden data-ws="{{ prefix }}/api/workspaces/{{ stagings.workspace.name }}">
+  <div class="section-head"><h2>{{ _("Addons") }}</h2></div>
+  <div class="scroll">
+  <table class="addons-table">
+    <tr><th>{{ _("Type") }}</th><th>{{ _("Repository") }}</th><th>{{ _("Branch") }}</th><th class="hide-sm">{{ _("Last commit") }}</th><th></th></tr>
+    {% for repo in inst.repositories %}
+    {% set rs = repo_status[inst.key][loop.index0] %}
+    <tr data-repo="{{ repo.name }}">
+      <td>Git</td>
+      <td><span class="mono">{{ repo_urls.get(repo.name) or repo.name }}</span>
+        {% if repo_urls.get(repo.name, "").startswith("https://") %}<a href="{{ repo_urls[repo.name] }}" target="_blank" rel="noopener" title="{{ _('Opens the repository in a new tab') }}">↗</a>{% endif %}</td>
+      <td class="mono">{{ repo.branch }}</td>
+      <td class="hide-sm">{% if rs.error %}<span class="error">{{ tr(rs.error) }}</span>{% else %}<span class="mono">{{ rs.sha }}</span> <span class="muted">{{ rs.date }}</span>{% endif %}</td>
+      <td style="white-space: nowrap; text-align: right">
+        <form method="post" action="{{ base }}/pull" style="display: inline" onsubmit='return confirm({{ _("Download the new commits of {repo}?", repo=repo.name) | tojson }})'>
+          <input type="hidden" name="chosen" value="1"><input type="hidden" name="repo" value="{{ repo.name }}">
+          <input type="hidden" name="next" value="{{ here }}">
+          <button {{ off }} title="{{ _('Downloads the new commits of this repository (git pull), updates the changed modules when the instance says so, and restarts.') }}">{{ _("Update") }}</button></form>
+        {% if is_admin_here %}<button type="button" class="danger" data-repo-remove="{{ repo.name }}" {{ off }}
+          title="{{ _('Takes the repository out of the instance: out of its odoo.conf, its folder deleted, Odoo restarted. Its modules installed stay in the database, without their code.') }}">{{ _("Delete") }}</button>{% endif %}
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5" class="muted">{{ _("No repository yet: only the addons of the Odoo image.") }}</td></tr>
+    {% endfor %}
+  </table>
+  </div>
+  {% if is_admin_here %}
+  <form class="addons-add" id="addons-add">
+    <h3>{{ _("Add a repository") }}</h3>
+    <div class="addons-fields">
+      <div><label for="addons-url">{{ _("Repository address") }}</label>
+        <input type="url" id="addons-url" class="mono" required placeholder="https://github.com/OCA/web.git" spellcheck="false"></div>
+      <div><label for="addons-branch">{{ _("Branch") }}</label>
+        <input type="text" id="addons-branch" class="mono" required placeholder="19.0" spellcheck="false"></div>
+      <div class="addons-go"><button type="submit" class="primary" {{ off }}>{{ _("Add") }}</button></div>
+    </div>
+    <p class="muted" style="font-size: 12px; margin: 6px 0 0">{{ _("https only. A private repository is read with the git credentials of the workspace (Settings › Credentials). Its modules are then installed from Odoo's Apps.") }}</p>
+    <p class="error" id="addons-error" role="alert"></p>
+  </form>
+  {% endif %}
+</section>
+<style>
+.addons-add { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
+.addons-add h3 { margin: 0 0 8px; font-size: 15px; }
+.addons-fields { display: grid; grid-template-columns: 1fr 160px auto; gap: 10px; align-items: end; }
+.addons-fields label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+.addons-fields input { width: 100%; }
+@media (max-width: 700px) { .addons-fields { grid-template-columns: 1fr; } }
+</style>
+{% endif %}
 {% if can_act and inst.type == "odoo" %}
 {# the options the instance's Odoo knows (its own parser), the values of its config file; the ones the layout owns
    locked, a secret's value never shown; Save writes them as the user Odoo runs as and restarts it #}
@@ -537,6 +592,30 @@
     const box = document.querySelector('[data-panel="odoo-config"]');
     if (ocData) drawOdooConfig(box);
   });
+  // the Addons tab: add and remove a repository of the workspace's instance
+  const ADD = {removeQ: {{ _("Take {repo} out of the instance? Its folder is deleted and Odoo restarted.") | tojson }},
+               refused: {{ _("Refused") | tojson }}};
+  async function addonsPost(path, body) {
+    const box = document.querySelector('[data-panel="addons"]');
+    const resp = await fetch(`${box.dataset.ws}/${path}`, {method: "POST",
+      headers: {"Content-Type": "application/json", Accept: "application/json"}, body: JSON.stringify(body)});
+    return {ok: resp.ok, data: await resp.json().catch(() => ({}))};
+  }
+  document.getElementById("addons-add")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const error = document.getElementById("addons-error");
+    error.textContent = "";
+    const {ok, data} = await addonsPost("repositories/add", {server: {{ server.name | tojson }},
+      url: document.getElementById("addons-url").value.trim(), branch: document.getElementById("addons-branch").value.trim()});
+    if (!ok || !data.job) { error.textContent = data.error || data.detail || ADD.refused; return; }
+    location.href = `{{ prefix }}/jobs/${data.job}`;
+  });
+  document.querySelectorAll("[data-repo-remove]").forEach((b) => b.addEventListener("click", async () => {
+    if (!confirm(ADD.removeQ.replace("{repo}", b.dataset.repoRemove))) return;
+    const {ok, data} = await addonsPost("repositories/remove", {server: {{ server.name | tojson }}, name: b.dataset.repoRemove});
+    if (!ok || !data.job) { alert(data.error || data.detail || ADD.refused); return; }
+    location.href = `{{ prefix }}/jobs/${data.job}`;
+  }));
   document.getElementById("oc-save")?.addEventListener("click", async () => {
     const box = document.querySelector('[data-panel="odoo-config"]');
     const changes = changesOdooConfig(box), count = Object.keys(changes.set).length + changes.unset.length;

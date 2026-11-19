@@ -983,6 +983,13 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         statuses = await asyncio.gather(
             *(asyncio.gather(*(ops.repository_status(r) for r in i.repositories)) for i in shown)
         )
+
+        async def remote_url(repo) -> str:
+            code, out = await ops.capture(repo.git("remote", "get-url", repo.remote), cwd=repo.path, timeout=10)
+            return out if code == 0 else ""
+        # the Addons tab: where each repository comes from
+        repo_urls = {r.name: url for i in shown for r, url in
+                     zip(i.repositories, await asyncio.gather(*(remote_url(r) for r in i.repositories)))}
         # Copy from link: for a user who logs in here, with the role it needs;
         # shown also without a usable link, disabled, saying how to get one
         from_link = {}
@@ -1065,6 +1072,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 # the plugin's settings of each instance, as its fields name them
                 "settings_rows": {i.key: settings_rows(i) for i in shown},
                 "repo_status": {i.key: s for i, s in zip(shown, statuses)},
+                "repo_urls": repo_urls,
                 "package_state": {i.key: packages.installed_state(i.package) for i in shown if i.package},
                 "auto_state": updater.state,
                 "busy": {i.key: jobs.is_busy(i.key) for i in srv.instances.values()},
@@ -2925,8 +2933,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         prefix = f"{ws.name}-"
         if name not in ws.servers or not name.startswith(prefix) or name not in settings.servers:
             return refuse(f"No instance {name} in workspace {ws.name}", status.HTTP_404_NOT_FOUND)
-        if any(getattr(settings.servers[name], role) is None for role in ROLES):
-            return refuse(f"{name} has no production and test")
+        # a production at least: the instances made now have no test
+        if settings.servers[name].production is None:
+            return refuse(f"{name} has no production")
         if server_busy(name):
             return refuse(f"A job is running on {name}: try again when it ends")
         return name, name[len(prefix):]
@@ -2961,40 +2970,46 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if not isinstance(found, tuple):
             return found
         name, instance = found
-        repo, url = str(payload.get("name") or "").strip(), str(payload.get("url") or "").strip()
-        branches = {role: str(payload.get(f"{role}_branch") or "").strip() for role in ROLES}
+        server = settings.servers[name]
+        # the roles it has: production, and its test when it has one
+        roles = [role for role in ROLES if getattr(server, role) is not None]
+        url = str(payload.get("url") or "").strip()
+        # no name given: the repository's own (…/OCA/web.git → web)
+        repo = str(payload.get("name") or "").strip() or url.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git")
+        given = str(payload.get("branch") or payload.get("production_branch") or "").strip()
+        branches = {role: str(payload.get(f"{role}_branch") or "").strip() or given for role in roles}
         try:
             for branch in branches.values():
                 workspaceops.check_repository(repo, url, branch)
         except JobFailed as exc:
             return refuse(str(exc))
-        server = settings.servers[name]
-        if any(r.name == repo for role in ROLES for r in getattr(server, role).repositories):
+        if any(r.name == repo for role in roles for r in getattr(server, role).repositories):
             return refuse(f"{name} has a repository {repo} already")
 
         async def action(job):
             options = gitcredentials.options_for(settings, name)
-            current = {role: list(getattr(server, role).repositories) for role in ROLES}
+            current = {role: list(getattr(server, role).repositories) for role in roles}
             cloned = {}
             try:
-                for role in ROLES:
+                for role in roles:
                     cloned[role] = await workspaceops.clone(job, ws, instance, role, repo, url, branches[role], options)
-                for role in ROLES:
+                for role in roles:
                     await workspaceops.write_conf(job, ws, instance, role, [*(r.name for r in current[role]), repo])
                 done = await set_repositories(name, {role: [*repository_rows(current[role]), {
                     "name": repo, "path": str(cloned[role]), "branch": branches[role], "remote": "origin"}]
-                    for role in ROLES})
+                    for role in roles})
             except BaseException:
-                for role in ROLES:
+                for role in roles:
                     await workspaceops.write_conf(job, ws, instance, role, [r.name for r in current[role]])
                     if role in cloned:
                         workspaceops.remove_clone(cloned[role])
                 raise
-            for role in ROLES:
+            for role in roles:
                 await ops.restart(job, getattr(done, role))
             job.log(f"{repo} is in {name}: install its modules from Odoo's Apps")
+            job.result = {"server": name, "repository": repo}
 
-        job = jobs.submit(f"Add repository {repo} to {name}", [f"{name}/{role}" for role in ROLES],
+        job = jobs.submit(f"Add repository {repo} to {name}", [f"{name}/{role}" for role in roles],
                           f"manual: {me}", action)
         return {"job": job.id}
 
@@ -3009,20 +3024,21 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         name, instance = found
         repo = str(payload.get("name") or "")
         server = settings.servers[name]
-        if not any(r.name == repo for role in ROLES for r in getattr(server, role).repositories):
+        roles = [role for role in ROLES if getattr(server, role) is not None]
+        if not any(r.name == repo for role in roles for r in getattr(server, role).repositories):
             return refuse(f"{name} has no repository {repo}", status.HTTP_404_NOT_FOUND)
 
         async def action(job):
-            kept = {role: [r for r in getattr(server, role).repositories if r.name != repo] for role in ROLES}
-            for role in ROLES:
+            kept = {role: [r for r in getattr(server, role).repositories if r.name != repo] for role in roles}
+            for role in roles:
                 await workspaceops.write_conf(job, ws, instance, role, [r.name for r in kept[role]])
-            done = await set_repositories(name, {role: repository_rows(kept[role]) for role in ROLES})
-            for role in ROLES:
+            done = await set_repositories(name, {role: repository_rows(kept[role]) for role in roles})
+            for role in roles:
                 await ops.restart(job, getattr(done, role))
                 workspaceops.remove_clone(workspaceops.addons_folder(ws, instance, role) / repo)
             job.log(f"{repo} removed from {name}")
 
-        job = jobs.submit(f"Remove repository {repo} from {name}", [f"{name}/{role}" for role in ROLES],
+        job = jobs.submit(f"Remove repository {repo} from {name}", [f"{name}/{role}" for role in roles],
                           f"manual: {me}", action)
         return {"job": job.id}
 

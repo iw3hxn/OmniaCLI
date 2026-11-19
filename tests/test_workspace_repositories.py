@@ -171,3 +171,26 @@ async def test_who_and_what_is_refused(instance, client):
     resp = await client.post("/api/workspaces/acme/repositories/remove", headers=post_as("mario"),
                              json={"server": "acme-main", "name": "nope"})
     assert resp.status_code == 404
+
+
+async def test_an_instance_with_production_only(instance, client):
+    """The instances made now have no test: the repository goes in production
+    only, named after its address, on the branch given."""
+    calls, settings = instance["calls"], instance["settings"]
+    settings.servers["acme-main"].instances.pop("test")
+    resp = await client.post("/api/workspaces/acme/repositories/add", headers=post_as("mario"),
+                             json={"server": "acme-main", "url": URL, "branch": "17.0"})
+    assert resp.status_code == 200, resp.text
+    job = await wait_job(client, resp.json()["job"])
+    assert job["status"] == "success", job["lines"]
+    assert calls["clone"] == [("main", "production", "odoo-custom", URL, "17.0", True)]
+    assert calls["restart"] == ["acme-main/production"]
+    server = settings.servers["acme-main"]
+    assert server.test is None and [(r.name, r.branch) for r in server.production.repositories] == [("odoo-custom", "17.0")]
+    resp = await client.post("/api/workspaces/acme/repositories/remove", headers=post_as("mario"),
+                             json={"server": "acme-main", "name": "odoo-custom"})
+    assert (await wait_job(client, resp.json()["job"]))["status"] == "success"
+    assert settings.servers["acme-main"].production.repositories == []
+    # the Addons tab of the instance's page: the add form, posting to its workspace
+    page = (await client.get("/servers/acme-main", headers=post_as("mario"))).text
+    assert 'data-tab="addons"' in page and 'data-ws="/api/workspaces/acme"' in page and 'id="addons-add"' in page
