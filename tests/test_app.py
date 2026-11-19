@@ -1598,3 +1598,21 @@ async def test_pull_dialog_chooses_the_repositories(client, env):
     viewer = "Basic " + base64.b64encode(f"viewer:{PASSWORD}".encode()).decode()
     assert (await client.get("/api/servers/srv/test/pull-preview",
                              headers={"Authorization": viewer})).status_code == 403
+
+
+async def test_a_part_that_does_not_stop_does_not_hang_the_service(env, monkeypatch, caplog):
+    """A part whose task does not end (a child process that does not die) is
+    logged and left behind: the lifespan ends, the others stop."""
+    from omniacli import app as app_module
+    from omniacli.diskhistory import DiskRecorder
+
+    monkeypatch.setattr(app_module, "STOP_SECONDS", 0.2)
+
+    async def never(self):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(DiskRecorder, "stop", never)
+    app = create_app(env["settings"])
+    async with app.router.lifespan_context(app):
+        pass
+    assert "disk history did not stop within" in caplog.text

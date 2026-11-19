@@ -602,10 +602,15 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                            ("disk history", disk_recorder.stop), ("load sampler", sampler.stop),
                            ("auto update", updater.stop), ("schedules", scheduler.stop),
                            ("link clients", link_clients.close)):
-            try:
-                await asyncio.wait_for(stop(), STOP_SECONDS)
-            except asyncio.TimeoutError:
+            # a task of its own, waited for and never cancelled from here: a
+            # timeout cancelling this task (the lifespan's) would reach the
+            # server running it (anyio's in the tests) as a cancellation
+            task = asyncio.ensure_future(stop())
+            done, _ = await asyncio.wait({task}, timeout=STOP_SECONDS)
+            if not done:
                 _logger.error("%s did not stop within %d s: left behind", what, STOP_SECONDS)
+            elif task.exception() is not None:
+                _logger.error("%s stopped with an error: %s", what, task.exception())
         selflog.detach(own_log)
 
     app = FastAPI(
