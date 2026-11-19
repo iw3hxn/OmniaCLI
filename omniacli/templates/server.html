@@ -19,7 +19,8 @@
 {% macro when(iso) %}{% if iso %}{{ iso[8:10] }}/{{ iso[5:7] }}/{{ iso[0:4] }} {{ iso[11:16] }}{% else %}—{% endif %}{% endmacro %}
 {# an instance's address without its scheme; none (localhost): its server's name #}
 {% macro host_of(url, name) %}{% if url and "://localhost" not in url and "://127.0.0.1" not in url %}{{ url.split("://", 1)[-1] }}{% else %}{{ name }}{% endif %}{% endmacro %}
-{% macro state_word(st) %}<span class="state-dot {{ st }}" title="{{ {'running': _('Odoo answers'), 'stopped': _('Odoo is stopped: Start brings it back'), 'busy': _('A job is working on it')}.get(st, _('OmniaCLI cannot read the state of its service')) }}">{{ {"running": _("Running"), "stopped": _("Stopped"), "busy": _("Job running")}.get(st, _("State unknown")) }}</span>{% endmacro %}
+{# raw: the state systemd (or compose) gives, said on hover: "service: active" #}
+{% macro state_word(st, raw=none, compose=false) %}<span class="state-dot {{ st }}" title="{% if raw and st != 'busy' %}{{ _('project: {state}', state=tr(raw)) if compose else _('service: {state}', state=tr(raw)) }}{% else %}{{ {'running': _('Odoo answers'), 'stopped': _('Odoo is stopped: Start brings it back'), 'busy': _('A job is working on it')}.get(st, _('OmniaCLI cannot read the state of its service')) }}{% endif %}">{{ {"running": _("Running"), "stopped": _("Stopped"), "busy": _("Job running")}.get(st, _("State unknown")) }}</span>{% endmacro %}
 <style>
 /* an instance's page (docs/ux/UX-001, UX-003/004): one copy at a time, one
    primary action for its state, the rest in More, the details in tabs */
@@ -102,7 +103,7 @@
       {% elif is_staging %}<span class="badge info" title="{{ _('A dated, neutralized copy of a production') }}">{{ _("Staging") }}</span>
       {% else %}<span class="badge ok" title="{{ _('The instance its users work on') }}">{{ _("Production") }}</span>{% endif %}</h1>
     <div class="facts">
-      {{ state_word("busy" if is_busy else st) }}
+      {{ state_word("busy" if is_busy else st, state if rt != "process" else none, rt == "compose") }}
       <span>{{ tr(inst.plugin.label) }}</span>
       {% if title != server.name %}<span title="{{ _('Its name in OmniaCLI') }}">{{ _("server {name}", name=server.name) }}</span>{% endif %}
       {% set database = inst.plugin.describe(inst).database %}{% if database %}<span>{{ _("database {name}", name=database) }}</span>{% endif %}
