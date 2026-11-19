@@ -2821,6 +2821,22 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                           f"manual: {me}", action, workspace=ws.name)
         return {"job": job.id, "server": name}
 
+    @app.post("/api/stagings/mark", dependencies=[Depends(admin)])
+    async def staging_mark(payload: dict = Body(...)):
+        """Record a server as a staging of another one (a hosting panel's
+        staging, found by Add a server): shown under its parent with the
+        Staging badge; created: when it was copied, if known."""
+        name, parent = str(payload.get("name") or ""), str(payload.get("parent") or "")
+        created = str(payload.get("created") or "")
+        if name not in settings.servers or parent not in settings.servers or name == parent:
+            return refuse("name and parent: two servers of this OmniaCLI")
+        if created and not re.fullmatch(r"\d{4}-\d{2}-\d{2}(T[\d:]{5,8})?", created):
+            return refuse(f"{created!r} is not a date, as 2026-11-19")
+        data = stagings.load(stagings_file)
+        data[name] = {**data.get(name, {}), "parent": parent, "created": created}
+        await asyncio.to_thread(stagings.save, stagings_file, data)
+        return {"ok": True}
+
     @app.post("/api/workspaces/{workspace}/instances/delete", dependencies=[Depends(admin)])
     async def instance_delete(workspace: str, payload: dict = Body(...), me: Principal = Depends(current_user)):
         """An instance of the workspace removed: its containers, data and
@@ -3550,6 +3566,22 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         except (sshlinks.SshError, OSError) as exc:
             return refuse(str(exc), 500)
 
+    async def mark_stagings(job, client, headers: dict, names: list[str]) -> None:
+        """The servers there whose names say they are a hosting panel's
+        stagings (stagings.parent_by_name) recorded under their production."""
+        for name in names:
+            staging = stagings.parent_by_name(str(name), [str(n) for n in names])
+            if staging is None:
+                continue
+            parent, created = staging
+            try:
+                resp = await client.post("/api/stagings/mark", headers=headers, timeout=30,
+                                         json={"name": name, "parent": parent, "created": created})
+                said = f"HTTP {resp.status_code}" if resp.status_code != 200 else ""
+            except httpx.HTTPError as exc:
+                said = describe_error(exc)
+            job.log(f"{name}: not marked as a staging of {parent} ({said})" if said else f"{name}: a staging of {parent}")
+
     async def add_found_instances(job, link: LinkTarget, me: Principal) -> None:
         """A machine that already runs Odoo: what Discover finds there, saved
         there as the productions of its servers and activated (Test &
@@ -3573,6 +3605,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             # the machine was added for its Odoo: none is a failure, said so;
             # added again, those OmniaCLI has there already are enough
             if any(item.get("known") for item in found):
+                await mark_stagings(job, client, headers, list(data.get("names") or []))
                 return
             raise JobFailed("linked, but no Odoo instance was added there: the lines above say why")
         try:
@@ -3582,6 +3615,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             raise JobFailed(f"the instances cannot be saved there: {exc}")
         if not saved.get("ok"):
             raise JobFailed(f"the instances cannot be saved there: {saved.get('error')}")
+        await mark_stagings(job, client, headers, [item["name"] for item in items] + list(data.get("names") or []))
         for item in items:
             name = item["name"]
             try:

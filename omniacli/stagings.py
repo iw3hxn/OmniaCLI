@@ -48,3 +48,25 @@ def instance_name(parent_instance: str, when: datetime.datetime, taken) -> str:
 
 def is_staging_name(instance: str) -> bool:
     return re.search(r"-stg-\d{8}(-\d+)?$", instance) is not None
+
+
+# the names a hosting panel gives its stagings, beside their production's:
+# <name>-stage, <name>-staging, <name>-stg..., and <date>-staging-<name>
+_SUFFIXED = re.compile(r"(?P<parent>.+?)-(?:stage|staging|stg)(?:-[\w.-]*)?")
+_DATED = re.compile(r"(?P<stamp>\d{6}(?:\d{2})?)-(?:stage|staging)-(?P<parent>.+)")
+
+
+def parent_by_name(name: str, names) -> tuple[str, str] | None:
+    """(parent, date copied as yyyy-mm-dd or "") when name is the name of a
+    staging of one of names (volontarius-stage of volontarius,
+    20260805-staging-ridix.example.com of ridix.example.com), else None.
+    The date is the one the name carries, the day when only a month."""
+    names = set(names) - {name}
+    found = _DATED.fullmatch(name)
+    if found and found["parent"] in names:
+        stamp = found["stamp"]
+        return found["parent"], f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:8] or '01'}"
+    found = _SUFFIXED.fullmatch(name)
+    if found and found["parent"] in names:
+        return found["parent"], ""
+    return None
