@@ -261,7 +261,17 @@ class DockerPlugin(ServicePlugin):
     # --- what follows a pull, backup, restore ------------------------------
 
     async def after_pull(self, job: Job, instance: Instance) -> None:
+        await self.pip_requirements(job, instance)
         await self._update_changed(job, instance)
+
+    async def pip_requirements(self, job: Job, instance: Instance, only: str | None = None) -> None:
+        """The requirements.txt of each repository of addons (or of the one
+        named), installed in the running Odoo service (compose-helper
+        pip-requirements): before its modules are updated or installed."""
+        for repo in instance.repositories:
+            if only is None or repo.name == only:
+                job.log(f"--- Python packages of {repo.name}")
+                await _helper(job, instance, "pip-requirements", instance.options.odoo_service, repo.name)
 
     async def _update_changed(self, job: Job, instance: Instance, force: bool = False) -> None:
         if not instance.options.update_modules and not force:
@@ -478,6 +488,9 @@ class DockerPlugin(ServicePlugin):
     async def _pull_image(self, job: Job, instance: Instance, params: dict) -> None:
         job.log(f"--- pull the images of {instance.restart.service}")
         await _helper(job, instance, "pull")
+        # a newer image may have another Python: the repositories' packages again,
+        # for it (pip installs only what is missing)
+        await self.pip_requirements(job, instance)
 
 
 def _copy_params(server: Server, params: dict) -> dict:

@@ -71,6 +71,12 @@ command of the caller's, and runs docker with an environment of its own:
                                          on the input, the helper's own file,
                                          never the caller's): the users, or
                                          a new session of one (its sid)
+    pip-requirements <odoo service> <repository>
+                                         in the running service, as its
+                                         user: pip install --user of the
+                                         requirements.txt of that repository
+                                         of addons (none: said), on the
+                                         volume of its data
     setup <odoo service> <db>            in the running service, odoo shell
                                          runs odoo/setup_database.py on a new
                                          database: the admin's password and
@@ -116,7 +122,9 @@ ACTIONS = {
 }
 # the actions that take arguments (commands())
 WITH_ARGUMENTS = ("logs", "version", "port", "dump", "load", "update", "psql", "init", "link-filestore", "login",
-                  "setup")
+                  "setup", "pip-requirements")
+# a repository of the instance's addons (/mnt/customer-addons/<name>)
+REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 DATABASE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,62}")
 MODULE = re.compile(r"[a-z0-9][a-z0-9_]{0,99}")
 LANGUAGE = re.compile(r"[a-z]{2,3}_[A-Z]{2}")
@@ -178,6 +186,12 @@ SCRIPTS = {
     # odoo shell reads the script from its input; quiet, the answer is its last line
     "login": ODOO_DB + 'OMNIACLI_LOGIN="$2" exec odoo shell -d "$1" --no-http --log-level=critical',
     "setup": ODOO_DB + 'exec odoo shell -d "$1" --no-http --log-level=critical',
+    # the Python packages a repository of addons asks (its requirements.txt),
+    # as the image's user in its home (/var/lib/odoo/.local, on the volume of
+    # the instance's data: they stay when the container is made again)
+    "pip-requirements": 'f="/mnt/customer-addons/$1/requirements.txt"; if [ -f "$f" ]; then '
+                        'exec python3 -m pip install --user --break-system-packages --disable-pip-version-check '
+                        '--no-warn-script-location -r "$f"; else echo "$1 has no requirements.txt"; fi',
 }
 _ENV_LINE = re.compile(r"\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=")
 # logs: a service's output with the time of each line, the last N lines or
@@ -404,6 +418,11 @@ def commands(project: Path, action: str, args: list[str]) -> list[list[str]]:
         if len(args) != 3 or not LOGIN_REQUEST.fullmatch(args[2]):
             raise HelperError("usage: login <service> <database> users|<user id>")
         return [_script(service(project, args[0]), "login", _database(args[1]), args[2])]
+    if action == "pip-requirements":
+        # pip-requirements <odoo service> <repository>: in the running service
+        if len(args) != 2 or not REPOSITORY.fullmatch(args[1]) or ".." in args[1]:
+            raise HelperError("usage: pip-requirements <service> <repository>")
+        return [_script(service(project, args[0]), "pip-requirements", args[1])]
     if action == "setup":
         # setup <odoo service> <database>: the values on the helper's input
         if len(args) != 2:

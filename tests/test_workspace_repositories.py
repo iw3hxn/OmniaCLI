@@ -10,6 +10,7 @@ import pytest
 
 from omniacli import gitcredentials, ops, workspaceops
 from omniacli.config import Workspace, parse_servers
+from omniacli.docker import DockerPlugin
 from omniacli.jobs import Job, JobFailed
 
 from .test_app import client, wait_job  # noqa: F401 - the client fixture
@@ -87,7 +88,7 @@ def instance(workspaces, env, tmp_path, monkeypatch):
     settings.credentials_file = tmp_path / "credentials.yaml"
     gitcredentials.save(settings.credentials_file, {"workspace:acme": {"github.com": gitcredentials.check(
         "github.com", "bot", "tok")}})
-    calls = {"clone": [], "conf": [], "restart": [], "fail_conf": False}
+    calls = {"clone": [], "conf": [], "restart": [], "pip": [], "fail_conf": False}
 
     async def clone(job, ws, instance, role, name, url, branch, git_options=()):
         calls["clone"].append((instance, role, name, url, branch, bool(git_options)))
@@ -103,6 +104,10 @@ def instance(workspaces, env, tmp_path, monkeypatch):
 
     async def restart(job, inst):
         calls["restart"].append(inst.key)
+
+    async def pip_requirements(self, job, inst, only=None):
+        calls["pip"].append((inst.key, only))
+    monkeypatch.setattr(DockerPlugin, "pip_requirements", pip_requirements)
     monkeypatch.setattr(workspaceops, "clone", clone)
     monkeypatch.setattr(workspaceops, "write_conf", write_conf)
     monkeypatch.setattr(ops, "restart", restart)
@@ -122,6 +127,8 @@ async def test_add_and_remove(instance, client):
                               ("main", "test", "custom", URL, "17.0-dev", True)]
     assert calls["conf"] == [("production", ["custom"]), ("test", ["custom"])]
     assert calls["restart"] == ["acme-main/production", "acme-main/test"]
+    # the repository's Python packages in each role, before the restart
+    assert calls["pip"] == [("acme-main/production", "custom"), ("acme-main/test", "custom")]
     server = settings.servers["acme-main"]
     assert [(r.name, r.branch, r.path) for r in server.test.repositories] == [
         ("custom", "17.0-dev", instance["folder"] / "test" / "addons" / "custom")]

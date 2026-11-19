@@ -3005,6 +3005,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                         workspaceops.remove_clone(cloned[role])
                 raise
             for role in roles:
+                # its Python packages before Odoo starts with its modules
+                pip = getattr(getattr(done, role).plugin, "pip_requirements", None)
+                if pip is not None:
+                    await pip(job, getattr(done, role), repo)
                 await ops.restart(job, getattr(done, role))
             job.log(f"{repo} is in {name}: install its modules from Odoo's Apps")
             job.result = {"server": name, "repository": repo}
