@@ -82,8 +82,11 @@ main() {
         step "nginx, certbot and Docker"
         apt-get install "${APT_OPTIONS[@]}" nginx certbot
         command -v docker >/dev/null || apt-get install "${APT_OPTIONS[@]}" docker.io
+        # Debian 13 keeps the docker command apart from the daemon (docker-cli)
+        command -v docker >/dev/null || apt-get install "${APT_OPTIONS[@]}" docker-cli
         if ! docker compose version >/dev/null 2>&1; then
-            for compose in docker-compose-v2 docker-compose-plugin; do
+            # Ubuntu's, Docker's own, Debian 13's (docker-compose 2.x, the plugin)
+            for compose in docker-compose-v2 docker-compose-plugin docker-compose; do
                 apt-get install "${APT_OPTIONS[@]}" "$compose" >/dev/null 2>&1 && break
             done
         fi
