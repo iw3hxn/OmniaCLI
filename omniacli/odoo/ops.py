@@ -210,7 +210,7 @@ def _shebang_python(script: Path) -> Path | None:
 
 # the venvs OmniaCLI makes, as root, for an Odoo run by a python outside a
 # venv (Odoo's Debian package): they see that python's packages and add
-# click-odoo-contrib, the system's python untouched (omniacli/adopt.py)
+# click-odoo-contrib, the system's python untouched (omniacli/odoo/adopt.py)
 ADOPTED_VENVS = Path("/opt/omniacli/odoo-venvs")
 
 

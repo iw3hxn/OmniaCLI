@@ -8,7 +8,7 @@ import subprocess
 
 import pytest
 
-from omniacli import adopt
+from omniacli.odoo import adopt
 from omniacli.odoo import ops as odoo_ops
 
 

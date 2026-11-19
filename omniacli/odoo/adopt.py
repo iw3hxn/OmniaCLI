@@ -6,7 +6,7 @@ one installed by hand, needs before Discover and Test & activate pass.
 
 Run as root by provision.sh, once OmniaCLI's package is installed:
 
-    /opt/omniacli/venv/bin/python -I -m omniacli.adopt <OmniaCLI's user>
+    /opt/omniacli/venv/bin/python -I -m omniacli.odoo.adopt <OmniaCLI's user>
 
 For every Odoo that Discover finds (a process or a systemd unit), as
 Discover finds it, with nothing of Odoo's changed:
@@ -39,8 +39,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-from .odoo import discover
-from .odoo.ops import adopted_venv, addons_paths_of
+from . import discover
+from .ops import adopted_venv, addons_paths_of
 
 SUDOERS = Path("/etc/sudoers.d/omniacli-instances")
 
@@ -186,7 +186,7 @@ async def adopt(service_user: str) -> int:
 
 def main() -> None:
     if os.geteuid() != 0 or len(sys.argv) != 2:
-        sys.exit("usage, as root: python -m omniacli.adopt <OmniaCLI's user>")
+        sys.exit("usage, as root: python -m omniacli.odoo.adopt <OmniaCLI's user>")
     service_user = sys.argv[1]
     pwd.getpwnam(service_user)
     ready = asyncio.run(adopt(service_user))

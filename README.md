@@ -1736,7 +1736,7 @@ the machine is upgraded, installed beside it or closed, and it takes about
 1. `provision.sh existing`: `apt-get update` and only what OmniaCLI needs
    (`acl`, `python3-venv`, `curl`), OmniaCLI from its package without the
    workspaces, the link back as above; no nginx, Docker nor firewall.
-2. `python -m omniacli.adopt omniacli`, as root, for every Odoo that
+2. `python -m omniacli.odoo.adopt omniacli`, as root, for every Odoo that
    **Discover** finds there (a process or a systemd unit), changing nothing
    of Odoo:
    - read access for OmniaCLI's user to its Odoo config, its log folder

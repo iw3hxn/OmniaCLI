@@ -14,7 +14,7 @@
 # (a Cloudpepper server, one installed by hand): nothing of it is upgraded,
 # installed beside it or closed (no nginx, Docker, workspaces nor firewall);
 # OmniaCLI and the link back as below, then its Odoo made ready for
-# OmniaCLI (omniacli/adopt.py: read access by ACLs, click-odoo, sudoers).
+# OmniaCLI (omniacli/odoo/adopt.py: read access by ACLs, click-odoo, sudoers).
 #
 # 1. the system: a supported one, its updates, unattended upgrades;
 # 2. what the workspaces need: nginx, certbot, Docker with its compose plugin;
@@ -152,7 +152,7 @@ PY
 
     if [ "$MODE" = existing ]; then
         step "the Odoo instances"
-        /opt/omniacli/venv/bin/python -I -m omniacli.adopt "${service_user:-omniacli}"
+        /opt/omniacli/venv/bin/python -I -m omniacli.odoo.adopt "${service_user:-omniacli}"
         # the service reads the configs with the access just given
         systemctl restart omniacli
         for _ in $(seq 60); do curl -s -o /dev/null http://127.0.0.1:8090/ && break; sleep 1; done

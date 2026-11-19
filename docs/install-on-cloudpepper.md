@@ -42,7 +42,7 @@ Analysis of 19/11/2026 on `95.179.220.4` (my.cloudpepper.io server
 ## From the interface (since 19/11/2026)
 
 **Servers › Add a server**, step 1 **Odoo already runs there**: the steps
-below are what the job does (`provision.sh existing`, `omniacli.adopt`,
+below are what the job does (`provision.sh existing`, `omniacli.odoo.adopt`,
 Discover and Test & activate through the link). See the README, Machines,
 "A server that already has Odoo".
 
