@@ -119,6 +119,34 @@ def store_dir(credentials_file: Path) -> Path:
     return credentials_file.parent / "credentials"
 
 
+# the key of OmniaCLI for the repositories of the workspaces reached over ssh
+# (git@host:org/repo.git): its public half is added to each repository as a
+# read-only deploy key; made on demand (the Addons tab), in the store folder
+GIT_KEY_NAME = "id_ed25519_git"
+GIT_KNOWN_HOSTS = "known_hosts_git"
+
+
+def git_key(credentials_file: Path) -> Path:
+    return store_dir(credentials_file) / GIT_KEY_NAME
+
+
+def ssh_options(key: Path) -> tuple[str, ...]:
+    """The -c option that has git's ssh use OmniaCLI's git key only (no agent,
+    no prompt), a host's key recorded the first time it is met."""
+    known = key.parent / GIT_KNOWN_HOSTS
+    command = (f"ssh -i {shlex.quote(str(key))} -o IdentitiesOnly=yes -o IdentityAgent=none -o BatchMode=yes"
+               f" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={shlex.quote(str(known))}")
+    return ("-c", f"core.sshCommand={command}")
+
+
+def _with_key(settings, server: str, options: tuple[str, ...]) -> tuple[str, ...]:
+    """options and, for a workspace's server once the git key is made, the key's."""
+    key = git_key(settings.credentials_file)
+    if settings.workspace_of(server) is None or not key.is_file():
+        return options
+    return (*options, *ssh_options(key))
+
+
 def write_store(folder: Path, server: str, creds: dict[str, Credential]) -> Path:
     """git credential-store's file of a server: one https://user:token@host per host."""
     folder.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -152,10 +180,11 @@ def options_for(settings, server: str) -> tuple[str, ...]:
     try:
         creds = merged(load(settings.credentials_file), server, settings.workspace_of(server))
     except CredentialError:
-        return ()
+        creds = {}
     if not creds:
-        return ()
-    return git_options(write_store(store_dir(settings.credentials_file), server, creds), creds)
+        return _with_key(settings, server, ())
+    return _with_key(settings, server,
+                     git_options(write_store(store_dir(settings.credentials_file), server, creds), creds))
 
 
 def bind(settings) -> None:
@@ -177,6 +206,7 @@ def bind(settings) -> None:
             store = write_store(folder, name, creds)
             kept.add(store.name)
             options = git_options(store, creds)
+        options = _with_key(settings, name, options)
         for inst in (server.production, server.test):
             for repo in (inst.repositories if inst is not None else []):
                 repo.git_options = options

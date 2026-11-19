@@ -5,10 +5,11 @@ by OmniaCLI into the role's addons/ with the workspace's git credentials,
 named in that role's odoo.conf, the role restarted; removed the same way."""
 import os
 import stat
+from pathlib import Path
 
 import pytest
 
-from omniacli import gitcredentials, ops, workspaceops
+from omniacli import gitcredentials, ops, stacktemplates, workspaceops
 from omniacli.config import Workspace, parse_servers
 from omniacli.docker import DockerPlugin
 from omniacli.jobs import Job, JobFailed
@@ -21,13 +22,18 @@ URL = "https://github.com/acme/odoo-custom.git"
 
 def test_what_a_repository_may_be():
     workspaceops.check_repository("custom", URL, "17.0")
+    # over ssh, with OmniaCLI's git key
+    workspaceops.check_repository("custom", "git@github.com:acme/x.git", "17.0")
+    workspaceops.check_repository("custom", "ssh://git@gitlab.example.com:2222/acme/x.git", "17.0")
     for name, url, branch, message in (
             ("../x", URL, "main", "not a repository name"),
-            ("custom", "http://github.com/acme/x.git", "main", "not an https"),
-            ("custom", "https://bot:tok@github.com/acme/x.git", "main", "not an https"),
-            ("custom", "git@github.com:acme/x.git", "main", "not an https"),
-            ("custom", "https://github.com/acme/../x", "main", "not an https"),
-            ("custom", "https://github.com/acme/x.git?u=1", "main", "not an https"),
+            ("custom", "http://github.com/acme/x.git", "main", "not the address"),
+            ("custom", "https://bot:tok@github.com/acme/x.git", "main", "not the address"),
+            ("custom", "root@github.com:acme/x.git", "main", "not the address"),
+            ("custom", "git@github.com:-oProxyCommand=x", "main", "not the address"),
+            ("custom", "git@github.com:acme/../x", "main", "not the address"),
+            ("custom", "https://github.com/acme/../x", "main", "not the address"),
+            ("custom", "https://github.com/acme/x.git?u=1", "main", "not the address"),
             ("custom", URL, "--upload-pack=x", "not a branch"),
             ("custom", URL, "a..b", "not a branch")):
         with pytest.raises(JobFailed, match=message):
@@ -201,3 +207,41 @@ async def test_an_instance_with_production_only(instance, client):
     # the Addons tab of the instance's page: the add form, posting to its workspace
     page = (await client.get("/servers/acme-main", headers=post_as("mario"))).text
     assert 'data-tab="addons"' in page and 'data-ws="/api/workspaces/acme"' in page and 'id="addons-add"' in page
+
+
+
+async def test_a_repository_over_ssh(instance, client):
+    """git@ addresses: OmniaCLI's git key, shown to be added as a deploy key,
+    used by every git command on the workspace's repositories."""
+    calls, settings = instance["calls"], instance["settings"]
+    settings.servers["acme-main"].instances.pop("test")
+    resp = await client.post("/api/workspaces/acme/git-key", headers=post_as("mario"), json={})
+    assert resp.status_code == 200, resp.text
+    key = resp.json()["public_key"]
+    assert key.startswith("ssh-ed25519 ") and gitcredentials.git_key(settings.credentials_file).is_file()
+    # the same key the next time
+    assert (await client.post("/api/workspaces/acme/git-key", headers=post_as("mario"), json={})).json()["public_key"] == key
+    options = gitcredentials.options_for(settings, "acme-main")
+    assert any(o.startswith("core.sshCommand=ssh -i ") and "IdentitiesOnly=yes" in o for o in options)
+    resp = await client.post("/api/workspaces/acme/repositories/add", headers=post_as("mario"),
+                             json={"server": "acme-main", "url": "git@github.com:DueEsseTI/Common.git", "branch": "17.0"})
+    job = await wait_job(client, resp.json()["job"])
+    assert job["status"] == "success", job["lines"]
+    # named after the address, cloned with the key's option
+    assert calls["clone"][-1][:5] == ("main", "production", "Common", "git@github.com:DueEsseTI/Common.git", "17.0")
+    repo = settings.servers["acme-main"].production.repositories[0]
+    assert any(o.startswith("core.sshCommand=") for o in repo.git_options)
+    # a server outside the workspaces keeps the machine's own ssh
+    assert not any("sshCommand" in o for o in gitcredentials.options_for(settings, "srv-alone"))
+
+
+async def test_the_odoo_config_tab_of_a_workspaces_instance(instance, client, monkeypatch):
+    """Its template's parameters, on the instance's page, posted to the
+    workspace's parameters/save."""
+    template = stacktemplates.load_template(Path(__file__).parent.parent / "templates" / "odoo-19")
+    monkeypatch.setattr(workspaceops, "templates", lambda: {"odoo-19": template})
+    meta = instance["folder"] / "instance.json"
+    meta.parent.mkdir(parents=True, exist_ok=True)
+    meta.write_text('{"template": "odoo-19"}')
+    page = (await client.get("/servers/acme-main", headers=post_as("mario"))).text
+    assert 'data-tab="odoo-config"' in page and 'data-param="workers"' in page and 'id="op-save"' in page

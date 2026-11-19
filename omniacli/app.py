@@ -212,6 +212,7 @@ WORKSPACE_ROUTES = frozenset({
     "/api/workspaces/{workspace}/web/publish", "/api/workspaces/{workspace}/web/certificate",
     "/api/workspaces/{workspace}/credentials/save", "/api/workspaces/{workspace}/credentials/delete",
     "/api/workspaces/{workspace}/repositories/add", "/api/workspaces/{workspace}/repositories/remove",
+    "/api/workspaces/{workspace}/git-key",
     "/api/workspaces/{workspace}/parameters/save", "/api/workspaces/{workspace}/load",
 })
 
@@ -987,6 +988,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         async def remote_url(repo) -> str:
             code, out = await ops.capture(repo.git("remote", "get-url", repo.remote), cwd=repo.path, timeout=10)
             return out if code == 0 else ""
+        # the Odoo config tab of a workspace's instance: its template's parameters
+        made_by = workspace_of(srv.name)
+        param_role = "test" if view == "test" else "production"
+        odoo_params = (await asyncio.to_thread(role_parameters, made_by[0], made_by[1], param_role)
+                       if made_by is not None and getattr(srv, param_role) is not None else None)
         # the Addons tab: where each repository comes from
         repo_urls = {r.name: url for i in shown for r, url in
                      zip(i.repositories, await asyncio.gather(*(remote_url(r) for r in i.repositories)))}
@@ -1073,6 +1079,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 "settings_rows": {i.key: settings_rows(i) for i in shown},
                 "repo_status": {i.key: s for i, s in zip(shown, statuses)},
                 "repo_urls": repo_urls,
+                "odoo_params": odoo_params, "param_role": param_role,
                 "package_state": {i.key: packages.installed_state(i.package) for i in shown if i.package},
                 "auto_state": updater.state,
                 "busy": {i.key: jobs.is_busy(i.key) for i in srv.instances.values()},
@@ -2975,7 +2982,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         roles = [role for role in ROLES if getattr(server, role) is not None]
         url = str(payload.get("url") or "").strip()
         # no name given: the repository's own (…/OCA/web.git → web)
-        repo = str(payload.get("name") or "").strip() or url.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git")
+        repo = str(payload.get("name") or "").strip() or re.split(r"[/:]", url.rstrip("/"))[-1].removesuffix(".git")
         given = str(payload.get("branch") or payload.get("production_branch") or "").strip()
         branches = {role: str(payload.get(f"{role}_branch") or "").strip() or given for role in roles}
         try:
@@ -3016,6 +3023,22 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         job = jobs.submit(f"Add repository {repo} to {name}", [f"{name}/{role}" for role in roles],
                           f"manual: {me}", action)
         return {"job": job.id}
+
+    @app.post("/api/workspaces/{workspace}/git-key", dependencies=[Depends(admin)])
+    async def workspace_git_key(workspace: str):
+        """OmniaCLI's git key for the repositories reached over ssh, made the
+        first time: its public half, to add as a read-only deploy key."""
+        a_workspace(workspace)
+        if settings.credentials_file is None:
+            return refuse("No credentials file in this configuration: the git key has no place")
+        key = gitcredentials.git_key(settings.credentials_file)
+        try:
+            public = await sshlinks.ensure_key(key.parent, key.name)
+        except (sshlinks.SshError, OSError) as exc:
+            return refuse(str(exc), 500)
+        # the repositories of the workspaces' servers use it from now
+        await asyncio.to_thread(gitcredentials.bind, settings)
+        return {"ok": True, "public_key": public}
 
     @app.post("/api/workspaces/{workspace}/repositories/remove", dependencies=[Depends(admin)])
     async def repository_remove(workspace: str, payload: dict = Body(...), me: Principal = Depends(current_user)):

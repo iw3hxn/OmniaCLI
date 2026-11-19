@@ -251,7 +251,7 @@
   <button type="button" role="tab" data-tab="log">{{ _("Log") }}</button>
   <button type="button" role="tab" data-tab="monitor" hidden>{{ _("Monitoring") }}</button>
   {% if can_act and stagings and stagings.workspace %}<button type="button" role="tab" data-tab="addons">{{ _("Addons") }}</button>{% endif %}
-  {% if can_act and inst.type == "odoo" %}<button type="button" role="tab" data-tab="odoo-config">{{ _("Odoo config") }}</button>{% endif %}
+  {% if can_act and (inst.type == "odoo" or odoo_params) %}<button type="button" role="tab" data-tab="odoo-config">{{ _("Odoo config") }}</button>{% endif %}
   {% if can_act %}<button type="button" role="tab" data-tab="settings">{{ _("Settings") }}</button>{% endif %}
 </nav>
 
@@ -350,24 +350,68 @@
     <h3>{{ _("Add a repository") }}</h3>
     <div class="addons-fields">
       <div><label for="addons-url">{{ _("Repository address") }}</label>
-        <input type="url" id="addons-url" class="mono" required placeholder="https://github.com/OCA/web.git" spellcheck="false"></div>
+        <input type="text" id="addons-url" class="mono" required placeholder="https://github.com/OCA/web.git · git@github.com:org/repo.git" spellcheck="false"></div>
       <div><label for="addons-branch">{{ _("Branch") }}</label>
         <input type="text" id="addons-branch" class="mono" required placeholder="19.0" spellcheck="false"></div>
       <div class="addons-go"><button type="submit" class="primary" {{ off }}>{{ _("Add") }}</button></div>
     </div>
-    <p class="muted" style="font-size: 12px; margin: 6px 0 0">{{ _("https only. A private repository is read with the git credentials of the workspace (Settings › Credentials). Its modules are then installed from Odoo's Apps.") }}</p>
+    <p class="muted" style="font-size: 12px; margin: 6px 0 0">{{ _("A private repository: over https with the git credentials of the workspace (Settings › Credentials), or over ssh (git@…) with OmniaCLI's key added to it as a deploy key. Its modules are then installed from Odoo's Apps.") }}</p>
     <p class="error" id="addons-error" role="alert"></p>
+    <details class="addons-key">
+      <summary>{{ _("The key for the repositories over ssh (git@…)") }}</summary>
+      <p class="muted" style="font-size: 13px">{{ _("Add it to each private repository as a read-only deploy key (GitHub: Settings › Deploy keys; GitLab: Settings › Repository › Deploy keys). One key for all of them, made the first time it is shown.") }}</p>
+      <button type="button" id="addons-key-show">{{ _("Show the key") }}</button>
+      <pre class="console mono copyable" id="addons-key" hidden style="white-space: pre-wrap; overflow-wrap: anywhere"></pre>
+    </details>
   </form>
   {% endif %}
 </section>
 <style>
 .addons-add { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
 .addons-add h3 { margin: 0 0 8px; font-size: 15px; }
+.addons-key { margin-top: 10px; } .addons-key summary { cursor: pointer; font-size: 13px; color: var(--muted); }
 .addons-fields { display: grid; grid-template-columns: 1fr 160px auto; gap: 10px; align-items: end; }
 .addons-fields label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; }
 .addons-fields input { width: 100%; }
 @media (max-width: 700px) { .addons-fields { grid-template-columns: 1fr; } }
 </style>
+{% endif %}
+<style>
+.oc-table { width: 100%; }
+.oc-table td { vertical-align: top; padding: 8px 10px; border-top: 1px solid var(--border); }
+.oc-table td:first-child { width: 45%; }
+.oc-table .oc-name { font-family: var(--mono, monospace); font-weight: 600; }
+.oc-table .oc-help { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.oc-table input, .oc-table select { width: 100%; }
+.oc-table input:disabled, .oc-table select:disabled { background: var(--panel-2); color: var(--muted); }
+.oc-table tr.oc-dirty td { background: var(--accent-soft); }
+.oc-table tr.oc-group td { background: var(--panel-2); font-weight: 600; font-size: 13px; }
+.oc-all { display: inline-flex; gap: 6px; align-items: center; font-size: 14px; }
+</style>
+{% if can_act and odoo_params and inst.type != "odoo" %}
+{# a workspace's instance: the Odoo options its template lets change, within the bounds the machine's admins set;
+   saved, the helper writes its odoo.conf again from the template with them and the instance restarts #}
+<section class="tab-panel panel" data-panel="odoo-config" hidden data-ws="{{ prefix }}/api/workspaces/{{ stagings.workspace.name }}">
+  <div class="section-head"><h2>{{ _("Odoo config") }}</h2></div>
+  <p class="muted" style="font-size: 13px">{{ _("The options of its template, within the limits of the workspace: the others are set by the template.") }}</p>
+  <div class="scroll"><table class="oc-table">
+    <tr><th>{{ _("Name") }}</th><th>{{ _("Value") }}</th></tr>
+    {% for p in odoo_params.parameters %}
+    <tr data-name="{{ p.name }}">
+      <td><div class="oc-name">{{ p.name }}</div><div class="oc-help">{{ tr(p.label) }}{% if p.min is not none and p.max is not none %} · {{ p.min }}–{{ p.max }}{% endif %}</div></td>
+      <td>{% if p.type == "bool" %}<input type="checkbox" data-param="{{ p.name }}" {{ "checked" if p.value }} {{ "disabled" if not is_admin_here }} style="width: auto">
+        {% elif p.type == "password" %}<input type="password" data-param="{{ p.name }}" autocomplete="off" {{ "disabled" if not is_admin_here }} placeholder="{{ _('set: empty keeps it') if p.set else '' }}">
+        {% elif p.type in ("int", "mb") %}<input type="number" data-param="{{ p.name }}" value="{{ p.value }}" {% if p.min is not none %}min="{{ p.min }}"{% endif %} {% if p.max is not none %}max="{{ p.max }}"{% endif %} {{ "disabled" if not is_admin_here }} class="mono">
+        {% else %}<input type="text" data-param="{{ p.name }}" value="{{ p.value }}" {{ "disabled" if not is_admin_here }} class="mono">{% endif %}</td>
+    </tr>
+    {% endfor %}
+    <tr><td><div class="oc-name">log_level debug</div><div class="oc-help">{{ _("Debug log: much more in the log, for a while") }}</div></td>
+      <td><input type="checkbox" id="op-debug" {{ "checked" if odoo_params.debug }} {{ "disabled" if not is_admin_here }} style="width: auto"></td></tr>
+  </table></div>
+  {% if is_admin_here %}<div class="actions" style="justify-content: flex-end; margin-top: 12px">
+    <button type="button" class="primary" id="op-save" {{ off }} title="{{ _('Writes the options in its odoo.conf and restarts Odoo.') }}">{{ _("Save and restart") }}</button>
+  </div>{% endif %}
+</section>
 {% endif %}
 {% if can_act and inst.type == "odoo" %}
 {# the options the instance's Odoo knows (its own parser), the values of its config file; the ones the layout owns
@@ -388,18 +432,6 @@
     <button type="button" class="primary" id="oc-save" disabled title="{{ _('Writes the changed options in the config file and restarts Odoo.') }}">{{ _("Save and restart") }}</button>
   </div>{% endif %}
 </section>
-<style>
-.oc-table { width: 100%; }
-.oc-table td { vertical-align: top; padding: 8px 10px; border-top: 1px solid var(--border); }
-.oc-table td:first-child { width: 45%; }
-.oc-table .oc-name { font-family: var(--mono, monospace); font-weight: 600; }
-.oc-table .oc-help { font-size: 12px; color: var(--muted); margin-top: 2px; }
-.oc-table input, .oc-table select { width: 100%; }
-.oc-table input:disabled, .oc-table select:disabled { background: var(--panel-2); color: var(--muted); }
-.oc-table tr.oc-dirty td { background: var(--accent-soft); }
-.oc-table tr.oc-group td { background: var(--panel-2); font-weight: 600; font-size: 13px; }
-.oc-all { display: inline-flex; gap: 6px; align-items: center; font-size: 14px; }
-</style>
 {% endif %}
 <section class="tab-panel panel" data-panel="settings" hidden>
   <dl>
@@ -610,12 +642,32 @@
     if (!ok || !data.job) { error.textContent = data.error || data.detail || ADD.refused; return; }
     location.href = `{{ prefix }}/jobs/${data.job}`;
   });
+  document.getElementById("addons-key-show")?.addEventListener("click", async (event) => {
+    const {ok, data} = await addonsPost("git-key", {});
+    const box = document.getElementById("addons-key");
+    if (!ok || !data.public_key) { document.getElementById("addons-error").textContent = data.error || ADD.refused; return; }
+    box.textContent = data.public_key; box.hidden = false; event.target.hidden = true;
+  });
   document.querySelectorAll("[data-repo-remove]").forEach((b) => b.addEventListener("click", async () => {
     if (!confirm(ADD.removeQ.replace("{repo}", b.dataset.repoRemove))) return;
     const {ok, data} = await addonsPost("repositories/remove", {server: {{ server.name | tojson }}, name: b.dataset.repoRemove});
     if (!ok || !data.job) { alert(data.error || data.detail || ADD.refused); return; }
     location.href = `{{ prefix }}/jobs/${data.job}`;
   }));
+  document.getElementById("op-save")?.addEventListener("click", async () => {
+    const box = document.querySelector('[data-panel="odoo-config"]'), parameters = {};
+    for (const input of box.querySelectorAll("[data-param]")) {
+      parameters[input.dataset.param] = input.type === "checkbox" ? input.checked : input.value;
+    }
+    if (!confirm({{ _("Write these options in its odoo.conf and restart Odoo?") | tojson }})) return;
+    const resp = await fetch(`${box.dataset.ws}/parameters/save`, {method: "POST",
+      headers: {"Content-Type": "application/json", Accept: "application/json"},
+      body: JSON.stringify({server: {{ server.name | tojson }}, role: {{ param_role | tojson }}, parameters,
+                            debug: document.getElementById("op-debug").checked})});
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || !data.job) { alert(data.error || data.detail || resp.status); return; }
+    location.href = `{{ prefix }}/jobs/${data.job}`;
+  });
   document.getElementById("oc-save")?.addEventListener("click", async () => {
     const box = document.querySelector('[data-panel="odoo-config"]');
     const changes = changesOdooConfig(box), count = Object.keys(changes.set).length + changes.unset.length;

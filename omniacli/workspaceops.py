@@ -272,6 +272,8 @@ def instance_folder(ws: Workspace, instance: str) -> Path:
 # a customer's repository: https only, no user or token in it (they are the
 # interface's git credentials), no query
 REPOSITORY_URL = re.compile(r"https://[A-Za-z0-9.-]+(?::\d{1,5})?/[A-Za-z0-9._~/-]+")
+# over ssh, with OmniaCLI's git key (gitcredentials.GIT_KEY_NAME) as a deploy key
+REPOSITORY_SSH = re.compile(r"(?:git@[A-Za-z0-9.-]+:|ssh://git@[A-Za-z0-9.-]+(?::\d{1,5})?/)[A-Za-z0-9._~][A-Za-z0-9._~/-]*")
 BRANCH = re.compile(r"[A-Za-z0-9._/-]{1,200}")
 CLONE_TIMEOUT = 1800
 
@@ -279,9 +281,9 @@ CLONE_TIMEOUT = 1800
 def check_repository(name: str, url: str, branch: str) -> None:
     if not workspacehelper.REPOSITORY.fullmatch(name):
         raise JobFailed(f"{name!r} is not a repository name (a-z A-Z 0-9 . _ -)")
-    if not REPOSITORY_URL.fullmatch(url) or ".." in url:
-        raise JobFailed(f"{url!r} is not an https:// address of a repository (no user or token in it: "
-                        "those are the workspace's git credentials)")
+    if not (REPOSITORY_URL.fullmatch(url) or REPOSITORY_SSH.fullmatch(url)) or ".." in url:
+        raise JobFailed(f"{url!r} is not the address of a repository: https://host/org/repo.git (no user or token in "
+                        "it: those are the workspace's git credentials) or git@host:org/repo.git (OmniaCLI's git key)")
     if not BRANCH.fullmatch(branch) or branch.startswith(("-", "/")) or ".." in branch:
         raise JobFailed(f"{branch!r} is not a branch name")
 
