@@ -20,6 +20,7 @@ gevent server as a child of itself ([python, odoo-bin, "gevent", ...], Odoo
 
 from __future__ import annotations
 
+import configparser
 import os
 import pwd
 import re
@@ -399,6 +400,11 @@ async def describe(item: Started, known: list[Instance]) -> Discovered:
         instance["http_port"] = args["http_port"]
     if run_as:
         instance["run_as"] = run_as
+    # its address, from the nginx site that passes to its port
+    address = nginx_addresses().get(_http_port(config, args.get("http_port")))
+    if address:
+        instance["domain"] = address
+        facts.append(("Address", address))
     for key, label_ in (("database", "Database"), ("http_port", "HTTP port"),
                         ("gevent_port", "Gevent port")):
         if key == "database" and database:
@@ -418,6 +424,55 @@ async def describe(item: Started, known: list[Instance]) -> Discovered:
     return Discovered(key=real or label, label=label, name=_name(database or item.unit or "odoo"),
                       instance=instance, facts=facts, notes=notes, known=known_as,
                       skip=None if args["command"] == "server" else f"odoo-bin {args['command']}")
+
+
+# where nginx's sites are (Debian's and the conf.d of nginx.org's package,
+# which hosting panels use): the address an Odoo is opened at
+NGINX_SITES = (Path("/etc/nginx/sites-enabled"), Path("/etc/nginx/conf.d"))
+_SERVER_BLOCK = re.compile(r"\bserver\s*\{")
+_SERVER_NAME = re.compile(r"^\s*server_name\s+([^;]+);", re.M)
+_LISTEN_SSL = re.compile(r"\blisten\s+[^;]*\bssl\b")
+_PROXY_PORT = re.compile(r"\bproxy_pass\s+https?://(?:127\.0\.0\.1|localhost|\[::1\]):(\d+)")
+
+
+def nginx_addresses(folders=NGINX_SITES) -> dict[int, str]:
+    """{port: address} of the local ports nginx's sites pass to: the first
+    name of the site, https when it listens with ssl (preferred to http)."""
+    found: dict[int, str] = {}
+    for folder in folders:
+        try:
+            files = sorted(f for f in Path(folder).iterdir() if f.is_file())
+        except OSError:
+            continue
+        for path in files:
+            try:
+                text = path.read_text(errors="replace")
+            except OSError:
+                continue
+            for block in _SERVER_BLOCK.split(text)[1:]:
+                names = _SERVER_NAME.search(block)
+                name = next((n for n in (names.group(1).split() if names else [])
+                             if n != "_" and "*" not in n and not n.startswith("~")), None)
+                if not name:
+                    continue
+                url = ("https://" if _LISTEN_SSL.search(block) else "http://") + name
+                for port in {int(m) for m in _PROXY_PORT.findall(block)}:
+                    if port not in found or url.startswith("https://") and not found[port].startswith("https://"):
+                        found[port] = url
+    return found
+
+
+def _http_port(config: str | None, given: str | None) -> int:
+    """The port Odoo serves: the command line's, else its config's, else 8069."""
+    if given and str(given).isdigit():
+        return int(given)
+    parser = configparser.ConfigParser(interpolation=None)
+    try:
+        parser.read(config or "", encoding="utf-8")
+        value = parser.get("options", "http_port", fallback="") or parser.get("options", "xmlrpc_port", fallback="")
+    except (configparser.Error, OSError, UnicodeDecodeError):
+        value = ""
+    return int(value) if str(value).strip().isdigit() else 8069
 
 
 def _is_file(path: Path) -> bool:

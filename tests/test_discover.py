@@ -307,3 +307,19 @@ async def test_discover_relative_logfile_and_closed_folders(machine):
         assert any("not in a venv" in n for d in found for n in d.notes)
     finally:
         closed.chmod(0o755)
+
+
+def test_the_address_from_nginx(tmp_path):
+    """A hosting panel's sites (conf.d): the name of the https site that
+    passes to Odoo's port wins over the http one; a catch-all is no name."""
+    conf = tmp_path / "conf.d"
+    conf.mkdir()
+    (conf / "odoo_http_shop.conf").write_text(
+        "server {\n  listen 80;\n  server_name shop.example.com;\n  location / {\n    proxy_pass http://127.0.0.1:3000;\n  }\n}\n")
+    (conf / "odoo_https_shop.conf").write_text(
+        "server {\n  listen 443 ssl;\n  server_name shop.example.com www.shop.example.com;\n"
+        "  location /websocket { proxy_pass http://127.0.0.1:3001; }\n  location / { proxy_pass http://127.0.0.1:3000; }\n}\n")
+    (conf / "default.conf").write_text("server {\n  listen 80 default_server;\n  server_name _;\n"
+                                       "  location / { proxy_pass http://localhost:8069; }\n}\n")
+    found = discover.nginx_addresses([tmp_path / "sites-enabled", conf])
+    assert found == {3000: "https://shop.example.com", 3001: "https://shop.example.com"}

@@ -3570,7 +3570,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 job.log(f"{item.get('label', '?')}: left out ({item.get('skip') or 'already there as ' + item['known']})")
         items = machines.instances_to_add(found, set(data.get("names") or []))
         if not items:
-            # the machine was added for its Odoo: none is a failure, said so
+            # the machine was added for its Odoo: none is a failure, said so;
+            # added again, those OmniaCLI has there already are enough
+            if any(item.get("known") for item in found):
+                return
             raise JobFailed("linked, but no Odoo instance was added there: the lines above say why")
         try:
             resp = await client.post("/api/servers/discover", json={"items": items}, headers=headers, timeout=60)
