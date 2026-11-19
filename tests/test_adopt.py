@@ -130,3 +130,65 @@ def test_a_venv_is_seen_not_touched(monkeypatch, tmp_path, ran):
     adopt.ready_venv(theirs / "bin")
     assert [str(theirs / "bin" / "python3"), "-m", "venv", "--system-site-packages", str(mine)] in [c for c, _ in ran]
     assert (mine / "site" / "omniacli-instance.pth").read_text() == f"{theirs / 'site'}\n"
+
+
+PANEL_SITE = """map $http_upgrade $connection_upgrade {
+  default upgrade;
+}
+
+server {
+  listen 443 ssl;
+  server_name shop.example.com;
+  location /.odoo-login {
+    proxy_pass https://panel.example.com;
+  }
+  location /websocket {
+    proxy_pass http://127.0.0.1:3005;
+  }
+  location / {
+    proxy_pass http://127.0.0.1:3004;
+  }
+}
+server {
+  listen 443 ssl;
+  server_name erp.customer.example;
+  location / {
+    proxy_pass http://127.0.0.1:3004;
+  }
+}
+server {
+  listen 443 ssl;
+  server_name other.example.com;
+  location / {
+    proxy_pass http://127.0.0.1:3006;
+  }
+}
+"""
+
+
+def test_log_in_as_in_a_panels_sites(tmp_path, monkeypatch, ran):
+    conf = tmp_path / "conf.d"
+    conf.mkdir()
+    site = conf / "odoo_https_shop.conf"
+    site.write_text(PANEL_SITE)
+    (conf / "odoo_http_shop.conf").write_text("server {\n  listen 80;\n  server_name shop.example.com;\n"
+                                              "  location / { proxy_pass http://127.0.0.1:3004; }\n}\n")
+    monkeypatch.setattr(adopt.shutil, "which", lambda name: f"/usr/bin/{name}")
+    assert adopt.add_login_paths(3004, [conf]) == 1
+    text = site.read_text()
+    # both https names of port 3004, right after server_name; not the other port's, not port 80's
+    assert text.count("location = /.omniacli/login {") == 2
+    assert text.index("server_name shop.example.com;") < text.index(adopt.LOGIN_MARK) < text.index("/.odoo-login")
+    assert "other.example.com;\n  location / {" in text
+    assert [c for c, _ in ran][-2:] == [["nginx", "-t"], ["systemctl", "reload", "nginx"]]
+    # again: nothing to add
+    assert adopt.add_login_paths(3004, [conf]) == 0
+
+    def refuse(cmd, user=None, env=None):
+        return subprocess.CompletedProcess(cmd, 1, "", "duplicate location")
+
+    site.write_text(PANEL_SITE)
+    monkeypatch.setattr(adopt, "call", refuse)
+    with pytest.raises(RuntimeError, match="put back"):
+        adopt.add_login_paths(3004, [conf])
+    assert site.read_text() == PANEL_SITE

@@ -36,6 +36,8 @@ LINK_SCRIPT = Path(__file__).with_name("link_filestore.py")
 PASSWORDS_SCRIPT = Path(__file__).with_name("reset_passwords.py")
 # the Log in as button: a session of a user made in Odoo's own store
 LOGIN_SCRIPT = Path(__file__).with_name("login_session.py")
+# the users for Log in as in SQL, without loading Odoo (list_users.py)
+USERS_SCRIPT = Path(__file__).with_name("list_users.py")
 LOGIN_TIMEOUT = 120
 # what click-odoo runs around a module update: a neutralized database keeps
 # its crons off
@@ -647,9 +649,15 @@ async def reset_passwords(job: Job, instance: Instance, major: int) -> None:
 async def login_session(instance: Instance, request: str) -> dict:
     """click-odoo runs login_session.py on the instance's database, as the
     user the instance runs as (the sessions are its files): the users, or a
-    new session of one (see login_session.py)."""
+    new session of one (see login_session.py). The users are read in SQL
+    first (list_users.py: seconds less, without Odoo's registry); when that
+    fails, through Odoo as before."""
     opts = instance.options
     env = odoo_env(instance)
+    if request == "users":
+        found = await _users_in_sql(instance)
+        if "users" in found:
+            return found
     # a copy of the script any user may read, in a folder only OmniaCLI writes to
     staging = Path(tempfile.mkdtemp(prefix="omniacli-login-", dir=BACKUP_STAGING))
     try:
@@ -660,6 +668,21 @@ async def login_session(instance: Instance, request: str) -> dict:
         cmd = [opts.venv_bin / "click-odoo", "-c", opts.odoo_config, "-d", opts.database,
                "--log-level", "critical", script, request]
         code, out = await capture(as_user(instance.run_as, cmd, env), env=env, timeout=LOGIN_TIMEOUT)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    return login_answer(code, out)
+
+
+async def _users_in_sql(instance: Instance) -> dict:
+    opts = instance.options
+    staging = Path(tempfile.mkdtemp(prefix="omniacli-users-", dir=BACKUP_STAGING))
+    try:
+        staging.chmod(0o755)
+        script = staging / USERS_SCRIPT.name
+        shutil.copyfile(USERS_SCRIPT, script)
+        script.chmod(0o644)
+        cmd = [opts.venv_bin / "python", script, opts.odoo_config, opts.database]
+        code, out = await capture(as_user(instance.run_as, cmd), timeout=LOGIN_TIMEOUT)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     return login_answer(code, out)

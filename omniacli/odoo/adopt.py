@@ -18,6 +18,10 @@ Discover finds it, with nothing of Odoo's changed:
   (odoo_ops.adopted_venv) that sees the packages of the python Odoo runs
   with, a system python's (Odoo's Debian package) or a venv's, with
   click-odoo-contrib there: the instance's python and venv untouched;
+- Log in as: in every https site of nginx passing to its port (a hosting
+  panel's conf.d), the location /.omniacli/login passed to OmniaCLI, which
+  sets Odoo's cookie on the instance's name; nginx -t first, the files put
+  back when it refuses;
 - the sudoers lines Test & activate asks for, in
   /etc/sudoers.d/omniacli-instances (checked by visudo before it is put
   there): its venv as the user Odoo runs as, psql, and restart, start, stop
@@ -130,6 +134,79 @@ def ready_venv(venv_bin: Path, odoo_root: Path | None = None) -> Path:
     return venv / "bin"
 
 
+# Log in as: the path the instance's own name passes to OmniaCLI, which sets
+# Odoo's cookie there (loginas.py), in every https site of the instance's port
+LOGIN_PATH = "/.omniacli/login"
+LOGIN_MARK = "# omniacli: Log in as"
+OMNIACLI_ADDRESS = "127.0.0.1:8090"
+
+
+def _server_blocks(text: str) -> list[tuple[int, int]]:
+    """(start, end) of each server { ... } block, by its braces."""
+    blocks = []
+    for found in discover._SERVER_BLOCK.finditer(text):
+        depth, pos = 1, found.end()
+        while depth and pos < len(text):
+            depth += {"{": 1, "}": -1}.get(text[pos], 0)
+            pos += 1
+        blocks.append((found.start(), pos))
+    return blocks
+
+
+def with_login_path(text: str, port: int) -> str:
+    """text with the Log in as location in each https server block that
+    passes / to 127.0.0.1:port, right after its server_name (once)."""
+    for start, end in reversed(_server_blocks(text)):
+        block = text[start:end]
+        if LOGIN_PATH in block or not discover._LISTEN_SSL.search(block) \
+                or port not in {int(p) for p in discover._PROXY_PORT.findall(block)}:
+            continue
+        name = discover._SERVER_NAME.search(block)
+        if not name:
+            continue
+        at = start + name.end()
+        indent = "  "
+        location = (f"\n\n{indent}{LOGIN_MARK}: the cookie of Odoo set on this name\n"
+                    f"{indent}location = {LOGIN_PATH} {{\n"
+                    f"{indent}  proxy_pass http://{OMNIACLI_ADDRESS};\n"
+                    f"{indent}  proxy_set_header Host $host;\n"
+                    f"{indent}  proxy_set_header X-Forwarded-Host $host;\n"
+                    f"{indent}  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n"
+                    f"{indent}  proxy_set_header X-Forwarded-Proto $scheme;\n"
+                    f"{indent}  proxy_set_header X-Real-IP $remote_addr;\n"
+                    f"{indent}}}")
+        text = text[:at] + location + text[at:]
+    return text
+
+
+def add_login_paths(port: int, folders=None) -> int:
+    """The Log in as location in nginx's sites of port; nginx checked and
+    reloaded, every file put back as it was when the check fails. The
+    number of files changed."""
+    changed = {}
+    for folder in folders or discover.NGINX_SITES:
+        try:
+            # conf.d reads *.conf only; sites-enabled every file
+            files = sorted(f for f in Path(folder).iterdir()
+                           if f.is_file() and (f.suffix == ".conf" or f.parent.name == "sites-enabled"))
+        except OSError:
+            continue
+        for path in files:
+            old = path.read_text(errors="replace")
+            new = with_login_path(old, port)
+            if new != old:
+                changed[path] = old
+                path.write_text(new)
+    if not changed:
+        return 0
+    if call(["nginx", "-t"]).returncode:
+        for path, old in changed.items():
+            path.write_text(old)
+        raise RuntimeError("nginx -t refused the Log in as location: the sites are put back as they were")
+    checked(["systemctl", "reload", "nginx"])
+    return len(changed)
+
+
 def sudoers_lines(service_user: str, run_as: str, venv_bin: Path, unit: str) -> list[str]:
     lines = [f"{service_user} ALL=({run_as}) NOPASSWD:SETENV: {venv_bin}/"]
     psql = shutil.which("psql")
@@ -190,6 +267,14 @@ async def adopt(service_user: str) -> int:
             odoo_bin = locate_odoo_bin(Path(inst["odoo_bin"]) if inst.get("odoo_bin") else None,
                                        [Path(r["path"]) for r in inst.get("repositories") or []])
             venv_bin = ready_venv(Path(inst["venv_bin"]), odoo_root(odoo_bin) if odoo_bin else None)
+            given_port = next((str(v).split(" ", 1)[0] for k, v in found.facts if k == "HTTP port"), None)
+            try:
+                sites = add_login_paths(discover._http_port(str(config), given_port))
+                if sites:
+                    say(f"  Log in as: {LOGIN_PATH} passed to OmniaCLI in {sites} nginx site(s)")
+            except (OSError, RuntimeError) as exc:
+                # the rest works without it: said, not a failure of the instance
+                say(f"  Log in as not ready: {exc}")
             write_sudoers(sudoers_lines(service_user, run_as, venv_bin, unit))
         except (OSError, RuntimeError) as exc:
             say(f"  NOT READY: {exc}")
