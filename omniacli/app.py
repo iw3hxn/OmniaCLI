@@ -2558,8 +2558,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         async with workspaces_lock:
             if name not in settings.workspaces:
                 return refuse(f"No workspace {name}", status.HTTP_404_NOT_FOUND)
-            return await store_workspaces({n: ws for n, ws in settings.workspaces.items() if n != name}) \
-                or {"ok": True}
+            ws = settings.workspaces[name]
+            refused = await store_workspaces({n: w for n, w in settings.workspaces.items() if n != name})
+            if refused:
+                return refused
+        # with no instance of its own left, its disk goes too (an empty one only)
+        if ws.storage and not [s for s in ws.servers if s in settings.servers and s.startswith(f"{name}-")]:
+            return {"ok": True, "disk": await workspaceops.drop_disk(None, ws)}
+        return {"ok": True}
 
     def a_workspace(name: str) -> Workspace:
         found = settings.workspaces.get(name)
@@ -2607,7 +2613,16 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 raise JobFailed(f"the instance runs, but the servers file was not written: {error.body.decode()}")
         except BaseException:
             await rename_in_workspaces(name, None)
+            # a New instance's own workspace, left with nothing: it goes, and
+            # its disk, so that the next try finds the room and the name free
+            current = settings.workspaces.get(ws.name)
+            if ws.name in quick_workspaces and current is not None and not current.servers:
+                async with workspaces_lock:
+                    await store_workspaces({n: w for n, w in settings.workspaces.items() if n != ws.name})
+                job.log(f"workspace {ws.name} removed: {await workspaceops.drop_disk(job, current)}")
+                quick_workspaces.discard(ws.name)
             raise
+        quick_workspaces.discard(ws.name)
         job.result = {"server": name}
         job.log(f"Server {name}: production at http://127.0.0.1:{parsed.production.options.http_port}"
                 + (f", test at http://127.0.0.1:{parsed.test.options.http_port}" if parsed.test else ""))
@@ -2682,6 +2697,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     # --- a new Odoo by its version only, as a hosting panel's Add instance ------
 
     QUICK_INSTANCE = "odoo"
+    # the workspaces New instance made, until their instance is made: one
+    # whose creation fails is taken away with its disk (make_instance)
+    quick_workspaces: set[str] = set()
     QUICK_DISK_GB = (10, 200)
 
     @app.get("/api/instances/versions", dependencies=[Depends(admin)])
@@ -2738,11 +2756,13 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             refused = await store_workspaces(found)
             if refused:
                 return refused
+        quick_workspaces.add(name)
         language = str(payload.get("language") or "")
         made = await instance_create(name, {"instance": QUICK_INSTANCE, "template": template,
                                             "values": {"INIT_LANG": language} if language else {},
                                             "setup": setup}, me)
         if not isinstance(made, dict):
+            quick_workspaces.discard(name)
             async with workspaces_lock:
                 await store_workspaces({n: ws for n, ws in settings.workspaces.items() if n != name})
             return made

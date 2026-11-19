@@ -131,6 +131,23 @@ async def _setup(job: Job, folder: str, odoo_service: str, database: str, setup:
             await run(job, compose(folder, "setup", odoo_service, database), stdin=stdin, timeout=INIT_TIMEOUT)
 
 
+async def drop_disk(job: Job | None, ws: Workspace) -> str:
+    """The workspace's disk taken away (workspace-helper drop: an empty one
+    only); what happened, said for the job or the page."""
+    if not ws.storage:
+        return "no disk"
+    if job is not None:
+        job.log(f"--- the disk of workspace {ws.name}, empty: taken away")
+    code, out = await capture(helper("drop", ws.name, ws.storage), timeout=HELPER_TIMEOUT)
+    if code:
+        return f"its disk stays: {out.splitlines()[-1] if out else code}"
+    try:
+        freed = json.loads(out.splitlines()[-1]).get("size_gb", 0)
+    except (ValueError, IndexError):
+        freed = 0
+    return f"its disk ({freed} GB) taken away"
+
+
 async def remove_instance(job: Job, ws: Workspace, instance: str) -> None:
     await _helper(job, "remove", ws.name, ws.storage, instance)
 

@@ -647,6 +647,34 @@ def disk(name: str, storage: str, size_gb: str) -> dict:
     return {"workspace": name, "image": str(image), "mount": str(mount), "unit": unit, "size_gb": int(size_gb)}
 
 
+def drop(name: str, storage: str) -> dict:
+    """A workspace's disk taken away, when nothing is on it (lost+found
+    only): a New instance that failed, a workspace deleted before any
+    instance. Its mount unit, docker's drop-in and its slice go too; a disk
+    with an instance's folder is refused (its instance is removed first)."""
+    image, mount = workspace(name, storage)
+    if image.is_symlink():
+        raise HelperError(f"{image} is a symbolic link")
+    if os.path.ismount(mount):
+        left = sorted(p.name for p in mount.iterdir() if p.name != "lost+found")
+        if left:
+            raise HelperError(f"the disk of {name} holds {', '.join(left)}: remove its instances first")
+    unit = unit_name(mount)
+    _run("systemctl", "disable", "--now", unit, check=False)
+    if os.path.ismount(mount):
+        _run("umount", str(mount))
+    for path in (SYSTEMD / unit, SYSTEMD / "docker.service.d" / f"omniacli-{name}.conf", SYSTEMD / slice_name(name)):
+        path.unlink(missing_ok=True)
+    _run("systemctl", "daemon-reload")
+    if mount.is_dir() and not os.path.ismount(mount):
+        _run("chattr", "-i", str(mount), check=False)
+        if not any(mount.iterdir()):
+            mount.rmdir()
+    freed = image.stat().st_size // GB if image.exists() else 0
+    image.unlink(missing_ok=True)
+    return {"workspace": name, "dropped": str(image), "size_gb": freed}
+
+
 def _used(image: Path) -> int:
     """What the disk's image takes on the real disk (it grows as it is used)."""
     return image.stat().st_blocks * 512 if image.exists() else 0
@@ -1339,7 +1367,7 @@ def owncert(name: str, storage: str, given: str | None = None) -> dict:
             "names": [part.strip()[4:] for part in alt.replace("\n", ",").split(",") if part.strip().startswith("DNS:")]}
 
 
-ACTIONS = {"disk": (disk, 3), "limits": (limits, 3), "create": (create, 5), "remove": (remove, 3),
+ACTIONS = {"disk": (disk, 3), "drop": (drop, 2), "limits": (limits, 3), "create": (create, 5), "remove": (remove, 3),
            "web": (web, 3), "owncert": (owncert, 2), "firewall": (firewall, 1), "template-install": (template_install, 1),
            "conf": (conf, 5), "space": (space, 0),
            "storage-setup": (storage_setup, 0), "storage-check": (storage_check, 1), "storage-reset": (storage_reset, 1)}

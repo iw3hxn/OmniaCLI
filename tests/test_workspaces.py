@@ -5,6 +5,7 @@ with their role there, and nothing of the machine."""
 import base64
 import json
 import re
+from pathlib import Path
 
 import pytest
 import yaml
@@ -12,6 +13,7 @@ from fastapi.routing import APIRoute, APIWebSocketRoute
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+from omniacli import stacktemplates, workspaceops
 from omniacli.app import WORKSPACE_ROUTES, create_app
 from omniacli.auth import hash_password
 from omniacli.config import (
@@ -766,3 +768,35 @@ async def test_a_dated_staging_beside_a_production(workspaces, client, env, monk
     assert record[made[0]]["parent"] == "acme-odoo" and record[made[0]]["backup"] == "odoo_20261117.zip"
     assert (await client.get(f"/api/servers/{made[0]}/stagings", headers={"Authorization": AUTH})).json()["parent"] == "acme-odoo"
     assert settings.workspaces["acme"].servers == ["srv", "acme-odoo", *made]
+
+
+async def test_a_failed_new_instance_leaves_nothing(workspaces, client, env, monkeypatch):
+    """New instance's own workspace, when its creation fails: taken away with
+    its disk, so that the same name and the room are free for the next try."""
+    settings = env["settings"]
+    root = Path(__file__).parent.parent / "templates"
+    monkeypatch.setattr(workspaceops, "templates", lambda: {"odoo-19": stacktemplates.load_template(root / "odoo-19")})
+    dropped = []
+
+    async def create_instance(job, ws, instance, tpl, values, setup=None):
+        raise workspaceops.JobFailed("workspace-helper: docker is not installed")
+
+    async def drop_disk(job, ws):
+        dropped.append(ws.name)
+        return "its disk (127 GB) taken away"
+
+    async def space():
+        return space_of(500, {}, root="main")
+    monkeypatch.setattr(workspaceops, "create_instance", create_instance)
+    monkeypatch.setattr(workspaceops, "drop_disk", drop_disk)
+    monkeypatch.setattr(workspaceops, "space", space)
+    settings.storage_roots = {"main": "/s"}
+    resp = await client.post("/api/instances/new", headers=POST, json={"version": "19"})
+    job = await wait_job(client, resp.json()["job"])
+    assert job["status"] == "failed"
+    assert "odoo19" not in settings.workspaces and dropped == ["odoo19"]
+    assert any("workspace odoo19 removed: its disk (127 GB) taken away" in line for line in job["lines"])
+    # the next try has the same name
+    monkeypatch.setattr(workspaceops, "create_instance", create_instance)
+    resp = await client.post("/api/instances/new", headers=POST, json={"version": "19"})
+    assert resp.json()["workspace"] == "odoo19"
