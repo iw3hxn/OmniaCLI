@@ -30,6 +30,8 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-24.04
+    # the suite takes about 3 minutes: a test that hangs ends the job
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -40,7 +42,8 @@ jobs:
       - name: Install
         run: pip install -e '.[test]'
       - name: Tests
-        run: pytest -q
+        # a test still running after 5 minutes prints where every thread is
+        run: pytest -q -o faulthandler_timeout=300
 
   package:
     needs: test
