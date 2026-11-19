@@ -113,7 +113,7 @@ curl "${API[@]}" localhost:8090/api/links/save \
   || fail "link not saved"
 [ "$(stat -c '%U %a' /var/lib/omniacli/links.yaml)" = "omniacli 600" ] || fail "links.yaml owner or mode"
 curl "${API[@]}" -X POST localhost:8090/api/links/me/test | has '"role":"developer"' || fail "Test link"
-curl -s -b /tmp/cookies-admin -H "Accept: text/html" localhost:8090/links/me/ | has "Linked instance <strong>me</strong>" \
+curl -s -b /tmp/cookies-admin -H "Accept: text/html" localhost:8090/links/me/ | has "<h1>me</h1>" \
   || fail "page through the link"
 
 step "Test & activate: the checks that can pass here"
