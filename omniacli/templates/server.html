@@ -250,6 +250,7 @@
   {% if can_act %}<button type="button" role="tab" data-tab="backups">{{ _("Backups") }}</button>{% endif %}
   <button type="button" role="tab" data-tab="log">{{ _("Log") }}</button>
   <button type="button" role="tab" data-tab="monitor" hidden>{{ _("Monitoring") }}</button>
+  {% if can_act and inst.type == "odoo" %}<button type="button" role="tab" data-tab="odoo-config">{{ _("Odoo config") }}</button>{% endif %}
   {% if can_act %}<button type="button" role="tab" data-tab="settings">{{ _("Settings") }}</button>{% endif %}
 </nav>
 
@@ -313,6 +314,38 @@
 </section>
 
 {% if can_act %}
+{% if can_act and inst.type == "odoo" %}
+{# the options the instance's Odoo knows (its own parser), the values of its config file; the ones the layout owns
+   locked, a secret's value never shown; Save writes them as the user Odoo runs as and restarts it #}
+<section class="tab-panel panel" data-panel="odoo-config" hidden
+         data-url="{{ prefix }}/x/odoo/servers/{{ server.name }}/{{ inst.role }}/odoo-config" data-admin="{{ 1 if is_admin else '' }}">
+  <div class="section-head">
+    <h2>{{ _("Odoo config") }} <span class="muted mono oc-file" style="font-size: 13px; font-weight: 400"></span></h2>
+    <label class="oc-all"><input type="checkbox" id="oc-all"> {{ _("Show all the options") }}</label>
+  </div>
+  <p class="muted oc-state">{{ _("Reading the options of its Odoo…") }}</p>
+  <p class="note-box oc-readonly" hidden>{{ _("The config file cannot be written by the user Odoo runs as (a hosting panel's, for one): the values are shown, change them there.") }}</p>
+  <div class="scroll"><table class="oc-table" hidden>
+    <tr><th>{{ _("Name") }}</th><th>{{ _("Value") }}</th></tr>
+  </table></div>
+  {% if is_admin %}<div class="actions oc-actions" hidden style="justify-content: flex-end; margin-top: 12px">
+    <span class="muted oc-changed"></span>
+    <button type="button" class="primary" id="oc-save" disabled title="{{ _('Writes the changed options in the config file and restarts Odoo.') }}">{{ _("Save and restart") }}</button>
+  </div>{% endif %}
+</section>
+<style>
+.oc-table { width: 100%; }
+.oc-table td { vertical-align: top; padding: 8px 10px; border-top: 1px solid var(--border); }
+.oc-table td:first-child { width: 45%; }
+.oc-table .oc-name { font-family: var(--mono, monospace); font-weight: 600; }
+.oc-table .oc-help { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.oc-table input, .oc-table select { width: 100%; }
+.oc-table input:disabled, .oc-table select:disabled { background: var(--panel-2); color: var(--muted); }
+.oc-table tr.oc-dirty td { background: var(--accent-soft); }
+.oc-table tr.oc-group td { background: var(--panel-2); font-weight: 600; font-size: 13px; }
+.oc-all { display: inline-flex; gap: 6px; align-items: center; font-size: 14px; }
+</style>
+{% endif %}
 <section class="tab-panel panel" data-panel="settings" hidden>
   <dl>
     <dt>{{ _("Type") }}</dt><dd>{{ tr(inst.plugin.label) }}</dd>
@@ -393,9 +426,127 @@
     for (const t of tabs) t.setAttribute("aria-selected", String(t.dataset.tab === name));
     for (const p of document.querySelectorAll(".tab-panel")) p.hidden = p.dataset.panel !== name;
     if (name === "backups") loadBackups();
+    if (name === "odoo-config") loadOdooConfig();
     if (name === "monitor") { since = 0; for (const k in series) delete series[k]; refresh(); }
   }
   for (const t of tabs) t.addEventListener("click", () => { history.replaceState(null, "", "#" + t.dataset.tab); show(t.dataset.tab); });
+
+  // the Odoo config tab
+  const OC = {
+    reading: {{ _("Reading the options of its Odoo…") | tojson }}, failed: {{ _("The options could not be read: {error}") | tojson }},
+    secret: {{ _("set: empty keeps it") | tojson }}, locked: {{ _("set by the server's layout") | tojson }},
+    changed: {{ _("{count} changed") | tojson }}, confirm: {{ _("Write {count} options in the config file and restart Odoo?") | tojson }},
+    defaultIs: {{ _("default: {value}") | tojson }},
+  };
+  // shown without "all": the ones the file sets, and these, the ones people tune
+  const OC_COMMON = ["workers", "max_cron_threads", "limit_memory_soft", "limit_memory_hard", "limit_time_cpu",
+    "limit_time_real", "limit_request", "db_maxconn", "proxy_mode", "list_db", "dbfilter", "log_level",
+    "server_wide_modules", "email_from", "smtp_server", "smtp_port", "smtp_ssl", "smtp_user", "smtp_password"];
+  let ocLoaded = false, ocData = null;
+  async function loadOdooConfig() {
+    if (ocLoaded) return;
+    const box = document.querySelector('[data-panel="odoo-config"]');
+    if (!box) return;
+    ocLoaded = true;
+    const state = box.querySelector(".oc-state");
+    let data;
+    try {
+      const resp = await fetch(box.dataset.url, {headers: {Accept: "application/json"}});
+      data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || data.detail || resp.status);
+    } catch (e) { state.textContent = OC.failed.replace("{error}", e.message); ocLoaded = false; return; }
+    ocData = data;
+    state.hidden = true;
+    box.querySelector(".oc-file").textContent = data.file + (data.version ? " · Odoo " + data.version : "");
+    box.querySelector(".oc-readonly").hidden = data.writable;
+    drawOdooConfig(box);
+  }
+  function drawOdooConfig(box) {
+    const data = ocData, all = document.getElementById("oc-all").checked;
+    const canEdit = !!box.dataset.admin && data.writable;
+    const table = box.querySelector(".oc-table");
+    table.querySelectorAll("tr:not(:first-child)").forEach((r) => r.remove());
+    let group = null;
+    for (const o of data.options) {
+      const inFile = Object.prototype.hasOwnProperty.call(data.values, o.name);
+      if (!all && !inFile && !OC_COMMON.includes(o.name)) continue;
+      if (all && o.group !== group) {
+        group = o.group;
+        const g = document.createElement("tr"); g.className = "oc-group";
+        const td = document.createElement("td"); td.colSpan = 2; td.textContent = group || "—"; g.append(td); table.append(g);
+      }
+      const tr = document.createElement("tr"); tr.dataset.name = o.name;
+      const left = document.createElement("td");
+      const name = document.createElement("div"); name.className = "oc-name"; name.textContent = o.name;
+      const help = document.createElement("div"); help.className = "oc-help"; help.textContent = o.help;
+      left.append(name, help);
+      const right = document.createElement("td");
+      const locked = data.locked.includes(o.name), secret = data.secrets.includes(o.name) || /passw|secret|token/.test(o.name);
+      let input;
+      if (o.kind === "bool") {
+        input = document.createElement("select");
+        for (const [v, t] of [["", "—"], ["True", "True"], ["False", "False"]]) input.append(new Option(t, v));
+        // a value the file writes otherwise (1, 0, true): shown as it is
+        const written = inFile ? data.values[o.name] : "";
+        if (written && !["True", "False"].includes(written)) input.append(new Option(written, written));
+      } else {
+        input = document.createElement("input");
+        input.type = secret ? "password" : (o.kind === "int" || o.kind === "float" ? "text" : "text");
+        input.autocomplete = "off"; input.spellcheck = false; input.className = "mono";
+      }
+      const value = inFile ? data.values[o.name] : "";
+      input.value = secret ? "" : value;
+      input.dataset.orig = input.value;
+      if (secret && data.secrets.includes(o.name)) input.placeholder = OC.secret;
+      else if (o.default !== null && o.default !== undefined && o.default !== "") input.placeholder = OC.defaultIs.replace("{value}", o.default);
+      if (locked) { input.disabled = true; input.title = OC.locked; }
+      else if (!canEdit) input.disabled = true;
+      input.dataset.secret = secret ? "1" : "";
+      input.addEventListener("input", () => markOdooConfig(box));
+      input.addEventListener("change", () => markOdooConfig(box));
+      right.append(input);
+      tr.append(left, right); table.append(tr);
+    }
+    table.hidden = false;
+    const actions = box.querySelector(".oc-actions");
+    if (actions) actions.hidden = !canEdit;
+    markOdooConfig(box);
+  }
+  function changesOdooConfig(box) {
+    const set = {}, unset = [];
+    for (const input of box.querySelectorAll(".oc-table input, .oc-table select")) {
+      if (input.disabled) continue;
+      const name = input.closest("tr").dataset.name, now = input.value.trim(), was = input.dataset.orig;
+      if (input.dataset.secret) { if (now) set[name] = now; continue; }
+      if (now === was) continue;
+      if (now) set[name] = now; else if (Object.prototype.hasOwnProperty.call(ocData.values, name)) unset.push(name);
+    }
+    return {set, unset};
+  }
+  function markOdooConfig(box) {
+    const {set, unset} = changesOdooConfig(box), count = Object.keys(set).length + unset.length;
+    box.querySelectorAll(".oc-table tr[data-name]").forEach((tr) => {
+      tr.classList.toggle("oc-dirty", tr.dataset.name in set || unset.includes(tr.dataset.name));
+    });
+    const save = document.getElementById("oc-save");
+    if (save) save.disabled = !count;
+    const label = box.querySelector(".oc-changed");
+    if (label) label.textContent = count ? OC.changed.replace("{count}", count) : "";
+  }
+  document.getElementById("oc-all")?.addEventListener("change", () => {
+    const box = document.querySelector('[data-panel="odoo-config"]');
+    if (ocData) drawOdooConfig(box);
+  });
+  document.getElementById("oc-save")?.addEventListener("click", async () => {
+    const box = document.querySelector('[data-panel="odoo-config"]');
+    const changes = changesOdooConfig(box), count = Object.keys(changes.set).length + changes.unset.length;
+    if (!count || !confirm(OC.confirm.replace("{count}", count))) return;
+    const resp = await fetch(box.dataset.url, {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
+                                               body: JSON.stringify({...changes, restart: true})});
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || !data.job) { alert(data.error || data.detail || resp.status); return; }
+    location.href = `{{ prefix }}/jobs/${data.job}`;
+  });
 
   async function refresh() {
     let data;

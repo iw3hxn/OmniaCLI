@@ -606,6 +606,41 @@ class OdooPlugin(ServicePlugin):
             except JobFailed as exc:
                 return JSONResponse({"error": str(exc)[-500:]}, status_code=502)
 
+        @router.get("/servers/{server}/{role}/odoo-config", dependencies=[Depends(host.needs("developer"))])
+        async def odoo_config(server: str, role: str):
+            """The Odoo config tab: the options the instance's Odoo knows and
+            the values of its config file."""
+            instance = host.instance(server, role)
+            found = await ops.odoo_options(instance)
+            if "error" in found:
+                return JSONResponse({"error": found["error"]}, status_code=502)
+            return found
+
+        @router.post("/servers/{server}/{role}/odoo-config", dependencies=[Depends(host.needs("admin"))])
+        async def odoo_config_save(request: Request, server: str, role: str, payload: dict = Body(...)):
+            """A job: the options changed written in the instance's Odoo config
+            (write_config.py, as the user it runs as), then Odoo restarted."""
+            instance = host.instance(server, role)
+            values = payload.get("set") or {}
+            unset = payload.get("unset") or []
+            if not isinstance(values, dict) or not isinstance(unset, list) or not (values or unset):
+                return refuse("Nothing changed")
+            locked = ops.locked_options()
+            touched = [str(k) for k in [*values, *unset]]
+            if any(k in locked for k in touched):
+                return refuse(f"{', '.join(k for k in touched if k in locked)}: set by the server's layout, not here")
+            changes = {"set": {str(k): str(v) for k, v in values.items()}, "unset": [str(k) for k in unset]}
+            again = payload.get("restart", True) is not False
+
+            async def action(job):
+                changed = await ops.write_odoo_options(job, instance, changes)
+                job.log(f"changed: {', '.join(changed) or 'nothing'}")
+                if again:
+                    await restart(job, instance)
+
+            job = host.submit(request, f"Odoo config of {instance.key}", [instance.key], action)
+            return {"job": job.id}
+
         @router.post("/form/config", dependencies=[Depends(host.needs("admin"))])
         async def form_config(payload: dict = Body(...)):
             """The database, log file and repositories an Odoo config gives."""

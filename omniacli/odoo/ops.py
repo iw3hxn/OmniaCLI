@@ -38,6 +38,13 @@ PASSWORDS_SCRIPT = Path(__file__).with_name("reset_passwords.py")
 LOGIN_SCRIPT = Path(__file__).with_name("login_session.py")
 # the users for Log in as in SQL, without loading Odoo (list_users.py)
 USERS_SCRIPT = Path(__file__).with_name("list_users.py")
+# the Odoo config tab: the options Odoo knows, and the writer of the file
+OPTIONS_SCRIPT = Path(__file__).with_name("config_options.py")
+WRITE_SCRIPT = Path(__file__).with_name("write_config.py")
+OPTIONS_MARK = "OMNIACLI-OPTIONS "
+CONFIG_MARK = "OMNIACLI-CONFIG "
+# options whose value is a secret: never sent to the browser, a blank keeps it
+SECRET_OPTION = re.compile(r"passw|secret|token|_key$|^key")
 LOGIN_TIMEOUT = 120
 # what click-odoo runs around a module update: a neutralized database keeps
 # its crons off
@@ -686,6 +693,93 @@ async def _users_in_sql(instance: Instance) -> dict:
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     return login_answer(code, out)
+
+
+def answer_of(mark: str, code: int, out: str) -> dict:
+    """The JSON a script printed after mark (its last such line), else an error."""
+    for line in reversed(out.splitlines()):
+        if line.startswith(mark):
+            try:
+                data = json.loads(line[len(mark):])
+            except ValueError:
+                break
+            if isinstance(data, dict):
+                return data
+            break
+    tail = " | ".join(out.splitlines()[-5:])
+    return {"error": f"no answer (exit code {code}): {tail}"[:500]}
+
+
+async def _script(instance: Instance, script: Path, args: list, stdin_text: str | None = None,
+                  with_odoo: bool = True) -> tuple[int, str]:
+    """script run with the instance's python as the user it runs as, from a
+    copy any user may read (in a folder only OmniaCLI writes to)."""
+    env = odoo_env(instance) if with_odoo else None
+    staging = Path(tempfile.mkdtemp(prefix="omniacli-script-", dir=BACKUP_STAGING))
+    try:
+        staging.chmod(0o755)
+        copy = staging / script.name
+        shutil.copyfile(script, copy)
+        copy.chmod(0o644)
+        cmd = [instance.options.venv_bin / "python", copy, *args]
+        return await capture(as_user(instance.run_as, cmd, env), env=env, timeout=LOGIN_TIMEOUT,
+                             input=stdin_text.encode() if stdin_text is not None else None)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+def config_values(path) -> dict[str, str]:
+    """The [options] of an Odoo config file, as written there."""
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.read(path, encoding="utf-8")
+    return dict(parser.items("options")) if parser.has_section("options") else {}
+
+
+async def odoo_options(instance: Instance) -> dict:
+    """The Odoo config tab: every option the instance's Odoo knows (its
+    parser, config_options.py), the values of its config file (a secret's
+    is only said to be set), the options the layout owns (locked) and
+    whether the file can be written as the user the instance runs as."""
+    code, out = await _script(instance, OPTIONS_SCRIPT, [])
+    found = answer_of(OPTIONS_MARK, code, out)
+    if "error" in found:
+        return found
+    path = instance.options.odoo_config
+    try:
+        values = await asyncio.to_thread(config_values, path)
+    except (configparser.Error, OSError, UnicodeDecodeError) as exc:
+        return {"error": f"{path} cannot be read: {exc}"}
+    locked = sorted(locked_options())
+    shown = {k: ("" if SECRET_OPTION.search(k) else v) for k, v in values.items()}
+    secrets = sorted(k for k, v in values.items() if SECRET_OPTION.search(k) and v and v != "False")
+    # the venv's python as that user: what sudoers lets OmniaCLI run as it
+    probe = "import os, sys; sys.exit(0 if os.access(sys.argv[1], os.W_OK) else 1)"
+    code, out = await capture(as_user(instance.run_as, [instance.options.venv_bin / "python", "-c", probe, str(path)]),
+                              timeout=30)
+    return {"options": found["options"], "version": found.get("version"), "values": shown, "secrets": secrets,
+            "locked": locked, "writable": code == 0, "file": str(path)}
+
+
+def locked_options() -> set[str]:
+    """The options write_config.py refuses (its LOCKED), read from its text:
+    one list, where the writing is checked."""
+    tree = ast.parse(WRITE_SCRIPT.read_text())
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "LOCKED" for t in node.targets):
+            return set(ast.literal_eval(node.value))
+    return set()
+
+
+async def write_odoo_options(job: Job, instance: Instance, changes: dict) -> list[str]:
+    """write_config.py on the instance's Odoo config, as the user it runs as:
+    the options changed (secrets named, never their values)."""
+    path = instance.options.odoo_config
+    job.log(f"--- {path}: " + ", ".join([*(changes.get("set") or {}), *[f"-{k}" for k in changes.get("unset") or []]]))
+    code, out = await _script(instance, WRITE_SCRIPT, [str(path)], json.dumps(changes), with_odoo=False)
+    found = answer_of(CONFIG_MARK, code, out)
+    if "error" in found:
+        raise JobFailed(f"{path} not changed: {found['error']}")
+    return found["changed"]
 
 
 async def share_filestore(job: Job, instance: Instance, src: Path, dst: Path, check: bool = False) -> None:
