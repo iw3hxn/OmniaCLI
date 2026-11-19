@@ -218,7 +218,9 @@ def test_the_progress_of_an_add_job():
 
 def test_what_discover_found_becomes_productions():
     found = [
-        {"type": "odoo", "label": "process 1, unit odona-shop", "name": "shop", "instance": {"database": "shop"}},
+        {"type": "odoo", "label": "process 1, unit odona-shop", "name": "shop",
+         "instance": {"database": "shop", "repositories": [{"path": "/var/odoo/shop/src"}]},
+         "facts": [["odoo-bin", "/var/odoo/shop/src/odoo-bin (Odoo 19)"]]},
         {"type": "odoo", "label": "unit odona-shop-old", "name": "shop", "instance": {"database": "shop"}},
         {"type": "odoo", "label": "process 2", "name": "c", "instance": {}, "skip": "in a container"},
         {"type": "odoo", "label": "unit odoo", "name": "erp", "instance": {}, "known": "erp/production"},
@@ -227,4 +229,6 @@ def test_what_discover_found_becomes_productions():
     items = machines.instances_to_add(found, {"erp"})
     assert [(i["name"], i["role"], i["type"]) for i in items] == [
         ("shop", "production", "odoo"), ("shop-2", "production", "odoo")]
-    assert items[0]["instance"] == {"database": "shop"}
+    # the code is the panel's: nothing to pull, odoo-bin as found
+    assert items[0]["instance"] == {"database": "shop", "repositories": [], "odoo_bin": "/var/odoo/shop/src/odoo-bin"}
+    assert items[1]["instance"] == {"database": "shop", "repositories": []}

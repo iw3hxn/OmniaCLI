@@ -1729,7 +1729,7 @@ use it.
 ### A server that already has Odoo
 
 Step 1 of **Add a server** asks what is on it. **Odoo already runs there**
-(a Cloudpepper server, one installed by hand) changes the job: nothing of
+(a hosting panel's server, one installed by hand) changes the job: nothing of
 the machine is upgraded, installed beside it or closed, and it takes about
 5 minutes.
 
@@ -1742,18 +1742,21 @@ the machine is upgraded, installed beside it or closed, and it takes about
    - read access for OmniaCLI's user to its Odoo config, its log folder
      (the logs to come too) and its addons, by ACLs: the folders' modes,
      owners and groups stay as they are;
-   - click-odoo: Odoo run by a python outside a venv (Odoo's Debian package,
-     as on Cloudpepper's servers) gets a venv of its own in
-     `/opt/omniacli/odoo-venvs/` that sees that python's packages, the
-     system's python untouched; a venv without click-odoo gets it, as its
-     owner;
+   - click-odoo: a venv of OmniaCLI's own in `/opt/omniacli/odoo-venvs/`,
+     named after the python folder Odoo runs from, that sees that python's
+     packages (a system python's, Odoo's Debian package, by
+     `--system-site-packages`; a venv's by a `.pth` naming its
+     site-packages), with click-odoo-contrib there: the instance's python
+     and venv are not touched;
    - its sudoers lines in `/etc/sudoers.d/omniacli-instances`, checked by
      `visudo` first: the venv and psql as the user Odoo runs as, restart,
      start and stop of its unit.
 
    Odoo run as root, in a container or without a unit is said and left out.
 3. Through the link, Discover there, each Odoo saved as the production of
-   a server named after its database, and **Test & activate**: the job says
+   a server named after its database, with no repository (its code stays
+   what deployed it: OmniaCLI pulls nothing there) and odoo-bin as found,
+   and **Test & activate**: the job says
    which are active and, for the others, the checks that failed (they stay
    drafts there, to complete).
 

@@ -278,7 +278,7 @@ async def test_discover_takes_the_venv_add_a_server_made(machine, monkeypatch):
     prod = next(d for d in await discover.discover([], machine["proc"]) if d.label.startswith("process 100"))
     assert prod.instance["venv_bin"] == str(machine["venv"] / "bin")
     assert any("--system-site-packages" in n for n in prod.notes)
-    adopted = odoo_ops.adopted_venv(machine["venv"] / "bin" / "python")
+    adopted = odoo_ops.adopted_venv(machine["venv"] / "bin")
     (adopted / "bin").mkdir(parents=True)
     (adopted / "bin" / "python").write_text("")
     prod = next(d for d in await discover.discover([], machine["proc"]) if d.label.startswith("process 100"))

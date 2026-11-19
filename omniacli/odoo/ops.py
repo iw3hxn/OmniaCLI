@@ -208,16 +208,19 @@ def _shebang_python(script: Path) -> Path | None:
     return Path(words[0]) if words else None
 
 
-# the venvs OmniaCLI makes, as root, for an Odoo run by a python outside a
-# venv (Odoo's Debian package): they see that python's packages and add
-# click-odoo-contrib, the system's python untouched (omniacli/odoo/adopt.py)
+# the venvs OmniaCLI makes, as root, for an Odoo it joins on a machine that
+# already runs it (adopt.py): one per python folder Odoo runs from, seeing
+# its packages (a system python's by --system-site-packages, a venv's by a
+# .pth file), with click-odoo-contrib added there; the system's python and
+# the instance's own venv are not touched
 ADOPTED_VENVS = Path("/opt/omniacli/odoo-venvs")
 
 
-def adopted_venv(python: Path, base: Path | None = None) -> Path:
-    """The venv adopt.py makes for python: /usr/bin/python3 → <base>/usr-bin-python3."""
-    # by the real file: /usr/bin/python3 and /usr/bin/python3.10 are one python
-    name = re.sub(r"[^A-Za-z0-9._-]+", "-", os.path.realpath(python)).strip("-")
+def adopted_venv(venv_bin: Path, base: Path | None = None) -> Path:
+    """The venv adopt.py makes for the python of venv_bin, named by that
+    folder (/usr/bin → <base>/usr-bin): the same name from root and from
+    OmniaCLI's user, who may not enter a closed venv to resolve links."""
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", str(venv_bin)).strip("-")
     return (base or ADOPTED_VENVS) / name
 
 

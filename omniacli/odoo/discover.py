@@ -341,8 +341,8 @@ async def describe(item: Started, known: list[Instance]) -> Discovered:
     venv_bin = None
     if python and os.path.isabs(python):
         venv_bin = Path(python).parent
-        adopted = adopted_venv(Path(python))
-        if not (venv_bin.parent / "pyvenv.cfg").is_file() and (adopted / "bin" / "python").is_file():
+        adopted = adopted_venv(venv_bin)
+        if (adopted / "bin" / "python").is_file():
             # the venv Add a server made for it (adopt.py): click-odoo there
             venv_bin = adopted / "bin"
         elif not (venv_bin.parent / "pyvenv.cfg").is_file():

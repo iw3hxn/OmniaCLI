@@ -248,7 +248,9 @@ def instances_to_add(found: list[dict], taken: set[str]) -> list[dict]:
     saves (POST /api/servers/discover): each Odoo it can add, as the
     production of a server named after its database (-2, -3... beside a
     name taken). Those it cannot add (in a container, already there) are
-    left out: the job says so."""
+    left out: the job says so. Their code stays what put it there (a
+    hosting panel deploys its own): no repository for OmniaCLI to pull,
+    odoo-bin named as Discover found it."""
     items, names = [], set(taken)
     for item in found:
         if item.get("skip") or item.get("known") or item.get("error") or not isinstance(item.get("instance"), dict):
@@ -258,6 +260,10 @@ def instances_to_add(found: list[dict], taken: set[str]) -> list[dict]:
         while name in names:
             name, number = f"{base}-{number}", number + 1
         names.add(name)
-        items.append({"name": name, "role": "production", "type": item.get("type") or "odoo",
-                      "instance": item["instance"]})
+        instance = {**item["instance"], "repositories": []}
+        odoo_bin = next((str(value).split(" (", 1)[0] for label, value in item.get("facts") or []
+                         if label == "odoo-bin"), "")
+        if odoo_bin and not instance.get("odoo_bin"):
+            instance["odoo_bin"] = odoo_bin
+        items.append({"name": name, "role": "production", "type": item.get("type") or "odoo", "instance": instance})
     return items

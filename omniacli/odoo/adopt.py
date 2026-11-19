@@ -14,10 +14,10 @@ Discover finds it, with nothing of Odoo's changed:
 - read access for OmniaCLI's user to its Odoo config, its log folder (new
   logs too: a default ACL) and its addons, by ACLs (setfacl): the folders'
   modes, owners and groups stay as they are;
-- click-odoo, which backups and updates run: Odoo run by a python outside a
-  venv (Odoo's Debian package) gets a venv of its own that sees that
-  python's packages (odoo_ops.adopted_venv), the system's python
-  untouched; a venv without it gets it installed, as the venv's owner;
+- click-odoo, which backups and updates run: a venv of OmniaCLI's own
+  (odoo_ops.adopted_venv) that sees the packages of the python Odoo runs
+  with, a system python's (Odoo's Debian package) or a venv's, with
+  click-odoo-contrib there: the instance's python and venv untouched;
 - the sudoers lines Test & activate asks for, in
   /etc/sudoers.d/omniacli-instances (checked by visudo before it is put
   there): its venv as the user Odoo runs as, psql, and restart, start, stop
@@ -40,7 +40,7 @@ import tempfile
 from pathlib import Path
 
 from . import discover
-from .ops import adopted_venv, addons_paths_of
+from .ops import adopted_venv, addons_paths_of, locate_odoo_bin, odoo_root
 
 SUDOERS = Path("/etc/sudoers.d/omniacli-instances")
 
@@ -49,10 +49,10 @@ def say(text: str) -> None:
     print(text, flush=True)
 
 
-def call(cmd: list[str], user: str | None = None) -> subprocess.CompletedProcess:
+def call(cmd: list[str], user: str | None = None, env: dict | None = None) -> subprocess.CompletedProcess:
     if user is not None:
         cmd = ["runuser", "-u", user, "--", *cmd]
-    return subprocess.run(cmd, capture_output=True, text=True, check=False)
+    return subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
 
 
 def checked(cmd: list[str], user: str | None = None) -> None:
@@ -85,36 +85,49 @@ def let_read(service_user: str, path: Path, folder: bool = False) -> list[str]:
     return given
 
 
-def system_python(venv_bin: Path) -> Path | None:
-    """The python of venv_bin when it is not a venv's (Odoo's Debian
-    package: /usr/bin), None for a venv."""
-    if (venv_bin.parent / "pyvenv.cfg").is_file():
-        return None
+def python_of(venv_bin: Path) -> Path:
     for name in ("python3", "python"):
-        if (venv_bin / name).is_file():
+        if (venv_bin / name).exists():
             return venv_bin / name
-    return None
+    raise RuntimeError(f"no python in {venv_bin}")
 
 
-def ready_venv(venv_bin: Path) -> Path:
-    """The venv's bin folder where click-odoo imports with odoo: made for a
-    system python, completed for a venv."""
-    python = system_python(venv_bin)
-    if python is not None:
-        venv = adopted_venv(python)
-        if not (venv / "bin" / "python").is_file():
-            venv.parent.mkdir(parents=True, exist_ok=True)
-            checked([str(python), "-m", "venv", "--system-site-packages", str(venv)])
+def site_packages(python: Path) -> str:
+    done = call([str(python), "-c", "import site; print(site.getsitepackages()[0])"])
+    if done.returncode or not done.stdout.strip():
+        raise RuntimeError(f"{python}: its site-packages cannot be read")
+    return done.stdout.strip().splitlines()[-1]
+
+
+def ready_venv(venv_bin: Path, odoo_root: Path | None = None) -> Path:
+    """The bin folder of OmniaCLI's venv for the python of venv_bin
+    (odoo_ops.adopted_venv), where click-odoo imports with odoo: it sees
+    that python's packages, a system python's (--system-site-packages) or a
+    venv's (a .pth naming its site-packages), and has click-odoo-contrib of
+    its own. The instance's python and venv are not touched. odoo_root: the
+    folder of a source checkout's odoo package (OmniaCLI gives it as
+    PYTHONPATH, as here to check the import)."""
+    python = python_of(venv_bin)
+    venv = adopted_venv(venv_bin)
+    if not (venv / "bin" / "python").is_file():
+        venv.parent.mkdir(parents=True, exist_ok=True)
+        checked([str(python), "-m", "venv", "--system-site-packages", str(venv)])
+        if (venv_bin.parent / "pyvenv.cfg").is_file():
+            pth = Path(site_packages(venv / "bin" / "python")) / "omniacli-instance.pth"
+            pth.write_text(site_packages(python) + "\n")
+            say(f"  venv {venv}, seeing the packages of {venv_bin.parent}")
+        else:
             say(f"  venv {venv}, seeing the packages of {python}")
-        venv_bin, owner = venv / "bin", None
-    else:
-        owner = pwd.getpwuid(os.stat(venv_bin).st_uid).pw_name
-    if call([str(venv_bin / "python"), "-c", "import click_odoo"], owner).returncode:
-        checked([str(venv_bin / "python"), "-m", "pip", "install", "-q", "--disable-pip-version-check",
-                 "click-odoo-contrib"], owner)
-        say(f"  click-odoo-contrib installed in {venv_bin.parent}" + (f" as {owner}" if owner else ""))
-    checked([str(venv_bin / "python"), "-c", "import click_odoo, odoo"], owner)
-    return venv_bin
+    mine = venv / "bin" / "python"
+    if call([str(mine), "-c", "import click_odoo"]).returncode:
+        checked([str(mine), "-m", "pip", "install", "-q", "--disable-pip-version-check", "click-odoo-contrib"])
+        say(f"  click-odoo-contrib installed in {venv}")
+    env = {**os.environ, "PYTHONPATH": str(odoo_root)} if odoo_root else None
+    done = call([str(mine), "-c", "import click_odoo, odoo"], env=env)
+    if done.returncode:
+        said = (done.stderr or done.stdout).strip().splitlines()
+        raise RuntimeError(f"{mine}: click_odoo or odoo does not import: {said[-1] if said else done.returncode}")
+    return venv / "bin"
 
 
 def sudoers_lines(service_user: str, run_as: str, venv_bin: Path, unit: str) -> list[str]:
@@ -174,7 +187,9 @@ async def adopt(service_user: str) -> int:
                     given += let_read(service_user, folder, folder=True)
             for line in given:
                 say(f"  read: {line}")
-            venv_bin = ready_venv(Path(inst["venv_bin"]))
+            odoo_bin = locate_odoo_bin(Path(inst["odoo_bin"]) if inst.get("odoo_bin") else None,
+                                       [Path(r["path"]) for r in inst.get("repositories") or []])
+            venv_bin = ready_venv(Path(inst["venv_bin"]), odoo_root(odoo_bin) if odoo_bin else None)
             write_sudoers(sudoers_lines(service_user, run_as, venv_bin, unit))
         except (OSError, RuntimeError) as exc:
             say(f"  NOT READY: {exc}")
