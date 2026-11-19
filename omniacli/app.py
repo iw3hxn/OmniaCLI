@@ -276,6 +276,10 @@ def _version() -> str:
         return "unknown"
 
 
+# the most each part of OmniaCLI has to stop when the service stops
+STOP_SECONDS = 10
+
+
 def public_address() -> str | None:
     """The IPv4 address this machine goes out with, when it is a public one:
     the value of the DNS A record of a new instance's domain (the New
@@ -591,16 +595,17 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 yield
         else:
             yield
-        await consumers.stop()
-        await publications.stop()
-        await pullers.stop()
-        await tunnels.stop()
-        await ssh_tunnels.close()
-        await disk_recorder.stop()
-        await sampler.stop()
-        await updater.stop()
-        await scheduler.stop()
-        await link_clients.close()
+        # each part stops within STOP_SECONDS: one whose task does not end
+        # (a child process that does not die) is said, and the others stop
+        for what, stop in (("consumers", consumers.stop), ("publications", publications.stop),
+                           ("pullers", pullers.stop), ("tunnels", tunnels.stop), ("ssh tunnels", ssh_tunnels.close),
+                           ("disk history", disk_recorder.stop), ("load sampler", sampler.stop),
+                           ("auto update", updater.stop), ("schedules", scheduler.stop),
+                           ("link clients", link_clients.close)):
+            try:
+                await asyncio.wait_for(stop(), STOP_SECONDS)
+            except asyncio.TimeoutError:
+                _logger.error("%s did not stop within %d s: left behind", what, STOP_SECONDS)
         selflog.detach(own_log)
 
     app = FastAPI(
