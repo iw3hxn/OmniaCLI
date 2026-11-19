@@ -44,6 +44,7 @@ import tempfile
 from pathlib import Path
 
 from . import discover
+from . import ops as odoo_ops
 from .ops import adopted_venv, addons_paths_of, locate_odoo_bin, odoo_root
 
 SUDOERS = Path("/etc/sudoers.d/omniacli-instances")
@@ -111,9 +112,13 @@ def ready_venv(venv_bin: Path, odoo_root: Path | None = None) -> Path:
     its own. The instance's python and venv are not touched. odoo_root: the
     folder of a source checkout's odoo package (OmniaCLI gives it as
     PYTHONPATH, as here to check the import)."""
-    python = python_of(venv_bin)
-    venv = adopted_venv(venv_bin)
-    if not (venv / "bin" / "python").is_file():
+    if venv_bin.parent.parent == odoo_ops.ADOPTED_VENVS:
+        # added again: Discover gives the venv made the first time, ours already
+        python, venv = None, venv_bin.parent
+    else:
+        python = python_of(venv_bin)
+        venv = adopted_venv(venv_bin)
+    if python is not None and not (venv / "bin" / "python").is_file():
         venv.parent.mkdir(parents=True, exist_ok=True)
         checked([str(python), "-m", "venv", "--system-site-packages", str(venv)])
         if (venv_bin.parent / "pyvenv.cfg").is_file():

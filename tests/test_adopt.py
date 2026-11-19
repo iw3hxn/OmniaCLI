@@ -192,3 +192,15 @@ def test_log_in_as_in_a_panels_sites(tmp_path, monkeypatch, ran):
     with pytest.raises(RuntimeError, match="put back"):
         adopt.add_login_paths(3004, [conf])
     assert site.read_text() == PANEL_SITE
+
+
+def test_added_again_its_own_venv_is_kept(monkeypatch, tmp_path, ran):
+    """Discover gives, the second time, the venv made the first time: no venv
+    is made over it (it would not see Odoo's packages)."""
+    monkeypatch.setattr(odoo_ops, "ADOPTED_VENVS", tmp_path / "venvs")
+    mine = odoo_ops.adopted_venv(Path("/var/odoo/shop/venv/bin"))
+    (mine / "bin").mkdir(parents=True)
+    (mine / "bin" / "python").write_text("")
+    assert adopt.ready_venv(mine / "bin") == mine / "bin"
+    assert not any("venv" in c for c, _ in ran)
+    assert [c for c, _ in ran][-1] == [str(mine / "bin" / "python"), "-c", "import click_odoo, odoo"]
