@@ -15,6 +15,7 @@ def test_the_staging_of_a_name():
     assert stagings.parent_by_name("shop-staging", names) == ("shop", "")
     assert stagings.parent_by_name("20260805-staging-ridix.example.com", names) == ("ridix.example.com", "2026-08-05")
     assert stagings.parent_by_name("202606-staging-ridix.example.com", names) == ("ridix.example.com", "2026-06-01")
+    assert stagings.parent_by_name("staging-ridix.example.com", names) == ("ridix.example.com", "")
     # no production of that name: a production of its own
     assert stagings.parent_by_name("alone-stage", names) is None
     assert stagings.parent_by_name("volontarius", names) is None
