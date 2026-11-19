@@ -525,3 +525,21 @@ def test_closed_groups_open_only_the_closed_folders(monkeypatch):
     assert composehelper.closed_groups(Path("/srv/x")) == ()
     # root's group never: it would open more than the way
     assert composehelper.closed_groups(Path("/private/x")) == ()
+
+
+def test_setup_takes_its_values_on_its_input(tmp_path, monkeypatch):
+    # the admin's password and the country of a new database: checked, then a
+    # Python literal in front of the script odoo shell runs; on no command line
+    monkeypatch.setattr(composehelper, "services", lambda project: ["odoo", "db"])
+    [cmd] = composehelper.commands(tmp_path, "setup", ["odoo", "shop"])
+    assert cmd[:5] == ["exec", "-T", "odoo", "sh", "-c"] and cmd[-2:] == ["sh", "shop"]
+    assert "odoo shell" in cmd[5]
+    text = composehelper.setup_input(b'{"password": "s3cret-Pass#1", "country": "CH"}').decode()
+    first, _, script = text.partition("\n")
+    assert first == "OMNIACLI_SETUP = {'password': 's3cret-Pass#1', 'country': 'CH'}"
+    assert script == composehelper.SETUP_SCRIPT.read_text()
+    assert composehelper.setup_input(b"").startswith(b"OMNIACLI_SETUP = {}\n")
+    for bad in (b"not json", b'{"password": "short"}', b'{"country": "Svizzera"}', b'{"login": "x"}',
+                b'{"password": "line\\nbreak!!"}'):
+        with pytest.raises(composehelper.HelperError):
+            composehelper.setup_input(bad)

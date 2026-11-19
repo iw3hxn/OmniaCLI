@@ -1,7 +1,9 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
-{# New instance, as Cloudpepper's Add instance: the Odoo version is the one
-   choice; a name, a domain and a language are optional (POST /api/instances/new:
-   a workspace of its own, its production and test from the template odoo-<major>). -#}
+{# New instance: the Odoo version, its domain
+   (the DNS A record it needs), language and country, the admin's password
+   made here and shown once, to be saved before Create; the name is optional
+   (POST /api/instances/new: a workspace of its own, its production from the
+   template odoo-<major>, the password and country set by compose-helper setup). -#}
 <style>
 #new-instance { width: min(620px, calc(100vw - 32px)); padding: 0; }
 #new-instance form { margin: 0; }
@@ -26,31 +28,54 @@
 .ni-foot { display: flex; justify-content: flex-end; align-items: center; gap: 8px; padding: 16px 24px 20px; }
 .ni-foot .error { margin: 0 auto 0 0; font-size: 13px; }
 .ni-foot button { padding: 8px 16px; }
+.ni-password { display: flex; gap: 6px; }
+.ni-password input { flex: 1; font-family: var(--mono, monospace); }
+.ni-password button { padding: 6px 10px; }
+.ni-once { color: var(--err); }
+.ni-saved { display: flex; gap: 8px; align-items: center; justify-content: flex-end; margin-top: 12px; font-size: 14px; }
 @media (max-width: 600px) { .ni-fields { grid-template-columns: 1fr; } }
 </style>
 <dialog id="new-instance" aria-labelledby="ni-title">
   <form id="ni-form" novalidate>
     <div class="ni-head">
       <h2 id="ni-title">{{ _("New instance") }}</h2>
-      <p class="muted" style="margin: 0">{{ _("Choose the Odoo version: OmniaCLI makes its database, its containers, its disk and its test copy.") }}</p>
+      <p class="muted" style="margin: 0">{{ _("Choose the Odoo version: OmniaCLI makes its database, its containers and its disk.") }}</p>
     </div>
     <div class="ni-body">
       <div class="ni-versions" id="ni-versions" role="radiogroup" aria-label="{{ _('Odoo version') }}"></div>
-      <details>
-        <summary class="muted" style="cursor: pointer; font-size: 13px">{{ _("Name, domain and language (optional)") }}</summary>
+      <div class="ni-fields">
+        <div class="wide"><label for="ni-domain">{{ _("Domain") }}</label>
+          <input type="text" id="ni-domain" class="mono" placeholder="erp.example.com" autocomplete="off" spellcheck="false">
+          <div class="ni-help" id="ni-dns">{{ _("Its DNS name pointing to this server, ports 80 and 443 open: it answers there with HTTPS. Empty: added later.") }}</div></div>
+        <div><label for="ni-language">{{ _("Language") }}</label>
+          <select id="ni-language">
+            <option value="">English</option><option value="it_IT" {{ "selected" if lang == "it" }}>Italiano</option><option value="de_DE">Deutsch</option>
+            <option value="fr_FR">Français</option><option value="es_ES">Español</option>
+          </select></div>
+        <div><label for="ni-country">{{ _("Country") }}</label>
+          <select id="ni-country">
+            <option value="">—</option>
+            {% for code, label in [("IT", _("Italy")), ("CH", _("Switzerland")), ("DE", _("Germany")), ("AT", _("Austria")), ("FR", _("France")), ("ES", _("Spain")), ("SI", _("Slovenia")), ("GB", _("United Kingdom")), ("US", _("United States"))] %}
+            <option value="{{ code }}" {{ "selected" if code == "IT" and lang == "it" }}>{{ label }}</option>
+            {% endfor %}
+          </select>
+          <div class="ni-help">{{ _("The company's: Odoo picks its accounting from it.") }}</div></div>
+        <div class="wide"><label for="ni-password">{{ _("Password of the user admin") }}</label>
+          <div class="ni-password">
+            <input type="text" id="ni-password" autocomplete="off" spellcheck="false" minlength="8" maxlength="128">
+            <button type="button" id="ni-regenerate" title="{{ _('Makes another random password') }}" aria-label="{{ _('Another password') }}">↻</button>
+            <button type="button" id="ni-copy" title="{{ _('Copies the password') }}">{{ _("Copy") }}</button>
+          </div>
+          <div class="ni-help ni-once">{{ _("It is shown only now: store it somewhere safe.") }}</div></div>
+      </div>
+      <details style="margin-top: 12px">
+        <summary class="muted" style="cursor: pointer; font-size: 13px">{{ _("Name (optional)") }}</summary>
         <div class="ni-fields" style="margin-top: 12px">
           <div><label for="ni-name">{{ _("Name") }}</label>
             <input type="text" id="ni-name" class="mono" maxlength="32" placeholder="odoo19" autocomplete="off"></div>
-          <div><label for="ni-language">{{ _("Language") }}</label>
-            <select id="ni-language">
-              <option value="">English</option><option value="it_IT" {{ "selected" if lang == "it" }}>Italiano</option><option value="de_DE">Deutsch</option>
-              <option value="fr_FR">Français</option><option value="es_ES">Español</option>
-            </select></div>
-          <div class="wide"><label for="ni-domain">{{ _("Domain") }}</label>
-            <input type="text" id="ni-domain" class="mono" placeholder="erp.example.com" autocomplete="off" spellcheck="false">
-            <div class="ni-help">{{ _("Its DNS name pointing to this server, ports 80 and 443 open: production answers there with HTTPS, its test on test.<domain>. Empty: added later from its workspace.") }}</div></div>
         </div>
       </details>
+      <label class="ni-saved"><input type="checkbox" id="ni-saved"> {{ _("I have saved the admin's password") }}</label>
     </div>
     <div class="ni-foot">
       <p id="ni-error" class="error" role="alert"></p>
@@ -64,11 +89,29 @@
   const PREFIX = {{ prefix | tojson }};
   const T = {creating: {{ _("Creating…") | tojson }}, create: {{ _("Create the instance") | tojson }},
              refused: {{ _("Refused") | tojson }}, none: {{ _("No Odoo template on this machine") | tojson }},
-             community: {{ _("Community") | tojson }}};
+             community: {{ _("Community") | tojson }}, copied: {{ _("Copied") | tojson }},
+             dns: {{ _("Its DNS name: create an A record with the value {address}, ports 80 and 443 open; it answers there with HTTPS. Empty: added later.") | tojson }},
+             short: {{ _("The admin's password is 8 characters at least") | tojson }}};
   const dialog = document.getElementById("new-instance"), versions = document.getElementById("ni-versions");
   const error = document.getElementById("ni-error"), create = document.getElementById("ni-create");
   const nameField = document.getElementById("ni-name");
+  const password = document.getElementById("ni-password"), saved = document.getElementById("ni-saved");
   let loaded = false;
+  // a random password: 16 characters, letters, digits and a few signs
+  function newPassword() {
+    const chars = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789#%+=@";
+    const bytes = crypto.getRandomValues(new Uint32Array(16));
+    password.value = Array.from(bytes, (b) => chars[b % chars.length]).join("");
+    saved.checked = false; ready();
+  }
+  function ready() { create.disabled = !saved.checked || !loaded || !versions.children.length; }
+  saved.addEventListener("change", ready);
+  password.addEventListener("input", () => { saved.checked = false; ready(); });
+  document.getElementById("ni-regenerate").addEventListener("click", newPassword);
+  document.getElementById("ni-copy").addEventListener("click", async (event) => {
+    try { await navigator.clipboard.writeText(password.value); event.target.textContent = T.copied; }
+    catch (e) { password.select(); }
+  });
   async function load() {
     const resp = await fetch(`${PREFIX}/api/instances/versions`, {headers: {Accept: "application/json"}}).catch(() => null);
     const data = resp && resp.ok ? await resp.json().catch(() => ({})) : {};
@@ -85,26 +128,32 @@
     }
     if (!versions.children.length) { error.textContent = T.none; create.disabled = true; }
     else nameField.placeholder = `odoo${data.versions[0].major}`;
-    loaded = true;
+    if (data.address) document.getElementById("ni-dns").textContent = T.dns.replace("{address}", data.address);
+    loaded = true; ready();
   }
-  document.querySelectorAll("[data-new-instance]").forEach((b) => b.addEventListener("click", async () => {
+  // by delegation: the dialog may come before its button in the page
+  document.addEventListener("click", async (event) => {
+    if (!event.target.closest("[data-new-instance]")) return;
     error.textContent = "";
+    newPassword();
     dialog.showModal();
     if (!loaded) await load();
-  }));
+  });
   document.getElementById("ni-cancel").addEventListener("click", () => dialog.close());
   document.getElementById("ni-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const picked = versions.querySelector("input:checked");
-    if (!picked) return;
+    if (!picked || !saved.checked) return;
+    if (password.value.length < 8) { error.textContent = T.short; password.focus(); return; }
     error.textContent = ""; create.disabled = true; create.textContent = T.creating;
     const resp = await fetch(`${PREFIX}/api/instances/new`, {
       method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
       body: JSON.stringify({version: picked.value, name: nameField.value.trim(),
                             domain: document.getElementById("ni-domain").value.trim(),
-                            language: document.getElementById("ni-language").value})}).catch(() => null);
+                            language: document.getElementById("ni-language").value,
+                            country: document.getElementById("ni-country").value, password: password.value})}).catch(() => null);
     const data = resp ? await resp.json().catch(() => ({})) : {};
-    create.disabled = false; create.textContent = T.create;
+    create.textContent = T.create; ready();
     if (!resp || !resp.ok || !data.job) { error.textContent = data.error || data.detail || T.refused; return; }
     location.href = `${PREFIX}/jobs/${data.job}`;
   });

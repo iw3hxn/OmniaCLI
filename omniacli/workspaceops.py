@@ -11,6 +11,7 @@ import re
 import shutil
 import stat
 import sys
+import tempfile
 from pathlib import Path
 
 from . import config, stacktemplates, templatestore, workspacehelper
@@ -73,11 +74,13 @@ async def apply_limits(job: Job, ws: Workspace) -> dict:
 
 
 async def create_instance(job: Job, ws: Workspace, instance: str, template: stacktemplates.Template,
-                          values: dict[str, str]) -> dict:
+                          values: dict[str, str], setup: dict | None = None) -> dict:
     """The disk, the project of its production, its database, started: the
     server's data for the servers file (its production, type docker). The
-    copies to try things on are stagings beside it (stagings.py), as
-    Cloudpepper's, not a test of its own."""
+    copies to try things on are stagings beside it (stagings.py), not a
+    test of its own. setup: the admin's password and
+    the company's country of the new database (compose-helper setup), as the
+    New instance dialog asks them; never in the job's log."""
     if not ws.storage or not ws.limits.get("disk_gb"):
         raise JobFailed(f"workspace {ws.name} has no storage or no disk limit: the machine's admins set them")
     job.log(f"--- the disk of workspace {ws.name} ({ws.limits['disk_gb']:g} GB, in {ws.storage})")
@@ -94,11 +97,19 @@ async def create_instance(job: Job, ws: Workspace, instance: str, template: stac
             await run(job, compose(info["folder"], "init", made["odoo_service"], made["database"], modules,
                                    *([language] if language else [])), timeout=INIT_TIMEOUT)
             await run(job, compose(info["folder"], "start"), timeout=HELPER_TIMEOUT)
+            if setup:
+                said = (["the admin's password"] if setup.get("password") else []) + \
+                    ([f"the country {setup['country']}"] if setup.get("country") else [])
+                job.log("--- " + " and ".join(said))
+                await _setup(job, info["folder"], made["odoo_service"], made["database"], setup)
     except BaseException:
         job.log(f"--- the creation failed: instance {instance} removed")
         await run(job, helper("remove", ws.name, ws.storage, instance), check=False, timeout=HELPER_TIMEOUT)
         raise
-    job.log("The new database has the user admin with password admin: change it at the first login.")
+    if setup and setup.get("password"):
+        job.log("The new database has the user admin with the password chosen in the form.")
+    else:
+        job.log("The new database has the user admin with password admin: change it at the first login.")
     return {
         "type": "docker",
         **{role: {"database": made["database"], "odoo_service": made["odoo_service"],
@@ -106,6 +117,18 @@ async def create_instance(job: Job, ws: Workspace, instance: str, template: stac
                   "restart": {"type": "compose", "service": info["folder"], "sudo": True}, "repositories": []}
            for role, info in made["roles"].items()},
     }
+
+
+async def _setup(job: Job, folder: str, odoo_service: str, database: str, setup: dict) -> None:
+    """compose-helper setup, its values as JSON on its input through a file
+    only OmniaCLI reads, removed at once: the password is on no command
+    line and in no log."""
+    with tempfile.TemporaryDirectory(prefix="omniacli-setup-") as tmp:
+        values = Path(tmp) / "setup.json"
+        values.touch(mode=0o600)
+        values.write_text(json.dumps({k: v for k, v in setup.items() if v}))
+        with values.open("rb") as stdin:
+            await run(job, compose(folder, "setup", odoo_service, database), stdin=stdin, timeout=INIT_TIMEOUT)
 
 
 async def remove_instance(job: Job, ws: Workspace, instance: str) -> None:

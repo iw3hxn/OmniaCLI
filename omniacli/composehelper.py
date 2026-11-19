@@ -71,6 +71,12 @@ command of the caller's, and runs docker with an environment of its own:
                                          on the input, the helper's own file,
                                          never the caller's): the users, or
                                          a new session of one (its sid)
+    setup <odoo service> <db>            in the running service, odoo shell
+                                         runs odoo/setup_database.py on a new
+                                         database: the admin's password and
+                                         the company's country, read by the
+                                         helper as JSON on its input (never
+                                         on a command line) and checked
 
 A database name is [A-Za-z0-9_.-], a module [a-z0-9_]; a service must be one
 of the project's. They reach the container's shell as its arguments, never
@@ -109,7 +115,8 @@ ACTIONS = {
     "pull": [["pull"], ["up", "-d"]],
 }
 # the actions that take arguments (commands())
-WITH_ARGUMENTS = ("logs", "version", "port", "dump", "load", "update", "psql", "init", "link-filestore", "login")
+WITH_ARGUMENTS = ("logs", "version", "port", "dump", "load", "update", "psql", "init", "link-filestore", "login",
+                  "setup")
 DATABASE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,62}")
 MODULE = re.compile(r"[a-z0-9][a-z0-9_]{0,99}")
 LANGUAGE = re.compile(r"[a-z]{2,3}_[A-Z]{2}")
@@ -170,6 +177,7 @@ SCRIPTS = {
     "psql": 'exec psql -U "${POSTGRES_USER:-postgres}" "$1"',
     # odoo shell reads the script from its input; quiet, the answer is its last line
     "login": ODOO_DB + 'OMNIACLI_LOGIN="$2" exec odoo shell -d "$1" --no-http --log-level=critical',
+    "setup": ODOO_DB + 'exec odoo shell -d "$1" --no-http --log-level=critical',
 }
 _ENV_LINE = re.compile(r"\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=")
 # logs: a service's output with the time of each line, the last N lines or
@@ -185,6 +193,12 @@ LINK_SCRIPT = Path(__file__).parent / "odoo" / "link_filestore.py"
 # of the package, root's), the request in OMNIACLI_LOGIN, never in its text
 LOGIN_SCRIPT = Path(__file__).parent / "odoo" / "login_session.py"
 LOGIN_REQUEST = re.compile(r"users|[1-9][0-9]{0,9}")
+# setup: the script odoo shell runs on a new database (the admin's password,
+# the company's country), its values read by the helper on its own input as
+# JSON and put in front of it: the password is on no command line
+SETUP_SCRIPT = Path(__file__).parent / "odoo" / "setup_database.py"
+COUNTRY = re.compile(r"[A-Z]{2}")
+PASSWORD_LENGTH = (8, 128)
 
 
 class HelperError(Exception):
@@ -390,6 +404,11 @@ def commands(project: Path, action: str, args: list[str]) -> list[list[str]]:
         if len(args) != 3 or not LOGIN_REQUEST.fullmatch(args[2]):
             raise HelperError("usage: login <service> <database> users|<user id>")
         return [_script(service(project, args[0]), "login", _database(args[1]), args[2])]
+    if action == "setup":
+        # setup <odoo service> <database>: the values on the helper's input
+        if len(args) != 2:
+            raise HelperError("usage: setup <service> <database> (the values, JSON, on the input)")
+        return [_script(service(project, args[0]), "setup", _database(args[1]))]
     if action == "psql":
         # psql <database service> <database>: on a terminal, the web shell's
         if len(args) != 2:
@@ -474,6 +493,32 @@ def link_filestore(project: Path, args: list[str], uid: int, groups: list[int]) 
     return 0
 
 
+def setup_input(raw: bytes) -> bytes:
+    """What odoo shell reads for setup: the values checked (a password of
+    PASSWORD_LENGTH characters, a country code as CH) as a Python literal,
+    then the script."""
+    try:
+        data = json.loads(raw or b"{}")
+    except ValueError:
+        raise HelperError("setup: the input is no JSON") from None
+    if not isinstance(data, dict) or set(data) - {"password", "country"}:
+        raise HelperError("setup: the input takes password and country only")
+    clean = {}
+    password = data.get("password")
+    if password is not None:
+        if not isinstance(password, str) or not PASSWORD_LENGTH[0] <= len(password) <= PASSWORD_LENGTH[1] \
+                or any(ord(c) < 32 for c in password):
+            raise HelperError(f"setup: a password is {PASSWORD_LENGTH[0]} to {PASSWORD_LENGTH[1]} characters, "
+                              "no control character")
+        clean["password"] = password
+    country = data.get("country")
+    if country:
+        if not isinstance(country, str) or not COUNTRY.fullmatch(country):
+            raise HelperError(f"setup: {country!r} is not a country code, as CH")
+        clean["country"] = country
+    return f"OMNIACLI_SETUP = {clean!r}\n".encode() + SETUP_SCRIPT.read_bytes()
+
+
 def run(argv: list[str]) -> int:
     """compose-helper <project> <action> [arguments]: the exit code of the action."""
     if len(argv) < 2:
@@ -490,6 +535,8 @@ def run(argv: list[str]) -> int:
     # login: the script on the input of odoo shell, the helper's own file;
     # the other actions keep the caller's input (load reads its zip there)
     extra = {"input": LOGIN_SCRIPT.read_bytes()} if action == "login" else {}
+    if action == "setup":
+        extra = {"input": setup_input(sys.stdin.buffer.read(65536))}
     for cmd in commands(project, action, args):
         code = subprocess.run(compose(project, *cmd), env=ENV, cwd=project, **extra).returncode
         if code:

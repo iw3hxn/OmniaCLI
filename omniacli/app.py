@@ -11,6 +11,7 @@ import datetime
 import functools
 import importlib.metadata
 import importlib.util
+import ipaddress
 import json
 import logging
 import os
@@ -273,6 +274,23 @@ def _version() -> str:
         return importlib.metadata.version("omniacli")
     except importlib.metadata.PackageNotFoundError:
         return "unknown"
+
+
+def public_address() -> str | None:
+    """The IPv4 address this machine goes out with, when it is a public one:
+    the value of the DNS A record of a new instance's domain (the New
+    instance dialog says it). A UDP connect sends nothing; behind NAT (a
+    private address) there is none to say."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("192.0.2.1", 9))
+            address = sock.getsockname()[0]
+    except OSError:
+        return None
+    try:
+        return address if ipaddress.ip_address(address).is_global else None
+    except ValueError:
+        return None
 
 
 def _same_origin(request: Request) -> bool:
@@ -2550,13 +2568,13 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
              else int(ws.limits["instances"]) - len([n for n in ws.servers if n in settings.servers])},
         )
 
-    async def make_instance(job, ws: Workspace, instance: str, template, values: dict):
+    async def make_instance(job, ws: Workspace, instance: str, template, values: dict, setup: dict | None = None):
         """The job of a new instance of ws (its server already in ws.servers):
         made, written in the servers file, its names published; its server
         out of ws again when it fails."""
         name = workspaceops.server_name(ws, instance)
         try:
-            data = await workspaceops.create_instance(job, ws, instance, template, values)
+            data = await workspaceops.create_instance(job, ws, instance, template, values, setup)
             parsed = parse_servers({name: {**data, "status": "active"}}, settings.logs_dir)[name]
             async with config_lock:
                 error = await store({**settings.servers, name: parsed})
@@ -2575,6 +2593,19 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             except JobFailed as exc:
                 job.log(f"The instance runs, its names are not published: {exc}")
         return parsed
+
+    def admin_setup(setup):
+        """The admin's password and the company's country of a new database
+        ({password, country}, both optional) checked: the values to keep, or
+        the refusal."""
+        if not isinstance(setup, dict) or set(setup) - {"password", "country"}:
+            return refuse("setup takes password and country only")
+        password, country = str(setup.get("password") or ""), str(setup.get("country") or "").upper()
+        if password and (not 8 <= len(password) <= 128 or any(ord(c) < 32 for c in password)):
+            return refuse("The admin's password is 8 to 128 characters")
+        if country and not re.fullmatch(r"[A-Z]{2}", country):
+            return refuse(f"{country!r} is not a country code, as CH")
+        return {k: v for k, v in (("password", password), ("country", country)) if v}
 
     @app.post("/api/workspaces/{workspace}/instances/create", dependencies=[Depends(admin)])
     async def instance_create(workspace: str, payload: dict = Body(...), me: Principal = Depends(current_user)):
@@ -2596,6 +2627,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             values = template.values({str(k): str(v) for k, v in (payload.get("values") or {}).items()})
         except stacktemplates.TemplateError as exc:
             return refuse(str(exc))
+        setup = admin_setup(payload.get("setup") or {})
+        if not isinstance(setup, dict):
+            return setup
         if not ws.storage or not ws.limits.get("disk_gb"):
             return refuse(f"Workspace {ws.name} has no storage or no disk limit: the machine's admins set them")
         if settings.storage_problem(ws):
@@ -2614,7 +2648,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 return refused
 
         async def action(job):
-            await make_instance(job, ws, instance, template, values)
+            await make_instance(job, ws, instance, template, values, setup or None)
 
         job = jobs.submit(f"Create {name} from {template.name}", [f"{name}/production", f"{name}/test"],
                           f"manual: {me}", action, workspace=ws.name)
@@ -2631,7 +2665,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         found = await asyncio.to_thread(workspaceops.templates)
         majors = sorted((int(n.split("-", 1)[1]) for n in found if re.fullmatch(r"odoo-\d+", n)), reverse=True)
         return {"versions": [{"major": m, "label": found[f"odoo-{m}"].label} for m in majors],
-                "storage": bool(settings.storage_roots)}
+                "storage": bool(settings.storage_roots), "address": await asyncio.to_thread(public_address)}
 
     @app.post("/api/instances/new", dependencies=[Depends(admin)])
     async def quick_instance(payload: dict = Body(...), me: Principal = Depends(current_user)):
@@ -2656,6 +2690,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         while name in settings.workspaces:
             name, number = f"{base[:29]}-{number}", number + 1
         domain = str(payload.get("domain") or "").strip().lower().rstrip(".")
+        setup = admin_setup({"password": payload.get("password"), "country": payload.get("country")})
+        if not isinstance(setup, dict):
+            return setup
         storage = next(iter(settings.storage_roots))
         try:
             room = workspaceops.room(await workspaceops.space(), settings.workspaces, storage, None)
@@ -2678,7 +2715,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 return refused
         language = str(payload.get("language") or "")
         made = await instance_create(name, {"instance": QUICK_INSTANCE, "template": template,
-                                            "values": {"INIT_LANG": language} if language else {}}, me)
+                                            "values": {"INIT_LANG": language} if language else {},
+                                            "setup": setup}, me)
         if not isinstance(made, dict):
             async with workspaces_lock:
                 await store_workspaces({n: ws for n, ws in settings.workspaces.items() if n != name})

@@ -477,7 +477,7 @@ async def test_create_and_remove_an_instance(workspaces, client, env, monkeypatc
     monkeypatch.setattr(workspaceops, "templates", lambda: {template.name: template})
     asked = []
 
-    async def create_instance(job, ws, instance, tpl, values):
+    async def create_instance(job, ws, instance, tpl, values, setup=None):
         asked.append((ws.name, instance, tpl.name, values))
         if instance == "broken":
             raise JobFailed("the helper failed")
@@ -622,8 +622,11 @@ async def test_a_new_odoo_by_its_version_only(workspaces, client, env, monkeypat
     monkeypatch.setattr(workspaceops, "templates", lambda: found)
     asked = []
 
-    async def create_instance(job, ws, instance, tpl, values):
+    setups = []
+
+    async def create_instance(job, ws, instance, tpl, values, setup=None):
         asked.append((ws.name, ws.limits, instance, tpl.name, values))
+        setups.append(setup)
         return {"type": "docker", **{role: {
             "database": instance, "odoo_service": "odoo", "db_service": "db", "http_port": port,
             "update_modules": True, "restart": {"type": "compose", "service": str(tmp_path / role), "sudo": True},
@@ -653,11 +656,21 @@ async def test_a_new_odoo_by_its_version_only(workspaces, client, env, monkeypat
     assert job["status"] == "success", job["lines"]
     assert asked[-1] == ("odoo19", {"disk_gb": 200}, "odoo", "odoo-19",
                          {"IMAGE": "odoo:19.0", "INIT_MODULES": "base", "INIT_LANG": "it_IT"})
+    # no password given: the database keeps admin/admin, as before
+    assert setups[-1] is None
     ws = settings.workspaces["odoo19"]
     assert (ws.domain, ws.main, ws.storage, ws.servers) == ("odoo.inaria.example", "odoo", "main", ["odoo19-odoo"])
     # the same version again: a name of its own
     resp = await client.post("/api/instances/new", headers=POST, json={"version": "19"})
     assert resp.json()["workspace"] == "odoo19-2"
+    # the admin's password made in the form and the country, to the setup of its database
+    resp = await client.post("/api/instances/new", headers=POST,
+                             json={"version": "19", "password": "s3cret-Pass#1", "country": "ch"})
+    assert (await wait_job(client, resp.json()["job"]))["status"] == "success"
+    assert setups[-1] == {"password": "s3cret-Pass#1", "country": "CH"}
+    for bad, said in (({"password": "short"}, "8 to 128"), ({"country": "Svizzera"}, "not a country code")):
+        resp = await client.post("/api/instances/new", headers=POST, json={"version": "19", **bad})
+        assert resp.status_code == 400 and said in resp.json()["error"]
     # a name given and taken: refused, nothing made
     resp = await client.post("/api/instances/new", headers=POST, json={"version": "18", "name": "odoo19"})
     assert resp.status_code == 400 and "already exists" in resp.json()["error"]
@@ -692,7 +705,7 @@ async def test_a_dated_staging_beside_a_production(workspaces, client, env, monk
     (tmp_path / "acme" / "odoo" / "instance.json").write_text(json.dumps({"template": "odoo-19"}))
     ports = iter(range(20000, 20100, 2))
 
-    async def create_instance(job, w, instance, tpl, values):
+    async def create_instance(job, w, instance, tpl, values, setup=None):
         port = next(ports)
         return {"type": "docker", **{role: {
             "database": instance.replace("-", "_"), "odoo_service": "odoo", "db_service": "db", "http_port": port + i,
