@@ -314,13 +314,13 @@ async def describe(item: Started, known: list[Instance]) -> Discovered:
     if args.get("addons_path"):
         # the command line's addons_path wins over the config's
         repositories = await odooconf.addons_repositories(args["addons_path"], notes)
-    if odoo_bin is None or not odoo_bin.is_file():
+    if odoo_bin is None or not _is_file(odoo_bin):
         if odoo_bin is not None:
             notes.append(f"{odoo_bin} not found")
         odoo_bin = locate_odoo_bin(None, [Path(r["path"]) for r in repositories])
         if odoo_bin is None:
             notes.append(f"{script}: relative and in no repository of the addons_path: set odoo-bin by hand")
-    if odoo_bin is not None and odoo_bin.is_file():
+    if odoo_bin is not None and _is_file(odoo_bin):
         major = odoo_major(odoo_bin)
         facts.append(("odoo-bin", f"{odoo_bin}" + (f" (Odoo {major})" if major else
                                                     " (no odoo/release.py found: version unknown)")))
@@ -342,10 +342,10 @@ async def describe(item: Started, known: list[Instance]) -> Discovered:
     if python and os.path.isabs(python):
         venv_bin = Path(python).parent
         adopted = adopted_venv(venv_bin)
-        if (adopted / "bin" / "python").is_file():
+        if _is_file(adopted / "bin" / "python"):
             # the venv Add a server made for it (adopt.py): click-odoo there
             venv_bin = adopted / "bin"
-        elif not (venv_bin.parent / "pyvenv.cfg").is_file():
+        elif not _is_file(venv_bin.parent / "pyvenv.cfg"):
             # the system python (Odoo's Debian package): a venv of OmniaCLI's
             # own that sees its packages takes click-odoo, the system's untouched
             notes.append(f"{python} is not in a venv: click-odoo-contrib must be installed for it, or in a "
@@ -363,6 +363,12 @@ async def describe(item: Started, known: list[Instance]) -> Discovered:
         if len(names) != 1:
             notes.append(f"-d {args['database']}: choose the database")
     log_file = args.get("logfile") or found["log_file"]
+    if log_file and not os.path.isabs(log_file):
+        # --logfile logs/odoo.log: Odoo opens it from its working directory
+        if item.cwd:
+            log_file = os.path.join(item.cwd, log_file)
+        else:
+            notes.append(f"logfile {log_file}: relative, and its working directory cannot be read")
     if not log_file:
         notes.append("no logfile: Odoo logs to its standard output (the journal of its unit): "
                      "OmniaCLI needs a log file, set logfile in the Odoo config")
@@ -384,7 +390,7 @@ async def describe(item: Started, known: list[Instance]) -> Discovered:
     instance = {"database": database or "", "odoo_config": config or "",
                 "venv_bin": str(venv_bin) if venv_bin else "", "update_modules": True,
                 "restart": restart, "repositories": repositories}
-    if odoo_bin is not None and odoo_bin.is_file() and not any(
+    if odoo_bin is not None and _is_file(odoo_bin) and not any(
             (Path(r["path"]) / "odoo-bin") == odoo_bin for r in repositories):
         instance["odoo_bin"] = str(odoo_bin)
     if restart["type"] != "process":
@@ -412,6 +418,13 @@ async def describe(item: Started, known: list[Instance]) -> Discovered:
     return Discovered(key=real or label, label=label, name=_name(database or item.unit or "odoo"),
                       instance=instance, facts=facts, notes=notes, known=known_as,
                       skip=None if args["command"] == "server" else f"odoo-bin {args['command']}")
+
+
+def _is_file(path: Path) -> bool:
+    """A file there: False also where OmniaCLI's user may not look (a
+    closed venv, an instance folder of mode 700), which Path.is_file
+    raises."""
+    return os.path.isfile(path)
 
 
 async def discover(known: list[Instance], proc: Path = PROC) -> list[Discovered]:

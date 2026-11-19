@@ -231,7 +231,8 @@ def odoo_root(odoo_bin: Path) -> Path:
     /usr/lib/python3/dist-packages; a pip install's odoo in the venv's
     lib/python3.X/site-packages). odoo-bin's folder when none has one."""
     here = odoo_bin.parent
-    if (here / "odoo" / "release.py").is_file():
+    # os.path.isfile: False where the user may not look, which Path.is_file raises
+    if os.path.isfile(here / "odoo" / "release.py"):
         return here
     python = _shebang_python(odoo_bin)
     if python is not None:
@@ -242,7 +243,7 @@ def odoo_root(odoo_bin: Path) -> Path:
         if prefix == Path("/usr"):
             candidates += sorted(Path("/usr/local/lib").glob("python3*/dist-packages"), reverse=True)
         for folder in candidates:
-            if (folder / "odoo" / "release.py").is_file():
+            if os.path.isfile(folder / "odoo" / "release.py"):
                 return folder
     return here
 
@@ -293,7 +294,7 @@ def locate_odoo_bin(odoo_bin: Path | None, folders: list[Path]) -> Path | None:
     if odoo_bin is not None:
         return odoo_bin
     for folder in folders:
-        if (folder / "odoo-bin").is_file():
+        if os.path.isfile(folder / "odoo-bin"):
             return folder / "odoo-bin"
     return None
 

@@ -3554,12 +3554,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             raise JobFailed(f"Discover there: {describe_error(exc) if isinstance(exc, httpx.HTTPError) else exc}")
         found = data.get("found") or []
         for item in found:
-            if item.get("skip") or item.get("known"):
+            if item.get("error"):
+                job.log(f"Discover there ({item.get('type', '?')}): {item['error']}")
+            elif item.get("skip") or item.get("known"):
                 job.log(f"{item.get('label', '?')}: left out ({item.get('skip') or 'already there as ' + item['known']})")
         items = machines.instances_to_add(found, set(data.get("names") or []))
         if not items:
-            job.log("no Odoo to add there: its instances can be added by hand (Configure › Servers › Discover)")
-            return
+            # the machine was added for its Odoo: none is a failure, said so
+            raise JobFailed("linked, but no Odoo instance was added there: the lines above say why")
         try:
             resp = await client.post("/api/servers/discover", json={"items": items}, headers=headers, timeout=60)
             saved = resp.json()

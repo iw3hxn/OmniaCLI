@@ -284,3 +284,26 @@ async def test_discover_takes_the_venv_add_a_server_made(machine, monkeypatch):
     prod = next(d for d in await discover.discover([], machine["proc"]) if d.label.startswith("process 100"))
     assert prod.instance["venv_bin"] == str(adopted / "bin")
     assert not any("--system-site-packages" in n for n in prod.notes)
+
+
+async def test_discover_relative_logfile_and_closed_folders(machine):
+    """A hosting panel's Odoo: --logfile relative to its working directory,
+    its venv closed to OmniaCLI's user (the check answers no, it does not fail)."""
+    (machine["tmp"] / "logs").mkdir()
+    proc = fake_proc(machine["tmp"] / "proc2", {
+        100: (1, [f"{machine['venv']}/bin/python", f"{machine['odoo']}/odoo-bin", "-c", str(machine["conf"]),
+                  "--logfile", "logs/odoo-server.log"], "0::/system.slice/odoo-prod.service\n"),
+    })
+    (proc / "100" / "cwd").symlink_to(machine["tmp"])
+    prod = next(d for d in await discover.discover([], proc) if d.label.startswith("process 100"))
+    assert prod.instance["log_file"] == str(machine["tmp"] / "logs" / "odoo-server.log")
+    closed = machine["venv"]
+    closed.chmod(0o000)
+    try:
+        if os.access(closed, os.R_OK):
+            pytest.skip("running as root: every folder can be entered")
+        found = await discover.discover([], proc)
+        assert all(not getattr(d, "error", None) for d in found)
+        assert any("not in a venv" in n for d in found for n in d.notes)
+    finally:
+        closed.chmod(0o755)
