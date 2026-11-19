@@ -1,7 +1,7 @@
 # Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Add a machine (README, Machines): a clean Ubuntu or Debian server given by
-its address and an SSH user, prepared from here as Cloudpepper does, then
+its address and an SSH user, prepared from here as a hosting panel does, then
 linked to this OmniaCLI.
 
 1. The admin puts OmniaCLI's provisioning key (sshlinks.PROVISION_KEY_NAME,
@@ -59,7 +59,7 @@ JOB_TITLE = re.compile(r"Add machine (\S+) \((.+)\)")
 STEPS = ("prepare ", "the system", "updates", "nginx, certbot and Docker", "OmniaCLI", "the link back",
          "the link's token", "the Odoo instances", "the firewall", "the link ", "the instances in OmniaCLI")
 # what the machine has: clean (a new one: everything installed, workspaces,
-# firewall) or existing (it already runs Odoo, a Cloudpepper server: only
+# firewall) or existing (it already runs Odoo, a hosting panel's server: only
 # OmniaCLI and the link added, its Odoo made ready by adopt.py, then found
 # by Discover and activated through the link)
 KINDS = ("clean", "existing")

@@ -39,7 +39,7 @@ def test_the_form_is_checked():
     assert machines.Machine.parse({**FORM, "firewall": False}, "Not A Name!").here == "omniacli"
     assert machines.Machine.parse(FORM, "c").kind == "clean"
     with pytest.raises(machines.MachineError, match="clean or existing"):
-        machines.Machine.parse({**FORM, "kind": "cloudpepper"}, "c")
+        machines.Machine.parse({**FORM, "kind": "panel"}, "c")
     assert machines.here_name("Omnia-Server.example.com") == "omnia-server"
     # only the address: the name from it, port 22, root, the host key read later
     bare = machines.Machine.parse({"host": "ERP.acme.it"}, "central")

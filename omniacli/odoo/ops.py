@@ -227,7 +227,7 @@ def adopted_venv(venv_bin: Path, base: Path | None = None) -> Path:
 def odoo_root(odoo_bin: Path) -> Path:
     """The folder holding the odoo package: odoo-bin's own in a checkout, the
     python's site-packages for Odoo installed as a package (the Debian
-    package's /usr/bin/odoo, Cloudpepper's servers: its odoo is in
+    package's /usr/bin/odoo, hosting panels' servers: its odoo is in
     /usr/lib/python3/dist-packages; a pip install's odoo in the venv's
     lib/python3.X/site-packages). odoo-bin's folder when none has one."""
     here = odoo_bin.parent

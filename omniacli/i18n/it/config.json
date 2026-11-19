@@ -90,7 +90,7 @@
  "Firewall": "Firewall",
  "Firewall and security updates": "Firewall e aggiornamenti di sicurezza",
  "For every repository of the server, its pull, fetch, merge and push, also a working copy found here with an ssh remote (reached over https, its configuration untouched).": "Per ogni repository del server, nel pull, fetch, merge e push, anche una copia di lavoro trovata qui con un remote ssh (raggiunta in https, senza toccarne la configurazione).",
- "For example a Cloudpepper server: OmniaCLI joins it, finds its instances and operates them, the rest stays as it is.": "Per esempio un server di Cloudpepper: OmniaCLI si affianca, trova le sue istanze e le gestisce, il resto resta com'è.",
+ "For example a hosting panel's server: OmniaCLI joins it, finds its instances and operates them, the rest stays as it is.": "Per esempio il server di un pannello di hosting: OmniaCLI si affianca, trova le sue istanze e le gestisce, il resto resta com'è.",
  "General": "Generale",
  "Gevent port": "Porta gevent",
  "Git credentials": "Credenziali git",

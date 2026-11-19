@@ -1137,7 +1137,7 @@ def web_names(domain: str, instances, main: str = "", subdomains: dict[str, str]
     <domain> and test.<domain>; every instance <instance>.<domain> and
     <instance>.test.<domain>; a subdomain <sub>.<domain> and <sub>.test.<domain>.
     A staging of an instance there answers on stg-<date>.<its first name>,
-    as Cloudpepper's. roles: {instance: the roles it has}, both by default
+    as a hosting panel's. roles: {instance: the roles it has}, both by default
     (an instance with its production only has no test names)."""
     found, first = [], {}
     instances = list(instances)

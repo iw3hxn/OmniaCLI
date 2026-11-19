@@ -32,7 +32,7 @@ def test_web_names():
 
 
 def test_web_names_of_a_staging_and_of_a_production_alone():
-    # a staging answers under its production's name, as Cloudpepper's
+    # a staging answers under its production's name, as a hosting panel's
     sites = web_names("inaria.media", ["odoo", "odoo-stg-20261117", "odoo-stg-20261117-2"])
     assert [(s["instance"], s["role"], s["names"]) for s in sites] == [
         ("odoo", "production", ["odoo.inaria.media"]),

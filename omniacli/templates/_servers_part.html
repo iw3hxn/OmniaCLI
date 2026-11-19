@@ -2,7 +2,7 @@
 {% from "_list.html" import grouped, item with context %}
 {# The instances of the server's page (docs/ux/REVIEW-2026-11-18.md, mockup 2):
    each production at its address, its test and its stagings right under it
-   as Cloudpepper's ↳ children; a row opens its page, no buttons in the rows.
+   as a hosting panel's ↳ children; a row opens its page, no buttons in the rows.
    Rendered with the page and again by /dashboard/servers when a job starts or ends. #}
 {% from "_icons.html" import runner %}
 {% macro host(url, name) %}{% if url and "://localhost" not in url and "://127.0.0.1" not in url %}{{ url.split("://", 1)[-1] }}{% else %}{{ name }}{% endif %}{% endmacro %}

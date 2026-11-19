@@ -1681,7 +1681,7 @@ the new public key on every instance; a stolen one, the same at once.
 ## Machines
 
 **Configure › Machines** (`/machines`, the machine's admins) prepares a
-new server from here, as Cloudpepper does: a clean Ubuntu 22.04 or 24.04
+new server from here, as a hosting panel does: a clean Ubuntu 22.04 or 24.04
 or Debian 11, 12 or 13 (amd64 or arm64), given by its address and an SSH user, ends
 linked to this OmniaCLI with its workspaces ready, in about 10 to 20
 minutes.

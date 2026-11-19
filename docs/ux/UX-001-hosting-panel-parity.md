@@ -1,11 +1,11 @@
-# UX-001 … UX-005 — OmniaCLI alla pari con Cloudpepper
+# UX-001 … UX-005 — OmniaCLI alla pari con un pannello di hosting
 
 Stato: contratto di design, prima della build. Implementa: chi scrive i template (`omniacli/templates/`),
 stringhe in `omniacli/i18n/it/*.json`. Modello dati invariato (ROLES = production/test, stagings.json).
 Origine: tre obiezioni di Carlo sulla stessa forma («siamo all'età della pietra», «nei pulsanti manca
 tutta l'usabilità», «e se avessi una produzione e più stage?»): non si mette una quarta toppa, si cambia
 la forma degli schermi.
-Riferimento: Cloudpepper, pagina server (screenshot 2026-11-17 21-43-36).
+Riferimento: il pannello di hosting, pagina server (screenshot 2026-11-17 21-43-36).
 
 ## 0. Il concetto sullo schermo: una produzione e le sue copie
 
@@ -27,7 +27,7 @@ Le copie sono di due tipi, nello stesso elenco e con la stessa riga:
    riga d'avviso, «Il test di questa staging è acceso e consuma risorse.», con il pulsante **Ferma**.
 
 Nell'elenco delle istanze della macchina (UX-002) le righe figlie sono **solo le staging**, come su
-Cloudpepper. Test esiste per ogni istanza: ripeterlo come riga figlia raddoppierebbe l'elenco senza dire
+il pannello di riferimento. Test esiste per ogni istanza: ripeterlo come riga figlia raddoppierebbe l'elenco senza dire
 niente di nuovo (Hick). Test si raggiunge dalla pagina dell'istanza.
 
 ## Regole comuni (valgono per tutti gli schermi)
@@ -91,7 +91,7 @@ niente di nuovo (Hick). Test si raggiunge dalla pagina dell'istanza.
      «N core». A destra, solo per admin, il **primario «+ Nuova istanza»**.
   2. **Tab** (al massimo 4): **Panoramica** · Job · Workspace (admin) · Dischi (admin).
   3. **Tre card numeriche**: Istanze Odoo (N); In esecuzione (n di N, rossa se n < N); Disco usato (%).
-  4. **Barre di risorse** come Cloudpepper: CPU, Disco, Rete (Memoria se il campionatore la misura).
+  4. **Barre di risorse** come il pannello di riferimento: CPU, Disco, Rete (Memoria se il campionatore la misura).
      Sotto, «aggiornato alle hh:mm:ss». I grafici della macchina dietro «Dettagli ▸», chiuso.
   5. **Tabella «Istanze Odoo»**, ordinata per nome:
 
@@ -271,6 +271,6 @@ Fuori da questo contratto: la barra laterale da 13 voci, da raccogliere in «Imp
 
 1. Test nelle copie con il suo badge «Test».
 2. Nessun pulsante Avvia/Ferma/Riavvia nelle righe dell'elenco istanze.
-3. Nomi a schermo come Cloudpepper: «Server» le macchine, «Istanze» i server Odoo (solo etichette e Guida).
+3. Nomi a schermo come il pannello di riferimento: «Server» le macchine, «Istanze» i server Odoo (solo etichette e Guida).
 4. Eliminare una produzione resta nel Workspace; una staging si elimina dalla sua pagina.
 5. Staging di una staging: non offerta (scelta raccomandata, non chiesta).

@@ -112,7 +112,7 @@
 
   {% if can_restart %}
   <div class="head-actions">
-    {# one primary: Start when stopped, else Open Odoo at its address (Cloudpepper's); Update and the rest beside it #}
+    {# one primary: Start when stopped, else Open Odoo at its address (a hosting panel's); Update and the rest beside it #}
     {% if opens and st != "stopped" %}<a class="button primary" href="{{ inst.web_url }}" target="_blank" rel="noopener" title="{{ _('Opens {url} in a new tab', url=inst.web_url) }}">{{ _("Open Odoo") }} ↗</a>{% endif %}
     {% if login_as[inst.key] %}<button type="button" data-login-as='{{ login_as[inst.key] | tojson }}' title="{{ _('Opens Odoo in a new tab as one of its users, without their password.') }}">{{ _("Log in as…") }}</button>{% endif %}
     {% if st == "stopped" %}

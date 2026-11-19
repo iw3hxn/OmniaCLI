@@ -632,7 +632,7 @@ async def test_pull_preview_says_a_missing_copy(env):
 
 
 def test_odoo_installed_as_a_package(tmp_path):
-    # Odoo's Debian package (Cloudpepper's servers): /usr/bin/odoo, a script of
+    # Odoo's Debian package (hosting panels' servers): /usr/bin/odoo, a script of
     # the system python, and the odoo package in its dist-packages
     prefix = tmp_path / "usr"
     (prefix / "bin").mkdir(parents=True)

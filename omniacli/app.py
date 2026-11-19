@@ -900,7 +900,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     def nest_stagings(rows: list[dict]) -> list[dict]:
         """rows with each staging right under its parent, the newest first, as
-        Cloudpepper's ↳ children: "parent" and "created" on every row (empty
+        a hosting panel's ↳ children: "parent" and "created" on every row (empty
         for one that is no staging, or whose parent is not shown)."""
         known = stagings.load(stagings_file)
         names = {row["name"] for row in rows}
@@ -2664,7 +2664,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                           f"manual: {me}", action, workspace=ws.name)
         return {"job": job.id}
 
-    # --- a new Odoo by its version only, as Cloudpepper's Add instance ------
+    # --- a new Odoo by its version only, as a hosting panel's Add instance ------
 
     QUICK_INSTANCE = "odoo"
     QUICK_DISK_GB = (10, 200)

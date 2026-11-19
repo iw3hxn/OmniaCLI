@@ -609,7 +609,7 @@ async def test_workspaceops_create_instance(monkeypatch):
 
 
 async def test_a_new_odoo_by_its_version_only(workspaces, client, env, monkeypatch, tmp_path):
-    """As Cloudpepper's Add instance: the version is enough; its workspace is
+    """As a hosting panel's Add instance: the version is enough; its workspace is
     made on the first storage with a disk the real one allows, its domain's
     production on the domain itself."""
     from pathlib import Path
@@ -686,7 +686,7 @@ async def _space_small():
 
 
 async def test_a_dated_staging_beside_a_production(workspaces, client, env, monkeypatch, tmp_path):
-    """As Cloudpepper's stagings: an instance beside the parent in its
+    """As a hosting panel's stagings: an instance beside the parent in its
     workspace, its production a neutralized copy of the parent's made now,
     its test stopped, recorded with its parent and date; several a day."""
     import datetime

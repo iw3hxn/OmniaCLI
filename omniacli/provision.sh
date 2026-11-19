@@ -11,7 +11,7 @@
 #          <authorized_keys line of the link, base64> <clean|existing>
 #
 # clean: a new machine, as below. existing: a machine that already runs Odoo
-# (a Cloudpepper server, one installed by hand): nothing of it is upgraded,
+# (a hosting panel's server, one installed by hand): nothing of it is upgraded,
 # installed beside it or closed (no nginx, Docker, workspaces nor firewall);
 # OmniaCLI and the link back as below, then its Odoo made ready for
 # OmniaCLI (omniacli/odoo/adopt.py: read access by ACLs, click-odoo, sudoers).

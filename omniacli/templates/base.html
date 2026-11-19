@@ -134,7 +134,7 @@ body { margin: 0; background: var(--bg); color: var(--text);
 @media (max-width: 560px) {
   .lang-switch, .logout { display: none; }
 }
-/* the state of an instance, a dot and a word (Cloudpepper's); the kinds of copies */
+/* the state of an instance, a dot and a word (a hosting panel's); the kinds of copies */
 .state-dot { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; color: var(--text); font-weight: 600; }
 .state-dot::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
 .state-dot.running::before { background: var(--ok); } .state-dot.stopped::before { background: var(--err); }

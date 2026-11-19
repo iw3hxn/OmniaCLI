@@ -1,7 +1,7 @@
 # Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """The Odoo already on a machine, made OmniaCLI's to operate (README,
-Machines, "A server that already has Odoo"): what a Cloudpepper server, or
+Machines, "A server that already has Odoo"): what a hosting panel's server, or
 one installed by hand, needs before Discover and Test & activate pass.
 
 Run as root by provision.sh, once OmniaCLI's package is installed:

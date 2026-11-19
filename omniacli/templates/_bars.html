@@ -1,5 +1,5 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
-{# A machine's load as three bars, as Cloudpepper's server cards: CPU, RAM,
+{# A machine's load as three bars, as a hosting panel's server cards: CPU, RAM,
    disk (docs/ux/REVIEW-2026-11-18.md). Markup: bars(base, long), base "" is
    this machine, "/links/<name>" a linked one; long: the amounts (4.6 / 8 GB)
    besides the percent. Script (include this file once): every element
@@ -53,7 +53,7 @@ const OmniaBars = (function () {
       const resp = await fetch(`${box.dataset.base}/api/disks`);
       if (!resp.ok) return;
       const disks = (await resp.json()).disks || [];
-      // the disk of / (else the biggest): where the instances live, as Cloudpepper's
+      // the disk of / (else the biggest): where the instances live, as a hosting panel's
       const d = disks.find((x) => x.mount === "/") || disks.sort((a, b) => b.total - a.total)[0];
       if (!d) return;
       const pct = d.used / d.total * 100;

@@ -1,6 +1,6 @@
 # Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Stagings, as Cloudpepper's: an instance of a workspace made as a copy of
+"""Stagings, as a hosting panel's: an instance of a workspace made as a copy of
 another one's production (its parent), neutralized, on a date. Several may
 live beside their parent; each is an instance of its own (its server, its
 production with the copy, its test stopped), so everything an instance has
