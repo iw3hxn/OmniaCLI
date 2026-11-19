@@ -546,9 +546,11 @@ apt-get purge -y -qq omniacli >/dev/null 2>&1 || fail "purge"
 echo "ALL CHECKS PASSED"
 EOS
 
-# the Python a local python3.12 is taken from: the package's bundled one
-BUNDLED_URL="$(dpkg-deb --ctrl-tarfile "$DEB" | tar -xO ./postinst | sed -n 's/^BUNDLED_URL=//p')"
-BUNDLED_SHA256="$(dpkg-deb --ctrl-tarfile "$DEB" | tar -xO ./postinst | sed -n 's/^BUNDLED_SHA256=//p')"
+# the Python a local python3.12 is taken from: the package's bundled one, for
+# this machine's CPU (the containers run on it): postinst's own lines, from
+# BUNDLED_BASE to BUNDLED_URL, run here
+eval "$(dpkg-deb --ctrl-tarfile "$DEB" | tar -xO ./postinst | sed -n '/^BUNDLED_BASE=/,/^BUNDLED_URL=/p')"
+[ -n "$BUNDLED_ARCH" ] || { echo "no bundled Python for $(uname -m) in the package" >&2; exit 1; }
 # downloaded once into a cache of this machine, checked against the package's
 # sha256: the images take it from there, never from github.com at each run
 # (debian:11 installs it where the package looks for it, so its postinst
