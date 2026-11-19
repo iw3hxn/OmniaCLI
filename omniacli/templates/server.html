@@ -654,6 +654,7 @@
     if (!ok || !data.job) { alert(data.error || data.detail || ADD.refused); return; }
     location.href = `{{ prefix }}/jobs/${data.job}`;
   }));
+  {% if can_act and odoo_params and inst.type != "odoo" and is_admin_here %}
   document.getElementById("op-save")?.addEventListener("click", async () => {
     const box = document.querySelector('[data-panel="odoo-config"]'), parameters = {};
     for (const input of box.querySelectorAll("[data-param]")) {
@@ -668,6 +669,7 @@
     if (!resp.ok || !data.job) { alert(data.error || data.detail || resp.status); return; }
     location.href = `{{ prefix }}/jobs/${data.job}`;
   });
+  {% endif %}
   document.getElementById("oc-save")?.addEventListener("click", async () => {
     const box = document.querySelector('[data-panel="odoo-config"]');
     const changes = changesOdooConfig(box), count = Object.keys(changes.set).length + changes.unset.length;
