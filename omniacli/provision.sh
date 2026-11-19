@@ -54,7 +54,10 @@ main() {
         ubuntu:22.04|ubuntu:24.04|debian:11|debian:12|debian:13) echo "$PRETTY_NAME" ;;
         *) fail "$PRETTY_NAME is not supported: Ubuntu 22.04 or 24.04, Debian 11, 12 or 13" ;;
     esac
-    [ "$(dpkg --print-architecture)" = amd64 ] || fail "$(dpkg --print-architecture): amd64 only"
+    case "$(dpkg --print-architecture)" in
+        amd64|arm64) ;;
+        *) fail "$(dpkg --print-architecture): amd64 or arm64 only" ;;
+    esac
     if [ "$MODE" = clean ]; then
         # a machine that already serves the web is not a clean one: its sites would meet the workspaces'
         for site in /etc/apache2/sites-enabled/*; do

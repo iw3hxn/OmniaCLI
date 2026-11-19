@@ -31,7 +31,7 @@ script, or an Odoo that OmniaCLI starts itself.
 
 ## Quick start
 
-On Debian 11–13 or Ubuntu 22.04/24.04 (amd64):
+On Debian 11–13 or Ubuntu 22.04/24.04 (amd64 or arm64):
 
 ```bash
 wget https://github.com/OmniaGit/OmniaCLI/releases/latest/download/OmniaCLI.deb
@@ -341,7 +341,7 @@ prepared before Test & activate. The job's log opens in a new tab.
 
 ## Install from the Debian package
 
-Supported: Debian 11, 12, 13 and Ubuntu 22.04, 24.04 (amd64). OmniaCLI needs
+Supported: Debian 11, 12, 13 and Ubuntu 22.04, 24.04 (amd64 or arm64). OmniaCLI needs
 Python 3.10 or newer: the package uses the system `python3` when it is 3.10+,
 otherwise (Debian 11, Python 3.9) a local `python3.10`+ already installed (in
 the `PATH` or `/usr/local/bin`, the newest first), otherwise it downloads a
@@ -1682,7 +1682,7 @@ the new public key on every instance; a stolen one, the same at once.
 
 **Configure › Machines** (`/machines`, the machine's admins) prepares a
 new server from here, as Cloudpepper does: a clean Ubuntu 22.04 or 24.04
-or Debian 11, 12 or 13 (amd64), given by its address and an SSH user, ends
+or Debian 11, 12 or 13 (amd64 or arm64), given by its address and an SSH user, ends
 linked to this OmniaCLI with its workspaces ready, in about 10 to 20
 minutes.
 
@@ -1704,7 +1704,7 @@ minutes.
    answer are said on the form, and no job is made.
 3. A job then prepares it: `omniacli/provision.sh` runs there as
    root, its text and its values on bash's input (never on a command line):
-   - the system checked (supported, amd64, no site of apache), its updates,
+   - the system checked (supported, amd64 or arm64, no site of apache), its updates,
      and the security updates every day (unattended-upgrades);
    - nginx, certbot, Docker and its compose plugin (Debian 12 has none of
      its own: there it says so);

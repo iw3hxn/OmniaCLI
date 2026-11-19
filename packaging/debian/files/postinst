@@ -12,9 +12,17 @@ USER_DROPIN=/etc/systemd/system/omniacli.service.d/omniacli-user.conf
 
 BUNDLED=/opt/omniacli/python
 # The Python for a machine without any python3.10+ (Debian 11 has 3.9): a
-# python-build-standalone build, downloaded once and checked against its sha256
-BUNDLED_URL=https://github.com/astral-sh/python-build-standalone/releases/download/20261020/cpython-3.12.15%2B20261020-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz
-BUNDLED_SHA256=7d6ef1164fb94c4b60d913340610fc7e0ef8e3d1b705aa5628b299b08cbdd4b5
+# python-build-standalone build for the machine's CPU (x86_64 or aarch64),
+# downloaded once and checked against its sha256 (the release's SHA256SUMS)
+BUNDLED_BASE=https://github.com/astral-sh/python-build-standalone/releases/download/20261020
+case "$(uname -m)" in
+    x86_64) BUNDLED_ARCH=x86_64
+            BUNDLED_SHA256=7d6ef1164fb94c4b60d913340610fc7e0ef8e3d1b705aa5628b299b08cbdd4b5 ;;
+    aarch64|arm64) BUNDLED_ARCH=aarch64
+            BUNDLED_SHA256=6d129ebdfa88ef11a78c42bd11426c17fad28a42ae20257c1b242cb7e971a235 ;;
+    *) BUNDLED_ARCH="" BUNDLED_SHA256="" ;;
+esac
+BUNDLED_URL=$BUNDLED_BASE/cpython-3.12.15%2B20261020-$BUNDLED_ARCH-unknown-linux-gnu-install_only_stripped.tar.gz
 
 # Print py<major><minor> of a Python 3.10+ that can build the venv, fail otherwise.
 usable() {
@@ -27,8 +35,8 @@ print("py%d%d" % sys.version_info[:2])' 2>/dev/null
 # previous one is kept in $BUNDLED.old until the venv is built on the new one.
 fetch_bundled() {
     [ "$(cat "$BUNDLED/.sha256" 2>/dev/null)" = "$BUNDLED_SHA256" ] && return 0
-    if [ "$(uname -m)" != x86_64 ]; then
-        echo "omniacli: no python3.10 or newer here, and the bundled Python is for x86_64 only: install python3.10+" >&2
+    if [ -z "$BUNDLED_ARCH" ]; then
+        echo "omniacli: no python3.10 or newer here, and no bundled Python for $(uname -m) (x86_64 and aarch64 only): install python3.10+" >&2
         exit 1
     fi
     echo "omniacli: $(python3 -V 2>&1) and no python3.10+ here: downloading Python 3.12 into $BUNDLED"
