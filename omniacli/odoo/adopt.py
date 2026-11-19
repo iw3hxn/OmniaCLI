@@ -185,7 +185,7 @@ async def adopt(service_user: str) -> int:
             for folder in addons_paths_of(config):
                 if folder.is_dir():
                     given += let_read(service_user, folder, folder=True)
-            for line in given:
+            for line in dict.fromkeys(given):
                 say(f"  read: {line}")
             odoo_bin = locate_odoo_bin(Path(inst["odoo_bin"]) if inst.get("odoo_bin") else None,
                                        [Path(r["path"]) for r in inst.get("repositories") or []])

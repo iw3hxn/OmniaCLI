@@ -243,6 +243,19 @@ async def provision(job: Job, machine: Machine, ssh_folder: Path, link_public_ke
             await run(job, cmd, timeout=PROVISION_TIMEOUT, stdin=script)
 
 
+def left_out(item: dict) -> str:
+    """Why an Odoo Discover found is not an instance to add (empty: it is):
+    one started by hand (an update someone runs, a shell) has no service of
+    its own, one whose config could not be read is not known enough."""
+    instance = item.get("instance") or {}
+    restart = instance.get("restart") or {}
+    if restart.get("type") != "systemd" or not restart.get("service"):
+        return "started by hand, no service of its own"
+    if not instance.get("odoo_config"):
+        return "its Odoo config could not be read"
+    return ""
+
+
 def instances_to_add(found: list[dict], taken: set[str]) -> list[dict]:
     """What Discover found on an existing machine, as the items its OmniaCLI
     saves (POST /api/servers/discover): each Odoo it can add, as the
@@ -254,6 +267,8 @@ def instances_to_add(found: list[dict], taken: set[str]) -> list[dict]:
     items, names = [], set(taken)
     for item in found:
         if item.get("skip") or item.get("known") or item.get("error") or not isinstance(item.get("instance"), dict):
+            continue
+        if left_out(item):
             continue
         base = item.get("name") or "odoo"
         name, number = base, 2

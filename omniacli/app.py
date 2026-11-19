@@ -3600,6 +3600,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 job.log(f"Discover there ({item.get('type', '?')}): {item['error']}")
             elif item.get("skip") or item.get("known"):
                 job.log(f"{item.get('label', '?')}: left out ({item.get('skip') or 'already there as ' + item['known']})")
+            elif machines.left_out(item):
+                job.log(f"{item.get('label', '?')}: left out ({machines.left_out(item)})")
         items = machines.instances_to_add(found, set(data.get("names") or []))
         if not items:
             # the machine was added for its Odoo: none is a failure, said so;

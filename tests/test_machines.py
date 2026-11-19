@@ -217,18 +217,22 @@ def test_the_progress_of_an_add_job():
 
 
 def test_what_discover_found_becomes_productions():
+    unit = {"odoo_config": "/var/odoo/shop/odoo.conf", "restart": {"type": "systemd", "service": "odona-shop.service"}}
     found = [
         {"type": "odoo", "label": "process 1, unit odona-shop", "name": "shop",
-         "instance": {"database": "shop", "repositories": [{"path": "/var/odoo/shop/src"}]},
+         "instance": {"database": "shop", "repositories": [{"path": "/var/odoo/shop/src"}], **unit},
          "facts": [["odoo-bin", "/var/odoo/shop/src/odoo-bin (Odoo 19)"]]},
-        {"type": "odoo", "label": "unit odona-shop-old", "name": "shop", "instance": {"database": "shop"}},
+        {"type": "odoo", "label": "unit odona-shop-old", "name": "shop", "instance": {"database": "shop", **unit}},
         {"type": "odoo", "label": "process 2", "name": "c", "instance": {}, "skip": "in a container"},
         {"type": "odoo", "label": "unit odoo", "name": "erp", "instance": {}, "known": "erp/production"},
         {"type": "generic", "error": "boom"},
+        # an Odoo started by hand in the unit of another (an update someone runs): not an instance
+        {"type": "odoo", "label": "process 9", "name": "shop", "instance": {"restart": {"type": "systemd", "service": ""}}},
     ]
+    assert machines.left_out(found[-1]) == "started by hand, no service of its own"
     items = machines.instances_to_add(found, {"erp"})
     assert [(i["name"], i["role"], i["type"]) for i in items] == [
         ("shop", "production", "odoo"), ("shop-2", "production", "odoo")]
     # the code is the panel's: nothing to pull, odoo-bin as found
-    assert items[0]["instance"] == {"database": "shop", "repositories": [], "odoo_bin": "/var/odoo/shop/src/odoo-bin"}
-    assert items[1]["instance"] == {"database": "shop", "repositories": []}
+    assert items[0]["instance"] == {"database": "shop", "repositories": [], "odoo_bin": "/var/odoo/shop/src/odoo-bin", **unit}
+    assert items[1]["instance"] == {"database": "shop", "repositories": [], **unit}

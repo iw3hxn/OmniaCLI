@@ -100,7 +100,7 @@
   <div>
     <h1>{{ title }}
       {% if view == "test" %}<span class="badge test-badge" title="{{ _('The test copy of this instance: try the code here, then bring it to production') }}">Test</span>
-      {% elif is_staging %}<span class="badge info" title="{{ _('A dated, neutralized copy of a production') }}">{{ _("Staging") }}</span>
+      {% elif is_staging %}<span class="badge info" title="{{ _('A dated, neutralized copy of a production') if stagings.parent.backup else _('A copy of a production, made outside OmniaCLI') }}">{{ _("Staging") }}</span>
       {% else %}<span class="badge ok" title="{{ _('The instance its users work on') }}">{{ _("Production") }}</span>{% endif %}</h1>
     <div class="facts">
       {{ state_word("busy" if is_busy else st, state if rt != "process" else none, rt == "compose") }}
@@ -238,7 +238,12 @@
 
 {% set show_envs = view == "production" and not is_staging and (server.test or (stagings and (stagings.rows or stagings.can))) %}
 {% if is_staging %}
+{# a staging OmniaCLI made has its backup and was neutralized; one a hosting panel made (told by its name) may not be #}
+{% if stagings.parent.backup %}
 <div class="note-box">{{ _("Copy of") }} <a href="{{ prefix }}/servers/{{ parent }}">{{ host_of(stagings.parent.url, parent) }}</a> {{ _("of {date}", date=when(stagings.parent.created)) }}, {{ _("neutralized: no outgoing mail, no scheduled actions.") }}</div>
+{% else %}
+<div class="note-box">{{ _("Staging of") }} <a href="{{ prefix }}/servers/{{ parent }}">{{ host_of(stagings.parent.url, parent) }}</a>{% if stagings.parent.created %} {{ _("of {date}", date=when(stagings.parent.created)) }}{% endif %}, {{ _("made outside OmniaCLI: OmniaCLI does not know whether it is neutralized, check its outgoing mail and scheduled actions.") }}</div>
+{% endif %}
 {% endif %}
 <nav class="tabs" role="tablist" aria-label="{{ _('Sections of the instance') }}">
   <button type="button" role="tab" data-tab="overview" aria-selected="true">{{ _("Environments") if show_envs else _("Overview") }}</button>
