@@ -28,7 +28,7 @@ from pathlib import Path
 
 from ..plugin_api import SERVER_NAME, ConfigError, Discovered, Instance, capture, system_user
 from . import odooconf
-from .ops import locate_odoo_bin, odoo_major
+from .ops import locate_odoo_bin, odoo_major, odoo_root
 
 PROC = Path("/proc")
 # the scripts that start Odoo: odoo-bin from git, odoo of the Debian package,
@@ -323,12 +323,15 @@ async def describe(item: Started, known: list[Instance]) -> Discovered:
     if odoo_bin is not None and odoo_bin.is_file():
         major = odoo_major(odoo_bin)
         facts.append(("odoo-bin", f"{odoo_bin}" + (f" (Odoo {major})" if major else
-                                                    " (no odoo/release.py next to it: version unknown)")))
+                                                    " (no odoo/release.py found: version unknown)")))
         if not any(odoo_bin.parent == Path(r["path"]) for r in repositories):
             # the Odoo repository itself, when the addons_path names only its addons
             repo = await odooconf.repository_of(odoo_bin.parent, notes)
             if repo is not None and not any(r["path"] == repo["path"] for r in repositories):
                 repositories.insert(0, repo)
+            elif repo is None and odoo_root(odoo_bin) != odoo_bin.parent:
+                notes.append(f"Odoo installed as a package ({odoo_root(odoo_bin) / 'odoo'}): "
+                             "its code is updated by the package, not by OmniaCLI")
             elif repo is None:
                 notes.append(f"{odoo_bin} is in no git repository (installed by a package?): "
                              "OmniaCLI updates only what is in git")
@@ -339,7 +342,11 @@ async def describe(item: Started, known: list[Instance]) -> Discovered:
     if python and os.path.isabs(python):
         venv_bin = Path(python).parent
         if not (venv_bin.parent / "pyvenv.cfg").is_file():
-            notes.append(f"{python} is not in a venv: click-odoo-contrib must be installed for it")
+            # the system python (Odoo's Debian package): a venv of OmniaCLI's
+            # own that sees its packages takes click-odoo, the system's untouched
+            notes.append(f"{python} is not in a venv: click-odoo-contrib must be installed for it, or in a "
+                         f"venv that sees its packages: {python} -m venv --system-site-packages <folder>, "
+                         "<folder>/bin/pip install click-odoo-contrib, and <folder>/bin as the venv's bin folder")
     elif at:
         notes.append(f"python {python}: no path, set the venv's bin folder by hand")
     else:

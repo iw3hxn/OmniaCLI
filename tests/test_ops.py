@@ -629,3 +629,31 @@ async def test_pull_preview_says_a_missing_copy(env):
     rows = {r["name"]: r for r in await ops.pull_preview(test)}
     assert rows["addons"]["pending"] is None and "does not exist" in rows["addons"]["error"]
     assert rows["odoo"]["pending"] == 0
+
+
+def test_odoo_installed_as_a_package(tmp_path):
+    # Odoo's Debian package (Cloudpepper's servers): /usr/bin/odoo, a script of
+    # the system python, and the odoo package in its dist-packages
+    prefix = tmp_path / "usr"
+    (prefix / "bin").mkdir(parents=True)
+    script = prefix / "bin" / "odoo"
+    script.write_text(f"#!{prefix}/bin/python3\nimport odoo\nodoo.cli.main()\n")
+    assert odoo_ops.odoo_root(script) == prefix / "bin" and odoo_ops.odoo_major(script) is None
+    package = prefix / "lib" / "python3" / "dist-packages"
+    (package / "odoo").mkdir(parents=True)
+    (package / "odoo" / "release.py").write_text("version_info = (15, 0, 0, FINAL, 0, '')\n")
+    assert odoo_ops.odoo_root(script) == package and odoo_ops.odoo_major(script) == 15
+    # a pip install in a venv: its lib/python3.X/site-packages
+    venv = tmp_path / "venv"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "bin" / "odoo").write_text(f"#!{venv}/bin/python\nimport odoo\n")
+    site = venv / "lib" / "python3.12" / "site-packages"
+    (site / "odoo").mkdir(parents=True)
+    (site / "odoo" / "release.py").write_text("version_info = (18, 0, 0, FINAL, 0, '')\n")
+    assert odoo_ops.odoo_major(venv / "bin" / "odoo") == 18
+    # a checkout's odoo-bin still reads the release.py next to it
+    checkout = tmp_path / "checkout"
+    (checkout / "odoo").mkdir(parents=True)
+    (checkout / "odoo-bin").write_text("#!/usr/bin/env python3\n")
+    (checkout / "odoo" / "release.py").write_text("version_info = (17, 0, 0, FINAL, 0, '')\n")
+    assert odoo_ops.odoo_root(checkout / "odoo-bin") == checkout and odoo_ops.odoo_major(checkout / "odoo-bin") == 17

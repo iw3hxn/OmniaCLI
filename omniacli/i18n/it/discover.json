@@ -1,6 +1,7 @@
 {
  "-c {config}: relative, and its working directory cannot be read": "-c {config}: relativo, e la sua cartella di lavoro non si può leggere",
  "-d {database}: choose the database": "-d {database}: scegli il database",
+ "Odoo installed as a package ({path}): its code is updated by the package, not by OmniaCLI": "Odoo installato come pacchetto ({path}): il suo codice lo aggiorna il pacchetto, non OmniaCLI",
  "Odoo runs as root: run_as root lets OmniaCLI run its venv as root": "Odoo gira come root: run_as root fa eseguire a OmniaCLI il suo venv come root",
  "no -c: Odoo reads {config}": "nessun -c: Odoo legge {config}",
  "no logfile: Odoo logs to its standard output (the journal of its unit): OmniaCLI needs a log file, set logfile in the Odoo config": "nessun logfile: Odoo scrive il log sull'output standard (il journal della sua unità): OmniaCLI ha bisogno di un file di log, imposta logfile nella configurazione di Odoo",
@@ -13,7 +14,7 @@
  "{error}: the user running OmniaCLI ({user}) must read it (e.g. sudo adduser {user} {owner})": "{error}: l'utente che esegue OmniaCLI ({user}) deve poterlo leggere (es. sudo adduser {user} {owner})",
  "{path} is in no git repository (installed by a package?): OmniaCLI updates only what is in git": "{path} non è in nessun repository git (installato da un pacchetto?): OmniaCLI aggiorna solo ciò che è in git",
  "{path} not found": "{path} non trovato",
- "{python} is not in a venv: click-odoo-contrib must be installed for it": "{python} non è in un venv: va installato click-odoo-contrib per lui",
+ "{python} is not in a venv: click-odoo-contrib must be installed for it, or in a venv that sees its packages: {python} -m venv --system-site-packages <folder>, <folder>/bin/pip install click-odoo-contrib, and <folder>/bin as the venv's bin folder": "{python} non è in un venv: va installato click-odoo-contrib per lui, oppure in un venv che vede i suoi pacchetti: {python} -m venv --system-site-packages <cartella>, <cartella>/bin/pip install click-odoo-contrib, e <cartella>/bin come cartella bin del venv",
  "{script} started without a python on the command line: set the venv's bin folder by hand": "{script} avviato senza un python sulla riga di comando: imposta a mano la cartella bin del venv",
  "{script}: relative and in no repository of the addons_path: set odoo-bin by hand": "{script}: relativo e in nessun repository dell'addons_path: imposta odoo-bin a mano",
  "{value} (command line)": "{value} (riga di comando)"

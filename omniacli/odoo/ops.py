@@ -194,10 +194,47 @@ _MANIFESTS = ("__manifest__.py", "__openerp__.py")
 _VERSION_INFO = re.compile(r"^version_info\s*=\s*\(\s*['\"]?(?:saas~)?(\d+)", re.MULTILINE)
 
 
-def odoo_major(odoo_bin: Path) -> int | None:
-    """The major version from odoo/release.py next to odoo-bin."""
+def _shebang_python(script: Path) -> Path | None:
     try:
-        text = (odoo_bin.parent / "odoo" / "release.py").read_text(encoding="utf-8")
+        with script.open("rb") as fh:
+            first = fh.readline(256).decode("utf-8", "replace").strip()
+    except OSError:
+        return None
+    if not first.startswith("#!"):
+        return None
+    words = first[2:].split()
+    if words and Path(words[0]).name == "env" and len(words) > 1:
+        return None  # "#!/usr/bin/env python3": no path to follow
+    return Path(words[0]) if words else None
+
+
+def odoo_root(odoo_bin: Path) -> Path:
+    """The folder holding the odoo package: odoo-bin's own in a checkout, the
+    python's site-packages for Odoo installed as a package (the Debian
+    package's /usr/bin/odoo, Cloudpepper's servers: its odoo is in
+    /usr/lib/python3/dist-packages; a pip install's odoo in the venv's
+    lib/python3.X/site-packages). odoo-bin's folder when none has one."""
+    here = odoo_bin.parent
+    if (here / "odoo" / "release.py").is_file():
+        return here
+    python = _shebang_python(odoo_bin)
+    if python is not None:
+        prefix = python.parent.parent
+        candidates = [prefix / "lib" / "python3" / "dist-packages"]
+        for lib in sorted((prefix / "lib").glob("python3*"), reverse=True):
+            candidates += [lib / "site-packages", lib / "dist-packages"]
+        if prefix == Path("/usr"):
+            candidates += sorted(Path("/usr/local/lib").glob("python3*/dist-packages"), reverse=True)
+        for folder in candidates:
+            if (folder / "odoo" / "release.py").is_file():
+                return folder
+    return here
+
+
+def odoo_major(odoo_bin: Path) -> int | None:
+    """The major version from the odoo/release.py of odoo-bin (odoo_root)."""
+    try:
+        text = (odoo_root(odoo_bin) / "odoo" / "release.py").read_text(encoding="utf-8")
     except OSError:
         return None
     match = _VERSION_INFO.search(text)
@@ -222,7 +259,7 @@ def odoo_env(instance: Instance) -> dict:
     odoo_bin = find_odoo_bin(instance)
     if odoo_bin is None or not odoo_bin.is_file():
         return base_env()
-    return {**base_env(), "PYTHONPATH": str(odoo_bin.parent)}
+    return {**base_env(), "PYTHONPATH": str(odoo_root(odoo_bin))}
 
 
 def psql_path() -> str:
@@ -256,7 +293,8 @@ def addons_paths(instance: Instance) -> list[Path]:
     paths = [Path(p.strip()) for p in raw.replace("\n", ",").split(",") if p.strip()]
     odoo_bin = find_odoo_bin(instance)
     if odoo_bin is not None:
-        paths += [odoo_bin.parent / "addons", odoo_bin.parent / "odoo" / "addons"]
+        root = odoo_root(odoo_bin)
+        paths += [root / "addons", root / "odoo" / "addons"]
     if not raw:
         # no readable addons_path: the repositories and their first level
         for repo in instance.repositories:
