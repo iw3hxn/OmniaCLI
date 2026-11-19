@@ -13,7 +13,7 @@
   <div>
     <h1>{{ name }} {{ instance.key }}</h1>
     {% if kind == "terminal" %}
-    <p>{{ _("A login shell in the Odoo container of the instance, as its user odoo, in /mnt/customer-addons (its repositories of addons). odoo shell -d <database> opens Odoo's own; what is written outside /var/lib/odoo goes when the container is made again.") }} {{ _("it ends when this page closes.") }}</p>
+    <p>{{ _("A login shell in the Odoo container of the instance, as its user odoo, in /mnt/customer-addons (its repositories of addons). odoo shell -d <database> opens Odoo's own; what is written outside /var/lib/odoo goes when the container is made again. It ends when this page closes.") }}</p>
     {% else %}
     <p><span class="mono">{{ system_user }}@{{ folder or "~" }}</span> · {{ _("A login shell ({shell}) of the user running OmniaCLI, on this server", shell=shell) }}{% if command and stay %}, {{ _("that runs") }} <span class="mono">{{ command }}</span> {{ _("first and stays open after it") }}{% elif command %}, {{ _("that runs") }} <span class="mono">{{ command }}</span> {{ _("on the instance's database with the connection settings of its configuration, and ends with it") }}{% endif %}: {{ _("it ends when this page closes.") }}</p>
     {% endif %}
