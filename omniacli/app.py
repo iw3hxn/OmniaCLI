@@ -3823,6 +3823,13 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         command, env = found
         return command, env, False
 
+    def terminal_run(instance: Instance):
+        # a shell in the instance's Odoo container (the docker plugin's); the page ends with it
+        found = getattr(instance.plugin, "container_shell", None)
+        if found is None:
+            return f"{instance.key} runs in no container"
+        return found(instance), {}, False
+
     # the shells of an instance: kind -> (where it starts, what it runs:
     # (command first, its environment, the shell stays after it), or why
     # the instance has none of that kind)
@@ -3830,6 +3837,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         "shell": (shell_folder, lambda instance: (None, {}, True)),
         "claude": (lambda instance: instance.claude_dir, claude_run),
         "psql": (shell_folder, psql_run),
+        "terminal": (lambda instance: None, terminal_run),
     }
 
     def shell_refused(instance: Instance, kind: str) -> str | None:
@@ -3838,6 +3846,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if settings.machine == MACHINE_DEVELOPMENT:
             return None
         if kind == "psql" and not instance.plugin.db_shell_as_service(instance):
+            return None
+        if kind == "terminal":
+            # in the container, as its own user: never OmniaCLI's
             return None
         return f"This machine is a server: no {kind} as OmniaCLI's own user"
 

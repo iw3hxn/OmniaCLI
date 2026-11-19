@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 import stat
 
+import subprocess
+
 import pytest
 
 from omniacli import checks, composehelper, ops, plugins
@@ -555,3 +557,23 @@ def test_the_requirements_of_a_repository(tmp_path, monkeypatch):
     for bad in (["odoo", "../etc"], ["odoo", "a;b"], ["odoo"], ["web", "x"]):
         with pytest.raises(composehelper.HelperError):
             composehelper.commands(tmp_path, "pip-requirements", bad)
+
+
+
+def test_the_terminal_of_a_service(tmp_path, monkeypatch):
+    """A login shell in the Odoo container, on the caller's terminal (no -T),
+    as the image's user: an image running as root is refused."""
+    monkeypatch.setattr(composehelper, "services", lambda project: ["odoo", "db"])
+    answers = {"uid": "100\n"}
+
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, answers["uid"], "")
+    monkeypatch.setattr(composehelper.subprocess, "run", fake_run)
+    [cmd] = composehelper.commands(tmp_path, "terminal", ["odoo"])
+    assert cmd[:4] == ["exec", "odoo", "sh", "-c"] and "-T" not in cmd and "exec bash -l" in cmd[4]
+    answers["uid"] = "0\n"
+    with pytest.raises(composehelper.HelperError, match="runs as root"):
+        composehelper.commands(tmp_path, "terminal", ["odoo"])
+    for bad in ([], ["odoo", "x"], ["web"]):
+        with pytest.raises(composehelper.HelperError):
+            composehelper.commands(tmp_path, "terminal", bad)

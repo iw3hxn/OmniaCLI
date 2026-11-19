@@ -379,6 +379,11 @@ class DockerPlugin(ServicePlugin):
         opts = instance.options
         return shlex.join(instance.restart.command("psql", opts.db_service, opts.database)), {}
 
+    def container_shell(self, instance: Instance) -> str:
+        """The Terminal console: a shell in the running Odoo container, as its
+        user (odoo), through the helper."""
+        return shlex.join(instance.restart.command("terminal", instance.options.odoo_service))
+
     def db_shell_as_service(self, instance: Instance) -> bool:
         # through the helper, as postgres in the database's container
         return False

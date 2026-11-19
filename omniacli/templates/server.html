@@ -144,7 +144,8 @@
 
     {# the rare ones: More #}
     {% set show_psql = can_act and not scoped and inst.plugin.db_shell(inst) and (own_user_shells or not inst.plugin.db_shell_as_service(inst)) %}
-    {% set shells = can_act and not scoped and (own_user_shells or show_psql) %}
+    {% set show_terminal = can_act and not scoped and inst.plugin.container_shell is defined %}
+    {% set shells = can_act and not scoped and (own_user_shells or show_psql or show_terminal) %}
     {% set others = [] %}{% for group, found in buttons[inst.key].items() if group not in core_groups and found %}{% set _x = others.append(group) %}{% endfor %}
     {% set server_wide = server_buttons.values() | select | list and view == "test" and not is_staging %}
     {% set delete_staging = is_staging and is_admin_here and stagings.workspace %}
@@ -197,6 +198,7 @@
         <a class="button" href="{{ base }}/shell" target="_blank" rel="noopener" title="{{ _('A shell of the user running OmniaCLI, in {path}', path=inst.repositories[0].path if inst.repositories else _('its home')) }}">{{ icon("terminal") }}Shell</a>
         {% if inst.claude_dir %}<a class="button" href="{{ base }}/claude" target="_blank" rel="noopener" title="{{ _('A shell of the user running OmniaCLI in {path}, running claude', path=inst.claude_dir) }}">{{ icon("terminal") }}Claude</a>{% endif %}
         {% endif %}
+        {% if show_terminal %}<a class="button" href="{{ base }}/terminal" target="_blank" rel="noopener" title="{{ _('A shell in the Odoo container of the instance, as its user odoo, in its repositories of addons: odoo shell, pip, the files of the modules.') }}">{{ icon("terminal") }}{{ _("Terminal") }}</a>{% endif %}
         {% if show_psql %}<a class="button" href="{{ base }}/psql" target="_blank" rel="noopener" title="{{ _('psql on {database}, as the instance connects to it', database=inst.plugin.describe(inst).database or _('the database')) }}">{{ icon("terminal") }}psql</a>{% endif %}
         {% endif %}
         {% set delete_instance = not is_staging and view == "production" and is_admin_here and stagings and stagings.workspace %}

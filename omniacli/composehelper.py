@@ -48,6 +48,10 @@ command of the caller's, and runs docker with an environment of its own:
                                          (TOOLS) mounted read only
     update <odoo service> <db> --modules a,b
                                          odoo -u a,b --stop-after-init
+    terminal <odoo service>              a login shell in the running service,
+                                         on the caller's terminal, as the
+                                         image's user (never root), in the
+                                         repositories of addons
     psql <database service> <db>         psql, on the caller's terminal, as the
                                          image's postgres (never root: its \\!
                                          runs commands)
@@ -122,7 +126,7 @@ ACTIONS = {
 }
 # the actions that take arguments (commands())
 WITH_ARGUMENTS = ("logs", "version", "port", "dump", "load", "update", "psql", "init", "link-filestore", "login",
-                  "setup", "pip-requirements")
+                  "setup", "pip-requirements", "terminal")
 # a repository of the instance's addons (/mnt/customer-addons/<name>)
 REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 DATABASE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,62}")
@@ -183,6 +187,10 @@ SCRIPTS = {
                         f'python3 {TOOLS_MOUNT}/bin/click-odoo-update -d "$1"; ' + CRONS_AFTER,
     "update-modules": ODOO_DB + CRONS_BEFORE + 'odoo -d "$1" -u "$2" --stop-after-init --no-http; ' + CRONS_AFTER,
     "psql": 'exec psql -U "${POSTGRES_USER:-postgres}" "$1"',
+    # the terminal of the Odoo container: a login shell of the image's user,
+    # in the repositories of addons (bash when the image has it)
+    "terminal": 'cd /mnt/customer-addons 2>/dev/null || cd; '
+                'if command -v bash >/dev/null; then exec bash -l; fi; exec sh -l',
     # odoo shell reads the script from its input; quiet, the answer is its last line
     "login": ODOO_DB + 'OMNIACLI_LOGIN="$2" exec odoo shell -d "$1" --no-http --log-level=critical',
     "setup": ODOO_DB + 'exec odoo shell -d "$1" --no-http --log-level=critical',
@@ -335,6 +343,18 @@ def _script(service_name: str, script: str, *args: str, options: tuple[str, ...]
     return ["exec", *options, service_name, "sh", "-c", SCRIPTS[script], "sh", *args]
 
 
+def terminal_options(project: Path, service_name: str) -> tuple[str, ...]:
+    """The terminal of a service runs as the image's own user (odoo), never
+    root: an image that runs as root is refused."""
+    done = subprocess.run(compose(project, "exec", "-T", service_name, "id", "-u"),
+                          env=ENV, cwd=project, capture_output=True, text=True)
+    if done.returncode:
+        raise HelperError(f"cannot ask {service_name} who it runs as (is it running?): {done.stderr.strip()}")
+    if done.stdout.strip() in ("", "0"):
+        raise HelperError(f"{service_name} runs as root: no terminal is opened in it")
+    return ()
+
+
 def psql_options(project: Path, service_name: str) -> tuple[str, ...]:
     """Who psql runs as: its \\! runs any command as that user, so never root,
     which on an image without a USER (postgres:17) is what exec gives: the
@@ -434,6 +454,12 @@ def commands(project: Path, action: str, args: list[str]) -> list[list[str]]:
             raise HelperError("usage: psql <service> <database>")
         name = service(project, args[0])
         return [_script(name, "psql", _database(args[1]), options=psql_options(project, name))]
+    if action == "terminal":
+        # terminal <odoo service>: on the caller's terminal, never as root
+        if len(args) != 1:
+            raise HelperError("usage: terminal <service>")
+        name = service(project, args[0])
+        return [_script(name, "terminal", options=terminal_options(project, name))]
     if action == "logs":
         # logs <service> --tail <N> | --since <time>
         if len(args) != 3 or args[1] not in ("--tail", "--since"):

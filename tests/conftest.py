@@ -161,7 +161,7 @@ def restart_calls(monkeypatch, tmp_path):
     calls = tmp_path / "calls.log"
     monkeypatch.setattr(
         Restart, "command",
-        lambda self, action="restart": ["sh", "-c", f'echo "{action} {self.service}" >> {calls}']
+        lambda self, action="restart", *args: ["sh", "-c", f'echo "{action} {self.service}" >> {calls}', "sh", action, *args]
     )
     return calls
 

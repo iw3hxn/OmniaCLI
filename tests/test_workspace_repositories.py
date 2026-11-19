@@ -14,7 +14,7 @@ from omniacli.config import Workspace, parse_servers
 from omniacli.docker import DockerPlugin
 from omniacli.jobs import Job, JobFailed
 
-from .test_app import client, wait_job  # noqa: F401 - the client fixture
+from .test_app import AUTH, client, wait_job  # noqa: F401 - the client fixture
 from .test_workspaces import post_as, workspaces  # noqa: F401 - the workspaces fixture
 
 URL = "https://github.com/acme/odoo-custom.git"
@@ -245,3 +245,15 @@ async def test_the_odoo_config_tab_of_a_workspaces_instance(instance, client, mo
     meta.write_text('{"template": "odoo-19"}')
     page = (await client.get("/servers/acme-main", headers=post_as("mario"))).text
     assert 'data-tab="odoo-config"' in page and 'data-param="workers"' in page and 'id="op-save"' in page
+
+
+async def test_the_terminal_of_a_workspaces_instance(instance, client):
+    """The Terminal console: a shell in the Odoo container through the
+    helper, offered in More and opened on any machine (never OmniaCLI's user)
+    to the machine's developers; not to the users of workspaces."""
+    page = (await client.get("/servers/acme-main", headers={"Authorization": AUTH})).text
+    assert "/servers/acme-main/production/terminal" in page
+    resp = await client.get("/servers/acme-main/production/terminal", headers={"Authorization": AUTH})
+    assert resp.status_code == 200 and "/mnt/customer-addons" in resp.text and "terminal/ws" in resp.text
+    assert "/production/terminal" not in (await client.get("/servers/acme-main", headers=post_as("mario"))).text
+    assert (await client.get("/servers/acme-main/production/terminal", headers=post_as("mario"))).status_code == 403
