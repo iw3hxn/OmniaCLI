@@ -212,7 +212,8 @@ WORKSPACE_ROUTES = frozenset({
     "/api/workspaces/{workspace}/web/publish", "/api/workspaces/{workspace}/web/certificate",
     "/api/workspaces/{workspace}/credentials/save", "/api/workspaces/{workspace}/credentials/delete",
     "/api/workspaces/{workspace}/repositories/add", "/api/workspaces/{workspace}/repositories/remove",
-    "/api/workspaces/{workspace}/git-key",
+    "/api/workspaces/{workspace}/git-key", "/api/workspaces/{workspace}/repositories/branches",
+    "/api/workspaces/{workspace}/repositories/update",
     "/api/workspaces/{workspace}/parameters/save", "/api/workspaces/{workspace}/load",
 })
 
@@ -3087,6 +3088,78 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
         job = jobs.submit(f"Remove repository {repo} from {name}", [f"{name}/{role}" for role in roles],
                           f"manual: {me}", action)
+        return {"job": job.id}
+
+    def workspace_repository(ws: Workspace, payload: dict):
+        """(server name, its instance of the role asked, the repository) of
+        the Update dialog, or a refusal."""
+        found = workspace_instance(ws, payload)
+        if not isinstance(found, tuple):
+            return found
+        name = found[0]
+        role = str(payload.get("role") or "production")
+        inst = getattr(settings.servers[name], role, None) if role in ROLES else None
+        if inst is None:
+            return refuse(f"{name} has no {role}", status.HTTP_404_NOT_FOUND)
+        repo = next((r for r in inst.repositories if r.name == str(payload.get("name") or "")), None)
+        if repo is None:
+            return refuse(f"{name} has no repository {payload.get('name')}", status.HTTP_404_NOT_FOUND)
+        return name, inst, repo
+
+    @app.post("/api/workspaces/{workspace}/repositories/branches", dependencies=[Depends(developer)])
+    async def repository_branches(workspace: str, payload: dict = Body(...)):
+        """The Update dialog of a repository: the commit checked out, the
+        branches of its remote with their last commit, the page of the
+        differences for each."""
+        found = workspace_repository(a_workspace(workspace), payload)
+        if not isinstance(found, tuple):
+            return found
+        _, _, repo = found
+        try:
+            data = await workspaceops.repository_branches(repo)
+        except JobFailed as exc:
+            return refuse(str(exc))
+        for branch in data["branches"]:
+            branch["compare"] = workspaceops.compare_url(data["url"], data["commit"], branch["commit"])
+        return data
+
+    @app.post("/api/workspaces/{workspace}/repositories/update", dependencies=[Depends(developer)])
+    async def repository_update(workspace: str, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """A repository of an instance on the last commit of the branch
+        chosen (its own: a pull; another: checked out and kept in the
+        servers file), its Python packages, the changed modules updated
+        when the instance says so, restarted."""
+        found = workspace_repository(a_workspace(workspace), payload)
+        if not isinstance(found, tuple):
+            return found
+        name, inst, repo = found
+        branch = str(payload.get("branch") or "").strip() or repo.branch
+        try:
+            workspaceops.check_branch(branch)
+        except JobFailed as exc:
+            return refuse(str(exc))
+
+        async def action(job):
+            previous = repo.branch
+            await workspaceops.update_repository(job, repo, branch)
+            current = inst
+            if branch != previous:
+                try:
+                    done = await set_repositories(name, {inst.role: [
+                        {**row, "branch": branch} if row["name"] == repo.name else row
+                        for row in repository_rows(inst.repositories)]})
+                except BaseException:
+                    # the servers file still names the old branch: the copy goes back to it
+                    await ops.run(job, repo.git("checkout", previous), cwd=repo.path, check=False)
+                    raise
+                current = getattr(done, inst.role)
+                job.log(f"{repo.name} follows {branch} now")
+            await current.plugin.after_pull(job, current)
+            await ops.restart(job, current)
+            job.result = {"server": name, "repository": repo.name, "branch": branch}
+
+        what = f"Update {repo.name} of {inst.key}" + (f" to {branch}" if branch != repo.branch else "")
+        job = jobs.submit(what, [inst.key], f"manual: {me}", action)
         return {"job": job.id}
 
     def instance_template(ws: Workspace, instance: str):

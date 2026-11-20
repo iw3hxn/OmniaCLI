@@ -334,10 +334,8 @@
       <td class="mono">{{ repo.branch }}</td>
       <td class="hide-sm">{% if rs.error %}<span class="error">{{ tr(rs.error) }}</span>{% else %}<span class="mono">{{ rs.sha }}</span> <span class="muted">{{ rs.date }}</span>{% endif %}</td>
       <td style="white-space: nowrap; text-align: right">
-        <form method="post" action="{{ base }}/pull" style="display: inline" onsubmit='return confirm({{ _("Download the new commits of {repo}?", repo=repo.name) | tojson }})'>
-          <input type="hidden" name="chosen" value="1"><input type="hidden" name="repo" value="{{ repo.name }}">
-          <input type="hidden" name="next" value="{{ here }}">
-          <button {{ off }} title="{{ _('Downloads the new commits of this repository (git pull), updates the changed modules when the instance says so, and restarts.') }}">{{ _("Update") }}</button></form>
+        <button type="button" data-repo-update="{{ repo.name }}" data-role="{{ inst.role }}" {{ off }}
+          title="{{ _('Chooses the branch and shows the commit it brings; then downloads it, updates the changed modules when the instance says so, and restarts.') }}">{{ _("Update") }}</button>
         {% if is_admin_here %}<button type="button" class="danger" data-repo-remove="{{ repo.name }}" {{ off }}
           title="{{ _('Takes the repository out of the instance: out of its odoo.conf, its folder deleted, Odoo restarted. Its modules installed stay in the database, without their code.') }}">{{ _("Delete") }}</button>{% endif %}
       </td>
@@ -347,6 +345,27 @@
     {% endfor %}
   </table>
   </div>
+  <dialog id="addons-update" aria-labelledby="au-title" style="width: min(560px, calc(100vw - 32px))">
+    <form method="dialog">
+      <h2 id="au-title"></h2>
+      <p class="muted" id="au-reading">{{ _("Reading the branches…") }}</p>
+      <div id="au-fields" hidden>
+        <label for="au-branch">{{ _("Branch") }}</label>
+        <select id="au-branch" class="mono" style="width: 100%"></select>
+        <label for="au-old">{{ _("Previous commit") }}</label>
+        <input type="text" id="au-old" class="mono" readonly style="width: 100%">
+        <label for="au-new">{{ _("New commit") }}</label>
+        <input type="text" id="au-new" class="mono" readonly style="width: 100%">
+        <p class="muted" id="au-same" hidden>{{ _("Already on this commit: nothing new to download.") }}</p>
+        <p><a id="au-compare" target="_blank" rel="noopener" hidden>{{ _("Show the differences") }} ↗</a></p>
+      </div>
+      <p class="error" id="au-error" role="alert"></p>
+      <div class="actions">
+        <button type="button" id="au-cancel">{{ _("Cancel") }}</button>
+        <button type="button" class="primary" id="au-go" disabled>{{ _("Update module") }}</button>
+      </div>
+    </form>
+  </dialog>
   {% if is_admin_here %}
   <form class="addons-add" id="addons-add">
     <h3>{{ _("Add a repository") }}</h3>
@@ -375,6 +394,7 @@
 .addons-fields { display: grid; grid-template-columns: 1fr 160px auto; gap: 10px; align-items: end; }
 .addons-fields label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; }
 .addons-fields input { width: 100%; }
+#au-fields label { display: block; font-size: 13px; font-weight: 600; margin: 10px 0 4px; }
 @media (max-width: 700px) { .addons-fields { grid-template-columns: 1fr; } }
 </style>
 {% endif %}
@@ -650,6 +670,50 @@
     if (!ok || !data.public_key) { document.getElementById("addons-error").textContent = data.error || ADD.refused; return; }
     box.textContent = data.public_key; box.hidden = false; event.target.hidden = true;
   });
+  // the Update dialog: the branch chosen, the commit it brings, the page of the differences
+  (function () {
+    const dialog = document.getElementById("addons-update");
+    if (!dialog) return;
+    const T = {title: {{ _("Update {repo}") | tojson }}, unreadable: {{ _("The branches cannot be read") | tojson }}};
+    const select = document.getElementById("au-branch"), go = document.getElementById("au-go");
+    let target = null, data = null;
+    function show() {
+      const chosen = data.branches.find((b) => b.name === select.value);
+      document.getElementById("au-new").value = chosen ? chosen.commit : "";
+      const same = !chosen || chosen.commit === data.commit;
+      document.getElementById("au-same").hidden = !same;
+      const link = document.getElementById("au-compare");
+      link.hidden = !(chosen && chosen.compare);
+      if (chosen && chosen.compare) link.href = chosen.compare;
+      // the same commit on another branch is still a change of branch
+      go.disabled = same && select.value === data.branch;
+    }
+    select.addEventListener("change", show);
+    document.getElementById("au-cancel").addEventListener("click", () => dialog.close());
+    document.querySelectorAll("[data-repo-update]").forEach((b) => b.addEventListener("click", async () => {
+      target = {server: {{ server.name | tojson }}, name: b.dataset.repoUpdate, role: b.dataset.role};
+      document.getElementById("au-title").textContent = T.title.replace("{repo}", target.name);
+      document.getElementById("au-reading").hidden = false;
+      document.getElementById("au-fields").hidden = true;
+      document.getElementById("au-error").textContent = "";
+      go.disabled = true;
+      dialog.showModal();
+      const {ok, data: answer} = await addonsPost("repositories/branches", target);
+      document.getElementById("au-reading").hidden = true;
+      if (!ok || !answer.branches) { document.getElementById("au-error").textContent = answer.error || answer.detail || T.unreadable; return; }
+      data = answer;
+      select.replaceChildren(...data.branches.map((br) => new Option(br.name, br.name, false, br.name === data.branch)));
+      document.getElementById("au-old").value = data.commit;
+      document.getElementById("au-fields").hidden = false;
+      show();
+    }));
+    go.addEventListener("click", async () => {
+      go.disabled = true;
+      const {ok, data: answer} = await addonsPost("repositories/update", {...target, branch: select.value});
+      if (!ok || !answer.job) { document.getElementById("au-error").textContent = answer.error || answer.detail || ADD.refused; go.disabled = false; return; }
+      location.href = `{{ prefix }}/jobs/${answer.job}`;
+    });
+  })();
   document.querySelectorAll("[data-repo-remove]").forEach((b) => b.addEventListener("click", async () => {
     if (!confirm(ADD.removeQ.replace("{repo}", b.dataset.repoRemove))) return;
     const {ok, data} = await addonsPost("repositories/remove", {server: {{ server.name | tojson }}, name: b.dataset.repoRemove});

@@ -14,7 +14,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from . import config, stacktemplates, templatestore, workspacehelper
+from . import config, ops, stacktemplates, templatestore, workspacehelper
 from .config import OMNIACLI_COMMAND, Workspace
 from .jobs import Job, JobFailed
 from .ops import capture, run
@@ -301,12 +301,90 @@ def check_repository(name: str, url: str, branch: str) -> None:
     if not (REPOSITORY_URL.fullmatch(url) or REPOSITORY_SSH.fullmatch(url)) or ".." in url:
         raise JobFailed(f"{url!r} is not the address of a repository: https://host/org/repo.git (no user or token in "
                         "it: those are the workspace's git credentials) or git@host:org/repo.git (OmniaCLI's git key)")
-    if not BRANCH.fullmatch(branch) or branch.startswith(("-", "/")) or ".." in branch:
-        raise JobFailed(f"{branch!r} is not a branch name")
+    check_branch(branch)
 
 
 def addons_folder(ws: Workspace, instance: str, role: str) -> Path:
     return storage_path(ws) / ws.name / instance / role / "addons"
+
+
+def check_branch(branch: str) -> None:
+    if not BRANCH.fullmatch(branch) or branch.startswith(("-", "/")) or ".." in branch:
+        raise JobFailed(f"{branch!r} is not a branch name")
+
+
+def web_url(url: str) -> str | None:
+    """The web page of a repository from its address (https or git@/ssh://),
+    without .git; None when it is not one of these."""
+    found = (re.fullmatch(r"https://([^/]+)/(.+?)(?:\.git)?/?", url)
+             or re.fullmatch(r"git@([^:]+):(.+?)(?:\.git)?/?", url)
+             or re.fullmatch(r"ssh://git@([^/:]+)(?::\d+)?/(.+?)(?:\.git)?/?", url))
+    return f"https://{found[1]}/{found[2]}" if found else None
+
+
+def compare_url(url: str, old: str, new: str) -> str | None:
+    """The page of the differences between two commits, on GitHub and GitLab."""
+    web = web_url(url)
+    if web is None or old == new:
+        return None
+    host = web.split("/")[2]
+    if host == "github.com":
+        return f"{web}/compare/{old}...{new}"
+    if "gitlab" in host:
+        return f"{web}/-/compare/{old}...{new}"
+    return None
+
+
+async def repository_branches(repo: config.Repository, timeout: float = 60) -> dict:
+    """What the Update dialog of a repository shows: the commit checked out,
+    and every branch of its remote with its last commit (git ls-remote, with
+    the server's git credentials)."""
+    if not repo.path.is_dir():
+        raise JobFailed(f"{repo.path} does not exist")
+    code, head = await capture(["git", "rev-parse", "HEAD"], cwd=repo.path)
+    if code:
+        raise JobFailed(f"[{repo.name}] {head.splitlines()[-1] if head else 'not a git repository'}")
+    code, out = await capture(repo.git("ls-remote", "--heads", repo.remote), cwd=repo.path, timeout=timeout)
+    if code:
+        raise JobFailed(f"[{repo.name}] the branches of {repo.remote} cannot be read: "
+                        f"{out.splitlines()[-1] if out else code}")
+    branches = []
+    for line in out.splitlines():
+        sha, _, ref = line.partition("\t")
+        if ref.startswith("refs/heads/"):
+            branches.append({"name": ref[len("refs/heads/"):], "commit": sha})
+    _, url = await capture(["git", "remote", "get-url", repo.remote], cwd=repo.path)
+    return {"branch": repo.branch, "commit": head, "url": url,
+            "branches": sorted(branches, key=lambda b: b["name"])}
+
+
+async def update_repository(job: Job, repo: config.Repository, branch: str) -> bool:
+    """The repository on the last commit of a branch: its own (a fast-forward
+    pull) or another (fetched and checked out), with its submodules; refused
+    with uncommitted changes. True when the commit checked out changed."""
+    check_branch(branch)
+    changes = (await ops.git(repo, "status", "--porcelain", "--untracked-files=no"))
+    if changes:
+        job.log(changes)
+        raise JobFailed(f"[{repo.name}] {repo.path} has uncommitted changes")
+    before = await ops.git(repo, "rev-parse", "HEAD")
+    if branch == repo.branch:
+        job.log(f"--- [{repo.name}] pull {repo.remote}/{branch}")
+        await ops.ensure_ready(job, repo)
+        await run(job, repo.git("pull", "--ff-only", repo.remote, branch), cwd=repo.path)
+    else:
+        job.log(f"--- [{repo.name}] from {repo.branch} to {branch}")
+        await run(job, repo.git("fetch", repo.remote, f"+refs/heads/{branch}:refs/remotes/{repo.remote}/{branch}"),
+                  cwd=repo.path)
+        await run(job, repo.git("checkout", "-B", branch, "--track", f"{repo.remote}/{branch}"), cwd=repo.path)
+    await ops.update_submodules(job, repo)
+    after = await ops.git(repo, "rev-parse", "HEAD")
+    if before == after:
+        job.log(f"[{repo.name}] already on {after[:10]}")
+        return False
+    code, log = await capture(["git", "log", "--oneline", f"{before}..{after}"], cwd=repo.path)
+    job.log(log if code == 0 and log else f"[{repo.name}] {before[:10]} → {after[:10]}")
+    return True
 
 
 def _remove_tree(path: Path) -> None:

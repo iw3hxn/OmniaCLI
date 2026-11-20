@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from omniacli import gitcredentials, ops, stacktemplates, workspaceops
-from omniacli.config import Workspace, parse_servers
+from omniacli.config import Repository, Workspace, parse_servers
 from omniacli.docker import DockerPlugin
 from omniacli.jobs import Job, JobFailed
 
@@ -257,3 +257,100 @@ async def test_the_terminal_of_a_workspaces_instance(instance, client):
     assert resp.status_code == 200 and "/mnt/customer-addons" in resp.text and "terminal/ws" in resp.text
     assert "/production/terminal" not in (await client.get("/servers/acme-main", headers=post_as("mario"))).text
     assert (await client.get("/servers/acme-main/production/terminal", headers=post_as("mario"))).status_code == 403
+
+
+def test_the_page_of_the_differences():
+    sha_a, sha_b = "a" * 40, "b" * 40
+    assert workspaceops.web_url("git@github.com:DueEsseTI/Common.git") == "https://github.com/DueEsseTI/Common"
+    assert workspaceops.web_url("ssh://git@gitlab.example.com:2222/acme/x.git") == "https://gitlab.example.com/acme/x"
+    assert workspaceops.compare_url(URL, sha_a, sha_b) == f"https://github.com/acme/odoo-custom/compare/{sha_a}...{sha_b}"
+    assert workspaceops.compare_url("git@gitlab.com:acme/x.git", sha_a, sha_b) == \
+        f"https://gitlab.com/acme/x/-/compare/{sha_a}...{sha_b}"
+    # the same commit, or a host whose pages are not known: no link
+    assert workspaceops.compare_url(URL, sha_a, sha_a) is None
+    assert workspaceops.compare_url("https://git.example.com/acme/x.git", sha_a, sha_b) is None
+
+
+async def _git(*args, cwd):
+    code, out = await ops.capture(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=cwd)
+    assert code == 0, out
+    return out
+
+
+async def test_the_branches_and_a_change_of_branch(tmp_path):
+    """The Update dialog's data from a real remote, then the copy moved to
+    the last commit of its branch and to another branch."""
+    origin, copy = tmp_path / "origin", tmp_path / "copy"
+    origin.mkdir()
+    await _git("init", "-q", "-b", "18.0", cwd=origin)
+    await _git("commit", "-q", "--allow-empty", "-m", "one", cwd=origin)
+    await _git("clone", "-q", str(origin), str(copy), cwd=tmp_path)
+    await _git("commit", "-q", "--allow-empty", "-m", "two", cwd=origin)
+    await _git("checkout", "-q", "-b", "19.0", cwd=origin)
+    await _git("commit", "-q", "--allow-empty", "-m", "three", cwd=origin)
+    repo = Repository("custom", copy, "18.0")
+    data = await workspaceops.repository_branches(repo)
+    assert data["branch"] == "18.0" and data["commit"] == await _git("rev-parse", "HEAD", cwd=copy)
+    assert [b["name"] for b in data["branches"]] == ["18.0", "19.0"]
+    assert data["branches"][1]["commit"] == await _git("rev-parse", "19.0", cwd=origin)
+    # its own branch: a pull
+    assert await workspaceops.update_repository(_job(), repo, "18.0")
+    assert await _git("rev-parse", "HEAD", cwd=copy) == await _git("rev-parse", "18.0", cwd=origin)
+    assert not await workspaceops.update_repository(_job(), repo, "18.0")
+    # another: fetched and checked out, following its remote branch
+    assert await workspaceops.update_repository(_job(), repo, "19.0")
+    assert await _git("rev-parse", "--abbrev-ref", "HEAD", cwd=copy) == "19.0"
+    assert await _git("rev-parse", "--abbrev-ref", "@{upstream}", cwd=copy) == "origin/19.0"
+    # uncommitted changes are never overwritten
+    await _git("checkout", "-q", "18.0", cwd=copy)
+    (copy / "f").write_text("x")
+    await _git("add", "f", cwd=copy)
+    with pytest.raises(JobFailed, match="uncommitted changes"):
+        await workspaceops.update_repository(_job(), Repository("custom", copy, "18.0"), "19.0")
+    with pytest.raises(JobFailed, match="not a branch name"):
+        await workspaceops.update_repository(_job(), repo, "--upload-pack=x")
+
+
+async def test_the_update_dialog(instance, client, monkeypatch):
+    """Update: the branches read for the dialog, then the repository moved to
+    the branch chosen, kept in the servers file, its packages, restarted."""
+    calls, settings = instance["calls"], instance["settings"]
+    settings.servers["acme-main"].instances.pop("test")
+    resp = await client.post("/api/workspaces/acme/repositories/add", headers=post_as("mario"),
+                             json={"server": "acme-main", "url": URL, "branch": "18.0", "name": "custom"})
+    assert (await wait_job(client, resp.json()["job"]))["status"] == "success"
+    old, new = "a" * 40, "b" * 40
+
+    async def branches(repo, timeout=60):
+        return {"branch": repo.branch, "commit": old, "url": URL,
+                "branches": [{"name": "18.0", "commit": old}, {"name": "19.0", "commit": new}]}
+    moved = []
+
+    async def update_repository(job, repo, branch):
+        moved.append((repo.name, repo.branch, branch))
+        return True
+    after = []
+
+    async def after_pull(self, job, inst):
+        after.append(inst.key)
+    monkeypatch.setattr(workspaceops, "repository_branches", branches)
+    monkeypatch.setattr(workspaceops, "update_repository", update_repository)
+    monkeypatch.setattr(DockerPlugin, "after_pull", after_pull)
+    url = "/api/workspaces/acme/repositories/"
+    body = {"server": "acme-main", "name": "custom", "role": "production"}
+    data = (await client.post(url + "branches", headers=post_as("mario"), json=body)).json()
+    assert data["branches"][0]["compare"] is None
+    assert data["branches"][1]["compare"] == f"https://github.com/acme/odoo-custom/compare/{old}...{new}"
+    calls["restart"].clear()
+    resp = await client.post(url + "update", headers=post_as("mario"), json={**body, "branch": "19.0"})
+    job = await wait_job(client, resp.json()["job"])
+    assert job["status"] == "success", job["lines"]
+    assert moved == [("custom", "18.0", "19.0")]
+    assert settings.servers["acme-main"].production.repositories[0].branch == "19.0"
+    assert after == calls["restart"] == ["acme-main/production"]
+    for bad, status_code in (({**body, "name": "nope"}, 404), ({**body, "role": "test"}, 404),
+                             ({**body, "branch": "a..b"}, 400)):
+        assert (await client.post(url + "update", headers=post_as("mario"), json=bad)).status_code == status_code
+    # the dialog on the Addons tab
+    page = (await client.get("/servers/acme-main", headers=post_as("mario"))).text
+    assert 'id="addons-update"' in page and 'data-repo-update="custom"' in page
