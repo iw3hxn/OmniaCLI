@@ -65,7 +65,7 @@ async def here(env, tmp_path, monkeypatch):
     app = create_app(settings)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=BasicAsSession(app)),
                                  base_url=f"http://{HOST}") as c:
-        c.asked, c.settings = asked, settings
+        c.asked, c.settings, c.app = asked, settings, app
         yield c
 
 
@@ -267,3 +267,84 @@ async def test_a_panels_nginx_that_does_not_pass_the_path(here, monkeypatch):
     assert (await here.get(f"{api('test')}/users", headers=as_user("dev"))).status_code == 200
     probe = await here.get(f"{loginas.LOGIN_PATH}?probe=1", headers={"Host": TEST})
     assert probe.status_code == 204 and probe.headers[loginas.MARK] == "1"
+
+
+async def test_through_a_link_when_the_nginx_there_does_not_pass_it(here, tmp_path, monkeypatch):
+    """A linked OmniaCLI whose instance sits behind a hosting panel's nginx
+    (left untouched): its link is opened here through the link, the session
+    kept, Odoo reached through a tunnel, the cookie set by this OmniaCLI on
+    the tunnel's address."""
+    from omniacli import tunnel
+
+    async def reaches_here(host):
+        return False
+    monkeypatch.setattr(loginas, "reaches_here", reaches_here)
+    conf = tmp_path / "mine"
+    conf.mkdir()
+    (conf / "servers.yaml").write_text("servers: {}\n")
+    (conf / "links.yaml").write_text(yaml.safe_dump({"links": {"cliente": {"url": f"http://{HOST}",
+                                                                           "token": "a-link-token"}}}))
+    settings = parse_settings({"auth": {"users": {"admin": USER_HASH}}, "backup_dir": str(tmp_path / "mb"),
+                               "jobs_dir": str(conf / "jobs"), "servers_file": "servers.yaml"}, base_dir=conf)
+    mine = create_app(settings, link_transport=httpx.ASGITransport(app=here.app))
+    opened = []
+
+    async def open_tunnel(link, server, role, owner, owner_role):
+        opened.append((link.name, server, role, owner))
+        return tunnel.Tunnel("t1", link.name, server, role, owner, owner_role, "127.0.0.1", 18003)
+    monkeypatch.setattr(mine.state.tunnels, "open", open_tunnel)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=BasicAsSession(mine)),
+                                 base_url="http://127.0.0.1:8090") as c:
+        resp = await c.post("/links/cliente/api/servers/srv/test/login-as", json={"id": 7},
+                            headers={**as_user("admin", post=True), "Accept": "application/json",
+                                     "Origin": "http://127.0.0.1:8090"})
+        assert resp.status_code == 200, resp.text
+        link = urlsplit(resp.json()["url"])
+        # opened here, on the tunnel's name: the cookie reaches 127.0.0.1:18003
+        assert (link.scheme, link.netloc, link.path) == ("http", "127.0.0.1:8090", loginas.LOGIN_PATH)
+        assert opened == [("cliente", "srv", "test", "admin")] and resp.json()["tunnel"] == "http://127.0.0.1:18003/"
+        assert SID not in resp.text
+        landing = await c.get(f"{link.path}?{link.query}", headers={"Host": "127.0.0.1:8090"})
+        assert landing.status_code == 303 and landing.headers["location"] == "http://127.0.0.1:18003/odoo"
+        cookie = landing.headers["set-cookie"]
+        assert cookie.startswith(f"session_id={SID};") and "Secure" not in cookie
+    # the link there was spent: it cannot be opened again on the instance's name
+    seen = [json.loads(line)["detail"] for line in (here.settings.logs_dir / "access.jsonl").read_text().splitlines()
+            if json.loads(line)["event"] == "login-as"]
+    assert seen[-1].startswith("opened: srv/test as mario")
+    # when the nginx there passes it: its own link, untouched
+    async def passes(host):
+        return True
+    monkeypatch.setattr(loginas, "reaches_here", passes)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=BasicAsSession(mine)),
+                                 base_url="http://127.0.0.1:8090") as c:
+        resp = await c.post("/links/cliente/api/servers/srv/test/login-as", json={"id": 7},
+                            headers={**as_user("admin", post=True), "Accept": "application/json",
+                                     "Origin": "http://127.0.0.1:8090"})
+        assert urlsplit(resp.json()["url"]).netloc == TEST
+
+
+def test_the_ports_a_panels_unit_passes(env, monkeypatch):
+    """A hosting panel starts Odoo with --http-port and --gevent-port in its
+    unit, not in the Odoo config: the plugin reads them there (the tunnel and
+    the monitor reach Odoo on them)."""
+    from omniacli import odoo as odoo_plugin
+
+    inst = env["settings"].servers["srv"].test
+    monkeypatch.setattr(inst.restart, "type", "systemd")
+    exec_start = ("{ path=/usr/bin/env ; argv[]=/usr/bin/env PATH=/v/bin:${PATH} /v/bin/python3 src/odoo-bin "
+                  "--config odoo.conf --http-interface=127.0.0.1 --http-port 3006 --gevent-port 3007 "
+                  "--logfile logs/odoo-server.log ; ignore_errors=no }")
+    asked = []
+
+    def run(cmd, **kwargs):
+        asked.append(cmd)
+        return odoo_plugin.subprocess.CompletedProcess(cmd, 0, exec_start, "")
+    monkeypatch.setattr(odoo_plugin.subprocess, "run", run)
+    monkeypatch.setattr(odoo_plugin, "_unit_ports", {})
+    assert inst.plugin.web_port(inst) == 3006
+    conf = inst.options.odoo_config
+    conf.write_text("[options]\nworkers = 4\n")
+    assert inst.plugin.tunnel_address(inst, "/websocket") == ("127.0.0.1", 3007)
+    assert inst.plugin.tunnel_address(inst, "/web") == ("127.0.0.1", 3006)
+    assert len(asked) == 1  # asked once, then kept

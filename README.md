@@ -2018,6 +2018,16 @@ as before) and reloads. `login-path check <host>` says whether it is there,
 `login-path remove <host>` takes the lines away. A panel that writes its
 sites again drops the line: the dialog says so again.
 
+Through a link nothing has to change there: when the link of the other
+OmniaCLI would open on a name whose nginx does not pass the path (a hosting
+panel's site), this OmniaCLI opens it itself through the link (the name in
+its `Host`), keeps the session it hands over, opens a tunnel to the
+instance's Odoo (Tunnels, below) and gives the browser its own link on the
+tunnel's address (`http://127.0.0.1:<this port>/.omniacli/login?t=…`): the
+cookie is set there and reaches the tunnel's port, Odoo opens at
+`http://127.0.0.1:<tunnel>/odoo`. Odoo changes `web.base.url` only at a
+login with a password, which Log in as does not make.
+
 On a development machine an instance at `http://localhost:<port>` works
 without nginx when OmniaCLI is opened at `localhost` too: a browser keeps
 cookies by name, not by port.

@@ -192,6 +192,8 @@ _MIN_PASSWORD = 8
 # what the proxy of a link passes on, each way (never the caller's credentials,
 # never the other instance's WWW-Authenticate: the browser would ask for them)
 _LINK_REQUEST_HEADERS = ("content-type", "accept", "accept-language")
+# Log in as asked of a linked OmniaCLI: handled here when its link cannot open there
+_LINK_LOGIN_AS = re.compile(r"api/servers/([^/]+)/(production|test)/login-as")
 _LINK_RESPONSE_HEADERS = ("content-type", "content-disposition", "content-length",
                           "content-encoding", "location", "cache-control")
 # the only routes a user of workspaces reaches (in_workspaces): its account,
@@ -2122,7 +2124,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         """A refusal when the instance's nginx (not a workspace's: those pass
         it by themselves) does not pass the Log in as path here; for an admin
         of the machine, the address that adds it."""
-        if workspace_of(instance.server) is not None:
+        if workspace_of(instance.server) is not None or user.on_behalf:
+            # a linked OmniaCLI asking: it opens the link through a tunnel when needed
             return None
         host = urlsplit(instance.web_url or "").hostname or ""
         if not host or not (instance.web_url or "").startswith("https://") or await login_path_reached(host):
@@ -4613,6 +4616,54 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         a_link(name)
         return RedirectResponse(f"/links/{name}/", status.HTTP_307_TEMPORARY_REDIRECT)
 
+    async def login_as_through_link(request: Request, link, client, url: str, headers: dict, server: str,
+                                    role: str, me: Principal):
+        """Log in as on an instance of a linked OmniaCLI. Its link opens on the
+        instance's name; when the nginx there does not pass that path to the
+        OmniaCLI there (a hosting panel's site, left untouched), the link is
+        opened here through the link instead, the session it hands over is
+        kept, and Odoo is reached through a tunnel: the browser gets the
+        session's cookie from this OmniaCLI on the tunnel's own address
+        (cookies go by name, not by port)."""
+        try:
+            resp = await client.post(url, headers={**headers, "content-type": "application/json"},
+                                     content=await request.body())
+        except httpx.HTTPError as exc:
+            return link_failure(request, link, describe_error(exc))
+        try:
+            data = resp.json()
+        except ValueError:
+            data = {}
+        given = urlsplit(str(data.get("url") or ""))
+        if resp.status_code != 200 or not given.hostname:
+            return JSONResponse(data or {"error": f"{link.name} answered {resp.status_code}"},
+                                status_code=resp.status_code)
+        if given.scheme != "https" or await loginas.reaches_here(given.hostname):
+            return JSONResponse(data)
+        try:
+            landing = await client.get(f"{given.path}?{given.query}", headers={**headers, "host": given.netloc})
+        except httpx.HTTPError as exc:
+            return link_failure(request, link, describe_error(exc))
+        sid = landing.cookies.get(loginas.ODOO_COOKIE)
+        if landing.status_code != 303 or not sid:
+            return refuse(f"{link.name} did not hand over the session ({landing.status_code})",
+                          status.HTTP_502_BAD_GATEWAY)
+        try:
+            opened = await tunnels.open(link, server, role, me.name, me.role)
+        except tunnel.TunnelError as exc:
+            return refuse(f"The nginx of {given.hostname} does not pass {loginas.LOGIN_PATH} to OmniaCLI, "
+                          f"and no tunnel opens: {exc}", status.HTTP_502_BAD_GATEWAY)
+        odoo = urlsplit(tunnel_url(request, opened))
+        port = request.url.port or (443 if request.url.scheme == "https" else 80)
+        here = f"{odoo.netloc.rsplit(':', 1)[0]}:{port}"
+        home = f"http://{odoo.netloc}" + loginas.safe_home(urlsplit(landing.headers.get("location", "")).path or "/odoo")
+        detail = f"{link.name} › {server}/{role} as {data.get('login')}, through tunnel {odoo.netloc}"
+        token = login_tickets.issue(sid, here, home, me.name, detail)
+        access_log.record("login-as", me.kind, me.name, request.client.host if request.client else "",
+                          f"asked: {detail}")
+        return {"url": f"{request.url.scheme}://{here}{loginas.LOGIN_PATH}?t={token}", "login": data.get("login"),
+                "seconds": loginas.TOKEN_SECONDS, "tunnel": f"http://{odoo.netloc}/"}
+
     @app.api_route("/links/{name}/{path:path}", methods=["GET", "HEAD", "POST"])
     async def link_proxy(request: Request, name: str, path: str, me: Principal = Depends(current_user)):
         """The other instance's page or API, as the link, with at most our role."""
@@ -4628,6 +4679,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         headers["accept-language"] = request_language(request)
         headers.update(link_headers(link, me.name, me.role))
         url = "/" + path + (f"?{request.url.query}" if request.url.query else "")
+        found = _LINK_LOGIN_AS.fullmatch(path)
+        if found and request.method == "POST":
+            return await login_as_through_link(request, link, client, url, headers, found[1], found[2], me)
         outgoing = client.build_request(request.method, url, headers=headers,
                                         content=await request.body() or None)
         try:

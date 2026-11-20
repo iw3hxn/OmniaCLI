@@ -13,6 +13,8 @@ import configparser
 import os
 import re
 import shlex
+import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -75,6 +77,38 @@ class OdooOptions:
     # the port Odoo listens on, passed to the odoo-bin OmniaCLI starts (restart
     # type process only); None: the port of the Odoo config
     http_port: int | None = None
+
+
+UNIT_PORTS_SECONDS = 300
+_unit_ports: dict[str, tuple[float, dict]] = {}
+
+
+def unit_ports(instance: Instance) -> dict:
+    """{http_port, gevent_port} that a systemd service's ExecStart passes to
+    odoo-bin (--http-port, --gevent-port and their older names), asked of
+    systemd at most every UNIT_PORTS_SECONDS; empty for anything else."""
+    if instance.restart.type != "systemd":
+        return {}
+    service = instance.restart.service
+    cached = _unit_ports.get(service)
+    if cached and time.monotonic() - cached[0] < UNIT_PORTS_SECONDS:
+        return cached[1]
+    found: dict = {}
+    try:
+        done = subprocess.run(["systemctl", "show", "-p", "ExecStart", "--value", "--", service],
+                              capture_output=True, text=True, timeout=10)
+        match = discover._EXEC_ARGV.search(done.stdout if done.returncode == 0 else "")
+    except (OSError, subprocess.SubprocessError):
+        match = None
+    if match:
+        argv = match.group(1).split()
+        at = next((i for i, arg in enumerate(argv) if Path(arg).name in discover.SCRIPTS), None)
+        if at is not None:
+            args = discover.parse_args(argv[at + 1:])
+            found = {key: int(args[key]) for key in ("http_port", "gevent_port")
+                     if str(args.get(key, "")).isdigit() and 1 <= int(args[key]) <= 65535}
+    _unit_ports[service] = (time.monotonic(), found)
+    return found
 
 
 def _require(data: dict, key: str, where: str):
@@ -308,7 +342,10 @@ class OdooPlugin(ServicePlugin):
         return instance.options.odoo_config
 
     def web_port(self, instance: Instance) -> int | None:
-        return instance.options.http_port or odooconf.http_port(instance.options.odoo_config)
+        # a service started with --http-port (a hosting panel's units) listens
+        # there, whatever its Odoo config says
+        return (instance.options.http_port or unit_ports(instance).get("http_port")
+                or odooconf.http_port(instance.options.odoo_config))
 
     def tunnel_address(self, instance: Instance, path: str) -> tuple[str, int] | None:
         port = self.web_port(instance)
@@ -321,7 +358,7 @@ class OdooPlugin(ServicePlugin):
         # with workers, the bus (/websocket from Odoo 16, /longpolling
         # before) is served by the evented server on its own port
         if found.get("workers") and (path == "/websocket" or path.startswith(("/websocket/", "/longpolling"))):
-            return host, found["evented_port"]
+            return host, unit_ports(instance).get("gevent_port") or found["evented_port"]
         return host, port
 
     def search_text(self, instance: Instance) -> list[str]:
