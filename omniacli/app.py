@@ -4460,6 +4460,13 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 if publications != settings.publications:
                     await asyncio.to_thread(save_publications, settings.publications_file, publications)
                     settings.publications = publications
+                # the instances operated from here through a puller of that link follow it too
+                connections = {k: dataclasses.replace(v, link=new_name) if v.link == name else v
+                               for k, v in settings.connections.items()}
+                if connections != settings.connections:
+                    await asyncio.to_thread(save_connections, settings.connections_file, connections)
+                    settings.connections = connections
+                    consumers.reload()
                 if uses:
                     for inst in uses:
                         inst.from_link = dataclasses.replace(inst.from_link, link=new_name)

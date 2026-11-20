@@ -381,8 +381,13 @@ async def test_a_linked_server_renamed(here):
     resp = await here.post("/api/links/rename", headers={**user_headers("dev", post=True), "Accept": "application/json"},
                            json={"name": "cliente", "new_name": "acme"})
     assert resp.status_code == 403
+    # an instance operated from here through a puller of that link: it follows the new name too
+    made = await here.post("/api/connections/save", headers=post,
+                           json={"name": "lontana", "link": "cliente", "puller": "casella", "new": True})
+    assert made.status_code == 200, made.text
     resp = await here.post("/api/links/rename", headers=post, json={"name": "cliente", "new_name": "acme"})
     assert resp.status_code == 200 and resp.json() == {"ok": True, "name": "acme"}
+    assert here.settings.connections["lontana"].link == "acme"
     assert set(here.settings.link_targets) == {"acme"} and here.settings.link_targets["acme"].name == "acme"
     assert here.settings.servers["srv"].test.from_link.link == "acme"
     saved = yaml.safe_load(here.settings.servers_file.read_text())

@@ -477,6 +477,269 @@ di cui 3 via SSH, almeno 2 utenti oltre all'admin, 1 token di collegamento, 1 wo
   pubblicazioni. La conferma potrebbe dire «2 istanze sono state copiate da qui».
 - L'**ultima prova riuscita** di un collegamento, salvata, così lo Stato ha una data anche prima della risposta.
 
+## Aggiunta del 20/11/2026: la pagina Pubblicazioni
+
+Stessa origine e stesse regole (§2); i criteri qui sotto si aggiungono a §6, le decisioni a §8.
+
+### 4.6 Pubblicazioni (`/pullers`)
+
+Oggi (20/11, admin, 1440×900, IT) la pagina è alta 1409–1469 px. Ha 24 campi aperti nelle righe e 3 pannelli in colonna, ognuno con «Altro», una ricerca sempre visibile e una riga «nuovo» in fondo. I pulsanti con `title` sono 7, il primario 1 («Aggiungi puller»). È l'ultima pagina di amministrazione contro la regola 1.
+
+Altri difetti di oggi:
+- le etichette sono «Puller», «Producer», «Consumer», «Collegamento al relay», «Connessione»;
+- il campo Chiave è schiacciato a una riga di 6 px (schermate);
+- la chiave nuova compare in un banner prima di essere salvata;
+- dopo il salvataggio di una pubblicazione, Annulla del `confirm("Salvato. Attenzione…")` salta il ricaricamento;
+- «Togli la chiave» salva anche le altre modifiche non salvate della riga.
+
+**Le tre cose, dette dal codice**
+
+| Oggi | Che cos'è (dal codice) | Si dice |
+|---|---|---|
+| Puller («Inoltrati da qui», `PullerDef`, `puller.py`) | una casella su **questa** macchina, l'«ufficio postale» del docstring. Un OmniaCLI che non si raggiunge da fuori ci lascia rapporti e backup e prende i comandi. Gli OmniaCLI che lo gestiscono leggono i rapporti e lasciano i comandi. Entrano tutti con un accesso di Utenti › Altre istanze (`settings.links`). Con una chiave, questa macchina non legge né cambia quello che passa | **Casella** (`puller` in `.small mono` dopo il nome, solo nel dialogo) |
+| Producer / Consumer | il collegamento in entrata di chi pubblica e di chi gestisce | **Chi pubblica** / **Chi gestisce** |
+| Pubblicazione («Pubblicate da qui», `Publication`, `publisher.py`) | un'istanza di **questa** macchina che chiama la macchina di inoltro tramite un collegamento della pagina Collegamenti (`link_targets`). Manda i rapporti (stato, dischi, carico, job) e i backup, e prende solo i comandi permessi, nei loro orari. Nessuno entra in questa macchina | **Istanza pubblicata** |
+| Connessione («Collegati da qui», `PullerConnection`, `consumer.py`) | **questa** macchina gestisce un'istanza che un altro OmniaCLI pubblica su una casella. Ha una sua pagina (`/pullers/connections/<nome>`) e compare nella barra in alto (`base.html` riga 525) | **Istanza gestita da qui** |
+| Relay | l'OmniaCLI raggiungibile che tiene la casella | **Macchina di inoltro** |
+
+Persona: l'integratore, admin della macchina; tutte le route sono `Depends(admin)`. Desktop. Ogni macchina di solito ha un solo ruolo dei tre: quella del cliente pubblica, quella pubblica inoltra, l'orchestratore gestisce.
+
+**Lavoro primario:** «Le istanze che passano da un inoltro arrivano? Ne aggiungo una.»
+
+**Testa:** «Pubblicazioni», con la riga «Le istanze che non si raggiungono da fuori: chi le pubblica, chi fa da inoltro, chi le gestisce. Nessuno entra nella macchina del cliente: è lei che chiama.» Il primario cambia con il tab e ce n'è sempre uno solo, come in Utenti (§4.2).
+
+**Tre tab** (`.tabs`, il tab in `#hash`), nell'ordine in cui passano i dati, **Pubblicate da qui (N) · Inoltrate da qui (N) · Gestite da qui (N)**:
+- senza `#hash` si apre il primo tab con righe;
+- con tutti e tre a 0 si apre il primo, e «Come funziona ▸» è aperto (rete di sicurezza);
+- un tab a 0 resta visibile con il suo conteggio: sono 3 e si vede subito dove sta il lavoro.
+
+**Sopra la piega, in ogni tab:** una riga di descrizione, la tabella e, solo oltre 8 righe, la ricerca. In fondo alla pagina, chiusi, «Come funziona ▸» (i tre «Altro» di oggi, riscritti con le parole sopra) e «Dove è salvato ▸»: i tre file in `.small mono`, con «leggibili solo dal proprietario: contengono le chiavi» per pubblicazioni e istanze gestite.
+
+#### A. Pubblicate da qui (primario **Pubblica un'istanza**)
+
+Descrizione: «Le istanze di questa macchina che mandano i rapporti a una casella di una macchina di inoltro, e ne prendono i comandi che permetti.»
+
+| Colonna | Contenuto |
+|---|---|
+| Istanza | «odoo19-odoo · produzione» (da `server/role`), link alla pagina dell'istanza. Se non è attiva qui: badge rosso «L'istanza non è attiva: non parte niente» |
+| Dove | «tramite **ber** · casella **api-prod**». Con `link_missing`: badge rosso «Manca il collegamento ber: Modifica…» |
+| Comandi permessi | a parole: «Backup sempre · Riavvia 22:00–06:00»; nessuno: «Nessun comando: solo rapporti». Sotto, in `.small`: «Con chiave» oppure, ambra, «In chiaro». Rosso se Avvia/Ferma/Riavvia sono permessi senza chiave: «Avvia, Ferma senza chiave: chi controlla la macchina di inoltro può mandarli» (è il `warning` di `/api/publications/save`, calcolato nel template) |
+| Stato | **Arriva** (verde) «ultimo rapporto gg/mm/aaaa hh:mm»; in `.small` «N comandi presi». **Non arriva** (rosso) con la causa tradotta in una riga (tabella sotto). **In partenza** (grigio, `ok` è `None`) |
+| Azioni | Modifica… · Smetti di pubblicare… |
+
+**Dialogo «Pubblica un'istanza» / «Modifica la pubblicazione di <istanza>»**, in quest'ordine:
+1. Istanza: un menu, solo nel nuovo, con le istanze non ancora pubblicate scritte come nella riga; nel Modifica è testo.
+2. Macchina di inoltro: un menu dei Collegamenti. Accanto, il link «Collegamenti ›».
+3. Casella: il nome che la casella ha sulla macchina di inoltro. Si controlla in linea: lettere, cifre e . _ -
+4. Comandi permessi: quattro caselle (Backup, Avvia, Ferma, Riavvia). Il campo Orari compare solo accanto a una casella spuntata: segnaposto «sempre», formato 22:00-06:00 controllato in linea. Avviso rosso in linea, prima di Salva, se Avvia, Ferma o Riavvia è spuntato senza chiave.
+5. Chiave, come stato a parole:
+   - senza chiave: «Nessuna chiave: tutto passa in chiaro sulla macchina di inoltro» e il secondario **Crea una chiave**;
+   - con chiave: «Chiave impostata», con i secondari **Sostituisci la chiave** e **Togli la chiave**;
+   - dopo Crea o Sostituisci la riga dice «Chiave nuova: vale al salvataggio». La chiave non si vede nel dialogo;
+   - dopo Togli dice, in rosso, «Al salvataggio tutto passa in chiaro», e Salva diventa **Salva senza chiave**;
+   - tutti e tre sono cambi del dialogo: non partono richieste POST.
+6. `details` **«Avanzate ▸»**, chiuso: «Incolla una chiave esistente» (campo `mono`), per ripubblicare con la chiave che i gestori hanno già.
+7. **Salva**, primario del dialogo, disattivato finché non cambi · Annulla.
+8. Dopo Salva:
+   - se la chiave è nuova, si apre il **dialogo del segreto** (regola 3): «La chiave di <istanza>. Incollala con Modifica… nella scheda Gestite da qui di ogni macchina che gestisce questa istanza: senza, i loro rapporti vengono rifiutati.» Poi Copia e **Ho copiato la chiave**;
+   - poi la pagina si ricarica sempre. Il `confirm()` di oggi sparisce: l'avviso è già in linea, e dopo il salvataggio resta nella colonna Comandi permessi.
+
+**Vuoto:** «Nessuna istanza pubblicata. Si pubblica un'istanza quando la sua macchina non si raggiunge da fuori: è lei a chiamare una macchina di inoltro. Serve prima un collegamento verso quella macchina, nella pagina Collegamenti.»
+
+Il primario è disattivato, con il motivo nel `title` dello `span`:
+- senza collegamenti: «Serve un collegamento verso la macchina di inoltro: aggiungilo in Collegamenti»;
+- senza istanze libere: «Tutte le istanze di questa macchina sono già pubblicate».
+
+#### B. Inoltrate da qui (primario **Nuova casella**)
+
+Descrizione: «Le caselle che questa macchina tiene per altri OmniaCLI: chi pubblica ci lascia rapporti e backup, chi gestisce ci lascia i comandi.»
+
+| Colonna | Contenuto |
+|---|---|
+| Casella | il nome. Se manca un accesso (`missing`): badge rosso «Manca l'accesso di <nomi>: Utenti › Altre istanze» |
+| Chi pubblica | il nome, con un pallino e una parola: **in linea** (verde, contatto negli ultimi 2 minuti) · «ultimo contatto gg/mm/aaaa hh:mm» (grigio) · **mai visto** |
+| Chi gestisce | i nomi, ciascuno in `.small` con «gg/mm/aaaa hh:mm» oppure «mai visto» |
+| In transito | «2 comandi in attesa · 1 scaduto · 1 file, 230,4 MiB»; niente: «Niente in attesa» |
+| Azioni | Modifica… · Elimina… |
+
+**Dialogo «Nuova casella» / «Modifica <nome>»**, in quest'ordine:
+1. Nome, solo nel nuovo. Hint: «lo stesso nome va scritto sulla macchina che pubblica e su quelle che gestiscono; lettere, cifre e . _ -». Controllo in linea, al massimo 64 caratteri. Nel Modifica è testo: non c'è una route per rinominare.
+2. Chi pubblica: un menu degli accessi di Utenti › Altre istanze.
+3. Chi gestisce: **caselle di spunta** sugli stessi accessi, senza chi pubblica. Prendono il posto del campo di testo con le virgole, e insieme al punto 2 tolgono di mezzo i due errori di oggi «X non può pubblicare e gestire» e «almeno uno». Il rosso in linea compare finché non ce n'è almeno una.
+4. `details` **«Avanzate ▸»**, chiuso: Ore di conservazione (1–720, predefinito 24) e File più grande, MiB (predefinito 10240, con «10 GiB» accanto). Rete di sicurezza: è aperto se un valore è diverso dal predefinito.
+5. **Salva**, primario del dialogo, disattivato finché non cambi · Annulla.
+
+**Vuoto:** «Nessuna casella. Una casella serve quando questa macchina si raggiunge da fuori e fa da inoltro per un'altra che non si raggiunge. Prima crea in Utenti › Altre istanze l'accesso di chi pubblica e di chi gestisce (basta il ruolo utente).»
+
+Il primario è disattivato con meno di due accessi: «Servono almeno due accessi in Utenti › Altre istanze: uno per chi pubblica e uno per chi gestisce.»
+
+#### C. Gestite da qui (primario **Aggiungi un'istanza da gestire**)
+
+Descrizione: «Le istanze di altri OmniaCLI che gestisci da qui attraverso una casella: le trovi anche nella barra in alto.»
+
+| Colonna | Contenuto |
+|---|---|
+| Istanza | il nome, link a `/pullers/connections/<nome>` |
+| Dove | «tramite **ber** · casella **api-prod**». Con `link_missing`: badge rosso «Manca il collegamento ber: Modifica…» |
+| Protezione | «Con chiave» · «In chiaro» (ambra) |
+| Stato | **Rapporti letti** (verde) gg/mm/aaaa hh:mm · **Rapporti rifiutati** (rosso, quando l'errore comincia con «a report refused») con la causa · **Non arriva niente** (rosso) con la causa · **In attesa del primo rapporto** (grigio) |
+| Azioni | Modifica… · Elimina… |
+
+**Dialogo «Aggiungi un'istanza da gestire» / «Modifica <nome>»**:
+1. Nome, solo nel nuovo: «come compare nella barra in alto»; controllo in linea.
+2. Macchina di inoltro: un menu dei Collegamenti.
+3. Casella.
+4. Chiave:
+   - nel nuovo: «Incolla la chiave della pubblicazione; vuota: in chiaro»;
+   - nel Modifica: «invariata», con il secondario **Togli la chiave**. È uno stato del dialogo: rosso in linea «Al salvataggio i rapporti cifrati vengono rifiutati», e Salva diventa **Salva senza chiave**.
+5. **Salva**, disattivato finché non cambi · Annulla.
+
+**Vuoto:** «Nessuna istanza gestita da qui. Sulla macchina del cliente qualcuno pubblica un'istanza su una casella; qui la aggiungi con il nome della casella e la sua chiave. Serve un collegamento verso la macchina di inoltro, nella pagina Collegamenti.»
+
+Il primario è disattivato senza collegamenti: «Serve un collegamento verso la macchina di inoltro: aggiungilo in Collegamenti».
+
+**Lista HIDE**
+
+| Elemento | Dove va | Rete di sicurezza |
+|---|---|---|
+| I 24 campi delle righe (menu, chiavi, ore, MiB, caselle e orari dei comandi) | dialogo Modifica | ogni valore resta letto nella riga, a parole |
+| Le tre righe «nuovo» in fondo alle tabelle | dialogo dal primario del tab | stato vuoto con il primo passo; primario disattivato con il motivo |
+| Banner «La chiave nuova» con il `pre` | dialogo del segreto, dopo Salva | la riga dice «Con chiave» o «In chiaro» |
+| Pulsanti «Nuova chiave» e «Togli la chiave» nelle righe | dialogo, come stati che non salvano da soli | Salva cambia etichetta; avviso rosso in linea |
+| Ore di conservazione, file più grande | Avanzate ▸ del dialogo della casella | aperto se diverso dal predefinito |
+| «Incolla una chiave esistente» della pubblicazione | Avanzate ▸ | — |
+| I tre «Altro» e i percorsi dei file | «Come funziona ▸», «Dove è salvato ▸» in fondo alla pagina | «Come funziona ▸» aperto se tutti i tab sono vuoti |
+| Le tre ricerche | solo oltre 8 righe nel tab | — |
+| Due pannelli su tre | tab | conteggio (N) su ogni tab; si apre il primo con righe |
+
+**Testi**
+
+| Oggi | Diventa |
+|---|---|
+| Puller (titolo, briciole, scheda di Impostazioni) | Pubblicazioni (P2) |
+| Inoltrati da qui / Pubblicate da qui / Collegati da qui | Inoltrate da qui / Pubblicate da qui / Gestite da qui |
+| Puller (colonna) | Casella |
+| Producer / Consumer | Chi pubblica / Chi gestisce |
+| Collegamento al relay | Macchina di inoltro (nel dialogo); «tramite <nome>» (nella riga) |
+| Connessione | Istanza |
+| Adesso | Stato / In transito |
+| Ore di conservazione · File più grande, MiB | invariati, dentro Avanzate ▸ |
+| «nessuna chiave: in chiaro» | In chiaro |
+| relay raggiunto / rapporti letti | Arriva / Rapporti letti |
+| Aggiungi puller / Pubblica / Collega | Nuova casella / Pubblica un'istanza / Aggiungi un'istanza da gestire |
+| Elimina (pubblicazione) | Smetti di pubblicare… |
+| Altro (×3) | Come funziona ▸ (uno, in fondo) |
+
+| Pulsante | Tab | Tipo | Etichetta | `title` (dal codice) |
+|---|---|---|---|---|
+| tab | — | tab | Pubblicate da qui (N) | «Le istanze di questa macchina che mandano i rapporti a una casella di una macchina di inoltro» |
+| tab | — | tab | Inoltrate da qui (N) | «Le caselle che questa macchina tiene per altri OmniaCLI» |
+| tab | — | tab | Gestite da qui (N) | «Le istanze di altri OmniaCLI che gestisci da qui attraverso una casella» |
+| pubblica | Pubblicate | **primario** | Pubblica un'istanza | «Manda i rapporti di un'istanza di questa macchina (stato, dischi, carico, job) a una casella di una macchina di inoltro, e prende da lì solo i comandi che permetti. Nessuno entra in questa macchina: è lei che chiama. Serve un collegamento verso la macchina di inoltro, nella pagina Collegamenti.» (`/api/publications/save`, `new`) |
+| modifica pubblicazione | Pubblicate | secondario `.small` | Modifica… | «Cambia macchina di inoltro, casella, comandi permessi con i loro orari e chiave. Vale dal giro successivo, entro mezzo minuto.» |
+| smetti | Pubblicate | pericolo `.small`, conferma | Smetti di pubblicare… | «Smette di mandare rapporti e backup e di prendere comandi per questa istanza. L'istanza non si tocca, e la casella sulla macchina di inoltro resta. Chiede conferma.» (`/api/publications/delete`). Conferma: «Smettere di pubblicare <istanza>? Chi la gestisce non riceve più rapporti né può mandarle comandi.» |
+| crea chiave | dialogo pubblicazione | secondario `.small` | Crea una chiave | «Prepara una chiave nuova che cifra rapporti, comandi e backup: la macchina di inoltro non può più leggerli né cambiarli. Vale solo dopo Salva, e allora te la mostra una volta: va data a ogni macchina che gestisce l'istanza.» (`/api/publications/key`, che non salva niente) |
+| sostituisci chiave | dialogo pubblicazione | secondario `.small` | Sostituisci la chiave | «Come Crea una chiave. Al salvataggio la chiave vecchia smette di valere: chi gestisce con quella rifiuta i rapporti finché non mette la nuova.» |
+| togli chiave | dialogo pubblicazione | pericolo `.small` | Togli la chiave | «Al salvataggio tutto passa in chiaro sulla macchina di inoltro, e chi gestisce con la chiave rifiuta i rapporti finché non la toglie anche lui. Da solo non salva niente.» (`remove_key`) |
+| caselle dei comandi | dialogo pubblicazione | casella (sull'etichetta) | Backup / Avvia / Ferma / Riavvia | «Chi gestisce può chiedere un backup di questa istanza: si fa qui e va alla casella, cifrato se c'è la chiave.» / «Chi gestisce può avviare (fermare, riavviare) questa istanza.» |
+| orari | dialogo pubblicazione | campo | Orari | «Le ore in cui il comando si prende, sull'orologio di questa macchina, per esempio 22:00-06:00. Vuoto: sempre. Fuori orario il comando si rifiuta subito.» |
+| salva pubblicazione | dialogo | primario del dialogo | Salva / Salva senza chiave | «Salva la pubblicazione. Disattivato finché non cambi qualcosa.» |
+| nuova casella | Inoltrate | **primario** | Nuova casella | «Apre una casella su questa macchina. Un OmniaCLI che non si raggiunge (chi pubblica) ci lascia rapporti e backup e ne prende i comandi; quelli che lo gestiscono leggono i rapporti e lasciano i comandi. Entrano tutti con un accesso di Utenti › Altre istanze (basta il ruolo utente).» (`/api/pullers/save`, `new`) |
+| modifica casella | Inoltrate | secondario `.small` | Modifica… | «Cambia chi pubblica, chi gestisce, le ore di conservazione e il file più grande. Il nome non cambia: fa parte degli indirizzi che usano le altre macchine. Comandi e file in attesa restano; chi togli non entra più.» |
+| elimina casella | Inoltrate | pericolo `.small`, conferma | Elimina… | «Cancella la casella con i comandi in attesa, i rapporti e i file. Chi pubblica e chi gestisce si sentono rispondere "casella inesistente" finché non la ricrei; le loro impostazioni non cambiano. Chiede conferma.» (`/api/pullers/delete`, `forget`). Conferma, dai dati della riga: «Eliminare la casella <nome>? Se ne vanno anche 2 comandi in attesa e 1 file (230,4 MiB).» |
+| salva casella | dialogo | primario del dialogo | Salva | «Salva la casella. Ogni nome scelto deve avere un accesso in Utenti › Altre istanze. Disattivato finché non cambi qualcosa.» |
+| aggiungi gestita | Gestite | **primario** | Aggiungi un'istanza da gestire | «Gestisce da qui un'istanza che un altro OmniaCLI pubblica su una casella: ne legge i rapporti e le lascia i comandi. L'istanza compare nella barra in alto. Serve un collegamento verso la macchina di inoltro (pagina Collegamenti) e, se la pubblicazione ne ha una, la sua chiave.» (`/api/connections/save`, `new`) |
+| nome istanza gestita | Gestite | link | `<nome>` | «Apre l'istanza: stato, carico, job e comandi, come li dicono i suoi rapporti» |
+| modifica gestita | Gestite | secondario `.small` | Modifica… | «Cambia macchina di inoltro, casella e chiave. La chiave lasciata vuota resta quella salvata.» |
+| togli chiave gestita | dialogo gestita | pericolo `.small` | Togli la chiave | «Al salvataggio i rapporti cifrati vengono rifiutati. Da solo non salva niente.» (`remove_key`) |
+| elimina gestita | Gestite | pericolo `.small`, conferma | Elimina… | «Smette di gestire l'istanza da qui, che sparisce dalla barra in alto. Quello che è già arrivato resta sul disco. Sulla macchina di inoltro e su quella del cliente non cambia niente. Chiede conferma.» (`/api/connections/delete`). Conferma: «Smettere di gestire <nome> da qui?» |
+| ho copiato | dialogo del segreto | primario del dialogo | Ho copiato la chiave | «Chiude: la chiave non si vedrà più. Se la perdi, Sostituisci la chiave e dalla di nuovo a chi gestisce.» |
+| Annulla | ogni dialogo | secondario | Annulla | «Chiude senza salvare» |
+| come funziona | fondo | `summary` | Come funziona | «Chi pubblica, chi inoltra, chi gestisce: cosa passa, cosa può leggere la macchina di inoltro, per quanto resta» |
+| dove è salvato | fondo | `summary` | Dove è salvato | «I tre file di questa macchina con caselle, pubblicazioni e istanze gestite, chiavi comprese» |
+
+**Messaggi d'errore** (`refuse()` e stati, da `tr`; il prefisso `pullers.<nome>.` / `publications.<…>.` / `connections.<…>.` di `ConfigError` non si mostra)
+
+| Oggi | Testo |
+|---|---|
+| A puller named X already exists / A puller connection named X already exists | «Esiste già una casella (un'istanza gestita) di nome X: scegli un altro nome.» |
+| X is already published | «X è già pubblicata: cambiala con Modifica….» |
+| No puller X / X is not published / No puller connection X (404) | «X non c'è più: ricarica la pagina.» |
+| No instance X | «L'istanza X non c'è su questa macchina.» |
+| …: a name is letters, digits and . _ - (it is part of URLs) / … is not a name of letters, digits and . _ - | «Il nome: lettere, cifre e . _ - (fa parte degli indirizzi).» |
+| .producer: the name of a link of the Users page | «Scegli chi pubblica fra gli accessi di Utenti › Altre istanze.» |
+| .consumers: at least one | «Scegli almeno una macchina che gestisce.» |
+| X cannot be the producer and a consumer | «X non può pubblicare e gestire la stessa casella.» |
+| keep_hours must be a whole number from 1 to 720 | «Ore di conservazione: un numero intero da 1 a 720.» |
+| max_file_mib must be a whole number from 1 to 1048576 | «File più grande: un numero intero di MiB da 1 a 1048576.» |
+| No incoming link X: create it on the Users page | «X non ha un accesso a questa macchina: crealo in Utenti › Altre istanze.» |
+| No link X: add the relay on the Links page | «Non c'è il collegamento X: aggiungi la macchina di inoltro in Collegamenti.» |
+| window must be 'HH:MM-HH:MM' / invalid time …, expected HH:MM | «Orari di <comando>: nel formato 22:00-06:00, oppure vuoto per sempre.» |
+| .key: a puller key starts with opk1- / holds 32 bytes / not base64 text | «Questa non è una chiave di pubblicazione intera: copiala di nuovo, comincia con opk1-.» |
+| Cannot write <file>: … (500) | «Non riesco a scrivere il file (<motivo>): niente è cambiato.» |
+| warning «start, stop exposed without a key…» | «Avvia, Ferma senza chiave: chi controlla la macchina di inoltro può mandarli.» |
+| stato: X is not a live instance here | «L'istanza non è attiva qui: non parte niente.» |
+| stato: no link X on the Links page | «Manca il collegamento X: Modifica….» |
+| stato: X answered HTTP 404: No puller Y | «La macchina di inoltro non ha la casella Y: va creata lì (Inoltrate da qui).» |
+| stato: X answered HTTP 403: … is the consumer of puller Y, not its producer | «Su X questa macchina non è chi pubblica la casella Y: va cambiato lì.» |
+| stato: X: <errore di rete> | «La macchina di inoltro X non risponde (<causa tradotta>).» |
+| stato: a report refused: the message does not open with this puller's key… | «Rapporti rifiutati: la chiave non è quella della pubblicazione (o la casella è un'altra). Incollala di nuovo con Modifica….» |
+| stato: a report refused: a message in clear on a puller with a key | «Rapporti rifiutati: arrivano in chiaro e qui c'è una chiave. Togli la chiave qui, o mettila nella pubblicazione.» |
+| stato: a report refused: an encrypted message, and no key for this puller here | «Rapporti rifiutati: arrivano cifrati e qui non c'è la chiave. Incollala con Modifica….» |
+
+**Il necessario**
+- **Stato del sistema:** Stato a parole in ogni riga di Pubblicate e Gestite, «in linea» e «In transito» in Inoltrate. Il conteggio (N) è su ogni tab. Le date sono `gg/mm/aaaa hh:mm`: oggi `toLocaleString()` mette i secondi e la virgola.
+- **Annulla:**
+  - c'è una conferma, con il nome dell'oggetto, su Elimina casella, Smetti di pubblicare ed Elimina istanza gestita;
+  - Crea, Sostituisci e Togli la chiave non partono finché non premi Salva;
+  - Annulla o Esc chiudono il dialogo senza richieste POST.
+- **Prevenzione dell'errore:**
+  - Salva è disattivato senza modifiche;
+  - chi pubblica e chi gestisce si scelgono da elenchi (niente nomi a mano);
+  - nomi e orari si controllano in linea;
+  - «Avvia/Ferma senza chiave» è rosso prima di Salva;
+  - Salva cambia etichetta quando toglie la chiave;
+  - i primari sono disattivati con il motivo.
+- **Messaggio d'errore:** la tabella sopra, mai `data.error` grezzo (regola 6). L'esito di un errore resta nella fascia `#error` in testa; con il dialogo aperto va sotto il Salva del dialogo.
+- **Aiuto:** il `title` di ogni pulsante; «Come funziona ▸»; gli stati vuoti dicono il primo passo e su quale pagina.
+
+#### Righe da aggiungere a §6
+
+- **Dati:** sulla macchina di prova, 2 accessi in Utenti › Altre istanze, 1 collegamento verso una macchina di inoltro, 2 caselle, 2 pubblicazioni (una con chiave, una in chiaro con Riavvia permesso), 2 istanze gestite.
+- **Criterio 1:** su `/pullers`, in ogni tab, `.primary:visible` fuori da `dialog[open]` = 1 (oggi 1 per tutta la pagina, ma con 3 pannelli). Dentro `dialog[open]`: ≤ 1.
+- **Criterio 2:** su `/pullers`, compresi i 3 tab, i 2 `summary` e i pulsanti dei dialoghi aperti, pulsanti senza aiuto = 0.
+- **Criterio 3:** su `/pullers`, ogni tab ≤ 900 px con i `details` chiusi (oggi 1409–1469 px per la pagina intera).
+- **Criterio 4:** su `/pullers`, ogni tab ≤ 1 campo in vista fuori da `dialog[open]` (la ricerca, solo oltre 8 righe). Oggi 24. `pre:visible` fuori da `dialog[open]` = 0.
+- **Criterio 7:** su `/pullers`, nessun match di `/\b(puller|producer|consumer|relay)\b/i` fuori da `.mono.small`, da `details:not([open])` e dai `title`.
+- **Criterio 8:** una chiave nuova compare solo in `dialog[open]` **dopo** la risposta di `/api/publications/save`, con un solo pulsante «Ho copiato la chiave». Crea, Sostituisci e Togli la chiave non fanno partire nessuna richiesta verso `/save`.
+- **Criterio 11 (nuovo):** durante il salvataggio di una pubblicazione con Riavvia e senza chiave, `page.on("dialog")` = 0, la pagina si ricarica e la riga mostra in rosso «Riavvia senza chiave». Senza `#hash` si apre il primo tab con righe; con tutti i file vuoti si apre «Pubblicate da qui» con «Come funziona ▸» aperto.
+- **Criterio 9:** aggiungere tre errori provocati: Nuova casella senza nessun gestore (il Salva resta disattivato, con il rosso in linea); orari «25:00-06:00» (testo italiano in linea); Aggiungi un'istanza da gestire con la chiave «abc».
+
+#### Decisioni di Carlo (da aggiungere a §8)
+
+1. **P1: la parola per «puller».**
+   - **Raccomandata: «casella»**, perché il codice la descrive come un ufficio postale dove si lasciano e si prendono comandi, rapporti e file. «puller» resta in `.small mono` nel dialogo.
+   - Alternativa: «puller» come oggi. È più corto e uguale nelle due lingue, ma il criterio 7 va tolto per questa parola.
+2. **P2: il titolo della pagina.**
+   - **Raccomandata: «Pubblicazioni»**, il nome che usi già. La riga sotto il titolo nomina tutti e tre i ruoli.
+   - Alternativa: «Inoltro», più neutro sui tre tab ma meno parlante per chi pubblica.
+   - In tutti e due i casi cambiano anche le briciole di `connection.html`, la scheda di Impostazioni e il `title` della voce nella barra in alto.
+3. **P3: il nome di un'istanza gestita.**
+   - **Raccomandata: non si cambia** (nessuna route); per cambiarlo si elimina e si aggiunge di nuovo. Quello che è arrivato resta sul disco sotto il nome vecchio.
+   - Alternativa: una route di rinomina (sotto).
+
+**Funzioni di backend che servirebbero (fuori da questo contratto)**
+- Rinominare una casella o un'istanza gestita, come fa `/api/links/rename` per i collegamenti.
+- **`/api/links/rename` sposta le pubblicazioni ma non le istanze gestite** (`app.py` intorno alla riga 4449). Dopo una rinomina, una riga di «Gestite da qui» mostra «Manca il collegamento X». Il badge `link_missing` è la rete di sicurezza, ma è un difetto da segnalare a parte.
+- Lo stato di una pubblicazione (ultimo rapporto, comandi presi) vive in memoria: dopo un riavvio di OmniaCLI la riga dice «In partenza» fino al primo giro. Salvarlo darebbe la data anche prima.
+
+**Non verificato (Pubblicazioni)**
+
+1. La soglia «in linea = contatto negli ultimi 2 minuti» la deduco da `WAIT = 25 s` del long-poll. Non ho letto `RETRY` né misurato.
+2. Non ho controllato se un admin di workspace riceve 403 su `/pullers` come sulle altre pagine. Né se `/pullers/connections/<nome>`, che non ha `Depends(admin)`, è aperta a tutti i ruoli.
+3. «Vale dal giro successivo, entro mezzo minuto»: è letto in `cycle()`, che rilegge la pubblicazione a ogni giro. Che un job già partito da un comando continui dopo Smetti di pubblicare non l'ho verificato, e per questo il `title` non lo promette.
+4. Le altezze sotto i 900 px sono stime (righe di circa 56 px), non misure. Le traduzioni degli errori di rete (`describe_error`) non le ho lette una per una.
+
 ## Stato (20/11/2026 notte)
 
 Fatti: Collegamenti (2026.1.5446), Utenti, Gruppi, pagina del Workspace ed elenco (2026.1.5447). Misurato con Playwright
