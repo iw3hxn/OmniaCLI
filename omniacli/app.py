@@ -2106,6 +2106,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                             f"the instance is opened at {web or 'no address'}")
 
     login_path_seen: dict[str, float] = {}
+    LOGIN_PATH_TRIES, LOGIN_PATH_PAUSE = 10, 1.0
 
     async def login_path_reached(host: str) -> bool:
         """Whether https://host/.omniacli/login reaches this OmniaCLI (its
@@ -2150,7 +2151,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             login_path_seen.pop(host, None)
             job.log(f"nginx of {host}: {', '.join(found.get('changed') or []) or 'already passing it'} "
                     f"({found.get('nginx')}); to undo: {found.get('undo')}")
-            if not await login_path_reached(host):
+            # nginx's workers take the reload a moment later: asked a few times
+            for _ in range(LOGIN_PATH_TRIES):
+                if await login_path_reached(host):
+                    break
+                await asyncio.sleep(LOGIN_PATH_PAUSE)
+            else:
                 raise JobFailed(f"https://{host}{loginas.LOGIN_PATH} still does not reach OmniaCLI: "
                                 "another nginx or a proxy in front of this one answers that name")
             job.result = found
