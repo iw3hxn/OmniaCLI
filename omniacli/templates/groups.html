@@ -5,41 +5,52 @@
 {{ crumbs([(_("Settings"), "/settings"), (_("Groups"), None)]) }}
 {% endblock %}
 {% block content %}
+{# the groups (docs/ux/UX-007 §4.3): the page is the form; one Save, in a bar that stays in sight, once something changed #}
+<style>
+.groups-bar { position: sticky; bottom: 0; z-index: 5; display: flex; gap: 12px; align-items: center; justify-content: flex-end;
+  padding: 10px 14px; margin-top: 8px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-lg);
+  box-shadow: var(--shadow); }
+.groups-foot details { margin: 10px 0 0; }
+</style>
 <div class="page-head">
   <div><h1>{{ _("Groups") }}</h1>
-    <p>{{ _("The headings of the Dashboard's lists, in this order, each with its subgroups.") }}</p></div>
-  <div class="actions"><button type="button" class="primary save-top">{{ _("Save") }}</button>
-    <a class="button" href="{{ prefix }}/">{{ _("Cancel") }}</a></div>
+    <p>{{ _("The headings the Dashboard shows the instances under, in this order.") }}</p></div>
 </div>
-<details class="panel" style="margin-bottom: 16px"><summary>{{ _("How members are matched") }}</summary>
-<p class="muted" style="margin-bottom: 0">{{ _("One member per line: a name of the list (srv), or a pattern of names (acme-*; * all of them; ? one character). An item shows under the first group that has it, itself or in a subgroup, then under the first of its subgroups that has it; the others under Others.") }}
-{{ _("Saved in {path}.", path=groups_file) }}</p></details>
 <div id="error" class="banner" hidden></div>
-{% for list, title in (("servers", _("Servers")), ("links", _("Linked"))) %}
+{% for list, title in (("servers", _("Instances of this machine")), ("links", _("Linked instances"))) %}
 <section class="panel group-list" id="{{ list }}" data-list-name="{{ list }}" style="margin-bottom: 16px">
   <h2 style="margin-top: 0">{{ title }}</h2>
+  <p class="muted groups-empty" hidden>{{ _("No group: the Dashboard shows the instances in one list. A group gathers them under a heading, for example Customers with acme-*.") }}</p>
   <div class="groups"></div>
-  <div class="actions"><button type="button" class="add-top">{{ _("Add group") }}</button></div>
-  <p class="muted" style="margin-bottom: 4px">{{ _("Servers known now (click one to add it to the last group you edited):") if list == "servers" else _("Linked instances known now (click one to add it to the last group you edited):") }}</p>
+  <div class="actions"><button type="button" class="add-top" title="{{ _('Adds a group at the end of this list: give it a name and its members, one a line') }}">+ {{ _("Add group") }}</button></div>
+  <p class="muted" style="margin-bottom: 4px">{{ _("Known now (a click adds it to the last group you edited):") }}</p>
   <div class="actions known">
-    {% for key in known[list] %}<button type="button" class="mono" data-member="{{ key }}">{{ key }}</button>
-    {% else %}<span class="muted">{{ _("none yet") }}</span>{% endfor %}
+    {% for key in known[list] %}<button type="button" class="mono small" data-member="{{ key }}" title="{{ _('Adds {name} to the last group you edited (none: to the last of the list)', name=key) }}">{{ key }}</button>
+    {% else %}<span class="muted">{{ _("No instance yet.") }}</span>{% endfor %}
   </div>
 </section>
 {% endfor %}
-<div class="actions">
-  <button type="button" class="primary" id="save">{{ _("Save") }}</button>
-  <a class="button" href="{{ prefix }}/">{{ _("Cancel") }}</a>
+<div class="groups-bar">
+  <span class="muted" id="changes"></span>
+  <a href="{{ prefix }}/" id="cancel" title="{{ _('Goes back to the Dashboard without saving') }}">{{ _("Cancel") }}</a>
+  <span title="{{ _('Saves the groups of the two lists and goes back to the Dashboard, which shows them at once. It does not touch the instances. Disabled until something is changed.') }}">
+    <button type="button" class="primary" id="save" disabled>{{ _("Save") }}</button></span>
+</div>
+<div class="groups-foot muted">
+  <details><summary title="{{ _('How a name or a pattern of names puts an instance in a group') }}">{{ _("How members are matched") }}</summary>
+    <p>{{ _("One member per line: a name of the list (srv), or a pattern of names (acme-*; * all of them; ? one character). An item shows under the first group that has it, itself or in a subgroup, then under the first of its subgroups that has it; the others under Others.") }}</p></details>
+  <details><summary title="{{ _('The file of this machine that keeps the groups') }}">{{ _("Where it is saved") }}</summary>
+    <p class="mono" style="font-size: 13px">{{ _("Saved in {path}.", path=groups_file) }}</p></details>
 </div>
 <template id="group-template">
   <fieldset class="group-box">
     <legend><input type="text" class="name" placeholder="{{ _("group name") }}" aria-label="{{ _("Group name") }}"></legend>
     <textarea class="members mono" rows="3" placeholder="{{ _("one member per line") }}" aria-label="{{ _("Members") }}"></textarea>
     <div class="actions" style="margin: 8px 0 0">
-      <button type="button" class="up" title="{{ _("Move up") }}" aria-label="{{ _("Move up") }}">↑</button>
-      <button type="button" class="down" title="{{ _("Move down") }}" aria-label="{{ _("Move down") }}">↓</button>
-      <button type="button" class="add-sub">{{ _("Add subgroup") }}</button>
-      <button type="button" class="danger remove">{{ _("Remove") }}</button>
+      <button type="button" class="small up" title="{{ _("Move up") }}" aria-label="{{ _("Move up") }}">↑</button>
+      <button type="button" class="small down" title="{{ _("Move down") }}" aria-label="{{ _("Move down") }}">↓</button>
+      <button type="button" class="small add-sub" title="{{ _('Adds a group inside this one (up to 4 levels): an instance goes in the first subgroup that names it') }}">+ {{ _("Subgroup") }}</button>
+      <button type="button" class="small danger remove" title="{{ _('Takes the group and its subgroups out of the list; its instances go back under Others. It holds at the save.') }}">{{ _("Remove") }}</button>
     </div>
     <div class="subgroups" style="margin-left: 18px"></div>
   </fieldset>
@@ -87,20 +98,44 @@
       };
     }
   }
+  // what changed since the page was read: every group as its place, name and members
+  const flat = (groups, path = "") => groups.flatMap((g, i) => [`${path}/${i}|${g.name}|${g.members.join(",")}`, ...flat(g.groups, `${path}/${i}`)]);
+  const state = () => [...document.querySelectorAll(".group-list")].flatMap((section) => flat(collect(section.querySelector(".groups")), section.dataset.listName));
+  const before = state();
+  const T = {one: {{ _("1 change") | tojson }}, many: {{ _("{count} changes") | tojson }},
+             leaveQ: {{ _("Leave the page without saving the changes?") | tojson }}};
+  function changes() {
+    const now = state(), a = new Set(before), b = new Set(now);
+    return Math.ceil((before.filter((x) => !b.has(x)).length + now.filter((x) => !a.has(x)).length) / 2);
+  }
+  let leaving = false;
+  function mark() {
+    const count = changes();
+    document.getElementById("save").disabled = !count;
+    document.getElementById("changes").textContent = !count ? "" : count === 1 ? T.one : T.many.replace("{count}", count);
+    for (const section of document.querySelectorAll(".group-list"))
+      section.querySelector(".groups-empty").hidden = section.querySelector(".groups").children.length > 0;
+  }
+  for (const kind of ["input", "click"]) document.addEventListener(kind, () => setTimeout(mark, 0));
+  window.addEventListener("beforeunload", (e) => { if (!leaving && changes()) e.preventDefault(); });
+  document.getElementById("cancel").addEventListener("click", (e) => {
+    if (changes() && !confirm(T.leaveQ)) { e.preventDefault(); return; }
+    leaving = true;
+  });
+  mark();
   const save = async () => {
     const body = {lists: Object.fromEntries([...document.querySelectorAll(".group-list")].map(
       (section) => [section.dataset.listName, collect(section.querySelector(".groups"))]))};
     const resp = await fetch("{{ prefix }}/api/groups/save", {method: "POST",
       headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
     const data = await resp.json().catch(() => ({}));
-    if (resp.ok) { location.href = "{{ prefix }}/"; return; }
+    if (resp.ok) { leaving = true; location.href = "{{ prefix }}/"; return; }
     const errorBox = document.getElementById("error");
     errorBox.textContent = data.error || data.detail || {{ _("Error {status}") | tojson }}.replace("{status}", resp.status);
     errorBox.hidden = false;
     window.scrollTo(0, 0);
   };
   document.getElementById("save").onclick = save;
-  document.querySelector(".save-top").onclick = save;
 })();
 </script>
 {% endblock %}

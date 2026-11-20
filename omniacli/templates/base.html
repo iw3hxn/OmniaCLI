@@ -271,6 +271,12 @@ dialog h2 { font-size: 18px; margin-bottom: 8px; }
 .addon { display: block; padding: 2px 0; font-family: ui-monospace, "DejaVu Sans Mono", monospace; font-size: 12.5px; }
 .addon-version { white-space: pre; } .addon.addon-newer, .addon.addon-newer .addon-version { color: var(--err); }
 .instance-grid { display: grid; gap: 16px; grid-template-columns: repeat(var(--cols, 1), minmax(0, 1fr)); }
+/* the tabs of a page (an instance, the Dashboard, Users, a workspace) */
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin: 6px 0 16px; overflow-x: auto; }
+.tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; box-shadow: none;
+  padding: 10px 14px; color: var(--muted); font-weight: 600; white-space: nowrap; }
+.tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+.tab-panel[hidden] { display: none; }
 .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
 .tile { border: 1px solid var(--border); border-radius: var(--r-lg); padding: 12px 14px; background: var(--panel-2); }
 .tile-label { color: var(--muted); font-size: 12px; font-weight: 500; }

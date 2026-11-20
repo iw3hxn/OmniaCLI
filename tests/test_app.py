@@ -1216,6 +1216,15 @@ async def test_users_page_and_web_user(client, env):
     settings = client.app.state.settings
     page = (await client.get("/users", headers={"Authorization": AUTH})).text
     assert "<h1>Users" in page and "<strong>viewer</strong>" in page and "main config" in page
+    # UX-007: three tabs, the rows read (no field outside the dialogs), one primary, every button with its help
+    import re
+    assert re.findall(r'role="tab" data-tab="([a-z]+)"', page) == ["people", "incoming", "tokens"]
+    body = re.sub(r"<script.*?</script>", "", page[page.index('<div class="page-head">'):], flags=re.S)
+    outside = re.sub(r"<dialog.*?</dialog>", "", body, flags=re.S)
+    assert len(re.findall(r'class="[^"]*\bprimary\b', outside)) == 1
+    assert not re.findall(r"<(?:input|textarea|select)\b(?![^>]*data-list-search)", outside)
+    assert not [m.group(0) for m in re.finditer(r"<(?:button|summary)\b[^>]*>", outside)
+                if "title=" not in m.group(0) and 'id="new-item"' not in m.group(0)]
     resp = await access(client, "users/save", {"name": "anna", "role": "developer", "password": "anna-pass-1", "new": True})
     assert resp.status_code == 200, resp.text
     # the file holds the hash, readable by its owner only

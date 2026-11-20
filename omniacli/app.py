@@ -4118,7 +4118,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             request,
             "users.html",
             {
-                "users": [{"name": n, "role": settings.user_role(n), "fixed": n in fixed.users}
+                "users": [{"name": n, "role": settings.user_role(n), "fixed": n in fixed.users,
+                           # where a customer's user gets in
+                           "workspaces": sorted(w.name for w in settings.workspaces.values() if n in w.members)}
                           for n in sorted(settings.users)],
                 "links": [{"name": n, "role": link.role, "fixed": n in fixed.links}
                           for n, link in sorted(settings.links.items())],
@@ -4128,6 +4130,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 "users_file": settings.users_file,
                 "roles": ACCESS_ROLES,
                 "user_roles": USER_ROLES,
+                "min_password": _MIN_PASSWORD,
             },
         )
 
