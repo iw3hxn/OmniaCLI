@@ -270,6 +270,9 @@ async def environment(dest: Destination, folder: Path) -> dict:
             continue
         if setting.obscure:
             value = await _obscured(value)
+        if setting.name == "key_pem":
+            # rclone reads it on one line, its line ends written \n
+            value = value.replace("\r", "").strip().replace("\n", "\\n")
         env[prefix + setting.name.upper()] = value
     if dest.kind == "drive":
         env[prefix + "SCOPE"] = "drive"

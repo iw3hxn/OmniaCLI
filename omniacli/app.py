@@ -4851,7 +4851,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return {}
 
     def machine_admin(me: Principal) -> bool:
-        return me.kind == "user" and not me.workspaces and me.can("admin") or me.kind == "token" and me.can("admin")
+        """An admin of the machine (a user, a token, a link acting as one), not
+        of a workspace only."""
+        return not me.workspaces and me.can("admin")
 
     def destination_choices(instance: Instance, me: Principal, current: str = "") -> list:
         """The destinations the instance's backups may go to, for me: the

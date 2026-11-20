@@ -164,6 +164,16 @@ async def test_a_copy_encrypted_there_rotated_and_brought_back(rclone, tmp_path)
             await destinations.fetch(_job(), dest, "srv/production", bad, back)
 
 
+async def test_a_private_key_reaches_rclone_on_one_line(rclone):
+    dest = destinations.parse_destination("k", {
+        "kind": "sftp", "path": "b", "key": pullcrypto.new_key(),
+        "settings": {"host": str(rclone["root"]), "user": "u",
+                     "key_pem": "-----BEGIN OPENSSH PRIVATE KEY-----\r\nAAAA\nBBBB\n-----END OPENSSH PRIVATE KEY-----\n"}})
+    await destinations.check(dest)
+    sent = rclone["asked"]()[-1]["env"]["RCLONE_CONFIG_OMNIACLI_KEY_PEM"]
+    assert sent == "-----BEGIN OPENSSH PRIVATE KEY-----\\nAAAA\\nBBBB\\n-----END OPENSSH PRIVATE KEY-----"
+
+
 async def test_check_and_an_unreachable_one(rclone, tmp_path):
     assert await destinations.check(_dest(rclone["root"])) == "0 files in backups/odoo"
     with pytest.raises(JobFailed, match="no such host"):
