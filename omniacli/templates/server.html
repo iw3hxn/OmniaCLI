@@ -306,7 +306,7 @@
     <h3>{{ _("Automatic backups") }}</h3>
     <div class="ab-row">
       <label><input type="checkbox" id="ab-enabled"> {{ _("Every day at") }}</label>
-      <input type="time" id="ab-time" required>
+      <input type="time" id="ab-time" required> <span class="muted" id="ab-zone"></span>
       {% for f in inst.plugin.backup_fields() if f.kind == "checkbox" %}
       <label title="{{ tr(f.help) if f.help }}"><input type="checkbox" data-ab-option="{{ f.key }}"> {{ tr(f.label) }}</label>
       {% endfor %}
@@ -561,6 +561,9 @@
     abNext: {{ _("Next: {time}.") | tojson }}, abLast: {{ _("Last: {time}, {status}.") | tojson }},
     abOff: {{ _("Off: no automatic backup.") | tojson }}, abSaved: {{ _("Saved.") | tojson }},
     abNoRight: {{ _("Only an administrator changes them.") | tojson }},
+    abZone: {{ _("this server's time ({zone})") | tojson }},
+    statuses: {success: {{ _("success") | tojson }}, failed: {{ _("failed") | tojson }}, skipped: {{ _("skipped") | tojson }},
+               running: {{ _("running") | tojson }}, queued: {{ _("queued") | tojson }}},
     refused: {{ _("Refused") | tojson }},
   };
 
@@ -873,13 +876,14 @@
     form.hidden = false;
     document.getElementById("ab-enabled").checked = data.enabled;
     document.getElementById("ab-time").value = data.time;
+    document.getElementById("ab-zone").textContent = data.zone ? T.abZone.replace("{zone}", data.zone) : "";
     for (const k of ["daily", "weekly", "monthly"]) document.getElementById(`ab-${k}`).value = data[k];
     for (const input of form.querySelectorAll("[data-ab-option]")) input.checked = !!data.options[input.dataset.abOption];
     for (const input of form.querySelectorAll("input, button")) input.disabled = !data.can_edit;
     const said = [];
     if (!data.enabled) said.push(T.abOff);
     else if (data.next) said.push(T.abNext.replace("{time}", data.next));
-    if (data.last) said.push(T.abLast.replace("{time}", data.last.time.replace("T", " ")).replace("{status}", data.last.message || data.last.status));
+    if (data.last) said.push(T.abLast.replace("{time}", data.last.time.replace("T", " ")).replace("{status}", data.last.message || T.statuses[data.last.status] || data.last.status));
     if (!data.can_edit) said.push(T.abNoRight);
     document.getElementById("ab-status").textContent = said.join(" ");
   }

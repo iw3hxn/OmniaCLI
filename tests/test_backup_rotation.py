@@ -154,7 +154,7 @@ async def test_the_automatic_backups_panel(client, env):
     resp = await client.post(url, headers=POST, json=body)
     assert resp.status_code == 200, resp.text
     data = resp.json()
-    assert data["enabled"] and data["time"] == "02:30" and data["next"], data
+    assert data["enabled"] and data["time"] == "02:30" and data["next"] and data["zone"], data
     assert data["options"]["no_filestore"] is True, data
     sch = schedules.load_schedules(env["settings"].schedules_file)["backup.srv.production"]
     assert sch.cron == "30 2 * * *" and (sch.backup.daily, sch.backup.weekly, sch.backup.monthly) == (5, 2, 6)

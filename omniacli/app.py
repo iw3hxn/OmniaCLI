@@ -4754,6 +4754,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 "cron": sch.cron if sch is not None else "", **rotation,
                 "options": dict(backup.options) if backup is not None else {},
                 "next": upcoming, "last": runs[0] if runs else None,
+                # the schedule runs at this machine's time
+                "zone": datetime.datetime.now().astimezone().tzname() or "",
                 "fields": [_field_dict(f) for f in instance.plugin.backup_fields() if f.kind == "checkbox"],
                 "can_edit": me.can(backup_role(instance))}
 

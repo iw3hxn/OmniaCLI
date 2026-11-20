@@ -368,6 +368,7 @@
  "the restore into {key}": "il ripristino in {key}",
  "the restore into {key} here": "il ripristino in {key} qui",
  "this machine has": "questa macchina ha",
+ "this server's time ({zone})": "ora del server ({zone})",
  "updated {time}": "aggiornato alle {time}",
  "weeks": "settimane",
  "with filestore (a copy of production's)": "con filestore (una copia di quello della produzione)",
