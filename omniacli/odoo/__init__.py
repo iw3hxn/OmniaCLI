@@ -12,6 +12,7 @@ import asyncio
 import configparser
 import os
 import re
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -371,6 +372,32 @@ class OdooPlugin(ServicePlugin):
     def disk_paths(self, instance: Instance) -> list[tuple[str, str]]:
         data_dir = _data_dir(instance.options.odoo_config)
         return [("filestore", data_dir)] if data_dir else []
+
+    def shell_paths(self, instance: Instance) -> list[dict]:
+        """Its folders and files; odoo-bin with its venv's python, as the
+        user it runs as."""
+        opts = instance.options
+        python = opts.venv_bin / "python"
+        odoo_bin = ops.find_odoo_bin(instance)
+        sudo = f"sudo -u {shlex.quote(instance.run_as)} " if instance.run_as else ""
+        conf, db = shlex.quote(str(opts.odoo_config)), shlex.quote(opts.database)
+        rows = [{"label": "Source", "value": str(odoo_bin.parent if odoo_bin else ""), "kind": "path"},
+                {"label": "Config file", "value": str(opts.odoo_config), "kind": "path"},
+                {"label": "Python interpreter", "value": str(python), "kind": "path"}]
+        if instance.log_file is not None:
+            rows.append({"label": "Log file", "value": str(instance.log_file), "kind": "path"})
+        data_dir = _data_dir(opts.odoo_config)
+        if data_dir:
+            rows.append({"label": "Data folder", "value": data_dir, "kind": "path"})
+        rows = [r for r in rows if r["value"]]
+        if odoo_bin is not None:
+            run = f"{sudo}{shlex.quote(str(python))} {shlex.quote(str(odoo_bin))}"
+            rows += [{"label": "Odoo shell", "value": f"{run} shell -c {conf} -d {db} --no-http", "kind": "command"},
+                     {"label": "Update all modules",
+                      "value": f"{run} -c {conf} -d {db} -u all --stop-after-init --no-http", "kind": "command"}]
+        rows.append({"label": "Install Python packages",
+                     "value": f"{sudo}{shlex.quote(str(python))} -m pip install ...", "kind": "command"})
+        return rows
 
     # --- the server form, the server page, the routes, MCP --------------
 

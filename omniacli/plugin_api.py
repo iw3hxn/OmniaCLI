@@ -437,6 +437,12 @@ class ServicePlugin(ABC):
         """[(what, path)] the instance writes to, for the disks panel."""
         return []
 
+    def shell_paths(self, instance: Instance) -> list[dict]:
+        """The paths and the shell commands of the instance, for whoever
+        works on the machine over ssh (the page's Paths and shell commands):
+        [{"label", "value", "kind": "path" or "command"}]."""
+        return []
+
     def db_shell(self, instance: Instance) -> tuple[str, dict] | None:
         """The database client of the instance's psql page: the command the
         login shell runs (found by its PATH) and the environment it gets.

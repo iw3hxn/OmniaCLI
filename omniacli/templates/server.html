@@ -286,6 +286,21 @@
     {% if stagings and stagings.can and not stagings.rows %}<p class="muted" style="margin: 8px 0 0">{{ _("No staging: a staging is a dated copy of production, to try an update without touching it.") }}</p>{% endif %}
   </div>
   {% endif %}
+  {% set paths = shell_paths.get(inst.key) %}
+  {% if paths %}
+  {# where the instance lives and the commands to work on it from a shell of the machine (ssh) #}
+  <details class="panel shell-paths">
+    <summary>{{ icon("terminal") }} {{ _("Paths and shell commands") }}</summary>
+    <p class="muted" style="font-size: 13px">{{ _("On this machine, over ssh as root (or a user with sudo).") }}</p>
+    <dl>
+      {% for row in paths %}
+      <dt>{{ tr(row.label) }}</dt>
+      <dd>{% if row.kind == "command" %}<pre class="copyable sp-cmd">{{ row.value }}</pre>
+        {% else %}<span class="mono">{{ row.value }}</span>{% endif %}</dd>
+      {% endfor %}
+    </dl>
+  </details>
+  {% endif %}
   {% set outcome = {"success": _("done"), "failed": _("failed"), "running": _("running"), "queued": _("queued"), "interrupted": _("interrupted"), "stopped": _("stopped")} %}
   <p class="last-action">{% if jobs %}{% set job = jobs[0] %}{{ _("Last action:") }} <a href="{{ prefix }}/jobs/{{ job.id }}">{{ tr(job.title) }}</a>
     · <span class="status {{ job.status }}">{{ outcome.get(job.status, job.status) }}</span>{% if job.duration %} · {{ job.duration }}{% endif %} · {{ when(job.created) }}
@@ -438,15 +453,32 @@
 .oc-table input:disabled, .oc-table select:disabled { background: var(--panel-2); color: var(--muted); }
 .oc-table tr.oc-dirty td { background: var(--accent-soft); }
 .oc-table tr.oc-group td { background: var(--panel-2); font-weight: 600; font-size: 13px; }
+.shell-paths summary { cursor: pointer; font-weight: 600; display: inline-flex; gap: 6px; align-items: center; }
+.shell-paths dl { display: grid; grid-template-columns: minmax(140px, max-content) 1fr; gap: 8px 16px; margin: 12px 0 0; }
+.shell-paths dd { margin: 0; min-width: 0; }
+.shell-paths .sp-cmd { margin: 0; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 640px) { .shell-paths dl { grid-template-columns: 1fr; } }
 .oc-all { display: inline-flex; gap: 6px; align-items: center; font-size: 14px; }
+.op-views { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.op-views button { border: 0; border-radius: 0; background: transparent; padding: 6px 14px; font-size: 14px; }
+.op-views button[aria-checked="true"] { background: var(--accent); color: #fff; }
 </style>
 {% if can_act and odoo_params and inst.type != "odoo" %}
 {# a workspace's instance: the Odoo options its template lets change, within the bounds the machine's admins set;
    saved, the helper writes its odoo.conf again from the template with them and the instance restarts #}
 <section class="tab-panel panel" data-panel="odoo-config" hidden data-ws="{{ prefix }}/api/workspaces/{{ stagings.workspace.name }}">
-  <div class="section-head"><h2>{{ _("Odoo config") }}</h2></div>
-  <p class="muted" style="font-size: 13px">{{ _("The options of its template, within the limits of the workspace: the others are set by the template.") }}</p>
-  <div class="scroll"><table class="oc-table">
+  <div class="section-head"><h2>{{ _("Odoo config") }} <span class="muted mono" id="op-version" style="font-size: 13px; font-weight: 400"></span></h2>
+    <div class="op-views" role="radiogroup" aria-label="{{ _('Options shown') }}">
+      <button type="button" role="radio" aria-checked="true" data-op-view="basic">{{ _("Basic") }}</button>
+      <button type="button" role="radio" aria-checked="false" data-op-view="extended">{{ _("Extended") }}</button>
+    </div></div>
+  <p class="muted" style="font-size: 13px" data-op-show="basic">{{ _("The options of its template, within the limits of the workspace: the others are set by the template.") }}</p>
+  <p class="muted" style="font-size: 13px" data-op-show="extended" hidden>{{ _("Every other option its Odoo knows: an empty one keeps Odoo's default. The greyed ones are set by the template or the server.") }}</p>
+  <p class="muted" id="op-ext-state" data-op-show="extended" hidden></p>
+  <div class="scroll" data-op-show="extended" hidden><table class="oc-table" id="op-ext-table" hidden>
+    <tr><th>{{ _("Name") }}</th><th>{{ _("Value") }}</th></tr>
+  </table></div>
+  <div class="scroll" data-op-show="basic"><table class="oc-table">
     <tr><th>{{ _("Name") }}</th><th>{{ _("Value") }}</th></tr>
     {% for p in odoo_params.parameters %}
     <tr data-name="{{ p.name }}">
@@ -759,17 +791,94 @@
     if (!ok || !data.job) { alert(data.error || data.detail || ADD.refused); return; }
     location.href = `{{ prefix }}/jobs/${data.job}`;
   }));
+  {% if can_act and odoo_params and inst.type != "odoo" %}
+  // Basic: the template's parameters; Extended: every other option its Odoo knows
+  const OP = {reading: {{ _("Reading the options of its Odoo…") | tojson }},
+              failed: {{ _("The options cannot be read: {error}") | tojson }},
+              locked: {{ _("Set by the template or the server") | tojson }},
+              secret: {{ _("set: empty keeps it") | tojson }},
+              defaultIs: {{ _("default: {value}") | tojson }}};
+  const opBasic = new Set({{ odoo_params.parameters | map(attribute="name") | list | tojson }});
+  let opExt = null;
+  async function opExtended() {
+    if (opExt) return;
+    const box = document.querySelector('[data-panel="odoo-config"]'), state = document.getElementById("op-ext-state");
+    state.textContent = OP.reading;
+    let data;
+    try {
+      const resp = await fetch(`${box.dataset.ws}/parameters/options`, {method: "POST",
+        headers: {"Content-Type": "application/json", Accept: "application/json"},
+        body: JSON.stringify({server: {{ server.name | tojson }}, role: {{ param_role | tojson }}})});
+      data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || data.detail || resp.status);
+    } catch (e) { state.textContent = OP.failed.replace("{error}", e.message); return; }
+    opExt = data;
+    state.textContent = "";
+    if (data.version) document.getElementById("op-version").textContent = "Odoo " + data.version;
+    const table = document.getElementById("op-ext-table"), canEdit = {{ "true" if is_admin_here else "false" }};
+    let group = null;
+    for (const o of data.options) {
+      if (opBasic.has(o.name)) continue;
+      if (o.group !== group) {
+        group = o.group;
+        const g = document.createElement("tr"); g.className = "oc-group";
+        const td = document.createElement("td"); td.colSpan = 2; td.textContent = group || "—"; g.append(td); table.append(g);
+      }
+      const tr = document.createElement("tr"); tr.dataset.name = o.name;
+      const left = document.createElement("td");
+      const name = document.createElement("div"); name.className = "oc-name"; name.textContent = o.name;
+      const help = document.createElement("div"); help.className = "oc-help"; help.textContent = o.help;
+      left.append(name, help);
+      const right = document.createElement("td");
+      const locked = data.locked.includes(o.name), secret = /passw|secret|token|_key$|^key/.test(o.name);
+      let input;
+      if (o.kind === "bool") {
+        input = document.createElement("select");
+        for (const [v, t] of [["", "—"], ["True", "True"], ["False", "False"]]) input.append(new Option(t, v));
+      } else {
+        input = document.createElement("input");
+        input.type = secret ? "password" : "text"; input.autocomplete = "off"; input.spellcheck = false;
+        input.className = "mono";
+      }
+      input.dataset.extra = o.name;
+      input.value = data.extra[o.name] || "";
+      if (secret && data.secrets.includes(o.name)) input.placeholder = OP.secret;
+      else if (o.default !== null && o.default !== undefined && o.default !== "") input.placeholder = OP.defaultIs.replace("{value}", o.default);
+      if (locked) { input.disabled = true; input.title = OP.locked; tr.classList.add("muted"); }
+      else if (!canEdit) input.disabled = true;
+      right.append(input);
+      tr.append(left, right); table.append(tr);
+    }
+    table.hidden = false;
+  }
+  document.querySelectorAll("[data-op-view]").forEach((b) => b.addEventListener("click", () => {
+    const view = b.dataset.opView;
+    document.querySelectorAll("[data-op-view]").forEach((x) => x.setAttribute("aria-checked", String(x === b)));
+    document.querySelectorAll("[data-op-show]").forEach((x) => { x.hidden = x.dataset.opShow !== view; });
+    if (view === "extended") opExtended();
+  }));
+  {% endif %}
   {% if can_act and odoo_params and inst.type != "odoo" and is_admin_here %}
   document.getElementById("op-save")?.addEventListener("click", async () => {
     const box = document.querySelector('[data-panel="odoo-config"]'), parameters = {};
     for (const input of box.querySelectorAll("[data-param]")) {
       parameters[input.dataset.param] = input.type === "checkbox" ? input.checked : input.value;
     }
+    // the Extended view, once read: its whole set (a secret left empty keeps the one saved)
+    let extra;
+    if (opExt) {
+      extra = {};
+      for (const input of box.querySelectorAll("[data-extra]")) {
+        if (input.disabled) continue;
+        const value = input.value.trim();
+        if (value || (input.type === "password" && opExt.secrets.includes(input.dataset.extra))) extra[input.dataset.extra] = value;
+      }
+    }
     if (!confirm({{ _("Write these options in its odoo.conf and restart Odoo?") | tojson }})) return;
     const resp = await fetch(`${box.dataset.ws}/parameters/save`, {method: "POST",
       headers: {"Content-Type": "application/json", Accept: "application/json"},
       body: JSON.stringify({server: {{ server.name | tojson }}, role: {{ param_role | tojson }}, parameters,
-                            debug: document.getElementById("op-debug").checked})});
+                            debug: document.getElementById("op-debug").checked, ...(extra ? {extra} : {})})});
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok || !data.job) { alert(data.error || data.detail || resp.status); return; }
     location.href = `{{ prefix }}/jobs/${data.job}`;

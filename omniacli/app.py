@@ -215,7 +215,8 @@ WORKSPACE_ROUTES = frozenset({
     "/api/workspaces/{workspace}/git-key", "/api/workspaces/{workspace}/repositories/branches",
     "/api/workspaces/{workspace}/repositories/update",
     "/api/servers/{server}/{role}/backup-schedule", "/api/servers/{server}/{role}/backups/delete",
-    "/api/workspaces/{workspace}/parameters/save", "/api/workspaces/{workspace}/load",
+    "/api/workspaces/{workspace}/parameters/save", "/api/workspaces/{workspace}/parameters/options",
+    "/api/workspaces/{workspace}/load",
 })
 
 
@@ -1065,6 +1066,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                  (settings.servers.get(staging_of.get("parent")) or srv).production, "web_url", None)},
                              "workspace": (workspace_of(srv.name) or (None,))[0]},
                 "is_admin_here": request.state.user.can("admin"),
+                # the paths and the commands of an instance, for the machine's admins (ssh)
+                "shell_paths": {i.key: i.plugin.shell_paths(i) for i in shown if i.plugin is not None}
+                if request.state.user.can("admin") and not request.state.user.workspaces else {},
                 "test_state": await run_state(srv.test) if srv.test is not None and view != "test" else None,
                 "pull_choices": pull_choices,
                 "restore_file": restore_file,
@@ -3191,7 +3195,36 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             rows.append({**param.to_dict(), "min": bounds[0], "max": bounds[1],
                          "value": "" if param.type == "password" else value,
                          "set": bool(value) if param.type == "password" else None})
-        return {"parameters": rows, "debug": state["debug"]}
+        return {"parameters": rows, "debug": state["debug"], "extra": state["extra"]}
+
+    @app.post("/api/workspaces/{workspace}/parameters/options", dependencies=[Depends(admin)])
+    async def parameters_options(workspace: str, payload: dict = Body(...)):
+        """The Extended view of the Odoo config of a role of an instance:
+        every option the Odoo of its container knows (config_options.py,
+        in the running service), the other options saved, those it does not
+        set (the template's, the layout's, the parameters)."""
+        ws = a_workspace(workspace)
+        name = str(payload.get("server") or "")
+        role = str(payload.get("role") or "production")
+        if name not in ws.servers or not name.startswith(f"{ws.name}-") or name not in settings.servers:
+            return refuse(f"No instance {name} in workspace {ws.name}", status.HTTP_404_NOT_FOUND)
+        instance = getattr(settings.servers[name], role, None) if role in ROLES else None
+        if instance is None:
+            return refuse(f"{name} has no {role}")
+        template = await asyncio.to_thread(instance_template, ws, name[len(ws.name) + 1:])
+        if template is None:
+            return refuse(f"{name} was not made from a template installed here")
+        code, out = await ops.capture(instance.restart.command("options", template.odoo_service), timeout=120)
+        found = stacktemplates.options_answer(code, out)
+        if "error" in found:
+            return JSONResponse({"error": "Its Odoo does not answer (is it running?): " + found["error"]},
+                                status_code=502)
+        state = workspacehelper.role_state(workspaceops.storage_path(ws) / ws.name / name[len(ws.name) + 1:] / role)
+        locked = template.locked_options()
+        return {"options": found.get("options") or [], "version": found.get("version"),
+                "extra": {k: ("" if stacktemplates.SECRET_OPTION.search(k) else v) for k, v in state["extra"].items()},
+                "secrets": sorted(k for k in state["extra"] if stacktemplates.SECRET_OPTION.search(k)),
+                "locked": sorted(locked)}
 
     @app.post("/api/workspaces/{workspace}/parameters/save", dependencies=[Depends(admin)])
     async def parameters_save(workspace: str, payload: dict = Body(...), me: Principal = Depends(current_user)):
@@ -3228,10 +3261,24 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return refuse(f"{workers} workers x {hard} MB is more than the workspace's {memory:g} GB: the kernel "
                           "would kill Odoo instead of Odoo stopping one request")
         debug = bool(payload.get("debug"))
+        spec = {"parameters": given, "debug": debug, "bounds": ws.parameter_bounds}
+        if "extra" in payload:
+            # the other options (the Extended view), the whole set: a secret
+            # left empty keeps the one saved
+            extra = payload.get("extra")
+            if isinstance(extra, dict):
+                saved_extra = workspacehelper.role_state(
+                    workspaceops.storage_path(ws) / ws.name / instance / role)["extra"]
+                for key in [k for k, v in extra.items() if stacktemplates.SECRET_OPTION.search(str(k)) and not str(v or "").strip()]:
+                    if key in saved_extra:
+                        extra[key] = saved_extra[key]
+            try:
+                spec["extra"] = template.extra_options(extra)
+            except stacktemplates.TemplateError as exc:
+                return refuse(str(exc))
 
         async def action(job):
-            await workspaceops._helper(job, "conf", ws.name, ws.storage, instance, role, json.dumps(
-                {"parameters": given, "debug": debug, "bounds": ws.parameter_bounds}))
+            await workspaceops._helper(job, "conf", ws.name, ws.storage, instance, role, json.dumps(spec))
             await ops.restart(job, getattr(settings.servers[name], role))
             current = settings.workspaces.get(ws.name)
             if current is not None and current.domain:

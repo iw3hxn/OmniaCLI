@@ -460,6 +460,37 @@ def test_conf_sets_the_parameters(root):
     assert "workers = 12\n" in (project / "config" / "odoo.conf").read_text()
 
 
+def test_conf_sets_the_other_options(root):
+    """The Extended view: any other option of Odoo, never one the template,
+    the layout or the parameters set; debug wins over a log_level."""
+    storage = root["storage"]
+    workspacehelper.disk("acme", str(storage), "2")
+    workspacehelper.limits("acme", "0", "0")
+    workspacehelper.create("acme", str(storage), "main", "odooplm-20", "{}")
+    project = storage / "acme" / "main" / "test"
+    made = _conf(storage, "test", extra={"server_wide_modules": "base,web,queue_job", "unaccent": True,
+                                         "log_level": "warn", "osv_memory_count_limit": ""})
+    text = (project / "config" / "odoo.conf").read_text()
+    assert "server_wide_modules = base,web,queue_job\n" in text and "unaccent = True\n" in text
+    assert "log_level = warn\n" in text and "osv_memory_count_limit" not in text
+    assert made["extra"] == ["log_level", "server_wide_modules", "unaccent"]
+    # kept by a later change, and debug wins over their log_level (one line of it: Odoo refuses two)
+    _conf(storage, "test", repositories=[], debug=True)
+    text = (project / "config" / "odoo.conf").read_text()
+    assert "server_wide_modules = base,web,queue_job\n" in text and text.count("log_level") == 1
+    assert text.endswith("log_level = debug\n")
+    # the whole set when given: an option left out goes
+    _conf(storage, "test", extra={"unaccent": "True"}, debug=False)
+    text = (project / "config" / "odoo.conf").read_text()
+    assert "server_wide_modules" not in text and "unaccent = True\n" in text
+    for extra, message in (({"data_dir": "/"}, "not here"), ({"dbfilter": ".*"}, "not here"),
+                           ({"admin_passwd": "x"}, "not here"), ({"workers": "20"}, "not here"),
+                           ({"db_host": "evil"}, "not here"), ({"Bad-Name": "1"}, "not the name"),
+                           ({"unaccent": "a\nadmin_passwd = x"}, "one line"), (["x"], "JSON object")):
+        with pytest.raises(HelperError, match=message):
+            _conf(storage, "test", extra=extra)
+
+
 @pytest.mark.parametrize("uid, mode", [(1234, 0o750), (0, 0o755)])
 def test_the_disk_is_closed_to_other_users(root, monkeypatch, uid, mode):
     """Only for the user OmniaCLI runs as: run by hand as root, nobody would get in."""

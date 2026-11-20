@@ -258,6 +258,13 @@ prepared before Test & activate. The job's log opens in a new tab.
   `options.yaml` next to the servers file (`options_file` in the main
   configuration): the text size every console opens with (8-40 pixels,
   default 14).
+- **Paths and shell commands** (the machine's admins, an instance's
+  Environments tab): where the instance lives and the commands of a shell of
+  the machine over ssh, each with Copy. Docker Compose: the project, its
+  addons and `odoo.conf`, then `docker compose` logs, `odoo shell`, update
+  all modules, pip, psql, bash in the container; a venv: the source, the
+  config, the python, the log, the data folder, then `odoo-bin shell`, the
+  update of all modules and pip as the user Odoo runs as.
 - **Consoles**: every log (an instance's, OmniaCLI's own, a job's) and every
   terminal (shell, Claude, psql) is the same widget (`templates/_console.html`)
   with the same bar: A− and A+ for the text size, kept in the browser for
@@ -1027,6 +1034,20 @@ names published again (with workers the websocket goes to Odoo's 8072). A
 password left empty keeps the one saved; with `workers = 0` Odoo does not
 apply `limit_time_cpu`. The SMTP password is in `odoo.conf`, which is
 readable by everyone on the machine (`0644`).
+
+**Basic and Extended**: the Odoo config tab shows the template's parameters
+(**Basic**) or every other option the Odoo of the container knows
+(**Extended**: the root helper's `options` runs `odoo/config_options.py`
+with its `python3`, in the running service, grouped as Odoo's `--help`
+groups them). An empty one keeps Odoo's default; saved, the whole set goes
+with the parameters to `conf`, which writes them after them in `odoo.conf`
+and keeps them in `omniacli.json` (`extra`). Never set there, greyed: the
+options the template's `odoo.conf.in` writes, the parameters (their bounds
+stay the machine admins'), the connection, the ports, the folders, the
+command line's actions (`write_config.py`'s `LOCKED`, `admin_passwd`,
+`without_demo`, the tests, `dev_mode`, `pg_path`, the replica). The debug
+switch wins over a `log_level` set there; a secret's value never goes back
+to the browser, left empty it keeps the one saved.
 
 A new database has the user **admin** with password **admin**: change it
 at the first login. **Remove** on the same page takes down both projects,

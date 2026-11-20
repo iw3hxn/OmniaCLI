@@ -93,3 +93,49 @@ async def test_the_parameters_of_a_role(made, client):
     assert (await client.post(url, headers=post_as("eva"), json=body)).status_code == 403
     resp = await client.post(url, headers=post_as("mario"), json={**body, "role": "stage"})
     assert resp.status_code == 400
+
+
+async def test_the_other_options_of_a_role(made, client, monkeypatch):
+    """The Extended view: the options its Odoo knows, read in the container;
+    the other options saved with the parameters, a secret kept when empty."""
+    from omniacli import ops, stacktemplates
+    asked = []
+
+    async def capture(cmd, **kwargs):
+        asked.append(cmd)
+        options = [{"name": n, "help": "h", "kind": "string", "group": "g", "default": None}
+                   for n in ("workers", "unaccent", "data_dir", "geoip_db_key")]
+        return 0, "noise\n" + stacktemplates.OPTIONS_MARK + json.dumps({"options": options, "version": "18.0"})
+    monkeypatch.setattr(ops, "capture", capture)
+    (made["folder"] / "test").mkdir(parents=True, exist_ok=True)
+    (made["folder"] / "test" / "omniacli.json").write_text(json.dumps({"extra": {"unaccent": "True",
+                                                                                 "geoip_db_key": "Kept-1"}}))
+    url = "/api/workspaces/acme/parameters/options"
+    resp = await client.post(url, headers=post_as("mario"), json={"server": "acme-main", "role": "test"})
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert asked[-1][-2:] == ["options", "odoo"] and data["version"] == "18.0" and len(data["options"]) == 4
+    # a secret's value never goes to the browser
+    assert data["extra"] == {"unaccent": "True", "geoip_db_key": ""} and data["secrets"] == ["geoip_db_key"]
+    assert {"data_dir", "workers", "dbfilter"} <= set(data["locked"])
+    save = "/api/workspaces/acme/parameters/save"
+    body = {"server": "acme-main", "role": "test", "parameters": {}, "debug": False,
+            "extra": {"unaccent": "", "geoip_db_key": "", "limit_time_real_cron": "60"}}
+    resp = await client.post(save, headers=post_as("mario"), json=body)
+    assert resp.status_code == 400 and "not here" in resp.json()["error"]
+    body["extra"] = {"unaccent": "", "geoip_db_key": "", "list_db": "x", "server_wide_modules": "base,web"}
+    resp = await client.post(save, headers=post_as("mario"), json=body)
+    assert resp.status_code == 400 and "list_db" in resp.json()["error"]
+    del body["extra"]["list_db"]
+    resp = await client.post(save, headers=post_as("mario"), json=body)
+    assert resp.status_code == 200, resp.text
+    assert json.loads(made["confs"][-1][-1])["extra"] == {"geoip_db_key": "Kept-1", "server_wide_modules": "base,web"}
+    await wait_job(client, resp.json()["job"])
+    # without the Extended view read, the others are not sent: the helper keeps them
+    del body["extra"]
+    resp = await client.post(save, headers=post_as("mario"), json=body)
+    assert "extra" not in json.loads(made["confs"][-1][-1])
+    await wait_job(client, resp.json()["job"])
+    # its users and other workspaces' cannot read them
+    for user in ("luca", "eva"):
+        assert (await client.post(url, headers=post_as(user), json={"server": "acme-main"})).status_code == 403

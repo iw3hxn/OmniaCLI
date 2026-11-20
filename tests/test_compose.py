@@ -560,6 +560,19 @@ def test_the_requirements_of_a_repository(tmp_path, monkeypatch):
 
 
 
+def test_the_options_of_odoo(tmp_path, monkeypatch):
+    """Its python3 in the running service, the script on its input (the helper's own file)."""
+    monkeypatch.setattr(composehelper, "services", lambda project: ["odoo", "db"])
+    [cmd] = composehelper.commands(tmp_path, "options", ["odoo"])
+    assert cmd == ["exec", "-T", "odoo", "sh", "-c", "exec python3 -", "sh"]
+    # the mark the page reads its answer after
+    from omniacli import stacktemplates
+    assert f'MARK = "{stacktemplates.OPTIONS_MARK}"' in composehelper.OPTIONS_SCRIPT.read_text()
+    for bad in ([], ["odoo", "x"], ["web"]):
+        with pytest.raises(composehelper.HelperError):
+            composehelper.commands(tmp_path, "options", bad)
+
+
 def test_the_terminal_of_a_service(tmp_path, monkeypatch):
     """A login shell in the Odoo container, on the caller's terminal (no -T),
     as the image's user: an image running as root is refused."""

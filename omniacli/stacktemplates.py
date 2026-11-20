@@ -25,6 +25,7 @@ regular files and nothing else.
 
 from __future__ import annotations
 
+import ast
 import gzip
 import io
 import json
@@ -103,6 +104,51 @@ EDITABLE = ("workers", "max_cron_threads", "limit_time_cpu", "limit_time_real", 
 PARAMETER_TYPES = ("int", "mb", "bool", "text", "password")
 # a text of odoo.conf: one line, printable, no ; or # that would start a comment
 TEXT = re.compile(r"[^\x00-\x1f\x7f;#]{0,200}")
+# the other options of Odoo (the Extended view of the page): a name of
+# Odoo's options, a value of one line; never those of LOCKED_OPTIONS
+OPTION_NAME = re.compile(r"[a-z_][a-z0-9_]{0,63}")
+EXTRA_TEXT = re.compile(r"[^\x00-\x1f\x7f]{0,1000}")
+EXTRA_MAX = 100
+# an option whose value is a secret: never sent back to the browser
+SECRET_OPTION = re.compile(r"passw|secret|token|_key$|^key")
+OPTIONS_MARK = "OMNIACLI-OPTIONS "
+
+
+def options_answer(code: int, out: str) -> dict:
+    """What config_options.py printed in the container: {options, version},
+    or {error}."""
+    for line in reversed(out.splitlines()):
+        if line.startswith(OPTIONS_MARK):
+            try:
+                data = json.loads(line[len(OPTIONS_MARK):])
+            except ValueError:
+                break
+            if isinstance(data, dict):
+                return data
+            break
+    tail = " | ".join(out.splitlines()[-5:])
+    return {"error": f"no answer (exit code {code}): {tail}"[:500]}
+
+
+def _odoo_locked() -> set[str]:
+    """The options the server's layout owns: write_config.py's LOCKED, read
+    from its text (one list, standard library only, no import of the plugin)."""
+    tree = ast.parse((Path(__file__).parent / "odoo" / "write_config.py").read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "LOCKED" for t in node.targets):
+            return set(ast.literal_eval(node.value))
+    return set()
+
+
+# the connection, the ports, the folders; the actions of a command line; and
+# what a workspace's machine admins bound (the parameters, set only by those
+# the template offers)
+LOCKED_OPTIONS = frozenset({*_odoo_locked(), *EDITABLE, "admin_passwd", "without_demo", "test_enable",
+                            "test_file", "test_tags", "dev_mode", "shell_interface", "translate_out",
+                            "translate_in", "load_language", "overwrite_existing_translations",
+                            "import_partial", "pg_path", "with_demo", "skip_auto_install", "screencasts",
+                            "screenshots", "db_replica_host", "db_replica_port", "upgrade_path",
+                            "pre_upgrade_scripts"})
 
 
 @dataclass
@@ -179,6 +225,44 @@ class Template:
         bounds = bounds or {}
         return {p.name: p.check(given[p.name], bounds.get(p.name)) if p.name in given else p.default
                 for p in self.parameters}
+
+    def conf_keys(self) -> set[str]:
+        """The options its odoo.conf.in writes itself."""
+        found = set()
+        for line in self.conf.splitlines():
+            key, sep, _ = line.partition("=")
+            if sep and not key.lstrip().startswith((";", "#", "[")):
+                found.add(key.strip())
+        return found
+
+    def locked_options(self) -> set[str]:
+        """The options the Extended view does not set: the layout's, the
+        template's own, its parameters."""
+        return {*LOCKED_OPTIONS, *self.conf_keys(), *(p.name for p in self.parameters)}
+
+    def extra_options(self, given) -> dict[str, str]:
+        """The other Odoo options of a role (the Extended view), checked:
+        {name: value}, an empty value left out."""
+        if not isinstance(given, dict):
+            raise TemplateError("the other options are a JSON object {name: value}")
+        locked = self.locked_options()
+        found = {}
+        for key, value in given.items():
+            key = str(key).strip()
+            if not OPTION_NAME.fullmatch(key):
+                raise TemplateError(f"{key!r} is not the name of an Odoo option")
+            if key in locked:
+                raise TemplateError(f"{key}: set by the template or the server's layout, not here")
+            if isinstance(value, bool):
+                value = "True" if value else "False"
+            text = str(value if value is not None else "").strip()
+            if not EXTRA_TEXT.fullmatch(text):
+                raise TemplateError(f"{key}: one line of at most 1000 characters")
+            if text:
+                found[key] = text
+        if len(found) > EXTRA_MAX:
+            raise TemplateError(f"at most {EXTRA_MAX} other options")
+        return dict(sorted(found.items()))
 
     def values(self, given: dict) -> dict[str, str]:
         """The fields' values, checked; a field not given takes its default."""
@@ -340,10 +424,11 @@ def env_text(values: dict[str, str]) -> str:
 
 
 def conf_text(template: Template, database: str, admin_password: str, customer_repos: list[str],
-              parameters: dict | None = None, debug: bool = False) -> str:
+              parameters: dict | None = None, debug: bool = False, extra: dict | None = None) -> str:
     """The Odoo configuration: the image's addons, then the customer's
-    repositories; then the editable parameters (checked: parameter_values)
-    and, with debug, log_level = debug."""
+    repositories; then the editable parameters (checked: parameter_values),
+    the other options (checked: extra_options) and, with debug,
+    log_level = debug (over a log_level of the others)."""
     addons = [*template.addons_path,
               *(f"{template.customer_addons}/{repo}" for repo in customer_repos if template.customer_addons)]
     values = {"ADDONS_PATH": ",".join(addons), "DB_NAME": database, "ADMIN_PASSWD": admin_password}
@@ -353,6 +438,9 @@ def conf_text(template: Template, database: str, admin_password: str, customer_r
         param = template.parameter(name)
         if param is not None and not (param.type in ("text", "password") and value == ""):
             lines.append(f"{name} = {param.conf_value(value)}")
+    for name, value in (extra or {}).items():
+        if not (debug and name == "log_level"):
+            lines.append(f"{name} = {value}")
     if debug:
         lines.append("log_level = debug")
     if lines:

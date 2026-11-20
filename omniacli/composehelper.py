@@ -75,6 +75,10 @@ command of the caller's, and runs docker with an environment of its own:
                                          on the input, the helper's own file,
                                          never the caller's): the users, or
                                          a new session of one (its sid)
+    options <odoo service>               in the running service, its python3
+                                         runs odoo/config_options.py (its text
+                                         on the input, the helper's own file):
+                                         the options its Odoo knows
     pip-requirements <odoo service> <repository>
                                          in the running service, as its
                                          user: pip install --user of the
@@ -126,7 +130,7 @@ ACTIONS = {
 }
 # the actions that take arguments (commands())
 WITH_ARGUMENTS = ("logs", "version", "port", "dump", "load", "update", "psql", "init", "link-filestore", "login",
-                  "setup", "pip-requirements", "terminal")
+                  "setup", "options", "pip-requirements", "terminal")
 # a repository of the instance's addons (/mnt/customer-addons/<name>)
 REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 DATABASE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,62}")
@@ -194,6 +198,8 @@ SCRIPTS = {
     # odoo shell reads the script from its input; quiet, the answer is its last line
     "login": ODOO_DB + 'OMNIACLI_LOGIN="$2" exec odoo shell -d "$1" --no-http --log-level=critical',
     "setup": ODOO_DB + 'exec odoo shell -d "$1" --no-http --log-level=critical',
+    # the options the image's Odoo knows: its python3 reads the script from its input
+    "options": "exec python3 -",
     # the Python packages a repository of addons asks (its requirements.txt),
     # as the image's user in its home (/var/lib/odoo/.local, on the volume of
     # the instance's data: they stay when the container is made again)
@@ -219,6 +225,7 @@ LOGIN_REQUEST = re.compile(r"users|[1-9][0-9]{0,9}")
 # the company's country), its values read by the helper on its own input as
 # JSON and put in front of it: the password is on no command line
 SETUP_SCRIPT = Path(__file__).parent / "odoo" / "setup_database.py"
+OPTIONS_SCRIPT = Path(__file__).parent / "odoo" / "config_options.py"
 COUNTRY = re.compile(r"[A-Z]{2}")
 PASSWORD_LENGTH = (8, 128)
 
@@ -438,6 +445,11 @@ def commands(project: Path, action: str, args: list[str]) -> list[list[str]]:
         if len(args) != 3 or not LOGIN_REQUEST.fullmatch(args[2]):
             raise HelperError("usage: login <service> <database> users|<user id>")
         return [_script(service(project, args[0]), "login", _database(args[1]), args[2])]
+    if action == "options":
+        # options <odoo service>: in the running service
+        if len(args) != 1:
+            raise HelperError("usage: options <service>")
+        return [_script(service(project, args[0]), "options")]
     if action == "pip-requirements":
         # pip-requirements <odoo service> <repository>: in the running service
         if len(args) != 2 or not REPOSITORY.fullmatch(args[1]) or ".." in args[1]:
@@ -580,6 +592,8 @@ def run(argv: list[str]) -> int:
     # login: the script on the input of odoo shell, the helper's own file;
     # the other actions keep the caller's input (load reads its zip there)
     extra = {"input": LOGIN_SCRIPT.read_bytes()} if action == "login" else {}
+    if action == "options":
+        extra = {"input": OPTIONS_SCRIPT.read_bytes()}
     if action == "setup":
         extra = {"input": setup_input(sys.stdin.buffer.read(65536))}
     for cmd in commands(project, action, args):

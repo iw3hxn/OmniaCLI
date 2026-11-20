@@ -288,3 +288,30 @@ async def test_copy_leaves_test_stopped_when_a_step_fails(copy_steps, monkeypatc
     with pytest.raises(JobFailed, match="same filesystem"):
         await copy.run(j, srv, {"filestore": "share"})
     assert steps[-1] == ("/srv/x/test", "link-filestore") and "left stopped" in j.lines[-1]
+
+
+def test_the_paths_and_shell_commands(tmp_path):
+    """The compose project, its addons and odoo.conf when there; the commands
+    of its containers, the database quoted for the shell."""
+    (tmp_path / "addons").mkdir()
+    data = {"type": "docker", "test": {"restart": {"type": "compose", "service": str(tmp_path)}, "repositories": [],
+                                       "database": "main"}}
+    inst = parse_servers({"s": data})["s"].test
+    rows = {r["label"]: r for r in inst.plugin.shell_paths(inst)}
+    assert rows["Compose project"]["value"] == str(tmp_path) and rows["Addons"]["kind"] == "path"
+    assert "Config file" not in rows
+    assert rows["Odoo shell"]["value"] == f"cd {tmp_path} && docker compose exec odoo odoo shell -d main --no-http"
+    assert "-u all --stop-after-init" in rows["Update all modules"]["value"]
+    assert rows["psql"]["value"].endswith("""exec db sh -c 'exec psql -U "$POSTGRES_USER" main'""")
+
+
+def test_the_paths_and_shell_commands_of_a_venv(tmp_path):
+    data = {"type": "odoo", "test": {"restart": {"type": "systemd", "service": "odoo"}, "repositories": [],
+                                     "log_file": "/var/log/odoo.log", "run_as": "odoo", "database": "db 1",
+                                     "odoo_config": str(tmp_path / "odoo.conf"), "venv_bin": "/srv/venv/bin",
+                                     "odoo_bin": "/srv/src/odoo-bin"}}
+    inst = parse_servers({"s": data})["s"].test
+    rows = {r["label"]: r["value"] for r in inst.plugin.shell_paths(inst)}
+    assert rows["Source"] == "/srv/src" and rows["Log file"] == "/var/log/odoo.log"
+    assert rows["Odoo shell"] == (f"sudo -u odoo /srv/venv/bin/python /srv/src/odoo-bin shell -c {tmp_path}/odoo.conf "
+                                  "-d 'db 1' --no-http")

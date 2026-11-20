@@ -185,6 +185,28 @@ class DockerPlugin(ServicePlugin):
     api_version = PLUGIN_API
     mcp_help = MCP_HELP
 
+    def shell_paths(self, instance: Instance) -> list[dict]:
+        """Its compose project; in it, the commands of its containers."""
+        opts, project = instance.options, Path(instance.restart.service)
+        cd = f"cd {shlex.quote(str(project))} && docker compose "
+        db = shlex.quote(opts.database)
+        rows = [{"label": "Compose project", "value": str(project), "kind": "path"}]
+        for label, path in (("Addons", project / "addons"), ("Config file", project / "config" / "odoo.conf")):
+            if path.exists():
+                rows.append({"label": label, "value": str(path), "kind": "path"})
+        return rows + [
+            {"label": "Log", "value": f"{cd}logs -f --tail 200 {opts.odoo_service}", "kind": "command"},
+            {"label": "Odoo shell", "value": f"{cd}exec {opts.odoo_service} odoo shell -d {db} --no-http",
+             "kind": "command"},
+            {"label": "Update all modules", "value": f"{cd}run --rm {opts.odoo_service} odoo -d {db} -u all "
+                                                     "--stop-after-init --no-http", "kind": "command"},
+            {"label": "Install Python packages", "value": f"{cd}exec {opts.odoo_service} python3 -m pip install "
+                                                          "--user --break-system-packages ...", "kind": "command"},
+            {"label": "psql", "value": f"{cd}exec {opts.db_service} sh -c 'exec psql -U \"$POSTGRES_USER\" {db}'",
+             "kind": "command"},
+            {"label": "Bash in the container", "value": f"{cd}exec {opts.odoo_service} bash", "kind": "command"},
+        ]
+
     @property
     def has_compose(self) -> bool:
         return True

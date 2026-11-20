@@ -1616,3 +1616,14 @@ async def test_a_part_that_does_not_stop_does_not_hang_the_service(env, monkeypa
     async with app.router.lifespan_context(app):
         pass
     assert "disk history did not stop within" in caplog.text
+
+
+async def test_the_paths_and_shell_commands(client, env):
+    """The machine's admins see where the instance lives and the commands of
+    a shell of the machine; a developer does not."""
+    page = (await client.get("/servers/srv?view=test", headers={"Authorization": AUTH})).text
+    test = env["settings"].servers["srv"].test
+    assert "Paths and shell commands" in page and str(test.options.odoo_config) in page
+    assert '<pre class="copyable sp-cmd">' in page and " -m pip install ..." in page
+    from .test_links import as_user
+    assert "Paths and shell commands" not in (await client.get("/servers/srv?view=test", headers=as_user("dev"))).text

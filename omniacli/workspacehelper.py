@@ -1037,7 +1037,7 @@ def role_state(project: Path) -> dict:
         data = {}
     data = data if isinstance(data, dict) else {}
     return {"repositories": list(data.get("repositories") or []), "parameters": dict(data.get("parameters") or {}),
-            "debug": bool(data.get("debug"))}
+            "debug": bool(data.get("debug")), "extra": dict(data.get("extra") or {})}
 
 
 def conf(name: str, storage: str, instance: str, role: str, spec_json: str) -> dict:
@@ -1085,19 +1085,27 @@ def conf(name: str, storage: str, instance: str, role: str, spec_json: str) -> d
     except stacktemplates.TemplateError as exc:
         raise HelperError(str(exc)) from None
     debug = bool(spec.get("debug", state["debug"]))
+    # the other options (the Extended view): the whole set when given, else
+    # those saved before that this template still lets set
+    try:
+        extra = template.extra_options(spec["extra"]) if "extra" in spec else \
+            {k: v for k, v in state["extra"].items() if k not in template.locked_options()}
+    except stacktemplates.TemplateError as exc:
+        raise HelperError(str(exc)) from None
     conf_file = project / "config" / "odoo.conf"
     try:
         password = _admin_password(conf_file.read_text(encoding="utf-8"))
     except OSError:
         password = None
     text = stacktemplates.conf_text(template, str(meta.get("database") or ""),
-                                    password or stacktemplates.new_password(), repos, values, debug)
+                                    password or stacktemplates.new_password(), repos, values, debug, extra)
     _write(conf_file, text, mode=0o644)
     kept = {k: v for k, v in values.items() if v != template.parameter(k).default}
-    _write(project / ROLE_FILE, json.dumps({"repositories": repos, "parameters": kept, "debug": debug}) + "\n")
+    _write(project / ROLE_FILE, json.dumps({"repositories": repos, "parameters": kept, "debug": debug,
+                                            **({"extra": extra} if extra else {})}) + "\n")
     return {"workspace": name, "instance": instance, "role": role, "repositories": repos,
             "parameters": {k: ("" if template.parameter(k).type == "password" and v else v) for k, v in values.items()},
-            "debug": debug, "template": template.name, "version": template.version}
+            "debug": debug, "extra": sorted(extra), "template": template.name, "version": template.version}
 
 
 def remove(name: str, storage: str, instance: str) -> dict:
