@@ -36,6 +36,12 @@ services:
       PORT: "5432"
       USER: odoo
       PASSWORD: ${DB_PASSWORD}
+      # the same connection for a command typed in the container (odoo shell,
+      # click-odoo, psql): the image's entrypoint reads HOST..., they read PG*
+      PGHOST: db
+      PGPORT: "5432"
+      PGUSER: odoo
+      PGPASSWORD: ${DB_PASSWORD}
       # OmniaCLI creates the database itself (a job), not the image's entrypoint
       ODOOPLM_AUTO_INIT: "0"
     volumes:

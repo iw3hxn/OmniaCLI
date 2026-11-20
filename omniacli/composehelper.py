@@ -263,8 +263,9 @@ SCRIPTS = {
                     '-c "SELECT pg_terminate_backend($2) FROM pg_stat_activity WHERE pid = $2 '
                     'AND datname = current_database()"',
     # the terminal of the Odoo container: a login shell of the image's user,
-    # in the repositories of addons (bash when the image has it)
-    "terminal": 'cd /mnt/customer-addons 2>/dev/null || cd; '
+    # in the repositories of addons (bash when the image has it), with the
+    # database connection: odoo shell and psql typed there connect
+    "terminal": ODOO_DB + 'cd /mnt/customer-addons 2>/dev/null || cd; '
                 'if command -v bash >/dev/null; then exec bash -l; fi; exec sh -l',
     # odoo shell reads the script from its input; quiet, the answer is its last line
     "login": ODOO_DB + 'OMNIACLI_LOGIN="$2" exec odoo shell -d "$1" --no-http --log-level=critical',

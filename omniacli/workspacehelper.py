@@ -1096,6 +1096,7 @@ def conf(name: str, storage: str, instance: str, role: str, spec_json: str) -> d
             {k: v for k, v in state["extra"].items() if k not in template.locked_options()}
     except stacktemplates.TemplateError as exc:
         raise HelperError(str(exc)) from None
+    compose_changed = _ensure_pg_env(project)
     conf_file = project / "config" / "odoo.conf"
     try:
         password = _admin_password(conf_file.read_text(encoding="utf-8"))
@@ -1109,7 +1110,35 @@ def conf(name: str, storage: str, instance: str, role: str, spec_json: str) -> d
                                             **({"extra": extra} if extra else {})}) + "\n")
     return {"workspace": name, "instance": instance, "role": role, "repositories": repos,
             "parameters": {k: ("" if template.parameter(k).type == "password" and v else v) for k, v in values.items()},
-            "debug": debug, "extra": sorted(extra), "template": template.name, "version": template.version}
+            "debug": debug, "extra": sorted(extra), "template": template.name, "version": template.version,
+            "compose": "the database connection for commands typed in the container added" if compose_changed else ""}
+
+
+# an instance made before the templates gave PG* to the Odoo service: a command
+# typed in its container (odoo shell, psql) looked for a database on a local socket
+_ENTRYPOINT_DB = re.compile(r"(?m)^(?P<indent>[ \t]+)HOST: db\n(?P=indent)PORT: \"5432\"\n(?P=indent)USER: odoo\n"
+                            r"(?P=indent)PASSWORD: \$\{DB_PASSWORD\}\n")
+
+
+def _ensure_pg_env(project: Path) -> bool:
+    """PGHOST, PGPORT, PGUSER and PGPASSWORD beside the HOST... the image's
+    entrypoint reads, in the project's compose.yaml, when it has none (taken
+    by the containers at the next restart, which runs up -d); True: added."""
+    path = project / "compose.yaml"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    found = _ENTRYPOINT_DB.search(text)
+    if "PGHOST:" in text or found is None:
+        return False
+    indent = found["indent"]
+    added = "".join(f"{indent}{line}\n" for line in ("PGHOST: db", 'PGPORT: "5432"', "PGUSER: odoo",
+                                                     "PGPASSWORD: ${DB_PASSWORD}"))
+    info = path.stat()
+    _write(path, text[:found.end()] + added + text[found.end():], mode=info.st_mode & 0o777,
+           uid=info.st_uid, gid=info.st_gid)
+    return True
 
 
 def remove(name: str, storage: str, instance: str) -> dict:

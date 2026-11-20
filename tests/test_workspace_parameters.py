@@ -146,3 +146,42 @@ async def test_the_other_options_of_a_role(made, client, monkeypatch):
     # its users and other workspaces' cannot read them
     for user in ("luca", "eva"):
         assert (await client.post(url, headers=post_as(user), json={"server": "acme-main"})).status_code == 403
+
+
+def test_commands_typed_in_the_container_reach_the_database(tmp_path, monkeypatch):
+    """odoo shell and psql typed in the Odoo container connect: the templates
+    give PG* beside the HOST... of the image's entrypoint, the Terminal
+    exports them, and an instance made before gets them at its next
+    configuration (taken at the restart: up -d). The empty folder of the
+    image's volume is not an addons path (Odoo warned at every start)."""
+    import json
+    from pathlib import Path
+
+    from omniacli import composehelper, stacktemplates, workspacehelper
+
+    root = Path(__file__).parent.parent / "templates"
+    for name in ("odoo-18", "odoo-19", "odooplm-20"):
+        compose = (root / name / "compose.yaml").read_text()
+        for line in ("PGHOST: db", 'PGPORT: "5432"', "PGUSER: odoo", "PGPASSWORD: ${DB_PASSWORD}"):
+            assert compose.count(line) == 1, (name, line)
+        assert "/mnt/extra-addons" not in json.loads((root / name / "template.json").read_text())["addons_path"]
+        # still mounted: a volume of the image, otherwise an anonymous one
+        assert "./data/extra-addons:/mnt/extra-addons:ro" in compose
+    template = stacktemplates.load_template(root / "odoo-19")
+    assert "addons_path = /mnt/customer-addons/web\n" in stacktemplates.conf_text(template, "db", "pw", ["web"])
+    assert composehelper.SCRIPTS["terminal"].startswith(composehelper.ODOO_DB)
+    # an instance made before
+    monkeypatch.setattr(workspacehelper, "_write", lambda path, text, mode=0o644, uid=0, gid=0: path.write_text(text))
+    project = tmp_path / "production"
+    project.mkdir()
+    new = (root / "odoo-19" / "compose.yaml").read_text()
+    old = "\n".join(line for line in new.splitlines() if "PG" not in line and "the same connection" not in line
+                    and "click-odoo, psql" not in line) + "\n"
+    assert "PGHOST" not in old
+    (project / "compose.yaml").write_text(old)
+    assert workspacehelper._ensure_pg_env(project) is True
+    assert [line.strip() for line in (project / "compose.yaml").read_text().splitlines() if "PG" in line] == \
+        ["PGHOST: db", 'PGPORT: "5432"', "PGUSER: odoo", "PGPASSWORD: ${DB_PASSWORD}"]
+    assert workspacehelper._ensure_pg_env(project) is False  # once
+    (project / "compose.yaml").write_text("services: {}\n")
+    assert workspacehelper._ensure_pg_env(project) is False  # not a template's: left alone

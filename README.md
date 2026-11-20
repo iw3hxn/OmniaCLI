@@ -1583,6 +1583,17 @@ and click-odoo leave them to libpq when the Odoo config sets no `db_host`...,
 and a config that sets one still wins. `odoo db` and click-odoo find the
 config through `ODOO_RC`, which the image sets.
 
+A command typed in the Odoo container connects too (`odoo shell -d <db>`,
+`click-odoo`, `psql`; from `docker compose exec odoo ...` or the Terminal
+console): the templates give the Odoo service `PGHOST`, `PGPORT`, `PGUSER`
+and `PGPASSWORD` beside the entrypoint's variables (Odoo leaves the
+connection to libpq when its config sets no `db_host`), and the Terminal
+exports them itself. An instance made before the templates had them gets
+them in its `compose.yaml` at its next configuration (Odoo config, Save),
+taken at the restart. The image's empty `/mnt/extra-addons` stays mounted (a
+volume of the image) but is no addons path any more: Odoo warned of it at
+every start.
+
 OmniaCLI's tools are click-odoo-contrib and what it needs (click, click-odoo,
 manifestoo-core: pure Python, pinned), in `omniacli-tools` next to the venv,
 which only root writes. They are mounted into a container of the image the
