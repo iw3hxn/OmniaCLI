@@ -232,6 +232,8 @@ WORKSPACE_ROUTES = frozenset({
 
 
 _logger = logging.getLogger(__name__)
+# an MCP call through a link: a tool may wait 600 s for its job
+LINK_MCP_TIMEOUT = 660
 # the day the automatic backups' Try a restore runs (6: Sunday)
 VERIFY_WEEKDAY = 6
 
@@ -586,8 +588,27 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         from .mcp_server import create_mcp
 
         # add_draft_server is defined further down, with the configuration's lock
+        async def mcp_link_call(name: str, user: str, role: str, payload: dict) -> dict:
+            """An MCP call to a linked OmniaCLI, through its link."""
+            link = settings.link_targets.get(name)
+            if link is None:
+                raise LookupError(f"No link {name}: see list_links")
+            try:
+                resp = await link_clients.client(link).post(
+                    "/mcp", json=payload, timeout=LINK_MCP_TIMEOUT,
+                    headers={**link_headers(link, user, role), "Accept": "application/json, text/event-stream"})
+            except httpx.HTTPError as exc:
+                raise LookupError(f"{name}: {describe_error(exc)}") from exc
+            if resp.status_code != 200:
+                raise LookupError(f"{name} answered {resp.status_code} on /mcp (an OmniaCLI older than "
+                                  "2026.1.5431 has no MCP through links)")
+            try:
+                return resp.json()
+            except ValueError:
+                raise LookupError(f"{name}: its /mcp did not answer JSON") from None
+
         mcp_route, mcp_manager = create_mcp(settings, jobs, updater, sampler, authenticator, access_log,
-                                            lambda name, data: add_draft_server(name, data))
+                                            lambda name, data: add_draft_server(name, data), mcp_link_call)
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):

@@ -51,7 +51,9 @@ list_actions and run_action (the type's actions: Pull image, Update modules...),
 verify_backup, full_archive and stop_job act; on a production they need an
 admin token and confirm=<server name>, which you give only after the user
 agreed. update_production backs up first, always. A token bound to a
-workspace sees that workspace's servers only. With an admin token, backup backs up any
+workspace sees that workspace's servers only. list_links, linked_tools and
+call_linked reach the OmniaCLI this one is linked to, with their own tools:
+one MCP for every machine. With an admin token, backup backs up any
 instance (production too) and list_backups lists an instance's backups, each
 with the path to download it; these two and dev_setup also reach the draft
 servers (complete ones) with an admin token. read_server gives a
@@ -72,11 +74,15 @@ TOOL_ROLES = {"update_test": "developer", "backup_test": "developer",
               "list_actions": "developer", "run_action": "developer", "verify_backup": "developer",
               "full_archive": "developer", "stop_job": "developer", "update_production": "admin"}
 # the tools of the machine's tokens only: a workspace's token never reaches them
-MACHINE_TOOLS = {"read_server", "add_draft_server"}
+MACHINE_TOOLS = {"read_server", "add_draft_server", "list_links", "linked_tools", "call_linked"}
 # the role of the token of the request being served, for the list of tools,
 # and the workspace it is bound to (empty: the machine's)
 _ROLE = contextvars.ContextVar("omniacli_mcp_role", default="user")
 _SCOPE = contextvars.ContextVar("omniacli_mcp_scope", default="")
+# who calls through a link: "link <name> (<user there>)"
+_WHO = contextvars.ContextVar("omniacli_mcp_who", default="")
+# the headers a link sends with who acts through it and the most it may do
+_ON_BEHALF = re.compile(r"[A-Za-z0-9._@-]{1,64}")
 
 
 def _public_url(url: str) -> str:
@@ -142,21 +148,31 @@ def _rpc_summary(body: bytes) -> str:
 
 
 def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampler: Sampler,
-               authenticator: Authenticator, access_log: AccessLog, add_draft) -> tuple[Route, object]:
+               authenticator: Authenticator, access_log: AccessLog, add_draft,
+               link_call=None) -> tuple[Route, object]:
     """The /mcp route and the session manager to run in the app's lifespan.
-    add_draft(name, data): the app's own way to add a draft server."""
+    add_draft(name, data): the app's own way to add a draft server;
+    link_call(link, user, role, payload): a JSON-RPC payload to the /mcp of
+    a linked OmniaCLI, its answer (LookupError: no such link)."""
     server = MCPServer(name="OmniaCLI", instructions=_instructions())
 
     def caller(ctx: Context) -> str:
+        """Who calls: the token's name, or "link <name> (<who acts there>)"."""
         # the route checked this very header before the request got here
         _, _, token = (ctx.headers or {}).get("authorization", "").partition(" ")
-        return authenticator.token_name(token.strip()) or "unknown"
+        return authenticator.token_name(token.strip()) or _WHO.get() or "unknown"
+
+    def role_of(ctx: Context) -> str:
+        """The caller's role: its token's, or its link's capped by who acts."""
+        _, _, token = (ctx.headers or {}).get("authorization", "").partition(" ")
+        name = authenticator.token_name(token.strip())
+        return settings.token_role(name) if name else _ROLE.get()
 
     def allowed(tool: str, role: str) -> bool:
         return ACCESS_ROLES.index(role) >= ACCESS_ROLES.index(TOOL_ROLES.get(tool, "user"))
 
     def need(ctx: Context, tool: str) -> None:
-        role = settings.token_role(caller(ctx))
+        role = role_of(ctx)
         if not allowed(tool, role):
             raise ToolError(f"{tool} needs an MCP token with role {TOOL_ROLES[tool]}; this one is {role}")
 
@@ -169,8 +185,13 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
     server.list_tools = list_tools
 
     def scope_of(ctx: Context | None) -> str:
-        """The workspace the caller's token is bound to; empty: the machine's token."""
-        return settings.token_workspace(caller(ctx)) if ctx is not None else _SCOPE.get()
+        """The workspace the caller's token is bound to; empty: the machine's
+        token, or a link (a link is the machine's)."""
+        if ctx is None:
+            return _SCOPE.get()
+        _, _, token = (ctx.headers or {}).get("authorization", "").partition(" ")
+        name = authenticator.token_name(token.strip())
+        return settings.token_workspace(name) if name else ""
 
     def sees(ctx: Context | None, server_name: str) -> bool:
         scope = scope_of(ctx)
@@ -194,7 +215,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         workspace's servers only."""
         if not sees(ctx, name):
             raise ToolError(f"No active server {name} with a {role} instance")
-        drafts = drafts_too and ctx is not None and settings.token_role(caller(ctx)) == "admin" and not scope_of(ctx)
+        drafts = drafts_too and ctx is not None and role_of(ctx) == "admin" and not scope_of(ctx)
         found = settings.instance(name, role, drafts)
         if found is None:
             srv = settings.servers.get(name)
@@ -456,6 +477,60 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         return {"server": inst.server, "role": role, "type": inst.type, **own,
                 "repositories": repos, "backups": backups_of(inst, 10)}
 
+    # --- the linked OmniaCLI: one MCP for every machine --------------------
+
+    async def linked(ctx: Context, link: str, method: str, params: dict) -> dict:
+        """A JSON-RPC call to the /mcp of a linked OmniaCLI, through its link,
+        as this token (its role caps the link's there)."""
+        machine_only(ctx, "a linked OmniaCLI")
+        if link_call is None:
+            raise ToolError("This OmniaCLI reaches no linked one")
+        user = re.sub(r"[^A-Za-z0-9._@-]", "-", f"mcp-{caller(ctx)}")[:64]
+        try:
+            return await link_call(link, user, role_of(ctx), {"jsonrpc": "2.0", "id": 1, "method": method,
+                                                              "params": params})
+        except LookupError as exc:
+            raise ToolError(str(exc)) from exc
+
+    @server.tool()
+    def list_links(ctx: Context) -> list[dict]:
+        """The other OmniaCLI this one is linked to: call their tools with
+        linked_tools and call_linked, as if they were here."""
+        machine_only(ctx, "list_links")
+        return [{"name": t.name, "url": t.url} for t in settings.link_targets.values()]
+
+    @server.tool()
+    async def linked_tools(link: str, ctx: Context) -> list[dict]:
+        """The tools of a linked OmniaCLI for this token (its role caps the
+        link's there): name, what it does, its arguments."""
+        answer = await linked(ctx, link, "tools/list", {})
+        if "error" in answer:
+            raise ToolError(f"{link}: {answer['error'].get('message', answer['error'])}")
+        return [{"name": t.get("name"), "description": (t.get("description") or "").split("\n\n")[0],
+                 "arguments": sorted((t.get("inputSchema") or {}).get("properties") or {})}
+                for t in (answer.get("result") or {}).get("tools") or []]
+
+    @server.tool()
+    async def call_linked(link: str, tool: str, ctx: Context,
+                          arguments: dict | None = None) -> dict | list | str | int | float | bool | None:
+        """Call a tool of a linked OmniaCLI (see linked_tools) with its
+        arguments: list_servers, diagnose_instance, restart_instance... there,
+        with the same rules (a production asks confirm=<server name>)."""
+        answer = await linked(ctx, link, "tools/call", {"name": tool, "arguments": arguments or {}})
+        if "error" in answer:
+            raise ToolError(f"{link}: {answer['error'].get('message', answer['error'])}")
+        result = answer.get("result") or {}
+        text = " ".join(c.get("text", "") for c in result.get("content") or [] if isinstance(c, dict))
+        if result.get("isError"):
+            raise ToolError(f"{link}: {text}")
+        content = result.get("structuredContent")
+        if isinstance(content, dict):
+            return content["result"] if set(content) == {"result"} else content
+        try:
+            return json.loads(text)
+        except ValueError:
+            return text
+
     # --- acting on an instance: production asks an admin's token and its name typed
 
     def acting(ctx: Context, tool: str, server_name: str, role: str, confirm: str) -> Instance:
@@ -465,7 +540,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         need(ctx, tool)
         inst = instance(server_name, role, ctx)
         if inst.role == "production":
-            token_role = settings.token_role(caller(ctx))
+            token_role = role_of(ctx)
             if ACCESS_ROLES.index(token_role) < ACCESS_ROLES.index("admin"):
                 raise ToolError(f"{tool} on a production needs an MCP token with role admin; this one is {token_role}")
             if (confirm or "").strip() != inst.server:
@@ -568,7 +643,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
                       and a.applies_to(inst)), None)
         if found is None:
             raise ToolError(f"{inst.plugin.label} has no action {action} for {inst.key}: see list_actions")
-        token_role = settings.token_role(caller(ctx))
+        token_role = role_of(ctx)
         if ACCESS_ROLES.index(token_role) < ACCESS_ROLES.index(found.role):
             raise ToolError(f"{action} needs the role {found.role}; this token is {token_role}")
         given = dict(params or {})
@@ -614,7 +689,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         production's needs an admin token."""
         need(ctx, "full_archive")
         inst = instance(server_name, role, ctx)
-        if inst.role == "production" and settings.token_role(caller(ctx)) != "admin":
+        if inst.role == "production" and role_of(ctx) != "admin":
             raise ToolError("full_archive of a production needs an MCP token with role admin")
         folder = settings.backup_dir / inst.server / inst.role
         return await submit(ctx, f"Full archive of {inst.key}", inst,
@@ -651,6 +726,18 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
             scheme, _, token = headers.get(b"authorization", b"").decode(errors="replace").partition(" ")
             name = authenticator.token_name(token.strip()) if scheme.lower() == "bearer" else None
             ip = (scope.get("client") or ("",))[0]
+            role, workspace, who, kind = settings.token_role(name or ""), settings.token_workspace(name or ""), "", "mcp"
+            link = authenticator.link_name(token.strip()) if scheme.lower() == "bearer" and name is None else None
+            if link is not None and link in settings.links:
+                # another OmniaCLI's MCP, for one of its tokens: the link's
+                # role, capped by the token's there
+                role = settings.links[link].role
+                cap = headers.get(b"x-omniacli-role-cap", b"").decode(errors="replace")
+                if cap in ACCESS_ROLES and ACCESS_ROLES.index(cap) < ACCESS_ROLES.index(role):
+                    role = cap
+                on_behalf = headers.get(b"x-omniacli-user", b"").decode(errors="replace")
+                who = f"link {link}" + (f" ({on_behalf})" if _ON_BEHALF.fullmatch(on_behalf) else "")
+                name, workspace, kind = who, "", "link"
             if name is None:
                 access_log.record("failed", "mcp", "", ip, f"{scope.get('method', '')} /mcp")
                 response = JSONResponse({"error": "A bearer token from auth.tokens is required"},
@@ -666,9 +753,10 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
                 chunks.append(message.get("body", b""))
                 more = message.get("more_body", False)
             body = b"".join(chunks)
-            access_log.record("mcp", "mcp", name, ip, _rpc_summary(body) or f"{scope.get('method', '')} /mcp")
-            _ROLE.set(settings.token_role(name))
-            _SCOPE.set(settings.token_workspace(name))
+            access_log.record("mcp", kind, name, ip, _rpc_summary(body) or f"{scope.get('method', '')} /mcp")
+            _ROLE.set(role)
+            _SCOPE.set(workspace)
+            _WHO.set(who)
             sent = False
 
             async def replay():

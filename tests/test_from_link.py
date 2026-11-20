@@ -4,6 +4,8 @@
 conftest's env, where this one is the link omnia, a developer), downloaded
 here and restored into a local instance, in the same process."""
 
+import asyncio
+import contextlib
 import json
 import zipfile
 
@@ -46,7 +48,7 @@ async def here(env, tmp_path, monkeypatch):
     app = create_app(settings, link_transport=httpx.ASGITransport(app=customer))
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=BasicAsSession(app)),
                                  base_url=f"http://{HOST}") as c:
-        c.settings, c.customer = settings, customer
+        c.settings, c.customer, c.app = settings, customer, app
         yield c
 
 
@@ -298,3 +300,72 @@ async def test_a_full_archive_copied_from_a_link(here, env):
     assert len((await here.get(url[:-1], headers=as_user("admin"))).json()["archives"]) == 1
     # a developer, even an admin of the workspace: not through the machine's links
     assert (await here.get(url + "remote?link=cliente", headers=as_user("dev"))).status_code == 403
+
+
+async def test_one_mcp_for_the_linked_machines(here, env):
+    """A token here calls the tools of the linked OmniaCLI: its /mcp takes the
+    link's token, with the link's role there capped by the token's here."""
+    pytest.importorskip("mcp")
+    from .test_mcp import call, rpc
+    async with running(here.app), running(here.customer):
+        await _one_mcp(here)
+
+
+@contextlib.asynccontextmanager
+async def running(app):
+    """The app's lifespan in a task of its own, as uvicorn runs it (the MCP
+    session manager's cancel scope stays in the task that entered it)."""
+    started, stop = asyncio.Event(), asyncio.Event()
+
+    async def lifespan():
+        async with app.router.lifespan_context(app):
+            started.set()
+            await stop.wait()
+    task = asyncio.create_task(lifespan())
+    await started.wait()
+    try:
+        yield
+    finally:
+        stop.set()
+        await task
+
+
+async def _one_mcp(here):
+    from .test_mcp import call, rpc
+
+    async def through(headers, link, tool, arguments=None):
+        """call_linked (its argument tool would clash with call's own)."""
+        resp = await rpc(here, "tools/call", {"name": "call_linked", "arguments": {
+            "link": link, "tool": tool, **({"arguments": arguments} if arguments else {})}}, headers=headers)
+        result = resp.json()["result"]
+        if result.get("isError"):
+            return {"error": result["content"][0]["text"]}
+        content = result.get("structuredContent")
+        if content is not None:
+            return content.get("result", content) if set(content) == {"result"} else content
+        return json.loads(result["content"][0]["text"])
+
+    resp = await here.post("/api/access/tokens/save", headers=as_user("admin", post=True),
+                           json={"name": "boss", "role": "admin", "new": True})
+    headers = {"Authorization": f"Bearer {resp.json()['token']}", "Accept": "application/json, text/event-stream",
+               "Content-Type": "application/json"}
+    assert await call(here, "list_links", headers=headers) == [{"name": "cliente", "url": "http://customer.test"}]
+    tools = {t["name"] for t in await call(here, "linked_tools", headers=headers, link="cliente")}
+    # omnia is a developer there: its tools, not an admin's
+    assert {"list_servers", "diagnose_instance", "restart_instance"} <= tools and "read_server" not in tools
+    servers = await through(headers, "cliente", "list_servers")
+    assert [s["name"] for s in servers] == ["srv"]
+    job = await through(headers, "cliente", "restart_instance", {"server_name": "srv", "role": "test", "wait_seconds": 30})
+    assert job["status"] == "success" and job["source"] == "mcp: link omnia (mcp-boss)", job
+    # a production there needs an admin, and the link is a developer there
+    answer = await through(headers, "cliente", "restart_instance", {"server_name": "srv", "role": "production", "confirm": "srv"})
+    assert "role admin" in answer["error"]
+    assert "No link nope" in (await through(headers, "nope", "list_servers"))["error"]
+    # a viewer token here caps the link at user there
+    resp = await here.post("/api/access/tokens/save", headers=as_user("admin", post=True),
+                           json={"name": "eyes", "role": "user", "new": True})
+    viewer = {**headers, "Authorization": f"Bearer {resp.json()['token']}"}
+    tools = {t["name"] for t in await call(here, "linked_tools", headers=viewer, link="cliente")}
+    assert "restart_instance" not in tools and "list_servers" in tools
+    # the link's token alone, without an MCP token here, is not taken here
+    assert (await rpc(here, "tools/list", headers={**headers, "Authorization": "Bearer nope"})).status_code == 401

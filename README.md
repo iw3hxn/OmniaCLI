@@ -1970,6 +1970,7 @@ provides: OmniaCLI installed by hand on Python 3.9 runs without it.
 | `verify_backup` | a backup checked (SHA-256) and restored for a try in a database of its own, dropped after |
 | `full_archive` | the full archive of an instance in its backups (a production's: admin token) |
 | `stop_job` | stops a running job |
+| `list_links`, `linked_tools`, `call_linked` | (a machine's token) the OmniaCLI this one is linked to, and their tools called through the link: one MCP for every machine |
 | `backup_test` | a backup (database and filestore) of the **test** instance; `options: {"no_filestore": true}` for the database only, `{"no_binaries": true}` with the binary columns emptied (those ticked in the instance's last Backup dialog, or `"binary_columns": ["table.column", ...]`) |
 | `backup` | (admin token) a backup of any instance, **production** too; the same `options` |
 | `list_backups` | (admin token) an instance's backups, each with its download path |
@@ -2002,6 +2003,12 @@ admin above and acts on the productions, each time with the server's name in
 `confirm` (the assistant gives it once the user has agreed, as the web
 interface has it typed). A client sees only the tools of its role. A token
 saved without a role (a bare hash, as before roles) is a `developer`.
+
+**One MCP for every machine**: `call_linked` sends a tool call to the
+`/mcp` of a linked OmniaCLI through its link (2026.1.5431 or newer there),
+with the link's token and who acts (`mcp-<token>`): there it has the link's
+role, capped by the token's role here, and the same rules (a production
+asks its name in `confirm`). A client is set up once, here.
 
 **A token of a workspace**: the **MCP tokens** of a workspace's page (its
 admins) make a token bound to it (`workspace:` in the users file): it sees
