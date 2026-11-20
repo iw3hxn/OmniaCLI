@@ -143,8 +143,12 @@ async def test_add_and_remove(instance, client):
     assert server.test.repositories[0].git_options[:3] == ("-c", "credential.helper=", "-c")
     resp = await client.post(url + "add", headers=post_as("mario"), json=body)
     assert resp.status_code == 400 and "already" in resp.json()["error"]
+    # the workspace's page sends to the instance's Settings, which list the repositories (UX-007): not twice
     page = (await client.get("/workspaces/acme", headers=post_as("mario"))).text
-    assert "production 17.0, test 17.0-dev" in page
+    assert 'href="/servers/acme-main#settings"' in page and "17.0-dev" not in page
+    for view, branch in (("", "17.0"), ("?view=test", "17.0-dev")):
+        page = (await client.get("/servers/acme-main" + view, headers=post_as("mario"))).text
+        assert 'data-repo="custom"' in page and f'>{branch}</td>' in page, view
     resp = await client.post(url + "remove", headers=post_as("mario"), json={"server": "acme-main", "name": "custom"})
     job = await wait_job(client, resp.json()["job"])
     assert job["status"] == "success", job["lines"]

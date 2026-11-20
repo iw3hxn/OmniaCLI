@@ -2862,6 +2862,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
              "links": sorted(settings.link_targets) if me.kind == "user" and not me.workspaces and me.can("admin")
              else [],
              "credentials": await asyncio.to_thread(workspace_credentials, ws.name),
+             # how many remote destinations its backups have (their page lists them)
+             "destinations_count": len(destination_rows(ws.name)),
              "instances_left": None if not ws.limits.get("instances")
              else int(ws.limits["instances"]) - len([n for n in ws.servers if n in settings.servers])},
         )

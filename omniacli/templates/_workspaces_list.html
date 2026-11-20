@@ -13,7 +13,7 @@
       <th title="{{ _("what its containers receive and send, on the bridges of its projects") }}">{{ _("Network in / out") }}</th>
       <th>{{ _("Disk used / limit") }}</th><th title="{{ _("the real disk under its storage, with what the workspaces were promised there") }}">{{ _("Real disk") }}</th></tr>
     {% for ws in workspaces %}
-    <tr class="ws-row" data-ws="{{ ws.name }}" tabindex="0" style="cursor: pointer" title="{{ _("Edit {name}", name=ws.name) }}"
+    <tr class="ws-row" data-ws="{{ ws.name }}" tabindex="0" style="cursor: pointer" title="{{ _('Opens the form of {name}: its limits, disk, domain, servers and users', name=ws.name) }}"
         {{ item([ws.name, ws.label, ws.domain, ws.storage, ws.servers | join(" ")] | join(" ")) }}>
       <td><strong>{{ ws.name }}</strong>{% if ws.label %} <span class="muted">{{ ws.label }}</span>{% endif %}
         {% if ws.storage_problem %} <span class="badge error" title="{{ tr(ws.storage_problem) }}">⚠ {{ _("unusable") }}</span>{% endif %}</td>

@@ -477,6 +477,24 @@ di cui 3 via SSH, almeno 2 utenti oltre all'admin, 1 token di collegamento, 1 wo
   pubblicazioni. La conferma potrebbe dire «2 istanze sono state copiate da qui».
 - L'**ultima prova riuscita** di un collegamento, salvata, così lo Stato ha una data anche prima della risposta.
 
+## Stato (20/11/2026 notte)
+
+Fatti: Collegamenti (2026.1.5446), Utenti, Gruppi, pagina del Workspace ed elenco (2026.1.5447). Misurato con Playwright
+come admin a 1440×900: un primario per pagina e per tab, 0 pulsanti e `summary` senza `title` fuori dai dialoghi;
+Collegamenti 844 px (da 3709), Workspace al più 969 px per tab (da 2883), nessun campo nelle righe.
+
+Scostamenti, voluti:
+- **D1 non presa**: il Workspace ha 4 tab; per l'admin della macchina c'è il link «Limiti e disco ›» al modulo di
+  oggi, e il clic sulla riga dell'elenco apre ancora quel modulo.
+- Il branch del test e il nome della cartella di un repository, che si davano dal Workspace, stanno ora nella pagina
+  dell'istanza: Impostazioni › Codice › Aggiungi un repository › Avanzate.
+- Gruppi: il conteggio delle modifiche è una stima (gruppi cambiati di posto, nome o membri).
+- Utenti: «token» per i collegamenti, «chiave» per gli assistenti AI (D3 raccomandata), tre tab (D4 raccomandata);
+  lo stato dei collegamenti si legge all'apertura (D2 raccomandata).
+
+Restano aperti: D1; i testi d'errore di §5 non ancora tutti nel catalogo; le misure come admin di un workspace e a
+375×812; l'indirizzo per gli assistenti AI, che visto attraverso un collegamento mostra quello interno del tunnel.
+
 ## Non verificato
 
 - I `title` di Elimina collegamento e di Elimina utente non promettono di chiudere le sessioni già aperte, né

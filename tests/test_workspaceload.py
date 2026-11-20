@@ -117,9 +117,9 @@ async def test_a_member_sees_the_load_of_its_workspace(workspaces, client, monke
     assert 'class="panel ws-load-panel" data-ws="acme"' in page and 'data-ws="beta"' not in page
     assert 'data-fold="machine"' not in page and '/workspaces/acme"' not in page  # luca is no admin there
     assert '<a href="/workspaces/acme">' in (await client.get("/", headers=basic("mario"))).text
-    # the workspace's page shows its disk with the same widget
+    # the workspace's page shows its disk with the same widget, in one line of its head (UX-007)
     page = (await client.get("/workspaces/acme", headers=basic("mario"))).text
-    assert 'id="ws-disk"' in page and "OmniaDisk.workspace(box, name, data)" in page
+    assert 'id="ws-disk"' in page and "OmniaDisk.render(diskBox," in page and "OmniaDisk.workspace(diskBox," in page
     # an admin of the machine has its machine, not these panels
     assert "ws-load-panel" not in (await client.get("/", headers={"Authorization": AUTH})).text
     resp = await client.get("/api/workspaces/acme/load", headers=basic("luca"))

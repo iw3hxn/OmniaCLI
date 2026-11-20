@@ -550,6 +550,15 @@
         title="{{ _('Downloads the repository into production and test, each on its branch, adds it to their odoo.conf and restarts them: its modules are then installed from Odoo › Apps. A private one: over https with the git credentials of the workspace, over ssh (git@…) with the key here below.') }}">{{ _("Add") }}</button></div>
     </div>
     <p class="muted" style="font-size: 12px; margin: 6px 0 0">{{ _("A private repository: over https with the git credentials of the workspace (Settings › Credentials), or over ssh (git@…) with OmniaCLI's key added to it as a deploy key. Its modules are then installed from Odoo's Apps.") }}</p>
+    <details class="addons-more">
+      <summary title="{{ _('Another branch for the test and the name of its folder, when the ones worked out by themselves do not fit') }}">{{ _("Advanced") }}</summary>
+      <div class="addons-fields" style="grid-template-columns: 1fr 1fr; margin-top: 8px">
+        <div><label for="addons-test-branch">{{ _("Branch of the test") }}</label>
+          <input type="text" id="addons-test-branch" class="mono" placeholder="{{ _('empty: the same branch') }}" spellcheck="false"></div>
+        <div><label for="addons-name">{{ _("Name of its folder") }}</label>
+          <input type="text" id="addons-name" class="mono" placeholder="{{ _('empty: the last part of the address') }}" spellcheck="false"></div>
+      </div>
+    </details>
     <p class="error" id="addons-error" role="alert"></p>
     <details class="addons-key">
       <summary title="{{ _('The public key OmniaCLI reads the private repositories with over ssh') }}">{{ _("The key for the repositories over ssh (git@…)") }}</summary>
@@ -565,7 +574,7 @@
 <style>
 .addons-add { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
 .addons-add > summary { font-weight: 600; color: var(--text); } .addons-add form { margin-top: 10px; }
-.addons-key { margin-top: 10px; } .addons-key summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+.addons-key, .addons-more { margin-top: 10px; } .addons-key summary, .addons-more summary { cursor: pointer; font-size: 13px; color: var(--muted); }
 .addons-fields { display: grid; grid-template-columns: 1fr 160px auto; gap: 10px; align-items: end; }
 .addons-fields label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; }
 .addons-fields input { width: 100%; }
@@ -945,7 +954,8 @@
     const error = document.getElementById("addons-error");
     error.textContent = "";
     const {ok, data} = await addonsPost("repositories/add", {server: {{ server.name | tojson }},
-      url: document.getElementById("addons-url").value.trim(), branch: document.getElementById("addons-branch").value.trim()});
+      url: document.getElementById("addons-url").value.trim(), branch: document.getElementById("addons-branch").value.trim(),
+      test_branch: document.getElementById("addons-test-branch").value.trim(), name: document.getElementById("addons-name").value.trim()});
     if (!ok || !data.job) { error.textContent = data.error || data.detail || ADD.refused; return; }
     location.href = `{{ prefix }}/jobs/${data.job}`;
   });

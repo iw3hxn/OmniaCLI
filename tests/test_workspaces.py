@@ -235,6 +235,26 @@ async def test_workspace_admin_manages_its_users(workspaces, client, env):
     assert (await client.get("/workspaces/beta", headers={"Authorization": AUTH})).status_code == 200
 
 
+async def test_the_workspace_page_is_four_tabs_and_one_primary(workspaces, client):
+    """docs/ux/UX-007 §4.4: four tabs, one primary outside the dialogs, the disk in the head, every list read;
+    what the instance's page holds (repositories, Odoo options, its deletion) is linked, not here twice; the
+    form of its limits is linked for the machine's admins only."""
+    page = (await client.get("/workspaces/acme", headers=basic("mario"))).text
+    assert re.findall(r'role="tab" data-tab="(\w+)"', page) == ["instances", "names", "users", "services"]
+    assert len(re.findall(r'class="[^"]*\bprimary\b', page.split("<dialog")[0])) == 1
+    assert '<p class="ws-disk-line">' in page and 'href="/servers/srv#settings"' in page
+    # a row read each: its fields are in the dialog
+    assert '<tr data-user="luca" data-role="user"' in page and 'data-edit="members"' in page
+    for gone in ("data-add-repo", "data-save-params", "data-remove-instance", "Add repository", "Odoo parameters of",
+                 "alert(", "sessionStorage"):
+        assert gone not in page, gone
+    # the anchors of the sections of before still open their tab
+    for anchor in ("mcp-tokens", "ws-notify", "new-instance-panel"):
+        assert f'"{anchor}": "' in page, anchor
+    assert 'href="/workspaces?edit=acme"' not in page
+    assert 'href="/workspaces?edit=acme"' in (await client.get("/workspaces/acme", headers={"Authorization": AUTH})).text
+
+
 async def test_workspaces_page_and_api(workspaces, client, env):
     settings = env["settings"]
     page = (await client.get("/workspaces", headers={"Authorization": AUTH})).text
@@ -826,7 +846,9 @@ async def test_no_new_instance_without_docker(workspaces, client, env, monkeypat
     from .test_app import POST
     monkeypatch.setattr(workspaceops, "docker_missing", lambda: workspaceops.DOCKER_MISSING)
     page = (await client.get("/workspaces/acme", headers=post_as("mario"))).text
-    assert 'href="#new-instance-panel"' not in page and "Docker" in page
+    # the primary is there and disabled, the reason in the title around it and on the Instances tab (UX-007)
+    assert 'id="new-instance" disabled' in page and 'id="instance-dialog"' not in page
+    assert page.count("Docker is not installed on this machine") == 2
     assert "data-new-instance" not in (await client.get("/", headers=POST)).text
     resp = await client.post("/api/workspaces/acme/instances/create", headers=post_as("mario"),
                              json={"instance": "odoo", "template": "odoo-19"})

@@ -1,168 +1,118 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
 {% extends "base.html" %}
-{% from "_credentials.html" import credentials_table, credentials_script with context %}
 {% block title %}{{ ws.name }} · OmniaCLI{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
 {{ crumbs([(_("Settings"), "/settings"), (_("Workspace {name}", name=ws.name), None)]) }}
 {% endblock %}
 {% block content %}
+{# the page of a workspace (docs/ux/UX-007 §4.4): its disk in the head, four tabs (instances, names on the web, users,
+   external services), every list read; a new instance, a user, a key and the notices in a dialog. The repositories,
+   the Odoo options and the deletion of an instance are on the instance's page (UX-006 › Settings). #}
 {% set new_instance = not storage_problem and not docker_missing and can_create and not (instances_left is not none and instances_left <= 0) and templates %}
+{# an administrator of the machine (not of this workspace only): the form of its limits is theirs (/workspaces?edit=) #}
+{% set machine_admin = not scoped %}
+{% set limits_url = prefix ~ "/workspaces?edit=" ~ (ws.name | urlencode) %}
+{% set role_names = {"user": _("user"), "developer": _("developer"), "admin": _("admin")} %}
+{# why no instance can be made now: on the Instances tab, and in the title of the disabled primary #}
+{% set why_not | trim %}
+{% if storage_problem %}{{ _("This workspace cannot be used: {problem}.", problem=tr(storage_problem)) }}
+{% elif docker_missing %}{{ _("Docker is not installed on this machine: the instances of a workspace are Docker Compose projects. Install it (the Checks page says how), then new instances can be made here.") }}
+{% elif not can_create %}{{ _("New instances need a storage and a disk limit for the workspace: the machine's administrators set them.") }}
+{% elif instances_left is not none and instances_left <= 0 %}{{ _("The workspace has all the instances its limit allows.") }}
+{% elif not templates %}{{ _("No template is installed on this machine.") }}
+{% endif %}
+{% endset %}
 <style>
-select.role { text-transform: none; letter-spacing: 0; font-size: inherit; font-weight: inherit; }
-.add-repo { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 6px; margin-top: 8px; }
-.add-repo .repo-url { grid-column: 1 / -1; }
-.repo-list { margin-top: 4px; }
+.ws-disk-line { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.section-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 8px; }
+.section-head h2 { margin: 0; }
+button.small { padding: 3px 10px; font-size: 13px; }
+.ws-table td { vertical-align: middle; }
+.ws-table .small-note { display: block; font-size: 13px; color: var(--muted); }
+.ws-side { font-size: 13px; white-space: nowrap; }
 .ws-names { margin: 8px 0 0; }
+.ws-line { margin: 0; overflow-wrap: anywhere; }
+.ws-services h2 { margin-bottom: 8px; }
+.ws-outcome { font-size: 13px; margin: 8px 0 0; } .ws-outcome:empty { display: none; }
+#instance-dialog { width: min(640px, calc(100vw - 32px)); }
+#item-dialog, #secret-dialog, #notify-dialog { width: min(520px, calc(100vw - 32px)); }
+dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
+.in-ways { display: flex; flex-wrap: wrap; gap: 6px 20px; margin: 4px 0 14px; }
+.in-ways label { display: inline-flex; gap: 6px; align-items: center; font-weight: 600; }
+.in-ways input { width: auto; }
+.fa-from { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.fa-from select { width: auto; flex: 1; min-width: 140px; }
 </style>
 <div class="page-head">
   <div>
     <h1>{{ _("Workspace {name}", name=ws.name) }}{% if ws.label %} <span class="muted">· {{ ws.label }}</span>{% endif %}</h1>
-    <p>{{ _("Your instances, their names on the web, the git credentials and the users of this workspace.") }}</p>
+    <p class="ws-disk-line"><span>{{ _("Disk:") }}</span> <span id="ws-disk">{{ _("Loading…") }}</span>
+      {% if ws.limits.get("instances") %}<span>· {{ _("{count} instances of {limit}", count=servers | length, limit=ws.limits.get("instances") | int) }}</span>{% endif %}</p>
   </div>
-  {% if new_instance %}<div class="actions"><a class="button primary" href="#new-instance-panel">{{ _("New instance") }}</a></div>{% endif %}
+  <div class="actions" style="margin: 0; align-items: center">
+    {% if machine_admin %}<a href="{{ limits_url }}" title="{{ _('Opens the form of the machine for this workspace: its limits, disk, domain and servers. For the administrators of the machine only.') }}">{{ _("Limits and disk") }} ›</a>{% endif %}
+    {% if new_instance %}
+    <button type="button" class="primary" id="new-instance" title="{{ _('Opens the form of a new instance of the workspace, from a template or from a full archive, on the disk of the workspace. Disabled when the workspace has no disk or disk limit, when Docker or a template is missing, or when it has all the instances of its limit.') }}">{{ _("New instance") }}</button>
+    {% else %}
+    <span title="{{ why_not }}"><button type="button" class="primary" id="new-instance" disabled>{{ _("New instance") }}</button></span>
+    {% endif %}
+  </div>
 </div>
 <div id="error" class="banner" hidden></div>
-<div class="stack">
-<section class="panel">
-  <h2>{{ _("Disk") }}</h2>
-  <div id="ws-disk" style="margin-top: 10px"><span class="muted">{{ _("Loading…") }}</span></div>
-</section>
+<nav class="tabs" role="tablist" aria-label="{{ _('The parts of the workspace') }}">
+  <button type="button" role="tab" data-tab="instances" aria-selected="true" title="{{ _('The instances of the workspace, each with its addresses') }}">{{ _("Instances") }} ({{ servers | length }})</button>
+  <button type="button" role="tab" data-tab="names" title="{{ _('The names the instances answer on, the subdomains and the certificate') }}">{{ _("Names on the web") }}</button>
+  <button type="button" role="tab" data-tab="users" title="{{ _('Who gets into this workspace, and with which role') }}">{{ _("Users") }} ({{ members | length }})</button>
+  <button type="button" role="tab" data-tab="services" title="{{ _('What the workspace talks to outside: who is told, where the backups go, the git servers and the AI assistants') }}">{{ _("External services") }}</button>
+</nav>
 
-<section class="panel">
-  <h2>{{ _("Instances") }}</h2>
-  <p class="muted">{{ _("Each instance has a production and a test, made from a template, on the workspace's disk.") }}</p>
+{# A. the instances: each with its addresses; its code and its Odoo options are on its own page #}
+<section class="panel tab-panel" data-panel="instances">
+  {% if why_not %}
+  <div class="{{ 'banner' if storage_problem else 'muted' }}" id="no-new-instance" style="margin: 0 0 12px">{{ why_not }}
+    {% if machine_admin and (storage_problem or not can_create) %}<a href="{{ limits_url }}">{{ _("Limits and disk") }} ›</a>{% endif %}</div>
+  {% endif %}
   <div class="scroll">
-  <table>
-    <tr><th>{{ _("Server") }}</th><th></th></tr>
+  <table class="ws-table">
+    <tr><th>{{ _("Instance") }}</th><th>{{ _("Addresses") }}</th><th></th></tr>
     {% for name in servers %}
+    {% set instance = name[(ws.name | length) + 1:] if name.startswith(ws.name ~ "-") else "" %}
     <tr data-server="{{ name }}">
-      <td><a href="{{ prefix }}/servers/{{ name }}"><strong>{{ name }}</strong></a>
-        {% set roles = repositories.get(name) or {} %}
-        <div class="muted repo-list">{{ _("Repositories:") }}
-          {% for r in roles.get("production", []) %}<span class="mono">{{ r.name }}</span>
-            ({{ _("production") }} {{ r.branch }}{% for t in roles.get("test", []) if t.name == r.name %}, {{ _("test") }} {{ t.branch }}{% endfor %})
-            <button type="button" class="danger" data-remove-repo data-name="{{ r.name }}"
-                    title="{{ _('Out of the odoo.conf of production and test, its clones deleted') }}"
-                    aria-label="{{ _('Remove {name}', name=r.name) }}">×</button>{% if not loop.last %}, {% endif %}
-          {% else %}{{ _("none") }}{% endfor %}</div>
-        <div class="add-repo">
-          <input type="text" class="mono repo-url" placeholder="https://github.com/acme/odoo-custom.git" aria-label="{{ _('Repository address') }}" size="40">
-          <input type="text" class="mono repo-production" placeholder="{{ _('production branch') }}" aria-label="{{ _('Production branch') }}" size="12">
-          <input type="text" class="mono repo-test" placeholder="{{ _('test branch') }}" aria-label="{{ _('Test branch') }}" size="12">
-          <input type="text" class="mono repo-name" placeholder="{{ _('name (folder)') }}" aria-label="{{ _('Name') }}" size="12">
-          <button type="button" data-add-repo>{{ _("Add repository") }}</button>
-        </div>
-        {% for role, info in (parameters.get(name) or {}).items() if info %}
-        <details style="margin-top: 8px" class="params" data-role="{{ role }}">
-          <summary>{{ _("Odoo parameters of {role}", role=tr(role)) }}</summary>
-          <div class="form-grid" style="margin-top: 6px">
-            {% for p in info.parameters %}
-            <label for="p-{{ name }}-{{ role }}-{{ p.name }}">{{ tr(p.label) }}</label>
-            {% if p.type == "bool" %}
-            <input type="checkbox" id="p-{{ name }}-{{ role }}-{{ p.name }}" data-param="{{ p.name }}" {% if p.value %}checked{% endif %}>
-            {% elif p.type == "password" %}
-            <input type="password" id="p-{{ name }}-{{ role }}-{{ p.name }}" data-param="{{ p.name }}" autocomplete="new-password"
-                   placeholder="{{ _('saved: empty keeps it') if p.set else _('none') }}">
-            {% elif p.type in ("int", "mb") %}
-            <input type="number" class="mono" id="p-{{ name }}-{{ role }}-{{ p.name }}" data-param="{{ p.name }}" value="{{ p.value }}"
-                   {% if p.min is not none %}min="{{ p.min }}"{% endif %} {% if p.max is not none %}max="{{ p.max }}"{% endif %}
-                   title="{{ _('allowed: {min} to {max}', min=p.min, max=p.max) }}">
-            {% else %}
-            <input type="text" class="mono" id="p-{{ name }}-{{ role }}-{{ p.name }}" data-param="{{ p.name }}" value="{{ p.value }}">
-            {% endif %}
-            {% endfor %}
-            <label for="p-{{ name }}-{{ role }}-debug">{{ _("Debug log") }}</label>
-            <input type="checkbox" id="p-{{ name }}-{{ role }}-debug" class="debug" {% if info.debug %}checked{% endif %}>
-          </div>
-          <p class="muted">{{ _("With 0 workers Odoo is threaded: it does not apply the CPU time of a request. Saved, the role's odoo.conf is written again and the role restarted.") }}</p>
-          <div class="actions"><button type="button" data-save-params>{{ _("Save and restart {role}", role=tr(role)) }}</button></div>
-        </details>
-        {% endfor %}</td>
-      <td><button type="button" class="danger" data-remove-instance>{{ _("Remove") }}</button></td>
+      <td><a href="{{ prefix }}/servers/{{ name }}"><strong>{{ name }}</strong></a></td>
+      <td>{% for site in sites if instance and site.instance == instance %}
+        <div><span class="muted">{{ tr(site.role) }}</span>
+          <a class="mono" href="https://{{ site.names[0] }}/" target="_blank" rel="noopener">{{ site.names[0] }} ↗</a>
+          {% if site.names[1:] %}<a class="ws-side" href="#names" title="{{ _('Its other names, on the tab Names on the web') }}">+{{ site.names[1:] | length }}</a>{% endif %}</div>
+        {% else %}<span class="muted">{{ _("no name on the web yet") }}</span>{% endfor %}</td>
+      <td style="text-align: right"><a class="ws-side" href="{{ prefix }}/servers/{{ name }}#settings"
+        title="{{ _('Opens the settings of the instance: its repositories, the options of its Odoo, its updates') }}">{{ _("Code and options") }} ›</a></td>
     </tr>
     {% else %}
-    <tr><td colspan="2" class="muted">{{ _("No instances yet.") }}</td></tr>
+    <tr><td colspan="3" class="muted">{% if new_instance %}{{ _("No instances yet. New instance makes one from a template, or from a full archive of another machine.") }}{% else %}{{ _("No instances yet.") }}{% endif %}</td></tr>
     {% endfor %}
   </table>
   </div>
 </section>
 
-<section class="panel" id="new-instance-panel">
-  <h2>{{ _("New instance") }}</h2>
-  {% if storage_problem %}
-  <div class="banner" style="margin: 10px 0 0">{{ _("This workspace cannot be used: {problem}.", problem=tr(storage_problem)) }}</div>
-  {% elif docker_missing %}
-  <p class="muted">{{ _("Docker is not installed on this machine: the instances of a workspace are Docker Compose projects. Install it (the Checks page says how), then new instances can be made here.") }}</p>
-  {% elif not can_create %}
-  <p class="muted">{{ _("New instances need a storage and a disk limit for the workspace: the machine's administrators set them.") }}</p>
-  {% elif instances_left is not none and instances_left <= 0 %}
-  <p class="muted">{{ _("The workspace has all the instances its limit allows.") }}</p>
-  {% elif not templates %}
-  <p class="muted">{{ _("No template is installed on this machine.") }}</p>
-  {% else %}
-  <p class="muted">{{ _("A production and a test made from a template. A new database has the user admin with password admin: change it at the first login.") }}</p>
-  <div class="form-grid" id="new-instance">
-    <label for="instance-name">{{ _("Name") }}</label>
-    <input type="text" id="instance-name" class="mono" placeholder="{{ _('a-z 0-9 -: the server is {server}', server=ws.name ~ '-<name>') }}">
-    <label for="instance-template">{{ _("Template") }}</label>
-    <select id="instance-template">{% for t in templates %}<option value="{{ t.name }}">{{ tr(t.label) }} ({{ t.version }})</option>{% endfor %}</select>
-  </div>
-  <div class="form-grid" id="template-fields" style="margin-top: 8px"></div>
-  <div class="actions"><button type="button" class="primary" id="create-instance">{{ _("Create") }}</button></div>
-  <details id="from-archive" style="margin-top: 14px">
-    <summary>{{ _("From a full archive") }}</summary>
-    <p class="muted" style="font-size: 13px">{{ _("A full archive made by an OmniaCLI (Backups tab › More › Full archive), here or on another machine: the instance is made from its template, its repositories at their commits, its Odoo parameters, and its database in production.") }}</p>
-    <div class="form-grid">
-      <label for="fa-name">{{ _("Name") }}</label>
-      <input type="text" id="fa-name" class="mono" placeholder="{{ _('a-z 0-9 -: the server is {server}', server=ws.name ~ '-<name>') }}">
-      <label for="fa-archive">{{ _("Archive") }}</label>
-      <select id="fa-archive"><option value="">{{ _("Loading…") }}</option></select>
-      <label for="fa-file">{{ _("Or send one") }}</label>
-      <span><input type="file" id="fa-file" accept=".zip"> <span class="muted" id="fa-progress"></span></span>
-      {% if links %}
-      <label for="fa-link">{{ _("Or copy one from a link") }}</label>
-      <span style="display: flex; gap: 8px; flex-wrap: wrap">
-        <select id="fa-link"><option value="">—</option>{% for l in links %}<option>{{ l }}</option>{% endfor %}</select>
-        <select id="fa-remote" hidden></select>
-        <button type="button" id="fa-copy" hidden>{{ _("Copy here") }}</button>
-        <span class="muted" id="fa-remote-state"></span>
-      </span>
-      {% endif %}
-      <label for="fa-neutralize">{{ _("Neutralize") }}</label>
-      <label style="font-weight: 400"><input type="checkbox" id="fa-neutralize" checked style="width: auto">
-        {{ _("no scheduled actions, no outgoing mail: off for a move, where this becomes the instance at work") }}</label>
-    </div>
-    <div class="actions"><button type="button" class="primary" id="fa-create">{{ _("Create from the archive") }}</button></div>
-  </details>
-  {% endif %}
-</section>
-
-<section class="panel" id="names">
-  <h2>{{ _("Names and certificate") }}</h2>
+{# B. the names on the web: the subdomains are a table to fill, the row is the datum #}
+<section class="panel tab-panel" data-panel="names" id="names" hidden>
   {% if not ws.domain %}
-  <p class="muted">{{ _("The workspace has no domain yet: the machine's administrators set it.") }}</p>
+  <p class="muted" style="margin: 0">{{ _("The workspace has no domain yet: the machine's administrators set it.") }}
+    {% if machine_admin %}<a href="{{ limits_url }}">{{ _("Limits and disk") }} ›</a>{% endif %}</p>
   {% else %}
-  <p class="muted">{{ _("The instances answer under {domain}; each name needs a DNS record pointing to this machine.", domain=ws.domain) }}</p>
-  <details>
-    <summary>{{ _("More") }}</summary>
-    <dl class="ws-names">
-      <dt>{{ _("Main instance") }}</dt><dd class="mono">{{ ws.domain }}, test.{{ ws.domain }}</dd>
-      <dt>{{ _("Every instance") }}</dt><dd class="mono">&lt;instance&gt;.{{ ws.domain }}, &lt;instance&gt;.test.{{ ws.domain }}</dd>
-      <dt>{{ _("A subdomain") }}</dt><dd class="mono">&lt;sub&gt;.{{ ws.domain }}, &lt;sub&gt;.test.{{ ws.domain }}</dd>
-    </dl>
-    <p class="muted">{{ _("Each name needs a DNS record pointing to this machine, and the certificate of Let's Encrypt port 80 open to the internet.") }}</p>
-  </details>
+  <p class="muted" style="margin: 0 0 10px">{{ _("The instances answer under {domain}; each name needs a DNS record pointing to this machine.", domain=ws.domain) }}</p>
   {% if sites %}
-  <div class="scroll" style="margin-top: 10px">
+  <div class="scroll">
   <table>
-    <tr><th>{{ _("Instance") }}</th><th>{{ _("Role") }}</th><th>{{ _("Names") }}</th></tr>
+    <tr><th>{{ _("Instance") }}</th><th>{{ _("Copy") }}</th><th>{{ _("Addresses") }}</th></tr>
     {% for site in sites %}
     <tr><td>{{ site.instance }}</td><td>{{ tr(site.role) }}</td>
-      <td class="mono">{% for n in site.names %}<a href="https://{{ n }}/" target="_blank" rel="noopener">{{ n }}</a>{% if not loop.last %}<br>{% endif %}{% endfor %}</td></tr>
+      <td class="mono">{% for n in site.names %}<a href="https://{{ n }}/" target="_blank" rel="noopener">{{ n }} ↗</a>{% if not loop.last %}<br>{% endif %}{% endfor %}</td></tr>
     {% endfor %}
   </table>
   </div>
   {% endif %}
+  <div id="names-form">
   <div class="form-grid" style="margin-top: 12px">
     <label for="main-instance">{{ _("Main instance") }}</label>
     <select id="main-instance"><option value="">{{ _("(none)") }}</option>
@@ -180,199 +130,326 @@ select.role { text-transform: none; letter-spacing: 0; font-size: inherit; font-
     {% for sub, target in ws.subdomains.items() %}
     <tr data-sub><td><input type="text" class="mono sub" value="{{ sub }}" aria-label="{{ _('Subdomain') }}"></td>
       <td><select class="target" aria-label="{{ _('Instance of the subdomain') }}">{% for i in instances %}<option {% if i == target %}selected{% endif %}>{{ i }}</option>{% endfor %}</select></td>
-      <td><button type="button" class="danger" data-drop-sub>{{ _("Remove") }}</button></td></tr>
+      <td><button type="button" class="small danger" data-drop-sub title="{{ _('Takes the subdomain out of the table. It holds with Save and publish.') }}">{{ _("Take out") }}</button></td></tr>
     {% endfor %}
   </table>
   </div>
-  <div class="actions">
-    {% if instances %}<button type="button" id="add-sub">{{ _("Add subdomain") }}</button>{% endif %}
-    <button type="button" id="save-names">{{ _("Save and publish") }}</button>
-    {% if instances %}<button type="button" id="publish-names">{{ _("Publish again") }}</button>{% endif %}
   </div>
+  <div class="actions">
+    {% if instances %}<button type="button" class="small" id="add-sub" title="{{ _('Adds a name {name} that opens the instance you choose. It holds with Save and publish.', name='<sub>.' ~ ws.domain) }}">+ {{ _("Subdomain") }}</button>{% endif %}
+    <span title="{{ _('Saves the main instance, the subdomains and where the certificate comes from, then writes again the nginx site of the workspace and asks for the certificate. It is a job. A name without a DNS record stays out of the certificate. Disabled until something is changed.') }}">
+      <button type="button" id="save-names" disabled>{{ _("Save and publish") }}</button></span>
+    {% if instances %}<button type="button" id="publish-names" title="{{ _('Writes again the nginx site of the workspace and asks for the certificate again, without changing the names: after the DNS records were made, or when a certificate did not arrive. It is a job.') }}">{{ _("Publish again") }}</button>{% endif %}
+  </div>
+  <p class="error ws-outcome" id="names-error" role="alert"></p>
   {% if ws.certificate == "own" %}
   <h3>{{ _("The customer's certificate") }}</h3>
   <p class="muted">{{ _("PEM: the certificate with its chain, and its private key (not protected by a passphrase). It should list every name above.") }}</p>
   <div class="form-grid">
     <label for="own-cert">{{ _("Certificate") }}</label>
-    <textarea id="own-cert" class="mono" rows="6" placeholder="-----BEGIN CERTIFICATE-----"></textarea>
+    <textarea id="own-cert" class="mono" rows="3" placeholder="-----BEGIN CERTIFICATE-----"></textarea>
     <label for="own-key">{{ _("Private key") }}</label>
-    <textarea id="own-key" class="mono" rows="6" placeholder="-----BEGIN PRIVATE KEY-----"></textarea>
+    <textarea id="own-key" class="mono" rows="3" placeholder="-----BEGIN PRIVATE KEY-----"></textarea>
   </div>
-  <div class="actions"><button type="button" id="upload-cert">{{ _("Upload and publish") }}</button></div>
+  <div class="actions"><button type="button" id="upload-cert" title="{{ _('Checks the certificate and the key (PEM, the key without a passphrase), installs them and publishes the names again. The outcome says until when it is valid and for which names.') }}">{{ _("Upload and publish") }}</button></div>
+  <p class="ok ws-outcome" id="cert-state" role="status"></p>
+  <p class="error ws-outcome" id="cert-error" role="alert"></p>
   {% endif %}
+  <details style="margin-top: 14px">
+    <summary title="{{ _('Which names the main instance, the other instances and a subdomain answer on, and what each name needs') }}">{{ _("How names are formed") }}</summary>
+    <dl class="ws-names">
+      <dt>{{ _("Main instance") }}</dt><dd class="mono">{{ ws.domain }}, test.{{ ws.domain }}</dd>
+      <dt>{{ _("Every instance") }}</dt><dd class="mono">&lt;instance&gt;.{{ ws.domain }}, &lt;instance&gt;.test.{{ ws.domain }}</dd>
+      <dt>{{ _("A subdomain") }}</dt><dd class="mono">&lt;sub&gt;.{{ ws.domain }}, &lt;sub&gt;.test.{{ ws.domain }}</dd>
+    </dl>
+    <p class="muted">{{ _("Each name needs a DNS record pointing to this machine, and the certificate of Let's Encrypt port 80 open to the internet.") }}</p>
+  </details>
   {% endif %}
 </section>
 
-<section class="panel">
-  <div class="section-head"><h2>{{ _("Backup destinations") }}</h2>
-    <a class="button" href="{{ prefix }}/workspaces/{{ ws.name | urlencode }}/destinations">{{ _("Open") }}</a></div>
-  <p class="muted" style="margin: 0">{{ _("Where the automatic backups of the workspace's instances are copied, encrypted: SFTP, FTP, S3, Google Drive, Dropbox, OneDrive, WebDAV.") }}</p>
-</section>
-
-<section class="panel" id="ws-notify">
-  <h2>{{ _("Notices") }}</h2>
-  <p class="muted">{{ _("Who is told when an instance of the workspace goes down and when it comes back (it is asked for its login page every minute).") }}</p>
-  <div class="actions" style="margin: 0">
-    <input type="text" id="notify-list" class="mono" style="flex: 1; min-width: 260px" value="{{ ws.notify | join(', ') }}"
-           placeholder="{{ _('emails or webhook URLs, separated by commas') }}">
-    <button type="button" id="notify-save">{{ _("Save") }}</button>
-  </div>
-</section>
-
-<section class="panel" id="mcp-tokens">
-  <h2>{{ _("MCP tokens") }}</h2>
-  <p class="muted">{{ _("An AI assistant (Claude, Cursor…) reaches the workspace's instances at {url} with a token: it sees this workspace only, and does what its role lets do here.", url=mcp_url) }}</p>
-  <div id="token-box" class="banner info" hidden>
-    <p style="margin-top: 0"><strong>{{ _("The new token.") }}</strong> {{ _("Copy it now: it is not shown again.") }}</p>
-    <pre class="copyable mono" id="token-text"></pre>
-  </div>
-  <div class="scroll"><table>
-    <tr><th>{{ _("Name") }}</th><th>{{ _("Role") }}</th><th></th></tr>
-    {% for t in tokens %}
-    <tr data-token="{{ t.name }}"><td class="mono">{{ t.name }}</td>
-      <td><select class="token-role">{% for r in roles %}<option {{ "selected" if r == t.role }}>{{ r }}</option>{% endfor %}</select></td>
-      <td><div class="actions" style="margin: 0"><button type="button" data-token-save>{{ _("Save") }}</button>
-        <button type="button" class="danger" data-token-delete>{{ _("Revoke") }}</button></div></td></tr>
+{# C. the users: a row read each; a new one and a change in the dialog #}
+<section class="panel tab-panel" data-panel="users" hidden>
+  <div class="section-head"><p class="muted ws-line">{{ _("A user created here sees this workspace's servers only.") }}</p>
+    <button type="button" id="new-member" title="{{ _('Makes a user who sees only the instances of this workspace, with the role you choose here') }}">{{ _("New user") }}</button></div>
+  <div class="scroll" style="margin-top: 10px">
+  <table class="ws-table">
+    <tr><th>{{ _("User") }}</th><th>{{ _("Role") }}</th><th></th></tr>
+    {% for m in members %}
+    <tr data-user="{{ m.name }}" data-role="{{ m.role }}" data-only-here="{{ 1 if m.only_here else '' }}">
+      <td><strong>{{ m.name }}</strong>{% if m.name == me %} <span class="muted">{{ _("(you)") }}</span>{% endif %}
+        {% if not m.only_here %}<span class="small-note">{{ _("also elsewhere: its password is the machine's administrator's") }}</span>{% endif %}</td>
+      <td>{{ role_names.get(m.role, m.role) }}</td>
+      <td><div class="actions" style="margin: 0; justify-content: flex-end">
+        <button type="button" class="small" data-edit="members" title="{{ _('Changes the role in the workspace and, for a user of this workspace only, the password. You cannot change your own role.') }}">{{ _("Edit…") }}</button>
+        {% if m.name != me %}<button type="button" class="small danger" data-delete="members" title="{{ _('Takes the user out of the workspace. A user of this workspace only is deleted; one who gets in elsewhere too only loses this workspace. You cannot take out yourself.') }}">{{ _("Take out…") }}</button>{% endif %}
+      </div></td>
+    </tr>
+    {% else %}
+    <tr><td colspan="3" class="muted">{{ _("No user: only the administrators of the machine get into this workspace. A user made here sees only its instances.") }}</td></tr>
     {% endfor %}
-    <tr><td><input type="text" id="token-name" class="mono" placeholder="claude-{{ ws.name }}"></td>
-      <td><select id="token-role">{% for r in roles %}<option {{ "selected" if r == "developer" }}>{{ r }}</option>{% endfor %}</select></td>
-      <td><button type="button" class="primary" id="token-new">{{ _("New token") }}</button></td></tr>
-  </table></div>
-</section>
-
-<section class="panel">
-  <h2>{{ _("Git credentials") }}</h2>
-  <p class="muted">{{ _("The user and token OmniaCLI uses for a host (github.com, bitbucket.org…) to reach the customer's repositories of every instance of the workspace. The token is never shown again; it never reaches the repositories nor the containers.") }}</p>
-  {{ credentials_table(credentials, prefix ~ "/api/workspaces/" ~ (ws.name | urlencode) ~ "/credentials/", {},
-                       _("workspace {name}", name=ws.name)) }}
-</section>
-
-<section class="panel">
-  <h2>{{ _("Users") }}</h2>
-  <p class="muted">{{ _("A user created here sees this workspace's servers only.") }}</p>
-  <details>
-    <summary>{{ _("The roles") }}</summary>
+  </table>
+  </div>
+  <details style="margin-top: 12px">
+    <summary title="{{ _('What a user, a developer and an admin may do in this workspace') }}">{{ _("The roles") }}</summary>
     <dl>
       <dt>{{ _("user") }}</dt><dd>{{ _("watches and restarts, starts and stops") }}</dd>
       <dt>{{ _("developer") }}</dt><dd>{{ _("also pulls, updates and backs up") }}</dd>
       <dt>{{ _("admin") }}</dt><dd>{{ _("also manages these users") }}</dd>
     </dl>
   </details>
-  <div class="scroll" style="margin-top: 10px">
-  <table>
-    <tr><th>{{ _("User") }}</th><th>{{ _("Role") }}</th><th>{{ _("New password") }}</th><th></th></tr>
-    {% for m in members %}
-    <tr data-user="{{ m.name }}">
-      <td><strong>{{ m.name }}</strong>{% if m.name == me %} <span class="muted">{{ _("(you)") }}</span>{% endif %}
-        {% if not m.only_here %}<br><span class="muted">{{ _("also elsewhere: its password is the machine's administrator's") }}</span>{% endif %}</td>
-      <td><select class="role" aria-label="{{ _('Role of {name}', name=m.name) }}" {% if m.name == me %}disabled title="{{ _('You cannot change your own role') }}"{% endif %}>
-        {% for r in roles %}<option value="{{ r }}" {% if r == m.role %}selected{% endif %}>{{ tr(r) }}</option>{% endfor %}</select></td>
-      <td>{% if m.only_here %}<input type="password" class="password" autocomplete="new-password" placeholder="{{ _('unchanged') }}" aria-label="{{ _('New password of {name}', name=m.name) }}">{% endif %}</td>
-      <td><div class="actions" style="margin: 0">
-        <button type="button" data-save>{{ _("Save") }}</button>
-        {% if m.name != me %}<button type="button" class="danger" data-delete>{{ _("Remove") }}</button>{% endif %}
-      </div></td>
-    </tr>
-    {% else %}
-    <tr><td colspan="4" class="muted">{{ _("No users yet.") }}</td></tr>
+</section>
+
+{# D. what the workspace talks to outside: four short sections #}
+<div class="tab-panel stack ws-services" data-panel="services" hidden>
+<section class="panel" id="ws-notify">
+  <div class="section-head"><h2>{{ _("Notices") }}</h2>
+    <button type="button" class="small" id="notify-edit" title="{{ _('Whom to tell (e-mail addresses or webhook addresses) when an instance of the workspace does not answer and when it comes back: the monitor asks for its login page every minute.') }}">{{ _("Edit…") if ws.notify else _("Add…") }}</button></div>
+  {# a webhook address may hold a secret: only its server here, the whole in the dialog #}
+  {% set told = [] %}
+  {% for n in ws.notify %}{% if told.append(((n.split("/")[:3] | join("/")) ~ "/…") if "://" in n else n) %}{% endif %}{% endfor %}
+  <p class="ws-line {{ '' if ws.notify else 'muted' }}">{% if ws.notify %}{{ _("Tells {who} when an instance does not answer and when it comes back.", who=told | join(", ")) }}{% else %}{{ _("Nobody is told when an instance does not answer.") }}{% endif %}</p>
+</section>
+
+<section class="panel" id="backup-destinations">
+  <h2>{{ _("Backup destinations") }}</h2>
+  <p class="ws-line">{% if not destinations_count %}<span class="muted">{{ _("No destination yet.") }}</span>{% elif destinations_count == 1 %}{{ _("1 destination") }}{% else %}{{ _("{count} destinations", count=destinations_count) }}{% endif %}
+    · <a href="{{ prefix }}/workspaces/{{ ws.name | urlencode }}/destinations" title="{{ _('Opens the destinations where the automatic backups of the instances of the workspace are copied, encrypted') }}">{{ _("Open") }} ›</a></p>
+</section>
+
+<section class="panel" id="git-credentials">
+  <h2>{{ _("Git credentials") }}</h2>
+  <p class="muted ws-line" style="margin-bottom: 10px">{{ _("The user and token OmniaCLI reads the private repositories of the instances with, one for each git server (github.com, bitbucket.org…).") }}</p>
+  <div class="scroll">
+  <table class="credentials ws-table" id="credentials">
+    <tr><th>{{ _("Git server") }}</th><th>{{ _("User") }}</th><th>{{ _("Token") }}</th><th></th></tr>
+    {% for c in credentials %}
+    <tr data-host="{{ c.host }}"><td class="mono">{{ c.host }}</td><td class="mono">{{ c.username }}</td>
+      <td>{% if c.token_set %}<span class="badge ok">{{ _("saved") }}</span>{% else %}<span class="badge">{{ _("none") }}</span>{% endif %}</td>
+      <td style="text-align: right"><button type="button" class="small danger" data-delete-credential title="{{ _('Takes out the user and token saved for that git server: its repositories are then read as the git user of this machine, so the private ones are no longer updated until new ones are saved. It asks before.') }}">{{ _("Take out…") }}</button></td></tr>
     {% endfor %}
     <tr>
-      <td><input type="text" id="new-user" placeholder="{{ _('new user') }}" aria-label="{{ _('New user name') }}"></td>
-      <td><select id="new-user-role" aria-label="{{ _('Role of the new user') }}">{% for r in roles %}<option value="{{ r }}" {% if r == "user" %}selected{% endif %}>{{ tr(r) }}</option>{% endfor %}</select></td>
-      <td><input type="password" id="new-user-password" autocomplete="new-password" placeholder="{{ _('password, {count}+ characters', count=min_password) }}" aria-label="{{ _('Password of the new user') }}"></td>
-      <td><button type="button" id="add-user">{{ _("Add user") }}</button></td>
+      <td><input type="text" class="mono cred-host" placeholder="github.com" aria-label="{{ _('Git server') }}"></td>
+      <td><input type="text" class="mono cred-user" placeholder="{{ _('user') }}" aria-label="{{ _('User') }}" autocomplete="off"></td>
+      <td><input type="password" class="mono cred-token" placeholder="{{ _('token (empty: keep the saved one)') }}" aria-label="{{ _('Token') }}" autocomplete="new-password"></td>
+      <td style="text-align: right"><span title="{{ _('Saves the user and token OmniaCLI uses for that git server (github.com…) to read the private repositories of the instances of the workspace. A server already listed is changed; an empty token keeps the saved one. The token is not shown again and never reaches the containers. Disabled until the server is written.') }}">
+        <button type="button" data-save-credential disabled>{{ _("Save") }}</button></span></td>
     </tr>
+  </table>
+  </div>
+  <p class="error ws-outcome" id="cred-error" role="alert"></p>
+</section>
+
+<section class="panel" id="mcp-tokens">
+  <div class="section-head"><h2>{{ _("AI assistants") }}</h2>
+    <button type="button" class="small" id="new-token" title="{{ _('Makes a key for an AI assistant: it sees only this workspace and does there what its role allows. You see it once.') }}">{{ _("New key for an assistant") }}</button></div>
+  <p class="muted ws-line" style="margin-bottom: 10px">{{ _("The keys an AI assistant (Claude, Cursor…) reads the instances of this workspace and uses its tools with: a key sees this workspace only.") }}
+    <span class="mono small" style="font-size: 12px">MCP · {{ mcp_url }}</span></p>
+  <div class="scroll">
+  <table class="ws-table">
+    <tr><th>{{ _("Key") }}</th><th>{{ _("Role") }}</th><th></th></tr>
+    {% for t in tokens %}
+    <tr data-token="{{ t.name }}" data-role="{{ t.role }}"><td><strong>{{ t.name }}</strong></td>
+      <td>{{ role_names.get(t.role, t.role) }}</td>
+      <td><div class="actions" style="margin: 0; justify-content: flex-end">
+        <button type="button" class="small" data-edit="tokens" title="{{ _('Changes the role of the key; the key stays the same.') }}">{{ _("Edit…") }}</button>
+        <button type="button" class="small danger" data-delete="tokens" title="{{ _('Cancels the key: the assistant that uses it stops working at once.') }}">{{ _("Revoke…") }}</button>
+      </div></td></tr>
+    {% else %}
+    <tr><td colspan="3" class="muted">{{ _("No AI assistant gets into this workspace. Make a key to connect one.") }}</td></tr>
+    {% endfor %}
   </table>
   </div>
 </section>
 </div>
+
+{% if new_instance %}
+{# a new instance: from a template, or from a full archive made by an OmniaCLI #}
+<dialog id="instance-dialog" aria-labelledby="in-title">
+  <form method="dialog" id="in-form">
+    <h2 id="in-title">{{ _("New instance") }}</h2>
+    <div class="in-ways">
+      <label><input type="radio" name="in-way" value="template" checked> {{ _("From a template") }}</label>
+      <label><input type="radio" name="in-way" value="archive"> {{ _("From a full archive") }}</label>
+    </div>
+    <div class="form-grid">
+      <label for="instance-name">{{ _("Name") }}</label>
+      <div><input type="text" id="instance-name" class="mono" autocomplete="off" placeholder="{{ _('a-z 0-9 -: the server is {server}', server=ws.name ~ '-<name>') }}">
+        <span class="error field-help" id="in-name-help" hidden></span></div>
+    </div>
+    <div id="new-instance-fields">
+      <div class="form-grid" style="margin-top: 8px">
+        <label for="instance-template">{{ _("Template") }}</label>
+        <select id="instance-template">{% for t in templates %}<option value="{{ t.name }}">{{ tr(t.label) }} ({{ t.version }})</option>{% endfor %}</select>
+      </div>
+      <div class="form-grid" id="template-fields" style="margin-top: 8px"></div>
+      <p class="muted" style="font-size: 13px">{{ _("The new database has the user admin with password admin: change it at the first login.") }}</p>
+    </div>
+    <div id="from-archive" hidden>
+      <p class="muted" style="font-size: 13px">{{ _("A full archive made by an OmniaCLI (Backups tab › More › Full archive), here or on another machine: the instance is made from its template, its repositories at their commits, its Odoo parameters, and its database in production.") }}</p>
+      <div class="form-grid">
+        <label for="fa-archive">{{ _("Archive") }}</label>
+        <select id="fa-archive"><option value="">{{ _("Loading…") }}</option></select>
+        <label for="fa-file">{{ _("or upload a .zip file") }}</label>
+        <span><input type="file" id="fa-file" accept=".zip" title="{{ _('Uploads a full archive made by another OmniaCLI (Backups › More › Full archive)') }}"> <span class="muted" id="fa-progress"></span></span>
+        {% if links %}
+        <label for="fa-link">{{ _("or copy one from a link") }}</label>
+        <span class="fa-from">
+          <select id="fa-link"><option value="">—</option>{% for l in links %}<option>{{ l }}</option>{% endfor %}</select>
+          <select id="fa-remote" hidden></select>
+          <button type="button" class="small" id="fa-copy" hidden title="{{ _('Copies the full archive from the link among the archives of this workspace, then you choose it here above. It is a job. Administrators of the machine only.') }}">{{ _("Copy here") }}</button>
+          <span class="muted" id="fa-remote-state"></span>
+        </span>
+        {% endif %}
+        <label for="fa-neutralize">{{ _("Neutralize") }}</label>
+        <label style="font-weight: 400"><input type="checkbox" id="fa-neutralize" checked style="width: auto">
+          {{ _("no scheduled actions, no outgoing mail: off for a move, where this becomes the instance at work") }}</label>
+      </div>
+    </div>
+    <p class="error" id="in-error" role="alert"></p>
+    <div class="actions">
+      <button type="button" id="in-cancel" title="{{ _('Closes without making anything') }}">{{ _("Cancel") }}</button>
+      <span id="create-wrap"><span title="{{ _('Makes the instance from the template on the disk of the workspace (containers, database, folders) and publishes its names on the web. It is a job: its page opens. If it fails, the instance is not left half made. Disabled until the name is written: 1 to 32 lower case letters, digits and -.') }}">
+        <button type="button" class="primary" id="create-instance" disabled>{{ _("Create") }}</button></span></span>
+      <span id="fa-wrap" hidden><span title="{{ _('Makes the instance from the full archive: its template, its repositories at their commits, its Odoo options and its database in production, neutralized when Neutralize is left on. It is a job. Disabled until the name is written and an archive is chosen.') }}">
+        <button type="button" class="primary" id="fa-create" disabled>{{ _("Create from the archive") }}</button></span></span>
+    </div>
+  </form>
+</dialog>
+{% endif %}
+
+{# one dialog for a new one and for a change: a user of the workspace, a key of an assistant #}
+<dialog id="item-dialog" aria-labelledby="id-title">
+  <form method="dialog" id="id-form">
+    <h2 id="id-title"></h2>
+    <div class="form-grid">
+      <label for="id-name">{{ _("Name") }}</label>
+      <div><input type="text" id="id-name" required autocomplete="off"></div>
+      <label for="id-role">{{ _("Role") }}</label>
+      <div><select id="id-role"></select>
+        <span class="muted field-help" id="id-role-help"></span></div>
+      <label for="id-password" data-for-password>{{ _("Password") }}</label>
+      <div data-for-password><input type="password" id="id-password" autocomplete="new-password" minlength="{{ min_password }}">
+        <span class="muted field-help" id="id-password-help"></span></div>
+    </div>
+    <p class="muted" id="id-elsewhere" style="font-size: 13px" hidden>{{ _("also elsewhere: its password is the machine's administrator's") }}</p>
+    <p class="error" id="id-error" role="alert"></p>
+    <div class="actions">
+      <button type="button" id="id-cancel" title="{{ _('Closes without saving') }}">{{ _("Cancel") }}</button>
+      <span title="{{ _('Disabled until something is changed.') }}"><button type="submit" class="primary" id="id-save" disabled></button></span>
+    </div>
+  </form>
+</dialog>
+<dialog id="secret-dialog" aria-labelledby="sd-title">
+  <h2 id="sd-title"></h2>
+  <p>{{ _("It is shown only now: copy it.") }}</p>
+  <pre class="console mono copyable" id="secret-value" style="white-space: pre-wrap; word-break: break-all"></pre>
+  <p class="muted mono small" style="font-size: 13px">{{ mcp_url }}<br>Authorization: Bearer &lt;token&gt;</p>
+  <div class="actions"><button type="button" class="primary" id="sd-done" title="{{ _('Closes: the token will not be shown again. If you lose it, revoke it and make a new one.') }}">{{ _("I have copied the token") }}</button></div>
+</dialog>
+<dialog id="notify-dialog" aria-labelledby="nd-title">
+  <form method="dialog" id="nd-form">
+    <h2 id="nd-title">{{ _("Notices") }}</h2>
+    <label for="notify-list">{{ _("Whom to tell, one a line") }}</label>
+    <textarea id="notify-list" class="mono" rows="4" style="margin-top: 6px" placeholder="mario@acme.example">{{ ws.notify | join("\n") }}</textarea>
+    <span class="muted field-help">{{ _("E-mail addresses, or the https address of a webhook. Empty: nobody is told.") }}</span>
+    <p class="error" id="nd-error" role="alert"></p>
+    <div class="actions">
+      <button type="button" id="nd-cancel" title="{{ _('Closes without saving') }}">{{ _("Cancel") }}</button>
+      <span title="{{ _('Saves whom to tell. Disabled until the list is changed.') }}"><button type="submit" class="primary" id="notify-save" disabled>{{ _("Save") }}</button></span>
+    </div>
+  </form>
+</dialog>
 {# the template fields' labels (template.json), in the page's language #}
 {% set field_labels = {} %}
 {% for t in templates %}{% for f in t.fields %}{% if field_labels.update({f.label: tr(f.label)}) %}{% endif %}{% endfor %}{% endfor %}
+{% include "_disk.html" %}
 <script>
 (function () {
-  const errorBox = document.getElementById("error");
-  const errorText = (status) => {{ _("Error {status}") | tojson }}.replace("{status}", status);
-  const base = "{{ prefix }}/api/workspaces/{{ ws.name | urlencode }}/members/";
-  async function post(url, body) {
-    errorBox.hidden = true;
-    const resp = await fetch(base + url, {method: "POST",
-      headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
-    const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) {
-      errorBox.textContent = data.error || data.detail || errorText(resp.status);
-      errorBox.hidden = false;
+  const $ = (id) => document.getElementById(id);
+  const ROLES = {{ role_names | tojson }}, ROLE_LIST = {{ roles | list | tojson }}, ME = {{ me | tojson }}, MIN = {{ min_password | tojson }};
+  const T = {
+    error: {{ _("Error {status}") | tojson }}, save: {{ _("Save") | tojson }},
+    ownRole: {{ _("You cannot change your own role") | tojson }},
+    atLeast: {{ _("at least {count} characters") | tojson }}, keep: {{ _("empty: it stays the one of now") | tojson }},
+    badName: {{ _("An instance's name is 1-32 lower case letters, digits and -") | tojson }},
+    none: {{ _("(none)") | tojson }}, noArchive: {{ _("none yet: send one") | tojson }}, sentHere: {{ _("sent here") | tojson }},
+    reading: {{ _("Reading…") | tojson }}, noRemote: {{ _("no full archive there") | tojson }},
+    subdomain: {{ _("Subdomain") | tojson }}, subInstance: {{ _("Instance of the subdomain") | tojson }},
+    takeOut: {{ _("Take out") | tojson }},
+    takeOutHelp: {{ _("Takes the subdomain out of the table. It holds with Save and publish.") | tojson }},
+    certOk: {{ _("Certificate valid until {date}, for: {names}") | tojson }}, noDns: {{ _("no DNS name") | tojson }},
+    seeJob: {{ _("See the job that publishes the names") | tojson }},
+    credentialQ: {{ _("Take out the credentials of {host}? Its private repositories are no longer updated until new ones are saved.") | tojson }},
+    usedOf: {{ _("{used} used of {total}") | tojson }},
+    noAnswer: {{ _("No answer.") | tojson }}, noAnswerStatus: {{ _("No answer: HTTP {status}") | tojson }},
+  };
+  // what each of the two lists of the dialog calls its things
+  const KINDS = {
+    members: {row: "user", first: "user", password: true,
+      newTitle: {{ _("New user") | tojson }}, editTitle: {{ _("Edit {name}") | tojson }}, create: {{ _("Add") | tojson }},
+      createHelp: {{ _("Makes the user and puts it in this workspace: from now it gets in with this name and this password. Disabled until the name and the password are written.") | tojson }},
+      saveHelp: {{ _("Saves the role and, when one is written, the new password. Disabled until something is changed.") | tojson }},
+      namePlaceholder: {{ _("new user") | tojson }},
+      deleteQ: {{ _("Take {name} out of {workspace}? A user of this workspace only is deleted.", name="{name}", workspace=ws.name) | tojson }}},
+    tokens: {row: "token", first: "developer", password: false,
+      newTitle: {{ _("New key for an assistant") | tojson }}, editTitle: {{ _("Edit {name}") | tojson }}, create: {{ _("Create") | tojson }},
+      createHelp: {{ _("Makes the key and shows it once. Disabled until the name is written.") | tojson }},
+      saveHelp: {{ _("Saves the role of the key. Disabled until it is changed.") | tojson }},
+      roleHelp: {{ _("It sees only this workspace, and does there what its role allows.") | tojson }},
+      namePlaceholder: {{ ("claude-" ~ ws.name) | tojson }},
+      deleteQ: {{ _("Revoke the key {name}? The assistant that uses it stops at once.") | tojson }},
+      secret: {{ _("Key {name} for an AI assistant") | tojson }}},
+  };
+  // a button that waits for a change has its help on the span around it, read while it is disabled: on itself too, for when it is not
+  for (const span of document.querySelectorAll("span[title]")) {
+    const button = span.firstElementChild;
+    if (button && button.tagName === "BUTTON" && !button.title) button.title = span.title;
+  }
+  const errorBox = $("error");
+  const wsBase = "{{ prefix }}/api/workspaces/{{ ws.name | urlencode }}/";
+  const jobPage = (id) => { location.href = "{{ prefix }}/jobs/" + id; };
+  // a request to the workspace's routes: the answer, or null with the error (in the caller's language) shown in `where`
+  async function post(url, body, where) {
+    where = where || errorBox;
+    where.textContent = ""; if (where === errorBox) errorBox.hidden = true;
+    const resp = await fetch(wsBase + url, {method: "POST",
+      headers: {"Content-Type": "application/json", Accept: "application/json"}, body: JSON.stringify(body || {})}).catch(() => null);
+    const data = resp ? await resp.json().catch(() => ({})) : {};
+    if (!resp || !resp.ok) {
+      where.textContent = data.error || data.detail || T.error.replace("{status}", resp ? resp.status : "–");
+      where.hidden = false;
+      if (where === errorBox) window.scrollTo(0, 0);
       return null;
     }
     return data;
   }
-  for (const button of document.querySelectorAll("[data-save]")) {
-    button.onclick = async () => {
-      const row = button.closest("tr"), password = row.querySelector(".password");
-      const body = {name: row.dataset.user, role: row.querySelector(".role").value, password: password ? password.value : ""};
-      if (await post("save", body)) location.reload();
-    };
+
+  // the tabs: the one in the address (#names); the addresses of the sections of before still open theirs
+  const tabs = [...document.querySelectorAll(".tabs [data-tab]")];
+  const BEFORE = {"ws-notify": "services", "backup-destinations": "services", "git-credentials": "services",
+                  "mcp-tokens": "services", "new-instance-panel": "instances"};
+  function show(name) {
+    if (!tabs.some((t) => t.dataset.tab === name)) name = "instances";
+    for (const t of tabs) t.setAttribute("aria-selected", String(t.dataset.tab === name));
+    for (const p of document.querySelectorAll(".tab-panel")) p.hidden = p.dataset.panel !== name;
   }
-  for (const button of document.querySelectorAll("[data-delete]")) {
-    button.onclick = async () => {
-      const name = button.closest("tr").dataset.user;
-      if (!confirm({{ _("Remove {name} from {workspace}? A user of this workspace only is deleted.", name="{name}", workspace=ws.name) | tojson }}.replace("{name}", name))) return;
-      if (await post("delete", {name})) location.reload();
-    };
+  function fromAddress() {
+    const hash = (location.hash || "#instances").slice(1);
+    show(BEFORE[hash] || hash);
+    if (hash === "new-instance-panel") { history.replaceState(null, "", "#instances"); openInstance(); }
+    else if (BEFORE[hash]) $(hash).scrollIntoView();
   }
-  const wsBase = "{{ prefix }}/api/workspaces/{{ ws.name | urlencode }}/";
-  async function postWs(url, body) {
-    errorBox.hidden = true;
-    const resp = await fetch(wsBase + url, {method: "POST",
-      headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
-    const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) { errorBox.textContent = data.error || data.detail || errorText(resp.status); errorBox.hidden = false; return null; }
-    return data;
-  }
-  for (const button of document.querySelectorAll("[data-add-repo]")) {
-    button.onclick = async () => {
-      const row = button.closest("tr"), box = button.closest(".add-repo");
-      const url = box.querySelector(".repo-url").value.trim();
-      const name = box.querySelector(".repo-name").value.trim() || url.replace(/\.git$/, "").split("/").pop();
-      const production = box.querySelector(".repo-production").value.trim();
-      const data = await postWs("repositories/add", {server: row.dataset.server, url, name, production_branch: production,
-                                                     test_branch: box.querySelector(".repo-test").value.trim() || production});
-      if (data) location.href = "{{ prefix }}/jobs/" + data.job;
-    };
-  }
-  for (const button of document.querySelectorAll("[data-save-params]")) {
-    button.onclick = async () => {
-      const box = button.closest("details.params"), parameters = {};
-      for (const input of box.querySelectorAll("[data-param]")) {
-        parameters[input.dataset.param] = input.type === "checkbox" ? input.checked : input.value;
-      }
-      const data = await postWs("parameters/save", {server: button.closest("tr").dataset.server, role: box.dataset.role,
-                                                    parameters, debug: box.querySelector(".debug").checked});
-      if (data) location.href = "{{ prefix }}/jobs/" + data.job;
-    };
-  }
-  for (const button of document.querySelectorAll("[data-remove-repo]")) {
-    button.onclick = async () => {
-      const server = button.closest("tr").dataset.server, name = button.dataset.name;
-      if (!confirm({{ _("Remove {name} from {server}, production and test? Its clones are deleted; the modules installed from it stop working.") | tojson }}
-                   .replace("{name}", name).replace("{server}", server))) return;
-      const data = await postWs("repositories/remove", {server, name});
-      if (data) location.href = "{{ prefix }}/jobs/" + data.job;
-    };
-  }
-  for (const button of document.querySelectorAll("[data-remove-instance]")) {
-    button.onclick = async () => {
-      const server = button.closest("tr").dataset.server;
-      if (!confirm({{ _("Remove {server}? Its production and test, their databases and files are deleted.") | tojson }}.replace("{server}", server))) return;
-      const data = await postWs("instances/delete", {server});
-      if (data) location.href = "{{ prefix }}/jobs/" + data.job;
-    };
-  }
+  for (const t of tabs) t.addEventListener("click", () => { history.replaceState(null, "", "#" + t.dataset.tab); show(t.dataset.tab); });
+  window.addEventListener("hashchange", fromAddress);
+
+  // a new instance: from a template, or from a full archive (one sent to the workspace or in its servers' backups)
+  const inDialog = $("instance-dialog");
+  const NAME = /^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$/;
   const templates = {{ templates | tojson }};
   const fieldLabels = {{ field_labels | tojson }};
-  const fieldsBox = document.getElementById("template-fields"), templateSelect = document.getElementById("instance-template");
+  const fieldsBox = $("template-fields"), templateSelect = $("instance-template"), faSelect = $("fa-archive");
+  let archivesAsked = false;
   function drawFields() {
-    if (!fieldsBox) return;
     fieldsBox.textContent = "";
     const t = templates.find((x) => x.name === templateSelect.value);
     for (const f of t ? t.fields : []) {
@@ -381,7 +458,7 @@ select.role { text-transform: none; letter-spacing: 0; font-size: inherit; font-
       let input;
       if (f.choices.length) {
         input = document.createElement("select");
-        for (const c of f.choices) { const o = document.createElement("option"); o.value = c; o.textContent = c || {{ _("(none)") | tojson }}; input.appendChild(o); }
+        for (const c of f.choices) { const o = document.createElement("option"); o.value = c; o.textContent = c || T.none; input.appendChild(o); }
       } else {
         input = document.createElement("input");
         input.type = "text";
@@ -393,64 +470,61 @@ select.role { text-transform: none; letter-spacing: 0; font-size: inherit; font-
       fieldsBox.append(label, input);
     }
   }
-  if (templateSelect) {
-    templateSelect.onchange = drawFields;
-    drawFields();
-    document.getElementById("create-instance").onclick = async () => {
-      const values = {};
-      for (const input of fieldsBox.querySelectorAll("[data-field]")) values[input.dataset.field] = input.value;
-      const data = await postWs("instances/create", {instance: document.getElementById("instance-name").value.trim(),
-                                                     template: templateSelect.value, values});
-      if (data) location.href = "{{ prefix }}/jobs/" + data.job;
-    };
-  }
-  document.getElementById("notify-save")?.addEventListener("click", async () => {
-    const list = document.getElementById("notify-list").value.split(/[\s,;]+/).filter(Boolean);
-    if (await postWs("notify", {notify: list})) location.reload();
-  });
-  // the workspace's MCP tokens
-  document.getElementById("token-new")?.addEventListener("click", async () => {
-    const data = await postWs("tokens/save", {name: document.getElementById("token-name").value.trim(),
-                                             role: document.getElementById("token-role").value, new: true});
-    if (!data) return;
-    try { sessionStorage.setItem("omniacli-new-token", data.token); } catch (e) { /* shown below instead */ }
-    location.reload();
-  });
-  try {
-    const fresh = sessionStorage.getItem("omniacli-new-token");
-    if (fresh) {
-      sessionStorage.removeItem("omniacli-new-token");
-      document.getElementById("token-text").textContent = fresh;
-      document.getElementById("token-box").hidden = false;
-    }
-  } catch (e) { /* no storage */ }
-  for (const row of document.querySelectorAll("[data-token]")) {
-    row.querySelector("[data-token-save]").onclick = async () => {
-      if (await postWs("tokens/save", {name: row.dataset.token, role: row.querySelector(".token-role").value})) location.reload();
-    };
-    row.querySelector("[data-token-delete]").onclick = async () => {
-      if (!confirm({{ _("Revoke the token {name}? What uses it stops at once.") | tojson }}.replace("{name}", row.dataset.token))) return;
-      if (await postWs("tokens/delete", {name: row.dataset.token})) location.reload();
-    };
-  }
-  // a new instance from a full archive: one sent to the workspace or in its servers' backups
-  const faSelect = document.getElementById("fa-archive");
   async function loadArchives(chosen) {
     const resp = await fetch(wsBase + "archives", {headers: {Accept: "application/json"}}).catch(() => null);
     const data = resp && resp.ok ? await resp.json() : {archives: []};
     faSelect.length = 0;
-    if (!data.archives.length) faSelect.append(new Option({{ _("none yet: send one") | tojson }}, ""));
+    if (!data.archives.length) faSelect.append(new Option(T.noArchive, ""));
     for (const a of data.archives) {
-      const where = a.source === "upload" ? {{ _("sent here") | tojson }} : a.source;
+      const where = a.source === "upload" ? T.sentHere : a.source;
       faSelect.append(new Option(`${a.file} · ${a.of} · Odoo ${a.odoo || "?"} · ${(a.size / 1048576).toFixed(0)} MiB · ${where}`, a.id));
     }
     if (chosen) faSelect.value = chosen;
+    instanceChanged();
   }
-  if (faSelect) {
-    document.getElementById("from-archive").addEventListener("toggle", () => loadArchives(), {once: true});
-    document.getElementById("fa-file").onchange = (event) => {
-      const file = event.target.files[0], progress = document.getElementById("fa-progress");
+  const instanceName = () => $("instance-name").value.trim();
+  // the way chosen, its fields and its button; the name is checked while it is written
+  function instanceChanged() {
+    const archive = inDialog.querySelector('input[name="in-way"]:checked').value === "archive";
+    $("new-instance-fields").hidden = $("create-wrap").hidden = archive;
+    $("from-archive").hidden = $("fa-wrap").hidden = !archive;
+    if (archive && !archivesAsked) { archivesAsked = true; loadArchives(); }
+    const name = instanceName(), good = NAME.test(name);
+    $("in-name-help").textContent = T.badName; $("in-name-help").hidden = good || name === "";
+    $("create-instance").disabled = !good;
+    $("fa-create").disabled = !good || !faSelect.value;
+  }
+  function openInstance() {
+    if (!inDialog || inDialog.open) return;
+    $("in-error").textContent = "";
+    instanceChanged();
+    inDialog.showModal();
+    $("instance-name").focus();
+  }
+  if (inDialog) {
+    templateSelect.onchange = drawFields;
+    drawFields();
+    $("new-instance").onclick = openInstance;
+    $("in-cancel").onclick = () => inDialog.close();
+    for (const kindOf of ["input", "change"]) $("in-form").addEventListener(kindOf, instanceChanged);
+    $("in-form").addEventListener("submit", (event) => event.preventDefault());
+    $("create-instance").onclick = async () => {
+      const values = {};
+      for (const input of fieldsBox.querySelectorAll("[data-field]")) values[input.dataset.field] = input.value;
+      $("create-instance").disabled = true;
+      const data = await post("instances/create", {instance: instanceName(), template: templateSelect.value, values}, $("in-error"));
+      if (data) jobPage(data.job); else instanceChanged();
+    };
+    $("fa-create").onclick = async () => {
+      $("fa-create").disabled = true;
+      const data = await post("instances/from-archive", {instance: instanceName(), archive: faSelect.value,
+                                                         neutralize: $("fa-neutralize").checked}, $("in-error"));
+      if (data) jobPage(data.job); else instanceChanged();
+    };
+    $("fa-file").onchange = (event) => {
+      const file = event.target.files[0], progress = $("fa-progress"), where = $("in-error");
       if (!file) return;
+      where.textContent = "";
       const xhr = new XMLHttpRequest();
       xhr.open("POST", wsBase + "archives/upload?name=" + encodeURIComponent(file.name));
       xhr.setRequestHeader("Accept", "application/json");
@@ -458,25 +532,24 @@ select.role { text-transform: none; letter-spacing: 0; font-size: inherit; font-
       xhr.onload = () => {
         let data = {};
         try { data = JSON.parse(xhr.responseText); } catch (e) { /* not JSON */ }
-        if (xhr.status !== 200) { errorBox.textContent = data.error || data.detail || errorText(xhr.status); errorBox.hidden = false; progress.textContent = ""; return; }
+        if (xhr.status !== 200) { where.textContent = data.error || data.detail || T.error.replace("{status}", xhr.status); progress.textContent = ""; return; }
         progress.textContent = "✓"; loadArchives(data.id);
       };
-      xhr.onerror = () => { errorBox.textContent = errorText(0); errorBox.hidden = false; };
+      xhr.onerror = () => { where.textContent = T.error.replace("{status}", "–"); progress.textContent = ""; };
       xhr.send(file);
     };
-    const linkSelect = document.getElementById("fa-link");
+    const linkSelect = $("fa-link");
     if (linkSelect) {
-      const remote = document.getElementById("fa-remote"), copy = document.getElementById("fa-copy"),
-            state = document.getElementById("fa-remote-state");
+      const remote = $("fa-remote"), copy = $("fa-copy"), state = $("fa-remote-state");
       linkSelect.onchange = async () => {
         remote.hidden = copy.hidden = true; remote.length = 0;
         if (!linkSelect.value) { state.textContent = ""; return; }
-        state.textContent = {{ _("Reading…") | tojson }};
+        state.textContent = T.reading;
         const resp = await fetch(wsBase + "archives/remote?link=" + encodeURIComponent(linkSelect.value),
                                  {headers: {Accept: "application/json"}}).catch(() => null);
         const data = resp ? await resp.json().catch(() => ({})) : {};
-        if (!resp || !resp.ok) { state.textContent = data.error || data.detail || errorText(resp ? resp.status : 0); return; }
-        if (!data.archives.length) { state.textContent = {{ _("no full archive there") | tojson }}; return; }
+        if (!resp || !resp.ok) { state.textContent = data.error || data.detail || T.error.replace("{status}", resp ? resp.status : "–"); return; }
+        if (!data.archives.length) { state.textContent = T.noRemote; return; }
         state.textContent = "";
         for (const a of data.archives) {
           const o = new Option(`${a.server}/${a.role} · ${a.file} · ${((a.size || 0) / 1048576).toFixed(0)} MiB`, a.file);
@@ -486,85 +559,190 @@ select.role { text-transform: none; letter-spacing: 0; font-size: inherit; font-
       };
       copy.onclick = async () => {
         const o = remote.selectedOptions[0];
-        const data = await postWs("archives/fetch", {link: linkSelect.value, server: o.dataset.server,
-                                                     role: o.dataset.role, file: o.value});
-        if (data) location.href = "{{ prefix }}/jobs/" + data.job;
+        const data = await post("archives/fetch", {link: linkSelect.value, server: o.dataset.server,
+                                                   role: o.dataset.role, file: o.value}, $("in-error"));
+        if (data) jobPage(data.job);
       };
     }
-    document.getElementById("fa-create").onclick = async () => {
-      if (!faSelect.value) return;
-      const data = await postWs("instances/from-archive", {instance: document.getElementById("fa-name").value.trim(),
-        archive: faSelect.value, neutralize: document.getElementById("fa-neutralize").checked});
-      if (data) location.href = "{{ prefix }}/jobs/" + data.job;
+  }
+
+  // the names on the web: Save and publish waits for a change; a subdomain's row is the datum
+  const instances = {{ instances | tojson }};
+  const subTable = $("subdomains"), saveNames = $("save-names");
+  const namesNow = () => JSON.stringify([$("main-instance").value, $("certificate").value,
+    [...subTable.querySelectorAll("[data-sub]")].map((row) => [row.querySelector(".sub").value.trim(), row.querySelector(".target").value])]);
+  if (saveNames) {
+    const namesBefore = namesNow();
+    const namesChanged = () => { saveNames.disabled = namesNow() === namesBefore; };
+    const bindDrop = (row) => { row.querySelector("[data-drop-sub]").onclick = () => { row.remove(); namesChanged(); }; };
+    for (const row of subTable.querySelectorAll("[data-sub]")) bindDrop(row);
+    for (const kindOf of ["input", "change"]) $("names-form").addEventListener(kindOf, namesChanged);
+    const addSub = $("add-sub");
+    if (addSub) addSub.onclick = () => {
+      const row = subTable.insertRow(-1);
+      row.dataset.sub = "";
+      const input = document.createElement("input");
+      input.type = "text"; input.className = "mono sub"; input.setAttribute("aria-label", T.subdomain);
+      const select = document.createElement("select");
+      select.className = "target"; select.setAttribute("aria-label", T.subInstance);
+      for (const i of instances) { const o = document.createElement("option"); o.textContent = i; select.appendChild(o); }
+      const drop = document.createElement("button");
+      drop.type = "button"; drop.className = "small danger"; drop.dataset.dropSub = ""; drop.textContent = T.takeOut; drop.title = T.takeOutHelp;
+      row.insertCell().appendChild(input); row.insertCell().appendChild(select); row.insertCell().appendChild(drop);
+      bindDrop(row); namesChanged(); input.focus();
+    };
+    saveNames.onclick = async () => {
+      const subdomains = {};
+      for (const row of subTable.querySelectorAll("[data-sub]")) {
+        const sub = row.querySelector(".sub").value.trim().toLowerCase();
+        if (sub) subdomains[sub] = row.querySelector(".target").value;
+      }
+      const data = await post("web/save", {main: $("main-instance").value, subdomains, certificate: $("certificate").value}, $("names-error"));
+      if (data) data.job ? jobPage(data.job) : location.reload();
+    };
+    const publishNames = $("publish-names");
+    if (publishNames) publishNames.onclick = async () => {
+      const data = await post("web/publish", {}, $("names-error"));
+      if (data) jobPage(data.job);
+    };
+    // a moment as people write it: openssl's (Nov 20 10:40:00 2027 GMT) or ISO
+    const moment = (text) => {
+      const d = new Date(text), two = (n) => String(n).padStart(2, "0");
+      return isNaN(d) ? window.whenText(text)
+        : `${two(d.getDate())}/${two(d.getMonth() + 1)}/${d.getFullYear()} ${two(d.getHours())}:${two(d.getMinutes())}`;
+    };
+    const uploadCert = $("upload-cert");
+    if (uploadCert) uploadCert.onclick = async () => {
+      const state = $("cert-state");
+      state.textContent = "";
+      const data = await post("web/certificate", {certificate: $("own-cert").value, key: $("own-key").value}, $("cert-error"));
+      if (!data) return;
+      // the outcome stays here, with the job that publishes the names a click away
+      const job = document.createElement("a");
+      job.href = "{{ prefix }}/jobs/" + data.job; job.textContent = T.seeJob + " ›";
+      state.replaceChildren(T.certOk.replace("{date}", moment(data.not_after)).replace("{names}", (data.names || []).join(", ") || T.noDns) + " · ", job);
     };
   }
-  const instances = {{ instances | tojson }};
-  const subTable = document.getElementById("subdomains");
-  function bindDrop(row) { row.querySelector("[data-drop-sub]").onclick = () => row.remove(); }
-  if (subTable) for (const row of subTable.querySelectorAll("[data-sub]")) bindDrop(row);
-  const addSub = document.getElementById("add-sub");
-  if (addSub) addSub.onclick = () => {
-    const row = subTable.insertRow(-1);
-    row.dataset.sub = "";
-    const input = document.createElement("input");
-    input.type = "text"; input.className = "mono sub"; input.setAttribute("aria-label", {{ _("Subdomain") | tojson }});
-    const select = document.createElement("select");
-    select.className = "target"; select.setAttribute("aria-label", {{ _("Instance of the subdomain") | tojson }});
-    for (const i of instances) { const o = document.createElement("option"); o.textContent = i; select.appendChild(o); }
-    const drop = document.createElement("button");
-    drop.type = "button"; drop.className = "danger"; drop.dataset.dropSub = ""; drop.textContent = {{ _("Remove") | tojson }};
-    row.insertCell().appendChild(input); row.insertCell().appendChild(select); row.insertCell().appendChild(drop);
-    bindDrop(row);
-  };
-  const saveNames = document.getElementById("save-names");
-  if (saveNames) saveNames.onclick = async () => {
-    const subdomains = {};
-    for (const row of subTable.querySelectorAll("[data-sub]")) {
-      const sub = row.querySelector(".sub").value.trim().toLowerCase();
-      if (sub) subdomains[sub] = row.querySelector(".target").value;
-    }
-    const data = await postWs("web/save", {main: document.getElementById("main-instance").value, subdomains,
-                                           certificate: document.getElementById("certificate").value});
-    if (data) data.job ? location.href = "{{ prefix }}/jobs/" + data.job : location.reload();
-  };
-  const publishNames = document.getElementById("publish-names");
-  if (publishNames) publishNames.onclick = async () => {
-    const data = await postWs("web/publish", {});
-    if (data) location.href = "{{ prefix }}/jobs/" + data.job;
-  };
-  const uploadCert = document.getElementById("upload-cert");
-  if (uploadCert) uploadCert.onclick = async () => {
-    const data = await postWs("web/certificate", {certificate: document.getElementById("own-cert").value,
-                                                  key: document.getElementById("own-key").value});
+
+  // the dialog of a user of the workspace or of a key: a new one, or one of the rows
+  const dialog = $("item-dialog"), secret = $("secret-dialog");
+  let kind = "members", editing = null, before = "";
+  const usesPassword = () => !$("id-password").closest("[data-for-password]").hidden;
+  const values = () => JSON.stringify([$("id-name").value.trim(), $("id-role").value, $("id-password").value]);
+  function changed() {
+    const password = usesPassword() ? $("id-password").value : "";
+    const short = password !== "" && password.length < MIN;
+    const missing = !editing && (!$("id-name").value.trim() || (KINDS[kind].password && !password));
+    $("id-password-help").className = "field-help " + (short ? "error" : "muted");
+    $("id-save").disabled = values() === before || missing || short;
+  }
+  function openDialog(kindName, row) {
+    kind = kindName;
+    const K = KINDS[kind];
+    editing = row ? row.dataset[K.row] : null;
+    $("id-title").textContent = row ? K.editTitle.replace("{name}", editing) : K.newTitle;
+    $("id-name").value = editing || ""; $("id-name").readOnly = !!row; $("id-name").placeholder = K.namePlaceholder;
+    const role = $("id-role");
+    role.replaceChildren(...ROLE_LIST.map((r) => new Option(ROLES[r] || r, r)));
+    role.value = row ? row.dataset.role : K.first;
+    const own = kind === "members" && editing === ME;
+    role.disabled = own;
+    $("id-role-help").textContent = own ? T.ownRole : (K.roleHelp || "");
+    // the password: of a new user, or of one who gets in here only
+    const password = K.password && (!row || !!row.dataset.onlyHere);
+    for (const el of dialog.querySelectorAll("[data-for-password]")) el.hidden = !password;
+    $("id-elsewhere").hidden = !(K.password && row && !row.dataset.onlyHere);
+    $("id-password").value = ""; $("id-password").required = password && !row;
+    $("id-password-help").textContent = T.atLeast.replace("{count}", MIN) + (row ? "; " + T.keep : "");
+    $("id-save").textContent = row ? T.save : K.create;
+    $("id-save").title = $("id-save").parentElement.title = row ? K.saveHelp : K.createHelp;
+    $("id-error").textContent = "";
+    before = values(); changed();
+    dialog.showModal();
+    (row ? (own ? $("id-password") : role) : $("id-name")).focus();
+  }
+  for (const kindOf of ["input", "change"]) $("id-form").addEventListener(kindOf, changed);
+  $("new-member").onclick = () => openDialog("members", null);
+  $("new-token").onclick = () => openDialog("tokens", null);
+  $("id-cancel").onclick = () => dialog.close();
+  for (const button of document.querySelectorAll("[data-edit]")) button.onclick = () => openDialog(button.dataset.edit, button.closest("tr"));
+  $("id-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const K = KINDS[kind], name = $("id-name").value.trim();
+    const body = {name, role: $("id-role").value};
+    if (K.password) body.password = usesPassword() ? $("id-password").value : "";
+    if (!editing) body.new = true;
+    const data = await post(kind + "/save", body, $("id-error"));
     if (!data) return;
-    alert({{ _("Certificate valid until {date}, for: {names}") | tojson }}.replace("{date}", data.not_after)
-          .replace("{names}", (data.names || []).join(", ") || {{ _("no DNS name") | tojson }}));
-    location.href = "{{ prefix }}/jobs/" + data.job;
+    if (!editing && data.token) {
+      // a secret: once, in a dialog of its own; the page again when it is closed
+      dialog.close();
+      $("sd-title").textContent = K.secret.replace("{name}", name);
+      $("secret-value").textContent = data.token;
+      secret.showModal();
+      return;
+    }
+    location.reload();
+  });
+  $("sd-done").onclick = () => location.reload();
+  secret.addEventListener("cancel", (e) => e.preventDefault());
+  for (const button of document.querySelectorAll("[data-delete]")) {
+    button.onclick = async () => {
+      const K = KINDS[button.dataset.delete], name = button.closest("tr").dataset[K.row];
+      if (!confirm(K.deleteQ.replace("{name}", name))) return;
+      if (await post(button.dataset.delete + "/delete", {name})) location.reload();
+    };
+  }
+
+  // whom the monitor tells: the list in a dialog, saved once it is changed
+  const notifyDialog = $("notify-dialog"), notifyList = $("notify-list"), notifyBefore = notifyList.value;
+  const told = (text) => text.split(/[\s,;]+/).filter(Boolean);
+  $("notify-edit").onclick = () => {
+    notifyList.value = notifyBefore; $("notify-save").disabled = true; $("nd-error").textContent = "";
+    notifyDialog.showModal(); notifyList.focus();
   };
-  document.getElementById("add-user").onclick = async () => {
-    const body = {name: document.getElementById("new-user").value.trim(), role: document.getElementById("new-user-role").value,
-                  password: document.getElementById("new-user-password").value, new: true};
-    if (await post("save", body)) location.reload();
+  $("nd-cancel").onclick = () => notifyDialog.close();
+  notifyList.addEventListener("input", () => { $("notify-save").disabled = told(notifyList.value).join(" ") === told(notifyBefore).join(" "); });
+  $("nd-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (await post("notify", {notify: told(notifyList.value)}, $("nd-error"))) location.reload();
+  });
+
+  // the git credentials of the workspace: one git server a row, the token never shown back
+  const credentials = $("credentials"), saveCredential = credentials.querySelector("[data-save-credential]");
+  credentials.addEventListener("input", () => { saveCredential.disabled = !credentials.querySelector(".cred-host").value.trim(); });
+  saveCredential.onclick = async () => {
+    const body = {host: credentials.querySelector(".cred-host").value.trim(), username: credentials.querySelector(".cred-user").value.trim(),
+                  token: credentials.querySelector(".cred-token").value};
+    if (await post("credentials/save", body, $("cred-error"))) location.reload();
   };
-})();
-</script>
-{{ credentials_script() }}
-{% include "_disk.html" %}
-<script>
-(function () {
-  // the workspace's disk and its estimate, once a minute (_disk.html)
-  const box = document.getElementById("ws-disk"), name = {{ ws.name | tojson }};
-  async function show() {
+  for (const button of credentials.querySelectorAll("[data-delete-credential]")) {
+    button.onclick = async () => {
+      const host = button.closest("tr").dataset.host;
+      if (!confirm(T.credentialQ.replace("{host}", host))) return;
+      if (await post("credentials/delete", {host}, $("cred-error"))) location.reload();
+    };
+  }
+
+  // the workspace's disk in one line, once a minute: the widget of every disk (_disk.html), then used of its limit
+  const diskBox = $("ws-disk"), wsName = {{ ws.name | tojson }};
+  async function showDisk() {
     let data;
     try {
-      const resp = await fetch("{{ prefix }}/api/workspaces/" + encodeURIComponent(name) + "/load?since=" + Math.floor(Date.now() / 1000));
-      if (!resp.ok) { OmniaDisk.message(box, {{ _("No answer: HTTP {status}") | tojson }}.replace("{status}", resp.status), true); return; }
+      const resp = await fetch(wsBase + "load?since=" + Math.floor(Date.now() / 1000));
+      if (!resp.ok) { OmniaDisk.message(diskBox, T.noAnswerStatus.replace("{status}", resp.status), true); return; }
       data = await resp.json();
-    } catch (e) { OmniaDisk.message(box, {{ _("No answer.") | tojson }}, true); return; }
-    OmniaDisk.workspace(box, name, data);
+    } catch (e) { OmniaDisk.message(diskBox, T.noAnswer, true); return; }
+    // no disk yet, or not readable: the widget says which
+    if (!data.disk) { OmniaDisk.workspace(diskBox, wsName, data); return; }
+    const limit = (data.limits || {}).disk_gb, total = limit ? limit * 1073741824 : data.disk.size;
+    OmniaDisk.render(diskBox, {label: wsName, used: data.disk.used, total, forecast: data.disk.forecast}, {compact: true});
+    diskBox.append(" " + T.usedOf.replace("{used}", OmniaDisk.size(data.disk.used)).replace("{total}", OmniaDisk.size(total)));
   }
-  show();
-  setInterval(() => { if (!document.hidden) show(); }, 60000);
+  showDisk();
+  setInterval(() => { if (!document.hidden) showDisk(); }, 60000);
+
+  fromAddress();
 })();
 </script>
 {% endblock %}

@@ -51,8 +51,11 @@ def made(instance, monkeypatch):
 
 async def test_the_parameters_of_a_role(made, client):
     settings, helper, calls, confs = made["settings"], made["helper"], made["calls"], made["confs"]
+    # the workspace's page sends to the instance's Settings, which hold the parameters (UX-007): not twice
     page = (await client.get("/workspaces/acme", headers=basic("mario"))).text
-    assert "Odoo parameters of production" in page and 'data-param="limit_time_cpu"' in page
+    assert 'href="/servers/acme-main#settings"' in page and "data-param=" not in page
+    page = (await client.get("/servers/acme-main", headers=basic("mario"))).text
+    assert 'data-section="odoo-config"' in page and 'data-param="limit_time_cpu"' in page
     url = "/api/workspaces/acme/parameters/save"
     body = {"server": "acme-main", "role": "test", "parameters": {"workers": "2", "limit_memory_hard": "3072",
                                                                     "smtp_password": "s3cret"}, "debug": True}
@@ -86,8 +89,10 @@ async def test_the_parameters_of_a_role(made, client):
     assert resp.status_code == 200
     assert json.loads(confs[-1][-1])["parameters"]["smtp_password"] == "Pw-kept-9Z"
     await wait_job(client, resp.json()["job"])
-    page = (await client.get("/workspaces/acme", headers=basic("mario"))).text
-    assert "Pw-kept-9Z" not in page.split("Odoo parameters of test")[1].split("</details>")[0]
+    # a password saved is never in a page: not in the instance's options of its test, not in the workspace's
+    page = (await client.get("/servers/acme-main?view=test", headers=basic("mario"))).text
+    assert 'data-param="smtp_password"' in page and "Pw-kept-9Z" not in page
+    assert "Pw-kept-9Z" not in (await client.get("/workspaces/acme", headers=basic("mario"))).text
     # its users and other workspaces' cannot
     assert (await client.post(url, headers=post_as("luca"), json=body)).status_code == 403
     assert (await client.post(url, headers=post_as("eva"), json=body)).status_code == 403

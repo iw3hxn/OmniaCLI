@@ -11,12 +11,19 @@
 {% include "_disk.html" %}
 {% include "_load.html" %}
 {% include "_list.html" %}
+{# the workspaces (docs/ux/UX-007 §4.5): this machine, the list with one primary in the head; how it works and the
+   templates folded at the bottom. A click on a row opens the form of the machine for it (?edit=). #}
+<style>
+.ws-foot { margin-top: 16px; } .ws-foot > details { margin-bottom: 8px; }
+.ws-foot > details > summary { font-weight: 600; }
+.ws-foot .ws-fold { margin-top: 8px; }
+</style>
 <div class="page-head">
   <div>
     <h1>{{ _("Workspaces") }}</h1>
     <p>{{ _("The customers' closed parts of this machine: their servers, their users, their limits and disk.") }}</p>
   </div>
-  <div class="actions list-only"><button type="button" class="primary" id="add" title="{{ _('Opens the form of a new workspace. Nothing is created until you save there.') }}">{{ _("New workspace") }}</button></div>
+  <div class="actions list-only"><button type="button" class="primary" id="add" title="{{ _('Opens the form of a new workspace, a closed part of the machine for a customer with its disk, limits, domain and users. Nothing is created until you save there.') }}">{{ _("New workspace") }}</button></div>
 </div>
 <div id="error" class="banner" hidden></div>
 {% if storage_error %}<div class="banner">{{ _("No workspace can be used: {error}, in {file} (root's); then, as root, {command}.", error=tr(storage_error), file=system_config, command="dpkg-reconfigure omniacli") }}</div>{% endif %}
@@ -29,36 +36,35 @@
   <section>
     {{ list_search("workspaces", _("Search workspace, domain, storage, server…"), request.query_params.get("q", "")) }}
     {% include "_workspaces_list.html" %}
-    <p class="muted">{{ _("A workspace is a customer's closed part of this machine: its servers and its users, each with its role there.") }}</p>
-    <details>
-      <summary title="{{ _('Who sees what in a workspace, how its CPU and memory are measured and where the workspaces are saved') }}">{{ _("More") }}</summary>
-      <p class="muted">{{ _("The roles in a workspace are those of the Users page: user, developer, admin. A user of role workspace (Users page) sees only the servers of its workspaces, none of this machine's pages, consoles, links and configuration; the admins of a workspace manage its users. A server is in one workspace at most.") }}</p>
-      <p class="muted">{{ _("CPU and memory are those of its containers together (its systemd slice), against its limits.") }}
-        {{ _("Saved in {file}.", file=workspaces_file) }}</p>
-    </details>
   </section>
 </div>
 <div id="edit-view" hidden>
   <p><a href="{{ prefix }}/workspaces">{{ _("← All workspaces") }}</a></p>
   <div id="workspaces"></div>
 </div>
-<div class="list-only stack" style="margin-top: 16px">
-<section class="panel">
-  <h2>{{ _("Known now") }}</h2>
+{# folded at the bottom: the help of who sets the workspaces up, and the templates the new instances are made from #}
+<div class="list-only ws-foot">
+<details>
+  <summary title="{{ _('Who sees what in a workspace, how its CPU and memory are measured, where the workspaces are saved, and the servers and users known now') }}">{{ _("How it works") }}</summary>
+  <div class="panel ws-fold">
+  <p class="muted" style="margin-top: 0">{{ _("A workspace is a customer's closed part of this machine: its servers and its users, each with its role there.") }}</p>
+  <p class="muted">{{ _("The roles in a workspace are those of the Users page: user, developer, admin. A user of role workspace (Users page) sees only the servers of its workspaces, none of this machine's pages, consoles, links and configuration; the admins of a workspace manage its users. A server is in one workspace at most.") }}</p>
+  <p class="muted">{{ _("CPU and memory are those of its containers together (its systemd slice), against its limits.") }}
+    {{ _("Saved in {file}.", file=workspaces_file) }}</p>
+  <h3>{{ _("Known now") }}</h3>
   <dl>
     <dt>{{ _("Servers") }}</dt>
     <dd>{% for s in servers %}<span class="mono">{{ s }}</span>{% if not loop.last %}, {% endif %}{% else %}{{ _("none") }}{% endfor %}</dd>
     <dt>{{ _("Users of workspaces") }}</dt>
     <dd>{% for u in users if user_roles[u] == "workspace" %}<span class="mono">{{ u }}</span>{% if not loop.last %}, {% endif %}{% else %}<span class="muted">{{ _("none (create them on the Users page with role workspace, or let a workspace's admin create them)") }}</span>{% endfor %}</dd>
   </dl>
-</section>
-<section class="panel">
-  <h2>{{ _("Templates") }}</h2>
-  <p class="muted">{{ _("What new instances are made from: the package's, and those published and downloaded here.") }}</p>
-  <details>
-    <summary title="{{ _('Where the published templates come from and which version is used') }}">{{ _("More") }}</summary>
-    <p class="muted">{{ _("The published templates come from {index}, signed and checked with plugins.public_key of the main configuration. Of the two, the higher version is used; the instances made before keep their files.", index=templates_index) }}</p>
-  </details>
+  </div>
+</details>
+<details>
+  <summary title="{{ _('What the new instances are made from: the templates of the package and those published, with the version used here') }}">{{ _("Templates") }} ({{ templates | length }})</summary>
+  <div class="panel ws-fold">
+  <p class="muted" style="margin-top: 0">{{ _("What new instances are made from: the package's, and those published and downloaded here.") }}
+    {{ _("The published templates come from {index}, signed and checked with plugins.public_key of the main configuration. Of the two, the higher version is used; the instances made before keep their files.", index=templates_index) }}</p>
   <div class="scroll" style="margin-top: 10px">
   <table id="templates">
     <tr><th>{{ _("Template") }}</th><th>{{ _("Package") }}</th><th>{{ _("Downloaded") }}</th><th>{{ _("Used") }}</th><th>{{ _("Published") }}</th><th></th></tr>
@@ -71,8 +77,10 @@
     {% endfor %}
   </table>
   </div>
-  <div class="actions"><button type="button" id="look-templates" title="{{ _('Reads the index of the published templates and shows the version published of each, with a button to install it. It changes nothing.') }}">{{ _("Look for published templates") }}</button></div>
-</section>
+  <div class="actions" style="align-items: center"><button type="button" id="look-templates" title="{{ _('Reads the index of the published templates and shows the version published of each, with a button to install it. It changes nothing.') }}">{{ _("Look for published templates") }}</button>
+    <span class="error" id="templates-error" role="alert"></span></div>
+  </div>
+</details>
 </div>
 {% set limit_labels = {"disk_gb": _("Disk, GB"), "cpus": _("CPUs"), "memory_gb": _("Memory, GB"), "instances": _("Instances")} %}
 <template id="ws-template">
@@ -227,11 +235,13 @@
     return box;
   }
   const table = document.getElementById("templates");
+  // what the templates' buttons refuse is said beside them: the banner is out of sight, above
+  const templatesError = document.getElementById("templates-error");
   document.getElementById("look-templates").onclick = async () => {
-    errorBox.hidden = true;
-    const resp = await fetch("{{ prefix }}/api/templates/available");
+    templatesError.textContent = "";
+    const resp = await fetch("{{ prefix }}/api/templates/available", {headers: {Accept: "application/json"}});
     const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) { errorBox.textContent = data.error || data.detail || errorText(resp.status); errorBox.hidden = false; return; }
+    if (!resp.ok) { templatesError.textContent = data.error || data.detail || errorText(resp.status); return; }
     for (const t of data.templates) {
       let row = table.querySelector(`tr[data-template="${CSS.escape(t.name)}"]`);
       if (!row) {
@@ -252,9 +262,10 @@
         button.textContent = t.used === t.version ? {{ _("Install again") | tojson }} : {{ _("Install") | tojson }};
         button.title = {{ _("Downloads this published template, checks it and installs it through the root helper: it is a job, started at once without asking. New instances are made from it; the instances made before keep their files.") | tojson }};
         button.onclick = async () => {
-          const r = await fetch(`{{ prefix }}/api/templates/${encodeURIComponent(t.name)}/install`, {method: "POST"});
+          templatesError.textContent = "";
+          const r = await fetch(`{{ prefix }}/api/templates/${encodeURIComponent(t.name)}/install`, {method: "POST", headers: {Accept: "application/json"}});
           const d = await r.json().catch(() => ({}));
-          if (!r.ok) { errorBox.textContent = d.error || d.detail || errorText(r.status); errorBox.hidden = false; return; }
+          if (!r.ok) { templatesError.textContent = d.error || d.detail || errorText(r.status); return; }
           location.href = "{{ prefix }}/jobs/" + d.job;
         };
         cell.appendChild(button);
