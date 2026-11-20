@@ -103,6 +103,33 @@ def _proc_usage(pids: list[int], proc: Path = Path("/proc")) -> tuple[dict[int, 
     return cpu, rss
 
 
+def container_cgroups(proc: Path = Path("/proc")) -> dict[str, str]:
+    """{container id (64 hex): its cgroup} of the containers running here,
+    read from their processes' /proc/<pid>/cgroup (docker-<id>.scope)."""
+    found = {}
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        text = _read(entry / "cgroup")
+        if not text or "docker-" not in text:
+            continue
+        for line in text.splitlines():
+            path = line.split(":", 2)[-1]
+            name = path.rsplit("/", 1)[-1]
+            if name.startswith("docker-") and name.endswith(".scope"):
+                found.setdefault(name[len("docker-"):-len(".scope")], path)
+    return found
+
+
+def cgroup_usage(base: Path) -> tuple[float, int, int] | None:
+    """(CPU seconds used so far, memory bytes, processes) of a cgroup."""
+    stat, procs, memory = _read(base / "cpu.stat"), _read(base / "cgroup.procs"), _read(base / "memory.current")
+    if not stat or procs is None:
+        return None
+    usage = int(stat.split("usage_usec", 1)[1].split()[0]) / 1e6
+    return usage, int(memory) if memory and memory.strip().isdigit() else 0, len(procs.split())
+
+
 def machine_counters(proc: Path = Path("/proc"), net: Path = Path("/sys/class/net")) -> tuple[int, int, int, int]:
     """(busy cpu ticks, total cpu ticks, received bytes, sent bytes) so far."""
     fields = [int(v) for v in (proc / "stat").read_text().split("\n", 1)[0].split()[1:]]
@@ -201,6 +228,8 @@ class Sampler:
         # per instance: how it is measured, and the previous counters
         self.source: dict[str, str] = {}
         self._cgroup: dict[str, tuple[float, str | None]] = {}
+        # {instance key: (when asked, its running containers' ids)}: a compose project's
+        self._containers: dict[str, tuple[float, list[str]]] = {}
         self._prev: dict[str, tuple[float, object]] = {}
         self._task: asyncio.Task | None = None
         self.cores = os.cpu_count() or 1
@@ -232,6 +261,26 @@ class Sampler:
             except Exception:  # noqa: BLE001 - sampling must never stop
                 pass
             await asyncio.sleep(INTERVAL)
+
+    async def _container_ids(self, instance: Instance) -> list[str]:
+        """The ids of the compose project's running containers (the helper's
+        state), asked at most once a minute."""
+        cached = self._containers.get(instance.key)
+        if cached and time.monotonic() - cached[0] < 60:
+            return cached[1]
+        code, out = await ops.capture(instance.restart.command("state"), timeout=30)
+        ids = []
+        if code == 0:
+            text = out.strip()
+            try:
+                rows = json.loads(text) if text.startswith("[") else [json.loads(line) for line in text.splitlines()
+                                                                       if line.startswith("{")]
+            except ValueError:
+                rows = []
+            ids = [str(r.get("ID") or "") for r in rows if isinstance(r, dict) and r.get("State") == "running"
+                   and r.get("ID")]
+        self._containers[instance.key] = (time.monotonic(), ids)
+        return ids
 
     async def _unit_cgroup(self, instance: Instance) -> str | None:
         """The unit's cgroup, asked to systemd at most once a minute."""
@@ -339,7 +388,7 @@ class Sampler:
             except (OSError, ValueError, IndexError):
                 pass
         instances = self.settings.all_instances()
-        by_config = None
+        by_config, cgroups = None, None
         now = time.monotonic()
         keys = set()
         for inst in instances:
@@ -356,6 +405,18 @@ class Sampler:
                     _, rss = await asyncio.to_thread(_proc_usage, pids)
                     point = self._point(inst.key, now, usage, rss, len(pids))
                     self.source[inst.key] = f"systemd unit {inst.restart.service}"
+            if point is None and inst.restart.type == "compose":
+                ids = await self._container_ids(inst)
+                if ids:
+                    if cgroups is None:
+                        cgroups = await asyncio.to_thread(container_cgroups)
+                    used = [cgroup_usage(CGROUP_ROOT / path.lstrip("/"))
+                            for full, path in cgroups.items() if any(full.startswith(i) for i in ids)]
+                    used = [u for u in used if u is not None]
+                    if used:
+                        point = self._point(inst.key, now, sum(u[0] for u in used), sum(u[1] for u in used),
+                                            sum(u[2] for u in used))
+                        self.source[inst.key] = f"the containers of {inst.restart.service}"
             if point is None:
                 if by_config is None:
                     by_config = await asyncio.to_thread(processes_by_config)
