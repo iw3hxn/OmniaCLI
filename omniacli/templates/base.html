@@ -537,6 +537,11 @@ summary { cursor: pointer; color: var(--muted); }
 // a page shown again from the browser's cache (Back) is drawn anew: its
 // buttons and states are those of now, not of when it was left
 window.addEventListener("pageshow", (event) => { if (event.persisted) location.reload(); });
+// a moment as people write it, gg/mm/aaaa hh:mm, from 2026-11-20T10:40[:51...] (anything else: as it is)
+window.whenText = (iso) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/.exec(String(iso || ""));
+  return m ? `${m[3]}/${m[2]}/${m[1]} ${m[4]}:${m[5]}` : String(iso || "");
+};
 </script>
 <script>
 (function () {

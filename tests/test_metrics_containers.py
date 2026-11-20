@@ -47,3 +47,14 @@ async def test_a_compose_instance_measured(tmp_path, monkeypatch):
     # only the running container, its CPU between the two samples
     assert point["mem"] == 300.0 and point["procs"] == 4 and point["cpu"] is not None and point["cpu"] > 0
     assert "containers" in sampler.source[servers["s"].test.key]
+
+
+def test_how_it_is_measured_is_said_in_the_users_language():
+    """The source of an instance's load, shown under its charts, is translated
+    (it was the one English line of the Monitoring tab)."""
+    from omniacli import i18n
+
+    assert i18n.tr("it", "the containers of /srv/acme/odoo/production") == "i container di /srv/acme/odoo/production"
+    assert i18n.tr("it", "systemd unit odoo-prod") == "unità systemd odoo-prod"
+    assert i18n.tr("it", "processes started with -c /etc/odoo.conf") == "processi avviati con -c /etc/odoo.conf"
+    assert i18n.tr("en", "systemd unit odoo-prod") == "systemd unit odoo-prod"

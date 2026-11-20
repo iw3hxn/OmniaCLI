@@ -223,7 +223,7 @@ async def repository_status(repo: Repository) -> dict:
     if not repo.path.is_dir():
         return {"error": f"{repo.path} does not exist"}
     code, out = await capture(
-        ["git", "log", "-1", "--format=%h%x00%cd%x00%s", "--date=format:%Y-%m-%d %H:%M"],
+        ["git", "log", "-1", "--format=%h%x00%cd%x00%s", "--date=format:%d/%m/%Y %H:%M"],
         cwd=repo.path,
     )
     if code:

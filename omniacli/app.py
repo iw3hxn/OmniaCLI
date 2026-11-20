@@ -1210,7 +1210,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         for inst in [] if machine_only else settings.all_instances():
             if (server is None or inst.server == server) and (shown is None or inst.server in shown):
                 data[inst.key] = {
-                    "source": sampler.source.get(inst.key, ""),
+                    "source": i18n.tr(request_language(request), sampler.source.get(inst.key, "")),
                     "points": sampler.series(inst.key, since),
                 }
         return {"cores": sampler.cores, "interval": 5,

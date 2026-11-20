@@ -949,7 +949,7 @@
     box.querySelector(".pitr-on").hidden = !data.enabled;
     const said = [];
     if (data.enabled) {
-      said.push(data.first ? P.range.replace("{first}", data.first.replace("T", " ").slice(0, 16)).replace("{last}", (data.last || "?").replace("T", " ").slice(0, 16))
+      said.push(data.first ? P.range.replace("{first}", whenText(data.first)).replace("{last}", data.last ? whenText(data.last) : "?")
         .replace("{bases}", data.bases.length).replace("{segments}", data.segments).replace("{size}", (data.archive_size / 1048576).toFixed(0) + " MiB") : P.noneYet);
       if (data.failed) said.push(P.failing.replace("{count}", data.failed).replace("{time}", data.last_failed));
       const input = document.getElementById("pitr-time");
@@ -1010,7 +1010,7 @@
         const tr = table.insertRow();
         for (const c of cols) {
           const td = tr.insertCell(), v = r[c];
-          td.textContent = v === null ? "–" : c === "size" ? bytes(v) : c === "last_autovacuum" ? String(v).slice(0, 16).replace("T", " ") : String(v);
+          td.textContent = v === null ? "–" : c === "size" ? bytes(v) : c === "last_autovacuum" ? whenText(v) : String(v);
           if (c === "query") { td.className = "mono"; td.style.fontSize = "12px"; td.style.whiteSpace = "pre-wrap"; }
         }
         if (key === "long_queries" && data.can_stop) {
@@ -1086,7 +1086,7 @@
       const said = [];
       if (u.uptime_24h !== null && u.uptime_24h !== undefined) said.push(S.uptime.replace("{pct}", u.uptime_24h));
       if (u.last_ms) said.push(S.answers.replace("{ms}", u.last_ms));
-      if (u.since) said.push(S.since.replace("{time}", u.since.replace("T", " ")));
+      if (u.since) said.push(S.since.replace("{time}", whenText(u.since)));
       const text = document.createElement("span"); text.className = "muted"; text.textContent = said.join(" · ");
       cell.append(text);
     }).catch(() => { field("uptime").textContent = "—"; });
