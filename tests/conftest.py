@@ -77,6 +77,23 @@ def storage_where_it_is(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def docker_here(monkeypatch):
+    """Workspace instances are made in the tests whether docker is installed or not."""
+    from omniacli import workspaceops
+    monkeypatch.setattr(workspaceops, "docker_missing", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def login_path_passed(monkeypatch):
+    """The instances' nginx pass Log in as's path here (no network in the tests)."""
+    from omniacli import loginas
+
+    async def reaches_here(host):
+        return True
+    monkeypatch.setattr(loginas, "reaches_here", reaches_here)
+
+
+@pytest.fixture(autouse=True)
 def git_identity(monkeypatch, tmp_path):
     monkeypatch.setenv("GIT_AUTHOR_NAME", "Test")
     monkeypatch.setenv("GIT_AUTHOR_EMAIL", "test@example.com")

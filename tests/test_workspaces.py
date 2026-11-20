@@ -816,3 +816,22 @@ async def test_a_failed_new_instance_leaves_nothing(workspaces, client, env, mon
     monkeypatch.setattr(workspaceops, "create_instance", create_instance)
     resp = await client.post("/api/instances/new", headers=POST, json={"version": "19"})
     assert resp.json()["workspace"] == "odoo19"
+
+
+async def test_no_new_instance_without_docker(workspaces, client, env, monkeypatch):
+    """Without docker: no New instance on the workspace's page nor on the
+    dashboard, and a call to make one is refused with the reason."""
+    from omniacli import workspaceops
+
+    from .test_app import POST
+    monkeypatch.setattr(workspaceops, "docker_missing", lambda: workspaceops.DOCKER_MISSING)
+    page = (await client.get("/workspaces/acme", headers=post_as("mario"))).text
+    assert 'href="#new-instance-panel"' not in page and "Docker" in page
+    assert "data-new-instance" not in (await client.get("/", headers=POST)).text
+    resp = await client.post("/api/workspaces/acme/instances/create", headers=post_as("mario"),
+                             json={"instance": "odoo", "template": "odoo-19"})
+    assert resp.status_code == 400 and "Docker is not installed" in resp.text
+    env["settings"].storage_roots = {"main": "/srv"}
+    monkeypatch.setattr(workspaceops, "templates", lambda: {"odoo-19": object()})
+    resp = await client.post("/api/instances/new", headers=POST, json={"version": "19"})
+    assert resp.status_code == 400 and "Docker is not installed" in resp.text

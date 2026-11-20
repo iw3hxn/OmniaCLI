@@ -773,9 +773,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         nginx passes the path here): Odoo's session cookie set on that host,
         then Odoo's home. A token is used once, on the host it was made for."""
         host = request.headers.get("host", "")
+        # marked: OmniaCLI asks its own path on a name to know nginx passes it here
+        headers = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer", loginas.MARK: "1"}
+        if request.query_params.get("probe") == "1":
+            return Response(status_code=status.HTTP_204_NO_CONTENT, headers=headers)
         ticket = login_tickets.take(request.query_params.get("t", ""), host)
         ip = request.client.host if request.client else ""
-        headers = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
         if ticket is None:
             access_log.record("failed", "user", "", ip, f"log in as: no valid link on {host}"[:200])
             return HTMLResponse("This link to log in has been used, has expired or belongs to another address: "
@@ -994,7 +997,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             "machine_links": links,
             "linked_sections": listgroups.sections(linked, settings.groups.get("links", []), lambda r: r["name"]),
             # New instance (a version only): the machine's admins, workspaces allowed here
-            "quick_instance": shown is None and me.can("admin") and bool(settings.storage_roots),
+            "quick_instance": shown is None and me.can("admin") and bool(settings.storage_roots)
+            and workspaceops.docker_missing() is None,
             "jobs": visible_jobs(me, jobs.recent(len(jobs.jobs)))[:10],
             # a user of workspaces: the load of each of its workspaces instead
             "load_workspaces": sorted((ws, role) for ws, role in me.workspaces if ws in settings.workspaces) if me.scoped else [],
@@ -2101,11 +2105,66 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                             "with its nginx passing /.omniacli/login to OmniaCLI (README, Log in as); "
                             f"the instance is opened at {web or 'no address'}")
 
+    login_path_seen: dict[str, float] = {}
+
+    async def login_path_reached(host: str) -> bool:
+        """Whether https://host/.omniacli/login reaches this OmniaCLI (its
+        answer carries LOGIN_MARK); a yes is kept 10 minutes."""
+        if time.monotonic() - login_path_seen.get(host, -1e9) < 600:
+            return True
+        if await loginas.reaches_here(host):
+            login_path_seen[host] = time.monotonic()
+            return True
+        return False
+
+    async def login_path_problem(request: Request, instance: Instance, user: Principal):
+        """A refusal when the instance's nginx (not a workspace's: those pass
+        it by themselves) does not pass the Log in as path here; for an admin
+        of the machine, the address that adds it."""
+        if workspace_of(instance.server) is not None:
+            return None
+        host = urlsplit(instance.web_url or "").hostname or ""
+        if not host or not (instance.web_url or "").startswith("https://") or await login_path_reached(host):
+            return None
+        api = f"{prefix_of(request)}/api/servers/{instance.server}/{instance.role}/login-as/nginx"
+        return JSONResponse({"error": f"The nginx of {host} does not pass {loginas.LOGIN_PATH} to OmniaCLI: "
+                                      "Odoo would answer the link, not OmniaCLI (README, Log in as)",
+                             "nginx": api if machine_admin(user) else None, "host": host},
+                            status_code=status.HTTP_409_CONFLICT)
+
+    @app.post("/api/servers/{server}/{role}/login-as/nginx")
+    async def login_as_nginx(server: str, role: str, me: Principal = Depends(current_user)):
+        """One line in the instance's server block of 443 of this machine's
+        nginx (a hosting panel's site): an include of the paths OmniaCLI
+        answers there; the file before kept, nginx -t, undone by
+        workspace-helper login-path remove <host>."""
+        if not machine_admin(me):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "An admin of the machine is required")
+        instance = get_instance(server, role)
+        host = urlsplit(instance.web_url or "").hostname or ""
+        if not host:
+            return refuse(f"{instance.key} has no domain name")
+
+        async def action(job):
+            found = await workspaceops._helper(job, "login-path", "add", host)
+            login_path_seen.pop(host, None)
+            job.log(f"nginx of {host}: {', '.join(found.get('changed') or []) or 'already passing it'} "
+                    f"({found.get('nginx')}); to undo: {found.get('undo')}")
+            if not await login_path_reached(host):
+                raise JobFailed(f"https://{host}{loginas.LOGIN_PATH} still does not reach OmniaCLI: "
+                                "another nginx or a proxy in front of this one answers that name")
+            job.result = found
+        job = jobs.submit(f"Log in as through the nginx of {host}", [instance.key], f"manual: {me}", action)
+        return {"job": job.id}
+
     @app.get("/api/servers/{server}/{role}/login-as/users")
     async def login_as_users(request: Request, server: str, role: str, user: Principal = Depends(developer)):
         """The users of the instance one may log in as."""
         instance = get_instance(server, role)
         login_as_target(request, instance, user)
+        problem = await login_path_problem(request, instance, user)
+        if problem is not None:
+            return problem
         found = await instance.plugin.login_session(instance, "users")
         if "error" in found:
             return refuse(found["error"], status.HTTP_502_BAD_GATEWAY)
@@ -2749,6 +2808,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
              "servers": [n for n in ws.servers if n in settings.servers],
              "templates": [t.to_dict() for t in found.values()],
              "can_create": bool(ws.storage and ws.limits.get("disk_gb")) and settings.storage_problem(ws) is None,
+             "docker_missing": workspaceops.docker_missing(),
              "storage_problem": settings.storage_problem(ws),
              "instances": [i for i in ws.instances() if workspaceops.server_name(ws, i) in settings.servers],
              "parameters": {n: {role: role_parameters(ws, n[len(ws.name) + 1:], role) for role in ROLES}
@@ -2822,6 +2882,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         template: a job (the disk, the projects, the databases); then the
         server, of type docker, is the workspace's."""
         ws = a_workspace(workspace)
+        if workspaceops.docker_missing():
+            return refuse(workspaceops.docker_missing())
         instance = str(payload.get("instance") or "").strip()
         if not WORKSPACE_NAME.fullmatch(instance):
             return refuse("An instance's name is 1-32 lower case letters, digits and -")
@@ -3161,6 +3223,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return refuse(f"No Odoo {major} here (no template {template})")
         if not settings.storage_roots:
             return refuse(f"No storage for workspaces on this machine: {workspaceops.HELPERS_HINT}")
+        if workspaceops.docker_missing():
+            return refuse(workspaceops.docker_missing())
         given = re.sub(r"[^a-z0-9-]+", "-", str(payload.get("name") or "").strip().lower()).strip("-")[:32]
         name = given or f"odoo{major}"
         if not WORKSPACE_NAME.fullmatch(name):

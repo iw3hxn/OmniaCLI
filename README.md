@@ -2005,6 +2005,19 @@ location = /.omniacli/login {
 }
 ```
 
+Before listing the users, OmniaCLI asks
+`https://<instance>/.omniacli/login?probe=1` itself: when the answer is not
+its own (the site of a hosting panel passes everything to Odoo), the dialog
+says so, and for an admin of the machine offers **Let nginx pass it**: the
+root helper (`workspace-helper login-path add <host>`) finds the server
+blocks of port 443 for that name in `nginx -T`, keeps each file as
+`<file>.omniacli-before`, adds one line to each,
+`include /etc/nginx/omniacli-paths.conf;` (the two locations, Log in as and
+deploy on push, to OmniaCLI's address), runs `nginx -t` (refused: the files
+as before) and reloads. `login-path check <host>` says whether it is there,
+`login-path remove <host>` takes the lines away. A panel that writes its
+sites again drops the line: the dialog says so again.
+
 On a development machine an instance at `http://localhost:<port>` works
 without nginx when OmniaCLI is opened at `localhost` too: a browser keeps
 cookies by name, not by port.

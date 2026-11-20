@@ -4,6 +4,7 @@
 plugin, handed to the browser on the instance's own host through a token
 used once."""
 
+import asyncio
 import json
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -229,3 +230,40 @@ def test_the_address_of_omniacli_for_nginx(tmp_path, lines, address):
     defaults.write_text(lines)
     assert workspacehelper.omniacli_address(defaults) == address
     assert workspacehelper.omniacli_address(Path("/nonexistent")) == "127.0.0.1:8090"
+
+
+async def test_a_panels_nginx_that_does_not_pass_the_path(here, monkeypatch):
+    """The nginx of a hosting panel answers the instance's name and passes
+    /.omniacli/login to Odoo: said before listing the users, with the
+    address that adds the line for an admin of the machine only; the
+    landing answers a probe with its mark."""
+    from omniacli import workspaceops
+
+    seen = {"passes": False}
+
+    async def reaches_here(host):
+        return seen["passes"]
+    monkeypatch.setattr(loginas, "reaches_here", reaches_here)
+    resp = await here.get(f"{api('test')}/users", headers=as_user("dev"))
+    assert resp.status_code == 409 and resp.json()["nginx"] is None and TEST in resp.json()["error"]
+    resp = await here.get(f"{api('production')}/users", headers=as_user("admin"))
+    assert resp.status_code == 409 and resp.json()["nginx"] == f"{api('production')}/nginx"
+    assert (await here.post(f"{api('test')}/nginx", headers=as_user("dev", post=True))).status_code == 403
+    helper = []
+
+    async def fake_helper(job, *args, timeout=None):
+        helper.append(args)
+        seen["passes"] = True
+        return {"changed": ["/etc/nginx/sites-enabled/x.conf"], "nginx": "nginx reloaded", "undo": "…"}
+    monkeypatch.setattr(workspaceops, "_helper", fake_helper)
+    resp = await here.post(f"{api('test')}/nginx", headers={**as_user("admin", post=True), "Accept": "application/json"})
+    assert resp.status_code == 200, resp.text
+    for _ in range(100):
+        job = (await here.get(f"/api/jobs/{resp.json()['job']}", headers=as_user("admin"))).json()
+        if job["status"] not in ("queued", "running"):
+            break
+        await asyncio.sleep(0.05)
+    assert job["status"] == "success" and helper == [("login-path", "add", TEST)]
+    assert (await here.get(f"{api('test')}/users", headers=as_user("dev"))).status_code == 200
+    probe = await here.get(f"{loginas.LOGIN_PATH}?probe=1", headers={"Host": TEST})
+    assert probe.status_code == 204 and probe.headers[loginas.MARK] == "1"

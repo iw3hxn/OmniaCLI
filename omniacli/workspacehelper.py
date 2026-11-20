@@ -6,6 +6,7 @@
     omniacli workspace-helper create <workspace> <storage> <instance> <template> <values as JSON>
     omniacli workspace-helper remove <workspace> <storage> <instance>
     omniacli workspace-helper limits <workspace> <cpus> <memory in GB>
+    omniacli workspace-helper login-path check | add | remove <host>
     omniacli workspace-helper pitr-enable | pitr-base | pitr-state <workspace> <storage> <instance> <role>
     omniacli workspace-helper pitr-restore <workspace> <storage> <source> <target> <time> <source db> <target db>
     omniacli workspace-helper space
@@ -1377,6 +1378,115 @@ def owncert(name: str, storage: str, given: str | None = None) -> dict:
             "names": [part.strip()[4:] for part in alt.replace("\n", ",").split(",") if part.strip().startswith("DNS:")]}
 
 
+# --- Log in as on a site of another nginx (a hosting panel's): its server
+# block of 443 for the instance's name gets one line, an include of the two
+# paths OmniaCLI answers there (Log in as, deploy on push)
+
+PATHS_SNIPPET = Path("/etc/nginx/omniacli-paths.conf")
+PATHS_MARK = "# omniacli: Log in as, deploy on push"
+BEFORE_SUFFIX = ".omniacli-before"
+_SERVER_OPEN = re.compile(r"(?m)^[ \t]*server\s*\{")
+
+
+def _server_blocks(text: str) -> list[tuple[int, int]]:
+    """(index after its {, index of its }) of each server block; comments skipped."""
+    blocks = []
+    for match in _SERVER_OPEN.finditer(text):
+        depth, i = 1, match.end()
+        while i < len(text) and depth:
+            char = text[i]
+            if char == "#":
+                i = text.find("\n", i)
+                if i < 0:
+                    break
+                continue
+            depth += {"{": 1, "}": -1}.get(char, 0)
+            i += 1
+        if depth == 0:
+            blocks.append((match.end(), i - 1))
+    return blocks
+
+
+def _answers_https(block: str, host: str) -> bool:
+    lines = [line.split("#", 1)[0] for line in block.splitlines()]
+    body = "\n".join(lines)
+    names = [n for m in re.finditer(r"(?:^|[;\s])server_name\s+([^;]*);", body) for n in m.group(1).split()]
+    return host in names and bool(re.search(r"(?:^|[;\s])listen\s+[^;]*\b443\b", body))
+
+
+def _sites_of(host: str) -> dict[Path, str]:
+    """The files of nginx's configuration with a server block of 443 for host."""
+    dump = _run(_tool("nginx"), "-T", check=False)
+    found = {}
+    for line in dump.splitlines():
+        if line.startswith("# configuration file ") and line.endswith(":"):
+            path = Path(line[len("# configuration file "):-1])
+            if path == PATHS_SNIPPET or not path.is_file():
+                continue
+            text = path.read_text(encoding="utf-8")
+            if any(_answers_https(text[a:b], host) for a, b in _server_blocks(text)):
+                found[path.resolve()] = text
+    return found
+
+
+def login_path(action: str, host: str) -> dict:
+    """check | add | remove the include of PATHS_SNIPPET in host's server
+    blocks of 443. add keeps each file as it was in <file>.omniacli-before
+    (once) and puts them all back when nginx -t refuses."""
+    if action not in ("check", "add", "remove"):
+        raise HelperError("login-path takes check, add or remove")
+    if not config.DOMAIN_NAME.fullmatch(host):
+        raise HelperError(f"{host!r} is not a domain name")
+    sites = _sites_of(host)
+    if not sites:
+        raise HelperError(f"no server block of nginx answers https on {host} here")
+    ready = {str(path): all(PATHS_MARK in text[a:b] or workspaceweb.LOGIN_PATH in text[a:b]
+                            for a, b in _server_blocks(text) if _answers_https(text[a:b], host))
+             for path, text in sites.items()}
+    if action == "check":
+        return {"host": host, "files": ready, "ready": all(ready.values())}
+    changed: dict[Path, str] = {}
+    if action == "add":
+        address = omniacli_address()
+        snippet = ["# written by omniacli workspace-helper login-path: the paths OmniaCLI answers on",
+                   "# the names of its instances, included in their server block of 443", ""]
+        for location in (f"location = {workspaceweb.LOGIN_PATH}", f"location ^~ {workspaceweb.HOOKS_PATH}"):
+            snippet += [f"{location} {{", f"    proxy_pass http://{address};",
+                        *workspaceweb._headers("    "), "}"]
+        _write(PATHS_SNIPPET, "\n".join(snippet) + "\n")
+        for path, text in sites.items():
+            if ready[str(path)]:
+                continue
+            out, last = [], 0
+            for a, b in _server_blocks(text):
+                if _answers_https(text[a:b], host) and PATHS_MARK not in text[a:b]:
+                    out += [text[last:a], f"\n    include {PATHS_SNIPPET};  {PATHS_MARK}"]
+                    last = a
+            changed[path] = "".join(out) + text[last:]
+    else:
+        for path, text in sites.items():
+            kept = "".join(line for line in text.splitlines(keepends=True) if PATHS_MARK not in line)
+            if kept != text:
+                changed[path] = kept
+    for path, text in changed.items():
+        before = path.with_name(path.name + BEFORE_SUFFIX)
+        if action == "add" and not before.exists():
+            shutil.copy2(path, before)
+        info = path.stat()
+        _write(path, text, mode=info.st_mode & 0o777, uid=info.st_uid, gid=info.st_gid)
+    if changed:
+        test = subprocess.run([_tool("nginx"), "-t"], env=ENV, capture_output=True, text=True)
+        if test.returncode:
+            for path in changed:
+                path.write_text(sites[path], encoding="utf-8")
+            raise HelperError(f"nginx -t refused it, the files are as before: {test.stderr.strip()[-400:]}")
+        reloaded = _nginx_reload()
+    else:
+        reloaded = "nothing to change"
+    return {"host": host, "changed": [str(p) for p in changed], "nginx": reloaded,
+            "undo": f"omniacli workspace-helper login-path remove {host}"}
+
+
 def _project(name: str, storage: str, instance: str, role: str) -> Path:
     """The compose project of a role of an instance of the workspace (mounted)."""
     image, mount = workspace(name, storage)
@@ -1417,7 +1527,7 @@ ACTIONS = {"disk": (disk, 3), "drop": (drop, 2), "limits": (limits, 3), "create"
            "conf": (conf, 5), "space": (space, 0),
            "storage-setup": (storage_setup, 0), "storage-check": (storage_check, 1), "storage-reset": (storage_reset, 1),
            "pitr-enable": (pitr_enable, 4), "pitr-base": (pitr_base, 4), "pitr-state": (pitr_state, 4),
-           "pitr-restore": (pitr_restore, 7)}
+           "pitr-restore": (pitr_restore, 7), "login-path": (login_path, 2)}
 
 
 def run(argv: list[str]) -> dict:

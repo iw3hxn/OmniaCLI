@@ -48,6 +48,14 @@ def server_name(ws: Workspace, instance: str) -> str:
     return f"{ws.name}-{instance}"
 
 
+DOCKER_MISSING = "Docker is not installed on this machine: the instances of a workspace are Docker Compose projects"
+
+
+def docker_missing() -> str | None:
+    """Why a workspace instance cannot be made here (no docker), else None."""
+    return None if shutil.which("docker", path=os.environ.get("PATH", "") + ":/usr/bin:/usr/local/bin") else DOCKER_MISSING
+
+
 async def _helper(job: Job, *args: str, timeout: float = HELPER_TIMEOUT) -> dict:
     job.log("$ " + " ".join(helper(*args)))
     code, out = await capture(helper(*args), timeout=timeout)

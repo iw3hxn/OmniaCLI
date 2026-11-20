@@ -67,6 +67,7 @@
  "Disk": "Disco",
  "Disk, GB": "Disco, GB",
  "Disks": "Dischi",
+ "Docker is not installed on this machine: the instances of a workspace are Docker Compose projects. Install it (the Checks page says how), then new instances can be made here.": "Docker non è installato su questa macchina: le istanze di un workspace sono progetti Docker Compose. Installalo (la pagina Controlli dice come), poi qui si potranno creare nuove istanze.",
  "Domain": "Dominio",
  "Downloaded": "Scaricato",
  "Each instance has a production and a test, made from a template, on the workspace's disk.": "Ogni istanza ha una produzione e un test, creati da un template, sul disco del workspace.",

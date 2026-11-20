@@ -222,6 +222,10 @@ def test_claude_in_its_folder(env, tmp_path, monkeypatch):
         with c.websocket_connect("/servers/srv/test/claude/ws", headers=browser(app, "dev")) as ws:
             out = run(ws, "echo AFTER=$((40+2))\n", "AFTER=42")
             assert f"CLAUDE-RAN-IN-{folder}" in out
+            # ended by the shell, not by the client leaving: leaving a running
+            # shell cancels the server's task, and sometimes the test with it
+            ws.send_text(json.dumps({"type": "input", "data": "exit\n"}))
+            assert closed(ws) == (1000, "the shell ended")
     # the servers file keeps it; a relative path is refused
     data = server_to_dict(settings.servers["srv"])
     assert data["test"]["claude_dir"] == str(folder)

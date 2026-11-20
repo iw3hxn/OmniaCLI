@@ -9,6 +9,10 @@
     <input type="search" id="login-as-filter" placeholder="{{ _('Filter by name or login') }}" style="width: 100%">
     <div id="login-as-users" class="scroll" style="max-height: 45vh; margin: 8px 0"></div>
     <p id="login-as-error" class="error"></p>
+    <div id="login-as-nginx" class="actions" hidden style="justify-content: flex-start">
+      <button type="button" class="primary" id="login-as-nginx-add">{{ _("Let nginx pass it") }}</button>
+      <span class="muted" style="font-size: 13px">{{ _("One line in the site of that name (the file before kept), nginx -t, a reload; undone with workspace-helper login-path remove.") }}</span>
+    </div>
     <div class="actions">
       <button type="button" id="login-as-cancel">{{ _("Close") }}</button>
     </div>
@@ -20,11 +24,13 @@
   const list = document.getElementById("login-as-users");
   const filter = document.getElementById("login-as-filter");
   const errorBox = document.getElementById("login-as-error");
+  const nginxBox = document.getElementById("login-as-nginx"), nginxAdd = document.getElementById("login-as-nginx-add");
   let target = null, users = [];
   const T = {
     portal: {{ _("portal") | tojson }}, admin: {{ _("administrator") | tojson }},
     noSession: {{ _("No session made") | tojson }}, title: {{ _("Log in as a user of {key}") | tojson }},
-    reading: {{ _("Reading the users…") | tojson }}, unreadable: {{ _("The users cannot be read") | tojson }},
+    reading: {{ _("Reading the users…") | tojson }},
+    nginxQ: {{ _("Add to the nginx site of {host} the line that passes Log in as to OmniaCLI?") | tojson }}, unreadable: {{ _("The users cannot be read") | tojson }},
   };
 
   function draw() {
@@ -77,8 +83,17 @@
       if (!resp || !resp.ok) {
         list.replaceChildren();
         errorBox.textContent = data.error || data.detail || T.unreadable;
+        nginxBox.hidden = !data.nginx;
+        nginxAdd.onclick = async () => {
+          if (!confirm(T.nginxQ.replace("{host}", data.host))) return;
+          const made = await fetch(data.nginx, {method: "POST", headers: {Accept: "application/json"}}).catch(() => null);
+          const answer = made ? await made.json().catch(() => ({})) : {};
+          if (made && made.ok && answer.job) { location.href = `{{ prefix }}/jobs/${answer.job}`; return; }
+          errorBox.textContent = answer.error || answer.detail || T.noSession;
+        };
         return;
       }
+      nginxBox.hidden = true;
       users = data.users || [];
       draw();
       filter.focus();

@@ -6,7 +6,7 @@
 {{ crumbs([(_("Settings"), "/settings"), (_("Workspace {name}", name=ws.name), None)]) }}
 {% endblock %}
 {% block content %}
-{% set new_instance = not storage_problem and can_create and not (instances_left is not none and instances_left <= 0) and templates %}
+{% set new_instance = not storage_problem and not docker_missing and can_create and not (instances_left is not none and instances_left <= 0) and templates %}
 <style>
 select.role { text-transform: none; letter-spacing: 0; font-size: inherit; font-weight: inherit; }
 .add-repo { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 6px; margin-top: 8px; }
@@ -91,6 +91,8 @@ select.role { text-transform: none; letter-spacing: 0; font-size: inherit; font-
   <h2>{{ _("New instance") }}</h2>
   {% if storage_problem %}
   <div class="banner" style="margin: 10px 0 0">{{ _("This workspace cannot be used: {problem}.", problem=tr(storage_problem)) }}</div>
+  {% elif docker_missing %}
+  <p class="muted">{{ _("Docker is not installed on this machine: the instances of a workspace are Docker Compose projects. Install it (the Checks page says how), then new instances can be made here.") }}</p>
   {% elif not can_create %}
   <p class="muted">{{ _("New instances need a storage and a disk limit for the workspace: the machine's administrators set them.") }}</p>
   {% elif instances_left is not none and instances_left <= 0 %}

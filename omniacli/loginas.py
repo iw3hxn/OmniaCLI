@@ -27,9 +27,26 @@ import threading
 import time
 from dataclasses import dataclass
 
+import httpx
+
 from .workspaceweb import LOGIN_PATH
 
-__all__ = ["LOGIN_PATH", "LoginTickets", "Ticket", "safe_home"]
+# the header of OmniaCLI's answers on LOGIN_PATH: asked with ?probe=1 on an
+# instance's name, it says the name's nginx passes the path here
+MARK = "X-OmniaCLI-Login"
+
+
+async def reaches_here(host: str) -> bool:
+    """Whether https://host/.omniacli/login is answered by an OmniaCLI (its
+    MARK), not by Odoo: the certificate is not judged, only the path."""
+    try:
+        async with httpx.AsyncClient(verify=False, timeout=10, follow_redirects=False) as client:
+            resp = await client.get(f"https://{host}{LOGIN_PATH}", params={"probe": "1"})
+    except httpx.HTTPError:
+        return False
+    return resp.headers.get(MARK) == "1"
+
+__all__ = ["LOGIN_PATH", "MARK", "reaches_here", "LoginTickets", "Ticket", "safe_home"]
 
 # how long the browser has to open the link the button gives
 TOKEN_SECONDS = 60
