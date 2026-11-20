@@ -192,6 +192,8 @@ _MIN_PASSWORD = 8
 # what the proxy of a link passes on, each way (never the caller's credentials,
 # never the other instance's WWW-Authenticate: the browser would ask for them)
 _LINK_REQUEST_HEADERS = ("content-type", "accept", "accept-language")
+# sent through a link: the asking OmniaCLI can carry Log in as through a tunnel
+TUNNEL_HEADER = "X-OmniaCLI-Tunnel"
 # Log in as asked of a linked OmniaCLI: handled here when its link cannot open there
 _LINK_LOGIN_AS = re.compile(r"api/servers/([^/]+)/(production|test)/login-as")
 _LINK_RESPONSE_HEADERS = ("content-type", "content-disposition", "content-length",
@@ -2124,8 +2126,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         """A refusal when the instance's nginx (not a workspace's: those pass
         it by themselves) does not pass the Log in as path here; for an admin
         of the machine, the address that adds it."""
-        if workspace_of(instance.server) is not None or user.on_behalf:
-            # a linked OmniaCLI asking: it opens the link through a tunnel when needed
+        if workspace_of(instance.server) is not None or (user.on_behalf and request.headers.get(TUNNEL_HEADER) == "1"):
+            # a linked OmniaCLI whose browser reaches its tunnels opens the link through one
             return None
         host = urlsplit(instance.web_url or "").hostname or ""
         if not host or not (instance.web_url or "").startswith("https://") or await login_path_reached(host):
@@ -4390,6 +4392,51 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 return refuse(str(exc))
             return await store_links({**settings.link_targets, name: link}) or {"ok": True}
 
+    @app.post("/api/links/rename", dependencies=[Depends(admin)])
+    async def link_target_rename(payload: dict = Body(...)):
+        """A linked server's name changed (its page, its URLs here): the
+        link, the instances whose database comes from it, the publications
+        through it; its open tunnels closed (they name it)."""
+        name, new_name = str(payload.get("name") or ""), str(payload.get("new_name") or "").strip()
+        async with links_lock:
+            link = a_link(name)
+            if new_name == name:
+                return {"ok": True, "name": name}
+            if new_name in settings.link_targets:
+                return refuse(f"A link named {new_name} already exists")
+            try:
+                renamed = parse_link(new_name, {"url": link.url, "token": link.token, "ca_file": link.ca_file,
+                                                "ssh": link.ssh.to_dict() if link.ssh else None})
+            except ConfigError as exc:
+                return refuse(str(exc))
+            uses = [inst for srv in settings.servers.values() for inst in srv.instances.values()
+                    if inst.from_link is not None and not inst.from_link.is_puller and inst.from_link.link == name]
+            if any(jobs.is_busy(inst.key) for inst in uses):
+                return refuse(f"A job runs on an instance copied from {name}: try again when it ends")
+            publications = {k: dataclasses.replace(v, link=new_name) if v.link == name else v
+                            for k, v in settings.publications.items()}
+            for found in [t for t in tunnels.tunnels.values() if t.link == name]:
+                await tunnels.close(found.id, f"{name} renamed {new_name}")
+            links = {(new_name if k == name else k): (renamed if k == name else v)
+                     for k, v in settings.link_targets.items()}
+            failed = await store_links(links)
+            if failed:
+                return failed
+            before = [(inst, inst.from_link) for inst in uses]
+            try:
+                if publications != settings.publications:
+                    await asyncio.to_thread(save_publications, settings.publications_file, publications)
+                    settings.publications = publications
+                if uses:
+                    for inst in uses:
+                        inst.from_link = dataclasses.replace(inst.from_link, link=new_name)
+                    await write_servers(settings.servers)
+            except OSError as exc:
+                for inst, source in before:
+                    inst.from_link = source
+                return refuse(f"The link is renamed, but its uses could not be written: {exc}", 500)
+            return {"ok": True, "name": new_name}
+
     @app.post("/api/links/delete", dependencies=[Depends(admin)])
     async def link_target_delete(payload: dict = Body(...)):
         name = str(payload.get("name") or "")
@@ -4616,6 +4663,15 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         a_link(name)
         return RedirectResponse(f"/links/{name}/", status.HTTP_307_TEMPORARY_REDIRECT)
 
+    def tunnel_reaches_browser(request: Request) -> bool:
+        """Whether a tunnel's port here is reached by this browser: tunnels on
+        every address, or on the loopback with the browser on this machine
+        (an OmniaCLI on a server: no, its tunnels are its own)."""
+        bind = settings.options.tunnel_bind
+        if bind in ("0.0.0.0", "::"):
+            return True
+        return bind in ("127.0.0.1", "::1", "localhost") and request.url.hostname in ("localhost", "127.0.0.1", "::1")
+
     async def login_as_through_link(request: Request, link, client, url: str, headers: dict, server: str,
                                     role: str, me: Principal):
         """Log in as on an instance of a linked OmniaCLI. Its link opens on the
@@ -4638,7 +4694,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if resp.status_code != 200 or not given.hostname:
             return JSONResponse(data or {"error": f"{link.name} answered {resp.status_code}"},
                                 status_code=resp.status_code)
-        if given.scheme != "https" or await loginas.reaches_here(given.hostname):
+        if given.scheme != "https" or not tunnel_reaches_browser(request) or await loginas.reaches_here(given.hostname):
             return JSONResponse(data)
         try:
             landing = await client.get(f"{given.path}?{given.query}", headers={**headers, "host": given.netloc})
@@ -4678,6 +4734,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         # the pages there in this browser's language (its cookie is this site's)
         headers["accept-language"] = request_language(request)
         headers.update(link_headers(link, me.name, me.role))
+        if tunnel_reaches_browser(request):
+            headers[TUNNEL_HEADER] = "1"
         url = "/" + path + (f"?{request.url.query}" if request.url.query else "")
         found = _LINK_LOGIN_AS.fullmatch(path)
         if found and request.method == "POST":

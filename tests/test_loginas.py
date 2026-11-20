@@ -312,6 +312,14 @@ async def test_through_a_link_when_the_nginx_there_does_not_pass_it(here, tmp_pa
     seen = [json.loads(line)["detail"] for line in (here.settings.logs_dir / "access.jsonl").read_text().splitlines()
             if json.loads(line)["event"] == "login-as"]
     assert seen[-1].startswith("opened: srv/test as mario")
+    # an OmniaCLI on a server (the browser elsewhere): its tunnels are its own, so
+    # the users are refused there with the offer to let the nginx pass the path
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=BasicAsSession(mine)),
+                                 base_url="https://omnia.example.com") as c:
+        resp = await c.get("/links/cliente/api/servers/srv/test/login-as/users",
+                           headers={**as_user("admin"), "Accept": "application/json"})
+        assert resp.status_code == 409, resp.text
+        assert resp.json()["nginx"] == "/links/cliente/api/servers/srv/test/login-as/nginx"
     # when the nginx there passes it: its own link, untouched
     async def passes(host):
         return True

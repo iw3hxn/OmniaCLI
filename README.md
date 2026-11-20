@@ -2018,7 +2018,15 @@ as before) and reloads. `login-path check <host>` says whether it is there,
 `login-path remove <host>` takes the lines away. A panel that writes its
 sites again drops the line: the dialog says so again.
 
-Through a link nothing has to change there: when the link of the other
+This is a hosting panel's way too: its sites carry a location of their
+own that passes its login path to the panel. With OmniaCLI the line passes
+it to the OmniaCLI of that server, which makes the session: an OmniaCLI
+used as the orchestrator, on a server, works with every server it links to
+whose sites pass the path (the workspaces' do by themselves; another nginx
+gets the line from **Let nginx pass it**, offered through the link too).
+
+From an OmniaCLI on the user's own machine there is also a way that changes
+nothing there: when the link of the other
 OmniaCLI would open on a name whose nginx does not pass the path (a hosting
 panel's site), this OmniaCLI opens it itself through the link (the name in
 its `Host`), keeps the session it hands over, opens a tunnel to the
@@ -2026,7 +2034,15 @@ instance's Odoo (Tunnels, below) and gives the browser its own link on the
 tunnel's address (`http://127.0.0.1:<this port>/.omniacli/login?t=…`): the
 cookie is set there and reaches the tunnel's port, Odoo opens at
 `http://127.0.0.1:<tunnel>/odoo`. Odoo changes `web.base.url` only at a
-login with a password, which Log in as does not make.
+login with a password, which Log in as does not make. This needs a tunnel
+the browser reaches (tunnels on the loopback and OmniaCLI opened at
+`localhost`, or tunnels on every address); otherwise the dialog offers the
+line in nginx.
+
+**Rename** (an admin, on a linked server's page) changes the name a linked
+server has here: its address (`/links/<name>/`), the instances whose
+database is copied from it, the publications through it; its open tunnels
+close.
 
 On a development machine an instance at `http://localhost:<port>` works
 without nginx when OmniaCLI is opened at `localhost` too: a browser keeps

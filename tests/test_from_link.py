@@ -369,3 +369,24 @@ async def _one_mcp(here):
     assert "restart_instance" not in tools and "list_servers" in tools
     # the link's token alone, without an MCP token here, is not taken here
     assert (await rpc(here, "tools/list", headers={**headers, "Authorization": "Bearer nope"})).status_code == 401
+
+
+async def test_a_linked_server_renamed(here):
+    """An admin renames a linked server: the link, the instances copied from
+    it, its URLs here; a name taken or not valid is refused."""
+    from .test_links import as_user as user_headers
+
+    post = {**user_headers("admin", post=True), "Accept": "application/json"}
+    assert (await here.post("/api/links/rename", headers=post, json={"name": "cliente", "new_name": "bad name"})).status_code == 400
+    resp = await here.post("/api/links/rename", headers={**user_headers("dev", post=True), "Accept": "application/json"},
+                           json={"name": "cliente", "new_name": "acme"})
+    assert resp.status_code == 403
+    resp = await here.post("/api/links/rename", headers=post, json={"name": "cliente", "new_name": "acme"})
+    assert resp.status_code == 200 and resp.json() == {"ok": True, "name": "acme"}
+    assert set(here.settings.link_targets) == {"acme"} and here.settings.link_targets["acme"].name == "acme"
+    assert here.settings.servers["srv"].test.from_link.link == "acme"
+    saved = yaml.safe_load(here.settings.servers_file.read_text())
+    assert saved["servers"]["srv"]["test"]["from_link"]["link"] == "acme"
+    assert "acme" in yaml.safe_load(here.settings.links_file.read_text())["links"]
+    assert (await here.get("/links/acme/", headers=user_headers("admin"))).status_code == 200
+    assert (await here.get("/links/cliente/", headers=user_headers("admin"))).status_code == 404

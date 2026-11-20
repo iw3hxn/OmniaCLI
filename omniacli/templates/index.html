@@ -33,7 +33,9 @@
 <div class="srv-head">
   <div>
     {% if linked_name %}<a class="back-link" href="/machines">‹ {{ _("All the servers") }}</a>{% endif %}
-    <h1>{{ linked_name or (_("This machine") if machine else _("Instances")) }}</h1>
+    <h1>{{ linked_name or (_("This machine") if machine else _("Instances")) }}
+      {% if linked_name and is_admin %}<button type="button" class="small" id="link-rename" data-name="{{ linked_name }}"
+        title="{{ _('The name this server has here: in its address, in the list of servers, in the copies made from it') }}">{{ _("Rename") }}</button>{% endif %}</h1>
     <div class="facts">
       {% if linked_name %}<span class="state-dot running">{{ _("Connected") }}</span>{% endif %}
       <span class="cores-fact" hidden></span>
@@ -44,6 +46,21 @@
     {% if machine %}<a class="button" href="{{ prefix }}/disks" title="{{ _('The disks of this machine, their free space and when they fill up') }}">{{ _("Disks") }}</a>{% endif %}
   </div>
 </div>
+{% if linked_name and is_admin %}
+<script>
+  // the name is this OmniaCLI's (its links), not the server's: asked of the root, not through the link
+  document.getElementById("link-rename").addEventListener("click", async (event) => {
+    const name = event.currentTarget.dataset.name;
+    const given = prompt({{ _("The new name of {name} (letters, digits and . _ -):") | tojson }}.replace("{name}", name), name);
+    if (!given || given.trim() === name) return;
+    const resp = await fetch("/api/links/rename", {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
+                                                 body: JSON.stringify({name, new_name: given.trim()})});
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) { alert(data.error || data.detail || resp.status); return; }
+    location.href = `/links/${encodeURIComponent(data.name)}/`;
+  });
+</script>
+{% endif %}
 {% if quick_instance %}{% include "_new_instance_dialog.html" %}{% endif %}
 {% include "_charts.html" %}
 {% include "_disk.html" %}
