@@ -220,3 +220,10 @@ async def test_the_full_archive(client, env, monkeypatch):
     job = await wait_job(client, resp.json()["job"])
     assert job["status"] == "success" and tried == ["backup.zip"]
     assert any("every part of the archive" in line for line in job["lines"])
+
+
+def test_pip_freeze_keeps_the_packages_only():
+    from omniacli.plugin_api import pip_lines
+    out = ("WARNING: Skipping /usr/lib/python3.12/dist-packages/x.dist-info due to invalid metadata\n"
+           "requests==2.32.0\nDEPRECATION: something\nzeep==4.3.1\n")
+    assert pip_lines(out) == b"requests==2.32.0\nzeep==4.3.1\n"

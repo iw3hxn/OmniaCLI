@@ -63,6 +63,7 @@ from ..plugin_api import (
     backup_into,
     capture,
     login_answer,
+    pip_lines,
     restart,
     run,
     start,
@@ -243,7 +244,7 @@ class DockerPlugin(ServicePlugin):
         code, out = await capture(instance.restart.command("pip-freeze", instance.options.odoo_service),
                                   timeout=HELPER_TIMEOUT)
         if code == 0:
-            found.append(("pip-freeze.txt", (out.strip() + "\n").encode()))
+            found.append(("pip-freeze.txt", pip_lines(out)))
         else:
             job.log(f"WARNING: the Python packages of the container are not listed: {out[-200:]}")
         return found

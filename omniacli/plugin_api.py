@@ -600,6 +600,14 @@ def login_answer(code: int, out: str) -> dict:
     return {"error": f"no answer (exit code {code}): {tail}"[:500]}
 
 
+def pip_lines(out: str) -> bytes:
+    """What pip freeze printed, its packages only (not its warnings, which
+    reach the same output)."""
+    lines = [line for line in out.splitlines()
+             if line.strip() and not line.startswith(("WARNING", "DEPRECATION", "ERROR", "  "))]
+    return ("\n".join(lines) + "\n").encode()
+
+
 # the methods a plugin must write as async def
 async def restore_fetched(job: Job, instance: Instance, backup_zip: Path, options: dict) -> None:
     """The restore of a backup downloaded from another machine: what came may

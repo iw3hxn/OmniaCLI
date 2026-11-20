@@ -39,6 +39,7 @@ from ..plugin_api import (
     backup_before_update,
     backup_into,
     capture,
+    pip_lines,
     restart,
     start,
     stop,
@@ -383,7 +384,7 @@ class OdooPlugin(ServicePlugin):
         code, out = await capture([str(instance.options.venv_bin / "python"), "-m", "pip", "freeze",
                                    "--disable-pip-version-check"], timeout=120)
         if code == 0:
-            found.append(("pip-freeze.txt", (out.strip() + "\n").encode()))
+            found.append(("pip-freeze.txt", pip_lines(out)))
         else:
             job.log(f"WARNING: the Python packages of the venv are not listed: {out[-200:]}")
         return found
