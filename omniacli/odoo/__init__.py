@@ -22,6 +22,7 @@ from fastapi import APIRouter, Body, Depends, Request
 from fastapi.responses import JSONResponse
 
 from ..plugin_api import (
+    UPDATE_TOOLTIP,
     PLUGIN_API,
     ROLES,
     SERVER_NAME,
@@ -511,7 +512,8 @@ class OdooPlugin(ServicePlugin):
 
         return [
             Action("update", "Update modules", self._update, group="git", icon="github",
-                   dialog="update_dialog.html", prepare=_update_params, title=_update_title),
+                   dialog="update_dialog.html", prepare=_update_params, title=_update_title,
+                   tooltip=UPDATE_TOOLTIP),
             Action("pip-requirements", "pip requirements", self._pip_requirements, group="python",
                    icon="python",
                    tooltip="pip install the requirements.txt of Odoo and of the repositories in the venv",

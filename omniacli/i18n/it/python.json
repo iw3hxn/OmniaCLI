@@ -287,6 +287,7 @@
  "Update modules": "Aggiorna moduli",
  "Update {modules} on {key}": "Aggiorna {modules} su {key}",
  "Update {modules} on {key} + restart": "Aggiorna {modules} su {key} + riavvio",
+ "Updates the Odoo modules in the database (odoo -u): the ones you name, or the changed ones when none is named; a backup first when the instance asks it. It downloads no code.": "Aggiorna i moduli di Odoo nel database (odoo -u): quelli che indichi, o quelli cambiati se non ne indichi; prima un backup, se l'istanza lo chiede. Non scarica codice.",
  "Venv bin (click-odoo-contrib)": "Bin del venv (click-odoo-contrib)",
  "WARNING: Odoo {major} cannot be neutralized (Odoo 16 and later): the copy keeps the scheduled actions and outgoing mail servers of the backup": "ATTENZIONE: Odoo {major} non si può neutralizzare (da Odoo 16 in poi): la copia mantiene le azioni pianificate e i server di posta in uscita del backup",
  "WARNING: no binary column {columns} in {database}: left out": "ATTENZIONE: nessuna colonna binaria {columns} in {database}: tralasciata",

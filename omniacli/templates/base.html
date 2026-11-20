@@ -572,7 +572,7 @@ window.whenText = (iso) => {
 <script>
 (function () {
   // pre.copyable: a Copy button; navigator.clipboard needs https or localhost, else the old way
-  const COPY = {{ _("Copy") | tojson }}, COPIED = {{ _("Copied") | tojson }};
+  const COPY = {{ _("Copy") | tojson }}, COPIED = {{ _("Copied") | tojson }}, COPY_TITLE = {{ _("Copies this text to the clipboard") | tojson }};
   async function copy(text) {
     try { await navigator.clipboard.writeText(text); return true; } catch (e) { /* plain http */ }
     const area = document.createElement("textarea");
@@ -582,7 +582,7 @@ window.whenText = (iso) => {
   }
   document.querySelectorAll("pre.copyable").forEach((pre) => {
     const box = document.createElement("div"), button = document.createElement("button");
-    box.className = "copy-box"; button.type = "button"; button.className = "copy-button"; button.textContent = COPY;
+    box.className = "copy-box"; button.type = "button"; button.className = "copy-button"; button.textContent = COPY; button.title = COPY_TITLE;
     pre.replaceWith(box); box.append(pre, button);
     button.addEventListener("click", async () => {
       if (!(await copy(pre.textContent.trim()))) return;

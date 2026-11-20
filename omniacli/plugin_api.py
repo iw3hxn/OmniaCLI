@@ -73,7 +73,7 @@ __all__ = [
     "ConfigError", "Instance", "Repository", "Server", "Job", "JobFailed",
     "run", "capture", "as_user", "backup_into", "backup_before_update", "restart", "start", "stop", "service_state", "base_env", "system_user",
     "ROLES", "SERVER_NAME", "USER_NAME", "Field", "FormButton", "Action", "ActionRefused", "Host",
-    "Discovered", "COMPOSE_TOOLS", "login_answer",
+    "Discovered", "COMPOSE_TOOLS", "login_answer", "UPDATE_TOOLTIP",
 ]
 
 
@@ -689,3 +689,8 @@ def parts_problems(plugin: ServicePlugin) -> list[str]:
                 problems.append(f"{what} field {f.key}: threshold is a number field of its fields, "
                                 "for a checklist")
     return problems
+
+
+# what "Update modules" does, said on the button of every plugin that has it
+UPDATE_TOOLTIP = ("Updates the Odoo modules in the database (odoo -u): the ones you name, or the changed ones "
+                  "when none is named; a backup first when the instance asks it. It downloads no code.")

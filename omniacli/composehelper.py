@@ -163,7 +163,8 @@ PG_REPORT = """SELECT json_build_object(
  'cache_hit', (SELECT round(100.0 * sum(blks_hit) / nullif(sum(blks_hit) + sum(blks_read), 0), 2)
                FROM pg_stat_database WHERE datname = current_database()),
  'long_queries', (SELECT coalesce(json_agg(q), '[]') FROM (
-     SELECT pid, state, extract(epoch FROM now() - query_start)::int AS seconds, wait_event_type AS waiting,
+     SELECT pid, usename AS "user", state, extract(epoch FROM now() - query_start)::int AS seconds,
+            wait_event_type AS waiting,
             left(query, 400) AS query
      FROM pg_stat_activity WHERE datname = current_database() AND state <> 'idle' AND pid <> pg_backend_pid()
        AND query_start < now() - interval '5 seconds' ORDER BY query_start LIMIT 20) q),

@@ -72,6 +72,20 @@
   .tile-value { font-size: 18px; }
 }
 </style>
+{% macro shell_paths_box(paths) %}
+  {# where the instance lives and the commands to work on it from a shell of the machine (ssh) #}
+  <details class="shell-paths">
+    <summary title="{{ _('The folders of the instance on this machine and the commands to work on it from a shell') }}">{{ icon("terminal") }} {{ _("Paths and shell commands") }}</summary>
+    <p class="muted" style="font-size: 13px">{{ _("On this machine, over ssh as root (or a user with sudo).") }}</p>
+    <dl>
+      {% for row in paths %}
+      <dt>{{ tr(row.label) }}</dt>
+      <dd>{% if row.kind == "command" %}<pre class="copyable sp-cmd">{{ row.value }}</pre>
+        {% else %}<span class="mono">{{ row.value }}</span>{% endif %}</dd>
+      {% endfor %}
+    </dl>
+  </details>
+{% endmacro %}
 {% set inst = instances[0] %}
 {# its state: running, stopped or unknown #}
 {% if inst.restart.type == "process" %}
@@ -247,7 +261,7 @@
 <div class="note-box" style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap">
   <span>{{ _("Copy of") }} <a href="{{ prefix }}/servers/{{ parent }}">{{ host_of(stagings.parent.url, parent) }}</a> {{ _("of {date}", date=when(stagings.parent.refreshed or stagings.parent.created)) }}, {{ _("neutralized: no outgoing mail, no scheduled actions.") }}</span>
   {% if is_admin_here %}<button type="button" class="small" id="staging-refresh" {{ off }}
-    title="{{ _('Its data again from the production as it is now (a new backup there, neutralized here); its code stays as it is.') }}">{{ icon("restart") }}{{ _("Refresh from production") }}</button>{% endif %}
+    title="{{ _('Puts in this staging the data of production as it is now: a new backup of production, loaded here and neutralized (no outgoing mail, no scheduled actions). The code of the staging stays as it is; its data of now are lost. Not available while a job works on the staging or on production. Admins only.') }}">{{ icon("restart") }}{{ _("Refresh from production…") }}</button>{% endif %}
 </div>
 {% else %}
 <div class="note-box">{{ _("Staging of") }} <a href="{{ prefix }}/servers/{{ parent }}">{{ host_of(stagings.parent.url, parent) }}</a>{% if stagings.parent.created %} {{ _("of {date}", date=when(stagings.parent.created)) }}{% endif %}, {{ _("made outside OmniaCLI: OmniaCLI does not know whether it is neutralized, check its outgoing mail and scheduled actions.") }}</div>
@@ -255,12 +269,12 @@
 {% endif %}
 {% set db_tab = can_act and inst.plugin and (inst.restart.type == "compose" or inst.plugin.db_shell(inst)) %}
 <nav class="tabs" role="tablist" aria-label="{{ _('Sections of the instance') }}">
-  <button type="button" role="tab" data-tab="overview" aria-selected="true">{{ _("Environments") if show_envs else _("Overview") }}</button>
-  {% if can_act %}<button type="button" role="tab" data-tab="backups">{{ _("Backups") }}</button>{% endif %}
-  <button type="button" role="tab" data-tab="log">{{ _("Log") }}</button>
+  <button type="button" role="tab" data-tab="overview" aria-selected="true" title="{{ _('The instance, its test and its stagings, and whether it answers') }}">{{ _("Environments") if show_envs else _("Overview") }}</button>
+  {% if can_act %}<button type="button" role="tab" data-tab="backups" title="{{ _('The backups of this instance, the automatic ones and the recovery at a minute') }}">{{ _("Backups") }}</button>{% endif %}
+  <button type="button" role="tab" data-tab="log" title="{{ _('The log of its Odoo, followed live') }}">{{ _("Log") }}</button>
   {# Monitoring: the load once it is measured, and the database for who may act (UX-006: five tabs) #}
-  <button type="button" role="tab" data-tab="monitor" {{ '' if db_tab else 'hidden' }}>{{ _("Monitoring") }}</button>
-  {% if can_act %}<button type="button" role="tab" data-tab="settings">{{ _("Settings") }}</button>{% endif %}
+  <button type="button" role="tab" data-tab="monitor" {{ '' if db_tab else 'hidden' }} title="{{ _('The load of the instance over the last hour and how its database is') }}">{{ _("Monitoring") }}</button>
+  {% if can_act %}<button type="button" role="tab" data-tab="settings" title="{{ _('Its code, the options of its Odoo and its technical details') }}">{{ _("Settings") }}</button>{% endif %}
 </nav>
 
 <section class="tab-panel" data-panel="overview">
@@ -313,20 +327,7 @@
   </div>
   {% endif %}
   {% set paths = shell_paths.get(inst.key) %}
-  {% if paths %}
-  {# where the instance lives and the commands to work on it from a shell of the machine (ssh) #}
-  <details class="panel shell-paths">
-    <summary>{{ icon("terminal") }} {{ _("Paths and shell commands") }}</summary>
-    <p class="muted" style="font-size: 13px">{{ _("On this machine, over ssh as root (or a user with sudo).") }}</p>
-    <dl>
-      {% for row in paths %}
-      <dt>{{ tr(row.label) }}</dt>
-      <dd>{% if row.kind == "command" %}<pre class="copyable sp-cmd">{{ row.value }}</pre>
-        {% else %}<span class="mono">{{ row.value }}</span>{% endif %}</dd>
-      {% endfor %}
-    </dl>
-  </details>
-  {% endif %}
+  {% if paths and not can_act %}<div class="panel">{{ shell_paths_box(paths) }}</div>{% endif %}
   {% set outcome = {"success": _("done"), "failed": _("failed"), "running": _("running"), "queued": _("queued"), "interrupted": _("interrupted"), "stopped": _("stopped")} %}
   <p class="last-action">{% if jobs %}{% set job = jobs[0] %}{{ _("Last action:") }} <a href="{{ prefix }}/jobs/{{ job.id }}">{{ tr(job.title) }}</a>
     · <span class="status {{ job.status }}">{{ outcome.get(job.status, job.status) }}</span>{% if job.duration %} · {{ job.duration }}{% endif %} · {{ when(job.created) }}
@@ -342,9 +343,11 @@
 <section class="tab-panel panel" data-panel="backups" hidden data-url="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}/backups"
          data-api="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}">
   {% if inst.plugin.has_backup %}
-  {# the automatic backups: one schedule of the instance, every day, kept by a rotation #}
-  <form class="backup-auto" id="ab-form" hidden>
-    <h3>{{ _("Automatic backups") }}</h3>
+  {# the automatic backups (UX-006): what they do in one line, the form behind it (open while they are off) #}
+  <p class="ab-line" id="ab-status" role="status" hidden></p>
+  <details class="backup-auto" id="ab-details" hidden>
+    <summary title="{{ _('The time, how many are kept, where a copy goes and who is told when one fails') }}">{{ _("Automatic backups") }}</summary>
+    <form id="ab-form">
     <div class="ab-row">
       <label><input type="checkbox" id="ab-enabled"> {{ _("Every day at") }}</label>
       <input type="time" id="ab-time" required> <span class="muted" id="ab-zone"></span>
@@ -361,64 +364,80 @@
     <div class="ab-row">
       <label for="ab-destination">{{ _("Copy also to") }}</label>
       <select id="ab-destination"><option value="">{{ _("nowhere: this machine only") }}</option></select>
-      <span class="muted" id="ab-dest-none" hidden>{{ _("No destination yet:") }} <a id="ab-dest-link" href="#">{{ _("add one") }}</a></span>
+      <span class="muted" id="ab-dest-none" hidden>{{ _("No destination yet:") }} <a id="ab-dest-link" href="#" title="{{ _('Opens the destinations of the workspace (S3, SFTP…): a new one is then chosen here') }}">{{ _("add one") }}</a></span>
     </div>
     <div class="ab-row">
       <label title="{{ _('The backup, the code of every repository at its commit and the configuration (compose.yaml, odoo.conf, the Python packages): what makes the instance again on another machine.') }}">
-        <input type="checkbox" id="ab-archive"> {{ _("Full archive, not the backup alone") }}</label>
+        <input type="checkbox" id="ab-archive"> {{ _("Full archive (code and configuration too)") }}</label>
     </div>
     <div class="ab-row" id="ab-verify-row">
       <label title="{{ _('The backup made on Sunday is also restored for a try into a database of its own, dropped after: a backup that does not restore is told as a failure.') }}">
-        <input type="checkbox" id="ab-verify"> {{ _("Every Sunday, also try to restore it") }}</label>
+        <input type="checkbox" id="ab-verify"> {{ _("Every Sunday, try to restore it") }}</label>
     </div>
     <div class="ab-row">
       <label for="ab-notify">{{ _("When it fails, tell") }}</label>
       <input type="text" id="ab-notify" class="mono" style="flex: 1; min-width: 240px"
              placeholder="{{ _('emails or webhook URLs, separated by commas') }}"
              title="{{ _('An email (the SMTP server of the Options page) or an https:// webhook that gets a JSON text: Slack, Teams, Telegram, ntfy') }}">
-      <button type="submit" id="ab-save">{{ _("Save") }}</button>
+      <span title="{{ _('Saves the time, the rotation, the destination and the notices of the automatic backups of this instance. The next backup starts at the chosen time, not now: for one at once use More › Back up now. Disabled until something is changed.') }}">
+        <button type="submit" id="ab-save" disabled>{{ _("Save") }}</button></span>
     </div>
-    <p class="muted" id="ab-status"></p>
+    <p class="muted" id="ab-note"></p>
     <p class="error" id="ab-error" role="alert"></p>
-  </form>
+    </form>
+  </details>
   {% endif %}
   <div class="backup-list muted">{{ _("Loading…") }}</div>
+  <details class="remote-list" hidden>
+    <summary title="{{ _('The copies of the backups kept in the destination: one can be brought back among the backups of this machine') }}">{{ _("Copies in") }} <span class="rl-name"></span> <span class="rl-count"></span></summary>
+    <div class="rl-body muted">{{ _("Loading…") }}</div>
+  </details>
   {% if inst.role == "production" and stagings and stagings.workspace and inst.restart.type == "compose" and not is_staging %}
-  {# point-in-time recovery: the database as it was at a minute, in a new staging #}
+  {# the database as it was at a minute, in a new staging (UX-006: no words of PostgreSQL on the screen) #}
   <div class="pitr" data-api="{{ prefix }}/api/servers/{{ server.name }}/pitr" hidden>
-    <h3 style="margin: 16px 0 6px; font-size: 15px">{{ _("Back to a minute (point-in-time recovery)") }}</h3>
-    <p class="muted" style="font-size: 13px; margin: 0 0 8px">{{ _("PostgreSQL keeps every change (its WAL) beside a base backup made each night: the database can be had again as it was at any minute since the oldest base backup, in a new staging, without touching production. At most 5 minutes of work are not in the archive yet.") }}</p>
-    <p class="pitr-state muted" style="font-size: 13px"></p>
-    <div class="actions pitr-off" hidden><button type="button" id="pitr-enable" {{ off }}>{{ _("Switch on") }}</button>
-      <span class="muted" style="font-size: 13px">{{ _("Its database restarts once, for a few seconds.") }}</span></div>
+    <h3>{{ _("Recovery at a minute") }}</h3>
+    <p class="muted" style="font-size: 13px; margin: 0 0 8px">{{ _("Brings the database back as it was at a chosen minute, in a new staging: production does not change.") }}</p>
+    <p class="pitr-state" style="font-size: 14px"></p>
+    {% if is_admin_here %}
+    <div class="actions pitr-off" hidden><button type="button" id="pitr-enable" {{ off }}
+      title="{{ _('Switches recovery at a minute on: the database starts keeping the record of every change and makes the first full copy at once, then one every night. The database restarts once, for a few seconds: in those seconds Odoo does not answer. Admins only.') }}">{{ _("Switch on…") }}</button></div>
     <div class="actions pitr-on" hidden>
-      <input type="datetime-local" id="pitr-time" step="60">
-      <button type="button" id="pitr-restore" {{ off }}>{{ _("New staging at this minute") }}</button>
-      <button type="button" id="pitr-base" {{ off }}>{{ _("Base backup now") }}</button>
+      <input type="datetime-local" id="pitr-time" step="60" aria-label="{{ _('The minute to go back to') }}">
+      <span id="pitr-restore-wrap"><button type="button" id="pitr-restore" {{ off }}>{{ _("New staging at this minute") }}</button></span>
+      <button type="button" id="pitr-base" {{ off }}
+        title="{{ _('Makes now the full copy of the database recovery at a minute starts from; it is made by itself every night. After a big change it shortens the recovery. It is a job.') }}">{{ _("Full copy now") }}</button>
     </div>
+    {% else %}
+    <p class="muted" style="font-size: 13px">{{ _("An admin switches it on or uses it.") }}</p>
+    {% endif %}
+    <details class="pitr-details" hidden><summary title="{{ _('How many full copies are kept and how much room the record of the changes takes') }}">{{ _("Details") }}</summary>
+      <p class="muted pitr-detail" style="font-size: 13px"></p></details>
   </div>
   {% endif %}
-  <div class="remote-list" hidden>
-    <h3 style="margin: 16px 0 8px; font-size: 15px">{{ _("Copies in") }} <span class="rl-name"></span></h3>
-    <div class="rl-body muted">{{ _("Loading…") }}</div>
-  </div>
 </section>
 <style>
+.ab-line { margin: 0 0 10px; font-size: 14px; }
+.ab-line.off { color: var(--warn); font-weight: 600; }
 .backup-auto { border-bottom: 1px solid var(--border); padding-bottom: 12px; margin-bottom: 12px; }
-.backup-auto h3 { margin: 0 0 8px; font-size: 15px; }
+.backup-auto > summary, .remote-list > summary { font-weight: 600; color: var(--text); }
+.backup-auto form { margin-top: 10px; }
 .ab-row { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin-bottom: 8px; }
 .ab-row input[type="number"] { width: 70px; }
 .backup-auto p { margin: 4px 0 0; font-size: 13px; }
+.remote-list { margin-top: 16px; } .remote-list .rl-body { margin-top: 8px; }
+.pitr { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 12px; }
+.pitr h3 { margin: 0 0 6px; font-size: 15px; }
+.pitr-details { margin-top: 8px; } .pitr-details summary { font-size: 13px; }
 </style>
 {% endif %}
 
 <section class="tab-panel panel instance-charts" data-panel="monitor" hidden>
   <div class="tiles">
-    <div class="tile"><div class="tile-label">{{ _("CPU now") }}</div><div class="tile-value" data-tile="cpu">–</div></div>
-    <div class="tile"><div class="tile-label">{{ _("Memory") }}</div><div class="tile-value" data-tile="mem">–</div></div>
-    <div class="tile"><div class="tile-label">{{ _("Processes") }}</div><div class="tile-value" data-tile="procs">–</div></div>
+    <div class="tile"><div class="tile-label">{{ _("CPU now") }}</div><div class="tile-value" data-tile="cpu">–</div><div class="tile-sub" data-tile-sub="cpu"></div></div>
+    <div class="tile"><div class="tile-label">{{ _("Memory") }}</div><div class="tile-value" data-tile="mem">–</div><div class="tile-sub" data-tile-sub="mem"></div></div>
+    <div class="tile"><div class="tile-label">{{ _("Processes") }}</div><div class="tile-value" data-tile="procs">–</div><div class="tile-sub">{{ _("of the instance, running now") }}</div></div>
   </div>
-  <p class="muted source" style="margin: 6px 0 10px"></p>
+  <div style="height: 10px"></div>
   <h3 class="chart-title">{{ _("CPU, % of one core") }} <span class="muted" style="font-weight: 400">· {{ _("this machine has") }} <span class="cores">?</span></span></h3>
   <div class="chart-box"><svg class="chart" data-chart="cpu" role="img" aria-label="{{ _('CPU of {key} over the last hour', key=inst.key) }}"></svg><div class="chart-tip" hidden></div></div>
   <h3 class="chart-title">{{ _("Memory, MiB resident") }}</h3>
@@ -428,24 +447,45 @@
 {% if can_act %}
 {% if db_tab %}
 <section class="tab-panel panel" data-panel="monitor" data-section="database" hidden data-api="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}/database">
-  <div class="section-head"><h2>{{ _("Database") }}</h2><button type="button" class="small" id="db-reload">{{ icon("restart") }}{{ _("Read again") }}</button></div>
-  <p class="muted db-state">{{ _("Reading the statistics of its database…") }}</p>
+  <div class="section-head"><h2>{{ _("Database") }}</h2><button type="button" class="small" id="db-reload"
+    title="{{ _('Reads the statistics of the database again, now. It changes nothing.') }}">{{ icon("restart") }}{{ _("Read again") }}</button></div>
+  {# the verdict in one line (UX-006): good, to look at (one line a cause, with its remedy) or not readable #}
+  <p class="db-verdict" role="status"><span class="db-dot"></span><strong class="db-word">{{ _("Reading the statistics of its database…") }}</strong> <span class="muted db-facts"></span></p>
+  <ul class="db-causes" hidden></ul>
   <div class="db-body" hidden>
     <div class="tiles">
-      <div class="tile"><div class="tile-label">{{ _("Size") }}</div><div class="tile-value" data-db="size">–</div></div>
-      <div class="tile"><div class="tile-label">{{ _("Connections") }}</div><div class="tile-value" data-db="connections">–</div></div>
-      <div class="tile"><div class="tile-label">{{ _("Read from the cache") }}</div><div class="tile-value" data-db="cache">–</div></div>
-      <div class="tile"><div class="tile-label">PostgreSQL</div><div class="tile-value" data-db="version" style="font-size: 15px">–</div></div>
-      <div class="tile"><div class="tile-label">{{ _("Where") }}</div><div class="tile-value" data-db="where" style="font-size: 15px">–</div></div>
+      <div class="tile"><div class="tile-label">{{ _("Connections") }}</div><div class="tile-value" data-db="connections">–</div><div class="tile-sub">{{ _("of PostgreSQL, in use now") }}</div></div>
+      <div class="tile"><div class="tile-label">{{ _("Slow queries") }}</div><div class="tile-value" data-db="slow">–</div><div class="tile-sub">{{ _("running for more than 5 s") }}</div></div>
+      <div class="tile"><div class="tile-label">{{ _("Read from memory") }}</div><div class="tile-value" data-db="cache">–</div><div class="tile-sub">{{ _("under 95% it slows down") }}</div></div>
     </div>
-    <p class="muted db-remote" style="font-size: 13px" hidden></p>
-    <h3>{{ _("Queries running for more than 5 seconds") }}</h3><div class="scroll" data-db-table="long_queries"></div>
-    <h3>{{ _("The costliest statements") }}</h3><div class="scroll" data-db-table="statements"></div>
-    <h3>{{ _("The largest tables") }}</h3><div class="scroll" data-db-table="tables"></div>
-    <h3>{{ _("Indexes never used") }} <span class="muted" style="font-weight: 400; font-size: 13px">{{ _("since the statistics were reset: they slow the writes and take room") }}</span></h3><div class="scroll" data-db-table="unused_indexes"></div>
-    <h3>{{ _("Tables read whole") }} <span class="muted" style="font-weight: 400; font-size: 13px">{{ _("many rows read without an index: an index may be missing") }}</span></h3><div class="scroll" data-db-table="sequential"></div>
+    <div class="db-slow" hidden><h3>{{ _("Queries running for more than 5 seconds") }}</h3><div class="scroll" data-db-table="long_queries"></div></div>
+    <details class="db-details">
+      <summary title="{{ _('The costliest operations, the largest tables, the indexes never used and where the database is') }}">{{ _("Details") }}</summary>
+      <dl class="db-where">
+        <dt>PostgreSQL</dt><dd data-db="version">–</dd>
+        <dt>{{ _("Size") }}</dt><dd data-db="size">–</dd>
+        <dt>{{ _("Where") }}</dt><dd data-db="where">–</dd>
+      </dl>
+      <p class="muted db-remote" style="font-size: 13px" hidden></p>
+      <h3>{{ _("The costliest operations") }}</h3><div class="scroll" data-db-table="statements"></div>
+      <h3>{{ _("The largest tables") }}</h3><div class="scroll" data-db-table="tables"></div>
+      <h3>{{ _("Indexes never used") }} <span class="muted" style="font-weight: 400; font-size: 13px">{{ _("since the statistics were reset: they slow the writes and take room") }}</span></h3><div class="scroll" data-db-table="unused_indexes"></div>
+      <h3>{{ _("Tables read whole without an index") }} <span class="muted" style="font-weight: 400; font-size: 13px">{{ _("many rows read without an index: an index may be missing") }}</span></h3><div class="scroll" data-db-table="sequential"></div>
+    </details>
   </div>
 </section>
+<style>
+.db-verdict { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; margin: 4px 0 10px; font-size: 16px; }
+.db-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); flex: none; }
+.db-verdict.good .db-dot { background: var(--ok); } .db-verdict.look .db-dot { background: var(--warn); }
+.db-facts { font-size: 14px; }
+.db-causes { margin: 0 0 12px; padding-left: 20px; }
+.tile-sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.db-details { margin-top: 14px; } .db-details > summary { font-weight: 600; }
+.db-details h3, .db-slow h3 { margin: 16px 0 6px; font-size: 15px; }
+.db-where { display: grid; grid-template-columns: minmax(120px, max-content) 1fr; gap: 6px 16px; margin: 10px 0 0; }
+.db-where dt { font-weight: 600; } .db-where dd { margin: 0; }
+</style>
 {% endif %}
 {% if can_act and stagings and stagings.workspace %}
 {# the repositories of addons of a workspace's instance: each from its URL on its branch, updated (pull) or
@@ -465,10 +505,10 @@
       <td class="mono {{ 'error' if off_branch }}" {% if off_branch %}title="{{ _('expected {branch}', branch=repo.branch) }}"{% endif %}>{{ rs.branch if off_branch else repo.branch }}</td>
       <td class="hide-sm">{% if rs.error %}<span class="error">{{ tr(rs.error) }}</span>{% else %}<span class="mono">{{ rs.sha }}</span> <span class="muted">{{ rs.date }}</span>{% if rs.subject %}<br><span title="{{ rs.subject }}">{{ rs.subject | truncate(80, true, "…") }}</span>{% endif %}{% endif %}</td>
       <td style="white-space: nowrap; text-align: right">
-        <button type="button" data-repo-update="{{ repo.name }}" data-role="{{ inst.role }}" {{ off }}
-          title="{{ _('Chooses the branch and shows the commit it brings; then downloads it, updates the changed modules when the instance says so, and restarts.') }}">{{ _("Update") }}</button>
-        {% if is_admin_here %}<button type="button" class="danger" data-repo-remove="{{ repo.name }}" {{ off }}
-          title="{{ _('Takes the repository out of the instance: out of its odoo.conf, its folder deleted, Odoo restarted. Its modules installed stay in the database, without their code.') }}">{{ _("Delete") }}</button>{% endif %}
+        <button type="button" class="small" data-repo-update="{{ repo.name }}" data-role="{{ inst.role }}" {{ off }}
+          title="{{ _('Brings the repository to the last commit of the branch you choose (the same: downloads the new commits; another: changes it and remembers it), installs its Python packages, updates the changed modules when the instance says so and restarts Odoo. Not available while a job works on the instance.') }}">{{ _("Update…") }}</button>
+        {% if is_admin_here %}<button type="button" class="small danger" data-repo-remove="{{ repo.name }}" {{ off }}
+          title="{{ _('Takes the repository out of production and test: out of their odoo.conf and of the configuration, deletes the copies of the code and restarts them. The modules already installed from it stay in the database without their code: uninstall them first from Odoo › Apps. Admins only.') }}">{{ _("Delete…") }}</button>{% endif %}
       </td>
     </tr>
     {% else %}
@@ -492,35 +532,39 @@
       </div>
       <p class="error" id="au-error" role="alert"></p>
       <div class="actions">
-        <button type="button" id="au-cancel">{{ _("Cancel") }}</button>
+        <button type="button" id="au-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
         <button type="button" class="primary" id="au-go" disabled>{{ _("Update module") }}</button>
       </div>
     </form>
   </dialog>
   {% if is_admin_here %}
-  <form class="addons-add" id="addons-add">
-    <h3>{{ _("Add a repository") }}</h3>
+  <details class="addons-add" {{ "open" if not inst.repositories }}>
+  <summary title="{{ _('The address and the branch of a repository of addons to add to this instance, and the key for the private ones over ssh') }}">+ {{ _("Add a repository") }}</summary>
+  <form id="addons-add">
     <div class="addons-fields">
       <div><label for="addons-url">{{ _("Repository address") }}</label>
         <input type="text" id="addons-url" class="mono" required placeholder="https://github.com/OCA/web.git · git@github.com:org/repo.git" spellcheck="false"></div>
       <div><label for="addons-branch">{{ _("Branch") }}</label>
         <input type="text" id="addons-branch" class="mono" required placeholder="19.0" spellcheck="false"></div>
-      <div class="addons-go"><button type="submit" {{ off }}>{{ _("Add") }}</button></div>
+      <div class="addons-go"><button type="submit" {{ off }}
+        title="{{ _('Downloads the repository into production and test, each on its branch, adds it to their odoo.conf and restarts them: its modules are then installed from Odoo › Apps. A private one: over https with the git credentials of the workspace, over ssh (git@…) with the key here below.') }}">{{ _("Add") }}</button></div>
     </div>
     <p class="muted" style="font-size: 12px; margin: 6px 0 0">{{ _("A private repository: over https with the git credentials of the workspace (Settings › Credentials), or over ssh (git@…) with OmniaCLI's key added to it as a deploy key. Its modules are then installed from Odoo's Apps.") }}</p>
     <p class="error" id="addons-error" role="alert"></p>
     <details class="addons-key">
-      <summary>{{ _("The key for the repositories over ssh (git@…)") }}</summary>
+      <summary title="{{ _('The public key OmniaCLI reads the private repositories with over ssh') }}">{{ _("The key for the repositories over ssh (git@…)") }}</summary>
       <p class="muted" style="font-size: 13px">{{ _("Add it to each private repository as a read-only deploy key (GitHub: Settings › Deploy keys; GitLab: Settings › Repository › Deploy keys). One key for all of them, made the first time it is shown.") }}</p>
-      <button type="button" id="addons-key-show">{{ _("Show the key") }}</button>
+      <button type="button" class="small" id="addons-key-show"
+        title="{{ _('Shows the public key OmniaCLI reads the repositories with over ssh (made the first time): add it to the repository as a read-only deploy key.') }}">{{ _("Show the key") }}</button>
       <pre class="console mono copyable" id="addons-key" hidden style="white-space: pre-wrap; overflow-wrap: anywhere"></pre>
     </details>
   </form>
+  </details>
   {% endif %}
 </section>
 <style>
 .addons-add { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
-.addons-add h3 { margin: 0 0 8px; font-size: 15px; }
+.addons-add > summary { font-weight: 600; color: var(--text); } .addons-add form { margin-top: 10px; }
 .addons-key { margin-top: 10px; } .addons-key summary { cursor: pointer; font-size: 13px; color: var(--muted); }
 .addons-fields { display: grid; grid-template-columns: 1fr 160px auto; gap: 10px; align-items: end; }
 .addons-fields label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; }
@@ -529,118 +573,21 @@
 @media (max-width: 700px) { .addons-fields { grid-template-columns: 1fr; } }
 </style>
 {% endif %}
-<style>
-.oc-table { width: 100%; }
-.oc-table td { vertical-align: top; padding: 8px 10px; border-top: 1px solid var(--border); }
-.oc-table td:first-child { width: 45%; }
-.oc-table .oc-name { font-family: var(--mono, monospace); font-weight: 600; }
-.oc-table .oc-help { font-size: 12px; color: var(--muted); margin-top: 2px; }
-.oc-table input, .oc-table select { width: 100%; }
-.oc-table input:disabled, .oc-table select:disabled { background: var(--panel-2); color: var(--muted); }
-.oc-table tr.oc-dirty td { background: var(--accent-soft); }
-.oc-table tr.oc-group td { background: var(--panel-2); font-weight: 600; font-size: 13px; }
-.sum-grid { display: grid; grid-template-columns: minmax(150px, max-content) 1fr; gap: 10px 20px; margin: 0; }
-.sum-grid dt { font-weight: 600; }
-.sum-grid dd { margin: 0; min-width: 0; display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
-.sum-grid .sum-repo { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; width: 100%; }
-.sum-grid .sum-subject { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40ch; }
-.sum-grid form { display: inline; margin: 0; }
-@media (max-width: 640px) { .sum-grid { grid-template-columns: 1fr; } }
-.shell-paths summary { cursor: pointer; font-weight: 600; display: inline-flex; gap: 6px; align-items: center; }
-.shell-paths dl { display: grid; grid-template-columns: minmax(140px, max-content) 1fr; gap: 8px 16px; margin: 12px 0 0; }
-.shell-paths dd { margin: 0; min-width: 0; }
-.shell-paths .sp-cmd { margin: 0; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
-@media (max-width: 640px) { .shell-paths dl { grid-template-columns: 1fr; } }
-.oc-all { display: inline-flex; gap: 6px; align-items: center; font-size: 14px; }
-.oc-table tr.op-locked .oc-name, .oc-table tr.op-locked .oc-help { opacity: .6; }
-.op-views { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
-.op-views button { border: 0; border-radius: 0; background: transparent; padding: 6px 14px; font-size: 14px; }
-.op-views button[aria-checked="true"] { background: var(--accent); color: #fff; }
-</style>
-{% if can_act and odoo_params and inst.type != "odoo" %}
-{# a workspace's instance: the Odoo options its template lets change, within the bounds the machine's admins set;
-   saved, the helper writes its odoo.conf again from the template with them and the instance restarts #}
-<section class="tab-panel panel" data-panel="settings" data-section="odoo-config" hidden data-ws="{{ prefix }}/api/workspaces/{{ stagings.workspace.name }}">
-  <div class="section-head"><h2>{{ _("Odoo options") }} <span class="muted mono" id="op-version" style="font-size: 13px; font-weight: 400"></span></h2>
-    <div class="op-views" role="radiogroup" aria-label="{{ _('Options shown') }}">
-      <button type="button" role="radio" aria-checked="true" data-op-view="basic">{{ _("Basic") }}</button>
-      <button type="button" role="radio" aria-checked="false" data-op-view="extended">{{ _("Extended") }}</button>
-    </div></div>
-  <p class="muted" style="font-size: 13px" data-op-show="basic">{{ _("The options of its template, within the limits of the workspace: the others are set by the template.") }}</p>
-  <p class="muted" style="font-size: 13px" data-op-show="extended" hidden>{{ _("Every other option its Odoo knows: an empty one keeps Odoo's default. The greyed ones are set by the template or the server.") }}</p>
-  <p class="muted" id="op-ext-state" data-op-show="extended" hidden></p>
-  <div class="scroll" data-op-show="extended" hidden><table class="oc-table" id="op-ext-table" hidden>
-    <tr><th>{{ _("Name") }}</th><th>{{ _("Value") }}</th></tr>
-  </table></div>
-  <div class="scroll" data-op-show="basic"><table class="oc-table">
-    <tr><th>{{ _("Name") }}</th><th>{{ _("Value") }}</th></tr>
-    {% for p in odoo_params.parameters %}
-    <tr data-name="{{ p.name }}">
-      <td><div class="oc-name">{{ p.name }}</div><div class="oc-help">{{ tr(p.label) }}{% if p.min is not none and p.max is not none %} · {{ p.min }}–{{ p.max }}{% endif %}</div></td>
-      <td>{% if p.type == "bool" %}<input type="checkbox" data-param="{{ p.name }}" {{ "checked" if p.value }} {{ "disabled" if not is_admin_here }} style="width: auto">
-        {% elif p.type == "password" %}<input type="password" data-param="{{ p.name }}" autocomplete="off" {{ "disabled" if not is_admin_here }} placeholder="{{ _('set: empty keeps it') if p.set else '' }}">
-        {% elif p.type in ("int", "mb") %}<input type="number" data-param="{{ p.name }}" value="{{ p.value }}" {% if p.min is not none %}min="{{ p.min }}"{% endif %} {% if p.max is not none %}max="{{ p.max }}"{% endif %} {{ "disabled" if not is_admin_here }} class="mono">
-        {% else %}<input type="text" data-param="{{ p.name }}" value="{{ p.value }}" {{ "disabled" if not is_admin_here }} class="mono">{% endif %}</td>
-    </tr>
-    {% endfor %}
-    <tr><td><div class="oc-name">log_level debug</div><div class="oc-help">{{ _("Debug log: much more in the log, for a while") }}</div></td>
-      <td><input type="checkbox" id="op-debug" {{ "checked" if odoo_params.debug }} {{ "disabled" if not is_admin_here }} style="width: auto"></td></tr>
-  </table></div>
-  {% if is_admin_here %}<div class="actions" style="justify-content: flex-end; margin-top: 12px">
-    <button type="button" id="op-save" {{ off }} title="{{ _('Writes the options in its odoo.conf and restarts Odoo.') }}">{{ _("Save and restart") }}</button>
-  </div>{% endif %}
-</section>
-{% endif %}
-{% if can_act and inst.type == "odoo" %}
-{# the options the instance's Odoo knows (its own parser), the values of its config file; the ones the layout owns
-   locked, a secret's value never shown; Save writes them as the user Odoo runs as and restarts it #}
-<section class="tab-panel panel" data-panel="settings" data-section="odoo-config" hidden
-         data-url="{{ prefix }}/x/odoo/servers/{{ server.name }}/{{ inst.role }}/odoo-config" data-admin="{{ 1 if is_admin else '' }}">
-  <div class="section-head">
-    <h2>{{ _("Odoo options") }} <span class="muted mono oc-file" style="font-size: 13px; font-weight: 400"></span></h2>
-    <label class="oc-all"><input type="checkbox" id="oc-all"> {{ _("Show all the options") }}</label>
-  </div>
-  <p class="muted oc-state">{{ _("Reading the options of its Odoo…") }}</p>
-  <p class="note-box oc-readonly" hidden>{{ _("The config file cannot be written by the user Odoo runs as (a hosting panel's, for one): the values are shown, change them there.") }}</p>
-  <div class="scroll"><table class="oc-table" hidden>
-    <tr><th>{{ _("Name") }}</th><th>{{ _("Value") }}</th></tr>
-  </table></div>
-  {% if is_admin %}<div class="actions oc-actions" hidden style="justify-content: flex-end; margin-top: 12px">
-    <span class="muted oc-changed"></span>
-    <button type="button" id="oc-save" disabled title="{{ _('Writes the changed options in the config file and restarts Odoo.') }}">{{ _("Save and restart") }}</button>
-  </div>{% endif %}
-</section>
-{% endif %}
-<section class="tab-panel panel" data-panel="settings" hidden>
-  <dl>
-    <dt>{{ _("Type") }}</dt><dd>{{ tr(inst.plugin.label) }}</dd>
-    {% for label, value, kind in settings_rows[inst.key] %}
-    <dt>{{ tr(label) }}</dt>
-    {% if kind == "checkbox" %}<dd>{{ _("yes") if value else _("no") }}</dd>
-    {% elif value is none or value == "" %}<dd class="muted">–</dd>
-    {% else %}<dd class="{{ 'mono' if kind in ('path', 'number') }}">{{ value }}</dd>{% endif %}
-    {% endfor %}
-    <dt>{{ _("Log") }}</dt><dd class="mono">{{ inst.log_label }}</dd>
-    {% if rt == "process" %}
-    <dt>{{ tr(inst.plugin.label) }}</dt><dd>{% if pid %}{{ _("started by OmniaCLI: running, pid") }} <span class="mono">{{ pid }}</span>{% else %}{{ _("started by OmniaCLI:") }} <span class="muted">{{ _("stopped") }}</span>{% endif %}</dd>
-    {% else %}
-    <dt>{{ _("Service") }}</dt><dd class="mono">{{ rt }}: {{ inst.restart.service }}</dd>
-    {% endif %}
-    {% if inst.package %}
-    {% set pkg = package_state[inst.key] %}
-    <dt>{{ _("Package") }}</dt>
-    <dd><span class="mono">{{ inst.package.name }}</span>{% if pkg.version %} {{ pkg.version }}{% endif %}
-      <span class="muted">{{ _("from") }}</span> <span class="mono">{{ inst.package.url }}</span>
-      {% if pkg.installed %}<br><span class="muted">{{ _("installed by OmniaCLI {when}", when=pkg.installed) }}</span>{% endif %}</dd>
-    {% endif %}
+<section class="tab-panel panel" data-panel="settings" data-section="updates" hidden>
+  <div class="section-head"><h2>{{ _("Updates of the code") }}</h2></div>
+  {# what happens at the next push or at the next round of the auto update: in sight; the rest in the technical details #}
+  <dl class="set-grid">
     <dt>{{ _("Auto update") }}</dt>
     <dd>
       {% if inst.auto_update.enabled %}
         {{ _("every {minutes} min, {window}", minutes=inst.auto_update.interval_minutes, window=tr(inst.auto_update.window_label())) }}
         {% set ast = auto_state.get(inst.key) %}
-        {% if ast %}<br><span class="{{ 'error' if ast.error else 'muted' }}">{{ ast.checked }}: {{ tr(ast.message) }}</span>{% endif %}
+        {% if ast %}<br><span class="{{ 'error' if ast.error else 'muted' }}">{{ when(ast.checked) }}: {{ tr(ast.message) }}</span>{% endif %}
       {% else %}<span class="muted">{{ _("no") }}</span>{% endif %}
     </dd>
+    {% for label, value, kind in settings_rows[inst.key] if kind == "checkbox" %}
+    <dt>{{ tr(label) }}</dt><dd>{{ _("yes") if value else _("no") }}</dd>
+    {% endfor %}
   </dl>
   {# a workspace's instance lists its repositories once, in Code above (UX-006) #}
   {% if not (can_act and stagings and stagings.workspace) %}
@@ -666,19 +613,138 @@
   {% if can_act and inst.repositories %}
   {# deploy on push: the repository's webhook calls the instance (deployhooks.py) #}
   <div class="deploy-hook" data-api="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}/deploy-hook" hidden>
-    <h3 style="margin: 16px 0 6px; font-size: 15px">{{ _("Deploy on push") }}</h3>
-    <p class="muted" style="font-size: 13px; margin: 0 0 8px">{{ _("A push on the branch of one of its repositories pulls it, updates the changed modules (a backup first when the instance asks it) and restarts: the address and the secret go in the repository's webhook (GitHub: Settings › Webhooks, content type JSON; GitLab: Settings › Webhooks, Push events).") }}</p>
-    <label><input type="checkbox" id="dh-enabled" style="width: auto"> {{ _("On") }}</label>
+    <label title="{{ _('On: a push on the branch of one of its repositories downloads it, updates the changed modules (a backup first, when the instance asks it) and restarts. Off: the webhook of the repository does nothing any more.') }}">
+      <input type="checkbox" id="dh-enabled" style="width: auto"> <strong>{{ _("Update at every push") }}</strong></label>
+    <span class="muted" id="dh-state" style="margin-left: 8px"></span>
     <div id="dh-details" hidden style="margin-top: 8px">
       <div class="muted" style="font-size: 13px">{{ _("Address") }}</div><pre class="copyable mono" id="dh-url"></pre>
       <div id="dh-secret-box" hidden><div class="muted" style="font-size: 13px">{{ _("Secret: copy it now, it is not shown again") }}</div><pre class="copyable mono" id="dh-secret"></pre></div>
-      <p class="muted" id="dh-last" style="font-size: 13px"></p>
-      <button type="button" class="small" id="dh-new">{{ _("New secret") }}</button>
+      <button type="button" class="small" id="dh-new"
+        title="{{ _('Makes a new secret and cancels the one of before: the webhook of the repository stops working until the new one is pasted there. The secret is shown once.') }}">{{ _("New secret…") }}</button>
+      <details style="margin-top: 8px"><summary title="{{ _('Where the address and the secret go, in GitHub and in GitLab') }}" style="font-size: 13px">{{ _("How it is connected to the repository") }}</summary>
+        <p class="muted" style="font-size: 13px; margin: 6px 0 0">{{ _("The address and the secret go in the repository's webhook: GitHub, Settings › Webhooks, content type JSON; GitLab, Settings › Webhooks, Push events. A push on the branch of one of the instance's repositories then pulls it, updates the changed modules (a backup first when the instance asks it) and restarts.") }}</p></details>
     </div>
     <p class="error" id="dh-error"></p>
   </div>
   {% endif %}
+  <details class="tech-details">
+    <summary title="{{ _('The type of the instance, its services, its port, its log and the commands to work on it from a shell') }}">{{ _("Technical details") }}</summary>
+    <dl class="set-grid">
+      <dt>{{ _("Type") }}</dt><dd>{{ tr(inst.plugin.label) }}</dd>
+      {% for label, value, kind in settings_rows[inst.key] if kind != "checkbox" %}
+      <dt>{{ tr(label) }}</dt>
+      {% if value is none or value == "" %}<dd class="muted">–</dd>
+      {% else %}<dd class="{{ 'mono' if kind in ('path', 'number') }}">{{ value }}</dd>{% endif %}
+      {% endfor %}
+      <dt>{{ _("Log") }}</dt><dd class="mono">{{ inst.log_label }}</dd>
+      {% if rt == "process" %}
+      <dt>{{ tr(inst.plugin.label) }}</dt><dd>{% if pid %}{{ _("started by OmniaCLI: running, pid") }} <span class="mono">{{ pid }}</span>{% else %}{{ _("started by OmniaCLI:") }} <span class="muted">{{ _("stopped") }}</span>{% endif %}</dd>
+      {% else %}
+      <dt>{{ _("Service") }}</dt><dd class="mono">{{ rt }}: {{ inst.restart.service }}</dd>
+      {% endif %}
+      {% if inst.package %}
+      {% set pkg = package_state[inst.key] %}
+      <dt>{{ _("Package") }}</dt>
+      <dd><span class="mono">{{ inst.package.name }}</span>{% if pkg.version %} {{ pkg.version }}{% endif %}
+        <span class="muted">{{ _("from") }}</span> <span class="mono">{{ inst.package.url }}</span>
+        {% if pkg.installed %}<br><span class="muted">{{ _("installed by OmniaCLI {when}", when=pkg.installed) }}</span>{% endif %}</dd>
+      {% endif %}
+    </dl>
+    {% if shell_paths.get(inst.key) %}{{ shell_paths_box(shell_paths.get(inst.key)) }}{% endif %}
+  </details>
 </section>
+<style>
+.oc-table { width: 100%; }
+.oc-table td { vertical-align: top; padding: 8px 10px; border-top: 1px solid var(--border); }
+.oc-table td:first-child { width: 45%; }
+.oc-table .oc-name { font-family: var(--mono, monospace); font-weight: 600; }
+.oc-table .oc-label { font-weight: 600; }
+.oc-table input:invalid { border-color: var(--err); color: var(--err); }
+.oc-table .oc-help { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.oc-table input, .oc-table select { width: 100%; }
+.oc-table input:disabled, .oc-table select:disabled { background: var(--panel-2); color: var(--muted); }
+.oc-table tr.oc-dirty td { background: var(--accent-soft); }
+.oc-table tr.oc-group td { background: var(--panel-2); font-weight: 600; font-size: 13px; }
+.sum-grid { display: grid; grid-template-columns: minmax(150px, max-content) 1fr; gap: 10px 20px; margin: 0; }
+.sum-grid dt { font-weight: 600; }
+.sum-grid dd { margin: 0; min-width: 0; display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
+.sum-grid .sum-repo { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; width: 100%; }
+.sum-grid .sum-subject { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40ch; }
+.sum-grid form { display: inline; margin: 0; }
+@media (max-width: 640px) { .sum-grid { grid-template-columns: 1fr; } }
+.shell-paths summary { cursor: pointer; font-weight: 600; display: inline-flex; gap: 6px; align-items: center; }
+.set-grid { display: grid; grid-template-columns: minmax(170px, max-content) 1fr; gap: 8px 20px; margin: 0 0 12px; }
+.set-grid dt { font-weight: 600; } .set-grid dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 640px) { .set-grid { grid-template-columns: 1fr; } }
+.tech-details { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
+.tech-details > summary { font-weight: 600; color: var(--text); } .tech-details > dl { margin-top: 10px; }
+.tech-details .shell-paths { margin-top: 12px; }
+.deploy-hook { margin: 4px 0 8px; }
+.shell-paths dl { display: grid; grid-template-columns: minmax(140px, max-content) 1fr; gap: 8px 16px; margin: 12px 0 0; }
+.shell-paths dd { margin: 0; min-width: 0; }
+.shell-paths .sp-cmd { margin: 0; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 640px) { .shell-paths dl { grid-template-columns: 1fr; } }
+.oc-all { display: inline-flex; gap: 6px; align-items: center; font-size: 14px; }
+.oc-table tr.op-locked .oc-name, .oc-table tr.op-locked .oc-help { opacity: .6; }
+</style>
+{% if can_act and odoo_params and inst.type != "odoo" %}
+{# a workspace's instance: the Odoo options its template lets change, within the bounds the machine's admins set;
+   saved, the helper writes its odoo.conf again from the template with them and the instance restarts #}
+<section class="tab-panel panel" data-panel="settings" data-section="odoo-config" hidden data-ws="{{ prefix }}/api/workspaces/{{ stagings.workspace.name }}">
+  <div class="section-head"><h2>{{ _("Odoo options") }} <span class="muted mono" id="op-version" style="font-size: 13px; font-weight: 400"></span></h2>
+    <label class="oc-all" title="{{ _('Shows also the options that are rarely changed; the ones already changed are always shown') }}">
+      <input type="checkbox" id="op-all"> {{ _("Show all the options") }} <span id="op-count"></span></label></div>
+  {% if not is_admin_here %}<p class="muted" style="font-size: 13px">{{ _("An admin changes them.") }}</p>{% endif %}
+  <div class="scroll"><table class="oc-table">
+    <tr><th>{{ _("Option") }}</th><th>{{ _("Value") }}</th></tr>
+    {% for p in odoo_params.parameters %}
+    <tr data-name="{{ p.name }}">
+      <td><div class="oc-label">{{ tr(p.label) }}</div><div class="oc-help"><span class="mono">{{ p.name }}</span>{% if p.min is not none and p.max is not none %} · {{ _("from {min} to {max}", min=p.min, max=p.max) }}{% endif %}</div></td>
+      <td>{% if p.type == "bool" %}<input type="checkbox" data-param="{{ p.name }}" {{ "checked" if p.value }} {{ "disabled" if not is_admin_here }} style="width: auto" aria-label="{{ tr(p.label) }}">
+        {% elif p.type == "password" %}<input type="password" data-param="{{ p.name }}" autocomplete="off" {{ "disabled" if not is_admin_here }} placeholder="{{ _('set: empty keeps it') if p.set else '' }}" aria-label="{{ tr(p.label) }}">
+        {% elif p.type in ("int", "mb") %}<input type="number" data-param="{{ p.name }}" value="{{ p.value }}" {% if p.min is not none %}min="{{ p.min }}"{% endif %} {% if p.max is not none %}max="{{ p.max }}"{% endif %} {{ "disabled" if not is_admin_here }} class="mono" aria-label="{{ tr(p.label) }}">
+        {% else %}<input type="text" data-param="{{ p.name }}" value="{{ p.value }}" {{ "disabled" if not is_admin_here }} class="mono" aria-label="{{ tr(p.label) }}">{% endif %}</td>
+    </tr>
+    {% endfor %}
+    <tr><td><div class="oc-label">{{ _("Debug log") }}</div><div class="oc-help"><span class="mono">log_level debug</span> · {{ _("much more in the log: for a while") }}</div></td>
+      <td><input type="checkbox" id="op-debug" {{ "checked" if odoo_params.debug }} {{ "disabled" if not is_admin_here }} style="width: auto" aria-label="{{ _('Debug log') }}"></td></tr>
+  </table></div>
+  {# the other options its Odoo knows: the ones already set always, all of them with the switch #}
+  <div id="op-ext" hidden>
+    <p class="muted" style="font-size: 13px; margin-top: 14px" id="op-ext-note">{{ _("The other options its Odoo knows: an empty one keeps Odoo's default. The greyed ones are set by the template or the server.") }}</p>
+    <p class="muted" id="op-ext-state"></p>
+    <div class="scroll"><table class="oc-table" id="op-ext-table" hidden>
+      <tr><th>{{ _("Option") }}</th><th>{{ _("Value") }}</th></tr>
+    </table></div>
+  </div>
+  {% if is_admin_here %}<div class="actions" style="justify-content: flex-end; margin-top: 12px">
+    <span class="muted" id="op-changed"></span>
+    <span title="{{ _('Writes the changed options in its odoo.conf and restarts Odoo: who is connected loses the connection for a few seconds. Disabled until an option is changed.') }}">
+      <button type="button" id="op-save" disabled data-busy="{{ 1 if is_busy else '' }}">{{ _("Save and restart") }}</button></span>
+  </div>{% endif %}
+</section>
+{% endif %}
+{% if can_act and inst.type == "odoo" %}
+{# the options the instance's Odoo knows (its own parser), the values of its config file; the ones the layout owns
+   locked, a secret's value never shown; Save writes them as the user Odoo runs as and restarts it #}
+<section class="tab-panel panel" data-panel="settings" data-section="odoo-config" hidden
+         data-url="{{ prefix }}/x/odoo/servers/{{ server.name }}/{{ inst.role }}/odoo-config" data-admin="{{ 1 if is_admin else '' }}">
+  <div class="section-head">
+    <h2>{{ _("Odoo options") }} <span class="muted mono oc-file" style="font-size: 13px; font-weight: 400"></span></h2>
+    <label class="oc-all" title="{{ _('Shows also the options that are rarely changed; the ones the file sets are always shown') }}"><input type="checkbox" id="oc-all"> {{ _("Show all the options") }} <span id="oc-count"></span></label>
+  </div>
+  <p class="muted oc-state">{{ _("Reading the options of its Odoo…") }}</p>
+  <p class="note-box oc-readonly" hidden>{{ _("The config file cannot be written by the user Odoo runs as (a hosting panel's, for one): the values are shown, change them there.") }}</p>
+  <div class="scroll"><table class="oc-table" hidden>
+    <tr><th>{{ _("Name") }}</th><th>{{ _("Value") }}</th></tr>
+  </table></div>
+  {% if is_admin %}<div class="actions oc-actions" hidden style="justify-content: flex-end; margin-top: 12px">
+    <span class="muted oc-changed"></span>
+    <span title="{{ _('Writes the changed options in the config file and restarts Odoo: who is connected loses the connection for a few seconds. Disabled until an option is changed.') }}">
+      <button type="button" id="oc-save" disabled>{{ _("Save and restart") }}</button></span>
+  </div>{% endif %}
+</section>
+{% endif %}
 {% endif %}
 
 {% for dialog in dialogs %}{% include dialog %}{% endfor %}
@@ -697,28 +763,38 @@
   const T = {
     measured: {{ _("Measured on: {source}") | tojson }},
     core: {{ _("{n} core") | tojson }}, cores: {{ _("{n} cores") | tojson }},
-    emptyList: {{ _("No backups yet.") | tojson }}, file: {{ _("File") | tojson }}, date: {{ _("Date") | tojson }},
+    cpuOf: {{ _("100% is one core; this machine has {cores}") | tojson }}, memTop: {{ _("the most of the last hour: {top} MiB") | tojson }},
+    emptyList: {{ _("No backup yet. Make the first with More › Back up now, or switch the automatic backups on here above.") | tojson }}, file: {{ _("File") | tojson }}, date: {{ _("Date") | tojson }},
     size: {{ _("Size") | tojson }}, listFailed: {{ _("Could not load the backups.") | tojson }},
     kind: {{ _("Type") | tojson }}, kinds: {scheduled: {{ _("automatic") | tojson }}, "pre-update": {{ _("before an update") | tojson }},
                                           manual: {{ _("by hand") | tojson }}},
-    remove: {{ _("Delete") | tojson }}, removeQ: {{ _("Delete the backup {file}? It cannot be undone.") | tojson }},
-    abNext: {{ _("Next: {time}.") | tojson }}, abLast: {{ _("Last: {time}, {status}.") | tojson }},
-    abOff: {{ _("Off: no automatic backup.") | tojson }}, abSaved: {{ _("Saved.") | tojson }},
-    abNoRight: {{ _("Only an administrator changes them.") | tojson }},
+    remove: {{ _("Delete…") | tojson }},
+    removeTitle: {{ _("Deletes this backup file from this machine. It cannot be undone. For production an admin is needed.") | tojson }},
+    downloadTitle: {{ _("Downloads this backup to your computer") | tojson }},
+    neverTried: {{ _("Never restored for a try") | tojson }},
+    showAll: {{ _("Show all ({n})") | tojson }}, showAllTitle: {{ _("Shows the rows left out of this list") | tojson }},
+    removeQ: {{ _("Delete the backup {file}? It cannot be undone.") | tojson }},
+    abLast: {{ _("last: {time}, {status}") | tojson }},
+    abOn: {{ _("Automatic backups: every day at {time} (this server's time, {zone})") | tojson }},
+    abKeeps: {{ _("keeps {daily} days, {weekly} weeks, {monthly} months") | tojson }},
+    abCopy: {{ _("a copy in {name}") | tojson }}, abNoCopy: {{ _("on this machine only") | tojson }},
+    abOff: {{ _("Automatic backups off: no backup is made by itself") | tojson }}, abSaved: {{ _("Saved.") | tojson }},
+    abNoRight: {{ _("An admin changes them.") | tojson }},
+    abUnread: {{ _("The automatic backups cannot be read now: open this tab again in a moment.") | tojson }},
     abZone: {{ _("this server's time ({zone})") | tojson }},
     abMachine: {{ _("this machine's") | tojson }}, loading: {{ _("Loading…") | tojson }},
-    checked: {{ _("Restore tried") | tojson }}, verify: {{ _("Verify") | tojson }},
+    checked: {{ _("Restore tried") | tojson }}, verify: {{ _("Try a restore") | tojson }},
     archiveKind: {{ _("full archive") | tojson }},
-    verifyTitle: {{ _("Checks the file is the one made, then restores it for a try into a database of its own, beside the instance, dropped after: the instance is not touched.") | tojson }},
+    verifyTitle: {{ _("Checks the file is whole and restores it for a try into a database of its own beside the instance, then drops it: the instance does not change. It is a job; the outcome shows in Restore tried.") | tojson }},
     verifyQ: {{ _("Try a restore of {file}? It takes the room of one more database for a while; the instance keeps working.") | tojson }},
     checkFound: {{ _("{modules} modules installed, {users} users, newest record {last}") | tojson }},
-    abVerified: {{ _("Last restore tried: {time}, {result}.") | tojson }}, abVerifyOk: {{ _("good") | tojson }},
+    abVerified: {{ _("restore tried on {time}: {result}") | tojson }}, abVerifyOk: {{ _("good") | tojson }},
     abVerifyFailed: {{ _("failed") | tojson }},
     destPage: {{ (prefix ~ ("/workspaces/" ~ stagings.workspace.name ~ "/destinations" if stagings and stagings.workspace else "/destinations")) | tojson }},
     rlNone: {{ _("No copies there yet: the next automatic backup makes the first.") | tojson }},
     rlFile: {{ _("File") | tojson }}, rlWhen: {{ _("Made") | tojson }}, rlSize: {{ _("Size") | tojson }},
     rlHere: {{ _("also here") | tojson }}, rlFetch: {{ _("Bring back") | tojson }},
-    rlFetchTitle: {{ _("Downloads it, decrypts it and puts it in the backups of this instance: then Restore it from the list above.") | tojson }},
+    rlFetchTitle: {{ _("Brings this copy back from the destination among the backups of this machine, decrypted. It is a job; then it is restored from More › Restore a backup….") | tojson }},
     statuses: {success: {{ _("success") | tojson }}, failed: {{ _("failed") | tojson }}, skipped: {{ _("skipped") | tojson }},
                running: {{ _("running") | tojson }}, queued: {{ _("queued") | tojson }}},
     refused: {{ _("Refused") | tojson }},
@@ -762,7 +838,7 @@
   let ocLoaded = false, ocData = null;
   async function loadOdooConfig() {
     if (ocLoaded) return;
-    const box = document.querySelector('[data-section="odoo-config"]');
+    const box = document.querySelector('[data-section="odoo-config"][data-url]');
     if (!box) return;
     ocLoaded = true;
     const state = box.querySelector(".oc-state");
@@ -825,6 +901,7 @@
       tr.append(left, right); table.append(tr);
     }
     table.hidden = false;
+    document.getElementById("oc-count").textContent = `(${data.options.length})`;
     const actions = box.querySelector(".oc-actions");
     if (actions) actions.hidden = !canEdit;
     markOdooConfig(box);
@@ -933,109 +1010,187 @@
     const resp = await fetch(event.currentTarget.dataset.url, {method: "POST",
       headers: {"Content-Type": "application/json", Accept: "application/json"}, body: "{}"});
     const data = await resp.json().catch(() => ({}));
-    if (!resp.ok || !data.job) { alert(data.error || data.detail || resp.status); return; }
+    if (!resp.ok || !data.job) { alert(data.error || data.detail || T.refused); return; }
     location.href = `{{ prefix }}/jobs/${data.job}`;
   });
-  // point-in-time recovery: its state, switched on, a staging at a minute
+  // recovery at a minute: its state, switched on, a staging at a minute
   (async function () {
     const box = document.querySelector(".pitr");
     if (!box) return;
-    const P = {range: {{ _("Can go back from {first} to {last}; {bases} base backups, {segments} WAL segments ({size}).") | tojson }},
-               failing: {{ _("The archive fails: {count} segments not archived, the last at {time}.") | tojson }},
-               noneYet: {{ _("No base backup yet.") | tojson }},
-               enableQ: {{ _("Switch point-in-time recovery on? The database restarts once, for a few seconds.") | tojson }},
-               restoreQ: {{ _("A new staging with the database as it was at {time}?") | tojson }}};
+    const P = {range: {{ _("You can choose a minute between {first} and {last} (this server's time).") | tojson }},
+               recent: {{ _("The last 5 minutes may be missing.") | tojson }},
+               quiet: {{ _("Since {last} the database has not changed: a later minute would give the same database.") | tojson }},
+               detail: {{ _("{bases} full copies, the record of the changes takes {size} ({segments} files).") | tojson }},
+               failing: {{ _("The record of the changes is not being saved: {count} files not saved, the last at {time}.") | tojson }},
+               noneYet: {{ _("No full copy yet: the first is being made, or failed (see the last actions).") | tojson }},
+               off: {{ _("Off: the database can only be had again as it was at the moment of a backup.") | tojson }},
+               enableQ: {{ _("Switch recovery at a minute on for {server}? The database restarts once, for a few seconds.", server=server.name) | tojson }},
+               restoreQ: {{ _("A new staging with the database of {server} as it was at {time}?") | tojson }}.replace("{server}", {{ server.name | tojson }}),
+               restoreTitle: {{ _("Makes a new staging with the database of production as it was at the chosen minute, neutralized (no outgoing mail, no scheduled actions); the attachments are those of now. Production does not change.") | tojson }},
+               outside: {{ _("The minute is outside the range that can be reached: choose one between {first} and {last}.") | tojson }}};
     const post = async (path, body) => {
       const resp = await fetch(box.dataset.api + path, {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
                                                         body: JSON.stringify(body || {})});
       const data = await resp.json().catch(() => ({}));
-      if (!resp.ok || !data.job) { alert(data.error || data.detail || resp.status); return; }
+      if (!resp.ok || !data.job) { alert(data.error || data.detail || T.refused); return; }
       location.href = `{{ prefix }}/jobs/${data.job}`;
     };
     const resp = await fetch(box.dataset.api).catch(() => null);
     if (!resp || !resp.ok) return;
     const data = await resp.json();
     box.hidden = false;
-    box.querySelector(".pitr-off").hidden = data.enabled;
-    box.querySelector(".pitr-on").hidden = !data.enabled;
-    const said = [];
-    if (data.enabled) {
-      said.push(data.first ? P.range.replace("{first}", whenText(data.first)).replace("{last}", data.last ? whenText(data.last) : "?")
-        .replace("{bases}", data.bases.length).replace("{segments}", data.segments).replace("{size}", (data.archive_size / 1048576).toFixed(0) + " MiB") : P.noneYet);
-      if (data.failed) said.push(P.failing.replace("{count}", data.failed).replace("{time}", data.last_failed));
-      const input = document.getElementById("pitr-time");
-      if (data.first) input.min = data.first.slice(0, 16);
-      if (data.last) { input.max = data.last.slice(0, 16); input.value = data.last.slice(0, 16); }
+    const offBox = box.querySelector(".pitr-off"), onBox = box.querySelector(".pitr-on");
+    if (offBox) offBox.hidden = data.enabled;
+    if (onBox) onBox.hidden = !data.enabled;
+    const said = [], input = document.getElementById("pitr-time"), go = document.getElementById("pitr-restore");
+    const wrap = document.getElementById("pitr-restore-wrap"), busy = go ? go.disabled : false;
+    if (!data.enabled) said.push(P.off);
+    else {
+      const first = data.first ? whenText(data.first) : "", last = data.last ? whenText(data.last) : "";
+      said.push(data.first && data.last ? P.range.replace("{first}", first).replace("{last}", last) : P.noneYet);
+      // PostgreSQL closes a file of changes every 5 minutes when there are any: an older end means nothing changed since
+      const idle = data.now && data.last ? (new Date(data.now) - new Date(data.last)) / 60000 : 0;
+      if (data.first && data.last && !data.failed) said.push(idle > 10 ? P.quiet.replace("{last}", last) : P.recent);
+      if (data.failed) said.push(P.failing.replace("{count}", data.failed).replace("{time}", whenText(data.last_failed)));
+      const details = box.querySelector(".pitr-details");
+      details.hidden = !data.first;
+      box.querySelector(".pitr-detail").textContent = P.detail.replace("{bases}", data.bases.length).replace("{segments}", data.segments)
+        .replace("{size}", bytes(data.archive_size));
+      if (input) {
+        if (data.first) input.min = data.first.slice(0, 16);
+        if (data.last) { input.max = data.last.slice(0, 16); input.value = data.last.slice(0, 16); }
+        // a minute outside the range cannot be asked for: the button says why
+        const check = () => {
+          const out = !input.value || !data.first || !data.last || input.value < input.min || input.value > input.max;
+          go.disabled = busy || out;
+          wrap.title = go.title = out && data.first && data.last ? P.outside.replace("{first}", first).replace("{last}", last) : P.restoreTitle;
+        };
+        input.addEventListener("input", check); check();
+      }
     }
     box.querySelector(".pitr-state").textContent = said.join(" ");
     document.getElementById("pitr-enable")?.addEventListener("click", () => { if (confirm(P.enableQ)) post("/enable"); });
     document.getElementById("pitr-base")?.addEventListener("click", () => post("/base"));
-    document.getElementById("pitr-restore")?.addEventListener("click", () => {
-      const value = document.getElementById("pitr-time").value;
-      if (value && confirm(P.restoreQ.replace("{time}", value.replace("T", " ")))) post("/restore", {time: value});
+    go?.addEventListener("click", () => {
+      if (input.value && confirm(P.restoreQ.replace("{time}", whenText(input.value)))) post("/restore", {time: input.value});
     });
   })();
-  // the Database tab: the statistics of its database, read when opened
+  // the database in Monitoring: a verdict in one line, three numbers, the rest behind Details (UX-006)
   const DB = {remote: {{ _("on {host}") | tojson }}, service: {{ _("its container") | tojson }}, local: {{ _("this machine") | tojson }},
               remoteNote: {{ _("The database is on another machine ({host}), reached as Odoo reaches it: the statistics are its, the backups are made through the network, and its disk and point-in-time recovery are those of that machine.") | tojson }},
-              none: {{ _("none") | tojson }}, failed: {{ _("Cannot be read: {error}") | tojson }},
-              stop: {{ _("Stop") | tojson }}, stopQ: {{ _("Stop the query {pid}? Its transaction is rolled back.") | tojson }},
-              noStatements: {{ _("pg_stat_statements is not installed in this database: CREATE EXTENSION pg_stat_statements, with shared_preload_libraries = pg_stat_statements in PostgreSQL's configuration.") | tojson }},
-              cols: {pid: "pid", seconds: {{ _("seconds") | tojson }}, state: {{ _("state") | tojson }}, waiting: {{ _("waiting") | tojson }},
+              none: {{ _("none") | tojson }},
+              good: {{ _("The database is well") | tojson }}, look: {{ _("To look at") | tojson }}, unreadable: {{ _("Not readable") | tojson }},
+              failed: {{ _("The statistics of the database cannot be read: {error}") | tojson }},
+              of: {{ _("{n} of {max}") | tojson }},
+              slowOne: {{ _("1 query has been working for {time}:") | tojson }},
+              slowMany: {{ _("{n} queries have been working for more than 5 s, the longest for {time}:") | tojson }},
+              slowStop: {{ _("if the users are held up, it is stopped here below.") | tojson }},
+              slowAsk: {{ _("an admin can stop it from here.") | tojson }},
+              connCause: {{ _("{n} connections of {max}: who opens Odoo now may get an error; a restart of Odoo frees them.") | tojson }},
+              cacheCause: {{ _("{p}% of the reads come from memory: the rest goes to the disk and slows down.") | tojson }},
+              stop: {{ _("Stop…") | tojson }}, stopQ: {{ _("Stop the query of {user} running for {time}?") | tojson }},
+              stopTitle: {{ _("Closes the connection that runs this query: the query is interrupted, its transaction is rolled back and the request of Odoo that waited for it gets an error. Odoo stays on.") | tojson }},
+              noStatements: {{ _("Not available: the database does not record the statistics of the queries. It is switched on in PostgreSQL's configuration") | tojson }},
+              showAll: {{ _("Show all ({n})") | tojson }}, showAllTitle: {{ _("Shows the rows left out of this list") | tojson }},
+              states: {active: {{ _("working") | tojson }}, "idle in transaction": {{ _("transaction left open") | tojson }},
+                       "idle in transaction (aborted)": {{ _("transaction failed, left open") | tojson }}},
+              waits: {Lock: {{ _("a lock of another query") | tojson }}, IO: {{ _("the disk") | tojson }}, Client: "Odoo"},
+              // the columns of each list, in the order they are shown
+              shown: {long_queries: ["seconds", "user", "state", "waiting", "query"],
+                      statements: ["calls", "total_ms", "mean_ms", "rows", "query"],
+                      tables: ["name", "rows", "size", "idx_scan", "seq_scan", "dead", "last_autovacuum"],
+                      unused_indexes: ["name", "table", "size"],
+                      sequential: ["name", "rows", "seq_scan", "rows_read", "idx_scan"]},
+              cols: {seconds: {{ _("for") | tojson }}, user: {{ _("user") | tojson }}, state: {{ _("state") | tojson }}, waiting: {{ _("waits for") | tojson }},
                      query: {{ _("query") | tojson }}, name: {{ _("name") | tojson }}, table: {{ _("table") | tojson }},
-                     size: {{ _("size") | tojson }}, rows: {{ _("rows") | tojson }}, dead: {{ _("dead rows") | tojson }},
-                     seq_scan: {{ _("read whole") | tojson }}, idx_scan: {{ _("by index") | tojson }},
-                     last_autovacuum: {{ _("last vacuum") | tojson }}, rows_read: {{ _("rows read") | tojson }},
-                     calls: {{ _("calls") | tojson }}, total_ms: {{ _("total ms") | tojson }}, mean_ms: {{ _("mean ms") | tojson }}}};
-  const bytes = (n) => n >= 1 << 30 ? (n / (1 << 30)).toFixed(1) + " GiB" : n >= 1 << 20 ? (n / (1 << 20)).toFixed(1) + " MiB" : Math.round(n / 1024) + " KiB";
+                     size: {{ _("size") | tojson }}, rows: {{ _("rows") | tojson }}, dead: {{ _("rows to clean") | tojson }},
+                     seq_scan: {{ _("whole reads") | tojson }}, idx_scan: {{ _("reads by index") | tojson }},
+                     last_autovacuum: {{ _("last cleaning") | tojson }}, rows_read: {{ _("rows read") | tojson }},
+                     calls: {{ _("times") | tojson }}, total_ms: {{ _("total time, ms") | tojson }}, mean_ms: {{ _("mean time, ms") | tojson }}}};
+  const LANG = document.documentElement.lang || "en";
+  const num = (n, digits = 1) => Number(n).toLocaleString(LANG, {maximumFractionDigits: digits});
+  const bytes = (n) => n >= 1 << 30 ? num(n / (1 << 30)) + " GiB" : n >= 1 << 20 ? num(n / (1 << 20)) + " MiB" : Math.round(n / 1024) + " KiB";
+  const lasting = (s) => s >= 3600 ? `${Math.floor(s / 3600)} h ${Math.floor(s % 3600 / 60)} min` : s >= 60 ? `${Math.floor(s / 60)} min ${s % 60} s` : `${s} s`;
+  const DB_FIRST = 10;
   async function loadDatabase() {
     const box = document.querySelector('[data-section="database"]');
     if (!box) return;
-    const state = box.querySelector(".db-state");
-    state.hidden = false;
+    const verdict = box.querySelector(".db-verdict"), word = box.querySelector(".db-word"), facts = box.querySelector(".db-facts");
+    const causes = box.querySelector(".db-causes");
     let data;
     try {
       const resp = await fetch(box.dataset.api, {headers: {Accept: "application/json"}});
       data = await resp.json();
       if (!resp.ok) throw new Error(data.error || data.detail || resp.status);
-    } catch (e) { state.textContent = DB.failed.replace("{error}", e.message); return; }
-    state.hidden = true;
+    } catch (e) {
+      verdict.className = "db-verdict"; word.textContent = DB.unreadable;
+      facts.textContent = DB.failed.replace("{error}", e.message);
+      causes.hidden = true; box.querySelector(".db-body").hidden = true;
+      return;
+    }
+    const slow = data.long_queries || [], longest = slow.reduce((m, q) => Math.max(m, q.seconds || 0), 0);
+    const said = [];
+    if (slow.length) said.push((slow.length === 1 ? DB.slowOne : DB.slowMany.replace("{n}", slow.length)).replace("{time}", lasting(longest))
+      + " " + (data.can_stop ? DB.slowStop : DB.slowAsk));
+    if (data.max_connections && data.connections >= 0.8 * data.max_connections)
+      said.push(DB.connCause.replace("{n}", data.connections).replace("{max}", data.max_connections));
+    if (data.cache_hit !== null && data.cache_hit < 95) said.push(DB.cacheCause.replace("{p}", num(data.cache_hit)));
+    verdict.className = "db-verdict " + (said.length ? "look" : "good");
+    word.textContent = said.length ? DB.look : DB.good;
+    facts.textContent = `· ${bytes(data.size)} · PostgreSQL ${(data.version || "").split(".")[0]}`;
+    causes.replaceChildren(...said.map((t) => Object.assign(document.createElement("li"), {textContent: t})));
+    causes.hidden = !said.length;
     box.querySelector(".db-body").hidden = false;
     box.querySelector('[data-db="size"]').textContent = bytes(data.size);
-    box.querySelector('[data-db="connections"]').textContent = `${data.connections} / ${data.max_connections}`;
-    box.querySelector('[data-db="cache"]').textContent = data.cache_hit === null ? "–" : data.cache_hit + "%";
+    box.querySelector('[data-db="connections"]').textContent = DB.of.replace("{n}", data.connections).replace("{max}", data.max_connections);
+    box.querySelector('[data-db="slow"]').textContent = slow.length;
+    box.querySelector('[data-db="cache"]').textContent = data.cache_hit === null ? "–" : num(data.cache_hit) + "%";
     box.querySelector('[data-db="version"]').textContent = (data.version || "").split(" ")[0];
     box.querySelector('[data-db="where"]').textContent = data.where === "remote" ? DB.remote.replace("{host}", data.host)
       : data.where === "service" ? DB.service : DB.local;
     const note = box.querySelector(".db-remote");
     note.hidden = data.where !== "remote";
     note.textContent = data.where === "remote" ? DB.remoteNote.replace("{host}", data.host) + (data.ssl ? " SSL: " + data.ssl + "." : "") : "";
+    box.querySelector(".db-slow").hidden = !slow.length;
     for (const holder of box.querySelectorAll("[data-db-table]")) {
       const key = holder.dataset.dbTable, rows = data[key];
-      if (key === "statements" && rows === null) { holder.replaceChildren(Object.assign(document.createElement("p"), {className: "muted", textContent: DB.noStatements})); continue; }
+      if (key === "statements" && rows === null) {
+        const p = Object.assign(document.createElement("p"), {className: "muted", textContent: DB.noStatements + " "});
+        p.append(Object.assign(document.createElement("span"), {className: "mono small", textContent: "pg_stat_statements"}));
+        holder.replaceChildren(p); continue;
+      }
       if (!rows || !rows.length) { holder.replaceChildren(Object.assign(document.createElement("p"), {className: "muted", textContent: DB.none})); continue; }
-      const table = document.createElement("table"), cols = Object.keys(rows[0]);
+      const table = document.createElement("table"), cols = DB.shown[key].filter((c) => c in rows[0]);
+      const stops = key === "long_queries" && data.can_stop;
       const head = table.insertRow();
-      for (const c of [...cols, ...(key === "long_queries" && data.can_stop ? [""] : [])]) { const th = document.createElement("th"); th.textContent = DB.cols[c] || c; head.append(th); }
-      for (const r of rows) {
+      for (const c of [...cols, ...(stops ? [""] : [])]) { const th = document.createElement("th"); th.textContent = DB.cols[c] || c; head.append(th); }
+      rows.forEach((r, i) => {
         const tr = table.insertRow();
+        tr.hidden = key !== "long_queries" && i >= DB_FIRST;
         for (const c of cols) {
           const td = tr.insertCell(), v = r[c];
-          td.textContent = v === null ? "–" : c === "size" ? bytes(v) : c === "last_autovacuum" ? whenText(v) : String(v);
+          td.textContent = v === null ? "–" : c === "size" ? bytes(v) : c === "last_autovacuum" ? whenText(v) : c === "seconds" ? lasting(v)
+            : c === "state" ? DB.states[v] || v : c === "waiting" ? DB.waits[v] || v : typeof v === "number" ? num(v) : String(v);
           if (c === "query") { td.className = "mono"; td.style.fontSize = "12px"; td.style.whiteSpace = "pre-wrap"; }
         }
-        if (key === "long_queries" && data.can_stop) {
-          const b = document.createElement("button"); b.type = "button"; b.className = "small danger"; b.textContent = DB.stop;
+        if (stops) {
+          const b = document.createElement("button"); b.type = "button"; b.className = "small danger"; b.textContent = DB.stop; b.title = DB.stopTitle;
           b.addEventListener("click", async () => {
-            if (!confirm(DB.stopQ.replace("{pid}", r.pid))) return;
+            if (!confirm(DB.stopQ.replace("{user}", r.user || "?").replace("{time}", lasting(r.seconds || 0)))) return;
             await fetch(box.dataset.api + "/terminate", {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
                                                          body: JSON.stringify({pid: r.pid})});
             loadDatabase();
           });
           tr.insertCell().append(b);
         }
-      }
+      });
       holder.replaceChildren(table);
+      if (key !== "long_queries" && rows.length > DB_FIRST) {
+        const more = Object.assign(document.createElement("button"), {type: "button", className: "small", textContent: DB.showAll.replace("{n}", rows.length), title: DB.showAllTitle});
+        more.style.marginTop = "6px";
+        more.addEventListener("click", () => { for (const tr of table.rows) tr.hidden = false; more.remove(); });
+        holder.append(more);
+      }
     }
   }
   document.getElementById("db-reload")?.addEventListener("click", loadDatabase);
@@ -1043,7 +1198,7 @@
   (async function () {
     const box = document.querySelector(".deploy-hook");
     if (!box) return;
-    const D = {last: {{ _("Last push: {time}, {result}.") | tojson }}, newQ: {{ _("A new secret: the webhook with the old one stops working. Go on?") | tojson }},
+    const D = {off: {{ _("Switched off") | tojson }}, on: {{ _("Switched on") | tojson }}, last: {{ _("last push {time}: {result}") | tojson }}, newQ: {{ _("A new secret: the webhook with the old one stops working. Go on?") | tojson }},
                offQ: {{ _("Switch deploy on push off? The webhook's calls will change nothing.") | tojson }}};
     function draw(data) {
       box.hidden = false;
@@ -1053,7 +1208,8 @@
       document.getElementById("dh-details").hidden = !data.enabled;
       document.getElementById("dh-url").textContent = data.url;
       if (data.secret) { document.getElementById("dh-secret").textContent = data.secret; document.getElementById("dh-secret-box").hidden = false; }
-      document.getElementById("dh-last").textContent = data.last ? D.last.replace("{time}", data.last.time.replace("T", " ")).replace("{result}", data.last.result) : "";
+      document.getElementById("dh-state").textContent = !data.enabled ? D.off
+        : D.on + (data.last ? " · " + D.last.replace("{time}", whenText(data.last.time)).replace("{result}", data.last.result) : "");
     }
     async function save(enabled) {
       const resp = await fetch(box.dataset.api, {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
@@ -1076,6 +1232,8 @@
     if (!box) return;
     const S = {thread: {{ _("0: threads, no workers") | tojson }}, updateNow: {{ _("Update now ({count} commits)") | tojson }},
                updateOne: {{ _("Update now (1 commit)") | tojson }}, upToDate: {{ _("up to date") | tojson }},
+               updateTitle: {{ _("Downloads the new commits of this repository, updates the changed modules when the instance says so and restarts Odoo. It asks before.") | tojson }},
+               pullTitle: {{ _("Downloads the newer image of Odoo and makes the containers again with it: Odoo restarts. It asks before.") | tojson }},
                newImage: {{ _("A newer image is published") | tojson }}, pullImage: {{ _("Pull image") | tojson }},
                imageSame: {{ _("the newest image") | tojson }}, differences: {{ _("differences") | tojson }},
                updateQ: {{ _("Back up if the instance asks it, pull {repo}, update the changed modules and restart?") | tojson }},
@@ -1120,6 +1278,7 @@
       const form = el("form"); form.method = "post"; form.action = box.dataset.pullRestart;
       for (const [k, v] of [["chosen", "1"], ["repo", repo]]) { const i = el("input"); i.type = "hidden"; i.name = k; i.value = v; form.append(i); }
       const b = el("button", "small", count === 1 ? S.updateOne : S.updateNow.replace("{count}", count));
+      b.title = S.updateTitle;
       form.append(b);
       form.addEventListener("submit", (e) => { if (!confirm(S.updateQ.replace("{repo}", repo))) e.preventDefault(); });
       return form;
@@ -1150,7 +1309,8 @@
       if (data.image.error) version.append(el("span", "muted", data.image.error));
       else if (data.image.update && box.dataset.pullImage && box.dataset.can) {
         const form = el("form"); form.method = "post"; form.action = box.dataset.pullImage;
-        form.append(el("button", "small", S.newImage + " · " + S.pullImage));
+        const b = el("button", "small", S.newImage + " · " + S.pullImage); b.title = S.pullTitle;
+        form.append(b);
         form.addEventListener("submit", (e) => { if (!confirm(S.pullQ)) e.preventDefault(); });
         version.append(form);
       } else if (data.image.update) version.append(badge(S.newImage, "warn"));
@@ -1170,12 +1330,53 @@
               failed: {{ _("The options cannot be read: {error}") | tojson }},
               locked: {{ _("Set by the template or the server") | tojson }},
               secret: {{ _("set: empty keeps it") | tojson }},
+              changedOne: {{ _("1 option changed: at the save Odoo restarts") | tojson }},
+              changed: {{ _("{count} options changed: at the save Odoo restarts") | tojson }},
               defaultIs: {{ _("default: {value}") | tojson }}};
   const opBasic = new Set({{ odoo_params.parameters | map(attribute="name") | list | tojson }});
   let opExt = null;
+  const opBox = () => document.querySelector('[data-section="odoo-config"]');
+  // what was changed since the page was read: Save waits for it, and says how many
+  function opChanges() {
+    let count = 0;
+    for (const input of opBox().querySelectorAll("[data-param], [data-extra], #op-debug")) {
+      if (input.disabled) continue;
+      const now = input.type === "checkbox" ? String(input.checked) : input.value;
+      const changed = now !== input.dataset.orig;
+      input.closest("tr").classList.toggle("oc-dirty", changed);
+      if (changed) count += 1;
+    }
+    return count;
+  }
+  function opMark() {
+    const count = opChanges(), save = document.getElementById("op-save"), label = document.getElementById("op-changed");
+    if (save) save.disabled = !count || !!save.dataset.busy || !!opBox().querySelector("input:invalid");
+    if (label) label.textContent = !count ? "" : (count === 1 ? OP.changedOne : OP.changed.replace("{count}", count));
+    opShow();
+  }
+  // the other options: all with the switch; without it, the ones that have a value (saved, or just written)
+  function opShow() {
+    const all = document.getElementById("op-all").checked, table = document.getElementById("op-ext-table");
+    let shown = 0;
+    for (const tr of table.querySelectorAll("tr[data-name]")) {
+      const input = tr.querySelector("[data-extra]");
+      tr.hidden = !all && (input.disabled || !(input.value || tr.classList.contains("op-set") || tr.classList.contains("oc-dirty")));
+      if (!tr.hidden) shown += 1;
+    }
+    for (const tr of table.querySelectorAll("tr.oc-group")) tr.hidden = !all;
+    table.hidden = !shown;
+    document.getElementById("op-ext").hidden = !all && !shown;
+    document.getElementById("op-ext-note").hidden = !all;
+  }
+  for (const input of opBox().querySelectorAll("[data-param], #op-debug")) input.dataset.orig = input.type === "checkbox" ? String(input.checked) : input.value;
+  for (const kind of ["input", "change"]) opBox().addEventListener(kind, (e) => { if (e.target.matches("[data-param], [data-extra], #op-debug")) opMark(); });
+  // options changed and not saved: the browser asks before leaving the page
+  let opLeaving = false;
+  window.addEventListener("beforeunload", (e) => { if (!opLeaving && opChanges()) e.preventDefault(); });
   async function opExtended() {
     if (opExt) return;
-    const box = document.querySelector('[data-section="odoo-config"]'), state = document.getElementById("op-ext-state");
+    const state = document.getElementById("op-ext-state"), box = opBox();
+    document.getElementById("op-ext").hidden = false;
     state.textContent = OP.reading;
     let data;
     try {
@@ -1189,9 +1390,10 @@
     state.textContent = "";
     if (data.version) document.getElementById("op-version").textContent = "Odoo " + data.version;
     const table = document.getElementById("op-ext-table"), canEdit = {{ "true" if is_admin_here else "false" }};
-    let group = null;
+    let group = null, total = 0;
     for (const o of data.options) {
       if (opBasic.has(o.name)) continue;
+      total += 1;
       if (o.group !== group) {
         group = o.group;
         const g = document.createElement("tr"); g.className = "oc-group";
@@ -1213,27 +1415,29 @@
         input.type = secret ? "password" : "text"; input.autocomplete = "off"; input.spellcheck = false;
         input.className = "mono";
       }
-      input.dataset.extra = o.name;
+      input.dataset.extra = o.name; input.setAttribute("aria-label", o.name);
       // a greyed one shows what its odoo.conf has
       input.value = locked ? (data.values[o.name] || "") : (data.extra[o.name] || "");
       if (locked && o.kind === "bool" && input.value && ![...input.options].some((x) => x.value === input.value)) {
         input.append(new Option(input.value, input.value)); input.value = data.values[o.name];
       }
-      if (secret && data.secrets.includes(o.name)) input.placeholder = OP.secret;
+      input.dataset.orig = input.value;
+      if (secret && data.secrets.includes(o.name)) { input.placeholder = OP.secret; tr.classList.add("op-set"); }
       else if (o.default !== null && o.default !== undefined && o.default !== "") input.placeholder = OP.defaultIs.replace("{value}", o.default);
       if (locked) { input.disabled = true; input.title = OP.locked; tr.classList.add("op-locked"); }
       else if (!canEdit) input.disabled = true;
       right.append(input);
       tr.append(left, right); table.append(tr);
     }
-    table.hidden = false;
+    document.getElementById("op-count").textContent = `(${opBasic.size + 1 + total})`;
+    opShow();
   }
-  document.querySelectorAll("[data-op-view]").forEach((b) => b.addEventListener("click", () => {
-    const view = b.dataset.opView;
-    document.querySelectorAll("[data-op-view]").forEach((x) => x.setAttribute("aria-checked", String(x === b)));
-    document.querySelectorAll("[data-op-show]").forEach((x) => { x.hidden = x.dataset.opShow !== view; });
-    if (view === "extended") opExtended();
-  }));
+  document.getElementById("op-all").addEventListener("change", async (e) => {
+    if (e.target.checked) await opExtended();
+    opShow();
+  });
+  // the other options already saved are shown without the switch: read at once when there are any
+  if ({{ (odoo_params.extra | length > 0) | tojson }}) opExtended();
   {% endif %}
   {% if can_act and odoo_params and inst.type != "odoo" and is_admin_here %}
   document.getElementById("op-save")?.addEventListener("click", async () => {
@@ -1251,13 +1455,14 @@
         if (value || (input.type === "password" && opExt.secrets.includes(input.dataset.extra))) extra[input.dataset.extra] = value;
       }
     }
-    if (!confirm({{ _("Write these options in its odoo.conf and restart Odoo?") | tojson }})) return;
+    if (!confirm({{ _("Write the changed options in the odoo.conf of {name} and restart Odoo? Who is connected loses the connection for a few seconds.", name=who) | tojson }})) return;
     const resp = await fetch(`${box.dataset.ws}/parameters/save`, {method: "POST",
       headers: {"Content-Type": "application/json", Accept: "application/json"},
       body: JSON.stringify({server: {{ server.name | tojson }}, role: {{ param_role | tojson }}, parameters,
                             debug: document.getElementById("op-debug").checked, ...(extra ? {extra} : {})})});
     const data = await resp.json().catch(() => ({}));
-    if (!resp.ok || !data.job) { alert(data.error || data.detail || resp.status); return; }
+    if (!resp.ok || !data.job) { alert(data.error || data.detail || T.refused); return; }
+    opLeaving = true;
     location.href = `{{ prefix }}/jobs/${data.job}`;
   });
   {% endif %}
@@ -1268,7 +1473,7 @@
     const resp = await fetch(box.dataset.url, {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
                                                body: JSON.stringify({...changes, restart: true})});
     const data = await resp.json().catch(() => ({}));
-    if (!resp.ok || !data.job) { alert(data.error || data.detail || resp.status); return; }
+    if (!resp.ok || !data.job) { alert(data.error || data.detail || T.refused); return; }
     location.href = `{{ prefix }}/jobs/${data.job}`;
   });
 
@@ -1292,14 +1497,16 @@
         else if (tab && tab.getAttribute("aria-selected") === "true") show("monitor");
       }
       if (!charts || charts.hidden) continue;
-      charts.querySelector(".source").textContent = info.source ? T.measured.replace("{source}", info.source) : "";
+      charts.querySelector(".tiles").title = info.source ? T.measured.replace("{source}", info.source) : "";
       charts.querySelector(".cores").textContent = (data.cores === 1 ? T.core : T.cores).replace("{n}", data.cores);
       OmniaCharts.draw(charts.querySelector('[data-chart="cpu"]'), points, "cpu", {unit: "%", minMax: 10, format: (v) => v.toFixed(0)});
       OmniaCharts.draw(charts.querySelector('[data-chart="mem"]'), points, "mem", {unit: " MiB", format: (v) => v.toFixed(0)});
       const last = points[points.length - 1];
       if (last) {
-        charts.querySelector('[data-tile="cpu"]').textContent = last.cpu === null ? "–" : last.cpu.toFixed(1) + "%";
-        charts.querySelector('[data-tile="mem"]').textContent = last.mem.toFixed(0) + " MiB";
+        charts.querySelector('[data-tile="cpu"]').textContent = last.cpu === null ? "–" : num(last.cpu) + "%";
+        charts.querySelector('[data-tile="mem"]').textContent = num(last.mem, 0) + " MiB";
+        charts.querySelector('[data-tile-sub="cpu"]').textContent = T.cpuOf.replace("{cores}", (data.cores === 1 ? T.core : T.cores).replace("{n}", data.cores));
+        charts.querySelector('[data-tile-sub="mem"]').textContent = T.memTop.replace("{top}", num(Math.max(...points.map((p) => p.mem || 0)), 0));
         charts.querySelector('[data-tile="procs"]').textContent = last.procs;
       }
     }
@@ -1321,6 +1528,21 @@
   // the Backups tab loads its list when it is opened
   const sizeText = (b) => b >= 1073741824 ? (b / 1073741824).toFixed(2) + " GiB"
     : b >= 1048576 ? (b / 1048576).toFixed(1) + " MiB" : Math.max(1, Math.round(b / 1024)) + " KiB";
+  // a moment of this browser's clock as the page writes it: gg/mm/aaaa hh:mm
+  const stamp = (ms) => { const d = new Date(ms), two = (n) => String(n).padStart(2, "0");
+    return `${two(d.getDate())}/${two(d.getMonth() + 1)}/${d.getFullYear()} ${two(d.getHours())}:${two(d.getMinutes())}`; };
+  const LIST_FIRST = 10;
+  // the rows after the first ten behind "Show all (N)"
+  function foldRows(table, holder) {
+    const rows = [...table.rows].slice(1);
+    if (rows.length <= LIST_FIRST) return;
+    rows.slice(LIST_FIRST).forEach((tr) => { tr.hidden = true; });
+    const more = Object.assign(document.createElement("button"), {type: "button", className: "small",
+      textContent: T.showAll.replace("{n}", rows.length), title: T.showAllTitle});
+    more.style.marginTop = "6px";
+    more.addEventListener("click", () => { rows.forEach((tr) => { tr.hidden = false; }); more.remove(); });
+    holder.append(more);
+  }
   async function loadBackups() {
     const box = document.querySelector('[data-panel="backups"]');
     if (!box) return;
@@ -1328,29 +1550,30 @@
     loadBackupSchedule(box);
     try {
       const files = await (await fetch(box.dataset.url)).json();
-      if (!files.length) { list.textContent = T.emptyList; return; }
+      box.dataset.count = files.length;
+      if (!files.length) { list.className = "backup-list muted"; list.textContent = T.emptyList; return; }
       const table = document.createElement("table");
       const head = table.insertRow();
       for (const text of [T.file, T.kind, T.date, T.size, T.checked, ""]) { const th = document.createElement("th"); th.textContent = text; head.appendChild(th); }
       for (const f of files) {
         const tr = table.insertRow();
         const a = document.createElement("a");
-        a.href = f.download; a.textContent = f.file; a.setAttribute("download", f.file);
+        a.href = f.download; a.textContent = f.file; a.setAttribute("download", f.file); a.title = T.downloadTitle;
         tr.insertCell().appendChild(a);
         tr.insertCell().textContent = (T.kinds[f.kind] || "") + (f.archive ? " · " + T.archiveKind : "");
-        tr.insertCell().textContent = new Date(f.time * 1000).toLocaleString();
+        tr.insertCell().textContent = stamp(f.time * 1000);
         tr.insertCell().textContent = sizeText(f.size);
         // the last restore tried: when and what it found, or why it failed
         const check = tr.insertCell(), v = f.verified;
         if (v && v.ok) {
           check.className = "status success";
-          check.textContent = "✓ " + new Date(v.time).toLocaleString();
-          check.title = T.checkFound.replace("{modules}", v.modules).replace("{users}", v.users).replace("{last}", v.last || "?");
+          check.textContent = "✓ " + whenText(v.time);
+          check.title = T.checkFound.replace("{modules}", v.modules).replace("{users}", v.users).replace("{last}", v.last ? whenText(v.last) : "?");
         } else if (v) {
-          check.className = "error"; check.textContent = "✗ " + new Date(v.time).toLocaleString(); check.title = v.detail || "";
-        } else { check.className = "muted"; check.textContent = "—"; }
+          check.className = "error"; check.textContent = "✗ " + whenText(v.time); check.title = v.detail || "";
+        } else { check.className = "muted"; check.textContent = "—"; check.title = T.neverTried; }
         const cell = tr.insertCell();
-        cell.style.textAlign = "right";
+        cell.style.textAlign = "right"; cell.style.whiteSpace = "nowrap";
         if (f.can_verify) {
           const vb = document.createElement("button");
           vb.type = "button"; vb.className = "small"; vb.textContent = T.verify; vb.title = T.verifyTitle;
@@ -1367,7 +1590,7 @@
         }
         if (f.can_delete) {
           const b = document.createElement("button");
-          b.type = "button"; b.className = "danger"; b.textContent = T.remove;
+          b.type = "button"; b.className = "small danger"; b.textContent = T.remove; b.title = T.removeTitle;
           b.addEventListener("click", async () => {
             if (!confirm(T.removeQ.replace("{file}", f.file))) return;
             const resp = await fetch(`${box.dataset.api}/backups/delete`, {method: "POST",
@@ -1380,13 +1603,20 @@
         }
       }
       list.className = "backup-list scroll"; list.textContent = ""; list.appendChild(table);
+      foldRows(table, list);
     } catch (e) { list.textContent = T.listFailed; }
   }
 
   // the automatic backups of the instance: its schedule, read and saved here
-  function drawBackupSchedule(data) {
-    const form = document.getElementById("ab-form");
-    form.hidden = false;
+  let abBefore = "", abCanEdit = false;
+  const abValues = () => JSON.stringify([...document.getElementById("ab-form").querySelectorAll("input, select")]
+    .map((i) => i.type === "checkbox" ? i.checked : i.value));
+  function abChanged() {
+    document.getElementById("ab-save").disabled = !abCanEdit || abValues() === abBefore;
+  }
+  function drawBackupSchedule(data, saved) {
+    const form = document.getElementById("ab-form"), details = document.getElementById("ab-details");
+    details.hidden = false;
     document.getElementById("ab-enabled").checked = data.enabled;
     document.getElementById("ab-time").value = data.time;
     document.getElementById("ab-zone").textContent = data.zone ? T.abZone.replace("{zone}", data.zone) : "";
@@ -1404,16 +1634,29 @@
     document.getElementById("ab-verify").checked = !!data.verify;
     document.getElementById("ab-archive").checked = !!data.archive;
     for (const input of form.querySelectorAll("input, button, select")) input.disabled = !data.can_edit;
+    abCanEdit = data.can_edit; abBefore = abValues(); abChanged();
     loadRemoteCopies(data.destination);
-    const said = [];
+    // the line on top: what the automatic backups do, the last one, the last restore tried
+    const line = document.getElementById("ab-status"), said = [];
+    line.hidden = false;
+    line.className = "ab-line" + (data.enabled ? "" : " off");
     if (!data.enabled) said.push(T.abOff);
-    else if (data.next) said.push(T.abNext.replace("{time}", data.next));
-    if (data.last) said.push(T.abLast.replace("{time}", data.last.time.replace("T", " ")).replace("{status}", data.last.message || T.statuses[data.last.status] || data.last.status));
-    if (data.verified) said.push(T.abVerified.replace("{time}", data.verified.time.replace("T", " "))
+    else {
+      said.push(T.abOn.replace("{time}", data.time).replace("{zone}", data.zone || "?"));
+      said.push(T.abKeeps.replace("{daily}", data.daily).replace("{weekly}", data.weekly).replace("{monthly}", data.monthly));
+      const dest = data.destinations.find((d) => d.name === data.destination);
+      said.push(dest ? T.abCopy.replace("{name}", `${dest.label} ${dest.name}`) : T.abNoCopy);
+    }
+    if (data.last) said.push(T.abLast.replace("{time}", whenText(data.last.time)).replace("{status}", T.statuses[data.last.status] || data.last.status)
+      + (data.last.status === "failed" && data.last.message ? ` (${data.last.message})` : ""));
+    if (data.verified) said.push(T.abVerified.replace("{time}", whenText(data.verified.time))
       .replace("{result}", data.verified.ok ? T.abVerifyOk : T.abVerifyFailed));
-    if (!data.can_edit) said.push(T.abNoRight);
-    document.getElementById("ab-status").textContent = said.join(" ");
+    line.textContent = said.join(" · ") + ".";
+    document.getElementById("ab-note").textContent = [data.can_edit ? "" : T.abNoRight, saved ? T.abSaved : ""].filter(Boolean).join(" ");
+    // open while they are off: that is the thing to do here
+    if (!saved) details.open = !data.enabled;
   }
+  for (const kind of ["input", "change"]) document.getElementById("ab-form")?.addEventListener(kind, abChanged);
   // the copies in the destination of the automatic backups: one brought back is a backup here
   async function loadRemoteCopies(destination) {
     const box = document.querySelector('[data-panel="backups"]'), wrap = box.querySelector(".remote-list");
@@ -1424,7 +1667,8 @@
     const resp = await fetch(`${box.dataset.api}/remote-backups`).catch(() => null);
     const data = resp ? await resp.json().catch(() => ({})) : {};
     if (!resp || !resp.ok) { body.textContent = data.error || data.detail || T.refused; body.className = "rl-body error"; return; }
-    wrap.querySelector(".rl-name").textContent = `${data.destination.name} (${data.destination.label})`;
+    wrap.querySelector(".rl-name").textContent = `${data.destination.label} ${data.destination.name}`;
+    wrap.querySelector(".rl-count").textContent = `(${data.files.length})`;
     body.className = "rl-body";
     if (!data.files.length) { body.textContent = T.rlNone; body.className = "rl-body muted"; return; }
     const table = document.createElement("table");
@@ -1433,8 +1677,8 @@
     for (const f of data.files) {
       const tr = table.insertRow();
       tr.insertCell().textContent = f.file;
-      tr.insertCell().textContent = f.time.replace("T", " ");
-      tr.insertCell().textContent = (f.size / 1048576).toFixed(1) + " MiB";
+      tr.insertCell().textContent = whenText(f.time);
+      tr.insertCell().textContent = sizeText(f.size);
       const cell = tr.insertCell();
       if (f.here) { cell.textContent = T.rlHere; cell.className = "muted"; }
       else if (data.can_fetch) {
@@ -1452,11 +1696,14 @@
     }
     const scroll = document.createElement("div"); scroll.className = "scroll"; scroll.append(table);
     body.replaceChildren(scroll);
+    foldRows(table, body);
   }
   async function loadBackupSchedule(box) {
     if (!document.getElementById("ab-form")) return;
     const resp = await fetch(`${box.dataset.api}/backup-schedule`).catch(() => null);
-    if (resp && resp.ok) drawBackupSchedule(await resp.json());
+    if (resp && resp.ok) { drawBackupSchedule(await resp.json()); return; }
+    const line = document.getElementById("ab-status");
+    line.hidden = false; line.className = "ab-line off"; line.textContent = T.abUnread;
   }
   document.getElementById("ab-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -1474,8 +1721,7 @@
       headers: {"Content-Type": "application/json", Accept: "application/json"}, body: JSON.stringify(body)});
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) { error.textContent = data.error || data.detail || T.refused; return; }
-    drawBackupSchedule(data);
-    document.getElementById("ab-status").textContent += " " + T.abSaved;
+    drawBackupSchedule(data, true);
   });
 
   // a new staging, a staging deleted: a job, followed on its page

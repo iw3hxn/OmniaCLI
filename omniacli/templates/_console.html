@@ -26,7 +26,7 @@
   <button type="button" class="console-smaller" title="{{ _('Smaller text (kept in this browser for this kind of console)') }}">A−</button>
   <span class="console-size mono muted" title="{{ _('Text size in pixels') }}"></span>
   <button type="button" class="console-larger" title="{{ _('Larger text (kept in this browser for this kind of console)') }}">A+</button>
-  <button type="button" class="console-expand" title="{{ _('Fill the browser window') }}">{{ _("Expand") }}</button>
+  <button type="button" class="console-expand" title="{{ _('Widens the log to the whole window; Esc goes back') }}">{{ _("Expand") }}</button>
 </span>
 {%- endmacro %}
 
@@ -39,7 +39,7 @@ data-font-min="{{ console_font_sizes[0] }}" data-font-max="{{ console_font_sizes
 <div {{ _box_attrs(key) }}>
   <div class="console-bar">
     <span class="console-tags" title="{{ _('Show only the lines of the chosen tags (none chosen: every line)') }}">
-      {% for tag in tags %}<button type="button" class="console-tag tag-{{ tag }}" data-tag="{{ tag }}" aria-pressed="false">{{ tag }}</button>{% endfor %}
+      {% for tag in tags %}<button type="button" class="console-tag tag-{{ tag }}" data-tag="{{ tag }}" aria-pressed="false" title="{{ _('Only the {tag} lines; pressed again, every line', tag=tag) }}">{{ tag }}</button>{% endfor %}
     </span>
     <input type="search" class="console-search" placeholder="{{ _('Filter text') }}" aria-label="{{ _('Show only the lines with this text') }}">
     <label><input type="checkbox" class="console-follow" checked> {{ _("Follow") }}</label>

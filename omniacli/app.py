@@ -3470,7 +3470,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             found = await workspaceops.ask("pitr-state", ws.name, ws.storage, instance, "production")
         except JobFailed as exc:
             return refuse(str(exc), status.HTTP_502_BAD_GATEWAY)
-        return found
+        # this machine's time: the page tells a range that ended long ago from one that is still growing
+        return {**found, "now": datetime.datetime.now().isoformat(timespec="seconds")}
 
     @app.post("/api/servers/{server}/pitr/enable", dependencies=[Depends(admin)])
     async def pitr_enable(server: str, me: Principal = Depends(current_user)):

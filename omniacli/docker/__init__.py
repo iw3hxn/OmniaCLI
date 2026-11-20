@@ -45,6 +45,7 @@ from pathlib import Path
 import httpx
 
 from ..plugin_api import (
+    UPDATE_TOOLTIP,
     COMPOSE_TOOLS,
     ERROR,
     PLUGIN_API,
@@ -575,7 +576,8 @@ class DockerPlugin(ServicePlugin):
                    params=(Field("modules", "Modules, comma separated",
                                  placeholder="empty: the changed ones (click-odoo-update)"),
                            Field("restart", "Restart after the update", "checkbox", default=False)),
-                   prepare=_update_params, title=_update_title),
+                   prepare=_update_params, title=_update_title,
+                   tooltip=UPDATE_TOOLTIP),
             Action("pull-image", "Pull image", self._pull_image, group="service", icon="download",
                    tooltip="docker compose pull, then up -d: the containers made again with the newer images",
                    confirm=lambda inst: f"Pull the newer images of {inst.restart.service} and make its "

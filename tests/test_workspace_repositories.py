@@ -245,6 +245,13 @@ async def test_the_odoo_config_tab_of_a_workspaces_instance(instance, client, mo
     meta.write_text('{"template": "odoo-19"}')
     page = (await client.get("/servers/acme-main", headers=post_as("mario"))).text
     assert 'data-section="odoo-config"' in page and 'data-param="workers"' in page and 'id="op-save"' in page
+    # UX-006: the label before the option's name, one switch for the other options, Save waits for a change
+    import re
+    options = page[page.index('data-section="odoo-config"'):]
+    options = options[:options.index("</section>")]
+    assert options.index('class="oc-label"') < options.index('class="mono">workers')
+    assert 'id="op-all"' in options and "data-op-view" not in page
+    assert re.search(r'id="op-save" disabled', options)
 
 
 async def test_the_terminal_of_a_workspaces_instance(instance, client):
@@ -374,3 +381,35 @@ async def test_five_tabs_and_one_primary(workspaces, client, env, monkeypatch, t
     body = re.sub(r"<script.*?</script>", "", body, flags=re.S)
     assert len(re.findall(r'class="[^"]*\bprimary\b[^"]*"', body)) == 1, re.findall(r'class="[^"]*\bprimary\b[^"]*"[^>]*>', body)
     assert len(re.findall(r"<th>Repository</th>", page)) <= 1
+
+
+async def test_the_page_explains_itself(workspaces, client, env):
+    """UX-006, steps 2 to 5: every button and every folded line of the
+    instance page says on hover what it does; the database is a verdict and
+    three numbers with the lists behind Details; the form of the automatic
+    backups is folded under its line; no word of PostgreSQL's on the screen."""
+    import re
+
+    page = (await client.get("/servers/srv?view=production", headers=post_as("admin"))).text
+    body = re.sub(r"<script.*?</script>", "", page, flags=re.S)
+    body = body[body.index('<div class="inst-top'):]
+    body = re.sub(r"<dialog.*?</dialog>", "", body, flags=re.S)
+    # a button says what it does: its own title, or the one of the span around a disabled one
+    silent = [m.group(0)[:120] for m in re.finditer(r"(<span title=\"[^\"]+\">\s*)?<(?:button|summary)\b[^>]*>", body)
+              if "title=" not in m.group(0) and 'role="radio"' not in m.group(0)]
+    assert not silent, "\n".join(silent)
+    # the database: a verdict, three tiles, the rest folded
+    database = body[body.index('data-section="database"'):]
+    database = database[:database.index("</section>")]
+    assert 'class="db-verdict"' in database
+    assert len(re.findall(r'class="tile"', database)) == 3
+    assert database.index('<details class="db-details">') < database.index('data-db-table="tables"')
+    assert database.index('data-db-table="long_queries"') < database.index('<details class="db-details">')
+    # the automatic backups: their line, then the form folded
+    backups = body[body.index('data-panel="backups"'):]
+    backups = backups[:backups.index("</section>")]
+    assert backups.index('id="ab-status"') < backups.index('<details class="backup-auto"') < backups.index('id="ab-form"')
+    assert backups.index('id="ab-form"') < backups.index("</details>")
+    text = re.sub(r"<[^>]+>", " ", re.sub(r'title="[^"]*"', "", body))
+    for word in ("WAL", "base backup", "point-in-time", "pg_stat_statements"):
+        assert word not in text, word

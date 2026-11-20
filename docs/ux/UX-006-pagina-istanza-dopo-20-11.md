@@ -318,6 +318,25 @@ Come **admin della macchina**, **admin del workspace**, **developer** e **user**
    - **Raccomandate: query lenta > 5 s (quella che il rapporto conta già), connessioni ≥ 80% del massimo, letto dalla memoria < 95%.** Sull'istanza misurata oggi (3 su 100, 99,49%, 0 query lente) il verdetto è verde.
    - Alternativa: soglie tue per cliente, da mettere in configurazione. È una funzione di backend: fuori da questo contratto.
 
+## Stato (20/11/2026 sera)
+
+Fatti i passi 1–5, misurati con Playwright come admin a 1440×900 sull'istanza di prova:
+5 tab, 1 primario per tab, 0 pulsanti e 0 `summary` senza `title` fuori dai dialoghi, 0 date tecniche, Monitoraggio 795 px
+con «Dettagli» chiuso, 3 tile del database, modulo dei backup dentro il suo `details`.
+
+Scostamenti dal contratto, voluti:
+- «Aggiornamento automatico», «Aggiorna i moduli modificati» e «Aggiorna a ogni push» stanno in una sezione propria,
+  «Aggiornamenti del codice», fra Codice e Opzioni di Odoo: vale anche per le istanze fuori da un workspace, che non
+  hanno la sezione Codice.
+- Le opzioni estese di Odoo mostrano il nome tecnico e l'aiuto in inglese di Odoo: un'etichetta italiana non esiste.
+- Il ripristino a un minuto dice «ora del server» e, se l'intervallo finisce da più di 10 minuti senza errori, «Dal
+  <minuto> il database non è cambiato» al posto di «Gli ultimi 5 minuti possono mancare».
+
+Restano aperti:
+- il pulsante di D3 nel dialogo «Entra come…» (aspetta la decisione);
+- i `title` dei pulsanti dentro i dialoghi (Annulla, conferma);
+- le misure come developer, user e a 375×812.
+
 ## Non verificato
 
 - Le schermate sono quelle dell'admin. Il tab Monitoraggio per il ruolo `user` (cioè se `/uptime` e i grafici rispondono senza `developer`) l'ho dedotto dal template, non l'ho misurato. Anche la vista a 375×812 non è misurata.
