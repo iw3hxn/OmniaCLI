@@ -192,18 +192,27 @@ async def test_an_admin_adds_a_machine(client, monkeypatch):
     saved = links["acme-cloud"]
     assert saved["url"] == machines.REMOTE_URL and saved["ssh"]["user"] == machines.LINK_USER
     assert hash_token(saved["token"]) == ran[0][2]
+    # a machine has one link here: again, under this or another name, it is refused
+    # (it would get a new token, and the link it has, perhaps renamed, would be refused there)
+    for form in (FORM, {**FORM, "name": "another-name"}):
+        again = await client.post("/api/machines/add", headers=post, json=form)
+        assert again.status_code == 400 and "already linked here as acme-cloud" in again.json()["error"]
+    assert len(ran) == 1
+    renamed = await client.post("/api/links/rename", headers=post, json={"name": "acme-cloud", "new_name": "Acme"})
+    assert renamed.status_code == 200
     again = await client.post("/api/machines/add", headers=post, json=FORM)
-    assert again.status_code == 400 and "already exists" in again.json()["error"]
-    # only the address: named from it, the host key read; the same address again gets -2
-    for expected in ("203-0-113-10", "203-0-113-10-2"):
-        resp = await client.post("/api/machines/add", headers=post, json={"host": "203.0.113.10"})
-        assert resp.status_code == 200, resp.text
-        await wait(client, resp.json()["job"])
-        saved = yaml.safe_load(client.settings.links_file.read_text())["links"][expected]
-        assert saved["ssh"]["host_key"] == HOST_KEY
+    assert again.status_code == 400 and "already linked here as Acme" in again.json()["error"]
+    assert (await client.post("/api/links/rename", headers=post,
+                              json={"name": "Acme", "new_name": "acme-cloud"})).status_code == 200
+    # only the address: named from it, the host key read
+    resp = await client.post("/api/machines/add", headers=post, json={"host": "203.0.113.11"})
+    assert resp.status_code == 200, resp.text
+    await wait(client, resp.json()["job"])
+    saved = yaml.safe_load(client.settings.links_file.read_text())["links"]["203-0-113-11"]
+    assert saved["ssh"]["host_key"] == HOST_KEY
     # the cards: the machines linked, each with its last add job when it did not end well
     cards = {c["name"]: c for c in (await client.get("/api/machines", headers=as_user("admin"))).json()["machines"]}
-    assert set(cards) == {"acme-cloud", "203-0-113-10", "203-0-113-10-2"}
+    assert set(cards) == {"acme-cloud", "203-0-113-11"}
     assert cards["acme-cloud"]["linked"] and cards["acme-cloud"]["job"]["status"] == "failed"
     assert machines.STEPS[cards["acme-cloud"]["job"]["step"]] == "the link "
 

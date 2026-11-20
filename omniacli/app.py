@@ -337,7 +337,7 @@ def _same_origin(request: Request) -> bool:
 
 
 # what a request does not say in its path: never a password, a token or a key
-_AUDIT_FIELDS = ("name", "role", "host", "server", "kind")
+_AUDIT_FIELDS = ("name", "new_name", "role", "host", "server", "kind")
 _AUDIT_MAX_BODY = 64 * 1024
 # polled, or they change nothing: an access log full of them would hide the rest
 _NOT_AUDITED = re.compile(r"/logout|/api/pullers/[^/]+/producer|/api/servers/(check|branches)")
@@ -4601,8 +4601,16 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             machine = machines.Machine.parse(payload, machines.here_name(socket.gethostname()))
         except machines.MachineError as exc:
             return refuse(str(exc))
+        # one link for a machine: adding it again would give its OmniaCLI a new
+        # token for this one, and the link it has here (whatever its name,
+        # perhaps renamed) would be refused
+        same = next((link.name for link in settings.link_targets.values() if link.ssh is not None
+                     and (link.ssh.host.lower(), link.ssh.port) == (machine.host.lower(), machine.port)), None)
+        if same is not None:
+            return refuse(f"{machine.host} is already linked here as {same}: use that link, rename it on its "
+                          "page, or delete it first to prepare the machine again")
         if not str(payload.get("name") or "").strip():
-            # the name from the address: another one beside it gets -2, -3...
+            # the name from the address: another machine's with the same one gets -2, -3...
             base, number = machine.name, 2
             while machine.name in settings.link_targets:
                 machine = dataclasses.replace(machine, name=f"{base[:29]}-{number}")
