@@ -48,7 +48,7 @@
       <td>{{ t.owner }}</td>
       <td class="mono muted" data-time="{{ t.last_active }}"></td>
       <td class="mono">{{ t.connections }}</td>
-      <td>{% if t.can_close %}<button type="button" class="danger" data-close="{{ t.id }}" title="{{ _('Closes this tunnel at once, without asking: its address stops answering. The instance is not touched. Only who opened it, or an admin, closes it.') }}">{{ _("Close") }}</button>{% endif %}</td>
+      <td>{% if t.can_close %}<button type="button" class="danger" data-close="{{ t.id }}" title="{{ _('Closes this tunnel: its address stops answering at once. The instance is not touched. It asks before. Only who opened it, or an admin, closes it.') }}">{{ _("Close") }}</button>{% endif %}</td>
     </tr>
     {% else %}
     <tr><td colspan="6" class="muted">{{ _("No tunnel open.") }}</td></tr>
@@ -101,6 +101,7 @@
   });
   for (const button of document.querySelectorAll("[data-close]")) {
     button.addEventListener("click", async () => {
+      if (!confirm({{ _("Close this tunnel? Its address stops answering at once.") | tojson }})) return;
       if (await post(`/api/tunnels/${encodeURIComponent(button.dataset.close)}/close`)) location.reload();
     });
   }

@@ -266,8 +266,12 @@
     if (del) del.onclick = async () => {
       if (!confirm({{ _("Delete the connection {name}?") | tojson }}.replace("{name}", name()))) return;
       const resp = await fetch("{{ prefix }}/api/connections/delete", {method: "POST",
-        headers: {"Content-Type": "application/json"}, body: JSON.stringify({name: name()})});
-      if (resp.ok) location.reload();
+        headers: {"Content-Type": "application/json", Accept: "application/json"}, body: JSON.stringify({name: name()})});
+      if (resp.ok) { location.reload(); return; }
+      // refused: said, as every other refusal of the page
+      const data = await resp.json().catch(() => ({}));
+      errorBox.textContent = data.error || data.detail || errorText(resp.status); errorBox.hidden = false;
+      window.scrollTo(0, 0);
     };
   }
   document.getElementById("add").onclick = async () => {
