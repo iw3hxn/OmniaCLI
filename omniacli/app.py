@@ -4787,12 +4787,19 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         found = _LINK_LOGIN_AS.fullmatch(path)
         if found and request.method == "POST":
             return await login_as_through_link(request, link, client, url, headers, found[1], found[2], me)
-        outgoing = client.build_request(request.method, url, headers=headers,
-                                        content=await request.body() or None)
-        try:
-            resp = await client.send(outgoing, stream=True)
-        except httpx.HTTPError as exc:
-            return link_failure(request, link, describe_error(exc))
+        body = await request.body() or None
+        # a read is asked once more: a connection kept open may have been closed there
+        # in the meantime (its server drops an idle one after a few seconds)
+        for last in (False, True) if request.method in ("GET", "HEAD") else (True,):
+            outgoing = client.build_request(request.method, url, headers=headers, content=body)
+            try:
+                resp = await client.send(outgoing, stream=True)
+                break
+            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError, httpx.CloseError) as exc:
+                if last:
+                    return link_failure(request, link, describe_error(exc))
+            except httpx.HTTPError as exc:
+                return link_failure(request, link, describe_error(exc))
         if resp.status_code == 401:
             await resp.aclose()
             return link_failure(request, link, "the other instance refused the token: ask for a new one")

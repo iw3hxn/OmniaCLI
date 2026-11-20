@@ -242,3 +242,23 @@ def test_describe_websocket_refusals():
     assert refused(502) == "WebSocket refused (502)"
     # the close reason of a link's shell keeps the whole message
     assert len(f"link customer-x: {refused(404)}".encode()) <= 120
+
+
+async def test_a_read_through_a_link_is_asked_once_more(mine, monkeypatch):
+    """A connection kept open to the other instance may be closed there
+    between two requests: a GET is sent again once, a POST is not."""
+    real, dropped = httpx.AsyncClient.send, []
+
+    async def send(self, request, **kwargs):
+        # the request to the other instance, not the test's own to this one
+        if "/links/" not in request.url.path and request.url.path in ("/jobs", "/servers/srv/test/pull") \
+                and len([m for m in dropped if m == request.method]) < 1:
+            dropped.append(request.method)
+            raise httpx.RemoteProtocolError("Server disconnected without sending a response.", request=request)
+        return await real(self, request, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", send)
+    assert (await mine.get("/links/cliente/jobs", headers=as_user("admin"))).status_code == 200
+    assert dropped == ["GET"]
+    resp = await mine.post("/links/cliente/servers/srv/test/pull", headers=as_user("dev", post=True))
+    assert resp.status_code == 502 and dropped == ["GET", "POST"]

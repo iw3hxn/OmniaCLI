@@ -1559,7 +1559,10 @@
     const list = box.querySelector(".backup-list");
     loadBackupSchedule(box);
     try {
-      const files = await (await fetch(box.dataset.url)).json();
+      const resp = await fetch(box.dataset.url, {headers: {Accept: "application/json"}});
+      const files = await resp.json();
+      // not read is not empty: said with its reason
+      if (!resp.ok || !Array.isArray(files)) { list.className = "backup-list error"; list.textContent = T.listFailed + " " + (files.error || files.detail || ""); return; }
       box.dataset.count = files.length;
       if (!files.length) { list.className = "backup-list muted"; list.textContent = T.emptyList; return; }
       const table = document.createElement("table");
@@ -1614,7 +1617,7 @@
       }
       list.className = "backup-list scroll"; list.textContent = ""; list.appendChild(table);
       foldRows(table, list);
-    } catch (e) { list.textContent = T.listFailed; }
+    } catch (e) { list.className = "backup-list error"; list.textContent = T.listFailed; }
   }
 
   // the automatic backups of the instance: its schedule, read and saved here
