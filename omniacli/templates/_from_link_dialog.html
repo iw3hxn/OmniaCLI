@@ -32,8 +32,8 @@
     </div>
     <p id="from-link-error" class="error"></p>
     <div class="actions">
-      <button type="submit" class="danger">{{ _("Copy here") }}</button>
-      <button type="button" id="from-link-cancel">{{ _("Cancel") }}</button>
+      <button type="submit" class="danger" title="{{ _('Replaces the database and the files of this instance with the backup chosen above; over there nothing changes, at most a new backup is made. It asks before: for a production you type the name of its database, and an admin is needed.') }}">{{ _("Copy here") }}</button>
+      <button type="button" id="from-link-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
     </div>
   </form>
 </dialog>

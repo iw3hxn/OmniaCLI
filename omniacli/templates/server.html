@@ -104,7 +104,7 @@
 {% set backup_here = can_act and inst.plugin.has_backup %}
 {% set package_only = inst.package and not inst.repositories %}
 {% set package_note = _("A new {name} is installed with its own scripts: they may stop and start the service {service} by themselves, also if it is stopped now.", name=inst.package.name, service=inst.restart.service) if inst.package else "" %}
-{% set update_help = (_("Installs the new version of the package {name} and restarts; its own scripts may stop and start the service by themselves.", name=inst.package.name) if package_only else _("Downloads the new code of the repositories (git pull), updates the changed Odoo modules when its settings say so, and restarts. With more than one repository it asks which first. It makes no backup before: for a big change press Backup. Not available while a job works on this instance.")) %}
+{% set update_help = (_("Installs the new version of the package {name} and restarts; its own scripts may stop and start the service by themselves.", name=inst.package.name) if package_only else _("Downloads the new code of the repositories (git pull), updates the changed Odoo modules when its settings say so, and restarts. With more than one repository it asks which first. It makes a backup before only when the instance is set to (Backup before an update): otherwise, for a big change, make one first from More. Not available while a job works on this instance.")) %}
 {% set merge = is_admin and view == "test" and server.production and not is_staging %}
 
 {% set title = host_of(inst.web_url, server.name) %}
@@ -533,7 +533,7 @@
       <p class="error" id="au-error" role="alert"></p>
       <div class="actions">
         <button type="button" id="au-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
-        <button type="button" class="primary" id="au-go" disabled>{{ _("Update module") }}</button>
+        <button type="button" class="primary" id="au-go" disabled title="{{ _('Brings the repository to the last commit of the chosen branch, installs its Python packages, updates the changed modules when the instance says so and restarts Odoo: a job, started at once. A backup is made first when the instance is set so. Not available while the branch and the commit are the ones it has.') }}">{{ _("Update module") }}</button>
       </div>
     </form>
   </dialog>

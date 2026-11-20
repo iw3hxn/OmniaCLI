@@ -116,7 +116,9 @@
 
 <div class="page-head">
   <div><h1>{{ _("Servers") }}</h1></div>
-  <div class="actions"><button type="button" class="primary" data-add-machine {{ "disabled" if not provision_key }}>+ {{ _("Add a server") }}</button></div>
+  <div class="actions"><span title="{{ _('Links a clean Ubuntu or Debian server: OmniaCLI installs everything there over ssh and shows it here, in about 15 minutes') }}">
+    <button type="button" class="primary" data-add-machine {{ "disabled" if not provision_key }}
+            title="{{ _('Links a clean Ubuntu or Debian server: OmniaCLI installs everything there over ssh and shows it here, in about 15 minutes') }}">+ {{ _("Add a server") }}</button></span></div>
 </div>
 {% if not provision_key %}<div class="banner">{{ _("OmniaCLI's key cannot be made: see its log.") }}</div>{% endif %}
 
@@ -127,7 +129,7 @@
   <div class="m-empty-icon"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01M11 7.5h6M11 16.5h6"/></svg></div>
   <h2>{{ _("No servers yet") }}</h2>
   <p>{{ _("Add a clean Ubuntu or Debian server: OmniaCLI installs everything there and links it here, in about 15 minutes.") }}</p>
-  <button type="button" class="primary" data-add-machine {{ "disabled" if not provision_key }}>+ {{ _("Add your first server") }}</button>
+  <button type="button" data-add-machine {{ "disabled" if not provision_key }} title="{{ _('Links a clean Ubuntu or Debian server: OmniaCLI installs everything there over ssh and shows it here, in about 15 minutes') }}">+ {{ _("Add your first server") }}</button>
   <div class="m-features">
     <span>{{ _("Docker and nginx") }}</span><span>{{ _("Automatic HTTPS") }}</span>
     <span>{{ _("Firewall and security updates") }}</span><span>{{ _("Linked through SSH") }}</span>
@@ -172,7 +174,7 @@
       <p class="w-tip" style="margin-top: 10px" data-kind-only="clean">{{ _("Updates, nginx, certbot, Docker, OmniaCLI and a firewall are installed there, then it appears here with its link. About 10 to 20 minutes.") }}</p>
       <p class="w-tip" style="margin-top: 10px" data-kind-only="existing" hidden>{{ _("Only OmniaCLI is installed there, nothing is upgraded and the firewall stays as it is; its Odoo instances get read access and the permissions OmniaCLI needs, and appear here active. About 5 minutes.") }}</p>
       <details class="w-advanced">
-        <summary>{{ _("Advanced options") }}</summary>
+        <summary title="{{ _('Shows the name of the link, the SSH user, the key of the server, the package and the firewall. Each has its default.') }}">{{ _("Advanced options") }}</summary>
         <div class="form-grid">
           <label for="m-name">{{ _("Name") }}</label>
           <div><input type="text" id="m-name" class="mono" maxlength="32" placeholder="{{ _('from the address') }}">
@@ -183,7 +185,7 @@
           <label>{{ _("Server's key") }}</label>
           <div><input type="hidden" id="m-host-key">
             <span id="m-fingerprint" class="mono">{{ _("accepted on the first connection") }}</span>
-            <button type="button" id="m-fetch">{{ _("Fetch host key") }}</button>
+            <button type="button" id="m-fetch" title="{{ _('Reads the key the server at this address shows now, to compare before adding it: only this key is then accepted. It changes nothing on the server.') }}">{{ _("Fetch host key") }}</button>
             <span class="muted field-help">{{ _("To check it, compare it with {command} run on that server: only this key is then accepted.", command="ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub") }}</span></div>
           <label for="m-package">{{ _("OmniaCLI package") }}</label>
           <div><input type="url" id="m-package" class="mono" value="{{ package_url }}" style="width: 100%"></div>
@@ -194,9 +196,9 @@
     </div>
 
     <div class="w-foot">
-      <button type="button" id="w-back">{{ _("Cancel") }}</button>
+      <button type="button" id="w-back" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
       <p id="machine-error" class="error" role="alert"></p>
-      <button type="submit" class="primary" id="w-next">{{ _("Next") }} →</button>
+      <button type="submit" class="primary" id="w-next" title="{{ _('Goes to the second step: the address of the server. Nothing is done on the server yet.') }}">{{ _("Next") }} →</button>
     </div>
   </form>
 </dialog>
@@ -206,8 +208,8 @@
     <h2 id="remove-title"></h2>
     <p class="muted">{{ _("Only its link here is removed: the server, its OmniaCLI and its instances stay as they are, and it can be added again.") }}</p>
     <div class="actions" style="justify-content: flex-end">
-      <button value="cancel">{{ _("Cancel") }}</button>
-      <button value="remove" class="danger">{{ _("Remove") }}</button>
+      <button value="cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
+      <button value="remove" class="danger" title="{{ _('Takes this server out of the list here. Nothing is touched on the server.') }}">{{ _("Remove") }}</button>
     </div>
   </form>
 </dialog>
@@ -218,6 +220,12 @@
   const T = {
     up: {{ _("Online") | tojson }}, starting: {{ _("Starting") | tojson }}, down: {{ _("Offline") | tojson }},
     preparing: {{ _("Preparing") | tojson }}, failed: {{ _("Not prepared") | tojson }},
+    openTitle: {{ _("Opens the instances of {name}") | tojson }},
+    logTitle: {{ _("Opens the log of the job that prepares this server") | tojson }},
+    retryTitle: {{ _("Opens the steps again with this server's address, to prepare it once more") | tojson }},
+    testTitle: {{ _("Asks the OmniaCLI of this server whether it answers through the link. It changes nothing.") | tojson }},
+    removeHelp: {{ _("Takes this server out of this list: nothing is touched on the server, its instances keep working. It asks before.") | tojson }},
+    moreTitle: {{ _("The other actions: test the link, remove from the list") | tojson }},
     open: {{ _("Open") | tojson }}, workspaces: {{ _("Workspaces") | tojson }}, log: {{ _("See the log") | tojson }},
     retry: {{ _("Try again") | tojson }}, test: {{ _("Test the link") | tojson }}, remove: {{ _("Remove from the list") | tojson }},
     removeTitle: {{ _("Remove {name} from the list?") | tojson }}, cpu: {{ _("CPU") | tojson }}, disk: {{ _("Disk") | tojson }},
@@ -227,6 +235,9 @@
     servers: {{ _("servers") | tojson }}, online: {{ _("online") | tojson }}, preparingN: {{ _("being prepared") | tojson }},
     next: {{ _("Next") | tojson }}, add: {{ _("Add the server") | tojson }}, connecting: {{ _("Connecting…") | tojson }},
     cancel: {{ _("Cancel") | tojson }}, back: {{ _("Back") | tojson }}, refused: {{ _("Refused") | tojson }},
+    cancelTitle: {{ _("Closes without changing anything") | tojson }}, backTitle: {{ _("Goes back to the first step; what you wrote stays") | tojson }},
+    nextTitle: {{ _("Goes to the second step: the address of the server. Nothing is done on the server yet.") | tojson }},
+    addTitle: {{ _("Connects to the server over ssh and starts the job that installs what is written above and links it here. It does not ask again.") | tojson }},
     noHostKey: {{ _("The host key cannot be read") | tojson }}, addressFirst: {{ _("Write the server's address") | tojson }},
     version: {{ _("OmniaCLI {version}") | tojson }}, ram: {{ _("RAM") | tojson }}, here: {{ _("This machine") | tojson }},
     stagings: {{ _("{count} stagings") | tojson }}, staging: {{ _("1 staging") | tojson }},
@@ -314,17 +325,17 @@
   function foot(card, state) {
     const row = el("div", {class: "mcard-foot"});
     const base = `${baseOf(card)}/`;
-    if (card.job && state !== "up") row.append(el("a", {class: "button", href: `${PREFIX}/jobs/${card.job.id}`, text: T.log}));
-    if (state === "failed") row.append(el("button", {type: "button", class: "primary", text: T.retry, onclick: () => openWizard(card)}));
+    if (card.job && state !== "up") row.append(el("a", {class: "button", href: `${PREFIX}/jobs/${card.job.id}`, text: T.log, title: T.logTitle}));
+    if (state === "failed") row.append(el("button", {type: "button", text: T.retry, title: T.retryTitle, onclick: () => openWizard(card)}));
     if (card.linked && state !== "preparing") {
-      row.append(el("a", {class: "button primary", href: base, text: T.open}));
+      row.append(el("a", {class: "button", href: base, text: T.open, title: fill(T.openTitle, {name: card.local ? T.here : card.name})}));
     }
     row.append(el("span", {class: "grow"}));
     if (card.linked && !card.local) {
       const items = el("div", {class: "m-more-items"},
-        el("button", {type: "button", text: T.test, onclick: (e) => testLink(card, e.target)}),
-        el("button", {type: "button", class: "danger", text: T.remove, onclick: () => askRemove(card)}));
-      row.append(el("details", {class: "m-more"}, el("summary", {"aria-label": "…", text: "⋯"}), items));
+        el("button", {type: "button", text: T.test, title: T.testTitle, onclick: (e) => testLink(card, e.target)}),
+        el("button", {type: "button", class: "danger", text: T.remove + "…", title: T.removeHelp, onclick: () => askRemove(card)}));
+      row.append(el("details", {class: "m-more"}, el("summary", {"aria-label": T.moreTitle, title: T.moreTitle, text: "⋯"}), items));
     }
     return row;
   }
@@ -441,6 +452,7 @@
     });
     next.textContent = n === 1 ? `${T.next} →` : T.add;
     back.textContent = n === 1 ? T.cancel : `← ${T.back}`;
+    next.title = n === 1 ? T.nextTitle : T.addTitle; back.title = n === 1 ? T.cancelTitle : T.backTitle;
     error.textContent = "";
     if (n === 2) field("m-host").focus();
   }

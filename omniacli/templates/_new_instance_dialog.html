@@ -69,7 +69,7 @@
           <div class="ni-help ni-once">{{ _("It is shown only now: store it somewhere safe.") }}</div></div>
       </div>
       <details style="margin-top: 12px">
-        <summary class="muted" style="cursor: pointer; font-size: 13px">{{ _("Name (optional)") }}</summary>
+        <summary class="muted" style="cursor: pointer; font-size: 13px" title="{{ _('Shows the field of the name. Left empty, the instance is named after its version, for example odoo19.') }}">{{ _("Name (optional)") }}</summary>
         <div class="ni-fields" style="margin-top: 12px">
           <div><label for="ni-name">{{ _("Name") }}</label>
             <input type="text" id="ni-name" class="mono" maxlength="32" placeholder="odoo19" autocomplete="off"></div>
@@ -79,8 +79,8 @@
     </div>
     <div class="ni-foot">
       <p id="ni-error" class="error" role="alert"></p>
-      <button type="button" id="ni-cancel">{{ _("Cancel") }}</button>
-      <button type="submit" class="primary" id="ni-create">{{ _("Create the instance") }}</button>
+      <button type="button" id="ni-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
+      <button type="submit" class="primary" id="ni-create" title="{{ _('Makes the instance as a job: a workspace of its own with its disk, its database and its containers. What is there already is not touched. Not available until you tick that the password is saved.') }}">{{ _("Create the instance") }}</button>
     </div>
   </form>
 </dialog>

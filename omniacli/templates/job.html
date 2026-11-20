@@ -33,7 +33,7 @@
   <div class="actions" style="margin: 0">
     <form method="post" action="{{ prefix }}/jobs/{{ job.id }}/stop" id="stop-form"
           onsubmit="return confirm({{ _('Stop this job? Its program is ended (SIGTERM, SIGKILL after 10 s); what the job did before stays done, a step cut halfway stays halfway.') | tojson | forceescape }})">
-      <button class="danger btn-stop">{{ _("Stop job") }}</button>
+      <button class="danger btn-stop" title="{{ _('Ends the program of this job. What it did before stays done, a step cut halfway stays halfway. It asks before. Admins only.') }}">{{ _("Stop job") }}</button>
     </form>
   </div>
   {% endif %}
@@ -113,8 +113,8 @@
     <dt>{{ _("Status") }}</dt><dd class="status {{ job.status }}" id="status">{{ states.get(job.status, job.status) }}</dd>
     <dt>{{ _("Started by") }}</dt><dd>{{ tr(job.source) }}</dd>
     <dt>{{ _("Instances") }}</dt><dd class="mono">{{ job.instances | join(", ") }}</dd>
-    <dt>{{ _("Created") }}</dt><dd class="mono muted">{{ job.created }}</dd>
-    <dt>{{ _("Finished") }}</dt><dd class="mono muted" id="finished">{{ job.finished or "" }}</dd>
+    <dt>{{ _("Created") }}</dt><dd class="muted" id="created"></dd>
+    <dt>{{ _("Finished") }}</dt><dd class="muted" id="finished"></dd>
     <dt>{{ _("Duration") }}</dt><dd id="duration">{{ job.duration }}</dd>
     <dt>{{ _("Error") }}</dt><dd class="error" id="error" data-raw="{{ job.error or '' }}">{{ tr(job.error) }}</dd>
   </dl>
@@ -125,6 +125,8 @@
 <script>
 (function () {
   const STATES = {{ states | tojson }}, TEXTS = {{ texts | tojson }};
+  document.getElementById("created").textContent = whenText({{ job.created | tojson }});
+  document.getElementById("finished").textContent = whenText({{ (job.finished or "") | tojson }});
   const log = OmniaConsole.log(document.querySelector("#log .console-box"), OmniaConsole.jobLines(), 0);
   let next = 0;
   async function poll() {
@@ -140,7 +142,7 @@
     const st = document.getElementById("status");
     st.textContent = STATES[data.status] || data.status; st.className = "status " + data.status;
     showState(data.status);
-    document.getElementById("finished").textContent = data.finished || "";
+    document.getElementById("finished").textContent = whenText(data.finished || "");
     document.getElementById("duration").textContent = data.duration || "";
     // the error as the page drew it (translated) while the job's own text is the same
     const err = document.getElementById("error");
@@ -257,6 +259,7 @@
     const size = b >= 1073741824 ? (b / 1073741824).toFixed(2) + " GiB"
       : b >= 1048576 ? (b / 1048576).toFixed(1) + " MiB" : Math.max(1, Math.round(b / 1024)) + " KiB";
     a.className = "button primary"; a.textContent = {{ _("Download {file} ({size})") | tojson }}.replace("{file}", result.file).replace("{size}", size);
+    a.title = {{ _("Downloads this backup to your computer") | tojson }};
     box.appendChild(a); box.hidden = false;
     const params = new URLSearchParams(location.search);
     if (params.get("download") === "1") {

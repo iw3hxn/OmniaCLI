@@ -13,7 +13,7 @@
     <p>{{ _("A plugin adds a type of server: those installed here, and those published for download.") }}</p>
   </div>
   <div class="actions" style="margin: 0">
-    <button type="button" id="restart" {% if not systemd %}disabled title="{{ _('OmniaCLI is not run by systemd here: restart it yourself') }}"{% endif %}>{{ _("Restart OmniaCLI") }}</button>
+    <button type="button" id="restart" {% if not systemd %}disabled title="{{ _('OmniaCLI is not run by systemd here: restart it yourself') }}"{% else %}title="{{ _('Restarts OmniaCLI so that a plugin just installed is loaded: the pages answer again in a few seconds. Refused while a job is running. It asks before.') }}"{% endif %}>{{ _("Restart OmniaCLI") }}</button>
   </div>
 </div>
 <div id="store-error" class="banner" hidden></div>
@@ -23,7 +23,7 @@
   <p class="muted" style="margin: 0 0 12px">{{ _("Plugin API of this OmniaCLI:") }} <span class="mono">{{ api_version }}</span>.
   {{ _("A plugin that does not pass its checks is disabled: OmniaCLI works without it, and the servers of its type are kept as they are, without actions, until it is back.") }}</p>
   <details style="margin-bottom: 12px">
-    <summary>{{ _("How plugins are found") }}</summary>
+    <summary title="{{ _('Where OmniaCLI looks for the plugins installed on this machine') }}">{{ _("How plugins are found") }}</summary>
     <p class="muted" style="margin: 6px 0 0">{{ _("Those of the installed Python packages are found by their entry point of the group") }} <span class="mono">{{ group }}</span>.</p>
   </details>
   {{ list_search("plugins", _("Search type, name, source…")) }}
@@ -63,7 +63,7 @@
   <span class="mono">plugins.public_key</span> {{ _("of the main configuration") }}{% if not source.public_key %} (<strong>{{ _("not set: nothing can be installed") }}</strong>){% endif %}.
   {{ _("Install downloads one, checks it, and installs it through the root helper; it is loaded when OmniaCLI restarts, and installed again at every upgrade.") }}</p>
   <details style="margin-bottom: 12px">
-    <summary>{{ _("The line the helper needs in") }} <span class="mono">/etc/sudoers.d/omniacli</span></summary>
+    <summary title="{{ _('Shows the sudoers line that lets OmniaCLI install a plugin through the root helper, ready to copy') }}">{{ _("The line the helper needs in") }} <span class="mono">/etc/sudoers.d/omniacli</span></summary>
     <pre class="console mono copyable" style="white-space: pre-wrap; margin-top: 8px">{{ sudoers }}</pre>
   </details>
   <div class="scroll">
@@ -95,6 +95,7 @@
       if (!p.error && p.installed !== p.version) {
         const button = document.createElement("button");
         button.type = "button"; button.textContent = p.installed ? {{ _("Update") | tojson }} : {{ _("Install") | tojson }};
+        button.title = {{ _("Downloads the published version of this plugin, checks its signed manifest and installs it through the root helper: it is a job. OmniaCLI loads it at its next restart. It asks before.") | tojson }};
         button.onclick = async () => {
           if (!confirm((p.installed ? {{ _("Update the plugin {name} {version}?") | tojson }} : {{ _("Install the plugin {name} {version}?") | tojson }}).replace("{name}", p.name).replace("{version}", p.version))) return;
           show("");

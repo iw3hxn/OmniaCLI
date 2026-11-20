@@ -14,7 +14,7 @@
     <p>{{ _("The log of the instance, followed as it grows:") }} <span class="mono">{{ instance.log_label }}</span></p>
   </div>
   <div class="actions" style="margin: 0">
-    <a class="button" href="{{ prefix }}/servers/{{ instance.server }}?view={{ instance.role }}">{{ _("Back to {key}", key=instance.key) }}</a>
+    <a class="button" href="{{ prefix }}/servers/{{ instance.server }}?view={{ instance.role }}" title="{{ _('Goes back to the page of {key}', key=instance.key) }}">{{ _("Back to {key}", key=instance.key) }}</a>
   </div>
 </div>
 {% from "_console.html" import logbox, console_script with context %}

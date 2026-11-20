@@ -18,13 +18,13 @@
 <div class="banner info">{{ _("Your user is set in the main configuration file: its password is changed there") }} (<span class="mono">omniacli hash-password</span>).</div>
 {% else %}
 <div id="error" class="banner" hidden></div>
-<div id="done" class="banner ok" hidden>{{ _("Password changed. The browser asks for the new one at the next page.") }}</div>
+<div id="done" class="banner ok" hidden>{{ _("Password changed. This browser stays logged in; every other session of your user is closed.") }}</div>
 <form class="panel" id="password-form">
   <h2 style="margin-bottom: 12px">{{ _("Change password") }}</h2>
   <p><label>{{ _("Current password") }}<br><input type="password" id="current" autocomplete="current-password" required></label></p>
   <p><label>{{ _("New password (at least 8 characters)") }}<br><input type="password" id="password" autocomplete="new-password" minlength="8" required></label></p>
   <p><label>{{ _("New password again") }}<br><input type="password" id="again" autocomplete="new-password" minlength="8" required></label></p>
-  <button class="primary">{{ _("Change password") }}</button>
+  <button class="primary" title="{{ _('Changes your password after checking the current one. Your sessions in other browsers end; this one stays open.') }}">{{ _("Change password") }}</button>
 </form>
 <script>
 document.getElementById("password-form").onsubmit = async (event) => {

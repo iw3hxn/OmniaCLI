@@ -23,8 +23,8 @@
     <progress id="restore-progress" max="100" value="0" hidden style="width: 100%; margin-top: 10px"></progress>
     <p id="restore-error" class="error"></p>
     <div class="actions">
-      <button type="submit" class="danger" id="restore-go">{{ _("Restore") }}</button>
-      <button type="button" id="restore-cancel">{{ _("Cancel") }}</button>
+      <button type="submit" class="danger" id="restore-go" title="{{ _('Drops the database and the files of this instance and loads the zip or the backup chosen above. It cannot be undone. It asks before: for a production you type the name of its database. Admins only.') }}">{{ _("Restore") }}</button>
+      <button type="button" id="restore-cancel" title="{{ _('Closes without restoring anything. An upload that is going is interrupted and leaves no file.') }}">{{ _("Cancel") }}</button>
     </div>
   </form>
 </dialog>

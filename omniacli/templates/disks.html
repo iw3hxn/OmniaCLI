@@ -15,7 +15,7 @@
   <div><h1>{{ _("Disks") }}</h1>
     <p>{{ _("The used space of each disk, recorded once a day and kept three years, and the day it will be full.") }}</p></div>
 </div>
-<details style="margin: 0 0 16px"><summary>{{ _("How the forecast is made") }}</summary>
+<details style="margin: 0 0 16px"><summary title="{{ _('The rule the days left of each disk are worked out with') }}">{{ _("How the forecast is made") }}</summary>
 <p class="muted">{{ _("The dashed line is the forecast: the trend of the last 90 days (at least 7 days of data), up to the day the disk is full, that is when no space is left to a service (ext4 keeps 5% for root).") }}</p></details>
 <div id="disks"><p class="muted">{{ _("Loading…") }}</p></div>
 <div id="ws-disks-box" hidden>
@@ -30,7 +30,7 @@
   const DAY = 86400000;
   const T = {
     fullAt: {{ _("full at {size}") | tojson }}, tip: {{ _("{day} · used {used} · free {free}") | tojson }},
-    daily: {{ _("Daily values") | tojson }},
+    daily: {{ _("Daily values") | tojson }}, dailyTitle: {{ _("The room used on this disk day by day, the numbers the forecast is made from") | tojson }},
     heads: [{{ _("Day") | tojson }}, {{ _("Used") | tojson }}, {{ _("Free") | tojson }}, {{ _("Size") | tojson }}],
     second: {{ _("Recorded once a day: the chart starts with the second day.") | tojson }},
     aria: {{ _("Used space of {name} by day, with the forecast") | tojson }},
@@ -139,7 +139,7 @@
 
   function table(disk) {
     const box = node("details");
-    box.appendChild(node("summary", "", T.daily));
+    box.appendChild(Object.assign(node("summary", "", T.daily), {title: T.dailyTitle}));
     const scroll = node("div", "scroll");
     scroll.style.maxHeight = "40vh";
     const t = node("table");

@@ -174,6 +174,17 @@ async def test_links_page(mine):
     page = (await mine.get("/links", headers=as_user("admin"))).text
     assert "<strong><a href=\"/links/cliente/\">cliente</a></strong>" in page and LINK_TOKEN not in page
     assert "the token travels in clear" in page  # cliente is http
+    # UX-007: a row a link, read; its fields in the dialog; one primary; every button says what it does
+    import re
+    body = re.sub(r"<script.*?</script>", "", page, flags=re.S)
+    body = body[body.index('<div class="page-head">'):]
+    outside = re.sub(r"<dialog.*?</dialog>", "", body, flags=re.S)
+    assert len(re.findall(r'class="[^"]*\bprimary\b', outside)) == 1 and 'id="link-new"' in outside
+    assert not re.findall(r"<(?:input|textarea|select)\b(?![^>]*data-list-search)", outside) and "<pre" not in outside
+    silent = [m.group(0) for m in re.finditer(r"(<span title=\"[^\"]+\">\s*)?<(?:button|summary)\b[^>]*>", body)
+              if "title=" not in m.group(0)]
+    assert not silent, silent
+    assert 'data-link="cliente"' in outside and 'data-url="' in outside and 'id="ld-save" disabled' in body
     assert (await mine.get("/links", headers=as_user("dev"))).status_code == 403
 
     data = (await post("/api/links/cliente/test", {})).json()

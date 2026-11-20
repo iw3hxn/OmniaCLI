@@ -37,14 +37,14 @@
   <div id="roles"></div>
   <div class="actions form-actions">
     {% if model.active %}
-    <button type="submit" data-activate="1" class="primary">{{ _("Test & save") }}</button>
-    <button type="submit" data-activate="0">{{ _("Save as draft (takes it offline)") }}</button>
+    <button type="submit" data-activate="1" class="primary" title="{{ _('Runs the checks on what the form holds and saves only when all pass. Otherwise nothing is saved and the server stays live with its previous settings.') }}">{{ _("Test & save") }}</button>
+    <button type="submit" data-activate="0" title="{{ _('Saves what the form holds without running the checks and takes the server offline: no actions and no auto update until Test & activate. It asks before.') }}">{{ _("Save as draft (takes it offline)") }}</button>
     {% else %}
-    <button type="submit" data-activate="1" class="primary">{{ _("Save, test & activate") }}</button>
-    <button type="submit" data-activate="0">{{ _("Save as draft") }}</button>
+    <button type="submit" data-activate="1" class="primary" title="{{ _('Saves what the form holds, then runs the checks: when all pass the server goes live, otherwise it stays saved as a draft.') }}">{{ _("Save, test & activate") }}</button>
+    <button type="submit" data-activate="0" title="{{ _('Saves what the form holds without running the checks. A draft is not live: no dashboard, no actions, no auto update.') }}">{{ _("Save as draft") }}</button>
     {% endif %}
     <button type="button" id="check" title="{{ _("Run the checks on what the form holds: nothing is saved, the form stays open") }}">{{ _("Test") }}</button>
-    <a class="button" href="{{ prefix }}/config">{{ _("Cancel") }}</a>
+    <a class="button" href="{{ prefix }}/config" title="{{ _('Goes back to the list of the servers: nothing of what is typed here is saved.') }}">{{ _("Cancel") }}</a>
   </div>
   <p class="muted">{% if model.active %}{{ _("This server is live: the change is saved only if every check passes, otherwise it stays as it is.") }}{% else %}{{ _("A draft is not live: no dashboard, no actions, no auto update.") }}{% endif %}</p>
 </form>
@@ -109,7 +109,7 @@
         <tbody></tbody>
       </table>
       </div>
-      <div class="actions"><button type="button" class="add-repo">{{ _("Add repository") }}</button></div>
+      <div class="actions"><button type="button" class="add-repo" title="{{ _('Adds an empty row to the repositories of this instance. It is saved with the form.') }}">{{ _("Add repository") }}</button></div>
     </div>
   </section>
 </template>
@@ -171,6 +171,7 @@ function repoRow(tbody, repo) {
   read.title = {{ _("Read the branches of the remote and choose one from a list") | tojson }};
   read.onclick = () => readBranches(tr, read);
   del.type = "button"; del.textContent = {{ _("Remove") | tojson }}; del.onclick = () => tr.remove();
+  del.title = {{ _("Takes this repository off the list of the form: its folder on the disk is not touched. It is saved with the form.") | tojson }};
   td.style.whiteSpace = "nowrap"; td.append(read, " ", del); tr.appendChild(td); tbody.appendChild(tr);
 }
 

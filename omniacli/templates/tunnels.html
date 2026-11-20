@@ -31,7 +31,7 @@
     </div>
     <span></span>
     <div>
-      <button type="submit" class="primary" {% if not servers %}disabled{% endif %}>{{ _("Open tunnel") }}</button>
+      <button type="submit" class="primary" {% if not servers %}disabled{% endif %} title="{{ _('Opens a port of this machine that reaches the web interface of the chosen instance through the link, and lists it here below. A tunnel already open to that instance is used again. Not available when no server of a link answers.') }}">{{ _("Open tunnel") }}</button>
       {% if not servers %}<span class="muted">{{ _("No server of a link answers") }}{% for e in errors %} · {{ e.link }}: {{ tr(e.error) }}{% endfor %}.</span>{% endif %}
     </div>
   </form>
@@ -48,7 +48,7 @@
       <td>{{ t.owner }}</td>
       <td class="mono muted" data-time="{{ t.last_active }}"></td>
       <td class="mono">{{ t.connections }}</td>
-      <td>{% if t.can_close %}<button type="button" class="danger" data-close="{{ t.id }}">{{ _("Close") }}</button>{% endif %}</td>
+      <td>{% if t.can_close %}<button type="button" class="danger" data-close="{{ t.id }}" title="{{ _('Closes this tunnel at once, without asking: its address stops answering. The instance is not touched. Only who opened it, or an admin, closes it.') }}">{{ _("Close") }}</button>{% endif %}</td>
     </tr>
     {% else %}
     <tr><td colspan="6" class="muted">{{ _("No tunnel open.") }}</td></tr>
@@ -57,7 +57,7 @@
   </div>
 </section>
 <details class="panel">
-  <summary>{{ _("How a tunnel works") }}</summary>
+  <summary title="{{ _('Where the tunnels listen, when one closes by itself and who can reach it') }}">{{ _("How a tunnel works") }}</summary>
   <p class="muted" style="margin-bottom: 0">{{ _("The tunnels listen on") }} <span class="mono">{{ options.tunnel_bind }}</span>, {{ _("ports") }} <span class="mono">{{ options.tunnel_ports }}</span>.
   {% if options.tunnel_bind.startswith("127.") or options.tunnel_bind == "::1" %}{{ _("Only a browser on this machine reaches it.") }}{% endif %}
   {{ _("It closes when you close it, when OmniaCLI stops, or after {hours} h without traffic.", hours=options.tunnel_idle_hours) }}

@@ -55,7 +55,7 @@ data-font-min="{{ console_font_sizes[0] }}" data-font-max="{{ console_font_sizes
 <div {{ _box_attrs(key) }}>
   <div class="console-bar">
     <span class="console-state muted">{{ _("Connecting…") }}</span>
-    <button type="button" class="console-again" hidden>{{ _("Open a new shell") }}</button>
+    <button type="button" class="console-again" hidden title="{{ _('Clears this terminal and opens a new shell in it. The shell that closed is not taken up again.') }}">{{ _("Open a new shell") }}</button>
     {{ _tools() }}
   </div>
   <div class="console-term" style="height: {{ height }}"></div>

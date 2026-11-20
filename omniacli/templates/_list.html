@@ -40,7 +40,7 @@ data-list-item data-text="{{ text | lower }}"
 {% for section in sections %}
 {% if section.name %}
 <details class="group list-group level-{{ level }}" open data-group="{{ path ~ '/' ~ section.name }}">
-  <summary><h2>{{ (_("Others") if _ is defined else section.name) if section.name == "Others" else section.name }} <span class="muted list-count">({{ section.count }})</span></h2></summary>
+  <summary {% if _ is defined %}title="{{ _('Folds or shows this group. The choice is kept in this browser.') }}"{% endif %}><h2>{{ (_("Others") if _ is defined else section.name) if section.name == "Others" else section.name }} <span class="muted list-count">({{ section.count }})</span></h2></summary>
   {% if section["items"] %}{{ render(section["items"]) }}{% endif %}
   {{ grouped(section.groups, render, id, path ~ "/" ~ section.name, level + 1) }}
 </details>

@@ -199,7 +199,7 @@ def test_a_link_goes_through_its_tunnel(env, tmp_path, customer, fake_ssh):  # n
         assert c.get("/links/cliente/servers/srv", headers=headers).status_code == 200
         page = html.unescape(c.get("/links", headers=headers).text)
         assert f'permitopen="127.0.0.1:{url.rsplit(":", 1)[1]}",command="/bin/false" {public}' in page
-        assert "Match User omniacli-link" in page and ">up<" in page
+        assert "Match User omniacli-link" in page and 'data-tunnel="up"' in page
         # ssh dropped: down, then again, on the same port
         first = call["pid"]
         os.kill(first, signal.SIGKILL)

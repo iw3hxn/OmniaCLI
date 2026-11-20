@@ -34,8 +34,8 @@
     {% endfor %}
     </div>
     <div class="actions">
-      <button class="danger">{{ tr(a.label) }}</button>
-      <button type="button" onclick="this.closest('dialog').close()">{{ _("Cancel") }}</button>
+      <button class="danger" title="{{ tr(a.tooltip) if a.tooltip else _('Starts this action with the values written here, as a job.') }}">{{ tr(a.label) }}</button>
+      <button type="button" onclick="this.closest('dialog').close()" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
     </div>
   </form>
 </dialog>

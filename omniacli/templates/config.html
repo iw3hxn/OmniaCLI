@@ -8,7 +8,7 @@
   <div><h1>{{ _("Servers") }}</h1>
     <p>{{ _("The servers OmniaCLI operates: a new or cloned one is a draft until Test & activate passes its checks.") }}</p></div>
   <div class="actions" style="margin: 0">
-    <a class="button primary" href="{{ prefix }}/config/new">{{ _("New server") }}</a>
+    <a class="button primary" href="{{ prefix }}/config/new" title="{{ _('Opens an empty form for a new server. Nothing is created until you save there.') }}">{{ _("New server") }}</a>
     <a class="button" href="{{ prefix }}/config/discover" title="{{ _("Find the instances running on this machine and add them as drafts") }}">{{ _("Discover") }}</a>
   </div>
 </div>
@@ -34,11 +34,11 @@
     <tr class="config-actions">
       <td colspan="4">
         <div class="actions" style="margin: 0">
-          <button type="button" class="{{ 'btn-test' if server.active else 'btn-activate' }}" data-test="{{ server.name }}">{{ _("Test") if server.active else _("Test & activate") }}</button>
-          {% if not server.missing_plugin %}<a class="button btn-edit" href="{{ prefix }}/config/{{ server.name }}/edit">{{ _("Edit") }}</a>
-          <a class="button btn-clone" href="{{ prefix }}/config/{{ server.name }}/clone">{{ _("Clone") }}</a>{% endif %}
-          {% if server.active %}<button type="button" data-deactivate="{{ server.name }}" {% if busy[server.name] %}disabled title="{{ _("A job is running") }}"{% endif %}>{{ _("Set to draft") }}</button>{% endif %}
-          <button class="danger" data-name="{{ server.name }}" {% if busy[server.name] %}disabled title="{{ _("A job is running") }}"{% endif %}>{{ _("Delete") }}</button>
+          <button type="button" class="{{ 'btn-test' if server.active else 'btn-activate' }}" data-test="{{ server.name }}" title="{{ _('Runs the checks on this server as it is saved and shows the result. It changes nothing: the server stays live even when a check fails.') if server.active else _('Runs the checks on this draft and shows the result: when all pass the server goes live, otherwise it stays a draft.') }}">{{ _("Test") if server.active else _("Test & activate") }}</button>
+          {% if not server.missing_plugin %}<a class="button btn-edit" href="{{ prefix }}/config/{{ server.name }}/edit" title="{{ _('Opens the form of this server with its saved settings. Nothing changes until you save there.') }}">{{ _("Edit") }}</a>
+          <a class="button btn-clone" href="{{ prefix }}/config/{{ server.name }}/clone" title="{{ _('Opens the form of a new server filled with the settings of this one, under a new name. Nothing is created until you save there; this server does not change.') }}">{{ _("Clone") }}</a>{% endif %}
+          {% if server.active %}<button type="button" data-deactivate="{{ server.name }}" {% if busy[server.name] %}disabled title="{{ _("A job is running") }}"{% else %}title="{{ _('Takes this server offline: no dashboard, no actions and no auto update until Test & activate passes again. Its settings, databases and files are not touched. It asks before.') }}"{% endif %}>{{ _("Set to draft") }}</button>{% endif %}
+          <button class="danger" data-name="{{ server.name }}" {% if busy[server.name] %}disabled title="{{ _("A job is running") }}"{% else %}title="{{ _('Removes this server from OmniaCLI: only its configuration goes, databases and files stay where they are. It asks before. An instance made by a workspace is deleted from the page of its workspace instead.') }}"{% endif %}>{{ _("Delete") }}</button>
         </div>
       </td>
     </tr>
@@ -50,7 +50,7 @@
   </div>
 </section>
 <details class="muted">
-  <summary>{{ _("More") }}</summary>
+  <summary title="{{ _('Where the servers are saved and when a draft goes live') }}">{{ _("More") }}</summary>
   <p>{{ _("Servers are saved in {file} (the previous version is kept as .bak).", file=servers_file) }}
     {{ _("A new or cloned server is a draft: it goes live only when Test & activate passes its checks.") }}</p>
 </details>

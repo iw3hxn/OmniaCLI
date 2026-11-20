@@ -20,7 +20,7 @@
        {{ _("Every copy is encrypted here before it leaves, with the destination's own key: the provider cannot read it.") }}
        {% if workspace %}{{ _("These are the workspace's: its admins set them, its instances use them.") }}{% else %}{{ _("These are the machine's, for its admins; a workspace's admins set the workspace's on its page.") }}{% endif %}</p>
   </div>
-  <div class="actions"><button type="button" class="primary" id="dest-new" {{ "disabled" if not rclone }}>+ {{ _("New destination") }}</button></div>
+  <div class="actions"><button type="button" class="primary" id="dest-new" {{ "disabled" if not rclone }} title="{{ _('Opens the form of a new destination: nothing is created until you save there. Not available when rclone is not installed on this machine.') }}">+ {{ _("New destination") }}</button></div>
 </div>
 {% if not rclone %}<div class="banner">{{ _("rclone is not installed on this machine: install it (apt install rclone) to copy the backups out.") }}</div>{% endif %}
 <div id="error" class="banner" hidden></div>
@@ -38,10 +38,10 @@
       {% if not workspace %}<td>{% if d.workspace %}<a href="{{ prefix }}/workspaces/{{ d.workspace }}/destinations">{{ d.workspace }}</a>{% else %}{{ _("this machine") }}{% endif %}</td>{% endif %}
       <td class="muted">{{ d.used_by | join(", ") or "—" }}</td>
       <td>{% if (d.workspace or "") == workspace %}<div class="actions" style="margin: 0">
-        <button type="button" data-check>{{ _("Try") }}</button>
-        <button type="button" data-edit>{{ _("Edit") }}</button>
-        <button type="button" data-key>{{ _("Show the key") }}</button>
-        <button type="button" class="danger" data-delete {{ "disabled" if d.used_by }}>{{ _("Delete") }}</button>
+        <button type="button" data-check title="{{ _('Reaches the destination now: makes its folder when missing, writes a small file there and removes it, then says how many files the folder holds. The copies there are not touched.') }}">{{ _("Try") }}</button>
+        <button type="button" data-edit title="{{ _('Opens the form of this destination to change its kind, folder or settings. Its name and its key stay as they are; a password left empty keeps the saved one.') }}">{{ _("Edit") }}</button>
+        <button type="button" data-key title="{{ _('Shows here above the key the copies of this destination are encrypted with, to keep somewhere else too. It changes nothing; the access log records who asked.') }}">{{ _("Show the key") }}</button>
+        <button type="button" class="danger" data-delete {{ "disabled" if d.used_by }} title="{{ _('Deletes this destination from OmniaCLI: the copies already there stay there. It asks before. Not available while the automatic backups of an instance go to it.') }}">{{ _("Delete") }}</button>
       </div><div class="muted dest-result" style="font-size: 13px"></div>{% endif %}</td>
     </tr>
     {% else %}
@@ -64,13 +64,13 @@
       <p class="help muted" id="d-path-help">{{ _("For S3, Azure and Google Cloud: the bucket, then the folder (my-bucket/odoo).") }}</p>
     </div>
     <div class="form-grid" id="d-settings"></div>
-    <details id="d-key-row" style="margin-top: 8px"><summary>{{ _("A key of before") }}</summary>
+    <details id="d-key-row" style="margin-top: 8px"><summary title="{{ _('For a folder that already holds copies made by another OmniaCLI: type its key here to read them again') }}">{{ _("A key of before") }}</summary>
       <p class="muted" style="font-size: 13px">{{ _("To read again the copies another OmniaCLI made there, give its key; empty: a new one.") }}</p>
       <input type="text" id="d-key" class="mono" placeholder="opk1-…"></details>
     <p class="error" id="d-error"></p>
     <div class="actions" style="justify-content: flex-end">
-      <button type="button" id="d-cancel">{{ _("Cancel") }}</button>
-      <button type="submit" class="primary" id="d-save">{{ _("Save") }}</button>
+      <button type="button" id="d-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
+      <button type="submit" class="primary" id="d-save" title="{{ _('Saves the destination. A new one gets its own key, shown right after: keep it somewhere else too. No backup goes there until an instance chooses it in its automatic backups.') }}">{{ _("Save") }}</button>
     </div>
   </form>
 </dialog>

@@ -16,7 +16,7 @@
     <h1>{{ _("Workspaces") }}</h1>
     <p>{{ _("The customers' closed parts of this machine: their servers, their users, their limits and disk.") }}</p>
   </div>
-  <div class="actions list-only"><button type="button" class="primary" id="add">{{ _("New workspace") }}</button></div>
+  <div class="actions list-only"><button type="button" class="primary" id="add" title="{{ _('Opens the form of a new workspace. Nothing is created until you save there.') }}">{{ _("New workspace") }}</button></div>
 </div>
 <div id="error" class="banner" hidden></div>
 {% if storage_error %}<div class="banner">{{ _("No workspace can be used: {error}, in {file} (root's); then, as root, {command}.", error=tr(storage_error), file=system_config, command="dpkg-reconfigure omniacli") }}</div>{% endif %}
@@ -31,7 +31,7 @@
     {% include "_workspaces_list.html" %}
     <p class="muted">{{ _("A workspace is a customer's closed part of this machine: its servers and its users, each with its role there.") }}</p>
     <details>
-      <summary>{{ _("More") }}</summary>
+      <summary title="{{ _('Who sees what in a workspace, how its CPU and memory are measured and where the workspaces are saved') }}">{{ _("More") }}</summary>
       <p class="muted">{{ _("The roles in a workspace are those of the Users page: user, developer, admin. A user of role workspace (Users page) sees only the servers of its workspaces, none of this machine's pages, consoles, links and configuration; the admins of a workspace manage its users. A server is in one workspace at most.") }}</p>
       <p class="muted">{{ _("CPU and memory are those of its containers together (its systemd slice), against its limits.") }}
         {{ _("Saved in {file}.", file=workspaces_file) }}</p>
@@ -56,7 +56,7 @@
   <h2>{{ _("Templates") }}</h2>
   <p class="muted">{{ _("What new instances are made from: the package's, and those published and downloaded here.") }}</p>
   <details>
-    <summary>{{ _("More") }}</summary>
+    <summary title="{{ _('Where the published templates come from and which version is used') }}">{{ _("More") }}</summary>
     <p class="muted">{{ _("The published templates come from {index}, signed and checked with plugins.public_key of the main configuration. Of the two, the higher version is used; the instances made before keep their files.", index=templates_index) }}</p>
   </details>
   <div class="scroll" style="margin-top: 10px">
@@ -71,7 +71,7 @@
     {% endfor %}
   </table>
   </div>
-  <div class="actions"><button type="button" id="look-templates">{{ _("Look for published templates") }}</button></div>
+  <div class="actions"><button type="button" id="look-templates" title="{{ _('Reads the index of the published templates and shows the version published of each, with a button to install it. It changes nothing.') }}">{{ _("Look for published templates") }}</button></div>
 </section>
 </div>
 {% set limit_labels = {"disk_gb": _("Disk, GB"), "cpus": _("CPUs"), "memory_gb": _("Memory, GB"), "instances": _("Instances")} %}
@@ -87,7 +87,7 @@
       <div>
       {% if storage_roots %}<select class="storage" aria-label="{{ _('Storage') }}">{% for r, folder in storage_roots.items() %}<option value="{{ r }}">{{ r }} ({{ folder }})</option>{% endfor %}</select>
       {% else %}<input type="text" class="storage mono" placeholder="{{ _('no workspaces.storage in the main configuration') }}" disabled aria-label="{{ _('Storage') }}">{% endif %}
-      <details class="muted" style="margin-top: 4px"><summary>{{ _("Add a storage (another real disk)") }}</summary>
+      <details class="muted" style="margin-top: 4px"><summary title="{{ _('The steps to do as root to offer another disk here, or to move a storage to a new disk') }}">{{ _("Add a storage (another real disk)") }}</summary>
         <ol style="margin: 4px 0; padding-left: 20px">
           <li>{{ _("As root, make on the disk a folder of root's that nobody else may write (letters, digits and . _ -, no symbolic link). The folders above it may be anyone's: OmniaCLI binds it on a path of root's and checks at every boot that it is still the same folder:") }}
             <pre class="mono copyable">install -d -o root -g root -m 755 /media/disk2/omniacli</pre></li>
@@ -114,9 +114,9 @@
       <textarea class="bounds mono" rows="2" placeholder="workers 0 16" aria-label="{{ _('Bounds of the Odoo parameters') }}"></textarea>
     </div>
     <div class="actions" style="margin: 8px 0 0">
-      <button type="button" class="save primary">{{ _("Save") }}</button>
-      <a class="button users-link">{{ _("Users of the workspace") }}</a>
-      <button type="button" class="danger remove">{{ _("Delete") }}</button>
+      <button type="button" class="save primary" title="{{ _('Saves the workspace as the form holds it and goes back to the list. A changed domain, CPU or memory limit is applied to its instances by a job. A disk larger than the room left is refused unless forced.') }}">{{ _("Save") }}</button>
+      <a class="button users-link" title="{{ _('Opens the page of this workspace, where its users and their roles are managed. What was changed here and not saved is lost.') }}">{{ _("Users of the workspace") }}</a>
+      <button type="button" class="danger remove" title="{{ _('Deletes this workspace: its servers stay, its users of role workspace no longer see them. Its disk goes too when it is empty and no instance of its own is left. It asks before.') }}">{{ _("Delete") }}</button>
     </div>
   </fieldset>
 </template>
@@ -216,6 +216,8 @@
                     servers: field("servers").value.split("\n").map((l) => l.trim()).filter(Boolean)};
       if (await post("save", body)) location.href = "{{ prefix }}/workspaces";
     };
+    // on a new workspace nothing is there to delete: the button only leaves the form
+    if (isNew) field("remove").title = {{ _("Leaves this form and goes back to the list: no workspace is created.") | tojson }};
     field("remove").onclick = async () => {
       if (isNew) { location.href = "{{ prefix }}/workspaces"; return; }
       if (!confirm({{ _("Delete workspace {name}? Its servers stay; its users no longer see them.") | tojson }}.replace("{name}", ws.name))) return;
@@ -248,6 +250,7 @@
         const button = document.createElement("button");
         button.type = "button";
         button.textContent = t.used === t.version ? {{ _("Install again") | tojson }} : {{ _("Install") | tojson }};
+        button.title = {{ _("Downloads this published template, checks it and installs it through the root helper: it is a job, started at once without asking. New instances are made from it; the instances made before keep their files.") | tojson }};
         button.onclick = async () => {
           const r = await fetch(`{{ prefix }}/api/templates/${encodeURIComponent(t.name)}/install`, {method: "POST"});
           const d = await r.json().catch(() => ({}));

@@ -1,5 +1,9 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
 {% from "_icons.html" import runner %}
+{# 2026-11-20 10:40:51 as 20/11/2026 10:40 #}
+{% macro when(iso) %}{% if iso %}{{ iso[8:10] }}/{{ iso[5:7] }}/{{ iso[0:4] }} {{ iso[11:16] }}{% endif %}{% endmacro %}
+{% set job_states = {"queued": _("queued"), "running": _("running"), "success": _("success"), "failed": _("failed"),
+                     "interrupted": _("interrupted"), "stopped": _("stopped"), "skipped": _("skipped")} %}
 {# the status stays the job's own word (running, success...): the Dashboard's
    script reads it from the cell to see a job change #}
 <div class="scroll">
@@ -9,10 +13,10 @@
   <tr data-job="{{ job.id }}" data-servers="{{ job.servers | join(' ') }}">
     <td><a href="{{ prefix }}/jobs/{{ job.id }}">{{ tr(job.title) }}</a></td>
     <td>{% for name in job.servers %}<a href="{{ prefix }}/jobs?server={{ name | urlencode }}" title="{{ _('Jobs of {name}', name=name) }}">{{ name }}</a>{% if not loop.last %}, {% endif %}{% endfor %}</td>
-    <td class="status {{ job.status }} job-status" data-status="{{ job.status }}">{% if job.status == "running" %}{{ runner("mini") }}{% endif %}{{ job.status }}</td>
+    <td class="status {{ job.status }} job-status" data-status="{{ job.status }}">{% if job.status == "running" %}{{ runner("mini") }}{% endif %}{{ job_states.get(job.status, job.status) }}</td>
     <td>{{ tr(job.source) }}</td>
-    <td class="mono muted" style="white-space: nowrap">{{ job.created }}</td>
-    <td class="mono muted job-finished" style="white-space: nowrap">{{ job.finished or "" }}</td>
+    <td class="muted" style="white-space: nowrap; font-variant-numeric: tabular-nums" title="{{ job.created }}">{{ when(job.created) }}</td>
+    <td class="muted job-finished" style="white-space: nowrap; font-variant-numeric: tabular-nums" title="{{ job.finished or '' }}">{{ when(job.finished) }}</td>
     <td class="job-duration">{{ job.duration }}</td>
     <td class="error job-error">{{ tr(job.error) }}</td>
   </tr>

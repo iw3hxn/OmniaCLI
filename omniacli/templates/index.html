@@ -77,8 +77,8 @@
 {% from "_bars.html" import bars with context %}
 {% if machine %}
 <nav class="tabs" role="tablist" aria-label="{{ _('Sections of the server') }}">
-  <button type="button" role="tab" data-tab="overview" aria-selected="true">{{ _("Overview") }}</button>
-  <button type="button" role="tab" data-tab="monitor">{{ _("Monitoring") }}</button>
+  <button type="button" role="tab" data-tab="overview" aria-selected="true" title="{{ _('The instances of this machine, the linked ones and the last jobs') }}">{{ _("Overview") }}</button>
+  <button type="button" role="tab" data-tab="monitor" title="{{ _('The load of this machine and of each instance over the last hour') }}">{{ _("Monitoring") }}</button>
 </nav>
 {% endif %}
 <section class="tab-panel" data-panel="overview" data-bars-scope>
@@ -110,8 +110,8 @@
 {% if machine and machine_links %}
 <section class="fold" data-fold="linked">
 <div class="fold-head">
-  <h2><button type="button" class="fold-toggle" aria-expanded="true"><span class="fold-icon" aria-hidden="true">▾</span>{{ _("Linked") }}</button></h2>
-  {% if is_admin and not prefix %}<a class="button" href="/groups#links">{{ _("Edit groups") }}</a>{% endif %}
+  <h2><button type="button" class="fold-toggle" aria-expanded="true" title="{{ _('Folds or shows the list of the linked servers') }}"><span class="fold-icon" aria-hidden="true">▾</span>{{ _("Linked") }}</button></h2>
+  {% if is_admin and not prefix %}<a class="button" href="/groups#links" title="{{ _('Opens the page where the linked servers are put in groups') }}">{{ _("Edit groups") }}</a>{% endif %}
 </div>
 <div class="fold-body"><div class="fold-inner">
 <p class="muted" style="margin-top: 0">{{ _("The machine of each linked instance, through its link: CPU and network of the last 15 minutes, its disks. A name opens it.") }}</p>
@@ -156,7 +156,7 @@
 {% if load_workspaces %}
 <section class="fold" data-fold="my-workspaces">
 <div class="fold-head">
-  <h2><button type="button" class="fold-toggle" aria-expanded="true"><span class="fold-icon" aria-hidden="true">▾</span>{{ _("Your workspace") if load_workspaces | length == 1 else _("Your workspaces") }}</button></h2>
+  <h2><button type="button" class="fold-toggle" aria-expanded="true" title="{{ _('Folds or shows the load of your workspaces') }}"><span class="fold-icon" aria-hidden="true">▾</span>{{ _("Your workspace") if load_workspaces | length == 1 else _("Your workspaces") }}</button></h2>
 </div>
 <div class="fold-body"><div class="fold-inner">
 <p class="muted" style="margin-top: 0">{{ _("What the workspace's containers use, last hour, against its limits. Network: the traffic of its projects' networks, not the traffic inside one project.") }}</p>
@@ -188,7 +188,7 @@
 const DASH_T = {
   status: {{ job_status | tojson }}, badge: {{ job_badge | tojson }},
   noJobs: {{ _("No job of these servers among the last ones.") | tojson }},
-  finishedOk: {{ _("finished: success") | tojson }}, close: {{ _("Close") | tojson }},
+  finishedOk: {{ _("finished: success") | tojson }}, close: {{ _("Close") | tojson }}, closeTitle: {{ _("Closes this notice. The job is not touched.") | tojson }},
   http: {{ _("No answer: HTTP {status}") | tojson }}, noAnswer: {{ _("No answer.") | tojson }},
   older: {{ _("Not available: that OmniaCLI is older.") | tojson }}, noDisks: {{ _("No disks found.") | tojson }},
   core: {{ _("{n} core") | tojson }}, cores: {{ _("{n} cores") | tojson }},
@@ -360,8 +360,8 @@ const dashFill = (text, values) => text.replace(/\{(\w+)\}/g, (all, k) => (k in 
     });
     statusCell(tr.insertCell(), job.status);
     tr.insertCell().textContent = job.source;
-    const created = tr.insertCell(); created.className = "mono"; created.textContent = job.created;
-    tr.insertCell().className = "mono job-finished";
+    const created = tr.insertCell(); created.className = "muted"; created.textContent = whenText(job.created);
+    tr.insertCell().className = "muted job-finished";
     tr.insertCell().className = "job-duration";
     tr.insertCell().className = "error job-error";
     return tr;
@@ -383,7 +383,7 @@ const dashFill = (text, values) => text.replace(/\{(\w+)\}/g, (all, k) => (k in 
       }
       const st = tr.querySelector(".job-status");
       if (statusOf(st) !== job.status) statusCell(st, job.status);
-      tr.querySelector(".job-finished").textContent = job.finished || "";
+      tr.querySelector(".job-finished").textContent = whenText(job.finished || "");
       tr.querySelector(".job-duration").textContent = job.duration || "";
       tr.querySelector(".job-error").textContent = job.error || "";
     }
@@ -402,7 +402,7 @@ const dashFill = (text, values) => text.replace(/\{(\w+)\}/g, (all, k) => (k in 
     title.href = base + "/jobs/" + job.id;
     body.append(title, text("div", "toast-text", ok ? DASH_T.finishedOk : (DASH_T.status[job.status] || job.status) + (job.error ? ": " + job.error : "")));
     const close = text("button", "toast-close", "×");
-    close.type = "button"; close.setAttribute("aria-label", DASH_T.close);
+    close.type = "button"; close.setAttribute("aria-label", DASH_T.close); close.title = DASH_T.closeTitle;
     close.onclick = () => box.remove();
     box.append(body, close);
     document.getElementById("toasts").appendChild(box);

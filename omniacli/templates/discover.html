@@ -10,12 +10,12 @@
     <p>{{ _("The instances running on this machine, and the systemd units that start one: add them as drafts.") }}</p></div>
   <div class="actions" style="margin: 0; align-items: center">
     <span id="status" class="muted"></span>
-    <button type="button" id="search" class="primary">{{ _("Search") }}</button>
-    <button type="button" id="save" class="primary" hidden>{{ _("Create drafts") }}</button>
+    <button type="button" id="search" class="primary" title="{{ _('Looks for the instances running on this machine and for the systemd units that start one, and lists them here. It only reads: nothing is changed or saved.') }}">{{ _("Search") }}</button>
+    <button type="button" id="save" class="primary" hidden title="{{ _('Saves the ticked instances as draft servers, each with the name and role given here. A draft is not live: open it, complete it and run Test & activate. Nothing on the machine is changed.') }}">{{ _("Create drafts") }}</button>
   </div>
 </div>
 <details class="muted" style="margin-bottom: 16px">
-  <summary>{{ _("More") }}</summary>
+  <summary title="{{ _('Where the instances are read from, how two become production and test of one server, and what to do with the drafts') }}">{{ _("More") }}</summary>
   <p>{{ _("Read from the processes and from systemd, stopped units too. Choose the ones to add, give each a server name and a role: they are saved as drafts, two instances with the same name as the production and the test of one server.") }}
     {{ _("Then open each draft, complete what the notes say and run Test & activate. Nothing on the machine is changed.") }}</p>
 </details>

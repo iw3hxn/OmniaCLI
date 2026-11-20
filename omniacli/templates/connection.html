@@ -5,6 +5,11 @@
 {{ crumbs([(_("Settings"), "/settings"), (_("Pullers"), "/pullers" if is_admin else None), (name, None)]) }}
 {% endblock %}
 {% block content %}
+{# what each command does, on its button; the script adds why it is off or when it is taken #}
+{% set command_help = {"backup": _('Asks the producer to back up the instance there, with the options ticked here below: the backup is made there and sent to the relay, encrypted when the puller has a key. It asks before.'),
+                       "start": _('Asks the producer to start the instance there. The command waits on the relay until the producer takes it, 10 minutes at most. It asks before.'),
+                       "stop": _('Asks the producer to stop the instance there: it stays off until someone starts it again. The command waits on the relay until the producer takes it, 10 minutes at most. It asks before.'),
+                       "restart": _('Asks the producer to restart the instance there. The command waits on the relay until the producer takes it, 10 minutes at most. It asks before.')} %}
 <div class="page-head">
   <div>
     <h1>{{ name }}</h1>
@@ -13,7 +18,7 @@
 </div>
 <p class="muted" style="margin-top: -8px">{{ _("What is shown comes through the relay, so it may be some seconds old.") }} <span id="key-note"></span></p>
 <details style="margin-bottom: 16px">
-  <summary>{{ _("More") }}</summary>
+  <summary title="{{ _('Where what is shown comes from, and when a command sent from here runs') }}">{{ _("More") }}</summary>
   <p class="muted">{{ _("The instance the producer of this puller publishes, as its reports tell it: they come through the relay, so what is shown may be some seconds old.") }}
     {{ _("A command waits on the relay until the producer takes it (10 minutes at most), and runs only if the producer exposes it, within its hours.") }}</p>
 </details>
@@ -23,7 +28,7 @@
   <h2 id="title">{{ _("Waiting for the first report…") }}</h2>
   <p id="facts" class="muted" style="margin: 6px 0 0"></p>
   <div class="actions" id="buttons">
-    {% for c in commands %}<button type="button" data-command="{{ c }}" disabled>{{ tr(c | capitalize) }}</button>{% endfor %}
+    {% for c in commands %}<button type="button" data-command="{{ c }}" disabled title="{{ command_help[c] }}">{{ tr(c | capitalize) }}</button>{% endfor %}
   </div>
   <div id="backup-options" hidden style="margin: 8px 0 0"></div>
 </section>
@@ -78,6 +83,8 @@
     "startedJob": _("started job {job}"), "done": _("done"), "log": _("Log"), "stop": _("Stop"),
     "askStop": _("Ask the producer to stop {job}?"), "error": _("Error {status}"),
     "confirm": _("{command} {instance} through the puller?"),
+    "does": command_help, "logHelp": _('Shows here below what this job has written so far, as the producer reports it. It changes nothing.'),
+    "stopHelp": _('Asks the producer to stop this job: only a job started through this puller can be stopped. It asks before. Admins only.'),
     "commands": {"backup": tr("Backup"), "start": tr("Start"), "stop": tr("Stop"), "restart": tr("Restart")},
     "statuses": {"success": _("success"), "failed": _("failed"), "stopped": _("stopped"), "interrupted": _("interrupted"),
                  "running": _("running"), "queued": _("queued")}
@@ -111,9 +118,10 @@
       const c = button.dataset.command, rule = (latest.commands || {})[c];
       const allowed = account && (c === "backup" ? canAct : true);
       button.disabled = !rule || !rule.enabled || !allowed;
-      button.title = !rule ? T.noReport : !rule.enabled ? fill(T.notExposed, {command: T.commands[c] || c})
+      // what the command does, then why it is off or when it is taken
+      button.title = (T.does[c] ? T.does[c] + " " : "") + (!rule ? T.noReport : !rule.enabled ? fill(T.notExposed, {command: T.commands[c] || c})
         : !allowed ? (account ? T.developer : T.loginHere)
-        : fill(T.taken, {window: rule.window});
+        : fill(T.taken, {window: rule.window})) + ".";
     }
     const options = $("backup-options");
     if (!options.dataset.filled && (latest.backup_fields || []).length) {
@@ -149,12 +157,12 @@
       cell(row, j.title || j.id); cell(row, T.statuses[j.status] || j.status || "?", j.status === "success" ? "ok" : ["failed", "stopped", "interrupted"].includes(j.status) ? "error" : "");
       cell(row, j.source || ""); cell(row, j.started || "");
       const td = row.insertCell();
-      const show = document.createElement("button"); show.type = "button"; show.textContent = T.log;
+      const show = document.createElement("button"); show.type = "button"; show.textContent = T.log; show.title = T.logHelp;
       show.onclick = () => { shownJob = j.id; jobNext = 0; $("job-log").textContent = ""; $("job-box").hidden = false;
                              $("job-title").textContent = j.title || j.id; readJob(); };
       td.appendChild(show);
       if (isAdmin && account && ["running", "queued"].includes(j.status)) {
-        const stop = document.createElement("button"); stop.type = "button"; stop.className = "danger"; stop.textContent = T.stop;
+        const stop = document.createElement("button"); stop.type = "button"; stop.className = "danger"; stop.textContent = T.stop; stop.title = T.stopHelp;
         stop.onclick = () => { if (confirm(fill(T.askStop, {job: j.title || j.id}))) send("stop-job", {job: j.id}); };
         td.appendChild(stop);
       }

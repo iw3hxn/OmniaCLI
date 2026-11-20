@@ -15,8 +15,8 @@
       {% for name in servers %}<option value="{{ name }}" {% if name == server %}selected{% endif %}>{{ name }}</option>{% endfor %}
     </select>
     <input type="search" name="q" value="{{ q }}" placeholder="{{ _('Search title, user, error…') }}" aria-label="{{ _('Search') }}">
-    <button class="primary">{{ _("Search") }}</button>
-    {% if server or q %}<a class="button" href="{{ prefix }}/jobs">{{ _("Clear") }}</a>{% endif %}
+    <button class="primary" title="{{ _('Shows the jobs of the chosen server whose title, user or error has the text written') }}">{{ _("Search") }}</button>
+    {% if server or q %}<a class="button" href="{{ prefix }}/jobs" title="{{ _('Shows all the jobs again') }}">{{ _("Clear") }}</a>{% endif %}
   </form>
   <p class="muted" style="margin: 0 0 10px">{% if total == 1 %}{{ _("1 job") }}{% else %}{{ _("{count} jobs", count=total) }}{% endif %}{% if total > jobs | length %}, {{ _("the last {count} shown", count=jobs | length) }}{% endif %}.</p>
   {% include "_jobs_table.html" %}

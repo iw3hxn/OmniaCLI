@@ -527,8 +527,8 @@ summary { cursor: pointer; color: var(--muted); }
         {% for code, name in languages.items() %}<a href="/language/{{ code }}?next={{ (here ~ ('?' ~ request.url.query if request and request.url.query else '')) | urlencode }}" title="{{ name }}"
           {% if code == lang %}aria-current="true"{% endif %}>{{ code | upper }}</a>{% endfor %}
       </span>{% endif %}
-      <button type="button" class="theme-toggle" id="theme-toggle"></button>
-      {% if account %}<form method="post" action="/logout" class="logout"><button class="logout-button">{{ _("Log out") }}</button></form>{% endif %}
+      <button type="button" class="theme-toggle" id="theme-toggle" title="{{ _('Switches between the light and the dark theme. The choice is kept in this browser.') }}"></button>
+      {% if account %}<form method="post" action="/logout" class="logout"><button class="logout-button" title="{{ _('Ends your session in this browser and goes back to the login page. The jobs that are running go on.') }}">{{ _("Log out") }}</button></form>{% endif %}
     </div>
   </div>
 </header>
@@ -551,7 +551,7 @@ window.whenText = (iso) => {
   const label = () => {
     const dark = current() === "dark";
     button.textContent = dark ? "☀" : "☾";
-    button.title = button.ariaLabel = dark ? {{ _("Light theme") | tojson }} : {{ _("Dark theme") | tojson }};
+    button.ariaLabel = dark ? {{ _("Light theme") | tojson }} : {{ _("Dark theme") | tojson }};
   };
   label();
   button.addEventListener("click", () => {

@@ -340,7 +340,7 @@ def _same_origin(request: Request) -> bool:
 _AUDIT_FIELDS = ("name", "new_name", "role", "host", "server", "kind")
 _AUDIT_MAX_BODY = 64 * 1024
 # polled, or they change nothing: an access log full of them would hide the rest
-_NOT_AUDITED = re.compile(r"/logout|/api/pullers/[^/]+/producer|/api/servers/(check|branches)")
+_NOT_AUDITED = re.compile(r"/logout|/api/pullers/[^/]+/producer|/api/servers/(check|branches)|/api/links/[^/]+/test")
 
 
 async def _audit_target(request: Request) -> str:
@@ -4474,16 +4474,22 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return await store_links(links) or {"ok": True}
 
     @app.post("/api/links/{name}/test")
-    async def link_target_test(name: str, me: Principal = Depends(admin)):
-        """Ask the other instance who we are there: its version and our role."""
-        return await probe_link(a_link(name), me.name, me.role)
+    async def link_target_test(name: str, request: Request, me: Principal = Depends(admin)):
+        """Ask the other instance who we are there: its version and our role
+        (the Links page asks it of every link when it opens: it changes
+        nothing, so it is not in the access log); why not, in the caller's language."""
+        found = await probe_link(a_link(name), me.name, me.role)
+        if not found["ok"]:
+            found["error"] = i18n.tr(request_language(request), found["error"])
+        return found
 
     async def probe_link(link: LinkTarget, who: str, role: str) -> dict:
         """The other instance's /api/info through the link: {"ok", ...}."""
         name = link.name
         tunnel = ssh_tunnels.status(name) if link.ssh is not None else None
         if tunnel is not None and tunnel["state"] != "up":
-            return {"ok": False, "error": f"SSH tunnel {tunnel['state']}: {tunnel['detail'] or 'starting'}"}
+            return {"ok": False, "tunnel": tunnel["state"],
+                    "error": f"SSH tunnel {tunnel['state']}: {tunnel['detail'] or 'starting'}"}
         try:
             resp = await link_clients.client(link).get(
                 "/api/info", headers=link_headers(link, who, role), timeout=LIST_TIMEOUT)

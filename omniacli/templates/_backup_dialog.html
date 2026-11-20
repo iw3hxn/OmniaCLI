@@ -42,8 +42,8 @@
     <div id="backup-room"></div>
     <p class="muted" id="backup-remembered" style="font-size: 13px" hidden></p>
     <div class="actions">
-      <button type="submit" id="backup-submit">{{ icon("backup") }}{{ _("Back up") }}</button>
-      <button type="button" id="backup-cancel">{{ _("Cancel") }}</button>
+      <button type="submit" id="backup-submit" title="{{ _('Starts the backup with these choices, as a job: the zip goes into the backups of the instance. The choices are remembered for the next backups.') }}">{{ icon("backup") }}{{ _("Back up") }}</button>
+      <button type="button" id="backup-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
     </div>
   </form>
 </dialog>

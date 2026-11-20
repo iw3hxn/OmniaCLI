@@ -15,9 +15,9 @@
     <p class="muted" id="pull-note" hidden style="white-space: pre-line"></p>
     <p class="error" id="pull-error"></p>
     <div class="actions">
-      <button type="submit" name="chosen" value="1" id="pull-selected">{{ icon("github") }}{{ _("Pull selected") }}</button>
-      <button type="submit" id="pull-every">{{ icon("github") }}{{ _("Pull all") }}</button>
-      <button type="button" id="pull-cancel">{{ _("Cancel") }}</button>
+      <button type="submit" name="chosen" value="1" id="pull-selected" title="{{ _('Does what the title says on the ticked repositories only, as a job: the others stay on the commit they have. Not available with none ticked.') }}">{{ icon("github") }}{{ _("Pull selected") }}</button>
+      <button type="submit" id="pull-every" title="{{ _('Does what the title says on every repository of the instance and on its package, ticked or not, as a job.') }}">{{ icon("github") }}{{ _("Pull all") }}</button>
+      <button type="button" id="pull-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
     </div>
   </form>
 </dialog>

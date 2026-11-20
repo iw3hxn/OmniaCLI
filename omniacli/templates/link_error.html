@@ -5,8 +5,8 @@
 <div class="page-head">
   <div><h1>{{ _("Link {name}", name=link.name) }}</h1>
     <p>{{ _("The linked instance does not answer: its pages are not available now.") }}</p></div>
-  <div class="actions"><a class="button primary" href="{{ prefix }}/">{{ _("Back to the servers") }}</a>
-    {% if is_admin %}<a class="button" href="{{ prefix }}/links">{{ _("Links") }}</a>{% endif %}</div>
+  <div class="actions"><a class="button primary" href="{{ prefix }}/" title="{{ _('Leaves this link and goes back to the servers of this machine') }}">{{ _("Back to the servers") }}</a>
+    {% if is_admin %}<a class="button" href="{{ prefix }}/links" title="{{ _('Opens the page of the links, where the address and the token of this one are tested and changed') }}">{{ _("Links") }}</a>{% endif %}</div>
 </div>
 <div class="banner">{{ _("The linked instance at {url} did not answer: {message}.", url=link.url, message=tr(message)) }}</div>
 {% endblock %}

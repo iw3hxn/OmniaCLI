@@ -10,10 +10,10 @@
 <div class="page-head">
   <div><h1>{{ _("Schedules") }}</h1>
     <p>{{ _("Actions run on an instance at the times of a crontab expression: a backup, a git pull, a copy from a link, a Python script.") }}</p></div>
-  <div class="actions" style="margin: 0"><button type="button" id="new" class="primary">{{ _("New schedule") }}</button></div>
+  <div class="actions" style="margin: 0"><button type="button" id="new" class="primary" title="{{ _('Opens here below the form of a new schedule. Nothing is created until you save.') }}">{{ _("New schedule") }}</button></div>
 </div>
 <details class="muted" style="margin-bottom: 16px">
-  <summary>{{ _("More") }}</summary>
+  <summary title="{{ _('How the times are written, which steps run and in which order, and when a run is skipped') }}">{{ _("More") }}</summary>
   <p>{{ _("The crontab expression is minute hour day month weekday, in this computer's time.") }}
     {{ _("The steps: a backup kept by a rotation, a git pull of its repositories, a copy of a linked instance's database (as Copy from link), a Python script of {folder}; each one optional, in this order.", folder=scripts_dir) }}
     {{ _("A run that finds a job on the instance is skipped; runs missed while OmniaCLI is stopped are not made up.") }}
@@ -43,12 +43,12 @@
       {% if last.message %}<br><span class="muted">{{ tr(last.message) }}</span>{% endif %}{% else %}<span class="muted">{{ _("never") }}</span>{% endif %}</td>
     <td><span class="run-buttons">
       <button type="button" data-run="{{ s.name }}" title="{{ _("Run the steps now, enabled or not") }}">{{ _("Run now") }}</button>
-      <button type="button" data-edit="{{ s.name }}">{{ _("Edit") }}</button>
-      <button type="button" class="danger" data-delete="{{ s.name }}">{{ _("Delete") }}</button></span></td>
+      <button type="button" data-edit="{{ s.name }}" title="{{ _('Opens here below the form with this schedule. Nothing changes until you save.') }}">{{ _("Edit") }}</button>
+      <button type="button" class="danger" data-delete="{{ s.name }}" title="{{ _('Deletes this schedule and its history: it does not run any more. The backups it made are not touched. It asks before.') }}">{{ _("Delete") }}</button></span></td>
   </tr>
   {% if s.runs %}
   <tr><td colspan="7" style="padding-top: 0">
-    <details><summary class="muted">{{ _("History: the last {count} of {total}", count=s.runs | length, total=s.data.history) }}</summary>
+    <details><summary class="muted" title="{{ _('Shows the last runs of this schedule: when, started by what, how each ended and its job') }}">{{ _("History: the last {count} of {total}", count=s.runs | length, total=s.data.history) }}</summary>
     <table>
       <tr><th>{{ _("Time") }}</th><th>{{ _("Trigger") }}</th><th>{{ _("Status") }}</th><th>{{ _("Job") }}</th><th>{{ _("Message") }}</th></tr>
       {% for r in s.runs %}
@@ -127,13 +127,13 @@
     <select id="f-script-name">{% for name in scripts %}<option value="{{ name }}">{{ name }}</option>{% endfor %}</select>
     <label for="f-args">{{ _("Arguments") }}</label><input type="text" id="f-args" class="mono" placeholder="{{ _("as on a command line") }}">
   </div>
-  <details class="muted" style="margin: 4px 0 0"><summary>{{ _("More") }}</summary>
+  <details class="muted" style="margin: 4px 0 0"><summary title="{{ _('With which Python, in which folder and with which variables the script is run, and what makes it fail') }}">{{ _("More") }}</summary>
   <p>{{ _("Run with the instance's python (Odoo: its venv's, as its run as user), in its first repository's folder, with {variables} and, for Odoo, {odoo_variables}.", variables="OMNIACLI_SERVER, OMNIACLI_ROLE, OMNIACLI_REPOSITORIES (JSON name: path)", odoo_variables="OMNIACLI_DATABASE, OMNIACLI_ODOO_CONFIG") }}
   {{ _("Its output goes to the job; an exit code other than 0 fails it.") }}</p></details>
 
   <div class="actions">
-    <button type="submit" class="primary">{{ _("Save") }}</button>
-    <button type="button" id="cancel">{{ _("Cancel") }}</button>
+    <button type="submit" class="primary" title="{{ _('Saves the schedule: it runs at its next time, when Enabled is ticked, not now. For a run at once use Run now in the list.') }}">{{ _("Save") }}</button>
+    <button type="button" id="cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
   </div>
 </form>
 

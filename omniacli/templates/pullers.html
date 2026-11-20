@@ -19,7 +19,7 @@
   <h2>{{ _("Relayed here") }}</h2>
   <p class="muted">{{ _("This instance relays between an OmniaCLI that cannot be reached (the producer) and the OmniaCLI that operate it (the consumers).") }}</p>
   <details>
-    <summary>{{ _("More") }}</summary>
+    <summary title="{{ _('How the two ends reach this relay, what it can read of what passes, and how long commands and files are kept') }}">{{ _("More") }}</summary>
     <p class="muted">{{ _("Both ends link out to here, with an incoming link of the Users page (the role user is enough).") }} <a href="{{ prefix }}/users">{{ _("Users") }}</a></p>
     <p class="muted">{{ _("The producer takes the consumers' commands and leaves its reports and backups here; with a key, which only the two ends hold, this instance cannot read nor change them.") }}
       {{ _("A command not taken by the producer in 10 minutes expires; a file goes once a consumer has it whole, and every file and report after the hours kept.") }}
@@ -45,8 +45,8 @@
       <td class="muted">{% set waiting = p.pending | length %}{{ _("1 command waiting") if waiting == 1 else _("{count} commands waiting", count=waiting) }}{% if p.expired %}, {{ _("expired: {count}", count=p.expired | length) }}{% endif %}
         <br>{% set files = p.files | length %}{{ _("1 file") if files == 1 else _("{count} files", count=files) }}{% if p.files %}, {{ ((p.files | sum(attribute='size')) / 1048576) | round(1) }} MiB{% endif %}</td>
       <td><div class="actions" style="margin: 0">
-        <button type="button" data-save>{{ _("Save") }}</button>
-        <button type="button" class="danger" data-delete>{{ _("Delete") }}</button>
+        <button type="button" data-save title="{{ _('Saves the producer, the consumers, the hours kept and the largest file of this puller. Every link named must be an incoming link of the Users page.') }}">{{ _("Save") }}</button>
+        <button type="button" class="danger" data-delete title="{{ _('Deletes this puller with its waiting commands, its reports and its files: producer and consumers can no longer use it. It asks before.') }}">{{ _("Delete") }}</button>
       </div></td>
     </tr>
     {% else %}
@@ -60,7 +60,7 @@
       <td><input type="number" id="new-keep" min="1" max="720" value="{{ keep_hours }}" aria-label="{{ _('Hours kept by the new puller') }}" style="width: 6em"></td>
       <td><input type="number" id="new-size" min="1" value="{{ max_file_mib }}" aria-label="{{ _('Largest file of the new puller') }}" style="width: 8em"></td>
       <td></td>
-      <td><button type="button" class="primary" id="add" {% if not links %}disabled title="{{ _('Create the incoming links on the Users page first') }}"{% endif %}>{{ _("Add puller") }}</button></td>
+      <td><button type="button" class="primary" id="add" {% if not links %}disabled title="{{ _('Create the incoming links on the Users page first') }}"{% else %}title="{{ _('Creates a puller with the name, the producer, the consumers and the limits typed in this row.') }}"{% endif %}>{{ _("Add puller") }}</button></td>
     </tr>
   </table>
   </div>
@@ -70,7 +70,7 @@
   <h2>{{ _("Published here") }}</h2>
   <p class="muted">{{ _("Instances of this OmniaCLI published as the producer of a puller of a relay, reached through a link of the Links page.") }} <a href="{{ prefix }}/links">{{ _("Links") }}</a></p>
   <details>
-    <summary>{{ _("More") }}</summary>
+    <summary title="{{ _('What this instance sends to the relay, how the commands and their hours work, and why a key matters') }}">{{ _("More") }}</summary>
     <p class="muted">{{ _("This instance asks the relay for commands and sends it its reports (state, disks, load, the progress of its jobs) and its backups.") }}
       {{ _("Every command is off until you enable it; one sent outside its hours (HH:MM-HH:MM by this machine's clock, empty: always) is refused at once.") }}
       {{ _("With a key, give the same key to the consumers: without one, whoever controls the relay can read what passes and send the commands enabled.") }}
@@ -93,8 +93,8 @@
         {% if p.link_missing %}<br><span class="badge error">{{ _("no link {name}", name=p.link) }}</span>{% endif %}</td>
       <td><input type="text" class="puller mono" value="{{ p.puller }}" aria-label="{{ _('Puller of {name}', name=p.instance) }}"></td>
       <td><input type="text" class="key mono" autocomplete="off" placeholder="{{ _('unchanged') if p.has_key else _('none') }}" aria-label="{{ _('Key of {name}', name=p.instance) }}">
-        <div class="actions" style="margin: 4px 0 0"><button type="button" data-new-key>{{ _("New key") }}</button>
-        {% if p.has_key %}<button type="button" data-remove-key>{{ _("Remove key") }}</button>{% endif %}</div>
+        <div class="actions" style="margin: 4px 0 0"><button type="button" data-new-key title="{{ _('Makes a new random key and puts it in the Key field, shown here above to copy. It is used only once you save the row; the consumers then need the same key.') }}">{{ _("New key") }}</button>
+        {% if p.has_key %}<button type="button" data-remove-key title="{{ _('Saves this row without its key: everything then passes in clear on the relay. It asks before.') }}">{{ _("Remove key") }}</button>{% endif %}</div>
         {% if not p.has_key %}<span class="badge warn">{{ _("no key: in clear") }}</span>{% endif %}</td>
       <td>{% for c in commands %}<div><label><input type="checkbox" class="cmd" data-cmd="{{ c }}" {% if p.commands[c].enabled %}checked{% endif %}> {{ tr(c | capitalize) }}</label>
         <input type="text" class="window mono" data-cmd="{{ c }}" value="{{ p.commands[c].window or '' }}" placeholder="{{ _('always') }}" aria-label="{{ _('Hours of {command}', command=tr(c | capitalize)) }}" style="width: 9em"></div>{% endfor %}</td>
@@ -103,8 +103,8 @@
         {% else %}{{ _("not reached yet") }}{% endif %}
         {% if p.status.commands %}<br>{{ _("1 command taken") if p.status.commands == 1 else _("{count} commands taken", count=p.status.commands) }}{% endif %}</td>
       <td><div class="actions" style="margin: 0">
-        <button type="button" data-save>{{ _("Save") }}</button>
-        <button type="button" class="danger" data-delete>{{ _("Delete") }}</button>
+        <button type="button" data-save title="{{ _('Saves the relay link, the puller, the commands enabled and their hours of this publication. An empty Key keeps the saved one. It warns when start, stop or restart are enabled without a key.') }}">{{ _("Save") }}</button>
+        <button type="button" class="danger" data-delete title="{{ _('Stops publishing this instance: no report nor backup goes to the relay any more and no command is taken. The instance itself is not touched. It asks before.') }}">{{ _("Delete") }}</button>
       </div></td>
     </tr>
     {% else %}
@@ -115,11 +115,11 @@
       <td><select class="link" aria-label="{{ _('Relay link') }}">{% for l in link_targets %}<option>{{ l }}</option>{% endfor %}</select></td>
       <td><input type="text" class="puller mono" placeholder="api-prod" aria-label="{{ _('Puller') }}"></td>
       <td><input type="text" class="key mono" autocomplete="off" placeholder="{{ _('none') }}" aria-label="{{ _('Key') }}">
-        <div class="actions" style="margin: 4px 0 0"><button type="button" data-new-key>{{ _("New key") }}</button></div></td>
+        <div class="actions" style="margin: 4px 0 0"><button type="button" data-new-key title="{{ _('Makes a new random key and puts it in the Key field, shown here above to copy. It is used only once you save the row; the consumers then need the same key.') }}">{{ _("New key") }}</button></div></td>
       <td>{% for c in commands %}<div><label><input type="checkbox" class="cmd" data-cmd="{{ c }}"> {{ tr(c | capitalize) }}</label>
         <input type="text" class="window mono" data-cmd="{{ c }}" placeholder="{{ _('always') }}" aria-label="{{ _('Hours of {command}', command=tr(c | capitalize)) }}" style="width: 9em"></div>{% endfor %}</td>
       <td></td>
-      <td><button type="button" data-save {% if not instances or not link_targets %}disabled title="{{ _('An instance not published yet and a link to the relay are needed') }}"{% endif %}>{{ _("Publish") }}</button></td>
+      <td><button type="button" data-save {% if not instances or not link_targets %}disabled title="{{ _('An instance not published yet and a link to the relay are needed') }}"{% else %}title="{{ _('Publishes the chosen instance on the puller typed in this row, through the chosen relay link. Only the commands ticked are taken; the others stay off.') }}"{% endif %}>{{ _("Publish") }}</button></td>
     </tr>
   </table>
   </div>
@@ -129,7 +129,7 @@
   <h2>{{ _("Connected here") }}</h2>
   <p class="muted">{{ _("Pullers of a relay this OmniaCLI is a consumer of, reached through a link of the Links page: their instance is operated from here.") }} <a href="{{ prefix }}/links">{{ _("Links") }}</a></p>
   <details>
-    <summary>{{ _("More") }}</summary>
+    <summary title="{{ _('How long the reports are kept here, which key to give, and how a connection brings a backup here') }}">{{ _("More") }}</summary>
     <p class="muted">{{ _("Their reports are kept here (the load 7 days). Give the key the producer's publication has (none: in clear).") }}
       {{ _("In a server's form, Database from link may name a connection: Copy from link and the scheduled copies then bring a new backup through the relay.") }}
       {{ _("Saved in {file}, readable by its owner only: it holds the keys.", file=connections_file) }}</p>
@@ -147,14 +147,14 @@
         {% if c.link_missing %}<br><span class="badge error">{{ _("no link {name}", name=c.link) }}</span>{% endif %}</td>
       <td><input type="text" class="puller mono" value="{{ c.puller }}" aria-label="{{ _('Puller of {name}', name=c.name) }}"></td>
       <td><input type="text" class="key mono" autocomplete="off" placeholder="{{ _('unchanged') if c.has_key else _('none') }}" aria-label="{{ _('Key of {name}', name=c.name) }}">
-        {% if c.has_key %}<div class="actions" style="margin: 4px 0 0"><button type="button" data-remove-key>{{ _("Remove key") }}</button></div>
+        {% if c.has_key %}<div class="actions" style="margin: 4px 0 0"><button type="button" data-remove-key title="{{ _('Saves this row without its key: reports sealed with a key are then refused. It asks before.') }}">{{ _("Remove key") }}</button></div>
         {% else %}<br><span class="badge warn">{{ _("no key: in clear") }}</span>{% endif %}</td>
       <td class="muted">{% if c.status.ok %}<span class="badge ok">{{ _("reports read") }}</span> <span data-time="{{ c.status.at }}"></span>
         {% elif c.status.ok is sameas false %}<span class="error">{{ tr(c.status.error) }}</span> <span data-time="{{ c.status.at }}"></span>
         {% else %}{{ _("not read yet") }}{% endif %}</td>
       <td><div class="actions" style="margin: 0">
-        <button type="button" data-save>{{ _("Save") }}</button>
-        <button type="button" class="danger" data-delete>{{ _("Delete") }}</button>
+        <button type="button" data-save title="{{ _('Saves the relay link and the puller of this connection. An empty Key keeps the saved one.') }}">{{ _("Save") }}</button>
+        <button type="button" class="danger" data-delete title="{{ _('Deletes this connection: its instance is no longer operated from here. What it has received stays on the disk. It asks before.') }}">{{ _("Delete") }}</button>
       </div></td>
     </tr>
     {% else %}
@@ -166,7 +166,7 @@
       <td><input type="text" class="puller mono" placeholder="api-prod" aria-label="{{ _('Puller') }}"></td>
       <td><input type="text" class="key mono" autocomplete="off" placeholder="{{ _('the publication\'s key, or none') }}" aria-label="{{ _('Key') }}"></td>
       <td></td>
-      <td><button type="button" data-save {% if not link_targets %}disabled title="{{ _('Add the relay on the Links page first') }}"{% endif %}>{{ _("Connect") }}</button></td>
+      <td><button type="button" data-save {% if not link_targets %}disabled title="{{ _('Add the relay on the Links page first') }}"{% else %}title="{{ _('Connects this OmniaCLI as a consumer to the puller typed in this row, through the chosen relay link: its instance then gets its own page here.') }}"{% endif %}>{{ _("Connect") }}</button></td>
     </tr>
   </table>
   </div>

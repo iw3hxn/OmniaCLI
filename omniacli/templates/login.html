@@ -94,7 +94,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid color-mix(in srgb, va
     <input type="text" id="username" name="username" autocomplete="username" autocapitalize="none" required autofocus>
     <label for="password">{{ _("Password") }}</label>
     <input type="password" id="password" name="password" autocomplete="current-password" required>
-    <button>{{ _("Log in") }}</button>
+    <button title="{{ _('Opens OmniaCLI with this user name and password. After several wrong tries you wait before the next one; every try goes in the access log.') }}">{{ _("Log in") }}</button>
   </form>
   <p class="foot">© 2026 OmniaSolutions S.n.c di Boscolo Matteo &amp; C ·
     <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">GNU AGPL v3</a></p>
