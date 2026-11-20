@@ -41,7 +41,7 @@ from starlette.requests import ClientDisconnect, HTTPConnection
 from . import (backupcheck, backupchoices, checks, deployhooks, destinations, instancearchive, private, restoreroom, consumer, disks, gitcredentials, linkcopy, listgroups, ops, packages, plugins, pluginstore, puller, publisher,
                schedules, selflog, sshlinks, shell, stacktemplates, templatestore, tunnel, workspacehelper, workspaceops)
 from .accesslog import AccessLog
-from . import i18n, loginas, machines, stagings, workspaceweb
+from . import i18n, loginas, machines, pgreport, stagings, workspaceweb
 from .diskhistory import DiskHistory, DiskRecorder
 from .auth import ROLES as ACCESS_ROLES
 from .auth import WORKSPACE_ROLE, Authenticator, Principal, hash_password, hash_token, new_token, verify_password
@@ -207,6 +207,7 @@ WORKSPACE_ROUTES = frozenset({
     "/servers/{server}/{role}/pull", "/servers/{server}/{role}/pull-restart",
     "/api/servers/{server}/{role}/pull-preview", "/api/servers/{server}/{role}/summary",
     "/api/servers/{server}/{role}/uptime", "/api/workspaces/{workspace}/notify",
+    "/api/servers/{server}/{role}/database", "/api/servers/{server}/{role}/database/terminate",
     "/servers/{server}/{role}/restart", "/servers/{server}/{role}/start", "/servers/{server}/{role}/stop",
     "/servers/{server}/{role}/backup", "/api/servers/{server}/{role}/backups",
     "/backups/{server}/{role}/{name}", "/servers/{server}/{role}/x/{plugin}/{action}",
@@ -228,7 +229,8 @@ WORKSPACE_ROUTES = frozenset({
     "/api/workspaces/{workspace}/archives/remote", "/api/workspaces/{workspace}/archives/fetch",
     "/api/workspaces/{workspace}/tokens/save", "/api/workspaces/{workspace}/tokens/delete",
     "/api/servers/{server}/stagings", "/api/servers/{server}/stagings/refresh",
-    "/api/servers/{server}/{role}/deploy-hook",
+    "/api/servers/{server}/{role}/deploy-hook", "/api/servers/{server}/pitr", "/api/servers/{server}/pitr/enable",
+    "/api/servers/{server}/pitr/base", "/api/servers/{server}/pitr/restore",
     "/workspaces/{workspace}/destinations", "/api/workspaces/{workspace}/destinations/save",
     "/api/workspaces/{workspace}/destinations/delete", "/api/workspaces/{workspace}/destinations/check",
     "/api/workspaces/{workspace}/destinations/key",
@@ -628,6 +630,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         scheduler.start()
         sampler.start()
         monitor.start()
+        pitr_tasks.append(asyncio.get_running_loop().create_task(pitr_loop()))
         disk_recorder.start()
         tunnels.start()
         ssh_tunnels.sync(settings.link_targets)
@@ -645,7 +648,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         for what, stop in (("consumers", consumers.stop), ("publications", publications.stop),
                            ("pullers", pullers.stop), ("tunnels", tunnels.stop), ("ssh tunnels", ssh_tunnels.close),
                            ("disk history", disk_recorder.stop), ("load sampler", sampler.stop),
-                           ("monitor", monitor.stop),
+                           ("monitor", monitor.stop), ("point-in-time recovery", stop_pitr),
                            ("auto update", updater.stop), ("schedules", scheduler.stop),
                            ("link clients", link_clients.close)):
             # a task of its own, waited for and never cancelled from here: a
@@ -1249,6 +1252,32 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if ops.PACKAGE_CHOICE in only:
             names.append(f"package {instance.package.name}")
         return f"{what} {instance.key} ({', '.join(names)})"
+
+    @app.get("/api/servers/{server}/{role}/database")
+    async def database_report(server: str, role: str, me: Principal = Depends(developer)):
+        """The health of the instance's database (pgreport.py)."""
+        instance = get_instance(server, role)
+        try:
+            found = await pgreport.report(instance)
+        except JobFailed as exc:
+            return refuse(str(exc), status.HTTP_502_BAD_GATEWAY)
+        return {**found, "can_stop": me.can(backup_role(instance))}
+
+    @app.post("/api/servers/{server}/{role}/database/terminate")
+    async def database_terminate(request: Request, server: str, role: str, payload: dict = Body(...),
+                                 me: Principal = Depends(current_user)):
+        """A query of the instance's database stopped (an admin's on a production)."""
+        instance = get_instance(server, role)
+        if not me.can(backup_role(instance)):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, f"The {backup_role(instance)} role is required")
+        pid = str(payload.get("pid") or "")
+        try:
+            stopped = await pgreport.terminate(instance, pid)
+        except JobFailed as exc:
+            return refuse(str(exc))
+        access_log.record("action", me.kind, me.name, request.client.host if request.client else "",
+                          f"stop query {pid} of {instance.key}")
+        return {"ok": True, "stopped": stopped}
 
     @app.get("/api/servers/{server}/{role}/uptime")
     async def instance_uptime(server: str, role: str, user: Principal = Depends(developer)):
@@ -3222,6 +3251,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         workspace, from the same template, its production loaded with a
         backup of server's production made now, neutralized, its test
         stopped; recorded with its parent and its date."""
+        return await new_staging(server, me)
+
+    async def new_staging(server: str, me: Principal, load=None, title: str = "", extra: dict | None = None):
+        """A staging of server beside it; load(job, parent production, the
+        staging's production) fills it (default: a backup made now, restored
+        neutralized); extra goes in its record (stagings.py)."""
         srv = settings.servers.get(server)
         if srv is None or srv.production is None:
             return refuse(f"No server {server} with a production", status.HTTP_404_NOT_FOUND)
@@ -3248,21 +3283,26 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if refused:
                 return refused
 
+        async def backup_and_restore(job, prod, target) -> dict:
+            backup_zip = await ops.backup_into(job, prod, backup_folder(prod), {"no_filestore": False})
+            await target.plugin.restore(job, target, backup_zip, {"neutralize": True})
+            return {"backup": backup_zip.name}
+
         async def action(job):
             made = await make_instance(job, settings.workspaces[ws.name], new_instance, template, {})
             prod = settings.servers[server].production
-            backup_zip = await ops.backup_into(job, prod, backup_folder(prod), {"no_filestore": False})
             target = settings.servers[name].production
-            await target.plugin.restore(job, target, backup_zip, {"neutralize": True})
+            record = await (load or backup_and_restore)(job, prod, target)
             if settings.servers[name].test is not None:
                 job.log(f"--- {name}: its test stopped, a staging needs its production only")
                 await ops.stop(job, settings.servers[name].test)
             data = stagings.load(stagings_file)
-            data[name] = {"parent": server, "created": now.isoformat(timespec="seconds"), "backup": backup_zip.name}
+            data[name] = {"parent": server, "created": now.isoformat(timespec="seconds"), **record, **(extra or {})}
             await asyncio.to_thread(stagings.save, stagings_file, data)
             job.result = {"server": name, "port": made.production.options.http_port}
 
-        job = jobs.submit(f"Staging {name} of {server}", [f"{server}/production", f"{name}/production", f"{name}/test"],
+        job = jobs.submit(title or f"Staging {name} of {server}",
+                          [f"{server}/production", f"{name}/production", f"{name}/test"],
                           f"manual: {me}", action, workspace=ws.name)
         return {"job": job.id, "server": name}
 
@@ -3296,6 +3336,134 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         job = jobs.submit(f"Refresh the staging {server} from {parent}", [f"{parent}/production", f"{server}/production"],
                           f"manual: {me}", action, workspace=ws[0].name if ws else "")
         return {"job": job.id}
+
+    # --- point-in-time recovery of a workspace instance's database (pitrhelper.py)
+
+    pitr_file = settings.servers_file.parent / "pitr.json"
+    PITR_RESTORE_TIMEOUT = 6 * 3600
+
+    def pitr_target(server: str):
+        """(workspace, instance name there, production) of a workspace's
+        instance; a refusal otherwise."""
+        srv = settings.servers.get(server)
+        found = workspace_of(server)
+        if srv is None or srv.production is None or found is None or srv.production.restart.type != "compose":
+            raise HTTPException(status.HTTP_404_NOT_FOUND,
+                                f"{server} is not an instance of a workspace: point-in-time recovery is for those")
+        return found[0], found[1], srv.production
+
+    def pitr_record(server: str, **values) -> None:
+        data = deployhooks.load(pitr_file)
+        if values.get("enabled") is False:
+            data.pop(server, None)
+        else:
+            data[server] = {**data.get(server, {}), **values}
+        deployhooks.save(pitr_file, data)
+
+    @app.get("/api/servers/{server}/pitr", dependencies=[Depends(developer)])
+    async def pitr_state(server: str):
+        """Whether it is on, the base backups, the first and last minute a restore can reach."""
+        ws, instance, _ = pitr_target(server)
+        try:
+            found = await workspaceops.ask("pitr-state", ws.name, ws.storage, instance, "production")
+        except JobFailed as exc:
+            return refuse(str(exc), status.HTTP_502_BAD_GATEWAY)
+        return found
+
+    @app.post("/api/servers/{server}/pitr/enable", dependencies=[Depends(admin)])
+    async def pitr_enable(server: str, me: Principal = Depends(current_user)):
+        """Point-in-time recovery switched on: the database archives its WAL
+        (a volume of its own, its service made again: a few seconds without
+        database), a first base backup; then one each night."""
+        ws, instance, prod = pitr_target(server)
+
+        async def action(job):
+            found = await workspaceops._helper(job, "pitr-enable", ws.name, ws.storage, instance, "production",
+                                               timeout=PITR_RESTORE_TIMEOUT)
+            await asyncio.to_thread(pitr_record, server, enabled=True,
+                                    base=datetime.datetime.now().isoformat(timespec="seconds"))
+            job.log(f"Point-in-time recovery on for {prod.key}: base backup {found.get('base')}")
+            job.result = found
+        job = jobs.submit(f"Point-in-time recovery on for {prod.key}", [prod.key], f"manual: {me}", action,
+                          workspace=ws.name)
+        return {"job": job.id}
+
+    async def pitr_base_job(job, ws: Workspace, instance: str, server: str) -> None:
+        found = await workspaceops._helper(job, "pitr-base", ws.name, ws.storage, instance, "production",
+                                           timeout=PITR_RESTORE_TIMEOUT)
+        await asyncio.to_thread(pitr_record, server, base=datetime.datetime.now().isoformat(timespec="seconds"))
+        job.log(f"Base backup {found.get('base')} ({found.get('size', 0) >> 20} MiB)")
+
+    PITR_EVERY = 3600
+    PITR_BASE_AGE = 24 * 3600
+
+    async def pitr_loop() -> None:
+        """Each hour: a base backup of each instance whose last one is a day old."""
+        while True:
+            await asyncio.sleep(PITR_EVERY)
+            try:
+                for server, info in (await asyncio.to_thread(deployhooks.load, pitr_file)).items():
+                    found = workspace_of(server)
+                    srv = settings.servers.get(server)
+                    if found is None or srv is None or srv.production is None or jobs.is_busy(srv.production.key):
+                        continue
+                    try:
+                        last = datetime.datetime.fromisoformat(str(info.get("base") or "")).timestamp()
+                    except ValueError:
+                        last = 0
+                    if time.time() - last >= PITR_BASE_AGE:
+                        ws, instance = found
+                        jobs.submit(f"Base backup for point-in-time recovery of {srv.production.key}",
+                                    [srv.production.key], "point-in-time recovery",
+                                    lambda job, ws=ws, instance=instance, server=server:
+                                    pitr_base_job(job, ws, instance, server), workspace=ws.name)
+            except Exception:  # noqa: BLE001 - the loop must survive
+                _logger.exception("point-in-time recovery: the nightly base backups failed")
+
+    pitr_tasks: list[asyncio.Task] = []
+
+    async def stop_pitr() -> None:
+        for task in pitr_tasks:
+            task.cancel()
+        await asyncio.gather(*pitr_tasks, return_exceptions=True)
+        pitr_tasks.clear()
+
+    @app.post("/api/servers/{server}/pitr/base", dependencies=[Depends(admin)])
+    async def pitr_base(server: str, me: Principal = Depends(current_user)):
+        ws, instance, prod = pitr_target(server)
+        job = jobs.submit(f"Base backup for point-in-time recovery of {prod.key}", [prod.key], f"manual: {me}",
+                          lambda job: pitr_base_job(job, ws, instance, server), workspace=ws.name)
+        return {"job": job.id}
+
+    @app.post("/api/servers/{server}/pitr/restore", dependencies=[Depends(admin)])
+    async def pitr_restore(server: str, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """A new staging with the database of the production as it was at a
+        minute: its cluster made again from the archive, the filestore of
+        now linked (Odoo never changes a file there, only adds), neutralized."""
+        ws, instance, prod = pitr_target(server)
+        when = str(payload.get("time") or "").strip()
+        try:
+            at = datetime.datetime.fromisoformat(when)
+        except ValueError:
+            return refuse(f"{when!r} is not a time, as 2026-11-20T09:41")
+
+        async def load(job, parent, target) -> dict:
+            target_instance = target.server[len(ws.name) + 1:]
+            job.log(f"--- the database of {parent.key} as it was at {at:%Y-%m-%d %H:%M}")
+            found = await workspaceops._helper(job, "pitr-restore", ws.name, ws.storage, instance, target_instance,
+                                               at.isoformat(timespec="minutes"), parent.options.database,
+                                               target.options.database, timeout=PITR_RESTORE_TIMEOUT)
+            job.log(f"Replayed from the base backup {found.get('base')} with {found.get('segments')} WAL segments")
+            await ops.run(job, target.restart.command("link-filestore", target.options.odoo_service,
+                                                      target.options.database, parent.restart.service,
+                                                      parent.options.database), timeout=3600)
+            # neutralized as every staging: no outgoing mail, no scheduled actions
+            await ops.run(job, target.restart.command("neutralize", target.options.odoo_service,
+                                                      target.options.database), timeout=3600)
+            await ops.restart(job, target)
+            return {"pitr": at.isoformat(timespec="minutes")}
+
+        return await new_staging(server, me, load, title=f"Staging of {server} at {at:%Y-%m-%d %H:%M}")
 
     @app.post("/api/stagings/mark", dependencies=[Depends(admin)])
     async def staging_mark(payload: dict = Body(...)):

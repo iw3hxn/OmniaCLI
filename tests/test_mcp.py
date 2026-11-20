@@ -43,7 +43,8 @@ async def test_token_required(client):
     assert tools == {"list_servers", "server_status", "pending_updates", "read_log", "list_jobs",
                      "get_job", "update_test", "backup_test", "dev_setup", "diagnose_instance",
                      "restart_instance", "start_instance", "stop_instance", "list_actions", "run_action",
-                     "verify_backup", "full_archive", "stop_job", "list_links", "linked_tools", "call_linked"}
+                     "verify_backup", "full_archive", "stop_job", "list_links", "linked_tools", "call_linked",
+                     "database_report"}
     # the token reads pages but never acts on them
     assert (await client.get("/jobs", headers=BEARER)).status_code == 200
     assert (await client.post("/servers/srv/test/pull", headers={**BEARER, "Origin": f"http://{HOST}"})).status_code == 403

@@ -48,9 +48,20 @@ def server_name(ws: Workspace, instance: str) -> str:
     return f"{ws.name}-{instance}"
 
 
-async def _helper(job: Job, *args: str) -> dict:
+async def _helper(job: Job, *args: str, timeout: float = HELPER_TIMEOUT) -> dict:
     job.log("$ " + " ".join(helper(*args)))
-    code, out = await capture(helper(*args), timeout=HELPER_TIMEOUT)
+    code, out = await capture(helper(*args), timeout=timeout)
+    if code:
+        raise JobFailed(out or f"workspace-helper {args[0]} failed ({code})")
+    try:
+        return json.loads(out.splitlines()[-1])
+    except (ValueError, IndexError):
+        raise JobFailed(f"workspace-helper {args[0]} answered no JSON: {out}") from None
+
+
+async def ask(*args: str, timeout: float = HELPER_TIMEOUT) -> dict:
+    """A helper's answer read for a page, without a job."""
+    code, out = await capture(helper(*args), timeout=timeout)
     if code:
         raise JobFailed(out or f"workspace-helper {args[0]} failed ({code})")
     try:

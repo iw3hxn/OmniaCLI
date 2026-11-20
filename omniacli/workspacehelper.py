@@ -6,6 +6,8 @@
     omniacli workspace-helper create <workspace> <storage> <instance> <template> <values as JSON>
     omniacli workspace-helper remove <workspace> <storage> <instance>
     omniacli workspace-helper limits <workspace> <cpus> <memory in GB>
+    omniacli workspace-helper pitr-enable | pitr-base | pitr-state <workspace> <storage> <instance> <role>
+    omniacli workspace-helper pitr-restore <workspace> <storage> <source> <target> <time> <source db> <target db>
     omniacli workspace-helper space
     omniacli workspace-helper storage-setup | storage-check <storage> | storage-reset <storage>
 
@@ -113,7 +115,7 @@ from pathlib import Path
 
 import yaml
 
-from . import composehelper, config, stacktemplates, templatestore, workspaceweb
+from . import composehelper, config, pitrhelper, stacktemplates, templatestore, workspaceweb
 from .composehelper import ENV, HelperError, caller
 from .config import (CERTIFICATES, DOMAIN_NAME, OMNIACLI_COMMAND, SUBDOMAIN, TEST_LABEL, WORKSPACE_NAME,
                      ConfigError, parse_storage_roots, web_names)
@@ -1375,10 +1377,47 @@ def owncert(name: str, storage: str, given: str | None = None) -> dict:
             "names": [part.strip()[4:] for part in alt.replace("\n", ",").split(",") if part.strip().startswith("DNS:")]}
 
 
+def _project(name: str, storage: str, instance: str, role: str) -> Path:
+    """The compose project of a role of an instance of the workspace (mounted)."""
+    image, mount = workspace(name, storage)
+    _name("instance", instance)
+    if role not in ROLES:
+        raise HelperError(f"the role is {' or '.join(ROLES)}")
+    if not mounted(image, mount):
+        raise HelperError(f"the disk of workspace {name} is not mounted")
+    project = mount / instance / role
+    if project.is_symlink() or not (project / "compose.yaml").is_file():
+        raise HelperError(f"no project {instance}/{role} in workspace {name}")
+    return project
+
+
+def pitr_enable(name: str, storage: str, instance: str, role: str) -> dict:
+    return pitrhelper.enable(_project(name, storage, instance, role))
+
+
+def pitr_base(name: str, storage: str, instance: str, role: str) -> dict:
+    return pitrhelper.base(_project(name, storage, instance, role))
+
+
+def pitr_state(name: str, storage: str, instance: str, role: str) -> dict:
+    return pitrhelper.state(_project(name, storage, instance, role))
+
+
+def pitr_restore(name: str, storage: str, source: str, target: str, when: str, source_db: str,
+                 target_db: str) -> dict:
+    """source's production database, as it was at when, into target's production."""
+    if source == target:
+        raise HelperError("the source and the target are one instance")
+    return pitrhelper.restore(_project(name, storage, source, "production"),
+                              _project(name, storage, target, "production"), when, source_db, target_db)
+
+
 ACTIONS = {"disk": (disk, 3), "drop": (drop, 2), "limits": (limits, 3), "create": (create, 5), "remove": (remove, 3),
            "web": (web, 3), "owncert": (owncert, 2), "firewall": (firewall, 1), "template-install": (template_install, 1),
            "conf": (conf, 5), "space": (space, 0),
-           "storage-setup": (storage_setup, 0), "storage-check": (storage_check, 1), "storage-reset": (storage_reset, 1)}
+           "storage-setup": (storage_setup, 0), "storage-check": (storage_check, 1), "storage-reset": (storage_reset, 1),
+           "pitr-enable": (pitr_enable, 4), "pitr-base": (pitr_base, 4), "pitr-state": (pitr_state, 4),
+           "pitr-restore": (pitr_restore, 7)}
 
 
 def run(argv: list[str]) -> dict:

@@ -1313,6 +1313,32 @@ actions' notices. The head of the Environments tab says whether it answers,
 since when, its uptime over the last 24 hours and its answer time; MCP's
 `diagnose_instance` too. The last day of checks is kept in `monitor.json`.
 
+### The database: its health, back to a minute
+
+The **Database** tab of an instance (developers; Docker Compose and venv)
+reads PostgreSQL's own statistics with fixed queries (`pg-report` of the
+compose helper in the database container; `psql` as Odoo connects for a
+venv): size, connections, cache hits, the queries running for more than 5
+seconds (**Stop** ends one: an admin's on a production, in the access log),
+the costliest statements when `pg_stat_statements` is installed, the largest
+tables, the indexes never used, the tables read whole (an index may be
+missing). MCP's `database_report` gives the same.
+
+**Back to a minute** (point-in-time recovery; a workspace's production, the
+Backups tab, its admins): **Switch on** gives the database service a volume
+of its own (`data/wal`, a line in its `compose.yaml`; the service made again:
+a few seconds without database), switches PostgreSQL's WAL archive on
+(`archive_mode`, `archive_command`, `archive_timeout` 300 s: at most 5
+minutes of work not archived yet) and makes a first base backup
+(`pg_basebackup`); one more each night, the newest 7 kept, the segments older
+than the oldest one deleted. **New staging at this minute** makes a staging
+beside it whose cluster is the base backup before that minute with the
+segments after it replayed up to it (`recovery_target_time`), then promoted;
+its database renamed as the staging names it, its roles given the staging's
+passwords, the filestore of now linked (Odoo only adds files there), and
+neutralized (`odoo neutralize`). Production is never touched; when it fails
+the staging's data of before is put back.
+
 ### Is a backup good
 
 Every backup made here has its **SHA-256** written when it is made, in

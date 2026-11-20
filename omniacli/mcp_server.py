@@ -22,7 +22,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from . import backupcheck, instancearchive, ops, plugins
+from . import backupcheck, instancearchive, ops, pgreport, plugins
 from .accesslog import AccessLog
 from .auth import ROLES as ACCESS_ROLES
 from .auth import Authenticator
@@ -72,7 +72,8 @@ TOOL_ROLES = {"update_test": "developer", "backup_test": "developer",
               "read_server": "admin", "add_draft_server": "admin",
               "restart_instance": "developer", "start_instance": "developer", "stop_instance": "developer",
               "list_actions": "developer", "run_action": "developer", "verify_backup": "developer",
-              "full_archive": "developer", "stop_job": "developer", "update_production": "admin"}
+              "full_archive": "developer", "stop_job": "developer", "update_production": "admin",
+              "database_report": "developer"}
 # the tools of the machine's tokens only: a workspace's token never reaches them
 MACHINE_TOOLS = {"read_server", "add_draft_server", "list_links", "linked_tools", "call_linked"}
 # the role of the token of the request being served, for the list of tools,
@@ -697,6 +698,18 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         folder = settings.backup_dir / inst.server / inst.role
         return await submit(ctx, f"Full archive of {inst.key}", inst,
                             lambda job: instancearchive.make(job, inst, folder), wait_seconds)
+
+    @server.tool()
+    async def database_report(server_name: str, role: str, ctx: Context) -> dict:
+        """The health of an instance's database: size, connections, cache hits,
+        the queries running for long, the costliest statements
+        (pg_stat_statements, when installed), the largest tables, the indexes
+        never used, the tables read whole (an index may be missing)."""
+        need(ctx, "database_report")
+        try:
+            return await pgreport.report(instance(server_name, role, ctx))
+        except JobFailed as exc:
+            raise ToolError(str(exc)) from exc
 
     @server.tool()
     def stop_job(job_id: str, ctx: Context) -> dict:

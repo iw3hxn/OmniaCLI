@@ -258,6 +258,7 @@
   {% if can_act %}<button type="button" role="tab" data-tab="backups">{{ _("Backups") }}</button>{% endif %}
   <button type="button" role="tab" data-tab="log">{{ _("Log") }}</button>
   <button type="button" role="tab" data-tab="monitor" hidden>{{ _("Monitoring") }}</button>
+  {% if can_act and inst.plugin and (inst.restart.type == "compose" or inst.plugin.db_shell(inst)) %}<button type="button" role="tab" data-tab="database">{{ _("Database") }}</button>{% endif %}
   {% if can_act and stagings and stagings.workspace %}<button type="button" role="tab" data-tab="addons">{{ _("Addons") }}</button>{% endif %}
   {% if can_act and (inst.type == "odoo" or odoo_params) %}<button type="button" role="tab" data-tab="odoo-config">{{ _("Odoo config") }}</button>{% endif %}
   {% if can_act %}<button type="button" role="tab" data-tab="settings">{{ _("Settings") }}</button>{% endif %}
@@ -337,6 +338,25 @@
     · {% else %}{{ _("No jobs yet.") }} {% endif %}<a href="{{ prefix }}/jobs?server={{ server.name | urlencode }}">{{ _("all the actions") }}</a></p>
 </section>
 
+{% if can_act %}
+<section class="tab-panel panel" data-panel="database" hidden data-api="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}/database">
+  <div class="section-head"><h2>{{ _("Database") }}</h2><button type="button" class="small" id="db-reload">{{ icon("restart") }}{{ _("Read again") }}</button></div>
+  <p class="muted db-state">{{ _("Reading the statistics of its database…") }}</p>
+  <div class="db-body" hidden>
+    <div class="tiles">
+      <div class="tile"><div class="tile-label">{{ _("Size") }}</div><div class="tile-value" data-db="size">–</div></div>
+      <div class="tile"><div class="tile-label">{{ _("Connections") }}</div><div class="tile-value" data-db="connections">–</div></div>
+      <div class="tile"><div class="tile-label">{{ _("Read from the cache") }}</div><div class="tile-value" data-db="cache">–</div></div>
+      <div class="tile"><div class="tile-label">PostgreSQL</div><div class="tile-value" data-db="version" style="font-size: 15px">–</div></div>
+    </div>
+    <h3>{{ _("Queries running for more than 5 seconds") }}</h3><div class="scroll" data-db-table="long_queries"></div>
+    <h3>{{ _("The costliest statements") }}</h3><div class="scroll" data-db-table="statements"></div>
+    <h3>{{ _("The largest tables") }}</h3><div class="scroll" data-db-table="tables"></div>
+    <h3>{{ _("Indexes never used") }} <span class="muted" style="font-weight: 400; font-size: 13px">{{ _("since the statistics were reset: they slow the writes and take room") }}</span></h3><div class="scroll" data-db-table="unused_indexes"></div>
+    <h3>{{ _("Tables read whole") }} <span class="muted" style="font-weight: 400; font-size: 13px">{{ _("many rows read without an index: an index may be missing") }}</span></h3><div class="scroll" data-db-table="sequential"></div>
+  </div>
+</section>
+{% endif %}
 <section class="tab-panel panel" data-panel="log" hidden>
   <div class="log-panel" data-log="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}/log">{{ logbox("server-log", height="60vh") }}</div>
 </section>
@@ -386,6 +406,21 @@
   </form>
   {% endif %}
   <div class="backup-list muted">{{ _("Loading…") }}</div>
+  {% if inst.role == "production" and stagings and stagings.workspace and inst.restart.type == "compose" and not is_staging %}
+  {# point-in-time recovery: the database as it was at a minute, in a new staging #}
+  <div class="pitr" data-api="{{ prefix }}/api/servers/{{ server.name }}/pitr" hidden>
+    <h3 style="margin: 16px 0 6px; font-size: 15px">{{ _("Back to a minute (point-in-time recovery)") }}</h3>
+    <p class="muted" style="font-size: 13px; margin: 0 0 8px">{{ _("PostgreSQL keeps every change (its WAL) beside a base backup made each night: the database can be had again as it was at any minute since the oldest base backup, in a new staging, without touching production. At most 5 minutes of work are not in the archive yet.") }}</p>
+    <p class="pitr-state muted" style="font-size: 13px"></p>
+    <div class="actions pitr-off" hidden><button type="button" id="pitr-enable" {{ off }}>{{ _("Switch on") }}</button>
+      <span class="muted" style="font-size: 13px">{{ _("Its database restarts once, for a few seconds.") }}</span></div>
+    <div class="actions pitr-on" hidden>
+      <input type="datetime-local" id="pitr-time" step="60">
+      <button type="button" class="primary" id="pitr-restore" {{ off }}>{{ _("New staging at this minute") }}</button>
+      <button type="button" id="pitr-base" {{ off }}>{{ _("Base backup now") }}</button>
+    </div>
+  </div>
+  {% endif %}
   <div class="remote-list" hidden>
     <h3 style="margin: 16px 0 8px; font-size: 15px">{{ _("Copies in") }} <span class="rl-name"></span></h3>
     <div class="rl-body muted">{{ _("Loading…") }}</div>
@@ -695,6 +730,7 @@
     for (const p of document.querySelectorAll(".tab-panel")) p.hidden = p.dataset.panel !== name;
     if (name === "backups") loadBackups();
     if (name === "odoo-config") loadOdooConfig();
+    if (name === "database") loadDatabase();
     if (name === "monitor") { since = 0; for (const k in series) delete series[k]; refresh(); }
   }
   for (const t of tabs) t.addEventListener("click", () => { history.replaceState(null, "", "#" + t.dataset.tab); show(t.dataset.tab); });
@@ -887,6 +923,102 @@
     if (!resp.ok || !data.job) { alert(data.error || data.detail || resp.status); return; }
     location.href = `{{ prefix }}/jobs/${data.job}`;
   });
+  // point-in-time recovery: its state, switched on, a staging at a minute
+  (async function () {
+    const box = document.querySelector(".pitr");
+    if (!box) return;
+    const P = {range: {{ _("Can go back from {first} to {last}; {bases} base backups, {segments} WAL segments ({size}).") | tojson }},
+               failing: {{ _("The archive fails: {count} segments not archived, the last at {time}.") | tojson }},
+               noneYet: {{ _("No base backup yet.") | tojson }},
+               enableQ: {{ _("Switch point-in-time recovery on? The database restarts once, for a few seconds.") | tojson }},
+               restoreQ: {{ _("A new staging with the database as it was at {time}?") | tojson }}};
+    const post = async (path, body) => {
+      const resp = await fetch(box.dataset.api + path, {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
+                                                        body: JSON.stringify(body || {})});
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok || !data.job) { alert(data.error || data.detail || resp.status); return; }
+      location.href = `{{ prefix }}/jobs/${data.job}`;
+    };
+    const resp = await fetch(box.dataset.api).catch(() => null);
+    if (!resp || !resp.ok) return;
+    const data = await resp.json();
+    box.hidden = false;
+    box.querySelector(".pitr-off").hidden = data.enabled;
+    box.querySelector(".pitr-on").hidden = !data.enabled;
+    const said = [];
+    if (data.enabled) {
+      said.push(data.first ? P.range.replace("{first}", data.first.replace("T", " ").slice(0, 16)).replace("{last}", (data.last || "?").replace("T", " ").slice(0, 16))
+        .replace("{bases}", data.bases.length).replace("{segments}", data.segments).replace("{size}", (data.archive_size / 1048576).toFixed(0) + " MiB") : P.noneYet);
+      if (data.failed) said.push(P.failing.replace("{count}", data.failed).replace("{time}", data.last_failed));
+      const input = document.getElementById("pitr-time");
+      if (data.first) input.min = data.first.slice(0, 16);
+      if (data.last) { input.max = data.last.slice(0, 16); input.value = data.last.slice(0, 16); }
+    }
+    box.querySelector(".pitr-state").textContent = said.join(" ");
+    document.getElementById("pitr-enable")?.addEventListener("click", () => { if (confirm(P.enableQ)) post("/enable"); });
+    document.getElementById("pitr-base")?.addEventListener("click", () => post("/base"));
+    document.getElementById("pitr-restore")?.addEventListener("click", () => {
+      const value = document.getElementById("pitr-time").value;
+      if (value && confirm(P.restoreQ.replace("{time}", value.replace("T", " ")))) post("/restore", {time: value});
+    });
+  })();
+  // the Database tab: the statistics of its database, read when opened
+  const DB = {none: {{ _("none") | tojson }}, failed: {{ _("Cannot be read: {error}") | tojson }},
+              stop: {{ _("Stop") | tojson }}, stopQ: {{ _("Stop the query {pid}? Its transaction is rolled back.") | tojson }},
+              noStatements: {{ _("pg_stat_statements is not installed in this database: CREATE EXTENSION pg_stat_statements, with shared_preload_libraries = pg_stat_statements in PostgreSQL's configuration.") | tojson }},
+              cols: {pid: "pid", seconds: {{ _("seconds") | tojson }}, state: {{ _("state") | tojson }}, waiting: {{ _("waiting") | tojson }},
+                     query: {{ _("query") | tojson }}, name: {{ _("name") | tojson }}, table: {{ _("table") | tojson }},
+                     size: {{ _("size") | tojson }}, rows: {{ _("rows") | tojson }}, dead: {{ _("dead rows") | tojson }},
+                     seq_scan: {{ _("read whole") | tojson }}, idx_scan: {{ _("by index") | tojson }},
+                     last_autovacuum: {{ _("last vacuum") | tojson }}, rows_read: {{ _("rows read") | tojson }},
+                     calls: {{ _("calls") | tojson }}, total_ms: {{ _("total ms") | tojson }}, mean_ms: {{ _("mean ms") | tojson }}}};
+  const bytes = (n) => n >= 1 << 30 ? (n / (1 << 30)).toFixed(1) + " GiB" : n >= 1 << 20 ? (n / (1 << 20)).toFixed(1) + " MiB" : Math.round(n / 1024) + " KiB";
+  async function loadDatabase() {
+    const box = document.querySelector('[data-panel="database"]');
+    if (!box) return;
+    const state = box.querySelector(".db-state");
+    state.hidden = false;
+    let data;
+    try {
+      const resp = await fetch(box.dataset.api, {headers: {Accept: "application/json"}});
+      data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || data.detail || resp.status);
+    } catch (e) { state.textContent = DB.failed.replace("{error}", e.message); return; }
+    state.hidden = true;
+    box.querySelector(".db-body").hidden = false;
+    box.querySelector('[data-db="size"]').textContent = bytes(data.size);
+    box.querySelector('[data-db="connections"]').textContent = `${data.connections} / ${data.max_connections}`;
+    box.querySelector('[data-db="cache"]').textContent = data.cache_hit === null ? "–" : data.cache_hit + "%";
+    box.querySelector('[data-db="version"]').textContent = (data.version || "").split(" ")[0];
+    for (const holder of box.querySelectorAll("[data-db-table]")) {
+      const key = holder.dataset.dbTable, rows = data[key];
+      if (key === "statements" && rows === null) { holder.replaceChildren(Object.assign(document.createElement("p"), {className: "muted", textContent: DB.noStatements})); continue; }
+      if (!rows || !rows.length) { holder.replaceChildren(Object.assign(document.createElement("p"), {className: "muted", textContent: DB.none})); continue; }
+      const table = document.createElement("table"), cols = Object.keys(rows[0]);
+      const head = table.insertRow();
+      for (const c of [...cols, ...(key === "long_queries" && data.can_stop ? [""] : [])]) { const th = document.createElement("th"); th.textContent = DB.cols[c] || c; head.append(th); }
+      for (const r of rows) {
+        const tr = table.insertRow();
+        for (const c of cols) {
+          const td = tr.insertCell(), v = r[c];
+          td.textContent = v === null ? "–" : c === "size" ? bytes(v) : c === "last_autovacuum" ? String(v).slice(0, 16).replace("T", " ") : String(v);
+          if (c === "query") { td.className = "mono"; td.style.fontSize = "12px"; td.style.whiteSpace = "pre-wrap"; }
+        }
+        if (key === "long_queries" && data.can_stop) {
+          const b = document.createElement("button"); b.type = "button"; b.className = "small danger"; b.textContent = DB.stop;
+          b.addEventListener("click", async () => {
+            if (!confirm(DB.stopQ.replace("{pid}", r.pid))) return;
+            await fetch(box.dataset.api + "/terminate", {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
+                                                         body: JSON.stringify({pid: r.pid})});
+            loadDatabase();
+          });
+          tr.insertCell().append(b);
+        }
+      }
+      holder.replaceChildren(table);
+    }
+  }
+  document.getElementById("db-reload")?.addEventListener("click", loadDatabase);
   // deploy on push: switched on gives the address and a secret, once
   (async function () {
     const box = document.querySelector(".deploy-hook");

@@ -441,6 +441,8 @@ class LogUnavailable(Exception):
 
 # a line of docker compose logs --timestamps: its UTC time, then the line
 _LOG_LINE = re.compile(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?Z ?(.*)")
+# a terminal's escapes docker compose may put before a line (ESC[2K)
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 LOG_TIMEOUT = 60
 
 
@@ -472,7 +474,7 @@ async def compose_log(instance: Instance, pos: int | None = None, initial: int =
         raise LogUnavailable(out.splitlines()[-1] if out else f"docker compose logs ended with {code}")
     lines, last = [], pos
     for raw in out.splitlines():
-        found = _LOG_LINE.match(raw)
+        found = _LOG_LINE.match(_ANSI.sub("", raw))
         if not found:
             continue  # a warning of docker compose, not a line of the log
         moment = _micros(found.group(1), found.group(2))

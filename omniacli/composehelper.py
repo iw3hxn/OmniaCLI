@@ -75,6 +75,15 @@ command of the caller's, and runs docker with an environment of its own:
                                          on the input, the helper's own file,
                                          never the caller's): the users, or
                                          a new session of one (its sid)
+    neutralize <odoo service> <db>       odoo neutralize (no outgoing mail, no
+                                         scheduled actions), in a container
+                                         of its own
+    pg-report <database service> <db>    the database's health (fixed queries:
+                                         size, connections, cache, long
+                                         queries, tables, unused indexes,
+                                         pg_stat_statements when there), JSON
+    pg-terminate <database service> <db> <pid>
+                                         a query of that database stopped
     pip-freeze <odoo service>            in the running service: the Python
                                          packages installed for its user
                                          (pip freeze --user)
@@ -143,10 +152,45 @@ ACTIONS = {
     # a newer image of every service, then the containers made again with it
     "pull": [["pull"], ["up", "-d"]],
 }
+# the database's health, one JSON line (jsonb: json_agg would break lines):
+# only these fixed queries, never the
+# caller's text (pgreport.py reads them on a venv's database the same way)
+PG_REPORT = """SELECT json_build_object(
+ 'version', current_setting('server_version'),
+ 'size', pg_database_size(current_database()),
+ 'connections', (SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()),
+ 'max_connections', current_setting('max_connections')::int,
+ 'cache_hit', (SELECT round(100.0 * sum(blks_hit) / nullif(sum(blks_hit) + sum(blks_read), 0), 2)
+               FROM pg_stat_database WHERE datname = current_database()),
+ 'long_queries', (SELECT coalesce(json_agg(q), '[]') FROM (
+     SELECT pid, state, extract(epoch FROM now() - query_start)::int AS seconds, wait_event_type AS waiting,
+            left(query, 400) AS query
+     FROM pg_stat_activity WHERE datname = current_database() AND state <> 'idle' AND pid <> pg_backend_pid()
+       AND query_start < now() - interval '5 seconds' ORDER BY query_start LIMIT 20) q),
+ 'tables', (SELECT coalesce(json_agg(t), '[]') FROM (
+     SELECT relname AS name, pg_total_relation_size(relid) AS size, n_live_tup AS rows, n_dead_tup AS dead,
+            seq_scan, idx_scan, last_autovacuum
+     FROM pg_stat_user_tables ORDER BY pg_total_relation_size(relid) DESC LIMIT 15) t),
+ 'unused_indexes', (SELECT coalesce(json_agg(i), '[]') FROM (
+     SELECT s.indexrelname AS name, s.relname AS "table", pg_relation_size(s.indexrelid) AS size
+     FROM pg_stat_user_indexes s JOIN pg_index x ON x.indexrelid = s.indexrelid
+     WHERE s.idx_scan = 0 AND NOT x.indisunique AND NOT x.indisprimary
+     ORDER BY pg_relation_size(s.indexrelid) DESC LIMIT 15) i),
+ 'sequential', (SELECT coalesce(json_agg(t), '[]') FROM (
+     SELECT relname AS name, seq_scan, seq_tup_read AS rows_read, idx_scan, n_live_tup AS rows
+     FROM pg_stat_user_tables WHERE seq_scan > 0 AND n_live_tup > 10000
+     ORDER BY seq_tup_read DESC LIMIT 10) t),
+ 'statements_on', EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements'))::jsonb"""
+PG_STATEMENTS = """SELECT coalesce(json_agg(s), '[]')::jsonb FROM (
+ SELECT calls, round(total_exec_time::numeric, 1) AS total_ms, round(mean_exec_time::numeric, 1) AS mean_ms,
+        rows, left(query, 400) AS query
+ FROM pg_stat_statements WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
+ ORDER BY total_exec_time DESC LIMIT 20) s"""
+PID = re.compile(r"[1-9][0-9]{0,9}")
 # the actions that take arguments (commands())
 WITH_ARGUMENTS = ("logs", "version", "port", "dump", "load", "update", "psql", "init", "link-filestore", "login",
                   "setup", "options", "image", "verify", "pip-freeze",
-                  "pip-requirements", "terminal")
+                  "pg-report", "pg-terminate", "neutralize", "pip-requirements", "terminal")
 # a repository of the instance's addons (/mnt/customer-addons/<name>)
 REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 DATABASE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,62}")
@@ -205,8 +249,19 @@ SCRIPTS = {
                                  'cat > "$f"; odoo db load --force --neutralize "$1" "$f"',
     "update": ODOO_DB + CRONS_BEFORE + f'export PYTHONPATH={TOOLS_MOUNT}; '
                         f'python3 {TOOLS_MOUNT}/bin/click-odoo-update -d "$1"; ' + CRONS_AFTER,
+    # no outgoing mail, no scheduled actions (Odoo 16 and later)
+    "neutralize": ODOO_DB + 'exec odoo neutralize -d "$1"',
     "update-modules": ODOO_DB + CRONS_BEFORE + 'odoo -d "$1" -u "$2" --stop-after-init --no-http; ' + CRONS_AFTER,
     "psql": 'exec psql -U "${POSTGRES_USER:-postgres}" "$1"',
+    # the report: its line, then pg_stat_statements' when the extension is there
+    "pg-report": 'psql -X -At -U "${POSTGRES_USER:-postgres}" -d "$1" -c "$2" || exit 1; '
+                 'if psql -X -At -U "${POSTGRES_USER:-postgres}" -d "$1" '
+                 '-c "SELECT 1 FROM pg_extension WHERE extname = \'pg_stat_statements\'" | grep -q 1; '
+                 'then psql -X -At -U "${POSTGRES_USER:-postgres}" -d "$1" -c "$3"; else echo null; fi',
+    # a query of the database stopped: its backend ended
+    "pg-terminate": 'exec psql -X -At -U "${POSTGRES_USER:-postgres}" -d "$1" '
+                    '-c "SELECT pg_terminate_backend($2) FROM pg_stat_activity WHERE pid = $2 '
+                    'AND datname = current_database()"',
     # the terminal of the Odoo container: a login shell of the image's user,
     # in the repositories of addons (bash when the image has it)
     "terminal": 'cd /mnt/customer-addons 2>/dev/null || cd; '
@@ -234,7 +289,9 @@ SCRIPTS = {
 _ENV_LINE = re.compile(r"\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=")
 # logs: a service's output with the time of each line, the last N lines or
 # those since a time (UTC, as docker writes it)
-LOGS = ["logs", "--no-color", "--no-log-prefix", "--timestamps"]
+# --ansi never: docker compose 2.26 starts each line with an escape (ESC[2K)
+# otherwise, even without a terminal
+LOGS = ["--ansi", "never", "logs", "--no-color", "--no-log-prefix", "--timestamps"]
 MAX_TAIL = 10000
 SINCE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z")
 # link-filestore: Odoo's data folder in its container (the images' data_dir),
@@ -502,6 +559,24 @@ def commands(project: Path, action: str, args: list[str]) -> list[list[str]]:
             raise HelperError("usage: psql <service> <database>")
         name = service(project, args[0])
         return [_script(name, "psql", _database(args[1]), options=psql_options(project, name))]
+    if action == "neutralize":
+        # neutralize <odoo service> <database>: in a container of its own
+        if len(args) != 2:
+            raise HelperError("usage: neutralize <service> <database>")
+        return [["run", "--rm", "-T", "--entrypoint", "sh", service(project, args[0]), "-c", SCRIPTS["neutralize"],
+                 "sh", _database(args[1])]]
+    if action == "pg-report":
+        # pg-report <database service> <database>: the fixed queries above
+        if len(args) != 2:
+            raise HelperError("usage: pg-report <service> <database>")
+        name = service(project, args[0])
+        return [_script(name, "pg-report", _database(args[1]), PG_REPORT, PG_STATEMENTS,
+                        options=("-T", *psql_options(project, name)))]
+    if action == "pg-terminate":
+        if len(args) != 3 or not PID.fullmatch(args[2]):
+            raise HelperError("usage: pg-terminate <service> <database> <pid>")
+        name = service(project, args[0])
+        return [_script(name, "pg-terminate", _database(args[1]), args[2], options=("-T", *psql_options(project, name)))]
     if action == "terminal":
         # terminal <odoo service>: on the caller's terminal, never as root
         if len(args) != 1:

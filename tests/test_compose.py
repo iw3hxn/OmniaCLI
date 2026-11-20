@@ -283,7 +283,8 @@ async def test_compose_log(with_logged, monkeypatch):
 
     monkeypatch.setattr(ops, "capture", capture)
     instance = _server("logged").test
-    answers.append((0, f'level=warning msg="obsolete"\n{T1} line 4\n{T2} 2026-10-28 16:48:50,380 INFO db: line 5'))
+    # docker compose 2.26 may start a line with a terminal's escape (ESC[2K)
+    answers.append((0, f'level=warning msg="obsolete"\n\x1b[2K{T1} line 4\n{T2} 2026-10-28 16:48:50,380 INFO db: line 5'))
     first = await ops.compose_log(instance)
     assert asked[-1] == ["sudo", "-n", *HELPER, "logs", "odoo", "--tail", "300"]
     assert first["lines"] == ["line 4", "2026-10-28 16:48:50,380 INFO db: line 5"]
@@ -314,7 +315,7 @@ def test_the_logs_action(tmp_path, monkeypatch):
     project = tmp_path
     monkeypatch.setattr(composehelper, "services", lambda project: ["odoo", "db"])
     assert composehelper.commands(project, "logs", ["odoo", "--tail", "5"]) == [
-        ["logs", "--no-color", "--no-log-prefix", "--timestamps", "--tail", "5", "odoo"]]
+        ["--ansi", "never", "logs", "--no-color", "--no-log-prefix", "--timestamps", "--tail", "5", "odoo"]]
     assert composehelper.commands(project, "logs", ["db", "--since", T2])[0][-3:] == ["--since", T2, "db"]
     for args, message in ((["odoo", "--tail", "0"], "1 to 10000"), (["odoo", "--tail", "x"], "1 to 10000"),
                           (["odoo", "--since", "yesterday"], "UTC time"), (["web", "--tail", "5"], "no service"),
