@@ -390,3 +390,14 @@ async def test_a_linked_server_renamed(here):
     assert "acme" in yaml.safe_load(here.settings.links_file.read_text())["links"]
     assert (await here.get("/links/acme/", headers=user_headers("admin"))).status_code == 200
     assert (await here.get("/links/cliente/", headers=user_headers("admin"))).status_code == 404
+
+
+async def test_the_rename_button_keeps_the_head(here):
+    """The page of a linked server keeps its head (<h1>name</h1>); Rename is
+    not offered to whom the link does not make an admin."""
+    from .test_links import as_user as user_headers
+
+    for who in ("admin", "dev"):
+        page = (await here.get("/links/cliente/", headers={**user_headers(who), "Accept": "text/html"})).text
+        assert "<h1>cliente</h1>" in page
+    assert 'id="link-rename"' not in page
