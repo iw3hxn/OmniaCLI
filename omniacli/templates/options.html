@@ -44,6 +44,27 @@
              title="{{ _('A port or a range low-high (1024-65535): every tunnel takes the first free one') }}">
     </div>
   </section>
+  <section class="panel">
+    <h2 style="margin-bottom: 4px">{{ _("Email of the notifications") }}</h2>
+    <p class="muted" style="font-size: 13px; margin-top: 0">{{ _("The SMTP server the notices of a failed scheduled action are sent through (an automatic backup, a copy). Empty: only the webhooks are used.") }}</p>
+    <div class="form-grid">
+      <label for="mail-host">{{ _("SMTP server") }}</label>
+      <input type="text" id="mail-host" class="mono" value="{{ options.smtp_host }}" placeholder="smtp.example.com">
+      <label for="mail-port">{{ _("Port") }}</label>
+      <input type="number" id="mail-port" class="mono" min="1" max="65535" value="{{ options.smtp_port }}">
+      <label for="mail-security">{{ _("Security") }}</label>
+      <select id="mail-security">
+        {% for value, label in (("starttls", "STARTTLS"), ("ssl", "SSL/TLS"), ("none", _("none"))) %}
+        <option value="{{ value }}" {{ "selected" if options.smtp_security == value }}>{{ label }}</option>{% endfor %}
+      </select>
+      <label for="mail-user">{{ _("User") }}</label>
+      <input type="text" id="mail-user" class="mono" value="{{ options.smtp_user }}">
+      <label for="mail-password">{{ _("Password") }}</label>
+      <input type="password" id="mail-password" autocomplete="new-password" placeholder="{{ _('set: empty keeps it') if options.smtp_password else '' }}">
+      <label for="mail-from">{{ _("Sender") }}</label>
+      <input type="email" id="mail-from" class="mono" value="{{ options.mail_from }}" placeholder="omniacli@example.com">
+    </div>
+  </section>
   <div class="actions">
     <button type="submit" class="primary">{{ _("Save") }}</button>
     <a class="button" href="{{ prefix }}/">{{ _("Cancel") }}</a>
@@ -63,6 +84,12 @@ document.getElementById("form").addEventListener("submit", async (ev) => {
       tunnel: {idle_hours: Number(document.getElementById("tunnel-idle").value),
                bind: document.getElementById("tunnel-bind").value.trim(),
                ports: document.getElementById("tunnel-ports").value.trim()},
+      mail: {host: document.getElementById("mail-host").value.trim(),
+             port: Number(document.getElementById("mail-port").value || 587),
+             security: document.getElementById("mail-security").value,
+             user: document.getElementById("mail-user").value.trim(),
+             password: document.getElementById("mail-password").value,
+             from: document.getElementById("mail-from").value.trim()},
     }),
   }).catch(() => null);
   const data = resp ? await resp.json().catch(() => ({})) : {};

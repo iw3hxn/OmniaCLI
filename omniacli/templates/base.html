@@ -498,7 +498,7 @@ summary { cursor: pointer; color: var(--muted); }
 {% macro nav(path, label, title="") -%}
 <a class="nav-link"{% if here == prefix ~ path or (path != "/" and here.startswith(prefix ~ path ~ "/")) %} aria-current="page"{% endif %}{% if title %} title="{{ title }}"{% endif %} href="{{ prefix }}{{ path }}">{{ label }}</a>
 {%- endmacro %}
-{% set settings_paths = ["/settings", "/config", "/links", "/pullers", "/schedules", "/tunnels", "/users", "/workspaces",
+{% set settings_paths = ["/settings", "/config", "/links", "/pullers", "/schedules", "/destinations", "/tunnels", "/users", "/workspaces",
                          "/credentials", "/plugins", "/options", "/omniacli/log", "/help", "/jobs", "/disks", "/groups", "/access"] %}
 {% set path = here[prefix | length:] %}{% set place = namespace(settings=false) %}
 {% for sp in settings_paths %}{% if path == sp or path.startswith(sp ~ "/") %}{% set place.settings = true %}{% endif %}{% endfor %}

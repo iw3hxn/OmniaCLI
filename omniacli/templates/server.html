@@ -331,6 +331,17 @@
       <label><input type="number" id="ab-daily" min="0" max="1000"> {{ _("days") }}</label>
       <label><input type="number" id="ab-weekly" min="0" max="1000"> {{ _("weeks") }}</label>
       <label><input type="number" id="ab-monthly" min="0" max="1000"> {{ _("months") }}</label>
+    </div>
+    <div class="ab-row">
+      <label for="ab-destination">{{ _("Copy also to") }}</label>
+      <select id="ab-destination"><option value="">{{ _("nowhere: this machine only") }}</option></select>
+      <span class="muted" id="ab-dest-none" hidden>{{ _("No destination yet:") }} <a id="ab-dest-link" href="#">{{ _("add one") }}</a></span>
+    </div>
+    <div class="ab-row">
+      <label for="ab-notify">{{ _("When it fails, tell") }}</label>
+      <input type="text" id="ab-notify" class="mono" style="flex: 1; min-width: 240px"
+             placeholder="{{ _('emails or webhook URLs, separated by commas') }}"
+             title="{{ _('An email (the SMTP server of the Options page) or an https:// webhook that gets a JSON text: Slack, Teams, Telegram, ntfy') }}">
       <button type="submit" id="ab-save">{{ _("Save") }}</button>
     </div>
     <p class="muted" id="ab-status"></p>
@@ -338,6 +349,10 @@
   </form>
   {% endif %}
   <div class="backup-list muted">{{ _("Loading…") }}</div>
+  <div class="remote-list" hidden>
+    <h3 style="margin: 16px 0 8px; font-size: 15px">{{ _("Copies in") }} <span class="rl-name"></span></h3>
+    <div class="rl-body muted">{{ _("Loading…") }}</div>
+  </div>
 </section>
 <style>
 .backup-auto { border-bottom: 1px solid var(--border); padding-bottom: 12px; margin-bottom: 12px; }
@@ -459,6 +474,7 @@
 .shell-paths .sp-cmd { margin: 0; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 640px) { .shell-paths dl { grid-template-columns: 1fr; } }
 .oc-all { display: inline-flex; gap: 6px; align-items: center; font-size: 14px; }
+.oc-table tr.op-locked .oc-name, .oc-table tr.op-locked .oc-help { opacity: .6; }
 .op-views { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
 .op-views button { border: 0; border-radius: 0; background: transparent; padding: 6px 14px; font-size: 14px; }
 .op-views button[aria-checked="true"] { background: var(--accent); color: #fff; }
@@ -594,6 +610,12 @@
     abOff: {{ _("Off: no automatic backup.") | tojson }}, abSaved: {{ _("Saved.") | tojson }},
     abNoRight: {{ _("Only an administrator changes them.") | tojson }},
     abZone: {{ _("this server's time ({zone})") | tojson }},
+    abMachine: {{ _("this machine's") | tojson }}, loading: {{ _("Loading…") | tojson }},
+    destPage: {{ (prefix ~ ("/workspaces/" ~ stagings.workspace.name ~ "/destinations" if stagings and stagings.workspace else "/destinations")) | tojson }},
+    rlNone: {{ _("No copies there yet: the next automatic backup makes the first.") | tojson }},
+    rlFile: {{ _("File") | tojson }}, rlWhen: {{ _("Made") | tojson }}, rlSize: {{ _("Size") | tojson }},
+    rlHere: {{ _("also here") | tojson }}, rlFetch: {{ _("Bring back") | tojson }},
+    rlFetchTitle: {{ _("Downloads it, decrypts it and puts it in the backups of this instance: then Restore it from the list above.") | tojson }},
     statuses: {success: {{ _("success") | tojson }}, failed: {{ _("failed") | tojson }}, skipped: {{ _("skipped") | tojson }},
                running: {{ _("running") | tojson }}, queued: {{ _("queued") | tojson }}},
     refused: {{ _("Refused") | tojson }},
@@ -841,10 +863,14 @@
         input.className = "mono";
       }
       input.dataset.extra = o.name;
-      input.value = data.extra[o.name] || "";
+      // a greyed one shows what its odoo.conf has
+      input.value = locked ? (data.values[o.name] || "") : (data.extra[o.name] || "");
+      if (locked && o.kind === "bool" && input.value && ![...input.options].some((x) => x.value === input.value)) {
+        input.append(new Option(input.value, input.value)); input.value = data.values[o.name];
+      }
       if (secret && data.secrets.includes(o.name)) input.placeholder = OP.secret;
       else if (o.default !== null && o.default !== undefined && o.default !== "") input.placeholder = OP.defaultIs.replace("{value}", o.default);
-      if (locked) { input.disabled = true; input.title = OP.locked; tr.classList.add("muted"); }
+      if (locked) { input.disabled = true; input.title = OP.locked; tr.classList.add("op-locked"); }
       else if (!canEdit) input.disabled = true;
       right.append(input);
       tr.append(left, right); table.append(tr);
@@ -988,13 +1014,61 @@
     document.getElementById("ab-zone").textContent = data.zone ? T.abZone.replace("{zone}", data.zone) : "";
     for (const k of ["daily", "weekly", "monthly"]) document.getElementById(`ab-${k}`).value = data[k];
     for (const input of form.querySelectorAll("[data-ab-option]")) input.checked = !!data.options[input.dataset.abOption];
-    for (const input of form.querySelectorAll("input, button")) input.disabled = !data.can_edit;
+    const select = document.getElementById("ab-destination");
+    select.length = 1;
+    for (const d of data.destinations) select.append(new Option(`${d.name} · ${d.label} · ${d.path}` + (d.workspace ? "" : " · " + T.abMachine), d.name));
+    select.value = data.destination || "";
+    const none = document.getElementById("ab-dest-none");
+    none.hidden = data.destinations.length > 0 || !data.can_edit;
+    document.getElementById("ab-dest-link").href = T.destPage;
+    document.getElementById("ab-notify").value = (data.notify || []).join(", ");
+    for (const input of form.querySelectorAll("input, button, select")) input.disabled = !data.can_edit;
+    loadRemoteCopies(data.destination);
     const said = [];
     if (!data.enabled) said.push(T.abOff);
     else if (data.next) said.push(T.abNext.replace("{time}", data.next));
     if (data.last) said.push(T.abLast.replace("{time}", data.last.time.replace("T", " ")).replace("{status}", data.last.message || T.statuses[data.last.status] || data.last.status));
     if (!data.can_edit) said.push(T.abNoRight);
     document.getElementById("ab-status").textContent = said.join(" ");
+  }
+  // the copies in the destination of the automatic backups: one brought back is a backup here
+  async function loadRemoteCopies(destination) {
+    const box = document.querySelector('[data-panel="backups"]'), wrap = box.querySelector(".remote-list");
+    wrap.hidden = !destination;
+    if (!destination) return;
+    const body = wrap.querySelector(".rl-body");
+    body.textContent = T.loading;
+    const resp = await fetch(`${box.dataset.api}/remote-backups`).catch(() => null);
+    const data = resp ? await resp.json().catch(() => ({})) : {};
+    if (!resp || !resp.ok) { body.textContent = data.error || data.detail || T.refused; body.className = "rl-body error"; return; }
+    wrap.querySelector(".rl-name").textContent = `${data.destination.name} (${data.destination.label})`;
+    body.className = "rl-body";
+    if (!data.files.length) { body.textContent = T.rlNone; body.className = "rl-body muted"; return; }
+    const table = document.createElement("table");
+    const head = table.insertRow();
+    for (const t of [T.rlFile, T.rlWhen, T.rlSize, ""]) { const th = document.createElement("th"); th.textContent = t; head.append(th); }
+    for (const f of data.files) {
+      const tr = table.insertRow();
+      tr.insertCell().textContent = f.file;
+      tr.insertCell().textContent = f.time.replace("T", " ");
+      tr.insertCell().textContent = (f.size / 1048576).toFixed(1) + " MiB";
+      const cell = tr.insertCell();
+      if (f.here) { cell.textContent = T.rlHere; cell.className = "muted"; }
+      else if (data.can_fetch) {
+        const b = document.createElement("button"); b.type = "button"; b.className = "small"; b.textContent = T.rlFetch;
+        b.title = T.rlFetchTitle;
+        b.addEventListener("click", async () => {
+          const r = await fetch(`${box.dataset.api}/remote-backups/fetch`, {method: "POST",
+            headers: {"Content-Type": "application/json", Accept: "application/json"}, body: JSON.stringify({file: f.name})});
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok || !d.job) { alert(d.error || d.detail || T.refused); return; }
+          location.href = `{{ prefix }}/jobs/${d.job}`;
+        });
+        cell.append(b);
+      }
+    }
+    const scroll = document.createElement("div"); scroll.className = "scroll"; scroll.append(table);
+    body.replaceChildren(scroll);
   }
   async function loadBackupSchedule(box) {
     if (!document.getElementById("ab-form")) return;
@@ -1005,7 +1079,9 @@
     event.preventDefault();
     const box = document.querySelector('[data-panel="backups"]'), form = event.target, options = {};
     for (const input of form.querySelectorAll("[data-ab-option]")) options[input.dataset.abOption] = input.checked;
-    const body = {enabled: document.getElementById("ab-enabled").checked, time: document.getElementById("ab-time").value, options};
+    const body = {enabled: document.getElementById("ab-enabled").checked, time: document.getElementById("ab-time").value, options,
+                  destination: document.getElementById("ab-destination").value,
+                  notify: document.getElementById("ab-notify").value.split(/[\s,;]+/).filter(Boolean)};
     for (const k of ["daily", "weekly", "monthly"]) body[k] = document.getElementById(`ab-${k}`).value;
     const error = document.getElementById("ab-error");
     error.textContent = "";

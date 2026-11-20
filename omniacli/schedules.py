@@ -16,6 +16,7 @@ import os
 import re
 import shlex
 import shutil
+import socket
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,7 +24,7 @@ from pathlib import Path
 import yaml
 from croniter import croniter
 
-from . import linkcopy, ops
+from . import destinations, linkcopy, notify, ops
 from .config import ROLES, SERVER_NAME, ConfigError, LinkSource, parse_link_source
 from .jobs import FINISHED, Job, JobFailed, JobManager
 from .plugin_api import restore_fetched
@@ -42,6 +43,11 @@ DEFAULT_KEEP_BACKUPS = 3
 LINK_ROLE = "developer"
 # the backups a schedule makes: their names start so, and only they rotate
 SCHEDULED_PREFIX = "scheduled_"
+# the name of a destination (destinations.NAME), whom a run tells
+DESTINATION_NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
+EMAIL = re.compile(r"[^@\s<>,;]{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,63}")
+WEBHOOK = re.compile(r"https://[^\s]{4,2000}")
+NOTIFY_MAX = 10
 # the rotation of a backup step: the newest backup of each of the last
 # so many days, weeks and months
 DEFAULT_ROTATION = {"daily": 7, "weekly": 4, "monthly": 12}
@@ -54,6 +60,9 @@ class BackupStep:
     daily: int = DEFAULT_ROTATION["daily"]
     weekly: int = DEFAULT_ROTATION["weekly"]
     monthly: int = DEFAULT_ROTATION["monthly"]
+    # a remote destination (destinations.py) each backup is copied to,
+    # encrypted, kept there by the same rotation; empty: here only
+    destination: str = ""
 
 
 @dataclass
@@ -86,6 +95,10 @@ class Schedule:
     copy: CopyStep | None = None
     script: ScriptStep | None = None
     history: int = DEFAULT_HISTORY
+    # who is told when a run fails or cannot start: email addresses (the SMTP
+    # server of the Options page) and webhook URLs (a JSON {"text": ...}:
+    # Slack, Teams, Telegram's sendMessage, ntfy...)
+    notify: list[str] = field(default_factory=list)
 
     @property
     def acting_user(self) -> str:
@@ -165,6 +178,10 @@ def parse_schedule(name: str, data: dict) -> Schedule:
                               for k in ("daily", "weekly", "monthly")))
         if not (backup.daily or backup.weekly or backup.monthly):
             raise ConfigError(f"{where}.backup: keep at least one backup (days, weeks or months)")
+        destination = str(raw.get("destination") or "").strip()
+        if destination and not DESTINATION_NAME.fullmatch(destination):
+            raise ConfigError(f"{where}.backup.destination: {destination!r} is not the name of a destination")
+        backup.destination = destination
     copy = None
     if data.get("copy"):
         raw = data["copy"]
@@ -191,10 +208,20 @@ def parse_schedule(name: str, data: dict) -> Schedule:
         except ValueError as exc:
             raise ConfigError(f"{where}.script.args: {exc}") from None
         script = ScriptStep(script_name, args)
+    notify = data.get("notify") or []
+    if isinstance(notify, str):
+        notify = [n for n in re.split(r"[\s,;]+", notify) if n]
+    if not isinstance(notify, list) or len(notify) > NOTIFY_MAX:
+        raise ConfigError(f"{where}.notify: at most {NOTIFY_MAX} addresses or webhook URLs")
+    notify = [str(n).strip() for n in notify if str(n).strip()]
+    bad = [n for n in notify if not (EMAIL.fullmatch(n) or WEBHOOK.fullmatch(n))]
+    if bad:
+        raise ConfigError(f"{where}.notify: {bad[0]!r} is neither an email address nor an https:// URL")
     schedule = Schedule(
         name=name, instance=instance, cron=check_cron(data.get("cron"), f"{where}.cron"),
         enabled=bool(data.get("enabled", True)), user=user, pull=bool(data.get("pull", False)),
         backup=backup, copy=copy, script=script, history=_positive(data.get("history"), DEFAULT_HISTORY, f"{where}.history"),
+        notify=list(dict.fromkeys(notify)),
     )
     if not (schedule.backup or schedule.pull or schedule.copy or schedule.script):
         raise ConfigError(f"{where}: choose at least one step (backup, git pull, copy from link, script)")
@@ -208,6 +235,8 @@ def schedule_to_dict(schedule: Schedule) -> dict:
     if schedule.backup:
         data["backup"] = {"options": schedule.backup.options, "daily": schedule.backup.daily,
                           "weekly": schedule.backup.weekly, "monthly": schedule.backup.monthly}
+        if schedule.backup.destination:
+            data["backup"]["destination"] = schedule.backup.destination
     data["pull"] = schedule.pull
     if schedule.copy:
         data["copy"] = {**schedule.copy.source.to_dict(),
@@ -217,6 +246,8 @@ def schedule_to_dict(schedule: Schedule) -> dict:
     if schedule.script:
         data["script"] = {"name": schedule.script.name, "args": schedule.script.args}
     data["history"] = schedule.history
+    if schedule.notify:
+        data["notify"] = list(schedule.notify)
     return data
 
 
@@ -411,6 +442,8 @@ class Scheduler:
         self.consumers = consumers
         self.schedules: dict[str, Schedule] = {}
         self._task: asyncio.Task | None = None
+        # the notices being sent of runs that did not start
+        self._telling: set[asyncio.Task] = set()
 
     def load(self) -> None:
         self.schedules = load_schedules(self.settings.schedules_file)
@@ -470,18 +503,60 @@ class Scheduler:
         if problem:
             self.history.add(schedule, {"time": stamp, "trigger": trigger, "job": None,
                                         "status": "skipped", "message": problem})
+            if schedule.notify and trigger == "cron":
+                task = asyncio.get_running_loop().create_task(
+                    self.tell(schedule, f"did not start on {schedule.instance}", problem))
+                self._telling.add(task)
+                task.add_done_callback(self._telling.discard)
             return None
         job = self.jobs.submit(f"Schedule {schedule.name} on {instance.key} ({', '.join(schedule.steps)})",
                                [instance.key], f"schedule {schedule.name} ({schedule.acting_user})",
-                               lambda job: self.run(job, schedule, instance))
+                               lambda job: self.run_and_tell(job, schedule, instance))
         self.history.add(schedule, {"time": stamp, "trigger": trigger, "job": job.id,
                                     "status": job.status, "message": ""})
         return job
 
+    async def tell(self, schedule: Schedule, what: str, detail: str) -> list[str]:
+        """The schedule's notify told: the problems of sending, if any."""
+        subject = f"OmniaCLI {socket.gethostname()}: schedule {schedule.name} {what}"
+        return await notify.send(self.settings.options, schedule.notify, subject, detail)
+
+    async def run_and_tell(self, job: Job, schedule: Schedule, instance) -> None:
+        """run; when it fails, the schedule's notify told (and the job's log says so)."""
+        try:
+            await self.run(job, schedule, instance)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if schedule.notify:
+                problems = await self.tell(schedule, f"failed on {instance.key}",
+                                           f"{exc}\n\nJob {job.id}: {job.title}")
+                job.log("--- notified: " + ", ".join(schedule.notify) if not problems
+                        else "--- not notified: " + "; ".join(problems))
+            raise
+
+    def destination(self, name: str, instance) -> destinations.Destination:
+        """The remote destination a backup step names, if the instance may use
+        it: the machine's, or one of the workspace the instance is in."""
+        found = destinations.load_destinations(self.settings.destinations_file).get(name)
+        if found is None:
+            raise JobFailed(f"no destination {name}: the backups stay here only")
+        if found.workspace and instance.server not in getattr(self.settings.workspaces.get(found.workspace),
+                                                              "servers", []):
+            raise JobFailed(f"destination {name} is of workspace {found.workspace}, not of {instance.server}'s")
+        return found
+
     async def run(self, job: Job, schedule: Schedule, instance) -> None:
         folder = self.settings.backup_dir / instance.server / instance.role
         if schedule.backup:
-            await scheduled_backup(job, instance, folder, schedule.backup)
+            made = await scheduled_backup(job, instance, folder, schedule.backup)
+            step = schedule.backup
+            if step.destination:
+                dest = self.destination(step.destination, instance)
+                where = destinations.instance_folder(instance)
+                await destinations.upload(job, dest, made, where)
+                await destinations.rotate(job, dest, where, SCHEDULED_PREFIX,
+                                          lambda times: rotation_kept(times, step.daily, step.weekly, step.monthly))
         if schedule.pull and not schedule.copy:
             # as the auto update: the module update and the restart only when
             # something new came (after a backup of its own step, no other)

@@ -74,7 +74,8 @@ main() {
         step "updates"
         apt-get update -q
         apt-get upgrade "${APT_OPTIONS[@]}"
-        apt-get install "${APT_OPTIONS[@]}" ca-certificates curl ufw unattended-upgrades
+        # rclone: the backups' remote destinations (SFTP, FTP, S3, Drive...)
+        apt-get install "${APT_OPTIONS[@]}" ca-certificates curl ufw unattended-upgrades rclone
         # the security updates by themselves, every day
         printf 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n' \
             > /etc/apt/apt.conf.d/20auto-upgrades

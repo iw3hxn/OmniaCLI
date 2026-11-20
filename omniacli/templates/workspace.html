@@ -177,6 +177,12 @@ select.role { text-transform: none; letter-spacing: 0; font-size: inherit; font-
 </section>
 
 <section class="panel">
+  <div class="section-head"><h2>{{ _("Backup destinations") }}</h2>
+    <a class="button" href="{{ prefix }}/workspaces/{{ ws.name | urlencode }}/destinations">{{ _("Open") }}</a></div>
+  <p class="muted" style="margin: 0">{{ _("Where the automatic backups of the workspace's instances are copied, encrypted: SFTP, FTP, S3, Google Drive, Dropbox, OneDrive, WebDAV.") }}</p>
+</section>
+
+<section class="panel">
   <h2>{{ _("Git credentials") }}</h2>
   <p class="muted">{{ _("The user and token OmniaCLI uses for a host (github.com, bitbucket.org…) to reach the customer's repositories of every instance of the workspace. The token is never shown again; it never reaches the repositories nor the containers.") }}</p>
   {{ credentials_table(credentials, prefix ~ "/api/workspaces/" ~ (ws.name | urlencode) ~ "/credentials/", {},

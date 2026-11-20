@@ -369,6 +369,9 @@ class Settings:
     workspaces_file: Path | None = None
     # the git credentials of servers and workspaces (gitcredentials.py)
     credentials_file: Path | None = None
+    # the remote destinations of the backups (destinations.py, mode 600:
+    # it holds passwords, tokens and the keys), read when used
+    destinations_file: Path | None = None
     workspaces: dict[str, Workspace] = field(default_factory=dict)
     # {name: folder}; storage_error: why there are none usable (a list of before)
     storage_roots: dict[str, str] = field(default_factory=dict)
@@ -1303,6 +1306,16 @@ class Options:
     tunnel_idle_hours: int = TUNNEL_IDLE
     tunnel_bind: str = TUNNEL_BIND
     tunnel_ports: str = TUNNEL_PORTS
+    # the SMTP server the notifications of the scheduled actions go through
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_security: str = "starttls"  # SMTP_SECURITY
+    smtp_user: str = ""
+    smtp_password: str = ""
+    mail_from: str = ""
+
+
+SMTP_SECURITY = ("starttls", "ssl", "none")
 
 
 def _whole(value, where: str, limits: tuple[int, int]) -> int:
@@ -1330,7 +1343,24 @@ def parse_options(data) -> Options:
     low, high = (int(match[1]), int(match[2] or match[1])) if match else (0, 0)
     if not 1024 <= low <= high <= 65535:
         raise ConfigError(f"tunnel.ports: {ports!r} must be a port or a range low-high, from 1024 to 65535")
-    return Options(shell_font_size=size, tunnel_idle_hours=idle, tunnel_bind=bind, tunnel_ports=ports)
+    mail = data.get("mail") or {}
+    if not isinstance(mail, dict):
+        raise ConfigError("mail must be a mapping")
+    texts = {}
+    for key in ("host", "user", "password", "from"):
+        value = str(mail.get(key) or "").strip()
+        if len(value) > 254 or any(ord(c) < 32 for c in value):
+            raise ConfigError(f"mail.{key}: one line of at most 254 characters")
+        texts[key] = value
+    port = _whole(mail.get("port", 587), "mail.port", (1, 65535))
+    security = str(mail.get("security") or "starttls")
+    if security not in SMTP_SECURITY:
+        raise ConfigError(f"mail.security: one of {', '.join(SMTP_SECURITY)}")
+    if texts["from"] and "@" not in texts["from"]:
+        raise ConfigError("mail.from: an email address")
+    return Options(shell_font_size=size, tunnel_idle_hours=idle, tunnel_bind=bind, tunnel_ports=ports,
+                   smtp_host=texts["host"], smtp_port=port, smtp_security=security, smtp_user=texts["user"],
+                   smtp_password=texts["password"], mail_from=texts["from"])
 
 
 def load_options(path: Path) -> Options:
@@ -1348,12 +1378,20 @@ def load_options(path: Path) -> Options:
 
 
 def save_options(path: Path, options: Options) -> None:
-    text = yaml.safe_dump({"shell": {"font_size": options.shell_font_size},
-                           "tunnel": {"idle_hours": options.tunnel_idle_hours, "bind": options.tunnel_bind,
-                                      "ports": options.tunnel_ports}}, sort_keys=False)
+    """Mode 600: it may hold the SMTP password."""
+    data = {"shell": {"font_size": options.shell_font_size},
+            "tunnel": {"idle_hours": options.tunnel_idle_hours, "bind": options.tunnel_bind,
+                       "ports": options.tunnel_ports}}
+    if options.smtp_host:
+        data["mail"] = {"host": options.smtp_host, "port": options.smtp_port, "security": options.smtp_security,
+                        "user": options.smtp_user, "password": options.smtp_password, "from": options.mail_from}
+    text = yaml.safe_dump(data, sort_keys=False)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    os.chmod(tmp, 0o600)
     os.replace(tmp, path)
 
 
@@ -1715,6 +1753,7 @@ def parse_settings(data: dict, base_dir: Path = Path(".")) -> Settings:
         workspaces_file=workspaces_file,
         workspaces=load_workspaces(workspaces_file, storage_roots),
         credentials_file=servers_file.parent / "credentials.yaml",
+        destinations_file=servers_file.parent / "destinations.yaml",
         storage_roots=storage_roots,
         storage_error=storage_error,
         machine=parse_machine(data.get("machine"), os.environ.get("OMNIACLI_USER")),

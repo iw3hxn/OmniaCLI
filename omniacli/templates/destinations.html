@@ -1,0 +1,178 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{% extends "base.html" %}
+{% block title %}{{ _("Backup destinations") }} · OmniaCLI{% endblock %}
+{% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
+{% if workspace %}{{ crumbs([(_("Workspaces"), "/workspaces"), (ws.label or workspace, "/workspaces/" ~ workspace), (_("Backup destinations"), None)]) }}
+{% else %}{{ crumbs([(_("Settings"), "/settings"), (_("Backup destinations"), None)]) }}{% endif %}
+{% endblock %}
+{% block content %}
+<style>
+.dest-table td { vertical-align: top; }
+#dest-dialog { width: min(640px, calc(100vw - 32px)); }
+#dest-dialog .form-grid textarea { min-height: 90px; font-family: var(--mono, monospace); font-size: 12px; }
+#dest-dialog .help { grid-column: 2; margin: -6px 0 4px; font-size: 12px; }
+.key-box { word-break: break-all; }
+</style>
+<div class="page-head">
+  <div>
+    <h1>{{ _("Backup destinations") }}{% if workspace %} <span class="muted" style="font-weight: 400">· {{ ws.label or workspace }}</span>{% endif %}</h1>
+    <p>{{ _("Where the automatic backups are copied, out of this machine: SFTP, FTP, S3 and compatible, Google Drive, Dropbox, OneDrive, WebDAV, Azure, Google Cloud.") }}
+       {{ _("Every copy is encrypted here before it leaves, with the destination's own key: the provider cannot read it.") }}
+       {% if workspace %}{{ _("These are the workspace's: its admins set them, its instances use them.") }}{% else %}{{ _("These are the machine's, for its admins; a workspace's admins set the workspace's on its page.") }}{% endif %}</p>
+  </div>
+  <div class="actions"><button type="button" class="primary" id="dest-new" {{ "disabled" if not rclone }}>+ {{ _("New destination") }}</button></div>
+</div>
+{% if not rclone %}<div class="banner">{{ _("rclone is not installed on this machine: install it (apt install rclone) to copy the backups out.") }}</div>{% endif %}
+<div id="error" class="banner" hidden></div>
+<div id="key-box" class="banner info" hidden>
+  <p style="margin-top: 0"><strong>{{ _("The key of") }} <span id="key-name"></span>.</strong>
+    {{ _("Keep it somewhere else too (a password manager): without it, the copies cannot be read back on another machine.") }}</p>
+  <pre class="copyable key-box mono" id="key-text"></pre>
+</div>
+<section class="panel">
+  <div class="scroll"><table class="dest-table">
+    <tr><th>{{ _("Name") }}</th><th>{{ _("Kind") }}</th><th>{{ _("Folder") }}</th>{% if not workspace %}<th>{{ _("Of") }}</th>{% endif %}<th>{{ _("Used by") }}</th><th></th></tr>
+    {% for d in rows %}
+    <tr data-name="{{ d.name }}">
+      <td><strong>{{ d.name }}</strong></td><td>{{ tr(d.label) }}</td><td class="mono">{{ d.path }}</td>
+      {% if not workspace %}<td>{% if d.workspace %}<a href="{{ prefix }}/workspaces/{{ d.workspace }}/destinations">{{ d.workspace }}</a>{% else %}{{ _("this machine") }}{% endif %}</td>{% endif %}
+      <td class="muted">{{ d.used_by | join(", ") or "—" }}</td>
+      <td>{% if (d.workspace or "") == workspace %}<div class="actions" style="margin: 0">
+        <button type="button" data-check>{{ _("Try") }}</button>
+        <button type="button" data-edit>{{ _("Edit") }}</button>
+        <button type="button" data-key>{{ _("Show the key") }}</button>
+        <button type="button" class="danger" data-delete {{ "disabled" if d.used_by }}>{{ _("Delete") }}</button>
+      </div><div class="muted dest-result" style="font-size: 13px"></div>{% endif %}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6" class="muted">{{ _("No destinations yet: the backups stay on this machine.") }}</td></tr>
+    {% endfor %}
+  </table></div>
+  <p class="muted" style="font-size: 13px">{{ _("Choose a destination in the automatic backups of an instance (its Backups tab): every backup is copied there and kept by the same rotation.") }}
+    {% if file %}{{ _("Saved in {file}, readable by its owner only.", file=file) }}{% endif %}</p>
+</section>
+<dialog id="dest-dialog">
+  <form method="dialog" id="dest-form" autocomplete="off">
+    <h2 id="dest-title">{{ _("New destination") }}</h2>
+    <div class="form-grid">
+      <label for="d-name">{{ _("Name") }}</label>
+      <input type="text" id="d-name" class="mono" required pattern="[a-z0-9][a-z0-9_-]{0,31}" placeholder="nas-office">
+      <label for="d-kind">{{ _("Kind") }}</label>
+      <select id="d-kind">{% for k, v in kinds.items() %}<option value="{{ k }}">{{ tr(v.label) }}</option>{% endfor %}</select>
+      <label for="d-path">{{ _("Folder") }}</label>
+      <input type="text" id="d-path" class="mono" required placeholder="backups/odoo">
+      <p class="help muted" id="d-path-help">{{ _("For S3, Azure and Google Cloud: the bucket, then the folder (my-bucket/odoo).") }}</p>
+    </div>
+    <div class="form-grid" id="d-settings"></div>
+    <details id="d-key-row" style="margin-top: 8px"><summary>{{ _("A key of before") }}</summary>
+      <p class="muted" style="font-size: 13px">{{ _("To read again the copies another OmniaCLI made there, give its key; empty: a new one.") }}</p>
+      <input type="text" id="d-key" class="mono" placeholder="opk1-…"></details>
+    <p class="error" id="d-error"></p>
+    <div class="actions" style="justify-content: flex-end">
+      <button type="button" id="d-cancel">{{ _("Cancel") }}</button>
+      <button type="submit" class="primary" id="d-save">{{ _("Save") }}</button>
+    </div>
+  </form>
+</dialog>
+<script>
+(function () {
+  const API = {{ (prefix ~ api) | tojson }}, KINDS = {{ kinds | tojson }}, ROWS = {{ rows | tojson }};
+  const T = {edit: {{ _("Edit {name}") | tojson }},
+             deleteQ: {{ _("Delete the destination {name}? The copies already there stay there.") | tojson }},
+             trying: {{ _("Trying…") | tojson }}, kept: {{ _("set: empty keeps it") | tojson }},
+             refused: {{ _("Refused") | tojson }}};
+  const dialog = document.getElementById("dest-dialog"), error = document.getElementById("error");
+  let editing = null;
+  async function post(path, body) {
+    const resp = await fetch(`${API}/${path}`, {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
+                                                body: JSON.stringify(body)});
+    return {ok: resp.ok, data: await resp.json().catch(() => ({}))};
+  }
+  function drawSettings(kind, row) {
+    const box = document.getElementById("d-settings");
+    box.replaceChildren();
+    for (const s of KINDS[kind].settings) {
+      const label = document.createElement("label"); label.htmlFor = `ds-${s.name}`; label.textContent = s.label + (s.required ? " *" : "");
+      let input;
+      if (s.kind === "select") {
+        input = document.createElement("select");
+        for (const [v, t] of s.choices) input.append(new Option(t, v));
+      } else if (s.kind === "textarea") {
+        input = document.createElement("textarea"); input.spellcheck = false;
+      } else {
+        input = document.createElement("input");
+        input.type = s.kind === "password" ? "password" : s.kind === "number" ? "number" : s.kind === "checkbox" ? "checkbox" : "text";
+        if (s.kind === "checkbox") input.style.width = "auto";
+        input.autocomplete = "off";
+      }
+      input.id = `ds-${s.name}`; input.dataset.setting = s.name;
+      const saved = row && row.kind === kind ? row.settings[s.name] : undefined, isSet = row && row.set.includes(s.name);
+      if (s.kind === "checkbox") input.checked = (saved !== undefined ? saved : s.default) === "true";
+      else input.value = saved !== undefined && saved !== "" ? saved : (row ? "" : s.default);
+      if (isSet) input.placeholder = T.kept;
+      box.append(label, input);
+      if (s.help) { const h = document.createElement("p"); h.className = "help muted"; h.textContent = s.help; box.append(h); }
+    }
+  }
+  function open(row) {
+    editing = row;
+    document.getElementById("dest-title").textContent = row ? T.edit.replace("{name}", row.name) : {{ _("New destination") | tojson }};
+    document.getElementById("d-name").value = row ? row.name : ""; document.getElementById("d-name").disabled = !!row;
+    document.getElementById("d-kind").value = row ? row.kind : "sftp";
+    document.getElementById("d-path").value = row ? row.path : "";
+    document.getElementById("d-key-row").hidden = !!row; document.getElementById("d-key").value = "";
+    document.getElementById("d-error").textContent = "";
+    drawSettings(document.getElementById("d-kind").value, row);
+    dialog.showModal();
+  }
+  document.getElementById("d-kind").addEventListener("change", (e) => drawSettings(e.target.value, editing));
+  document.getElementById("dest-new").addEventListener("click", () => open(null));
+  document.getElementById("d-cancel").addEventListener("click", () => dialog.close());
+  document.getElementById("dest-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const settings = {};
+    for (const input of document.querySelectorAll("#d-settings [data-setting]")) {
+      settings[input.dataset.setting] = input.type === "checkbox" ? input.checked : input.value;
+    }
+    const body = {name: document.getElementById("d-name").value.trim(), kind: document.getElementById("d-kind").value,
+                  path: document.getElementById("d-path").value.trim(), settings, new: !editing};
+    if (!editing && document.getElementById("d-key").value.trim()) body.key = document.getElementById("d-key").value.trim();
+    const {ok, data} = await post("save", body);
+    if (!ok) { document.getElementById("d-error").textContent = data.error || data.detail || T.refused; return; }
+    dialog.close();
+    if (data.new_key) { sessionStorage.setItem("omniacli-new-destination", body.name); }
+    location.reload();
+  });
+  async function showKey(name) {
+    const {ok, data} = await post("key", {name});
+    if (!ok) { error.textContent = data.error || data.detail || T.refused; error.hidden = false; return; }
+    document.getElementById("key-name").textContent = name;
+    document.getElementById("key-text").textContent = data.key;
+    document.getElementById("key-box").hidden = false;
+    document.getElementById("key-box").scrollIntoView({block: "center"});
+  }
+  try {
+    const fresh = sessionStorage.getItem("omniacli-new-destination");
+    if (fresh) { sessionStorage.removeItem("omniacli-new-destination"); showKey(fresh); }
+  } catch (e) { /* no storage: the key stays one click away */ }
+  for (const tr of document.querySelectorAll("tr[data-name]")) {
+    const name = tr.dataset.name, row = ROWS.find((r) => r.name === name), result = tr.querySelector(".dest-result");
+    tr.querySelector("[data-edit]")?.addEventListener("click", () => open(row));
+    tr.querySelector("[data-key]")?.addEventListener("click", () => showKey(name));
+    tr.querySelector("[data-check]")?.addEventListener("click", async (event) => {
+      event.target.disabled = true; result.textContent = T.trying; result.className = "muted dest-result";
+      const {ok, data} = await post("check", {name});
+      event.target.disabled = false;
+      result.textContent = ok ? "✓ " + data.message : (data.error || data.detail || T.refused);
+      result.className = (ok ? "status success" : "error") + " dest-result";
+    });
+    tr.querySelector("[data-delete]")?.addEventListener("click", async () => {
+      if (!confirm(T.deleteQ.replace("{name}", name))) return;
+      const {ok, data} = await post("delete", {name});
+      if (!ok) { error.textContent = data.error || data.detail || T.refused; error.hidden = false; return; }
+      location.reload();
+    });
+  }
+})();
+</script>
+{% endblock %}

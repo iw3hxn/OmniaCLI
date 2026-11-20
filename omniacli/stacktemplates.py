@@ -109,6 +109,13 @@ TEXT = re.compile(r"[^\x00-\x1f\x7f;#]{0,200}")
 OPTION_NAME = re.compile(r"[a-z_][a-z0-9_]{0,63}")
 EXTRA_TEXT = re.compile(r"[^\x00-\x1f\x7f]{0,1000}")
 EXTRA_MAX = 100
+# the options of Odoo's command line only (actions, tests, translations):
+# not of a config file, the Extended view does not list them
+COMMAND_LINE_ONLY = frozenset({"config", "save", "init", "update", "reinit", "stop_after_init", "with_demo",
+                               "without_demo", "skip_auto_install", "import_partial", "test_file", "test_enable",
+                               "test_tags", "screencasts", "screenshots", "shell_interface", "translate_out",
+                               "translate_in", "load_language", "overwrite_existing_translations", "language",
+                               "dev_mode"})
 # an option whose value is a secret: never sent back to the browser
 SECRET_OPTION = re.compile(r"passw|secret|token|_key$|^key")
 OPTIONS_MARK = "OMNIACLI-OPTIONS "

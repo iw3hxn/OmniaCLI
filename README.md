@@ -1233,6 +1233,43 @@ themselves. Deleting a server takes it out of its workspace, renaming keeps
 it there, and a new server is in no workspace, whatever a workspace still
 names.
 
+### Backup destinations
+
+Where the automatic backups go out of the machine: **Settings › Backup
+destinations** (`/destinations`, the machine's admins) for the machine's,
+and the **Backup destinations** of a workspace's page for the workspace's
+(its admins; its instances may use them, the machine's admins may use the
+machine's too). One engine, [rclone](https://rclone.org) (`apt install
+rclone`, installed with a new machine), for every kind: SFTP (password or
+private key), FTP (FTPES or FTPS), S3 and compatible (Amazon, Wasabi,
+Cloudflare R2, MinIO, Scaleway, Backblaze B2...), Google Drive, Dropbox,
+OneDrive (a token: the JSON `rclone authorize "drive"` prints on a
+computer with a browser), WebDAV (Nextcloud, ownCloud), Azure Blob, Google
+Cloud Storage. **Try** reaches it and writes a file there, then removes it.
+
+The settings, passwords and tokens included, are in `destinations.yaml`
+next to the servers file (mode 600) and reach rclone in its environment for
+one command (a password obscured as rclone wants it), never on its command
+line nor in a config file; the page never shows a secret again, left empty
+it keeps the saved one. Every copy is **encrypted here** before it leaves,
+with the destination's own key (AES-256-GCM in chunks, as the pullers'
+files): `<folder>/<server>/<role>/<backup>.zip.ocpf`. **Show the key** (a
+line in the access log) gives it, to keep elsewhere: without it the copies
+cannot be read on another machine; a new destination may be given the key
+of before, to read the copies another OmniaCLI made. The Backups tab of an
+instance lists the copies in its destination: **Bring back** downloads one,
+decrypts it into the instance's backups, from where it is restored as any
+other. A destination in use by an instance's automatic backups is not
+deleted.
+
+**Notifications**: *When it fails, tell* of the automatic backups (the
+schedule's `notify`: emails and `https://` webhook URLs) is told when a run
+fails (a backup, a copy out) or does not start. An email goes through the
+SMTP server of **Options** (`mail:` of `options.yaml`, mode 600); a webhook
+gets a JSON `{"text": ...}`: Slack's and Teams' incoming webhooks,
+Telegram's `https://api.telegram.org/bot<token>/sendMessage?chat_id=<id>`,
+ntfy. Only a webhook's host is ever written in a log.
+
 ### Scheduled actions
 
 The **Schedules** page (admins) runs steps on an instance at the times of a
@@ -1249,7 +1286,9 @@ this order:
    instance's Backups tab (an admin's for a production, a developer's for a
    test, also for the users of a workspace) is the schedule
    `backup.<server>.<role>` with this step: every day at a time; switched off
-   it goes (or keeps its other steps).
+   it goes (or keeps its other steps). With a **destination** (*Copy also
+   to*, below) each backup is then encrypted and copied there, and the same
+   rotation deletes the copies there it does not keep.
 1. **git pull** of the instance's repositories. Alone it works as the auto
    update: the modules are updated and the instance restarted only when
    something new came. With the copy it does not restart: the restore does.

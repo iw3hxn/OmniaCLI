@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import configparser
 import contextlib
 import dataclasses
 import datetime
@@ -37,7 +38,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
 from starlette.requests import ClientDisconnect, HTTPConnection
 
-from . import (backupchoices, checks, private, restoreroom, consumer, disks, gitcredentials, linkcopy, listgroups, ops, packages, plugins, pluginstore, puller, publisher,
+from . import (backupchoices, checks, destinations, private, restoreroom, consumer, disks, gitcredentials, linkcopy, listgroups, ops, packages, plugins, pluginstore, puller, publisher,
                schedules, selflog, sshlinks, shell, stacktemplates, templatestore, tunnel, workspacehelper, workspaceops)
 from .accesslog import AccessLog
 from . import i18n, loginas, machines, stagings
@@ -216,6 +217,10 @@ WORKSPACE_ROUTES = frozenset({
     "/api/workspaces/{workspace}/repositories/update",
     "/api/servers/{server}/{role}/backup-schedule", "/api/servers/{server}/{role}/backups/delete",
     "/api/workspaces/{workspace}/parameters/save", "/api/workspaces/{workspace}/parameters/options",
+    "/api/servers/{server}/{role}/remote-backups", "/api/servers/{server}/{role}/remote-backups/fetch",
+    "/workspaces/{workspace}/destinations", "/api/workspaces/{workspace}/destinations/save",
+    "/api/workspaces/{workspace}/destinations/delete", "/api/workspaces/{workspace}/destinations/check",
+    "/api/workspaces/{workspace}/destinations/key",
     "/api/workspaces/{workspace}/load",
 })
 
@@ -3219,9 +3224,20 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if "error" in found:
             return JSONResponse({"error": "Its Odoo does not answer (is it running?): " + found["error"]},
                                 status_code=502)
-        state = workspacehelper.role_state(workspaceops.storage_path(ws) / ws.name / name[len(ws.name) + 1:] / role)
+        project = workspaceops.storage_path(ws) / ws.name / name[len(ws.name) + 1:] / role
+        state = workspacehelper.role_state(project)
         locked = template.locked_options()
-        return {"options": found.get("options") or [], "version": found.get("version"),
+        # the values its odoo.conf has now: what a greyed option is set to (a secret's never)
+        parser = configparser.ConfigParser(interpolation=None)
+        try:
+            parser.read(project / "config" / "odoo.conf", encoding="utf-8")
+            written = dict(parser.items("options")) if parser.has_section("options") else {}
+        except (configparser.Error, OSError, UnicodeDecodeError):
+            written = {}
+        options = [o for o in found.get("options") or [] if o.get("name") not in stacktemplates.COMMAND_LINE_ONLY]
+        return {"options": options, "version": found.get("version"),
+                "values": {k: ("" if stacktemplates.SECRET_OPTION.search(k) else v) for k, v in written.items()
+                           if k in locked},
                 "extra": {k: ("" if stacktemplates.SECRET_OPTION.search(k) else v) for k, v in state["extra"].items()},
                 "secrets": sorted(k for k in state["extra"] if stacktemplates.SECRET_OPTION.search(k)),
                 "locked": sorted(locked)}
@@ -4606,6 +4622,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                   ("/groups", t("Groups"), t("The groups the instances and the linked OmniaCLI are arranged in"), admin_here),
                   ("/pullers", t("Pullers"), t("Instances operated through a relay"), admin_here),
                   ("/schedules", t("Schedules"), t("Actions run at set times: backups, updates, restarts"), admin_here),
+                  ("/destinations", t("Backup destinations"), t("Where the automatic backups are copied, encrypted: SFTP, FTP, S3, Drive, Dropbox…"), admin_here),
                   ("/tunnels", t("Tunnels"), t("Ports of the instances reached from your computer"), me.kind == "user" and not getattr(request.state, "prefix", ""))),
             group(t("People and access"),
                   ("/users", t("Users"), t("Who logs in, with which role"), admin_here),
@@ -4628,6 +4645,15 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     @app.post("/api/options/save", dependencies=[Depends(admin)])
     async def options_save(payload: dict = Body(...)):
+        # the mail: not posted keeps the saved one; a password left empty too
+        mail = payload.get("mail")
+        if mail is None:
+            current = settings.options
+            payload = {**payload, "mail": {"host": current.smtp_host, "port": current.smtp_port,
+                                           "security": current.smtp_security, "user": current.smtp_user,
+                                           "password": current.smtp_password, "from": current.mail_from}}
+        elif isinstance(mail, dict) and not mail.get("password"):
+            payload = {**payload, "mail": {**mail, "password": settings.options.smtp_password}}
         try:
             options = parse_options(payload)
         except ConfigError as exc:
@@ -4705,7 +4731,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if srv is None or role not in srv.instances:
                 return refuse(f"No instance {data.get('instance')}")
             instance = srv.instances[role]
+            # what this form does not show stays as it was: the destination of
+            # the backup and whom to tell (the instance's Backups tab sets them)
+            before = current.get(original) if original is not None else None
+            if before is not None and "notify" not in data:
+                data["notify"] = list(before.notify)
             backup = data.get("backup")
+            if backup and before is not None and before.backup and "destination" not in backup:
+                backup["destination"] = before.backup.destination
             if backup:
                 if not instance.plugin.has_backup:
                     return refuse(f"{instance.plugin.label} has no backup")
@@ -4804,7 +4837,30 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 # the schedule runs at this machine's time
                 "zone": datetime.datetime.now().astimezone().tzname() or "",
                 "fields": [_field_dict(f) for f in instance.plugin.backup_fields() if f.kind == "checkbox"],
+                "destination": backup.destination if backup is not None else "",
+                "destinations": [{"name": d.name, "label": d.label, "path": d.path, "workspace": d.workspace}
+                                 for d in destination_choices(instance, me, backup.destination if backup else "")],
+                "notify": list(sch.notify) if sch is not None else [],
                 "can_edit": me.can(backup_role(instance))}
+
+    def load_destinations() -> dict:
+        try:
+            return destinations.load_destinations(settings.destinations_file)
+        except ConfigError as exc:
+            _logger.warning("%s", exc)
+            return {}
+
+    def machine_admin(me: Principal) -> bool:
+        return me.kind == "user" and not me.workspaces and me.can("admin") or me.kind == "token" and me.can("admin")
+
+    def destination_choices(instance: Instance, me: Principal, current: str = "") -> list:
+        """The destinations the instance's backups may go to, for me: the
+        workspaces' it is in, the machine's for the machine's admins; and the
+        one chosen now, whoever chose it."""
+        found = load_destinations()
+        here = {ws.name for ws in settings.workspaces.values() if instance.server in ws.servers}
+        return [d for d in found.values()
+                if (d.workspace in here) or (not d.workspace and machine_admin(me)) or d.name == current]
 
     def backup_role(instance: Instance) -> str:
         """Who may delete an instance's backups and set its automatic ones:
@@ -4845,9 +4901,16 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             current = scheduler.schedules.get(name)
             data = schedules.schedule_to_dict(current) if current is not None else {
                 "instance": instance.key, "user": me.name if me.kind == "user" else ""}
+            destination = str(payload.get("destination") or "")
+            was = current.backup.destination if current is not None and current.backup else ""
+            if destination and destination != was and destination not in [
+                    d.name for d in destination_choices(instance, me)]:
+                return refuse(f"No destination {destination} for {instance.key}")
             data.update({"cron": f"{int(found[2])} {int(found[1])} * * *", "enabled": True,
-                         "backup": {"options": options,
+                         "backup": {"options": options, "destination": destination,
                                     **{k: payload.get(k) for k in schedules.DEFAULT_ROTATION}}})
+            if "notify" in payload:
+                data["notify"] = payload.get("notify") or []
             if not enabled:
                 data.pop("backup")
             updated = dict(scheduler.schedules)
@@ -4884,6 +4947,190 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         access_log.record("delete backup", me.kind, me.name, request.client.host if request.client else "",
                           f"{instance.key}/{name}")
         return {"ok": True}
+
+    async def remote_of(instance: Instance) -> "destinations.Destination | None":
+        sch = scheduler.schedules.get(backup_schedule_name(instance))
+        name = sch.backup.destination if sch is not None and sch.backup else ""
+        return load_destinations().get(name) if name else None
+
+    @app.get("/api/servers/{server}/{role}/remote-backups", dependencies=[Depends(developer)])
+    async def remote_backups(server: str, role: str, me: Principal = Depends(current_user)):
+        """The copies of the instance's backups in the destination of its
+        automatic backups, newest first."""
+        instance = get_instance(server, role)
+        dest = await remote_of(instance)
+        if dest is None:
+            return {"destination": None, "files": []}
+        try:
+            files = await destinations.listing(dest, destinations.instance_folder(instance))
+        except JobFailed as exc:
+            return JSONResponse({"error": str(exc), "destination": dest.name}, status_code=502)
+        local = backup_folder(instance)
+        return {"destination": {"name": dest.name, "label": dest.label, "path": dest.path},
+                "files": [{**f, "here": (local / f["file"]).exists()} for f in files],
+                "can_fetch": me.can(backup_role(instance))}
+
+    @app.post("/api/servers/{server}/{role}/remote-backups/fetch")
+    async def remote_backup_fetch(request: Request, server: str, role: str, payload: dict = Body(...),
+                                  me: Principal = Depends(current_user)):
+        """A copy brought back into the instance's backups, decrypted: a job.
+        Restoring it is then the Backups tab's Restore."""
+        instance = get_instance(server, role)
+        if not me.can(backup_role(instance)):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, f"The {backup_role(instance)} role is required")
+        dest = await remote_of(instance)
+        name = str(payload.get("file") or "")
+        if dest is None:
+            return refuse("The automatic backups of this instance have no destination")
+        if not name.endswith(destinations.SUFFIX) or not _BACKUP_NAME.fullmatch(name[:-len(destinations.SUFFIX)]):
+            return refuse("No such copy", status.HTTP_404_NOT_FOUND)
+        folder = backup_folder(instance)
+        job = jobs.submit(f"Bring back {name[:-len(destinations.SUFFIX)]} from {dest.name}", [instance.key],
+                          f"manual: {me}", lambda job: destinations.fetch(
+                              job, dest, destinations.instance_folder(instance), name, folder))
+        return {"job": job.id}
+
+    # --- remote destinations of the backups -----------------------------
+
+    destinations_lock = asyncio.Lock()
+
+    def destination_rows(workspace: str | None) -> list:
+        """The destinations of a workspace ("" the machine's, None all of them),
+        as the page shows them, and which schedules use each."""
+        used = {}
+        for sch in scheduler.schedules.values():
+            if sch.backup and sch.backup.destination:
+                used.setdefault(sch.backup.destination, []).append(sch.instance)
+        return [{**d.public(), "used_by": sorted(used.get(d.name, []))}
+                for d in sorted(load_destinations().values(), key=lambda d: (d.workspace, d.name))
+                if workspace is None or d.workspace == workspace]
+
+    def destination_kinds(request: Request) -> dict:
+        """The kinds and their settings, in the page's language."""
+        lang = request_language(request)
+        return {k: {"label": i18n.tr(lang, label),
+                    "settings": [{**s.to_dict(), "label": i18n.tr(lang, s.label), "help": i18n.tr(lang, s.help)}
+                                 for s in found]}
+                for k, (label, _, found) in destinations.KINDS.items()}
+
+    async def destination_save(workspace: str, payload: dict):
+        """A destination of workspace ("": the machine's) made or changed:
+        a secret left empty keeps the saved one; a new one gets a key (or the
+        one given: copies made before, elsewhere, can be read again)."""
+        name = str(payload.get("name") or "").strip()
+        async with destinations_lock:
+            found = await asyncio.to_thread(load_destinations)
+            current = found.get(name)
+            if payload.get("new") and current is not None:
+                return refuse(f"A destination {name} exists already")
+            if current is not None and current.workspace != workspace:
+                return refuse(f"No destination {name} here", status.HTTP_404_NOT_FOUND)
+            kind = str(payload.get("kind") or "")
+            try:
+                checked = destinations.check_settings(
+                    kind, payload.get("settings") or {}, current.settings if current and current.kind == kind else {})
+            except ConfigError as exc:
+                return refuse(str(exc))
+            key = current.key if current is not None else (str(payload.get("key") or "").strip()
+                                                           or new_key())
+            data = {"kind": kind, "path": str(payload.get("path") or ""), "workspace": workspace,
+                    "settings": checked, "key": key}
+            try:
+                dest = destinations.parse_destination(name, data)
+            except ConfigError as exc:
+                return refuse(str(exc).removeprefix(f"destinations.{name}: ").removeprefix(f"destinations.{name}."))
+            try:
+                await asyncio.to_thread(destinations.save_destinations, settings.destinations_file,
+                                        {**found, name: dest})
+            except OSError as exc:
+                return refuse(f"Cannot write {settings.destinations_file}: {exc}", 500)
+        return {"ok": True, "destination": dest.public(), "new_key": current is None}
+
+    async def destination_delete(workspace: str, payload: dict):
+        name = str(payload.get("name") or "")
+        async with destinations_lock:
+            found = await asyncio.to_thread(load_destinations)
+            if name not in found or found[name].workspace != workspace:
+                return refuse(f"No destination {name} here", status.HTTP_404_NOT_FOUND)
+            users = [s.instance for s in scheduler.schedules.values() if s.backup and s.backup.destination == name]
+            if users:
+                return refuse(f"The automatic backups of {', '.join(sorted(users))} go to {name}: choose another first")
+            found.pop(name)
+            await asyncio.to_thread(destinations.save_destinations, settings.destinations_file, found)
+        return {"ok": True}
+
+    def destination_of(workspace: str, payload: dict):
+        found = load_destinations().get(str(payload.get("name") or ""))
+        if found is None or found.workspace != workspace:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "No such destination here")
+        return found
+
+    async def destination_check(workspace: str, payload: dict):
+        """The destination reached and written now (a file put and removed)."""
+        dest = destination_of(workspace, payload)
+        try:
+            return {"ok": True, "message": await destinations.check(dest)}
+        except JobFailed as exc:
+            return refuse(str(exc), status.HTTP_502_BAD_GATEWAY)
+
+    def destination_key(request: Request, me: Principal, workspace: str, payload: dict):
+        """The destination's key, to keep elsewhere: without it, its copies
+        cannot be read back on another machine."""
+        dest = destination_of(workspace, payload)
+        access_log.record("show destination key", me.kind, me.name, request.client.host if request.client else "",
+                          dest.name)
+        return {"key": dest.key}
+
+    @app.get("/destinations", dependencies=[Depends(admin)])
+    async def destinations_page(request: Request):
+        """The machine's destinations, and the workspaces' (each workspace's
+        admins set theirs on its page)."""
+        return _TEMPLATES.TemplateResponse(request, "destinations.html", {
+            "rows": destination_rows(None), "kinds": destination_kinds(request), "api": "/api/destinations",
+            "workspace": "", "rclone": destinations.rclone_path() is not None,
+            "file": settings.destinations_file})
+
+    @app.post("/api/destinations/save", dependencies=[Depends(admin)])
+    async def machine_destination_save(payload: dict = Body(...)):
+        return await destination_save("", payload)
+
+    @app.post("/api/destinations/delete", dependencies=[Depends(admin)])
+    async def machine_destination_delete(payload: dict = Body(...)):
+        return await destination_delete("", payload)
+
+    @app.post("/api/destinations/check", dependencies=[Depends(admin)])
+    async def machine_destination_check(payload: dict = Body(...)):
+        return await destination_check("", payload)
+
+    @app.post("/api/destinations/key", dependencies=[Depends(admin)])
+    async def machine_destination_key(request: Request, payload: dict = Body(...),
+                                      me: Principal = Depends(current_user)):
+        return destination_key(request, me, "", payload)
+
+    @app.get("/workspaces/{workspace}/destinations", dependencies=[Depends(admin)])
+    async def workspace_destinations_page(request: Request, workspace: str):
+        ws = a_workspace(workspace)
+        return _TEMPLATES.TemplateResponse(request, "destinations.html", {
+            "rows": destination_rows(ws.name), "kinds": destination_kinds(request),
+            "api": f"/api/workspaces/{ws.name}/destinations", "workspace": ws.name, "ws": ws,
+            "rclone": destinations.rclone_path() is not None, "file": None})
+
+    @app.post("/api/workspaces/{workspace}/destinations/save", dependencies=[Depends(admin)])
+    async def workspace_destination_save(workspace: str, payload: dict = Body(...)):
+        return await destination_save(a_workspace(workspace).name, payload)
+
+    @app.post("/api/workspaces/{workspace}/destinations/delete", dependencies=[Depends(admin)])
+    async def workspace_destination_delete(workspace: str, payload: dict = Body(...)):
+        return await destination_delete(a_workspace(workspace).name, payload)
+
+    @app.post("/api/workspaces/{workspace}/destinations/check", dependencies=[Depends(admin)])
+    async def workspace_destination_check(workspace: str, payload: dict = Body(...)):
+        return await destination_check(a_workspace(workspace).name, payload)
+
+    @app.post("/api/workspaces/{workspace}/destinations/key", dependencies=[Depends(admin)])
+    async def workspace_destination_key(request: Request, workspace: str, payload: dict = Body(...),
+                                        me: Principal = Depends(current_user)):
+        return destination_key(request, me, a_workspace(workspace).name, payload)
 
     # --- the caller's own password --------------------------------------
 

@@ -103,18 +103,25 @@ async def test_the_other_options_of_a_role(made, client, monkeypatch):
 
     async def capture(cmd, **kwargs):
         asked.append(cmd)
+        if cmd[-2:] != ["options", "odoo"]:
+            return 1, ""
         options = [{"name": n, "help": "h", "kind": "string", "group": "g", "default": None}
-                   for n in ("workers", "unaccent", "data_dir", "geoip_db_key")]
+                   for n in ("workers", "unaccent", "data_dir", "geoip_db_key", "init")]
         return 0, "noise\n" + stacktemplates.OPTIONS_MARK + json.dumps({"options": options, "version": "18.0"})
     monkeypatch.setattr(ops, "capture", capture)
-    (made["folder"] / "test").mkdir(parents=True, exist_ok=True)
+    (made["folder"] / "test" / "config").mkdir(parents=True, exist_ok=True)
+    (made["folder"] / "test" / "config" / "odoo.conf").write_text(
+        "[options]\ndata_dir = /var/lib/odoo\ndb_name = main\nadmin_passwd = Hidden-1\nunaccent = True\n")
     (made["folder"] / "test" / "omniacli.json").write_text(json.dumps({"extra": {"unaccent": "True",
                                                                                  "geoip_db_key": "Kept-1"}}))
     url = "/api/workspaces/acme/parameters/options"
     resp = await client.post(url, headers=post_as("mario"), json={"server": "acme-main", "role": "test"})
     assert resp.status_code == 200, resp.text
     data = resp.json()
-    assert asked[-1][-2:] == ["options", "odoo"] and data["version"] == "18.0" and len(data["options"]) == 4
+    # the command line's own (init) are not a config file's
+    assert ["options", "odoo"] in [c[-2:] for c in asked] and data["version"] == "18.0" and len(data["options"]) == 4
+    # a greyed one shows what its odoo.conf has, a secret never
+    assert data["values"] == {"data_dir": "/var/lib/odoo", "db_name": "main", "admin_passwd": ""}
     # a secret's value never goes to the browser
     assert data["extra"] == {"unaccent": "True", "geoip_db_key": ""} and data["secrets"] == ["geoip_db_key"]
     assert {"data_dir", "workers", "dbfilter"} <= set(data["locked"])
