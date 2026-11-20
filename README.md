@@ -713,7 +713,7 @@ to the producer. On the relay a **puller** names the link of the producer
 and those of its consumers:
 
 
-- the **Pullers** page (admins) adds one: a name, the producer and the
+- the **Publications** page (Settings; its tab *Relayed from here*; admins) adds one: a name, the producer and the
   consumers, among the incoming links of the Users page (the role **user**
   is enough: a puller's routes check that the link is in it, and that role
   opens no shell, no backup and no action on the relay's own servers), the
@@ -735,8 +735,8 @@ and those of its consumers:
   relay knows: when each side was last seen, the commands waiting and the
   files kept.
 
-On the producer, the **Pullers** page publishes an instance (*Published
-here*): the link to the relay (Links page), the puller's name, its key (*New
+On the producer, the **Publications** page publishes an instance (*Published
+from here*): the link to the relay (Links page), the puller's name, its key (*New
 key* makes one: give the same to the consumers) and the commands it takes,
 each with its hours. Saved in `publications.yaml` next to the servers file,
 readable by its owner only:
@@ -763,12 +763,12 @@ readable by its owner only:
   `jobs_dir`, so a restart does not let one be played again. The page shows
   when the relay was reached last, or why not.
 
-On a consumer, the **Pullers** page connects to a puller (*Connected
-here*): a name, the link to the relay, the puller's name and the key of the
+On a consumer, the **Publications** page operates an instance through a puller (*Operated
+from here*): a name, the link to the relay, the puller's name and the key of the
 producer's publication (none: in clear). Saved in `connections.yaml` next
 to the servers file, readable by its owner only. Then:
 
-- the **Pullers** menu (every role) opens each connection's page: the
+- the entries of the top bar (every role) open each connection's page: the
   instance there with its state, disks, CPU and memory (the last hour, day
   or 7 days), the buttons of the commands it exposes, the commands sent with
   the producer's answers, and its jobs with their log. Backup needs the
@@ -810,7 +810,7 @@ The routes, for links in the puller only (a JSON `{"error": ...}` otherwise):
 ### Groups
 
 Every list of things (the Dashboard's Servers, Workspaces and Linked, and
-the Workspaces, Settings › Servers, Users, Links, Pullers, Schedules and
+the Workspaces, Settings › Servers, Users, Links, Publications, Schedules and
 Plugins pages) is one list widget (`templates/_list.html`): its search finds
 every word typed, in any case, in the browser (`?q=` fills it). Grouping is
 an option of the widget, offered by the Dashboard's **Servers** and
