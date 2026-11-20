@@ -1008,25 +1008,26 @@ template and the fields it asks. A job then:
    and starts both; a step that fails removes what was made;
 4. adds the server, of type `docker`, to the workspace.
 
-The job, and that of **Remove** below, is the workspace's: its users see it on
+The job, and that of **Delete the instance…** (the instance's own page, More; its name is asked), is the workspace's: its users see it on
 the Jobs page and its own page also when the creation failed (the server
 then leaves the workspace) or after the removal.
 
-**The customer's modules**: on the same page, **Add repository** on an
-instance takes an `https://` address (no user or token in it: those are the
-workspace's git credentials, above), a branch for production and one for
-test, and a name. A job clones it, with its submodules and those
+**The customer's modules**: on the instance's page, **Settings › Code › Add a
+repository** takes an `https://` address (no user or token in it: those are
+the workspace's git credentials, on the workspace's page under External
+services), a branch and, under Advanced, another branch for test and a name
+for its folder. A job clones it, with its submodules and those
 credentials, into `production/addons/<name>` and `test/addons/<name>` (folders
 of OmniaCLI's user, mounted read only into the containers, so no token and no
 `.git` the customer could change), has the root helper's `conf` write each
 role's `odoo.conf` again with `/mnt/customer-addons/<name>` in its addons path
 (the admin password kept), adds the repository to the server and restarts
 both; its modules are then installed from Odoo's Apps. Pull, update and the
-merge of test into production then work as for every server. **×** takes it
-out of both the same way and deletes the clones. A step that fails puts the
+merge of test into production then work as for every server. **Delete…** on
+its row takes it out of both the same way and deletes the clones. A step that fails puts the
 `odoo.conf` back and deletes what was cloned.
 
-**Odoo parameters**: each role of an instance has, on the same page, the
+**Odoo parameters**: each role of an instance has, on the instance's page (Settings › Odoo options; the test's with the test in view), the
 Odoo options its template lets the workspace's admins change, with their
 bounds (`odooplm-20`: `workers`, `max_cron_threads`, the `limit_time_*` and
 `limit_memory_*`, `limit_request`, `db_maxconn`, the SMTP server and
@@ -1246,7 +1247,7 @@ names.
 
 Where the automatic backups go out of the machine: **Settings › Backup
 destinations** (`/destinations`, the machine's admins) for the machine's,
-and the **Backup destinations** of a workspace's page for the workspace's
+and **External services › Backup destinations** of a workspace's page for the workspace's
 (its admins; its instances may use them, the machine's admins may use the
 machine's too). One engine, [rclone](https://rclone.org) (`apt install
 rclone`, installed with a new machine), for every kind: SFTP (password or
@@ -1367,8 +1368,8 @@ with the database's password), and `manifest.json` with the SHA-256 of every
 part. Restore takes the backup inside it; Verify checks every part against
 the manifest first.
 
-**New instance from a full archive** (a workspace's page, New instance › From
-a full archive; its admins): an archive sent by the browser (kept in
+**New instance from a full archive** (a workspace's page, New instance, the
+way From a full archive of its dialog; its admins): an archive sent by the browser (kept in
 `<backup_dir>/.archives/<workspace>/`, only an archive of OmniaCLI is
 taken) or one in the backups of the workspace's servers. Every part is
 checked against the manifest (one that is not: nothing made), then the
@@ -2142,8 +2143,8 @@ with the link's token and who acts (`mcp-<token>`): there it has the link's
 role, capped by the token's role here, and the same rules (a production
 asks its name in `confirm`). A client is set up once, here.
 
-**A token of a workspace**: the **MCP tokens** of a workspace's page (its
-admins) make a token bound to it (`workspace:` in the users file): it sees
+**A token of a workspace**: **External services › AI assistants** of a
+workspace's page (its admins) makes a key, a token bound to it (`workspace:` in the users file): it sees
 and reaches that workspace's servers and jobs only, with its role there, and
 never the machine's tools (`read_server`, `add_draft_server`, the drafts).
 
