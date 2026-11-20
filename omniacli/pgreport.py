@@ -6,7 +6,8 @@ tables, the indexes never used, the tables read whole, and the costliest
 statements when pg_stat_statements is installed. Only fixed queries
 (composehelper.PG_REPORT): a Docker instance's through the root helper in
 its database container, a venv's with psql as Odoo connects (its plugin's
-db_shell). A query running for long can be stopped (an admin's)."""
+db_shell, its db_host too: a database on another machine is read there,
+with its db_sslmode). A query running for long can be stopped (an admin's)."""
 
 from __future__ import annotations
 
@@ -43,6 +44,21 @@ def _answer(out: str) -> dict:
     return report
 
 
+LOCAL_HOSTS = ("", "localhost", "127.0.0.1", "::1")
+
+
+def where(instance, env: dict | None) -> dict:
+    """Where the database is: the compose project's own service, this
+    machine's PostgreSQL, or another machine (db_host of its config)."""
+    if env is None:
+        return {"where": "service", "host": f"{getattr(instance.options, 'db_service', 'db')} of the project"}
+    host = env.get("PGHOST", "")
+    remote = host not in LOCAL_HOSTS and not host.startswith("/")
+    return {"where": "remote" if remote else "local",
+            "host": f"{host}:{env.get('PGPORT') or 5432}" if remote else (host or "local socket"),
+            "ssl": env.get("PGSSLMODE") or None}
+
+
 async def report(instance) -> dict:
     cmd, env = _command(instance, "pg-report")
     if env is None:
@@ -54,8 +70,9 @@ async def report(instance) -> dict:
             if more == 0:
                 out += "\n" + extra
     if code:
-        raise JobFailed(f"the database's statistics cannot be read: {out[-400:]}")
-    return _answer(out)
+        place = where(instance, env)
+        raise JobFailed(f"the database's statistics cannot be read ({place['where']}, {place['host']}): {out[-400:]}")
+    return {**_answer(out), **where(instance, env)}
 
 
 async def terminate(instance, pid: str) -> bool:

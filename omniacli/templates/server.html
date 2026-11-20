@@ -348,7 +348,9 @@
       <div class="tile"><div class="tile-label">{{ _("Connections") }}</div><div class="tile-value" data-db="connections">–</div></div>
       <div class="tile"><div class="tile-label">{{ _("Read from the cache") }}</div><div class="tile-value" data-db="cache">–</div></div>
       <div class="tile"><div class="tile-label">PostgreSQL</div><div class="tile-value" data-db="version" style="font-size: 15px">–</div></div>
+      <div class="tile"><div class="tile-label">{{ _("Where") }}</div><div class="tile-value" data-db="where" style="font-size: 15px">–</div></div>
     </div>
+    <p class="muted db-remote" style="font-size: 13px" hidden></p>
     <h3>{{ _("Queries running for more than 5 seconds") }}</h3><div class="scroll" data-db-table="long_queries"></div>
     <h3>{{ _("The costliest statements") }}</h3><div class="scroll" data-db-table="statements"></div>
     <h3>{{ _("The largest tables") }}</h3><div class="scroll" data-db-table="tables"></div>
@@ -963,7 +965,9 @@
     });
   })();
   // the Database tab: the statistics of its database, read when opened
-  const DB = {none: {{ _("none") | tojson }}, failed: {{ _("Cannot be read: {error}") | tojson }},
+  const DB = {remote: {{ _("on {host}") | tojson }}, service: {{ _("its container") | tojson }}, local: {{ _("this machine") | tojson }},
+              remoteNote: {{ _("The database is on another machine ({host}), reached as Odoo reaches it: the statistics are its, the backups are made through the network, and its disk and point-in-time recovery are those of that machine.") | tojson }},
+              none: {{ _("none") | tojson }}, failed: {{ _("Cannot be read: {error}") | tojson }},
               stop: {{ _("Stop") | tojson }}, stopQ: {{ _("Stop the query {pid}? Its transaction is rolled back.") | tojson }},
               noStatements: {{ _("pg_stat_statements is not installed in this database: CREATE EXTENSION pg_stat_statements, with shared_preload_libraries = pg_stat_statements in PostgreSQL's configuration.") | tojson }},
               cols: {pid: "pid", seconds: {{ _("seconds") | tojson }}, state: {{ _("state") | tojson }}, waiting: {{ _("waiting") | tojson }},
@@ -990,6 +994,11 @@
     box.querySelector('[data-db="connections"]').textContent = `${data.connections} / ${data.max_connections}`;
     box.querySelector('[data-db="cache"]').textContent = data.cache_hit === null ? "–" : data.cache_hit + "%";
     box.querySelector('[data-db="version"]').textContent = (data.version || "").split(" ")[0];
+    box.querySelector('[data-db="where"]').textContent = data.where === "remote" ? DB.remote.replace("{host}", data.host)
+      : data.where === "service" ? DB.service : DB.local;
+    const note = box.querySelector(".db-remote");
+    note.hidden = data.where !== "remote";
+    note.textContent = data.where === "remote" ? DB.remoteNote.replace("{host}", data.host) + (data.ssl ? " SSL: " + data.ssl + "." : "") : "";
     for (const holder of box.querySelectorAll("[data-db-table]")) {
       const key = holder.dataset.dbTable, rows = data[key];
       if (key === "statements" && rows === null) { holder.replaceChildren(Object.assign(document.createElement("p"), {className: "muted", textContent: DB.noStatements})); continue; }

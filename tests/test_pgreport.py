@@ -56,6 +56,18 @@ async def test_a_docker_and_a_venv_instance(tmp_path, monkeypatch, env):
     found = await pgreport.report(venv)
     cmd, environ = asked[-1]
     assert cmd[-1] == composehelper.PG_REPORT and "-At" in cmd and environ["PGDATABASE"] == "DB_test"
+    assert found["where"] == "local"
+    # a database on another machine (as ridix's): reached with the config's host, port and sslmode
+    conf = tmp_path / "remote.conf"
+    conf.write_text("[options]\ndb_host = pg.example.net\ndb_port = 6432\ndb_user = odoo\n"
+                    "db_password = s3cret\ndb_sslmode = require\n")
+    monkeypatch.setattr(venv.options, "odoo_config", conf)
+    found = await pgreport.report(venv)
+    environ = asked[-1][1]
+    assert (environ["PGHOST"], environ["PGPORT"], environ["PGSSLMODE"]) == ("pg.example.net", "6432", "require")
+    assert found["where"] == "remote" and found["host"] == "pg.example.net:6432" and found["ssl"] == "require"
+    # the password in the environment, never on the command line
+    assert "s3cret" not in " ".join(asked[-1][0])
 
 
 async def test_the_tab(client, env, monkeypatch):

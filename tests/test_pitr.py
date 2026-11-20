@@ -43,7 +43,7 @@ class FakeDocker:
     psql answers, the rest is recorded."""
 
     def __init__(self, monkeypatch):
-        self.calls, self.sql, self.fail_on = [], [], None
+        self.calls, self.sql, self.fail_on, self.crash = [], [], None, False
         monkeypatch.setattr(pitrhelper, "_dc", self.dc)
         monkeypatch.setattr(pitrhelper.os, "chown", lambda *a, **k: None)
 
@@ -51,7 +51,13 @@ class FakeDocker:
         self.calls.append((project.name, args))
         if self.fail_on and self.fail_on in args:
             raise HelperError(f"{self.fail_on} failed")
-        out = ""
+        out, code = "", 0
+        if self.crash and "pg_isready" in args:
+            code = 1
+        if self.crash and "ps" in args:
+            out = "restarting"
+        if self.crash and "logs" in args:
+            out = 'FATAL:  must specify "restore_command" when standby mode is not enabled'
         if "pg_basebackup" in args:
             target = project / "data" / "wal" / "base" / args[args.index("-D") + 1].rsplit("/", 1)[1]
             target.mkdir(parents=True)
@@ -64,7 +70,7 @@ class FakeDocker:
         if "psql" in args:
             self.sql.append(input)
             out = "f" if "pg_is_in_recovery" in (input or "") else ""
-        return type("Done", (), {"returncode": 0, "stdout": out, "stderr": ""})
+        return type("Done", (), {"returncode": code, "stdout": out, "stderr": ""})
 
 
 def test_switched_on(tmp_path, monkeypatch):
@@ -126,8 +132,11 @@ def test_a_cluster_at_a_minute(tmp_path, monkeypatch):
     at = (when + datetime.timedelta(minutes=5)).isoformat(timespec="minutes")
     found = pitrhelper.restore(src, dst, at, "odoo", "odoo_stg")
     pgdata = dst / "data" / "pgdata"
-    assert found["segments"] == 1 and (pgdata / "pg_wal" / segment.name).read_bytes() == b"wal"
+    # the segments read by restore_command, removed once promoted
+    assert found["segments"] == 1 and not (pgdata / pitrhelper.RESTORE_WAL).exists()
     auto = (pgdata / "postgresql.auto.conf").read_text()
+    assert f"restore_command = 'cp {pitrhelper.PGDATA_MOUNT}/{pitrhelper.RESTORE_WAL}/%f" in auto
+    assert any("RESET restore_command" in (q or "") for q in docker.sql)
     assert "recovery_target_time" in auto and "archive_mode = 'off'" in auto and (pgdata / "recovery.signal").exists()
     assert not (dst / "data" / "pgdata.omniacli-before-restore").exists()
     # renamed as the target names it; the target's passwords, quoted
@@ -140,6 +149,12 @@ def test_a_cluster_at_a_minute(tmp_path, monkeypatch):
     with pytest.raises(HelperError):
         pitrhelper.restore(src, dst, at, "odoo", "odoo_stg")
     assert marker.read_text() == "before"
+    # a database that cannot start: told at once with its FATAL line, the data of before back
+    docker.fail_on, docker.crash = None, True
+    with pytest.raises(HelperError, match="restore_command"):
+        pitrhelper.restore(src, dst, at, "odoo", "odoo_stg")
+    assert marker.read_text() == "before"
+    docker.crash = False
     with pytest.raises(HelperError, match="not a database name"):
         pitrhelper.restore(src, dst, at, "odoo; DROP", "odoo_stg")
 

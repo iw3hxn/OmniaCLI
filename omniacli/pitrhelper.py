@@ -41,6 +41,8 @@ from .composehelper import ENV, HelperError
 WAL_MOUNT = "/var/lib/postgresql/wal"
 PGDATA_LINE = "./data/pgdata:/var/lib/postgresql/data/pgdata"
 WAL_LINE = f"./data/wal:{WAL_MOUNT}"
+PGDATA_MOUNT = PGDATA_LINE.split(":", 1)[1]
+RESTORE_WAL = "omniacli_restore_wal"
 DB_SERVICE = "db"
 ARCHIVE_TIMEOUT = 300
 KEEP_BASES = 7
@@ -71,6 +73,13 @@ def _wait_ready(project: Path, timeout: int = READY_TIMEOUT) -> None:
         done = _dc(project, "exec", "-T", DB_SERVICE, "pg_isready", "-h", "127.0.0.1", "-U", "postgres", check=False)
         if done.returncode == 0:
             return
+        # a database that cannot start restarts in a loop: told at once, with its log
+        state = _dc(project, "ps", "-a", "--format", "{{.State}}", DB_SERVICE, check=False).stdout.strip()
+        if state in ("restarting", "exited", "dead"):
+            log = _dc(project, "--ansi", "never", "logs", "--no-log-prefix", "--tail", "8", DB_SERVICE, check=False)
+            fatal = [line for line in log.stdout.splitlines() if "FATAL" in line or "PANIC" in line]
+            raise HelperError(f"the database of {project} does not start ({state}): "
+                              + (" | ".join(fatal[-2:]) or log.stdout.strip()[-400:]))
         time.sleep(2)
     raise HelperError(f"the database of {project} is not ready after {timeout} s")
 
@@ -222,8 +231,11 @@ def restore(source: Path, target: Path, when: str, source_db: str, target_db: st
         pgdata.mkdir(mode=0o700)
         subprocess.run(["tar", "-xzf", str(chosen / "base.tar.gz"), "-C", str(pgdata)], check=True, env=ENV,
                        capture_output=True)
-        pg_wal = pgdata / "pg_wal"
-        pg_wal.mkdir(mode=0o700, exist_ok=True)
+        (pgdata / "pg_wal").mkdir(mode=0o700, exist_ok=True)
+        # the archived segments beside it, read by restore_command (a recovery
+        # without one is refused by PostgreSQL)
+        pg_wal = pgdata / RESTORE_WAL
+        pg_wal.mkdir(mode=0o700)
         since = chosen.stat().st_mtime - 600
         copied = 0
         for segment in sorted((_wal(source) / "archive").iterdir()):
@@ -234,6 +246,7 @@ def restore(source: Path, target: Path, when: str, source_db: str, target_db: st
         with open(pgdata / "postgresql.auto.conf", "a", encoding="utf-8") as fh:
             fh.write("\n# written by omniacli workspace-helper pitr-restore\n"
                      "archive_mode = 'off'\n"
+                     f"restore_command = 'cp {PGDATA_MOUNT}/{RESTORE_WAL}/%f \"%p\"'\n"
                      f"recovery_target_time = '{target_time}'\n"
                      "recovery_target_action = 'promote'\n")
         (pgdata / "recovery.signal").write_text("")
@@ -245,6 +258,10 @@ def restore(source: Path, target: Path, when: str, source_db: str, target_db: st
             if time.monotonic() > end:
                 raise HelperError(f"the database is still replaying after {RECOVERY_TIMEOUT} s")
             time.sleep(3)
+        # promoted: the recovery's settings and segments are not needed any more
+        _psql(target, "ALTER SYSTEM RESET restore_command;\nALTER SYSTEM RESET recovery_target_time;\n"
+                      "ALTER SYSTEM RESET recovery_target_action;\n")
+        shutil.rmtree(pg_wal, ignore_errors=True)
         if source_db != target_db:
             _psql(target, f'ALTER DATABASE "{source_db}" RENAME TO "{target_db}";')
         _psql(target, f"ALTER ROLE odoo PASSWORD {_literal(_env_value(target, 'DB_PASSWORD'))};\n"

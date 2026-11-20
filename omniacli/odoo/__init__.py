@@ -336,7 +336,7 @@ class OdooPlugin(ServicePlugin):
         env = {"PGDATABASE": instance.options.database, "PGAPPNAME": "omniacli psql"}
         for key, value in odooconf.db_connection(instance.options.odoo_config).items():
             env[{"db_host": "PGHOST", "db_port": "PGPORT", "db_user": "PGUSER",
-                 "db_password": "PGPASSWORD"}[key]] = value
+                 "db_password": "PGPASSWORD", "db_sslmode": "PGSSLMODE"}[key]] = value
         if instance.run_as is None:
             return "psql", env
         # with run_as, as the user Odoo runs as: PostgreSQL's peer login on
