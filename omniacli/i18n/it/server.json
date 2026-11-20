@@ -243,6 +243,7 @@
  "Off: no automatic backup.": "Spenti: nessun backup automatico.",
  "OmniaCLI cannot read the state of its service": "OmniaCLI non riesce a leggere lo stato del servizio",
  "On": "Attivo",
+ "On a machine whose sites another program writes (a hosting panel): as root there, once, so that the line is kept in every site, also the new ones, every minute:": "Su una macchina i cui siti li scrive un altro programma (un pannello di hosting): come root lì, una volta, perché la riga resti in ogni sito, anche in quelli nuovi, ogni minuto:",
  "On this machine, over ssh as root (or a user with sudo).": "Su questa macchina, in ssh come root (o un utente con sudo).",
  "One line in the site of that name (the file before kept), nginx -t, a reload; undone with workspace-helper login-path remove.": "Una riga nel sito di quel nome (il file di prima resta da parte), nginx -t, un reload; si annulla con workspace-helper login-path remove.",
  "Only an administrator changes them.": "Solo un amministratore li modifica.",

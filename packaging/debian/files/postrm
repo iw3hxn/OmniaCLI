@@ -38,6 +38,7 @@ case "$1" in
             /var/lib/omniacli/disk_history.json /var/lib/omniacli/disk_history.tmp \
             /var/lib/omniacli/sessions.json /var/lib/omniacli/sessions.json.tmp \
             /var/lib/omniacli/monitor.json /var/lib/omniacli/monitor.json.tmp \
+            /var/lib/omniacli/login-hosts.json /var/lib/omniacli/login-hosts.json.tmp \
             /var/lib/omniacli/pitr.json /var/lib/omniacli/pitr.json.tmp \
             /var/lib/omniacli/deploy-hooks.json /var/lib/omniacli/deploy-hooks.json.tmp \
             /var/lib/omniacli/destinations.yaml /var/lib/omniacli/destinations.yaml.tmp

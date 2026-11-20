@@ -46,7 +46,21 @@ async def reaches_here(host: str) -> bool:
         return False
     return resp.headers.get(MARK) == "1"
 
-__all__ = ["LOGIN_PATH", "MARK", "reaches_here", "LoginTickets", "Ticket", "safe_home"]
+async def passed_locally(host: str, port: int = 443) -> bool:
+    """Whether this machine's nginx passes host's path here: asked on the
+    loopback under host's name (SNI and Host), so the answer does not depend
+    on the network outside (a NAT that does not route the public name back
+    to the machine itself)."""
+    try:
+        async with httpx.AsyncClient(verify=False, timeout=10, follow_redirects=False) as client:
+            resp = await client.get(f"https://127.0.0.1:{port}{LOGIN_PATH}", params={"probe": "1"},
+                                    headers={"Host": host}, extensions={"sni_hostname": host})
+    except httpx.HTTPError:
+        return False
+    return resp.headers.get(MARK) == "1"
+
+
+__all__ = ["LOGIN_PATH", "MARK", "reaches_here", "passed_locally", "LoginTickets", "Ticket", "safe_home"]
 
 # how long the browser has to open the link the button gives
 TOKEN_SECONDS = 60

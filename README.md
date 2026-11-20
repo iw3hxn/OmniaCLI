@@ -2018,6 +2018,28 @@ as before) and reloads. `login-path check <host>` says whether it is there,
 `login-path remove <host>` takes the lines away. A panel that writes its
 sites again drops the line: the dialog says so again.
 
+On a machine whose sites another program writes (a hosting panel), root
+switches the line's keeping on, once:
+
+```
+omniacli workspace-helper login-path keep on
+```
+
+A timer of root's (`omniacli-login-path.timer`) then runs
+`workspace-helper login-path sync all` every minute: the names are those of
+the service's instances whose nginx is not a workspace's (it writes them in
+`login-hosts.json` next to the servers file, read by root as data: a regular
+file, each entry a domain name); every server block of 443 answering one of
+them gets the line when it has none: a site the panel wrote again, or a new
+instance added to OmniaCLI, has it within a minute; nothing is touched, and
+nginx is not reloaded, when the lines are there. `login-path keep off` stops
+the timer, `login-path remove all` takes every line of ours away and the
+snippet with them (removing the package does both first). A location cannot
+be given to a site from outside it (a file in `conf.d` holds whole sites),
+which is why the line is in the site. Whether a name passes the path is
+asked of this machine's nginx on the loopback under that name first, then of
+the public name: a machine behind a NAT may not reach its own public name.
+
 This is a hosting panel's way too: its sites carry a location of their
 own that passes its login path to the panel. With OmniaCLI the line passes
 it to the OmniaCLI of that server, which makes the session: an OmniaCLI

@@ -8,4 +8,16 @@ if [ -d /run/systemd/system ] && { [ "$1" = "remove" ] || [ "$1" = "upgrade" ] |
     deb-systemd-invoke stop 'omniacli.service' >/dev/null || true
 fi
 
+# removed: the timer that keeps the Log in as path in the sites of nginx, and
+# the lines themselves (their include names a file of ours: nginx would not
+# start without it), while the helper is still here
+if [ "$1" = "remove" ] && [ -x /opt/omniacli/venv/bin/omniacli ]; then
+    if [ -e /etc/systemd/system/omniacli-login-path.timer ]; then
+        /opt/omniacli/venv/bin/omniacli workspace-helper login-path keep off >/dev/null 2>&1 || true
+    fi
+    if [ -e /etc/nginx/omniacli-paths.conf ]; then
+        /opt/omniacli/venv/bin/omniacli workspace-helper login-path remove all >/dev/null 2>&1 || true
+    fi
+fi
+
 exit 0

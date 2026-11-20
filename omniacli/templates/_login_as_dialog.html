@@ -13,6 +13,8 @@
       <button type="button" class="primary" id="login-as-nginx-add">{{ _("Let nginx pass it") }}</button>
       <span class="muted" style="font-size: 13px">{{ _("One line in the site of that name (the file before kept), nginx -t, a reload; undone with workspace-helper login-path remove.") }}</span>
     </div>
+    <p id="login-as-keep" class="muted" hidden style="font-size: 13px">{{ _("On a machine whose sites another program writes (a hosting panel): as root there, once, so that the line is kept in every site, also the new ones, every minute:") }}
+      <code class="mono" id="login-as-keep-command"></code></p>
     <div class="actions">
       <button type="button" id="login-as-cancel">{{ _("Close") }}</button>
     </div>
@@ -84,6 +86,8 @@
         list.replaceChildren();
         errorBox.textContent = data.error || data.detail || T.unreadable;
         nginxBox.hidden = !data.nginx;
+        document.getElementById("login-as-keep").hidden = !data.keep;
+        document.getElementById("login-as-keep-command").textContent = data.keep || "";
         nginxAdd.onclick = async () => {
           if (!confirm(T.nginxQ.replace("{host}", data.host))) return;
           const made = await fetch(data.nginx, {method: "POST", headers: {Accept: "application/json"}}).catch(() => null);
@@ -94,6 +98,7 @@
         return;
       }
       nginxBox.hidden = true;
+      document.getElementById("login-as-keep").hidden = true;
       users = data.users || [];
       draw();
       filter.focus();

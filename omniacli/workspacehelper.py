@@ -6,7 +6,8 @@
     omniacli workspace-helper create <workspace> <storage> <instance> <template> <values as JSON>
     omniacli workspace-helper remove <workspace> <storage> <instance>
     omniacli workspace-helper limits <workspace> <cpus> <memory in GB>
-    omniacli workspace-helper login-path check | add | remove <host>
+    omniacli workspace-helper login-path check | add | remove | sync <host or all>
+    omniacli workspace-helper login-path keep on | off
     omniacli workspace-helper pitr-enable | pitr-base | pitr-state <workspace> <storage> <instance> <role>
     omniacli workspace-helper pitr-restore <workspace> <storage> <source> <target> <time> <source db> <target db>
     omniacli workspace-helper space
@@ -1380,11 +1381,16 @@ def owncert(name: str, storage: str, given: str | None = None) -> dict:
 
 # --- Log in as on a site of another nginx (a hosting panel's): its server
 # block of 443 for the instance's name gets one line, an include of the two
-# paths OmniaCLI answers there (Log in as, deploy on push)
+# paths OmniaCLI answers there (Log in as, deploy on push). A site cannot be
+# given a location from outside it, so the line is in the site; a timer of
+# root's keeps it there (login-path keep on): a site the panel writes again,
+# or a new instance's, has it within a minute.
 
 PATHS_SNIPPET = Path("/etc/nginx/omniacli-paths.conf")
 PATHS_MARK = "# omniacli: Log in as, deploy on push"
 BEFORE_SUFFIX = ".omniacli-before"
+KEEP_UNIT = "omniacli-login-path"
+KEEP_EVERY = 60
 _SERVER_OPEN = re.compile(r"(?m)^[ \t]*server\s*\{")
 
 
@@ -1407,84 +1413,172 @@ def _server_blocks(text: str) -> list[tuple[int, int]]:
     return blocks
 
 
+def _https_names(block: str) -> set[str]:
+    """The names a server block answers on, when it listens on 443."""
+    body = "\n".join(line.split("#", 1)[0] for line in block.splitlines())
+    if not re.search(r"(?:^|[;\s])listen\s+[^;]*\b443\b", body):
+        return set()
+    return {n for m in re.finditer(r"(?:^|[;\s])server_name\s+([^;]*);", body) for n in m.group(1).split()}
+
+
 def _answers_https(block: str, host: str) -> bool:
-    lines = [line.split("#", 1)[0] for line in block.splitlines()]
-    body = "\n".join(lines)
-    names = [n for m in re.finditer(r"(?:^|[;\s])server_name\s+([^;]*);", body) for n in m.group(1).split()]
-    return host in names and bool(re.search(r"(?:^|[;\s])listen\s+[^;]*\b443\b", body))
+    return host in _https_names(block)
 
 
-def _sites_of(host: str) -> dict[Path, str]:
-    """The files of nginx's configuration with a server block of 443 for host."""
+def _nginx_files() -> dict[Path, str]:
+    """The files of nginx's configuration (nginx -T names them), but our snippet."""
     dump = _run(_tool("nginx"), "-T", check=False)
     found = {}
     for line in dump.splitlines():
         if line.startswith("# configuration file ") and line.endswith(":"):
             path = Path(line[len("# configuration file "):-1])
-            if path == PATHS_SNIPPET or not path.is_file():
-                continue
-            text = path.read_text(encoding="utf-8")
-            if any(_answers_https(text[a:b], host) for a, b in _server_blocks(text)):
-                found[path.resolve()] = text
+            if path != PATHS_SNIPPET and path.is_file():
+                found[path.resolve()] = path.read_text(encoding="utf-8")
     return found
 
 
-def login_path(action: str, host: str) -> dict:
-    """check | add | remove the include of PATHS_SNIPPET in host's server
-    blocks of 443. add keeps each file as it was in <file>.omniacli-before
-    (once) and puts them all back when nginx -t refuses."""
-    if action not in ("check", "add", "remove"):
-        raise HelperError("login-path takes check, add or remove")
-    if not config.DOMAIN_NAME.fullmatch(host):
-        raise HelperError(f"{host!r} is not a domain name")
-    sites = _sites_of(host)
-    if not sites:
-        raise HelperError(f"no server block of nginx answers https on {host} here")
-    ready = {str(path): all(PATHS_MARK in text[a:b] or workspaceweb.LOGIN_PATH in text[a:b]
-                            for a, b in _server_blocks(text) if _answers_https(text[a:b], host))
-             for path, text in sites.items()}
+def _login_hosts() -> list[str]:
+    """The names the OmniaCLI service says its instances answer on: its file
+    next to the servers file (workspaceweb.LOGIN_HOSTS_FILE). Written by its
+    user, so read as data: a regular file, each entry a domain name."""
+    folder = Path(str(_system().get("servers_file") or "/var/lib/omniacli/servers.yaml")).parent
+    try:
+        fd = os.open(folder / workspaceweb.LOGIN_HOSTS_FILE, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return []
+    with os.fdopen(fd, encoding="utf-8") as fh:
+        if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+            return []
+        text = fh.read(1 << 20)
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return []
+    if not isinstance(data, list):
+        return []
+    return sorted({h for h in data if isinstance(h, str) and config.DOMAIN_NAME.fullmatch(h)})
+
+
+def _paths_snippet() -> str:
+    address = omniacli_address()
+    lines = ["# written by omniacli workspace-helper login-path: the paths OmniaCLI answers on",
+             "# the names of its instances, included in their server block of 443", ""]
+    for location in (f"location = {workspaceweb.LOGIN_PATH}", f"location ^~ {workspaceweb.HOOKS_PATH}"):
+        lines += [f"{location} {{", f"    proxy_pass http://{address};", *workspaceweb._headers("    "), "}"]
+    return "\n".join(lines) + "\n"
+
+
+def _keep_units() -> tuple[Path, Path]:
+    return SYSTEMD / f"{KEEP_UNIT}.service", SYSTEMD / f"{KEEP_UNIT}.timer"
+
+
+def _login_path_keep(mode: str) -> dict:
+    """on: a timer of root's runs login-path sync all every minute; off: no more
+    (the lines stay: login-path remove all takes them away)."""
+    service, timer = _keep_units()
+    if mode == "on":
+        _write(service, "# written by omniacli workspace-helper login-path keep on\n"
+                        "[Unit]\nDescription=OmniaCLI: the Log in as path in the nginx sites of its instances\n"
+                        f"[Service]\nType=oneshot\nExecStart={OMNIACLI_COMMAND} workspace-helper login-path sync all\n")
+        _write(timer, "# written by omniacli workspace-helper login-path keep on\n"
+                      "[Unit]\nDescription=OmniaCLI: the Log in as path kept in the nginx sites, every minute\n"
+                      f"[Timer]\nOnBootSec={KEEP_EVERY}\nOnUnitActiveSec={KEEP_EVERY}\nAccuracySec=5\n"
+                      "[Install]\nWantedBy=timers.target\n")
+        _run("systemctl", "daemon-reload")
+        _run("systemctl", "enable", "--now", f"{KEEP_UNIT}.timer")
+        return {**login_path("sync", "all"), "keep": True, "every_seconds": KEEP_EVERY,
+                "undo": "omniacli workspace-helper login-path keep off; "
+                        "omniacli workspace-helper login-path remove all"}
+    if mode == "off":
+        _run("systemctl", "disable", "--now", f"{KEEP_UNIT}.timer", check=False)
+        for unit in (service, timer):
+            unit.unlink(missing_ok=True)
+        _run("systemctl", "daemon-reload", check=False)
+        return {"keep": False, "note": "the lines stay in the sites: login-path remove all takes them away"}
+    raise HelperError("login-path keep takes on or off")
+
+
+def login_path(action: str, target: str) -> dict:
+    """check | add | remove | sync the include of PATHS_SNIPPET in the server
+    blocks of 443 of a name (target: a domain name, or all: the names of the
+    service's instances; remove all: every line of ours), or keep on | off
+    (the timer). add keeps each file as it was in <file>.omniacli-before
+    (once); sync, run every minute, does not. Whatever is changed is checked
+    by nginx -t, and put back when it refuses."""
+    if action == "keep":
+        return _login_path_keep(target)
+    if action not in ("check", "add", "remove", "sync"):
+        raise HelperError("login-path takes check, add, remove, sync or keep")
+    everything = target == "all"
+    if not everything and not config.DOMAIN_NAME.fullmatch(target):
+        raise HelperError(f"{target!r} is not a domain name (or all)")
+    hosts = _login_hosts() if everything else [target]
+    files = _nginx_files()
+
+    def ours(block: str) -> bool:
+        names = _https_names(block)
+        return bool(names) and (PATHS_MARK in block if everything and action == "remove"
+                                else any(h in names for h in hosts))
+
+    found = {path: [(a, b) for a, b in _server_blocks(text) if ours(text[a:b])] for path, text in files.items()}
+    found = {path: blocks for path, blocks in found.items() if blocks}
+    served = {name for path, blocks in found.items() for a, b in blocks for name in _https_names(files[path][a:b])}
+    no_site = [h for h in hosts if h not in served]
+    if not everything and no_site:
+        raise HelperError(f"no server block of nginx answers https on {target} here")
+
+    def has_line(block: str) -> bool:
+        return PATHS_MARK in block or workspaceweb.LOGIN_PATH in block
+
+    ready = {str(path): all(has_line(files[path][a:b]) for a, b in blocks) for path, blocks in found.items()}
+    answer = {"host": target, "files": ready, "ready": all(ready.values()) and not no_site, "no_site": no_site}
     if action == "check":
-        return {"host": host, "files": ready, "ready": all(ready.values())}
+        return answer
     changed: dict[Path, str] = {}
-    if action == "add":
-        address = omniacli_address()
-        snippet = ["# written by omniacli workspace-helper login-path: the paths OmniaCLI answers on",
-                   "# the names of its instances, included in their server block of 443", ""]
-        for location in (f"location = {workspaceweb.LOGIN_PATH}", f"location ^~ {workspaceweb.HOOKS_PATH}"):
-            snippet += [f"{location} {{", f"    proxy_pass http://{address};",
-                        *workspaceweb._headers("    "), "}"]
-        _write(PATHS_SNIPPET, "\n".join(snippet) + "\n")
-        for path, text in sites.items():
-            if ready[str(path)]:
-                continue
-            out, last = [], 0
-            for a, b in _server_blocks(text):
-                if _answers_https(text[a:b], host) and PATHS_MARK not in text[a:b]:
-                    out += [text[last:a], f"\n    include {PATHS_SNIPPET};  {PATHS_MARK}"]
-                    last = a
-            changed[path] = "".join(out) + text[last:]
-    else:
-        for path, text in sites.items():
-            kept = "".join(line for line in text.splitlines(keepends=True) if PATHS_MARK not in line)
-            if kept != text:
-                changed[path] = kept
+    snippet = None
+    for path, blocks in found.items():
+        text = files[path]
+        for a, b in reversed(blocks):  # from the last: the indexes before it stay good
+            block = text[a:b]
+            if action == "remove":
+                kept = "".join(line for line in block.splitlines(keepends=True) if PATHS_MARK not in line)
+                text = text[:a] + kept + text[b:]
+            elif not has_line(block):
+                text = text[:a] + f"\n    include {PATHS_SNIPPET};  {PATHS_MARK}" + text[a:]
+        if text != files[path]:
+            changed[path] = text
+    if action != "remove":
+        snippet = _paths_snippet()
+        if any(PATHS_MARK in text for text in (*changed.values(), *files.values())):
+            before_snippet = PATHS_SNIPPET.read_text(encoding="utf-8") if PATHS_SNIPPET.is_file() else None
+            if before_snippet != snippet:
+                _write(PATHS_SNIPPET, snippet)
+            else:
+                snippet = None
+        else:
+            snippet = None
     for path, text in changed.items():
         before = path.with_name(path.name + BEFORE_SUFFIX)
         if action == "add" and not before.exists():
             shutil.copy2(path, before)
         info = path.stat()
         _write(path, text, mode=info.st_mode & 0o777, uid=info.st_uid, gid=info.st_gid)
-    if changed:
+    if changed or snippet is not None:
         test = subprocess.run([_tool("nginx"), "-t"], env=ENV, capture_output=True, text=True)
         if test.returncode:
             for path in changed:
-                path.write_text(sites[path], encoding="utf-8")
+                path.write_text(files[path], encoding="utf-8")
             raise HelperError(f"nginx -t refused it, the files are as before: {test.stderr.strip()[-400:]}")
         reloaded = _nginx_reload()
     else:
         reloaded = "nothing to change"
-    return {"host": host, "changed": [str(p) for p in changed], "nginx": reloaded,
-            "undo": f"omniacli workspace-helper login-path remove {host}"}
+    if action == "remove" and everything:
+        PATHS_SNIPPET.unlink(missing_ok=True)
+    if action != "remove":
+        # what is there now: every site found has the line
+        answer = {**answer, "files": {path: True for path in ready}, "ready": not no_site}
+    return {**answer, "changed": [str(p) for p in changed], "nginx": reloaded,
+            "undo": f"omniacli workspace-helper login-path remove {target}"}
 
 
 def _project(name: str, storage: str, instance: str, role: str) -> Path:

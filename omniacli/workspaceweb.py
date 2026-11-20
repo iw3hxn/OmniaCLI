@@ -22,6 +22,10 @@ LOGIN_PATH = "/.omniacli/login"
 # the addresses of deploy on push (deployhooks.py), passed to OmniaCLI too:
 # a repository's webhook reaches it on the instance's own name
 HOOKS_PATH = "/.omniacli/hooks/"
+# next to the servers file: the names of the instances whose nginx is not a
+# workspace's, written by the service for root's timer (workspace-helper
+# login-path sync all), which keeps the paths above in their sites
+LOGIN_HOSTS_FILE = "login-hosts.json"
 
 _HEADERS = (
     ("Host", "$host"),

@@ -248,6 +248,15 @@ async def test_a_panels_nginx_that_does_not_pass_the_path(here, monkeypatch):
     assert resp.status_code == 409 and resp.json()["nginx"] is None and TEST in resp.json()["error"]
     resp = await here.get(f"{api('production')}/users", headers=as_user("admin"))
     assert resp.status_code == 409 and resp.json()["nginx"] == f"{api('production')}/nginx"
+    # root's switch on the machine, said to an admin only
+    assert resp.json()["keep"] == "omniacli workspace-helper login-path keep on"
+    assert (await here.get(f"{api('test')}/users", headers=as_user("dev"))).json()["keep"] is None
+    # asked on the loopback first: a machine behind a NAT does not reach its own public name
+    async def passed_locally(host, port=443):
+        return host == PRODUCTION
+    monkeypatch.setattr(loginas, "passed_locally", passed_locally)
+    assert (await here.get(f"{api('production')}/users", headers=as_user("admin"))).status_code == 200
+    assert (await here.get(f"{api('test')}/users", headers=as_user("admin"))).status_code == 409
     assert (await here.post(f"{api('test')}/nginx", headers=as_user("dev", post=True))).status_code == 403
     helper = []
 
@@ -356,3 +365,14 @@ def test_the_ports_a_panels_unit_passes(env, monkeypatch):
     assert inst.plugin.tunnel_address(inst, "/websocket") == ("127.0.0.1", 3007)
     assert inst.plugin.tunnel_address(inst, "/web") == ("127.0.0.1", 3006)
     assert len(asked) == 1  # asked once, then kept
+
+
+async def test_the_names_for_roots_timer(here):
+    """The service writes the names of the instances whose nginx is another's,
+    next to the servers file: root's timer keeps the path in their sites."""
+    from omniacli.app import create_app as make
+
+    app = make(here.settings)
+    async with app.router.lifespan_context(app):
+        path = here.settings.servers_file.parent / workspaceweb.LOGIN_HOSTS_FILE
+        assert json.loads(path.read_text()) == sorted([PRODUCTION, TEST])

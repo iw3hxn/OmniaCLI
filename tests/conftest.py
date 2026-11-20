@@ -90,7 +90,11 @@ def login_path_passed(monkeypatch):
 
     async def reaches_here(host):
         return True
+
+    async def passed_locally(host, port=443):
+        return False
     monkeypatch.setattr(loginas, "reaches_here", reaches_here)
+    monkeypatch.setattr(loginas, "passed_locally", passed_locally)
 
 
 @pytest.fixture(autouse=True)

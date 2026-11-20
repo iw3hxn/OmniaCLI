@@ -634,6 +634,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         scheduler.start()
         sampler.start()
         monitor.start()
+        await asyncio.to_thread(save_login_hosts)
         pitr_tasks.append(asyncio.get_running_loop().create_task(pitr_loop()))
         disk_recorder.start()
         tunnels.start()
@@ -2117,10 +2118,33 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         answer carries LOGIN_MARK); a yes is kept 10 minutes."""
         if time.monotonic() - login_path_seen.get(host, -1e9) < 600:
             return True
-        if await loginas.reaches_here(host):
+        # this machine's nginx first (asked on the loopback), then the public name
+        if await loginas.passed_locally(host) or await loginas.reaches_here(host):
             login_path_seen[host] = time.monotonic()
             return True
         return False
+
+    def save_login_hosts() -> None:
+        """The names of the instances whose nginx is not a workspace's, for
+        root's timer that keeps the Log in as path in their sites
+        (workspace-helper login-path keep on); written when they change."""
+        hosts = sorted({urlsplit(inst.web_url).hostname for srv in settings.servers.values() if srv.active
+                        for inst in srv.instances.values()
+                        if workspace_of(srv.name) is None and (inst.web_url or "").startswith("https://")
+                        and urlsplit(inst.web_url).hostname})
+        path = settings.servers_file.parent / workspaceweb.LOGIN_HOSTS_FILE
+        text = json.dumps(hosts)
+        try:
+            if path.read_text(encoding="utf-8") == text:
+                return
+        except OSError:
+            pass
+        try:
+            tmp = path.with_name(path.name + ".tmp")
+            tmp.write_text(text, encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError as exc:
+            _logger.warning("the names for Log in as cannot be written in %s: %s", path, exc)
 
     async def login_path_problem(request: Request, instance: Instance, user: Principal):
         """A refusal when the instance's nginx (not a workspace's: those pass
@@ -2135,7 +2159,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         api = f"{prefix_of(request)}/api/servers/{instance.server}/{instance.role}/login-as/nginx"
         return JSONResponse({"error": f"The nginx of {host} does not pass {loginas.LOGIN_PATH} to OmniaCLI: "
                                       "Odoo would answer the link, not OmniaCLI (README, Log in as)",
-                             "nginx": api if machine_admin(user) else None, "host": host},
+                             "nginx": api if machine_admin(user) else None, "host": host,
+                             # root's switch on the machine: the line kept in every site, every minute
+                             "keep": "omniacli workspace-helper login-path keep on" if machine_admin(user) else None},
                             status_code=status.HTTP_409_CONFLICT)
 
     @app.post("/api/servers/{server}/{role}/login-as/nginx")
@@ -2293,6 +2319,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         save_servers(settings.servers_file, servers)
         settings.servers = servers
         apply_sites(settings.servers, settings.workspaces)
+        save_login_hosts()
         gitcredentials.bind(settings)
         await updater.reload()
 
