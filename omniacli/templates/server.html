@@ -253,14 +253,13 @@
 <div class="note-box">{{ _("Staging of") }} <a href="{{ prefix }}/servers/{{ parent }}">{{ host_of(stagings.parent.url, parent) }}</a>{% if stagings.parent.created %} {{ _("of {date}", date=when(stagings.parent.created)) }}{% endif %}, {{ _("made outside OmniaCLI: OmniaCLI does not know whether it is neutralized, check its outgoing mail and scheduled actions.") }}</div>
 {% endif %}
 {% endif %}
+{% set db_tab = can_act and inst.plugin and (inst.restart.type == "compose" or inst.plugin.db_shell(inst)) %}
 <nav class="tabs" role="tablist" aria-label="{{ _('Sections of the instance') }}">
   <button type="button" role="tab" data-tab="overview" aria-selected="true">{{ _("Environments") if show_envs else _("Overview") }}</button>
   {% if can_act %}<button type="button" role="tab" data-tab="backups">{{ _("Backups") }}</button>{% endif %}
   <button type="button" role="tab" data-tab="log">{{ _("Log") }}</button>
-  <button type="button" role="tab" data-tab="monitor" hidden>{{ _("Monitoring") }}</button>
-  {% if can_act and inst.plugin and (inst.restart.type == "compose" or inst.plugin.db_shell(inst)) %}<button type="button" role="tab" data-tab="database">{{ _("Database") }}</button>{% endif %}
-  {% if can_act and stagings and stagings.workspace %}<button type="button" role="tab" data-tab="addons">{{ _("Addons") }}</button>{% endif %}
-  {% if can_act and (inst.type == "odoo" or odoo_params) %}<button type="button" role="tab" data-tab="odoo-config">{{ _("Odoo config") }}</button>{% endif %}
+  {# Monitoring: the load once it is measured, and the database for who may act (UX-006: five tabs) #}
+  <button type="button" role="tab" data-tab="monitor" {{ '' if db_tab else 'hidden' }}>{{ _("Monitoring") }}</button>
   {% if can_act %}<button type="button" role="tab" data-tab="settings">{{ _("Settings") }}</button>{% endif %}
 </nav>
 
@@ -281,10 +280,7 @@
       {% endif %}
       <dt>{{ _("Odoo version") }}</dt><dd data-sum="version"><span class="muted">{{ _("Reading…") }}</span></dd>
       <dt>{{ _("Reachable") }}</dt><dd data-sum="uptime"><span class="muted">…</span></dd>
-      <dt>{{ _("Odoo workers") }}</dt><dd data-sum="workers"><span class="muted">…</span></dd>
-      {% set db = inst.plugin.describe(inst).database if inst.plugin else none %}
-      {% if db %}<dt>{{ _("Database") }}</dt><dd class="mono">{{ db }}</dd>{% endif %}
-      <dt>{{ _("Repositories") }}</dt><dd data-sum="repositories"><span class="muted">…</span></dd>
+      <dt data-sum-label="repositories" hidden>{{ _("Code") }}</dt><dd data-sum="repositories" hidden></dd>
     </dl>
   </div>
   {% endif %}
@@ -338,27 +334,6 @@
     · {% else %}{{ _("No jobs yet.") }} {% endif %}<a href="{{ prefix }}/jobs?server={{ server.name | urlencode }}">{{ _("all the actions") }}</a></p>
 </section>
 
-{% if can_act %}
-<section class="tab-panel panel" data-panel="database" hidden data-api="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}/database">
-  <div class="section-head"><h2>{{ _("Database") }}</h2><button type="button" class="small" id="db-reload">{{ icon("restart") }}{{ _("Read again") }}</button></div>
-  <p class="muted db-state">{{ _("Reading the statistics of its database…") }}</p>
-  <div class="db-body" hidden>
-    <div class="tiles">
-      <div class="tile"><div class="tile-label">{{ _("Size") }}</div><div class="tile-value" data-db="size">–</div></div>
-      <div class="tile"><div class="tile-label">{{ _("Connections") }}</div><div class="tile-value" data-db="connections">–</div></div>
-      <div class="tile"><div class="tile-label">{{ _("Read from the cache") }}</div><div class="tile-value" data-db="cache">–</div></div>
-      <div class="tile"><div class="tile-label">PostgreSQL</div><div class="tile-value" data-db="version" style="font-size: 15px">–</div></div>
-      <div class="tile"><div class="tile-label">{{ _("Where") }}</div><div class="tile-value" data-db="where" style="font-size: 15px">–</div></div>
-    </div>
-    <p class="muted db-remote" style="font-size: 13px" hidden></p>
-    <h3>{{ _("Queries running for more than 5 seconds") }}</h3><div class="scroll" data-db-table="long_queries"></div>
-    <h3>{{ _("The costliest statements") }}</h3><div class="scroll" data-db-table="statements"></div>
-    <h3>{{ _("The largest tables") }}</h3><div class="scroll" data-db-table="tables"></div>
-    <h3>{{ _("Indexes never used") }} <span class="muted" style="font-weight: 400; font-size: 13px">{{ _("since the statistics were reset: they slow the writes and take room") }}</span></h3><div class="scroll" data-db-table="unused_indexes"></div>
-    <h3>{{ _("Tables read whole") }} <span class="muted" style="font-weight: 400; font-size: 13px">{{ _("many rows read without an index: an index may be missing") }}</span></h3><div class="scroll" data-db-table="sequential"></div>
-  </div>
-</section>
-{% endif %}
 <section class="tab-panel panel" data-panel="log" hidden>
   <div class="log-panel" data-log="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}/log">{{ logbox("server-log", height="60vh") }}</div>
 </section>
@@ -418,7 +393,7 @@
       <span class="muted" style="font-size: 13px">{{ _("Its database restarts once, for a few seconds.") }}</span></div>
     <div class="actions pitr-on" hidden>
       <input type="datetime-local" id="pitr-time" step="60">
-      <button type="button" class="primary" id="pitr-restore" {{ off }}>{{ _("New staging at this minute") }}</button>
+      <button type="button" id="pitr-restore" {{ off }}>{{ _("New staging at this minute") }}</button>
       <button type="button" id="pitr-base" {{ off }}>{{ _("Base backup now") }}</button>
     </div>
   </div>
@@ -451,11 +426,32 @@
 </section>
 
 {% if can_act %}
+{% if db_tab %}
+<section class="tab-panel panel" data-panel="monitor" data-section="database" hidden data-api="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}/database">
+  <div class="section-head"><h2>{{ _("Database") }}</h2><button type="button" class="small" id="db-reload">{{ icon("restart") }}{{ _("Read again") }}</button></div>
+  <p class="muted db-state">{{ _("Reading the statistics of its database…") }}</p>
+  <div class="db-body" hidden>
+    <div class="tiles">
+      <div class="tile"><div class="tile-label">{{ _("Size") }}</div><div class="tile-value" data-db="size">–</div></div>
+      <div class="tile"><div class="tile-label">{{ _("Connections") }}</div><div class="tile-value" data-db="connections">–</div></div>
+      <div class="tile"><div class="tile-label">{{ _("Read from the cache") }}</div><div class="tile-value" data-db="cache">–</div></div>
+      <div class="tile"><div class="tile-label">PostgreSQL</div><div class="tile-value" data-db="version" style="font-size: 15px">–</div></div>
+      <div class="tile"><div class="tile-label">{{ _("Where") }}</div><div class="tile-value" data-db="where" style="font-size: 15px">–</div></div>
+    </div>
+    <p class="muted db-remote" style="font-size: 13px" hidden></p>
+    <h3>{{ _("Queries running for more than 5 seconds") }}</h3><div class="scroll" data-db-table="long_queries"></div>
+    <h3>{{ _("The costliest statements") }}</h3><div class="scroll" data-db-table="statements"></div>
+    <h3>{{ _("The largest tables") }}</h3><div class="scroll" data-db-table="tables"></div>
+    <h3>{{ _("Indexes never used") }} <span class="muted" style="font-weight: 400; font-size: 13px">{{ _("since the statistics were reset: they slow the writes and take room") }}</span></h3><div class="scroll" data-db-table="unused_indexes"></div>
+    <h3>{{ _("Tables read whole") }} <span class="muted" style="font-weight: 400; font-size: 13px">{{ _("many rows read without an index: an index may be missing") }}</span></h3><div class="scroll" data-db-table="sequential"></div>
+  </div>
+</section>
+{% endif %}
 {% if can_act and stagings and stagings.workspace %}
 {# the repositories of addons of a workspace's instance: each from its URL on its branch, updated (pull) or
    removed one by one; a new one cloned with the workspace's git credentials, named in its odoo.conf, restarted #}
-<section class="tab-panel panel" data-panel="addons" hidden data-ws="{{ prefix }}/api/workspaces/{{ stagings.workspace.name }}">
-  <div class="section-head"><h2>{{ _("Addons") }}</h2></div>
+<section class="tab-panel panel" data-panel="settings" data-section="addons" hidden data-ws="{{ prefix }}/api/workspaces/{{ stagings.workspace.name }}">
+  <div class="section-head"><h2>{{ _("Code") }}</h2></div>
   <div class="scroll">
   <table class="addons-table">
     <tr><th>{{ _("Type") }}</th><th>{{ _("Repository") }}</th><th>{{ _("Branch") }}</th><th class="hide-sm">{{ _("Last commit") }}</th><th></th></tr>
@@ -465,8 +461,9 @@
       <td>Git</td>
       <td><span class="mono">{{ repo_urls.get(repo.name) or repo.name }}</span>
         {% if repo_urls.get(repo.name, "").startswith("https://") %}<a href="{{ repo_urls[repo.name] }}" target="_blank" rel="noopener" title="{{ _('Opens the repository in a new tab') }}">↗</a>{% endif %}</td>
-      <td class="mono">{{ repo.branch }}</td>
-      <td class="hide-sm">{% if rs.error %}<span class="error">{{ tr(rs.error) }}</span>{% else %}<span class="mono">{{ rs.sha }}</span> <span class="muted">{{ rs.date }}</span>{% endif %}</td>
+      {% set off_branch = not rs.error and rs.branch and rs.branch != repo.branch %}
+      <td class="mono {{ 'error' if off_branch }}" {% if off_branch %}title="{{ _('expected {branch}', branch=repo.branch) }}"{% endif %}>{{ rs.branch if off_branch else repo.branch }}</td>
+      <td class="hide-sm">{% if rs.error %}<span class="error">{{ tr(rs.error) }}</span>{% else %}<span class="mono">{{ rs.sha }}</span> <span class="muted">{{ rs.date }}</span>{% if rs.subject %}<br><span title="{{ rs.subject }}">{{ rs.subject | truncate(80, true, "…") }}</span>{% endif %}{% endif %}</td>
       <td style="white-space: nowrap; text-align: right">
         <button type="button" data-repo-update="{{ repo.name }}" data-role="{{ inst.role }}" {{ off }}
           title="{{ _('Chooses the branch and shows the commit it brings; then downloads it, updates the changed modules when the instance says so, and restarts.') }}">{{ _("Update") }}</button>
@@ -508,7 +505,7 @@
         <input type="text" id="addons-url" class="mono" required placeholder="https://github.com/OCA/web.git · git@github.com:org/repo.git" spellcheck="false"></div>
       <div><label for="addons-branch">{{ _("Branch") }}</label>
         <input type="text" id="addons-branch" class="mono" required placeholder="19.0" spellcheck="false"></div>
-      <div class="addons-go"><button type="submit" class="primary" {{ off }}>{{ _("Add") }}</button></div>
+      <div class="addons-go"><button type="submit" {{ off }}>{{ _("Add") }}</button></div>
     </div>
     <p class="muted" style="font-size: 12px; margin: 6px 0 0">{{ _("A private repository: over https with the git credentials of the workspace (Settings › Credentials), or over ssh (git@…) with OmniaCLI's key added to it as a deploy key. Its modules are then installed from Odoo's Apps.") }}</p>
     <p class="error" id="addons-error" role="alert"></p>
@@ -563,8 +560,8 @@
 {% if can_act and odoo_params and inst.type != "odoo" %}
 {# a workspace's instance: the Odoo options its template lets change, within the bounds the machine's admins set;
    saved, the helper writes its odoo.conf again from the template with them and the instance restarts #}
-<section class="tab-panel panel" data-panel="odoo-config" hidden data-ws="{{ prefix }}/api/workspaces/{{ stagings.workspace.name }}">
-  <div class="section-head"><h2>{{ _("Odoo config") }} <span class="muted mono" id="op-version" style="font-size: 13px; font-weight: 400"></span></h2>
+<section class="tab-panel panel" data-panel="settings" data-section="odoo-config" hidden data-ws="{{ prefix }}/api/workspaces/{{ stagings.workspace.name }}">
+  <div class="section-head"><h2>{{ _("Odoo options") }} <span class="muted mono" id="op-version" style="font-size: 13px; font-weight: 400"></span></h2>
     <div class="op-views" role="radiogroup" aria-label="{{ _('Options shown') }}">
       <button type="button" role="radio" aria-checked="true" data-op-view="basic">{{ _("Basic") }}</button>
       <button type="button" role="radio" aria-checked="false" data-op-view="extended">{{ _("Extended") }}</button>
@@ -590,17 +587,17 @@
       <td><input type="checkbox" id="op-debug" {{ "checked" if odoo_params.debug }} {{ "disabled" if not is_admin_here }} style="width: auto"></td></tr>
   </table></div>
   {% if is_admin_here %}<div class="actions" style="justify-content: flex-end; margin-top: 12px">
-    <button type="button" class="primary" id="op-save" {{ off }} title="{{ _('Writes the options in its odoo.conf and restarts Odoo.') }}">{{ _("Save and restart") }}</button>
+    <button type="button" id="op-save" {{ off }} title="{{ _('Writes the options in its odoo.conf and restarts Odoo.') }}">{{ _("Save and restart") }}</button>
   </div>{% endif %}
 </section>
 {% endif %}
 {% if can_act and inst.type == "odoo" %}
 {# the options the instance's Odoo knows (its own parser), the values of its config file; the ones the layout owns
    locked, a secret's value never shown; Save writes them as the user Odoo runs as and restarts it #}
-<section class="tab-panel panel" data-panel="odoo-config" hidden
+<section class="tab-panel panel" data-panel="settings" data-section="odoo-config" hidden
          data-url="{{ prefix }}/x/odoo/servers/{{ server.name }}/{{ inst.role }}/odoo-config" data-admin="{{ 1 if is_admin else '' }}">
   <div class="section-head">
-    <h2>{{ _("Odoo config") }} <span class="muted mono oc-file" style="font-size: 13px; font-weight: 400"></span></h2>
+    <h2>{{ _("Odoo options") }} <span class="muted mono oc-file" style="font-size: 13px; font-weight: 400"></span></h2>
     <label class="oc-all"><input type="checkbox" id="oc-all"> {{ _("Show all the options") }}</label>
   </div>
   <p class="muted oc-state">{{ _("Reading the options of its Odoo…") }}</p>
@@ -610,7 +607,7 @@
   </table></div>
   {% if is_admin %}<div class="actions oc-actions" hidden style="justify-content: flex-end; margin-top: 12px">
     <span class="muted oc-changed"></span>
-    <button type="button" class="primary" id="oc-save" disabled title="{{ _('Writes the changed options in the config file and restarts Odoo.') }}">{{ _("Save and restart") }}</button>
+    <button type="button" id="oc-save" disabled title="{{ _('Writes the changed options in the config file and restarts Odoo.') }}">{{ _("Save and restart") }}</button>
   </div>{% endif %}
 </section>
 {% endif %}
@@ -645,6 +642,8 @@
       {% else %}<span class="muted">{{ _("no") }}</span>{% endif %}
     </dd>
   </dl>
+  {# a workspace's instance lists its repositories once, in Code above (UX-006) #}
+  {% if not (can_act and stagings and stagings.workspace) %}
   <div class="scroll">
   <table>
     <tr><th>{{ _("Repository") }}</th><th>{{ _("Branch") }}</th><th>{{ _("Last commit") }}</th></tr>
@@ -663,6 +662,7 @@
     {% endfor %}
   </table>
   </div>
+  {% endif %}
   {% if can_act and inst.repositories %}
   {# deploy on push: the repository's webhook calls the instance (deployhooks.py) #}
   <div class="deploy-hook" data-api="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}/deploy-hook" hidden>
@@ -726,14 +726,25 @@
 
   // the tabs: the one in the address (#log) or Overview
   const tabs = [...document.querySelectorAll(".tabs [data-tab]")];
+  // the tabs of before UX-006, for an address kept somewhere (#database, #addons, #odoo-config)
+  const MOVED = {database: "monitor", addons: "settings", "odoo-config": "settings"};
+  let loadMeasured = false;
   function show(name) {
+    const section = MOVED[name] ? name : null;
+    name = MOVED[name] || name;
     if (!tabs.some((t) => t.dataset.tab === name && !t.hidden)) name = "overview";
     for (const t of tabs) t.setAttribute("aria-selected", String(t.dataset.tab === name));
-    for (const p of document.querySelectorAll(".tab-panel")) p.hidden = p.dataset.panel !== name;
+    for (const p of document.querySelectorAll(".tab-panel")) {
+      // the charts only once something is measured: the tab may be there for the database alone
+      p.hidden = p.dataset.panel !== name || (p.classList.contains("instance-charts") && !loadMeasured);
+    }
     if (name === "backups") loadBackups();
-    if (name === "odoo-config") loadOdooConfig();
-    if (name === "database") loadDatabase();
-    if (name === "monitor") { since = 0; for (const k in series) delete series[k]; refresh(); }
+    if (name === "settings" && document.querySelector('[data-section="odoo-config"]')) loadOdooConfig();
+    if (name === "monitor") {
+      since = 0; for (const k in series) delete series[k]; refresh();
+      if (document.querySelector('[data-section="database"]')) loadDatabase();
+    }
+    if (section) document.querySelector(`[data-section="${section}"]`)?.scrollIntoView();
   }
   for (const t of tabs) t.addEventListener("click", () => { history.replaceState(null, "", "#" + t.dataset.tab); show(t.dataset.tab); });
 
@@ -751,7 +762,7 @@
   let ocLoaded = false, ocData = null;
   async function loadOdooConfig() {
     if (ocLoaded) return;
-    const box = document.querySelector('[data-panel="odoo-config"]');
+    const box = document.querySelector('[data-section="odoo-config"]');
     if (!box) return;
     ocLoaded = true;
     const state = box.querySelector(".oc-state");
@@ -840,14 +851,14 @@
     if (label) label.textContent = count ? OC.changed.replace("{count}", count) : "";
   }
   document.getElementById("oc-all")?.addEventListener("change", () => {
-    const box = document.querySelector('[data-panel="odoo-config"]');
+    const box = document.querySelector('[data-section="odoo-config"]');
     if (ocData) drawOdooConfig(box);
   });
   // the Addons tab: add and remove a repository of the workspace's instance
   const ADD = {removeQ: {{ _("Take {repo} out of the instance? Its folder is deleted and Odoo restarted.") | tojson }},
                refused: {{ _("Refused") | tojson }}};
   async function addonsPost(path, body) {
-    const box = document.querySelector('[data-panel="addons"]');
+    const box = document.querySelector('[data-section="addons"]');
     const resp = await fetch(`${box.dataset.ws}/${path}`, {method: "POST",
       headers: {"Content-Type": "application/json", Accept: "application/json"}, body: JSON.stringify(body)});
     return {ok: resp.ok, data: await resp.json().catch(() => ({}))};
@@ -978,7 +989,7 @@
                      calls: {{ _("calls") | tojson }}, total_ms: {{ _("total ms") | tojson }}, mean_ms: {{ _("mean ms") | tojson }}}};
   const bytes = (n) => n >= 1 << 30 ? (n / (1 << 30)).toFixed(1) + " GiB" : n >= 1 << 20 ? (n / (1 << 20)).toFixed(1) + " MiB" : Math.round(n / 1024) + " KiB";
   async function loadDatabase() {
-    const box = document.querySelector('[data-panel="database"]');
+    const box = document.querySelector('[data-section="database"]');
     if (!box) return;
     const state = box.querySelector(".db-state");
     state.hidden = false;
@@ -1096,7 +1107,7 @@
       data = await resp.json();
       if (!resp.ok) throw new Error(data.error || data.detail || resp.status);
     } catch (e) {
-      for (const n of ["version", "workers", "repositories"]) field(n).textContent = S.failed.replace("{error}", e.message);
+      field("version").textContent = S.failed.replace("{error}", e.message);
       return;
     }
     const el = (tag, cls, text) => { const x = document.createElement(tag); if (cls) x.className = cls; if (text !== undefined) x.textContent = text; return x; };
@@ -1108,7 +1119,7 @@
     function updateForm(repo, count) {
       const form = el("form"); form.method = "post"; form.action = box.dataset.pullRestart;
       for (const [k, v] of [["chosen", "1"], ["repo", repo]]) { const i = el("input"); i.type = "hidden"; i.name = k; i.value = v; form.append(i); }
-      const b = el("button", "small primary", count === 1 ? S.updateOne : S.updateNow.replace("{count}", count));
+      const b = el("button", "small", count === 1 ? S.updateOne : S.updateNow.replace("{count}", count));
       form.append(b);
       form.addEventListener("submit", (e) => { if (!confirm(S.updateQ.replace("{repo}", repo))) e.preventDefault(); });
       return form;
@@ -1139,17 +1150,19 @@
       if (data.image.error) version.append(el("span", "muted", data.image.error));
       else if (data.image.update && box.dataset.pullImage && box.dataset.can) {
         const form = el("form"); form.method = "post"; form.action = box.dataset.pullImage;
-        form.append(el("button", "small primary", S.newImage + " · " + S.pullImage));
+        form.append(el("button", "small", S.newImage + " · " + S.pullImage));
         form.addEventListener("submit", (e) => { if (!confirm(S.pullQ)) e.preventDefault(); });
         version.append(form);
       } else if (data.image.update) version.append(badge(S.newImage, "warn"));
       else if (data.image.update === false) version.append(badge(S.imageSame, "ok"));
     }
-    field("workers").textContent = data.workers === undefined || data.workers === null ? "—"
-      : data.workers === 0 ? S.thread : String(data.workers);
+    // the repositories are listed once, in Settings: here only those with commits to
+    // download or that cannot be read
     const repos = field("repositories");
-    const others = data.repositories.filter((r) => r.name !== data.odoo_repository);
-    repos.replaceChildren(...(others.length ? others.map(repoLine) : [el("span", "muted", S.none)]));
+    const telling = data.repositories.filter((r) => r.name !== data.odoo_repository && (r.pending || r.error));
+    repos.replaceChildren(...telling.map(repoLine));
+    repos.hidden = !telling.length;
+    box.querySelector('[data-sum-label="repositories"]').hidden = !telling.length;
   })();
   {% if can_act and odoo_params and inst.type != "odoo" %}
   // Basic: the template's parameters; Extended: every other option its Odoo knows
@@ -1162,7 +1175,7 @@
   let opExt = null;
   async function opExtended() {
     if (opExt) return;
-    const box = document.querySelector('[data-panel="odoo-config"]'), state = document.getElementById("op-ext-state");
+    const box = document.querySelector('[data-section="odoo-config"]'), state = document.getElementById("op-ext-state");
     state.textContent = OP.reading;
     let data;
     try {
@@ -1224,7 +1237,7 @@
   {% endif %}
   {% if can_act and odoo_params and inst.type != "odoo" and is_admin_here %}
   document.getElementById("op-save")?.addEventListener("click", async () => {
-    const box = document.querySelector('[data-panel="odoo-config"]'), parameters = {};
+    const box = document.querySelector('[data-section="odoo-config"]'), parameters = {};
     for (const input of box.querySelectorAll("[data-param]")) {
       parameters[input.dataset.param] = input.type === "checkbox" ? input.checked : input.value;
     }
@@ -1249,7 +1262,7 @@
   });
   {% endif %}
   document.getElementById("oc-save")?.addEventListener("click", async () => {
-    const box = document.querySelector('[data-panel="odoo-config"]');
+    const box = document.querySelector('[data-section="odoo-config"]');
     const changes = changesOdooConfig(box), count = Object.keys(changes.set).length + changes.unset.length;
     if (!count || !confirm(OC.confirm.replace("{count}", count))) return;
     const resp = await fetch(box.dataset.url, {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
@@ -1273,7 +1286,11 @@
       // the Monitoring tab: only once something is measured
       const measured = points.some((p) => p.cpu !== null || p.mem > 0 || p.procs > 0);
       const tab = tabs.find((t) => t.dataset.tab === "monitor");
-      if (tab && measured && tab.hidden) { tab.hidden = false; if (location.hash === "#monitor") show("monitor"); }
+      if (measured && !loadMeasured) {
+        loadMeasured = true;
+        if (tab && tab.hidden) { tab.hidden = false; if (location.hash === "#monitor") show("monitor"); }
+        else if (tab && tab.getAttribute("aria-selected") === "true") show("monitor");
+      }
       if (!charts || charts.hidden) continue;
       charts.querySelector(".source").textContent = info.source ? T.measured.replace("{source}", info.source) : "";
       charts.querySelector(".cores").textContent = (data.cores === 1 ? T.core : T.cores).replace("{n}", data.cores);

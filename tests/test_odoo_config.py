@@ -87,4 +87,4 @@ async def test_the_tab_reads_and_saves(client, env, monkeypatch):  # noqa: F811
     assert written == [{"set": {"workers": "4"}, "unset": []}] and restarted == ["srv/production"]
     # the page has the tab for an Odoo instance
     page = (await client.get("/servers/srv", headers={"Authorization": AUTH, "Accept": "text/html"})).text
-    assert 'data-tab="odoo-config"' in page and 'data-url="/x/odoo/servers/srv/production/odoo-config"' in page
+    assert 'data-section="odoo-config"' in page and 'data-url="/x/odoo/servers/srv/production/odoo-config"' in page

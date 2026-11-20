@@ -237,6 +237,7 @@
  "Odoo config": "Configurazione di Odoo",
  "Odoo is stopped: Start brings it back": "Odoo è fermo: Avvia lo riaccende",
  "Odoo opens in a new tab as the user you choose: their password is not read nor changed. Who asks and as whom is in the access log.": "Odoo si apre in una nuova scheda come l'utente che scegli: la sua password non viene letta né cambiata. Chi lo chiede e come chi resta nel log degli accessi.",
+ "Odoo options": "Opzioni di Odoo",
  "Odoo shell": "Shell di Odoo",
  "Odoo workers": "Worker di Odoo",
  "Of": "Di",

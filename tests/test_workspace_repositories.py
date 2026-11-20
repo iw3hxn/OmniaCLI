@@ -206,7 +206,7 @@ async def test_an_instance_with_production_only(instance, client):
     assert settings.servers["acme-main"].production.repositories == []
     # the Addons tab of the instance's page: the add form, posting to its workspace
     page = (await client.get("/servers/acme-main", headers=post_as("mario"))).text
-    assert 'data-tab="addons"' in page and 'data-ws="/api/workspaces/acme"' in page and 'id="addons-add"' in page
+    assert 'data-section="addons"' in page and 'data-ws="/api/workspaces/acme"' in page and 'id="addons-add"' in page
 
 
 
@@ -244,7 +244,7 @@ async def test_the_odoo_config_tab_of_a_workspaces_instance(instance, client, mo
     meta.parent.mkdir(parents=True, exist_ok=True)
     meta.write_text('{"template": "odoo-19"}')
     page = (await client.get("/servers/acme-main", headers=post_as("mario"))).text
-    assert 'data-tab="odoo-config"' in page and 'data-param="workers"' in page and 'id="op-save"' in page
+    assert 'data-section="odoo-config"' in page and 'data-param="workers"' in page and 'id="op-save"' in page
 
 
 async def test_the_terminal_of_a_workspaces_instance(instance, client):
@@ -356,3 +356,21 @@ async def test_the_update_dialog(instance, client, monkeypatch):
     # the dialog on the Addons tab
     page = (await client.get("/servers/acme-main", headers=post_as("mario"))).text
     assert 'id="addons-update"' in page and 'data-repo-update="custom"' in page
+
+
+async def test_five_tabs_and_one_primary(workspaces, client, env, monkeypatch, tmp_path):
+    """UX-006: the instance page has at most five tabs (the database is in
+    Monitoring, the repositories and the Odoo options in Settings), one
+    primary button outside the dialogs, the repositories listed once."""
+    import re
+
+    settings = env["settings"]
+    page = (await client.get("/servers/srv?view=production", headers=post_as("admin"))).text
+    tabs = re.findall(r'role="tab" data-tab="([a-z-]+)"', page)
+    assert tabs == ["overview", "backups", "log", "monitor", "settings"], tabs
+    assert not re.search(r'data-panel="(database|addons|odoo-config)"', page)
+    # outside the dialogs: the head's primary only
+    body = re.sub(r"<dialog.*?</dialog>", "", page, flags=re.S)
+    body = re.sub(r"<script.*?</script>", "", body, flags=re.S)
+    assert len(re.findall(r'class="[^"]*\bprimary\b[^"]*"', body)) == 1, re.findall(r'class="[^"]*\bprimary\b[^"]*"[^>]*>', body)
+    assert len(re.findall(r"<th>Repository</th>", page)) <= 1

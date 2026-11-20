@@ -83,7 +83,7 @@ async def test_the_tab(client, env, monkeypatch):
     data = (await client.get("/api/servers/srv/production/database", headers={"Authorization": AUTH})).json()
     assert data["cache_hit"] == 99.6 and data["can_stop"]
     page = (await client.get("/servers/srv", headers={"Authorization": AUTH})).text
-    assert 'data-tab="database"' in page
+    assert 'data-section="database"' in page and 'data-tab="database"' not in page
     url = "/api/servers/srv/production/database/terminate"
     assert (await client.post(url, headers=post_as("dev"), json={"pid": 4321})).status_code == 403
     resp = await client.post(url, headers=POST, json={"pid": 4321})
