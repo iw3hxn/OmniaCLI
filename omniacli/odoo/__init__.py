@@ -373,6 +373,21 @@ class OdooPlugin(ServicePlugin):
         data_dir = _data_dir(instance.options.odoo_config)
         return [("filestore", data_dir)] if data_dir else []
 
+    async def archive_files(self, job: Job, instance: Instance) -> list[tuple[str, bytes]]:
+        """Its Odoo config and the packages of its venv (pip freeze)."""
+        found = []
+        try:
+            found.append(("odoo.conf", Path(instance.options.odoo_config).read_bytes()))
+        except OSError as exc:
+            job.log(f"WARNING: {instance.options.odoo_config} is not in the archive: {exc.strerror}")
+        code, out = await capture([str(instance.options.venv_bin / "python"), "-m", "pip", "freeze",
+                                   "--disable-pip-version-check"], timeout=120)
+        if code == 0:
+            found.append(("pip-freeze.txt", (out.strip() + "\n").encode()))
+        else:
+            job.log(f"WARNING: the Python packages of the venv are not listed: {out[-200:]}")
+        return found
+
     async def summary(self, instance: Instance) -> dict:
         """The Odoo of its code (release.py), the workers of its config, the
         repository that holds odoo-bin (its commits are Odoo's updates)."""

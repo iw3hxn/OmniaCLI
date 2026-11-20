@@ -221,7 +221,7 @@ async def test_copy_sharing_the_filestore(client, env, monkeypatch):
 
     # with a backup already made, the choice does not apply
     folder = env["settings"].backup_dir / "srv" / "production"
-    name = sorted(p.name for p in folder.iterdir())[0]
+    name = sorted(p.name for p in folder.glob("*.zip"))[0]
     resp = await client.post(URL, headers=POST, json={"backup": name, "share_filestore": True})
     job = await wait_job(client, resp.json()["job"])
     assert job["title"].endswith(f"({name})") and not any("hard links" in line for line in job["lines"])

@@ -189,6 +189,8 @@
         <button type="button" {{ off }} data-backup="{{ base }}/backup" data-download="0" data-key="{{ inst.key }}"
                 title="{{ _('Saves database and filestore in a zip on this machine; the dialog has the choices, for example without filestore. The file shows in the Backups tab.') }}">{{ icon("backup") }}{{ _("Back up now") }}</button>
         <button type="button" {{ off }} data-backup="{{ base }}/backup" data-download="1" data-key="{{ inst.key }}" title="{{ _('Makes a backup and downloads the zip as soon as it is ready.') }}">{{ icon("download") }}{{ _("Backup and download") }}</button>
+        <button type="button" {{ off }} id="archive-now" data-url="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}/archive"
+                title="{{ _('The backup, the code of every repository at its commit and the configuration (compose.yaml, odoo.conf, the Python packages), in one zip of the Backups tab.') }}">{{ icon("backup") }}{{ _("Full archive") }}</button>
         {% endif %}
         {% for b in buttons[inst.key].backup %}{{ action_button(b, off) }}{% endfor %}
         {% endif %}
@@ -358,6 +360,14 @@
       <label for="ab-destination">{{ _("Copy also to") }}</label>
       <select id="ab-destination"><option value="">{{ _("nowhere: this machine only") }}</option></select>
       <span class="muted" id="ab-dest-none" hidden>{{ _("No destination yet:") }} <a id="ab-dest-link" href="#">{{ _("add one") }}</a></span>
+    </div>
+    <div class="ab-row">
+      <label title="{{ _('The backup, the code of every repository at its commit and the configuration (compose.yaml, odoo.conf, the Python packages): what makes the instance again on another machine.') }}">
+        <input type="checkbox" id="ab-archive"> {{ _("Full archive, not the backup alone") }}</label>
+    </div>
+    <div class="ab-row" id="ab-verify-row">
+      <label title="{{ _('The backup made on Sunday is also restored for a try into a database of its own, dropped after: a backup that does not restore is told as a failure.') }}">
+        <input type="checkbox" id="ab-verify"> {{ _("Every Sunday, also try to restore it") }}</label>
     </div>
     <div class="ab-row">
       <label for="ab-notify">{{ _("When it fails, tell") }}</label>
@@ -640,6 +650,13 @@
     abNoRight: {{ _("Only an administrator changes them.") | tojson }},
     abZone: {{ _("this server's time ({zone})") | tojson }},
     abMachine: {{ _("this machine's") | tojson }}, loading: {{ _("Loading…") | tojson }},
+    checked: {{ _("Restore tried") | tojson }}, verify: {{ _("Verify") | tojson }},
+    archiveKind: {{ _("full archive") | tojson }},
+    verifyTitle: {{ _("Checks the file is the one made, then restores it for a try into a database of its own, beside the instance, dropped after: the instance is not touched.") | tojson }},
+    verifyQ: {{ _("Try a restore of {file}? It takes the room of one more database for a while; the instance keeps working.") | tojson }},
+    checkFound: {{ _("{modules} modules installed, {users} users, newest record {last}") | tojson }},
+    abVerified: {{ _("Last restore tried: {time}, {result}.") | tojson }}, abVerifyOk: {{ _("good") | tojson }},
+    abVerifyFailed: {{ _("failed") | tojson }},
     destPage: {{ (prefix ~ ("/workspaces/" ~ stagings.workspace.name ~ "/destinations" if stagings and stagings.workspace else "/destinations")) | tojson }},
     rlNone: {{ _("No copies there yet: the next automatic backup makes the first.") | tojson }},
     rlFile: {{ _("File") | tojson }}, rlWhen: {{ _("Made") | tojson }}, rlSize: {{ _("Size") | tojson }},
@@ -842,6 +859,14 @@
     if (!ok || !data.job) { alert(data.error || data.detail || ADD.refused); return; }
     location.href = `{{ prefix }}/jobs/${data.job}`;
   }));
+  document.getElementById("archive-now")?.addEventListener("click", async (event) => {
+    if (!confirm({{ _("Make the full archive of {key}: the backup, the code of its repositories and its configuration?", key=inst.key) | tojson }})) return;
+    const resp = await fetch(event.currentTarget.dataset.url, {method: "POST",
+      headers: {"Content-Type": "application/json", Accept: "application/json"}, body: "{}"});
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || !data.job) { alert(data.error || data.detail || resp.status); return; }
+    location.href = `{{ prefix }}/jobs/${data.job}`;
+  });
   // the head of the Environments tab: read after the page, a git fetch and the registry take a while
   (async function () {
     const box = document.querySelector(".inst-summary");
@@ -1078,17 +1103,40 @@
       if (!files.length) { list.textContent = T.emptyList; return; }
       const table = document.createElement("table");
       const head = table.insertRow();
-      for (const text of [T.file, T.kind, T.date, T.size, ""]) { const th = document.createElement("th"); th.textContent = text; head.appendChild(th); }
+      for (const text of [T.file, T.kind, T.date, T.size, T.checked, ""]) { const th = document.createElement("th"); th.textContent = text; head.appendChild(th); }
       for (const f of files) {
         const tr = table.insertRow();
         const a = document.createElement("a");
         a.href = f.download; a.textContent = f.file; a.setAttribute("download", f.file);
         tr.insertCell().appendChild(a);
-        tr.insertCell().textContent = T.kinds[f.kind] || "";
+        tr.insertCell().textContent = (T.kinds[f.kind] || "") + (f.archive ? " · " + T.archiveKind : "");
         tr.insertCell().textContent = new Date(f.time * 1000).toLocaleString();
         tr.insertCell().textContent = sizeText(f.size);
+        // the last restore tried: when and what it found, or why it failed
+        const check = tr.insertCell(), v = f.verified;
+        if (v && v.ok) {
+          check.className = "status success";
+          check.textContent = "✓ " + new Date(v.time).toLocaleString();
+          check.title = T.checkFound.replace("{modules}", v.modules).replace("{users}", v.users).replace("{last}", v.last || "?");
+        } else if (v) {
+          check.className = "error"; check.textContent = "✗ " + new Date(v.time).toLocaleString(); check.title = v.detail || "";
+        } else { check.className = "muted"; check.textContent = "—"; }
         const cell = tr.insertCell();
         cell.style.textAlign = "right";
+        if (f.can_verify) {
+          const vb = document.createElement("button");
+          vb.type = "button"; vb.className = "small"; vb.textContent = T.verify; vb.title = T.verifyTitle;
+          vb.style.marginRight = "6px";
+          vb.addEventListener("click", async () => {
+            if (!confirm(T.verifyQ.replace("{file}", f.file))) return;
+            const resp = await fetch(`${box.dataset.api}/backups/verify`, {method: "POST",
+              headers: {"Content-Type": "application/json", Accept: "application/json"}, body: JSON.stringify({file: f.file})});
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || !data.job) { alert(data.error || data.detail || T.refused); return; }
+            location.href = `{{ prefix }}/jobs/${data.job}`;
+          });
+          cell.appendChild(vb);
+        }
         if (f.can_delete) {
           const b = document.createElement("button");
           b.type = "button"; b.className = "danger"; b.textContent = T.remove;
@@ -1124,12 +1172,17 @@
     none.hidden = data.destinations.length > 0 || !data.can_edit;
     document.getElementById("ab-dest-link").href = T.destPage;
     document.getElementById("ab-notify").value = (data.notify || []).join(", ");
+    document.getElementById("ab-verify-row").hidden = !data.has_verify;
+    document.getElementById("ab-verify").checked = !!data.verify;
+    document.getElementById("ab-archive").checked = !!data.archive;
     for (const input of form.querySelectorAll("input, button, select")) input.disabled = !data.can_edit;
     loadRemoteCopies(data.destination);
     const said = [];
     if (!data.enabled) said.push(T.abOff);
     else if (data.next) said.push(T.abNext.replace("{time}", data.next));
     if (data.last) said.push(T.abLast.replace("{time}", data.last.time.replace("T", " ")).replace("{status}", data.last.message || T.statuses[data.last.status] || data.last.status));
+    if (data.verified) said.push(T.abVerified.replace("{time}", data.verified.time.replace("T", " "))
+      .replace("{result}", data.verified.ok ? T.abVerifyOk : T.abVerifyFailed));
     if (!data.can_edit) said.push(T.abNoRight);
     document.getElementById("ab-status").textContent = said.join(" ");
   }
@@ -1183,6 +1236,8 @@
     for (const input of form.querySelectorAll("[data-ab-option]")) options[input.dataset.abOption] = input.checked;
     const body = {enabled: document.getElementById("ab-enabled").checked, time: document.getElementById("ab-time").value, options,
                   destination: document.getElementById("ab-destination").value,
+                  verify: document.getElementById("ab-verify").checked,
+                  archive: document.getElementById("ab-archive").checked,
                   notify: document.getElementById("ab-notify").value.split(/[\s,;]+/).filter(Boolean)};
     for (const k of ["daily", "weekly", "monthly"]) body[k] = document.getElementById(`ab-${k}`).value;
     const error = document.getElementById("ab-error");

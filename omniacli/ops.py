@@ -18,7 +18,7 @@ import signal
 import subprocess
 from pathlib import Path
 
-from . import backupchoices, packages, private
+from . import backupcheck, backupchoices, packages, private
 from .config import Instance, Repository, Server
 from .jobs import Job, JobFailed
 
@@ -746,7 +746,10 @@ async def backup_into(job: Job, instance: Instance, dest_dir: Path, options: dic
         options[f.key] = backupchoices.ticked(rows, remembered, f.key, megabytes)
         job.log(f"--- {f.label}: the choice of the backup dialog of {remembered.get('saved', '?')} "
                 f"({remembered.get('user') or '?'}): {', '.join(options[f.key]) or 'none'}")
-    return private.backup_file(await instance.plugin.backup(job, instance, dest_dir, options))
+    made = private.backup_file(await instance.plugin.backup(job, instance, dest_dir, options))
+    # its SHA-256, to tell later whether the file is still the one made now
+    await backupcheck.record(made)
+    return made
 
 
 # the backups made before an update: their names start so, the last few kept
@@ -764,6 +767,7 @@ async def backup_before_update(job: Job, instance: Instance, folder: Path | None
     made = await backup_into(job, instance, folder)
     dest = made.with_name(PRE_UPDATE_PREFIX + made.name)
     os.replace(made, dest)
+    backupcheck.rename(folder, made.name, dest.name)
     job.log(f"Backup {dest.name} ({dest.stat().st_size} bytes)")
     found = sorted((p for p in folder.glob(f"{PRE_UPDATE_PREFIX}*.zip") if p.is_file()),
                    key=lambda p: p.stat().st_mtime, reverse=True)

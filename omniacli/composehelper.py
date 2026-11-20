@@ -75,6 +75,17 @@ command of the caller's, and runs docker with an environment of its own:
                                          on the input, the helper's own file,
                                          never the caller's): the users, or
                                          a new session of one (its sid)
+    pip-freeze <odoo service>            in the running service: the Python
+                                         packages installed for its user
+                                         (pip freeze --user)
+    verify <odoo service>                a backup's zip read from the input
+                                         loaded (neutralized) into a database
+                                         of its own, omniacli_verify_<random>,
+                                         in a container of its own; odoo shell
+                                         runs odoo/verify_check.py there (the
+                                         helper's own file); the database and
+                                         its filestore dropped, whatever
+                                         happened
     image <service>                      the image the service's container
                                          runs and its registry digests, as
                                          JSON {"image", "digests"}: is a
@@ -134,7 +145,8 @@ ACTIONS = {
 }
 # the actions that take arguments (commands())
 WITH_ARGUMENTS = ("logs", "version", "port", "dump", "load", "update", "psql", "init", "link-filestore", "login",
-                  "setup", "options", "image", "pip-requirements", "terminal")
+                  "setup", "options", "image", "verify", "pip-freeze",
+                  "pip-requirements", "terminal")
 # a repository of the instance's addons (/mnt/customer-addons/<name>)
 REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 DATABASE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,62}")
@@ -204,6 +216,14 @@ SCRIPTS = {
     "setup": ODOO_DB + 'exec odoo shell -d "$1" --no-http --log-level=critical',
     # the options the image's Odoo knows: its python3 reads the script from its input
     "options": "exec python3 -",
+    "pip-freeze": "exec python3 -m pip freeze --user --disable-pip-version-check",
+    # a backup restored for a try: the zip from the input, the check in
+    # OMNIACLI_CHECK; the database dropped on the way out, whatever happened
+    "verify": ODOO_DB + 'd="omniacli_verify_$(od -An -N4 -tx1 /dev/urandom | tr -d " \\n")"; '
+                        'f="$(mktemp /tmp/omniacli-verify-XXXXXX.zip)"; '
+                        'trap \'odoo db drop "$d" >&2 2>&1; rm -f "$f"\' EXIT; '
+                        'cat > "$f"; odoo db load --neutralize "$d" "$f" >&2 || exit 1; '
+                        'printf "%s\\n" "$OMNIACLI_CHECK" | odoo shell -d "$d" --no-http --log-level=critical',
     # the Python packages a repository of addons asks (its requirements.txt),
     # as the image's user in its home (/var/lib/odoo/.local, on the volume of
     # the instance's data: they stay when the container is made again)
@@ -230,6 +250,7 @@ LOGIN_REQUEST = re.compile(r"users|[1-9][0-9]{0,9}")
 # JSON and put in front of it: the password is on no command line
 SETUP_SCRIPT = Path(__file__).parent / "odoo" / "setup_database.py"
 OPTIONS_SCRIPT = Path(__file__).parent / "odoo" / "config_options.py"
+VERIFY_SCRIPT = Path(__file__).parent / "odoo" / "verify_check.py"
 COUNTRY = re.compile(r"[A-Z]{2}")
 PASSWORD_LENGTH = (8, 128)
 
@@ -449,6 +470,17 @@ def commands(project: Path, action: str, args: list[str]) -> list[list[str]]:
         if len(args) != 3 or not LOGIN_REQUEST.fullmatch(args[2]):
             raise HelperError("usage: login <service> <database> users|<user id>")
         return [_script(service(project, args[0]), "login", _database(args[1]), args[2])]
+    if action == "pip-freeze":
+        if len(args) != 1:
+            raise HelperError("usage: pip-freeze <service>")
+        return [_script(service(project, args[0]), "pip-freeze")]
+    if action == "verify":
+        # verify <odoo service>: in a container of its own (the service may
+        # be stopped), the check given in its environment
+        if len(args) != 1:
+            raise HelperError("usage: verify <service>")
+        return [["run", "--rm", "-T", "-e", "OMNIACLI_CHECK=" + VERIFY_SCRIPT.read_text(),
+                 "--entrypoint", "sh", service(project, args[0]), "-c", SCRIPTS["verify"], "sh"]]
     if action == "options":
         # options <odoo service>: in the running service
         if len(args) != 1:

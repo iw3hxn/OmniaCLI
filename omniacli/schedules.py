@@ -24,7 +24,7 @@ from pathlib import Path
 import yaml
 from croniter import croniter
 
-from . import destinations, linkcopy, notify, ops
+from . import backupcheck, destinations, instancearchive, linkcopy, notify, ops
 from .config import ROLES, SERVER_NAME, ConfigError, LinkSource, parse_link_source
 from .jobs import FINISHED, Job, JobFailed, JobManager
 from .plugin_api import restore_fetched
@@ -63,6 +63,12 @@ class BackupStep:
     # a remote destination (destinations.py) each backup is copied to,
     # encrypted, kept there by the same rotation; empty: here only
     destination: str = ""
+    # the day of the week (0 Monday ... 6 Sunday) the backup made is also
+    # restored for a try (backupcheck.verify); None: never
+    verify_weekday: int | None = None
+    # the full archive of the instance (instancearchive.py: the backup, the
+    # code of its repositories, its configuration) instead of the backup alone
+    archive: bool = False
 
 
 @dataclass
@@ -182,6 +188,12 @@ def parse_schedule(name: str, data: dict) -> Schedule:
         if destination and not DESTINATION_NAME.fullmatch(destination):
             raise ConfigError(f"{where}.backup.destination: {destination!r} is not the name of a destination")
         backup.destination = destination
+        weekday = raw.get("verify_weekday")
+        if weekday not in (None, ""):
+            if isinstance(weekday, bool) or not str(weekday).isdigit() or not 0 <= int(weekday) <= 6:
+                raise ConfigError(f"{where}.backup.verify_weekday: a day of the week, 0 (Monday) to 6 (Sunday)")
+            backup.verify_weekday = int(weekday)
+        backup.archive = bool(raw.get("archive", False))
     copy = None
     if data.get("copy"):
         raw = data["copy"]
@@ -237,6 +249,10 @@ def schedule_to_dict(schedule: Schedule) -> dict:
                           "weekly": schedule.backup.weekly, "monthly": schedule.backup.monthly}
         if schedule.backup.destination:
             data["backup"]["destination"] = schedule.backup.destination
+        if schedule.backup.archive:
+            data["backup"]["archive"] = True
+        if schedule.backup.verify_weekday is not None:
+            data["backup"]["verify_weekday"] = schedule.backup.verify_weekday
     data["pull"] = schedule.pull
     if schedule.copy:
         data["copy"] = {**schedule.copy.source.to_dict(),
@@ -329,9 +345,11 @@ def rotate_backups(job: Job, folder: Path, step: BackupStep) -> None:
 
 async def scheduled_backup(job: Job, instance, folder: Path, step: BackupStep) -> Path:
     """The instance's backup, named as a scheduled one, then the rotation."""
-    made = await ops.backup_into(job, instance, folder, dict(step.options))
+    made = await (instancearchive.make(job, instance, folder, dict(step.options)) if step.archive
+                  else ops.backup_into(job, instance, folder, dict(step.options)))
     dest = made.with_name(SCHEDULED_PREFIX + made.name)
     os.replace(made, dest)
+    backupcheck.rename(folder, made.name, dest.name)
     job.log(f"Backup {dest.name} ({dest.stat().st_size} bytes)")
     rotate_backups(job, folder, step)
     return dest
@@ -557,6 +575,9 @@ class Scheduler:
                 await destinations.upload(job, dest, made, where)
                 await destinations.rotate(job, dest, where, SCHEDULED_PREFIX,
                                           lambda times: rotation_kept(times, step.daily, step.weekly, step.monthly))
+            if step.verify_weekday is not None and datetime.date.today().weekday() == step.verify_weekday \
+                    and instance.plugin.has_verify:
+                await backupcheck.verify(job, instance, made)
         if schedule.pull and not schedule.copy:
             # as the auto update: the module update and the restart only when
             # something new came (after a backup of its own step, no other)

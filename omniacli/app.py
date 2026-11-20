@@ -38,7 +38,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
 from starlette.requests import ClientDisconnect, HTTPConnection
 
-from . import (backupchoices, checks, destinations, private, restoreroom, consumer, disks, gitcredentials, linkcopy, listgroups, ops, packages, plugins, pluginstore, puller, publisher,
+from . import (backupcheck, backupchoices, checks, destinations, instancearchive, private, restoreroom, consumer, disks, gitcredentials, linkcopy, listgroups, ops, packages, plugins, pluginstore, puller, publisher,
                schedules, selflog, sshlinks, shell, stacktemplates, templatestore, tunnel, workspacehelper, workspaceops)
 from .accesslog import AccessLog
 from . import i18n, loginas, machines, stagings
@@ -218,6 +218,7 @@ WORKSPACE_ROUTES = frozenset({
     "/api/servers/{server}/{role}/backup-schedule", "/api/servers/{server}/{role}/backups/delete",
     "/api/workspaces/{workspace}/parameters/save", "/api/workspaces/{workspace}/parameters/options",
     "/api/servers/{server}/{role}/remote-backups", "/api/servers/{server}/{role}/remote-backups/fetch",
+    "/api/servers/{server}/{role}/backups/verify", "/api/servers/{server}/{role}/archive",
     "/workspaces/{workspace}/destinations", "/api/workspaces/{workspace}/destinations/save",
     "/api/workspaces/{workspace}/destinations/delete", "/api/workspaces/{workspace}/destinations/check",
     "/api/workspaces/{workspace}/destinations/key",
@@ -226,6 +227,8 @@ WORKSPACE_ROUTES = frozenset({
 
 
 _logger = logging.getLogger(__name__)
+# the day the automatic backups' Try a restore runs (6: Sunday)
+VERIFY_WEEKDAY = 6
 
 
 def _field_value(field, raw):
@@ -1427,9 +1430,30 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 "kind": ("scheduled" if p.name.startswith(schedules.SCHEDULED_PREFIX)
                          else "pre-update" if p.name.startswith(ops.PRE_UPDATE_PREFIX) else "manual"),
                 "can_delete": can_delete,
+                "archive": p.name.startswith(instancearchive.PREFIX)
+                or p.name.startswith(schedules.SCHEDULED_PREFIX + instancearchive.PREFIX),
+                # its SHA-256 written, the last restore tried (backupcheck)
+                **backupcheck.state(folder, p.name),
+                "can_verify": instance.plugin.has_verify and me.can("developer"),
             }
             for p in files
         ]
+
+    @app.post("/api/servers/{server}/{role}/backups/verify")
+    async def backup_verify(server: str, role: str, payload: dict = Body(...), me: Principal = Depends(developer)):
+        """A backup checked: its SHA-256, then a restore tried in a database
+        of its own beside the instance (dropped after): a job."""
+        instance = get_instance(server, role)
+        if not instance.plugin.has_verify:
+            return refuse(f"{instance.plugin.label} cannot try a restore")
+        name = str(payload.get("file") or "")
+        folder = backup_folder(instance).resolve()
+        path = (folder / name).resolve()
+        if not _BACKUP_NAME.fullmatch(name) or path.parent != folder or not path.is_file():
+            return refuse("No such backup", status.HTTP_404_NOT_FOUND)
+        job = jobs.submit(f"Verify backup {name} of {instance.key}", [instance.key], f"manual: {me}",
+                          lambda job: backupcheck.verify(job, instance, path))
+        return {"job": job.id}
 
     @app.get("/backups/{server}/{role}/{name}", dependencies=[Depends(developer)])
     async def backup_download(request: Request, server: str, role: str, name: str,
@@ -1584,7 +1608,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         path = backup_folder(instance) / name
         if not path.is_file():
             return refuse(f"No backup {name} of {instance.key}", status.HTTP_404_NOT_FOUND)
-        problem = instance.plugin.backup_problem(path)
+        # a full archive: its Odoo backup is what is restored
+        archive = instancearchive.read_manifest(path) is not None
+        problem = None if archive else instance.plugin.backup_problem(path)
         if problem:
             return refuse(problem)
         if instance.role == "production":
@@ -1596,8 +1622,26 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             options = {f.key: _field_value(f, raw.get(f.key)) for f in instance.plugin.restore_fields()}
         except ActionRefused as exc:
             return refuse(str(exc))
-        job = jobs.submit(f"Restore {name} into {instance.key}", [instance.key], f"manual: {user}",
-                          lambda job: instance.plugin.restore(job, instance, path, options))
+        async def restore(job):
+            if not archive:
+                await instance.plugin.restore(job, instance, path, options)
+                return
+            job.log(f"--- the Odoo backup of the archive {name}")
+            with instancearchive.backup_of(path) as inner:
+                await restore_fetched(job, instance, inner, options)
+
+        job = jobs.submit(f"Restore {name} into {instance.key}", [instance.key], f"manual: {user}", restore)
+        return {"job": job.id}
+
+    @app.post("/api/servers/{server}/{role}/archive")
+    async def action_archive(server: str, role: str, payload: dict = Body(default={}),
+                             user: Principal = Depends(developer)):
+        """The full archive of the instance into its backups: a job."""
+        instance = get_instance(server, role)
+        if not instance.plugin.has_backup:
+            return refuse(f"{instance.plugin.label} has no backup")
+        job = jobs.submit(f"Full archive of {instance.key}", [instance.key], f"manual: {user}",
+                          lambda job: instancearchive.make(job, instance, backup_folder(instance)))
         return {"job": job.id}
 
     @app.post("/servers/{server}/merge")
@@ -4853,10 +4897,20 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 "zone": datetime.datetime.now().astimezone().tzname() or "",
                 "fields": [_field_dict(f) for f in instance.plugin.backup_fields() if f.kind == "checkbox"],
                 "destination": backup.destination if backup is not None else "",
+                "verify": backup is not None and backup.verify_weekday is not None,
+                "archive": bool(backup and backup.archive),
+                "has_verify": instance.plugin.has_verify,
+                "verified": last_verified(instance),
                 "destinations": [{"name": d.name, "label": d.label, "path": d.path, "workspace": d.workspace}
                                  for d in destination_choices(instance, me, backup.destination if backup else "")],
                 "notify": list(sch.notify) if sch is not None else [],
                 "can_edit": me.can(backup_role(instance))}
+
+    def last_verified(instance: Instance) -> dict | None:
+        """The newest restore tried of the instance's backups: {file, time, ok, ...}."""
+        found = [{"file": name, **entry["verified"]} for name, entry in
+                 backupcheck.load(backup_folder(instance)).items() if (entry or {}).get("verified")]
+        return max(found, key=lambda v: v.get("time") or "") if found else None
 
     def load_destinations() -> dict:
         try:
@@ -4923,8 +4977,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if destination and destination != was and destination not in [
                     d.name for d in destination_choices(instance, me)]:
                 return refuse(f"No destination {destination} for {instance.key}")
+            # a restore tried every Sunday: on, or as it was
+            weekday = (current.backup.verify_weekday if current is not None and current.backup else None)
+            if "verify" in payload:
+                weekday = VERIFY_WEEKDAY if payload.get("verify") and instance.plugin.has_verify else None
             data.update({"cron": f"{int(found[2])} {int(found[1])} * * *", "enabled": True,
-                         "backup": {"options": options, "destination": destination,
+                         "backup": {"options": options, "destination": destination, "verify_weekday": weekday,
+                                    "archive": bool(payload.get("archive", current.backup.archive
+                                                                if current is not None and current.backup else False)),
                                     **{k: payload.get(k) for k in schedules.DEFAULT_ROTATION}}})
             if "notify" in payload:
                 data["notify"] = payload.get("notify") or []

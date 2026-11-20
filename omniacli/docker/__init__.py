@@ -191,6 +191,8 @@ def _conf_value(path: Path, key: str) -> str | None:
     return parser.get("options", key, fallback=None)
 
 
+# the answer of odoo/verify_check.py
+VERIFY_MARK = "OMNIACLI-VERIFY "
 # Docker Hub: where a newer image of a tag is looked for (another registry: unknown)
 HUB_AUTH = "https://auth.docker.io/token"
 HUB = "https://registry-1.docker.io"
@@ -224,6 +226,51 @@ class DockerPlugin(ServicePlugin):
     label = "Odoo (Docker Compose)"
     api_version = PLUGIN_API
     mcp_help = MCP_HELP
+
+    async def archive_files(self, job: Job, instance: Instance) -> list[tuple[str, bytes]]:
+        """compose.yaml, config/odoo.conf, the role's omniacli.json and the
+        instance's instance.json (a workspace's: its template), the packages
+        pip installed in the container; not .env (root's: the database's
+        password; a new instance makes its own)."""
+        project = Path(instance.restart.service)
+        found = []
+        for name, path in (("compose.yaml", project / "compose.yaml"), ("odoo.conf", project / "config" / "odoo.conf"),
+                           ("omniacli.json", project / "omniacli.json"), ("instance.json", project.parent / "instance.json")):
+            try:
+                found.append((name, path.read_bytes()))
+            except OSError:
+                job.log(f"{path}: not there, not in the archive")
+        code, out = await capture(instance.restart.command("pip-freeze", instance.options.odoo_service),
+                                  timeout=HELPER_TIMEOUT)
+        if code == 0:
+            found.append(("pip-freeze.txt", (out.strip() + "\n").encode()))
+        else:
+            job.log(f"WARNING: the Python packages of the container are not listed: {out[-200:]}")
+        return found
+
+    @property
+    def has_verify(self) -> bool:
+        return True
+
+    async def verify_backup(self, job: Job, instance: Instance, backup_zip: Path) -> dict:
+        """The helper's verify: the zip loaded into a database of its own, in
+        a container of its own beside the instance's database, read by
+        odoo/verify_check.py, dropped with its filestore."""
+        major, found = await instance_major(instance), backup_major(backup_zip)
+        if major is not None and found is not None and found != major:
+            raise JobFailed(f"{backup_zip.name} is a database of Odoo {found}, {instance.key} runs Odoo {major}: "
+                            "its image cannot load it")
+        before = len(job.lines)
+        job.log(f"--- restore {backup_zip.name} for a try, into a database of its own (dropped after)")
+        await _helper(job, instance, "verify", instance.options.odoo_service, stdin=backup_zip)
+        for line in reversed(job.lines[before:]):
+            mark = line.find(VERIFY_MARK)
+            if mark >= 0:
+                try:
+                    return json.loads(line[mark + len(VERIFY_MARK):])
+                except ValueError:
+                    break
+        raise JobFailed("the restore ended, but its database could not be read (no answer of verify_check.py)")
 
     async def summary(self, instance: Instance) -> dict:
         """The Odoo of its image (its build date), the workers of its

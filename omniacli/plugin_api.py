@@ -437,6 +437,25 @@ class ServicePlugin(ABC):
         """[(what, path)] the instance writes to, for the disks panel."""
         return []
 
+    async def archive_files(self, job: Job, instance: Instance) -> list[tuple[str, bytes]]:
+        """The files of the instance's configuration a full archive holds
+        besides its backup and its repositories' code: [(name, content)]
+        (its compose.yaml, odoo.conf, the Python packages installed...). Never
+        a password file of the machine's."""
+        return []
+
+    @property
+    def has_verify(self) -> bool:
+        """Whether verify_backup tries a restore."""
+        return False
+
+    async def verify_backup(self, job: Job, instance: Instance, backup_zip: Path) -> dict:
+        """The backup restored for a try into a database of its own, beside
+        the instance and dropped after (the instance untouched): what it
+        holds, {"modules", "users", "companies", "last"} (the newest record's
+        time); JobFailed when it does not restore."""
+        raise JobFailed(f"{self.label} cannot try a restore")
+
     async def summary(self, instance: Instance) -> dict:
         """What the instance's Environments tab says of it, besides its
         repositories: {"version": the Odoo running, "workers": a number or

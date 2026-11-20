@@ -1279,6 +1279,34 @@ gets a JSON `{"text": ...}`: Slack's and Teams' incoming webhooks,
 Telegram's `https://api.telegram.org/bot<token>/sendMessage?chat_id=<id>`,
 ntfy. Only a webhook's host is ever written in a log.
 
+### Is a backup good
+
+Every backup made here has its **SHA-256** written when it is made, in
+`.omniacli-backups.json` of the instance's backups (mode 600). **Verify**
+(the Backups tab, developers) reads it again (a file damaged or replaced
+since is told) and then **restores it for a try**: the root helper's
+`verify` loads the zip, neutralized, into a database of its own
+(`omniacli_verify_<random>`) in a container of its own beside the
+instance's database, `odoo shell` runs `odoo/verify_check.py` there (the
+installed modules, the users, the newest record), and the database and its
+filestore are dropped whatever happened: the instance is not touched, the
+disk needs the room of one more database for a while. The list shows the
+last try of each backup; the automatic backups may try the one made on
+**Sunday** (*Every Sunday, also try to restore it*): a backup that does not
+restore fails the run, and *When it fails, tell* is told. Docker Compose
+instances (a venv's: not yet).
+
+**Full archive** (More › Backups, or the automatic backups' *Full archive,
+not the backup alone*): `archive_<backup>.zip` holds the Odoo backup, each
+repository's code at the commit checked out (`git archive`: the files, not
+the history) with its address (never a user nor a token), branch and
+commit, the plugin's files (Docker: `compose.yaml`, `odoo.conf`, the
+instance's `omniacli.json` and `instance.json`, `pip freeze --user` of the
+container; a venv: its Odoo config and `pip freeze`; never `.env`, root's,
+with the database's password), and `manifest.json` with the SHA-256 of every
+part. Restore takes the backup inside it; Verify checks every part against
+the manifest first.
+
 ### Scheduled actions
 
 The **Schedules** page (admins) runs steps on an instance at the times of a
