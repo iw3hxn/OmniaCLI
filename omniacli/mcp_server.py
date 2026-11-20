@@ -22,13 +22,14 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from . import ops, plugins
+from . import backupcheck, instancearchive, ops, plugins
 from .accesslog import AccessLog
 from .auth import ROLES as ACCESS_ROLES
 from .auth import Authenticator
 from .config import ConfigError, Instance, Settings, server_to_dict
 from .jobs import FINISHED, Job, JobFailed, JobManager, filter_jobs
 from .logtail import last_lines
+from .plugin_api import ActionRefused
 from .metrics import Sampler
 from .scheduler import AutoUpdater
 
@@ -43,7 +44,14 @@ server's type does after a pull, restart of the test instance). dev_setup descri
 branches, commits, backups, and what its type tells) so that you can rebuild
 it locally; for the data, download a backup zip with an HTTP GET to the
 server's base URL + its path, with the same Authorization: Bearer header.
-backup_test makes a fresh backup of a test instance. With an admin token, backup backs up any
+backup_test makes a fresh backup of a test instance. diagnose_instance tells
+in one answer what is wrong with an instance (state, load, log errors, last
+jobs, last backup). restart_instance, start_instance, stop_instance,
+list_actions and run_action (the type's actions: Pull image, Update modules...),
+verify_backup, full_archive and stop_job act; on a production they need an
+admin token and confirm=<server name>, which you give only after the user
+agreed. update_production backs up first, always. A token bound to a
+workspace sees that workspace's servers only. With an admin token, backup backs up any
 instance (production too) and list_backups lists an instance's backups, each
 with the path to download it; these two and dev_setup also reach the draft
 servers (complete ones) with an admin token. read_server gives a
@@ -59,9 +67,16 @@ def _instructions() -> str:
 # the role an MCP token needs for a tool; the others: any token
 TOOL_ROLES = {"update_test": "developer", "backup_test": "developer",
               "backup": "admin", "list_backups": "admin",
-              "read_server": "admin", "add_draft_server": "admin"}
-# the role of the token of the request being served, for the list of tools
+              "read_server": "admin", "add_draft_server": "admin",
+              "restart_instance": "developer", "start_instance": "developer", "stop_instance": "developer",
+              "list_actions": "developer", "run_action": "developer", "verify_backup": "developer",
+              "full_archive": "developer", "stop_job": "developer", "update_production": "admin"}
+# the tools of the machine's tokens only: a workspace's token never reaches them
+MACHINE_TOOLS = {"read_server", "add_draft_server"}
+# the role of the token of the request being served, for the list of tools,
+# and the workspace it is bound to (empty: the machine's)
 _ROLE = contextvars.ContextVar("omniacli_mcp_role", default="user")
+_SCOPE = contextvars.ContextVar("omniacli_mcp_scope", default="")
 
 
 def _public_url(url: str) -> str:
@@ -149,14 +164,37 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
 
     async def list_tools():
         """Only the tools the caller's token may use."""
-        role = _ROLE.get()
-        return [t for t in await every_tool() if allowed(t.name, role)]
+        role, scope = _ROLE.get(), _SCOPE.get()
+        return [t for t in await every_tool() if allowed(t.name, role) and not (scope and t.name in MACHINE_TOOLS)]
     server.list_tools = list_tools
 
-    def instance(name: str, role: str, ctx: Context | None = None) -> Instance:
-        """An instance of an active server; with ctx of an admin token, also
-        of a draft (to rebuild it locally and to back it up)."""
-        drafts = ctx is not None and settings.token_role(caller(ctx)) == "admin"
+    def scope_of(ctx: Context | None) -> str:
+        """The workspace the caller's token is bound to; empty: the machine's token."""
+        return settings.token_workspace(caller(ctx)) if ctx is not None else _SCOPE.get()
+
+    def sees(ctx: Context | None, server_name: str) -> bool:
+        scope = scope_of(ctx)
+        if not scope:
+            return True
+        ws = settings.workspaces.get(scope)
+        return ws is not None and server_name in ws.servers
+
+    def machine_only(ctx: Context, tool: str) -> None:
+        if scope_of(ctx):
+            raise ToolError(f"{tool} is for a token of the machine; this one is of workspace {scope_of(ctx)}")
+
+    def job_seen(ctx: Context | None, job: Job) -> bool:
+        scope = scope_of(ctx)
+        return not scope or job.workspace == scope or any(sees(ctx, s) for s in job.servers)
+
+    def instance(name: str, role: str, ctx: Context | None = None, drafts_too: bool = False) -> Instance:
+        """An instance of an active server; with drafts_too and an admin
+        token of the machine, also of a draft (to rebuild it locally and to
+        back it up: never to act on it). A workspace's token reaches the
+        workspace's servers only."""
+        if not sees(ctx, name):
+            raise ToolError(f"No active server {name} with a {role} instance")
+        drafts = drafts_too and ctx is not None and settings.token_role(caller(ctx)) == "admin" and not scope_of(ctx)
         found = settings.instance(name, role, drafts)
         if found is None:
             srv = settings.servers.get(name)
@@ -170,7 +208,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         return found
 
     @server.tool()
-    def list_servers() -> list[dict]:
+    def list_servers(ctx: Context) -> list[dict]:
         """Every configured server: type (odoo...), status (active or draft),
         its instances with what its plugin tells (Odoo: database) and how the
         service is restarted, and the drafts' problems (or a missing plugin)."""
@@ -184,16 +222,16 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
                     for role, i in srv.instances.items()
                 },
             }
-            for srv in settings.servers.values()
+            for srv in settings.servers.values() if sees(ctx, srv.name)
         ]
 
     @server.tool()
-    async def server_status(server_name: str) -> dict:
+    async def server_status(server_name: str, ctx: Context) -> dict:
         """State of an active server's instances: repositories (branch, last
         commit), whether Odoo runs, CPU and memory, auto update, running job,
         and its last jobs."""
         srv = settings.servers.get(server_name)
-        if srv is None or not srv.active:
+        if srv is None or not srv.active or not sees(ctx, server_name):
             raise ToolError(f"No active server {server_name}")
         result = {}
         for role, inst in srv.instances.items():
@@ -218,20 +256,23 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         return result
 
     @server.tool()
-    async def pending_updates(server_name: str, role: str = "test") -> dict:
+    async def pending_updates(server_name: str, ctx: Context, role: str = "test") -> dict:
         """Commits on the remotes not yet pulled, per repository (runs git fetch),
         and "package <name> <version>": 1 when a newer signed package is published."""
         try:
-            return await ops.pending_updates(instance(server_name, role))
+            return await ops.pending_updates(instance(server_name, role, ctx))
         except JobFailed as exc:
             raise ToolError(str(exc)) from exc
 
     @server.tool()
-    async def read_log(server_name: str, role: str = "test", lines: int = 200,
+    async def read_log(server_name: str, ctx: Context, role: str = "test", lines: int = 200,
                        errors_only: bool = False) -> dict:
         """The last lines of an instance's Odoo log; errors_only keeps the
         ERROR and CRITICAL records with their tracebacks."""
-        inst = instance(server_name, role)
+        inst = instance(server_name, role, ctx)
+        return await log_lines(inst, lines, errors_only)
+
+    async def log_lines(inst: Instance, lines: int, errors_only: bool) -> dict:
         count = min(max(lines, 1), 5000)
         # read more when filtering, so that errors_only still finds some
         wanted = count * (10 if errors_only else 1)
@@ -250,17 +291,17 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         return {"log_file": inst.log_label, "lines": read[-count:]}
 
     @server.tool()
-    def list_jobs(server_name: str = "", query: str = "", limit: int = 20) -> list[dict]:
+    def list_jobs(ctx: Context, server_name: str = "", query: str = "", limit: int = 20) -> list[dict]:
         """The last jobs, newest first, of a server and/or containing every
         word of query (title, started by, error, server/role)."""
-        found = filter_jobs(jobs.recent(len(jobs.jobs)), server_name, query)
+        found = [j for j in filter_jobs(jobs.recent(len(jobs.jobs)), server_name, query) if job_seen(ctx, j)]
         return [_job_dict(j) for j in found[:min(max(limit, 1), 200)]]
 
     @server.tool()
-    def get_job(job_id: str, tail: int = 200) -> dict:
+    def get_job(job_id: str, ctx: Context, tail: int = 200) -> dict:
         """A job with the last lines of its log."""
         job = jobs.get(job_id)
-        if job is None:
+        if job is None or not job_seen(ctx, job):
             raise ToolError(f"No job {job_id}")
         return _job_dict(job, tail=min(max(tail, 1), 5000))
 
@@ -270,7 +311,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         install of a new published package, update of the changed modules, restart. Waits up to wait_seconds (max 600) for
         the job; follow it with get_job otherwise."""
         need(ctx, "update_test")
-        inst = instance(server_name, "test")
+        inst = instance(server_name, "test", ctx)
         job = jobs.submit(f"Git pull and restart {inst.key}", [inst.key], f"mcp: {caller(ctx)}",
                           lambda job: ops.pull_restart(
                               job, inst, backup_folder=settings.backup_dir / inst.server / inst.role))
@@ -330,7 +371,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         columns emptied (those ticked in the instance's last backup dialog,
         or "binary_columns": ["table.column", ...])."""
         need(ctx, "backup_test")
-        return await backup_job(instance(server_name, "test"), ctx, wait_seconds, options)
+        return await backup_job(instance(server_name, "test", ctx), ctx, wait_seconds, options)
 
     @server.tool()
     async def backup(server_name: str, role: str, ctx: Context, wait_seconds: int = 0,
@@ -344,7 +385,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         with the binary columns emptied (those ticked in the instance's last
         backup dialog, or "binary_columns": ["table.column", ...])."""
         need(ctx, "backup")
-        return await backup_job(instance(server_name, role, ctx), ctx, wait_seconds, options)
+        return await backup_job(instance(server_name, role, ctx, drafts_too=True), ctx, wait_seconds, options)
 
     @server.tool()
     def list_backups(server_name: str, role: str, ctx: Context, limit: int = 20) -> list[dict]:
@@ -352,7 +393,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         time (Unix) and the path to download it (HTTP GET to the server's base
         URL + that path, with the same Authorization: Bearer header)."""
         need(ctx, "list_backups")
-        return backups_of(instance(server_name, role, ctx), min(max(limit, 1), 200))
+        return backups_of(instance(server_name, role, ctx, drafts_too=True), min(max(limit, 1), 200))
 
     @server.tool()
     def read_server(server_name: str, ctx: Context) -> dict:
@@ -362,6 +403,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         auto_update, update_modules, odoo_bin, run_as, http_port, domain. A draft saved
         incomplete has error, which says what is missing."""
         need(ctx, "read_server")
+        machine_only(ctx, "read_server")
         srv = settings.servers.get(server_name)
         if srv is None:
             raise ToolError(f"No server {server_name}")
@@ -379,6 +421,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         gives; at least one is needed. A draft may be saved incomplete: then
         the answer has error, which says what to fix on the web form."""
         need(ctx, "add_draft_server")
+        machine_only(ctx, "add_draft_server")
         data = {role: value for role, value in (("production", production), ("test", test)) if value}
         if not data:
             raise ToolError("Give production, test or both")
@@ -398,7 +441,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         tells (Odoo: Odoo and Python versions, the addons_path as repository
         folders, the Odoo config options without secrets nor server paths).
         Of an active server; with an admin token, of a draft too."""
-        inst = instance(server_name, role, ctx)
+        inst = instance(server_name, role, ctx, drafts_too=True)
         repos = []
         for repo in inst.repositories:
             _, url = await ops.capture(["git", "remote", "get-url", repo.remote], cwd=repo.path)
@@ -412,6 +455,181 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         own = await inst.plugin.dev_setup(inst, repos)
         return {"server": inst.server, "role": role, "type": inst.type, **own,
                 "repositories": repos, "backups": backups_of(inst, 10)}
+
+    # --- acting on an instance: production asks an admin's token and its name typed
+
+    def acting(ctx: Context, tool: str, server_name: str, role: str, confirm: str) -> Instance:
+        """The instance a tool acts on, for this token: a test's needs a
+        developer, a production's an admin and confirm = the server's name,
+        as the web interface has its name typed."""
+        need(ctx, tool)
+        inst = instance(server_name, role, ctx)
+        if inst.role == "production":
+            token_role = settings.token_role(caller(ctx))
+            if ACCESS_ROLES.index(token_role) < ACCESS_ROLES.index("admin"):
+                raise ToolError(f"{tool} on a production needs an MCP token with role admin; this one is {token_role}")
+            if (confirm or "").strip() != inst.server:
+                raise ToolError(f"{tool} acts on the production of {inst.server}: give confirm={inst.server!r} "
+                                "once the user has agreed")
+        return inst
+
+    async def submit(ctx: Context, title: str, inst: Instance, action, wait_seconds: int) -> dict:
+        job = jobs.submit(title, [inst.key], f"mcp: {caller(ctx)}", action)
+        await _wait(job, wait_seconds)
+        return _job_dict(job, tail=30)
+
+    @server.tool()
+    async def diagnose_instance(server_name: str, ctx: Context, role: str = "production") -> dict:
+        """Everything to tell what is wrong with an instance, in one answer:
+        whether it runs, CPU and memory, the ERROR records of its log (the
+        last 30, with tracebacks), its last jobs (a failed one with its error
+        and the end of its log), its last backup and the last restore tried."""
+        inst = instance(server_name, role, ctx)
+        try:
+            state = await ops.service_state(inst) if inst.restart.type != "process" else (
+                "running" if ops.managed_pid(inst) else "stopped")
+        except Exception as exc:  # noqa: BLE001 - said, not fatal: the rest still helps
+            state = f"unknown ({exc})"
+        try:
+            errors = (await log_lines(inst, 30, True))["lines"]
+        except ToolError as exc:
+            errors = [str(exc)]
+        recent = [j for j in filter_jobs(jobs.recent(len(jobs.jobs)), server_name) if inst.key in j.instances][:5]
+        series = sampler.series(inst.key)
+        folder = settings.backup_dir / inst.server / inst.role
+        backups = backups_of(inst, 1)
+        checked = backupcheck.load(folder)
+        verified = [{"file": n, **e["verified"]} for n, e in checked.items() if (e or {}).get("verified")]
+        return {
+            "server": inst.server, "role": inst.role, "type": inst.type, "state": state,
+            "load": series[-1] if series else None, "job_running": jobs.is_busy(inst.key),
+            "log_errors": errors,
+            "last_jobs": [_job_dict(j, tail=15 if j.status == "failed" else 0) for j in recent],
+            "last_backup": backups[0] if backups else None,
+            "last_restore_tried": max(verified, key=lambda v: v.get("time") or "") if verified else None,
+        }
+
+    @server.tool()
+    async def restart_instance(server_name: str, role: str, ctx: Context, confirm: str = "",
+                               wait_seconds: int = 0) -> dict:
+        """Restart an instance (whoever is connected loses the connection for
+        a few seconds). A production's: an admin token and confirm=<server name>."""
+        inst = acting(ctx, "restart_instance", server_name, role, confirm)
+        return await submit(ctx, f"Restart {inst.key}", inst, lambda job: ops.restart(job, inst), wait_seconds)
+
+    @server.tool()
+    async def start_instance(server_name: str, role: str, ctx: Context, confirm: str = "",
+                             wait_seconds: int = 0) -> dict:
+        """Start a stopped instance. A production's: an admin token and confirm=<server name>."""
+        inst = acting(ctx, "start_instance", server_name, role, confirm)
+        return await submit(ctx, f"Start {inst.key}", inst, lambda job: ops.start(job, inst), wait_seconds)
+
+    @server.tool()
+    async def stop_instance(server_name: str, role: str, ctx: Context, confirm: str = "",
+                            wait_seconds: int = 0) -> dict:
+        """Stop an instance: it stays stopped, also for the auto update, until
+        start_instance. A production's: an admin token and confirm=<server name>."""
+        inst = acting(ctx, "stop_instance", server_name, role, confirm)
+        return await submit(ctx, f"Stop {inst.key}", inst, lambda job: ops.stop(job, inst), wait_seconds)
+
+    @server.tool()
+    async def update_production(server_name: str, ctx: Context, confirm: str = "", wait_seconds: int = 0) -> dict:
+        """(admin token) Update a production as update_test does a test: first a
+        backup (always, whatever the instance's setting), then git pull of its
+        repositories, the changed modules updated, a restart. confirm=<server name>."""
+        inst = acting(ctx, "update_production", server_name, "production", confirm)
+
+        async def action(job):
+            job.log("--- a backup first")
+            made = await ops.backup(job, inst, settings.backup_dir)
+            job.log(f"Backup {made.name}")
+            await ops.pull_restart(job, inst)
+        return await submit(ctx, f"Backup, git pull and restart {inst.key}", inst, action, wait_seconds)
+
+    @server.tool()
+    def list_actions(server_name: str, role: str, ctx: Context) -> list[dict]:
+        """The actions of the instance's type (Odoo in Docker: Pull image,
+        Update modules...; a venv's Odoo: pip, the modules...): id, label, the
+        role they need, their parameters. Run one with run_action."""
+        need(ctx, "list_actions")
+        inst = instance(server_name, role, ctx)
+        return [{"id": a.id, "label": a.label, "role": a.role, "tooltip": a.tooltip if isinstance(a.tooltip, str) else "",
+                 "params": [{"key": f.key, "label": f.label, "kind": f.kind, "default": f.default,
+                             "choices": [list(c) for c in (f.choices or ())]} for f in a.params]}
+                for a in inst.plugin.actions() if a.scope == "instance" and a.applies_to(inst)]
+
+    @server.tool()
+    async def run_action(server_name: str, role: str, action: str, ctx: Context, params: dict | None = None,
+                         confirm: str = "", wait_seconds: int = 0) -> dict:
+        """Run an action of list_actions on an instance, with its params
+        ({key: value}). A production's: an admin token and confirm=<server name>."""
+        inst = acting(ctx, "run_action", server_name, role, confirm)
+        found = next((a for a in inst.plugin.actions() if a.id == action and a.scope == "instance"
+                      and a.applies_to(inst)), None)
+        if found is None:
+            raise ToolError(f"{inst.plugin.label} has no action {action} for {inst.key}: see list_actions")
+        token_role = settings.token_role(caller(ctx))
+        if ACCESS_ROLES.index(token_role) < ACCESS_ROLES.index(found.role):
+            raise ToolError(f"{action} needs the role {found.role}; this token is {token_role}")
+        given = dict(params or {})
+        values = {}
+        for f in found.params:
+            raw = given.get(f.key, f.default)
+            if f.kind == "checkbox":
+                values[f.key] = raw in (True, "true", "1", 1, "on")
+            elif f.kind == "number":
+                try:
+                    values[f.key] = int(raw) if raw not in (None, "") else None
+                except (TypeError, ValueError):
+                    raise ToolError(f"{f.key}: a whole number") from None
+            else:
+                values[f.key] = "" if raw is None else str(raw).strip()
+        try:
+            if found.prepare is not None:
+                values = found.prepare(inst, values)
+        except ActionRefused as exc:
+            raise ToolError(str(exc)) from exc
+        return await submit(ctx, found.title_of(inst, values), inst, lambda job: found.run(job, inst, values),
+                            wait_seconds)
+
+    @server.tool()
+    async def verify_backup(server_name: str, role: str, file: str, ctx: Context, wait_seconds: int = 0) -> dict:
+        """Check a backup of list_backups: its SHA-256, then a restore tried in
+        a database of its own, dropped after (the instance is not touched)."""
+        need(ctx, "verify_backup")
+        inst = instance(server_name, role, ctx)
+        if not inst.plugin.has_verify:
+            raise ToolError(f"{inst.plugin.label} cannot try a restore")
+        path = settings.backup_dir / inst.server / inst.role / file
+        if "/" in file or not file.endswith(".zip") or not path.is_file():
+            raise ToolError(f"No backup {file} of {inst.key}")
+        return await submit(ctx, f"Verify backup {file} of {inst.key}", inst,
+                            lambda job: backupcheck.verify(job, inst, path), wait_seconds)
+
+    @server.tool()
+    async def full_archive(server_name: str, role: str, ctx: Context, wait_seconds: int = 0) -> dict:
+        """The full archive of an instance in its backups: the backup, each
+        repository's code at its commit, the configuration, a manifest with
+        checksums (another OmniaCLI makes the instance again from it). A
+        production's needs an admin token."""
+        need(ctx, "full_archive")
+        inst = instance(server_name, role, ctx)
+        if inst.role == "production" and settings.token_role(caller(ctx)) != "admin":
+            raise ToolError("full_archive of a production needs an MCP token with role admin")
+        folder = settings.backup_dir / inst.server / inst.role
+        return await submit(ctx, f"Full archive of {inst.key}", inst,
+                            lambda job: instancearchive.make(job, inst, folder), wait_seconds)
+
+    @server.tool()
+    def stop_job(job_id: str, ctx: Context) -> dict:
+        """Stop a running job (a stuck pull, a long backup)."""
+        need(ctx, "stop_job")
+        job = jobs.get(job_id)
+        if job is None or not job_seen(ctx, job):
+            raise ToolError(f"No job {job_id}")
+        if not jobs.stop(job_id, f"mcp: {caller(ctx)}"):
+            raise ToolError(f"{job_id} is not running")
+        return _job_dict(job)
 
     server.streamable_http_app(
         streamable_http_path="/mcp", stateless_http=True, json_response=True,
@@ -450,6 +668,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
             body = b"".join(chunks)
             access_log.record("mcp", "mcp", name, ip, _rpc_summary(body) or f"{scope.get('method', '')} /mcp")
             _ROLE.set(settings.token_role(name))
+            _SCOPE.set(settings.token_workspace(name))
             sent = False
 
             async def replay():

@@ -207,6 +207,27 @@ select.role { text-transform: none; letter-spacing: 0; font-size: inherit; font-
   <p class="muted" style="margin: 0">{{ _("Where the automatic backups of the workspace's instances are copied, encrypted: SFTP, FTP, S3, Google Drive, Dropbox, OneDrive, WebDAV.") }}</p>
 </section>
 
+<section class="panel" id="mcp-tokens">
+  <h2>{{ _("MCP tokens") }}</h2>
+  <p class="muted">{{ _("An AI assistant (Claude, Cursor…) reaches the workspace's instances at {url} with a token: it sees this workspace only, and does what its role lets do here.", url=mcp_url) }}</p>
+  <div id="token-box" class="banner info" hidden>
+    <p style="margin-top: 0"><strong>{{ _("The new token.") }}</strong> {{ _("Copy it now: it is not shown again.") }}</p>
+    <pre class="copyable mono" id="token-text"></pre>
+  </div>
+  <div class="scroll"><table>
+    <tr><th>{{ _("Name") }}</th><th>{{ _("Role") }}</th><th></th></tr>
+    {% for t in tokens %}
+    <tr data-token="{{ t.name }}"><td class="mono">{{ t.name }}</td>
+      <td><select class="token-role">{% for r in roles %}<option {{ "selected" if r == t.role }}>{{ r }}</option>{% endfor %}</select></td>
+      <td><div class="actions" style="margin: 0"><button type="button" data-token-save>{{ _("Save") }}</button>
+        <button type="button" class="danger" data-token-delete>{{ _("Revoke") }}</button></div></td></tr>
+    {% endfor %}
+    <tr><td><input type="text" id="token-name" class="mono" placeholder="claude-{{ ws.name }}"></td>
+      <td><select id="token-role">{% for r in roles %}<option {{ "selected" if r == "developer" }}>{{ r }}</option>{% endfor %}</select></td>
+      <td><button type="button" class="primary" id="token-new">{{ _("New token") }}</button></td></tr>
+  </table></div>
+</section>
+
 <section class="panel">
   <h2>{{ _("Git credentials") }}</h2>
   <p class="muted">{{ _("The user and token OmniaCLI uses for a host (github.com, bitbucket.org…) to reach the customer's repositories of every instance of the workspace. The token is never shown again; it never reaches the repositories nor the containers.") }}</p>
@@ -369,6 +390,31 @@ select.role { text-transform: none; letter-spacing: 0; font-size: inherit; font-
       const data = await postWs("instances/create", {instance: document.getElementById("instance-name").value.trim(),
                                                      template: templateSelect.value, values});
       if (data) location.href = "{{ prefix }}/jobs/" + data.job;
+    };
+  }
+  // the workspace's MCP tokens
+  document.getElementById("token-new")?.addEventListener("click", async () => {
+    const data = await postWs("tokens/save", {name: document.getElementById("token-name").value.trim(),
+                                             role: document.getElementById("token-role").value, new: true});
+    if (!data) return;
+    try { sessionStorage.setItem("omniacli-new-token", data.token); } catch (e) { /* shown below instead */ }
+    location.reload();
+  });
+  try {
+    const fresh = sessionStorage.getItem("omniacli-new-token");
+    if (fresh) {
+      sessionStorage.removeItem("omniacli-new-token");
+      document.getElementById("token-text").textContent = fresh;
+      document.getElementById("token-box").hidden = false;
+    }
+  } catch (e) { /* no storage */ }
+  for (const row of document.querySelectorAll("[data-token]")) {
+    row.querySelector("[data-token-save]").onclick = async () => {
+      if (await postWs("tokens/save", {name: row.dataset.token, role: row.querySelector(".token-role").value})) location.reload();
+    };
+    row.querySelector("[data-token-delete]").onclick = async () => {
+      if (!confirm({{ _("Revoke the token {name}? What uses it stops at once.") | tojson }}.replace("{name}", row.dataset.token))) return;
+      if (await postWs("tokens/delete", {name: row.dataset.token})) location.reload();
     };
   }
   // a new instance from a full archive: one sent to the workspace or in its servers' backups

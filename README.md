@@ -1962,7 +1962,14 @@ provides: OmniaCLI installed by hand on Python 3.9 runs without it.
 | `pending_updates` | commits not yet pulled, per repository (`git fetch`) |
 | `read_log` | the last lines of an instance's log, optionally only ERROR/CRITICAL with their tracebacks |
 | `list_jobs`, `get_job` | the jobs, filtered by server and text, and a job's log |
-| `update_test` | **the only action on Odoo**: git pull + update of the changed modules + restart of the **test** instance |
+| `update_test` | git pull + update of the changed modules + restart of the **test** instance |
+| `diagnose_instance` | what is wrong with an instance, in one answer: whether it runs, CPU and memory, the ERROR records of its log, its last jobs (a failed one with the end of its log), its last backup and last restore tried |
+| `restart_instance`, `start_instance`, `stop_instance` | (developer token) on a test; on a **production** an admin token and `confirm` = the server's name |
+| `update_production` | (admin token, `confirm` = the server's name) a backup first, always, then git pull, the changed modules, a restart |
+| `list_actions`, `run_action` | the actions of the instance's type (Docker: Pull image, Update modules...; a venv's: pip...), run with their parameters; on a production as above |
+| `verify_backup` | a backup checked (SHA-256) and restored for a try in a database of its own, dropped after |
+| `full_archive` | the full archive of an instance in its backups (a production's: admin token) |
+| `stop_job` | stops a running job |
 | `backup_test` | a backup (database and filestore) of the **test** instance; `options: {"no_filestore": true}` for the database only, `{"no_binaries": true}` with the binary columns emptied (those ticked in the instance's last Backup dialog, or `"binary_columns": ["table.column", ...]`) |
 | `backup` | (admin token) a backup of any instance, **production** too; the same `options` |
 | `list_backups` | (admin token) an instance's backups, each with its download path |
@@ -1989,10 +1996,17 @@ auth:
     dev-laptop: {token: "sha256$...", role: admin}
 ```
 
-A token has a role, as a user does: `user` reads, `developer` also runs
-`update_test` and `backup_test` and downloads backups, `admin` also has the
-tools marked admin above. A client sees only the tools of its role. A token
+A token has a role, as a user does: `user` reads, `developer` also acts on
+the test instances and downloads backups, `admin` also has the tools marked
+admin above and acts on the productions, each time with the server's name in
+`confirm` (the assistant gives it once the user has agreed, as the web
+interface has it typed). A client sees only the tools of its role. A token
 saved without a role (a bare hash, as before roles) is a `developer`.
+
+**A token of a workspace**: the **MCP tokens** of a workspace's page (its
+admins) make a token bound to it (`workspace:` in the users file): it sees
+and reaches that workspace's servers and jobs only, with its role there, and
+never the machine's tools (`read_server`, `add_draft_server`, the drafts).
 
 Then, in Claude Code:
 

@@ -223,6 +223,7 @@ WORKSPACE_ROUTES = frozenset({
     "/api/workspaces/{workspace}/archives", "/api/workspaces/{workspace}/archives/upload",
     "/api/workspaces/{workspace}/instances/from-archive",
     "/api/workspaces/{workspace}/archives/remote", "/api/workspaces/{workspace}/archives/fetch",
+    "/api/workspaces/{workspace}/tokens/save", "/api/workspaces/{workspace}/tokens/delete",
     "/workspaces/{workspace}/destinations", "/api/workspaces/{workspace}/destinations/save",
     "/api/workspaces/{workspace}/destinations/delete", "/api/workspaces/{workspace}/destinations/check",
     "/api/workspaces/{workspace}/destinations/key",
@@ -2673,6 +2674,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                   for role in ROLES if getattr(settings.servers[n], role) is not None}
                               for n in ws.servers if n in settings.servers},
              "sites": site_names(ws), "certificates": CERTIFICATES,
+             "tokens": [{"name": n, "role": settings.token_role(n)} for n in sorted(settings.tokens)
+                        if settings.token_workspace(n) == ws.name],
+             "mcp_url": str(request.base_url).rstrip("/") + "/mcp",
              # the links an archive may be copied through: the machine's admins'
              "links": sorted(settings.link_targets) if me.kind == "user" and not me.workspaces and me.can("admin")
              else [],
@@ -3719,7 +3723,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     def web_copy() -> Access:
         web = settings.web
-        return Access(dict(web.users), dict(web.roles), dict(web.tokens), dict(web.links), dict(web.token_roles))
+        return Access(dict(web.users), dict(web.roles), dict(web.tokens), dict(web.links), dict(web.token_roles),
+                      dict(web.token_workspaces))
 
     async def store_access(web: Access):
         """Write the users file and make it current; a response on error."""
@@ -3760,7 +3765,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                           for n in sorted(settings.users)],
                 "links": [{"name": n, "role": link.role, "fixed": n in fixed.links}
                           for n, link in sorted(settings.links.items())],
-                "tokens": [{"name": n, "role": settings.token_role(n), "fixed": n in fixed.tokens}
+                "tokens": [{"name": n, "role": settings.token_role(n), "fixed": n in fixed.tokens,
+                            "workspace": settings.token_workspace(n)}
                            for n in sorted(settings.tokens)],
                 "users_file": settings.users_file,
                 "roles": ACCESS_ROLES,
@@ -3946,6 +3952,43 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             del getattr(web, kind)[name]
             if kind == "tokens":
                 web.token_roles.pop(name, None)
+                web.token_workspaces.pop(name, None)
+            return await store_access(web) or {"ok": True}
+
+    @app.post("/api/workspaces/{workspace}/tokens/save", dependencies=[Depends(admin)])
+    async def workspace_token_save(workspace: str, payload: dict = Body(...)):
+        """An MCP token of the workspace (new: true; it is in the answer, once),
+        or its role changed: it sees the workspace's instances only, with its
+        role there; never a machine's token."""
+        ws = a_workspace(workspace)
+        name = str(payload.get("name") or "").strip()
+        role = str(payload.get("role") or TOKEN_DEFAULT_ROLE)
+        new = bool(payload.get("new"))
+        async with access_lock:
+            refused = check_name("Token", name, settings.fixed.tokens, settings.tokens, new) or check_role(role)
+            if refused:
+                return refused
+            if not new and settings.token_workspace(name) != ws.name:
+                return refuse(f"No token {name} of workspace {ws.name}", status.HTTP_404_NOT_FOUND)
+            web = web_copy()
+            token = new_token() if new else None
+            if token:
+                web.tokens[name] = hash_token(token)
+            web.token_roles[name] = role
+            web.token_workspaces[name] = ws.name
+            return await store_access(web) or {"ok": True, "token": token}
+
+    @app.post("/api/workspaces/{workspace}/tokens/delete", dependencies=[Depends(admin)])
+    async def workspace_token_delete(workspace: str, payload: dict = Body(...)):
+        ws = a_workspace(workspace)
+        name = str(payload.get("name") or "")
+        async with access_lock:
+            if name in settings.fixed.tokens or settings.token_workspace(name) != ws.name:
+                return refuse(f"No token {name} of workspace {ws.name}", status.HTTP_404_NOT_FOUND)
+            web = web_copy()
+            web.tokens.pop(name, None)
+            web.token_roles.pop(name, None)
+            web.token_workspaces.pop(name, None)
             return await store_access(web) or {"ok": True}
 
     # --- links to other OmniaCLI instances -------------------------------

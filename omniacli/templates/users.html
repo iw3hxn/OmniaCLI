@@ -111,7 +111,8 @@
     <tr><th>{{ _("Token") }}</th><th>{{ _("Role") }}</th><th></th></tr>
     {% for t in tokens %}
     <tr data-token="{{ t.name }}" {{ item(t.name ~ " " ~ t.role) }}>
-      <td><strong>{{ t.name }}</strong>{% if t.fixed %}<br><span class="badge">{{ _("main config") }}</span>{% endif %}</td>
+      <td><strong>{{ t.name }}</strong>{% if t.fixed %}<br><span class="badge">{{ _("main config") }}</span>{% endif %}
+        {% if t.workspace %}<br><a class="badge info" href="{{ prefix }}/workspaces/{{ t.workspace }}#mcp-tokens">{{ _("workspace {name}", name=t.workspace) }}</a>{% endif %}</td>
       {% if t.fixed %}
       <td>{{ role_names.get(t.role, t.role) }}</td><td></td>
       {% else %}

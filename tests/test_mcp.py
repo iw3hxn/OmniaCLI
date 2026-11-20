@@ -41,7 +41,9 @@ async def test_token_required(client):
     assert resp.status_code == 200 and resp.json()["result"]["serverInfo"]["name"] == "OmniaCLI"
     tools = {t["name"] for t in (await rpc(client, "tools/list")).json()["result"]["tools"]}
     assert tools == {"list_servers", "server_status", "pending_updates", "read_log", "list_jobs",
-                     "get_job", "update_test", "backup_test", "dev_setup"}
+                     "get_job", "update_test", "backup_test", "dev_setup", "diagnose_instance",
+                     "restart_instance", "start_instance", "stop_instance", "list_actions", "run_action",
+                     "verify_backup", "full_archive", "stop_job"}
     # the token reads pages but never acts on them
     assert (await client.get("/jobs", headers=BEARER)).status_code == 200
     assert (await client.post("/servers/srv/test/pull", headers={**BEARER, "Origin": f"http://{HOST}"})).status_code == 403
@@ -191,3 +193,71 @@ async def test_admin_reaches_draft_servers(client, env):
     await call(client, "add_draft_server", headers=admin, server_name="half", test={"database": "X"})
     assert "saved incomplete" in (await call(client, "backup", headers=admin, server_name="half",
                                              role="test"))["error"]
+
+
+async def test_a_token_of_a_workspace(client, env):
+    """Made on the workspace's page by its admins: it sees that workspace's
+    servers only, with its role there, never the machine's tools."""
+    from omniacli.config import Workspace
+
+    from .test_workspaces import post_as
+    settings = env["settings"]
+    settings.workspaces["acme"] = Workspace("acme", servers=[], members={"dev": "admin"})
+    resp = await client.post("/api/workspaces/acme/tokens/save", headers=POST,
+                             json={"name": "acme-bot", "role": "admin", "new": True})
+    assert resp.status_code == 200, resp.text
+    scoped = {**HEADERS, "Authorization": f"Bearer {resp.json()['token']}"}
+    assert settings.token_workspace("acme-bot") == "acme" and "workspace: acme" in settings.users_file.read_text()
+    names = {t["name"] for t in (await rpc(client, "tools/list", headers=scoped)).json()["result"]["tools"]}
+    assert "update_production" in names and "read_server" not in names and "add_draft_server" not in names
+    # srv is not acme's: not seen, not reached
+    assert await call(client, "list_servers", headers=scoped) == []
+    for tool, args in (("server_status", {}), ("read_log", {"role": "test"}), ("diagnose_instance", {}),
+                       ("restart_instance", {"role": "test"})):
+        answer = await call(client, tool, headers=scoped, server_name="srv", **args)
+        assert "No active server srv" in answer["error"], (tool, answer)
+    assert "token of the machine" in (await call(client, "read_server", headers=scoped, server_name="srv"))["error"]
+    job = await call(client, "update_test", server_name="srv", wait_seconds=30)
+    assert "No job" in (await call(client, "get_job", headers=scoped, job_id=job["id"]))["error"]
+    assert await call(client, "list_jobs", headers=scoped) == []
+    # srv in acme: seen
+    settings.workspaces["acme"].servers.append("srv")
+    assert [s["name"] for s in await call(client, "list_servers", headers=scoped)] == ["srv"]
+    # another workspace's admin does not touch it; its own token list is on its page
+    page = (await client.get("/workspaces/acme", headers={"Authorization": AUTH})).text
+    assert 'data-token="acme-bot"' in page
+    settings.workspaces["beta"] = Workspace("beta", members={"dev": "admin"})
+    resp = await client.post("/api/workspaces/beta/tokens/delete", headers=POST, json={"name": "acme-bot"})
+    assert resp.status_code == 404
+    resp = await client.post("/api/workspaces/acme/tokens/delete", headers=POST, json={"name": "acme-bot"})
+    assert resp.status_code == 200 and "acme-bot" not in settings.tokens
+    assert (await rpc(client, "tools/list", headers=scoped)).status_code == 401
+
+
+async def test_acting_on_instances(client, env):
+    """A test's with a developer token; a production's with an admin token
+    and its name typed. diagnose_instance in one answer."""
+    admin = await token_headers(client, "boss", "admin")
+    job = await call(client, "restart_instance", server_name="srv", role="test", wait_seconds=30)
+    assert job["status"] == "success" and "restart odoo-test" in env["calls"].read_text()
+    answer = await call(client, "restart_instance", server_name="srv", role="production")
+    assert "role admin" in answer["error"]
+    answer = await call(client, "restart_instance", headers=admin, server_name="srv", role="production")
+    assert "confirm='srv'" in answer["error"]
+    job = await call(client, "restart_instance", headers=admin, server_name="srv", role="production",
+                     confirm="srv", wait_seconds=30)
+    assert job["status"] == "success" and "restart odoo-production" in env["calls"].read_text()
+    # update_production: a backup first, always
+    job = await call(client, "update_production", headers=admin, server_name="srv", confirm="srv", wait_seconds=30)
+    assert job["status"] == "success", job
+    assert any(line.endswith("--- a backup first") for line in job["log"]) or job["title"].startswith("Backup, git pull")
+    assert list((env["settings"].backup_dir / "srv" / "production").glob("*.zip"))
+    diagnosis = await call(client, "diagnose_instance", server_name="srv", role="production")
+    assert diagnosis["server"] == "srv" and diagnosis["last_backup"] and diagnosis["last_jobs"]
+    assert "log_errors" in diagnosis and "state" in diagnosis
+    # the type's actions
+    actions = await call(client, "list_actions", server_name="srv", role="test")
+    assert actions and all({"id", "label", "role", "params"} <= set(a) for a in actions)
+    assert "no action nope" in (await call(client, "run_action", server_name="srv", role="test", action="nope"))["error"]
+    # stop_job: a finished job is not running
+    assert "not running" in (await call(client, "stop_job", job_id=job["id"]))["error"]

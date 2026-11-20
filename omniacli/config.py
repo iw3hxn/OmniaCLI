@@ -320,6 +320,8 @@ class Access:
     tokens: dict[str, str] = field(default_factory=dict)  # MCP clients: {name: token hash}
     links: dict[str, LinkAccess] = field(default_factory=dict)
     token_roles: dict[str, str] = field(default_factory=dict)  # {MCP token name: role}
+    # {MCP token name: workspace}: such a token sees that workspace only, with its role there
+    token_workspaces: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -378,6 +380,7 @@ class Settings:
     storage_error: str = ""
     machine: str = MACHINE_SERVER
     token_roles: dict[str, str] = field(default_factory=dict)
+    token_workspaces: dict[str, str] = field(default_factory=dict)
     fixed: Access = field(default_factory=Access)
     web: Access = field(default_factory=Access)
 
@@ -399,12 +402,18 @@ class Settings:
         self.tokens = {**web.tokens, **self.fixed.tokens}
         self.links = {**web.links, **self.fixed.links}
         self.token_roles = {**web.token_roles, **self.fixed.token_roles}
+        self.token_workspaces = {**{n: w for n, w in web.token_workspaces.items() if n not in self.fixed.tokens},
+                                 **self.fixed.token_workspaces}
 
     def user_role(self, name: str) -> str:
         return self.user_roles.get(name, "admin")
 
     def token_role(self, name: str) -> str:
         return self.token_roles.get(name, TOKEN_DEFAULT_ROLE)
+
+    def token_workspace(self, name: str) -> str:
+        """The workspace an MCP token is bound to; empty: the machine's token."""
+        return self.token_workspaces.get(name, "")
 
     @property
     def logs_dir(self) -> Path:
@@ -780,12 +789,17 @@ def parse_auth(auth: dict, where: str = "auth", need_user: bool = True) -> Acces
             raise ConfigError(f"{where}.users.{name}: password hash missing (omniacli hash-password)")
     if need_user and not users:
         raise ConfigError(f"{where}.users: at least one user is required")
-    tokens, token_roles = {}, {}
+    tokens, token_roles, token_workspaces = {}, {}, {}
     for name, value in (auth.get("tokens") or {}).items():
         name = str(name)
         if isinstance(value, dict):
             tokens[name] = str(value.get("token") or "")
             token_roles[name] = _access_role(f"{where}.tokens.{name}", value.get("role") or TOKEN_DEFAULT_ROLE)
+            workspace = str(value.get("workspace") or "").strip()
+            if workspace:
+                if not WORKSPACE_NAME.fullmatch(workspace):
+                    raise ConfigError(f"{where}.tokens.{name}.workspace: {workspace!r} is not a workspace name")
+                token_workspaces[name] = workspace
         else:
             # the format before roles: what such a token could do then
             tokens[name], token_roles[name] = str(value), TOKEN_DEFAULT_ROLE
@@ -798,7 +812,7 @@ def parse_auth(auth: dict, where: str = "auth", need_user: bool = True) -> Acces
         if not _TOKEN_HASH.fullmatch(token):
             raise ConfigError(f"{where}.links.{name}: token is not a token hash (omniacli new-link-token)")
         links[name] = LinkAccess(token, _access_role(f"{where}.links.{name}", value.get("role")))
-    return Access(users, roles, tokens, links, token_roles)
+    return Access(users, roles, tokens, links, token_roles, token_workspaces)
 
 
 def load_access(path: Path) -> Access:
@@ -817,7 +831,8 @@ def save_access(path: Path, access: Access) -> None:
     data = {
         "users": {n: {"password": h, "role": access.roles.get(n, "admin")} for n, h in access.users.items()},
         "links": {n: {"token": link.token, "role": link.role} for n, link in access.links.items()},
-        "tokens": {n: {"token": h, "role": access.token_roles.get(n, TOKEN_DEFAULT_ROLE)}
+        "tokens": {n: {"token": h, "role": access.token_roles.get(n, TOKEN_DEFAULT_ROLE),
+                       **({"workspace": access.token_workspaces[n]} if n in access.token_workspaces else {})}
                    for n, h in access.tokens.items()},
     }
     text = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
