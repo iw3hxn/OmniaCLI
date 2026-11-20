@@ -265,3 +265,36 @@ def test_from_link_in_the_servers_file(env):
         data["srv"]["test"]["from_link"] = bad
         with pytest.raises(ConfigError, match=message):
             parse_servers(data)
+
+
+async def test_a_full_archive_copied_from_a_link(here, env):
+    """The archives in the backups of the linked OmniaCLI's servers, one copied
+    among a workspace's archives; a workspace's admin does not reach links."""
+    from omniacli.config import Workspace
+
+    from .test_archive_import import make_archive
+    folder = env["settings"].backup_dir / "srv" / "production"
+    folder.mkdir(parents=True, exist_ok=True)
+    make_archive(folder / "archive_db_20261120_080000.zip", "c" * 40)
+    a_backup(env, "db_20261120_070000.zip", 17)
+    here.settings.workspaces["acme"] = Workspace("acme", members={"dev": "admin"})
+    url = "/api/workspaces/acme/archives/"
+    data = (await here.get(url + "remote?link=cliente", headers=as_user("admin"))).json()
+    assert data["archives"] == [{"server": "srv", "role": "production", "file": "archive_db_20261120_080000.zip",
+                                 "size": (folder / "archive_db_20261120_080000.zip").stat().st_size,
+                                 "time": data["archives"][0]["time"]}]
+    resp = await here.post(url + "fetch", headers=as_user("admin", post=True),
+                           json={"link": "cliente", "server": "srv", "role": "production", "file": "archive_db_20261120_080000.zip"})
+    assert resp.status_code == 200, resp.text
+    job = await wait(here, resp.json()["job"])
+    assert job["status"] == "success", job["lines"]
+    listing = (await here.get(url[:-1], headers=as_user("admin"))).json()["archives"]
+    assert [a["id"] for a in listing] == ["upload/cliente_archive_db_20261120_080000.zip"]
+    # a backup that is not an archive is not kept
+    resp = await here.post(url + "fetch", headers=as_user("admin", post=True),
+                           json={"link": "cliente", "server": "srv", "role": "production", "file": "db_20261120_070000.zip"})
+    job = await wait(here, resp.json()["job"])
+    assert job["status"] == "failed" and "not a full archive" in job["error"]
+    assert len((await here.get(url[:-1], headers=as_user("admin"))).json()["archives"]) == 1
+    # a developer, even an admin of the workspace: not through the machine's links
+    assert (await here.get(url + "remote?link=cliente", headers=as_user("dev"))).status_code == 403

@@ -62,6 +62,7 @@ from .config import (
     ConfigError,
     Instance,
     LinkAccess,
+    LinkSource,
     LinkTarget,
     Settings,
     TEST_LABEL,
@@ -221,6 +222,7 @@ WORKSPACE_ROUTES = frozenset({
     "/api/servers/{server}/{role}/backups/verify", "/api/servers/{server}/{role}/archive",
     "/api/workspaces/{workspace}/archives", "/api/workspaces/{workspace}/archives/upload",
     "/api/workspaces/{workspace}/instances/from-archive",
+    "/api/workspaces/{workspace}/archives/remote", "/api/workspaces/{workspace}/archives/fetch",
     "/workspaces/{workspace}/destinations", "/api/workspaces/{workspace}/destinations/save",
     "/api/workspaces/{workspace}/destinations/delete", "/api/workspaces/{workspace}/destinations/check",
     "/api/workspaces/{workspace}/destinations/key",
@@ -2671,6 +2673,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                   for role in ROLES if getattr(settings.servers[n], role) is not None}
                               for n in ws.servers if n in settings.servers},
              "sites": site_names(ws), "certificates": CERTIFICATES,
+             # the links an archive may be copied through: the machine's admins'
+             "links": sorted(settings.link_targets) if me.kind == "user" and not me.workspaces and me.can("admin")
+             else [],
              "credentials": await asyncio.to_thread(workspace_credentials, ws.name),
              "instances_left": None if not ws.limits.get("instances")
              else int(ws.limits["instances"]) - len([n for n in ws.servers if n in settings.servers])},
@@ -2849,6 +2854,67 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         finally:
             part.unlink(missing_ok=True)
         return {"id": f"upload/{name}"}
+
+    def link_of_machine_admin(me: Principal, name: str) -> LinkTarget:
+        """A link of the machine, for its admins only: a workspace's admins do
+        not reach the other OmniaCLI this one is linked to."""
+        if me.kind != "user" or me.workspaces or not me.can("admin"):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Only an admin of the machine copies through its links")
+        link = settings.link_targets.get(name)
+        if link is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"No link {name}")
+        return link
+
+    @app.get("/api/workspaces/{workspace}/archives/remote", dependencies=[Depends(admin)])
+    async def archives_remote(workspace: str, link: str, me: Principal = Depends(current_user)):
+        """The full archives in the backups of the servers of a linked OmniaCLI."""
+        a_workspace(workspace)
+        target = link_of_machine_admin(me, link)
+        client, headers = link_clients.client(target), link_headers(target, me.name, me.role)
+        try:
+            resp = await client.get("/api/servers", headers=headers, timeout=LIST_TIMEOUT)
+            if resp.status_code != 200:
+                return refuse(f"{link} answered {resp.status_code}", status.HTTP_502_BAD_GATEWAY)
+            servers = resp.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            return refuse(f"{link}: {describe_error(exc)}", status.HTTP_502_BAD_GATEWAY)
+
+        async def backups(server: str, role: str) -> list[dict]:
+            try:
+                got = await client.get(f"/api/servers/{server}/{role}/backups", headers=headers, timeout=LIST_TIMEOUT)
+                rows = got.json() if got.status_code == 200 else []
+            except (httpx.HTTPError, ValueError):
+                return []
+            return [{"server": server, "role": role, "file": r["file"], "size": r.get("size"), "time": r.get("time")}
+                    for r in rows if isinstance(r, dict) and (r.get("archive") or instancearchive.PREFIX in str(r.get("file")))]
+        pairs = [(srv["name"], role) for srv in servers if isinstance(srv, dict)
+                 for role in ("production", "test") if role in (srv.get("instances") or {})]
+        found = await asyncio.gather(*(backups(s, r) for s, r in pairs))
+        return {"archives": [row for rows in found for row in rows]}
+
+    @app.post("/api/workspaces/{workspace}/archives/fetch", dependencies=[Depends(admin)])
+    async def archive_fetch(workspace: str, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """A full archive of a linked OmniaCLI copied among the workspace's
+        archives (a job): then a New instance from it."""
+        ws = a_workspace(workspace)
+        target = link_of_machine_admin(me, str(payload.get("link") or ""))
+        server, role, file = (str(payload.get(k) or "") for k in ("server", "role", "file"))
+        if not SERVER_NAME.fullmatch(server) or role not in ROLES or not linkcopy.BACKUP_NAME.fullmatch(file):
+            return refuse("server, role and file of an archive there")
+        headers = link_headers(target, me.name, me.role)
+        folder = uploaded_archives(ws)
+
+        async def action(job):
+            dest = await linkcopy.fetch_backup(job, link_clients.client(target), target, headers,
+                                               LinkSource(target.name, server, role), file, folder,
+                                               job.result.setdefault("progress", {}))
+            if instancearchive.read_manifest(dest) is None:
+                dest.unlink(missing_ok=True)
+                raise JobFailed(f"{file} of {target.name} is not a full archive")
+            job.log(f"{dest.name} is among the archives of workspace {ws.name}: New instance › From a full archive")
+
+        job = jobs.submit(f"Copy the archive {file} from {target.name}", [], f"manual: {me}", action, workspace=ws.name)
+        return {"job": job.id}
 
     async def repository_from_archive(job, ws: Workspace, instance: str, role: str, row: dict, archive: Path,
                                       options: tuple) -> Path:

@@ -1320,7 +1320,13 @@ of one commit with its address kept; the archive's parameters and other
 Odoo options (within this workspace's bounds), the repositories'
 `requirements.txt`, and its database restored in production, neutralized
 unless *Neutralize* is off (a move: this becomes the instance at work).
-The archive's `pip-freeze.txt` stays in it, for reference.
+The archive's `pip-freeze.txt` stays in it, for reference. An archive
+sent by the browser is taken from a user who logs in here; through a link,
+**Or copy one from a link** (the machine's admins only: a workspace's
+admins do not reach the machine's links) lists the full archives in the
+backups of the linked OmniaCLI's servers and copies one among the
+workspace's archives (`<link>_archive_...zip`; a zip that is not an archive
+is not kept).
 
 ### Scheduled actions
 

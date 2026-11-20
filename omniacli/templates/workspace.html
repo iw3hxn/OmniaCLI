@@ -117,6 +117,15 @@ select.role { text-transform: none; letter-spacing: 0; font-size: inherit; font-
       <select id="fa-archive"><option value="">{{ _("Loading…") }}</option></select>
       <label for="fa-file">{{ _("Or send one") }}</label>
       <span><input type="file" id="fa-file" accept=".zip"> <span class="muted" id="fa-progress"></span></span>
+      {% if links %}
+      <label for="fa-link">{{ _("Or copy one from a link") }}</label>
+      <span style="display: flex; gap: 8px; flex-wrap: wrap">
+        <select id="fa-link"><option value="">—</option>{% for l in links %}<option>{{ l }}</option>{% endfor %}</select>
+        <select id="fa-remote" hidden></select>
+        <button type="button" id="fa-copy" hidden>{{ _("Copy here") }}</button>
+        <span class="muted" id="fa-remote-state"></span>
+      </span>
+      {% endif %}
       <label for="fa-neutralize">{{ _("Neutralize") }}</label>
       <label style="font-weight: 400"><input type="checkbox" id="fa-neutralize" checked style="width: auto">
         {{ _("no scheduled actions, no outgoing mail: off for a move, where this becomes the instance at work") }}</label>
@@ -393,6 +402,33 @@ select.role { text-transform: none; letter-spacing: 0; font-size: inherit; font-
       xhr.onerror = () => { errorBox.textContent = errorText(0); errorBox.hidden = false; };
       xhr.send(file);
     };
+    const linkSelect = document.getElementById("fa-link");
+    if (linkSelect) {
+      const remote = document.getElementById("fa-remote"), copy = document.getElementById("fa-copy"),
+            state = document.getElementById("fa-remote-state");
+      linkSelect.onchange = async () => {
+        remote.hidden = copy.hidden = true; remote.length = 0;
+        if (!linkSelect.value) { state.textContent = ""; return; }
+        state.textContent = {{ _("Reading…") | tojson }};
+        const resp = await fetch(wsBase + "archives/remote?link=" + encodeURIComponent(linkSelect.value),
+                                 {headers: {Accept: "application/json"}}).catch(() => null);
+        const data = resp ? await resp.json().catch(() => ({})) : {};
+        if (!resp || !resp.ok) { state.textContent = data.error || data.detail || errorText(resp ? resp.status : 0); return; }
+        if (!data.archives.length) { state.textContent = {{ _("no full archive there") | tojson }}; return; }
+        state.textContent = "";
+        for (const a of data.archives) {
+          const o = new Option(`${a.server}/${a.role} · ${a.file} · ${((a.size || 0) / 1048576).toFixed(0)} MiB`, a.file);
+          o.dataset.server = a.server; o.dataset.role = a.role; remote.append(o);
+        }
+        remote.hidden = copy.hidden = false;
+      };
+      copy.onclick = async () => {
+        const o = remote.selectedOptions[0];
+        const data = await postWs("archives/fetch", {link: linkSelect.value, server: o.dataset.server,
+                                                     role: o.dataset.role, file: o.value});
+        if (data) location.href = "{{ prefix }}/jobs/" + data.job;
+      };
+    }
     document.getElementById("fa-create").onclick = async () => {
       if (!faSelect.value) return;
       const data = await postWs("instances/from-archive", {instance: document.getElementById("fa-name").value.trim(),
