@@ -272,7 +272,8 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         need(ctx, "update_test")
         inst = instance(server_name, "test")
         job = jobs.submit(f"Git pull and restart {inst.key}", [inst.key], f"mcp: {caller(ctx)}",
-                          lambda job: ops.pull_restart(job, inst))
+                          lambda job: ops.pull_restart(
+                              job, inst, backup_folder=settings.backup_dir / inst.server / inst.role))
         await _wait(job, wait_seconds)
         return _job_dict(job, tail=50)
 

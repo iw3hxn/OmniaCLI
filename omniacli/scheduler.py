@@ -85,6 +85,7 @@ class AutoUpdater:
             f"Auto update {instance.key} ({summary})",
             [instance.key],
             "auto",
-            lambda job: ops.pull_restart(job, instance, only_if_changed=True),
+            lambda job: ops.pull_restart(job, instance, only_if_changed=True,
+                                          backup_folder=self.settings.backup_dir / instance.server / instance.role),
         )
         self._set(instance, f"new commits ({summary}): started job {job.id}")

@@ -61,6 +61,9 @@ restart = _ops.restart
 # a backup into the instance's backup folder, with what the last backup
 # dialog chose for the fields a caller does not give (backup_into)
 backup_into = _ops.backup_into
+# the backup before an update, when the instance asks for it (its option
+# backup_before_update), into the folder given; the last few kept
+backup_before_update = _ops.backup_before_update
 start = _ops.start
 stop = _ops.stop
 service_state = _ops.service_state
@@ -68,7 +71,7 @@ service_state = _ops.service_state
 __all__ = [
     "PLUGIN_API", "ENTRY_POINT_GROUP", "ServicePlugin", "Check", "ERROR", "WARNING",
     "ConfigError", "Instance", "Repository", "Server", "Job", "JobFailed",
-    "run", "capture", "as_user", "backup_into", "restart", "start", "stop", "service_state", "base_env", "system_user",
+    "run", "capture", "as_user", "backup_into", "backup_before_update", "restart", "start", "stop", "service_state", "base_env", "system_user",
     "ROLES", "SERVER_NAME", "USER_NAME", "Field", "FormButton", "Action", "ActionRefused", "Host",
     "Discovered", "COMPOSE_TOOLS", "login_answer",
 ]

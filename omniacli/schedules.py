@@ -1,7 +1,7 @@
 # Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Scheduled actions: at the times of a crontab expression, on one instance,
-a git pull of its repositories, a copy of a linked instance's database (as
+a backup kept by a rotation (so many days, weeks, months), a git pull of its repositories, a copy of a linked instance's database (as
 Copy from link does) and a Python script of the scripts folder, each step
 optional. Saved in their own file (schedules.yaml, next to the servers); the
 last runs of each in a history file next to the jobs."""
@@ -40,6 +40,20 @@ DEFAULT_HISTORY = 30
 DEFAULT_KEEP_BACKUPS = 3
 # the routes a copy calls there need the developer role, no more
 LINK_ROLE = "developer"
+# the backups a schedule makes: their names start so, and only they rotate
+SCHEDULED_PREFIX = "scheduled_"
+# the rotation of a backup step: the newest backup of each of the last
+# so many days, weeks and months
+DEFAULT_ROTATION = {"daily": 7, "weekly": 4, "monthly": 12}
+
+
+@dataclass
+class BackupStep:
+    # the choices of the backup (Odoo: no_filestore), as the backup dialog posts them
+    options: dict = field(default_factory=dict)
+    daily: int = DEFAULT_ROTATION["daily"]
+    weekly: int = DEFAULT_ROTATION["weekly"]
+    monthly: int = DEFAULT_ROTATION["monthly"]
 
 
 @dataclass
@@ -68,6 +82,7 @@ class Schedule:
     enabled: bool = True
     user: str = ""  # empty: DEFAULT_USER
     pull: bool = False
+    backup: BackupStep | None = None
     copy: CopyStep | None = None
     script: ScriptStep | None = None
     history: int = DEFAULT_HISTORY
@@ -78,7 +93,7 @@ class Schedule:
 
     @property
     def steps(self) -> list[str]:
-        return [label for label, on in (("git pull", self.pull),
+        return [label for label, on in (("backup", self.backup), ("git pull", self.pull),
                                         (f"copy from {self.copy.source.label}" if self.copy else "", self.copy),
                                         (f"script {self.script.name}" if self.script else "", self.script))
                 if on]
@@ -108,6 +123,17 @@ def _positive(value, default: int, where: str) -> int:
     return number
 
 
+def _count(value, default: int, where: str) -> int:
+    """A number of backups kept, 0 or more."""
+    try:
+        number = int(default if value in (None, "") else value)
+    except (TypeError, ValueError):
+        raise ConfigError(f"{where}: {value!r} is not a number") from None
+    if not 0 <= number <= 1000:
+        raise ConfigError(f"{where}: from 0 to 1000")
+    return number
+
+
 def _options(value, where: str) -> dict:
     if value in (None, ""):
         return {}
@@ -129,6 +155,16 @@ def parse_schedule(name: str, data: dict) -> Schedule:
     user = str(data.get("user") or "").strip()
     if user and not _USER.fullmatch(user):
         raise ConfigError(f"{where}.user: {user!r} is not a user name")
+    backup = None
+    if data.get("backup"):
+        raw = data["backup"]
+        if not isinstance(raw, dict):
+            raise ConfigError(f"{where}.backup: a mapping")
+        backup = BackupStep(_options(raw.get("options"), f"{where}.backup.options"),
+                            *(_count(raw.get(k), DEFAULT_ROTATION[k], f"{where}.backup.{k}")
+                              for k in ("daily", "weekly", "monthly")))
+        if not (backup.daily or backup.weekly or backup.monthly):
+            raise ConfigError(f"{where}.backup: keep at least one backup (days, weeks or months)")
     copy = None
     if data.get("copy"):
         raw = data["copy"]
@@ -158,10 +194,10 @@ def parse_schedule(name: str, data: dict) -> Schedule:
     schedule = Schedule(
         name=name, instance=instance, cron=check_cron(data.get("cron"), f"{where}.cron"),
         enabled=bool(data.get("enabled", True)), user=user, pull=bool(data.get("pull", False)),
-        copy=copy, script=script, history=_positive(data.get("history"), DEFAULT_HISTORY, f"{where}.history"),
+        backup=backup, copy=copy, script=script, history=_positive(data.get("history"), DEFAULT_HISTORY, f"{where}.history"),
     )
-    if not (schedule.pull or schedule.copy or schedule.script):
-        raise ConfigError(f"{where}: choose at least one step (git pull, copy from link, script)")
+    if not (schedule.backup or schedule.pull or schedule.copy or schedule.script):
+        raise ConfigError(f"{where}: choose at least one step (backup, git pull, copy from link, script)")
     return schedule
 
 
@@ -169,6 +205,9 @@ def schedule_to_dict(schedule: Schedule) -> dict:
     data = {"instance": schedule.instance, "cron": schedule.cron, "enabled": schedule.enabled}
     if schedule.user:
         data["user"] = schedule.user
+    if schedule.backup:
+        data["backup"] = {"options": schedule.backup.options, "daily": schedule.backup.daily,
+                          "weekly": schedule.backup.weekly, "monthly": schedule.backup.monthly}
     data["pull"] = schedule.pull
     if schedule.copy:
         data["copy"] = {**schedule.copy.source.to_dict(),
@@ -227,6 +266,44 @@ def prune_backups(job: Job, folder: Path, link: str, keep: int) -> None:
     for path in found[:max(0, len(found) - (keep - 1))]:
         job.log(f"--- delete the old backup {path.name} (keep {keep} from {link})")
         path.unlink(missing_ok=True)
+
+
+def rotation_kept(times: dict, daily: int, weekly: int, monthly: int) -> set:
+    """Of {item: datetime}, the ones a rotation keeps: the newest of each of
+    the last daily days, weekly weeks (ISO) and monthly months that have
+    one."""
+    kept = set()
+    newest_first = sorted(times, key=lambda item: times[item], reverse=True)
+    for count, period in ((daily, lambda t: t.date()), (weekly, lambda t: t.isocalendar()[:2]),
+                          (monthly, lambda t: (t.year, t.month))):
+        seen = set()
+        for item in newest_first:
+            key = period(times[item])
+            if key not in seen and len(seen) < count:
+                seen.add(key)
+                kept.add(item)
+    return kept
+
+
+def rotate_backups(job: Job, folder: Path, step: BackupStep) -> None:
+    """The scheduled backups of the folder the rotation does not keep, deleted."""
+    found = {p: datetime.datetime.fromtimestamp(p.stat().st_mtime)
+             for p in folder.glob(f"{SCHEDULED_PREFIX}*.zip") if p.is_file()}
+    kept = rotation_kept(found, step.daily, step.weekly, step.monthly)
+    for path in sorted(set(found) - kept, key=lambda p: found[p]):
+        job.log(f"--- delete {path.name}: out of the rotation ({step.daily} days, {step.weekly} weeks, "
+                f"{step.monthly} months)")
+        path.unlink(missing_ok=True)
+
+
+async def scheduled_backup(job: Job, instance, folder: Path, step: BackupStep) -> Path:
+    """The instance's backup, named as a scheduled one, then the rotation."""
+    made = await ops.backup_into(job, instance, folder, dict(step.options))
+    dest = made.with_name(SCHEDULED_PREFIX + made.name)
+    os.replace(made, dest)
+    job.log(f"Backup {dest.name} ({dest.stat().st_size} bytes)")
+    rotate_backups(job, folder, step)
+    return dest
 
 
 # where the copy of a script another user runs is put: that user may not
@@ -381,6 +458,8 @@ class Scheduler:
             problem = f"no live instance {schedule.instance}"
         elif self.jobs.is_busy(instance.key):
             problem = "skipped: another job is running on the instance"
+        elif schedule.backup and not instance.plugin.has_backup:
+            problem = f"{instance.plugin.label} has no backup"
         elif schedule.copy and not instance.plugin.has_restore:
             problem = f"{instance.plugin.label} cannot restore a database"
         elif schedule.copy and schedule.copy.source.is_puller:
@@ -400,10 +479,14 @@ class Scheduler:
         return job
 
     async def run(self, job: Job, schedule: Schedule, instance) -> None:
+        folder = self.settings.backup_dir / instance.server / instance.role
+        if schedule.backup:
+            await scheduled_backup(job, instance, folder, schedule.backup)
         if schedule.pull and not schedule.copy:
             # as the auto update: the module update and the restart only when
-            # something new came
-            await ops.pull_restart(job, instance, only_if_changed=True)
+            # something new came (after a backup of its own step, no other)
+            await ops.pull_restart(job, instance, only_if_changed=True,
+                                   backup_folder=None if schedule.backup else folder)
         elif schedule.pull:
             # the restore that follows updates the modules and starts it
             await ops.pull(job, instance)

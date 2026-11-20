@@ -35,6 +35,7 @@ from ..plugin_api import (
     JobFailed,
     Server,
     ServicePlugin,
+    backup_before_update,
     backup_into,
     capture,
     restart,
@@ -565,6 +566,8 @@ class OdooPlugin(ServicePlugin):
             await restart(job, instance)
 
     async def _update(self, job: Job, instance: Instance, params: dict) -> None:
+        if self._host is not None:
+            await backup_before_update(job, instance, self._host.backup_folder(instance))
         if params["mode"] == "chosen":
             await ops.update_chosen_modules(job, instance, params["modules"])
         else:

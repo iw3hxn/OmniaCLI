@@ -717,8 +717,39 @@ async def backup_into(job: Job, instance: Instance, dest_dir: Path, options: dic
     return private.backup_file(await instance.plugin.backup(job, instance, dest_dir, options))
 
 
+# the backups made before an update: their names start so, the last few kept
+PRE_UPDATE_PREFIX = "pre-update_"
+KEEP_PRE_UPDATE = 3
+
+
+async def backup_before_update(job: Job, instance: Instance, folder: Path | None) -> Path | None:
+    """When the instance asks for it, its backup into folder (the choices of
+    its last backup dialog) named as one made before an update; the older
+    ones beyond KEEP_PRE_UPDATE deleted. None when it makes none."""
+    if not instance.backup_before_update or folder is None or not instance.plugin.has_backup:
+        return None
+    job.log("--- backup before the update")
+    made = await backup_into(job, instance, folder)
+    dest = made.with_name(PRE_UPDATE_PREFIX + made.name)
+    os.replace(made, dest)
+    job.log(f"Backup {dest.name} ({dest.stat().st_size} bytes)")
+    found = sorted((p for p in folder.glob(f"{PRE_UPDATE_PREFIX}*.zip") if p.is_file()),
+                   key=lambda p: p.stat().st_mtime, reverse=True)
+    for old in found[KEEP_PRE_UPDATE:]:
+        job.log(f"--- delete {old.name} (the last {KEEP_PRE_UPDATE} backups before an update are kept)")
+        old.unlink(missing_ok=True)
+    return dest
+
+
 async def pull_restart(job: Job, instance: Instance, only_if_changed: bool = False,
-                       only: set[str] | None = None) -> None:
+                       only: set[str] | None = None, backup_folder: Path | None = None) -> None:
+    """Pull, do what follows a pull (Odoo: update the changed modules) and
+    restart; backup_folder: where the backup before the update goes, made
+    only when the pull brings something (none: no backup)."""
+    if backup_folder is not None and instance.backup_before_update and instance.plugin.has_backup:
+        rows = await pull_preview(instance)
+        if any((row["pending"] or 0) > 0 for row in rows if only is None or row["name"] in only):
+            await backup_before_update(job, instance, backup_folder)
     changed = await pull(job, instance, only)
     if only_if_changed and not changed:
         job.log("Nothing new to deploy")

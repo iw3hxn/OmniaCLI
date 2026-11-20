@@ -56,6 +56,7 @@ from ..plugin_api import (
     JobFailed,
     Server,
     ServicePlugin,
+    backup_before_update,
     backup_into,
     capture,
     login_answer,
@@ -443,7 +444,12 @@ class DockerPlugin(ServicePlugin):
                    title=lambda inst, params: f"Pull image {inst.key}"),
         ]
 
+    async def _backup_before(self, job: Job, instance: Instance) -> None:
+        if self._host is not None:
+            await backup_before_update(job, instance, self._host.backup_folder(instance))
+
     async def _update(self, job: Job, instance: Instance, params: dict) -> None:
+        await self._backup_before(job, instance)
         opts = instance.options
         if params["modules"]:
             job.log(f"--- update {', '.join(params['modules'])}")
@@ -491,6 +497,7 @@ class DockerPlugin(ServicePlugin):
         await start(job, test)
 
     async def _pull_image(self, job: Job, instance: Instance, params: dict) -> None:
+        await self._backup_before(job, instance)
         job.log(f"--- pull the images of {instance.restart.service}")
         await _helper(job, instance, "pull")
         # a newer image may have another Python: the repositories' packages again,

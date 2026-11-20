@@ -186,6 +186,10 @@ class Instance:
     plugin: Any = field(repr=False, compare=False)
     options: Any
     auto_update: AutoUpdate = field(default_factory=AutoUpdate)
+    # a backup before what changes its code or its modules (a pull that
+    # brings commits, Update modules, a repository's Update, Pull image),
+    # the last few kept (ops.backup_before_update)
+    backup_before_update: bool = False
     # the system user the type's programs run as, through sudo -n -u (for
     # Odoo the user of its service: its database login, filestore and venv);
     # None: as the user running OmniaCLI. git always runs as that user.
@@ -534,6 +538,7 @@ def _parse_instance(server: str, role: str, data: dict, logs_dir: Path | None, p
         plugin=plugin,
         options=options,
         auto_update=_parse_auto_update(data.get("auto_update"), f"{where}.auto_update"),
+        backup_before_update=bool(data.get("backup_before_update", False)),
         run_as=run_as,
         from_link=from_link,
         domain=domain,
@@ -694,6 +699,8 @@ def instance_to_dict(instance: Instance) -> dict:
     }
     if auto.window_start is not None and auto.window_end is not None:
         data["auto_update"]["window"] = auto.window_label()
+    if instance.backup_before_update:
+        data["backup_before_update"] = True
     if instance.run_as is not None:
         data["run_as"] = instance.run_as
     if instance.domain is not None:

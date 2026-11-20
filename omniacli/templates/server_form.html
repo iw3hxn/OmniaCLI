@@ -83,6 +83,7 @@
       <h3>{{ _("Updates") }}</h3>
       <div class="form-grid">
         {{ field(_("Auto update"), "auto_update.enabled", kind="checkbox") }}
+        {{ field(_("Backup before an update"), "backup_before_update", _("A backup before a pull that brings commits, an update of its modules and a pull of its images; the last 3 are kept"), kind="checkbox") }}
         {{ field(_("Every (minutes)"), "auto_update.interval_minutes", kind="number") }}
         {{ field(_("Time window"), "auto_update.window", placeholder=_("HH:MM-HH:MM, empty = always"), cls="") }}
         {{ field(_("Package URL"), "package.url", _("https:// URL of a Debian package (…/api-server.deb), next to its signed manifest .json and .json.sig: a pull installs it when a newer version is published and signed by the public key. Its own scripts may stop and start the service during the install, also a stopped one"), _("empty: no package")) }}
@@ -138,6 +139,7 @@ const DEFAULTS = {
   package: {url: "", name: "", public_key: ""},
   restart: {type: "systemd", service: "", sudo: true},
   auto_update: {enabled: false, interval_minutes: 10, window: ""},
+  backup_before_update: false,
   repositories: [{name: "", path: "", remote: "origin", branch: ""}],
 };
 // keys left out when empty (the others are sent, empty, so that the checks name them)

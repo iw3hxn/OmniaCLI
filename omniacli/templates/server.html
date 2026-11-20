@@ -298,9 +298,39 @@
 </section>
 
 {% if can_act %}
-<section class="tab-panel panel" data-panel="backups" hidden data-url="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}/backups">
+<section class="tab-panel panel" data-panel="backups" hidden data-url="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}/backups"
+         data-api="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}">
+  {% if inst.plugin.has_backup %}
+  {# the automatic backups: one schedule of the instance, every day, kept by a rotation #}
+  <form class="backup-auto" id="ab-form" hidden>
+    <h3>{{ _("Automatic backups") }}</h3>
+    <div class="ab-row">
+      <label><input type="checkbox" id="ab-enabled"> {{ _("Every day at") }}</label>
+      <input type="time" id="ab-time" required>
+      {% for f in inst.plugin.backup_fields() if f.kind == "checkbox" %}
+      <label title="{{ tr(f.help) if f.help }}"><input type="checkbox" data-ab-option="{{ f.key }}"> {{ tr(f.label) }}</label>
+      {% endfor %}
+    </div>
+    <div class="ab-row">
+      <span>{{ _("Keep the newest of the last") }}</span>
+      <label><input type="number" id="ab-daily" min="0" max="1000"> {{ _("days") }}</label>
+      <label><input type="number" id="ab-weekly" min="0" max="1000"> {{ _("weeks") }}</label>
+      <label><input type="number" id="ab-monthly" min="0" max="1000"> {{ _("months") }}</label>
+      <button type="submit" id="ab-save">{{ _("Save") }}</button>
+    </div>
+    <p class="muted" id="ab-status"></p>
+    <p class="error" id="ab-error" role="alert"></p>
+  </form>
+  {% endif %}
   <div class="backup-list muted">{{ _("Loading…") }}</div>
 </section>
+<style>
+.backup-auto { border-bottom: 1px solid var(--border); padding-bottom: 12px; margin-bottom: 12px; }
+.backup-auto h3 { margin: 0 0 8px; font-size: 15px; }
+.ab-row { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin-bottom: 8px; }
+.ab-row input[type="number"] { width: 70px; }
+.backup-auto p { margin: 4px 0 0; font-size: 13px; }
+</style>
 {% endif %}
 
 <section class="tab-panel panel instance-charts" data-panel="monitor" hidden>
@@ -525,6 +555,12 @@
     core: {{ _("{n} core") | tojson }}, cores: {{ _("{n} cores") | tojson }},
     emptyList: {{ _("No backups yet.") | tojson }}, file: {{ _("File") | tojson }}, date: {{ _("Date") | tojson }},
     size: {{ _("Size") | tojson }}, listFailed: {{ _("Could not load the backups.") | tojson }},
+    kind: {{ _("Type") | tojson }}, kinds: {scheduled: {{ _("automatic") | tojson }}, "pre-update": {{ _("before an update") | tojson }},
+                                          manual: {{ _("by hand") | tojson }}},
+    remove: {{ _("Delete") | tojson }}, removeQ: {{ _("Delete the backup {file}? It cannot be undone.") | tojson }},
+    abNext: {{ _("Next: {time}.") | tojson }}, abLast: {{ _("Last: {time}, {status}.") | tojson }},
+    abOff: {{ _("Off: no automatic backup.") | tojson }}, abSaved: {{ _("Saved.") | tojson }},
+    abNoRight: {{ _("Only an administrator changes them.") | tojson }},
     refused: {{ _("Refused") | tojson }},
   };
 
@@ -796,23 +832,77 @@
     const box = document.querySelector('[data-panel="backups"]');
     if (!box) return;
     const list = box.querySelector(".backup-list");
+    loadBackupSchedule(box);
     try {
       const files = await (await fetch(box.dataset.url)).json();
       if (!files.length) { list.textContent = T.emptyList; return; }
       const table = document.createElement("table");
       const head = table.insertRow();
-      for (const text of [T.file, T.date, T.size]) { const th = document.createElement("th"); th.textContent = text; head.appendChild(th); }
+      for (const text of [T.file, T.kind, T.date, T.size, ""]) { const th = document.createElement("th"); th.textContent = text; head.appendChild(th); }
       for (const f of files) {
         const tr = table.insertRow();
         const a = document.createElement("a");
         a.href = f.download; a.textContent = f.file; a.setAttribute("download", f.file);
         tr.insertCell().appendChild(a);
+        tr.insertCell().textContent = T.kinds[f.kind] || "";
         tr.insertCell().textContent = new Date(f.time * 1000).toLocaleString();
         tr.insertCell().textContent = sizeText(f.size);
+        const cell = tr.insertCell();
+        cell.style.textAlign = "right";
+        if (f.can_delete) {
+          const b = document.createElement("button");
+          b.type = "button"; b.className = "danger"; b.textContent = T.remove;
+          b.addEventListener("click", async () => {
+            if (!confirm(T.removeQ.replace("{file}", f.file))) return;
+            const resp = await fetch(`${box.dataset.api}/backups/delete`, {method: "POST",
+              headers: {"Content-Type": "application/json", Accept: "application/json"}, body: JSON.stringify({file: f.file})});
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) { alert(data.error || data.detail || T.refused); return; }
+            loadBackups();
+          });
+          cell.appendChild(b);
+        }
       }
       list.className = "backup-list scroll"; list.textContent = ""; list.appendChild(table);
     } catch (e) { list.textContent = T.listFailed; }
   }
+
+  // the automatic backups of the instance: its schedule, read and saved here
+  function drawBackupSchedule(data) {
+    const form = document.getElementById("ab-form");
+    form.hidden = false;
+    document.getElementById("ab-enabled").checked = data.enabled;
+    document.getElementById("ab-time").value = data.time;
+    for (const k of ["daily", "weekly", "monthly"]) document.getElementById(`ab-${k}`).value = data[k];
+    for (const input of form.querySelectorAll("[data-ab-option]")) input.checked = !!data.options[input.dataset.abOption];
+    for (const input of form.querySelectorAll("input, button")) input.disabled = !data.can_edit;
+    const said = [];
+    if (!data.enabled) said.push(T.abOff);
+    else if (data.next) said.push(T.abNext.replace("{time}", data.next));
+    if (data.last) said.push(T.abLast.replace("{time}", data.last.time.replace("T", " ")).replace("{status}", data.last.message || data.last.status));
+    if (!data.can_edit) said.push(T.abNoRight);
+    document.getElementById("ab-status").textContent = said.join(" ");
+  }
+  async function loadBackupSchedule(box) {
+    if (!document.getElementById("ab-form")) return;
+    const resp = await fetch(`${box.dataset.api}/backup-schedule`).catch(() => null);
+    if (resp && resp.ok) drawBackupSchedule(await resp.json());
+  }
+  document.getElementById("ab-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const box = document.querySelector('[data-panel="backups"]'), form = event.target, options = {};
+    for (const input of form.querySelectorAll("[data-ab-option]")) options[input.dataset.abOption] = input.checked;
+    const body = {enabled: document.getElementById("ab-enabled").checked, time: document.getElementById("ab-time").value, options};
+    for (const k of ["daily", "weekly", "monthly"]) body[k] = document.getElementById(`ab-${k}`).value;
+    const error = document.getElementById("ab-error");
+    error.textContent = "";
+    const resp = await fetch(`${box.dataset.api}/backup-schedule`, {method: "POST",
+      headers: {"Content-Type": "application/json", Accept: "application/json"}, body: JSON.stringify(body)});
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) { error.textContent = data.error || data.detail || T.refused; return; }
+    drawBackupSchedule(data);
+    document.getElementById("ab-status").textContent += " " + T.abSaved;
+  });
 
   // a new staging, a staging deleted: a job, followed on its page
   async function post(url, body, confirmText) {

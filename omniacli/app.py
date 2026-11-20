@@ -214,6 +214,7 @@ WORKSPACE_ROUTES = frozenset({
     "/api/workspaces/{workspace}/repositories/add", "/api/workspaces/{workspace}/repositories/remove",
     "/api/workspaces/{workspace}/git-key", "/api/workspaces/{workspace}/repositories/branches",
     "/api/workspaces/{workspace}/repositories/update",
+    "/api/servers/{server}/{role}/backup-schedule", "/api/servers/{server}/{role}/backups/delete",
     "/api/workspaces/{workspace}/parameters/save", "/api/workspaces/{workspace}/load",
 })
 
@@ -1230,7 +1231,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 pull_title("Git pull and restart", instance, only),
                 [instance.key],
                 f"manual: {user}",
-                lambda job: ops.pull_restart(job, instance, only=only),
+                lambda job: ops.pull_restart(job, instance, only=only, backup_folder=backup_folder(instance)),
             )
         )
 
@@ -1386,8 +1387,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return settings.backup_dir / instance.server / instance.role
 
     @app.get("/api/servers/{server}/{role}/backups")
-    async def backup_list(request: Request, server: str, role: str):
+    async def backup_list(request: Request, server: str, role: str, me: Principal = Depends(current_user)):
         instance = get_instance(server, role)
+        can_delete = me.can(backup_role(instance))
         folder = backup_folder(instance)
         files = sorted(folder.glob("*.zip"), key=lambda p: p.stat().st_mtime, reverse=True) \
             if folder.is_dir() else []
@@ -1397,6 +1399,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 "size": p.stat().st_size,
                 "time": int(p.stat().st_mtime),
                 "download": f"{prefix_of(request)}/backups/{server}/{role}/{p.name}",
+                # scheduled, before an update, made by hand (or brought from a link)
+                "kind": ("scheduled" if p.name.startswith(schedules.SCHEDULED_PREFIX)
+                         else "pre-update" if p.name.startswith(ops.PRE_UPDATE_PREFIX) else "manual"),
+                "can_delete": can_delete,
             }
             for p in files
         ]
@@ -3141,6 +3147,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
         async def action(job):
             previous = repo.branch
+            await ops.backup_before_update(job, inst, backup_folder(inst))
             await workspaceops.update_repository(job, repo, branch)
             current = inst
             if branch != previous:
@@ -4610,6 +4617,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     "live": srv.active,
                     "type": srv.type,
                     "has_restore": bool(plugin and plugin.has_restore),
+                    "has_backup": bool(plugin and plugin.has_backup),
                     "backup_fields": [_field_dict(f) for f in plugin.backup_fields()] if plugin else [],
                     "restore_fields": [_field_dict(f) for f in plugin.restore_fields()] if plugin else [],
                     "from_link": src.to_dict() if src else None,
@@ -4650,6 +4658,15 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if srv is None or role not in srv.instances:
                 return refuse(f"No instance {data.get('instance')}")
             instance = srv.instances[role]
+            backup = data.get("backup")
+            if backup:
+                if not instance.plugin.has_backup:
+                    return refuse(f"{instance.plugin.label} has no backup")
+                try:
+                    backup["options"] = {f.key: _field_value(f, (backup.get("options") or {}).get(f.key))
+                                         for f in instance.plugin.backup_fields() if f.kind == "checkbox"}
+                except ActionRefused as exc:
+                    return refuse(str(exc))
             copy = data.get("copy")
             if copy:
                 if not instance.plugin.has_restore:
@@ -4709,6 +4726,115 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if job is None:
             return refuse(scheduler.history.data[name][0]["message"])
         return {"job": job.id}
+
+    # --- the automatic backups of an instance (its Backups tab) ---------
+
+    def backup_schedule_name(instance: Instance) -> str:
+        """The schedule of an instance's automatic backups: one per instance,
+        a schedule as the others (the Schedules page shows it too)."""
+        return f"backup.{instance.server}.{instance.role}"
+
+    def backup_schedule_view(instance: Instance, me: Principal) -> dict:
+        sch = scheduler.schedules.get(backup_schedule_name(instance))
+        backup = sch.backup if sch is not None else None
+        rotation = ({k: getattr(backup, k) for k in schedules.DEFAULT_ROTATION} if backup is not None
+                    else dict(schedules.DEFAULT_ROTATION))
+        time = "03:00"
+        if sch is not None:
+            minute, hour, *rest = sch.cron.split(" ")
+            if minute.isdigit() and hour.isdigit() and rest == ["*", "*", "*"]:
+                time = f"{int(hour):02d}:{int(minute):02d}"
+        runs = scheduler.history.runs(sch.name, jobs) if sch is not None else []
+        try:
+            upcoming = schedules.next_runs(sch.cron, 1)[0].isoformat(sep=" ", timespec="minutes") \
+                if sch is not None and sch.enabled else None
+        except (ValueError, KeyError):
+            upcoming = None
+        return {"exists": sch is not None, "enabled": bool(sch and sch.enabled and backup), "time": time,
+                "cron": sch.cron if sch is not None else "", **rotation,
+                "options": dict(backup.options) if backup is not None else {},
+                "next": upcoming, "last": runs[0] if runs else None,
+                "fields": [_field_dict(f) for f in instance.plugin.backup_fields() if f.kind == "checkbox"],
+                "can_edit": me.can(backup_role(instance))}
+
+    def backup_role(instance: Instance) -> str:
+        """Who may delete an instance's backups and set its automatic ones:
+        a production's are an admin's."""
+        return "admin" if instance.role == "production" else "developer"
+
+    @app.get("/api/servers/{server}/{role}/backup-schedule", dependencies=[Depends(developer)])
+    async def backup_schedule_get(server: str, role: str, me: Principal = Depends(current_user)):
+        """The automatic backups of the instance: when, the rotation, the
+        choices, the last run."""
+        return backup_schedule_view(get_instance(server, role), me)
+
+    @app.post("/api/servers/{server}/{role}/backup-schedule")
+    async def backup_schedule_save(server: str, role: str, payload: dict = Body(...),
+                                   me: Principal = Depends(current_user)):
+        """The automatic backups of the instance saved: every day at a time,
+        kept by a rotation (days, weeks, months); off keeps the schedule's
+        other steps, or removes it when it has none."""
+        instance = get_instance(server, role)
+        if not me.can(backup_role(instance)):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, f"The {backup_role(instance)} role is required")
+        if not instance.plugin.has_backup:
+            return refuse(f"{instance.plugin.label} has no backup")
+        name = backup_schedule_name(instance)
+        if not schedules.SCHEDULE_NAME.fullmatch(name):
+            return refuse(f"The server's name is too long for a schedule ({name})")
+        time = str(payload.get("time") or "").strip()
+        found = re.fullmatch(r"([01]?\d|2[0-3]):([0-5]\d)", time)
+        if found is None:
+            return refuse(f"{time!r} is not a time HH:MM")
+        enabled = bool(payload.get("enabled"))
+        try:
+            options = {f.key: _field_value(f, (payload.get("options") or {}).get(f.key))
+                       for f in instance.plugin.backup_fields() if f.kind == "checkbox"}
+        except ActionRefused as exc:
+            return refuse(str(exc))
+        async with schedules_lock:
+            current = scheduler.schedules.get(name)
+            data = schedules.schedule_to_dict(current) if current is not None else {
+                "instance": instance.key, "user": me.name if me.kind == "user" else ""}
+            data.update({"cron": f"{int(found[2])} {int(found[1])} * * *", "enabled": True,
+                         "backup": {"options": options,
+                                    **{k: payload.get(k) for k in schedules.DEFAULT_ROTATION}}})
+            if not enabled:
+                data.pop("backup")
+            updated = dict(scheduler.schedules)
+            if not enabled and not (data.get("pull") or data.get("copy") or data.get("script")):
+                updated.pop(name, None)
+            else:
+                try:
+                    updated[name] = schedules.parse_schedule(name, data)
+                except ConfigError as exc:
+                    return refuse(str(exc).removeprefix(f"schedules.{name}."))
+            try:
+                await asyncio.to_thread(schedules.save_schedules, settings.schedules_file, updated)
+            except OSError as exc:
+                return refuse(f"Cannot write {settings.schedules_file}: {exc}", 500)
+            scheduler.schedules = updated
+            scheduler.history.keep_only(updated)
+        return {"ok": True, **backup_schedule_view(instance, me)}
+
+    @app.post("/api/servers/{server}/{role}/backups/delete")
+    async def backup_delete(request: Request, server: str, role: str, payload: dict = Body(...),
+                            me: Principal = Depends(current_user)):
+        """A backup of the instance deleted (an admin's for a production)."""
+        instance = get_instance(server, role)
+        if not me.can(backup_role(instance)):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, f"The {backup_role(instance)} role is required")
+        name = str(payload.get("file") or "")
+        folder = backup_folder(instance).resolve()
+        path = (folder / name).resolve()
+        if not _BACKUP_NAME.fullmatch(name) or path.parent != folder or not path.is_file():
+            return refuse("No such backup", status.HTTP_404_NOT_FOUND)
+        if jobs.is_busy(instance.key):
+            return refuse(f"A job is running on {instance.key}: try again when it ends")
+        path.unlink()
+        access_log.record("delete backup", me.kind, me.name, request.client.host if request.client else "",
+                          f"{instance.key}/{name}")
+        return {"ok": True}
 
     # --- the caller's own password --------------------------------------
 

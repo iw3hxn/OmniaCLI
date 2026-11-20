@@ -9,13 +9,13 @@
 {% include "_list.html" %}
 <div class="page-head">
   <div><h1>{{ _("Schedules") }}</h1>
-    <p>{{ _("Actions run on an instance at the times of a crontab expression: a git pull, a copy from a link, a Python script.") }}</p></div>
+    <p>{{ _("Actions run on an instance at the times of a crontab expression: a backup, a git pull, a copy from a link, a Python script.") }}</p></div>
   <div class="actions" style="margin: 0"><button type="button" id="new" class="primary">{{ _("New schedule") }}</button></div>
 </div>
 <details class="muted" style="margin-bottom: 16px">
   <summary>{{ _("More") }}</summary>
   <p>{{ _("The crontab expression is minute hour day month weekday, in this computer's time.") }}
-    {{ _("The steps: a git pull of its repositories, a copy of a linked instance's database (as Copy from link), a Python script of {folder}; each one optional, in this order.", folder=scripts_dir) }}
+    {{ _("The steps: a backup kept by a rotation, a git pull of its repositories, a copy of a linked instance's database (as Copy from link), a Python script of {folder}; each one optional, in this order.", folder=scripts_dir) }}
     {{ _("A run that finds a job on the instance is skipped; runs missed while OmniaCLI is stopped are not made up.") }}
     {{ _("Saved in {file}.", file=schedules_file) }}</p>
 </details>
@@ -84,12 +84,23 @@
       <div class="muted field-help">{{ _("How many runs the history keeps") }}</div></div>
   </div>
 
-  <h3>{{ _("1. Git pull") }}</h3>
+  <h3>{{ _("1. Backup") }}</h3>
+  <label><input type="checkbox" id="f-backup"> {{ _("Back up the instance") }}</label>
+  <div id="backup-box" class="form-grid" style="margin-top: 8px">
+    <label>{{ _("Backup") }}</label><div id="f-own-options"></div>
+    <label for="f-daily">{{ _("Kept") }}</label>
+    <div><input type="number" id="f-daily" min="0" max="1000" style="width: 70px"> {{ _("days") }}
+      <input type="number" id="f-weekly" min="0" max="1000" style="width: 70px"> {{ _("weeks") }}
+      <input type="number" id="f-monthly" min="0" max="1000" style="width: 70px"> {{ _("months") }}
+      <div class="muted field-help">{{ _("The newest backup of each of the last days, weeks and months; the other backups of the schedules are deleted. The backups made by hand are not touched.") }}</div></div>
+  </div>
+
+  <h3>{{ _("2. Git pull") }}</h3>
   <label><input type="checkbox" id="f-pull"> {{ _("Pull the instance's repositories") }}</label>
   <p class="muted" style="margin: 4px 0 0">{{ _("Alone: the modules are updated and the instance restarted only when something new came (as the auto update).") }}
   {{ _("With the copy: no restart, the restore that follows updates the modules and starts it.") }}</p>
 
-  <h3>{{ _("2. Copy from link") }}</h3>
+  <h3>{{ _("3. Copy from link") }}</h3>
   <label id="copy-row"><input type="checkbox" id="f-copy"> {{ _("Back up an instance of a linked OmniaCLI, download it and restore it here") }}</label>
   <p class="muted" id="copy-off" hidden style="margin: 4px 0 0"></p>
   <div id="copy-box" class="form-grid" style="margin-top: 8px">
@@ -108,7 +119,7 @@
       <div class="muted field-help">{{ _("The zips of this link in the instance's backups, the new one included: the older ones are deleted before the new backup starts") }}</div></div>
   </div>
 
-  <h3>{{ _("3. Python script") }}</h3>
+  <h3>{{ _("4. Python script") }}</h3>
   <label><input type="checkbox" id="f-script" {{ "" if scripts else "disabled" }}> {{ _("Run a script of {folder}", folder=scripts_dir) }}</label>
   {% if not scripts %}<p class="muted" style="margin: 4px 0 0">{{ _("There is no .py file in that folder: put one there to choose it.") }}</p>{% endif %}
   <div id="script-box" class="form-grid" style="margin-top: 8px">
@@ -198,6 +209,17 @@
       : {{ _("No link nor puller connection here: add one on the Links or the Pullers page.") | tojson }};
     $("copy-box").hidden = !$("f-copy").checked;
     $("script-box").hidden = !$("f-script").checked;
+    $("f-backup").disabled = !target.has_backup;
+    if (!target.has_backup) $("f-backup").checked = false;
+    $("backup-box").hidden = !$("f-backup").checked;
+  }
+  function fillBackup(backup) {
+    const target = TARGETS[$("f-instance").value] || {};
+    optionBoxes($("f-own-options"), (target.backup_fields || []).filter((f) => f.kind === "checkbox"),
+                backup && backup.options);
+    $("f-daily").value = backup ? backup.daily : 7;
+    $("f-weekly").value = backup ? backup.weekly : 4;
+    $("f-monthly").value = backup ? backup.monthly : 12;
   }
   function fillCopy(copy) {
     const target = TARGETS[$("f-instance").value] || {};
@@ -233,7 +255,9 @@
     $("f-cron").value = s ? s.cron : "";
     $("f-user").value = s && s.user || "";
     $("f-history").value = s ? s.history : 30;
-    $("f-pull").checked = s ? !!s.pull : true;
+    $("f-backup").checked = !!(s && s.backup);
+    fillBackup(s && s.backup);
+    $("f-pull").checked = s ? !!s.pull : !(s && s.backup);
     $("f-copy").checked = !!(s && s.copy);
     fillCopy(s && s.copy);
     $("f-script").checked = !!(s && s.script);
@@ -251,7 +275,8 @@
                     role: $("f-src-role"), current, note: $("f-src-note")});
   }
   $("f-link").onchange = () => offerServers({});
-  $("f-instance").onchange = () => { fillCopy(null); sync(); };
+  $("f-instance").onchange = () => { fillCopy(null); fillBackup(null); sync(); };
+  $("f-backup").onchange = sync;
   $("f-copy").onchange = sync;
   $("f-script").onchange = sync;
   for (const b of document.querySelectorAll("[data-edit]")) b.onclick = () => open(b.dataset.edit);
@@ -269,6 +294,8 @@
       backup_options: optionValues($("f-backup-options")), restore_options: optionValues($("f-restore-options")),
       keep_backups: $("f-keep").value,
     };
+    if ($("f-backup").checked) schedule.backup = {options: optionValues($("f-own-options")),
+      daily: $("f-daily").value, weekly: $("f-weekly").value, monthly: $("f-monthly").value};
     if ($("f-script").checked) schedule.script = {name: $("f-script-name").value, args: $("f-args").value.trim()};
     try {
       await post("/api/schedules/save", {original, name: $("f-name").value.trim(), schedule});

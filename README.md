@@ -16,10 +16,12 @@ script, or an Odoo that OmniaCLI starts itself.
 - **Deploy**: git pull (submodules included), update of the changed or chosen
   modules, restart; auto update in a time window; merge of what was tested
   into production, after a backup.
-- **Backups** of database and filestore, to download; **copy of production
+- **Backups** of database and filestore, to download or delete; automatic
+  ones every day, kept by a rotation (so many days, weeks and months); one
+  before every update when the instance asks for it; **copy of production
   into test**, neutralized.
-- **Schedules**: at the times of a crontab expression, a git pull, a copy
-  of a linked instance's database and a Python script on an instance.
+- **Schedules**: at the times of a crontab expression, a backup, a git pull,
+  a copy of a linked instance's database and a Python script on an instance.
 - **Jobs** shown live; an administrator stops one that hangs.
 - **Logs** in the browser, with an "errors only" filter.
 - **Links**: operate the OmniaCLI of other machines from your own.
@@ -135,6 +137,8 @@ stopped with *Stop job*.
 | Restart | ✓ | ✓ | the instance's systemd or init.d restart, `docker compose up -d` then `restart` of a compose project (a type that runs in one, through the root helper `compose-helper`), or OmniaCLI's own start of `odoo-bin` (see below) |
 | Start, Stop | ✓ | ✓ | `systemctl start`/`stop` of a systemd service (each needs its sudoers line, the **Start/Stop permission** check prints them), `docker compose up -d`/`stop` of a compose project (the helper's line), or OmniaCLI's own Odoo; a stopped Odoo stays stopped for the auto update |
 | Backup | ✓ | ✓ | `click-odoo-backupdb` → `<backup_dir>/<server>/<role>/<db>_<timestamp>.zip`, database and filestore (the backups are OmniaCLI's own: `<backup_dir>/<server>` and `<server>/<role>` are made mode 700 and every zip there 600, made, downloaded from a link or a relay, or uploaded; a folder or file of another user is left as it is); with **Without filestore** checked, the database only (`--no-filestore`), `<db>_<timestamp>_nofilestore.zip`. With **Without binary columns** checked, the binary fields kept in the database (`bytea` columns: previews and printouts of older PLM databases) are left empty: the dialog lists every one that holds data, the biggest first, with its size, and ticks those of at least **Ticked from (MB)** (10); the dialog always shows the weight of the backup and whether a restore into the same instance fits on this machine (see **Weight and room** below). The dump is made by `omniacli/odoo/binary_dump.py` in the instance's venv: `pg_dump --section` pre-data, data (`--exclude-table-data` of the tables with an emptied column) and post-data on one exported snapshot, the rows of those tables copied with the column `NULL` (`''` where `NOT NULL`), into the same zip (`dump.sql`, `manifest.json`, `filestore/`), `<db>_<timestamp>_nobinaries.zip`, restored as any other; Odoo 10 to 19 (Python 2.7 and 3). The dialog opens with the instance's last choice (`<backup_dir>/<server>/<role>/.backup_choices.json`): a column ticked or left unticked then keeps it, a column new since is ticked by its size; the backups without the dialog (Copy production to test, Copy from link, schedules, MCP) take those ticks. The backup before a merge always has the filestore and every column |
+| Backup before an update | ✓ | ✓ | with **Backup before an update** in the instance's settings (on for the production of an instance made by **New instance**): a backup (the last Backup dialog's choices) before a pull that brings commits (Pull and restart, the auto update, a schedule's pull, a repository's **Update** in the Addons tab), before **Update modules** and **Pull image**; named `pre-update_<file>.zip`, the last 3 kept. A pull that brings nothing makes none. When the backup fails, nothing is pulled or updated |
+| Delete a backup | ✓ | ✓ | the Backups tab lists each zip with its kind (automatic, before an update, by hand) and a **Delete** button: an admin's for a production, a developer's for a test; refused while a job works on the instance; in the access log |
 | pip requirements | ✓ | ✓ | `<venv_bin>/python -m pip install -r` the `requirements.txt` next to `odoo-bin` and that of every repository having one, in one call |
 | pip click-odoo | ✓ | ✓ | `<venv_bin>/python -m pip install click-odoo-contrib`, the scripts OmniaCLI runs in the venv |
 | Merge test to production | | ✓ | backup production, merge, push, update modules, restart production |
@@ -1215,6 +1219,16 @@ crontab expression of 5 fields (`0 2 * * *`: every day at 02:00, this
 computer's time; the form shows the next runs). Each step is optional, in
 this order:
 
+0. **Backup** of the instance, with the checkboxes of its Backup dialog
+   (the other choices are the last dialog's), named `scheduled_<file>.zip`,
+   then the rotation: of the `scheduled_*.zip` of the instance, the newest of
+   each of the last *days* (default 7), *weeks* (4) and *months* (12) are
+   kept, the others deleted; the backups made by hand, before an update or
+   from a link are not touched. The **Automatic backups** panel of the
+   instance's Backups tab (an admin's for a production, a developer's for a
+   test, also for the users of a workspace) is the schedule
+   `backup.<server>.<role>` with this step: every day at a time; switched off
+   it goes (or keeps its other steps).
 1. **git pull** of the instance's repositories. Alone it works as the auto
    update: the modules are updated and the instance restarted only when
    something new came. With the copy it does not restart: the restore does.

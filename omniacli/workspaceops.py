@@ -114,6 +114,8 @@ async def create_instance(job: Job, ws: Workspace, instance: str, template: stac
         "type": "docker",
         **{role: {"database": made["database"], "odoo_service": made["odoo_service"],
                   "db_service": made["db_service"], "http_port": info["http_port"], "update_modules": True,
+                  # production: a backup before every update of its code or modules
+                  "backup_before_update": role == "production",
                   "restart": {"type": "compose", "service": info["folder"], "sudo": True}, "repositories": []}
            for role, info in made["roles"].items()},
     }
