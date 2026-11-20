@@ -27,6 +27,7 @@ import json
 import os
 import re
 import shutil
+import tarfile
 import tempfile
 import zipfile
 from pathlib import Path
@@ -152,3 +153,44 @@ def backup_of(path: Path):
         with zipfile.ZipFile(path) as zf, zf.open("backup.zip") as src, open(inner, "wb") as dst:
             shutil.copyfileobj(src, dst, 4 << 20)
         yield inner
+
+
+def read_part(path: Path, name: str) -> bytes | None:
+    """A small part of an archive (repositories.json, config/...); None when absent."""
+    try:
+        with zipfile.ZipFile(path) as zf:
+            return zf.read(name)
+    except (OSError, KeyError, zipfile.BadZipFile):
+        return None
+
+
+def read_json(path: Path, name: str):
+    raw = read_part(path, name)
+    try:
+        return json.loads(raw) if raw is not None else None
+    except ValueError:
+        return None
+
+
+def extract_code(path: Path, arcname: str, target: Path) -> int:
+    """The code of a repository (code/<repo>.tar.gz) written into target, a
+    new folder: only plain files and folders inside it, never a link nor a
+    path that leaves it. The number of files."""
+    target.mkdir(parents=False)
+    root = target.resolve()
+    count = 0
+    with zipfile.ZipFile(path) as zf, zf.open(arcname) as raw, tarfile.open(fileobj=raw, mode="r|gz") as tar:
+        for member in tar:
+            dest = (root / member.name).resolve()
+            if dest != root and root not in dest.parents:
+                raise JobFailed(f"{arcname}: {member.name} leaves its folder")
+            if member.isdir():
+                dest.mkdir(parents=True, exist_ok=True)
+            elif member.isfile():
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                with tar.extractfile(member) as src, open(dest, "wb") as out:
+                    shutil.copyfileobj(src, out)
+                os.chmod(dest, 0o755 if member.mode & 0o111 else 0o644)
+                count += 1
+            # links, devices: not written
+    return count

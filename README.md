@@ -1307,6 +1307,21 @@ with the database's password), and `manifest.json` with the SHA-256 of every
 part. Restore takes the backup inside it; Verify checks every part against
 the manifest first.
 
+**New instance from a full archive** (a workspace's page, New instance › From
+a full archive; its admins): an archive sent by the browser (kept in
+`<backup_dir>/.archives/<workspace>/`, only an archive of OmniaCLI is
+taken) or one in the backups of the workspace's servers. Every part is
+checked against the manifest (one that is not: nothing made), then the
+instance is made from the archive's template (`instance.json`; it must be
+installed here), each repository cloned with the workspace's credentials and
+reset to the archive's commit, or, when its address cannot be reached or
+no longer has the commit, made from the archive's code as a git repository
+of one commit with its address kept; the archive's parameters and other
+Odoo options (within this workspace's bounds), the repositories'
+`requirements.txt`, and its database restored in production, neutralized
+unless *Neutralize* is off (a move: this becomes the instance at work).
+The archive's `pip-freeze.txt` stays in it, for reference.
+
 ### Scheduled actions
 
 The **Schedules** page (admins) runs steps on an instance at the times of a

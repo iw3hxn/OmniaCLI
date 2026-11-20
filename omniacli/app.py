@@ -219,6 +219,8 @@ WORKSPACE_ROUTES = frozenset({
     "/api/workspaces/{workspace}/parameters/save", "/api/workspaces/{workspace}/parameters/options",
     "/api/servers/{server}/{role}/remote-backups", "/api/servers/{server}/{role}/remote-backups/fetch",
     "/api/servers/{server}/{role}/backups/verify", "/api/servers/{server}/{role}/archive",
+    "/api/workspaces/{workspace}/archives", "/api/workspaces/{workspace}/archives/upload",
+    "/api/workspaces/{workspace}/instances/from-archive",
     "/workspaces/{workspace}/destinations", "/api/workspaces/{workspace}/destinations/save",
     "/api/workspaces/{workspace}/destinations/delete", "/api/workspaces/{workspace}/destinations/check",
     "/api/workspaces/{workspace}/destinations/key",
@@ -2767,6 +2769,214 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
         job = jobs.submit(f"Create {name} from {template.name}", [f"{name}/production", f"{name}/test"],
                           f"manual: {me}", action, workspace=ws.name)
+        return {"job": job.id}
+
+    # --- a new instance from a full archive (instancearchive.py) --------------
+
+    def uploaded_archives(ws: Workspace) -> Path:
+        """Where the archives sent to a workspace wait (700, 600 each)."""
+        return settings.backup_dir / ".archives" / ws.name
+
+    def workspace_archives(ws: Workspace) -> list[dict]:
+        """The full archives a new instance of ws may be made from: those sent
+        to it, and those in the backups of its servers."""
+        found = []
+        places = [("upload", uploaded_archives(ws))] + [
+            (f"{n}/{role}", settings.backup_dir / n / role) for n in ws.servers if n in settings.servers
+            for role in ROLES if getattr(settings.servers[n], role) is not None]
+        for source, folder in places:
+            if not folder.is_dir():
+                continue
+            for path in sorted(folder.glob("*.zip"), key=lambda p: p.stat().st_mtime, reverse=True):
+                if instancearchive.PREFIX not in path.name:
+                    continue
+                manifest = instancearchive.read_manifest(path)
+                if manifest is None:
+                    continue
+                found.append({"source": source, "file": path.name, "id": f"{source}/{path.name}",
+                              "size": path.stat().st_size, "made": manifest.get("made"),
+                              "of": f"{manifest.get('server')}/{manifest.get('role')}", "odoo": manifest.get("odoo"),
+                              "type": manifest.get("type")})
+        return found
+
+    def archive_path(ws: Workspace, ident: str) -> Path | None:
+        """The archive an id of workspace_archives names (nothing else)."""
+        for row in workspace_archives(ws):
+            if row["id"] == ident:
+                folder = uploaded_archives(ws) if row["source"] == "upload" else \
+                    settings.backup_dir / row["source"]
+                return folder / row["file"]
+        return None
+
+    @app.get("/api/workspaces/{workspace}/archives", dependencies=[Depends(admin)])
+    async def archives_list(workspace: str):
+        return {"archives": await asyncio.to_thread(workspace_archives, a_workspace(workspace))}
+
+    @app.post("/api/workspaces/{workspace}/archives/upload", dependencies=[Depends(admin)])
+    async def archive_upload(request: Request, workspace: str, name: str = "", me: Principal = Depends(current_user)):
+        """A full archive sent by the browser (the raw body), kept for the
+        workspace's New instance from an archive: whole, and an archive, or
+        nothing."""
+        ws = a_workspace(workspace)
+        if me.kind != "user":
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Only a user who logs in here may send an archive")
+        name = re.sub(r"[^A-Za-z0-9._-]", "_", Path(name).name)
+        if not linkcopy.BACKUP_NAME.fullmatch(name):
+            return refuse("The file must be a .zip")
+        if instancearchive.PREFIX not in name:
+            name = instancearchive.PREFIX + name
+        folder = private.backup_folder(uploaded_archives(ws))
+        dest = folder / name
+        if dest.exists():
+            return refuse(f"{name} was sent already: choose it from the list", status.HTTP_409_CONFLICT)
+        length = request.headers.get("content-length", "")
+        free = shutil.disk_usage(folder).free
+        if length.isdigit() and free - int(length) < puller.MIN_FREE:
+            return refuse(f"{name}: {free >> 20} MiB free here, not enough for {int(length) >> 20} MiB",
+                          status.HTTP_507_INSUFFICIENT_STORAGE)
+        handle, part_name = tempfile.mkstemp(dir=folder, prefix=f".{name}.", suffix=".part")
+        part = Path(part_name)
+        try:
+            with os.fdopen(handle, "wb") as out:
+                async for chunk in request.stream():
+                    out.write(chunk)
+            if instancearchive.read_manifest(part) is None:
+                return refuse(f"{name} is not a full archive of OmniaCLI (no manifest.json of one)")
+            os.replace(part, dest)
+            os.chmod(dest, 0o600)
+        except ClientDisconnect:
+            return refuse(f"{name}: the upload was interrupted")
+        finally:
+            part.unlink(missing_ok=True)
+        return {"id": f"upload/{name}"}
+
+    async def repository_from_archive(job, ws: Workspace, instance: str, role: str, row: dict, archive: Path,
+                                      options: tuple) -> Path:
+        """A repository of the archive in the role's addons, at the archive's
+        commit: cloned and reset to it; when its address cannot be reached or
+        no longer has that commit, made from the archive's code (a git
+        repository of one commit, its address kept: a later pull fetches)."""
+        target = workspaceops.addons_folder(ws, instance, role) / row["name"]
+        try:
+            await workspaceops.clone(job, ws, instance, role, row["name"], row["url"], row["branch"], options)
+            code, out = await ops.capture(["git", "cat-file", "-e", f"{row['commit']}^{{commit}}"], cwd=target)
+            if code:
+                raise JobFailed(f"{row['url']} no longer has the commit {row['commit'][:10]}")
+            await ops.run(job, ["git", "reset", "--hard", row["commit"]], cwd=target)
+            await ops.run(job, ["git", "submodule", "update", "--init", "--recursive"], cwd=target, check=False)
+            return target
+        except JobFailed as exc:
+            if not row.get("code"):
+                raise
+            job.log(f"{row['name']}: {exc}; made from the archive's code instead")
+            workspaceops.remove_clone(target)
+        count = await asyncio.to_thread(instancearchive.extract_code, archive, row["code"], target)
+        for cmd in (["git", "init", "-q", "-b", row["branch"]], ["git", "add", "-A"],
+                    ["git", "-c", "user.name=OmniaCLI", "-c", "user.email=omniacli@localhost", "commit", "-q",
+                     "-m", f"{row['name']} at {row['commit']}, from the archive {archive.name}"],
+                    ["git", "remote", "add", "origin", row["url"]]):
+            if cmd[-1]:
+                await ops.run(job, cmd, cwd=target)
+        job.log(f"{row['name']}: {count} files of the commit {row['commit'][:10]}, from the archive")
+        return target
+
+    async def instance_from_archive(job, ws: Workspace, instance: str, template, archive: Path, neutralize: bool):
+        name = workspaceops.server_name(ws, instance)
+        job.log(f"--- the archive {archive.name}: every part against its manifest")
+        bad = await asyncio.to_thread(instancearchive.check_parts, archive)
+        if bad:
+            # the name kept for it is free again
+            await rename_in_workspaces(name, None)
+            raise JobFailed(f"{archive.name}: {', '.join(bad)} not as its manifest says: nothing made")
+        values = template.values({})
+        await make_instance(job, ws, instance, template, values, None)
+        server = settings.servers[name]
+        roles = [role for role in ROLES if getattr(server, role) is not None]
+        rows = [r for r in instancearchive.read_json(archive, "repositories.json") or []
+                if isinstance(r, dict) and r.get("name") and r.get("commit")]
+        options = gitcredentials.options_for(settings, name)
+        made = {role: [] for role in roles}
+        for row in rows:
+            for role in roles:
+                path = await repository_from_archive(job, ws, instance, role, row, archive, options)
+                made[role].append({"name": row["name"], "path": str(path), "branch": row["branch"], "remote": "origin"})
+        state = instancearchive.read_json(archive, "config/omniacli.json") or {}
+        spec = {"repositories": [r["name"] for r in rows], "bounds": ws.parameter_bounds}
+        for key in ("parameters", "debug", "extra"):
+            if key in state:
+                spec[key] = state[key]
+        for role in roles:
+            try:
+                await workspaceops._helper(job, "conf", ws.name, ws.storage, instance, role, json.dumps(spec))
+            except JobFailed as exc:
+                # the bounds here may be narrower than there: the repositories at least
+                job.log(f"WARNING: the parameters of the archive are not taken ({exc}): the template's defaults")
+                await workspaceops.write_conf(job, ws, instance, role, spec["repositories"])
+        done = await set_repositories(name, made) if rows else server
+        for role in roles:
+            current = getattr(done, role)
+            pip = getattr(current.plugin, "pip_requirements", None)
+            for row in rows:
+                if pip is not None:
+                    await pip(job, current, row["name"])
+        if instancearchive.read_part(archive, "config/pip-freeze.txt"):
+            job.log("The Python packages the archive's instance had are in its config/pip-freeze.txt: the "
+                    "repositories' requirements.txt are installed, not that list")
+        production = done.production
+        job.log(f"--- the database of the archive into {production.key}" + (" (neutralized)" if neutralize else ""))
+        with instancearchive.backup_of(archive) as inner:
+            await restore_fetched(job, production, inner, {"neutralize": neutralize})
+        for role in roles:
+            if role != "production":
+                await ops.restart(job, getattr(done, role))
+        job.result = {"server": name}
+        job.log(f"{name} is made from {archive.name}")
+
+    @app.post("/api/workspaces/{workspace}/instances/from-archive", dependencies=[Depends(admin)])
+    async def instance_create_from_archive(workspace: str, payload: dict = Body(...),
+                                           me: Principal = Depends(current_user)):
+        """A new instance of the workspace from a full archive: its template,
+        its repositories at their commits, its parameters, its database (in
+        production; neutralized unless asked). A job."""
+        ws = a_workspace(workspace)
+        instance = str(payload.get("instance") or "").strip()
+        if not WORKSPACE_NAME.fullmatch(instance):
+            return refuse("An instance's name is 1-32 lower case letters, digits and -")
+        if instance == TEST_LABEL or instance in ws.subdomains:
+            return refuse(f"{instance} is a name the workspace's sites use: an instance needs another name")
+        archive = await asyncio.to_thread(archive_path, ws, str(payload.get("archive") or ""))
+        if archive is None:
+            return refuse("No such archive for this workspace", status.HTTP_404_NOT_FOUND)
+        manifest = instancearchive.read_manifest(archive) or {}
+        if manifest.get("type") != "docker":
+            return refuse(f"{archive.name} is an archive of a {manifest.get('type')} instance: a workspace's "
+                          "instance is made from one of Odoo in Docker Compose")
+        made_from = instancearchive.read_json(archive, "config/instance.json") or {}
+        template = (await asyncio.to_thread(workspaceops.templates)).get(str(made_from.get("template") or ""))
+        if template is None:
+            return refuse(f"{archive.name} was made from the template {made_from.get('template')!r}, "
+                          "not installed here")
+        name = workspaceops.server_name(ws, instance)
+        if not ws.storage or not ws.limits.get("disk_gb"):
+            return refuse(f"Workspace {ws.name} has no storage or no disk limit: the machine's admins set them")
+        if settings.storage_problem(ws):
+            return refuse(f"Workspace {ws.name} cannot be used: {settings.storage_problem(ws)}")
+        async with workspaces_lock:
+            ws = a_workspace(workspace)
+            if name in settings.servers or name in ws.servers:
+                return refuse(f"A server named {name} exists already")
+            mine = [n for n in ws.servers if n in settings.servers]
+            if ws.limits.get("instances") and len(mine) >= ws.limits["instances"]:
+                return refuse(f"Workspace {ws.name} has its {int(ws.limits['instances'])} instances already")
+            refused = await store_workspaces({**settings.workspaces,
+                                              ws.name: dataclasses.replace(ws, servers=[*ws.servers, name])})
+            if refused:
+                return refused
+        neutralize = bool(payload.get("neutralize", True))
+        job = jobs.submit(f"Create {name} from the archive {archive.name}", [f"{name}/production", f"{name}/test"],
+                          f"manual: {me}", lambda job: instance_from_archive(job, ws, instance, template, archive,
+                                                                          neutralize),
+                          workspace=ws.name)
         return {"job": job.id}
 
     # --- a new Odoo by its version only, as a hosting panel's Add instance ------

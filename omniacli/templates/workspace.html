@@ -107,6 +107,22 @@ select.role { text-transform: none; letter-spacing: 0; font-size: inherit; font-
   </div>
   <div class="form-grid" id="template-fields" style="margin-top: 8px"></div>
   <div class="actions"><button type="button" class="primary" id="create-instance">{{ _("Create") }}</button></div>
+  <details id="from-archive" style="margin-top: 14px">
+    <summary>{{ _("From a full archive") }}</summary>
+    <p class="muted" style="font-size: 13px">{{ _("A full archive made by an OmniaCLI (Backups tab › More › Full archive), here or on another machine: the instance is made from its template, its repositories at their commits, its Odoo parameters, and its database in production.") }}</p>
+    <div class="form-grid">
+      <label for="fa-name">{{ _("Name") }}</label>
+      <input type="text" id="fa-name" class="mono" placeholder="{{ _('a-z 0-9 -: the server is {server}', server=ws.name ~ '-<name>') }}">
+      <label for="fa-archive">{{ _("Archive") }}</label>
+      <select id="fa-archive"><option value="">{{ _("Loading…") }}</option></select>
+      <label for="fa-file">{{ _("Or send one") }}</label>
+      <span><input type="file" id="fa-file" accept=".zip"> <span class="muted" id="fa-progress"></span></span>
+      <label for="fa-neutralize">{{ _("Neutralize") }}</label>
+      <label style="font-weight: 400"><input type="checkbox" id="fa-neutralize" checked style="width: auto">
+        {{ _("no scheduled actions, no outgoing mail: off for a move, where this becomes the instance at work") }}</label>
+    </div>
+    <div class="actions"><button type="button" class="primary" id="fa-create">{{ _("Create from the archive") }}</button></div>
+  </details>
   {% endif %}
 </section>
 
@@ -343,6 +359,44 @@ select.role { text-transform: none; letter-spacing: 0; font-size: inherit; font-
       for (const input of fieldsBox.querySelectorAll("[data-field]")) values[input.dataset.field] = input.value;
       const data = await postWs("instances/create", {instance: document.getElementById("instance-name").value.trim(),
                                                      template: templateSelect.value, values});
+      if (data) location.href = "{{ prefix }}/jobs/" + data.job;
+    };
+  }
+  // a new instance from a full archive: one sent to the workspace or in its servers' backups
+  const faSelect = document.getElementById("fa-archive");
+  async function loadArchives(chosen) {
+    const resp = await fetch(wsBase + "archives", {headers: {Accept: "application/json"}}).catch(() => null);
+    const data = resp && resp.ok ? await resp.json() : {archives: []};
+    faSelect.length = 0;
+    if (!data.archives.length) faSelect.append(new Option({{ _("none yet: send one") | tojson }}, ""));
+    for (const a of data.archives) {
+      const where = a.source === "upload" ? {{ _("sent here") | tojson }} : a.source;
+      faSelect.append(new Option(`${a.file} · ${a.of} · Odoo ${a.odoo || "?"} · ${(a.size / 1048576).toFixed(0)} MiB · ${where}`, a.id));
+    }
+    if (chosen) faSelect.value = chosen;
+  }
+  if (faSelect) {
+    document.getElementById("from-archive").addEventListener("toggle", () => loadArchives(), {once: true});
+    document.getElementById("fa-file").onchange = (event) => {
+      const file = event.target.files[0], progress = document.getElementById("fa-progress");
+      if (!file) return;
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", wsBase + "archives/upload?name=" + encodeURIComponent(file.name));
+      xhr.setRequestHeader("Accept", "application/json");
+      xhr.upload.onprogress = (e) => { if (e.lengthComputable) progress.textContent = Math.round(e.loaded * 100 / e.total) + "%"; };
+      xhr.onload = () => {
+        let data = {};
+        try { data = JSON.parse(xhr.responseText); } catch (e) { /* not JSON */ }
+        if (xhr.status !== 200) { errorBox.textContent = data.error || data.detail || errorText(xhr.status); errorBox.hidden = false; progress.textContent = ""; return; }
+        progress.textContent = "✓"; loadArchives(data.id);
+      };
+      xhr.onerror = () => { errorBox.textContent = errorText(0); errorBox.hidden = false; };
+      xhr.send(file);
+    };
+    document.getElementById("fa-create").onclick = async () => {
+      if (!faSelect.value) return;
+      const data = await postWs("instances/from-archive", {instance: document.getElementById("fa-name").value.trim(),
+        archive: faSelect.value, neutralize: document.getElementById("fa-neutralize").checked});
       if (data) location.href = "{{ prefix }}/jobs/" + data.job;
     };
   }
