@@ -176,6 +176,14 @@ async def test_the_loop_fires_at_matching_minutes(here):
         await __import__("asyncio").sleep(0.02)
     await scheduler.stop()
     assert list(scheduler.history.data) == ["every"] and scheduler.history.data["every"][0]["trigger"] == "cron"
+    # its job ends here: a job cancelled by the loop's close while asyncio
+    # starts its git hangs the close for ever
+    job = scheduler.jobs.get(scheduler.history.data["every"][0]["job"])
+    for _ in range(500):
+        if job.finished_flag:
+            break
+        await __import__("asyncio").sleep(0.02)
+    assert job.finished_flag
 
 
 async def test_a_scheduled_copy_refuses_what_is_no_backup(here, env):
