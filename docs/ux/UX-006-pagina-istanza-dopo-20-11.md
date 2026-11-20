@@ -335,7 +335,10 @@ Scostamenti dal contratto, voluti:
 Restano aperti:
 - il pulsante di D3 nel dialogo «Entra come…» (aspetta la decisione);
 - i `title` dei pulsanti dentro i dialoghi (Annulla, conferma);
-- le misure come developer, user e a 375×812.
+- le misure come developer, user e a 375×812: **fatte il 20/11 sulla 2026.1.5448**. Developer: 5 tab, sezione
+  «Ripristino a un minuto» senza pulsanti. User: 3 tab (Panoramica, Log, Monitoraggio), assenti Backup, Impostazioni,
+  «+ Nuova staging» e «Rileggi». Telefono: nessuno scorrimento orizzontale, un primario. Resta da misurare l'admin
+  di un workspace.
 
 ## Non verificato
 
