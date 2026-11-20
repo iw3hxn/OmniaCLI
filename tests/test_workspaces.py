@@ -738,7 +738,8 @@ async def test_a_dated_staging_beside_a_production(workspaces, client, env, monk
     monkeypatch.setattr(plugin, "restore", restore)
     # srv was not made in a workspace: no staging beside it
     assert (await client.post("/api/servers/srv/stagings", headers=POST)).status_code == 400
-    assert (await client.post("/api/servers/acme-odoo/stagings", headers=post_as("mario"))).status_code == 403
+    # a user of acme who is no admin there: refused
+    assert (await client.post("/api/servers/acme-odoo/stagings", headers=post_as("luca"))).status_code == 403
     today = datetime.date.today().strftime("%Y%m%d")
     made = []
     for _ in range(2):
@@ -768,6 +769,21 @@ async def test_a_dated_staging_beside_a_production(workspaces, client, env, monk
     assert record[made[0]]["parent"] == "acme-odoo" and record[made[0]]["backup"] == "odoo_20261117.zip"
     assert (await client.get(f"/api/servers/{made[0]}/stagings", headers={"Authorization": AUTH})).json()["parent"] == "acme-odoo"
     assert settings.workspaces["acme"].servers == ["srv", "acme-odoo", *made]
+    # refreshed from its production as it is now: a new backup there, restored neutralized
+    steps.clear()
+    resp = await client.post(f"/api/servers/{made[0]}/stagings/refresh", headers=POST)
+    assert resp.status_code == 200, resp.text
+    assert (await wait_job(client, resp.json()["job"]))["status"] == "success"
+    assert steps == [("backup", "acme-odoo/production", {"no_filestore": False}),
+                     ("restore", f"{made[0]}/production", "odoo_20261117.zip", {"neutralize": True})]
+    record = stagings.load((settings.links_file or settings.servers_file).parent / stagings.FILE)
+    assert record[made[0]]["refreshed"].startswith(datetime.date.today().isoformat())
+    # not a staging, or a workspace's user who is no admin: refused
+    assert (await client.post("/api/servers/acme-odoo/stagings/refresh", headers=POST)).status_code == 404
+    assert (await client.post(f"/api/servers/{made[0]}/stagings/refresh", headers=post_as("luca"))).status_code == 403
+    # acme's admin does it too
+    resp = await client.post(f"/api/servers/{made[0]}/stagings/refresh", headers=post_as("mario"))
+    assert resp.status_code == 200 and (await wait_job(client, resp.json()["job"]))["status"] == "success"
 
 
 async def test_a_failed_new_instance_leaves_nothing(workspaces, client, env, monkeypatch):

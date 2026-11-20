@@ -207,6 +207,16 @@ select.role { text-transform: none; letter-spacing: 0; font-size: inherit; font-
   <p class="muted" style="margin: 0">{{ _("Where the automatic backups of the workspace's instances are copied, encrypted: SFTP, FTP, S3, Google Drive, Dropbox, OneDrive, WebDAV.") }}</p>
 </section>
 
+<section class="panel" id="ws-notify">
+  <h2>{{ _("Notices") }}</h2>
+  <p class="muted">{{ _("Who is told when an instance of the workspace goes down and when it comes back (it is asked for its login page every minute).") }}</p>
+  <div class="actions" style="margin: 0">
+    <input type="text" id="notify-list" class="mono" style="flex: 1; min-width: 260px" value="{{ ws.notify | join(', ') }}"
+           placeholder="{{ _('emails or webhook URLs, separated by commas') }}">
+    <button type="button" id="notify-save">{{ _("Save") }}</button>
+  </div>
+</section>
+
 <section class="panel" id="mcp-tokens">
   <h2>{{ _("MCP tokens") }}</h2>
   <p class="muted">{{ _("An AI assistant (Claude, Cursor…) reaches the workspace's instances at {url} with a token: it sees this workspace only, and does what its role lets do here.", url=mcp_url) }}</p>
@@ -392,6 +402,10 @@ select.role { text-transform: none; letter-spacing: 0; font-size: inherit; font-
       if (data) location.href = "{{ prefix }}/jobs/" + data.job;
     };
   }
+  document.getElementById("notify-save")?.addEventListener("click", async () => {
+    const list = document.getElementById("notify-list").value.split(/[\s,;]+/).filter(Boolean);
+    if (await postWs("notify", {notify: list})) location.reload();
+  });
   // the workspace's MCP tokens
   document.getElementById("token-new")?.addEventListener("click", async () => {
     const data = await postWs("tokens/save", {name: document.getElementById("token-name").value.trim(),

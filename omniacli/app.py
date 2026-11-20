@@ -38,10 +38,10 @@ from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
 from starlette.requests import ClientDisconnect, HTTPConnection
 
-from . import (backupcheck, backupchoices, checks, destinations, instancearchive, private, restoreroom, consumer, disks, gitcredentials, linkcopy, listgroups, ops, packages, plugins, pluginstore, puller, publisher,
+from . import (backupcheck, backupchoices, checks, deployhooks, destinations, instancearchive, private, restoreroom, consumer, disks, gitcredentials, linkcopy, listgroups, ops, packages, plugins, pluginstore, puller, publisher,
                schedules, selflog, sshlinks, shell, stacktemplates, templatestore, tunnel, workspacehelper, workspaceops)
 from .accesslog import AccessLog
-from . import i18n, loginas, machines, stagings
+from . import i18n, loginas, machines, stagings, workspaceweb
 from .diskhistory import DiskHistory, DiskRecorder
 from .auth import ROLES as ACCESS_ROLES
 from .auth import WORKSPACE_ROLE, Authenticator, Principal, hash_password, hash_token, new_token, verify_password
@@ -73,6 +73,7 @@ from .config import (
     matches,
     parse_link,
     parse_connection,
+    parse_notify,
     parse_options,
     parse_publication,
     parse_puller,
@@ -95,6 +96,7 @@ from .jobs import SUCCESS, JobFailed, JobManager, filter_jobs
 from .plugin_api import ENTRY_POINT_GROUP, PLUGIN_API, ActionRefused, Host, restore_fetched
 from .pullcrypto import new_key
 from .links import LIST_TIMEOUT, LinkClients, describe_error, link_headers, proxy_websocket
+from .monitor import FILE as MONITOR_FILE, Monitor
 from .logtail import read_since
 from .metrics import Sampler
 from .scheduler import AutoUpdater
@@ -204,6 +206,7 @@ WORKSPACE_ROUTES = frozenset({
     "/servers/{server}", "/servers/{server}/merge", "/servers/{server}/x/{plugin}/{action}",
     "/servers/{server}/{role}/pull", "/servers/{server}/{role}/pull-restart",
     "/api/servers/{server}/{role}/pull-preview", "/api/servers/{server}/{role}/summary",
+    "/api/servers/{server}/{role}/uptime", "/api/workspaces/{workspace}/notify",
     "/servers/{server}/{role}/restart", "/servers/{server}/{role}/start", "/servers/{server}/{role}/stop",
     "/servers/{server}/{role}/backup", "/api/servers/{server}/{role}/backups",
     "/backups/{server}/{role}/{name}", "/servers/{server}/{role}/x/{plugin}/{action}",
@@ -224,6 +227,8 @@ WORKSPACE_ROUTES = frozenset({
     "/api/workspaces/{workspace}/instances/from-archive",
     "/api/workspaces/{workspace}/archives/remote", "/api/workspaces/{workspace}/archives/fetch",
     "/api/workspaces/{workspace}/tokens/save", "/api/workspaces/{workspace}/tokens/delete",
+    "/api/servers/{server}/stagings", "/api/servers/{server}/stagings/refresh",
+    "/api/servers/{server}/{role}/deploy-hook",
     "/workspaces/{workspace}/destinations", "/api/workspaces/{workspace}/destinations/save",
     "/api/workspaces/{workspace}/destinations/delete", "/api/workspaces/{workspace}/destinations/check",
     "/api/workspaces/{workspace}/destinations/key",
@@ -608,7 +613,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 raise LookupError(f"{name}: its /mcp did not answer JSON") from None
 
         mcp_route, mcp_manager = create_mcp(settings, jobs, updater, sampler, authenticator, access_log,
-                                            lambda name, data: add_draft_server(name, data), mcp_link_call)
+                                            lambda name, data: add_draft_server(name, data), mcp_link_call,
+                                            lambda key: monitor.view(key))
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -621,6 +627,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         updater.start()
         scheduler.start()
         sampler.start()
+        monitor.start()
         disk_recorder.start()
         tunnels.start()
         ssh_tunnels.sync(settings.link_targets)
@@ -638,6 +645,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         for what, stop in (("consumers", consumers.stop), ("publications", publications.stop),
                            ("pullers", pullers.stop), ("tunnels", tunnels.stop), ("ssh tunnels", ssh_tunnels.close),
                            ("disk history", disk_recorder.stop), ("load sampler", sampler.stop),
+                           ("monitor", monitor.stop),
                            ("auto update", updater.stop), ("schedules", scheduler.stop),
                            ("link clients", link_clients.close)):
             # a task of its own, waited for and never cancelled from here: a
@@ -859,6 +867,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if state in ("inactive", "failed", "deactivating"):
             return "stopped"
         return "unknown"
+
+    # monitoring with notices (monitor.py): started with the app
+    monitor = Monitor(settings, jobs, run_state, settings.servers_file.parent / MONITOR_FILE)
 
     async def run_states(servers) -> dict[str, str]:
         """{instance key: run_state} of the servers' instances, asked together."""
@@ -1238,6 +1249,28 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if ops.PACKAGE_CHOICE in only:
             names.append(f"package {instance.package.name}")
         return f"{what} {instance.key} ({', '.join(names)})"
+
+    @app.get("/api/servers/{server}/{role}/uptime")
+    async def instance_uptime(server: str, role: str, user: Principal = Depends(developer)):
+        """The monitor's view of an instance: up, down or stopped, since when,
+        its uptime over the last day, its last answer time."""
+        return monitor.view(get_instance(server, role).key)
+
+    @app.post("/api/workspaces/{workspace}/notify", dependencies=[Depends(admin)])
+    async def workspace_notify(workspace: str, payload: dict = Body(...)):
+        """Whom the monitor tells when an instance of the workspace goes down."""
+        ws = a_workspace(workspace)
+        try:
+            notify_list = parse_notify(payload.get("notify"), "notify")
+        except ConfigError as exc:
+            return refuse(str(exc))
+        async with workspaces_lock:
+            current = a_workspace(workspace)
+            refused = await store_workspaces({**settings.workspaces,
+                                              ws.name: dataclasses.replace(current, notify=notify_list)})
+            if refused:
+                return refused
+        return {"ok": True, "notify": notify_list}
 
     @app.get("/api/servers/{server}/{role}/summary")
     async def instance_summary(server: str, role: str, user: Principal = Depends(developer)):
@@ -3166,7 +3199,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         for name, info in stagings.load(stagings_file).items():
             srv = settings.servers.get(name)
             if info.get("parent") == server and srv is not None and srv.production is not None:
-                rows.append({"server": name, "created": info.get("created", ""), "backup": info.get("backup", ""),
+                rows.append({"server": name, "created": info.get("refreshed") or info.get("created", ""),
+                             "backup": info.get("backup", ""),
                              "url": srv.production.web_url, "port": srv.production.plugin.web_port(srv.production),
                              "busy": server_busy(name)})
         return sorted(rows, key=lambda r: r["created"], reverse=True)
@@ -3231,6 +3265,37 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         job = jobs.submit(f"Staging {name} of {server}", [f"{server}/production", f"{name}/production", f"{name}/test"],
                           f"manual: {me}", action, workspace=ws.name)
         return {"job": job.id, "server": name}
+
+    @app.post("/api/servers/{server}/stagings/refresh", dependencies=[Depends(admin)])
+    async def staging_refresh(server: str, me: Principal = Depends(current_user)):
+        """A staging made again from its production as it is now: a new
+        backup of the parent's production restored into the staging's,
+        neutralized; its code stays as it is (what is being tried there)."""
+        info = stagings.load(stagings_file).get(server) or {}
+        parent = info.get("parent")
+        srv, parent_srv = settings.servers.get(server), settings.servers.get(parent or "")
+        if srv is None or srv.production is None or parent_srv is None or parent_srv.production is None:
+            return refuse(f"{server} is not a staging of a production here", status.HTTP_404_NOT_FOUND)
+        if not srv.production.plugin.has_restore or not parent_srv.production.plugin.has_backup:
+            return refuse(f"{server} cannot be loaded from {parent}")
+        if server_busy(server) or server_busy(parent):
+            return refuse("A job is running on the staging or its production: wait for it")
+
+        async def action(job):
+            prod, target = settings.servers[parent].production, settings.servers[server].production
+            job.log(f"--- a new backup of {prod.key}")
+            backup_zip = await ops.backup_into(job, prod, backup_folder(prod), {"no_filestore": False})
+            await target.plugin.restore(job, target, backup_zip, {"neutralize": True})
+            data = stagings.load(stagings_file)
+            data[server] = {**data.get(server, {}), "parent": parent, "backup": backup_zip.name,
+                            "refreshed": datetime.datetime.now().isoformat(timespec="seconds")}
+            await asyncio.to_thread(stagings.save, stagings_file, data)
+            job.log(f"{server} has the data of {prod.key} of now, neutralized; its code is as it was")
+
+        ws = workspace_of(server)
+        job = jobs.submit(f"Refresh the staging {server} from {parent}", [f"{parent}/production", f"{server}/production"],
+                          f"manual: {me}", action, workspace=ws[0].name if ws else "")
+        return {"job": job.id}
 
     @app.post("/api/stagings/mark", dependencies=[Depends(admin)])
     async def staging_mark(payload: dict = Body(...)):
@@ -5053,6 +5118,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                            "password": current.smtp_password, "from": current.mail_from}}
         elif isinstance(mail, dict) and not mail.get("password"):
             payload = {**payload, "mail": {**mail, "password": settings.options.smtp_password}}
+        if "monitor" not in payload:
+            payload = {**payload, "monitor": {"notify": list(settings.options.monitor_notify)}}
         try:
             options = parse_options(payload)
         except ConfigError as exc:
@@ -5345,6 +5412,87 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             scheduler.schedules = updated
             scheduler.history.keep_only(updated)
         return {"ok": True, **backup_schedule_view(instance, me)}
+
+    # --- deploy on push (deployhooks.py) -------------------------------------
+
+    deploy_hooks_file = settings.servers_file.parent / deployhooks.FILE
+
+    def deploy_hook_view(request: Request, instance: Instance, me: Principal) -> dict:
+        hook = deployhooks.load(deploy_hooks_file).get(instance.key) or {}
+        # on the instance's own name when it has one (its nginx passes it here):
+        # OmniaCLI itself may answer on 127.0.0.1 only
+        url = (f"{instance.site}{workspaceweb.HOOKS_PATH}deploy/{instance.server}/{instance.role}" if instance.site
+               else str(request.base_url).rstrip("/") + f"/hooks/deploy/{instance.server}/{instance.role}")
+        return {"enabled": bool(hook.get("secret")), "url": url,
+                "last": hook.get("last"), "can_edit": me.can(backup_role(instance)),
+                "repositories": [r.name for r in instance.repositories]}
+
+    @app.get("/api/servers/{server}/{role}/deploy-hook", dependencies=[Depends(developer)])
+    async def deploy_hook_get(request: Request, server: str, role: str, me: Principal = Depends(current_user)):
+        return deploy_hook_view(request, get_instance(server, role), me)
+
+    @app.post("/api/servers/{server}/{role}/deploy-hook")
+    async def deploy_hook_save(request: Request, server: str, role: str, payload: dict = Body(...),
+                               me: Principal = Depends(current_user)):
+        """Deploy on push switched on (a new secret, in the answer once: the
+        address and it go in the repository's webhook) or off."""
+        instance = get_instance(server, role)
+        if not me.can(backup_role(instance)):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, f"The {backup_role(instance)} role is required")
+        data = deployhooks.load(deploy_hooks_file)
+        secret = None
+        if payload.get("enabled"):
+            secret = deployhooks.new_secret()
+            data[instance.key] = {"secret": secret, "by": me.name}
+        else:
+            data.pop(instance.key, None)
+        await asyncio.to_thread(deployhooks.save, deploy_hooks_file, data)
+        return {**deploy_hook_view(request, instance, me), "secret": secret}
+
+    async def deploy_hook_call(request: Request):
+        """A push told by GitHub, GitLab, Bitbucket or a CI: with the
+        instance's secret, the repository pushed pulled if the instance
+        follows that branch, then the changed modules and a restart. A
+        Starlette route: no login, the secret is its check."""
+        server, role = request.path_params["server"], request.path_params["role"]
+        instance = settings.instance(server, role) if role in ROLES else None
+        hook = deployhooks.load(deploy_hooks_file).get(f"{server}/{role}") or {}
+        body = await request.body()
+        headers = {k.lower(): v for k, v in request.headers.items()}
+        ip = request.client.host if request.client else ""
+        if instance is None or not deployhooks.verified(headers, body[:deployhooks.MAX_BODY], hook.get("secret", "")):
+            access_log.record("failed", "hook", "", ip, f"deploy {server}/{role}")
+            return JSONResponse({"error": "Unknown instance or wrong secret"}, status_code=403)
+        if headers.get("x-github-event") == "ping" or headers.get("x-gitlab-event") == "System Hook":
+            return JSONResponse({"ok": True, "pong": True})
+        branch, urls = deployhooks.pushed(body)
+        followed = []
+        for repo in instance.repositories:
+            code, out = await ops.capture(repo.git("remote", "get-url", repo.remote), cwd=repo.path)
+            if code == 0 and deployhooks.host_path(out.strip()) in urls and repo.branch == branch:
+                followed.append(repo.name)
+        record = {"time": datetime.datetime.now().isoformat(timespec="seconds"), "branch": branch}
+        if not followed:
+            record["result"] = f"nothing to do: {instance.key} follows no pushed branch {branch or '?'} of that repository"
+            job = None
+        else:
+            job = jobs.submit(f"Deploy on push {', '.join(followed)} to {instance.key}", [instance.key],
+                              f"push ({branch})", lambda job: ops.pull_restart(
+                                  job, instance, only_if_changed=True, only=set(followed),
+                                  backup_folder=backup_folder(instance)),
+                              workspace=(workspace_of(server) or (None,))[0].name if workspace_of(server) else "")
+            record.update(result="deploy", job=job.id, repositories=followed)
+        access_log.record("action", "hook", "push", ip, f"deploy {instance.key}: {record['result']}")
+        data = deployhooks.load(deploy_hooks_file)
+        if instance.key in data:
+            data[instance.key]["last"] = record
+            await asyncio.to_thread(deployhooks.save, deploy_hooks_file, data)
+        return JSONResponse({"ok": True, **({"job": job.id} if job else {"note": record["result"]})},
+                            status_code=202 if job else 200)
+
+    app.add_route("/hooks/deploy/{server}/{role}", deploy_hook_call, methods=["POST"])
+    # the same on an instance's own name, which its nginx passes here
+    app.add_route(workspaceweb.HOOKS_PATH + "deploy/{server}/{role}", deploy_hook_call, methods=["POST"])
 
     @app.post("/api/servers/{server}/{role}/backups/delete")
     async def backup_delete(request: Request, server: str, role: str, payload: dict = Body(...),

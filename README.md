@@ -1279,6 +1279,40 @@ gets a JSON `{"text": ...}`: Slack's and Teams' incoming webhooks,
 Telegram's `https://api.telegram.org/bot<token>/sendMessage?chat_id=<id>`,
 ntfy. Only a webhook's host is ever written in a log.
 
+### Stagings, deploy on push, monitoring
+
+**Refresh from production** (a staging's page, the admins of the machine or
+of its workspace): a new backup of the parent's production restored into the
+staging's, neutralized; its code stays as it is, and the date of the copy is
+the refresh's.
+
+**Deploy on push** (an instance's Settings tab; a production's by an admin):
+switched on, it gives an address and a secret for the repository's webhook
+(GitHub: content type JSON, the secret signs the body, `X-Hub-Signature-256`;
+GitLab: the secret as its token, `X-Gitlab-Token`; Bitbucket and a CI:
+`X-OmniaCLI-Token`). A push of the branch an instance follows, of one of its
+repositories (matched by address, https or ssh), pulls that repository,
+updates the changed modules (a backup first when the instance asks it) and
+restarts: Git pull and restart of that repository alone. Another branch, a
+tag, an unknown repository change nothing; a call without the secret is
+refused and written in the access log. The secret is in `deploy-hooks.json`
+next to the servers file (mode 600), shown once; **New secret** replaces it.
+The address is on the instance's own name (`/.omniacli/hooks/deploy/...`,
+which its nginx passes to OmniaCLI: published again after an upgrade) when
+it has one, OmniaCLI's otherwise.
+
+**Monitoring** (`monitor.py`): every minute each live instance is asked for
+`/web/login` on its own port; it is down after 3 failed checks in a row while
+its service says it runs (one stopped on purpose is *stopped*), and told when
+it goes down and when it comes back. Each hour the disks of the backups and of
+the workspaces' storage are measured (less than 10% free: told once a day),
+each day the certificate of each workspace's names is read (ending within 14
+days: told once a day). Told: the machine's list (Options › Monitoring) and
+the workspace's (its page, **Notices**), emails and webhooks as the scheduled
+actions' notices. The head of the Environments tab says whether it answers,
+since when, its uptime over the last 24 hours and its answer time; MCP's
+`diagnose_instance` too. The last day of checks is kept in `monitor.json`.
+
 ### Is a backup good
 
 Every backup made here has its **SHA-256** written when it is made, in

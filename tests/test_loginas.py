@@ -208,6 +208,9 @@ def test_the_workspace_site_passes_the_path_to_omniacli(tmp_path):
     text = workspaceweb.conf_text("acme", sites, ("/c/f.pem", "/c/k.pem"), False, "127.0.0.1:8090")
     block = text.split(f"location = {loginas.LOGIN_PATH} {{", 1)[1].split("}", 1)[0]
     assert "proxy_pass http://127.0.0.1:8090;" in block and "proxy_set_header Host $host;" in block
+    # and the webhooks of deploy on push
+    block = text.split(f"location ^~ {workspaceweb.HOOKS_PATH} {{", 1)[1].split("}", 1)[0]
+    assert "proxy_pass http://127.0.0.1:8090;" in block
     assert loginas.LOGIN_PATH not in workspaceweb.conf_text("acme", sites, ("/c/f.pem", "/c/k.pem"), False)
     # port 80 sends everything to https, the login path too
     assert loginas.LOGIN_PATH not in workspaceweb.conf_text("acme", sites, None, False, "127.0.0.1:8090")

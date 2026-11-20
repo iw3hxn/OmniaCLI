@@ -254,7 +254,7 @@ async def test_acting_on_instances(client, env):
     assert list((env["settings"].backup_dir / "srv" / "production").glob("*.zip"))
     diagnosis = await call(client, "diagnose_instance", server_name="srv", role="production")
     assert diagnosis["server"] == "srv" and diagnosis["last_backup"] and diagnosis["last_jobs"]
-    assert "log_errors" in diagnosis and "state" in diagnosis
+    assert "log_errors" in diagnosis and "state" in diagnosis and diagnosis["reachable"]["state"] == "unknown"
     # the type's actions
     actions = await call(client, "list_actions", server_name="srv", role="test")
     assert actions and all({"id", "label", "role", "params"} <= set(a) for a in actions)

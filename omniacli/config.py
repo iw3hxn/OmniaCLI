@@ -1030,6 +1030,8 @@ class Workspace:
     # the bounds of the editable Odoo parameters for this workspace, set by
     # the machine's admins over the template's: {name: [min, max]}
     parameter_bounds: dict[str, list[int]] = field(default_factory=dict)
+    # who is told when one of its instances goes down (monitor.py), set by its admins
+    notify: list[str] = field(default_factory=list)
 
     def instances(self) -> list[str]:
         """The instances of the workspace: its servers <name>-<instance>."""
@@ -1054,6 +1056,8 @@ class Workspace:
             data["certificate"] = self.certificate
         if self.parameter_bounds:
             data["parameter_bounds"] = {k: list(v) for k, v in self.parameter_bounds.items()}
+        if self.notify:
+            data["notify"] = list(self.notify)
         return data
 
 
@@ -1124,7 +1128,8 @@ def parse_workspace(name: str, data: dict, storage_roots=()) -> Workspace:
         if not re.fullmatch(r"[a-z_]{1,40}", str(key)) or low > high:
             raise ConfigError(f"{where}.parameter_bounds.{key}: a parameter name and min <= max")
         bounds[str(key)] = [low, high]
-    return replace(ws, main=main, subdomains=subdomains, certificate=certificate, parameter_bounds=bounds)
+    return replace(ws, main=main, subdomains=subdomains, certificate=certificate, parameter_bounds=bounds,
+                   notify=parse_notify(data.get("notify"), f"{where}.notify"))
 
 
 def parse_workspaces(data, storage_roots=()) -> dict[str, Workspace]:
@@ -1328,9 +1333,31 @@ class Options:
     smtp_user: str = ""
     smtp_password: str = ""
     mail_from: str = ""
+    # who is told when an instance goes down, a disk fills, a certificate ends
+    monitor_notify: list = field(default_factory=list)
 
 
 SMTP_SECURITY = ("starttls", "ssl", "none")
+# whom a notice goes to: an email address (the SMTP server of Options) or a
+# webhook (https, a JSON {"text": ...})
+NOTIFY_EMAIL = re.compile(r"[^@\s<>,;]{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,63}")
+NOTIFY_WEBHOOK = re.compile(r"https://[^\s]{4,2000}")
+NOTIFY_MAX = 10
+
+
+def parse_notify(value, where: str) -> list[str]:
+    """Emails and https webhook URLs, a list or a text separated by commas."""
+    if value in (None, ""):
+        return []
+    if isinstance(value, str):
+        value = [v for v in re.split(r"[\s,;]+", value) if v]
+    if not isinstance(value, list) or len(value) > NOTIFY_MAX:
+        raise ConfigError(f"{where}: at most {NOTIFY_MAX} addresses or webhook URLs")
+    found = [str(v).strip() for v in value if str(v).strip()]
+    bad = [v for v in found if not (NOTIFY_EMAIL.fullmatch(v) or NOTIFY_WEBHOOK.fullmatch(v))]
+    if bad:
+        raise ConfigError(f"{where}: {bad[0]!r} is neither an email address nor an https:// URL")
+    return list(dict.fromkeys(found))
 
 
 def _whole(value, where: str, limits: tuple[int, int]) -> int:
@@ -1373,9 +1400,13 @@ def parse_options(data) -> Options:
         raise ConfigError(f"mail.security: one of {', '.join(SMTP_SECURITY)}")
     if texts["from"] and "@" not in texts["from"]:
         raise ConfigError("mail.from: an email address")
+    monitor = data.get("monitor") or {}
+    if not isinstance(monitor, dict):
+        raise ConfigError("monitor must be a mapping")
     return Options(shell_font_size=size, tunnel_idle_hours=idle, tunnel_bind=bind, tunnel_ports=ports,
                    smtp_host=texts["host"], smtp_port=port, smtp_security=security, smtp_user=texts["user"],
-                   smtp_password=texts["password"], mail_from=texts["from"])
+                   smtp_password=texts["password"], mail_from=texts["from"],
+                   monitor_notify=parse_notify(monitor.get("notify"), "monitor.notify"))
 
 
 def load_options(path: Path) -> Options:
@@ -1400,6 +1431,8 @@ def save_options(path: Path, options: Options) -> None:
     if options.smtp_host:
         data["mail"] = {"host": options.smtp_host, "port": options.smtp_port, "security": options.smtp_security,
                         "user": options.smtp_user, "password": options.smtp_password, "from": options.mail_from}
+    if options.monitor_notify:
+        data["monitor"] = {"notify": list(options.monitor_notify)}
     text = yaml.safe_dump(data, sort_keys=False)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")

@@ -25,7 +25,7 @@ import yaml
 from croniter import croniter
 
 from . import backupcheck, destinations, instancearchive, linkcopy, notify, ops
-from .config import ROLES, SERVER_NAME, ConfigError, LinkSource, parse_link_source
+from .config import ROLES, SERVER_NAME, ConfigError, LinkSource, parse_link_source, parse_notify
 from .jobs import FINISHED, Job, JobFailed, JobManager
 from .plugin_api import restore_fetched
 from .links import link_headers
@@ -45,9 +45,6 @@ LINK_ROLE = "developer"
 SCHEDULED_PREFIX = "scheduled_"
 # the name of a destination (destinations.NAME), whom a run tells
 DESTINATION_NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
-EMAIL = re.compile(r"[^@\s<>,;]{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,63}")
-WEBHOOK = re.compile(r"https://[^\s]{4,2000}")
-NOTIFY_MAX = 10
 # the rotation of a backup step: the newest backup of each of the last
 # so many days, weeks and months
 DEFAULT_ROTATION = {"daily": 7, "weekly": 4, "monthly": 12}
@@ -220,20 +217,12 @@ def parse_schedule(name: str, data: dict) -> Schedule:
         except ValueError as exc:
             raise ConfigError(f"{where}.script.args: {exc}") from None
         script = ScriptStep(script_name, args)
-    notify = data.get("notify") or []
-    if isinstance(notify, str):
-        notify = [n for n in re.split(r"[\s,;]+", notify) if n]
-    if not isinstance(notify, list) or len(notify) > NOTIFY_MAX:
-        raise ConfigError(f"{where}.notify: at most {NOTIFY_MAX} addresses or webhook URLs")
-    notify = [str(n).strip() for n in notify if str(n).strip()]
-    bad = [n for n in notify if not (EMAIL.fullmatch(n) or WEBHOOK.fullmatch(n))]
-    if bad:
-        raise ConfigError(f"{where}.notify: {bad[0]!r} is neither an email address nor an https:// URL")
+    notify = parse_notify(data.get("notify"), f"{where}.notify")
     schedule = Schedule(
         name=name, instance=instance, cron=check_cron(data.get("cron"), f"{where}.cron"),
         enabled=bool(data.get("enabled", True)), user=user, pull=bool(data.get("pull", False)),
         backup=backup, copy=copy, script=script, history=_positive(data.get("history"), DEFAULT_HISTORY, f"{where}.history"),
-        notify=list(dict.fromkeys(notify)),
+        notify=notify,
     )
     if not (schedule.backup or schedule.pull or schedule.copy or schedule.script):
         raise ConfigError(f"{where}: choose at least one step (backup, git pull, copy from link, script)")

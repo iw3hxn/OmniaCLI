@@ -244,7 +244,11 @@
 {% if is_staging %}
 {# a staging OmniaCLI made has its backup and was neutralized; one a hosting panel made (told by its name) may not be #}
 {% if stagings.parent.backup %}
-<div class="note-box">{{ _("Copy of") }} <a href="{{ prefix }}/servers/{{ parent }}">{{ host_of(stagings.parent.url, parent) }}</a> {{ _("of {date}", date=when(stagings.parent.created)) }}, {{ _("neutralized: no outgoing mail, no scheduled actions.") }}</div>
+<div class="note-box" style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap">
+  <span>{{ _("Copy of") }} <a href="{{ prefix }}/servers/{{ parent }}">{{ host_of(stagings.parent.url, parent) }}</a> {{ _("of {date}", date=when(stagings.parent.refreshed or stagings.parent.created)) }}, {{ _("neutralized: no outgoing mail, no scheduled actions.") }}</span>
+  {% if is_admin_here %}<button type="button" class="small" id="staging-refresh" {{ off }}
+    title="{{ _('Its data again from the production as it is now (a new backup there, neutralized here); its code stays as it is.') }}">{{ icon("restart") }}{{ _("Refresh from production") }}</button>{% endif %}
+</div>
 {% else %}
 <div class="note-box">{{ _("Staging of") }} <a href="{{ prefix }}/servers/{{ parent }}">{{ host_of(stagings.parent.url, parent) }}</a>{% if stagings.parent.created %} {{ _("of {date}", date=when(stagings.parent.created)) }}{% endif %}, {{ _("made outside OmniaCLI: OmniaCLI does not know whether it is neutralized, check its outgoing mail and scheduled actions.") }}</div>
 {% endif %}
@@ -275,6 +279,7 @@
       <dd><a href="{{ prefix }}/servers/{{ server.name }}?view=production">{{ host_of(server.production.web_url, server.name) }}</a></dd>
       {% endif %}
       <dt>{{ _("Odoo version") }}</dt><dd data-sum="version"><span class="muted">{{ _("Reading…") }}</span></dd>
+      <dt>{{ _("Reachable") }}</dt><dd data-sum="uptime"><span class="muted">…</span></dd>
       <dt>{{ _("Odoo workers") }}</dt><dd data-sum="workers"><span class="muted">…</span></dd>
       {% set db = inst.plugin.describe(inst).database if inst.plugin else none %}
       {% if db %}<dt>{{ _("Database") }}</dt><dd class="mono">{{ db }}</dd>{% endif %}
@@ -621,6 +626,21 @@
     {% endfor %}
   </table>
   </div>
+  {% if can_act and inst.repositories %}
+  {# deploy on push: the repository's webhook calls the instance (deployhooks.py) #}
+  <div class="deploy-hook" data-api="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}/deploy-hook" hidden>
+    <h3 style="margin: 16px 0 6px; font-size: 15px">{{ _("Deploy on push") }}</h3>
+    <p class="muted" style="font-size: 13px; margin: 0 0 8px">{{ _("A push on the branch of one of its repositories pulls it, updates the changed modules (a backup first when the instance asks it) and restarts: the address and the secret go in the repository's webhook (GitHub: Settings › Webhooks, content type JSON; GitLab: Settings › Webhooks, Push events).") }}</p>
+    <label><input type="checkbox" id="dh-enabled" style="width: auto"> {{ _("On") }}</label>
+    <div id="dh-details" hidden style="margin-top: 8px">
+      <div class="muted" style="font-size: 13px">{{ _("Address") }}</div><pre class="copyable mono" id="dh-url"></pre>
+      <div id="dh-secret-box" hidden><div class="muted" style="font-size: 13px">{{ _("Secret: copy it now, it is not shown again") }}</div><pre class="copyable mono" id="dh-secret"></pre></div>
+      <p class="muted" id="dh-last" style="font-size: 13px"></p>
+      <button type="button" class="small" id="dh-new">{{ _("New secret") }}</button>
+    </div>
+    <p class="error" id="dh-error"></p>
+  </div>
+  {% endif %}
 </section>
 {% endif %}
 
@@ -867,6 +887,37 @@
     if (!resp.ok || !data.job) { alert(data.error || data.detail || resp.status); return; }
     location.href = `{{ prefix }}/jobs/${data.job}`;
   });
+  // deploy on push: switched on gives the address and a secret, once
+  (async function () {
+    const box = document.querySelector(".deploy-hook");
+    if (!box) return;
+    const D = {last: {{ _("Last push: {time}, {result}.") | tojson }}, newQ: {{ _("A new secret: the webhook with the old one stops working. Go on?") | tojson }},
+               offQ: {{ _("Switch deploy on push off? The webhook's calls will change nothing.") | tojson }}};
+    function draw(data) {
+      box.hidden = false;
+      document.getElementById("dh-enabled").checked = data.enabled;
+      document.getElementById("dh-enabled").disabled = !data.can_edit;
+      document.getElementById("dh-new").hidden = !data.can_edit;
+      document.getElementById("dh-details").hidden = !data.enabled;
+      document.getElementById("dh-url").textContent = data.url;
+      if (data.secret) { document.getElementById("dh-secret").textContent = data.secret; document.getElementById("dh-secret-box").hidden = false; }
+      document.getElementById("dh-last").textContent = data.last ? D.last.replace("{time}", data.last.time.replace("T", " ")).replace("{result}", data.last.result) : "";
+    }
+    async function save(enabled) {
+      const resp = await fetch(box.dataset.api, {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
+                                                 body: JSON.stringify({enabled})});
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) { document.getElementById("dh-error").textContent = data.error || data.detail || resp.status; return; }
+      draw(data);
+    }
+    const resp = await fetch(box.dataset.api).catch(() => null);
+    if (resp && resp.ok) draw(await resp.json());
+    document.getElementById("dh-enabled").addEventListener("change", (e) => {
+      if (!e.target.checked && !confirm(D.offQ)) { e.target.checked = true; return; }
+      save(e.target.checked);
+    });
+    document.getElementById("dh-new").addEventListener("click", () => { if (confirm(D.newQ)) save(true); });
+  })();
   // the head of the Environments tab: read after the page, a git fetch and the registry take a while
   (async function () {
     const box = document.querySelector(".inst-summary");
@@ -877,8 +928,27 @@
                imageSame: {{ _("the newest image") | tojson }}, differences: {{ _("differences") | tojson }},
                updateQ: {{ _("Back up if the instance asks it, pull {repo}, update the changed modules and restart?") | tojson }},
                pullQ: {{ _("Pull the newer image and make the containers again?") | tojson }},
-               none: {{ _("none") | tojson }}, failed: {{ _("Cannot be read: {error}") | tojson }}};
+               none: {{ _("none") | tojson }}, failed: {{ _("Cannot be read: {error}") | tojson }},
+               up: {{ _("up") | tojson }}, down: {{ _("down") | tojson }}, stopped: {{ _("stopped") | tojson }},
+               unknownState: {{ _("not checked yet") | tojson }}, uptime: {{ _("{pct}% in the last 24 hours") | tojson }},
+               answers: {{ _("answers in {ms} ms") | tojson }}, since: {{ _("since {time}") | tojson }}};
     const field = (name) => box.querySelector(`[data-sum="${name}"]`);
+    // the monitor's view: up, down, stopped, and the uptime of the last day
+    fetch(box.dataset.summary.replace(/summary$/, "uptime")).then((r) => r.ok ? r.json() : null).then((u) => {
+      const cell = field("uptime");
+      if (!u) { cell.textContent = "—"; return; }
+      const word = {up: S.up, down: S.down, stopped: S.stopped}[u.state] || S.unknownState;
+      const badge = document.createElement("span");
+      badge.className = "badge " + ({up: "ok", down: "error", stopped: "warn"}[u.state] || "");
+      badge.textContent = word;
+      cell.replaceChildren(badge);
+      const said = [];
+      if (u.uptime_24h !== null && u.uptime_24h !== undefined) said.push(S.uptime.replace("{pct}", u.uptime_24h));
+      if (u.last_ms) said.push(S.answers.replace("{ms}", u.last_ms));
+      if (u.since) said.push(S.since.replace("{time}", u.since.replace("T", " ")));
+      const text = document.createElement("span"); text.className = "muted"; text.textContent = said.join(" · ");
+      cell.append(text);
+    }).catch(() => { field("uptime").textContent = "—"; });
     let data;
     try {
       const resp = await fetch(box.dataset.summary, {headers: {Accept: "application/json"}});
@@ -1273,6 +1343,9 @@
          typed === {{ server.name | tojson }});
   });
   {% endif %}
+  document.getElementById("staging-refresh")?.addEventListener("click", () => post(
+    {{ (prefix ~ "/api/servers/" ~ server.name ~ "/stagings/refresh") | tojson }}, {},
+    confirm({{ _("Replace the data of {server} with those of its production as they are now? What was done on the staging is lost; its code stays.", server=server.name) | tojson }})));
   const deleteStaging = document.getElementById("staging-delete");
   {% if stagings and stagings.parent and stagings.workspace %}
   if (deleteStaging) deleteStaging.addEventListener("click", () => {

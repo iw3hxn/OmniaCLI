@@ -149,11 +149,12 @@ def _rpc_summary(body: bytes) -> str:
 
 def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampler: Sampler,
                authenticator: Authenticator, access_log: AccessLog, add_draft,
-               link_call=None) -> tuple[Route, object]:
+               link_call=None, uptime=None) -> tuple[Route, object]:
     """The /mcp route and the session manager to run in the app's lifespan.
     add_draft(name, data): the app's own way to add a draft server;
     link_call(link, user, role, payload): a JSON-RPC payload to the /mcp of
-    a linked OmniaCLI, its answer (LookupError: no such link)."""
+    a linked OmniaCLI, its answer (LookupError: no such link); uptime(key):
+    the monitor's view of an instance."""
     server = MCPServer(name="OmniaCLI", instructions=_instructions())
 
     def caller(ctx: Context) -> str:
@@ -556,7 +557,8 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
     @server.tool()
     async def diagnose_instance(server_name: str, ctx: Context, role: str = "production") -> dict:
         """Everything to tell what is wrong with an instance, in one answer:
-        whether it runs, CPU and memory, the ERROR records of its log (the
+        whether it runs, whether it answers (the monitor: since when, uptime
+        of the last day), CPU and memory, the ERROR records of its log (the
         last 30, with tracebacks), its last jobs (a failed one with its error
         and the end of its log), its last backup and the last restore tried."""
         inst = instance(server_name, role, ctx)
@@ -578,6 +580,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         return {
             "server": inst.server, "role": inst.role, "type": inst.type, "state": state,
             "load": series[-1] if series else None, "job_running": jobs.is_busy(inst.key),
+            "reachable": uptime(inst.key) if uptime else None,
             "log_errors": errors,
             "last_jobs": [_job_dict(j, tail=15 if j.status == "failed" else 0) for j in recent],
             "last_backup": backups[0] if backups else None,

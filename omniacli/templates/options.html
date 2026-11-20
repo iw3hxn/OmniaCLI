@@ -65,6 +65,15 @@
       <input type="email" id="mail-from" class="mono" value="{{ options.mail_from }}" placeholder="omniacli@example.com">
     </div>
   </section>
+  <section class="panel">
+    <h2 style="margin-bottom: 4px">{{ _("Monitoring") }}</h2>
+    <p class="muted" style="font-size: 13px; margin-top: 0">{{ _("Every minute each instance is asked for its login page; each hour the disks are measured, each day the certificates read. Told: when an instance goes down (3 checks in a row) and comes back, a disk with less than 10% free, a certificate that ends within 14 days. Each workspace's admins add their own on its page.") }}</p>
+    <div class="form-grid">
+      <label for="monitor-notify">{{ _("Tell") }}</label>
+      <input type="text" id="monitor-notify" class="mono" value="{{ options.monitor_notify | join(', ') }}"
+             placeholder="{{ _('emails or webhook URLs, separated by commas') }}">
+    </div>
+  </section>
   <div class="actions">
     <button type="submit" class="primary">{{ _("Save") }}</button>
     <a class="button" href="{{ prefix }}/">{{ _("Cancel") }}</a>
@@ -90,6 +99,7 @@ document.getElementById("form").addEventListener("submit", async (ev) => {
              user: document.getElementById("mail-user").value.trim(),
              password: document.getElementById("mail-password").value,
              from: document.getElementById("mail-from").value.trim()},
+      monitor: {notify: document.getElementById("monitor-notify").value.split(/[\s,;]+/).filter(Boolean)},
     }),
   }).catch(() => null);
   const data = resp ? await resp.json().catch(() => ({})) : {};

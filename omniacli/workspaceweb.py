@@ -19,6 +19,9 @@ TIMEOUT = "720s"
 HASH_BUCKET = 256
 # the path of the Log in as links (loginas.LOGIN_PATH), passed to OmniaCLI
 LOGIN_PATH = "/.omniacli/login"
+# the addresses of deploy on push (deployhooks.py), passed to OmniaCLI too:
+# a repository's webhook reaches it on the instance's own name
+HOOKS_PATH = "/.omniacli/hooks/"
 
 _HEADERS = (
     ("Host", "$host"),
@@ -39,7 +42,8 @@ def conf_text(workspace: str, sites: list[dict], tls: tuple[str, str] | None, ip
     answers the challenges and sends the rest to https; without a
     certificate yet (tls None) it answers 503, and there is no 443.
     omniacli: the address OmniaCLI listens on (127.0.0.1:8090): each name
-    passes it LOGIN_PATH, the links of Log in as (loginas.py)."""
+    passes it LOGIN_PATH, the links of Log in as (loginas.py), and HOOKS_PATH,
+    the webhooks of deploy on push (deployhooks.py)."""
     names = [n for site in sites for n in site["names"]]
     out = [f"# written by omniacli workspace-helper: the names of workspace {workspace}.",
            "# Changed here, it is written again at the workspace's next change.", ""]
@@ -69,6 +73,10 @@ def conf_text(workspace: str, sites: list[dict], tls: tuple[str, str] | None, ip
                 '        proxy_set_header Connection "upgrade";',
                 "    }",
                 *([f"    location = {LOGIN_PATH} {{",
+                   f"        proxy_pass http://{omniacli};",
+                   *_headers("        "),
+                   "    }",
+                   f"    location ^~ {HOOKS_PATH} {{",
                    f"        proxy_pass http://{omniacli};",
                    *_headers("        "),
                    "    }"] if omniacli else []),
