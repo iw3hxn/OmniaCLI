@@ -373,6 +373,29 @@ class OdooPlugin(ServicePlugin):
         data_dir = _data_dir(instance.options.odoo_config)
         return [("filestore", data_dir)] if data_dir else []
 
+    async def summary(self, instance: Instance) -> dict:
+        """The Odoo of its code (release.py), the workers of its config, the
+        repository that holds odoo-bin (its commits are Odoo's updates)."""
+        found: dict = {}
+        odoo_bin = ops.find_odoo_bin(instance)
+        if odoo_bin is not None:
+            try:
+                text = (ops.odoo_root(odoo_bin) / "odoo" / "release.py").read_text(encoding="utf-8")
+                match = re.search(r"^version_info\s*=\s*\(\s*['\"]?(saas~)?(\d+)['\"]?\s*,\s*(\d+)", text, re.M)
+                if match:
+                    found["version"] = f"{'saas~' if match[1] else ''}{match[2]}.{match[3]}"
+            except OSError:
+                pass
+            repo = next((r for r in instance.repositories if odoo_bin.parent == r.path), None)
+            if repo is not None:
+                found["odoo_repository"] = repo.name
+        try:
+            workers = ops.config_values(instance.options.odoo_config).get("workers")
+            found["workers"] = int(workers) if workers is not None else 0
+        except (OSError, ValueError, configparser.Error):
+            pass
+        return found
+
     def shell_paths(self, instance: Instance) -> list[dict]:
         """Its folders and files; odoo-bin with its venv's python, as the
         user it runs as."""

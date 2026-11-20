@@ -318,7 +318,8 @@ def check_branch(branch: str) -> None:
 def web_url(url: str) -> str | None:
     """The web page of a repository from its address (https or git@/ssh://),
     without .git; None when it is not one of these."""
-    found = (re.fullmatch(r"https://([^/]+)/(.+?)(?:\.git)?/?", url)
+    # a user and a token in the address never reach a page
+    found = (re.fullmatch(r"https://(?:[^/@]*@)?([^/@]+)/(.+?)(?:\.git)?/?", url)
              or re.fullmatch(r"git@([^:]+):(.+?)(?:\.git)?/?", url)
              or re.fullmatch(r"ssh://git@([^/:]+)(?::\d+)?/(.+?)(?:\.git)?/?", url))
     return f"https://{found[1]}/{found[2]}" if found else None

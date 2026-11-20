@@ -4,8 +4,10 @@
 import json
 import zipfile
 
+import httpx
 import pytest
 
+from omniacli import composehelper
 from omniacli import docker as plugin_module
 from omniacli.config import OMNIACLI_COMMAND, ConfigError, parse_servers, server_to_dict
 from omniacli.jobs import Job, JobFailed
@@ -315,3 +317,57 @@ def test_the_paths_and_shell_commands_of_a_venv(tmp_path):
     assert rows["Source"] == "/srv/src" and rows["Log file"] == "/var/log/odoo.log"
     assert rows["Odoo shell"] == (f"sudo -u odoo /srv/venv/bin/python /srv/src/odoo-bin shell -c {tmp_path}/odoo.conf "
                                   "-d 'db 1' --no-http")
+
+
+async def test_the_summary_of_a_docker_instance(tmp_path, monkeypatch):
+    """The Odoo of its image, the workers of its odoo.conf, and a newer image
+    when the registry's digest of its tag is not the one it runs."""
+    docker_plugin = plugin_module
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "odoo.conf").write_text("[options]\nworkers = 3\n")
+    data = {"type": "docker", "test": {"restart": {"type": "compose", "service": str(tmp_path)}, "repositories": [],
+                                       "database": "main"}}
+    inst = parse_servers({"s": data})["s"].test
+
+    async def capture(cmd, **kwargs):
+        if "version" in cmd:
+            return 0, "Odoo Server 19.0-20261112"
+        return 0, json.dumps({"image": "odoo:19.0", "digests": ["odoo@sha256:old"]})
+    monkeypatch.setattr(docker_plugin, "capture", capture)
+    published = {"digest": "sha256:new"}
+
+    def handler(request):
+        if request.url.host == "auth.docker.io":
+            assert request.url.params["scope"] == "repository:library/odoo:pull"
+            return httpx.Response(200, json={"token": "t"})
+        assert request.url.path == "/v2/library/odoo/manifests/19.0"
+        return httpx.Response(200, headers={"Docker-Content-Digest": published["digest"]})
+    real = httpx.AsyncClient
+    monkeypatch.setattr(docker_plugin.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    found = await inst.plugin.summary(inst)
+    assert found == {"version": "19.0-20261112", "workers": 3,
+                     "image": {"name": "odoo:19.0", "update": True, "error": None}}
+    published["digest"] = "sha256:old"
+    assert (await inst.plugin.summary(inst))["image"]["update"] is False
+    # another registry: not known
+    assert await docker_plugin.registry_digest("ghcr.io/acme/odoo:19") is None
+
+
+def test_the_image_of_a_service(tmp_path, monkeypatch):
+    monkeypatch.setattr(composehelper, "services", lambda project: ["odoo", "db"])
+    calls = []
+
+    def run(cmd, **kwargs):
+        calls.append(cmd)
+        out = ('[{"ID": "sha256:' + "a" * 64 + '", "Repository": "odoo", "Tag": "19.0"}]' if "images" in cmd
+               else '["odoo@sha256:bbb"]')
+        return type("Done", (), {"returncode": 0, "stdout": out, "stderr": ""})
+    monkeypatch.setattr(composehelper.subprocess, "run", run)
+    monkeypatch.setattr(composehelper, "compose", lambda project, *args: ["/usr/bin/docker", "compose", *args])
+    printed = []
+    monkeypatch.setattr("builtins.print", lambda text, **kw: printed.append(text))
+    assert composehelper.image_state(tmp_path, ["odoo"]) == 0
+    assert json.loads(printed[-1]) == {"image": "odoo:19.0", "digests": ["odoo@sha256:bbb"]}
+    assert calls[-1][:3] == ["/usr/bin/docker", "image", "inspect"]
+    with pytest.raises(composehelper.HelperError):
+        composehelper.image_state(tmp_path, ["web"])

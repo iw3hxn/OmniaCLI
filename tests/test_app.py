@@ -1627,3 +1627,25 @@ async def test_the_paths_and_shell_commands(client, env):
     assert '<pre class="copyable sp-cmd">' in page and " -m pip install ..." in page
     from .test_links import as_user
     assert "Paths and shell commands" not in (await client.get("/servers/srv?view=test", headers=as_user("dev"))).text
+
+
+async def test_the_summary_of_an_instance(client, env, monkeypatch):
+    """The head of the Environments tab: Odoo's version and workers from the
+    plugin, each repository with its commit and the commits not yet pulled."""
+    async def states(instance, timeout=60):
+        return [{"name": r.name, "branch": "main", "commit": "c" * 40, "subject": "Fix", "pending": 3,
+                 "new": "d" * 40, "url": "https://tok:SECRET@github.com/acme/x.git", "error": None}
+                for r in instance.repositories]
+
+    async def summary(instance):
+        return {"version": "18.0", "workers": 2}
+    from omniacli import ops as core_ops
+    monkeypatch.setattr(core_ops, "repository_states", states)
+    monkeypatch.setattr(type(env["settings"].servers["srv"].test.plugin), "summary", lambda self, i: summary(i))
+    page = (await client.get("/servers/srv?view=test", headers={"Authorization": AUTH})).text
+    assert 'class="panel inst-summary"' in page and "/api/servers/srv/test/summary" in page
+    data = (await client.get("/api/servers/srv/test/summary", headers={"Authorization": AUTH})).json()
+    assert data["version"] == "18.0" and data["workers"] == 2
+    row = data["repositories"][0]
+    assert row["url"] == "https://github.com/acme/x" and row["short"] == "c" * 10 and "SECRET" not in str(data)
+    assert row["compare"] == f"https://github.com/acme/x/compare/{'c' * 40}...{'d' * 40}"

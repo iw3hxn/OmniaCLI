@@ -258,6 +258,15 @@ prepared before Test & activate. The job's log opens in a new tab.
   `options.yaml` next to the servers file (`options_file` in the main
   configuration): the text size every console opens with (8-40 pixels,
   default 14).
+- **The head of an instance's Environments tab** (developers and admins):
+  the Odoo it runs (Docker: the image's build, and whether Docker Hub has a
+  newer image of its tag, with Pull image; a venv: `odoo/release.py`, and
+  the repository holding `odoo-bin` with its commits not yet pulled), its
+  workers, its database, and each repository with its branch, the commit
+  checked out and its subject, and **Update now (N commits)** (a pull of
+  that repository, the backup before an update when asked, the changed
+  modules updated, a restart) with the page of the differences. Read after
+  the page: a `git fetch` of each repository and the registry take a while.
 - **Paths and shell commands** (the machine's admins, an instance's
   Environments tab): where the instance lives and the commands of a shell of
   the machine over ssh, each with Copy. Docker Compose: the project, its

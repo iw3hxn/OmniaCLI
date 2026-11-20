@@ -437,6 +437,14 @@ class ServicePlugin(ABC):
         """[(what, path)] the instance writes to, for the disks panel."""
         return []
 
+    async def summary(self, instance: Instance) -> dict:
+        """What the instance's Environments tab says of it, besides its
+        repositories: {"version": the Odoo running, "workers": a number or
+        None, "odoo_repository": the repository of Odoo's own code (its
+        commits are Odoo's updates), "image": {"name", "update": a newer one
+        is published (None: unknown), "error"}}; any of them may be missing."""
+        return {}
+
     def shell_paths(self, instance: Instance) -> list[dict]:
         """The paths and the shell commands of the instance, for whoever
         works on the machine over ssh (the page's Paths and shell commands):

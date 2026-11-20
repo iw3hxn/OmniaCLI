@@ -33,6 +33,7 @@ package does.
 from __future__ import annotations
 
 import asyncio
+import configparser
 import datetime
 import json
 import re
@@ -40,6 +41,8 @@ import shlex
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
+
+import httpx
 
 from ..plugin_api import (
     COMPOSE_TOOLS,
@@ -179,11 +182,77 @@ async def instance_major(instance: Instance) -> int | None:
     return odoo_major(out) if code == 0 else None
 
 
+def _conf_value(path: Path, key: str) -> str | None:
+    """A value of the [options] of an odoo.conf (None: not set there)."""
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.read(path, encoding="utf-8")
+    if not path.is_file():
+        raise OSError(f"no {path}")
+    return parser.get("options", key, fallback=None)
+
+
+# Docker Hub: where a newer image of a tag is looked for (another registry: unknown)
+HUB_AUTH = "https://auth.docker.io/token"
+HUB = "https://registry-1.docker.io"
+MANIFESTS = ", ".join(("application/vnd.oci.image.index.v1+json",
+                       "application/vnd.docker.distribution.manifest.list.v2+json",
+                       "application/vnd.docker.distribution.manifest.v2+json",
+                       "application/vnd.oci.image.manifest.v1+json"))
+
+
+async def registry_digest(image: str) -> str | None:
+    """The digest Docker Hub publishes now for an image's tag (odoo:19.0,
+    user/repo:tag); None for an image of another registry."""
+    name, _, tag = image.rpartition(":")
+    if not name or "/" in tag:
+        name, tag = image, "latest"
+    first = name.split("/")[0]
+    if "/" in name and ("." in first or ":" in first or first == "localhost"):
+        return None
+    repository = name if "/" in name else f"library/{name}"
+    async with httpx.AsyncClient(timeout=20) as client:
+        token = (await client.get(HUB_AUTH, params={"service": "registry.docker.io",
+                                                    "scope": f"repository:{repository}:pull"})).json()["token"]
+        resp = await client.head(f"{HUB}/v2/{repository}/manifests/{tag}",
+                                 headers={"Authorization": f"Bearer {token}", "Accept": MANIFESTS})
+        resp.raise_for_status()
+        return resp.headers.get("docker-content-digest")
+
+
 class DockerPlugin(ServicePlugin):
     name = "docker"
     label = "Odoo (Docker Compose)"
     api_version = PLUGIN_API
     mcp_help = MCP_HELP
+
+    async def summary(self, instance: Instance) -> dict:
+        """The Odoo of its image (its build date), the workers of its
+        odoo.conf, and whether the registry has a newer image of its tag."""
+        opts, project = instance.options, Path(instance.restart.service)
+        found: dict = {}
+        code, out = await capture(instance.restart.command("version", opts.odoo_service), timeout=HELPER_TIMEOUT)
+        if code == 0 and out.strip():
+            found["version"] = out.strip().splitlines()[-1].removeprefix("Odoo Server ").strip()
+        try:
+            workers = _conf_value(project / "config" / "odoo.conf", "workers")
+            found["workers"] = int(workers) if workers is not None else 0
+        except (OSError, ValueError):
+            pass
+        code, out = await capture(instance.restart.command("image", opts.odoo_service), timeout=HELPER_TIMEOUT)
+        try:
+            state = json.loads(out.strip().splitlines()[-1]) if code == 0 and out.strip() else None
+        except ValueError:
+            state = None
+        if state and state.get("image"):
+            image = {"name": state["image"], "update": None, "error": None}
+            try:
+                published = await registry_digest(state["image"])
+                if published:
+                    image["update"] = not any(d.endswith("@" + published) for d in state.get("digests") or [])
+            except (httpx.HTTPError, ValueError, KeyError) as exc:
+                image["error"] = f"the registry cannot be reached: {type(exc).__name__}"
+            found["image"] = image
+        return found
 
     def shell_paths(self, instance: Instance) -> list[dict]:
         """Its compose project; in it, the commands of its containers."""

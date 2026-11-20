@@ -202,7 +202,7 @@ WORKSPACE_ROUTES = frozenset({
     "/jobs", "/jobs/{job_id}", "/jobs/{job_id}/stop", "/api/jobs", "/api/jobs/{job_id}",
     "/servers/{server}", "/servers/{server}/merge", "/servers/{server}/x/{plugin}/{action}",
     "/servers/{server}/{role}/pull", "/servers/{server}/{role}/pull-restart",
-    "/api/servers/{server}/{role}/pull-preview",
+    "/api/servers/{server}/{role}/pull-preview", "/api/servers/{server}/{role}/summary",
     "/servers/{server}/{role}/restart", "/servers/{server}/{role}/start", "/servers/{server}/{role}/stop",
     "/servers/{server}/{role}/backup", "/api/servers/{server}/{role}/backups",
     "/backups/{server}/{role}/{name}", "/servers/{server}/{role}/x/{plugin}/{action}",
@@ -1209,6 +1209,21 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if ops.PACKAGE_CHOICE in only:
             names.append(f"package {instance.package.name}")
         return f"{what} {instance.key} ({', '.join(names)})"
+
+    @app.get("/api/servers/{server}/{role}/summary")
+    async def instance_summary(server: str, role: str, user: Principal = Depends(developer)):
+        """The head of the Environments tab: the Odoo running and whether a
+        newer one is there (its repository's commits, or its image), the
+        workers, each repository with its commit and the commits not yet
+        pulled, with the page of the differences."""
+        instance = get_instance(server, role)
+        found, repos = await asyncio.gather(instance.plugin.summary(instance), ops.repository_states(instance))
+        for row in repos:
+            row["compare"] = workspaceops.compare_url(row["url"], row["commit"], row["new"]) \
+                if row["url"] and row["commit"] and row["new"] and row["pending"] else None
+            row["url"] = workspaceops.web_url(row["url"]) if row["url"] else None
+            row["short"] = (row["commit"] or "")[:10]
+        return {**found, "repositories": repos}
 
     @app.get("/api/servers/{server}/{role}/pull-preview")
     async def pull_preview(server: str, role: str, user: Principal = Depends(developer)):

@@ -333,6 +333,38 @@ async def pull_preview(instance: Instance, timeout: float = 60) -> list[dict]:
     return rows
 
 
+async def repository_states(instance: Instance, timeout: float = 60) -> list[dict]:
+    """Each repository as the Environments tab shows it: its branch, the
+    commit checked out (and its subject), the commits not yet pulled (a
+    fetch, in parallel) and the last one of its branch there, its remote's
+    address; or the error."""
+    async def one(repo: Repository) -> dict:
+        row = {"name": repo.name, "branch": repo.branch, "commit": None, "subject": "", "pending": None,
+               "new": None, "url": "", "error": None}
+        if not repo.path.is_dir():
+            row["error"] = f"{repo.path} does not exist"
+            return row
+        code, out = await capture(["git", "log", "-1", "--format=%H%n%s"], cwd=repo.path)
+        if code:
+            row["error"] = f"git log failed: {out[-200:]}"
+            return row
+        row["commit"], _, row["subject"] = out.partition("\n")
+        code, out = await capture(repo.git("remote", "get-url", repo.remote), cwd=repo.path)
+        row["url"] = out.strip() if code == 0 else ""
+        code, out = await capture(repo.git("fetch", repo.remote, repo.branch), cwd=repo.path, timeout=timeout)
+        if code:
+            row["error"] = f"git fetch failed: {out.splitlines()[-1] if out else code}"
+            return row
+        code, out = await capture(["git", "rev-list", "--count", "HEAD..FETCH_HEAD"], cwd=repo.path)
+        if code == 0:
+            row["pending"] = int(out)
+        code, out = await capture(["git", "rev-parse", "FETCH_HEAD"], cwd=repo.path)
+        row["new"] = out.strip() if code == 0 else None
+        return row
+
+    return list(await asyncio.gather(*(one(r) for r in instance.repositories)))
+
+
 async def pending_updates(instance: Instance) -> dict[str, int]:
     """Fetch every repository; return {repository: commits not yet pulled},
     and {"package <name>": 1} when a new package is published."""

@@ -75,6 +75,10 @@ command of the caller's, and runs docker with an environment of its own:
                                          on the input, the helper's own file,
                                          never the caller's): the users, or
                                          a new session of one (its sid)
+    image <service>                      the image the service's container
+                                         runs and its registry digests, as
+                                         JSON {"image", "digests"}: is a
+                                         newer one published?
     options <odoo service>               in the running service, its python3
                                          runs odoo/config_options.py (its text
                                          on the input, the helper's own file):
@@ -130,7 +134,7 @@ ACTIONS = {
 }
 # the actions that take arguments (commands())
 WITH_ARGUMENTS = ("logs", "version", "port", "dump", "load", "update", "psql", "init", "link-filestore", "login",
-                  "setup", "options", "pip-requirements", "terminal")
+                  "setup", "options", "image", "pip-requirements", "terminal")
 # a repository of the instance's addons (/mnt/customer-addons/<name>)
 REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 DATABASE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,62}")
@@ -512,6 +516,38 @@ def closed_groups(path: Path) -> tuple[int, ...]:
     return tuple(sorted(found))
 
 
+def image_state(project: Path, args: list[str]) -> int:
+    """image <service>: {"image": "odoo:19.0", "digests": ["odoo@sha256:..."]}
+    of the image its container was made from, on the output."""
+    if len(args) != 1:
+        raise HelperError("usage: image <service>")
+    name = service(project, args[0])
+    done = subprocess.run(compose(project, "images", "--format", "json", name), env=ENV, cwd=project,
+                          capture_output=True, text=True)
+    if done.returncode:
+        raise HelperError(f"docker compose images failed: {done.stderr.strip()[-300:]}")
+    try:
+        rows = json.loads(done.stdout or "[]")
+    except ValueError:
+        raise HelperError("docker compose images: not JSON") from None
+    rows = rows if isinstance(rows, list) else [rows]
+    if not rows:
+        print(json.dumps({"image": None, "digests": []}))
+        return 0
+    row = rows[0]
+    image_id = str(row.get("ID") or "")
+    if not re.fullmatch(r"(sha256:)?[0-9a-f]{12,64}", image_id):
+        raise HelperError(f"{image_id!r} is not an image id")
+    inspect = subprocess.run([compose(project)[0], "image", "inspect", "--format", "{{json .RepoDigests}}", image_id],
+                             env=ENV, cwd=project, capture_output=True, text=True)
+    try:
+        digests = json.loads(inspect.stdout) if inspect.returncode == 0 else []
+    except ValueError:
+        digests = []
+    print(json.dumps({"image": f"{row.get('Repository')}:{row.get('Tag')}", "digests": digests or []}))
+    return 0
+
+
 def link_filestore(project: Path, args: list[str], uid: int, groups: list[int]) -> int:
     """link-filestore <odoo service> <database> <source project> <source
     database>: the filestore of database becomes hard links to the files of
@@ -589,6 +625,8 @@ def run(argv: list[str]) -> int:
         raise HelperError(f"{project} is not safe from user {name}:\n  " + "\n  ".join(found))
     if action == "link-filestore":
         return link_filestore(project, args, uid, groups)
+    if action == "image":
+        return image_state(project, args)
     # login: the script on the input of odoo shell, the helper's own file;
     # the other actions keep the caller's input (load reads its zip there)
     extra = {"input": LOGIN_SCRIPT.read_bytes()} if action == "login" else {}

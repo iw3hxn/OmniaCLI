@@ -263,6 +263,8 @@ def test_the_page_of_the_differences():
     sha_a, sha_b = "a" * 40, "b" * 40
     assert workspaceops.web_url("git@github.com:DueEsseTI/Common.git") == "https://github.com/DueEsseTI/Common"
     assert workspaceops.web_url("ssh://git@gitlab.example.com:2222/acme/x.git") == "https://gitlab.example.com/acme/x"
+    # a token in the address never reaches the page
+    assert workspaceops.web_url("https://bot:ghp_SECRET@github.com/acme/x.git") == "https://github.com/acme/x"
     assert workspaceops.compare_url(URL, sha_a, sha_b) == f"https://github.com/acme/odoo-custom/compare/{sha_a}...{sha_b}"
     assert workspaceops.compare_url("git@gitlab.com:acme/x.git", sha_a, sha_b) == \
         f"https://gitlab.com/acme/x/-/compare/{sha_a}...{sha_b}"

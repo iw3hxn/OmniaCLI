@@ -258,6 +258,28 @@
 </nav>
 
 <section class="tab-panel" data-panel="overview">
+  {# the head of the tab: the Odoo running and its updates, the workers, the database, the repositories #}
+  {% if can_act %}
+  {% set pull_image = (buttons[inst.key].service or []) | selectattr("action.id", "equalto", "pull-image") | first %}
+  <div class="panel inst-summary" data-summary="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}/summary"
+       data-pull-restart="{{ base }}/pull-restart" data-pull-image="{{ pull_image.url if pull_image and can_act else '' }}"
+       data-can="{{ '' if is_busy else 1 }}">
+    <dl class="sum-grid">
+      {% if stagings and stagings.parent %}
+      <dt>{{ _("Production instance") }}</dt>
+      <dd><a href="{{ prefix }}/servers/{{ stagings.parent.parent }}">{{ host_of(stagings.parent.url, stagings.parent.parent) }}</a></dd>
+      {% elif view == "test" and server.production %}
+      <dt>{{ _("Production instance") }}</dt>
+      <dd><a href="{{ prefix }}/servers/{{ server.name }}?view=production">{{ host_of(server.production.web_url, server.name) }}</a></dd>
+      {% endif %}
+      <dt>{{ _("Odoo version") }}</dt><dd data-sum="version"><span class="muted">{{ _("Reading…") }}</span></dd>
+      <dt>{{ _("Odoo workers") }}</dt><dd data-sum="workers"><span class="muted">…</span></dd>
+      {% set db = inst.plugin.describe(inst).database if inst.plugin else none %}
+      {% if db %}<dt>{{ _("Database") }}</dt><dd class="mono">{{ db }}</dd>{% endif %}
+      <dt>{{ _("Repositories") }}</dt><dd data-sum="repositories"><span class="muted">…</span></dd>
+    </dl>
+  </div>
+  {% endif %}
   {% if show_envs %}
   <div class="panel">
     <div class="section-head">
@@ -468,6 +490,13 @@
 .oc-table input:disabled, .oc-table select:disabled { background: var(--panel-2); color: var(--muted); }
 .oc-table tr.oc-dirty td { background: var(--accent-soft); }
 .oc-table tr.oc-group td { background: var(--panel-2); font-weight: 600; font-size: 13px; }
+.sum-grid { display: grid; grid-template-columns: minmax(150px, max-content) 1fr; gap: 10px 20px; margin: 0; }
+.sum-grid dt { font-weight: 600; }
+.sum-grid dd { margin: 0; min-width: 0; display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
+.sum-grid .sum-repo { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; width: 100%; }
+.sum-grid .sum-subject { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40ch; }
+.sum-grid form { display: inline; margin: 0; }
+@media (max-width: 640px) { .sum-grid { grid-template-columns: 1fr; } }
 .shell-paths summary { cursor: pointer; font-weight: 600; display: inline-flex; gap: 6px; align-items: center; }
 .shell-paths dl { display: grid; grid-template-columns: minmax(140px, max-content) 1fr; gap: 8px 16px; margin: 12px 0 0; }
 .shell-paths dd { margin: 0; min-width: 0; }
@@ -813,6 +842,79 @@
     if (!ok || !data.job) { alert(data.error || data.detail || ADD.refused); return; }
     location.href = `{{ prefix }}/jobs/${data.job}`;
   }));
+  // the head of the Environments tab: read after the page, a git fetch and the registry take a while
+  (async function () {
+    const box = document.querySelector(".inst-summary");
+    if (!box) return;
+    const S = {thread: {{ _("0: threads, no workers") | tojson }}, updateNow: {{ _("Update now ({count} commits)") | tojson }},
+               updateOne: {{ _("Update now (1 commit)") | tojson }}, upToDate: {{ _("up to date") | tojson }},
+               newImage: {{ _("A newer image is published") | tojson }}, pullImage: {{ _("Pull image") | tojson }},
+               imageSame: {{ _("the newest image") | tojson }}, differences: {{ _("differences") | tojson }},
+               updateQ: {{ _("Back up if the instance asks it, pull {repo}, update the changed modules and restart?") | tojson }},
+               pullQ: {{ _("Pull the newer image and make the containers again?") | tojson }},
+               none: {{ _("none") | tojson }}, failed: {{ _("Cannot be read: {error}") | tojson }}};
+    const field = (name) => box.querySelector(`[data-sum="${name}"]`);
+    let data;
+    try {
+      const resp = await fetch(box.dataset.summary, {headers: {Accept: "application/json"}});
+      data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || data.detail || resp.status);
+    } catch (e) {
+      for (const n of ["version", "workers", "repositories"]) field(n).textContent = S.failed.replace("{error}", e.message);
+      return;
+    }
+    const el = (tag, cls, text) => { const x = document.createElement(tag); if (cls) x.className = cls; if (text !== undefined) x.textContent = text; return x; };
+    function badge(text, cls, href) {
+      const b = el(href ? "a" : "span", "badge " + cls, text);
+      if (href) { b.href = href; b.target = "_blank"; b.rel = "noopener"; }
+      return b;
+    }
+    function updateForm(repo, count) {
+      const form = el("form"); form.method = "post"; form.action = box.dataset.pullRestart;
+      for (const [k, v] of [["chosen", "1"], ["repo", repo]]) { const i = el("input"); i.type = "hidden"; i.name = k; i.value = v; form.append(i); }
+      const b = el("button", "small primary", count === 1 ? S.updateOne : S.updateNow.replace("{count}", count));
+      form.append(b);
+      form.addEventListener("submit", (e) => { if (!confirm(S.updateQ.replace("{repo}", repo))) e.preventDefault(); });
+      return form;
+    }
+    function repoLine(r) {
+      const line = el("div", "sum-repo");
+      line.append(el("strong", "", r.name), el("span", "mono", r.branch || ""));
+      if (r.commit) {
+        const c = r.url ? el("a", "mono", r.short) : el("span", "mono", r.short);
+        if (r.url) { c.href = `${r.url}/commit/${r.commit}`; c.target = "_blank"; c.rel = "noopener"; }
+        line.append(c);
+      }
+      if (r.subject) line.append(el("span", "sum-subject", r.subject));
+      if (r.error) line.append(el("span", "error", r.error));
+      else if (r.pending) {
+        if (box.dataset.can) line.append(updateForm(r.name, r.pending));
+        else line.append(badge(S.updateNow.replace("{count}", r.pending), "warn"));
+        if (r.compare) line.append(badge(S.differences, "info", r.compare));
+      } else if (r.pending === 0) line.append(badge(S.upToDate, "ok"));
+      return line;
+    }
+    const version = field("version");
+    version.replaceChildren(el("span", "mono", data.version || "—"));
+    const own = data.repositories.find((r) => r.name === data.odoo_repository);
+    if (own) version.append(repoLine(own));
+    if (data.image) {
+      version.append(el("span", "mono muted", data.image.name));
+      if (data.image.error) version.append(el("span", "muted", data.image.error));
+      else if (data.image.update && box.dataset.pullImage && box.dataset.can) {
+        const form = el("form"); form.method = "post"; form.action = box.dataset.pullImage;
+        form.append(el("button", "small primary", S.newImage + " · " + S.pullImage));
+        form.addEventListener("submit", (e) => { if (!confirm(S.pullQ)) e.preventDefault(); });
+        version.append(form);
+      } else if (data.image.update) version.append(badge(S.newImage, "warn"));
+      else if (data.image.update === false) version.append(badge(S.imageSame, "ok"));
+    }
+    field("workers").textContent = data.workers === undefined || data.workers === null ? "—"
+      : data.workers === 0 ? S.thread : String(data.workers);
+    const repos = field("repositories");
+    const others = data.repositories.filter((r) => r.name !== data.odoo_repository);
+    repos.replaceChildren(...(others.length ? others.map(repoLine) : [el("span", "muted", S.none)]));
+  })();
   {% if can_act and odoo_params and inst.type != "odoo" %}
   // Basic: the template's parameters; Extended: every other option its Odoo knows
   const OP = {reading: {{ _("Reading the options of its Odoo…") | tojson }},
