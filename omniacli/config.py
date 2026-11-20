@@ -1141,8 +1141,8 @@ def web_names(domain: str, instances, main: str = "", subdomains: dict[str, str]
               roles: dict[str, tuple[str, ...]] | None = None) -> list[dict]:
     """The names each instance and role of a workspace answers on:
     [{instance, role, names}], production first. The main instance takes
-    <domain> and test.<domain>; every instance <instance>.<domain> and
-    <instance>.test.<domain>; a subdomain <sub>.<domain> and <sub>.test.<domain>.
+    <domain> and test.<domain> (and not its own name too); every other
+    instance <instance>.<domain> and <instance>.test.<domain>; a subdomain <sub>.<domain> and <sub>.test.<domain>.
     A staging of an instance there answers on stg-<date>.<its first name>,
     as a hosting panel's. roles: {instance: the roles it has}, both by default
     (an instance with its production only has no test names)."""
@@ -1160,7 +1160,9 @@ def web_names(domain: str, instances, main: str = "", subdomains: dict[str, str]
                     continue
                 names = [f"stg-{stagings[instance]['stamp']}.{parent}"]
             else:
-                names = ([base] if instance == main else []) + [f"{label}.{base}" for label in (instance, *subs)]
+                # the main instance answers on the domain itself, not also on <instance>.<domain>
+                names = [base, *(f"{sub}.{base}" for sub in subs)] if instance == main else \
+                    [f"{label}.{base}" for label in (instance, *subs)]
             long = [n for n in names if len(n) > 253]
             if long:
                 raise ConfigError(f"{long[0]} is longer than a domain name may be (253)")

@@ -1126,7 +1126,7 @@ their names; the workspace's admins choose the rest on its page (**Names**):
 | Name | Goes to |
 |---|---|
 | `<domain>`, `test.<domain>` | production and test of the **main instance** (none chosen: these names go nowhere) |
-| `<instance>.<domain>`, `<instance>.test.<domain>` | production and test of every instance |
+| `<instance>.<domain>`, `<instance>.test.<domain>` | production and test of every other instance (the main one answers on the domain only) |
 | `<sub>.<domain>`, `<sub>.test.<domain>` | a **subdomain**: production and test of the instance it is given to |
 
 A subdomain is one label (`a-z 0-9 -`), never `test` nor an instance's name;

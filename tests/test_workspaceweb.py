@@ -21,8 +21,8 @@ from .test_workspaces import basic, post_as, workspaces  # noqa: F401 - the work
 def test_web_names():
     sites = web_names("acme.it", ["main", "shop"], "main", {"www": "main", "negozio": "shop"})
     assert [(s["instance"], s["role"], s["names"]) for s in sites] == [
-        ("main", "production", ["acme.it", "main.acme.it", "www.acme.it"]),
-        ("main", "test", ["test.acme.it", "main.test.acme.it", "www.test.acme.it"]),
+        ("main", "production", ["acme.it", "www.acme.it"]),
+        ("main", "test", ["test.acme.it", "www.test.acme.it"]),
         ("shop", "production", ["shop.acme.it", "negozio.acme.it"]),
         ("shop", "test", ["shop.test.acme.it", "negozio.test.acme.it"])]
     # no main instance: the domain alone goes nowhere
@@ -44,7 +44,7 @@ def test_web_names_of_a_staging_and_of_a_production_alone():
     # an instance with its production only has no test names
     roles = {"odoo": ("production",), "odoo-stg-20261118": ("production",)}
     assert [(s["instance"], s["role"], s["names"]) for s in web_names("inaria.media", list(roles), "odoo", None, roles)] == [
-        ("odoo", "production", ["inaria.media", "odoo.inaria.media"]),
+        ("odoo", "production", ["inaria.media"]),
         ("odoo-stg-20261118", "production", ["stg-20261118.inaria.media"])]
     # an instance named like a staging whose production is not there is an instance
     assert web_names("acme.it", ["x-stg-20261117"])[0]["names"] == ["x-stg-20261117.acme.it"]
@@ -182,11 +182,10 @@ def spec(**change) -> str:
 def test_helper_web_letsencrypt(web_root):
     storage, state = str(web_root["storage"]), web_root["web"]
     made = workspacehelper.web("acme", storage, spec(subdomains={"www": "main"}))
-    assert made["names"] == ["acme.it", "main.acme.it", "www.acme.it", "test.acme.it", "main.test.acme.it",
-                             "www.test.acme.it"]
+    assert made["names"] == ["acme.it", "www.acme.it", "test.acme.it", "www.test.acme.it"]
     assert made["https"] and made["certificate_error"] is None
     certbot = [c for c in state["commands"] if c[0].endswith("certbot")][0]
-    assert certbot[certbot.index("--cert-name") + 1] == "omniacli-acme" and ["-m", "ops@acme.it"] == certbot[-14:-12]
+    assert certbot[certbot.index("--cert-name") + 1] == "omniacli-acme" and certbot[certbot.index("-m") + 1] == "ops@acme.it"
     assert [certbot[i + 1] for i, a in enumerate(certbot) if a == "-d"] == made["names"]
     site = web_root["site"].read_text()
     # the ports of the instance's .env, read by the helper; threaded: websocket on http
@@ -199,11 +198,11 @@ def test_helper_web_letsencrypt(web_root):
 def test_helper_web_certificate_of_the_names_in_dns(web_root):
     """A name with no DNS record yet does not fail the others' certificate."""
     storage, state = str(web_root["storage"]), web_root["web"]
-    state["dns"] = {"acme.it", "main.acme.it"}
-    made = workspacehelper.web("acme", storage, spec())
+    state["dns"] = {"acme.it"}
+    made = workspacehelper.web("acme", storage, spec(subdomains={"www": "main"}))
     certbot = [c for c in state["commands"] if c[0].endswith("certbot")][0]
-    assert [certbot[i + 1] for i, a in enumerate(certbot) if a == "-d"] == ["acme.it", "main.acme.it"]
-    assert made["without_dns"] == ["test.acme.it", "main.test.acme.it"] and made["https"]
+    assert [certbot[i + 1] for i, a in enumerate(certbot) if a == "-d"] == ["acme.it"]
+    assert made["without_dns"] == ["www.acme.it", "test.acme.it", "www.test.acme.it"] and made["https"]
     state["dns"], state["commands"] = set(), []
     made = workspacehelper.web("acme", storage, spec())
     assert "in DNS yet" in made["certificate_error"] and not [c for c in state["commands"] if c[0].endswith("certbot")]
