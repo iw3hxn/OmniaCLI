@@ -57,7 +57,14 @@
                                                  body: JSON.stringify({name, new_name: given.trim()})});
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) { alert(data.error || data.detail || resp.status); return; }
-    location.href = `/links/${encodeURIComponent(data.name)}/`;
+    // its SSH tunnel opens again under the new name: a few seconds
+    const next = `/links/${encodeURIComponent(data.name)}/`;
+    for (let i = 0; i < 20; i++) {
+      const probe = await fetch(next, {headers: {Accept: "text/html"}}).catch(() => null);
+      if (probe && probe.ok) break;
+      await new Promise((done) => setTimeout(done, 1000));
+    }
+    location.href = next;
   });
 </script>
 {% endif %}
