@@ -5248,6 +5248,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return _TEMPLATES.TemplateResponse(request, "pullers.html", {
             "pullers": rows, "links": sorted(settings.links), "pullers_file": settings.pullers_file,
             "keep_hours": PULLER_KEEP_HOURS, "max_file_mib": PULLER_FILE_MIB,
+            # this machine's clock: who publishes on a box is online when seen in the last two minutes
+            "now": time.time(),
             "publications": published, "publications_file": settings.publications_file,
             "instances": [k for k in instances if k not in settings.publications],
             "link_targets": sorted(settings.link_targets), "commands": PUBLISHED_COMMANDS,
@@ -5495,7 +5497,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                   ("/config", t("Servers by hand"), t("The servers' configuration, field by field: for the instances OmniaCLI did not make"), admin_here),
                   ("/links", t("Links"), t("Other OmniaCLI reached from here, and the tokens they use"), admin_here),
                   ("/groups", t("Groups"), t("The groups the instances and the linked OmniaCLI are arranged in"), admin_here),
-                  ("/pullers", t("Pullers"), t("Instances operated through a relay"), admin_here),
+                  ("/pullers", t("Publications"), t("The instances that cannot be reached from outside: who publishes them, who relays, who operates them"), admin_here),
                   ("/schedules", t("Schedules"), t("Actions run at set times: backups, updates, restarts"), admin_here),
                   ("/destinations", t("Backup destinations"), t("Where the automatic backups are copied, encrypted: SFTP, FTP, S3, Drive, Dropbox…"), admin_here),
                   ("/tunnels", t("Tunnels"), t("Ports of the instances reached from your computer"), me.kind == "user" and not getattr(request.state, "prefix", ""))),

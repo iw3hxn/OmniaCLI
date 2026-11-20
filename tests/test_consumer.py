@@ -285,7 +285,7 @@ async def test_the_admin_connects_a_puller(here):
     assert (await here.post("/api/connections/save", headers=post, json={**body, "link": "ghost", "new": False})
             ).status_code == 400
     page = await here.get("/pullers", headers={**as_user("admin"), "Accept": "text/html"})
-    assert page.status_code == 200 and "Connected here" in page.text and KEY not in page.text
+    assert page.status_code == 200 and "Operated from here" in page.text and KEY not in page.text
 
     async def failing():
         status = here.app.state.consumers.conn("other").status

@@ -263,7 +263,7 @@
  "No installed module has a newer version on disk": "Nessun modulo installato ha una versione più recente su disco",
  "No link {link} here: add it on the Links page, or change 'Database from link' in the server's form (Edit)": "Qui non c'è il collegamento {link}: aggiungilo nella pagina Collegamenti, o cambia 'Database da collegamento' nel modulo del server (Modifica)",
  "No modules found in the addons path.": "Nessun modulo trovato nell'addons path.",
- "No puller connection {link} here: add it on the Pullers page, or change 'Database from link' in the server's form (Edit)": "Qui non c'è la connessione puller {link}: aggiungila nella pagina Puller, o cambia 'Database da collegamento' nel modulo del server (Modifica)",
+ "No puller connection {link} here: add it on the Pullers page, or change 'Database from link' in the server's form (Edit)": "Qui non c'è l'istanza gestita {link}: aggiungila nella pagina Pubblicazioni (Gestite da qui), o cambia 'Database da collegamento' nel modulo del server (Modifica)",
  "No repository yet: only the addons of the Odoo image.": "Ancora nessun repository: solo gli addon dell'immagine di Odoo.",
  "No repository: the code is the image's.": "Nessun repository: il codice è quello dell'immagine.",
  "No session made": "Nessuna sessione creata",

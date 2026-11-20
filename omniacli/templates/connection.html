@@ -2,7 +2,7 @@
 {% extends "base.html" %}
 {% block title %}{{ name }} · OmniaCLI{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
-{{ crumbs([(_("Settings"), "/settings"), (_("Pullers"), "/pullers" if is_admin else None), (name, None)]) }}
+{{ crumbs([(_("Settings"), "/settings"), (_("Publications"), "/pullers" if is_admin else None), (name, None)]) }}
 {% endblock %}
 {% block content %}
 {# what each command does, on its button; the script adds why it is off or when it is taken #}

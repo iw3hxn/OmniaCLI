@@ -522,9 +522,9 @@ summary { cursor: pointer; color: var(--muted); }
        title="{{ _('The Odoo instances of this machine, with their stagings') }}">{{ _("Instances") }}</a>
     {% for ws in my_workspaces %}{{ nav("/workspaces/" ~ ws, ws) }}{% endfor %}
     {# the instances operated through a relay (consumer.py): every user sees them #}
-    {% if not prefix %}{% for c in puller_connections %}<a class="nav-link" title="{{ _('Instances operated through a relay') }}" href="/pullers/connections/{{ c }}">{{ c }}</a>{% endfor %}{% endif %}
+    {% if not prefix %}{% for c in puller_connections %}<a class="nav-link" title="{{ _('An instance of another OmniaCLI operated from here through a relay machine (Publications)') }}" href="/pullers/connections/{{ c }}">{{ c }}</a>{% endfor %}{% endif %}
     {% if can_act and not scoped %}<a class="nav-link" href="{{ prefix }}/settings" {% if place.settings %}aria-current="page"{% endif %}
-       title="{{ _('Users, git credentials, schedules, links, pullers, plugins, options, the jobs and the log') }}">{{ _("Settings") }}</a>{% endif %}
+       title="{{ _('Users, git credentials, schedules, links, publications, plugins, options, the jobs and the log') }}">{{ _("Settings") }}</a>{% endif %}
   </nav>
   <div class="top-end">
     {% if account %}<a class="side-account" href="{{ prefix }}/account" title="{{ _('Your account and password') }}">

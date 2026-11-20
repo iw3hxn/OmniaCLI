@@ -7,6 +7,7 @@ the consumer, each linking to the relay with a token of its own)."""
 import asyncio
 import base64
 import os
+import re
 import time
 
 import httpx
@@ -326,6 +327,26 @@ async def test_the_admin_defines_the_pullers(relay):
     resp = await relay.post("/api/pullers/delete", headers=as_user("admin", post=True), json={"name": "p2"})
     assert resp.json() == {"ok": True} and not folder.exists() and "p2" not in settings.pullers
     assert (await relay.get("/api/pullers/p2", headers=OTHER)).status_code == 404
+
+
+async def test_the_publications_page_is_read_and_changed_in_dialogs(relay):
+    """docs/ux/UX-007 §4.6: three tabs with their counts, the first with rows open; the rows are read (no field
+    in a table) and changed in a dialog; no alert, no question after a save; a refusal in the page's words."""
+    page = (await relay.get("/pullers", headers={**as_user("admin"), "Accept": "text/html"})).text
+    for tab, count in (("published", 0), ("relayed", 1), ("operated", 0)):
+        assert re.search(rf'role="tab" data-tab="{tab}"[^>]*>[^<]*\({count}\)<', page), tab
+    assert 'data-tab="relayed" aria-selected="true"' in page and 'data-tab="published" aria-selected="false"' in page
+    tables = re.findall(r"<table data-list=.*?</table>", page, re.S)
+    assert len(tables) == 3 and not any(re.search(r"<(input|select|textarea)\b", table) for table in tables)
+    assert "alert(" not in page and "Saved. Warning" not in page
+    assert all(f'<dialog id="{name}-dialog"' in page for name in ("pub", "box", "op", "secret"))
+    italian = {**as_user("admin", post=True), "Accept-Language": "it"}
+    page = (await relay.get("/pullers", headers={**italian, "Accept": "text/html"})).text
+    assert "Inoltrate da qui (1)" in page and ">Nuova casella<" in page and "<h1>Pubblicazioni</h1>" in page
+    resp = await relay.post("/api/pullers/save", headers=italian, json={"name": "p9", "producer": "api", "new": True})
+    assert resp.status_code == 400 and resp.json()["error"] == "Casella p9: scegli almeno una macchina che gestisce."
+    resp = await relay.post("/api/pullers/delete", headers=italian, json={"name": "p9"})
+    assert resp.status_code == 404 and resp.json()["error"] == "La casella p9 non c'è più: ricarica la pagina."
 
 
 async def test_a_puller_deleted_frees_its_waiting_producer(relay):

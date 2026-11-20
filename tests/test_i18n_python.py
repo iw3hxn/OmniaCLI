@@ -26,7 +26,7 @@ def fresh_catalog():
 
 @pytest.mark.parametrize("english, italian", [
     # errors returned to the browser
-    ("No instance erp/test", "Nessuna istanza erp/test"),
+    ("No instance erp/test", "L'istanza erp/test non c'è su questa macchina."),
     ("A job is running on erp: try again when it ends", "Su erp è in esecuzione un job: riprova quando finisce"),
     ("The job is not running: it is failed", "Il job non è in esecuzione: è failed"),
     ("Type erp to replace the production database", "Scrivi erp per sostituire il database di produzione"),

@@ -755,6 +755,11 @@ Scostamenti, voluti:
 - Utenti: «token» per i collegamenti, «chiave» per gli assistenti AI (D3 raccomandata), tre tab (D4 raccomandata);
   lo stato dei collegamenti si legge all'apertura (D2 raccomandata).
 
+Pubblicazioni (aggiunta del 20/11, 2026.1.5449): tre tab, nessun campo nelle righe, la chiave nuova mostrata una
+volta dopo il salvataggio; P1, P2 e P3 prese come raccomandate. La rinomina di un collegamento sposta ora anche le
+istanze gestite (il difetto segnalato nell'aggiunta è corretto). Aperto lì: il corpo della pagina di un'istanza
+gestita dice ancora producer/puller/relay.
+
 Restano aperti: D1; i testi d'errore di §5 non ancora tutti nel catalogo; le misure come admin di un workspace e a
 375×812; l'indirizzo per gli assistenti AI, che visto attraverso un collegamento mostra quello interno del tunnel.
 

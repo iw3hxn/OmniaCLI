@@ -1,289 +1,618 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
 {% extends "base.html" %}
-{% block title %}{{ _("Pullers") }} · OmniaCLI{% endblock %}
+{% block title %}{{ _("Publications") }} · OmniaCLI{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
-{{ crumbs([(_("Settings"), "/settings"), (_("Pullers"), None)]) }}
+{{ crumbs([(_("Settings"), "/settings"), (_("Publications"), None)]) }}
 {% endblock %}
 {% block content %}
 {% from "_list.html" import list_search, item with context %}
 {% include "_list.html" %}
+{# the publications (docs/ux/UX-007 §4.6): three tabs in the order the data travels, each a list read with one
+   primary; what changes is in a dialog, and a new key is a state of the dialog, shown once after the save.
+   In the code a box is a puller, who publishes its producer, who operates a consumer, the relay machine the relay. #}
+{% set role_names = {"production": _("production"), "test": _("test")} %}
+{% macro instance_name(key) -%}
+{{ key.split("/", 1)[0] }} · {{ role_names.get(key.split("/", 1)[-1], key.split("/", 1)[-1]) }}
+{%- endmacro %}
+{% macro mib(bytes) -%}
+{{ ("%.1f" | format(bytes / 1048576)) | replace(".", "," if lang == "it" else ".") }}
+{%- endmacro %}
+{% macro where(link, box, link_missing) -%}
+{{ _("through") }} <strong>{{ link }}</strong> · {{ _("box") }} <strong>{{ box }}</strong>
+{% if link_missing %}<br><span class="badge error">{{ _("The link {name} is missing: Edit…", name=link) }}</span>{% endif %}
+{%- endmacro %}
+{# why nothing arrives, in one line: a network error names the relay machine, the rest is said as the code says it #}
+{% macro cause(error, link) -%}
+{% if error.startswith(link ~ ": ") %}{{ _("The relay machine {name} does not answer ({cause}).", name=link, cause=tr(error[(link | length) + 2:])) }}{% else %}{{ tr(error) }}{% endif %}
+{%- endmacro %}
+{% set first_tab = "published" if publications else ("relayed" if pullers else ("operated" if connections else "published")) %}
+{% set nothing = not publications and not pullers and not connections %}
+{% set no_link = _("A link to the relay machine is needed: add it in Links") %}
+{% set publish_why = no_link if not link_targets else (_("This machine has no instance to publish yet") if not instances and not publications else (_("All the instances of this machine are already published") if not instances else "")) %}
+{% set box_why = _("At least two accesses are needed in Users › Other instances: one for who publishes and one for who operates.") if links | length < 2 else "" %}
+{% set operate_why = no_link if not link_targets else "" %}
+{% set publish_help = publish_why or _("Sends the reports of an instance of this machine (state, disks, load, jobs) to a box of a relay machine, and takes from there only the commands you allow. Nobody gets into this machine: it is the one that calls. A link to the relay machine is needed, on the Links page.") %}
+{% set box_help = box_why or _("Opens a box on this machine. An OmniaCLI that cannot be reached (who publishes) leaves its reports and backups there and takes its commands; those that operate it read the reports and leave the commands. They all get in with an access of Users › Other instances (the role user is enough).") %}
+{% set operate_help = operate_why or _("Operates from here an instance that another OmniaCLI publishes on a box: it reads its reports and leaves it the commands. The instance shows in the bar on top. A link to the relay machine is needed (Links page) and, if the publication has one, its key.") %}
+{% set command_help = {"backup": _("Who operates can ask for a backup of this instance: it is made here and goes to the box, encrypted if there is a key."),
+                       "start": _("Who operates can start this instance."),
+                       "stop": _("Who operates can stop this instance."),
+                       "restart": _("Who operates can restart this instance.")} %}
+<style>
+.pub-table td { vertical-align: top; } .pub-table .actions button, .pub-table td:first-child a { white-space: nowrap; }
+.pub-note { display: block; font-size: 13px; color: var(--muted); white-space: normal; max-width: 52ch; }
+.pub-note.warn, .pub-warn { color: var(--warn); } .pub-note.error { color: var(--err); }
+.pub-note.error::first-letter { text-transform: uppercase; }
+.pub-dot { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; white-space: nowrap; }
+.pub-dot::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+.pub-dot.up::before { background: var(--ok); } .pub-dot.down::before { background: var(--err); }
+.pub-dot.plain { font-weight: 400; }
+.pub-page .mono.small { font-size: 12px; color: var(--muted); }
+.pub-dialog { width: min(640px, calc(100vw - 32px)); }
+.pub-dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
+.pub-dialog details { margin-top: 12px; } .pub-dialog summary { font-weight: 600; color: var(--text); }
+.pub-dialog .form-grid { align-items: start; }
+.pub-choice { display: flex; gap: 10px; align-items: center; min-height: 34px; }
+.pub-choice label { color: var(--text); min-width: 7em; }
+.pub-choice input[type=text] { width: 10em; }
+.pub-foot { margin-top: 12px; } .pub-foot details { margin-bottom: 6px; }
+</style>
+<div class="pub-page">
 <div class="page-head">
   <div>
-    <h1>{{ _("Pullers") }}</h1>
-    <p>{{ _("Instances operated through a relay: the pullers this instance relays, the instances it publishes, the pullers it is connected to.") }}</p>
+    <h1>{{ _("Publications") }}</h1>
+    <p>{{ _("The instances that cannot be reached from outside: who publishes them, who relays, who operates them. Nobody gets into the customer's machine: it is the one that calls.") }}</p>
+  </div>
+  <div class="actions" style="margin: 0">
+    <span data-for-tab="published" title="{{ publish_help }}" {{ "hidden" if first_tab != "published" }}>
+      <button type="button" class="primary" id="new-publication" title="{{ publish_help }}" {{ "disabled" if publish_why }}>{{ _("Publish an instance") }}</button></span>
+    <span data-for-tab="relayed" title="{{ box_help }}" {{ "hidden" if first_tab != "relayed" }}>
+      <button type="button" class="primary" id="new-box" title="{{ box_help }}" {{ "disabled" if box_why }}>{{ _("New box") }}</button></span>
+    <span data-for-tab="operated" title="{{ operate_help }}" {{ "hidden" if first_tab != "operated" }}>
+      <button type="button" class="primary" id="new-operated" title="{{ operate_help }}" {{ "disabled" if operate_why }}>{{ _("Add an instance to operate") }}</button></span>
   </div>
 </div>
 <div id="error" class="banner" hidden></div>
-<div class="stack">
-<section class="panel">
-  <h2>{{ _("Relayed here") }}</h2>
-  <p class="muted">{{ _("This instance relays between an OmniaCLI that cannot be reached (the producer) and the OmniaCLI that operate it (the consumers).") }}</p>
-  <details>
-    <summary title="{{ _('How the two ends reach this relay, what it can read of what passes, and how long commands and files are kept') }}">{{ _("More") }}</summary>
-    <p class="muted">{{ _("Both ends link out to here, with an incoming link of the Users page (the role user is enough).") }} <a href="{{ prefix }}/users">{{ _("Users") }}</a></p>
-    <p class="muted">{{ _("The producer takes the consumers' commands and leaves its reports and backups here; with a key, which only the two ends hold, this instance cannot read nor change them.") }}
-      {{ _("A command not taken by the producer in 10 minutes expires; a file goes once a consumer has it whole, and every file and report after the hours kept.") }}
-      {{ _("Saved in {file}.", file=pullers_file) }}</p>
-  </details>
-  <div class="scroll" style="margin-top: 10px">
-  {{ list_search("pullers", _("Search puller, producer, consumer…")) }}
-  <table data-list="pullers">
-    <tr><th>{{ _("Puller") }}</th><th>{{ _("Producer") }}</th><th>{{ _("Consumers") }}</th><th>{{ _("Hours kept") }}</th><th>{{ _("Largest file, MiB") }}</th><th>{{ _("Now") }}</th><th></th></tr>
-    {% for p in pullers %}
-    <tr data-puller="{{ p.puller }}" {{ item(p.puller ~ " " ~ p.producer.link ~ " " ~ (p.consumers | map(attribute='link') | join(" "))) }}>
-      <td><strong>{{ p.puller }}</strong>
-        {% if p.missing %}<br><span class="badge error">{{ _("no incoming link {names}", names=p.missing | join(", ")) }}</span>{% endif %}</td>
-      <td><select class="producer" aria-label="{{ _('Producer of {name}', name=p.puller) }}">
-        {% for l in links %}<option {% if l == p.producer.link %}selected{% endif %}>{{ l }}</option>{% endfor %}
-        {% if p.producer.link not in links %}<option selected>{{ p.producer.link }}</option>{% endif %}
-      </select>
-        <br><span class="muted">{{ _("last seen") }} <span data-time="{{ p.producer.seen or '' }}"></span></span></td>
-      <td><input type="text" class="consumers mono" value="{{ p.consumers | map(attribute='link') | join(', ') }}" aria-label="{{ _('Consumers of {name}', name=p.puller) }}">
-        {% for c in p.consumers %}<br><span class="muted">{{ _("{name}, last seen", name=c.link) }} <span data-time="{{ c.seen or '' }}"></span></span>{% endfor %}</td>
-      <td><input type="number" class="keep" min="1" max="720" value="{{ p.keep_hours }}" aria-label="{{ _('Hours kept by {name}', name=p.puller) }}" style="width: 6em"></td>
-      <td><input type="number" class="size" min="1" value="{{ p.max_file_mib }}" aria-label="{{ _('Largest file of {name}', name=p.puller) }}" style="width: 8em"></td>
-      <td class="muted">{% set waiting = p.pending | length %}{{ _("1 command waiting") if waiting == 1 else _("{count} commands waiting", count=waiting) }}{% if p.expired %}, {{ _("expired: {count}", count=p.expired | length) }}{% endif %}
-        <br>{% set files = p.files | length %}{{ _("1 file") if files == 1 else _("{count} files", count=files) }}{% if p.files %}, {{ ((p.files | sum(attribute='size')) / 1048576) | round(1) }} MiB{% endif %}</td>
-      <td><div class="actions" style="margin: 0">
-        <button type="button" data-save title="{{ _('Saves the producer, the consumers, the hours kept and the largest file of this puller. Every link named must be an incoming link of the Users page.') }}">{{ _("Save") }}</button>
-        <button type="button" class="danger" data-delete title="{{ _('Deletes this puller with its waiting commands, its reports and its files: producer and consumers can no longer use it. It asks before.') }}">{{ _("Delete") }}</button>
-      </div></td>
-    </tr>
-    {% else %}
-    <tr><td colspan="7" class="muted">{{ _("No pullers yet.") }}</td></tr>
-    {% endfor %}
-    <tr>
-      <td><input type="text" id="new-name" placeholder="api-prod" aria-label="{{ _('New puller name') }}"></td>
-      <td><select id="new-producer" aria-label="{{ _('Producer of the new puller') }}">
-        {% for l in links %}<option>{{ l }}</option>{% endfor %}</select></td>
-      <td><input type="text" id="new-consumers" class="mono" placeholder="dev, other" aria-label="{{ _('Consumers of the new puller') }}"></td>
-      <td><input type="number" id="new-keep" min="1" max="720" value="{{ keep_hours }}" aria-label="{{ _('Hours kept by the new puller') }}" style="width: 6em"></td>
-      <td><input type="number" id="new-size" min="1" value="{{ max_file_mib }}" aria-label="{{ _('Largest file of the new puller') }}" style="width: 8em"></td>
-      <td></td>
-      <td><button type="button" class="primary" id="add" {% if not links %}disabled title="{{ _('Create the incoming links on the Users page first') }}"{% else %}title="{{ _('Creates a puller with the name, the producer, the consumers and the limits typed in this row.') }}"{% endif %}>{{ _("Add puller") }}</button></td>
-    </tr>
-  </table>
-  </div>
-</section>
+<nav class="tabs" role="tablist" aria-label="{{ _('What passes through a relay machine') }}">
+  <button type="button" role="tab" data-tab="published" aria-selected="{{ 'true' if first_tab == 'published' else 'false' }}" title="{{ _('The instances of this machine that send their reports to a box of a relay machine') }}">{{ _("Published from here") }} ({{ publications | length }})</button>
+  <button type="button" role="tab" data-tab="relayed" aria-selected="{{ 'true' if first_tab == 'relayed' else 'false' }}" title="{{ _('The boxes this machine keeps for other OmniaCLI') }}">{{ _("Relayed from here") }} ({{ pullers | length }})</button>
+  <button type="button" role="tab" data-tab="operated" aria-selected="{{ 'true' if first_tab == 'operated' else 'false' }}" title="{{ _('The instances of other OmniaCLI that you operate from here through a box') }}">{{ _("Operated from here") }} ({{ connections | length }})</button>
+</nav>
 
-<section class="panel">
-  <h2>{{ _("Published here") }}</h2>
-  <p class="muted">{{ _("Instances of this OmniaCLI published as the producer of a puller of a relay, reached through a link of the Links page.") }} <a href="{{ prefix }}/links">{{ _("Links") }}</a></p>
-  <details>
-    <summary title="{{ _('What this instance sends to the relay, how the commands and their hours work, and why a key matters') }}">{{ _("More") }}</summary>
-    <p class="muted">{{ _("This instance asks the relay for commands and sends it its reports (state, disks, load, the progress of its jobs) and its backups.") }}
-      {{ _("Every command is off until you enable it; one sent outside its hours (HH:MM-HH:MM by this machine's clock, empty: always) is refused at once.") }}
-      {{ _("With a key, give the same key to the consumers: without one, whoever controls the relay can read what passes and send the commands enabled.") }}
-      {{ _("Saved in {file}, readable by its owner only: it holds the keys.", file=publications_file) }}</p>
-  </details>
-  <div id="key-box" class="banner info" hidden style="margin-top: 10px">
-    <p style="margin-top: 0"><strong>{{ _("The new key.") }}</strong> {{ _("Copy it now into the consumers' connection to this puller; it is saved with the publication.") }}</p>
-    <pre class="console mono copyable" id="key-value" style="white-space: pre-wrap; word-break: break-all"></pre>
-  </div>
-  <div class="scroll" style="margin-top: 10px">
-  {{ list_search("publications", _("Search instance, relay link, puller…")) }}
-  <table data-list="publications">
-    <tr><th>{{ _("Instance") }}</th><th>{{ _("Relay link") }}</th><th>{{ _("Puller") }}</th><th>{{ _("Key") }}</th><th>{{ _("Commands and their hours") }}</th><th>{{ _("Now") }}</th><th></th></tr>
+<section class="panel tab-panel" data-panel="published" {{ "hidden" if first_tab != "published" }}>
+  <p class="muted" style="margin: 0 0 12px">{{ _("The instances of this machine that send their reports to a box of a relay machine, and take from it the commands you allow.") }}</p>
+  <div {{ "hidden" if publications | length <= 8 }}>{{ list_search("publications", _("Search instance, relay machine, box…")) }}</div>
+  <div class="scroll">
+  <table data-list="publications" class="pub-table">
+    <tr><th>{{ _("Instance") }}</th><th>{{ _("Where") }}</th><th>{{ _("Commands allowed") }}</th><th>{{ _("State") }}</th><th></th></tr>
     {% for p in publications %}
-    <tr data-publication="{{ p.instance }}" {{ item(p.instance ~ " " ~ p.link ~ " " ~ (p.puller or "")) }}>
-      <td><strong>{{ p.instance }}</strong>{% if not p.live %}<br><span class="badge error">{{ _("not live: nothing is sent") }}</span>{% endif %}</td>
-      <td><select class="link" aria-label="{{ _('Relay link of {name}', name=p.instance) }}">
-        {% for l in link_targets %}<option {% if l == p.link %}selected{% endif %}>{{ l }}</option>{% endfor %}
-        {% if p.link_missing %}<option selected>{{ p.link }}</option>{% endif %}</select>
-        {% if p.link_missing %}<br><span class="badge error">{{ _("no link {name}", name=p.link) }}</span>{% endif %}</td>
-      <td><input type="text" class="puller mono" value="{{ p.puller }}" aria-label="{{ _('Puller of {name}', name=p.instance) }}"></td>
-      <td><input type="text" class="key mono" autocomplete="off" placeholder="{{ _('unchanged') if p.has_key else _('none') }}" aria-label="{{ _('Key of {name}', name=p.instance) }}">
-        <div class="actions" style="margin: 4px 0 0"><button type="button" data-new-key title="{{ _('Makes a new random key and puts it in the Key field, shown here above to copy. It is used only once you save the row; the consumers then need the same key.') }}">{{ _("New key") }}</button>
-        {% if p.has_key %}<button type="button" data-remove-key title="{{ _('Saves this row without its key: everything then passes in clear on the relay. It asks before.') }}">{{ _("Remove key") }}</button>{% endif %}</div>
-        {% if not p.has_key %}<span class="badge warn">{{ _("no key: in clear") }}</span>{% endif %}</td>
-      <td>{% for c in commands %}<div><label><input type="checkbox" class="cmd" data-cmd="{{ c }}" {% if p.commands[c].enabled %}checked{% endif %}> {{ tr(c | capitalize) }}</label>
-        <input type="text" class="window mono" data-cmd="{{ c }}" value="{{ p.commands[c].window or '' }}" placeholder="{{ _('always') }}" aria-label="{{ _('Hours of {command}', command=tr(c | capitalize)) }}" style="width: 9em"></div>{% endfor %}</td>
-      <td class="muted">{% if p.status.ok %}<span class="badge ok">{{ _("relay reached") }}</span> <span data-time="{{ p.status.at }}"></span>, {{ _("report #{seq}", seq=p.status.seq) }}
-        {% elif p.status.ok is sameas false %}<span class="error">{{ tr(p.status.error) }}</span> <span data-time="{{ p.status.at }}"></span>
-        {% else %}{{ _("not reached yet") }}{% endif %}
-        {% if p.status.commands %}<br>{{ _("1 command taken") if p.status.commands == 1 else _("{count} commands taken", count=p.status.commands) }}{% endif %}</td>
-      <td><div class="actions" style="margin: 0">
-        <button type="button" data-save title="{{ _('Saves the relay link, the puller, the commands enabled and their hours of this publication. An empty Key keeps the saved one. It warns when start, stop or restart are enabled without a key.') }}">{{ _("Save") }}</button>
-        <button type="button" class="danger" data-delete title="{{ _('Stops publishing this instance: no report nor backup goes to the relay any more and no command is taken. The instance itself is not touched. It asks before.') }}">{{ _("Delete") }}</button>
+    {% set on = [] %}{% set risky = [] %}
+    {% for c in commands %}{% if p.commands[c].enabled %}{% set added = on.append(c) %}{% if c != "backup" %}{% set added = risky.append(tr(c | capitalize)) %}{% endif %}{% endif %}{% endfor %}
+    <tr data-publication="{{ p.instance }}" data-link="{{ p.link }}" data-box="{{ p.puller }}" data-has-key="{{ '1' if p.has_key else '' }}"
+        data-commands="{{ p.commands | tojson | forceescape }}" {{ item(p.instance ~ " " ~ p.link ~ " " ~ (p.puller or "")) }}>
+      <td><strong><a href="{{ prefix }}/servers/{{ p.instance.split('/')[0] }}?view={{ p.instance.split('/')[-1] }}" title="{{ _('Opens the page of this instance') }}">{{ instance_name(p.instance) }}</a></strong>
+        {% if not p.live %}<br><span class="badge error">{{ _("The instance is not live: nothing leaves") }}</span>{% endif %}</td>
+      <td>{{ where(p.link, p.puller, p.link_missing) }}</td>
+      <td>{% for c in on %}{{ tr(c | capitalize) }} {{ (p.commands[c].window | replace("-", "–")) if p.commands[c].window else _("always") }}{% if not loop.last %} · {% endif %}{% else %}{{ _("No command: reports only") }}{% endfor %}
+        {% if risky and not p.has_key %}<span class="pub-note error">{{ _("{commands} without a key: whoever controls the relay machine can send them", commands=risky | join(", ")) }}</span>
+        {% elif p.has_key %}<span class="pub-note">{{ _("With a key") }}</span>
+        {% else %}<span class="pub-note warn">{{ _("In clear") }}</span>{% endif %}</td>
+      <td role="status">{% if p.status.ok %}<span class="pub-dot up">{{ _("Arrives") }}</span>
+        <span class="pub-note">{{ _("last report") }} <span data-time="{{ p.status.at or '' }}"></span></span>
+        {% if p.status.commands %}<span class="pub-note">{{ _("1 command taken") if p.status.commands == 1 else _("{count} commands taken", count=p.status.commands) }}</span>{% endif %}
+        {% elif p.status.ok is sameas false %}<span class="pub-dot down">{{ _("Does not arrive") }}</span>
+        <span class="pub-note error">{{ cause(p.status.error, p.link) }}</span>
+        {% else %}<span class="pub-dot">{{ _("Leaving") }}</span>{% endif %}</td>
+      <td><div class="actions" style="margin: 0; justify-content: flex-end; flex-wrap: nowrap">
+        <button type="button" class="small" data-edit title="{{ _('Changes the relay machine, the box, the commands allowed with their hours and the key. It counts from the next round, within half a minute.') }}">{{ _("Edit…") }}</button>
+        <button type="button" class="small danger" data-delete title="{{ _('Stops sending reports and backups and taking commands for this instance. The instance is not touched, and the box on the relay machine stays. It asks before.') }}">{{ _("Stop publishing…") }}</button>
       </div></td>
     </tr>
     {% else %}
-    <tr><td colspan="7" class="muted">{{ _("No instance published.") }}</td></tr>
+    <tr><td colspan="5" class="muted">{{ _("No instance published. An instance is published when its machine cannot be reached from outside: it is the one that calls a relay machine. First a link to that machine is needed, on the Links page.") }}</td></tr>
     {% endfor %}
-    <tr data-publication="" data-new>
-      <td><select class="instance" aria-label="{{ _('Instance to publish') }}">{% for i in instances %}<option>{{ i }}</option>{% endfor %}</select></td>
-      <td><select class="link" aria-label="{{ _('Relay link') }}">{% for l in link_targets %}<option>{{ l }}</option>{% endfor %}</select></td>
-      <td><input type="text" class="puller mono" placeholder="api-prod" aria-label="{{ _('Puller') }}"></td>
-      <td><input type="text" class="key mono" autocomplete="off" placeholder="{{ _('none') }}" aria-label="{{ _('Key') }}">
-        <div class="actions" style="margin: 4px 0 0"><button type="button" data-new-key title="{{ _('Makes a new random key and puts it in the Key field, shown here above to copy. It is used only once you save the row; the consumers then need the same key.') }}">{{ _("New key") }}</button></div></td>
-      <td>{% for c in commands %}<div><label><input type="checkbox" class="cmd" data-cmd="{{ c }}"> {{ tr(c | capitalize) }}</label>
-        <input type="text" class="window mono" data-cmd="{{ c }}" placeholder="{{ _('always') }}" aria-label="{{ _('Hours of {command}', command=tr(c | capitalize)) }}" style="width: 9em"></div>{% endfor %}</td>
-      <td></td>
-      <td><button type="button" data-save {% if not instances or not link_targets %}disabled title="{{ _('An instance not published yet and a link to the relay are needed') }}"{% else %}title="{{ _('Publishes the chosen instance on the puller typed in this row, through the chosen relay link. Only the commands ticked are taken; the others stay off.') }}"{% endif %}>{{ _("Publish") }}</button></td>
-    </tr>
   </table>
   </div>
 </section>
 
-<section class="panel">
-  <h2>{{ _("Connected here") }}</h2>
-  <p class="muted">{{ _("Pullers of a relay this OmniaCLI is a consumer of, reached through a link of the Links page: their instance is operated from here.") }} <a href="{{ prefix }}/links">{{ _("Links") }}</a></p>
-  <details>
-    <summary title="{{ _('How long the reports are kept here, which key to give, and how a connection brings a backup here') }}">{{ _("More") }}</summary>
-    <p class="muted">{{ _("Their reports are kept here (the load 7 days). Give the key the producer's publication has (none: in clear).") }}
-      {{ _("In a server's form, Database from link may name a connection: Copy from link and the scheduled copies then bring a new backup through the relay.") }}
-      {{ _("Saved in {file}, readable by its owner only: it holds the keys.", file=connections_file) }}</p>
-  </details>
-  <div class="scroll" style="margin-top: 10px">
-  {{ list_search("connections", _("Search connection, relay link, puller…")) }}
-  <table data-list="connections">
-    <tr><th>{{ _("Connection") }}</th><th>{{ _("Relay link") }}</th><th>{{ _("Puller") }}</th><th>{{ _("Key") }}</th><th>{{ _("Now") }}</th><th></th></tr>
-    {% for c in connections %}
-    <tr data-connection="{{ c.name }}" {{ item(c.name ~ " " ~ c.link ~ " " ~ c.puller) }}>
-      <td><strong><a href="{{ prefix }}/pullers/connections/{{ c.name }}">{{ c.name }}</a></strong></td>
-      <td><select class="link" aria-label="{{ _('Relay link of {name}', name=c.name) }}">
-        {% for l in link_targets %}<option {% if l == c.link %}selected{% endif %}>{{ l }}</option>{% endfor %}
-        {% if c.link_missing %}<option selected>{{ c.link }}</option>{% endif %}</select>
-        {% if c.link_missing %}<br><span class="badge error">{{ _("no link {name}", name=c.link) }}</span>{% endif %}</td>
-      <td><input type="text" class="puller mono" value="{{ c.puller }}" aria-label="{{ _('Puller of {name}', name=c.name) }}"></td>
-      <td><input type="text" class="key mono" autocomplete="off" placeholder="{{ _('unchanged') if c.has_key else _('none') }}" aria-label="{{ _('Key of {name}', name=c.name) }}">
-        {% if c.has_key %}<div class="actions" style="margin: 4px 0 0"><button type="button" data-remove-key title="{{ _('Saves this row without its key: reports sealed with a key are then refused. It asks before.') }}">{{ _("Remove key") }}</button></div>
-        {% else %}<br><span class="badge warn">{{ _("no key: in clear") }}</span>{% endif %}</td>
-      <td class="muted">{% if c.status.ok %}<span class="badge ok">{{ _("reports read") }}</span> <span data-time="{{ c.status.at }}"></span>
-        {% elif c.status.ok is sameas false %}<span class="error">{{ tr(c.status.error) }}</span> <span data-time="{{ c.status.at }}"></span>
-        {% else %}{{ _("not read yet") }}{% endif %}</td>
-      <td><div class="actions" style="margin: 0">
-        <button type="button" data-save title="{{ _('Saves the relay link and the puller of this connection. An empty Key keeps the saved one.') }}">{{ _("Save") }}</button>
-        <button type="button" class="danger" data-delete title="{{ _('Deletes this connection: its instance is no longer operated from here. What it has received stays on the disk. It asks before.') }}">{{ _("Delete") }}</button>
+<section class="panel tab-panel" data-panel="relayed" {{ "hidden" if first_tab != "relayed" }}>
+  <p class="muted" style="margin: 0 0 12px">{{ _("The boxes this machine keeps for other OmniaCLI: who publishes leaves reports and backups there, who operates leaves the commands.") }}</p>
+  <div {{ "hidden" if pullers | length <= 8 }}>{{ list_search("pullers", _("Search box, who publishes, who operates…")) }}</div>
+  <div class="scroll">
+  <table data-list="pullers" class="pub-table">
+    <tr><th>{{ _("Box") }}</th><th>{{ _("Who publishes") }}</th><th>{{ _("Who operates") }}</th><th>{{ _("In transit") }}</th><th></th></tr>
+    {% for p in pullers %}
+    {% set waiting = p.pending | length %}{% set files = p.files | length %}{% set late = p.expired | length %}
+    {% set waiting_text = _("1 command waiting") if waiting == 1 else _("{count} commands waiting", count=waiting) %}
+    {% set files_text = _("1 file") if files == 1 else _("{count} files", count=files) %}
+    {% set size_text = mib(p.files | sum(attribute="size")) ~ " MiB" %}
+    {% set files_goes = files_text ~ " (" ~ size_text ~ ")" %}
+    <tr data-box="{{ p.puller }}" data-producer="{{ p.producer.link }}" data-consumers="{{ p.consumers | map(attribute='link') | join(' ') }}"
+        data-keep="{{ p.keep_hours }}" data-size="{{ p.max_file_mib }}"
+        data-confirm="{% if waiting and files %}{{ _('Delete the box {name}? {commands} and {files} go too.', name=p.puller, commands=waiting_text, files=files_goes) }}{% elif waiting or files %}{{ _('Delete the box {name}? This goes too: {what}.', name=p.puller, what=waiting_text if waiting else files_goes) }}{% else %}{{ _('Delete the box {name}?', name=p.puller) }}{% endif %}"
+        {{ item(p.puller ~ " " ~ p.producer.link ~ " " ~ (p.consumers | map(attribute='link') | join(" "))) }}>
+      <td><strong>{{ p.puller }}</strong>
+        {% if p.missing %}<br><span class="badge error">{{ _("The access of {names} is missing: Users › Other instances", names=p.missing | join(", ")) }}</span>{% endif %}</td>
+      <td>{{ p.producer.link }}
+        {% if p.producer.seen and now - p.producer.seen < 120 %}<span class="pub-dot up plain">{{ _("online now") }}</span>
+        {% elif p.producer.seen %}<span class="pub-note">{{ _("last contact") }} <span data-time="{{ p.producer.seen }}"></span></span>
+        {% else %}<span class="pub-note">{{ _("never seen") }}</span>{% endif %}</td>
+      <td>{% for c in p.consumers %}<div>{{ c.link }} <span class="pub-note" style="display: inline">{% if c.seen %}<span data-time="{{ c.seen }}"></span>{% else %}{{ _("never seen") }}{% endif %}</span></div>{% endfor %}</td>
+      <td>{% if waiting or late or files %}{% if waiting %}{{ waiting_text }}{% endif %}{% if late %}{% if waiting %} · {% endif %}{{ _("1 command expired") if late == 1 else _("{count} commands expired", count=late) }}{% endif %}{% if files %}{% if waiting or late %} · {% endif %}{{ files_text }}, {{ size_text }}{% endif %}
+        {% else %}<span class="muted">{{ _("Nothing waiting") }}</span>{% endif %}</td>
+      <td><div class="actions" style="margin: 0; justify-content: flex-end; flex-wrap: nowrap">
+        <button type="button" class="small" data-edit title="{{ _('Changes who publishes, who operates, the hours kept and the largest file. The name does not change: it is part of the addresses the other machines use. Waiting commands and files stay; who you take out does not get in any more.') }}">{{ _("Edit…") }}</button>
+        <button type="button" class="small danger" data-delete title="{{ _('Deletes the box with its waiting commands, its reports and its files. Who publishes and who operates are answered that there is no such box until you make it again; their settings do not change. It asks before.') }}">{{ _("Delete…") }}</button>
       </div></td>
     </tr>
     {% else %}
-    <tr><td colspan="6" class="muted">{{ _("No puller connections.") }}</td></tr>
+    <tr><td colspan="5" class="muted">{{ _("No box. A box is needed when this machine can be reached from outside and relays for another that cannot. First make in Users › Other instances the access of who publishes and of who operates (the role user is enough).") }}</td></tr>
     {% endfor %}
-    <tr data-connection="" data-new>
-      <td><input type="text" class="name" placeholder="api-prod" aria-label="{{ _('New connection name') }}"></td>
-      <td><select class="link" aria-label="{{ _('Relay link') }}">{% for l in link_targets %}<option>{{ l }}</option>{% endfor %}</select></td>
-      <td><input type="text" class="puller mono" placeholder="api-prod" aria-label="{{ _('Puller') }}"></td>
-      <td><input type="text" class="key mono" autocomplete="off" placeholder="{{ _('the publication\'s key, or none') }}" aria-label="{{ _('Key') }}"></td>
-      <td></td>
-      <td><button type="button" data-save {% if not link_targets %}disabled title="{{ _('Add the relay on the Links page first') }}"{% else %}title="{{ _('Connects this OmniaCLI as a consumer to the puller typed in this row, through the chosen relay link: its instance then gets its own page here.') }}"{% endif %}>{{ _("Connect") }}</button></td>
-    </tr>
   </table>
   </div>
 </section>
+
+<section class="panel tab-panel" data-panel="operated" {{ "hidden" if first_tab != "operated" }}>
+  <p class="muted" style="margin: 0 0 12px">{{ _("The instances of other OmniaCLI that you operate from here through a box: you also find them in the bar on top.") }}</p>
+  <div {{ "hidden" if connections | length <= 8 }}>{{ list_search("connections", _("Search instance, relay machine, box…")) }}</div>
+  <div class="scroll">
+  <table data-list="connections" class="pub-table">
+    <tr><th>{{ _("Instance") }}</th><th>{{ _("Where") }}</th><th>{{ _("Protection") }}</th><th>{{ _("State") }}</th><th></th></tr>
+    {% for c in connections %}
+    <tr data-operated="{{ c.name }}" data-link="{{ c.link }}" data-box="{{ c.puller }}" data-has-key="{{ '1' if c.has_key else '' }}" {{ item(c.name ~ " " ~ c.link ~ " " ~ c.puller) }}>
+      <td><strong><a href="{{ prefix }}/pullers/connections/{{ c.name }}" title="{{ _('Opens the instance: state, load, jobs and commands, as its reports tell them') }}">{{ c.name }}</a></strong></td>
+      <td>{{ where(c.link, c.puller, c.link_missing) }}</td>
+      <td>{% if c.has_key %}{{ _("With a key") }}{% else %}<span class="pub-warn">{{ _("In clear") }}</span>{% endif %}</td>
+      <td role="status">{% if c.status.ok %}<span class="pub-dot up">{{ _("Reports read") }}</span>
+        <span class="pub-note"><span data-time="{{ c.status.at or '' }}"></span></span>
+        {% elif c.status.ok is sameas false and c.status.error.startswith("a report refused") %}{% set said = tr(c.status.error) %}<span class="pub-dot down">{{ _("Reports refused") }}</span>
+        <span class="pub-note error">{{ said.split(": ", 1)[1] if ": " in said else said }}</span>
+        {% elif c.status.ok is sameas false %}<span class="pub-dot down">{{ _("Nothing arrives") }}</span>
+        <span class="pub-note error">{{ cause(c.status.error, c.link) }}</span>
+        {% else %}<span class="pub-dot">{{ _("Waiting for the first report") }}</span>{% endif %}</td>
+      <td><div class="actions" style="margin: 0; justify-content: flex-end; flex-wrap: nowrap">
+        <button type="button" class="small" data-edit title="{{ _('Changes the relay machine, the box and the key. A key left empty stays the one saved.') }}">{{ _("Edit…") }}</button>
+        <button type="button" class="small danger" data-delete title="{{ _('Stops operating the instance from here: it leaves the bar on top. What has already arrived stays on the disk. Nothing changes on the relay machine nor on the one of the customer. It asks before.') }}">{{ _("Delete…") }}</button>
+      </div></td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5" class="muted">{{ _("No instance operated from here. On the customer's machine someone publishes an instance on a box; here you add it with the name of the box and its key. A link to the relay machine is needed, on the Links page.") }}</td></tr>
+    {% endfor %}
+  </table>
+  </div>
+</section>
+<div class="pub-foot muted">
+  <details {{ "open" if nothing }}>
+    <summary title="{{ _('Who publishes, who relays, who operates: what passes, what the relay machine can read, how long it stays') }}">{{ _("How it works") }}</summary>
+    <p>{{ _("Who publishes: an instance of a machine that cannot be reached from outside calls a relay machine, through a link of the Links page. It asks it for commands and sends it its reports (state, disks, load, the progress of its jobs) and its backups. Every command is off until you allow it; one sent outside its hours (by this machine's clock; empty: always) is refused at once.") }}</p>
+    <p>{{ _("Who relays: a machine that can be reached keeps a box. Who publishes and who operates both call it, each with an access of Users › Other instances (the role user is enough). A command not taken in 10 minutes expires; a file goes once who operates has it whole, and every file and report after the hours kept.") }}</p>
+    <p>{{ _("Who operates: reads the reports of the box and leaves it the commands. The reports are kept here (the load 7 days). In a server's form, Database from link may name an instance operated from here: Copy from link and the scheduled copies then bring a new backup through the relay machine.") }}</p>
+    <p>{{ _("The key: only who publishes and who operates hold it. With a key the relay machine cannot read nor change what passes; without one, whoever controls the relay machine can read it and send the commands allowed.") }}</p>
+  </details>
+  <details>
+    <summary title="{{ _('The three files of this machine with boxes, publications and operated instances, keys included') }}">{{ _("Where it is saved") }}</summary>
+    <p class="mono small">{{ _("Boxes") }}: {{ pullers_file }}<br>{{ _("Publications") }}: {{ publications_file }}<br>{{ _("Instances operated from here") }}: {{ connections_file }}<br>
+      {{ _("The last two are readable by their owner only: they hold the keys.") }}</p>
+  </details>
 </div>
+</div>
+
+{# a publication: a new one, or one of the list; its key is a state, sent with the save #}
+<dialog id="pub-dialog" class="pub-dialog" aria-labelledby="pd-title">
+  <form method="dialog" id="pd-form">
+    <h2 id="pd-title"></h2>
+    <div class="form-grid">
+      <label for="pd-instance">{{ _("Instance") }}</label>
+      <div><select id="pd-instance">{% for i in instances %}<option value="{{ i }}">{{ instance_name(i) }}</option>{% endfor %}</select>
+        <strong id="pd-instance-text" hidden></strong></div>
+      <label for="pd-link">{{ _("Relay machine") }}</label>
+      <div><select id="pd-link"></select>
+        <a href="{{ prefix }}/links" style="margin-left: 8px" title="{{ _('Opens the links of this machine, where a relay machine is added. What you changed here is not saved.') }}">{{ _("Links") }} ›</a></div>
+      <label for="pd-box">{{ _("Box") }}</label>
+      <div><input type="text" id="pd-box" class="mono" placeholder="api-prod" maxlength="64" autocomplete="off">
+        <span class="muted field-help">{{ _("the name the box has on the relay machine; letters, digits and . _ -") }}</span>
+        <span class="error field-help" id="pd-box-bad" hidden>{{ _("The name: letters, digits and . _ - (it is part of the addresses).") }}</span></div>
+      <label>{{ _("Commands allowed") }}</label>
+      <div>{% for c in commands %}
+        <div class="pub-choice"><label title="{{ command_help[c] }}"><input type="checkbox" data-cmd="{{ c }}"> {{ tr(c | capitalize) }}</label>
+          <input type="text" class="mono" data-window="{{ c }}" placeholder="{{ _('always') }}" aria-label="{{ _('Hours of {command}', command=tr(c | capitalize)) }}" hidden
+                 title="{{ _('The hours the command is taken in, by the clock of this machine, for example 22:00-06:00. Empty: always. Outside its hours the command is refused at once.') }}"></div>{% endfor %}
+        <span class="error field-help" id="pd-window-bad" hidden></span>
+        <span class="error field-help" id="pd-risk" hidden></span></div>
+      <label>{{ _("Key") }}</label>
+      <div><span id="pd-key-state" role="status"></span>
+        <div class="actions" style="margin: 6px 0 0">
+          <button type="button" class="small" id="pd-key-new" title="{{ _('Prepares a new key that encrypts reports, commands and backups: the relay machine can no longer read nor change them. It counts only after Save, and then it is shown to you once: it goes to every machine that operates the instance.') }}">{{ _("Create a key") }}</button>
+          <button type="button" class="small" id="pd-key-replace" title="{{ _('As Create a key. At the save the old key stops counting: who operates with that one refuses the reports until the new one is put there.') }}">{{ _("Replace the key") }}</button>
+          <button type="button" class="small danger" id="pd-key-remove" title="{{ _('At the save everything passes in clear on the relay machine, and who operates with the key refuses the reports until the key is taken out there too. By itself it saves nothing.') }}">{{ _("Take the key out") }}</button>
+        </div></div>
+    </div>
+    <details id="pd-advanced">
+      <summary title="{{ _('A key you already have, to publish again with the one the machines that operate already hold') }}">{{ _("Advanced") }}</summary>
+      <div class="form-grid" style="margin-top: 8px">
+        <label for="pd-paste">{{ _("Paste an existing key") }}</label>
+        <div><input type="text" id="pd-paste" class="mono" autocomplete="off" placeholder="opk1-…">
+          <span class="muted field-help">{{ _("to publish again with the key the machines that operate already have") }}</span>
+          <span class="error field-help" id="pd-paste-bad" hidden>{{ _("This is not a whole publication key: copy it again, it starts with opk1-.") }}</span></div>
+      </div>
+    </details>
+    <div class="actions">
+      <button type="button" data-cancel title="{{ _('Closes without saving') }}">{{ _("Cancel") }}</button>
+      <span title="{{ _('Saves the publication. Disabled until something is changed.') }}">
+        <button type="submit" class="primary" id="pd-save" disabled>{{ _("Save") }}</button></span>
+    </div>
+    <p class="error" id="pd-error" role="alert"></p>
+  </form>
+</dialog>
+
+{# a box: who publishes from a menu, who operates ticked, its limits folded #}
+<dialog id="box-dialog" class="pub-dialog" aria-labelledby="bd-title">
+  <form method="dialog" id="bd-form">
+    <h2 id="bd-title"></h2>
+    <div class="form-grid">
+      <label for="bd-name">{{ _("Name") }}</label>
+      <div><input type="text" id="bd-name" class="mono" placeholder="api-prod" maxlength="64" autocomplete="off">
+        <strong id="bd-name-text" hidden></strong>
+        <span class="muted field-help" id="bd-name-help">{{ _("the same name is written on the machine that publishes and on those that operate; letters, digits and . _ -") }} <span class="mono small">puller</span></span>
+        <span class="error field-help" id="bd-name-bad" hidden>{{ _("The name: letters, digits and . _ - (it is part of the addresses).") }}</span></div>
+      <label for="bd-producer">{{ _("Who publishes") }}</label>
+      <div><select id="bd-producer"></select>
+        <span class="muted field-help">{{ _("an access of Users › Other instances") }}</span></div>
+      <label>{{ _("Who operates") }}</label>
+      <div><div id="bd-consumers"></div>
+        <span class="error field-help" id="bd-consumers-bad" hidden>{{ _("Choose at least one machine that operates.") }}</span></div>
+    </div>
+    <details id="bd-advanced">
+      <summary title="{{ _('How long the reports and the files are kept, and the largest file the box takes') }}">{{ _("Advanced") }}</summary>
+      <div class="form-grid" style="margin-top: 8px">
+        <label for="bd-keep">{{ _("Hours kept") }}</label>
+        <div><input type="number" id="bd-keep" min="1" max="720" style="width: 7em">
+          <span class="error field-help" id="bd-keep-bad" hidden>{{ _("Hours kept: a whole number from 1 to 720.") }}</span></div>
+        <label for="bd-size">{{ _("Largest file, MiB") }}</label>
+        <div><input type="number" id="bd-size" min="1" max="1048576" style="width: 9em"> <span class="muted" id="bd-size-gib"></span>
+          <span class="error field-help" id="bd-size-bad" hidden>{{ _("Largest file: a whole number of MiB from 1 to 1048576.") }}</span></div>
+      </div>
+    </details>
+    <div class="actions">
+      <button type="button" data-cancel title="{{ _('Closes without saving') }}">{{ _("Cancel") }}</button>
+      <span title="{{ _('Saves the box. Every name chosen must have an access in Users › Other instances. Disabled until something is changed.') }}">
+        <button type="submit" class="primary" id="bd-save" disabled>{{ _("Save") }}</button></span>
+    </div>
+    <p class="error" id="bd-error" role="alert"></p>
+  </form>
+</dialog>
+
+{# an instance operated from here: its key is pasted, or taken out at the save #}
+<dialog id="op-dialog" class="pub-dialog" aria-labelledby="od-title">
+  <form method="dialog" id="od-form">
+    <h2 id="od-title"></h2>
+    <div class="form-grid">
+      <label for="od-name">{{ _("Name") }}</label>
+      <div><input type="text" id="od-name" placeholder="api-prod" maxlength="64" autocomplete="off">
+        <strong id="od-name-text" hidden></strong>
+        <span class="muted field-help" id="od-name-help">{{ _("as it shows in the bar on top; letters, digits and . _ -") }}</span>
+        <span class="error field-help" id="od-name-bad" hidden>{{ _("The name: letters, digits and . _ - (it is part of the addresses).") }}</span></div>
+      <label for="od-link">{{ _("Relay machine") }}</label>
+      <div><select id="od-link"></select>
+        <a href="{{ prefix }}/links" style="margin-left: 8px" title="{{ _('Opens the links of this machine, where a relay machine is added. What you changed here is not saved.') }}">{{ _("Links") }} ›</a></div>
+      <label for="od-box">{{ _("Box") }}</label>
+      <div><input type="text" id="od-box" class="mono" placeholder="api-prod" maxlength="64" autocomplete="off">
+        <span class="muted field-help">{{ _("the name the box has on the relay machine; letters, digits and . _ -") }}</span>
+        <span class="error field-help" id="od-box-bad" hidden>{{ _("The name: letters, digits and . _ - (it is part of the addresses).") }}</span></div>
+      <label for="od-key">{{ _("Key") }}</label>
+      <div><input type="text" id="od-key" class="mono" autocomplete="off">
+        <span class="error field-help" id="od-key-bad" hidden>{{ _("This is not a whole publication key: copy it again, it starts with opk1-.") }}</span>
+        <span class="error field-help" id="od-key-out" hidden>{{ _("At the save the encrypted reports are refused") }}</span>
+        <div class="actions" style="margin: 6px 0 0">
+          <button type="button" class="small danger" id="od-key-remove" title="{{ _('At the save the encrypted reports are refused. By itself it saves nothing.') }}">{{ _("Take the key out") }}</button>
+        </div></div>
+    </div>
+    <div class="actions">
+      <button type="button" data-cancel title="{{ _('Closes without saving') }}">{{ _("Cancel") }}</button>
+      <span title="{{ _('Saves the instance operated from here. Disabled until something is changed.') }}">
+        <button type="submit" class="primary" id="od-save" disabled>{{ _("Save") }}</button></span>
+    </div>
+    <p class="error" id="od-error" role="alert"></p>
+  </form>
+</dialog>
+
+{# the new key of a publication: once, after its save #}
+<dialog id="secret-dialog" class="pub-dialog" aria-labelledby="sd-title">
+  <h2 id="sd-title"></h2>
+  <p>{{ _("Paste it with Edit… in the tab Operated from here of every machine that operates this instance: without it, their reports are refused.") }}
+    {{ _("It is shown only now.") }}</p>
+  <pre class="console mono copyable" id="secret-value" style="white-space: pre-wrap; word-break: break-all"></pre>
+  <div class="actions"><button type="button" class="primary" id="sd-done" title="{{ _('Closes: the key will not be shown again. If you lose it, Replace the key and give it again to who operates.') }}">{{ _("I have copied the key") }}</button></div>
+</dialog>
 <script>
 (function () {
-  const errorBox = document.getElementById("error");
-  const errorText = (status) => {{ _("Error {status}") | tojson }}.replace("{status}", status);
+  const $ = (id) => document.getElementById(id);
+  const T = {
+    publish: {{ _("Publish an instance") | tojson }}, editPublication: {{ _("Edit the publication of {instance}") | tojson }},
+    newBox: {{ _("New box") | tojson }}, operate: {{ _("Add an instance to operate") | tojson }}, edit: {{ _("Edit {name}") | tojson }},
+    save: {{ _("Save") | tojson }}, saveNoKey: {{ _("Save without a key") | tojson }},
+    noKey: {{ _("No key: everything passes in clear on the relay machine") | tojson }}, keySet: {{ _("Key set") | tojson }},
+    keyNew: {{ _("New key: it counts at the save") | tojson }}, keyPasted: {{ _("Pasted key: it counts at the save") | tojson }},
+    keyOut: {{ _("At the save everything passes in clear") | tojson }},
+    risk: {{ _("{commands} without a key: whoever controls the relay machine can send them") | tojson }},
+    hoursBad: {{ _("Hours of {command}: in the form 22:00-06:00, or empty for always.") | tojson }},
+    missing: {{ _("{name} (it is not there any more)") | tojson }},
+    pasteKey: {{ _("Paste the key of the publication; empty: in clear") | tojson }}, unchanged: {{ _("unchanged") | tojson }},
+    secret: {{ _("The key of {instance}") | tojson }},
+    stopQ: {{ _("Stop publishing {instance}? Who operates it gets no more reports and cannot send it commands.") | tojson }},
+    forgetQ: {{ _("Stop operating {name} from here?") | tojson }},
+    error: {{ _("Error {status}") | tojson }},
+  };
+  const COMMANDS = { {%- for c in commands %}{{ c | tojson }}: {{ tr(c | capitalize) | tojson }}{{ ", " if not loop.last }}{% endfor -%} };
+  const TARGETS = {{ link_targets | tojson }}, ACCESSES = {{ links | tojson }};
+  const KEEP = {{ keep_hours | tojson }}, SIZE = {{ max_file_mib | tojson }};
+  const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/, KEY = /^opk1-\S+$/;
+  const errorBox = $("error");
+
+  // a moment of the server (seconds) as people write it, by this browser's clock
+  const two = (n) => String(n).padStart(2, "0");
   for (const span of document.querySelectorAll("[data-time]")) {
     const at = parseFloat(span.dataset.time);
-    span.textContent = at ? new Date(at * 1000).toLocaleString() : {{ _("never") | tojson }};
+    if (!at) continue;
+    const d = new Date(at * 1000);
+    span.textContent = window.whenText(`${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}T${two(d.getHours())}:${two(d.getMinutes())}`);
   }
-  async function post(url, body) {
-    errorBox.hidden = true;
-    const resp = await fetch("{{ prefix }}/api/pullers/" + url, {method: "POST",
-      headers: {"Content-Type": "application/json"}, body: JSON.stringify(body || {})});
-    const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) { errorBox.textContent = data.error || data.detail || errorText(resp.status); errorBox.hidden = false; return null; }
+
+  // a request to one of the page's routes: the answer, or null with the error shown in `where`
+  async function post(url, body, where) {
+    where = where || errorBox;
+    where.textContent = ""; errorBox.hidden = true;
+    const resp = await fetch("{{ prefix }}/api/" + url, {method: "POST",
+      headers: {"Content-Type": "application/json", Accept: "application/json"}, body: JSON.stringify(body || {})}).catch(() => null);
+    const data = resp ? await resp.json().catch(() => ({})) : {};
+    if (!resp || !resp.ok) {
+      where.textContent = data.error || data.detail || T.error.replace("{status}", resp ? resp.status : "–");
+      where.hidden = false;
+      if (where === errorBox) window.scrollTo(0, 0);
+      return null;
+    }
     return data;
   }
-  const list = (text) => text.split(/[\s,]+/).filter(Boolean);
-  for (const row of document.querySelectorAll("tr[data-puller]")) {
-    const name = row.dataset.puller;
-    row.querySelector("[data-save]").onclick = async () => {
-      const body = {name, producer: row.querySelector(".producer").value,
-                    consumers: list(row.querySelector(".consumers").value),
-                    keep_hours: parseInt(row.querySelector(".keep").value, 10),
-                    max_file_mib: parseInt(row.querySelector(".size").value, 10)};
-      if (await post("save", body)) location.reload();
-    };
-    row.querySelector("[data-delete]").onclick = async () => {
-      if (!confirm({{ _("Delete puller {name}? Its waiting commands, reports and files go too.") | tojson }}.replace("{name}", name))) return;
-      if (await post("delete", {name})) location.reload();
-    };
+
+  // the tabs: the one in the address (#relayed), else the first with rows (the page's own choice); the primary is the tab's
+  const tabs = [...document.querySelectorAll(".tabs [data-tab]")];
+  function show(name) {
+    if (!tabs.some((t) => t.dataset.tab === name)) return;
+    for (const t of tabs) t.setAttribute("aria-selected", String(t.dataset.tab === name));
+    for (const p of document.querySelectorAll(".tab-panel")) p.hidden = p.dataset.panel !== name;
+    for (const b of document.querySelectorAll("[data-for-tab]")) b.hidden = b.dataset.forTab !== name;
   }
-  async function postPublication(url, body) {
-    errorBox.hidden = true;
-    const resp = await fetch("{{ prefix }}/api/publications/" + url, {method: "POST",
-      headers: {"Content-Type": "application/json"}, body: JSON.stringify(body || {})});
-    const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) { errorBox.textContent = data.error || data.detail || errorText(resp.status); errorBox.hidden = false; return null; }
-    return data;
+  for (const t of tabs) t.addEventListener("click", () => { history.replaceState(null, "", "#" + t.dataset.tab); show(t.dataset.tab); });
+  show(location.hash.slice(1));
+
+  // a menu of names; one that is saved but no longer among them stays, said missing
+  function fill(select, names, current) {
+    const all = current && !names.includes(current) ? [...names, current] : names;
+    select.replaceChildren(...all.map((n) => new Option(names.includes(n) ? n : T.missing.replace("{name}", n), n)));
+    if (current) select.value = current;
   }
-  for (const row of document.querySelectorAll("tr[data-publication]")) {
-    const isNew = "new" in row.dataset;
-    const instance = () => isNew ? row.querySelector(".instance").value : row.dataset.publication;
-    const commands = () => {
-      const found = {};
-      for (const box of row.querySelectorAll(".cmd")) {
-        const windowBox = row.querySelector(`.window[data-cmd="${box.dataset.cmd}"]`);
-        found[box.dataset.cmd] = {enabled: box.checked, window: windowBox.value.trim()};
-      }
-      return found;
-    };
-    row.querySelector("[data-new-key]").onclick = async () => {
-      const data = await postPublication("key");
-      if (!data) return;
-      row.querySelector(".key").value = data.key;
-      document.getElementById("key-value").textContent = data.key;
-      document.getElementById("key-box").hidden = false;
-    };
-    const save = async (extra) => {
-      const body = {instance: instance(), link: row.querySelector(".link").value, puller: row.querySelector(".puller").value.trim(),
-                    key: row.querySelector(".key").value.trim(), commands: commands(), new: isNew, ...extra};
-      const data = await postPublication("save", body);
-      if (!data) return;
-      if (data.warning && !confirm({{ _("Saved. Warning: {warning}.") | tojson }}.replace("{warning}", data.warning))) return;
-      location.reload();
-    };
-    row.querySelector("[data-save]").onclick = () => save({});
-    const remove = row.querySelector("[data-remove-key]");
-    if (remove) remove.onclick = () => { if (confirm({{ _("Remove the key? Everything then passes in clear.") | tojson }})) save({remove_key: true}); };
-    const del = row.querySelector("[data-delete]");
-    if (del) del.onclick = async () => {
-      if (!confirm({{ _("Stop publishing {instance}?") | tojson }}.replace("{instance}", instance()))) return;
-      if (await postPublication("delete", {instance: instance()})) location.reload();
-    };
-  }
-  for (const row of document.querySelectorAll("tr[data-connection]")) {
-    const isNew = "new" in row.dataset;
-    const name = () => isNew ? row.querySelector(".name").value.trim() : row.dataset.connection;
-    const save = async (extra) => {
-      errorBox.hidden = true;
-      const body = {name: name(), link: row.querySelector(".link").value, puller: row.querySelector(".puller").value.trim(),
-                    key: row.querySelector(".key").value.trim(), new: isNew, ...extra};
-      const resp = await fetch("{{ prefix }}/api/connections/save", {method: "POST",
-        headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
-      const data = await resp.json().catch(() => ({}));
-      if (!resp.ok) { errorBox.textContent = data.error || data.detail || errorText(resp.status); errorBox.hidden = false; return; }
-      location.reload();
-    };
-    row.querySelector("[data-save]").onclick = () => save({});
-    const remove = row.querySelector("[data-remove-key]");
-    if (remove) remove.onclick = () => { if (confirm({{ _("Remove the key? Reports sealed with it are then refused.") | tojson }})) save({remove_key: true}); };
-    const del = row.querySelector("[data-delete]");
-    if (del) del.onclick = async () => {
-      if (!confirm({{ _("Delete the connection {name}?") | tojson }}.replace("{name}", name()))) return;
-      const resp = await fetch("{{ prefix }}/api/connections/delete", {method: "POST",
-        headers: {"Content-Type": "application/json", Accept: "application/json"}, body: JSON.stringify({name: name()})});
-      if (resp.ok) { location.reload(); return; }
-      // refused: said, as every other refusal of the page
-      const data = await resp.json().catch(() => ({}));
-      errorBox.textContent = data.error || data.detail || errorText(resp.status); errorBox.hidden = false;
-      window.scrollTo(0, 0);
-    };
-  }
-  document.getElementById("add").onclick = async () => {
-    const value = (id) => document.getElementById(id).value.trim();
-    const body = {name: value("new-name"), producer: value("new-producer"), consumers: list(value("new-consumers")),
-                  keep_hours: parseInt(value("new-keep"), 10), max_file_mib: parseInt(value("new-size"), 10), new: true};
-    if (await post("save", body)) location.reload();
+  const mark = (id, bad) => { $(id).hidden = !bad; return bad; };
+  for (const button of document.querySelectorAll("dialog [data-cancel]")) button.onclick = () => button.closest("dialog").close();
+
+  // --- a publication ---------------------------------------------------------
+  const pubDialog = $("pub-dialog"), secret = $("secret-dialog");
+  const box = (c) => pubDialog.querySelector(`[data-cmd="${c}"]`), hours = (c) => pubDialog.querySelector(`[data-window="${c}"]`);
+  // key: what the save does with it ("": as it is, "new": the one made here, "remove"); a pasted one comes first
+  let pub = {editing: null, hasKey: false, key: "", made: ""}, pubBefore = "";
+  const hoursOk = (text) => {
+    const m = /^(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})$/.exec(text);
+    return !text || (!!m && m[1] < 24 && m[3] < 24 && m[2] < 60 && m[4] < 60);
   };
+  const pubValues = () => JSON.stringify([$("pd-instance").value, $("pd-link").value, $("pd-box").value.trim(),
+    Object.keys(COMMANDS).map((c) => [box(c).checked, hours(c).value.trim()]), pub.key, pub.made, $("pd-paste").value.trim()]);
+  function pubChanged() {
+    const pasted = $("pd-paste").value.trim(), name = $("pd-box").value.trim();
+    const state = $("pd-key-state");
+    const kept = pasted ? "pasted" : pub.key || (pub.hasKey ? "set" : "none");
+    state.textContent = {pasted: T.keyPasted, new: T.keyNew, remove: T.keyOut, set: T.keySet, none: T.noKey}[kept];
+    state.className = kept === "remove" ? "error" : "";
+    $("pd-key-new").hidden = pub.hasKey || kept !== "none";
+    $("pd-key-replace").hidden = !pub.hasKey || kept === "new";
+    $("pd-key-remove").hidden = !pub.hasKey || kept === "remove";
+    $("pd-save").textContent = kept === "remove" ? T.saveNoKey : T.save;
+    let bad = mark("pd-box-bad", !!name && !NAME.test(name)) || !name || !$("pd-link").value || !$("pd-instance").value;
+    const wrong = [], risky = [];
+    for (const c of Object.keys(COMMANDS)) {
+      hours(c).hidden = !box(c).checked;
+      if (!box(c).checked) continue;
+      if (!hoursOk(hours(c).value.trim())) wrong.push(T.hoursBad.replace("{command}", COMMANDS[c]));
+      if (c !== "backup") risky.push(COMMANDS[c]);
+    }
+    $("pd-window-bad").textContent = wrong.join(" ");
+    bad = mark("pd-window-bad", wrong.length > 0) || bad;
+    bad = mark("pd-paste-bad", !!pasted && !KEY.test(pasted)) || bad;
+    const clear = kept === "none" || kept === "remove";
+    $("pd-risk").textContent = T.risk.replace("{commands}", risky.join(", "));
+    $("pd-risk").hidden = !(risky.length && clear);
+    $("pd-save").disabled = bad || pubValues() === pubBefore;
+  }
+  function openPublication(row) {
+    const d = row ? row.dataset : {}, saved = row ? JSON.parse(d.commands) : {};
+    pub = {editing: row ? d.publication : null, hasKey: !!d.hasKey, key: "", made: ""};
+    $("pd-title").textContent = row ? T.editPublication.replace("{instance}", row.querySelector("a").textContent) : T.publish;
+    $("pd-instance").hidden = !!row; $("pd-instance-text").hidden = !row;
+    if (row) {
+      // the instance of a publication does not change: its menu holds it alone, shown as text
+      $("pd-instance").replaceChildren(new Option(pub.editing, pub.editing));
+      $("pd-instance-text").textContent = row.querySelector("a").textContent;
+    } else $("pd-instance").replaceChildren(...FREE.map((o) => o.cloneNode(true)));
+    fill($("pd-link"), TARGETS, d.link);
+    $("pd-box").value = d.box || "";
+    for (const c of Object.keys(COMMANDS)) {
+      box(c).checked = !!(saved[c] && saved[c].enabled);
+      hours(c).value = (saved[c] && saved[c].window) || "";
+    }
+    $("pd-paste").value = ""; $("pd-advanced").open = false; $("pd-error").textContent = "";
+    pubBefore = pubValues(); pubChanged();
+    pubDialog.showModal();
+    (row ? $("pd-box") : $("pd-instance")).focus();
+  }
+  const FREE = [...$("pd-instance").options];
+  for (const kind of ["input", "change"]) $("pd-form").addEventListener(kind, pubChanged);
+  // the three of the key change the dialog only: the key made is kept here and sent with the save
+  const makeKey = async () => {
+    const data = await post("publications/key", {}, $("pd-error"));
+    if (!data) return;
+    pub.key = "new"; pub.made = data.key; $("pd-paste").value = "";
+    pubChanged();
+  };
+  $("pd-key-new").onclick = makeKey; $("pd-key-replace").onclick = makeKey;
+  $("pd-key-remove").onclick = () => { pub.key = "remove"; pub.made = ""; $("pd-paste").value = ""; pubChanged(); };
+  $("pd-paste").addEventListener("input", () => { if ($("pd-paste").value.trim()) { pub.key = ""; pub.made = ""; } });
+  $("pd-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const pasted = $("pd-paste").value.trim(), instance = $("pd-instance").value, commands = {};
+    for (const c of Object.keys(COMMANDS)) {
+      const text = hours(c).value.trim();
+      // the hours of a command not allowed are kept as they were saved
+      commands[c] = {enabled: box(c).checked, window: hoursOk(text) ? text.replace(/\s+/g, "") : ""};
+    }
+    const body = {instance, link: $("pd-link").value, puller: $("pd-box").value.trim(), commands,
+                  key: pasted || (pub.key === "new" ? pub.made : "")};
+    if (!pub.editing) body.new = true;
+    if (!pasted && pub.key === "remove") body.remove_key = true;
+    // one save at a time: Save is off until the answer, and on again with a refusal
+    $("pd-save").disabled = true;
+    if (!(await post("publications/save", body, $("pd-error")))) { pubChanged(); return; }
+    const made = !pasted && pub.key === "new" ? pub.made : "";
+    const name = pub.editing ? $("pd-instance-text").textContent : $("pd-instance").selectedOptions[0].textContent;
+    pubDialog.close();
+    if (!made) { location.reload(); return; }
+    // the new key: once, now that it is saved; the page again when it is closed
+    $("sd-title").textContent = T.secret.replace("{instance}", name);
+    $("secret-value").textContent = made;
+    secret.showModal();
+  });
+  pubDialog.addEventListener("close", () => { if (!secret.open) pub.made = ""; });
+  $("sd-done").onclick = () => location.reload();
+  secret.addEventListener("cancel", (e) => e.preventDefault());
+  $("new-publication").onclick = () => openPublication(null);
+  for (const row of document.querySelectorAll("tr[data-publication]")) {
+    row.querySelector("[data-edit]").onclick = () => openPublication(row);
+    row.querySelector("[data-delete]").onclick = async () => {
+      if (!confirm(T.stopQ.replace("{instance}", row.querySelector("a").textContent))) return;
+      if (await post("publications/delete", {instance: row.dataset.publication})) location.reload();
+    };
+  }
+
+  // --- a box -----------------------------------------------------------------
+  const boxDialog = $("box-dialog");
+  let boxEditing = null, boxBefore = "";
+  const whole = (id, low, high) => { const text = $(id).value.trim(), n = Number(text); return /^\d+$/.test(text) && n >= low && n <= high; };
+  const operators = () => [...$("bd-consumers").querySelectorAll("input")].filter((i) => i.checked && i.value !== $("bd-producer").value).map((i) => i.value);
+  const boxValues = () => JSON.stringify([$("bd-name").value.trim(), $("bd-producer").value, operators(), $("bd-keep").value.trim(), $("bd-size").value.trim()]);
+  function boxChanged() {
+    // who publishes is not among who operates: its tick is put aside, and comes back with another choice
+    for (const input of $("bd-consumers").querySelectorAll("input")) input.closest("label").hidden = input.value === $("bd-producer").value;
+    const name = $("bd-name").value.trim();
+    let bad = !boxEditing && (mark("bd-name-bad", !!name && !NAME.test(name)) || !name);
+    bad = mark("bd-consumers-bad", operators().length === 0) || bad;
+    bad = mark("bd-keep-bad", !whole("bd-keep", 1, 720)) || bad;
+    const sized = whole("bd-size", 1, 1048576);
+    bad = mark("bd-size-bad", !sized) || bad;
+    $("bd-size-gib").textContent = sized ? (Number($("bd-size").value) / 1024).toLocaleString(document.documentElement.lang, {maximumFractionDigits: 1}) + " GiB" : "";
+    if ($("bd-keep-bad").hidden === false || $("bd-size-bad").hidden === false) $("bd-advanced").open = true;
+    $("bd-save").disabled = bad || boxValues() === boxBefore;
+  }
+  function openBox(row) {
+    const d = row ? row.dataset : {}, chosen = row && d.consumers ? d.consumers.split(" ") : [];
+    boxEditing = row ? d.box : null;
+    $("bd-title").textContent = row ? T.edit.replace("{name}", boxEditing) : T.newBox;
+    // the name of a box does not change (no route renames it): text in Edit
+    $("bd-name").value = boxEditing || ""; $("bd-name").hidden = !!row;
+    $("bd-name-text").textContent = boxEditing || ""; $("bd-name-text").hidden = !row;
+    $("bd-name-help").hidden = !!row; $("bd-name-bad").hidden = true;
+    fill($("bd-producer"), ACCESSES, d.producer);
+    const names = [...ACCESSES, ...chosen.filter((n) => !ACCESSES.includes(n))];
+    $("bd-consumers").replaceChildren(...names.map((n) => {
+      const label = document.createElement("label"), input = document.createElement("input");
+      input.type = "checkbox"; input.value = n; input.checked = chosen.includes(n);
+      label.className = "pub-choice"; label.append(input, ACCESSES.includes(n) ? n : T.missing.replace("{name}", n));
+      return label;
+    }));
+    $("bd-keep").value = d.keep || KEEP; $("bd-size").value = d.size || SIZE;
+    $("bd-advanced").open = Number($("bd-keep").value) !== KEEP || Number($("bd-size").value) !== SIZE;
+    $("bd-error").textContent = "";
+    boxBefore = boxValues(); boxChanged();
+    boxDialog.showModal();
+    (row ? $("bd-producer") : $("bd-name")).focus();
+  }
+  for (const kind of ["input", "change"]) $("bd-form").addEventListener(kind, boxChanged);
+  $("bd-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const body = {name: $("bd-name").value.trim(), producer: $("bd-producer").value, consumers: operators(),
+                  keep_hours: Number($("bd-keep").value), max_file_mib: Number($("bd-size").value)};
+    if (!boxEditing) body.new = true;
+    $("bd-save").disabled = true;
+    if (await post("pullers/save", body, $("bd-error"))) location.reload(); else boxChanged();
+  });
+  $("new-box").onclick = () => openBox(null);
+  for (const row of document.querySelectorAll("tr[data-box][data-producer]")) {
+    row.querySelector("[data-edit]").onclick = () => openBox(row);
+    row.querySelector("[data-delete]").onclick = async () => {
+      if (!confirm(row.dataset.confirm)) return;
+      if (await post("pullers/delete", {name: row.dataset.box})) location.reload();
+    };
+  }
+
+  // --- an instance operated from here ----------------------------------------
+  const opDialog = $("op-dialog");
+  let op = {editing: null, hasKey: false, remove: false}, opBefore = "";
+  const opValues = () => JSON.stringify([$("od-name").value.trim(), $("od-link").value, $("od-box").value.trim(), $("od-key").value.trim(), op.remove]);
+  function opChanged() {
+    const name = $("od-name").value.trim(), where = $("od-box").value.trim(), key = $("od-key").value.trim();
+    let bad = !op.editing && (mark("od-name-bad", !!name && !NAME.test(name)) || !name);
+    bad = mark("od-box-bad", !!where && !NAME.test(where)) || !where || !$("od-link").value || bad;
+    bad = mark("od-key-bad", !!key && !KEY.test(key)) || bad;
+    $("od-key").disabled = op.remove; $("od-key-out").hidden = !op.remove;
+    $("od-key").placeholder = op.remove ? "" : op.hasKey ? T.unchanged : T.pasteKey;
+    $("od-key-remove").hidden = !op.hasKey || op.remove;
+    $("od-save").textContent = op.remove ? T.saveNoKey : T.save;
+    $("od-save").disabled = bad || opValues() === opBefore;
+  }
+  function openOperated(row) {
+    const d = row ? row.dataset : {};
+    op = {editing: row ? d.operated : null, hasKey: !!d.hasKey, remove: false};
+    $("od-title").textContent = row ? T.edit.replace("{name}", op.editing) : T.operate;
+    $("od-name").value = op.editing || ""; $("od-name").hidden = !!row;
+    $("od-name-text").textContent = op.editing || ""; $("od-name-text").hidden = !row;
+    $("od-name-help").hidden = !!row; $("od-name-bad").hidden = true;
+    fill($("od-link"), TARGETS, d.link);
+    $("od-box").value = d.box || "";
+    $("od-key").value = "";
+    $("od-error").textContent = "";
+    opBefore = opValues(); opChanged();
+    opDialog.showModal();
+    (row ? $("od-box") : $("od-name")).focus();
+  }
+  for (const kind of ["input", "change"]) $("od-form").addEventListener(kind, opChanged);
+  // a state of the dialog: the key goes at the save
+  $("od-key-remove").onclick = () => { op.remove = true; $("od-key").value = ""; opChanged(); };
+  $("od-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const body = {name: $("od-name").value.trim(), link: $("od-link").value, puller: $("od-box").value.trim(), key: $("od-key").value.trim()};
+    if (!op.editing) body.new = true;
+    if (op.remove) body.remove_key = true;
+    $("od-save").disabled = true;
+    if (await post("connections/save", body, $("od-error"))) location.reload(); else opChanged();
+  });
+  $("new-operated").onclick = () => openOperated(null);
+  for (const row of document.querySelectorAll("tr[data-operated]")) {
+    row.querySelector("[data-edit]").onclick = () => openOperated(row);
+    row.querySelector("[data-delete]").onclick = async () => {
+      if (!confirm(T.forgetQ.replace("{name}", row.dataset.operated))) return;
+      if (await post("connections/delete", {name: row.dataset.operated})) location.reload();
+    };
+  }
 })();
 </script>
 <script>
   // the lists' search (_list.html)
-  for (const id of ["pullers", "publications", "connections"]) OmniaList.attach(document.querySelector(`[data-list="${id}"]`));
+  for (const id of ["publications", "pullers", "connections"]) OmniaList.attach(document.querySelector(`[data-list="${id}"]`));
 </script>
 {% endblock %}
