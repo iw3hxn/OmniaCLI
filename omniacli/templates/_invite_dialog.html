@@ -1,0 +1,39 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{# The link of an invitation, shown once in a dialog of its own like a token (docs/ux/UX-007 §2 rule 3): the
+   Users page and a workspace's page include it; OmniaInvite.show(name, answer, next, email) opens it with the
+   answer of the route that made the link, and its button goes to next (none: the page again). #}
+<dialog id="invite-dialog" aria-labelledby="iv-title">
+  <h2 id="iv-title"></h2>
+  <p id="iv-text"></p>
+  <pre class="console mono copyable" id="invite-value" style="white-space: pre-wrap; word-break: break-all"></pre>
+  <p class="muted" id="iv-note" style="font-size: 13px"></p>
+  <div class="actions"><button type="button" class="primary" id="iv-done" title="{{ _('Closes: the link will not be shown again. If it is lost, Send again makes a new one.') }}">{{ _("I have copied the link") }}</button></div>
+</dialog>
+<script>
+window.OmniaInvite = (function () {
+  const box = document.getElementById("invite-dialog");
+  const T = {title: {{ _("Invitation for {name}") | tojson }},
+             text: {{ _("Pass this link on to the person: it works once, until {date}. There the person chooses its password and is logged in.") | tojson }},
+             path: {{ _("Open it at the address of the machine of the user, followed by this path.") | tojson }},
+             ssh: {{ _("That machine is reached through an SSH server: the address in the link is the one the SSH server reaches it at. If the person cannot open it, put the address of that OmniaCLI in its place.") | tojson }},
+             mailed: {{ _("Sent also by e-mail to {email}.") | tojson }}, notMailed: {{ _("The e-mail did not go: {problem}") | tojson }}};
+  let next = null;
+  box.addEventListener("cancel", (e) => e.preventDefault());
+  document.getElementById("iv-done").onclick = () => { if (next) location.href = next; else location.reload(); };
+  return {
+    show(name, data, nextPage, email) {
+      next = nextPage;
+      document.getElementById("iv-title").textContent = T.title.replace("{name}", name);
+      document.getElementById("iv-text").textContent = T.text.replace("{date}", data.expires || "");
+      document.getElementById("invite-value").textContent = data.invite_url || data.invite_path;
+      const notes = [];
+      if (!data.invite_url) notes.push(T.path);
+      if (data.through_ssh) notes.push(T.ssh);
+      if (data.mail_problem) notes.push(T.notMailed.replace("{problem}", data.mail_problem));
+      else if (email) notes.push(T.mailed.replace("{email}", email));
+      document.getElementById("iv-note").textContent = notes.join(" ");
+      box.showModal();
+    },
+  };
+})();
+</script>

@@ -21,6 +21,7 @@ import logging
 import os
 import pwd
 import re
+import secrets
 import shutil
 import socket
 import tempfile
@@ -54,6 +55,9 @@ from .diskhistory import DiskHistory, DiskRecorder
 from .customerview import CustomerView
 from .auth import ROLES as ACCESS_ROLES
 from .auth import WORKSPACE_ROLE, Authenticator, Principal, hash_password, hash_token, new_token, verify_password
+from .auth import unknown_password
+from . import notify
+from .config import INVITATION_HOURS, Invitation, invitations_file_of, load_invitations, save_invitations
 from .config import (
     PUBLISHED_COMMANDS,
     PULLER_FILE_MIB,
@@ -253,7 +257,8 @@ WORKSPACE_ROUTES = frozenset({
     "/backups/{server}/{role}/{name}", "/servers/{server}/{role}/x/{plugin}/{action}",
     "/servers/{server}/{role}/log", "/api/servers/{server}/{role}/log", "/api/servers/{server}/{role}/log/records",
     "/workspaces/{workspace}", "/api/workspaces/{workspace}/members/save",
-    "/api/workspaces/{workspace}/members/delete", "/api/workspaces/{workspace}/instances/create",
+    "/api/workspaces/{workspace}/members/delete", "/api/workspaces/{workspace}/members/invitation/resend",
+    "/api/workspaces/{workspace}/members/invitation/revoke", "/api/workspaces/{workspace}/instances/create",
     "/api/workspaces/{workspace}/instances/delete", "/api/workspaces/{workspace}/web/save",
     "/api/workspaces/{workspace}/web/publish", "/api/workspaces/{workspace}/web/certificate",
     "/api/workspaces/{workspace}/credentials/save", "/api/workspaces/{workspace}/credentials/delete",
@@ -3232,11 +3237,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         """The users and the instances of a workspace, for its admins (and the machine's)."""
         ws = a_workspace(workspace)
         me = request.state.user
-        members = [{"name": n, "role": r, "only_here": only_here(n, ws.name)} for n, r in sorted(ws.members.items())]
+        members = [{"name": n, "role": r, "only_here": only_here(n, ws.name),
+                    "invitation": invitation_state(n) if only_here(n, ws.name) else None}
+                   for n, r in sorted(ws.members.items())]
         found = await asyncio.to_thread(workspaceops.templates)
         return _TEMPLATES.TemplateResponse(
             request, "workspace.html",
             {"ws": ws, "members": members, "roles": ACCESS_ROLES, "me": me.name, "min_password": _MIN_PASSWORD,
+             "can_mail": bool(settings.options.smtp_host), "invitation_hours": INVITATION_HOURS,
              "servers": [n for n in ws.servers if n in settings.servers],
              "templates": [t.to_dict() for t in found.values()],
              "can_create": bool(ws.storage and ws.limits.get("disk_gb")) and settings.storage_problem(ws) is None,
@@ -5542,21 +5550,27 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 and [ws for ws, _ in settings.memberships(user)] == [workspace])
 
     @app.post("/api/workspaces/{workspace}/members/save", dependencies=[Depends(admin)])
-    async def member_save(workspace: str, payload: dict = Body(...), me: Principal = Depends(current_user)):
-        """A workspace's admin creates a user of it (new: true, with a
-        password: a user of workspaces only), changes a member's role, and
-        the password of a member of this workspace only."""
+    async def member_save(request: Request, workspace: str, payload: dict = Body(...),
+                          me: Principal = Depends(current_user)):
+        """A workspace's admin creates a user of it (new: true, a user of
+        workspaces only: with a password, or invite: true, a one-time link
+        where the person sets its own), changes a member's role, and the
+        password of a member of this workspace only."""
         name, role = str(payload.get("name") or "").strip(), str(payload.get("role") or "")
         password, new = str(payload.get("password") or ""), bool(payload.get("new"))
+        invited = new and bool(payload.get("invite"))
+        if invited:
+            password = ""
         if role not in ACCESS_ROLES:
             return refuse(f"The role must be one of {', '.join(ACCESS_ROLES)}")
+        answer: dict = {"ok": True}
         async with access_lock, workspaces_lock:
             ws = a_workspace(workspace)
             if new:
                 refused = check_new_name(me, "User", name, settings.fixed.users, settings.users, True)
                 if refused:
                     return refused
-                if len(password) < _MIN_PASSWORD:
+                if not invited and len(password) < _MIN_PASSWORD:
                     return refuse(f"The password needs at least {_MIN_PASSWORD} characters")
             else:
                 if name not in ws.members:
@@ -5570,15 +5584,27 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     return refuse(f"The password needs at least {_MIN_PASSWORD} characters")
             if new or password:
                 web = web_copy()
-                web.users[name] = await asyncio.to_thread(hash_password, password)
+                web.users[name] = (await asyncio.to_thread(unknown_password) if invited
+                                   else await asyncio.to_thread(hash_password, password))
                 if new:
                     web.roles[name] = WORKSPACE_ROLE
-                refused = await store_access(web)
+                refused = await store_access(web) or (None if invited else await drop_invitations(name))
                 if refused:
                     return refused
             found = dict(settings.workspaces)
             found[workspace] = dataclasses.replace(ws, members={**ws.members, name: role})
-            return await store_workspaces(found) or {"ok": True}
+            refused = await store_workspaces(found)
+            if refused:
+                return refused
+            if invited:
+                made = await invite(request, name, me, workspace)
+                if not isinstance(made, dict):
+                    return made
+                answer.update(made)
+        if invited:
+            answer["mail_problem"] = await mail_invitation(request, str(payload.get("email") or "").strip(), name,
+                                                           answer["invite_url"])
+        return answer
 
     @app.post("/api/workspaces/{workspace}/members/delete", dependencies=[Depends(admin)])
     async def member_delete(workspace: str, payload: dict = Body(...), me: Principal = Depends(current_user)):
@@ -5600,7 +5626,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 web = web_copy()
                 web.users.pop(name, None)
                 web.roles.pop(name, None)
-                refused = await store_access(web)
+                refused = await store_access(web) or await drop_invitations(name)
                 if refused:
                     return refused
             return {"ok": True, "deleted": delete_user}
@@ -5661,7 +5687,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             {
                 "users": [{"name": n, "role": settings.user_role(n), "fixed": n in fixed.users,
                            # where a customer's user gets in
-                           "workspaces": sorted(w.name for w in settings.workspaces.values() if n in w.members)}
+                           "workspaces": sorted(w.name for w in settings.workspaces.values() if n in w.members),
+                           "invitation": None if n in fixed.users else invitation_state(n)}
                           for n in sorted(settings.users)],
                 "links": [{"name": n, "role": link.role, "fixed": n in fixed.links}
                           for n, link in sorted(settings.links.items())],
@@ -5672,6 +5699,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 "roles": ACCESS_ROLES,
                 "user_roles": USER_ROLES,
                 "min_password": _MIN_PASSWORD,
+                "can_mail": bool(settings.options.smtp_host),
+                "invitation_hours": INVITATION_HOURS,
+                "link_names": sorted(settings.link_targets),
             },
         )
 
@@ -5872,28 +5902,46 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return audit_export(entries, format, ws.name)
 
     @app.post("/api/access/users/save")
-    async def user_save(payload: dict = Body(...), me: Principal = Depends(admin)):
-        """Create a user (new: true, with a password) or change its role and,
+    async def user_save(request: Request, payload: dict = Body(...), me: Principal = Depends(admin)):
+        """Create a user (new: true, with a password, or invite: true, a
+        one-time link where the person sets its own) or change its role and,
         when given, its password."""
         name, role = str(payload.get("name") or "").strip(), str(payload.get("role") or "")
         password, new = str(payload.get("password") or ""), bool(payload.get("new"))
+        invited = new and bool(payload.get("invite"))
+        if invited:
+            password = ""
+        answer: dict = {"ok": True}
         async with access_lock:
             web = web_copy()
             refused = (check_name("User", name, settings.fixed.users, settings.users, new)
                        or check_role(role, USER_ROLES))
             if refused:
                 return refused
-            if (new or password) and len(password) < _MIN_PASSWORD:
+            if ((new and not invited) or password) and len(password) < _MIN_PASSWORD:
                 return refuse(f"The password needs at least {_MIN_PASSWORD} characters")
             if not new:
                 if me.kind == "user" and name == me.name and role != me.role:
                     return refuse("You cannot change your own role")
                 if role != "admin" and settings.user_role(name) == "admin" and not other_admins(name):
                     return refuse(f"{name} is the last admin")
-            if password:
+            if invited:
+                web.users[name] = await asyncio.to_thread(unknown_password)
+            elif password:
                 web.users[name] = await asyncio.to_thread(hash_password, password)
             web.roles[name] = role
-            return await store_access(web) or {"ok": True}
+            refused = await store_access(web) or (await drop_invitations(name) if password else None)
+            if refused:
+                return refused
+            if invited:
+                made = await invite(request, name, me)
+                if not isinstance(made, dict):
+                    return made
+                answer.update(made)
+        if invited:
+            answer["mail_problem"] = await mail_invitation(request, str(payload.get("email") or "").strip(), name,
+                                                           answer["invite_url"])
+        return answer
 
     @app.post("/api/access/users/delete")
     async def user_delete(payload: dict = Body(...), me: Principal = Depends(admin)):
@@ -5909,7 +5957,315 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             web = web_copy()
             del web.users[name]
             web.roles.pop(name, None)
-            return await store_access(web) or {"ok": True}
+            return await store_access(web) or await drop_invitations(name) or {"ok": True}
+
+    # --- invitations: a user made without a password gets a one-time link,
+    # valid INVITATION_HOURS, where the person sets its own and is logged in;
+    # a user of a customer made from the Users page, here or on a linked machine
+
+    invitations_path = invitations_file_of(settings.users_file) if settings.users_file else None
+    try:
+        invitations: list[Invitation] = load_invitations(invitations_path) if invitations_path else []
+    except ConfigError as exc:
+        _logger.error("The invitations are not read, none is valid: %s", exc)
+        invitations = []
+
+    def moment(ts: float) -> str:
+        """A moment as the pages show it: dd/mm/yyyy hh:mm, the machine's time."""
+        return time.strftime("%d/%m/%Y %H:%M", time.localtime(ts))
+
+    def invitation_of(name: str) -> Invitation | None:
+        """The newest invitation of name not used yet (pending or expired)."""
+        found = [i for i in invitations if i.name == name and not i.used]
+        return max(found, key=lambda i: i.created) if found else None
+
+    def invitation_state(name: str) -> dict | None:
+        """What the users pages show of name's invitation: None, none."""
+        found = invitation_of(name)
+        if found is None:
+            return None
+        return {"state": found.state(time.time()), "expires": moment(found.expires), "by": found.by}
+
+    def invitation_by_token(token: str) -> Invitation | None:
+        encoded = hash_token(token) if token else ""
+        hit = None
+        for item in invitations:
+            # every one compared, so the time does not tell which one matched
+            if secrets.compare_digest(encoded, item.token):
+                hit = item
+        return hit
+
+    async def store_invitations(found: list[Invitation]):
+        """Write the invitations (the caller holds access_lock); a response on error."""
+        if invitations_path is not None:
+            try:
+                found = await asyncio.to_thread(save_invitations, invitations_path, found, time.time())
+            except OSError as exc:
+                return refuse(f"Cannot write {invitations_path}: {exc}", 500)
+        invitations[:] = found
+        return None
+
+    async def drop_invitations(name: str):
+        """name has a password now, or is gone: its links not used are no longer valid."""
+        if any(i.name == name and not i.used for i in invitations):
+            return await store_invitations([i for i in invitations if not (i.name == name and not i.used)])
+        return None
+
+    async def invite(request: Request, name: str, me: Principal, workspace: str = "", again: bool = False):
+        """A new link for name (the one of before no longer valid), in the
+        access log: the answer's part of it, or a response on error. The
+        caller holds access_lock."""
+        token, now = new_token(), time.time()
+        made = Invitation(name, hash_token(token), now, now + INVITATION_HOURS * 3600, str(me), workspace)
+        refused = await store_invitations([i for i in invitations if not (i.name == name and not i.used)] + [made])
+        if refused:
+            return refused
+        access_log.record("invitation", me.kind, me.name, request.client.host if request.client else "",
+                          f"{'sent again' if again else 'made'} for {name}, valid until {moment(made.expires)}",
+                          workspace=workspace)
+        path = f"/invite/{token}"
+        base = str(request.base_url)
+        if prefix_of(request):
+            # through a link the browser knows this machine by the address the other reaches it at
+            base = request.headers.get("X-OmniaCLI-Address", "")
+        url = base.rstrip("/") + path if re.fullmatch(r"https?://[^\s/]+(/[^\s]*)?", base) else ""
+        return {"invite_path": path, "invite_url": url, "expires": moment(made.expires)}
+
+    async def mail_invitation(request: Request, email: str, name: str, url: str) -> str:
+        """The link by e-mail, through the SMTP server of the Options page:
+        "" when sent (or none asked), else why not."""
+        if not email or not url:
+            return ""
+        lang = request_language(request)
+        if not notify.is_email(email):
+            return i18n.tr(lang, f"{email} is not an e-mail address")
+        # in the language of who invites: the person's is not known
+        problems = await notify.send(
+            settings.options, [email], i18n.tr(lang, "OmniaCLI: your invitation"),
+            i18n.tr(lang, f"You are invited to OmniaCLI as {name}.\n\nOpen this link to choose your password, "
+                          f"within {INVITATION_HOURS} hours (it works once):\n{url}\n"))
+        return "; ".join(i18n.tr(lang, p) for p in problems)
+
+    def pending_user(name: str):
+        """None when name is a user of the users file with an invitation not
+        used, a response otherwise."""
+        if name in settings.fixed.users or name not in settings.web.users:
+            return refuse(f"No user {name}", status.HTTP_404_NOT_FOUND)
+        if invitation_of(name) is None:
+            return refuse(f"{name} has no invitation waiting: it has its password")
+        return None
+
+    async def revoke_user(name: str):
+        """The invitation of name revoked: the user, who never got in, goes,
+        out of every workspace too. The caller holds access_lock."""
+        web = web_copy()
+        web.users.pop(name, None)
+        web.roles.pop(name, None)
+        refused = await store_access(web)
+        if refused:
+            return refused
+        async with workspaces_lock:
+            if any(name in w.members for w in settings.workspaces.values()):
+                refused = await store_workspaces({
+                    n: dataclasses.replace(w, members={m: r for m, r in w.members.items() if m != name})
+                    for n, w in settings.workspaces.items()})
+                if refused:
+                    return refused
+        return await drop_invitations(name)
+
+    @app.post("/api/access/invitations/resend")
+    async def invitation_resend(request: Request, payload: dict = Body(...), me: Principal = Depends(admin)):
+        """A new link for a user still invited (the one of before no longer
+        valid), for INVITATION_HOURS again."""
+        name, email = str(payload.get("name") or ""), str(payload.get("email") or "").strip()
+        async with access_lock:
+            refused = pending_user(name)
+            if refused:
+                return refused
+            answer = await invite(request, name, me, invitation_of(name).workspace, again=True)
+        if not isinstance(answer, dict):
+            return answer
+        return {"ok": True, **answer, "mail_problem": await mail_invitation(request, email, name, answer["invite_url"])}
+
+    @app.post("/api/access/invitations/revoke")
+    async def invitation_revoke(request: Request, payload: dict = Body(...), me: Principal = Depends(admin)):
+        """The link no longer valid, and the user, who never got in, deleted."""
+        name = str(payload.get("name") or "")
+        async with access_lock:
+            refused = pending_user(name) or await revoke_user(name)
+            if refused:
+                return refused
+        access_log.record("invitation", me.kind, me.name, request.client.host if request.client else "",
+                          f"revoked for {name}: the user is deleted")
+        return {"ok": True}
+
+    @app.post("/api/workspaces/{workspace}/members/invitation/resend", dependencies=[Depends(admin)])
+    async def member_invitation_resend(request: Request, workspace: str, payload: dict = Body(...),
+                                       me: Principal = Depends(current_user)):
+        """A workspace's admin sends again the invitation of a user of that
+        workspace only."""
+        name, email = str(payload.get("name") or ""), str(payload.get("email") or "").strip()
+        a_workspace(workspace)
+        async with access_lock:
+            if not only_here(name, workspace):
+                return refuse(f"{name} is not a user of {workspace} only", status.HTTP_404_NOT_FOUND)
+            refused = pending_user(name)
+            if refused:
+                return refused
+            answer = await invite(request, name, me, workspace, again=True)
+        if not isinstance(answer, dict):
+            return answer
+        return {"ok": True, **answer, "mail_problem": await mail_invitation(request, email, name, answer["invite_url"])}
+
+    @app.post("/api/workspaces/{workspace}/members/invitation/revoke", dependencies=[Depends(admin)])
+    async def member_invitation_revoke(request: Request, workspace: str, payload: dict = Body(...),
+                                       me: Principal = Depends(current_user)):
+        """A workspace's admin revokes the invitation of a user of that
+        workspace only: the user, who never got in, is deleted."""
+        name = str(payload.get("name") or "")
+        a_workspace(workspace)
+        async with access_lock:
+            if not only_here(name, workspace):
+                return refuse(f"{name} is not a user of {workspace} only", status.HTTP_404_NOT_FOUND)
+            refused = pending_user(name) or await revoke_user(name)
+            if refused:
+                return refused
+        access_log.record("invitation", me.kind, me.name, request.client.host if request.client else "",
+                          f"revoked for {name}: the user is deleted", workspace=workspace)
+        return {"ok": True}
+
+    @app.get("/api/access/workspaces", dependencies=[Depends(admin)])
+    async def access_workspaces():
+        """The workspaces of this machine, for the Users page of a machine
+        linked to it (a user of a customer made from there)."""
+        return {"workspaces": [{"name": w.name, "label": w.label}
+                               for w in sorted(settings.workspaces.values(), key=lambda w: w.name)]}
+
+    @app.get("/api/access/workspace-choices")
+    async def workspace_choices(request: Request, me: Principal = Depends(admin)):
+        """Where a user of a customer may be made: the workspaces of this
+        machine and of each linked machine, asked in parallel; a machine
+        that does not answer says why."""
+        async def of_link(name: str, link: LinkTarget) -> dict:
+            row = {"machine": name, "workspaces": [], "error": "", "ssh": link.ssh is not None}
+            headers = {**link_headers(link, me.name, me.role), "Accept": "application/json"}
+            try:
+                resp = await link_clients.client(link).get("/api/access/workspaces", headers=headers,
+                                                           timeout=LIST_TIMEOUT)
+            except httpx.HTTPError as exc:
+                return {**row, "error": f"it does not answer: {describe_error(exc)}"}
+            if resp.status_code == 404:
+                return {**row, "error": "its OmniaCLI is older: make the user on its own Users page"}
+            if resp.status_code in (401, 403):
+                return {**row, "error": "the link is not an admin there"}
+            try:
+                found = resp.json().get("workspaces") if resp.status_code == 200 else None
+            except (ValueError, AttributeError):
+                found = None
+            if not isinstance(found, list):
+                return {**row, "error": f"HTTP {resp.status_code}"}
+            return {**row, "workspaces": [{"name": str(w["name"]), "label": str(w.get("label") or "")}
+                                          for w in found if isinstance(w, dict) and w.get("name")]}
+
+        here = {"machine": "", "error": "", "ssh": False, "workspaces": (await access_workspaces())["workspaces"]}
+        there = await asyncio.gather(*(of_link(n, link) for n, link in sorted(settings.link_targets.items())))
+        lang = request_language(request)
+        return {"machines": [here, *({**m, "error": i18n.tr(lang, m["error"])} for m in there)]}
+
+    @app.post("/api/access/workspace-users/save")
+    async def workspace_user_save(request: Request, payload: dict = Body(...), me: Principal = Depends(admin)):
+        """A user of a customer made from the Users page: in workspace, on
+        this machine (machine "") or on a linked one through its link, with
+        its role there; invited (invite: true) or with a password."""
+        machine, workspace = str(payload.get("machine") or ""), str(payload.get("workspace") or "")
+        email = str(payload.get("email") or "").strip()
+        body = {"name": str(payload.get("name") or "").strip(), "role": str(payload.get("role") or ""), "new": True,
+                "invite": bool(payload.get("invite")), "password": str(payload.get("password") or "")}
+        if not WORKSPACE_NAME.fullmatch(workspace):
+            return refuse("Choose the workspace of the user")
+        if not machine:
+            answer = await member_save(request, workspace, {**body, "email": email}, me)
+            if isinstance(answer, dict):
+                answer["page"] = f"/workspaces/{workspace}#users"
+            return answer
+        link = settings.link_targets.get(machine)
+        if link is None:
+            return refuse(f"No link {machine}", status.HTTP_404_NOT_FOUND)
+        try:
+            resp = await link_clients.client(link).post(
+                f"/api/workspaces/{quote(workspace)}/members/save", json=body,
+                headers={**link_headers(link, me.name, me.role), "Accept": "application/json"})
+        except httpx.HTTPError as exc:
+            return refuse(f"{machine} does not answer: {describe_error(exc)}", status.HTTP_502_BAD_GATEWAY)
+        try:
+            data = resp.json()
+        except ValueError:
+            data = {}
+        if resp.status_code != 200 or not isinstance(data, dict):
+            message = (data.get("error") or data.get("detail")) if isinstance(data, dict) else ""
+            return refuse(message or f"{machine} answered HTTP {resp.status_code}",
+                          resp.status_code if 400 <= resp.status_code < 500 else status.HTTP_502_BAD_GATEWAY)
+        data["page"] = f"/links/{machine}/workspaces/{workspace}#users"
+        if data.get("invite_path"):
+            # the person opens it on the other machine, at the address this one knows it by
+            data["invite_url"] = link.url.rstrip("/") + str(data["invite_path"])
+            data["through_ssh"] = link.ssh is not None
+            data["mail_problem"] = await mail_invitation(request, email, body["name"], data["invite_url"])
+        return data
+
+    def invite_page(request: Request, state: str, invitation: Invitation | None, error: str = "", code: int = 200):
+        return _TEMPLATES.TemplateResponse(
+            request, "invite.html",
+            {"state": state, "name": invitation.name if invitation else "", "error": error,
+             "min_password": _MIN_PASSWORD, "expires": moment(invitation.expires) if invitation else "",
+             "used": moment(invitation.used) if invitation and invitation.used else ""},
+            # the link's token goes to no other site (Referrer-Policy same-origin, security_headers); not
+            # no-referrer: the browser would send the form with Origin null, refused as cross-site
+            status_code=code, headers={"Cache-Control": "no-store"})
+
+    async def invitation_page(request: Request):
+        """/invite/<token>: the page of an invitation (GET), where the person
+        sets its password (POST) and is logged in. A link used, expired,
+        revoked or sent again says so."""
+        token = request.path_params["token"]
+        ip = request.client.host if request.client else ""
+        found = invitation_by_token(token)
+        state = found.state(time.time()) if found else "unknown"
+        if found is not None and state == "pending" and found.name not in settings.web.users:
+            state = "unknown"
+        if request.method == "GET" or state != "pending":
+            if request.method == "POST":
+                access_log.record("failed", "user", found.name if found else "", ip, f"invitation: {state}")
+            return invite_page(request, state, found, code=200 if state == "pending" else 410)
+        if not _same_origin(request):
+            return HTMLResponse("Cross-site form refused", status_code=403)
+        form = parse_qs((await request.body()).decode("utf-8", "replace"))
+        password, again = (form.get("password") or [""])[0], (form.get("again") or [""])[0]
+        if len(password) < _MIN_PASSWORD:
+            return invite_page(request, state, found, f"The password needs at least {_MIN_PASSWORD} characters", 400)
+        if password != again:
+            return invite_page(request, state, found, "The two passwords are not the same", 400)
+        hashed = await asyncio.to_thread(hash_password, password)
+        async with access_lock:
+            # again: revoked or sent again while the password was hashed
+            if invitation_by_token(token) is not found or found.used or found.name not in settings.web.users:
+                return invite_page(request, "unknown", None, code=410)
+            web = web_copy()
+            web.users[found.name] = hashed
+            refused = await store_access(web)
+            if refused:
+                return invite_page(request, state, found, "The password could not be saved: try again", 500)
+            used = dataclasses.replace(found, used=time.time())
+            await store_invitations([used if i is found else i for i in invitations])
+        name = found.name
+        access_log.record("invitation", "user", name, ip, f"accepted: {name} set its password",
+                          role=settings.user_role(name), workspace=found.workspace)
+        access_log.record("login", "user", name, ip, "invitation", role=settings.user_role(name))
+        response = RedirectResponse("/", status.HTTP_303_SEE_OTHER)
+        set_session_cookie(request, response, sessions.create(name, settings.users[name]))
+        return response
+
+    app.add_route("/invite/{token}", invitation_page, methods=["GET", "POST"])
 
     @app.post("/api/access/links/save", dependencies=[Depends(admin)])
     async def link_save(payload: dict = Body(...)):

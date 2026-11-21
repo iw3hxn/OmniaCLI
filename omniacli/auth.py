@@ -41,6 +41,12 @@ def verify_password(password: str, encoded: str) -> bool:
     return secrets.compare_digest(digest.hex(), expected)
 
 
+def unknown_password() -> str:
+    """The hash of a password nobody knows: an invited user's until the
+    person sets its own from the invitation's link (no login before)."""
+    return hash_password(secrets.token_urlsafe(32))
+
+
 TOKEN_ALGORITHM = "sha256"
 
 

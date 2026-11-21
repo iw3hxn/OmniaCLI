@@ -835,13 +835,88 @@ def save_access(path: Path, access: Access) -> None:
                        **({"workspace": access.token_workspaces[n]} if n in access.token_workspaces else {})}
                    for n, h in access.tokens.items()},
     }
-    text = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
+    _write_private(path, yaml.safe_dump(data, sort_keys=False, allow_unicode=True))
+
+
+def _write_private(path: Path, text: str) -> None:
+    """Write path atomically, readable by its owner only."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(text)
     os.replace(tmp, path)
+
+
+# an invitation: a link used once, where the person sets its own password
+INVITATION_HOURS = 72
+# an invitation used or expired is kept this long, so that its link says so
+INVITATION_KEPT_DAYS = 30
+
+
+@dataclass
+class Invitation:
+    """An invitation of a user made without a password: the hash of its
+    one-time link's token, when it ends, who made it and when; used: when
+    the person set its password (0: not yet)."""
+
+    name: str
+    token: str  # sha256$<hex> of the link's token
+    created: float
+    expires: float
+    by: str = ""
+    # made from a workspace's page: its admins may send it again or revoke it
+    workspace: str = ""
+    used: float = 0.0
+
+    def state(self, now: float) -> str:
+        """pending, expired or used."""
+        if self.used:
+            return "used"
+        return "expired" if now >= self.expires else "pending"
+
+    def to_dict(self) -> dict:
+        data = {"name": self.name, "token": self.token, "created": self.created, "expires": self.expires,
+                "by": self.by, "workspace": self.workspace, "used": self.used}
+        return {k: v for k, v in data.items() if v or k in ("name", "token")}
+
+
+def invitations_file_of(users_file: Path) -> Path:
+    """The invitations live beside the users file, in a file of their own
+    (an OmniaCLI without invitations never reads it)."""
+    return users_file.with_name("invitations.yaml")
+
+
+def load_invitations(path: Path) -> list[Invitation]:
+    """The invitations of the file; none yet is none, and an entry that is
+    not one is left out (the file is OmniaCLI's own)."""
+    if not path.exists():
+        return []
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        raise ConfigError(f"cannot read {path}: {exc}") from exc
+    found = []
+    for item in data.get("invitations") or []:
+        if not isinstance(item, dict) or not _TOKEN_HASH.fullmatch(str(item.get("token") or "")):
+            continue
+        try:
+            found.append(Invitation(str(item["name"]), str(item["token"]), float(item.get("created") or 0),
+                                    float(item.get("expires") or 0), str(item.get("by") or ""),
+                                    str(item.get("workspace") or ""), float(item.get("used") or 0)))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return found
+
+
+def save_invitations(path: Path, invitations: list[Invitation], now: float) -> list[Invitation]:
+    """Write the invitations, without those used or expired more than
+    INVITATION_KEPT_DAYS ago: the ones kept."""
+    keep = now - INVITATION_KEPT_DAYS * 86400
+    kept = [i for i in invitations if (i.used or i.expires) >= keep]
+    _write_private(path, yaml.safe_dump({"invitations": [i.to_dict() for i in kept]}, sort_keys=False,
+                                        allow_unicode=True))
+    return kept
 
 
 # an SSH host key as a known_hosts line has it, without the host: type and key

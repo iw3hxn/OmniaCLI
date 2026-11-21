@@ -22,6 +22,7 @@ le altre voci.
 | `read` | ogni lettura di dati dei clienti o di sicurezza (elenco sotto); la stessa pagina della stessa persona dallo stesso indirizzo una volta ogni 10 minuti (un log seguito chiede righe ogni secondo) |
 | `mcp` | ogni chiamata MCP, con metodo, tool, server e workspace |
 | `shell`, `tunnel`, `download`, `login-as` | apertura e chiusura di shell, psql, Claude, terminali; tunnel; download di backup; «Accedi come» |
+| `invitation` | un invito creato, inviato di nuovo o revocato (da chi), e usato dalla persona invitata, che sceglie la sua password (poi il suo `login`); una password mandata con un link scaduto, usato o revocato è un `failed` |
 | `job` | la fine di ogni job, con il suo esito (`success`, `failed`, `stopped`, `interrupted`) e l'errore |
 | `siem` | un invio al SIEM che fallisce, e quando riprende |
 

@@ -84,6 +84,8 @@ NOT_SENSITIVE = frozenset({
     "/instances", "/api/instances", "/backups", "/account", "/api/postgres",
     "/api/postgres/{server}/{role}/proposal",
     "/x/odoo/servers/{server}/{role}/addons", "/x/odoo/servers/{server}/{role}/addons/versions",
+    # an invitation's form (its use is logged by the route) and where a user of a customer may be made
+    "/invite/{token}", "/api/access/workspaces", "/api/access/workspace-choices",
 })
 
 

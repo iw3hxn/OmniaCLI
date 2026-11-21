@@ -178,11 +178,15 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
     {% for m in members %}
     <tr data-user="{{ m.name }}" data-role="{{ m.role }}" data-only-here="{{ 1 if m.only_here else '' }}">
       <td><strong>{{ m.name }}</strong>{% if m.name == me %} <span class="muted">{{ _("(you)") }}</span>{% endif %}
-        {% if not m.only_here %}<span class="small-note">{{ _("also elsewhere: its password is the machine's administrator's") }}</span>{% endif %}</td>
+        {% if not m.only_here %}<span class="small-note">{{ _("also elsewhere: its password is the machine's administrator's") }}</span>{% endif %}
+        {% if m.invitation and m.invitation.state == "pending" %} <span class="badge warn" title="{{ _('The person has not set a password yet: until then it cannot log in. Invited by {by}.', by=m.invitation.by) }}">{{ _("invitation waiting, until {date}", date=m.invitation.expires) }}</span>
+        {% elif m.invitation %} <span class="badge error" title="{{ _('The link was not used in time: the person cannot log in. Send it again or revoke it.') }}">{{ _("invitation expired on {date}", date=m.invitation.expires) }}</span>{% endif %}</td>
       <td>{{ role_names.get(m.role, m.role) }}</td>
       <td><div class="actions" style="margin: 0; justify-content: flex-end">
+        {% if m.invitation %}<button type="button" class="small" data-resend title="{{ _('Makes a new link for {hours} hours and shows it: the link of before works no more.', hours=invitation_hours) }}">{{ _("Send again") }}</button>{% endif %}
         <button type="button" class="small" data-edit="members" title="{{ _('Changes the role in the workspace and, for a user of this workspace only, the password. You cannot change your own role.') }}">{{ _("Edit…") }}</button>
-        {% if m.name != me %}<button type="button" class="small danger" data-delete="members" title="{{ _('Takes the user out of the workspace. A user of this workspace only is deleted; one who gets in elsewhere too only loses this workspace. You cannot take out yourself.') }}">{{ _("Take out…") }}</button>{% endif %}
+        {% if m.invitation %}<button type="button" class="small danger" data-revoke title="{{ _('The link works no more and the user, who never got in, is deleted.') }}">{{ _("Revoke…") }}</button>
+        {% elif m.name != me %}<button type="button" class="small danger" data-delete="members" title="{{ _('Takes the user out of the workspace. A user of this workspace only is deleted; one who gets in elsewhere too only loses this workspace. You cannot take out yourself.') }}">{{ _("Take out…") }}</button>{% endif %}
       </div></td>
     </tr>
     {% else %}
@@ -334,6 +338,13 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
       <label for="id-role">{{ _("Role") }}</label>
       <div><select id="id-role"></select>
         <span class="muted field-help" id="id-role-help"></span></div>
+      <span class="label muted" data-for-new>{{ _("Access") }}</span>
+      <div data-for-new class="in-ways" role="radiogroup" aria-label="{{ _('Access') }}" style="margin: 0">
+        <label title="{{ _('A link you pass on, valid {hours} hours and once: there the person chooses its own password and is logged in', hours=invitation_hours) }}"><input type="radio" name="id-way" value="invite" checked> {{ _("Send an invitation") }}</label>
+        <label title="{{ _('You choose the password and pass it on yourself') }}"><input type="radio" name="id-way" value="password"> {{ _("I write the password") }}</label></div>
+      {% if can_mail %}<label for="id-email" data-for-mail>{{ _("E-mail") }}</label>
+      <div data-for-mail><input type="email" id="id-email" autocomplete="off" placeholder="{{ _('optional') }}">
+        <span class="muted field-help">{{ _("The link goes there too, through the SMTP server of the Options page.") }}</span></div>{% endif %}
       <label for="id-password" data-for-password>{{ _("Password") }}</label>
       <div data-for-password><input type="password" id="id-password" autocomplete="new-password" minlength="{{ min_password }}">
         <span class="muted field-help" id="id-password-help"></span></div>
@@ -370,6 +381,7 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
 {% set field_labels = {} %}
 {% for t in templates %}{% for f in t.fields %}{% if field_labels.update({f.label: tr(f.label)}) %}{% endif %}{% endfor %}{% endfor %}
 {% include "_disk.html" %}
+{% include "_invite_dialog.html" %}
 <script>
 (function () {
   const $ = (id) => document.getElementById(id);
@@ -383,6 +395,7 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
     reading: {{ _("Reading…") | tojson }}, noRemote: {{ _("no full archive there") | tojson }},
     subdomain: {{ _("Subdomain") | tojson }}, subInstance: {{ _("Instance of the subdomain") | tojson }},
     takeOut: {{ _("Take out") | tojson }},
+    revokeQ: {{ _("Revoke the invitation of {name}? The link works no more and the user, who never got in, is deleted.") | tojson }},
     takeOutHelp: {{ _("Takes the subdomain out of the table. It holds with Save and publish.") | tojson }},
     certOk: {{ _("Certificate valid until {date}, for: {names}") | tojson }}, noDns: {{ _("no DNS name") | tojson }},
     seeJob: {{ _("See the job that publishes the names") | tojson }},
@@ -394,7 +407,7 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
   const KINDS = {
     members: {row: "user", first: "user", password: true,
       newTitle: {{ _("New user") | tojson }}, editTitle: {{ _("Edit {name}") | tojson }}, create: {{ _("Add") | tojson }},
-      createHelp: {{ _("Makes the user and puts it in this workspace: from now it gets in with this name and this password. Disabled until the name and the password are written.") | tojson }},
+      createHelp: {{ _("Makes the user and puts it in this workspace: invited, it shows the link to pass on; with a password, it gets in from now. Disabled until the name, and the password you write, are there.") | tojson }},
       saveHelp: {{ _("Saves the role and, when one is written, the new password. Disabled until something is changed.") | tojson }},
       namePlaceholder: {{ _("new user") | tojson }},
       deleteQ: {{ _("Take {name} out of {workspace}? A user of this workspace only is deleted.", name="{name}", workspace=ws.name) | tojson }}},
@@ -631,15 +644,24 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
     };
   }
 
-  // the dialog of a user of the workspace or of a key: a new one, or one of the rows
+  // the dialog of a user of the workspace or of a key: a new one, or one of the rows; a new user is invited
+  // (a one-time link where the person sets its password) or gets the password written here
   const dialog = $("item-dialog"), secret = $("secret-dialog");
-  let kind = "members", editing = null, before = "";
-  const usesPassword = () => !$("id-password").closest("[data-for-password]").hidden;
-  const values = () => JSON.stringify([$("id-name").value.trim(), $("id-role").value, $("id-password").value]);
+  let kind = "members", editing = null, before = "", passwordHere = false;
+  const way = () => (dialog.querySelector('input[name="id-way"]:checked') || {}).value;
+  const isNewMember = () => kind === "members" && !editing;
+  const usesPassword = () => passwordHere && (!isNewMember() || way() === "password");
+  const values = () => JSON.stringify([$("id-name").value.trim(), $("id-role").value, $("id-password").value, way()]);
+  function layout() {
+    for (const el of dialog.querySelectorAll("[data-for-password]")) el.hidden = !usesPassword();
+    for (const el of dialog.querySelectorAll("[data-for-new]")) el.hidden = !isNewMember();
+    for (const el of dialog.querySelectorAll("[data-for-mail]")) el.hidden = !isNewMember() || way() !== "invite";
+  }
   function changed() {
+    layout();
     const password = usesPassword() ? $("id-password").value : "";
     const short = password !== "" && password.length < MIN;
-    const missing = !editing && (!$("id-name").value.trim() || (KINDS[kind].password && !password));
+    const missing = !editing && (!$("id-name").value.trim() || (usesPassword() && !password));
     $("id-password-help").className = "field-help " + (short ? "error" : "muted");
     $("id-save").disabled = values() === before || missing || short;
   }
@@ -656,14 +678,16 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
     role.disabled = own;
     $("id-role-help").textContent = own ? T.ownRole : (K.roleHelp || "");
     // the password: of a new user, or of one who gets in here only
-    const password = K.password && (!row || !!row.dataset.onlyHere);
-    for (const el of dialog.querySelectorAll("[data-for-password]")) el.hidden = !password;
+    passwordHere = K.password && (!row || !!row.dataset.onlyHere);
+    dialog.querySelector('input[name="id-way"][value="invite"]').checked = true;
+    if ($("id-email")) $("id-email").value = "";
     $("id-elsewhere").hidden = !(K.password && row && !row.dataset.onlyHere);
-    $("id-password").value = ""; $("id-password").required = password && !row;
+    $("id-password").value = "";
     $("id-password-help").textContent = T.atLeast.replace("{count}", MIN) + (row ? "; " + T.keep : "");
     $("id-save").textContent = row ? T.save : K.create;
     $("id-save").title = $("id-save").parentElement.title = row ? K.saveHelp : K.createHelp;
     $("id-error").textContent = "";
+    layout();
     before = values(); changed();
     dialog.showModal();
     (row ? (own ? $("id-password") : role) : $("id-name")).focus();
@@ -678,9 +702,11 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
     const K = KINDS[kind], name = $("id-name").value.trim();
     const body = {name, role: $("id-role").value};
     if (K.password) body.password = usesPassword() ? $("id-password").value : "";
-    if (!editing) body.new = true;
+    const invite = isNewMember() && way() === "invite", email = invite && $("id-email") ? $("id-email").value.trim() : "";
+    if (!editing) Object.assign(body, {new: true}, kind === "members" ? {invite, email} : {});
     const data = await post(kind + "/save", body, $("id-error"));
     if (!data) return;
+    if (data.invite_path) { dialog.close(); OmniaInvite.show(name, data, null, email); return; }
     if (!editing && data.token) {
       // a secret: once, in a dialog of its own; the page again when it is closed
       dialog.close();
@@ -698,6 +724,20 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
       const K = KINDS[button.dataset.delete], name = button.closest("tr").dataset[K.row];
       if (!await omniaAsk(K.deleteQ.replace("{name}", name), button, {danger: true})) return;
       if (await post(button.dataset.delete + "/delete", {name})) location.reload();
+    };
+  }
+  // an invitation: a new link, or revoked with the user who never got in
+  for (const button of document.querySelectorAll("[data-resend]")) {
+    button.onclick = async () => {
+      const name = button.closest("tr").dataset.user, data = await post("members/invitation/resend", {name});
+      if (data) OmniaInvite.show(name, data, null);
+    };
+  }
+  for (const button of document.querySelectorAll("[data-revoke]")) {
+    button.onclick = async () => {
+      const name = button.closest("tr").dataset.user;
+      if (!await omniaAsk(T.revokeQ.replace("{name}", name), button, {danger: true})) return;
+      if (await post("members/invitation/revoke", {name})) location.reload();
     };
   }
 

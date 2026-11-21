@@ -1,7 +1,7 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
 {# The list of the workspaces, one line each: its servers, CPU and network
    (_load.html), memory, its disk and the real disk under its storage
-   (_disk.html); a click opens its form. The Workspaces page and the
+   (_disk.html); a click opens its page (instances, users), Limits and disk its form. The Workspaces page and the
    Dashboard show it; workspaces: app.workspace_rows. Needs _charts.html,
    _disk.html, _load.html and _list.html included before it. #}
 {% from "_load.html" import cpu as load_cpu, net as load_net with context %}
@@ -13,10 +13,11 @@
       <th title="{{ _("what its containers receive and send, on the bridges of its projects") }}">{{ _("Network in / out") }}</th>
       <th>{{ _("Disk used / limit") }}</th><th title="{{ _("the real disk under its storage, with what the workspaces were promised there") }}">{{ _("Real disk") }}</th></tr>
     {% for ws in workspaces %}
-    <tr class="ws-row" data-ws="{{ ws.name }}" tabindex="0" style="cursor: pointer" title="{{ _('Opens the form of {name}: its limits, disk, domain, servers and users', name=ws.name) }}"
+    <tr class="ws-row" data-ws="{{ ws.name }}" tabindex="0" style="cursor: pointer" title="{{ _('Opens the workspace {name}: its instances, names on the web, users and external services', name=ws.name) }}"
         {{ item([ws.name, ws.label, ws.domain, ws.storage, ws.servers | join(" ")] | join(" ")) }}>
       <td><strong>{{ ws.name }}</strong>{% if ws.label %} <span class="muted">{{ ws.label }}</span>{% endif %}
-        {% if ws.storage_problem %} <span class="badge error" title="{{ tr(ws.storage_problem) }}">⚠ {{ _("unusable") }}</span>{% endif %}</td>
+        {% if ws.storage_problem %} <span class="badge error" title="{{ tr(ws.storage_problem) }}">⚠ {{ _("unusable") }}</span>{% endif %}
+        <a class="small-note" style="display: block; font-size: 13px" href="{{ prefix }}/workspaces?edit={{ ws.name | urlencode }}" title="{{ _('Opens the form of the machine for this workspace: its limits, disk, domain and servers. For the administrators of the machine only.') }}">{{ _("Limits and disk") }} ›</a></td>
       <td class="mono">{{ ws.domain or "" }}</td>
       <td class="mono">{{ ws.instances_count }}</td>
       <td class="cpu">{{ load_cpu(ws.name) }}</td><td class="mono mem">…</td><td class="net">{{ load_net(ws.name) }}</td>
@@ -42,9 +43,10 @@
   const rows = [...document.querySelectorAll("#ws-list .ws-row")];
   if (!rows.length) return;
   for (const row of rows) {
-    const open = () => { location.href = "{{ prefix }}/workspaces?edit=" + encodeURIComponent(row.dataset.ws); };
-    row.onclick = open;
-    row.onkeydown = (e) => { if (e.key === "Enter") open(); };
+    const open = () => { location.href = "{{ prefix }}/workspaces/" + encodeURIComponent(row.dataset.ws); };
+    // a link of the row (Limits and disk) goes where it says
+    row.onclick = (e) => { if (!e.target.closest("a")) open(); };
+    row.onkeydown = (e) => { if (e.key === "Enter" && !e.target.closest("a")) open(); };
   }
   // CPU and network: the widgets of every row, the last 15 minutes, every 5 s
   const series = {};

@@ -61,6 +61,8 @@ def link_headers(link: LinkTarget, user: str, role: str) -> dict[str, str]:
         "X-OmniaCLI-Prefix": f"/links/{link.name}",
         "X-OmniaCLI-User": user,
         "X-OmniaCLI-Role-Cap": role,
+        # the address this instance reaches the other by: the other puts it in the links it hands out (an invitation)
+        "X-OmniaCLI-Address": link.url,
     }
 
 
