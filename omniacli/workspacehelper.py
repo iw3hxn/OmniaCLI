@@ -1397,6 +1397,24 @@ def _addresses(sites: list[dict], spec: dict) -> tuple[list[dict], list[str]]:
     return [{"names": names, "to": to} for to, names in groups.items()], notes
 
 
+def _main_own_names(sites: list[dict], spec: dict, redirects: list[dict]) -> list[dict]:
+    """The main instance's own names of before (<main>.<domain>,
+    <main>.test.<domain>: what it answered on until the workspace's domain
+    became its address): they send to its address with a 301, so a bookmark,
+    a DNS record or an integration made then keeps working. Not a name in use."""
+    main = spec.get("main") or ""
+    used = {n for site in sites for n in (*site["names"], *site.get("aliases", ()))}
+    used |= {n for r in redirects for n in r["names"]}
+    out = []
+    for site in sites:
+        if site["instance"] != main or not site["names"]:
+            continue
+        own = f"{main}.{site['names'][0]}"
+        if own not in used and len(own) <= 253:
+            out.append({"names": [own], "to": site["names"][0]})
+    return out
+
+
 def _sites(mount: Path, spec: dict, instances: list[str]) -> list[dict]:
     try:
         sites = web_names(spec["domain"], instances, spec["main"], spec["subdomains"], roles_on_disk(mount, instances))
@@ -1549,6 +1567,7 @@ def web(name: str, storage: str, spec_json: str) -> dict:
         return made
     sites = _sites(mount, spec, instances)
     redirects, made["redirects_moved"] = _addresses(sites, spec)
+    redirects += _main_own_names(sites, spec, redirects)
     names = [n for site in sites for n in site["names"]]
     # the other names (aliases, redirects): after the workspace's, in the certificate too
     extra = [n for site in sites for n in site["aliases"]] + [n for r in redirects for n in r["names"]]

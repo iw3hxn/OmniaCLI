@@ -20,7 +20,7 @@ case "$1" in
         # backups stay
         rm -rf /var/lib/omniacli/jobs /var/lib/omniacli/logs /var/lib/omniacli/scripts \
             /var/lib/omniacli/pullers /var/lib/omniacli/publications /var/lib/omniacli/connections \
-            /var/lib/omniacli/packages /var/lib/omniacli/plugins /var/lib/omniacli/templates
+            /var/lib/omniacli/packages /var/lib/omniacli/plugins /var/lib/omniacli/templates /var/lib/omniacli/catalog
         # the templates installed from the download server (the instances
         # made from them keep their own files)
         rm -rf /var/lib/omniacli-templates
@@ -37,6 +37,7 @@ case "$1" in
             /var/lib/omniacli/schedule_history.json /var/lib/omniacli/schedule_history.json.tmp \
             /var/lib/omniacli/disk_history.json /var/lib/omniacli/disk_history.tmp \
             /var/lib/omniacli/load_history.json /var/lib/omniacli/load_history.tmp \
+            /var/lib/omniacli/stagings.json /var/lib/omniacli/stagings.json.tmp \
             /var/lib/omniacli/postgres_tuning.json /var/lib/omniacli/postgres_tuning.json.part \
             /var/lib/omniacli/sessions.json /var/lib/omniacli/sessions.json.tmp \
             /var/lib/omniacli/monitor.json /var/lib/omniacli/monitor.json.tmp \

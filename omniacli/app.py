@@ -500,6 +500,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 # download backups); its actions go through the MCP tools only
                 if method not in ("GET", "HEAD"):
                     raise HTTPException(status.HTTP_403_FORBIDDEN, "A token may only read")
+                workspace = settings.token_workspace(name)
+                if workspace:
+                    # a workspace's token (its admin made it for an assistant) reads
+                    # that workspace only, with its role there, as a user of it does
+                    # (in_workspaces): on 21/11/2026 it read the whole machine over
+                    # REST, the other customers' backups too, while MCP kept it in
+                    return Principal(name, "user", "token", workspaces=((workspace, settings.token_role(name)),),
+                                     scoped=True)
                 return Principal(name, settings.token_role(name), "token")
             name = authenticator.link_name(token)
             if name is None:

@@ -140,17 +140,17 @@ def test_helper_writes_the_other_names(web_root, monkeypatch):
     monkeypatch.setattr(workspacehelper, "_reaches_here", lambda host: host in reached)
     made = workspacehelper.web("acme", storage, addresses_spec())
     assert made["names"] == ["acme.it", "test.acme.it", "www.customer.com"]
-    assert made["redirects"] == {"customer.com": "www.customer.com"}
+    assert made["redirects"] == {"customer.com": "www.customer.com", **{"main.acme.it": "acme.it", "main.test.acme.it": "test.acme.it"}}
     # customer.com is in DNS but this nginx does not answer it: out of the certificate, said
     certbot = [c for c in state["commands"] if c[0].endswith("certbot")][0]
     assert [certbot[i + 1] for i, a in enumerate(certbot) if a == "-d"] == ["acme.it", "test.acme.it", "www.customer.com"]
-    assert made["elsewhere"] == ["customer.com"] and made["without_dns"] == []
+    assert made["elsewhere"] == ["customer.com", "main.acme.it", "main.test.acme.it"] and made["without_dns"] == []
     site = web_root["site"].read_text()
     assert "server_name acme.it www.customer.com;" in site and "return 301 https://www.customer.com$request_uri;" in site
     # no DNS record at all: out, as the workspace's names
     state["dns"], state["commands"] = {"acme.it", "test.acme.it"}, []
     made = workspacehelper.web("acme", storage, addresses_spec())
-    assert made["without_dns"] == ["www.customer.com", "customer.com"] and made["elsewhere"] == []
+    assert made["without_dns"] == ["www.customer.com", "customer.com", "main.acme.it", "main.test.acme.it"] and made["elsewhere"] == []
 
 
 def test_helper_redirect_to_a_name_gone(web_root, monkeypatch):
@@ -159,7 +159,7 @@ def test_helper_redirect_to_a_name_gone(web_root, monkeypatch):
     monkeypatch.setattr(workspacehelper, "_reaches_here", lambda host: True)
     made = workspacehelper.web("acme", str(web_root["storage"]),
                                addresses_spec(aliases={}, redirects={"main": {"production": {"customer.com": "old.acme.it"}}}))
-    assert made["redirects"] == {"customer.com": "acme.it"} and "it goes to acme.it" in made["redirects_moved"][0]
+    assert made["redirects"] == {"customer.com": "acme.it", **{"main.acme.it": "acme.it", "main.test.acme.it": "test.acme.it"}} and "it goes to acme.it" in made["redirects_moved"][0]
 
 
 @pytest.mark.parametrize("change, message", [

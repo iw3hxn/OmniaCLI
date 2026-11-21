@@ -221,6 +221,14 @@ async def test_a_token_of_a_workspace(client, env):
     job = await call(client, "update_test", server_name="srv", wait_seconds=30)
     assert "No job" in (await call(client, "get_job", headers=scoped, job_id=job["id"]))["error"]
     assert await call(client, "list_jobs", headers=scoped) == []
+    # over REST too it reads acme only (21/11/2026: it read the whole machine,
+    # the other customers' backups too): srv is not acme's, the machine's pages are not its
+    rest = {"Authorization": scoped["Authorization"]}
+    for path in ("/api/servers/srv/test/log", "/api/servers/srv/test/database", "/config", "/users", "/links",
+                 "/api/postgres", "/api/metrics/history", "/api/disks", "/backups/srv/test/x.zip"):
+        assert (await client.get(path, headers=rest)).status_code in (403, 404), path
+    listed = (await client.get("/api/servers", headers=rest))
+    assert listed.status_code == 403 or "srv" not in listed.text
     # srv in acme: seen
     settings.workspaces["acme"].servers.append("srv")
     assert [s["name"] for s in await call(client, "list_servers", headers=scoped)] == ["srv"]
