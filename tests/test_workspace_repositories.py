@@ -369,16 +369,17 @@ async def test_the_update_dialog(instance, client, monkeypatch):
     assert 'id="addons-update"' in page and 'data-repo-update="custom"' in page
 
 
-async def test_five_tabs_and_one_primary(workspaces, client, env, monkeypatch, tmp_path):
-    """UX-006: the instance page has at most five tabs (the database is in
-    Monitoring, the repositories and the Odoo options in Settings), one
-    primary button outside the dialogs, the repositories listed once."""
+async def test_six_tabs_and_one_primary(workspaces, client, env, monkeypatch, tmp_path):
+    """UX-006, UX-008 §10: the instance page has at most six tabs (the
+    database is in Monitoring, the repositories in Modules, the Odoo options
+    in Settings), one primary button outside the dialogs, the repositories
+    listed once."""
     import re
 
     settings = env["settings"]
     page = (await client.get("/servers/srv?view=production", headers=post_as("admin"))).text
     tabs = re.findall(r'role="tab" data-tab="([a-z-]+)"', page)
-    assert tabs == ["overview", "backups", "log", "monitor", "settings"], tabs
+    assert tabs == ["overview", "backups", "log", "monitor", "modules", "settings"], tabs
     assert not re.search(r'data-panel="(database|addons|odoo-config)"', page)
     # outside the dialogs (rule of 21/11, as the reference panel): the head is neutral, a tab has at most one
     # primary, its creating action

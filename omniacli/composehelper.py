@@ -48,6 +48,12 @@ command of the caller's, and runs docker with an environment of its own:
                                          (TOOLS) mounted read only
     update <odoo service> <db> --modules a,b
                                          odoo -u a,b --stop-after-init
+    update <odoo service> <db> --install a,b
+                                         odoo -i a,b --stop-after-init, in
+                                         the running service, an existing
+                                         database (the catalog of modules)
+    modules <database service> <db>      the modules the database knows, each
+                                         name|state (fixed query)
     terminal <odoo service>              a login shell in the running service,
                                          on the caller's terminal, as the
                                          image's user (never root), in the
@@ -274,10 +280,14 @@ PG_SETTINGS = f"""SELECT json_build_object(
      WHERE f.sourcefile LIKE '%/postgresql.auto.conf' AND f.name NOT IN {_TUNED_IN} AND {_NOT_HIDDEN}
      ORDER BY f.name, f.seqno DESC) c))::jsonb"""
 # the actions that take arguments (commands())
+# the modules a database knows (ir_module_module), each name|state: the
+# catalog of modules tells installed, not installed and unknown apart
+MODULES_QUERY = "SELECT name, state FROM ir_module_module ORDER BY name"
 WITH_ARGUMENTS = ("logs", "version", "port", "dump", "load", "update", "psql", "init", "link-filestore", "login",
                   "setup", "options", "image", "verify", "pip-freeze",
                   "pg-report", "pg-terminate", "neutralize", "pip-requirements", "terminal",
-                  "mail-list", "mail-get", "mail-clear", "pg-settings", "pg-set", "pg-reset", "db-restart")
+                  "mail-list", "mail-get", "mail-clear", "pg-settings", "pg-set", "pg-reset", "db-restart",
+                  "modules")
 # the tuning's actions that read their values on the input (pg_tune())
 TUNE_ACTIONS = ("pg-set", "pg-reset", "db-restart")
 # a staging's caught mail (stacktemplates.MAIL_SERVICE, templates' compose.yaml):
@@ -349,6 +359,10 @@ SCRIPTS = {
     # no outgoing mail, no scheduled actions (Odoo 16 and later)
     "neutralize": ODOO_DB + 'exec odoo neutralize -d "$1"',
     "update-modules": ODOO_DB + CRONS_BEFORE + 'odoo -d "$1" -u "$2" --stop-after-init --no-http; ' + CRONS_AFTER,
+    # modules of the catalog installed into an existing database (UX-008 §7.2), without demo data
+    "install-modules": ODOO_DB + CRONS_BEFORE + 'odoo -d "$1" -i "$2" --stop-after-init --no-http '
+                                                '--without-demo=all; ' + CRONS_AFTER,
+    "pg-modules": 'exec psql -X -At -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-postgres}" -d "$1" -c "$2"',
     "psql": 'exec psql -U "${POSTGRES_USER:-postgres}" "$1"',
     # the report: its line, then pg_stat_statements' when the extension is there
     "pg-report": 'psql -X -At -U "${POSTGRES_USER:-postgres}" -d "$1" -c "$2" || exit 1; '
@@ -612,12 +626,20 @@ def commands(project: Path, action: str, args: list[str]) -> list[list[str]]:
             return [["run", "--rm", "--no-deps", "-T", "-v", f"{TOOLS}:{TOOLS_MOUNT}:ro",
                      "--entrypoint", "sh", service(project, args[0]), "-c", SCRIPTS["update"], "sh",
                      _database(args[1])]]
-        if len(args) == 4 and args[2] == "--modules":
+        if len(args) == 4 and args[2] in ("--modules", "--install"):
             modules = args[3].split(",")
             if not all(MODULE.fullmatch(m) for m in modules):
                 raise HelperError(f"{args[3]!r} is not a list of module names")
-            return [_script(service(project, args[0]), "update-modules", _database(args[1]), ",".join(modules))]
-        raise HelperError("usage: update <service> <database> [--modules a,b]")
+            script = "update-modules" if args[2] == "--modules" else "install-modules"
+            return [_script(service(project, args[0]), script, _database(args[1]), ",".join(modules))]
+        raise HelperError("usage: update <service> <database> [--modules a,b | --install a,b]")
+    if action == "modules":
+        # modules <database service> <database>: the fixed query above
+        if len(args) != 2:
+            raise HelperError("usage: modules <service> <database>")
+        name = service(project, args[0])
+        return [_script(name, "pg-modules", _database(args[1]), MODULES_QUERY,
+                        options=("-T", *psql_options(project, name)))]
     if action == "init":
         # init <odoo service> <database> <modules> [<language>]: a new database,
         # in a container of its own (the image's entrypoint gives the connection)

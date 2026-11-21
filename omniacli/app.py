@@ -41,7 +41,7 @@ from starlette.requests import ClientDisconnect, HTTPConnection
 from . import (backupcheck, backupchoices, checks, deployhooks, destinations, instancearchive, private, restoreroom, consumer, disks, gitcredentials, linkcopy, listgroups, ops, packages, plugins, pluginstore, puller, publisher,
                schedules, selflog, sshlinks, shell, stacktemplates, templatestore, tunnel, workspacehelper, workspaceops)
 from .accesslog import AccessLog
-from . import i18n, loginas, machines, pgreport, pgtuning, stagings, workspaceweb
+from . import i18n, loginas, machines, modulecatalog, pgreport, pgtuning, stagings, workspaceweb
 from . import stagingmail
 from .diskhistory import DiskHistory, DiskRecorder
 from .auth import ROLES as ACCESS_ROLES
@@ -263,6 +263,9 @@ WORKSPACE_ROUTES = frozenset({
     # the Addresses dialog of an environment (UX-008 §6.1): its admins (admin)
     "/api/servers/{server}/{role}/addresses", "/api/servers/{server}/{role}/addresses/check",
     "/api/servers/{server}/{role}/addresses/save",
+    # the Modules tab: the catalog of the OCA, with the role in the workspace (UX-008 §7)
+    "/api/servers/{server}/modules", "/api/servers/{server}/modules/catalog", "/api/servers/{server}/modules/plan",
+    "/api/servers/{server}/{role}/modules", "/api/servers/{server}/{role}/modules/install",
 })
 
 
@@ -664,6 +667,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         await asyncio.to_thread(save_login_hosts)
         pitr_tasks.append(asyncio.get_running_loop().create_task(pitr_loop()))
         postgres_tasks.append(asyncio.get_running_loop().create_task(postgres_loop()))
+        catalog_tasks.append(asyncio.get_running_loop().create_task(catalog_loop()))
         disk_recorder.start()
         load_recorder.start()
         tunnels.start()
@@ -685,6 +689,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                            ("load sampler", sampler.stop),
                            ("monitor", monitor.stop), ("point-in-time recovery", stop_pitr),
                            ("planned database restarts", stop_postgres),
+                           ("nightly catalog of modules", stop_catalog),
                            ("auto update", updater.stop), ("schedules", scheduler.stop),
                            ("link clients", link_clients.close)):
             # a task of its own, waited for and never cancelled from here: a
@@ -4428,6 +4433,43 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             raise JobFailed(f"the servers file was not written: {error.body.decode()}")
         return settings.servers[name]
 
+    async def add_repositories(job, ws: Workspace, name: str, instance: str, wanted: list[tuple[str, str, dict]]):
+        """Repositories (name, url, {role: branch}) cloned into each role of
+        the instance with the workspace's git credentials, named in their
+        odoo.conf and in the servers file, their Python packages installed,
+        the roles restarted; none of them left when one fails. The server as
+        it is then (Add a repository, the catalog of modules)."""
+        server = settings.servers[name]
+        roles = [role for role in ROLES if getattr(server, role) is not None]
+        options = gitcredentials.options_for(settings, name)
+        current = {role: list(getattr(server, role).repositories) for role in roles}
+        cloned: dict[str, dict[str, Path]] = {role: {} for role in roles}
+        try:
+            for repo, url, branches in wanted:
+                for role in roles:
+                    cloned[role][repo] = await workspaceops.clone(job, ws, instance, role, repo, url, branches[role],
+                                                                  options)
+            for role in roles:
+                await workspaceops.write_conf(job, ws, instance, role,
+                                              [*(r.name for r in current[role]), *(w[0] for w in wanted)])
+            done = await set_repositories(name, {role: [*repository_rows(current[role]), *(
+                {"name": repo, "path": str(cloned[role][repo]), "branch": branches[role], "remote": "origin"}
+                for repo, _, branches in wanted)] for role in roles})
+        except BaseException:
+            for role in roles:
+                await workspaceops.write_conf(job, ws, instance, role, [r.name for r in current[role]])
+                for path in cloned[role].values():
+                    workspaceops.remove_clone(path)
+            raise
+        for role in roles:
+            # their Python packages before Odoo starts with their modules
+            pip = getattr(getattr(done, role).plugin, "pip_requirements", None)
+            if pip is not None:
+                for repo, _, _ in wanted:
+                    await pip(job, getattr(done, role), repo)
+            await ops.restart(job, getattr(done, role))
+        return done
+
     @app.post("/api/workspaces/{workspace}/repositories/add", dependencies=[Depends(admin)])
     async def repository_add(workspace: str, payload: dict = Body(...), me: Principal = Depends(current_user)):
         """A customer's repository (https, the workspace's git credentials)
@@ -4457,29 +4499,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return refuse(f"{name} has a repository {repo} already")
 
         async def action(job):
-            options = gitcredentials.options_for(settings, name)
-            current = {role: list(getattr(server, role).repositories) for role in roles}
-            cloned = {}
-            try:
-                for role in roles:
-                    cloned[role] = await workspaceops.clone(job, ws, instance, role, repo, url, branches[role], options)
-                for role in roles:
-                    await workspaceops.write_conf(job, ws, instance, role, [*(r.name for r in current[role]), repo])
-                done = await set_repositories(name, {role: [*repository_rows(current[role]), {
-                    "name": repo, "path": str(cloned[role]), "branch": branches[role], "remote": "origin"}]
-                    for role in roles})
-            except BaseException:
-                for role in roles:
-                    await workspaceops.write_conf(job, ws, instance, role, [r.name for r in current[role]])
-                    if role in cloned:
-                        workspaceops.remove_clone(cloned[role])
-                raise
-            for role in roles:
-                # its Python packages before Odoo starts with its modules
-                pip = getattr(getattr(done, role).plugin, "pip_requirements", None)
-                if pip is not None:
-                    await pip(job, getattr(done, role), repo)
-                await ops.restart(job, getattr(done, role))
+            await add_repositories(job, ws, name, instance, [(repo, url, branches)])
             job.log(f"{repo} is in {name}: install its modules from Odoo's Apps")
             job.result = {"server": name, "repository": repo}
 
@@ -4604,6 +4624,318 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         what = f"Update {repo.name} of {inst.key}" + (f" to {branch}" if branch != repo.branch else "")
         job = jobs.submit(what, [inst.key], f"manual: {me}", action)
         return {"job": job.id}
+
+    # --- the Modules tab: the catalog of the OCA's modules (UX-008 §7) -----
+
+    catalog_dir = settings.jobs_dir.parent
+    # the catalog files read, by their path: (mtime, Catalog)
+    catalog_memo: dict[Path, tuple[float, modulecatalog.Catalog]] = {}
+    # what each database knows, asked at most every KNOWN_SECONDS: key → (time, {module: state} or None, why)
+    known_memo: dict[str, tuple[float, dict | None, str]] = {}
+    KNOWN_SECONDS = 30
+    CATALOG_EVERY = 3600
+    # the hours (this machine's) the catalog of each series is read again, once a day
+    CATALOG_NIGHT = range(2, 5)
+
+    def catalog_for(series: str) -> modulecatalog.Catalog:
+        path = modulecatalog.path_of(catalog_dir, series)
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            return modulecatalog.Catalog(series)
+        kept = catalog_memo.get(path)
+        if kept is None or kept[0] != mtime:
+            kept = (mtime, modulecatalog.catalog_of(modulecatalog.load(path), series))
+            catalog_memo[path] = kept
+        return kept[1]
+
+    def catalog_series() -> list[str]:
+        """The series of the templates this machine makes instances from."""
+        return sorted({s for t in workspaceops.templates().values()
+                       if (s := modulecatalog.series_of(t.name, t.label))}, key=lambda s: int(s.split(".")[0]))
+
+    def submit_catalog_refresh(series: str, source: str):
+        key = f"catalog/{series}"
+        running = jobs.running_on(key)
+        if running is not None:
+            return running
+        path = modulecatalog.path_of(catalog_dir, series)
+        return jobs.submit(f"Read the catalog of the OCA for Odoo {series}", [key], source,
+                           lambda job: modulecatalog.refresh(job, path, series, modulecatalog.GitSource()))
+
+    async def catalog_loop() -> None:
+        """Each night, the catalog of each series of the templates read again."""
+        while True:
+            await asyncio.sleep(CATALOG_EVERY)
+            try:
+                if datetime.datetime.now().hour not in CATALOG_NIGHT or not settings.workspaces:
+                    continue
+                today = datetime.date.today().isoformat()
+                for series in await asyncio.to_thread(catalog_series):
+                    if str(catalog_for(series).tried or "")[:10] != today:
+                        submit_catalog_refresh(series, "nightly catalog")
+            except Exception:  # noqa: BLE001 - the loop must survive
+                _logger.exception("the nightly reading of the catalog of modules failed")
+
+    catalog_tasks: list[asyncio.Task] = []
+
+    async def stop_catalog() -> None:
+        for task in catalog_tasks:
+            task.cancel()
+        await asyncio.gather(*catalog_tasks, return_exceptions=True)
+        catalog_tasks.clear()
+
+    def modules_instance(server: str):
+        """(workspace, instance name, server, series) of an instance whose
+        modules come from the catalog; a refusal otherwise."""
+        srv = settings.servers.get(server)
+        found = workspace_of(server)
+        if srv is None or found is None or srv.production is None:
+            return refuse(f"{server} is not an instance of a workspace: its modules come from its repositories",
+                          status.HTTP_404_NOT_FOUND)
+        ws, instance = found
+        template = instance_template(ws, instance)
+        series = modulecatalog.series_of(template.name, template.label) if template is not None else None
+        if series is None:
+            return refuse(f"The version of Odoo of {server} is not known: its template says none")
+        return ws, instance, srv, series
+
+    def is_staging(server: str) -> bool:
+        return server in stagings.load(stagings_file)
+
+    def install_roles(me: Principal, srv, staging: bool) -> dict[str, str | None]:
+        """{role: None when me may install there, else why not} of the roles
+        srv has: test for a developer, production for an admin (D3); the
+        production of a staging is a copy, a developer's too (its test is
+        stopped: not offered)."""
+        found = {}
+        for role in ROLES:
+            if getattr(srv, role) is None or (staging and role == "test"):
+                continue
+            if role == "test" or staging:
+                found[role] = None if me.can("developer") else "The developer role is required"
+            else:
+                found[role] = None if me.can("admin") else (
+                    "Installing in production is for the admins: a developer installs in test")
+        return found
+
+    async def known_modules(inst: Instance, fresh: bool = False) -> tuple[dict | None, str]:
+        """({module: state} the database of inst knows, or None; why not)."""
+        kept = known_memo.get(inst.key)
+        if kept is not None and not fresh and time.monotonic() - kept[0] < KNOWN_SECONDS:
+            return kept[1], kept[2]
+        reader = getattr(inst.plugin, "known_modules", None)
+        if reader is None:
+            found, why = None, f"{inst.key} does not say its modules"
+        else:
+            try:
+                found, why = await reader(inst), ""
+            except JobFailed as exc:
+                found, why = None, str(exc)
+        known_memo[inst.key] = (time.monotonic(), found, why)
+        return found, why
+
+    def code_modules(srv) -> set[str]:
+        """The modules in the repositories of the instance's roles."""
+        found = set()
+        for role in ROLES:
+            inst = getattr(srv, role)
+            for repo in (inst.repositories if inst is not None else []):
+                for manifest in repo.path.glob("*/__manifest__.py"):
+                    if modulecatalog.MODULE.fullmatch(manifest.parent.name):
+                        found.add(manifest.parent.name)
+        return found
+
+    def repository_names(srv) -> set[str]:
+        return {r.name for role in ROLES if getattr(srv, role) is not None for r in getattr(srv, role).repositories}
+
+    async def modules_view(srv) -> tuple[dict, dict, set, set]:
+        """(known of each role, why each is not known, the modules in the code, the repositories)."""
+        roles = [role for role in ROLES if getattr(srv, role) is not None]
+        answers = await asyncio.gather(*(known_modules(getattr(srv, role)) for role in roles))
+        known = {role: answer[0] for role, answer in zip(roles, answers)}
+        why = {role: answer[1] for role, answer in zip(roles, answers) if answer[1]}
+        code = await asyncio.to_thread(code_modules, srv)
+        return known, why, code, repository_names(srv)
+
+    def module_row(entry: dict, state: str, blocked: str | None) -> dict:
+        return {**{key: entry.get(key) for key in ("module", "name", "summary", "repository", "license", "version",
+                                                   "development_status", "depends", "python")},
+                "state": state, "blocked": blocked}
+
+    @app.get("/api/catalog", dependencies=[Depends(developer)])
+    async def catalog_search(series: str = "", q: str = ""):
+        """The catalog of the OCA for a series of Odoo (the date it was read,
+        its modules), and the modules matching q (at most 50)."""
+        if not modulecatalog.SERIES.fullmatch(series):
+            return refuse(f"{series!r} is not a series of Odoo, as 19.0")
+        found = catalog_for(series)
+        rows, total = modulecatalog.search(found, q)
+        return {**found.meta(), "total": total, "modules": [module_row(r, "", None) for r in rows]}
+
+    @app.post("/api/catalog/refresh", dependencies=[Depends(admin)])
+    async def catalog_refresh(payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """The catalog of a series read again from the OCA's repositories, a job."""
+        series = str(payload.get("series") or "")
+        if not modulecatalog.SERIES.fullmatch(series):
+            return refuse(f"{series!r} is not a series of Odoo, as 19.0")
+        if not machine_admin(me):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "The admins of the machine read the catalog again")
+        return {"job": submit_catalog_refresh(series, f"manual: {me}").id}
+
+    @app.get("/api/servers/{server}/modules", dependencies=[Depends(developer)])
+    async def modules_summary(request: Request, server: str, me: Principal = Depends(current_user)):
+        """What the Add modules dialog opens with: the catalog's date and
+        size, where me may install, and why a database cannot be read."""
+        found = modules_instance(server)
+        if not isinstance(found, tuple):
+            return found
+        ws, _, srv, series = found
+        staging = is_staging(server)
+        roles = install_roles(me, srv, staging)
+        known, why, _, _ = await modules_view(srv)
+        say = functools.partial(i18n.tr, request_language(request))
+        meta = catalog_for(series).meta()
+        return {**meta, "error": say(meta["error"]) if meta["error"] else None, "server": server, "staging": staging,
+                "roles": [{"role": role, "refused": say(refused) if refused else None,
+                           "unread": say(why[role]) if why.get(role) else None}
+                          for role, refused in roles.items()],
+                "default": "test" if "test" in roles else "production",
+                "can_refresh": machine_admin(me), "busy": server_busy(server),
+                "installed": {role: sorted(m for m, s in (k or {}).items() if s in modulecatalog.INSTALLED)
+                              for role, k in known.items()}}
+
+    @app.get("/api/servers/{server}/modules/catalog", dependencies=[Depends(developer)])
+    async def modules_catalog(request: Request, server: str, q: str = "", role: str = ""):
+        """The modules of the catalog matching q (at most 50), each with its
+        state in the instance and why it cannot be installed in role."""
+        found = modules_instance(server)
+        if not isinstance(found, tuple):
+            return found
+        _, _, srv, series = found
+        catalog = catalog_for(series)
+        rows, total = modulecatalog.search(catalog, q)
+        known, _, code, repos = await modules_view(srv)
+        role = role if role in known else ("test" if "test" in known else "production")
+        result = []
+        for entry in rows:
+            state = modulecatalog.state_of(entry["module"], known, code)
+            blocked = modulecatalog.plan(catalog, entry["module"], role, known, code, repos)["blocked"]
+            result.append(module_row(entry, state, i18n.tr(request_language(request), blocked) if blocked else None))
+        return {**catalog.meta(), "total": total, "query": q, "modules": result}
+
+    @app.get("/api/servers/{server}/modules/plan", dependencies=[Depends(developer)])
+    async def modules_plan(request: Request, server: str, module: str = "", role: str = "test"):
+        """What installing module in role takes (Install…): the repositories
+        to add, the modules, the Python packages; nothing is done."""
+        found = modules_instance(server)
+        if not isinstance(found, tuple):
+            return found
+        _, _, srv, series = found
+        if role not in ROLES or getattr(srv, role) is None:
+            return refuse(f"{server} has no {role}", status.HTTP_404_NOT_FOUND)
+        catalog = catalog_for(series)
+        known, why, code, repos = await modules_view(srv)
+        made = modulecatalog.plan(catalog, module, role, known, code, repos)
+        entry = catalog.modules.get(module) or {}
+        say = functools.partial(i18n.tr, request_language(request))
+        return {**made, "blocked": say(made["blocked"]) if made["blocked"] else None,
+                "name": entry.get("name") or module, "series": series,
+                "restarts": [r for r in ROLES if getattr(srv, r) is not None] if made["repositories"] else [role],
+                "unread": say(why[role]) if why.get(role) else None}
+
+    @app.get("/api/servers/{server}/{role}/modules", dependencies=[Depends(developer)])
+    async def modules_installed(server: str, role: str):
+        """The modules installed in the database of the role."""
+        inst = get_instance(server, role)
+        known, why = await known_modules(inst, fresh=True)
+        if known is None:
+            return refuse(why, status.HTTP_502_BAD_GATEWAY)
+        return {"modules": sorted(m for m, s in known.items() if s in modulecatalog.INSTALLED)}
+
+    @app.post("/api/servers/{server}/{role}/modules/install", dependencies=[Depends(developer)])
+    async def modules_install(server: str, role: str, payload: dict = Body(...),
+                              me: Principal = Depends(current_user)):
+        """A job: the repositories the module needs added to production and
+        test (both restarted), a backup of production when it goes there,
+        then odoo -i <module> in the database of the role and its restart."""
+        found = modules_instance(server)
+        if not isinstance(found, tuple):
+            return found
+        ws, instance, srv, series = found
+        if role not in ROLES or getattr(srv, role) is None:
+            return refuse(f"{server} has no {role}", status.HTTP_404_NOT_FOUND)
+        staging = is_staging(server)
+        allowed = install_roles(me, srv, staging)
+        if role not in allowed:
+            return refuse(f"The test of the staging {server} is stopped: install in the staging itself")
+        refused = allowed[role]
+        if refused:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, refused)
+        module = str(payload.get("module") or "")
+        if not modulecatalog.MODULE.fullmatch(module):
+            return refuse(f"{module!r} is not the name of a module")
+        production = role == "production" and not staging
+        if production and payload.get("confirm") is not True:
+            return refuse(f"Installing {module} in the production of {server} asks for a confirmation: "
+                          "a backup first, and production restarts")
+        if server_busy(server):
+            return refuse(f"A job is running on {server}: try again when it ends")
+        catalog = catalog_for(series)
+        known, why, code, repos = await modules_view(srv)
+        made = modulecatalog.plan(catalog, module, role, known, code, repos)
+        if made["blocked"]:
+            return refuse(made["blocked"])
+        if not made["modules"]:
+            return refuse(f"{module} is installed in {server}/{role} already")
+        roles = [r for r in ROLES if getattr(srv, r) is not None]
+        source = modulecatalog.GitSource()
+
+        async def action(job):
+            if made["repositories"]:
+                job.log(f"--- the repositories {', '.join(made['repositories'])} of the OCA, branch {series}, "
+                        f"added to {', '.join(roles)}")
+                await add_repositories(job, ws, server, instance,
+                                       [(repo, source.url(repo), {r: series for r in roles})
+                                        for repo in made["repositories"]])
+            inst = getattr(settings.servers[server], role)
+            if production:
+                # a backup first, whatever the instance's Backup before an update says
+                await ops.backup_before_update(job, dataclasses.replace(inst, backup_before_update=True),
+                                               backup_folder(inst))
+            first = len(job.lines)
+            try:
+                await inst.plugin.install_modules(job, inst, [module])
+            except JobFailed:
+                raise JobFailed(f"The module {module} was not installed: {odoo_error(job.lines[first:])}. "
+                                "The full log is in the job.") from None
+            finally:
+                known_memo.pop(inst.key, None)
+            await ops.restart(job, inst)
+            now_known, why_not = await known_modules(inst, fresh=True)
+            if now_known is not None and now_known.get(module) not in modulecatalog.INSTALLED:
+                raise JobFailed(f"The module {module} was not installed: {odoo_error(job.lines[first:])}. "
+                                "The full log is in the job.")
+            if now_known is None:
+                job.log(f"WARNING: whether {module} is installed is not known: {why_not}")
+            else:
+                job.log(f"{module} is installed in {inst.key}")
+            job.result = {"server": server, "role": role, "module": module, "repositories": made["repositories"]}
+
+        keys = [f"{server}/{r}" for r in roles] if made["repositories"] else [f"{server}/{role}"]
+        job = jobs.submit(f"Install {module} in {server}/{role}", keys, f"manual: {me}", action, workspace=ws.name)
+        return {"job": job.id}
+
+    def odoo_error(lines: list[str]) -> str:
+        """The first error Odoo logged, without its time and logger."""
+        for line in lines:
+            found = re.search(r"\b(?:ERROR|CRITICAL) \S+ \S+: (.+)", line)
+            if found:
+                return found.group(1).strip()[:300]
+        for line in lines:
+            if "Error" in line or "error" in line:
+                return line.strip()[-300:]
+        return "Odoo gave no reason"
 
     def instance_template(ws: Workspace, instance: str):
         """The template an instance was made from (the higher version installed), or None."""

@@ -330,7 +330,9 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
   <button type="button" role="tab" data-tab="log" title="{{ _('The log of its Odoo, followed live') }}">{{ _("Log") }}</button>
   {# Monitoring: the load once it is measured, and the database for who may act (UX-006: five tabs) #}
   <button type="button" role="tab" data-tab="monitor" {{ '' if db_tab else 'hidden' }} title="{{ _('The load of the instance over the last hour and how its database is') }}">{{ _("Monitoring") }}</button>
-  {% if can_act %}<button type="button" role="tab" data-tab="settings" title="{{ _('Its code, the options of its Odoo and its technical details') }}">{{ _("Settings") }}</button>{% endif %}
+  {# Modules: its code, its updates and the catalog of the OCA (UX-008 §7.3, D1) #}
+  {% if can_act %}<button type="button" role="tab" data-tab="modules" title="{{ _('Its repositories of addons, the updates of its code and the catalog of the OCA to add modules from') }}">{{ _("Modules") }}</button>{% endif %}
+  {% if can_act %}<button type="button" role="tab" data-tab="settings" title="{{ _('The options of its Odoo and its technical details') }}">{{ _("Settings") }}</button>{% endif %}
 </nav>
 
 <section class="tab-panel" data-panel="overview">
@@ -637,10 +639,11 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
 .db-where dt { font-weight: 600; } .db-where dd { margin: 0; }
 </style>
 {% endif %}
+{% if can_act %}{% include "_modules_tab.html" %}{% endif %}
 {% if can_act and stagings and stagings.workspace %}
 {# the repositories of addons of a workspace's instance: each from its URL on its branch, updated (pull) or
    removed one by one; a new one cloned with the workspace's git credentials, named in its odoo.conf, restarted #}
-<section class="tab-panel panel" data-panel="settings" data-section="addons" hidden data-ws="{{ prefix }}/api/workspaces/{{ stagings.workspace.name }}">
+<section class="tab-panel panel" data-panel="modules" data-section="addons" hidden data-ws="{{ prefix }}/api/workspaces/{{ stagings.workspace.name }}">
   <div class="section-head"><h2>{{ _("Code") }}</h2></div>
   <div class="scroll">
   <table class="addons-table">
@@ -732,7 +735,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
 @media (max-width: 700px) { .addons-fields { grid-template-columns: 1fr; } }
 </style>
 {% endif %}
-<section class="tab-panel panel" data-panel="settings" data-section="updates" hidden>
+<section class="tab-panel panel" data-panel="modules" data-section="updates" hidden>
   <div class="section-head"><h2>{{ _("Updates of the code") }}</h2></div>
   {# what happens at the next push or at the next round of the auto update: in sight; the rest in the technical details #}
   <dl class="set-grid">
@@ -786,45 +789,6 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     <p class="error" id="dh-error"></p>
   </div>
   {% endif %}
-  <details class="tech-details">
-    <summary title="{{ _('The type of the instance, its services, its port, its log and the commands to work on it from a shell') }}">{{ _("Technical details") }}</summary>
-    <dl class="set-grid">
-      <dt>{{ _("Type") }}</dt><dd>{{ tr(inst.plugin.label) }}</dd>
-      {# the database service's name gives way to the Database row (UX-008 §6.2.6) #}
-      {% set dbl = (db_line or {}).get(inst.key) %}
-      {% for label, value, kind in settings_rows[inst.key] if kind != "checkbox" and not (dbl and label == "Database service") %}
-      <dt>{{ tr(label) }}</dt>
-      {% if value is none or value == "" %}<dd class="muted">–</dd>
-      {% else %}<dd class="{{ 'mono' if kind in ('path', 'number') }}">{{ value }}</dd>{% endif %}
-      {% endfor %}
-      {% if dbl %}
-      <dt>{{ _("Database server") }}</dt>
-      <dd data-db-line="{{ dbl.where }}" {% if not machine_admin %}title="{{ _('The administrator of the machine tunes it') }}"{% endif %}>
-        {% if dbl.where == "dedicated" %}{{ _("dedicated") }} ·
-          {% if dbl.restart %}{{ _("restart at {time} of {date}", time=dbl.restart[11:16], date=when(dbl.restart)[:10]) }}
-          {% elif dbl.tuned %}{{ _("tuned on {when}", when=when(dbl.tuned)) }}
-          {% else %}{{ _("base values") }}{% endif %}
-        {% elif dbl.where == "system" %}{{ _("PostgreSQL of the system (port {port}) · not tuned by OmniaCLI", port=dbl.port) }}
-        {% else %}{{ _("on {host} · tuned there", host=dbl.host) }}{% endif %}
-        {% if machine_admin and dbl.where == "dedicated" %}<a href="{{ prefix }}/#database" title="{{ _('Opens the Database tab of the machine, where this database is tuned') }}">{{ _("Database of the machine ›") }}</a>{% endif %}
-      </dd>
-      {% endif %}
-      <dt>{{ _("Log") }}</dt><dd class="mono">{{ inst.log_label }}</dd>
-      {% if rt == "process" %}
-      <dt>{{ tr(inst.plugin.label) }}</dt><dd>{% if pid %}{{ _("started by OmniaCLI: running, pid") }} <span class="mono">{{ pid }}</span>{% else %}{{ _("started by OmniaCLI:") }} <span class="muted">{{ _("stopped") }}</span>{% endif %}</dd>
-      {% else %}
-      <dt>{{ _("Service") }}</dt><dd class="mono">{{ rt }}: {{ inst.restart.service }}</dd>
-      {% endif %}
-      {% if inst.package %}
-      {% set pkg = package_state[inst.key] %}
-      <dt>{{ _("Package") }}</dt>
-      <dd><span class="mono">{{ inst.package.name }}</span>{% if pkg.version %} {{ pkg.version }}{% endif %}
-        <span class="muted">{{ _("from") }}</span> <span class="mono">{{ inst.package.url }}</span>
-        {% if pkg.installed %}<br><span class="muted">{{ _("installed by OmniaCLI {when}", when=pkg.installed) }}</span>{% endif %}</dd>
-      {% endif %}
-    </dl>
-    {% if shell_paths.get(inst.key) %}{{ shell_paths_box(shell_paths.get(inst.key)) }}{% endif %}
-  </details>
 </section>
 <style>
 .oc-table { width: 100%; }
@@ -918,6 +882,48 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
   </div>{% endif %}
 </section>
 {% endif %}
+{# the technical details stay in Settings, after its options: how it runs, not its code #}
+<section class="tab-panel panel" data-panel="settings" data-section="technical" hidden>
+  <details class="tech-details">
+    <summary title="{{ _('The type of the instance, its services, its port, its log and the commands to work on it from a shell') }}">{{ _("Technical details") }}</summary>
+    <dl class="set-grid">
+      <dt>{{ _("Type") }}</dt><dd>{{ tr(inst.plugin.label) }}</dd>
+      {# the database service's name gives way to the Database row (UX-008 §6.2.6) #}
+      {% set dbl = (db_line or {}).get(inst.key) %}
+      {% for label, value, kind in settings_rows[inst.key] if kind != "checkbox" and not (dbl and label == "Database service") %}
+      <dt>{{ tr(label) }}</dt>
+      {% if value is none or value == "" %}<dd class="muted">–</dd>
+      {% else %}<dd class="{{ 'mono' if kind in ('path', 'number') }}">{{ value }}</dd>{% endif %}
+      {% endfor %}
+      {% if dbl %}
+      <dt>{{ _("Database server") }}</dt>
+      <dd data-db-line="{{ dbl.where }}" {% if not machine_admin %}title="{{ _('The administrator of the machine tunes it') }}"{% endif %}>
+        {% if dbl.where == "dedicated" %}{{ _("dedicated") }} ·
+          {% if dbl.restart %}{{ _("restart at {time} of {date}", time=dbl.restart[11:16], date=when(dbl.restart)[:10]) }}
+          {% elif dbl.tuned %}{{ _("tuned on {when}", when=when(dbl.tuned)) }}
+          {% else %}{{ _("base values") }}{% endif %}
+        {% elif dbl.where == "system" %}{{ _("PostgreSQL of the system (port {port}) · not tuned by OmniaCLI", port=dbl.port) }}
+        {% else %}{{ _("on {host} · tuned there", host=dbl.host) }}{% endif %}
+        {% if machine_admin and dbl.where == "dedicated" %}<a href="{{ prefix }}/#database" title="{{ _('Opens the Database tab of the machine, where this database is tuned') }}">{{ _("Database of the machine ›") }}</a>{% endif %}
+      </dd>
+      {% endif %}
+      <dt>{{ _("Log") }}</dt><dd class="mono">{{ inst.log_label }}</dd>
+      {% if rt == "process" %}
+      <dt>{{ tr(inst.plugin.label) }}</dt><dd>{% if pid %}{{ _("started by OmniaCLI: running, pid") }} <span class="mono">{{ pid }}</span>{% else %}{{ _("started by OmniaCLI:") }} <span class="muted">{{ _("stopped") }}</span>{% endif %}</dd>
+      {% else %}
+      <dt>{{ _("Service") }}</dt><dd class="mono">{{ rt }}: {{ inst.restart.service }}</dd>
+      {% endif %}
+      {% if inst.package %}
+      {% set pkg = package_state[inst.key] %}
+      <dt>{{ _("Package") }}</dt>
+      <dd><span class="mono">{{ inst.package.name }}</span>{% if pkg.version %} {{ pkg.version }}{% endif %}
+        <span class="muted">{{ _("from") }}</span> <span class="mono">{{ inst.package.url }}</span>
+        {% if pkg.installed %}<br><span class="muted">{{ _("installed by OmniaCLI {when}", when=pkg.installed) }}</span>{% endif %}</dd>
+      {% endif %}
+    </dl>
+    {% if shell_paths.get(inst.key) %}{{ shell_paths_box(shell_paths.get(inst.key)) }}{% endif %}
+  </details>
+</section>
 {% endif %}
 
 {% for dialog in dialogs %}{% include dialog %}{% endfor %}
@@ -975,8 +981,8 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
 
   // the tabs: the one in the address (#log) or Overview
   const tabs = [...document.querySelectorAll(".tabs [data-tab]")];
-  // the tabs of before UX-006, for an address kept somewhere (#database, #addons, #odoo-config)
-  const MOVED = {database: "monitor", addons: "settings", "odoo-config": "settings"};
+  // the tabs of before UX-006, for an address kept somewhere (#database, #addons, #updates, #odoo-config)
+  const MOVED = {database: "monitor", addons: "modules", updates: "modules", "odoo-config": "settings"};
   let loadMeasured = false;
   function show(name) {
     const section = MOVED[name] ? name : null;

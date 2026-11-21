@@ -1,0 +1,319 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{# The head of the Modules tab of an instance (docs/ux/UX-008 §7.3): the catalog of the OCA for its version of
+   Odoo, its date, and the tab's primary + Add modules, for a workspace's instance; the Code and Updates
+   sections of server.html follow it in the same tab.
+
+   The dialog Add modules: the search (GET /api/servers/<s>/modules/catalog?q=, at most 50 rows, none
+   without a search), then Install… shows in the same dialog what it takes (GET …/modules/plan) and where
+   (test by default; production for an admin, with a backup first and a confirmation of its own), then
+   POST /api/servers/<s>/<role>/modules/install starts the job and its page opens. Its script is an
+   IIFE of its own, its names its own (tests/test_script_scopes.py). -#}
+{% if stagings and stagings.workspace %}
+<div class="tab-panel mods-head" data-panel="modules" hidden
+  data-api="{{ prefix }}/api/servers/{{ server.name }}" data-jobs="{{ prefix }}/jobs/">
+  <p class="muted mods-line" id="mods-line">{{ _("Reading the catalog of the OCA…") }}</p>
+  <span {% if is_busy %}title="{{ _('A job is working on {name}: try again when it ends.', name=server.name) }}"{% endif %}>
+  <button type="button" class="primary" id="mods-open" {{ off }}
+    title="{{ _('Looks for a module in the catalog of the OCA for this version of Odoo and installs it, with the repositories it depends on') }}">+ {{ _("Add modules") }}</button></span>
+</div>
+<dialog id="mods-dialog" class="mods-dialog" aria-labelledby="mods-title">
+  <form method="dialog" id="mods-form">
+    <h2 id="mods-title">{{ _("Add modules") }}</h2>
+    {# step 1: the search #}
+    <div id="mods-search-step">
+      <div class="mods-meta">
+        <span class="muted" id="mods-meta"></span>
+        <button type="button" class="small" id="mods-refresh" hidden
+          title="{{ _('Reads again from the repositories of the OCA the modules of this version of Odoo. It installs nothing. It is a job.') }}">{{ _("Read the catalog again") }}</button>
+      </div>
+      <p class="error" id="mods-source-error" hidden></p>
+      <input type="search" id="mods-query" autocomplete="off" spellcheck="false" aria-label="{{ _('Search the catalog') }}"
+        placeholder="{{ _('Look for a name or for what it does: report excel, VAT number, warehouse…') }}">
+      <p class="muted" id="mods-hint">{{ _("Look for a name or for what it does: report excel, VAT number, warehouse…") }}</p>
+      <p class="muted" id="mods-none" hidden></p>
+      <div class="mods-list" id="mods-list" role="list"></div>
+      <p class="muted small" id="mods-more" hidden></p>
+      <div class="sd-foot">
+        <button type="button" id="mods-close" title="{{ _('Closes without changing anything') }}">{{ _("Close") }}</button>
+      </div>
+    </div>
+    {# step 2: what it takes and where #}
+    <div id="mods-plan-step" hidden>
+      <p id="mods-plan-text"></p>
+      <p class="muted" id="mods-plan-unread" hidden></p>
+      <p class="error" id="mods-plan-blocked" hidden></p>
+      <fieldset class="mods-where" id="mods-where">
+        <legend>{{ _("Where") }}</legend>
+      </fieldset>
+      <p class="muted" id="mods-backup-note" hidden>{{ _("Production: a backup first, then the module is installed and production restarts.") }}</p>
+      <p class="error" id="mods-error" role="alert"></p>
+      <div class="sd-foot">
+        <button type="button" id="mods-back" title="{{ _('Back to the search, without installing anything') }}">‹ {{ _("Back") }}</button>
+        <span id="mods-go-wrap"><button type="button" class="primary" id="mods-go"
+          title="{{ _('Adds the repositories missing to production and test (they restart: who is connected loses the connection for a few seconds), then installs the modules in the database chosen. In production it makes a backup first. It is a job.') }}">{{ _("Install in test") }}</button></span>
+      </div>
+    </div>
+    {# step 3: the confirmation of an install in production #}
+    <div id="mods-confirm-step" hidden>
+      <p id="mods-confirm-text"></p>
+      <div class="sd-foot">
+        <button type="button" id="mods-confirm-cancel" title="{{ _('Back to the summary, without installing anything') }}">{{ _("Cancel") }}</button>
+        <button type="button" class="primary danger" id="mods-confirm-go"
+          title="{{ _('Makes a backup of production, adds the repositories missing (production and test restart: who is connected loses the connection for a few seconds) and installs the module in the database of production. It is a job.') }}">{{ _("Install in production") }}</button>
+      </div>
+    </div>
+  </form>
+</dialog>
+<style>
+.mods-head { display: flex; justify-content: space-between; align-items: center; gap: 10px 16px; flex-wrap: wrap; margin: 0 0 14px; }
+.mods-head .mods-line { margin: 0; }
+dialog.mods-dialog { width: min(960px, calc(100vw - 32px)); }
+.mods-dialog h2 { margin: 0 0 8px; }
+.mods-meta { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; margin-bottom: 10px; }
+#mods-query { width: 100%; }
+.mods-list { max-height: min(55vh, 520px); overflow-y: auto; margin-top: 8px; }
+.mods-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 4px;
+  border-top: 1px solid var(--border); }
+.mods-row .mods-what { min-width: 0; }
+.mods-row .mods-tech { color: var(--muted); overflow-wrap: anywhere; }
+.mods-row .mods-side { display: flex; align-items: center; gap: 10px; white-space: nowrap; }
+.mods-state { font-size: 13px; color: var(--muted); }
+.mods-state.on { color: var(--ok); font-weight: 600; }
+.mods-alpha { font-size: 12px; color: var(--warn); }
+.mods-where { border: 0; padding: 0; margin: 10px 0; display: flex; gap: 6px 20px; flex-wrap: wrap; }
+.mods-where legend { font-size: 13px; font-weight: 600; margin-bottom: 4px; padding: 0; }
+.mods-where label { display: inline-flex; gap: 6px; align-items: center; }
+@media (max-width: 700px) { .mods-row { flex-direction: column; align-items: flex-start; } }
+</style>
+<script>
+(function () {
+  const head = document.querySelector(".mods-head");
+  const dialog = document.getElementById("mods-dialog");
+  if (!head || !dialog) return;
+  const api = head.dataset.api;
+  const M = {
+    line: {{ _("Catalog of the OCA for Odoo {series}, read on {when} · {count} modules.") | tojson }},
+    never: {{ _("The catalog of the OCA for Odoo {series} has not been read yet.") | tojson }},
+    unreadable: {{ _("The catalog cannot be read: {error}") | tojson }},
+    sourceError: {{ _("The catalog cannot be read from github.com ({error}): the one of {when} stays.") | tojson }},
+    sourceNever: {{ _("The catalog cannot be read from github.com ({error}).") | tojson }},
+    none: {{ _("No module of the OCA for Odoo {series} with \"{text}\". A module of another repository is added with + Add a repository.") | tojson }},
+    more: {{ _("{shown} of {total}: write more words to narrow the search.") | tojson }},
+    states: {installed: {{ _("Installed in production") | tojson }}, installed_test: {{ _("Installed in test") | tojson }},
+             in_code: {{ _("In the code, not installed") | tojson }}, to_add: {{ _("To add") | tojson }}},
+    alpha: {{ _("experimental") | tojson }},
+    install: {{ _("Install…") | tojson }},
+    installTitle: {{ _("Shows what it takes to install it (repositories, other modules, Python packages) and where; it does nothing yet") | tojson }},
+    reading: {{ _("Reading what it takes…") | tojson }},
+    planHead: {{ _("To install {name} it takes:") | tojson }},
+    repos: {{ _("{count} new repositories ({names}), added to production and test: both restart") | tojson }},
+    repo: {{ _("1 new repository ({names}), added to production and test: both restart") | tojson }},
+    reposOne: {{ _("{count} new repositories ({names}), added to production: it restarts") | tojson }},
+    repoOne: {{ _("1 new repository ({names}), added to production: it restarts") | tojson }},
+    noRepo: {{ _("no new repository: the code is there already") | tojson }},
+    modules: {{ _("{count} modules") | tojson }}, module: {{ _("1 module") | tojson }},
+    python: {{ _("the Python packages {names}") | tojson }}, pythonOne: {{ _("the Python package {names}") | tojson }},
+    already: {{ _("{name} is installed there already.") | tojson }},
+    unread: {{ _("The database of {role} did not answer ({error}): the modules of Odoo it needs are not checked.") | tojson }},
+    roles: {test: {{ _("Test environment") | tojson }}, production: {{ _("Production") | tojson }}},
+    stagingRole: {{ _("This staging") | tojson }},
+    go: {test: {{ _("Install in test") | tojson }}, production: {{ _("Install in production") | tojson }}},
+    goStaging: {{ _("Install in the staging") | tojson }},
+    confirm: {{ _("Install {name} in the production of {server}? A backup is made first; production restarts, and who is connected loses the connection for a few seconds.") | tojson }},
+    busy: {{ _("A job is working on {name}: try again when it ends.") | tojson }},
+    refused: {{ _("Refused") | tojson }},
+  };
+  const fill = (text, values) => text.replace(/\{(\w+)\}/g, (all, k) => (k in values ? values[k] : all));
+  const $ = (id) => document.getElementById(id);
+  let modsInfo = null, modsTimer = null, modsAbort = null, modsPlan = null, modsRole = "test";
+
+  async function modsGet(url, signal) {
+    const resp = await fetch(url, {headers: {Accept: "application/json"}, signal});
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.error || data.detail || resp.status);
+    return data;
+  }
+  function modsMetaText(info) {
+    if (!info.read) return fill(M.never, {series: info.series});
+    return fill(M.line, {series: info.series, when: window.whenText(info.read),
+                         count: Number(info.count).toLocaleString(document.documentElement.lang || undefined)});
+  }
+  async function modsLoad() {
+    try {
+      modsInfo = await modsGet(`${api}/modules`);
+    } catch (e) {
+      $("mods-line").textContent = fill(M.unreadable, {error: e.message});
+      return null;
+    }
+    $("mods-line").textContent = modsMetaText(modsInfo);
+    return modsInfo;
+  }
+  function modsStep(name) {
+    $("mods-search-step").hidden = name !== "search";
+    $("mods-plan-step").hidden = name !== "plan";
+    $("mods-confirm-step").hidden = name !== "confirm";
+  }
+  async function modsOpen() {
+    modsStep("search");
+    $("mods-error").textContent = "";
+    dialog.showModal();
+    $("mods-query").focus();
+    const info = modsInfo || await modsLoad();
+    if (!info) return;
+    modsRole = info.default;
+    $("mods-meta").textContent = modsMetaText(info);
+    $("mods-refresh").hidden = !info.can_refresh;
+    const bad = $("mods-source-error");
+    bad.hidden = !info.error;
+    if (info.error) bad.textContent = info.read ? fill(M.sourceError, {error: info.error, when: window.whenText(info.read)})
+                                                : fill(M.sourceNever, {error: info.error});
+  }
+  function modsRow(row) {
+    const div = document.createElement("div");
+    div.className = "mods-row"; div.setAttribute("role", "listitem");
+    const what = document.createElement("div"); what.className = "mods-what";
+    const name = document.createElement("strong"); name.textContent = row.name || row.module;
+    what.append(name, " ", row.summary || "");
+    const tech = document.createElement("div"); tech.className = "small mono mods-tech";
+    tech.textContent = [row.module, row.repository, row.license].filter(Boolean).join(" · ");
+    what.append(tech);
+    const side = document.createElement("div"); side.className = "mods-side";
+    if (row.development_status === "Alpha") {
+      const alpha = document.createElement("span"); alpha.className = "mods-alpha"; alpha.textContent = M.alpha; side.append(alpha);
+    }
+    const state = document.createElement("span");
+    state.className = "mods-state" + (row.state === "installed" || row.state === "installed_test" ? " on" : "");
+    state.textContent = M.states[row.state] || "";
+    side.append(state);
+    if (row.state !== "installed") {
+      const button = document.createElement("button");
+      button.type = "button"; button.className = "small"; button.textContent = M.install; button.title = M.installTitle;
+      button.addEventListener("click", () => modsShowPlan(row));
+      if (row.blocked) {
+        button.disabled = true;
+        const wrap = document.createElement("span"); wrap.title = row.blocked; wrap.append(button); side.append(wrap);
+      } else side.append(button);
+    }
+    div.append(what, side);
+    return div;
+  }
+  async function modsSearch() {
+    const text = $("mods-query").value.trim();
+    const list = $("mods-list");
+    if (modsAbort) modsAbort.abort();
+    $("mods-hint").hidden = !!text; $("mods-none").hidden = true; $("mods-more").hidden = true;
+    if (!text) { list.replaceChildren(); return; }
+    modsAbort = new AbortController();
+    let data;
+    try {
+      data = await modsGet(`${api}/modules/catalog?q=${encodeURIComponent(text)}&role=${encodeURIComponent(modsRole)}`, modsAbort.signal);
+    } catch (e) {
+      if (e.name === "AbortError") return;
+      $("mods-none").hidden = false; $("mods-none").textContent = fill(M.unreadable, {error: e.message});
+      list.replaceChildren(); return;
+    }
+    list.replaceChildren(...data.modules.map(modsRow));
+    if (!data.modules.length) { $("mods-none").hidden = false; $("mods-none").textContent = fill(M.none, {series: data.series, text}); }
+    if (data.total > data.modules.length) {
+      $("mods-more").hidden = false; $("mods-more").textContent = fill(M.more, {shown: data.modules.length, total: data.total});
+    }
+  }
+  function modsPlanText(plan) {
+    const parts = [];
+    const n = plan.repositories.length, names = plan.repositories.join(", ");
+    const both = plan.restarts.length > 1;
+    if (!n) parts.push(M.noRepo);
+    else if (n === 1) parts.push(fill(both ? M.repo : M.repoOne, {names}));
+    else parts.push(fill(both ? M.repos : M.reposOne, {count: n, names}));
+    parts.push(plan.modules.length === 1 ? M.module : fill(M.modules, {count: plan.modules.length}));
+    if (plan.python.length) parts.push(fill(plan.python.length === 1 ? M.pythonOne : M.python, {names: plan.python.join(", ")}));
+    return parts.join("; ") + ".";
+  }
+  function modsRoleChoices() {
+    const box = $("mods-where");
+    box.querySelectorAll("label").forEach((l) => l.remove());
+    for (const r of modsInfo.roles) {
+      const label = document.createElement("label");
+      const input = document.createElement("input");
+      input.type = "radio"; input.name = "mods-role"; input.value = r.role; input.checked = r.role === modsRole;
+      input.disabled = !!r.refused;
+      if (r.refused) label.title = r.refused;
+      input.addEventListener("change", () => { modsRole = r.role; modsShowPlan(modsPlan.row); });
+      label.append(input, " ", modsInfo.staging ? M.stagingRole : M.roles[r.role]);
+      box.append(label);
+    }
+  }
+  async function modsShowPlan(row) {
+    if (!modsInfo && !(await modsLoad())) return;
+    modsStep("plan");
+    $("mods-error").textContent = "";
+    $("mods-plan-text").textContent = M.reading;
+    $("mods-plan-blocked").hidden = true; $("mods-plan-unread").hidden = true;
+    const go = $("mods-go");
+    go.disabled = true;
+    // a role refused to me is never the one chosen
+    const mine = modsInfo.roles.find((r) => r.role === modsRole && !r.refused) || modsInfo.roles.find((r) => !r.refused);
+    if (mine) modsRole = mine.role;
+    modsRoleChoices();
+    let plan;
+    try {
+      plan = await modsGet(`${api}/modules/plan?module=${encodeURIComponent(row.module)}&role=${encodeURIComponent(modsRole)}`);
+    } catch (e) { $("mods-plan-text").textContent = ""; $("mods-error").textContent = e.message; return; }
+    modsPlan = {row, plan};
+    const textBox = $("mods-plan-text");
+    const strong = document.createElement("strong"); strong.textContent = plan.name;
+    const [before, after] = M.planHead.split("{name}");
+    textBox.replaceChildren(before, strong, after + " " + modsPlanText(plan));
+    if (plan.unread) { $("mods-plan-unread").hidden = false; $("mods-plan-unread").textContent = fill(M.unread, {role: M.roles[modsRole], error: plan.unread}); }
+    if (plan.blocked) { $("mods-plan-blocked").hidden = false; $("mods-plan-blocked").textContent = plan.blocked; }
+    else if (!plan.modules.length) { $("mods-plan-blocked").hidden = false; $("mods-plan-blocked").textContent = fill(M.already, {name: plan.name}); }
+    const production = modsRole === "production" && !modsInfo.staging;
+    $("mods-backup-note").hidden = !production;
+    go.textContent = modsInfo.staging ? M.goStaging : M.go[modsRole];
+    const wrap = $("mods-go-wrap");
+    if (modsInfo.busy) wrap.title = fill(M.busy, {name: modsInfo.server}); else wrap.removeAttribute("title");
+    go.disabled = !mine || !!plan.blocked || !plan.modules.length || modsInfo.busy;
+  }
+  async function modsInstall(confirmed) {
+    const {row} = modsPlan;
+    const body = {module: row.module};
+    if (confirmed) body.confirm = true;
+    const resp = await fetch(`${api}/${modsRole}/modules/install`, {method: "POST",
+      headers: {"Content-Type": "application/json", Accept: "application/json"}, body: JSON.stringify(body)});
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || !data.job) {
+      modsStep("plan");
+      $("mods-error").textContent = data.error || data.detail || M.refused;
+      return;
+    }
+    location.href = head.dataset.jobs + data.job;
+  }
+  $("mods-open").addEventListener("click", modsOpen);
+  $("mods-close").addEventListener("click", () => dialog.close());
+  $("mods-back").addEventListener("click", () => { modsStep("search"); $("mods-query").focus(); });
+  $("mods-query").addEventListener("input", () => { clearTimeout(modsTimer); modsTimer = setTimeout(modsSearch, 250); });
+  $("mods-query").addEventListener("keydown", (event) => { if (event.key === "Enter") event.preventDefault(); });
+  $("mods-go").addEventListener("click", () => {
+    if (modsRole === "production" && !modsInfo.staging) {
+      $("mods-confirm-text").textContent = fill(M.confirm, {name: modsPlan.plan.name, server: modsInfo.server});
+      modsStep("confirm");
+      return;
+    }
+    $("mods-go").disabled = true;
+    modsInstall(false);
+  });
+  $("mods-confirm-cancel").addEventListener("click", () => modsStep("plan"));
+  $("mods-confirm-go").addEventListener("click", () => { $("mods-confirm-go").disabled = true; modsInstall(true); });
+  $("mods-refresh").addEventListener("click", async () => {
+    const resp = await fetch(`{{ prefix }}/api/catalog/refresh`, {method: "POST",
+      headers: {"Content-Type": "application/json", Accept: "application/json"}, body: JSON.stringify({series: modsInfo.series})});
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || !data.job) { $("mods-source-error").hidden = false; $("mods-source-error").textContent = data.error || data.detail || M.refused; return; }
+    location.href = head.dataset.jobs + data.job;
+  });
+  // the head's line when the tab opens (and when the page opens on it)
+  document.querySelector('.tabs [data-tab="modules"]')?.addEventListener("click", () => { if (!modsInfo) modsLoad(); });
+  if (location.hash === "#modules") modsLoad();
+})();
+</script>
+{% endif %}

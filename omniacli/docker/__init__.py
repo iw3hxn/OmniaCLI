@@ -84,6 +84,8 @@ SERVICE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 MODULE = re.compile(r"[a-z0-9][a-z0-9_]{0,99}")
 _VERSION = re.compile(r"Odoo Server (?:saas~)?(\d+)")
 HELPER_TIMEOUT = 120
+# what the database knows, asked while a dialog waits
+MODULES_TIMEOUT = 15
 # a dump or a load of a big database
 DATA_TIMEOUT = 6 * 3600
 # Copy production to test: what test's filestore becomes
@@ -413,6 +415,34 @@ class DockerPlugin(ServicePlugin):
             if only is None or repo.name == only:
                 job.log(f"--- Python packages of {repo.name}")
                 await _helper(job, instance, "pip-requirements", instance.options.odoo_service, repo.name)
+
+    async def install_modules(self, job: Job, instance: Instance, modules: list[str]) -> None:
+        """odoo -i <modules> --stop-after-init into the instance's existing
+        database, in its running service (compose-helper update --install),
+        a neutralized database's crons kept off: the catalog of modules."""
+        bad = [m for m in modules if not MODULE.fullmatch(m)]
+        if not modules or bad:
+            raise JobFailed(f"invalid module list: {', '.join(bad) or 'empty'}")
+        opts = instance.options
+        job.log(f"--- install {', '.join(modules)} in database {opts.database}")
+        await _helper(job, instance, "update", opts.odoo_service, opts.database, "--install", ",".join(modules))
+
+    async def known_modules(self, instance: Instance) -> dict[str, str]:
+        """{module: state} of what the instance's database knows
+        (ir_module_module, compose-helper modules); JobFailed when it does
+        not answer."""
+        opts = instance.options
+        code, out = await capture(instance.restart.command("modules", opts.db_service, opts.database),
+                                  timeout=MODULES_TIMEOUT)
+        if code:
+            lines = [line for line in out.splitlines() if line.strip()]
+            raise JobFailed(f"the database {opts.database} did not answer: {(lines[-1] if lines else code)}")
+        found = {}
+        for line in out.splitlines():
+            name, sep, state = line.strip().partition("|")
+            if sep and MODULE.fullmatch(name):
+                found[name] = state
+        return found
 
     async def _update_changed(self, job: Job, instance: Instance, force: bool = False) -> None:
         if not instance.options.update_modules and not force:

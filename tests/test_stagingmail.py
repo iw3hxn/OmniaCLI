@@ -279,7 +279,8 @@ async def test_the_mail_tab_on_a_staging_only(workspaces, client, env, monkeypat
     assert 'data-tab="mail"' in page and 'data-panel="mail"' in page
     assert "the outgoing mail is read in the Mail tab, it does not leave" in page
     tabs = re.findall(r'<button type="button" role="tab" data-tab="(\w+)"', page)
-    assert tabs[:2] == ["overview", "mail"] and len(tabs) <= 6
+    # the six tabs of UX-008 §10, and the Mail of a staging (§5.3) beside them
+    assert tabs[:2] == ["overview", "mail"] and len(tabs) <= 7
     # the message in a frame without scripts; no primary in the tab
     frame = re.search(r'<iframe id="mm-body"[^>]*>', page).group(0)
     assert 'sandbox=""' in frame and "allow-scripts" not in frame
