@@ -1521,6 +1521,9 @@ class Options:
     syslog_port: int = 514
     syslog_protocol: str = "udp"  # SYSLOG_PROTOCOLS
     syslog_ca_file: str = ""
+    # how the users of workspaces read the machine's people (a link's user,
+    # a machine admin) in their jobs: empty is "the provider" in their language
+    provider_label: str = ""
 
 
 SMTP_SECURITY = ("starttls", "ssl", "none")
@@ -1604,12 +1607,18 @@ def parse_options(data) -> Options:
     ca_file = str(syslog.get("ca_file") or "").strip()
     if ca_file and (not ca_file.startswith("/") or any(ord(c) < 32 for c in ca_file) or len(ca_file) > 1024):
         raise ConfigError("audit.syslog.ca_file: an absolute path, or empty for the system's certificates")
+    portal = data.get("portal") or {}
+    if not isinstance(portal, dict):
+        raise ConfigError("portal must be a mapping")
+    provider = str(portal.get("provider") or "").strip()
+    if len(provider) > 100 or any(ord(c) < 32 for c in provider):
+        raise ConfigError("portal.provider: one line of at most 100 characters")
     return Options(shell_font_size=size, tunnel_idle_hours=idle, tunnel_bind=bind, tunnel_ports=ports,
                    smtp_host=texts["host"], smtp_port=port, smtp_security=security, smtp_user=texts["user"],
                    smtp_password=texts["password"], mail_from=texts["from"],
                    monitor_notify=parse_notify(monitor.get("notify"), "monitor.notify"),
                    audit_retention_days=retention, syslog_host=syslog_host, syslog_port=syslog_port,
-                   syslog_protocol=protocol, syslog_ca_file=ca_file)
+                   syslog_protocol=protocol, syslog_ca_file=ca_file, provider_label=provider)
 
 
 def load_options(path: Path) -> Options:
@@ -1641,6 +1650,8 @@ def save_options(path: Path, options: Options) -> None:
         if options.syslog_host:
             data["audit"]["syslog"] = {"host": options.syslog_host, "port": options.syslog_port,
                                        "protocol": options.syslog_protocol, "ca_file": options.syslog_ca_file}
+    if options.provider_label:
+        data["portal"] = {"provider": options.provider_label}
     text = yaml.safe_dump(data, sort_keys=False)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")

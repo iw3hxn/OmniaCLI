@@ -298,17 +298,20 @@ async def test_the_dialog_reads_and_checks(dialog, client):
     assert (by["www.customer.com"]["dns"], by["customer.com"]["dns"], by["new.customer.com"]["dns"]) == ("here", "elsewhere", "none")
     assert by["customer.com"]["addresses"] == ["198.51.100.1"]
     assert "not a host name" in by["*.customer.com"]["error"]
-    # another site of nginx, another workspace: not named to a workspace's admin
-    assert by["www.other.it"]["taken"] == "another site of this machine answers on it"
-    assert by["x.beta.it"]["taken"] == "it is under the domain of another workspace of this machine"
+    # another site of nginx, another workspace: a workspace's admin is told
+    # only that the name is not available, not that another customer of this
+    # machine has it (21/11/2026, FUGA 3); its own workspace's names keep why
+    assert by["www.other.it"]["taken"] == "not available"
+    assert by["x.beta.it"]["taken"] == "not available"
     assert by["test.acme.it"]["taken"] == "it is a name of main (test)"
-    # the machine's admin is told which file
-    rows = (await client.post(f"{API}/check", headers=POST, json={"names": ["www.other.it"]})).json()["rows"]
+    # the machine's admin is told which file, and that it is another workspace's
+    rows = (await client.post(f"{API}/check", headers=POST, json={"names": ["www.other.it", "x.beta.it"]})).json()["rows"]
     assert rows[0]["taken"] == "used by /etc/nginx/sites-enabled/other"
+    assert rows[1]["taken"] == "it is under the domain of another workspace of this machine"
     # in Italian for an Italian browser
     rows = (await client.post(f"{API}/check", headers={**post_as("mario"), "Accept-Language": "it"},
                               json={"names": ["www.other.it", "*.x.it"]})).json()["rows"]
-    assert rows[0]["taken"] == "risponde già un altro sito di questa macchina" and "non è un nome di host" in rows[1]["error"]
+    assert rows[0]["taken"] == "non disponibile" and "non è un nome di host" in rows[1]["error"]
 
 
 async def test_the_dialog_saves_and_publishes(dialog, client, env):
@@ -345,7 +348,9 @@ async def test_the_dialog_saves_and_publishes(dialog, client, env):
 
 @pytest.mark.parametrize("body, message", [
     ({"aliases": ["*.customer.com"], "redirects": []}, "not a host name"),
-    ({"aliases": ["www.other.it"], "redirects": []}, "Another site of this machine answers on www.other.it"),
+    # not said to a workspace's admin: another site of this machine has it (FUGA 3)
+    ({"aliases": ["www.other.it"], "redirects": []}, "^www.other.it is not available: choose another name$"),
+    ({"aliases": ["x.beta.it"], "redirects": []}, "^x.beta.it is not available: choose another name$"),
     ({"aliases": ["a.it", "a.it"], "redirects": []}, "twice"),
     ({"aliases": [], "redirects": [{"from": "customer.com", "to": "www.customer.com"}]}, "no address of main"),
     ({"aliases": ["acme.it"], "redirects": []}, "is taken: it is a name of main"),

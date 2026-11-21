@@ -259,7 +259,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
         {% endif %}
         {% if restore_file[inst.key] %}
         <button type="button" class="danger" {{ off }} data-restore-file='{{ restore_file[inst.key] | tojson }}' data-key="{{ inst.key }}"
-                title="{{ _('Replaces the database with a zip of its backups or one from your computer. To confirm, the name of the database is written. Admins only.') }}">{{ icon("backup") }}{{ _("Restore a backup…") }}</button>
+                title="{{ _('Makes a backup of the instance as it is now, then replaces the database and the files with one of its backups. To confirm, the name of the database is written. Admins only.') if restore_file[inst.key].backup_first else _('Replaces the database with a zip of its backups or one from your computer. To confirm, the name of the database is written. Admins only.') }}">{{ icon("backup") }}{{ _("Restore a backup…") }}</button>
         {% endif %}
         {% if delete_instance %}
         {% if stagings.rows %}<span title="{{ _('Delete its stagings first: they are copies of it') }}"><button type="button" class="danger" disabled>{{ _("Delete the instance…") }}</button></span>
@@ -2019,6 +2019,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
   const newStaging = document.getElementById("staging-new"), sd = document.getElementById("staging-dialog");
   if (newStaging && sd) {
     const S = {size: {{ _("Copy of {name} as it is now: about {size}.") | tojson }},
+               small: {{ _("Copy of {name} as it is now: less than 0.1 GB.") | tojson }},
                noSize: {{ _("Copy of {name} as it is now: its size cannot be read.") | tojson }},
                here: {{ _("This machine") | tojson }}, unlisted: {{ _("Not listed: {names}.") | tojson }},
                noAddress: {{ _("No domain: it answers on a port of its own, shown when it is made.") | tojson }},
@@ -2063,8 +2064,10 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
       if (!resp || !resp.ok) { sdError.textContent = data.error || data.detail || S.unread; return; }
       form = data;
       const name = {{ host_of(inst.web_url, server.name) | trim | tojson }};
-      document.getElementById("sd-size").textContent = data.size ? S.size.replace("{name}", name).replace("{size}", gb(data.size))
-                                                                 : S.noSize.replace("{name}", name);
+      // 22 MB is not "about 0.0 GB"
+      document.getElementById("sd-size").textContent = !data.size ? S.noSize.replace("{name}", name)
+        : data.size < 0.05 * 1073741824 ? S.small.replace("{name}", name)
+        : S.size.replace("{name}", name).replace("{size}", gb(data.size));
       // the choice only when there is one: this machine first, then the links that can hold it
       const list = document.getElementById("sd-server-list");
       list.replaceChildren(radio("", `${S.here} (${data.here})`, S.hereTitle, true),

@@ -51,6 +51,7 @@ from . import dumpinfo
 from . import uploads as uploads_mod
 from .uploads import Uploads
 from .diskhistory import DiskHistory, DiskRecorder
+from .customerview import CustomerView
 from .auth import ROLES as ACCESS_ROLES
 from .auth import WORKSPACE_ROLE, Authenticator, Principal, hash_password, hash_token, new_token, verify_password
 from .config import (
@@ -215,6 +216,13 @@ _PREFIX = re.compile(r"(/[A-Za-z0-9._~-]+)+")
 _ON_BEHALF = re.compile(r"[A-Za-z0-9._@-]{1,64}")
 # users, links and MCP tokens created from the web interface
 _ACCESS_NAME = re.compile(r"[A-Za-z0-9._@-]{1,64}")
+# why a name of the Addresses dialog is taken, when it is so outside the
+# workspace: a user of workspaces is told "not available" only
+ADDRESS_TAKEN_ELSEWHERE = frozenset({"it is under the domain of another workspace of this machine",
+                                     "another workspace of this machine answers on it",
+                                     "another site of this machine answers on it"})
+# a name taken, as a user of workspaces is told: not where, not by whom
+NAME_NOT_AVAILABLE = "This name is not available: choose another one"
 _MIN_PASSWORD = 8
 # what the proxy of a link passes on, each way (never the caller's credentials,
 # never the other instance's WWW-Authenticate: the browser would ask for them)
@@ -285,6 +293,15 @@ WORKSPACE_ROUTES = frozenset({
     "/api/servers/{server}/{role}/modules", "/api/servers/{server}/{role}/modules/install",
     # the PUT of an upload_backup URL (a workspace's token, for its workspace)
     UPLOAD_ROUTE,
+    # what the backup and restore dialogs show (sizes only), with the role
+    # that may back up there (developer)
+    "/api/servers/{server}/{role}/backup/estimate", "/api/servers/{server}/{role}/restore/room",
+    # a backup of its instance restored by its admin, with a backup made just
+    # before (action_restore); never the upload of a file (the machine's admins)
+    "/servers/{server}/{role}/restore",
+    # Log in as on its instances: its admin (from_link_role), a person who
+    # logs in here; not the nginx line (the machine's)
+    "/api/servers/{server}/{role}/login-as/users", "/api/servers/{server}/{role}/login-as",
 })
 
 
@@ -672,6 +689,38 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         mine = {ws for ws, _ in user.workspaces}
         return [j for j in found if (j.workspace and j.workspace in mine) or (j.servers and set(j.servers) <= shown)]
 
+    def customer_view(request: HTTPConnection) -> CustomerView | None:
+        """For a user of workspaces, what takes the integrator's names and the
+        machine's paths out of the jobs it reads (customerview.py); None for
+        the machine's users: they read everything."""
+        user = getattr(request.state, "user", None)
+        if user is None or not user.scoped:
+            return None
+        mine = {ws for ws, _ in user.workspaces}
+        own = {n for ws in settings.workspaces.values() if ws.name in mine for n in (ws.name, *ws.servers)}
+        members = {m for ws in settings.workspaces.values() if ws.name in mine for m in ws.members}
+        machines_ = set(settings.link_targets) | set(settings.connections)
+        for target in settings.link_targets.values():
+            host = urlsplit(target.url).hostname
+            if host:
+                machines_.add(host)
+            if target.ssh is not None and target.ssh.host:
+                machines_.add(target.ssh.host)
+        lang = request_language(request)
+        provider = settings.options.provider_label or i18n.gettext(lang, "the provider")
+        # a name of its own (a server, a workspace, a member) is never taken out
+        return CustomerView(provider, i18n.gettext(lang, "another machine"),
+                            links=frozenset(set(settings.links) - own - members),
+                            machines=frozenset(machines_ - own - members - {"localhost", "127.0.0.1"}),
+                            members=frozenset(members),
+                            tokens=frozenset(n for n in settings.tokens if settings.token_workspace(n) in mine))
+
+    def shown_jobs(request: HTTPConnection, found: list, lines: bool = False) -> list:
+        """The jobs as the caller reads them (customer_view); a list's
+        without their lines (lines: a job's page)."""
+        view = customer_view(request)
+        return found if view is None else [view.job(j, lines) for j in found]
+
     def current_user(request: HTTPConnection) -> Principal:
         ip = request.client.host if request.client else ""
         try:
@@ -894,6 +943,19 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             else:
                 target = _referer_path(request)
             return RedirectResponse(f"/login?next={quote(target)}", status.HTTP_303_SEE_OTHER)
+        if (exc.status_code in (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND)
+                and "text/html" in request.headers.get("accept", "")
+                and not request.headers.get("authorization")):
+            # a page the browser opened (or a form it sent): a page in the
+            # site's layout and language with the way back, not the JSON of
+            # an API's caller (a script's fetch, a token, a link: their JSON)
+            if getattr(request.state, "user", None) is None:
+                with contextlib.suppress(HTTPException):
+                    # the menus of who it is (refused before current_user kept it)
+                    request.state.user = identify(request)
+            return _TEMPLATES.TemplateResponse(request, "error.html",
+                                               {"code": exc.status_code, "detail": str(exc.detail or "")},
+                                               status_code=exc.status_code, headers=getattr(exc, "headers", None))
         return await http_exception_handler(request, exc)
 
     async def public_file(request: Request):
@@ -1180,7 +1242,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             # New instance (a version only): the machine's admins, workspaces allowed here
             "quick_instance": shown is None and me.can("admin") and bool(settings.storage_roots)
             and workspaceops.docker_missing() is None,
-            "jobs": visible_jobs(me, jobs.recent(len(jobs.jobs)))[:10],
+            "jobs": shown_jobs(request, visible_jobs(me, jobs.recent(len(jobs.jobs)))[:10]),
             # a user of workspaces: the load of each of its workspaces instead
             "load_workspaces": sorted((ws, role) for ws, role in me.workspaces if ws in settings.workspaces) if me.scoped else [],
             # the Database tab (UX-008 §6.2): the machine's admins only
@@ -1265,17 +1327,20 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             elif not known:
                 from_link[i.key]["disabled"] = (f"No link {src.link} here: add it on the Links page, "
                                                 "or change 'Database from link' in the server's form (Edit)")
-        # Restore: for an admin who logs in here
+        # Restore: for an admin who logs in here; an admin of the workspace
+        # restores one of its backups (no upload), a backup made just before
         restore_file = {}
         for i in shown:
-            if i.plugin.has_restore and me.kind == "user" and not me.scoped and me.can("admin"):
+            if i.plugin.has_restore and me.kind == "user" and me.can("admin"):
                 restore_file[i.key] = {
                     "url": f"{base}/{i.role}/restore",
-                    "upload": f"{prefix_of(request)}/api/servers/{srv.name}/{i.role}/backups/upload",
+                    "upload": None if me.scoped else f"{prefix_of(request)}/api/servers/{srv.name}/{i.role}/backups/upload",
                     "backups": f"{prefix_of(request)}/api/servers/{srv.name}/{i.role}/backups"
-                               + ("?dumps=1" if i.plugin.restores_sql else ""),
-                    "sql": i.plugin.restores_sql,
-                    "database": str(i.plugin.describe(i).get("database") or i.key) if i.role == "production" else ""}
+                               + ("?dumps=1" if i.plugin.restores_sql and not me.scoped else ""),
+                    "sql": i.plugin.restores_sql and not me.scoped,
+                    "backup_first": me.scoped,
+                    "database": str(i.plugin.describe(i).get("database") or i.key)
+                                if i.role == "production" or me.scoped else ""}
         # Log in as: a user who logs in here, with the role it needs
         login_as_buttons = {}
         for i in shown:
@@ -1356,7 +1421,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 "service_state": service_states,
                 # running, stopped or unknown, as on the Dashboard: the web link off when stopped
                 "run_state": {i.key: run_state_of(i, service_states[i.key]) for i in shown},
-                "jobs": [j for j in jobs.recent(200) if any(k.startswith(f"{server}/") for k in j.instances)][:5],
+                "jobs": shown_jobs(request, [j for j in jobs.recent(200)
+                                             if any(k.startswith(f"{server}/") for k in j.instances)][:5]),
             },
         )
 
@@ -1421,8 +1487,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         data = {}
         for inst in [] if machine_only else settings.all_instances():
             if (server is None or inst.server == server) and (shown is None or inst.server in shown):
+                source = sampler.source.get(inst.key, "")
+                if shown is not None:
+                    # a customer: not the machine's folders (FUGA 4)
+                    source = customer_view(request).text(source)
                 data[inst.key] = {
-                    "source": i18n.tr(request_language(request), sampler.source.get(inst.key, "")),
+                    "source": i18n.tr(request_language(request), source),
                     "points": sampler.series(inst.key, since),
                 }
         return {"cores": sampler.cores, "interval": 5,
@@ -1955,6 +2025,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         name = str(raw.get("backup") or "").strip()
         if not sqldump.RESTORE_NAME.fullmatch(name):
             return refuse(f"{name!r} is not the name of a backup zip or SQL dump")
+        # an admin of the workspace: a backup zip of the instance's, its
+        # database typed whatever the role, and a backup of it made first
+        backup_first = user.scoped
+        if backup_first and sqldump.is_dump_name(name):
+            return refuse("A SQL dump is restored by the administrators of the machine: choose a backup zip")
         if sqldump.is_dump_name(name) and not instance.plugin.restores_sql:
             return refuse(f"{instance.plugin.label} does not restore a SQL dump: a backup zip is asked")
         path = backup_folder(instance) / name
@@ -1965,7 +2040,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         problem = None if archive else instance.plugin.backup_problem(path)
         if problem:
             return refuse(problem)
-        if instance.role == "production":
+        if instance.role == "production" or backup_first:
             # the database it replaces, typed
             expected = str(instance.plugin.describe(instance).get("database") or instance.key)
             if str(raw.get("confirm") or "").strip() != expected:
@@ -1975,6 +2050,13 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         except ActionRefused as exc:
             return refuse(str(exc))
         async def restore(job):
+            if backup_first:
+                # what is replaced can be restored again: a backup of now, kept
+                # with the others (the choices of the last backup dialog)
+                job.log("--- backup before the restore")
+                made = await ops.backup_into(job, instance, backup_folder(instance))
+                job.log(f"Backup {made.name} ({made.stat().st_size} bytes): it can be restored to undo this")
+                job.result = {"backup_before": made.name}
             if not archive:
                 await instance.plugin.restore(job, instance, path, options)
                 return
@@ -2202,7 +2284,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         found = visible_jobs(me, jobs.recent(len(jobs.jobs)))
         shown = visible_servers(me)
         names = sorted((set(settings.servers) if shown is None else shown) | {n for j in found for n in j.servers})
-        found = filter_jobs(found, server, q)
+        # a customer searches what it reads: the names taken out are not found
+        found = filter_jobs(shown_jobs(request, found), server, q)
         return _TEMPLATES.TemplateResponse(
             request, "jobs.html",
             {"jobs": found[:200], "total": len(found), "servers": names, "server": server, "q": q},
@@ -2215,7 +2298,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             raise HTTPException(status.HTTP_404_NOT_FOUND, "No such job")
         # a draft or deleted server has no page: its crumb goes to its jobs
         live = [srv.name for srv in settings.active_servers()]
-        return _TEMPLATES.TemplateResponse(request, "job.html", {"job": job, "live": live})
+        return _TEMPLATES.TemplateResponse(request, "job.html", {"job": shown_jobs(request, [job], True)[0], "live": live})
 
     @app.post("/jobs/{job_id}/stop")
     async def job_stop(request: Request, job_id: str, user: Principal = Depends(admin)):
@@ -2233,7 +2316,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         """The last jobs, without their logs, and the instances busy now: the
         Dashboard follows them (runners, end notices)."""
         me = request.state.user
-        found = visible_jobs(me, jobs.recent(len(jobs.jobs)))[:min(max(limit, 1), 200)]
+        found = shown_jobs(request, visible_jobs(me, jobs.recent(len(jobs.jobs)))[:min(max(limit, 1), 200)])
         running = visible_jobs(me, [j for j in jobs.jobs.values() if j.status == "running"])
         return {
             "jobs": [{"id": j.id, "title": j.title, "status": j.status, "instances": j.instances,
@@ -2243,12 +2326,13 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         }
 
     @app.get("/api/jobs/{job_id}")
-    async def job_json(job_id: str, since: int = 0):
+    async def job_json(request: Request, job_id: str, since: int = 0):
         job = jobs.get(job_id)
         if job is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "No such job")
+        duration, job = job.duration, shown_jobs(request, [job], True)[0]
         data = asdict(job)
-        data["duration"] = job.duration
+        data["duration"] = duration
         data["lines"] = job.lines[since:]
         data["next"] = len(job.lines)
         return JSONResponse(data)
@@ -2787,9 +2871,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     def site_names(ws: Workspace) -> list[dict]:
         """The names of each environment, with its other names and redirects
         (set in its Addresses dialog, read only here: UX-008 D5)."""
+        # the roles each instance has: one without a test has no test names
+        roles = {i: tuple(settings.servers[workspaceops.server_name(ws, i)].instances)
+                 for i in ws.instances() if workspaceops.server_name(ws, i) in settings.servers}
         try:
-            sites = web_names(ws.domain, [i for i in ws.instances() if workspaceops.server_name(ws, i) in settings.servers],
-                              ws.main, ws.subdomains) if ws.domain else []
+            sites = web_names(ws.domain, list(roles), ws.main, ws.subdomains, roles) if ws.domain else []
         except ConfigError:
             return []
         return [{**s, "aliases": ws.aliases.get(s["instance"], {}).get(s["role"], []),
@@ -4570,6 +4656,15 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                         "reason": "" if isinstance(owner, tuple) else owner}
         return rows
 
+    def address_reason(me: Principal, taken: str) -> str:
+        """Why a name is taken, as me is told: a user of workspaces is not
+        told that another customer of this machine has it, or another site
+        (21/11/2026, FUGA 3): only that it is not available; the names of
+        its own workspace keep their reason."""
+        if taken and me.scoped and taken in ADDRESS_TAKEN_ELSEWHERE:
+            return "not available"
+        return taken
+
     def addresses_of_env(server: str, role: str):
         owner = address_owner(server, role)
         if not isinstance(owner, tuple):
@@ -4628,7 +4723,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if not taken and hit:
                 # the file of another site is the machine's: its admins only
                 taken = f"used by {hit[0][1]}" if machine_admin(me) else "another site of this machine answers on it"
-            row["taken"] = taken or ""
+            row["taken"] = address_reason(me, taken or "")
             rows.append(row)
         found = await asyncio.gather(*(asyncio.to_thread(workspaceweb.addresses_of, r["name"])
                                        for r in rows if not r["error"]))
@@ -4669,7 +4764,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 found = parse_workspaces({**{n: w.to_dict() for n, w in settings.workspaces.items()}, ws.name: data},
                                          settings.storage_roots)
             except ConfigError as exc:
-                return refuse(str(exc).removeprefix(f"workspaces.{ws.name}: "))
+                said = str(exc).removeprefix(f"workspaces.{ws.name}: ")
+                taken = re.fullmatch(r"(\S+) is taken: (.+)", said)
+                if taken and address_reason(me, taken[2]) != taken[2]:
+                    return refuse(f"{taken[1]} is not available: choose another name")
+                return refuse(said)
             new = found[ws.name]
             if (new.aliases, new.redirects) == (ws.aliases, ws.redirects):
                 return {"ok": True}
@@ -4684,8 +4783,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 hit = workspaceweb.takers(name, elsewhere)
                 if hit:
                     # the file of another site is the machine's: its admins only
-                    return refuse(f"{name} is used by {hit[0][1]}: choose another name" if machine_admin(me)
-                                  else f"Another site of this machine answers on {name}: choose another name")
+                    if machine_admin(me):
+                        return refuse(f"{name} is used by {hit[0][1]}: choose another name")
+                    return refuse(f"Another site of this machine answers on {name}: choose another name"
+                                  if not me.scoped else f"{name} is not available: choose another name")
             refused = await store_workspaces(found)
             if refused:
                 return refused
@@ -5406,7 +5507,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         async with access_lock, workspaces_lock:
             ws = a_workspace(workspace)
             if new:
-                refused = check_name("User", name, settings.fixed.users, settings.users, True)
+                refused = check_new_name(me, "User", name, settings.fixed.users, settings.users, True)
                 if refused:
                     return refused
                 if len(password) < _MIN_PASSWORD:
@@ -5491,6 +5592,16 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if not new and name not in current:
             return refuse(f"No {kind.lower()} {name}", status.HTTP_404_NOT_FOUND)
         return None
+
+    def check_new_name(me: Principal, kind: str, name: str, fixed: dict, current: dict, new: bool):
+        """check_name for a workspace's page: one namespace holds the users
+        (and one the tokens) of every customer of the machine, so a user of
+        workspaces is not told that a name exists elsewhere (21/11/2026,
+        FUGA 2); the machine's admins are told which and where."""
+        refused = check_name(kind, name, fixed, current, new)
+        if refused is not None and me.scoped and new and (name in fixed or name in current):
+            return refuse(NAME_NOT_AVAILABLE)
+        return refused
 
     def check_role(role: str, roles: tuple[str, ...] = ACCESS_ROLES):
         return None if role in roles else refuse(f"The role must be one of {', '.join(roles)}")
@@ -5806,7 +5917,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return await store_access(web) or {"ok": True}
 
     @app.post("/api/workspaces/{workspace}/tokens/save", dependencies=[Depends(admin)])
-    async def workspace_token_save(workspace: str, payload: dict = Body(...)):
+    async def workspace_token_save(workspace: str, payload: dict = Body(...), me: Principal = Depends(current_user)):
         """An MCP token of the workspace (new: true; it is in the answer, once),
         or its role changed: it sees the workspace's instances only, with its
         role there; never a machine's token."""
@@ -5815,7 +5926,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         role = str(payload.get("role") or TOKEN_DEFAULT_ROLE)
         new = bool(payload.get("new"))
         async with access_lock:
-            refused = check_name("Token", name, settings.fixed.tokens, settings.tokens, new) or check_role(role)
+            if me.scoped and not new and (name in settings.fixed.tokens or settings.token_workspace(name) != ws.name):
+                # one that does not exist and another workspace's: the same answer
+                return refuse(f"No token {name} of workspace {ws.name}", status.HTTP_404_NOT_FOUND)
+            refused = (check_new_name(me, "Token", name, settings.fixed.tokens, settings.tokens, new)
+                       or check_role(role))
             if refused:
                 return refused
             if not new and settings.token_workspace(name) != ws.name:
@@ -7028,6 +7143,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             payload = {**payload, "audit": {"retention_days": current.audit_retention_days, "syslog": {
                 "host": current.syslog_host, "port": current.syslog_port, "protocol": current.syslog_protocol,
                 "ca_file": current.syslog_ca_file}}}
+        if "portal" not in payload:
+            # the name the customers read: not posted keeps the saved one
+            payload = {**payload, "portal": {"provider": settings.options.provider_label}}
         try:
             options = parse_options(payload)
         except ConfigError as exc:

@@ -1,14 +1,19 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
 {# Restore: drawn once on the server page, it opens for the buttons
-   data-restore-file (url, upload, backups, sql, database). A zip from this
-   computer (or, with sql, a plain SQL dump: any name, told by its head) goes
-   first into the instance's backups, then a job restores it. -#}
+   data-restore-file (url, upload, backups, sql, database, backup_first). A
+   zip from this computer (or, with sql, a plain SQL dump: any name, told by
+   its head) goes first into the instance's backups, then a job restores it.
+   Without upload (an admin of a workspace) one of its backups only, and with
+   backup_first the job backs the instance up before. -#}
 <dialog id="restore-dialog">
   <form method="dialog" id="restore-form">
     <h2 id="restore-title" style="margin-bottom: 4px"></h2>
     <p class="muted" style="margin-top: 0" id="restore-what"></p>
+    <div id="restore-upload">
     <label><input type="radio" name="restore-source" value="" checked> <span id="restore-source-label">{{ _("A zip from this computer") }}</span></label>
     <input type="file" id="restore-file" accept=".zip" style="display: block; margin: 4px 0 8px 22px">
+    </div>
+    <p class="muted" id="restore-backup-first" hidden style="margin: 6px 0">{{ _("Before the restore a backup of the instance as it is now is made, automatically: it is in the list of its backups, to restore it if needed.") }}</p>
     <div id="restore-backups" class="scroll" style="max-height: 35vh; margin: 6px 0"></div>
     {% for f in restore_fields %}
     {% if f.kind == "checkbox" %}
@@ -43,6 +48,7 @@
   let target = null, key = "", sending = null;
   const T = {
     title: {{ _("Restore into {key}") | tojson }}, choose: {{ _("Choose a zip, or one of the backups.") | tojson }},
+    chooseBackup: {{ _("Choose one of the backups.") | tojson }},
     chooseSql: {{ _("Choose a zip or a SQL dump, or one of the backups.") | tojson }},
     zipSource: {{ _("A zip from this computer") | tojson }},
     sqlSource: {{ _("A zip or a plain SQL dump from this computer") | tojson }},
@@ -93,6 +99,9 @@
       if (target.sql) fileInput.removeAttribute("accept"); else fileInput.accept = ".zip";
       document.getElementById("restore-source-label").textContent = target.sql ? T.sqlSource : T.zipSource;
       what.textContent = target.sql ? T.zipText + " " + T.sqlText : T.zipText;
+      // no upload: one of its backups only (the first one chosen as it is listed)
+      document.getElementById("restore-upload").hidden = !target.upload;
+      document.getElementById("restore-backup-first").hidden = !target.backup_first;
       document.getElementById("restore-confirm").hidden = !target.database;
       document.getElementById("restore-db").textContent = target.database;
       errorBox.textContent = ""; progress.hidden = true; go.disabled = false;
@@ -103,7 +112,9 @@
   document.getElementById("restore-form").addEventListener("submit", async (ev) => {
     ev.preventDefault();
     errorBox.textContent = "";
-    let backup = dialog.querySelector("input[name=restore-source]:checked").value;
+    const picked = dialog.querySelector("input[name=restore-source]:checked");
+    let backup = picked ? picked.value : "";
+    if (!target.upload && !backup) { errorBox.textContent = T.chooseBackup; return; }
     const file = backup ? null : fileInput.files[0];
     if (!backup && !file) { errorBox.textContent = target.sql ? T.chooseSql : T.choose; return; }
     const body = {};

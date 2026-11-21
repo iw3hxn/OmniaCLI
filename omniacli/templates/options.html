@@ -98,6 +98,15 @@
              title="{{ _('The certificate of the authority that signed the syslog server’s, an absolute path on this machine; empty: the system certificates') }}">
     </div>
   </section>
+  <section class="panel" id="portal">
+    <h2 style="margin-bottom: 4px">{{ _("Customers' portal") }}</h2>
+    <p class="muted" style="font-size: 13px; margin-top: 0">{{ _("The users of the workspaces read their jobs without the names of this machine's users, of the links and of the other machines, and without its folders: who acted for the machine is shown with this name.") }}</p>
+    <div class="form-grid">
+      <label for="provider-label">{{ _("Name of the provider") }}</label>
+      <input type="text" id="provider-label" maxlength="100" value="{{ options.provider_label }}" placeholder="{{ _('the provider') }}"
+             title="{{ _('The name the users of the workspaces read for who started a job for the machine (a link, an administrator), for example your company name; empty: the provider, in their language') }}">
+    </div>
+  </section>
   <div class="actions">
     <button type="submit" class="primary" title="{{ _('Saves the options of this page for every user of this OmniaCLI: they hold from now. A password left empty keeps the saved one. The page stays open.') }}">{{ _("Save") }}</button>
     <a class="button" href="{{ prefix }}/settings" title="{{ _('Goes back to Settings: what was changed here and not saved is lost.') }}">{{ _("Cancel") }}</a>
@@ -129,6 +138,7 @@ document.getElementById("form").addEventListener("submit", async (ev) => {
                        protocol: document.getElementById("syslog-protocol").value,
                        port: Number(document.getElementById("syslog-port").value || 514),
                        ca_file: document.getElementById("syslog-ca").value.trim()}},
+      portal: {provider: document.getElementById("provider-label").value.trim()},
     }),
   }).catch(() => null);
   const data = resp ? await resp.json().catch(() => ({})) : {};

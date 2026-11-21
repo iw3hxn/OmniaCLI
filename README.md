@@ -1399,6 +1399,28 @@ user of workspaces reaches only the routes listed in `WORKSPACE_ROUTES`, and
 of a plugin's own routes those of an instance; a route added later is closed
 to them until it is listed (a test goes through every route).
 
+What a user of workspaces reads names no one else (the access tests of
+21/11/2026, `tests/test_portal_access.py`): a name taken by another
+customer, for a user or a token, is "not available", not "already exists";
+a name of the Addresses dialog under another workspace or another site of
+nginx is "not available", without why; in its jobs (lists, pages,
+`/api/jobs`) who acted for the machine (one of its users, a link and who
+acts through it, a machine's token) is **the provider**, or the name set in
+**Options › Customers' portal**, the other machines are "another machine"
+and the folders of this machine are `…/<last part>`. The job kept and the
+access log are unchanged: the machine's admins read everything. A page a
+browser opens and is refused (403, 404) is a page in the site's language
+with the way back to the instances; an API's caller keeps its JSON.
+
+The admin of a workspace may also **restore** one of its instance's backups
+(Altro › Restore a backup…): one of the backups listed only (uploading a
+file stays the machine's admins'), its database name typed, and a backup
+of the instance as it is made first, in the same job, so the restore can be
+undone; the access log records it. And **Log in as** on its instances,
+whose nginx sites (the workspace's) pass the path: it is their Odoo, and
+who asked, as whom, goes to the access log. Developers and users of the
+workspace do neither.
+
 On its Dashboard, in place of This machine, a user of workspaces sees the
 load of each of its workspaces (`/api/workspaces/<name>/load`, its members
 only): CPU in cores and memory against the workspace's limits, the traffic

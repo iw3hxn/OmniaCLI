@@ -209,7 +209,8 @@ async def test_workspace_admin_manages_its_users(workspaces, client, env):
     assert resp.status_code == 404
     resp = await client.post(url + "save", headers=post_as("mario"),
                              json={"name": "eva", "role": "user", "password": "long-enough", "new": True})
-    assert resp.status_code == 400 and "already exists" in resp.json()["error"]
+    # eva is beta's: not said to acme's admin (tests/test_portal_access.py)
+    assert resp.status_code == 400 and resp.json()["error"] == "This name is not available: choose another one"
     resp = await client.post(url + "save", headers=post_as("mario"),
                              json={"name": "ugo", "role": "user", "password": "short", "new": True})
     assert resp.status_code == 400 and "at least" in resp.json()["error"]

@@ -1,0 +1,23 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{# A page a browser asked for and was refused (403) or not found (404): in the
+   site's layout and language, with what can be done and the way back; an API
+   request keeps its JSON (app.py, to_login). -#}
+{% extends "base.html" %}
+{% block title %}{{ _("No access to this page") if code == 403 else _("Page not found") }} · OmniaCLI{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>{{ _("No access to this page") if code == 403 else _("Page not found") }}</h1>
+    <p>{{ tr(detail) }}</p></div>
+</div>
+<section class="panel">
+  {% if code == 403 %}
+  <p style="margin-top: 0">{{ _("Your user does not reach this page, or not with its role. If you need it, ask an administrator of your workspace or of this machine.") }}</p>
+  {% else %}
+  <p style="margin-top: 0">{{ _("The address may be wrong, or what it showed was deleted.") }}</p>
+  {% endif %}
+  <div class="actions">
+    <a class="button primary" href="{{ prefix }}/instances" title="{{ _('Opens the list of the instances you can reach') }}">{{ _("Back to the instances") }}</a>
+    {% if account %}<a class="button" href="{{ prefix }}/account" title="{{ _('Opens your account: your user, its role and your password') }}">{{ _("Your account") }}</a>{% endif %}
+  </div>
+</section>
+{% endblock %}
