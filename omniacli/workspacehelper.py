@@ -1135,6 +1135,8 @@ REMOTE_CA_MAX = 64 * 1024
 REMOTE_CA_FILE = "db-ca.pem"
 # "_remote": "-" in the values: the connection is read on the input
 REMOTE_STDIN = "-"
+# the firewall exception of a project's read replica: its entry of DB_REMOTE, the project's folder and this
+REPLICA_SUFFIX = "#replica"
 REMOTE_INPUT = 128 * 1024
 
 
@@ -1178,7 +1180,22 @@ def remote_spec(value) -> dict:
             or any(not re.fullmatch(r"[A-Za-z0-9+/=]{1,76}|-----(BEGIN|END) CERTIFICATE-----", line) for line in lines)):
         raise HelperError("the CA of the database's certificate: one or more certificates in PEM "
                           "(-----BEGIN CERTIFICATE----- ...), without it the server is not verified")
-    return {"host": host, "port": int(port), "user": user, "password": password, "database": database, "ca": ca + "\n"}
+    spec = {"host": host, "port": int(port), "user": user, "password": password, "database": database, "ca": ca + "\n"}
+    # its read replica (AD-004), when who runs the database gives one: reached as the database is, the
+    # same role and CA; Odoo reads from it (18 and later)
+    replica = str(value.get("replica_host") or "").strip().lower()
+    if replica:
+        if not REMOTE_HOST.fullmatch(replica) or replica in ("localhost", "127.0.0.1", "::1"):
+            raise HelperError(f"{replica!r} is not the host of a replica on another machine")
+        replica_port = str(value.get("replica_port") or port).strip()
+        if not (replica_port.isdigit() and 1 <= int(replica_port) <= 65535):
+            raise HelperError(f"{replica_port!r} is not a port")
+        if (replica, int(replica_port)) == (host, int(port)):
+            raise HelperError("the replica is the database itself: give the address of its replica, or none")
+        spec["replica"] = (replica, int(replica_port))
+        # as they were given too: a spec checked once (the app) is checked again by the helper, as it is
+        spec["replica_host"], spec["replica_port"] = replica, int(replica_port)
+    return spec
 
 
 def _private_address(host: str) -> str | None:
@@ -1277,7 +1294,8 @@ def create(name: str, storage: str, instance: str, template_name: str, values_js
     meta = {"template": template.name, "version": template.version, "database": database,
             **({MAIL_META: True} if mail else {}), **({INBOX_META: True} if inbox else {}),
             # where its database is, for the pages (no password here: the file is read by OmniaCLI's user)
-            **({"database_on": f"{remote['host']}:{remote['port']}"} if remote else {})}
+            **({"database_on": f"{remote['host']}:{remote['port']}"} if remote else {}),
+            **({"replica_on": "%s:%d" % remote["replica"]} if remote and remote.get("replica") else {})}
     folder.mkdir(mode=0o755)
     on_cluster = False
     try:
@@ -1312,7 +1330,8 @@ def create(name: str, storage: str, instance: str, template_name: str, values_js
             _write(project / "config" / "odoo.conf",
                    stacktemplates.conf_text(template, database, stacktemplates.new_password(), [],
                                             mail_capture=caught,
-                                            db_template=machinedb.template_name(name) if machine else ""),
+                                            db_template=machinedb.template_name(name) if machine else "",
+                                            replica=remote.get("replica") if remote else None),
                    mode=0o644)
             if remote:
                 # the CA Odoo verifies the database's certificate against (PGSSLROOTCERT)
@@ -1320,6 +1339,11 @@ def create(name: str, storage: str, instance: str, template_name: str, values_js
                 private = _private_address(remote["host"])
                 if private:
                     db_remote_set(project, {"subnet": subnets[index], "ip": private, "port": remote["port"]})
+                if remote.get("replica"):
+                    behind = _private_address(remote["replica"][0])
+                    if behind:
+                        db_remote_set(Path(str(project) + REPLICA_SUFFIX),
+                                      {"subnet": subnets[index], "ip": behind, "port": remote["replica"][1]})
                 made["remote"] = {"host": remote["host"], "port": remote["port"], "user": remote["user"],
                                   "database": remote["database"], "private": private}
             for item in template.data:
@@ -1341,12 +1365,21 @@ def create(name: str, storage: str, instance: str, template_name: str, values_js
                 pass
         for role in roles:
             db_remote_set(folder / role, None)
+            db_remote_set(Path(str(folder / role) + REPLICA_SUFFIX), None)
         shutil.rmtree(folder, ignore_errors=True)
         raise
     if mail:
         # its network may not reach SMTP outside itself, from now and at every boot
         made["mail_guarded"] = mail_guard_apply()["mail_guarded"]
     return made
+
+
+def _replica_of(meta: dict) -> tuple[str, int] | None:
+    """(host, port) of the read replica an instance was given at its creation (instance.json), or None."""
+    host, sep, port = str(meta.get("replica_on") or "").rpartition(":")
+    if sep and REMOTE_HOST.fullmatch(host) and port.isdigit() and 1 <= int(port) <= 65535:
+        return host, int(port)
+    return None
 
 
 def _admin_password(conf: str) -> str | None:
@@ -1431,7 +1464,8 @@ def conf(name: str, storage: str, instance: str, role: str, spec_json: str) -> d
     text = stacktemplates.conf_text(template, str(meta.get("database") or ""),
                                     password or stacktemplates.new_password(), repos, values, debug, extra,
                                     mail_capture=caught,
-                                    db_template=machinedb.template_name(name) if template.on_machine else "")
+                                    db_template=machinedb.template_name(name) if template.on_machine else "",
+                                    replica=_replica_of(meta))
     _write(conf_file, text, mode=0o644)
     kept = {k: v for k, v in values.items() if v != template.parameter(k).default
             and not (caught and k in stacktemplates.MAIL_PARAMETERS)}
@@ -1502,6 +1536,7 @@ def remove(name: str, storage: str, instance: str) -> dict:
     left = [f"{r['host']}:{r['port']}" for r in (composehelper.on_remote(folder / role) for role in ROLES) if r]
     for role in ROLES:
         db_remote_set(folder / role, None)
+        db_remote_set(Path(str(folder / role) + REPLICA_SUFFIX), None)
     shutil.rmtree(folder)
     # its network is free again: no SMTP rule left on it
     if _mail_guard_file():

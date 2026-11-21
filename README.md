@@ -1713,6 +1713,12 @@ the log, the statistics and the modules work as for the others; the tuning,
 the recovery at a minute and a staging are not offered from here, and each page
 says why. Removing the instance leaves the database there.
 
+Who runs that database may also give the address of its **read replica**: it
+is written in `odoo.conf` (`db_replica_host`, `db_replica_port`), so Odoo (18
+and later) reads from the replica and writes to the database, with the same
+role, password and CA. Odoo does not move to the replica by itself when the
+database is gone. OmniaCLI does not make or keep that replica.
+
 ### Modules from the OCA catalog
 
 The **Modules** tab of an instance of a workspace (developers and admins)

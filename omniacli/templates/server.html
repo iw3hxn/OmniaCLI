@@ -985,7 +985,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
           {% elif dbl.tuned %}{{ _("tuned on {when}", when=when(dbl.tuned)) }}
           {% else %}{{ _("base values") }}{% endif %}
         {% elif dbl.where == "system" %}{{ _("PostgreSQL of the system (port {port}) · not tuned by OmniaCLI", port=dbl.port) }}
-        {% else %}{{ _("on {host} · tuned there", host=dbl.host) }}{% endif %}
+        {% else %}{{ _("on {host} · tuned there", host=dbl.host) }}{% if dbl.replica %} · {{ _("read replica on {host}", host=dbl.replica) }}{% endif %}{% endif %}
         {% if machine_admin and dbl.where in ("dedicated", "machine") %}<a href="{{ prefix }}/#database" title="{{ _('Opens the Database tab of the machine, where this database is tuned') }}">{{ _("Database of the machine ›") }}</a>{% endif %}
         {# the move (AD-007): a job, Odoo stopped for the copy; its undo kept beside it until freed #}
         {% if machine_admin and (dbl.move or dbl.kept) %}

@@ -120,6 +120,8 @@ async def create_instance(job: Job, ws: Workspace, instance: str, template: stac
     if remote:
         job.log(f"--- its database is {remote.get('database')} on {remote.get('host')}:{remote.get('port')}, "
                 f"as {remote.get('user')}, over TLS verified against the CA given")
+        if remote.get("replica"):
+            job.log("--- its read replica is %s:%s: Odoo reads from it and writes to the database" % tuple(remote["replica"]))
     made = await _helper(job, "create", ws.name, ws.storage, instance, template.name,
                          json.dumps({**values, "_roles": ["production"],
                                      **({workspacehelper_remote_key(): "-"} if remote else {})}),

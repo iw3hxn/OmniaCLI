@@ -102,3 +102,29 @@ def test_the_app_tells_a_remote_instance_apart():
     assert stacktemplates.REMOTE_DB_SERVICE != stacktemplates.MACHINE_DB_SERVICE
     assert source.count("if on_remote_db(prod):\n            return refuse(workspacehelper.PITR_ON_REMOTE)") == 3
     assert "a staging of it needs a database there" in source
+
+
+def test_a_read_replica_is_checked_and_written():
+    """AD-004 for a database of another machine: the replica's address
+    checked, written in odoo.conf at the creation and at every rewrite."""
+    spec = workspacehelper.remote_spec({**GOOD, "replica_host": "db-ro.example.com", "replica_port": "6433"})
+    assert spec["replica"] == ("db-ro.example.com", 6433)
+    # checked by the app, sent as JSON, checked again by the helper: the replica is still there
+    import json
+    again = workspacehelper.remote_spec(json.dumps(spec))
+    assert again["replica"] == ("db-ro.example.com", 6433) and again["host"] == spec["host"]
+    assert "replica" not in workspacehelper.remote_spec(dict(GOOD))
+    # its port, when not given, is the database's
+    assert workspacehelper.remote_spec({**GOOD, "replica_host": "db-ro.example.com"})["replica"] == ("db-ro.example.com", 5432)
+    for change, message in (({"replica_host": "localhost"}, "not the host of a replica"),
+                            ({"replica_host": "bad host"}, "not the host of a replica"),
+                            ({"replica_host": "db.example.com"}, "the replica is the database itself"),
+                            ({"replica_host": "db-ro.example.com", "replica_port": "70000"}, "not a port")):
+        with pytest.raises(HelperError, match=message):
+            workspacehelper.remote_spec({**GOOD, **change})
+    template = stacktemplates.load_template(TEMPLATES / "odoo-19-remote")
+    text = stacktemplates.conf_text(template, "acme_shop", "x", [], replica=("db-ro.example.com", 6433))
+    assert "db_replica_host = db-ro.example.com\ndb_replica_port = 6433\n" in text
+    assert "db_replica" not in stacktemplates.conf_text(template, "acme_shop", "x", [])
+    assert workspacehelper._replica_of({"replica_on": "db-ro.example.com:6433"}) == ("db-ro.example.com", 6433)
+    assert workspacehelper._replica_of({"replica_on": "bad host:1"}) is None and workspacehelper._replica_of({}) is None

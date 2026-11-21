@@ -769,6 +769,7 @@
  "psql on {database}, as the instance connects to it": "psql su {database}, come vi si collega l'istanza",
  "query": "query",
  "rclone is not installed on this machine: install it (apt install rclone) to copy the backups out.": "rclone non è installato su questa macchina: installalo (apt install rclone) per copiare fuori i backup.",
+ "read replica on {host}": "replica di lettura su {host}",
  "read whole": "letture intere",
  "reads by index": "letture con indice",
  "reloading": "in ricaricamento",

@@ -22,7 +22,13 @@ workspace lascia passare quel solo indirizzo e porta dalla rete di quel progetto
 e lo dice. Regolazione, ripristino a un minuto e staging sono rifiutati con il motivo. Provato fra due macchine di
 prova: connessioni TLS 1.3 viste dal database, una CA sbagliata rifiutata, backup riuscito.
 **Non costruito di AD-003:** il caso «cluster di un altro OmniaCLI collegato», dove OmniaCLI prepara da solo ruolo,
-database, riga `hostssl` e firewall sull'altra macchina. **Non costruita la replica di lettura (AD-004).** Codice letto alla revisione 57a005c (`carlo_dev_2026`).
+database, riga `hostssl` e firewall sull'altra macchina. **AD-004, costruito il 21/11/2026 per il database di un'altra macchina** (release 2026.1.5465): chi gestisce il
+database può dare l'indirizzo della sua replica di lettura; OmniaCLI lo controlla, lo scrive in `odoo.conf`
+(`db_replica_host`, `db_replica_port`, Odoo dalla 18), lo conserva alle riscritture e lo lascia passare nel firewall.
+Provato con una replica in streaming vera: la replica vede la connessione TLS di Odoo. Se il primario cade Odoo non
+passa alla replica da solo, e il campo lo dice.
+**Non costruita:** la replica creata e gestita da OmniaCLI per un database dedicato o per il cluster della macchina
+(la copia in streaming del cluster su un'altra macchina). Codice letto alla revisione 57a005c (`carlo_dev_2026`).
 Origine: Carlo, 21/11/2026, UX-008 D2: «Farei un Postgresql per Macchina ma attenzione che la singola istanza potrebbe far uso di un Postgresql su un altra macchina. Poi va considerato il caso di Odoo19 che può montare 2 database in cluster». Riferimento: la scheda PostgreSQL del pannello di riferimento (schermate 04-05 del 21/11/2026).
 
 ## 0. Il costo della decisione, in numeri (da confermare)

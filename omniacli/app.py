@@ -9531,13 +9531,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         """Its database is on another machine (AD-003): no service of its own, not this machine's cluster."""
         return getattr(inst.options, "db_service", "") == stacktemplates.REMOTE_DB_SERVICE
 
-    def remote_db_host(inst: Instance) -> str:
-        """host:port of that database, from the instance's own record ("" when it cannot be read)."""
+    def remote_db_host(inst: Instance, key: str = "database_on") -> str:
+        """host:port of that database (or, key replica_on, of its read replica), from the instance's
+        own record ("" when it cannot be read or there is none)."""
         try:
             meta = json.loads((Path(inst.restart.service).parent / workspacehelper.INSTANCE_FILE).read_text("utf-8"))
         except (OSError, ValueError):
             return ""
-        return str(meta.get("database_on") or "") if isinstance(meta, dict) else ""
+        return str(meta.get(key) or "") if isinstance(meta, dict) else ""
 
     def cluster_target(major: str, project: str) -> types.SimpleNamespace:
         """What the tuning's code takes of an instance, for the cluster of
@@ -10015,7 +10016,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         the record: PostgreSQL is not read, the page is not slowed. With the
         move it may make (AD-007) and whether a move left its undo beside it."""
         if inst.restart.type == "compose" and on_remote_db(inst):
-            return {"where": "remote", "host": remote_db_host(inst) or "another machine"}
+            return {"where": "remote", "host": remote_db_host(inst) or "another machine",
+                    "replica": remote_db_host(inst, "replica_on")}
         if inst.restart.type == "compose":
             machine = on_machine_db(inst)
             key = f"{MACHINE_KEY}/{next(iter(machinedb.registry()), '')}" if machine else inst.key

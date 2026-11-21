@@ -309,6 +309,9 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
           <input type="password" id="rd-password" autocomplete="new-password" title="{{ _('It is written in the instance only (its .env, read by root): never in a job or in the access log') }}">
           <label for="rd-database">{{ _("Database") }}</label>
           <input type="text" id="rd-database" class="mono" autocomplete="off" spellcheck="false" title="{{ _('The name of the database Odoo makes there, or of an empty one already made for it') }}">
+          <label for="rd-replica">{{ _("Read replica (optional)") }}</label>
+          <span><input type="text" id="rd-replica" class="mono" autocomplete="off" spellcheck="false" placeholder="db-replica.example.com" style="width: 60%" title="{{ _('The host of a read-only replica of that database, when who runs it gives one: Odoo (18 and later) reads from it and writes to the database. Odoo does not move to it by itself if the database is gone. Same role, password and CA') }}">
+            <input type="number" id="rd-replica-port" class="mono" min="1" max="65535" placeholder="5432" style="width: 110px" title="{{ _('The port of the replica: empty, the port of the database') }}"></span>
           <label for="rd-ca">{{ _("CA of its certificate (PEM)") }}</label>
           <textarea id="rd-ca" class="mono" rows="4" spellcheck="false" placeholder="-----BEGIN CERTIFICATE-----" title="{{ _('The certificate of the authority that signed the certificate of that PostgreSQL: without it the server is not verified and the instance is not made') }}"></textarea>
         </div>
@@ -560,7 +563,8 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
       const body = {instance: instanceName(), template: templateSelect.value, values};
       if (!$("remote-fields").hidden) {
         body.remote = {host: $("rd-host").value.trim(), port: Number($("rd-port").value), user: $("rd-user").value.trim(),
-                       password: $("rd-password").value, database: $("rd-database").value.trim(), ca: $("rd-ca").value.trim()};
+                       password: $("rd-password").value, database: $("rd-database").value.trim(), ca: $("rd-ca").value.trim(),
+                       replica_host: $("rd-replica").value.trim(), replica_port: $("rd-replica-port").value.trim()};
       }
       const data = await post("instances/create", body, $("in-error"));
       if (data) jobPage(data.job); else instanceChanged();
