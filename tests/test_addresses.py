@@ -220,7 +220,20 @@ def test_the_probe_of_a_name(web_root, monkeypatch):
         path = web_root["tmp"] / "acme-challenges" / ".well-known" / "acme-challenge" / token
         return Answer(path.read_bytes() if "//www.yes.it/" in request.full_url else b"other")
     monkeypatch.setattr(workspacehelper.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(workspacehelper, "PROBE_WAIT", 0)
     assert workspacehelper._reaches_here("www.yes.it") and not workspacehelper._reaches_here("www.no.it")
+    # a name nginx takes only after its reload: the first answers are another server's
+    late = []
+
+    def urlopen_late(request, timeout):
+        late.append(request.full_url)
+        if len(late) < 3:
+            raise OSError("404 from the default server")
+        token = request.full_url.rsplit("/", 1)[1]
+        path = web_root["tmp"] / "acme-challenges" / ".well-known" / "acme-challenge" / token
+        return Answer(path.read_bytes())
+    monkeypatch.setattr(workspacehelper.urllib.request, "urlopen", urlopen_late)
+    assert workspacehelper._reaches_here("www.late.it") and len(late) == 3
     assert asked[0].startswith("http://www.yes.it/.well-known/acme-challenge/")
     assert not list((web_root["tmp"] / "acme-challenges" / ".well-known" / "acme-challenge").iterdir())
 

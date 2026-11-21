@@ -120,6 +120,7 @@ import socket
 import stat
 import subprocess
 import sys
+import time
 import urllib.request
 from pathlib import Path
 
@@ -1340,6 +1341,9 @@ def _resolves(host: str) -> bool:
         return False
 
 
+PROBE_TRIES, PROBE_WAIT = 5, 1.0
+
+
 def _reaches_here(host: str) -> bool:
     """http://host reaches this nginx: it answers a token put in the
     challenges' folder, as Let's Encrypt will ask (behind a proxy or a
@@ -1349,12 +1353,21 @@ def _reaches_here(host: str) -> bool:
     token = secrets.token_urlsafe(24)
     probe = folder / token
     _write(probe, token)
+    request = urllib.request.Request(f"http://{host}/.well-known/acme-challenge/{token}",
+                                     headers={"User-Agent": "omniacli-workspace-helper"})
     try:
-        request = urllib.request.Request(f"http://{host}/.well-known/acme-challenge/{token}",
-                                         headers={"User-Agent": "omniacli-workspace-helper"})
-        with urllib.request.urlopen(request, timeout=8) as answer:
-            return answer.read(256).decode("ascii", "replace").strip() == token
-    except (OSError, ValueError):
+        # the site was just reloaded: nginx's workers take the new names a
+        # moment later, and until then the name falls to another server (on
+        # odoo.ber.cat, 21/11/2026: a name answered here was said elsewhere)
+        for attempt in range(PROBE_TRIES):
+            try:
+                with urllib.request.urlopen(request, timeout=8) as answer:
+                    if answer.read(256).decode("ascii", "replace").strip() == token:
+                        return True
+            except (OSError, ValueError):
+                pass
+            if attempt + 1 < PROBE_TRIES:
+                time.sleep(PROBE_WAIT)
         return False
     finally:
         probe.unlink(missing_ok=True)
