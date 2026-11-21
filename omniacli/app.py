@@ -240,6 +240,8 @@ WORKSPACE_ROUTES = frozenset({
     "/api/workspaces/{workspace}/archives/remote", "/api/workspaces/{workspace}/archives/fetch",
     "/api/workspaces/{workspace}/tokens/save", "/api/workspaces/{workspace}/tokens/delete",
     "/api/servers/{server}/stagings", "/api/servers/{server}/stagings/refresh",
+    # the New staging dialog (UX-008 §5.1): here only, no choice of the machine
+    "/api/servers/{server}/stagings/new",
     "/api/servers/{server}/{role}/deploy-hook", "/api/servers/{server}/pitr", "/api/servers/{server}/pitr/enable",
     "/api/servers/{server}/pitr/base", "/api/servers/{server}/pitr/restore",
     "/workspaces/{workspace}/destinations", "/api/workspaces/{workspace}/destinations/save",
@@ -1136,8 +1138,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 "stagings": {"rows": await staging_states(staging_rows(srv.name)),
                              "can": request.state.user.can("admin") and workspace_of(srv.name) is not None
                              and srv.production is not None and not staging_of,
-                             # what it is a copy of, at the address the page names it by
-                             "parent": staging_of and {**staging_of, "url": getattr(
+                             # what it is a copy of, at the address the page names it by (none
+                             # when its production is on another machine: staging_of["machine"])
+                             "parent": staging_of and {**staging_of, "url": None if staging_of.get("machine") else getattr(
                                  (settings.servers.get(staging_of.get("parent")) or srv).production, "web_url", None)},
                              "workspace": (workspace_of(srv.name) or (None,))[0]},
                 "is_admin_here": request.state.user.can("admin"),
@@ -3325,27 +3328,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         setup = admin_setup({"password": payload.get("password"), "country": payload.get("country")})
         if not isinstance(setup, dict):
             return setup
-        storage = next(iter(settings.storage_roots))
-        try:
-            room = workspaceops.room(await workspaceops.space(), settings.workspaces, storage, None)
-        except workspaceops.SpaceError as exc:
-            return refuse(f"The room of the disks cannot be read: {exc}", status.HTTP_502_BAD_GATEWAY)
-        allowed = int((room or {}).get("allowed", 0) * 0.9 / workspaceops.GB)
-        if allowed < QUICK_DISK_GB[0]:
-            return refuse(f"Not enough room on the disk for a new instance: {allowed} GB, "
-                          f"{QUICK_DISK_GB[0]} GB at least")
-        data = {"label": str(payload.get("label") or name).strip()[:100], "domain": domain, "storage": storage,
-                "limits": {"disk_gb": min(allowed, QUICK_DISK_GB[1])}, "servers": [], "members": {}}
-        async with workspaces_lock:
-            try:
-                found = parse_workspaces({**{n: ws.to_dict() for n, ws in settings.workspaces.items()}, name: data},
-                                         settings.storage_roots)
-            except ConfigError as exc:
-                return refuse(str(exc))
-            refused = await store_workspaces(found)
-            if refused:
-                return refused
-        quick_workspaces.add(name)
+        refused = await quick_workspace(name, str(payload.get("label") or name), domain)
+        if refused:
+            return refused
         language = str(payload.get("language") or "")
         made = await instance_create(name, {"instance": QUICK_INSTANCE, "template": template,
                                             "values": {"INIT_LANG": language} if language else {},
@@ -3360,7 +3345,41 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             ws = settings.workspaces.get(name)
             if ws is not None:
                 await store_workspaces({**settings.workspaces, name: dataclasses.replace(ws, main=QUICK_INSTANCE)})
-        return {**made, "workspace": name, "server": workspaceops.server_name(found[name], QUICK_INSTANCE)}
+        return {**made, "workspace": name, "server": workspaceops.server_name(settings.workspaces[name], QUICK_INSTANCE)}
+
+    def quick_room(found: dict | None) -> int:
+        """The disk a workspace made here by itself gets, in GB: what the real
+        disk of the first storage allows, at most QUICK_DISK_GB."""
+        storage = next(iter(settings.storage_roots), None)
+        room = workspaceops.room(found, settings.workspaces, storage, None) if found and storage else None
+        return min(int((room or {}).get("allowed", 0) * 0.9 / workspaceops.GB), QUICK_DISK_GB[1])
+
+    async def quick_workspace(name: str, label: str, domain: str = ""):
+        """A workspace of its own made for New instance or for a staging of a
+        production of another machine, on the first storage with the disk
+        quick_room gives; until its instance is made, it goes when that
+        fails (make_instance). The refusal, or None."""
+        try:
+            found = await workspaceops.space()
+        except workspaceops.SpaceError as exc:
+            return refuse(f"The room of the disks cannot be read: {exc}", status.HTTP_502_BAD_GATEWAY)
+        allowed = quick_room(found)
+        if allowed < QUICK_DISK_GB[0]:
+            return refuse(f"Not enough room on the disk for a new instance: {allowed} GB, "
+                          f"{QUICK_DISK_GB[0]} GB at least")
+        data = {"label": label.strip()[:100] or name, "domain": domain, "storage": next(iter(settings.storage_roots)),
+                "limits": {"disk_gb": allowed}, "servers": [], "members": {}}
+        async with workspaces_lock:
+            try:
+                found = parse_workspaces({**{n: ws.to_dict() for n, ws in settings.workspaces.items()}, name: data},
+                                         settings.storage_roots)
+            except ConfigError as exc:
+                return refuse(str(exc))
+            refused = await store_workspaces(found)
+            if refused:
+                return refused
+        quick_workspaces.add(name)
+        return None
 
     # --- stagings: dated copies of a production beside it (stagings.py) -----
 
@@ -3396,85 +3415,433 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return {"stagings": staging_rows(server), "can": workspace_of(server) is not None,
                 "parent": stagings.load(stagings_file).get(server, {}).get("parent")}
 
-    @app.post("/api/servers/{server}/stagings", dependencies=[Depends(admin)])
-    async def staging_create(server: str, me: Principal = Depends(current_user)):
-        """A new staging of server's production: an instance beside it in its
-        workspace, from the same template, its production loaded with a
-        backup of server's production made now, neutralized, its test
-        stopped; recorded with its parent and its date."""
-        return await new_staging(server, me)
+    # a staging takes about twice what a backup of its production holds: the
+    # zip, and the database and the files restored from it
+    STAGING_ROOM = 2
+    # the names a staging on another machine is sent with (receive)
+    _STAGING_PARENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 
-    async def new_staging(server: str, me: Principal, load=None, title: str = "", extra: dict | None = None):
-        """A staging of server beside it; load(job, parent production, the
-        staging's production) fills it (default: a backup made now, restored
-        neutralized); extra goes in its record (stagings.py)."""
+    def chooses_machine(me: Principal) -> bool:
+        """Who chooses the machine of a new staging (UX-008 §3): an admin of
+        this machine who logs in here; a workspace's admin makes it here."""
+        return me.kind == "user" and not me.scoped and me.can("admin")
+
+    def gb_text(size: int | float) -> str:
+        return f"{size / workspaceops.GB:.1f}"
+
+    def staging_source(server: str):
+        """(its production, its workspace, its instance there) of a production
+        a staging may be made of, or the refusal."""
         srv = settings.servers.get(server)
         if srv is None or srv.production is None:
             return refuse(f"No server {server} with a production", status.HTTP_404_NOT_FOUND)
         found = workspace_of(server)
         if found is None:
             return refuse(f"{server} was not made in a workspace: a staging is made beside an instance of a workspace")
-        ws, instance = found
+        return srv.production, found[0], found[1]
+
+    def staging_address(ws: Workspace, new_instance: str) -> str:
+        """The address a new staging new_instance of ws would answer on (the
+        rule of web_names), "" when ws has no domain."""
+        if not ws.domain:
+            return ""
+        roles = {i: tuple(settings.servers[workspaceops.server_name(ws, i)].instances)
+                 for i in ws.instances() if workspaceops.server_name(ws, i) in settings.servers}
+        roles[new_instance] = ("production",)
+        try:
+            sites = web_names(ws.domain, list(roles), ws.main, ws.subdomains, roles)
+        except ConfigError:
+            return ""
+        return next((s["names"][0] for s in sites if s["instance"] == new_instance and s["role"] == "production"), "")
+
+    def workspace_free(found: dict | None, ws: Workspace) -> int | None:
+        """The bytes free in ws's disk (its limit less what its image takes),
+        None when not known."""
+        if not found or not ws.storage or not ws.limits.get("disk_gb"):
+            return None
+        room = workspaceops.room(found, settings.workspaces, ws.storage, ws.name)
+        return None if room is None else max(workspaceops.limit_bytes(ws) - room["own_used"], 0)
+
+    async def staging_size(prod) -> int | None:
+        """What a backup of prod would hold, database and files (backup_estimate), None: not known."""
+        try:
+            found = await prod.plugin.backup_estimate(prod)
+        except JobFailed:
+            return None
+        return int(found.get("database") or 0) + int(found.get("files") or 0)
+
+    async def reserve_staging(ws_name: str, instance: str, now: datetime.datetime):
+        """(the new staging's instance, its server) of a staging of instance
+        in workspace ws_name, its name taken there; or the refusal."""
+        async with workspaces_lock:
+            ws = settings.workspaces[ws_name]
+            taken = {n[len(ws.name) + 1:] for n in ws.servers}
+            new_instance = stagings.instance_name(instance, now, taken)
+            name = workspaceops.server_name(ws, new_instance)
+            mine = [n for n in ws.servers if n in settings.servers]
+            if ws.limits.get("instances") and len(mine) >= ws.limits["instances"]:
+                return refuse(f"Workspace {ws.name} has its {int(ws.limits['instances'])} instances already: "
+                              "raise its limit (Limits and disk) or delete a staging")
+            refused = await store_workspaces({**settings.workspaces,
+                                              ws.name: dataclasses.replace(ws, servers=[*ws.servers, name])})
+            if refused:
+                return refused
+        return new_instance, name
+
+    def staging_job(ws_name: str, new_instance: str, template, fill, record: dict, title: str,
+                    keys: list[str], me: Principal, now: datetime.datetime, not_made=None):
+        """The job of a staging whose name reserve_staging took: the instance
+        made from template, its mail caught (UX-008 §5.3), fill(job, its
+        production) loading it (what it returns goes in its record), its test
+        stopped, recorded (stagings.py) with record. not_made() runs when
+        the instance could not be made."""
+        name = workspaceops.server_name(settings.workspaces[ws_name], new_instance)
+
+        async def action(job):
+            try:
+                made = await make_instance(job, settings.workspaces[ws_name], new_instance, template,
+                                           {workspacehelper.MAIL_KEY: True})
+            except BaseException:
+                if not_made is not None:
+                    not_made()
+                raise
+            target = settings.servers[name].production
+            filled = await fill(job, target)
+            if settings.servers[name].test is not None:
+                job.log(f"--- {name}: its test stopped, a staging needs its production only")
+                await ops.stop(job, settings.servers[name].test)
+            data = stagings.load(stagings_file)
+            data[name] = {**record, "created": now.isoformat(timespec="seconds"), **filled}
+            await asyncio.to_thread(stagings.save, stagings_file, data)
+            job.result = {**job.result, "server": name, "port": made.production.options.http_port}
+
+        return jobs.submit(title, [*keys, f"{name}/production", f"{name}/test"], f"manual: {me}", action,
+                           workspace=ws_name)
+
+    @app.get("/api/servers/{server}/stagings/new", dependencies=[Depends(admin)])
+    async def staging_form(request: Request, server: str, me: Principal = Depends(current_user)):
+        """What the New staging dialog shows (UX-008 §5.1): the size of the
+        copy, the address it gets here, and for an admin of this machine the
+        links that can hold it (the same template as the production, room
+        for it), the others with why not."""
+        found = staging_source(server)
+        if not isinstance(found, tuple):
+            return found
+        prod, ws, instance = found
+        template = await asyncio.to_thread(instance_template, ws, instance)
+        if template is None:
+            return refuse(f"The template {server} was made from is not on this machine any more")
+        size = await staging_size(prod)
+        new_instance = stagings.instance_name(instance, datetime.datetime.now(), set(ws.instances()))
+        out = {"size": size, "address": staging_address(ws, new_instance), "template": template.name, "here": here_name(),
+               "workspace": ws.name, "machines": [], "unlisted": []}
+        if chooses_machine(me):
+            lang = request_language(request)
+            names = sorted(settings.link_targets)
+            answers = await asyncio.gather(*(staging_host_there(n, me, template.name, instance, ws.name, size)
+                                             for n in names))
+            for name, (data, why) in zip(names, answers):
+                if why:
+                    out["unlisted"].append({"name": name, "why": i18n.tr(lang, why)})
+                else:
+                    out["machines"].append({"name": name, **data})
+        return out
+
+    async def staging_host_there(name: str, me: Principal, template: str, instance: str, workspace: str,
+                                 size: int | None) -> tuple[dict | None, str]:
+        """({workspaces, default}, "") when the link name can hold a staging
+        from template (GET /api/stagings/host there), else (None, why not);
+        without room there ({need, free}, why not)."""
+        link = settings.link_targets.get(name)
+        if link is None:
+            return None, f"No link {name}"
+        headers = {**link_headers(link, me.name, me.role), "Accept": "application/json"}
+        try:
+            resp = await link_clients.client(link).get(
+                "/api/stagings/host", headers=headers, timeout=LIST_TIMEOUT,
+                params={"template": template, "instance": instance, "workspace": workspace})
+        except httpx.HTTPError:
+            return None, "does not answer"
+        if resp.status_code == 404:
+            return None, "its OmniaCLI is older: it makes no staging of another machine"
+        if resp.status_code in (401, 403):
+            return None, "the link is not an admin there"
+        if resp.status_code != 200:
+            return None, f"answered HTTP {resp.status_code}"
+        try:
+            data = resp.json()
+        except ValueError:
+            return None, "it did not answer JSON"
+        if not isinstance(data, dict):
+            return None, "it did not answer JSON"
+        if not data.get("template"):
+            labels = [str(x) for x in data.get("labels") or []]
+            return None, f"it has only {', '.join(labels)}" if labels else f"it has no template {template}"
+        if not data.get("storage") or not data.get("docker"):
+            return None, "no storage for workspaces"
+        rows = [w for w in data.get("workspaces") or [] if isinstance(w, dict) and w.get("name")]
+        need = STAGING_ROOM * size if size else 0
+        fits = [w for w in rows if not need or w.get("free") is None or w["free"] >= need]
+        if not fits:
+            free = max((w.get("free") or 0 for w in rows), default=0)
+            # the numbers too, for the refusal of staging_elsewhere
+            return {"need": need, "free": free}, f"no room: about {gb_text(need)} GB are needed, {gb_text(free)} GB are free"
+        # the workspace of the same name first, made there when it is missing
+        fits.sort(key=lambda w: w["name"] != workspace)
+        return {"workspaces": fits, "default": fits[0]["name"], "need": need}, ""
+
+    @app.get("/api/stagings/host", dependencies=[Depends(admin)])
+    async def staging_host(template: str = "", instance: str = "", workspace: str = ""):
+        """Asked by another machine through its link before it sends a
+        staging here (UX-008 §5.1): whether this one has the template and
+        room for workspaces; its workspaces with the room in their disk and
+        the address the staging would get there; the workspace of that name,
+        new, when there is none."""
+        found_templates = await asyncio.to_thread(workspaceops.templates)
+        out = {"template": template in found_templates,
+               "labels": sorted({t.label for t in found_templates.values()}),
+               "storage": bool(settings.storage_roots), "docker": workspaceops.docker_missing() is None,
+               "workspaces": []}
+        if not out["template"] or not out["storage"]:
+            return out
+        try:
+            space = await workspaceops.space()
+        except workspaceops.SpaceError:
+            space = None
+        now, base = datetime.datetime.now(), instance if WORKSPACE_NAME.fullmatch(instance) else "odoo"
+        for ws in sorted(settings.workspaces.values(), key=lambda w: w.name):
+            if not ws.storage or not ws.limits.get("disk_gb"):
+                continue
+            new_instance = stagings.instance_name(base, now, set(ws.instances()))
+            out["workspaces"].append({"name": ws.name, "label": ws.label, "free": workspace_free(space, ws),
+                                      "address": staging_address(ws, new_instance)})
+        if WORKSPACE_NAME.fullmatch(workspace) and workspace not in settings.workspaces:
+            allowed = quick_room(space)
+            if allowed >= QUICK_DISK_GB[0]:
+                out["workspaces"].append({"name": workspace, "label": workspace, "new": True, "address": "",
+                                          "free": allowed * workspaceops.GB})
+        return out
+
+    @app.post("/api/servers/{server}/stagings", dependencies=[Depends(admin)])
+    async def staging_create(request: Request, server: str, payload: Optional[dict] = Body(None),
+                             me: Principal = Depends(current_user)):
+        """A new staging of server's production: an instance beside it in its
+        workspace, from the same template, its production loaded with a
+        backup of server's production made now, neutralized, its test
+        stopped; recorded with its parent and its date. With machine (a
+        link, an admin of this machine): made there (staging_elsewhere)."""
+        payload = payload if isinstance(payload, dict) else {}
+        machine = str(payload.get("machine") or "").strip()
+        if machine:
+            return await staging_elsewhere(request, server, machine, str(payload.get("workspace") or "").strip(), me)
+        return await new_staging(server, me)
+
+    async def new_staging(server: str, me: Principal, load=None, title: str = "", extra: dict | None = None):
+        """A staging of server beside it; load(job, parent production, the
+        staging's production) fills it (default: a backup made now, restored
+        neutralized); extra goes in its record (stagings.py)."""
+        found = staging_source(server)
+        if not isinstance(found, tuple):
+            return found
+        _prod, ws, instance = found
         template = await asyncio.to_thread(instance_template, ws, instance)
         if template is None:
             return refuse(f"The template {server} was made from is not on this machine any more")
         if server_busy(server):
             return refuse(f"{server} is busy: wait for its job")
         now = datetime.datetime.now()
-        async with workspaces_lock:
-            ws = settings.workspaces[ws.name]
-            taken = {n[len(ws.name) + 1:] for n in ws.servers}
-            new_instance = stagings.instance_name(instance, now, taken)
-            name = workspaceops.server_name(ws, new_instance)
-            mine = [n for n in ws.servers if n in settings.servers]
-            if ws.limits.get("instances") and len(mine) >= ws.limits["instances"]:
-                return refuse(f"Workspace {ws.name} has its {int(ws.limits['instances'])} instances already")
-            refused = await store_workspaces({**settings.workspaces,
-                                              ws.name: dataclasses.replace(ws, servers=[*ws.servers, name])})
-            if refused:
-                return refused
+        reserved = await reserve_staging(ws.name, instance, now)
+        if not isinstance(reserved, tuple):
+            return reserved
+        new_instance, name = reserved
 
         async def backup_and_restore(job, prod, target) -> dict:
             backup_zip = await ops.backup_into(job, prod, backup_folder(prod), {"no_filestore": False})
             await target.plugin.restore(job, target, backup_zip, {"neutralize": True})
             return {"backup": backup_zip.name}
 
-        async def action(job):
-            # its mail caught in its project, read in its Mail tab (UX-008 §5.3)
-            made = await make_instance(job, settings.workspaces[ws.name], new_instance, template,
-                                       {workspacehelper.MAIL_KEY: True})
-            prod = settings.servers[server].production
-            target = settings.servers[name].production
-            record = await (load or backup_and_restore)(job, prod, target)
-            if settings.servers[name].test is not None:
-                job.log(f"--- {name}: its test stopped, a staging needs its production only")
-                await ops.stop(job, settings.servers[name].test)
-            data = stagings.load(stagings_file)
-            data[name] = {"parent": server, "created": now.isoformat(timespec="seconds"), **record, **(extra or {})}
-            await asyncio.to_thread(stagings.save, stagings_file, data)
-            job.result = {"server": name, "port": made.production.options.http_port}
+        async def fill(job, target) -> dict:
+            return await (load or backup_and_restore)(job, settings.servers[server].production, target)
 
-        job = jobs.submit(title or f"Staging {name} of {server}",
-                          [f"{server}/production", f"{name}/production", f"{name}/test"],
-                          f"manual: {me}", action, workspace=ws.name)
+        job = staging_job(ws.name, new_instance, template, fill, {"parent": server, **(extra or {})},
+                          title or f"Staging {name} of {server}", [f"{server}/production"], me, now)
         return {"job": job.id, "server": name}
 
+    async def staging_elsewhere(request: Request, server: str, machine: str, workspace: str, me: Principal):
+        """A staging of server's production on the machine of the link
+        machine: the backup made here, sent there through the link
+        (linkcopy.upload), the staging made there from the same template in
+        workspace (that of the same name by default, made there when it is
+        missing), loaded, neutralized, recorded there with this machine as
+        its production's (POST /api/stagings/receive there, its job followed)."""
+        if not chooses_machine(me):
+            return refuse("Only an admin of this machine makes a staging on another machine", status.HTTP_403_FORBIDDEN)
+        link = settings.link_targets.get(machine)
+        if link is None:
+            return refuse(f"No link {machine}", status.HTTP_404_NOT_FOUND)
+        found = staging_source(server)
+        if not isinstance(found, tuple):
+            return found
+        prod, ws, instance = found
+        if not prod.plugin.has_backup:
+            return refuse(f"{server} cannot be backed up: no staging of it")
+        template = await asyncio.to_thread(instance_template, ws, instance)
+        if template is None:
+            return refuse(f"The template {server} was made from is not on this machine any more")
+        if server_busy(server):
+            return refuse(f"{server} is busy: wait for its job")
+        size = await staging_size(prod)
+        there, why = await staging_host_there(machine, me, template.name, instance, ws.name, size)
+        if why:
+            if there is not None:
+                return refuse(f"There is no room on {machine}: about {gb_text(there['need'])} GB "
+                              f"are needed, {gb_text(there['free'])} GB are free")
+            if why.startswith("it has"):
+                return refuse(f"{machine} has no template {template.name}, the production's: no staging there")
+            return refuse(f"{machine} cannot hold the staging: {i18n.tr(request_language(request), why)}")
+        chosen = workspace or there["default"]
+        target_ws = next((w for w in there["workspaces"] if w["name"] == chosen), None)
+        if target_ws is None:
+            return refuse(f"No workspace {chosen} on {machine} with room for the staging")
+        headers = link_headers(link, me.name, me.role)
+        params = {"template": template.name, "instance": instance, "parent": server, "machine": here_name(),
+                  "workspace": chosen, "label": ws.label}
+
+        async def action(job):
+            progress = job.result["progress"] = {
+                "steps": [{"id": "backup", "label": "Backup", "where": here_name()},
+                          {"id": "download", "label": "Transfer", "where": f"{here_name()} → {machine}"},
+                          {"id": "restore", "label": "Staging", "where": machine}],
+                "step": "backup", "done": 0, "total": 0}
+            source = settings.servers[server].production
+            backup_zip = await ops.backup_into(job, source, backup_folder(source), {"no_filestore": False})
+            progress["step"] = "download"
+            client = link_clients.client(link)
+            answer = await linkcopy.upload(job, client, link, headers, backup_zip, "/api/stagings/receive",
+                                           {**params, "file": backup_zip.name}, progress)
+            remote_id, name = str(answer.get("job") or ""), str(answer.get("server") or "")
+            if not remote_id or not name:
+                raise JobFailed(f"{machine} started no job for the staging")
+            job.result.update(server=name, link=machine, url=f"/links/{machine}/servers/{name}")
+            progress["step"] = "restore"
+            await linkcopy.follow(job, client, link, headers, remote_id, "the staging")
+            job.log(f"{name} on {machine}: a copy of {server} of now, neutralized")
+
+        job = jobs.submit(f"Staging of {server} on {machine}", [f"{server}/production"], f"manual: {me}", action,
+                          workspace=ws.name)
+        return {"job": job.id, "machine": machine}
+
+    @app.post("/api/stagings/receive", dependencies=[Depends(admin)])
+    async def staging_receive(request: Request, template: str = "", instance: str = "", parent: str = "",
+                              machine: str = "", workspace: str = "", label: str = "", file: str = "",
+                              me: Principal = Depends(current_user)):
+        """A staging of a production of another machine, sent by it through
+        its link (staging_elsewhere there): the backup zip is the raw body,
+        kept in the staging's backups; the staging made in workspace (made
+        here when missing) from template, loaded with it, neutralized,
+        recorded with its parent and its machine (stagings.py). A job."""
+        if me.kind == "token":
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "A token may only read")
+        tpl = (await asyncio.to_thread(workspaceops.templates)).get(template)
+        if tpl is None:
+            return refuse(f"No template {template} here: a staging is made from the template of its production")
+        if not (WORKSPACE_NAME.fullmatch(instance) and WORKSPACE_NAME.fullmatch(workspace)
+                and _STAGING_PARENT.fullmatch(parent) and _STAGING_PARENT.fullmatch(machine)
+                and linkcopy.BACKUP_NAME.fullmatch(file)):
+            return refuse("A staging is sent with its template, instance, parent, machine, workspace and file")
+        if not settings.storage_roots:
+            return refuse(f"No storage for workspaces on this machine: {workspaceops.HELPERS_HINT}")
+        if workspaceops.docker_missing():
+            return refuse(workspaceops.docker_missing())
+        made_workspace = workspace not in settings.workspaces
+        if made_workspace:
+            refused = await quick_workspace(workspace, label or workspace)
+            if refused:
+                return refused
+        now = datetime.datetime.now()
+        reserved = await reserve_staging(workspace, instance, now)
+        if not isinstance(reserved, tuple):
+            if made_workspace:
+                await drop_quick_workspace(workspace)
+            return reserved
+        new_instance, name = reserved
+        folder = private.backup_folder(settings.backup_dir / name / "production")
+        dest = folder / file
+        length = request.headers.get("content-length", "")
+        free = shutil.disk_usage(folder).free
+        refused = None
+        if length.isdigit() and free - int(length) < puller.MIN_FREE:
+            refused = refuse(f"There is no room on {here_name()}: about {gb_text(int(length))} GB are needed, "
+                             f"{gb_text(free)} GB are free", status.HTTP_507_INSUFFICIENT_STORAGE)
+        else:
+            handle, part_name = tempfile.mkstemp(dir=folder, prefix=f"{file}.", suffix=".part")
+            part = Path(part_name)
+            try:
+                with os.fdopen(handle, "wb") as out:
+                    async for chunk in request.stream():
+                        out.write(chunk)
+                if length.isdigit() and part.stat().st_size != int(length):
+                    refused = refuse(f"{file}: {part.stat().st_size} of {length} bytes received")
+                else:
+                    part.replace(dest)
+            except (ClientDisconnect, OSError) as exc:
+                refused = refuse(f"{file} was not received whole: {exc}")
+            finally:
+                part.unlink(missing_ok=True)
+        if refused is not None:
+            await rename_in_workspaces(name, None)
+            if made_workspace:
+                await drop_quick_workspace(workspace)
+            return refused
+
+        async def fill(job, target) -> dict:
+            job.log(f"--- the backup {file} of {parent} on {machine} into {target.key}, neutralized")
+            await target.plugin.restore(job, target, dest, {"neutralize": True})
+            return {"backup": file}
+
+        job = staging_job(workspace, new_instance, tpl, fill, {"parent": parent, "machine": machine},
+                          f"Staging {name} of {parent} on {machine}", [], me, now,
+                          # no instance made: its backup goes too
+                          not_made=lambda: dest.unlink(missing_ok=True))
+        access_log.record("action", me.kind, me.name, request.client.host if request.client else "",
+                          f"staging {name} of {parent} on {machine} received")
+        return {"job": job.id, "server": name}
+
+    async def drop_quick_workspace(name: str) -> None:
+        """A workspace quick_workspace made, when nothing went in it: out of
+        the workspaces again (its disk is made with its first instance)."""
+        current = settings.workspaces.get(name)
+        if name in quick_workspaces and current is not None and not current.servers:
+            async with workspaces_lock:
+                await store_workspaces({n: w for n, w in settings.workspaces.items() if n != name})
+            quick_workspaces.discard(name)
+
     @app.post("/api/servers/{server}/stagings/refresh", dependencies=[Depends(admin)])
-    async def staging_refresh(server: str, me: Principal = Depends(current_user)):
-        """A staging made again from its production as it is now: a new
-        backup of the parent's production restored into the staging's,
-        neutralized; its code stays as it is (what is being tried there)."""
+    async def staging_refresh(server: str, payload: Optional[dict] = Body(None), me: Principal = Depends(current_user)):
+        """Rebuild (UX-008 §5.2): a staging made again from its production as
+        it is now: a new backup of the parent's production restored into the
+        staging's, neutralized. Its code stays as it is (what is being tried
+        there), or with code: true its repositories go back to the commits
+        of the production first (code_like_production)."""
+        code = bool((payload if isinstance(payload, dict) else {}).get("code"))
         info = stagings.load(stagings_file).get(server) or {}
         parent = info.get("parent")
+        if info.get("machine") and settings.servers.get(server) is not None:
+            return refuse(f"The production of {server} is on {info['machine']}: make a new staging from there")
         srv, parent_srv = settings.servers.get(server), settings.servers.get(parent or "")
         if srv is None or srv.production is None or parent_srv is None or parent_srv.production is None:
             return refuse(f"{server} is not a staging of a production here", status.HTTP_404_NOT_FOUND)
         if not srv.production.plugin.has_restore or not parent_srv.production.plugin.has_backup:
             return refuse(f"{server} cannot be loaded from {parent}")
+        ws = workspace_of(server)
+        if code and ws is None:
+            return refuse(f"{server} was not made in a workspace: only its data can be loaded again")
         if server_busy(server) or server_busy(parent):
             return refuse("A job is running on the staging or its production: wait for it")
 
         async def action(job):
+            if code:
+                await code_like_production(job, server, parent)
             prod, target = settings.servers[parent].production, settings.servers[server].production
             job.log(f"--- a new backup of {prod.key}")
             backup_zip = await ops.backup_into(job, prod, backup_folder(prod), {"no_filestore": False})
@@ -3483,12 +3850,54 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             data[server] = {**data.get(server, {}), "parent": parent, "backup": backup_zip.name,
                             "refreshed": datetime.datetime.now().isoformat(timespec="seconds")}
             await asyncio.to_thread(stagings.save, stagings_file, data)
-            job.log(f"{server} has the data of {prod.key} of now, neutralized; its code is as it was")
+            job.log(f"{server} has the data and the code of {prod.key} of now, neutralized" if code else
+                    f"{server} has the data of {prod.key} of now, neutralized; its code is as it was")
 
-        ws = workspace_of(server)
-        job = jobs.submit(f"Refresh the staging {server} from {parent}", [f"{parent}/production", f"{server}/production"],
+        title = f"Rebuild the staging {server} from {parent}" if code else f"Refresh the staging {server} from {parent}"
+        job = jobs.submit(title, [f"{parent}/production", f"{server}/production"],
                           f"manual: {me}", action, workspace=ws[0].name if ws else "")
         return {"job": job.id}
+
+    async def code_like_production(job, server: str, parent: str) -> None:
+        """The repositories of the staging server's production at the commits
+        the production of parent has checked out (Rebuild with its code): each
+        one of the same name fetched from the production's own clone and
+        checked out on the production's branch, its changes here dropped; one
+        the production has and the staging not cloned; one only the staging
+        has taken away. Its odoo.conf and the servers file follow."""
+        ws, instance = workspace_of(server)
+        prod, target = settings.servers[parent].production, settings.servers[server].production
+        mine = {r.name: r for r in target.repositories}
+        rows, added = [], []
+        for theirs in prod.repositories:
+            commit = await ops.git(theirs, "rev-parse", "HEAD")
+            repo = mine.get(theirs.name)
+            if repo is None:
+                job.log(f"--- [{theirs.name}] not in {server}: cloned as in {parent}")
+                url = await ops.git(theirs, "remote", "get-url", theirs.remote)
+                path = await workspaceops.clone(job, ws, instance, "production", theirs.name, url, theirs.branch,
+                                                gitcredentials.options_for(settings, server))
+                repo = dataclasses.replace(theirs, path=path, remote="origin")
+                added.append(theirs.name)
+            job.log(f"--- [{repo.name}] to {commit[:10]} of {parent} ({theirs.branch})")
+            changes = await ops.git(repo, "status", "--porcelain", "--untracked-files=no")
+            if changes:
+                job.log(f"[{repo.name}] its changes in {server} are dropped:\n{changes}")
+            # the commit from the production's clone: it is there even when its remote moved on
+            await ops.run(job, repo.git("fetch", str(theirs.path), "+HEAD:refs/omniacli/production"), cwd=repo.path)
+            await ops.run(job, repo.git("checkout", "--force", "-B", theirs.branch, commit), cwd=repo.path)
+            await ops.update_submodules(job, dataclasses.replace(repo, branch=theirs.branch))
+            rows.append({"name": repo.name, "path": str(repo.path), "branch": theirs.branch, "remote": repo.remote})
+        gone = [r for name, r in mine.items() if name not in {t.name for t in prod.repositories}]
+        await workspaceops.write_conf(job, ws, instance, "production", [r["name"] for r in rows])
+        done = await set_repositories(server, {"production": rows})
+        for repo in gone:
+            job.log(f"--- [{repo.name}] only in {server}: taken away")
+            workspaceops.remove_clone(workspaceops.addons_folder(ws, instance, "production") / repo.name)
+        pip = getattr(done.production.plugin, "pip_requirements", None)
+        for name in added if pip is not None else []:
+            await pip(job, done.production, name)
+
 
     # --- a staging's mail, caught in its project and read here (stagingmail.py, UX-008 §5.3)
 

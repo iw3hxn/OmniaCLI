@@ -7,7 +7,9 @@
 {% set parent_name = parent_url.split("://", 1)[-1] if parent_url and "://localhost" not in parent_url and "://127.0.0.1" not in parent_url else parent %}
 {% set own = instances[0].web_url or "" if instances else "" %}
 {% set own_name = own.split("://", 1)[-1] if own and "://localhost" not in own and "://127.0.0.1" not in own else server.name %}
-{% if parent %}{{ crumbs([(_("Instances"), "/"), (parent_name, "/servers/" ~ parent), (own_name, None)]) }}
+{% set elsewhere = stagings.parent.machine if parent and stagings.parent.machine else "" %}
+{% if parent and elsewhere %}{{ crumbs([(_("Instances"), "/"), (_("{name} on {machine}", name=parent, machine=elsewhere), None), (own_name, None)]) }}
+{% elif parent %}{{ crumbs([(_("Instances"), "/"), (parent_name, "/servers/" ~ parent), (own_name, None)]) }}
 {% elif view == "test" %}{{ crumbs([(_("Instances"), "/"), (server.name, "/servers/" ~ server.name), ("Test", None)]) }}
 {% else %}{{ crumbs([(_("Instances"), "/"), (own_name, None)]) }}{% endif %}
 {% endblock %}
@@ -71,6 +73,17 @@
   .tiles { grid-template-columns: 1fr 1fr 1fr; }
   .tile-value { font-size: 18px; }
 }
+/* New staging and Rebuild (UX-008 §5.1, §5.2) */
+dialog.sd { width: min(560px, calc(100vw - 32px)); }
+.sd h2 { margin: 0 0 6px; }
+.sd-field { margin: 12px 0; }
+.sd-label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+.sd-help { font-size: 13px; }
+.sd-server { display: inline-flex; gap: 6px; align-items: center; margin: 0 16px 4px 0; }
+.sd-choice { display: flex; gap: 8px; align-items: flex-start; margin: 0 0 10px; cursor: pointer; }
+.sd-choice input { margin-top: 3px; }
+.sd select { width: 100%; }
+.sd-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 </style>
 {% macro shell_paths_box(paths) %}
   {# where the instance lives and the commands to work on it from a shell of the machine (ssh) #}
@@ -256,15 +269,41 @@
 
 {% set show_envs = view == "production" and not is_staging and (server.test or (stagings and (stagings.rows or stagings.can))) %}
 {% if is_staging %}
+{% set copy_of = stagings.parent.parent %}
+{# its production on another machine (made there through a link, UX-008 §5.1): named, not linked #}
+{% set copy_elsewhere = stagings.parent.machine or "" %}
+{% macro copy_link() %}{% if copy_elsewhere %}<strong>{{ copy_of }}</strong> {{ _("on {machine}", machine=copy_elsewhere) }}{% else %}<a href="{{ prefix }}/servers/{{ copy_of }}">{{ host_of(stagings.parent.url, copy_of) }}</a>{% endif %}{% endmacro %}
 {# a staging OmniaCLI made has its backup and was neutralized; one a hosting panel made (told by its name) may not be #}
 {% if stagings.parent.backup %}
 <div class="note-box" style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap">
-  <span>{{ _("Copy of") }} <a href="{{ prefix }}/servers/{{ parent }}">{{ host_of(stagings.parent.url, parent) }}</a> {{ _("of {date}", date=when(stagings.parent.refreshed or stagings.parent.created)) }}, {{ _("neutralized: no scheduled actions; the outgoing mail is read in the Mail tab, it does not leave.") if mail_capture else _("neutralized: no outgoing mail, no scheduled actions.") }}</span>
-  {% if is_admin_here %}<button type="button" class="small" id="staging-refresh" {{ off }}
-    title="{{ _('Puts in this staging the data of production as it is now: a new backup of production, loaded here and neutralized (no outgoing mail, no scheduled actions). The code of the staging stays as it is; its data of now are lost. Not available while a job works on the staging or on production. Admins only.') }}">{{ icon("restart") }}{{ _("Refresh from production…") }}</button>{% endif %}
+  <span>{{ _("Copy of") }} {{ copy_link() }} {{ _("of {date}", date=when(stagings.parent.refreshed or stagings.parent.created)) }}, {{ _("neutralized: no scheduled actions; the outgoing mail is read in the Mail tab, it does not leave.") if mail_capture else _("neutralized: no outgoing mail, no scheduled actions.") }}</span>
+  {# Rebuild (UX-008 §5.2, D9): one button, the choice of data only or data and code in its dialog #}
+  {% if is_admin_here and copy_elsewhere %}<span title="{{ _('Its production is on {machine}: a new staging is made from the page of that production, through the link. This staging is not rebuilt from here.', machine=copy_elsewhere) }}"><button type="button" class="small danger" disabled>{{ icon("restart") }}{{ _("Rebuild…") }}</button></span>
+  {% elif is_admin_here %}<button type="button" class="small danger" id="staging-rebuild" {{ off }}
+    title="{{ _('Makes this staging again from production as it is now: a new backup, loaded here and neutralized; if you choose, also the code, at the commits of production. Its address stays. Not available while a job works on the staging or on production. Admins only.') }}">{{ icon("restart") }}{{ _("Rebuild…") }}</button>{% endif %}
 </div>
+{% if is_admin_here and not copy_elsewhere %}
+<dialog id="rebuild-dialog" class="sd" aria-labelledby="rb-title">
+  <form id="rb-form" novalidate>
+    <h2 id="rb-title">{{ _("Rebuild {name}", name=server.name) }}</h2>
+    <div class="sd-field" role="radiogroup" aria-labelledby="rb-title">
+      <label class="sd-choice"><input type="radio" name="rb-what" value="data" checked>
+        <span><strong>{{ _("Data only") }}</strong><br><span class="muted">{{ _("The code of the staging stays: to try the new code on the data of today.") }}</span></span></label>
+      <label class="sd-choice"><input type="radio" name="rb-what" value="code">
+        <span><strong>{{ _("Data and code") }}</strong><br><span class="muted">{{ _("The staging becomes equal to production: the repositories go back to the commits of production, and what you were trying here is lost.") }}</span></span></label>
+    </div>
+    <p class="sd-help">{{ _("The data of now of the staging are lost. The address stays the same.") }}</p>
+    <p id="rb-error" class="error" role="alert"></p>
+    <div class="sd-foot">
+      <button type="button" id="rb-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
+      <button type="submit" class="primary danger" id="rb-go"
+              title="{{ _('Rebuilds the staging as chosen above, from a backup of production made now. It is a job, and it cannot be undone.') }}">{{ _("Rebuild") }}</button>
+    </div>
+  </form>
+</dialog>
+{% endif %}
 {% else %}
-<div class="note-box">{{ _("Staging of") }} <a href="{{ prefix }}/servers/{{ parent }}">{{ host_of(stagings.parent.url, parent) }}</a>{% if stagings.parent.created %} {{ _("of {date}", date=when(stagings.parent.created)) }}{% endif %}, {{ _("made outside OmniaCLI: OmniaCLI does not know whether it is neutralized, check its outgoing mail and scheduled actions.") }}</div>
+<div class="note-box">{{ _("Staging of") }} {{ copy_link() }}{% if stagings.parent.created %} {{ _("of {date}", date=when(stagings.parent.created)) }}{% endif %}, {{ _("made outside OmniaCLI: OmniaCLI does not know whether it is neutralized, check its outgoing mail and scheduled actions.") }}</div>
 {% endif %}
 {% endif %}
 {% set db_tab = can_act and inst.plugin and (inst.restart.type == "compose" or inst.plugin.db_shell(inst)) %}
@@ -288,7 +327,7 @@
     <dl class="sum-grid">
       {% if stagings and stagings.parent %}
       <dt>{{ _("Production instance") }}</dt>
-      <dd><a href="{{ prefix }}/servers/{{ stagings.parent.parent }}">{{ host_of(stagings.parent.url, stagings.parent.parent) }}</a></dd>
+      <dd>{% if stagings.parent.machine %}{{ stagings.parent.parent }} <span class="muted">{{ _("on {machine}", machine=stagings.parent.machine) }}</span>{% else %}<a href="{{ prefix }}/servers/{{ stagings.parent.parent }}">{{ host_of(stagings.parent.url, stagings.parent.parent) }}</a>{% endif %}</dd>
       {% elif view == "test" and server.production %}
       <dt>{{ _("Production instance") }}</dt>
       <dd><a href="{{ prefix }}/servers/{{ server.name }}?view=production">{{ host_of(server.production.web_url, server.name) }}</a></dd>
@@ -304,7 +343,7 @@
     <div class="section-head">
       <h2>{{ _("Environments") }}</h2>
       {% if stagings and stagings.can %}<button type="button" class="primary" id="staging-new" {{ off }}
-        title="{{ _('A copy of production as it is now, neutralized (no outgoing mail, no scheduled actions), at an address of its own. Production stays on. Not available while a job works on production.') }}">+ {{ _("New staging") }}</button>{% endif %}
+        title="{{ _('Opens the form of a copy of production as it is now, neutralized, at an address of its own: on this machine or on another one with the same version of Odoo. Production stays on. Not available while a job works on production.') }}">+ {{ _("New staging") }}</button>{% endif %}
     </div>
     <div class="scroll"><table class="copies">
       <tr><th>{{ _("Address") }}</th><th>{{ _("Type") }}</th><th class="hide-sm">{{ _("Copied on") }}</th><th>{{ _("State") }}</th><th class="hide-sm"></th></tr>
@@ -326,6 +365,34 @@
     </table></div>
     {% if stagings and stagings.can and not stagings.rows %}<p class="muted" style="margin: 8px 0 0">{{ _("No staging: a staging is a dated copy of production, to try an update without touching it.") }}</p>{% endif %}
   </div>
+  {% endif %}
+  {% if stagings and stagings.can %}
+  {# New staging (UX-008 §5.1): asked before it is made (GET …/stagings/new); the machine only for its admin #}
+  <dialog id="staging-dialog" class="sd" aria-labelledby="sd-title">
+    <form id="sd-form" novalidate>
+      <h2 id="sd-title">{{ _("New staging") }}</h2>
+      <p id="sd-size" class="muted">{{ _("Reading…") }}</p>
+      <div id="sd-servers" class="sd-field" role="radiogroup" aria-labelledby="sd-server-label" hidden>
+        <div class="sd-label" id="sd-server-label">{{ _("Server") }}</div>
+        <div id="sd-server-list"></div>
+        <div class="muted sd-help" id="sd-unlisted"></div>
+      </div>
+      <div class="sd-field"><div class="sd-label">{{ _("Address") }}</div>
+        <output id="sd-address" class="mono"></output></div>
+      <p class="sd-help">{{ _("Neutralized: no scheduled actions; the outgoing mail is read in the Mail tab, it does not leave.") }}</p>
+      <details id="sd-advanced" hidden>
+        <summary class="muted" title="{{ _('Shows the workspace the staging goes in on the other machine: the one of the same name by default, made there when it is missing') }}">{{ _("Advanced") }}</summary>
+        <div class="sd-field"><label class="sd-label" for="sd-workspace">{{ _("Workspace there") }}</label>
+          <select id="sd-workspace"></select></div>
+      </details>
+      <p id="sd-error" class="error" role="alert"></p>
+      <div class="sd-foot">
+        <button type="button" id="sd-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
+        <button type="submit" class="primary" id="sd-create" disabled
+                title="{{ _('Makes a backup of production, creates the staging from the same template and loads the backup into it, neutralized. It is a job.') }}">{{ _("Create the staging") }}</button>
+      </div>
+    </form>
+  </dialog>
   {% endif %}
   {% set paths = shell_paths.get(inst.key) %}
   {% if paths and not can_act %}<div class="panel">{{ shell_paths_box(paths) }}</div>{% endif %}
@@ -1789,10 +1856,84 @@
     if (!resp || !resp.ok || !data.job) { error.textContent = data.error || data.detail || T.refused; return; }
     location.href = `{{ prefix }}/jobs/${data.job}`;
   }
-  const newStaging = document.getElementById("staging-new");
-  if (newStaging) newStaging.addEventListener("click", () => post(
-    {{ (prefix ~ "/api/servers/" ~ server.name ~ "/stagings") | tojson }}, {},
-    confirm({{ _("Make a new staging of {server}: a copy of its production as it is now, neutralized, beside it?", server=server.name) | tojson }})));
+  // New staging (UX-008 §5.1): a dialog, asked once what the copy is and where it may go; nothing is posted before Create
+  const newStaging = document.getElementById("staging-new"), sd = document.getElementById("staging-dialog");
+  if (newStaging && sd) {
+    const S = {size: {{ _("Copy of {name} as it is now: about {size}.") | tojson }},
+               noSize: {{ _("Copy of {name} as it is now: its size cannot be read.") | tojson }},
+               here: {{ _("This machine") | tojson }}, unlisted: {{ _("Not listed: {names}.") | tojson }},
+               noAddress: {{ _("No domain: it answers on a port of its own, shown when it is made.") | tojson }},
+               fresh: {{ _("{name} (made there)") | tojson }},
+               hereTitle: {{ _("Makes the staging on this machine, beside production, in its workspace") | tojson }},
+               thereTitle: {{ _("Makes the staging on {name}: the backup goes there through the link") | tojson }},
+               createHere: {{ _("Makes a backup of production, creates the staging from the same template and loads the backup into it, neutralized. It is a job.") | tojson }},
+               createThere: {{ _("Makes a backup of production, carries it to the other machine through the link and creates the staging there from the same template, loaded and neutralized. It is a job.") | tojson }},
+               unread: {{ _("What the staging would be cannot be read now: try again in a moment.") | tojson }}};
+    const api = {{ (prefix ~ "/api/servers/" ~ server.name ~ "/stagings") | tojson }};
+    const create = document.getElementById("sd-create"), sdError = document.getElementById("sd-error");
+    const address = document.getElementById("sd-address"), advanced = document.getElementById("sd-advanced");
+    const wsSelect = document.getElementById("sd-workspace");
+    let form = null;
+    const gb = (b) => (b / 1073741824).toLocaleString(document.documentElement.lang || undefined,
+                                                      {minimumFractionDigits: 1, maximumFractionDigits: 1}) + " GB";
+    function machine() { return (sd.querySelector('input[name="sd-machine"]:checked') || {}).value || ""; }
+    // the address and the workspace of the machine chosen
+    function show() {
+      const there = (form.machines || []).find((m) => m.name === machine());
+      advanced.hidden = !there;
+      create.title = there ? S.createThere : S.createHere;
+      if (!there) { address.textContent = form.address || S.noAddress; return; }
+      wsSelect.replaceChildren(...there.workspaces.map((w) => Object.assign(document.createElement("option"), {
+        value: w.name, textContent: w.new ? S.fresh.replace("{name}", w.name) : (w.label && w.label !== w.name ? `${w.label} (${w.name})` : w.name),
+        selected: w.name === there.default})));
+      const chosen = there.workspaces.find((w) => w.name === wsSelect.value) || {};
+      address.textContent = chosen.address || S.noAddress;
+    }
+    wsSelect.addEventListener("change", show);
+    function radio(value, text, title, checked) {
+      const input = Object.assign(document.createElement("input"), {type: "radio", name: "sd-machine", value, checked});
+      input.addEventListener("change", show);
+      const label = document.createElement("label");
+      label.className = "sd-server"; label.title = title;
+      label.append(input, " " + text);
+      return label;
+    }
+    async function load() {
+      const resp = await fetch(`${api}/new`, {headers: {Accept: "application/json"}}).catch(() => null);
+      const data = resp ? await resp.json().catch(() => ({})) : {};
+      if (!resp || !resp.ok) { sdError.textContent = data.error || data.detail || S.unread; return; }
+      form = data;
+      const name = {{ host_of(inst.web_url, server.name) | trim | tojson }};
+      document.getElementById("sd-size").textContent = data.size ? S.size.replace("{name}", name).replace("{size}", gb(data.size))
+                                                                 : S.noSize.replace("{name}", name);
+      // the choice only when there is one: this machine first, then the links that can hold it
+      const list = document.getElementById("sd-server-list");
+      list.replaceChildren(radio("", `${S.here} (${data.here})`, S.hereTitle, true),
+                           ...(data.machines || []).map((m) => radio(m.name, m.name, S.thereTitle.replace("{name}", m.name), false)));
+      document.getElementById("sd-servers").hidden = !(data.machines || []).length;
+      const names = (data.unlisted || []).map((u) => `${u.name} (${u.why})`);
+      document.getElementById("sd-unlisted").textContent = names.length ? S.unlisted.replace("{names}", names.join(", ")) : "";
+      show();
+      create.disabled = false;
+    }
+    newStaging.addEventListener("click", () => {
+      sdError.textContent = "";
+      sd.showModal();
+      if (!form) load();
+    });
+    document.getElementById("sd-cancel").addEventListener("click", () => sd.close());
+    document.getElementById("sd-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!form) return;
+      const body = machine() ? {machine: machine(), workspace: wsSelect.value} : {};
+      sdError.textContent = ""; create.disabled = true;
+      const resp = await fetch(api, {method: "POST", headers: {Accept: "application/json", "Content-Type": "application/json"},
+                                     body: JSON.stringify(body)}).catch(() => null);
+      const data = resp ? await resp.json().catch(() => ({})) : {};
+      if (!resp || !resp.ok || !data.job) { sdError.textContent = data.error || data.detail || T.refused; create.disabled = false; return; }
+      location.href = `{{ prefix }}/jobs/${data.job}`;
+    });
+  }
   const deleteInstance = document.getElementById("instance-delete");
   {% if stagings and not stagings.parent and stagings.workspace %}
   if (deleteInstance) deleteInstance.addEventListener("click", () => {
@@ -1801,9 +1942,26 @@
          typed === {{ server.name | tojson }});
   });
   {% endif %}
-  document.getElementById("staging-refresh")?.addEventListener("click", () => post(
-    {{ (prefix ~ "/api/servers/" ~ server.name ~ "/stagings/refresh") | tojson }}, {},
-    confirm({{ _("Replace the data of {server} with those of its production as they are now? What was done on the staging is lost; its code stays.", server=server.name) | tojson }})));
+  // Rebuild (UX-008 §5.2): the dialog is the confirmation; Cancel posts nothing
+  const rebuild = document.getElementById("rebuild-dialog");
+  document.getElementById("staging-rebuild")?.addEventListener("click", () => {
+    if (!rebuild) return;
+    rebuild.querySelector('input[value="data"]').checked = true;
+    document.getElementById("rb-error").textContent = "";
+    rebuild.showModal();
+  });
+  document.getElementById("rb-cancel")?.addEventListener("click", () => rebuild.close());
+  document.getElementById("rb-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const go = document.getElementById("rb-go"), error = document.getElementById("rb-error");
+    const code = (rebuild.querySelector('input[name="rb-what"]:checked') || {}).value === "code";
+    go.disabled = true; error.textContent = "";
+    const resp = await fetch({{ (prefix ~ "/api/servers/" ~ server.name ~ "/stagings/refresh") | tojson }}, {method: "POST",
+      headers: {Accept: "application/json", "Content-Type": "application/json"}, body: JSON.stringify({code})}).catch(() => null);
+    const data = resp ? await resp.json().catch(() => ({})) : {};
+    if (!resp || !resp.ok || !data.job) { error.textContent = data.error || data.detail || T.refused; go.disabled = false; return; }
+    location.href = `{{ prefix }}/jobs/${data.job}`;
+  });
   const deleteStaging = document.getElementById("staging-delete");
   {% if stagings and stagings.parent and stagings.workspace %}
   if (deleteStaging) deleteStaging.addEventListener("click", () => {

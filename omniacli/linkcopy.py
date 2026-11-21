@@ -7,7 +7,9 @@ whoever acts here (at most).
 
 It uses what every OmniaCLI with links answers: POST /servers/<s>/<r>/backup
 (a 303 to its job), GET /api/jobs/<id> (status, log, result.file) and GET
-/backups/<s>/<r>/<file>."""
+/backups/<s>/<r>/<file>. The other way, for a staging on another machine:
+a backup made here sent there (upload, POST /api/stagings/receive) and its
+job there followed (follow)."""
 
 from __future__ import annotations
 
@@ -25,6 +27,8 @@ from . import private
 from .links import describe_error
 
 POLL_EVERY = 2.0  # seconds between two looks at the job there
+# seconds each step of sending a file there may wait (a read, a write)
+UPLOAD_TIMEOUT = 300.0
 CHUNK = 1 << 20
 BACKUP_NAME = re.compile(r"[A-Za-z0-9._-]+\.zip")
 _FINISHED = ("success", "failed", "stopped", "interrupted")
@@ -71,6 +75,17 @@ async def _remote_backup(job: Job, client: httpx.AsyncClient, link: LinkTarget, 
     if resp.status_code != 303:
         raise _refused(link, resp, f"the backup of {where}")
     remote_id = resp.headers.get("location", "").split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+    data = await follow(job, client, link, headers, remote_id, "the backup")
+    name = str((data.get("result") or {}).get("file") or "")
+    if not BACKUP_NAME.fullmatch(name):
+        raise JobFailed(f"the backup on {link.name} names no zip (job {remote_id})")
+    return name
+
+
+async def follow(job: Job, client: httpx.AsyncClient, link: LinkTarget, headers: dict,
+                 remote_id: str, what: str) -> dict:
+    """The job remote_id there followed to its end, its lines in job's log;
+    what it answered last (with its result). JobFailed unless it succeeded."""
     seen = 0
     try:
         while True:
@@ -88,14 +103,47 @@ async def _remote_backup(job: Job, client: httpx.AsyncClient, link: LinkTarget, 
                 break
             await asyncio.sleep(POLL_EVERY)
     except asyncio.CancelledError:
-        job.log(f"--- the backup on {link.name} (its job {remote_id}) is not stopped there")
+        job.log(f"--- {what} on {link.name} (its job {remote_id}) is not stopped there")
         raise
     if data["status"] != "success":
-        raise JobFailed(f"the backup on {link.name} {data['status']}: {data.get('error') or 'no reason given'}")
-    name = str((data.get("result") or {}).get("file") or "")
-    if not BACKUP_NAME.fullmatch(name):
-        raise JobFailed(f"the backup on {link.name} names no zip (job {remote_id})")
-    return name
+        raise JobFailed(f"{what} on {link.name} {data['status']}: {data.get('error') or 'no reason given'}")
+    return data
+
+
+async def upload(job: Job, client: httpx.AsyncClient, link: LinkTarget, headers: dict,
+                 path: Path, url: str, params: dict, progress: dict) -> dict:
+    """The file at path sent there (POST url with params, the raw body),
+    the other way of _download; what it answered (JSON). progress gets done
+    and total (bytes) as it goes: the job page draws it."""
+    size = path.stat().st_size
+    job.log(f"--- send {path.name} ({size >> 20} MiB) to {link.name}")
+    progress.update(done=0, total=size, since=time.time())
+    started = time.monotonic()
+
+    async def chunks():
+        with path.open("rb") as fh:
+            while chunk := fh.read(CHUNK):
+                progress["done"] = progress.get("done", 0) + len(chunk)
+                yield chunk
+    try:
+        resp = await client.post(url, params=params, content=chunks(), timeout=httpx.Timeout(UPLOAD_TIMEOUT),
+                                 headers={**headers, "Content-Type": "application/zip",
+                                          "Content-Length": str(size), "Accept": "application/json"})
+    except httpx.HTTPError as exc:
+        raise JobFailed(f"{link.name}: {describe_error(exc)} while sending {path.name}") from exc
+    if resp.status_code == 403:
+        raise JobFailed(f"{link.name} refused {path.name}: the admin role is needed there, for the link and for you")
+    if resp.status_code in (401, 404):
+        raise _refused(link, resp, path.name)
+    if resp.status_code != 200:
+        said = _said(resp)
+        raise JobFailed(f"{link.name} refused {path.name}: {said or f'HTTP {resp.status_code}'}")
+    try:
+        data = resp.json()
+    except ValueError:
+        raise JobFailed(f"{link.name} did not answer JSON to {path.name}") from None
+    job.log(f"{size >> 20} MiB in {time.monotonic() - started:.0f} s")
+    return data if isinstance(data, dict) else {}
 
 
 async def _download(job: Job, client: httpx.AsyncClient, link: LinkTarget, headers: dict,
