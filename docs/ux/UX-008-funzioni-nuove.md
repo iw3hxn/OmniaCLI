@@ -483,5 +483,8 @@ Visita dal vivo del pannello di riferimento con Carlo, 21/11/2026 (note `confron
 
 ## Decisioni prese
 
-Il 21/11/2026 si costruisce con le raccomandate (D1-D9) finché Carlo non dice altro; D2 (database per istanza) è
-segnalata a Carlo come la prima da confermare.
+Il 21/11/2026 si costruisce con le raccomandate (D1-D9) finché Carlo non dice altro; D2 l'ha decisa Carlo il 21/11/2026,
+**contro la raccomandata**: «Farei un Postgresql per Macchina ma attenzione che la singola istanza potrebbe far uso di
+un Postgresql su un altra macchina. Poi va considerato il caso di Odoo19 che può montare 2 database in cluster».
+§6.2 (Impostazioni › Database per istanza) non si costruisce così: la forma la decide un ADR (topologia per macchina,
+database remoto, due database in cluster, migrazione), e §6.2 si riscrive dopo.
