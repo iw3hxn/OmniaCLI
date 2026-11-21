@@ -104,6 +104,10 @@
       document.getElementById("restore-backup-first").hidden = !target.backup_first;
       document.getElementById("restore-confirm").hidden = !target.database;
       document.getElementById("restore-db").textContent = target.database;
+      // a production keeps its scheduled actions and its mail unless asked: Neutralize
+      // starts unticked there (a customer restoring their own Odoo would stop its crons)
+      const neutral = document.querySelector('[data-restore-option="neutralize"]');
+      if (neutral && /\/production\//.test(String(target.url || ""))) neutral.checked = false;
       errorBox.textContent = ""; progress.hidden = true; go.disabled = false;
       dialog.showModal();
       load();

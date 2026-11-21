@@ -1450,9 +1450,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 "type": srv.type,
                 "instances": {
                     role: {
-                        # the plugin's fields (Odoo: database)
-                        **inst.plugin.describe(inst),
-                        "service": inst.restart.service,
+                        # the plugin's fields (Odoo: database); a customer gets no host
+                        # path (a compose project's folder is its service too)
+                        **({k: v for k, v in inst.plugin.describe(inst).items() if k != "project"}
+                           if request.state.user.scoped else inst.plugin.describe(inst)),
+                        "service": None if request.state.user.scoped and str(inst.restart.service).startswith("/")
+                        else inst.restart.service,
                         "repositories": [{"name": r.name, "branch": r.branch} for r in inst.repositories],
                         "busy": jobs.is_busy(inst.key),
                         "state": states[inst.key],
