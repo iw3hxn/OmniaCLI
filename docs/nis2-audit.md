@@ -4,10 +4,20 @@ Requisito: «tutte le azioni degli utenti per la NIS 2 devono essere loggate».
 Questa pagina dice cosa registra OmniaCLI, dove, per quanto tempo, come si
 dimostra che non è stato alterato e chi lo legge.
 
-> Il periodo di conservazione predefinito (12 mesi) **non è verificato qui**
-> contro le misure di attuazione italiane della NIS 2 (d.lgs. 138/2024 e
-> determinazioni ACN): va confermato da chi segue la conformità, e si cambia
-> in Impostazioni › Opzioni › Registro degli accessi.
+> **Il periodo di conservazione.** Letto il 21/11/2026 nell'allegato 1 della determinazione ACN n. 164179 del
+> 14/04/2025 (misure di sicurezza di base, soggetti importanti), misura **PR.PS-04**:
+> punto 2, «sono conservati in modo sicuro, e possibilmente centralizzato, almeno i log necessari ai fini del
+> monitoraggio degli eventi di sicurezza», compresi gli accessi da remoto e con privilegi amministrativi (punto 1);
+> punto 3, «in accordo agli esiti della valutazione rischio di cui alla misura ID.RA-05, sono definite e documentate
+> le tempistiche di conservazione dei log». **La norma non fissa un numero di mesi**: chiede che il periodo sia
+> deciso sul rischio e scritto. I 365 giorni predefiniti sono quindi una scelta di OmniaCLI, non un obbligo: chi
+> segue la conformità la conferma o la cambia in Impostazioni › Opzioni › Registro degli accessi, e la scrive nella
+> propria procedura (punto 4). Non controllato qui: se la determinazione che ha aggiornato le specifiche di base
+> (n. 379907/2025) ha cambiato il testo di questa misura, e l'allegato 2 per i soggetti essenziali.
+>
+> Sulla verifica in due passaggi, stessa fonte, misura **PR.AA-03** punto 2: «per almeno i sistemi informativi e di
+> rete rilevanti e in accordo agli esiti della valutazione del rischio […] sono impiegate modalità di
+> autenticazione multifattore».
 
 ## Cosa si registra
 
@@ -125,7 +135,8 @@ OmniaCLI con il SIEM giù perde le voci in coda (restano nel file locale).
 
 ## Limiti noti
 
-- Il periodo di 12 mesi va confermato (vedi sopra).
+- Il periodo di 365 giorni è una scelta, non un obbligo di legge: va confermato e documentato da chi segue la
+  conformità (vedi sopra, PR.PS-04 punto 3).
 - I job di una chiamata MCP non sono legati per id alla voce `mcp`: la voce
   `job` ne dice l'autore (`mcp: <token>`), l'ora e l'esito.
 - Un job interrotto da un riavvio di OmniaCLI non ha la sua voce `job`: il job
