@@ -160,7 +160,7 @@ def test_mailpit_s_answer_as_the_page_reads_it():
     assert stagingmail._answer('WARN something\n{"total": 0}') == {"total": 0}
 
 
-async def make_staging(workspaces, client, env, monkeypatch, tmp_path, caught=True):  # noqa: F811
+async def make_staging(workspaces, client, env, monkeypatch, tmp_path, caught=True, inbox=False):  # noqa: F811
     """acme-odoo, an instance of acme, and its staging made as the page asks
     it (the helper and the backup answered here); instance.json of the
     staging as the helper writes it."""
@@ -181,7 +181,8 @@ async def make_staging(workspaces, client, env, monkeypatch, tmp_path, caught=Tr
         port = next(ports)
         folder = tmp_path / "acme" / instance
         folder.mkdir(parents=True, exist_ok=True)
-        meta = {"template": "odoo-19", **({"mail_capture": True} if caught and values.get(workspacehelper.MAIL_KEY) else {})}
+        meta = {"template": "odoo-19", **({"mail_capture": True} if caught and values.get(workspacehelper.MAIL_KEY) else {}),
+                **({workspacehelper.INBOX_META: True} if inbox and caught and values.get(workspacehelper.MAIL_KEY) else {})}
         (folder / "instance.json").write_text(json.dumps(meta))
         return {"type": "docker", "production": {
             "database": instance.replace("-", "_"), "odoo_service": "odoo", "db_service": "db", "http_port": port,
@@ -247,7 +248,8 @@ async def test_the_mail_of_a_staging_per_role(workspaces, client, env, monkeypat
         data = resp.json()
         assert data["total"] == 2 and [m["id"] for m in data["messages"]] == [m["ID"] for m in LISTED["messages"]]
         assert data["messages"][0]["from"] == "Shop <shop@example.com>" and data["first"] == 50
-    assert helper_answers[-1][-3:] == ["mail-list", "0", "50"]
+    # every message Mailpit keeps is read (the mailboxes are of all of them); 50 shown
+    assert helper_answers[-1][-3:] == ["mail-list", "0", str(composehelper.MAIL_LIMIT)]
     assert (await client.get(url + "?every=1", headers=basic("luca"))).status_code == 200
     assert helper_answers[-1][-3:] == ["mail-list", "0", str(composehelper.MAIL_LIMIT)]
     assert (await client.get(url, headers=basic("luca"))).json()["can_clear"] is False

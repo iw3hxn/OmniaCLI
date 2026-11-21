@@ -126,8 +126,47 @@ services:
       MP_UI_BIND_ADDR: 127.0.0.1:8025
       MP_MAX_MESSAGES: "500"
       MP_DISABLE_VERSION_CHECK: "true"
+      # every message to an address of a .test domain (the staging's alias
+      # domain, UX-008 §5.4) handed on to the service inbox, never elsewhere:
+      # the mailboxes Odoo reads by IMAP (a message to anyone else stays here)
+      MP_SMTP_RELAY_HOST: inbox
+      MP_SMTP_RELAY_PORT: "3025"
+      MP_SMTP_RELAY_AUTH: none
+      MP_SMTP_RELAY_ALLOW_INSECURE: "true"
+      MP_SMTP_RELAY_MATCHING: '(?i)@[a-z0-9.-]+\.test$$'  # $$: a $ for compose
+      MP_SMTP_RELAY_PRESERVE_MESSAGE_IDS: "true"
     volumes:
       - ./data/mail:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+  # a staging's incoming mail (UX-008 §5.4): GreenMail (Apache-2.0), one
+  # IMAP mailbox per address, any password, in memory (a restart empties it,
+  # the Mail tab reads Mailpit's copy). Mailpit hands it the messages to a
+  # .test address (SMTP 3025); Odoo's incoming servers read catchall@ and
+  # its aliases on inbox:3143, which compose-helper mail-inbox writes. Same
+  # profile as mail, no port published, its API on its own loopback.
+  inbox:
+    image: greenmail/standalone:2.1.5
+    profiles: ["mail-capture"]
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 128
+    cgroup_parent: ${SLICE}
+    environment:
+      GREENMAIL_OPTS: >-
+        -Dgreenmail.setup.test.smtp -Dgreenmail.setup.test.imap
+        -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.auth.disabled
+        -Dgreenmail.api.hostname=127.0.0.1
+      JAVA_OPTS: -Djava.net.preferIPv4Stack=true -Xmx128m -XX:+UseSerialGC
     logging:
       driver: json-file
       options:

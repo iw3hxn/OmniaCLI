@@ -1067,11 +1067,19 @@ ROLES_KEY = "_roles"
 # UX-008 §5.3), kept in instance.json: what conf and the page read there
 MAIL_KEY = "_mail_capture"
 MAIL_META = "mail_capture"
+# and handed to mailboxes its Odoo reads (UX-008 §5.4): a staging made from a
+# template with the inbox service; one of before catches the outgoing mail only
+INBOX_META = "mail_inbox"
 
 
 def captures_mail(meta: dict, role: str) -> bool:
     """The role's mail is caught in its project (a staging's production)."""
     return role == "production" and meta.get(MAIL_META) is True
+
+
+def receives_mail(meta: dict, role: str) -> bool:
+    """The role's mail is caught and handed to mailboxes its Odoo can read."""
+    return captures_mail(meta, role) and meta.get(INBOX_META) is True
 
 
 def create(name: str, storage: str, instance: str, template_name: str, values_json: str) -> dict:
@@ -1099,6 +1107,7 @@ def create(name: str, storage: str, instance: str, template_name: str, values_js
     roles = [r for r in ROLES if r in roles]
     # asked of a template of before (no service to catch it): not caught, said in the answer
     mail = given.pop(MAIL_KEY, False) in (True, "1", "true") and template.captures_mail()
+    inbox = mail and template.receives_mail()
     try:
         values = template.values({str(k): str(v) for k, v in given.items()})
     except stacktemplates.TemplateError as exc:
@@ -1111,9 +1120,9 @@ def create(name: str, storage: str, instance: str, template_name: str, values_js
     database = instance.replace("-", "_")
     made = {"workspace": name, "instance": instance, "template": template.name, "version": template.version,
             "database": database, "odoo_service": template.odoo_service, "db_service": template.db_service,
-            "values": values, "roles": {}, "mail_capture": mail}
+            "values": values, "roles": {}, "mail_capture": mail, "mail_inbox": inbox}
     meta = {"template": template.name, "version": template.version, "database": database,
-            **({MAIL_META: True} if mail else {})}
+            **({MAIL_META: True} if mail else {}), **({INBOX_META: True} if inbox else {})}
     folder.mkdir(mode=0o755)
     try:
         _write(folder / INSTANCE_FILE, json.dumps(meta) + "\n")

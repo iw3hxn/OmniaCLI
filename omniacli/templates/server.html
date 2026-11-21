@@ -490,9 +490,26 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     <p class="mail-state" role="status" style="margin: 0">{{ _("Reading…") }}</p>
     <div class="head-actions">
       <button type="button" class="small" id="mail-reload" title="{{ _('Reads the caught mail again now. It changes nothing.') }}">{{ _("Read again") }}</button>
+      {% if mail_inbox and is_developer_here %}<button type="button" class="small" id="mail-write" title="{{ _('Writes a message as a person outside the company (a customer, a supplier), to an address of this staging: it is kept here and goes to the mailbox Odoo reads (its catchall or an alias), never outside') }}">{{ _("Write as…") }}</button>{% endif %}
       {% if is_admin_here %}<button type="button" class="small danger" id="mail-clear" title="{{ _('Deletes every caught message of this staging. It does not touch Odoo nor its queue of mail.') }}">{{ _("Empty…") }}</button>{% endif %}
     </div>
   </div>
+  {% if mail_inbox %}
+  {# its incoming mail (UX-008 §5.4): what Odoo reads, read when the tab opens (odoo shell, some seconds) #}
+  <div class="mail-inbox section-head" data-api="{{ prefix }}/api/servers/{{ server.name }}/production/mail/inbox" style="margin-top: 8px">
+    <p class="mail-inbox-state muted" role="status" style="margin: 0">{{ _("Incoming mail: reading…") }}</p>
+    {% if is_developer_here %}<div class="head-actions">
+      <button type="button" class="small" id="mail-inbox-on" hidden title="{{ _('Configures Odoo of this staging to read its mail: the alias domain {domain} on every company and the aliases moved onto it, an incoming server per mailbox (catchall and each alias) on the mailboxes of this staging, every other incoming server archived, the outgoing server the one of this tab alone, the two mail crons on (outgoing queue and mailboxes); the other crons stay off. It can be run again.', domain=mail_domain) }}">{{ _("Switch reception on") }}</button>
+      <button type="button" class="small" id="mail-inbox-fetch" hidden title="{{ _('Configures the mailboxes again (an alias made since gets its own), sends the outgoing queue of Odoo (to this tab), then reads every mailbox now instead of waiting for the cron (every 5 minutes)') }}">{{ _("Read now") }}</button>
+    </div>{% endif %}
+  </div>
+  {% else %}
+  <p class="muted">{{ _("This staging receives no mail: it was made before its mailboxes. What its Odoo sends is read here.") }}</p>
+  {% endif %}
+  <p class="mail-boxes" hidden style="margin: 8px 0"><label for="mail-box">{{ _("Mailbox") }}</label>
+    <select id="mail-box" style="width: auto; max-width: 100%" title="{{ _('Shows the messages of one address only: what it received and what it wrote. Every address of the caught mail is a mailbox.') }}">
+      <option value="">{{ _("Every message") }}</option>
+    </select></p>
   <p class="muted mail-empty" hidden>{{ _("No message. What Odoo of this staging sends (invoices, invitations, notices) arrives here and does not leave.") }}</p>
   <div class="scroll"><table class="mail-table" hidden>
     <tr><th>{{ _("Received on") }}</th><th>{{ _("Mail to") }}</th><th>{{ _("Subject") }}</th></tr>
@@ -514,9 +531,38 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     <p class="error" id="mm-error" role="alert"></p>
     <div class="actions">
       <button type="button" id="mm-close" title="{{ _('Closes the message: it is not sent, nothing changes') }}">{{ _("Close") }}</button>
+      {% if mail_inbox and is_developer_here %}<button type="button" id="mm-reply" title="{{ _('Opens Write as… with the answer of the recipient of this message: from that address to its Reply-To, with Re: and the message quoted, tied to it by its Message-ID so that Odoo puts it on its record') }}">{{ _("Reply") }}</button>{% endif %}
     </div>
   </dialog>
 </section>
+{% if mail_inbox and is_developer_here %}
+{# Write as… (UX-008 §5.4): a message of an outside sender, built by the helper, never sent outside #}
+<dialog id="mail-write-dialog" class="sd" aria-labelledby="mw-title">
+  <form id="mw-form" novalidate>
+    <h2 id="mw-title">{{ _("Write as an outside sender") }}</h2>
+    <div class="sd-field"><label class="sd-label" for="mw-from">{{ _("Mail from") }}</label>
+      <input type="email" id="mw-from" class="mono" required value="cliente@example.com" spellcheck="false" style="width: 100%"
+             title="{{ _('The address of the person who writes: Odoo finds the partner with this address, or treats it as a new sender') }}"></div>
+    <div class="sd-field"><label class="sd-label" for="mw-name">{{ _("Name") }}</label>
+      <input type="text" id="mw-name" maxlength="80" value="{{ _('Test customer') }}" style="width: 100%"></div>
+    <div class="sd-field"><label class="sd-label" for="mw-to">{{ _("Mail to") }}</label>
+      <input type="text" id="mw-to" class="mono" required list="mw-boxes" value="catchall@{{ mail_domain }}" spellcheck="false" style="width: 100%"
+             title="{{ _('An address of this staging (its catchall or an alias, @{domain}) reaches Odoo; any other stays in this tab. Several separated by commas.', domain=mail_domain) }}">
+      <datalist id="mw-boxes"></datalist></div>
+    <div class="sd-field"><label class="sd-label" for="mw-subject">{{ _("Subject") }}</label>
+      <input type="text" id="mw-subject" required maxlength="250" style="width: 100%"></div>
+    <div class="sd-field"><label class="sd-label" for="mw-body">{{ _("Text") }}</label>
+      <textarea id="mw-body" rows="9" style="width: 100%"></textarea></div>
+    <p class="sd-help" id="mw-reply-note" hidden>{{ _("An answer to the message opened: Odoo puts it on the record that message came from.") }}</p>
+    <p class="sd-help">{{ _("Nothing leaves: the message is kept in this tab and goes to the mailbox of its address in this staging. Odoo reads it with Read now, or by itself within 5 minutes when reception is on.") }}</p>
+    <p id="mw-error" class="error" role="alert"></p>
+    <div class="sd-foot">
+      <button type="button" id="mw-cancel" title="{{ _('Closes without sending anything') }}">{{ _("Cancel") }}</button>
+      <button type="submit" class="primary" id="mw-send" title="{{ _('Sends the message as the sender above to the mail service of this staging: it shows in this tab, and to an address of the staging it goes to the mailbox Odoo reads. Nothing leaves this staging.') }}">{{ _("Send") }}</button>
+    </div>
+  </form>
+</dialog>
+{% endif %}
 {% endif %}
 
 {% if can_act %}
@@ -1027,7 +1073,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
       p.hidden = p.dataset.panel !== name || (p.classList.contains("instance-charts") && !loadMeasured);
     }
     if (name === "backups") loadBackups();
-    if (name === "mail") loadMail();
+    if (name === "mail") { loadMail(); loadInbox(); }
     if (name === "settings" && document.querySelector('[data-section="odoo-config"]')) loadOdooConfig();
     if (name === "monitor") {
       since = 0; for (const k in series) delete series[k]; refresh();
@@ -2244,17 +2290,31 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     rowTitle: {{ _("Opens the message as it was, without sending it") | tojson }},
     clearQ: {{ _("Delete every caught message of {server}? It cannot be undone; Odoo and its queue of mail are not touched.", server=server.name) | tojson }},
     noText: {{ _("The message has no text.") | tojson }},
+    boxAll: {{ _("Every message") | tojson }}, boxOf: {{ _("{address} ({n})") | tojson }},
+    inboxOff: {{ _("Incoming mail: off. Odoo of this staging reads no mailbox; what is written to it stays here.") | tojson }},
+    inboxOn: {{ _("Incoming mail: on. Odoo reads {n} mailboxes of {domain} every 5 minutes; last read {date}.") | tojson }},
+    inboxNever: {{ _("never") | tojson }},
+    inboxBusy: {{ _("Incoming mail: Odoo is configuring and reading its mailboxes…") | tojson }},
+    inboxUnread: {{ _("Incoming mail: Odoo does not answer now: {error}") | tojson }},
+    inboxDone: {{ _("Reception on: Odoo reads {n} mailboxes of {domain}.") | tojson }},
+    fetched: {{ _("Read now: {n} new messages in Odoo.") | tojson }},
+    sent: {{ _("Sent as {from} to {to}. Odoo reads it with Read now, or within 5 minutes.") | tojson }},
+    re: {{ _("Re:") | tojson }}, wrote: {{ _("{who} wrote:") | tojson }},
   };
   const MAIL_EVERY = 10000, SUBJECT_MAX = 80;
-  let mailTimer = null, mailRound = 0, mailAll = false;
+  let mailTimer = null, mailRound = 0, mailAll = false, mailBoxes = [], inboxBoxes = [], mailOpen = null;
+  const boxSelect = document.getElementById("mail-box");
   async function loadMail() {
     if (!mailBox) return;
     clearTimeout(mailTimer);
     const round = ++mailRound;
     const state = mailBox.querySelector(".mail-state");
     let data = null, error = "";
+    const query = new URLSearchParams();
+    if (mailAll) query.set("every", "1");
+    if (boxSelect && boxSelect.value) query.set("box", boxSelect.value);
     try {
-      const resp = await fetch(mailBox.dataset.api + (mailAll ? "?every=1" : ""), {headers: {Accept: "application/json"}});
+      const resp = await fetch(mailBox.dataset.api + (query.toString() ? "?" + query : ""), {headers: {Accept: "application/json"}});
       data = await resp.json().catch(() => ({}));
       if (!resp.ok) { error = data.error || data.detail || String(resp.status); data = null; }
     } catch (e) { error = e.message; }
@@ -2291,6 +2351,123 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     const more = mailBox.querySelector(".mail-more"), button = document.getElementById("mail-all");
     more.hidden = total <= rows.length;
     button.textContent = M.all.replace("{n}", total); button.title = M.allTitle;
+    drawBoxes(data.boxes || []);
+  }
+  // the mailboxes: every address of the caught mail, the one chosen kept
+  function drawBoxes(boxes) {
+    mailBoxes = boxes.map((b) => b.address);
+    mailBox.querySelector(".mail-boxes").hidden = !boxes.length;
+    const chosen = boxSelect.value;
+    boxSelect.replaceChildren(new Option(M.boxAll, ""));
+    for (const b of boxes) boxSelect.append(new Option(M.boxOf.replace("{address}", b.address).replace("{n}", b.count), b.address));
+    if (chosen && !mailBoxes.includes(chosen)) boxSelect.append(new Option(chosen, chosen));
+    boxSelect.value = chosen;
+    fillWriteList();
+  }
+  // its incoming mail (UX-008 §5.4): read when the tab opens, not every 10 s (odoo shell takes seconds)
+  const inboxBox = document.querySelector(".mail-inbox");
+  function drawInbox(data) {
+    const state = inboxBox.querySelector(".mail-inbox-state");
+    const n = (data.mailboxes || []).length;
+    state.textContent = data.on
+      ? M.inboxOn.replace("{n}", n).replace("{domain}", data.domain).replace("{date}", data.last_fetch ? whenText(data.last_fetch) : M.inboxNever)
+      : M.inboxOff;
+    state.title = (data.mailboxes || []).join(", ");
+    inboxBoxes = data.mailboxes || [];
+    const on = document.getElementById("mail-inbox-on"), fetchNow = document.getElementById("mail-inbox-fetch");
+    if (on) on.hidden = !!data.on;
+    if (fetchNow) fetchNow.hidden = !data.on;
+    fillWriteList();
+  }
+  // the addresses Write as… offers: the staging's mailboxes, then those of the caught mail
+  function fillWriteList() {
+    const list = document.getElementById("mw-boxes");
+    if (list) list.replaceChildren(...[...new Set([...inboxBoxes, ...mailBoxes])].map((a) => new Option(a, a)));
+  }
+  async function loadInbox() {
+    if (!inboxBox) return;
+    const state = inboxBox.querySelector(".mail-inbox-state");
+    try {
+      const resp = await fetch(inboxBox.dataset.api, {headers: {Accept: "application/json"}});
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) { state.textContent = M.inboxUnread.replace("{error}", data.error || data.detail || resp.status); return; }
+      drawInbox(data);
+    } catch (e) { state.textContent = M.inboxUnread.replace("{error}", e.message); }
+  }
+  async function actInbox(fetchNow) {
+    const state = inboxBox.querySelector(".mail-inbox-state");
+    const buttons = inboxBox.querySelectorAll("button");
+    buttons.forEach((b) => { b.disabled = true; });
+    state.textContent = M.inboxBusy;
+    let data = {}, resp = null;
+    try {
+      resp = await fetch(inboxBox.dataset.api, {method: "POST",
+        headers: {Accept: "application/json", "Content-Type": "application/json"}, body: JSON.stringify({fetch: fetchNow})});
+      data = await resp.json().catch(() => ({}));
+    } catch (e) { data = {error: e.message}; }
+    buttons.forEach((b) => { b.disabled = false; });
+    if (!resp || !resp.ok) { state.textContent = M.inboxUnread.replace("{error}", data.error || data.detail || T.refused); return; }
+    drawInbox(data);
+    const said = (data.said || []).join("\n");
+    const head = fetchNow ? M.fetched.replace("{n}", data.fetched || 0)
+      : M.inboxDone.replace("{n}", (data.mailboxes || []).length).replace("{domain}", data.domain);
+    omniaSay(said ? head + "\n\n" + said : head);
+    loadMail();
+  }
+  // Write as… and Reply: the message of an outside sender
+  const writeDialog = document.getElementById("mail-write-dialog");
+  function openWrite(reply) {
+    const $ = (id) => document.getElementById(id);
+    $("mw-error").textContent = "";
+    $("mw-reply-note").hidden = !reply;
+    writeDialog.dataset.inReplyTo = reply ? reply.message_id || "" : "";
+    if (reply) {
+      // the person outside answers: the mailbox chosen when it got the message, else its first
+      // recipient outside the staging, to its Reply-To; a message an outside person wrote
+      // (to the staging only): that person writes again, in the same thread
+      const outside = (reply.to_addresses || []).filter((a) => !a.endsWith("@" + {{ mail_domain | tojson }}));
+      if (outside.length) {
+        $("mw-from").value = outside.includes(boxSelect.value) ? boxSelect.value : outside[0];
+        $("mw-to").value = (reply.reply_to && reply.reply_to[0]) || reply.from_address || "";
+      } else {
+        $("mw-from").value = reply.from_address || $("mw-from").value;
+        $("mw-to").value = (reply.to_addresses || []).join(", ");
+      }
+      // the name the message gave that address ("Mario Prova <cliente@example.com>")
+      const named = [...(reply.to || []), reply.from || ""].find((t) => t.toLowerCase().endsWith("<" + $("mw-from").value + ">"));
+      $("mw-name").value = named ? named.slice(0, named.lastIndexOf("<")).trim() : "";
+      $("mw-subject").value = /^(re|r|aw|sv):/i.test(reply.subject) ? reply.subject : M.re + " " + reply.subject;
+      const quoted = (reply.text || "").replace(/\r\n/g, "\n").replace(/\n\s*\n(\s*\n)+/g, "\n\n").trim()
+        .split("\n").map((l) => "> " + l).join("\n");
+      $("mw-body").value = "\n\n" + M.wrote.replace("{who}", reply.from) + "\n" + quoted;
+    } else {
+      if (boxSelect.value && !boxSelect.value.endsWith("@" + {{ mail_domain | tojson }})) $("mw-from").value = boxSelect.value;
+      $("mw-subject").value = ""; $("mw-body").value = "";
+    }
+    writeDialog.showModal();
+    (reply ? $("mw-body") : $("mw-subject")).focus();
+    if (reply) $("mw-body").setSelectionRange(0, 0);
+  }
+  async function sendWrite(event) {
+    event.preventDefault();
+    const $ = (id) => document.getElementById(id);
+    const message = {from: $("mw-from").value.trim(), name: $("mw-name").value.trim(), to: $("mw-to").value,
+                     subject: $("mw-subject").value.trim(), body: $("mw-body").value};
+    if (writeDialog.dataset.inReplyTo) message.in_reply_to = writeDialog.dataset.inReplyTo;
+    $("mw-error").textContent = "";
+    $("mw-send").disabled = true;
+    let resp = null, data = {};
+    try {
+      resp = await fetch(`${mailBox.dataset.api}/send`, {method: "POST",
+        headers: {Accept: "application/json", "Content-Type": "application/json"}, body: JSON.stringify(message)});
+      data = await resp.json().catch(() => ({}));
+    } catch (e) { data = {error: e.message}; }
+    $("mw-send").disabled = false;
+    if (!resp || !resp.ok) { $("mw-error").textContent = data.error || data.detail || T.refused; return; }
+    writeDialog.close();
+    mailDialog.close();
+    omniaSay(M.sent.replace("{from}", message.from).replace("{to}", message.to));
+    loadMail();
   }
   const mailDialog = document.getElementById("mail-message");
   async function openMail(id) {
@@ -2305,6 +2482,9 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
       if (!resp.ok) { $("#mm-error").textContent = m.error || m.detail || T.refused; m = null; }
     } catch (e) { $("#mm-error").textContent = M.unread.replace("{error}", e.message); }
     $("#mm-reading").hidden = true;
+    mailOpen = m;
+    const reply = $("#mm-reply");
+    if (reply) reply.hidden = !m;
     if (!m) return;
     $("#mm-subject").textContent = m.subject; $("#mm-from").textContent = m.from;
     $("#mm-to").textContent = (m.to || []).join(", "); $("#mm-cc").textContent = (m.cc || []).join(", ");
@@ -2323,6 +2503,13 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     document.getElementById("mail-reload").addEventListener("click", loadMail);
     document.getElementById("mail-all").addEventListener("click", () => { mailAll = true; loadMail(); });
     document.getElementById("mm-close").addEventListener("click", () => mailDialog.close());
+    boxSelect.addEventListener("change", () => { mailAll = false; loadMail(); });
+    document.getElementById("mail-inbox-on")?.addEventListener("click", () => actInbox(false));
+    document.getElementById("mail-inbox-fetch")?.addEventListener("click", () => actInbox(true));
+    document.getElementById("mail-write")?.addEventListener("click", () => openWrite(null));
+    document.getElementById("mm-reply")?.addEventListener("click", () => { if (mailOpen) openWrite(mailOpen); });
+    document.getElementById("mw-form")?.addEventListener("submit", sendWrite);
+    document.getElementById("mw-cancel")?.addEventListener("click", () => writeDialog.close());
     document.getElementById("mail-clear")?.addEventListener("click", async () => {
       if (!await omniaAsk(M.clearQ, {{ _("Delete") | tojson }}, {danger: true})) return;
       const error = document.getElementById("page-error");

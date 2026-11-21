@@ -151,6 +151,16 @@ command of the caller's, and runs docker with an environment of its own:
                                          published): the messages from the
                                          newest, one message, all deleted;
                                          JSON as Mailpit answers
+    mail-send                            a message written as an outside
+                                         sender, {from, name, to, subject,
+                                         body, in_reply_to} as JSON on the
+                                         input, checked and built here, to
+                                         the mail service's SMTP (a staging
+                                         with the inbox service only)
+    mail-inbox <odoo service> <db>       Odoo's incoming mail of a staging
+                                         (odoo/mail_inbox.py in odoo shell),
+                                         {mode: state|on|fetch, domain:
+                                         <name>.test} as JSON on the input
 
 A database name is [A-Za-z0-9_.-], a module [a-z0-9_]; a service must be one
 of the project's. They reach the container's shell as its arguments, never
@@ -161,6 +171,10 @@ entrypoint makes, from HOST, PORT, USER and PASSWORD (or PASSWORD_FILE).
 from __future__ import annotations
 
 import base64
+import email.message
+import email.policy
+import email.utils
+import html
 import json
 import os
 import pwd
@@ -287,7 +301,7 @@ WITH_ARGUMENTS = ("logs", "version", "port", "dump", "load", "update", "psql", "
                   "setup", "options", "image", "verify", "pip-freeze",
                   "pg-report", "pg-terminate", "neutralize", "pip-requirements", "terminal",
                   "mail-list", "mail-get", "mail-clear", "pg-settings", "pg-set", "pg-reset", "db-restart",
-                  "modules")
+                  "modules", "mail-send", "mail-inbox")
 # the tuning's actions that read their values on the input (pg_tune())
 TUNE_ACTIONS = ("pg-set", "pg-reset", "db-restart")
 # a staging's caught mail (stacktemplates.MAIL_SERVICE, templates' compose.yaml):
@@ -298,6 +312,24 @@ MAIL_API = "http://127.0.0.1:8025/api/v1"
 MAIL_ID = re.compile(r"[A-Za-z0-9]{8,40}")
 MAIL_LIMIT = 500
 MAIL_START = 100000
+# a staging's incoming mail (UX-008 §5.4): mail-send reads a message as an
+# outside sender writes it (JSON on the input, MAIL_INPUT bytes at most), the
+# helper builds it and hands it to the mail service's SMTP, which keeps it
+# and gives a message to a .test address to the inbox service's mailboxes.
+# An address of one plain form (no name, no quote, no space), never starting
+# with "-"; a Message-ID as Mailpit shows it, without its brackets
+INBOX_SERVICE = "inbox"
+MAIL_INPUT = 262144
+ADDRESS = re.compile(r"[A-Za-z0-9][A-Za-z0-9._%+-]{0,63}@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+                     r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+")
+MESSAGE_ID = re.compile(r"[A-Za-z0-9!#$%&'*+/=?^_`{|}~.@-]{1,250}")
+MAIL_RECIPIENTS = 10
+SUBJECT_MAX, BODY_MAX, NAME_MAX = 250, 100000, 80
+# mail-inbox: the script odoo shell runs (odoo/mail_inbox.py), its mode and
+# the staging's alias domain, a .test one, put in front of it by the helper
+INBOX_SCRIPT = Path(__file__).parent / "odoo" / "mail_inbox.py"
+INBOX_MODES = ("state", "on", "fetch")
+TEST_DOMAIN = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.test")
 # a repository of the instance's addons (/mnt/customer-addons/<name>)
 REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 DATABASE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,62}")
@@ -406,6 +438,11 @@ SCRIPTS = {
                   '| nc -w 20 127.0.0.1 8025 | head -n 1)"; '
                   'case "$r" in "HTTP/1."?" 200"*) echo cleared;; '
                   '*) echo "the mail service answered: ${r:-nothing}" >&2; exit 1;; esac',
+    # a message of an outside sender (mail_send()) on the input, to the
+    # service's own SMTP: the envelope's sender, then its recipients
+    "mail-send": 'f="$1"; shift; exec /mailpit sendmail -S 127.0.0.1:1025 -f "$f" "$@"',
+    # odoo shell reads mail_inbox.py from its input; quiet, the answer is its last line
+    "mail-inbox": ODOO_DB + 'exec odoo shell -d "$1" --no-http --log-level=critical',
     "pip-requirements": 'f="/mnt/customer-addons/$1/requirements.txt"; if [ -f "$f" ]; then '
                         'exec python3 -m pip install --user --break-system-packages --disable-pip-version-check '
                         '--no-warn-script-location -r "$f"; else echo "$1 has no requirements.txt"; fi',
@@ -732,6 +769,14 @@ def commands(project: Path, action: str, args: list[str]) -> list[list[str]]:
         if args:
             raise HelperError("mail-clear takes no arguments")
         return [_script(service(project, MAIL_SERVICE), "mail-clear")]
+    if action == "mail-send":
+        raise HelperError("mail-send reads its message on the input: compose-helper <project> mail-send")
+    if action == "mail-inbox":
+        # mail-inbox <odoo service> <database>: the mode and domain on the helper's input
+        if len(args) != 2:
+            raise HelperError("usage: mail-inbox <service> <database> (mode and domain, JSON, on the input)")
+        service(project, INBOX_SERVICE)
+        return [_script(service(project, args[0]), "mail-inbox", _database(args[1]))]
     if action == "terminal":
         # terminal <odoo service>: on the caller's terminal, never as root
         if len(args) != 1:
@@ -872,6 +917,112 @@ def setup_input(raw: bytes) -> bytes:
             raise HelperError(f"setup: {country!r} is not a country code, as CH")
         clean["country"] = country
     return f"OMNIACLI_SETUP = {clean!r}\n".encode() + SETUP_SCRIPT.read_bytes()
+
+
+def inbox_input(raw: bytes) -> bytes:
+    """What odoo shell reads for mail-inbox: {"mode", "domain"} checked (a
+    mode of INBOX_MODES, a .test domain of one label) as a Python literal,
+    then the script."""
+    try:
+        data = json.loads(raw or b"{}")
+    except ValueError:
+        raise HelperError("mail-inbox: the input is no JSON") from None
+    if not isinstance(data, dict) or set(data) != {"mode", "domain"}:
+        raise HelperError("mail-inbox: the input takes mode and domain")
+    if data["mode"] not in INBOX_MODES:
+        raise HelperError(f"mail-inbox: the mode is one of {', '.join(INBOX_MODES)}")
+    if not isinstance(data["domain"], str) or not TEST_DOMAIN.fullmatch(data["domain"]):
+        raise HelperError(f"mail-inbox: {data['domain']!r} is not a domain <name>.test (never a real one)")
+    clean = {"mode": data["mode"], "domain": data["domain"]}
+    return f"OMNIACLI_MAIL = {clean!r}\n".encode() + INBOX_SCRIPT.read_bytes()
+
+
+def _one_line(value, what: str, most: int, empty: bool = True) -> str:
+    if value is None:
+        value = ""
+    if not isinstance(value, str) or len(value) > most or any(ord(c) < 32 or c == "\x7f" for c in value) \
+            or (not empty and not value.strip()):
+        raise HelperError(f"mail-send: {what} is one line of at most {most} characters"
+                          + ("" if empty else ", not empty"))
+    return value.strip()
+
+
+def _address(value, what: str) -> str:
+    if not isinstance(value, str) or not ADDRESS.fullmatch(value):
+        raise HelperError(f"mail-send: {what} {value!r} is not an address as name@example.com")
+    return value
+
+
+def mail_message(raw: bytes) -> tuple[str, list[str], bytes]:
+    """(envelope sender, recipients, the message) of what an outside sender
+    writes, JSON: {"from", "name"?, "to": [..], "subject", "body",
+    "in_reply_to"?}; every value checked, the message built here (headers
+    folded and encoded by Python's email), never text of the caller's."""
+    if len(raw) > MAIL_INPUT:
+        raise HelperError(f"mail-send: the message is larger than {MAIL_INPUT} bytes")
+    try:
+        data = json.loads(raw or b"{}")
+    except ValueError:
+        raise HelperError("mail-send: the input is no JSON") from None
+    if not isinstance(data, dict) or not {"from", "to", "subject", "body"} <= set(data) \
+            or set(data) - {"from", "name", "to", "subject", "body", "in_reply_to"}:
+        raise HelperError("mail-send: the input takes from, to, subject, body, and name and in_reply_to")
+    sender = _address(data["from"], "the sender")
+    to = data["to"]
+    if not isinstance(to, list) or not 1 <= len(to) <= MAIL_RECIPIENTS:
+        raise HelperError(f"mail-send: to is a list of 1 to {MAIL_RECIPIENTS} addresses")
+    recipients = list(dict.fromkeys(_address(a, "the recipient") for a in to))
+    name = _one_line(data.get("name"), "the name", NAME_MAX)
+    subject = _one_line(data["subject"], "the subject", SUBJECT_MAX, empty=False)
+    body = data["body"]
+    if not isinstance(body, str) or len(body) > BODY_MAX or "\x00" in body:
+        raise HelperError(f"mail-send: the body is a text of at most {BODY_MAX} characters")
+    reply = data.get("in_reply_to") or ""
+    if reply and (not isinstance(reply, str) or not MESSAGE_ID.fullmatch(reply.strip("<>"))):
+        raise HelperError("mail-send: in_reply_to is a Message-ID")
+    message = email.message.EmailMessage(policy=email.policy.SMTP)
+    message["From"] = email.utils.formataddr((name, sender)) if name else sender
+    message["To"] = ", ".join(recipients)
+    message["Subject"] = subject
+    message["Date"] = email.utils.formatdate(localtime=True)
+    message["Message-ID"] = email.utils.make_msgid(domain=sender.rpartition("@")[2])
+    if reply:
+        # Odoo finds the record of a reply by these (mail.thread message_route)
+        message["In-Reply-To"] = f"<{reply.strip('<>')}>"
+        message["References"] = f"<{reply.strip('<>')}>"
+    text = body.replace("\r\n", "\n")
+    message.set_content(text)
+    # and as HTML, as a mail program sends it: Odoo shows a text alone in a
+    # <pre>, and folds the quoted lines (> ...) of a blockquote
+    message.add_alternative(_html_of(text), subtype="html")
+    return sender, recipients, message.as_bytes()
+
+
+def _html_of(text: str) -> str:
+    """The text as HTML, escaped: its lines with <br>, the lines quoted with
+    > in a blockquote."""
+    parts, quoted = [], []
+
+    def flush():
+        if quoted:
+            parts.append("<blockquote>" + "<br>".join(quoted) + "</blockquote>")
+            quoted.clear()
+    for line in text.split("\n"):
+        if line.startswith(">"):
+            quoted.append(html.escape(line[1:].removeprefix(" ")))
+            continue
+        flush()
+        parts.append(html.escape(line) + "<br>")
+    flush()
+    return "<div>" + "".join(parts) + "</div>"
+
+
+def mail_send(project: Path, raw: bytes) -> tuple[list[str], bytes]:
+    """The command of mail-send and its input: the message to the mail
+    service, in a staging whose mailboxes Odoo reads (the inbox service)."""
+    sender, recipients, message = mail_message(raw)
+    service(project, INBOX_SERVICE)
+    return _script(service(project, MAIL_SERVICE), "mail-send", sender, *recipients), message
 
 
 def tune_input(action: str, raw: bytes) -> tuple[dict[str, str], list[str]]:
@@ -1055,6 +1206,13 @@ def run(argv: list[str]) -> int:
         extra = {"input": OPTIONS_SCRIPT.read_bytes()}
     if action == "setup":
         extra = {"input": setup_input(sys.stdin.buffer.read(65536))}
+    if action == "mail-inbox":
+        extra = {"input": inbox_input(sys.stdin.buffer.read(4096))}
+    if action == "mail-send":
+        if args:
+            raise HelperError("mail-send takes no arguments: the message, JSON, on the input")
+        cmd, message = mail_send(project, sys.stdin.buffer.read(MAIL_INPUT + 1))
+        return subprocess.run(compose(project, *cmd), env=ENV, cwd=project, input=message).returncode
     for cmd in commands(project, action, args):
         code = subprocess.run(compose(project, *cmd), env=ENV, cwd=project, **extra).returncode
         if code:

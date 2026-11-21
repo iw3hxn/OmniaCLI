@@ -192,6 +192,88 @@ Posizione: dopo Panoramica. Le schede della staging diventano Panoramica · Post
 | svuota | admin del workspace | pericolo `.small`, conferma | Svuota… | «Cancella tutti i messaggi catturati di questa staging. Non tocca Odoo né la sua coda di posta.» **(route da creare: `POST …/mail/clear`)** |
 | riga | tutti | riga cliccabile | — | «Apre il messaggio com'era, senza mandarlo» **(route da creare: `GET /api/servers/{s}/production/mail`, `…/mail/{id}`)** |
 
+### 5.4 Posta in arrivo della staging: caselle esterne, «Scrivi come…», «Attiva la ricezione» (21/11/2026)
+
+Richiesta di Carlo: «Per la posta possiamo fare una cosa simile a quanto fatto per pet levrieri in locale che vediamo su
+una pagina la posta anche a caselle esterne così si può simulare invio e ricezione di una persona esterna». Il modello è
+il laboratorio di posta locale (skill `odoo-mail-lab`: Mailpit → GreenMail → Odoo per IMAP), portato dentro il progetto
+compose della staging.
+
+**Come gira la posta.**
+
+```
+Odoo ──SMTP invalid:1025──> mail (Mailpit: la scheda Posta legge qui tutto)
+                               │ inoltra solo i destinatari *.test
+                               v
+                            inbox (GreenMail: una casella IMAP per indirizzo, in memoria)
+                               │ IMAP inbox:3143
+                               v
+                            Odoo: un server in arrivo per casella (catchall + ogni alias) → chatter, record nuovi
+«Scrivi come…» ──compose-helper mail-send──> mail (come sopra)
+```
+
+- **Servizi** (template odoo-18 e odoo-19 2026.1.3, odooplm-20 2026.1.9): `mail` (Mailpit v1.33.1, com'era) con
+  l'inoltro automatico verso `inbox:3025` dei soli destinatari `@….test` (`MP_SMTP_RELAY_MATCHING`); `inbox`
+  (`greenmail/standalone:2.1.5`, Apache-2.0) nello stesso profilo `mail-capture`. Nessuna porta pubblicata, sola
+  lettura, `cap_drop: ALL`, nella slice del workspace, la sua API su `127.0.0.1` del suo container, Java a 128 MB.
+- **Perché GreenMail e non altro**: Odoo legge la posta in arrivo solo da un server IMAP o POP (`fetchmail.server`), e
+  così la richiesta va provata, per la strada standard. Il POP di Mailpit non va: dà a ogni utente tutti i messaggi e
+  Odoo, leggendoli, li cancella dalla scheda. Iniettare i messaggi con `message_process` salterebbe proprio il pezzo da
+  provare (server in arrivo, cron, alias).
+- **Dominio alias**: il nome della staging come un'etichetta di `.test` (`acme-odoo-stg-20261121-4.test`),
+  `stagingmail.domain_of`. `.test` non esiste fuori (RFC 2606); un dominio vero non si scrive mai.
+- **Le caselle della scheda** sono gli indirizzi della posta catturata (mittente, A, Cc): la casella
+  `cliente@example.com` mostra quello che Odoo le ha mandato e quello che lei ha scritto. Si leggono da Mailpit, non da
+  GreenMail: i messaggi a un indirizzo esterno restano solo lì.
+
+**Nella scheda Posta** (solo le staging nate con il servizio `inbox`, `instance.json` `mail_inbox`).
+
+- Una seconda riga di stato: «Ricezione: spenta. L'Odoo di questa staging non legge nessuna casella…» oppure
+  «Ricezione: attiva. Odoo legge 3 caselle di acme-odoo-stg-20261121-4.test ogni 5 minuti; ultima lettura …». Si legge
+  quando la scheda si apre (un `odoo shell`, qualche secondo), non ogni 10 s.
+- «Casella»: un menu con «Tutti i messaggi» e un indirizzo per riga, con quanti messaggi ha.
+- Il dialogo del messaggio ha «Rispondi».
+- «Scrivi come…» apre un `<dialog>`: Da (`cliente@example.com`), Nome (`Cliente di prova`), A (`catchall@<dominio>`,
+  con le caselle proposte), Oggetto, Testo. «Rispondi» lo riempie: Da è il destinatario del messaggio (la casella
+  scelta, se è fra i destinatari), A è il suo Reply-To, l'oggetto con «R:», il testo citato, e il messaggio porta
+  `In-Reply-To`/`References` con il Message-ID dell'originale, così Odoo lo mette nel chatter del record.
+- **Vuoto / staging di prima**: «Questa staging non riceve posta: è nata prima delle caselle. Quello che il suo Odoo
+  manda si legge qui.» Nessun pulsante nuovo.
+- **HIDE**: le intestazioni grezze, gli indirizzi dei servizi, la password delle caselle.
+
+**«Attiva la ricezione»** (`odoo/mail_inbox.py` in `odoo shell`, idempotente; rifiuta un database non neutralizzato):
+
+1. il dominio alias della staging su ogni azienda, e gli alias con un nome spostati lì (un alias il cui nome c'è già sul
+   dominio resta dov'è, e lo dice);
+2. un server in arrivo IMAP per casella, `catchall@` più ogni alias con un nome (non `bounce`, al massimo 60), su
+   `inbox:3143`, con la prova del login; **ogni altro server in arrivo archiviato**: quello vero del cliente leggerebbe,
+   e cancellerebbe, la sua casella vera, e il firewall ferma solo l'SMTP;
+3. in uscita solo il server della cattura (`invalid:1025`, quello di `odoo neutralize`; rifatto se manca), gli altri
+   archiviati;
+4. accesi i due cron della posta (`mail.ir_cron_mail_scheduler_action`, `mail.ir_cron_mail_gateway_action`); gli altri
+   cron restano come li ha lasciati `odoo neutralize`, spenti.
+
+«Leggi adesso» fa lo stesso (un alias nato dopo prende la sua casella), poi manda la coda in uscita di Odoo e legge ogni
+casella subito; dice quanti messaggi nuovi sono entrati.
+
+| Pulsante | Chi | Tipo | Etichetta | `title` |
+|---|---|---|---|---|
+| scrivi | developer e admin del workspace | secondario `.small` | Scrivi come… | «Scrive un messaggio come una persona fuori dall'azienda (un cliente, un fornitore) a un indirizzo di questa staging: resta qui e va nella casella che Odoo legge (il suo catchall o un alias), mai fuori» `POST …/production/mail/send` |
+| attiva | developer e admin | secondario `.small`, solo a ricezione spenta | Attiva la ricezione | il testo dei quattro punti qui sopra; `POST …/production/mail/inbox` `{"fetch": false}` |
+| leggi | developer e admin | secondario `.small`, solo a ricezione attiva | Leggi adesso | «Riconfigura le caselle (un alias nato dopo prende la sua), manda la coda in uscita di Odoo (in questa scheda), poi legge adesso ogni casella invece di aspettare il cron (ogni 5 minuti)» `POST …/mail/inbox` `{"fetch": true}` |
+| rispondi | developer e admin | secondario nel dialogo del messaggio | Rispondi | «Apre Scrivi come… con la risposta del destinatario di questo messaggio…» |
+| manda | developer e admin | primario del dialogo | Manda | «Manda il messaggio, come il mittente qui sopra, al servizio di posta di questa staging…» |
+| casella | tutti | `select` | Casella | «Mostra i messaggi di un solo indirizzo…» `GET …/mail?box=<indirizzo>` |
+
+Lo stato si legge con `GET …/production/mail/inbox` (tutti i ruoli del workspace). Il messaggio lo costruisce l'helper
+di root (`compose-helper mail-send`, JSON sull'input: indirizzi di una forma sola, oggetto e nome di una riga, al più 10
+destinatari, testo di 100.000 caratteri), e lo consegna con `mailpit sendmail` dentro il container `mail`: niente di quello
+che la pagina scrive finisce nel testo di uno script.
+
+**Limiti, detti**: GreenMail tiene le caselle in memoria, un riavvio della staging svuota quelle non ancora lette da
+Odoo (la scheda conserva la sua copia); le staging nate prima restano come sono (solo cattura); un alias il cui nome
+esiste già sul dominio della staging non si sposta.
+
 ## 6. C — Indirizzi, database, monitoraggio
 
 ### 6.1 Dialogo «Indirizzi…» (⚙ nella riga di Ambienti)

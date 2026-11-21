@@ -262,6 +262,8 @@ WORKSPACE_ROUTES = frozenset({
     # a staging's caught mail (UX-008 §5.3)
     "/api/servers/{server}/production/mail", "/api/servers/{server}/production/mail/{mail_id}",
     "/api/servers/{server}/production/mail/clear",
+    # and its incoming mail (UX-008 §5.4)
+    "/api/servers/{server}/production/mail/inbox", "/api/servers/{server}/production/mail/send",
     # the Addresses dialog of an environment (UX-008 §6.1): its admins (admin)
     "/api/servers/{server}/{role}/addresses", "/api/servers/{server}/{role}/addresses/check",
     "/api/servers/{server}/{role}/addresses/save",
@@ -1195,6 +1197,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     + [(r["server"], "production") for r in staging_rows(srv.name)]),
                 # a staging whose mail is caught: its Mail tab (UX-008 §5.3)
                 "mail_capture": bool(staging_of) and await asyncio.to_thread(staging_mail, srv.name) is not None,
+                # and its mailboxes Odoo reads, written to as an outside sender (UX-008 §5.4)
+                "mail_inbox": bool(staging_of) and await asyncio.to_thread(staging_inbox, srv.name) is not None,
+                "mail_domain": stagingmail.domain_of(srv.name),
+                "is_developer_here": request.state.user.can("developer"),
                 # the paths and the commands of an instance, for the machine's admins (ssh)
                 "shell_paths": {i.key: i.plugin.shell_paths(i) for i in shown if i.plugin is not None}
                 if request.state.user.can("admin") and not request.state.user.workspaces else {},
@@ -4020,38 +4026,125 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     # --- a staging's mail, caught in its project and read here (stagingmail.py, UX-008 §5.3)
 
-    def staging_mail(server: str):
-        """The production of a staging of a workspace whose mail is caught
-        (its instance.json says so: a staging made since the templates have
-        the service), or None."""
+    def staging_mail_meta(server: str):
+        """(the production of a staging of a workspace whose mail is caught,
+        its instance.json), or (None, {}): a staging made since the
+        templates have the service, its instance.json says so."""
         srv, found = settings.servers.get(server), workspace_of(server)
         if srv is None or srv.production is None or found is None or srv.production.restart.type != "compose" \
                 or server not in stagings.load(stagings_file):
-            return None
+            return None, {}
         ws, instance = found
         try:
             meta = json.loads((workspaceops.storage_path(ws) / ws.name / instance / workspacehelper.INSTANCE_FILE)
                               .read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            return None
-        return srv.production if isinstance(meta, dict) and workspacehelper.captures_mail(meta, "production") else None
+            return None, {}
+        if isinstance(meta, dict) and workspacehelper.captures_mail(meta, "production"):
+            return srv.production, meta
+        return None, {}
+
+    def staging_mail(server: str):
+        """The production of a staging whose mail is caught, or None."""
+        return staging_mail_meta(server)[0]
+
+    def staging_inbox(server: str):
+        """The production of a staging whose caught mail reaches mailboxes
+        its Odoo reads (UX-008 §5.4), or None."""
+        instance, meta = staging_mail_meta(server)
+        return instance if instance is not None and workspacehelper.receives_mail(meta, "production") else None
+
+    async def json_body(request: Request):
+        """The request's JSON, {} when it has none or none that parses."""
+        try:
+            return await request.json()
+        except ValueError:
+            return {}
+
+    def no_inbox(server: str):
+        return refuse(f"{server} receives no mail: it is no staging, or one made before its mailboxes "
+                      "(its outgoing mail is caught only)", status.HTTP_404_NOT_FOUND)
 
     def no_mail(server: str):
         return refuse(f"{server} catches no mail: it is no staging, or one made before the mail was caught "
                       "(its outgoing mail is off)", status.HTTP_404_NOT_FOUND)
 
     @app.get("/api/servers/{server}/production/mail")
-    async def staging_mail_list(server: str, every: bool = False, me: Principal = Depends(anyone)):
+    async def staging_mail_list(server: str, every: bool = False, box: str = "", me: Principal = Depends(anyone)):
         """The mail Odoo of the staging sent, caught: the newest first, the
-        first 50 or every one (?every=1)."""
-        instance = await asyncio.to_thread(staging_mail, server)
+        first 50 or every one (?every=1); of one mailbox (?box=<address>);
+        the mailboxes (every address of it)."""
+        instance, meta = await asyncio.to_thread(staging_mail_meta, server)
         if instance is None:
             return no_mail(server)
         try:
-            found = await stagingmail.messages(instance, every)
+            found = await stagingmail.messages(instance, every, box)
+        except LookupError as exc:
+            return refuse(str(exc))
         except JobFailed as exc:
             return refuse(str(exc), status.HTTP_502_BAD_GATEWAY)
-        return {**found, "first": stagingmail.FIRST, "can_clear": me.can("admin")}
+        receives = workspacehelper.receives_mail(meta, "production")
+        return {**found, "first": stagingmail.FIRST, "can_clear": me.can("admin"), "receives": receives,
+                "can_write": receives and me.can("developer"),
+                "domain": stagingmail.domain_of(server) if receives else ""}
+
+    # --- its incoming mail (UX-008 §5.4): declared before .../mail/{mail_id}
+
+    @app.get("/api/servers/{server}/production/mail/inbox")
+    async def staging_inbox_state(server: str, me: Principal = Depends(anyone)):
+        """What Odoo of the staging reads of its mailboxes: on or off, the
+        alias domain, the mailboxes, the last fetch (nothing changes)."""
+        instance = await asyncio.to_thread(staging_inbox, server)
+        if instance is None:
+            return no_inbox(server)
+        try:
+            found = await stagingmail.inbox(instance, server, "state")
+        except JobFailed as exc:
+            return refuse(str(exc), status.HTTP_502_BAD_GATEWAY)
+        return {**found, "can_act": me.can("developer")}
+
+    @app.post("/api/servers/{server}/production/mail/inbox")
+    async def staging_inbox_act(request: Request, server: str, me: Principal = Depends(developer)):
+        """{"fetch": false}: Odoo of the staging reads its mailboxes (the
+        alias domain of the staging, an incoming server per mailbox, the two
+        mail crons on); {"fetch": true}: that, then its outgoing queue sent
+        and every mailbox read now. The workspace's developers and admins."""
+        instance = await asyncio.to_thread(staging_inbox, server)
+        if instance is None:
+            return no_inbox(server)
+        body = await json_body(request)
+        fetch = isinstance(body, dict) and body.get("fetch") is True
+        try:
+            found = await stagingmail.inbox(instance, server, "fetch" if fetch else "on")
+        except JobFailed as exc:
+            return refuse(str(exc), status.HTTP_502_BAD_GATEWAY)
+        access_log.record("action", me.kind, me.name, request.client.host if request.client else "",
+                          f"incoming mail of {instance.key} " + ("read now" if fetch else "switched on"))
+        lang = request_language(request)
+        said = [i18n.tr(lang, line) for line in found.get("said") or [] if isinstance(line, str)]
+        return {**found, "said": said, "can_act": True}
+
+    @app.post("/api/servers/{server}/production/mail/send")
+    async def staging_mail_send(request: Request, server: str, me: Principal = Depends(developer)):
+        """A message written as an outside sender ({from, name, to, subject,
+        body, in_reply_to}): into the caught mail, and to the mailbox of a
+        .test address that Odoo reads. The workspace's developers and admins."""
+        instance = await asyncio.to_thread(staging_inbox, server)
+        if instance is None:
+            return no_inbox(server)
+        body = await json_body(request)
+        if not isinstance(body, dict):
+            return refuse("the message is a JSON object")
+        message = {k: body[k] for k in ("from", "name", "to", "subject", "body", "in_reply_to") if k in body}
+        if isinstance(message.get("to"), str):
+            message["to"] = [a.strip() for a in message["to"].replace(";", ",").split(",") if a.strip()]
+        try:
+            await stagingmail.send(instance, message)
+        except JobFailed as exc:
+            return refuse(str(exc))
+        access_log.record("action", me.kind, me.name, request.client.host if request.client else "",
+                          f"mail written to {instance.key} as {str(message.get('from'))[:80]}")
+        return {"ok": True}
 
     @app.get("/api/servers/{server}/production/mail/{mail_id}")
     async def staging_mail_get(server: str, mail_id: str, me: Principal = Depends(anyone)):

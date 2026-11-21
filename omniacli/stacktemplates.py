@@ -65,6 +65,10 @@ ALIAS = re.compile(r"[a-z][a-z0-9-]{0,62}")
 MAIL_PROFILE = "mail-capture"
 MAIL_SERVICE = "mail"
 MAIL_SMTP_PORT = 1025
+# its incoming mail (UX-008 §5.4): the service of the same profile that keeps
+# one IMAP mailbox per address (GreenMail), read by Odoo's incoming servers
+INBOX_SERVICE = "inbox"
+INBOX_IMAP_PORT = 3143
 # what odoo.conf says of the mail of a staging that catches it: the service,
 # never a server of the parameters (they are not written)
 MAIL_OPTIONS = {"smtp_server": MAIL_SERVICE, "smtp_port": str(MAIL_SMTP_PORT), "smtp_ssl": "False"}
@@ -294,6 +298,15 @@ class Template:
         except yaml.YAMLError:
             return False
         svc = ((data or {}).get("services") or {}).get(MAIL_SERVICE) if isinstance(data, dict) else None
+        return isinstance(svc, dict) and svc.get("profiles") == [MAIL_PROFILE]
+
+    def receives_mail(self) -> bool:
+        """It catches a staging's mail and has the service with the mailboxes
+        Odoo reads, under the same profile (UX-008 §5.4); a template of
+        before catches the outgoing mail only."""
+        if not self.captures_mail():
+            return False
+        svc = (yaml.safe_load(self.compose).get("services") or {}).get(INBOX_SERVICE)
         return isinstance(svc, dict) and svc.get("profiles") == [MAIL_PROFILE]
 
     def values(self, given: dict) -> dict[str, str]:
