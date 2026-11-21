@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import logging
 import os
 import time
@@ -66,6 +67,9 @@ def bucket_point(start: int, samples: list[dict]) -> list | None:
             round(mean_ram) if mean_ram is not None else None, max(ram) if ram else None,
             totals[-1] if totals else None,
             total_bytes("rx"), total_bytes("tx")]
+
+
+_SAVING = threading.Lock()
 
 
 class MetricsHistory:
@@ -116,13 +120,16 @@ class MetricsHistory:
         oldest = now - KEEP_SECONDS
         self.points = [p for p in self.points if p[0] >= oldest][-MAX_POINTS:]
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".tmp")
-        with open(tmp, "w", encoding="utf-8") as out:
-            json.dump({"started": self.started, "bucket": BUCKET, "fields": FIELDS, "points": self.points},
-                      out, separators=(",", ":"))
-            out.flush()
-            os.fsync(out.fileno())
-        os.replace(tmp, self.path)
+        # one writer at a time: the recorder's loop and a request may save together,
+        # and two writers of the one temporary file lose it to each other's rename
+        with _SAVING:
+            tmp = self.path.with_suffix(".tmp")
+            with open(tmp, "w", encoding="utf-8") as out:
+                json.dump({"started": self.started, "bucket": BUCKET, "fields": FIELDS, "points": self.points},
+                          out, separators=(",", ":"))
+                out.flush()
+                os.fsync(out.fileno())
+            os.replace(tmp, self.path)
 
     def window(self, days: int, now: float | None = None) -> dict:
         """{started, points: [{t, cpu, cpu_max, ram, ram_max, ram_total, rx, tx}]

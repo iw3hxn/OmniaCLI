@@ -25,6 +25,7 @@ import asyncio
 import datetime
 import json
 import logging
+import threading
 from pathlib import Path
 
 from . import disks as _disks
@@ -38,6 +39,9 @@ MIN_DAYS = 7
 CHECK_EVERY = 600  # seconds between two looks at the date
 # a forecast further away is no date (and past what datetime.date holds)
 HORIZON_DAYS = 100 * 366
+
+
+_SAVING = threading.Lock()
 
 
 class DiskHistory:
@@ -100,9 +104,12 @@ class DiskHistory:
         self.disks = {m: e for m, e in self.disks.items() if e["points"]}
         self.workspaces = {m: e for m, e in self.workspaces.items() if e["points"]}
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"disks": self.disks, "workspaces": self.workspaces}), encoding="utf-8")
-        tmp.replace(self.path)
+        # one writer at a time: the recorder's loop and a request may save together,
+        # and two writers of the one temporary file lose it to each other's rename
+        with _SAVING:
+            tmp = self.path.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"disks": self.disks, "workspaces": self.workspaces}), encoding="utf-8")
+            tmp.replace(self.path)
 
     def series(self) -> list[dict]:
         """Every disk with its points and its forecast, by mount point."""
