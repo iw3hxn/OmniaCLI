@@ -380,8 +380,38 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
           <td>{{ state_word("busy" if s.busy else s.state) }}</td>
           <td class="row-open hide-sm">{% if host_of(s.url, "") %}<a class="button small" href="{{ s.url }}" target="_blank" rel="noopener" title="{{ _('Opens {url} in a new tab', url=s.url) }}">{{ _("Open") }} ↗</a>{% endif %}{{ addresses_button(s.server ~ "/production", host_of(s.url, s.server)) }}</td></tr>
       {% endfor %}
+      {% if stagings and stagings.elsewhere %}<tbody id="stagings-elsewhere"></tbody>{% endif %}
     </table></div>
-    {% if stagings and stagings.can and not stagings.rows %}<p class="muted" style="margin: 8px 0 0">{{ _("No staging: a staging is a dated copy of production, to try an update without touching it.") }}</p>{% endif %}
+    {% if stagings and stagings.can and not stagings.rows %}<p class="muted" id="stagings-none" style="margin: 8px 0 0">{{ _("No staging: a staging is a dated copy of production, to try an update without touching it.") }}</p>{% endif %}
+    {% if stagings and stagings.elsewhere %}
+    <script>
+    // the stagings of this production made on the linked machines (UX-008 §5.1),
+    // asked by this machine to its links (GET …/stagings/elsewhere)
+    (async () => {
+      const box = document.getElementById("stagings-elsewhere");
+      const W = {staging: {{ _("Staging") | tojson }}, on: {{ _("on {machine}") | tojson }},
+                 open: {{ _("Opens its page on {machine}") | tojson }},
+                 there: {{ _("Open it from the page of {machine}") | tojson }},
+                 running: {{ _("Running") | tojson }}, stopped: {{ _("Stopped") | tojson }}, unknown: {{ _("State unknown") | tojson }}};
+      const el = (tag, attrs, ...kids) => { const e = Object.assign(document.createElement(tag), attrs || {}); e.append(...kids); return e; };
+      const resp = await fetch({{ (prefix ~ "/api/servers/" ~ server.name ~ "/stagings/elsewhere") | tojson }},
+                               {headers: {Accept: "application/json"}}).catch(() => null);
+      const data = resp && resp.ok ? await resp.json().catch(() => null) : null;
+      for (const s of (data && data.stagings) || []) {
+        const name = s.url ? el("a", {href: `{{ prefix }}${s.url}`, title: W.open.replace("{machine}", s.link)}, el("strong", {}, s.server))
+                           : el("strong", {title: W.there.replace("{machine}", s.link)}, s.server);
+        box.append(el("tr", {},
+          el("td", {}, "↳ ", name, " ", el("span", {className: "small muted"}, W.on.replace("{machine}", s.link))),
+          el("td", {}, el("span", {className: "badge info"}, W.staging)),
+          el("td", {className: "when hide-sm"}, whenText(s.created)),
+          el("td", {}, ({running: W.running, stopped: W.stopped})[s.state] || W.unknown),
+          el("td", {className: "row-open hide-sm"})));
+        const none = document.getElementById("stagings-none");
+        if (none) none.hidden = true;
+      }
+    })();
+    </script>
+    {% endif %}
   </div>
   {% endif %}
   {% if stagings and stagings.can %}

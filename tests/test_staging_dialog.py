@@ -348,3 +348,30 @@ def test_the_estimate_of_a_compose_instance(tmp_path, monkeypatch):
     assert asyncio.run(plugin.backup_estimate(object())) == {"database": 30_000_000, "files": 10_000_000}
     plugin._host = None
     assert asyncio.run(plugin.backup_estimate(object()))["files"] is None
+
+
+def test_a_person_through_a_link_chooses_the_machine():
+    """The integrator works on a machine through its link from his own
+    OmniaCLI (21/11/2026, the test machines): he chooses the machine of a new
+    staging as if he had logged in there; a link alone (no person) does not."""
+    from omniacli.auth import Principal
+    from omniacli.app import create_app  # noqa: F401  (chooses_machine lives in the app)
+    import inspect
+
+    import omniacli.app as appmod
+    source = inspect.getsource(appmod)
+    assert "return acts_for_a_person(me) and not me.scoped and me.can(\"admin\")" in source
+    person = Principal("lab1", "admin", kind="link", on_behalf="carlo")
+    alone = Principal("lab1", "admin", kind="link")
+    assert person.kind == "link" and person.on_behalf and not alone.on_behalf
+
+
+def test_the_stagings_of_a_production_on_other_machines(tmp_path, monkeypatch):
+    """GET …/stagings/elsewhere keeps, of each link's instances, the servers
+    whose production is this one of this machine (parent and parent_machine)."""
+    import inspect
+
+    import omniacli.app as appmod
+    source = inspect.getsource(appmod)
+    assert '"parent_machine": known.get(srv.name, {}).get("machine", "")' in source
+    assert 'srv.get("parent") == server and srv.get("parent_machine") == here' in source

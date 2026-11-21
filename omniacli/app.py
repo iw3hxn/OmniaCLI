@@ -248,7 +248,7 @@ WORKSPACE_ROUTES = frozenset({
     "/api/workspaces/{workspace}/tokens/save", "/api/workspaces/{workspace}/tokens/delete",
     "/api/servers/{server}/stagings", "/api/servers/{server}/stagings/refresh",
     # the New staging dialog (UX-008 §5.1): here only, no choice of the machine
-    "/api/servers/{server}/stagings/new",
+    "/api/servers/{server}/stagings/new", "/api/servers/{server}/stagings/elsewhere",
     "/api/servers/{server}/{role}/deploy-hook", "/api/servers/{server}/pitr", "/api/servers/{server}/pitr/enable",
     "/api/servers/{server}/pitr/base", "/api/servers/{server}/pitr/restore",
     "/workspaces/{workspace}/destinations", "/api/workspaces/{workspace}/destinations/save",
@@ -1161,7 +1161,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                              # when its production is on another machine: staging_of["machine"])
                              "parent": staging_of and {**staging_of, "url": None if staging_of.get("machine") else getattr(
                                  (settings.servers.get(staging_of.get("parent")) or srv).production, "web_url", None)},
-                             "workspace": (workspace_of(srv.name) or (None,))[0]},
+                             "workspace": (workspace_of(srv.name) or (None,))[0],
+                             # the links asked for the stagings of this production made on
+                             # them (their /api/instances): for an admin of this machine
+                             "elsewhere": bool(settings.link_targets) and chooses_machine(request.state.user)
+                             and srv.production is not None and not staging_of,
+                             },
                 "is_admin_here": request.state.user.can("admin"),
                 # the other names of each row of Environments, and its ⚙ Addresses… (UX-008 §6.1)
                 "addresses": address_rows(request.state.user, [
@@ -1244,6 +1249,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 },
                 # a staging: the production it is a copy of, and when (stagings.py)
                 "parent": known.get(srv.name, {}).get("parent", ""),
+                # the machine of that production when it is not this one (a staging
+                # made here from another machine's production, UX-008 §5.1)
+                "parent_machine": known.get(srv.name, {}).get("machine", ""),
                 "created": known.get(srv.name, {}).get("created", ""),
                 # the Instances of every machine (UX-008 §4.1): its Odoo, and
                 # whether its production backs up by itself (none for a staging)
@@ -3460,8 +3468,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     def chooses_machine(me: Principal) -> bool:
         """Who chooses the machine of a new staging (UX-008 §3): an admin of
-        this machine who logs in here; a workspace's admin makes it here."""
-        return me.kind == "user" and not me.scoped and me.can("admin")
+        this machine, logged in here or acting through a link for one of its
+        users (the pages of a linked machine, as its integrator works); a
+        workspace's admin makes it here."""
+        return acts_for_a_person(me) and not me.scoped and me.can("admin")
 
     def gb_text(size: int | float) -> str:
         return f"{size / workspaceops.GB:.1f}"
@@ -3583,6 +3593,36 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 else:
                     out["machines"].append({"name": name, **data})
         return out
+
+    @app.get("/api/servers/{server}/stagings/elsewhere", dependencies=[Depends(admin)])
+    async def stagings_elsewhere(server: str, me: Principal = Depends(current_user)):
+        """The stagings of server's production made on the linked machines
+        (UX-008 §5.1): each link's /api/instances, the servers whose production
+        is server of this machine; a link that does not answer is left out
+        and named. For an admin of this machine, as New staging's choice."""
+        if not chooses_machine(me) or server not in settings.servers:
+            return {"stagings": [], "unread": []}
+        here = here_name()
+
+        async def ask(name: str):
+            link = settings.link_targets[name]
+            headers = {**link_headers(link, me.name, me.role), "Accept": "application/json"}
+            try:
+                resp = await link_clients.client(link).get("/api/instances", headers=headers, timeout=LIST_TIMEOUT)
+                data = resp.json() if resp.status_code == 200 else None
+            except (httpx.HTTPError, ValueError):
+                data = None
+            if not isinstance(data, dict):
+                return name, None
+            return name, [{"link": name, "server": str(srv.get("name") or ""), "created": srv.get("created") or "",
+                           "state": ((srv.get("instances") or {}).get("production") or {}).get("state") or "",
+                           # its page: through this machine's link, for who logs in here
+                           "url": f"/links/{name}/servers/{srv.get('name')}" if me.kind == "user" else None}
+                          for srv in data.get("servers") or [] if isinstance(srv, dict)
+                          and srv.get("parent") == server and srv.get("parent_machine") == here]
+        answers = await asyncio.gather(*(ask(n) for n in sorted(settings.link_targets)))
+        return {"stagings": [r for _, rows in answers if rows for r in rows],
+                "unread": [n for n, rows in answers if rows is None]}
 
     async def staging_host_there(name: str, me: Principal, template: str, instance: str, workspace: str,
                                  size: int | None) -> tuple[dict | None, str]:
