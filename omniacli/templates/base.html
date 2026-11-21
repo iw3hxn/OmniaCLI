@@ -141,6 +141,17 @@ body { margin: 0; background: var(--bg); color: var(--text);
 @media (max-width: 560px) {
   .lang-switch, .logout { display: none; }
 }
+/* a phone: the places in a menu button, open under the bar */
+.menu-toggle { display: none; }
+@media (max-width: 600px) {
+  .menu-toggle { display: inline-flex; background: transparent; color: var(--side-text); border-color: var(--side-hover);
+    box-shadow: none; padding: 5px 10px; }
+  .topnav { display: none; position: absolute; top: 56px; left: 0; right: 0; flex-direction: column; gap: 0;
+    padding: 6px 12px 10px; background: var(--side-bg); box-shadow: var(--shadow-lg); }
+  .topnav.open { display: flex; }
+  .topnav .nav-link { padding: 10px 12px; }
+  .nav-link[aria-current="page"] { box-shadow: inset 3px 0 0 #F87171; }
+}
 /* the state of an instance, a dot and a word (a hosting panel's); the kinds of copies */
 .state-dot { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; color: var(--text); font-weight: 600; }
 .state-dot::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
@@ -220,7 +231,8 @@ button.ghost { background: none; border-color: transparent; box-shadow: none; }
 button:disabled, .button[aria-disabled="true"] { opacity: .45; cursor: not-allowed; }
 .status { font-weight: 600; }
 .status.success { color: var(--ok); } .status.failed, .status.interrupted, .status.stopped, .error { color: var(--err); }
-.status.running, .status.queued { color: var(--warn); }
+.status.running, .status.queued, .status.warned { color: var(--warn); }
+.status-warning { display: block; color: var(--warn); }
 .status::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: currentColor;
   margin-right: 6px; vertical-align: 1px; }
 .muted { color: var(--muted); }
@@ -521,8 +533,23 @@ summary { cursor: pointer; color: var(--muted); }
 {% for sp in settings_paths %}{% if path == sp or path.startswith(sp ~ "/") %}{% set place.settings = true %}{% endif %}{% endfor %}
 <div class="shell">
 <header class="topbar">
-  <a class="brand" href="{{ prefix }}/"><img src="/icon-180.png" alt=""><span class="brand-name">Omnia<span>CLI</span></span></a>
-  <nav class="topnav" aria-label="{{ _('Menu') }}">
+  {# shown through a link of a newer OmniaCLI: the menu of who looks, its own
+     places (central_menu, prefix-less), the same in every page #}
+  {% set central = central_menu is not none %}
+  <a class="brand" href="{{ '' if central else prefix }}/"><img src="/icon-180.png" alt=""><span class="brand-name">Omnia<span>CLI</span></span></a>
+  <button type="button" class="menu-toggle" id="menu-toggle" aria-expanded="false" aria-controls="topnav"
+          title="{{ _('Opens and closes the menu: the places of OmniaCLI') }}">☰ {{ _("Menu") }}</button>
+  <nav class="topnav" id="topnav" aria-label="{{ _('Menu') }}">
+    {% if central %}
+    {% if "servers" in central_menu %}<a class="nav-link" href="/machines" aria-current="page"
+       title="{{ _('The machines OmniaCLI manages, with their load') }}">{{ _("Servers") }}</a>{% endif %}
+    <a class="nav-link" href="/instances" {% if "servers" not in central_menu %}aria-current="page"{% endif %}
+       title="{{ _('The Odoo instances of every machine, with their stagings and whether each production backs up by itself') }}">{{ _("Instances") }}</a>
+    {% if "backups" in central_menu %}<a class="nav-link" href="/backups"
+       title="{{ _('The backups of every machine, the newest first, and the automatic ones that did not succeed') }}">{{ _("Backups") }}</a>{% endif %}
+    {% if "settings" in central_menu %}<a class="nav-link" href="/settings"
+       title="{{ _('Users, git credentials, schedules, links, publications, plugins, options, the jobs and the log') }}">{{ _("Settings") }}</a>{% endif %}
+    {% else %}
     {# UX-008 D8: Instances and Backups are the lists of every machine; this machine's
        Dashboard opens from the logo and from Servers #}
     {% set machine_admin = is_admin and not scoped and not prefix %}
@@ -542,18 +569,20 @@ summary { cursor: pointer; color: var(--muted); }
     {% if not prefix %}{% for c in puller_connections %}<a class="nav-link" title="{{ _('An instance of another OmniaCLI operated from here through a relay machine (Publications)') }}" href="/pullers/connections/{{ c }}">{{ c }}</a>{% endfor %}{% endif %}
     {% if can_act and not scoped %}<a class="nav-link" href="{{ prefix }}/settings" {% if place.settings %}aria-current="page"{% endif %}
        title="{{ _('Users, git credentials, schedules, links, publications, plugins, options, the jobs and the log') }}">{{ _("Settings") }}</a>{% endif %}
+    {% endif %}
   </nav>
   <div class="top-end">
-    {% if account %}<a class="side-account" href="{{ prefix }}/account" title="{{ _('Your account and password') }}">
-      <span class="avatar">{{ account[:1] }}</span><span>{{ account }}</span></a>{% endif %}
+    {% set viewer = account or (central_user if central else "") %}
+    {% if viewer %}<a class="side-account" href="{{ '' if central else prefix }}/account" title="{{ _('Your account and password') }}">
+      <span class="avatar">{{ viewer[:1] }}</span><span>{{ viewer }}</span></a>{% endif %}
     <div class="side-tools">
       {# the language is this browser's: a linked instance's pages follow it (the link passes it) #}
-      {% if not prefix %}<span class="lang-switch" role="group" aria-label="{{ _('Language') }}">
-        {% for code, name in languages.items() %}<a href="/language/{{ code }}?next={{ (here ~ ('?' ~ request.url.query if request and request.url.query else '')) | urlencode }}" title="{{ name }}"
+      {% if not prefix or central %}<span class="lang-switch" role="group" aria-label="{{ _('Language') }}">
+        {% for code, name in languages.items() %}<a href="/language/{{ code }}?next={{ ((prefix if central else '') ~ here ~ ('?' ~ request.url.query if request and request.url.query else '')) | urlencode }}" title="{{ name }}"
           {% if code == lang %}aria-current="true"{% endif %}>{{ code | upper }}</a>{% endfor %}
       </span>{% endif %}
       <button type="button" class="theme-toggle" id="theme-toggle" title="{{ _('Switches between the light and the dark theme. The choice is kept in this browser.') }}"></button>
-      {% if account %}<form method="post" action="/logout" class="logout"><button class="logout-button" title="{{ _('Ends your session in this browser and goes back to the login page. The jobs that are running go on.') }}">{{ _("Log out") }}</button></form>{% endif %}
+      {% if viewer %}<form method="post" action="/logout" class="logout"><button class="logout-button" title="{{ _('Ends your session in this browser and goes back to the login page. The jobs that are running go on.') }}">{{ _("Log out") }}</button></form>{% endif %}
     </div>
   </div>
 </header>
@@ -646,6 +675,16 @@ window.whenText = (iso) => {
 </script>
 <script>
 (function () {
+  // the menu button of a phone: opens the places under the bar, a click elsewhere closes them
+  const toggle = document.getElementById("menu-toggle"), nav = document.getElementById("topnav");
+  const show = (open) => { nav.classList.toggle("open", open); toggle.setAttribute("aria-expanded", String(open)); };
+  toggle.addEventListener("click", (event) => { event.stopPropagation(); show(!nav.classList.contains("open")); });
+  document.addEventListener("click", (event) => { if (!nav.contains(event.target)) show(false); });
+  document.addEventListener("keydown", (event) => { if (event.key === "Escape") show(false); });
+})();
+</script>
+<script>
+(function () {
   // light (OmniaSolutions) or dark; the choice is kept in this browser
   const root = document.documentElement, button = document.getElementById("theme-toggle");
   const current = () => root.dataset.theme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
@@ -663,7 +702,9 @@ window.whenText = (iso) => {
 })();
 </script>
 <main>
-{% block crumbs %}{% endblock %}
+{% if false %}{% block crumbs %}{% endblock %}{% endif %}
+{% set page_crumbs = self.crumbs() %}
+{% if page_crumbs | trim %}{{ page_crumbs }}{% elif central_menu is not none %}{% from "_crumbs.html" import crumbs with context %}{{ crumbs([]) }}{% endif %}
 {% block content %}{% endblock %}
 </main>
 <footer class="site-foot muted">OmniaCLI {{ version }} · © 2026 OmniaSolutions S.n.c di Boscolo Matteo &amp; C · {{ _("free software under the") }}

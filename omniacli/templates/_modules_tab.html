@@ -5,7 +5,8 @@
 
    The dialog Add modules: the search (GET /api/servers/<s>/modules/catalog?q=, at most 50 rows, none
    without a search), then Install… shows in the same dialog what it takes (GET …/modules/plan) and where
-   (test by default; production for an admin, with a backup first and a confirmation of its own), then
+   (test by default; production for an admin, with a backup first, said in the plan above its
+   Install in production: that button is the one confirmation), then
    POST /api/servers/<s>/<role>/modules/install starts the job and its page opens. Its script is an
    IIFE of its own, its names its own (tests/test_script_scopes.py). -#}
 {% if stagings and stagings.workspace %}
@@ -45,21 +46,12 @@
       <fieldset class="mods-where" id="mods-where">
         <legend>{{ _("Where") }}</legend>
       </fieldset>
-      <p class="muted" id="mods-backup-note" hidden>{{ _("Production: a backup first, then the module is installed and production restarts.") }}</p>
+      <p class="muted" id="mods-backup-note" hidden></p>
       <p class="error" id="mods-error" role="alert"></p>
       <div class="sd-foot">
         <button type="button" id="mods-back" title="{{ _('Back to the search, without installing anything') }}">‹ {{ _("Back") }}</button>
         <span id="mods-go-wrap"><button type="button" class="primary" id="mods-go"
           title="{{ _('Adds the repositories missing to production and test (they restart: who is connected loses the connection for a few seconds), then installs the modules in the database chosen. In production it makes a backup first. It is a job.') }}">{{ _("Install in test") }}</button></span>
-      </div>
-    </div>
-    {# step 3: the confirmation of an install in production #}
-    <div id="mods-confirm-step" hidden>
-      <p id="mods-confirm-text"></p>
-      <div class="sd-foot">
-        <button type="button" id="mods-confirm-cancel" title="{{ _('Back to the summary, without installing anything') }}">{{ _("Cancel") }}</button>
-        <button type="button" class="primary danger" id="mods-confirm-go"
-          title="{{ _('Makes a backup of production, adds the repositories missing (production and test restart: who is connected loses the connection for a few seconds) and installs the module in the database of production. It is a job.') }}">{{ _("Install in production") }}</button>
       </div>
     </div>
   </form>
@@ -121,7 +113,7 @@ dialog.mods-dialog { width: min(960px, calc(100vw - 32px)); }
     stagingRole: {{ _("This staging") | tojson }},
     go: {test: {{ _("Install in test") | tojson }}, production: {{ _("Install in production") | tojson }}},
     goStaging: {{ _("Install in the staging") | tojson }},
-    confirm: {{ _("Install {name} in the production of {server}? A backup is made first; production restarts, and who is connected loses the connection for a few seconds.") | tojson }},
+    backupNote: {{ _("In the production of {server}: a backup first, then {name} is installed and production restarts; who is connected loses the connection for a few seconds.") | tojson }},
     busy: {{ _("A job is working on {name}: try again when it ends.") | tojson }},
     refused: {{ _("Refused") | tojson }},
   };
@@ -153,7 +145,6 @@ dialog.mods-dialog { width: min(960px, calc(100vw - 32px)); }
   function modsStep(name) {
     $("mods-search-step").hidden = name !== "search";
     $("mods-plan-step").hidden = name !== "plan";
-    $("mods-confirm-step").hidden = name !== "confirm";
   }
   async function modsOpen() {
     modsStep("search");
@@ -271,6 +262,7 @@ dialog.mods-dialog { width: min(960px, calc(100vw - 32px)); }
     else if (!plan.modules.length) { $("mods-plan-blocked").hidden = false; $("mods-plan-blocked").textContent = fill(M.already, {name: plan.name}); }
     const production = modsRole === "production" && !modsInfo.staging;
     $("mods-backup-note").hidden = !production;
+    $("mods-backup-note").textContent = fill(M.backupNote, {name: plan.name, server: modsInfo.server});
     go.textContent = modsInfo.staging ? M.goStaging : M.go[modsRole];
     const wrap = $("mods-go-wrap");
     if (modsInfo.busy) wrap.title = fill(M.busy, {name: modsInfo.server}); else wrap.removeAttribute("title");
@@ -285,6 +277,7 @@ dialog.mods-dialog { width: min(960px, calc(100vw - 32px)); }
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok || !data.job) {
       modsStep("plan");
+      $("mods-go").disabled = false;
       $("mods-error").textContent = data.error || data.detail || M.refused;
       return;
     }
@@ -295,17 +288,11 @@ dialog.mods-dialog { width: min(960px, calc(100vw - 32px)); }
   $("mods-back").addEventListener("click", () => { modsStep("search"); $("mods-query").focus(); });
   $("mods-query").addEventListener("input", () => { clearTimeout(modsTimer); modsTimer = setTimeout(modsSearch, 250); });
   $("mods-query").addEventListener("keydown", (event) => { if (event.key === "Enter") event.preventDefault(); });
+  // Install in production is the confirmation: the plan above it says the backup and the restart
   $("mods-go").addEventListener("click", () => {
-    if (modsRole === "production" && !modsInfo.staging) {
-      $("mods-confirm-text").textContent = fill(M.confirm, {name: modsPlan.plan.name, server: modsInfo.server});
-      modsStep("confirm");
-      return;
-    }
     $("mods-go").disabled = true;
-    modsInstall(false);
+    modsInstall(modsRole === "production" && !modsInfo.staging);
   });
-  $("mods-confirm-cancel").addEventListener("click", () => modsStep("plan"));
-  $("mods-confirm-go").addEventListener("click", () => { $("mods-confirm-go").disabled = true; modsInstall(true); });
   $("mods-refresh").addEventListener("click", async () => {
     const resp = await fetch(`{{ prefix }}/api/catalog/refresh`, {method: "POST",
       headers: {"Content-Type": "application/json", Accept: "application/json"}, body: JSON.stringify({series: modsInfo.series})});

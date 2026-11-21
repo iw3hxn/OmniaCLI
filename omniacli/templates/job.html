@@ -20,10 +20,28 @@
 {% from "_icons.html" import runner %}
 {% from "_console.html" import logbox, console_script, JOB_TAGS with context %}
 {% set states = {"queued": _("queued"), "running": _("running"), "success": _("success"), "failed": _("failed"),
-                 "interrupted": _("interrupted"), "stopped": _("stopped")} %}
+                 "interrupted": _("interrupted"), "stopped": _("stopped"), "warned": _("success with warnings")} %}
 {% set texts = {"queued": _("Queued: waiting for another job on the same instance"), "running": _("Running…"),
                 "interrupted": _("Interrupted: OmniaCLI stopped while it ran"), "stopped": _("Stopped by an administrator"),
                 "failed": _("Failed: see the error and the log below")} %}
+{# opened from a list (Backups, Instances, Servers, Jobs, here or through a
+   link): the way back to it, with its filters (the page's referrer, same origin) #}
+<p class="job-back" id="job-back" hidden><a href="" title="">‹ <span></span></a></p>
+<script>
+(function () {
+  const PLACES = {{ {"backups": _("Back to Backups"), "instances": _("Back to Instances"),
+                     "machines": _("Back to Servers"), "jobs": _("Back to Jobs")} | tojson }};
+  const TITLE = {{ _("Goes back to the list this job was opened from, as it was left") | tojson }};
+  let from;
+  try { from = new URL(document.referrer); } catch (e) { return; }
+  const found = from.origin === location.origin && /^(?:\/links\/[^/]+)?\/(backups|instances|machines|jobs)\/?$/.exec(from.pathname);
+  if (!found) return;
+  const box = document.getElementById("job-back"), a = box.querySelector("a");
+  a.href = from.pathname + from.search; a.title = TITLE;
+  a.querySelector("span").textContent = PLACES[found[1]];
+  box.hidden = false;
+})();
+</script>
 <div class="page-head">
   <div>
     <h1 style="overflow-wrap: anywhere">{{ tr(job.title) }}</h1>
@@ -40,7 +58,15 @@
 </div>
 {# the job's state at a glance: a runner while it runs, a thumbs up when it
    succeeds, a danger sign when it fails #}
-<div class="job-state" id="job-state" data-status="{{ job.status }}" role="status" aria-live="polite">
+<style>
+/* done, but something did not come (a certificate): amber, with the warnings said */
+.job-state[data-status="warned"] .job-warned { display: flex; }
+.job-warned { color: var(--warn); border-color: var(--warn) !important; background: var(--warn-soft) !important; align-items: flex-start !important; }
+.job-warned ul { margin: 4px 0 0; padding-left: 18px; font-weight: 500; color: var(--text); }
+.job-warned .danger-sign { fill: var(--warn); stroke: var(--warn); }
+.job-back { margin: -4px 0 10px; font-size: 13px; }
+</style>
+<div class="job-state" id="job-state" data-status="{{ job.outcome }}" role="status" aria-live="polite">
   <div class="job-running">
     {{ runner() }}
     <span class="job-state-text">{{ texts.queued if job.status == "queued" else texts.running }}</span>
@@ -50,6 +76,14 @@
       <path d="M2 10h4v11H2zM8 21h9.2c.9 0 1.6-.6 1.9-1.4l2.4-7.2c.4-1.3-.6-2.6-1.9-2.6H14l1-4.6c.2-1-.3-2-1.2-2.4-.5-.2-1.1 0-1.4.4L8 9.6z"/>
     </svg>
     <span class="job-state-text">{{ _("Done: the job succeeded") }}</span>
+  </div>
+  <div class="job-warned">
+    <svg class="danger-sign" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 2.5 1.5 21h21z" stroke-linejoin="round"/>
+      <path class="danger-mark" d="M12 9v5.5M12 17.2v.3" stroke-linecap="round"/>
+    </svg>
+    <div><span class="job-state-text">{{ _("Done, with warnings: the main work succeeded, this did not") }}</span>
+      <ul id="job-warnings">{% for w in job.warnings %}<li>{{ tr(w) }}</li>{% endfor %}</ul></div>
   </div>
   <div class="job-failed">
     <svg class="danger-sign" viewBox="0 0 24 24" aria-hidden="true">
@@ -110,7 +144,7 @@
 <div class="steps" id="steps" hidden aria-live="polite"></div>
 <section class="panel">
   <dl>
-    <dt>{{ _("Status") }}</dt><dd class="status {{ job.status }}" id="status">{{ states.get(job.status, job.status) }}</dd>
+    <dt>{{ _("Status") }}</dt><dd class="status {{ job.outcome }}" id="status">{{ states.get(job.outcome, job.status) }}</dd>
     <dt>{{ _("Started by") }}</dt><dd>{{ tr(job.source) }}</dd>
     <dt>{{ _("Instances") }}</dt><dd class="mono">{{ job.instances | join(", ") }}</dd>
     <dt>{{ _("Created") }}</dt><dd class="muted" id="created"></dd>
@@ -132,7 +166,7 @@
   async function poll() {
     let data;
     try {
-      const resp = await fetch("{{ prefix }}/api/jobs/{{ job.id }}?since=" + next);
+      const resp = await fetch("{{ prefix }}/api/jobs/{{ job.id }}?said=1&since=" + next);
       if (resp.status === 403 || resp.status === 404) { unreadable(resp.status); return; }
       if (!resp.ok) throw new Error(resp.status);
       data = await resp.json();
@@ -140,8 +174,14 @@
     log.add(data.lines);
     next = data.next;
     const st = document.getElementById("status");
-    st.textContent = STATES[data.status] || data.status; st.className = "status " + data.status;
-    showState(data.status);
+    // success with warnings: amber, the warnings listed (data.outcome)
+    const outcome = data.outcome || data.status;
+    st.textContent = STATES[outcome] || outcome; st.className = "status " + outcome;
+    if (outcome === "warned") {
+      const list = document.getElementById("job-warnings");
+      list.replaceChildren(...(data.warnings || []).map((w) => Object.assign(document.createElement("li"), {textContent: w})));
+    }
+    showState(outcome);
     document.getElementById("finished").textContent = whenText(data.finished || "");
     document.getElementById("duration").textContent = data.duration || "";
     // the error as the page drew it (translated) while the job's own text is the same

@@ -35,7 +35,10 @@
 .ni-saved { display: flex; gap: 8px; align-items: center; justify-content: flex-end; margin-top: 12px; font-size: 14px; }
 .ni-servers { margin: 0 0 14px; }
 .ni-label { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
-.ni-server { display: inline-flex; gap: 6px; align-items: center; margin: 0 16px 4px 0; }
+.ni-server { display: flex; gap: 6px; align-items: baseline; margin: 0 0 4px; flex-wrap: wrap; }
+.ni-server.off { color: var(--muted); cursor: not-allowed; }
+.ni-server .ni-why { font-size: 12px; color: var(--muted); }
+.ni-server.off .ni-why { color: var(--warn); }
 @media (max-width: 600px) { .ni-fields { grid-template-columns: 1fr; } }
 </style>
 <dialog id="new-instance" aria-labelledby="ni-title">
@@ -45,17 +48,15 @@
       <p class="muted" style="margin: 0">{{ _("Choose the Odoo version: OmniaCLI makes its database, its containers and its disk.") }}</p>
     </div>
     <div class="ni-body">
-      {% if ni_links %}
-      {# the Instances of every machine (UX-008 §4.1): this machine, then the links that
-         answer with a version and room for workspaces; the others named under them #}
+      {# the machines it can be made on (UX-008 §4.1), in a fixed order: this one,
+         then the links alphabetically; each with its free disk, or off with why
+         (no template, less room than a new instance needs, an older OmniaCLI),
+         asked when the dialog opens, before the form is filled; the first
+         that can make one is chosen #}
       <div class="ni-servers" role="radiogroup" aria-labelledby="ni-server-label">
         <div class="ni-label" id="ni-server-label">{{ _("Server") }}</div>
-        <div id="ni-server-list">
-          <label class="ni-server"><input type="radio" name="ni-server" value="" checked> {{ _("This machine") }} <span class="muted">({{ here_name }})</span></label>
-        </div>
-        <div class="ni-help" id="ni-unlisted"></div>
+        <div id="ni-server-list"></div>
       </div>
-      {% endif %}
       <div class="ni-versions" id="ni-versions" role="radiogroup" aria-label="{{ _('Odoo version') }}"></div>
       <div class="ni-fields">
         <div class="wide"><label for="ni-domain">{{ _("Domain") }}</label>
@@ -100,18 +101,29 @@
 </dialog>
 <script>
 (function () {
-  const PREFIX = {{ prefix | tojson }}, LINKS = {{ (ni_links or []) | tojson }};
+  const PREFIX = {{ prefix | tojson }};
+  // this machine first, then the links alphabetically: the same order every time
+  const MACHINES = [{name: "", label: {{ (here_name or "") | tojson }}, base: PREFIX},
+    ...[...{{ (ni_links or []) | tojson }}].sort((a, b) => a.localeCompare(b))
+      .map((name) => ({name, label: name, base: `/links/${encodeURIComponent(name)}`}))];
   // the machine the instance is made on: this one, or a link's through it
-  let base = PREFIX, linksAsked = false;
+  let base = PREFIX, asked = null;
   const T = {creating: {{ _("Creating…") | tojson }}, create: {{ _("Create the instance") | tojson }},
-             refused: {{ _("Refused") | tojson }}, none: {{ _("No Odoo template on this machine") | tojson }},
+             refused: {{ _("Refused") | tojson }}, none: {{ _("No server can make a new instance now: see why beside each") | tojson }},
              community: {{ _("Community") | tojson }}, copied: {{ _("Copied") | tojson }},
              dns: {{ _("Its DNS name: create an A record with the value {address}, ports 80 and 443 open; it answers there with HTTPS. Empty: added later.") | tojson }},
              short: {{ _("The admin's password is 8 characters at least") | tojson }},
-             unlisted: {{ _("Not listed: {names}.") | tojson }}, noAnswer: {{ _("does not answer") | tojson }},
+             here: {{ _("This machine") | tojson }},
+             noAnswer: {{ _("does not answer") | tojson }}, asking: {{ _("asking…") | tojson }},
              noStorage: {{ _("no storage for workspaces") | tojson }}, noVersion: {{ _("no Odoo template") | tojson }},
              notAdmin: {{ _("the link is not an admin there") | tojson }},
-             serverTitle: {{ _("Makes the instance on {name}, through its link: its job opens there") | tojson }}};
+             older: {{ _("an older OmniaCLI: update it to make instances there from here") | tojson }},
+             noRoom: {{ _("the room of the disk cannot be read") | tojson }},
+             low: {{ _("{free} GB free, a new instance needs {min} GB at least") | tojson }},
+             free: {{ _("{free} GB free") | tojson }},
+             hereTitle: {{ _("Makes the instance on this machine") | tojson }},
+             serverTitle: {{ _("Makes the instance on {name}, through its link: its job opens there") | tojson }},
+             offTitle: {{ _("Cannot make an instance there: {why}") | tojson }}};
   const dialog = document.getElementById("new-instance"), versions = document.getElementById("ni-versions");
   const error = document.getElementById("ni-error"), create = document.getElementById("ni-create");
   const nameField = document.getElementById("ni-name");
@@ -132,9 +144,53 @@
     try { await navigator.clipboard.writeText(password.value); event.target.textContent = T.copied; }
     catch (e) { password.select(); }
   });
-  async function load() {
-    const resp = await fetch(`${base}/api/instances/versions`, {headers: {Accept: "application/json"}}).catch(() => null);
-    const data = resp && resp.ok ? await resp.json().catch(() => ({})) : {};
+  // what a machine answers: its versions and room, or why it cannot make one
+  async function ask(machine) {
+    const resp = await fetch(`${machine.base}/api/instances/versions`, {headers: {Accept: "application/json"}}).catch(() => null);
+    const data = resp && resp.ok ? await resp.json().catch(() => null) : null;
+    if (!data) return {why: resp && resp.status === 403 ? T.notAdmin : T.noAnswer};
+    if (!data.storage) return {data, why: T.noStorage};
+    if (!(data.versions || []).length) return {data, why: T.noVersion};
+    // an OmniaCLI before 21/11/2026 does not say its room
+    if (!("free_gb" in data)) return {data, why: T.older};
+    if (data.free_gb === null) return {data, why: T.noRoom};
+    const free = String(data.free_gb);
+    if (data.room_gb < data.min_gb) return {data, why: T.low.replace("{free}", free).replace("{min}", data.min_gb)};
+    return {data, note: T.free.replace("{free}", free)};
+  }
+  // the machines, each on its row: asked all at once, drawn in their order
+  async function askMachines() {
+    const list = document.getElementById("ni-server-list");
+    const rows = MACHINES.map((m) => {
+      const input = Object.assign(document.createElement("input"), {type: "radio", name: "ni-server", value: m.name, disabled: true});
+      const label = document.createElement("label");
+      label.className = "ni-server off";
+      const why = Object.assign(document.createElement("span"), {className: "ni-why", textContent: "· " + T.asking});
+      label.append(input, " " + (m.name || T.here));
+      if (!m.name && m.label) label.append(" ", Object.assign(document.createElement("span"), {className: "muted", textContent: `(${m.label})`}));
+      label.append(" ", why);
+      list.append(label);
+      return {m, input, label, why};
+    });
+    const answers = await Promise.all(MACHINES.map(ask));
+    rows.forEach((row, i) => {
+      const a = answers[i];
+      row.m.answer = a;
+      row.input.disabled = !!a.why;
+      row.label.classList.toggle("off", !!a.why);
+      row.why.textContent = "· " + (a.why || a.note);
+      row.label.title = a.why ? T.offTitle.replace("{why}", a.why) : row.m.name ? T.serverTitle.replace("{name}", row.m.name) : T.hereTitle;
+    });
+    const first = rows.find((row) => !row.input.disabled);
+    loaded = true;
+    if (!first) { error.textContent = T.none; ready(); return; }
+    first.input.checked = true;
+    choose(first.m);
+  }
+  // the versions of the chosen machine, from its answer
+  function choose(machine) {
+    base = machine.base;
+    const data = (machine.answer && machine.answer.data) || {};
     versions.replaceChildren();
     for (const [i, v] of (data.versions || []).entries()) {
       const input = Object.assign(document.createElement("input"), {type: "radio", name: "ni-version", value: String(v.major), checked: i === 0});
@@ -146,10 +202,10 @@
       card.append(input, big, small);
       versions.append(card);
     }
-    if (!versions.children.length) { error.textContent = T.none; create.disabled = true; }
-    else nameField.placeholder = `odoo${data.versions[0].major}`;
+    if (versions.children.length) nameField.placeholder = `odoo${data.versions[0].major}`;
     if (data.address) document.getElementById("ni-dns").textContent = T.dns.replace("{address}", data.address);
-    loaded = true; ready();
+    error.textContent = "";
+    ready();
   }
   // by delegation: the dialog may come before its button in the page
   document.addEventListener("click", async (event) => {
@@ -157,34 +213,13 @@
     error.textContent = "";
     newPassword();
     dialog.showModal();
-    if (!loaded) await load();
-    if (!linksAsked) askLinks();
+    if (!asked) asked = askMachines();
+    else if (loaded && !versions.children.length) error.textContent = T.none;
   });
-  // the links that can make one: asked all at once, the others named with why not
-  async function askLinks() {
-    linksAsked = true;
-    const list = document.getElementById("ni-server-list"), unlisted = document.getElementById("ni-unlisted");
-    if (!list || !LINKS.length) return;
-    const why = {};
-    await Promise.all(LINKS.map(async (name) => {
-      const resp = await fetch(`/links/${encodeURIComponent(name)}/api/instances/versions`, {headers: {Accept: "application/json"}}).catch(() => null);
-      const data = resp && resp.ok ? await resp.json().catch(() => null) : null;
-      if (!data) { why[name] = resp && resp.status === 403 ? T.notAdmin : T.noAnswer; return; }
-      if (!data.storage) { why[name] = T.noStorage; return; }
-      if (!(data.versions || []).length) { why[name] = T.noVersion; return; }
-      const input = Object.assign(document.createElement("input"), {type: "radio", name: "ni-server", value: name});
-      const label = document.createElement("label");
-      label.className = "ni-server"; label.title = T.serverTitle.replace("{name}", name);
-      label.append(input, " " + name);
-      list.append(label);
-    }));
-    const names = LINKS.filter((n) => why[n]).map((n) => `${n} (${why[n]})`);
-    unlisted.textContent = names.length ? T.unlisted.replace("{names}", names.join(", ")) : "";
-  }
   document.addEventListener("change", (event) => {
     if (event.target.name !== "ni-server") return;
-    base = event.target.value ? `/links/${encodeURIComponent(event.target.value)}` : PREFIX;
-    loaded = false; error.textContent = ""; ready(); load();
+    const machine = MACHINES.find((m) => m.name === event.target.value);
+    if (machine) choose(machine);
   });
   document.getElementById("ni-cancel").addEventListener("click", () => dialog.close());
   document.getElementById("ni-form").addEventListener("submit", async (event) => {

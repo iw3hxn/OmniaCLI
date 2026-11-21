@@ -326,7 +326,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
 {% endif %}
 {% set db_tab = can_act and inst.plugin and (inst.restart.type == "compose" or inst.plugin.db_shell(inst)) %}
 <nav class="tabs" role="tablist" aria-label="{{ _('Sections of the instance') }}">
-  <button type="button" role="tab" data-tab="overview" aria-selected="true" title="{{ _('The instance, its test and its stagings, and whether it answers') }}">{{ _("Environments") if show_envs else _("Overview") }}</button>
+  <button type="button" role="tab" data-tab="overview" aria-selected="true" title="{{ _('The instance, its test and its stagings, and whether it answers') }}">{{ _("Overview") }}</button>
   {% if mail_capture %}<button type="button" role="tab" data-tab="mail" title="{{ _('What Odoo of this staging sent: caught here, it did not leave') }}">{{ _("Mail") }}</button>{% endif %}
   {% if can_act %}<button type="button" role="tab" data-tab="backups" title="{{ _('The backups of this instance, the automatic ones and the recovery at a minute') }}">{{ _("Backups") }}</button>{% endif %}
   <button type="button" role="tab" data-tab="log" title="{{ _('The log of its Odoo, followed live') }}">{{ _("Log") }}</button>
@@ -473,10 +473,11 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
   {% endif %}
   {% set paths = shell_paths.get(inst.key) %}
   {% if paths and not can_act %}<div class="panel">{{ shell_paths_box(paths) }}</div>{% endif %}
-  {% set outcome = {"success": _("done"), "failed": _("failed"), "running": _("running"), "queued": _("queued"), "interrupted": _("interrupted"), "stopped": _("stopped")} %}
+  {% set outcome = {"success": _("done"), "failed": _("failed"), "running": _("running"), "queued": _("queued"), "interrupted": _("interrupted"), "stopped": _("stopped"), "warned": _("success with warnings")} %}
   <p class="last-action">{% if jobs %}{% set job = jobs[0] %}{{ _("Last action:") }} <a href="{{ prefix }}/jobs/{{ job.id }}">{{ tr(job.title) }}</a>
-    · <span class="status {{ job.status }}">{{ outcome.get(job.status, job.status) }}</span>{% if job.duration %} · {{ job.duration }}{% endif %} · {{ when(job.created) }}
+    · <span class="status {{ job.outcome }}">{{ outcome.get(job.outcome, job.status) }}</span>{% if job.duration %} · {{ job.duration }}{% endif %} · {{ when(job.created) }}
     {% if job.error %}<br><span class="error">{{ tr(job.error) | truncate(160) }}</span>{% endif %}
+    {% for w in job.warnings %}<span class="status-warning">{{ tr(w) | truncate(160) }}</span>{% endfor %}
     · {% else %}{{ _("No jobs yet.") }} {% endif %}<a href="{{ prefix }}/jobs?server={{ server.name | urlencode }}">{{ _("all the actions") }}</a></p>
 </section>
 
@@ -2140,7 +2141,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     }
     function nameInput(value) {
       const input = Object.assign(document.createElement("input"), {type: "text", className: "mono addr-name", value: value || "",
-                                                                    placeholder: "www.customer.com", spellcheck: false});
+                                                                    placeholder: {{ _("www.customer.com") | tojson }}, spellcheck: false});
       input.setAttribute("aria-label", A.name); input.autocapitalize = "off";
       input.addEventListener("input", () => { refresh(); clearTimeout(timer); timer = setTimeout(check, 600); });
       input.addEventListener("change", check);

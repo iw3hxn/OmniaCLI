@@ -128,7 +128,9 @@ async def test_proxied_pages_and_actions(mine):
     data = await wait_remote_job(mine, resp.headers["location"].rsplit("/", 1)[1])
     assert data["status"] == "success" and data["source"] == "manual: link omnia (dev)"
     job = (await mine.get(resp.headers["location"], headers=as_user("dev"))).text
-    assert 'class="nav-link" href="/machines"' in job and "/links/cliente/" in job
+    # the menu of a developer here (no Servers: an admin's), the machine in the crumbs
+    assert 'class="nav-link" href="/instances"' in job and 'href="/backups"' in job and "/links/cliente/" in job
+    assert 'href="/machines"' not in job
 
     # without the Origin of this instance, this instance refuses the POST
     assert (await mine.post("/links/cliente/servers/srv/test/pull", headers=as_user("dev"))).status_code == 403
@@ -136,8 +138,10 @@ async def test_proxied_pages_and_actions(mine):
 
 async def test_role_here_caps_the_link(mine):
     page = (await mine.get("/links/cliente/servers/srv?view=both", headers=as_user("viewer"))).text
-    # the role user there: no actions but restart, no settings
-    assert 'class="nav-link" href="/machines"' in page and "/pull" not in page
+    # the role user there: no actions but restart, no settings; the menu is the
+    # viewer's here: Instances only
+    assert 'class="nav-link" href="/instances"' in page and "/pull" not in page
+    assert 'href="/settings"' not in page and 'href="/backups"' not in page
     assert "Settings and repositories" not in page
     resp = await mine.post("/links/cliente/servers/srv/test/pull", headers=as_user("viewer", post=True))
     assert resp.status_code == 403
@@ -262,3 +266,33 @@ async def test_a_read_through_a_link_is_asked_once_more(mine, monkeypatch):
     assert dropped == ["GET"]
     resp = await mine.post("/links/cliente/servers/srv/test/pull", headers=as_user("dev", post=True))
     assert resp.status_code == 502 and dropped == ["GET", "POST"]
+
+
+async def test_the_menu_stays_the_viewers_inside_a_linked_machine(mine):
+    """Confronto 21/11/2026 §5.2: through a link the top menu is this OmniaCLI's
+    (Servers, Instances, Backups, Settings, without the link's prefix) and the
+    machine is in the crumbs: Servers › cliente › the instance."""
+    page = (await mine.get("/links/cliente/servers/srv", headers=as_user("admin"))).text
+    start = page.index('<nav class="topnav"')
+    nav = page[start:page.index("</nav>", start)]
+    for place in ("/machines", "/instances", "/backups", "/settings"):
+        assert f'href="{place}"' in nav
+    assert "/links/cliente" not in nav
+    start = page.index('<nav class="crumbs"')
+    crumbs = page[start:page.index("</nav>", start)]
+    assert crumbs.index('href="/machines"') < crumbs.index('href="/links/cliente/">cliente</a>') < crumbs.index("srv")
+    # the home of the linked machine: the crumbs of the machine alone
+    home = (await mine.get("/links/cliente/", headers=as_user("admin"))).text
+    assert '<span aria-current="page">cliente</span>' in home
+    # who looks: the account and the logout of this OmniaCLI
+    assert 'href="/account"' in page and 'action="/logout"' in page
+
+
+async def test_an_older_central_gets_the_old_menu(mine):
+    """A central OmniaCLI that sends no menu (older): the pages draw their own
+    menu, with the prefix, as before."""
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=mine.customer), base_url="http://customer.test") as c:
+        page = (await c.get("/servers/srv", headers={"Authorization": f"Bearer {LINK_TOKEN}", "Accept": "text/html",
+                                                     "X-OmniaCLI-Prefix": "/links/cliente"})).text
+    assert 'href="/links/cliente/#instances"' in page and 'href="/links/cliente/settings"' in page
+    assert 'class="nav-link" href="/backups"' not in page

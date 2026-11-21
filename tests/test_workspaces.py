@@ -666,9 +666,13 @@ async def test_a_new_odoo_by_its_version_only(workspaces, client, env, monkeypat
     settings.storage_roots = {}
     versions = (await client.get("/api/instances/versions", headers={"Authorization": AUTH})).json()
     assert [v["major"] for v in versions["versions"]] == [19, 18] and not versions["storage"]
+    assert versions["free_gb"] is None and versions["min_gb"] == 10
     resp = await client.post("/api/instances/new", headers=POST, json={"version": "19"})
     assert resp.status_code == 400 and "No storage" in resp.json()["error"]
     settings.storage_roots = {"main": "/s"}
+    # the room said before the form (the New instance dialog turns off a machine without it)
+    versions = (await client.get("/api/instances/versions", headers={"Authorization": AUTH})).json()
+    assert versions["room_gb"] == 200 and versions["free_gb"] >= 200
     assert (await client.post("/api/instances/new", headers=POST, json={"version": "15"})).status_code == 400
     assert (await client.post("/api/instances/new", headers=post_as("mario"), json={"version": "19"})).status_code == 403
     resp = await client.post("/api/instances/new", headers=POST,

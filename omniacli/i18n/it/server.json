@@ -815,6 +815,7 @@
  "without binary columns (as chosen in production's last Backup)": "senza colonne binarie (come scelto nell'ultimo Backup della produzione)",
  "without filestore (test without attachments)": "senza filestore (test senza allegati)",
  "working": "al lavoro",
+ "www.customer.com": "www.cliente.it",
  "yes": "sì",
  "{address} ({n})": "{address} ({n})",
  "{bases} full copies, the record of the changes takes {size} ({segments} files).": "Copie complete: {bases}; il registro delle modifiche occupa {size} ({segments} file).",

@@ -298,7 +298,39 @@ async def publish(job: Job, ws: Workspace) -> dict:
                 "then publish again): " + ", ".join(made["elsewhere"]))
     if made.get("certificate_error"):
         job.log(f"The certificate is not there yet: {made['certificate_error']}")
+    for warning in certificate_warnings(made):
+        job.warn(warning)
     return made
+
+
+# what certbot says when the names do not lead to this machine's nginx
+_DNS_REFUSALS = ("dns problem", "nxdomain", "no valid ip addresses", "unauthorized", "connection refused",
+                 "timeout during connect", "invalid response", "no name of the workspace is in dns")
+# Let's Encrypt did not reach the challenge here (its details only in certbot's log)
+_UNREACHED = ("challenges have failed", "failed to authenticate")
+
+
+def certificate_warnings(made: dict) -> list[str]:
+    """The web helper's result said as the warnings of its job: the names
+    whose certificate did not come and why, one sentence each."""
+    left = list(made.get("without_dns") or []) + list(made.get("elsewhere") or [])
+    known = [n for n in made.get("names") or [] if n not in left]
+    error = str(made.get("certificate_error") or "")
+    out = []
+    if error:
+        names = ", ".join(known or left) or "the workspace"
+        if any(word in error.lower() for word in _DNS_REFUSALS):
+            out.append(f"The certificate for {names} did not come: the DNS does not point here")
+        elif any(word in error.lower() for word in _UNREACHED):
+            out.append(f"The certificate for {names} did not come: the DNS does not point here, "
+                       "or port 80 is not open to the internet")
+        elif "upload it" in error:
+            out.append(f"The certificate for {names} is not there: the customer's certificate is not uploaded yet")
+        else:
+            out.append(f"The certificate for {names} did not come: Let's Encrypt refused it (see the log)")
+    if left and (known or not error):
+        out.append(f"Left out of the certificate, on http only: {', '.join(left)}: the DNS does not point here")
+    return out
 
 
 async def own_certificate(ws: Workspace, certificate: str, key: str) -> tuple[bool, str]:

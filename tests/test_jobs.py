@@ -120,3 +120,51 @@ async def test_the_workspace_of_a_job_is_kept_and_an_old_file_still_reads(tmp_pa
     assert "workspace" not in _json.loads((tmp_path / f"{two.id}.json").read_text())
     again = JobManager(tmp_path)
     assert again.get(one.id).workspace == "acme" and again.get(two.id).workspace == ""
+
+
+def test_the_warnings_of_a_certificate_not_obtained():
+    """Confronto 21/11/2026 §5.5: the web helper's result as warnings, one
+    sentence each: the names asked and why the certificate did not come."""
+    from omniacli.workspaceops import certificate_warnings
+
+    assert certificate_warnings({"names": ["acme.it"], "certificate_error": None}) == []
+    made = {"names": ["acme.it", "www.acme.it"], "without_dns": ["www.acme.it"], "elsewhere": [],
+            "certificate_error": "Certbot failed: DNS problem: NXDOMAIN looking up A for acme.it"}
+    assert certificate_warnings(made) == [
+        "The certificate for acme.it did not come: the DNS does not point here",
+        "Left out of the certificate, on http only: www.acme.it: the DNS does not point here"]
+    made = {"names": ["www.acme.it"], "without_dns": ["www.acme.it"], "certificate_error": "no name of the workspace is in DNS yet"}
+    assert certificate_warnings(made) == ["The certificate for www.acme.it did not come: the DNS does not point here"]
+    assert certificate_warnings({"names": ["acme.it"], "elsewhere": ["old.acme.it"]}) == [
+        "Left out of the certificate, on http only: old.acme.it: the DNS does not point here"]
+
+
+async def test_a_job_that_succeeds_with_warnings(client):
+    """The job's main work succeeded, something did not: success with
+    warnings, in amber, its warnings said in the reader's language on its
+    page, in the list and in the API for the page (said=1); the status stays
+    success for an older OmniaCLI and for the API's own readers."""
+    jobs = client.app.state.jobs
+    inst = client.app.state.settings.instance("srv", "test")
+
+    async def action(job):
+        job.log("--- the firewall")
+        job.warn("The certificate for www.acme.it did not come: the DNS does not point here")
+    job = jobs.submit("Names of workspace acme", [inst.key], "test", action)
+    data = await wait_job(client, job.id)
+    assert data["status"] == "success" and data["outcome"] == "warned"
+    assert data["result"]["warnings"] == ["The certificate for www.acme.it did not come: the DNS does not point here"]
+    italian = {"Authorization": AUTH, "Accept-Language": "it"}
+    said = (await client.get(f"/api/jobs/{job.id}?said=1", headers=italian)).json()
+    assert said["warnings"] == ["Il certificato per www.acme.it non è arrivato: il DNS non punta qui"]
+    assert said["lines"][0].endswith(" --- il firewall") and said["lines"][1].split(" ", 1)[1].startswith("ATTENZIONE: Il certificato")
+    # the API's own lines stay the code's
+    assert (await client.get(f"/api/jobs/{job.id}", headers=italian)).json()["lines"][0].endswith("--- the firewall")
+    page = (await client.get(f"/jobs/{job.id}", headers=italian)).text
+    assert 'data-status="warned"' in page and "riuscito con avvisi" in page
+    assert "<li>Il certificato per www.acme.it non è arrivato: il DNS non punta qui</li>" in page
+    listed = (await client.get("/jobs", headers=italian)).text
+    assert 'class="status warned job-status" data-status="success"' in listed and "il DNS non punta qui" in listed
+    # the Last action line of the instance
+    page = (await client.get("/servers/srv?view=test", headers=italian)).text
+    assert '<span class="status warned">riuscito con avvisi</span>' in page

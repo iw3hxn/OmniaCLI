@@ -25,6 +25,17 @@
   width: max-content; min-width: 230px; padding: 8px; background: var(--panel); border: 1px solid var(--border);
   border-radius: var(--r-lg); box-shadow: var(--shadow-lg); }
 .row-menu-items button, .row-menu-items .button { width: 100%; justify-content: flex-start; box-shadow: none; text-align: left; }
+/* a phone: each backup a card, its instance on top, then when, size, outcome and its menu */
+@media (max-width: 600px) {
+  .bk-rows thead { display: none; }
+  .bk-rows, .bk-rows tbody { display: block; }
+  .bk-rows tr { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; padding: 10px 4px;
+    border-bottom: 1px solid var(--border); position: relative; }
+  .bk-rows td { display: block; border: 0; padding: 0; background: none !important; }
+  .bk-rows td:first-child { flex: 1 1 100%; font-size: 15px; padding-right: 48px; }
+  .bk-rows td:not(:first-child) { font-size: 13px; }
+  .bk-rows td.num:last-child { position: absolute; top: 8px; right: 4px; }
+}
 #fb-dialog { width: min(560px, calc(100vw - 32px)); }
 #fb-dialog .actions { justify-content: flex-end; }
 </style>
@@ -122,7 +133,8 @@
 
   function rowsOf(machine, data) {
     const base = machine.link ? `/links/${encodeURIComponent(machine.link)}` : "";
-    return (data.rows || []).map((r) => ({...r, machine, base,
+    // the address without its scheme, as Instances writes it (a site there is https://...)
+    return (data.rows || []).map((r) => ({...r, machine, base, label: String(r.label || "").replace(/^[a-z]+:\/\//, "").replace(/\/$/, ""),
       text: [r.label, r.server, machine.name, r.file || "", r.version || ""].join(" ").toLowerCase()}));
   }
   function instanceCell(r) {

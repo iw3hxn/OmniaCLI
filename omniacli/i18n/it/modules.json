@@ -10,6 +10,7 @@
  "Back to the summary, without installing anything": "Torna al riepilogo, senza installare niente",
  "Catalog of the OCA for Odoo {series}, read on {when} · {count} modules.": "Catalogo dell'OCA per Odoo {series}, letto il {when} · {count} moduli.",
  "In the code, not installed": "Nel codice, non installato",
+ "In the production of {server}: a backup first, then {name} is installed and production restarts; who is connected loses the connection for a few seconds.": "Nella produzione di {server}: prima un backup, poi si installa {name} e la produzione si riavvia; chi è collegato perde la connessione per qualche secondo.",
  "Install in production": "Installa in produzione",
  "Install in test": "Installa in Test",
  "Install in the staging": "Installa nella staging",

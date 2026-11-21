@@ -860,7 +860,7 @@ async def test_dashboard_follows_jobs(client, env):
     data = (await client.get("/api/jobs?limit=5", headers={"Authorization": AUTH})).json()
     job = data["jobs"][0]
     assert job["id"] == job_id and job["status"] == "success" and job["servers"] == ["srv"]
-    assert set(job) == {"id", "title", "status", "instances", "servers", "source", "created", "finished", "duration", "error"}
+    assert set(job) == {"id", "title", "status", "instances", "servers", "source", "created", "finished", "duration", "error", "outcome"}
     assert data["busy"] == []
     page = (await client.get("/", headers={"Authorization": AUTH})).text
     # the last action, in one line (the jobs are on their page)

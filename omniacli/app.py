@@ -133,6 +133,17 @@ def request_language(request: HTTPConnection) -> str:
     return i18n.choose(request.cookies.get(i18n.COOKIE), request.headers.get("accept-language"))
 
 
+def menu_places(user) -> list[str]:
+    """The places of the top menu user sees (MENU_PLACES), as base.html draws them."""
+    places = ["servers"] if user.can("admin") and not user.scoped else []
+    places.append("instances")
+    if (any(r in ("developer", "admin") for _, r in user.workspaces) if user.scoped else user.can("developer")):
+        places.append("backups")
+    if user.can("developer") and not user.scoped:
+        places.append("settings")
+    return places
+
+
 def _page_context(request: Request) -> dict:
     """In every template: prefix, the path the pages are served under (a
     linked instance's, empty otherwise), and what the caller may do."""
@@ -147,6 +158,11 @@ def _page_context(request: Request) -> dict:
         "_": functools.partial(i18n.gettext, lang),
         "tr": functools.partial(i18n.tr, lang),
         "prefix": getattr(request.state, "prefix", ""),
+        # the menu of the OmniaCLI showing this page through its link (its
+        # places, _MENU_HEADER), None when it sent none: then this machine's
+        "central_menu": getattr(request.state, "central_menu", None),
+        # who looks through that link
+        "central_user": user.on_behalf if user and user.kind == "link" else "",
         # the text size the consoles (logs, terminals) open with: the Options
         # page's, within its limits (_console.html)
         "console_font": settings.options.shell_font_size if settings else SHELL_FONT_SIZE,
@@ -214,6 +230,12 @@ _PUBLIC_FILES = {"/favicon.ico": ("favicon.ico", "image/x-icon"),
 # what a linked instance sends: the path it serves our pages under, and the
 # name of its user acting through the link
 _PREFIX_HEADER = "x-omniacli-prefix"
+# the places of the top menu of the OmniaCLI showing our pages, those its
+# user sees there (comma separated): our pages draw that menu, its own links
+# without our prefix, so the menu stays the viewer's inside a linked machine.
+# An older OmniaCLI on either side sends or reads none: each page its own menu
+_MENU_HEADER = "x-omniacli-menu"
+MENU_PLACES = ("servers", "instances", "backups", "settings")
 _ON_BEHALF_HEADER = "x-omniacli-user"
 # the role of that user there: a link acts with the lower of it and its own
 _ROLE_CAP_HEADER = "x-omniacli-role-cap"
@@ -617,6 +639,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             # cross-site check; it serves our pages under its own prefix
             prefix = request.headers.get(_PREFIX_HEADER, "")
             request.state.prefix = prefix if _PREFIX.fullmatch(prefix) else ""
+            menu = request.headers.get(_MENU_HEADER)
+            if menu is not None and request.state.prefix:
+                request.state.central_menu = tuple(p for p in MENU_PLACES if p in menu.split(","))
             on_behalf = request.headers.get(_ON_BEHALF_HEADER, "")
             role = settings.links[name].role
             cap = request.headers.get(_ROLE_CAP_HEADER, "")
@@ -2372,12 +2397,13 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return {
             "jobs": [{"id": j.id, "title": j.title, "status": j.status, "instances": j.instances,
                       "servers": j.servers, "source": j.source, "created": j.created,
-                      "finished": j.finished, "duration": j.duration, "error": j.error} for j in found],
+                      "finished": j.finished, "duration": j.duration, "error": j.error,
+                      "outcome": j.outcome} for j in found],
             "busy": sorted({key for j in running for key in j.instances}),
         }
 
     @app.get("/api/jobs/{job_id}")
-    async def job_json(request: Request, job_id: str, since: int = 0):
+    async def job_json(request: Request, job_id: str, since: int = 0, said: int = 0):
         job = jobs.get(job_id)
         if job is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "No such job")
@@ -2386,6 +2412,25 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         data["duration"] = duration
         data["lines"] = job.lines[since:]
         data["next"] = len(job.lines)
+        data["outcome"] = job.outcome
+        if said:
+            # for the job page (said=1): its lines, steps, error and warnings
+            # in the reader's language; the API's own stays the code's English
+            say = functools.partial(i18n.tr, request_language(request))
+
+            def say_line(line: str) -> str:
+                # a warning (Job.warn): its sentence translated too, after the word
+                stamp, warned, text = line.partition(" WARNING: ")
+                if warned and re.fullmatch(r"\d\d:\d\d:\d\d", stamp):
+                    return f"{stamp} {say('WARNING: {text}').replace('{text}', say(text))}"
+                return say(line)
+            data["lines"] = [say_line(line) for line in data["lines"]]
+            data["error"] = say(data["error"]) if data["error"] else data["error"]
+            data["warnings"] = [say(w) for w in job.warnings]
+            progress = data["result"].get("progress") if isinstance(data["result"], dict) else None
+            if isinstance(progress, dict) and isinstance(progress.get("steps"), list):
+                progress["steps"] = [{**s, "label": say(s.get("label")), "where": say(s.get("where"))}
+                                     if isinstance(s, dict) else s for s in progress["steps"]]
         return JSONResponse(data)
 
     # --- server configuration -------------------------------------------
@@ -2915,7 +2960,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             current = settings.workspaces.get(ws.name)
             if current is None:
                 raise JobFailed(f"no workspace {ws.name}")
-            job.result = await workspaceops.publish(job, current)
+            job.result.update(await workspaceops.publish(job, current))
         return jobs.submit(f"Names of workspace {ws.name}", [f"{s}/{r}" for s in ws.servers for r in ROLES],
                            source, action)
 
@@ -3203,7 +3248,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if resources:
                 await workspaceops.apply_limits(job, current)
             if names:
-                job.result = await workspaceops.publish(job, current)
+                job.result.update(await workspaceops.publish(job, current))
         job = jobs.submit(f"Workspace {ws.name}: " + ", ".join(
             [w for w, on in (("CPU and memory", resources), ("names", names)) if on]),
             [f"{s}/{r}" for s in ws.servers for r in ROLES], f"manual: {me}", action)
@@ -3302,7 +3347,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             try:
                 await workspaceops.publish(job, current)
             except JobFailed as exc:
-                job.log(f"The instance runs, its names are not published: {exc}")
+                job.warn(f"The instance runs, its names are not published: {exc}")
         return parsed
 
     def admin_setup(setup):
@@ -3653,8 +3698,20 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         """The Odoo versions a new instance may have: the templates odoo-<major> here."""
         found = await asyncio.to_thread(workspaceops.templates)
         majors = sorted((int(n.split("-", 1)[1]) for n in found if re.fullmatch(r"odoo-\d+", n)), reverse=True)
+        # the disk a new instance would get (quick_room) and the least it needs:
+        # the New instance dialog turns off a machine without it before the form
+        free_gb = room_gb = None
+        storage = next(iter(settings.storage_roots), None)
+        try:
+            space = await workspaceops.space() if storage else None
+        except workspaceops.SpaceError:
+            space = None
+        if space is not None:
+            room = workspaceops.room(space, settings.workspaces, storage, None) or {}
+            free_gb, room_gb = int(room.get("allowed", 0) / workspaceops.GB), quick_room(space)
         return {"versions": [{"major": m, "label": found[f"odoo-{m}"].label} for m in majors],
-                "storage": bool(settings.storage_roots), "address": await asyncio.to_thread(public_address)}
+                "storage": bool(settings.storage_roots), "address": await asyncio.to_thread(public_address),
+                "free_gb": free_gb, "room_gb": room_gb, "min_gb": QUICK_DISK_GB[0]}
 
     @app.post("/api/instances/new", dependencies=[Depends(admin)])
     async def quick_instance(payload: dict = Body(...), me: Principal = Depends(current_user)):
@@ -6793,6 +6850,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         # the pages there in this browser's language (its cookie is this site's)
         headers["accept-language"] = request_language(request)
         headers.update(link_headers(link, me.name, me.role))
+        headers[_MENU_HEADER] = ",".join(menu_places(me))
         if tunnel_reaches_browser(request):
             headers[TUNNEL_HEADER] = "1"
         url = "/" + path + (f"?{request.url.query}" if request.url.query else "")

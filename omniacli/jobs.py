@@ -65,6 +65,24 @@ class Job:
         for line in str(text).splitlines() or [""]:
             self.lines.append(f"{stamp} {line}")
 
+    def warn(self, text: str) -> None:
+        """What did not come though the job's main work did (a certificate,
+        names left out): in its log, and in result["warnings"], so the job
+        ends "success with warnings". Kept in result: an older OmniaCLI reads
+        the job file and the job API as before (its status stays success)."""
+        self.log(f"WARNING: {text}")
+        self.result.setdefault("warnings", []).append(str(text))
+
+    @property
+    def warnings(self) -> list[str]:
+        found = self.result.get("warnings") if isinstance(self.result, dict) else None
+        return [str(w) for w in found] if isinstance(found, list) else []
+
+    @property
+    def outcome(self) -> str:
+        """The status as the pages show it: success with warnings is "warned"."""
+        return "warned" if self.status == SUCCESS and self.warnings else self.status
+
     @property
     def servers(self) -> list[str]:
         """The servers of the instances (server/role) the job ran on."""

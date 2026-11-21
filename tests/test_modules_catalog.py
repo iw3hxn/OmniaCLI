@@ -422,8 +422,8 @@ async def test_the_modules_tab(modules, client):
     assert "report excel" in dialog
     for match in re.finditer(r"<button\b[^>]*>", dialog):
         assert re.search(r'title="[^"]+"', match.group(0)), match.group(0)
-    # the steps: the plan and the confirmation hidden at first, one primary each
-    assert re.search(r'id="mods-plan-step" hidden', dialog) and re.search(r'id="mods-confirm-step" hidden', dialog)
+    # the plan hidden at first; its Install in production is the one confirmation (21/11/2026)
+    assert re.search(r'id="mods-plan-step" hidden', dialog) and 'mods-confirm-step' not in dialog
     # in Italian
     page = (await client.get("/servers/acme-main", headers={**post_as("mario"), "Accept-Language": "it"})).text
     assert ">Moduli<" in page and "+ Aggiungi moduli" in page and "Cerca per nome o per cosa fa" in page
