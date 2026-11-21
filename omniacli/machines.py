@@ -238,7 +238,8 @@ async def provision(job: Job, machine: Machine, ssh_folder: Path, link_public_ke
         stdin.write_bytes(script_input(machine, line, token_hash))
         cmd = ssh_command(machine, key, known_hosts, remote_command(machine), ssh)
         job.log(f"--- prepare {machine.user}@{machine.host}:{machine.port} (host key "
-                f"{sshlinks.fingerprint(machine.host_key)}), OmniaCLI from {machine.package_url}")
+                f"{sshlinks.fingerprint(machine.host_key)}), OmniaCLI from {machine.package_url}, "
+                + ("a clean server" if machine.kind == "clean" else "a server that already has Odoo"))
         with open(stdin, "rb") as script:
             await run(job, cmd, timeout=PROVISION_TIMEOUT, stdin=script)
 

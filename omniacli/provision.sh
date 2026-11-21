@@ -52,7 +52,12 @@ main() {
     . /etc/os-release
     case "$ID:$VERSION_ID" in
         ubuntu:22.04|ubuntu:24.04|debian:11|debian:12|debian:13) echo "$PRETTY_NAME" ;;
-        *) fail "$PRETTY_NAME is not supported: Ubuntu 22.04 or 24.04, Debian 11, 12 or 13" ;;
+        # an older Odoo server (Odoo 12 or 13 on 20.04, say): OmniaCLI alone, on a Python 3.12 of its own
+        # (the system's is 3.8); the workspaces want a newer system (Docker, cgroup v2, nginx)
+        ubuntu:20.04)
+            [ "$MODE" = existing ] || fail "$PRETTY_NAME is supported only as a server that already has Odoo (OmniaCLI alone, its instances adopted): a clean server needs Ubuntu 22.04 or 24.04, Debian 11, 12 or 13"
+            echo "$PRETTY_NAME: OmniaCLI alone, on a Python of its own" ;;
+        *) fail "$PRETTY_NAME is not supported: Ubuntu 22.04 or 24.04, Debian 11, 12 or 13 (Ubuntu 20.04 as a server that already has Odoo)" ;;
     esac
     case "$(dpkg --print-architecture)" in
         amd64|arm64) ;;

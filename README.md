@@ -361,7 +361,7 @@ prepared before Test & activate. The job's log opens in a new tab.
 
 ## Install from the Debian package
 
-Supported: Debian 11, 12, 13 and Ubuntu 22.04, 24.04 (amd64 or arm64). OmniaCLI needs
+Supported: Debian 11, 12, 13 and Ubuntu 22.04, 24.04 (amd64 or arm64); Ubuntu 20.04 only as a server that already has Odoo (Add a server › a server with Odoo: OmniaCLI alone, on the Python 3.12 the package downloads, since the system's is 3.8). OmniaCLI needs
 Python 3.10 or newer: the package uses the system `python3` when it is 3.10+,
 otherwise (Debian 11, Python 3.9) a local `python3.10`+ already installed (in
 the `PATH` or `/usr/local/bin`, the newest first), otherwise it downloads a

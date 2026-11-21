@@ -245,3 +245,28 @@ def test_what_discover_found_becomes_productions():
     # the code is the panel's: nothing to pull, odoo-bin as found
     assert items[0]["instance"] == {"database": "shop", "repositories": [], "odoo_bin": "/var/odoo/shop/src/odoo-bin", **unit}
     assert items[1]["instance"] == {"database": "shop", "repositories": [], **unit}
+
+
+@pytest.mark.parametrize("system, mode, ok", [
+    ("ubuntu:24.04", "clean", True), ("debian:11", "clean", True),
+    # an older Odoo server: OmniaCLI alone, adopting its instances; never as a clean server for the workspaces
+    ("ubuntu:20.04", "existing", True), ("ubuntu:20.04", "clean", False),
+    ("ubuntu:18.04", "existing", False), ("centos:7", "existing", False),
+])
+def test_the_systems_provisioning_takes(system, mode, ok):
+    """The check of the system in provision.sh, run with the os-release's ID
+    and VERSION_ID and the mode of the Add a server dialog."""
+    import re
+    import subprocess
+    from pathlib import Path
+
+    script = (Path(machines.__file__).parent / "provision.sh").read_text()
+    check = re.search(r'    case "\$ID:\$VERSION_ID" in\n.*?\n    esac\n', script, re.S).group(0)
+    distro, version = system.split(":")
+    done = subprocess.run(["bash", "-c", 'fail() { echo "PROVISION FAILED: $*"; exit 1; }\n' + check],
+                          env={"ID": distro, "VERSION_ID": version, "MODE": mode, "PRETTY_NAME": f"{distro} {version}",
+                               "PATH": "/usr/bin:/bin"},
+                          capture_output=True, text=True)
+    assert (done.returncode == 0) == ok, done.stdout
+    if system == "ubuntu:20.04" and mode == "clean":
+        assert "already has Odoo" in done.stdout

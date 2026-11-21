@@ -25,6 +25,7 @@
  "A run that finds a job on the instance is skipped; runs missed while OmniaCLI is stopped are not made up.": "Un'esecuzione che trova un job sull'istanza viene saltata; quelle perse mentre OmniaCLI è fermo non si recuperano.",
  "A server of the instance's type there, with its databases": "Un server del tipo dell'istanza di là, con i suoi database",
  "A server of the same type there, with its databases": "Un server dello stesso tipo di là, con i suoi database",
+ "A server with an older Odoo: OmniaCLI goes there alone, on a Python of its own, and adopts its instances. A clean server needs a newer system.": "Un server con un Odoo più vecchio: OmniaCLI ci va da solo, con un Python suo, e prende in carico le sue istanze. Un server pulito vuole un sistema più recente.",
  "A server's credential wins over its workspace's for the same host; a host without one is reached as before.": "La credenziale di un server prevale su quella del suo workspace per lo stesso host; un host senza credenziale si raggiunge come prima.",
  "A server: its production and test instances, how they restart and update, and their repositories.": "Un server: le sue istanze di produzione e di test, come si riavviano e si aggiornano, e i loro repository.",
  "AI assistants": "Assistenti AI",
