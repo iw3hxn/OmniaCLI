@@ -68,6 +68,20 @@ button:hover { background: color-mix(in srgb, var(--accent) 88%, #000); }
 button:focus-visible, a:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent); outline-offset: 2px; }
 .error { margin: 0 0 6px; padding: 9px 12px; border: 1px solid var(--err); border-radius: var(--r); color: var(--err);
   background: var(--err-soft); font-size: 14px; }
+.step-lead { margin: 0 0 6px; font-size: 14px; }
+.code-input { font-family: ui-monospace, "SFMono-Regular", Menlo, monospace !important; font-size: 20px !important; letter-spacing: .12em; }
+.qr { display: flex; justify-content: center; margin: 12px 0 4px; }
+.qr svg { background: #fff; border-radius: var(--r); max-width: 100%; height: auto; }
+.secret-line { font-size: 13px; color: var(--muted); margin: 8px 0 0; }
+.secret { font: 14px/1.4 ui-monospace, Menlo, monospace; color: var(--text); word-break: break-all; user-select: all; }
+dialog { border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--panel); color: var(--text);
+  padding: 22px 24px; max-width: min(440px, calc(100vw - 32px)); box-shadow: var(--shadow-lg); }
+dialog::backdrop { background: rgba(16, 24, 40, .45); }
+dialog h2 { margin: 0 0 8px; font-size: 18px; }
+.codes { font: 16px/1.7 ui-monospace, Menlo, monospace; background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: var(--r); padding: 10px 14px; columns: 2; user-select: all; margin: 12px 0 0; }
+a.button { display: block; text-align: center; margin-top: 18px; padding: 11px; font-weight: 600; border-radius: var(--r);
+  background: var(--accent); color: #fff; text-decoration: none; }
 .foot { margin: 18px 0 0; font-size: 12px; color: var(--muted); }
 .foot a { color: var(--muted); }
 @media (max-width: 760px) {
@@ -82,12 +96,54 @@ button:focus-visible, a:focus-visible { outline: 2px solid color-mix(in srgb, va
   <div class="card-top">
     <h1>Omnia<span>CLI</span></h1>
     <span class="lang-switch" role="group" aria-label="{{ _('Language') }}">
-      {% for code, name in languages.items() %}<a href="/language/{{ code }}?next={{ ('/login?next=' ~ (next | urlencode)) | urlencode }}" title="{{ name }}"
+      {% set here = "/login/" ~ step if step in ("code", "setup") else "/login?next=" ~ (next | urlencode) %}
+      {% for code, name in languages.items() %}<a href="/language/{{ code }}?next={{ here | urlencode }}" title="{{ name }}"
         {% if code == lang %}aria-current="true"{% endif %}>{{ code | upper }}</a>{% endfor %}
     </span>
   </div>
   <p class="lead">{{ _("Deploy and operate your Odoo instances.") }}</p>
   {% if error %}<p class="error" role="alert">{{ tr(error) }}</p>{% endif %}
+  {% if step == "code" %}
+  {#- the second step (README, Two-step verification): the code of the app, or a recovery code #}
+  <form method="post" action="/login/code">
+    <p class="step-lead">{{ _("{name}, type the code your authenticator app shows for OmniaCLI, or one of your recovery codes.", name=user) }}</p>
+    <label for="code">{{ _("Code") }}</label>
+    <input type="text" id="code" name="code" inputmode="text" autocomplete="one-time-code" autocapitalize="none" spellcheck="false"
+           maxlength="20" required autofocus placeholder="123456" class="code-input">
+    <button title="{{ _('Checks the code and opens OmniaCLI. A wrong code counts as a failed login and goes in the access log; after a few, the password is asked again.') }}">{{ _("Verify") }}</button>
+  </form>
+  <p class="foot"><a href="/login" title="{{ _('Back to the user name and password') }}">{{ _("Log in as someone else") }}</a></p>
+  {% elif step == "setup" %}
+  {#- its set-up, required here before anything else #}
+  <form method="post" action="/login/setup">
+    <p class="step-lead"><strong>{{ _("Two-step verification is required on this machine.") }}</strong>
+      {{ _("Scan the QR code with an authenticator app (Google Authenticator, Microsoft Authenticator, FreeOTP, Aegis…), then type the code it shows.") }}</p>
+    {% if qr %}<div class="qr" role="img" aria-label="{{ _('QR code of the secret') }}">{{ qr | safe }}</div>{% endif %}
+    <p class="secret-line">{{ _("Or type this secret in the app:") }}<br><code class="secret" id="secret">{{ secret }}</code></p>
+    <label for="code">{{ _("Code shown by the app") }}</label>
+    <input type="text" id="code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="10" required autofocus
+           placeholder="123456" class="code-input">
+    <button title="{{ _('Checks the code and switches two-step verification on; then it shows your recovery codes once.') }}">{{ _("Switch on and log in") }}</button>
+  </form>
+  <p class="foot"><a href="/login" title="{{ _('Back to the user name and password') }}">{{ _("Log in as someone else") }}</a></p>
+  {% elif step == "recovery" %}
+  {#- the recovery codes, once, in a dialog of their own; then the page asked #}
+  <p class="step-lead">{{ _("Two-step verification is on.") }}</p>
+  <dialog id="recovery-dialog" aria-labelledby="rd-title">
+    <h2 id="rd-title">{{ _("Your recovery codes") }}</h2>
+    <p>{{ _("Each one logs you in once without the app (a lost phone). They are shown only now: keep them somewhere safe.") }}</p>
+    <pre class="codes" id="recovery-codes">{% for c in recovery %}{{ c }}
+{% endfor %}</pre>
+    <a class="button" href="{{ next }}" id="rd-done" title="{{ _('Goes on into OmniaCLI: the codes will not be shown again. If you lose them, switch two-step verification off and on again from Account.') }}">{{ _("I have saved the codes") }}</a>
+  </dialog>
+  <script>
+  (function () {
+    const dialog = document.getElementById("recovery-dialog");
+    dialog.addEventListener("cancel", (event) => event.preventDefault());
+    dialog.showModal();
+  })();
+  </script>
+  {% else %}
   <form method="post" action="/login">
     <input type="hidden" name="next" value="{{ next }}">
     <label for="username">{{ _("User name") }}</label>
@@ -96,6 +152,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid color-mix(in srgb, va
     <input type="password" id="password" name="password" autocomplete="current-password" required>
     <button title="{{ _('Opens OmniaCLI with this user name and password. After several wrong tries you wait before the next one; every try goes in the access log.') }}">{{ _("Log in") }}</button>
   </form>
+  {% endif %}
   <p class="foot">© 2026 OmniaSolutions S.n.c di Boscolo Matteo &amp; C ·
     <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">GNU AGPL v3</a></p>
 </main>

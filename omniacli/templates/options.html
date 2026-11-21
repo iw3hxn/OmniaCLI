@@ -130,7 +130,13 @@
       <label style="display: inline-flex; gap: 6px; align-items: center"><input type="checkbox" id="portal-staff" style="width: auto" {{ "checked" if options.portal_staff }}
              title="{{ _('Off (advised): at the address of the portal only the users of the workspaces log in; the administrators and developers of the machine come in through their link. On: they log in there too, from the internet.') }}">
         {{ _("log in at the address of the portal too") }}</label>
+      <label for="second-factor">{{ _("Two-step verification required") }}</label>
+      <select id="second-factor" title="{{ _('Who must type a code of an authenticator app after the password. A user who must and has none sets it up right after the password. Anyone may switch it on from Account.') }}">
+        {% for value, label in [("portal", _("users at the portal address (advised)")), ("everybody", _("everybody")), ("nobody", _("nobody"))] %}
+        <option value="{{ value }}" {{ "selected" if options.second_factor == value }}>{{ label }}</option>{% endfor %}
+      </select>
     </div>
+    <p class="muted" style="font-size: 13px; margin: 8px 0 0">{{ _("Users at the portal address: whoever logs in there, and the users of the workspaces wherever they log in, once the portal has an address; without one, nobody is asked.") }}</p>
   </section>
   <div class="actions">
     <button type="submit" class="primary" title="{{ _('Saves the options of this page for every user of this OmniaCLI: they hold from now. A password left empty keeps the saved one. The page stays open.') }}">{{ _("Save") }}</button>
@@ -164,7 +170,8 @@ document.getElementById("form").addEventListener("submit", async (ev) => {
                        port: Number(document.getElementById("syslog-port").value || 514),
                        ca_file: document.getElementById("syslog-ca").value.trim()}},
       portal: {provider: document.getElementById("provider-label").value.trim(),
-               staff: document.getElementById("portal-staff").checked},
+               staff: document.getElementById("portal-staff").checked,
+               second_factor: document.getElementById("second-factor").value},
     }),
   }).catch(() => null);
   const data = resp ? await resp.json().catch(() => ({})) : {};

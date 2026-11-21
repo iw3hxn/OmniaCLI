@@ -45,5 +45,87 @@ document.getElementById("password-form").onsubmit = async (event) => {
 };
 </script>
 {% endif %}
+{#- two-step verification (README, Two-step verification): the secret and the recovery codes in dialogs of their own, once #}
+<section class="panel" id="two-step">
+  <h2 style="margin-bottom: 4px">{{ _("Two-step verification") }}</h2>
+  <div id="ts-error" class="banner" hidden></div>
+  {% if two_step.on %}
+  <p style="margin: 0 0 8px"><span class="badge ok">{{ _("switched on") }}</span> {{ _("since {date}: after the password, the login asks a code of your authenticator app.", date=two_step.since) }}
+    {{ _("Recovery codes left: {count}.", count=two_step.left) }}</p>
+  {% if two_step.required %}
+  <p class="muted" style="margin: 0">{{ _("It is required for you on this machine: it cannot be switched off. Lost the phone? Log in with a recovery code, or ask an administrator to reset it.") }}</p>
+  {% else %}
+  <form id="ts-off" style="display: flex; gap: 8px; flex-wrap: wrap; align-items: end">
+    <label style="flex: 1; min-width: 180px">{{ _("A code of the app, or a recovery code") }}<br>
+      <input type="text" id="ts-off-code" autocomplete="one-time-code" autocapitalize="none" spellcheck="false" maxlength="20" required></label>
+    <button class="danger" title="{{ _('Switches two-step verification off after checking the code: from the next login the password alone is asked again. A wrong code counts as a failed login.') }}">{{ _("Switch it off") }}</button>
+  </form>
+  {% endif %}
+  {% else %}
+  <p style="margin: 0 0 8px"><span class="badge">{{ _("off") }}</span> {{ _("Your password alone logs you in. With two-step verification, the login also asks a code of an authenticator app on your phone.") }}
+    {% if two_step.required %}<strong>{{ _("It is required for you on this machine: at your next login you will set it up.") }}</strong>{% endif %}</p>
+  <button type="button" class="primary" id="ts-start" title="{{ _('Shows the QR code to scan with an authenticator app; it is on once you type a code the app shows') }}">{{ _("Switch on…") }}</button>
+  {% endif %}
+</section>
+<dialog id="ts-dialog" aria-labelledby="ts-title">
+  <form id="ts-form">
+    <h2 id="ts-title">{{ _("Switch on two-step verification") }}</h2>
+    <p>{{ _("Scan the QR code with an authenticator app (Google Authenticator, Microsoft Authenticator, FreeOTP, Aegis…), then type the code it shows.") }}</p>
+    <div id="ts-qr" style="display: flex; justify-content: center"></div>
+    <p class="muted" style="font-size: 13px">{{ _("Or type this secret in the app:") }}<br><code class="mono copyable" id="ts-secret" style="word-break: break-all"></code></p>
+    <p><label>{{ _("Code shown by the app") }}<br><input type="text" id="ts-code" inputmode="numeric" autocomplete="one-time-code" maxlength="10" required></label></p>
+    <p class="error" id="ts-dialog-error" role="alert"></p>
+    <div class="actions">
+      <button type="button" id="ts-cancel" title="{{ _('Closes without switching it on: the secret shown is forgotten') }}">{{ _("Cancel") }}</button>
+      <button type="submit" class="primary" title="{{ _('Checks the code and switches two-step verification on; then it shows your recovery codes once.') }}">{{ _("Switch on") }}</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="recovery-dialog" aria-labelledby="rc-title">
+  <h2 id="rc-title">{{ _("Your recovery codes") }}</h2>
+  <p>{{ _("Each one logs you in once without the app (a lost phone). They are shown only now: keep them somewhere safe.") }}</p>
+  <pre class="console mono copyable" id="recovery-codes" style="white-space: pre-wrap"></pre>
+  <div class="actions"><button type="button" class="primary" id="rc-done" title="{{ _('Closes: the codes will not be shown again. If you lose them, switch two-step verification off and on again.') }}">{{ _("I have saved the codes") }}</button></div>
+</dialog>
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const send = async (path, body, box) => {
+    box.hidden = false; box.textContent = "";
+    const resp = await fetch("{{ prefix }}/api/account/second-factor/" + path, {method: "POST",
+      headers: {"Content-Type": "application/json"}, body: JSON.stringify(body || {})}).catch(() => null);
+    const data = resp ? await resp.json().catch(() => ({})) : {};
+    if (resp && resp.ok) { box.hidden = true; return data; }
+    box.textContent = data.error || data.detail || (resp ? {{ _("Error") | tojson }} + " " + resp.status : {{ _("OmniaCLI cannot be reached") | tojson }});
+    return null;
+  };
+  const start = $("ts-start"), dialog = $("ts-dialog"), codes = $("recovery-dialog");
+  if (start) start.onclick = async () => {
+    const data = await send("start", {}, $("ts-error"));
+    if (!data) return;
+    $("ts-qr").innerHTML = data.qr || "";
+    $("ts-secret").textContent = data.secret;
+    $("ts-code").value = ""; $("ts-dialog-error").textContent = "";
+    dialog.showModal(); $("ts-code").focus();
+  };
+  $("ts-cancel").onclick = () => dialog.close();
+  $("ts-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const box = $("ts-dialog-error");
+    const data = await send("confirm", {code: $("ts-code").value}, box);
+    if (!data) { box.hidden = false; return; }
+    dialog.close();
+    $("recovery-codes").textContent = data.recovery.join("\n");
+    codes.showModal();
+  });
+  codes.addEventListener("cancel", (event) => event.preventDefault());
+  $("rc-done").onclick = () => location.reload();
+  const off = $("ts-off");
+  if (off) off.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (await send("disable", {code: $("ts-off-code").value}, $("ts-error"))) location.reload();
+  });
+})();
+</script>
 </div>
 {% endblock %}

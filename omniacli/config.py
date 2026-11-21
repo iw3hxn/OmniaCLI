@@ -1604,9 +1604,17 @@ class Options:
     # the machine's own users log in there too (else through their link only)
     portal_address: str = ""
     portal_staff: bool = False
+    # who logs in with a second step (totp.py, README Two-step verification):
+    # nobody; portal: at the portal's address, and the users of the workspaces
+    # anywhere once the machine has one (else they would skip it by the
+    # machine's own address); everybody
+    second_factor: str = "portal"
 
 
 SMTP_SECURITY = ("starttls", "ssl", "none")
+# Options.second_factor
+SECOND_FACTOR_POLICIES = ("nobody", "portal", "everybody")
+SECOND_FACTOR_DEFAULT = "portal"
 # whom a notice goes to: an email address (the SMTP server of Options) or a
 # webhook (https, a JSON {"text": ...})
 NOTIFY_EMAIL = re.compile(r"[^@\s<>,;]{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,63}")
@@ -1697,13 +1705,16 @@ def parse_options(data) -> Options:
     staff = portal.get("staff", False)
     if not isinstance(staff, bool):
         raise ConfigError("portal.staff must be true or false")
+    second = str(portal.get("second_factor") or SECOND_FACTOR_DEFAULT)
+    if second not in SECOND_FACTOR_POLICIES:
+        raise ConfigError(f"portal.second_factor: one of {', '.join(SECOND_FACTOR_POLICIES)}")
     return Options(shell_font_size=size, tunnel_idle_hours=idle, tunnel_bind=bind, tunnel_ports=ports,
                    smtp_host=texts["host"], smtp_port=port, smtp_security=security, smtp_user=texts["user"],
                    smtp_password=texts["password"], mail_from=texts["from"],
                    monitor_notify=parse_notify(monitor.get("notify"), "monitor.notify"),
                    audit_retention_days=retention, syslog_host=syslog_host, syslog_port=syslog_port,
                    syslog_protocol=protocol, syslog_ca_file=ca_file, provider_label=provider,
-                   portal_address=address, portal_staff=staff)
+                   portal_address=address, portal_staff=staff, second_factor=second)
 
 
 def load_options(path: Path) -> Options:
@@ -1737,6 +1748,8 @@ def save_options(path: Path, options: Options) -> None:
                                        "protocol": options.syslog_protocol, "ca_file": options.syslog_ca_file}
     portal = {"provider": options.provider_label, "address": options.portal_address, "staff": options.portal_staff}
     portal = {key: value for key, value in portal.items() if value}
+    if options.second_factor != SECOND_FACTOR_DEFAULT:
+        portal["second_factor"] = options.second_factor
     if portal:
         data["portal"] = portal
     text = yaml.safe_dump(data, sort_keys=False)

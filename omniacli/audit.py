@@ -57,6 +57,8 @@ AUDITED_BY_ROUTE = frozenset({
 # lists of servers and jobs, the settings, the load
 NOT_SENSITIVE = frozenset({
     "/favicon.ico", "/icon-180.png", "/login-background.jpg", "/login", "/.omniacli/login", "/language/{code}",
+    # the second step of a login (its outcome is logged by the route)
+    "/login/code", "/login/setup",
     "/", "/dashboard/servers", "/servers/{server}", "/api/info", "/api/portal", "/api/servers", "/api/metrics",
     "/api/metrics/history", "/api/disks", "/api/disks/history", "/disks",
     "/api/servers/{server}/{role}/uptime", "/api/servers/{server}/{role}/summary",

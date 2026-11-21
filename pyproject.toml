@@ -24,6 +24,8 @@ dependencies = [
     "croniter>=6.0",
     # the encryption of what a puller carries (AES-GCM, HKDF)
     "cryptography>=42",
+    # the QR code of two-step verification (pure Python); without it the secret is shown as text only
+    "segno>=1.6",
     # the MCP interface (/mcp); the SDK needs Python 3.10, older ones run without it
     "mcp>=2.3; python_version >= '3.10'",
 ]

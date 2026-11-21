@@ -49,6 +49,7 @@ from . import audit, siem
 from . import i18n, loginas, machines, modulecatalog, pgreport, pgtuning, stagings, workspaceweb
 from . import stagingmail
 from . import dumpinfo
+from . import totp
 from . import uploads as uploads_mod
 from .uploads import Uploads
 from .diskhistory import DiskHistory, DiskRecorder
@@ -271,6 +272,9 @@ _LINK_RESPONSE_HEADERS = ("content-type", "content-disposition", "content-length
 # machine's pages and the configuration.
 WORKSPACE_ROUTES = frozenset({
     "/logout", "/account", "/api/account/password", "/static/{name}", "/x/{plugin}/static/{path:path}",
+    # its two-step verification, and its workspace's admins' reset of a member's
+    "/api/account/second-factor/start", "/api/account/second-factor/confirm",
+    "/api/account/second-factor/disable", "/api/workspaces/{workspace}/members/second-factor/reset",
     "/", "/dashboard/servers", "/api/servers", "/api/metrics",
     "/jobs", "/jobs/{job_id}", "/jobs/{job_id}/stop", "/api/jobs", "/api/jobs/{job_id}",
     "/servers/{server}", "/servers/{server}/merge", "/servers/{server}/x/{plugin}/{action}",
@@ -593,6 +597,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         lambda: settings.options, link_headers,
         lambda user, detail: access_log.record("tunnel", "user", user, "", detail))
     limiter = LoginLimiter()
+    # two-step verification (totp.py): the users' second factors, next to the
+    # users file; the logins still owing their code; the secrets being set up
+    # from the Account page ({user: (secret, until)})
+    second_factors = totp.SecondFactors(
+        settings.users_file.with_name("second-factor.json") if settings.users_file
+        else settings.jobs_dir.parent / "second-factor.json")
+    pending_logins = totp.PendingLogins()
+    account_setups: dict[str, tuple[str, float]] = {}
     # the links of the Log in as button (loginas.py)
     login_tickets = loginas.LoginTickets()
     # the pullers this instance relays: their state next to the jobs
@@ -633,6 +645,19 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         there too (Options); everywhere else, everyone as before."""
         return (not on_portal(request) or settings.options.portal_staff
                 or settings.user_role(name) == WORKSPACE_ROLE)
+
+    def second_step_required(request: HTTPConnection, name: str) -> bool:
+        """name must log in with a second step here (Options, Two-step
+        verification): everybody; or, with the portal's policy and once the
+        machine has a portal, whoever logs in at its address and the users of
+        the workspaces wherever they log in (the machine's own address is no
+        way around it). No portal address: nobody, as before."""
+        policy = settings.options.second_factor
+        if policy == "everybody":
+            return True
+        if policy == "portal" and settings.options.portal_address:
+            return on_portal(request) or settings.user_role(name) == WORKSPACE_ROLE
+        return False
 
     def public_base(request: Request) -> str:
         """Where a person or a client reaches this OmniaCLI: the portal when it
@@ -924,6 +949,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     app.state.ssh_tunnels = ssh_tunnels
     app.state.pullers, app.state.publications, app.state.consumers = pullers, publications, consumers
     app.state.sessions, app.state.authenticator = sessions, authenticator
+    app.state.second_factors = second_factors
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
@@ -1028,9 +1054,90 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return FileResponse(_STATIC / name, media_type=media_type,
                             headers={"Cache-Control": "public, max-age=86400"})
 
-    def login_page(request: Request, next_path: str, error: str = "", code: int = 200):
-        return _TEMPLATES.TemplateResponse(request, "login.html", {"next": next_path, "error": error},
-                                           status_code=code)
+    def login_page(request: Request, next_path: str, error: str = "", code: int = 200, **step):
+        return _TEMPLATES.TemplateResponse(request, "login.html", {"next": next_path, "error": error, "step": "", **step},
+                                           status_code=code, headers={"Cache-Control": "no-store"})
+
+    def needs_second_step(request: Request, name: str) -> bool:
+        return second_factors.on(name) or second_step_required(request, name)
+
+    def to_second_step(request: Request, name: str, next_path: str, via: str) -> RedirectResponse:
+        """The password was right: the code before the session, or first its
+        set-up when the user must and has none (secret: the pending's)."""
+        setup = not second_factors.on(name)
+        token = pending_logins.create(name, next_path, settings.users[name], setup, via)
+        response = RedirectResponse("/login/setup" if setup else "/login/code", status.HTTP_303_SEE_OTHER)
+        response.set_cookie(totp.STEP_COOKIE, token, max_age=totp.PENDING_SECONDS, httponly=True, samesite="strict",
+                            secure=request.url.scheme == "https", path="/login")
+        return response
+
+    def step_page(request: Request, found: totp.Pending, error: str = "", code: int = 200, recovery=None):
+        if recovery:
+            return login_page(request, found.next_path, step="recovery", user=found.user, recovery=recovery)
+        if not found.setup:
+            return login_page(request, found.next_path, error, code, step="code", user=found.user)
+        uri = totp.otpauth_uri(found.secret, f"{found.user}@{request.url.hostname}")
+        return login_page(request, found.next_path, error, code, step="setup", user=found.user, uri=uri,
+                          secret=found.secret, qr=totp.qr_svg(uri))
+
+    async def login_step(request: Request):
+        """/login/code and /login/setup: the second step of a login whose
+        password was right (its cookie), the session only after it. A wrong
+        code counts with the failed logins; MAX_TRIES of them, the password again."""
+        token = request.cookies.get(totp.STEP_COOKIE)
+        found = pending_logins.get(token, settings.users)
+        if found is None:
+            # none, ended, used up, or the password changed meanwhile: the password again
+            return RedirectResponse("/login", status.HTTP_303_SEE_OTHER)
+        if found.setup != (request.url.path == "/login/setup"):
+            return RedirectResponse("/login/setup" if found.setup else "/login/code", status.HTTP_303_SEE_OTHER)
+        if request.method == "GET":
+            return step_page(request, found)
+        if not _same_origin(request):
+            return HTMLResponse("Cross-site login refused", status_code=403)
+        form = parse_qs((await request.body()).decode("utf-8", "replace"))
+        code = (form.get("code") or [""])[0].strip()[:64]
+        ip = request.client.host if request.client else ""
+        name = found.user
+        wait = limiter.wait(ip, name)
+        if wait:
+            access_log.record("failed", "user", name, ip, f"second step: too many failed logins: wait {wait} s")
+            return step_page(request, found, f"Too many failed logins: try again in {wait} seconds.", 429)
+        used = None
+        if found.setup:
+            used = totp.code_step(found.secret, code)
+            result = None if used is None else ("code", totp.RECOVERY_CODES)
+        else:
+            result = await asyncio.to_thread(second_factors.check, name, code)
+        if result is None:
+            limiter.failed(ip, name)
+            left = pending_logins.failed(token)
+            access_log.record("failed", "user", name, ip,
+                              "second step: wrong code" + ("" if left else ", the password is asked again"))
+            if not left:
+                response = login_page(request, found.next_path, "Too many wrong codes: log in again with your password.", 401)
+                response.delete_cookie(totp.STEP_COOKIE, path="/login")
+                return response
+            return step_page(request, found, "Wrong code.", 401)
+        limiter.succeeded(ip, name)
+        pending_logins.drop(token)
+        role = settings.user_role(name)
+        codes = None
+        if found.setup:
+            codes = await asyncio.to_thread(second_factors.enable, name, found.secret, used)
+            access_log.record("second-factor", "user", name, ip, "switched on at the login (required here)", role=role)
+        elif result[0] == "recovery":
+            access_log.record("second-factor", "user", name, ip, f"recovery code used to log in: {result[1]} left",
+                              role=role)
+        access_log.record("login", "user", name, ip,
+                          f"{found.via}, second step: {'recovery code' if result[0] == 'recovery' else 'code'}",
+                          role=role)
+        # the recovery codes of a set-up: shown once, on the way to the page asked
+        response = (step_page(request, found, recovery=codes) if codes
+                    else RedirectResponse(found.next_path, status.HTTP_303_SEE_OTHER))
+        response.delete_cookie(totp.STEP_COOKIE, path="/login")
+        set_session_cookie(request, response, sessions.create(name, settings.users[name]))
+        return response
 
     async def login(request: Request):
         """The login form (GET) and its check (POST): a session cookie of
@@ -1059,6 +1166,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             # the password was right: said only once it is, as a wrong one would be otherwise
             access_log.record("failed", "user", name, ip, "login form: a user of the machine at the customers' portal")
             return login_page(request, next_path, PORTAL_STAFF_REFUSED + ".", 403)
+        if needs_second_step(request, name):
+            # the failed tries are forgotten only after the code: a known
+            # password does not buy fresh tries at the codes
+            return to_second_step(request, name, next_path, "login form")
         limiter.succeeded(ip, name)
         access_log.record("login", "user", name, ip, "login form", role=settings.user_role(name))
         response = RedirectResponse(next_path, status.HTTP_303_SEE_OTHER)
@@ -1073,6 +1184,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     for path in _PUBLIC_FILES:
         app.add_route(path, public_file, methods=["GET"])
     app.add_route("/login", login, methods=["GET", "POST"])
+    app.add_route("/login/code", login_step, methods=["GET", "POST"])
+    app.add_route("/login/setup", login_step, methods=["GET", "POST"])
 
     async def login_as_landing(request: Request):
         """/.omniacli/login?t=<token>, opened on the instance's own host (its
@@ -3324,7 +3437,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         ws = a_workspace(workspace)
         me = request.state.user
         members = [{"name": n, "role": r, "only_here": only_here(n, ws.name),
-                    "invitation": invitation_state(n) if only_here(n, ws.name) else None}
+                    "invitation": invitation_state(n) if only_here(n, ws.name) else None,
+                    # its two-step verification: on, and whether its admins here may reset it
+                    "two_step": second_factors.on(n),
+                    "can_reset": second_factors.on(n) and n != me.name and (machine_admin(me) or only_here(n, ws.name))}
                    for n, r in sorted(ws.members.items())]
         found = await asyncio.to_thread(workspaceops.templates)
         return _TEMPLATES.TemplateResponse(
@@ -5746,6 +5862,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return refuse(f"Cannot write {settings.users_file}: {exc}", 500)
         settings.set_web_access(web)
         authenticator.update(settings.users, settings.tokens, link_hashes())
+        try:
+            # a deleted user's two-step verification goes with it (a new one of that name starts without)
+            await asyncio.to_thread(second_factors.keep, set(settings.users))
+        except OSError as exc:
+            _logger.error("The second factors of the deleted users are not removed: %s", exc)
         return None
 
     def other_admins(name: str) -> int:
@@ -5786,7 +5907,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 "users": [{"name": n, "role": settings.user_role(n), "fixed": n in fixed.users,
                            # where a customer's user gets in
                            "workspaces": sorted(w.name for w in settings.workspaces.values() if n in w.members),
-                           "invitation": None if n in fixed.users else invitation_state(n)}
+                           "invitation": None if n in fixed.users else invitation_state(n),
+                           "two_step": second_factors.on(n)}
                           for n in sorted(settings.users)],
                 "links": [{"name": n, "role": link.role, "fixed": n in fixed.links}
                           for n, link in sorted(settings.links.items())],
@@ -6369,6 +6491,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         name = found.name
         access_log.record("invitation", "user", name, ip, f"accepted: {name} set its password",
                           role=settings.user_role(name), workspace=found.workspace)
+        if needs_second_step(request, name):
+            # its two-step verification first, set up now when it must
+            return to_second_step(request, name, "/", "invitation")
         access_log.record("login", "user", name, ip, "invitation", role=settings.user_role(name))
         response = RedirectResponse("/", status.HTTP_303_SEE_OTHER)
         set_session_cookie(request, response, sessions.create(name, settings.users[name]))
@@ -7638,7 +7763,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             "retention_limits": AUDIT_RETENTION_LIMITS, "syslog_protocols": SYSLOG_PROTOCOLS})
 
     @app.post("/api/options/save", dependencies=[Depends(admin)])
-    async def options_save(payload: dict = Body(...)):
+    async def options_save(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
         # the mail: not posted keeps the saved one; a password left empty too
         mail = payload.get("mail")
         if mail is None:
@@ -7664,7 +7789,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         # the portal's address changes only when it is published (portal_publish):
         # its site is written with it
         payload = {**payload, "portal": {**portal, "address": current.portal_address,
-                                         "staff": portal.get("staff", current.portal_staff)}}
+                                         "staff": portal.get("staff", current.portal_staff),
+                                         "second_factor": portal.get("second_factor", current.second_factor)}}
         try:
             options = parse_options(payload)
         except ConfigError as exc:
@@ -7676,6 +7802,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         settings.options = options
         apply_audit_options()
         audit_status_cache.clear()
+        if options.second_factor != current.second_factor:
+            access_log.record("second-factor", me.kind, me.name, request.client.host if request.client else "",
+                              f"required for: {current.second_factor} -> {options.second_factor} (Options)")
         return {"ok": True}
 
     # --- the customers' portal: its address, published by the root helper ----
@@ -9058,8 +9187,114 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return _TEMPLATES.TemplateResponse(
             request, "account.html",
             {"name": me.name, "role": WORKSPACE_ROLE if me.scoped else me.role, "workspaces": me.workspaces,
-             "fixed": me.name in settings.fixed.users},
+             "fixed": me.name in settings.fixed.users, "two_step": two_step_state(request, me.name)},
         )
+
+    # --- its two-step verification (totp.py): on with a code of the app, the
+    # recovery codes shown once; off with a code, unless it is required here
+
+    def two_step_state(request: Request, name: str) -> dict:
+        state = second_factors.state(name)
+        return {**state, "since": moment(state["since"]) if state["since"] else "",
+                "required": second_step_required(request, name)}
+
+    def code_refused(request: Request, me: Principal):
+        """A response when me may try no code now (the failed logins' wait)."""
+        wait = limiter.wait(request.client.host if request.client else "", me.name)
+        if wait:
+            return refuse(f"Too many failed logins: try again in {wait} seconds.", status.HTTP_429_TOO_MANY_REQUESTS)
+        return None
+
+    def code_failed(request: Request, me: Principal, what: str):
+        ip = request.client.host if request.client else ""
+        limiter.failed(ip, me.name)
+        access_log.record("failed", "user", me.name, ip, f"{what}: wrong code")
+        return refuse("Wrong code: type the one the app shows now (check the clock of the phone)")
+
+    @app.post("/api/account/second-factor/start")
+    async def second_factor_start(request: Request, me: Principal = Depends(current_user)):
+        """A new secret for the app (its QR code and as text), kept until it is
+        confirmed with a code, PENDING_SECONDS at most."""
+        password_user(me)
+        if second_factors.on(me.name):
+            return refuse("Two-step verification is on already")
+        secret = totp.new_secret()
+        account_setups[me.name] = (secret, time.time() + totp.PENDING_SECONDS)
+        uri = totp.otpauth_uri(secret, f"{me.name}@{request.url.hostname}")
+        return JSONResponse({"secret": secret, "uri": uri, "qr": totp.qr_svg(uri)}, headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/account/second-factor/confirm")
+    async def second_factor_confirm(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """On, once a code of the new secret is right: the recovery codes, once."""
+        password_user(me)
+        found = account_setups.get(me.name)
+        if found is None or found[1] < time.time():
+            return refuse("The set-up has expired: start it again")
+        refused = code_refused(request, me)
+        if refused:
+            return refused
+        used = totp.code_step(found[0], str(payload.get("code") or ""))
+        if used is None:
+            return code_failed(request, me, "two-step set-up")
+        account_setups.pop(me.name, None)
+        codes = await asyncio.to_thread(second_factors.enable, me.name, found[0], used)
+        access_log.record("second-factor", "user", me.name, request.client.host if request.client else "",
+                          "switched on (Account)", role=settings.user_role(me.name))
+        return JSONResponse({"ok": True, "recovery": codes}, headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/account/second-factor/disable")
+    async def second_factor_disable(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """Off with a code of the app or a recovery code; not where it is required."""
+        password_user(me)
+        if not second_factors.on(me.name):
+            return refuse("Two-step verification is not on")
+        if second_step_required(request, me.name):
+            return refuse("Two-step verification is required for you on this machine: it cannot be switched off",
+                          status.HTTP_403_FORBIDDEN)
+        refused = code_refused(request, me)
+        if refused:
+            return refused
+        result = await asyncio.to_thread(second_factors.check, me.name, str(payload.get("code") or ""))
+        if result is None:
+            return code_failed(request, me, "two-step switch-off")
+        await asyncio.to_thread(second_factors.disable, me.name)
+        access_log.record("second-factor", "user", me.name, request.client.host if request.client else "",
+                          "switched off (Account)" + (", with a recovery code" if result[0] == "recovery" else ""),
+                          role=settings.user_role(me.name))
+        return {"ok": True}
+
+    async def reset_second_factor(request: Request, me: Principal, name: str, where: str):
+        """name's two-step verification off, by an admin: the user sets it up
+        again (at its next login, where it is required)."""
+        if me.kind == "user" and name == me.name:
+            return refuse("Your own is switched off on your Account page, with a code")
+        if not second_factors.on(name):
+            return refuse(f"{name} has no two-step verification on")
+        await asyncio.to_thread(second_factors.disable, name)
+        access_log.record("second-factor", "user", name, request.client.host if request.client else "",
+                          f"reset by {me}{where}: it sets it up again", role=settings.user_role(name))
+        return {"ok": True}
+
+    @app.post("/api/access/users/second-factor/reset")
+    async def user_second_factor_reset(request: Request, payload: dict = Body(...), me: Principal = Depends(admin)):
+        name = str(payload.get("name") or "")
+        if name not in settings.users:
+            return refuse(f"No user {name}", status.HTTP_404_NOT_FOUND)
+        return await reset_second_factor(request, me, name, " (Users)")
+
+    @app.post("/api/workspaces/{workspace}/members/second-factor/reset", dependencies=[Depends(admin)])
+    async def member_second_factor_reset(request: Request, workspace: str, payload: dict = Body(...),
+                                         me: Principal = Depends(current_user)):
+        """A workspace's admin resets it for a user of this workspace only
+        (one who gets in elsewhere too: the machine's admins)."""
+        name = str(payload.get("name") or "")
+        ws = a_workspace(workspace)
+        if name not in ws.members:
+            return refuse(f"{name} is not a user of {workspace}", status.HTTP_404_NOT_FOUND)
+        if not machine_admin(me) and not only_here(name, workspace):
+            return refuse(f"{name} is also a user of other workspaces or of the machine: "
+                          "ask the administrator of the machine to reset it")
+        return await reset_second_factor(request, me, name, f" (workspace {workspace})")
 
     @app.post("/api/account/password")
     async def account_password(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):

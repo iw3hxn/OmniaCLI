@@ -12,5 +12,7 @@ PyYAML==6.0.3
 httpx==0.28.1
 # the crontab expressions of the scheduled actions
 croniter==6.2.4
+# the QR code of two-step verification, drawn here (pure Python, no dependencies)
+segno==1.6.6
 # the MCP interface (/mcp), Python 3.10 or newer
 mcp==2.3.0; python_version >= '3.10'

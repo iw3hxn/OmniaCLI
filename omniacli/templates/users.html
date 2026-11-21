@@ -50,11 +50,15 @@
     <tr data-user="{{ u.name }}" {{ item(u.name ~ " " ~ u.role) }} data-role="{{ u.role }}">
       <td><strong>{{ u.name }}</strong>{% if u.name == account %} <span class="muted">({{ _("you") }})</span>{% endif %}
         {% if u.fixed %} <span class="badge" title="{{ _('It is changed in the main configuration file of the machine, not from here') }}">{{ _("main config") }}</span>{% endif %}
+        {% if u.two_step %} <span class="badge ok" title="{{ _('After the password, the login asks a code of an authenticator app') }}">{{ _("two-step on") }}</span>{% endif %}
         {% if u.invitation and u.invitation.state == "pending" %} <span class="badge warn" title="{{ _('The person has not set a password yet: until then it cannot log in. Invited by {by}.', by=u.invitation.by) }}">{{ _("invitation waiting, until {date}", date=u.invitation.expires) }}</span>
         {% elif u.invitation %} <span class="badge error" title="{{ _('The link was not used in time: the person cannot log in. Send it again or revoke it.') }}">{{ _("invitation expired on {date}", date=u.invitation.expires) }}</span>{% endif %}</td>
       <td>{{ role_names.get(u.role, u.role) }}
         {% if u.workspaces %}<span class="small-note">{% for w in u.workspaces %}<a href="{{ prefix }}/workspaces/{{ w }}#users">{{ w }}</a>{% if not loop.last %}, {% endif %}{% endfor %}</span>{% endif %}</td>
-      <td>{% if not u.fixed %}<div class="actions" style="margin: 0; justify-content: flex-end">
+      <td>{% if u.fixed and u.two_step and u.name != account %}<div class="actions" style="margin: 0; justify-content: flex-end">
+        <button type="button" class="small" data-reset-two-step title="{{ _('Switches the two-step verification of this user off, for a lost phone: it sets it up again, at its next login where it is required. It goes in the access log.') }}">{{ _("Reset two-step…") }}</button></div>{% endif %}
+        {% if not u.fixed %}<div class="actions" style="margin: 0; justify-content: flex-end">
+        {% if u.two_step and u.name != account %}<button type="button" class="small" data-reset-two-step title="{{ _('Switches the two-step verification of this user off, for a lost phone: it sets it up again, at its next login where it is required. It goes in the access log.') }}">{{ _("Reset two-step…") }}</button>{% endif %}
         {% if u.invitation %}<button type="button" class="small" data-resend title="{{ _('Makes a new link for {hours} hours and shows it: the link of before works no more.', hours=invitation_hours) }}">{{ _("Send again") }}</button>{% endif %}
         <button type="button" class="small" data-edit="users" title="{{ _('Changes the role or the password. You cannot change your own role, nor take the admin role from the last admin.') }}">{{ _("Edit…") }}</button>
         {% if u.invitation %}<button type="button" class="small danger" data-revoke title="{{ _('The link works no more and the user, who never got in, is deleted.') }}">{{ _("Revoke…") }}</button>
@@ -352,6 +356,14 @@
       const name = button.closest("tr").dataset.user;
       if (!await omniaAsk(T.revokeQ.replace("{name}", name), button, {danger: true})) return;
       if (await post("invitations/revoke", {name}, errorBox)) location.reload();
+    };
+  }
+  // two-step verification off for a user (a lost phone): it sets it up again
+  for (const button of document.querySelectorAll("[data-reset-two-step]")) {
+    button.onclick = async () => {
+      const name = button.closest("tr").dataset.user;
+      if (!await omniaAsk({{ _("Reset the two-step verification of {name}? Its app and recovery codes stop working; it sets it up again at its next login where it is required.") | tojson }}.replace("{name}", name), button, {danger: true})) return;
+      if (await post("users/second-factor/reset", {name}, errorBox)) location.reload();
     };
   }
 })();

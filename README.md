@@ -2576,6 +2576,48 @@ address or for a user name, every further try waits 30 seconds, doubled each
 time up to 15 minutes. HTTP Basic is not accepted: scripts and AI clients use
 tokens (MCP), other OmniaCLI instances use link tokens.
 
+#### Two-step verification
+
+After the password, the login can ask a code of an authenticator app
+(Google Authenticator, Microsoft Authenticator, FreeOTP, Aegis…): TOTP of
+RFC 6238, 30 seconds, 6 digits, SHA-1, as the apps expect; a code is taken
+from the 30 seconds before to the 30 after, and never twice. NIS 2 (Directive
+2022/2555, art. 21(2)(j); d.lgs. 138/2024) asks for multi-factor
+authentication where appropriate: a customer's password alone from the
+internet is not.
+
+- **Switch on**: Account › Two-step verification › Switch on…: a QR code
+  (drawn by OmniaCLI itself, with the `segno` library: no service on the
+  network) and the same secret as text; it is on once a code of the app is
+  typed. Then 10 **recovery codes** are shown, once, in a dialog of their
+  own: each logs in once without the phone. **Switch off** asks a code (of
+  the app or a recovery code).
+- **Login**: user name and password, then the code (or a recovery code) on
+  a page of its own; the session is made only after it. A wrong code counts
+  with the failed logins (the same waits); after 5 wrong codes the password
+  is asked again.
+- **Who must** (Options › Customers' portal › Two-step verification
+  required): *users at the portal address* (the default) — whoever logs in
+  at the portal's address and the users of the workspaces wherever they log
+  in, once the portal has an address (else they could skip it by the
+  machine's own address); *everybody*; *nobody*. A user who must and has not
+  set it up does it right after the password, before anything else. The
+  default changes nothing on a machine without a portal address: the
+  internet is where a stolen password is used, the LAN and the links are
+  not. `options.yaml`: `portal: {second_factor: portal|everybody|nobody}`.
+- **Who has it on**: Settings › Users (the machine's admins) and the Users
+  tab of a workspace (its admins) show *two-step on*; **Reset two-step…**
+  switches it off for a lost phone, and the user sets it up again (a
+  workspace's admins: for the users of that workspace only).
+- **Tokens and links** (Bearer) are not affected.
+- The secrets and the recovery codes (as salted SHA-256) are in
+  `second-factor.json` next to the users file, mode 600; a deleted user's
+  goes with it.
+- In the access log (event *Two-step verification*): switched on and off,
+  recovery codes used (with how many are left), resets and by whom, the
+  policy changed; wrong codes are *Failed login* entries ("second step:
+  wrong code"); a login says how it passed ("login form, second step: code").
+
 Every page is sent with `X-Frame-Options: DENY` and `Content-Security-Policy:
 frame-ancestors 'none'` (no framing by other sites), `X-Content-Type-Options:
 nosniff`, `Referrer-Policy: same-origin`, and over HTTPS
@@ -2839,8 +2881,8 @@ backs up the databases. Without their work this interface would not have
 been possible: thank you.
 
 OmniaCLI also builds on [Odoo](https://www.odoo.com), and on FastAPI,
-Starlette, Uvicorn, websockets, Jinja, HTTPX, PyYAML, croniter, cryptography and
-the MCP Python SDK.
+Starlette, Uvicorn, websockets, Jinja, HTTPX, PyYAML, croniter, cryptography,
+segno (the QR codes of two-step verification) and the MCP Python SDK.
 The terminal of the shell page is [xterm.js](https://github.com/xtermjs/xterm.js)
 with its fit addon (MIT, shipped in `omniacli/static`).
 

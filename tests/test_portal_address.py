@@ -253,7 +253,8 @@ async def test_the_links_carry_the_portal(client, env, workspaces, monkeypatch):
 
 async def test_only_the_customers_log_in_at_the_portal(env, workspaces):
     settings = env["settings"]
-    settings.options = parse_options({"portal": {"address": PORTAL}})
+    # who gets in at all; the second step that follows is tests/test_two_step.py's
+    settings.options = parse_options({"portal": {"address": PORTAL, "second_factor": "nobody"}})
     app = create_app(settings)
     origin = {"Origin": f"https://{PORTAL}"}
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=f"https://{PORTAL}") as portal:

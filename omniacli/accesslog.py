@@ -245,7 +245,8 @@ class AccessLog:
     def record(self, event: str, kind: str, name: str, ip: str = "", detail: str = "",
                context: bool = True, **extra) -> None:
         """event: login, logout, failed, mcp, shell, tunnel, action, read,
-        download, login-as, job or siem; kind: user, link, token or mcp.
+        download, login-as, job, siem or second-factor (two-step
+        verification, totp.py); kind: user, link, token or mcp.
         extra: the FIELDS this entry knows (they win over the request's);
         context False: none taken from the request being served (a job's end)."""
         entry = self._entry(event, kind, name, ip, detail, extra, context)

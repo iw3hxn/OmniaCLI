@@ -179,10 +179,12 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
     <tr data-user="{{ m.name }}" data-role="{{ m.role }}" data-only-here="{{ 1 if m.only_here else '' }}">
       <td><strong>{{ m.name }}</strong>{% if m.name == me %} <span class="muted">{{ _("(you)") }}</span>{% endif %}
         {% if not m.only_here %}<span class="small-note">{{ _("also elsewhere: its password is the machine's administrator's") }}</span>{% endif %}
+        {% if m.two_step %} <span class="badge ok" title="{{ _('After the password, the login asks a code of an authenticator app') }}">{{ _("two-step on") }}</span>{% endif %}
         {% if m.invitation and m.invitation.state == "pending" %} <span class="badge warn" title="{{ _('The person has not set a password yet: until then it cannot log in. Invited by {by}.', by=m.invitation.by) }}">{{ _("invitation waiting, until {date}", date=m.invitation.expires) }}</span>
         {% elif m.invitation %} <span class="badge error" title="{{ _('The link was not used in time: the person cannot log in. Send it again or revoke it.') }}">{{ _("invitation expired on {date}", date=m.invitation.expires) }}</span>{% endif %}</td>
       <td>{{ role_names.get(m.role, m.role) }}</td>
       <td><div class="actions" style="margin: 0; justify-content: flex-end">
+        {% if m.can_reset %}<button type="button" class="small" data-reset-two-step title="{{ _('Switches the two-step verification of this user off, for a lost phone: it sets it up again, at its next login where it is required. It goes in the access log.') }}">{{ _("Reset two-step…") }}</button>{% endif %}
         {% if m.invitation %}<button type="button" class="small" data-resend title="{{ _('Makes a new link for {hours} hours and shows it: the link of before works no more.', hours=invitation_hours) }}">{{ _("Send again") }}</button>{% endif %}
         <button type="button" class="small" data-edit="members" title="{{ _('Changes the role in the workspace and, for a user of this workspace only, the password. You cannot change your own role.') }}">{{ _("Edit…") }}</button>
         {% if m.invitation %}<button type="button" class="small danger" data-revoke title="{{ _('The link works no more and the user, who never got in, is deleted.') }}">{{ _("Revoke…") }}</button>
@@ -738,6 +740,14 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
       const name = button.closest("tr").dataset.user;
       if (!await omniaAsk(T.revokeQ.replace("{name}", name), button, {danger: true})) return;
       if (await post("members/invitation/revoke", {name})) location.reload();
+    };
+  }
+  // two-step verification off for a member (a lost phone): it sets it up again
+  for (const button of document.querySelectorAll("[data-reset-two-step]")) {
+    button.onclick = async () => {
+      const name = button.closest("tr").dataset.user;
+      if (!await omniaAsk({{ _("Reset the two-step verification of {name}? Its app and recovery codes stop working; it sets it up again at its next login where it is required.") | tojson }}.replace("{name}", name), button, {danger: true})) return;
+      if (await post("members/second-factor/reset", {name})) location.reload();
     };
   }
 

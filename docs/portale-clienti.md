@@ -131,8 +131,57 @@ macchina. Queste sono le scelte, una per punto.
    - `/.omniacli/login`, con un ticket monouso legato al nome dell'istanza;
    - `/hooks/deploy/…`, con il segreto del repository;
    - `/invite/<token>`, con token lunghi, monouso, 72 ore, e il `limit_req` davanti.
-8. **Non c'è un secondo fattore.** Con il portale, la password di un cliente basta per entrare da internet.
-   È il prossimo passo, se lo vogliamo, e non è in questo lavoro.
+8. **Il secondo fattore** c'è: vedi la sezione seguente. Con il portale pubblicato, la password di un cliente
+   da sola non basta più per entrare da internet.
+
+## Verifica in due passaggi
+
+Il riesame del portale diceva: «non c'è un secondo fattore: la password di un cliente basta per entrare da
+internet». NIS 2 (Direttiva 2022/2555, art. 21(2)(j); d.lgs. 138/2024) chiede l'autenticazione a più fattori
+dove è appropriata. Dettagli nel README, *Two-step verification*.
+
+- **Cos'è**: dopo la password, il codice di un'app di autenticazione (TOTP, RFC 6238: 30 secondi, 6 cifre,
+  SHA-1) o uno dei 10 codici di recupero, ciascuno valido una volta. La sessione nasce solo dopo il secondo
+  passaggio.
+- **Attivarla**: Account › *Verifica in due passaggi* › *Attiva…*: QR code disegnato da OmniaCLI (libreria
+  `segno`, nessun servizio in rete) e lo stesso segreto in chiaro; è attiva dopo un codice giusto. I codici di
+  recupero si vedono una volta sola, in una finestra loro. Si disattiva con un codice.
+- **Chi deve usarla** (Opzioni › Portale dei clienti › *Verifica in due passaggi obbligatoria*):
+  - *utenti all'indirizzo del portale* (default): chi entra dall'indirizzo del portale, e gli utenti dei
+    workspace da qualunque indirizzo, appena il portale ha un indirizzo. Altrimenti un cliente la
+    salterebbe entrando dall'indirizzo della macchina;
+  - *tutti*;
+  - *nessuno*.
+
+  Il default: la password rubata si usa da internet, non dalla LAN né dai link, che hanno il loro token. E
+  su una macchina aggiornata senza portale non cambia niente. Chi deve e non l'ha ancora attivata la attiva
+  subito dopo la password, prima di qualunque pagina (anche dopo un invito).
+- **Codici sbagliati**: contano nel limite dei login falliti (stesse attese) e vanno nel registro come
+  `failed`; dopo 5 si torna alla password.
+- **Chi ce l'ha**: *Utenti* della macchina e la scheda *Utenti* del workspace mostrano «verifica in due
+  passaggi attiva»; *Azzera verifica…* la spegne (telefono perso) e l'utente la riattiva. L'admin di un
+  workspace lo fa solo per gli utenti del suo workspace soltanto.
+- **Token e link** (Bearer) non cambiano.
+- **Registro accessi**: evento `second-factor` per attivazione, disattivazione, codici di recupero usati,
+  azzeramenti (da chi) e cambio della regola.
+
+**Provato su lab1 (21/11/2026)**, Playwright da questo PC su `https://portale.172-30-0-11.sslip.io`, in italiano,
+come `acme-portale` (regola di default), con i codici calcolati da `totp.py` dal segreto mostrato:
+
+1. dopo la password, la pagina di attivazione con il QR code e il segreto; un codice sbagliato dice «Codice
+   sbagliato.», quello giusto attiva e mostra i 10 codici di recupero in una finestra loro, poi la Dashboard;
+   Account dice «attiva dal 21/11/2026 19:28… Codici di recupero rimasti: 10» e che non si può disattivare;
+2. uscita, password e codice dell'app: dentro;
+3. uscita, password e un codice di recupero: dentro, ne restano 9;
+4. uscita, password e un codice sbagliato: «Codice sbagliato.», e lo stesso codice di recupero una seconda
+   volta: rifiutato; senza secondo passaggio `/api/servers` rimanda al login;
+5. registro accessi con l'IP vero del PC (`172.30.0.1`) e `workspaces: ['acme']`: `second-factor` «switched on
+   at the login», `login` «login form, second step: code» e «…recovery code», `second-factor` «recovery code
+   used to log in: 9 left», tre `failed` «second step: wrong code»; `verify-access-log`: catena intatta.
+   `second-factor.json` è `600`, dell'utente `omniacli`.
+
+Non provato su lab1: l'azzeramento da un amministratore e l'attivazione da Account (sono nei test,
+`tests/test_two_step.py`), e un'app di autenticazione vera su un telefono.
 
 ## Provato su lab1 (21/11/2026)
 
