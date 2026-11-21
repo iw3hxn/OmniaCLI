@@ -3546,6 +3546,19 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             values = template.values({str(k): str(v) for k, v in (payload.get("values") or {}).items()})
         except stacktemplates.TemplateError as exc:
             return refuse(str(exc))
+        # a database of another machine (AD-003): the machine's admins only (it opens the
+        # workspace's network to an address), its connection checked before anything is made
+        if template.on_remote:
+            if not machine_admin(me):
+                return refuse("Only an admin of the machine makes an instance on a database of another machine",
+                              status.HTTP_403_FORBIDDEN)
+            try:
+                values = {**values, workspacehelper.REMOTE_KEY: workspacehelper.remote_spec(payload.get("remote"))}
+            except workspacehelper.HelperError as exc:
+                return refuse(str(exc))
+        elif payload.get("remote"):
+            return refuse(f"The template {template.name} has a database of its own: choose a template of a database "
+                          "of another machine")
         setup = admin_setup(payload.get("setup") or {})
         if not isinstance(setup, dict):
             return setup
@@ -4029,6 +4042,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         found = workspace_of(server)
         if found is None:
             return refuse(f"{server} was not made in a workspace: a staging is made beside an instance of a workspace")
+        if on_remote_db(srv.production):
+            # its copy would need a database of its own on that machine, which is not this machine's to make
+            return refuse(f"The database of {server} is on another machine: a staging of it needs a database there, "
+                          "and it is not made from here. Back it up and restore the backup into a new instance")
         return srv.production, found[0], found[1]
 
     def staging_address(ws: Workspace, new_instance: str) -> str:
@@ -4720,6 +4737,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         ws, instance, prod = pitr_target(server)
         if on_machine_db(prod):
             return refuse(workspacehelper.PITR_ON_CLUSTER)
+        if on_remote_db(prod):
+            return refuse(workspacehelper.PITR_ON_REMOTE)
 
         async def action(job):
             found = await workspaceops._helper(job, "pitr-enable", ws.name, ws.storage, instance, "production",
@@ -4750,7 +4769,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     found = workspace_of(server)
                     srv = settings.servers.get(server)
                     if found is None or srv is None or srv.production is None or jobs.is_busy(srv.production.key) \
-                            or on_machine_db(srv.production):
+                            or on_machine_db(srv.production) or on_remote_db(srv.production):
                         continue
                     try:
                         last = datetime.datetime.fromisoformat(str(info.get("base") or "")).timestamp()
@@ -4778,6 +4797,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         ws, instance, prod = pitr_target(server)
         if on_machine_db(prod):
             return refuse(workspacehelper.PITR_ON_CLUSTER)
+        if on_remote_db(prod):
+            return refuse(workspacehelper.PITR_ON_REMOTE)
         job = jobs.submit(f"Base backup for point-in-time recovery of {prod.key}", [prod.key], f"manual: {me}",
                           lambda job: pitr_base_job(job, ws, instance, server), workspace=ws.name)
         return {"job": job.id}
@@ -4790,6 +4811,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         ws, instance, prod = pitr_target(server)
         if on_machine_db(prod):
             return refuse(workspacehelper.PITR_ON_CLUSTER)
+        if on_remote_db(prod):
+            return refuse(workspacehelper.PITR_ON_REMOTE)
         when = str(payload.get("time") or "").strip()
         try:
             at = datetime.datetime.fromisoformat(when)
@@ -9401,6 +9424,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     continue
                 if inst.restart.type == "compose" and on_machine_db(inst):
                     continue  # a row of the machine's cluster, among those it serves
+                if inst.restart.type == "compose" and on_remote_db(inst):
+                    # on another machine: the line Not here, it is tuned there
+                    remote.append({"key": inst.key, "server": srv.name, "role": role,
+                                   "host": remote_db_host(inst) or "another machine"})
+                    continue
                 if inst.restart.type == "compose":
                     kind, parent = postgres_kind(srv, role, known)
                     dedicated.append({"key": inst.key, "server": srv.name, "role": role, "kind": kind,
@@ -9498,6 +9526,18 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     def on_machine_db(inst: Instance) -> bool:
         return getattr(inst.options, "db_service", "") == machinedb.DB_SERVICE
+
+    def on_remote_db(inst: Instance) -> bool:
+        """Its database is on another machine (AD-003): no service of its own, not this machine's cluster."""
+        return getattr(inst.options, "db_service", "") == stacktemplates.REMOTE_DB_SERVICE
+
+    def remote_db_host(inst: Instance) -> str:
+        """host:port of that database, from the instance's own record ("" when it cannot be read)."""
+        try:
+            meta = json.loads((Path(inst.restart.service).parent / workspacehelper.INSTANCE_FILE).read_text("utf-8"))
+        except (OSError, ValueError):
+            return ""
+        return str(meta.get("database_on") or "") if isinstance(meta, dict) else ""
 
     def cluster_target(major: str, project: str) -> types.SimpleNamespace:
         """What the tuning's code takes of an instance, for the cluster of
@@ -9974,6 +10014,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         """The Database row of the instance's Settings (UX-008 §6.2.6), from
         the record: PostgreSQL is not read, the page is not slowed. With the
         move it may make (AD-007) and whether a move left its undo beside it."""
+        if inst.restart.type == "compose" and on_remote_db(inst):
+            return {"where": "remote", "host": remote_db_host(inst) or "another machine"}
         if inst.restart.type == "compose":
             machine = on_machine_db(inst)
             key = f"{MACHINE_KEY}/{next(iter(machinedb.registry()), '')}" if machine else inst.key

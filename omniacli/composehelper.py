@@ -654,17 +654,37 @@ def on_cluster(project: Path) -> dict | None:
         raise HelperError(str(exc)) from None
 
 
+# the name of the database "service" of a project on a database of another
+# machine (stacktemplates.REMOTE_DB_SERVICE: this module does not import it)
+REMOTE_DB_SERVICE = "remote"
+
+
+def on_remote(project: Path) -> dict | None:
+    """{"host", "port"} of a project whose database is on another machine
+    (AD-003: its .env has DB_REMOTE, DB_HOST and DB_PORT), else None."""
+    try:
+        text = (Path(project) / ".env").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    values = dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
+    if values.get("DB_REMOTE", "").strip() != "1":
+        return None
+    return {"host": values.get("DB_HOST", "").strip(), "port": values.get("DB_PORT", "").strip()}
+
+
 def db_target(project: Path, name: str, terminal: bool = False) -> tuple[str, str, tuple[str, ...]]:
     """(service, prefix of the script, exec options) a database action of
     the service name runs with: the project's database service as its
     postgres; on the machine's cluster (name machinedb.DB_SERVICE) its Odoo
     service, as the environment's role."""
-    if on_cluster(project) is None:
+    remote = on_remote(project)
+    if on_cluster(project) is None and remote is None:
         svc = service(project, name)
         return svc, "", (() if terminal else ("-T",)) + psql_options(project, svc)
-    if name != machinedb.DB_SERVICE:
-        raise HelperError(f"{project} is on the machine's cluster: its database is {machinedb.DB_SERVICE}, "
-                          "reached from its Odoo service")
+    expected = machinedb.DB_SERVICE if remote is None else REMOTE_DB_SERVICE
+    if name != expected:
+        where = "is on the machine's cluster" if remote is None else f"has its database on {remote['host']}"
+        raise HelperError(f"{project} {where}: its database is {expected}, reached from its Odoo service")
     return service(project, MACHINE_ODOO), "machine-", () if terminal else ("-T",)
 
 
@@ -795,6 +815,8 @@ def commands(project: Path, action: str, args: list[str]) -> list[list[str]]:
         if on_cluster(project) is not None:
             raise HelperError(f"{project} is on the machine's cluster: it is tuned as the cluster, "
                               "in the Database tab of the machine")
+        if on_remote(project) is not None:
+            raise HelperError(f"{project} has its database on another machine: it is tuned there, not from here")
         name = service(project, args[0])
         return [_script(name, "pg-settings", _database(args[1]), PG_SETTINGS,
                         options=("-T", *psql_options(project, name)))]
@@ -1277,6 +1299,8 @@ def pg_tune(project: Path, action: str, args: list[str], raw: bytes) -> int:
     if on_cluster(project) is not None:
         raise HelperError(f"{project} is on the machine's cluster: it is tuned as the cluster, "
                           "in the Database tab of the machine")
+    if on_remote(project) is not None:
+        raise HelperError(f"{project} has its database on another machine: it is tuned there, not from here")
     name, database = service(project, args[0]), _database(args[1])
     options = psql_options(project, name)
     if "shared_preload_libraries" in values:

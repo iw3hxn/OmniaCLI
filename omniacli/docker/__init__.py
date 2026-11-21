@@ -96,6 +96,8 @@ COPY_FILESTORE = (("share", "shared with production (hard links, no extra disk s
 
 # the db_service of an instance on the machine's cluster (machinedb.DB_SERVICE)
 MACHINE_DB = "machine"
+# and of one on a database of another machine (stacktemplates.REMOTE_DB_SERVICE)
+REMOTE_DB = "remote"
 
 MCP_HELP = """Servers of type docker: Odoo 18 or later in a Docker Compose project, driven
 through OmniaCLI's root helper. update_test updates the changed modules
@@ -327,7 +329,7 @@ class DockerPlugin(ServicePlugin):
             {"label": "Install Python packages", "value": f"{cd}exec {opts.odoo_service} python3 -m pip install "
                                                           "--user --break-system-packages ...", "kind": "command"},
             # on the machine's cluster: from the Odoo service, as its own role
-            {"label": "psql", "value": f"{cd}exec {opts.odoo_service} psql {db}" if opts.db_service == MACHINE_DB
+            {"label": "psql", "value": f"{cd}exec {opts.odoo_service} psql {db}" if opts.db_service in (MACHINE_DB, REMOTE_DB)
              else f"{cd}exec {opts.db_service} sh -c 'exec psql -U \"$POSTGRES_USER\" {db}'", "kind": "command"},
             {"label": "Bash in the container", "value": f"{cd}exec {opts.odoo_service} bash", "kind": "command"},
         ]
@@ -400,7 +402,7 @@ class DockerPlugin(ServicePlugin):
                 except (ValueError, AttributeError):
                     continue  # a warning of docker compose
             # on the machine's cluster the database is no service of the project
-            wanted = (opts.odoo_service,) if opts.db_service == MACHINE_DB else (opts.odoo_service, opts.db_service)
+            wanted = (opts.odoo_service,) if opts.db_service in (MACHINE_DB, REMOTE_DB) else (opts.odoo_service, opts.db_service)
             missing = [s for s in wanted if s not in present]
             found.append(Check(target, "Services", not missing,
                                (f"{opts.odoo_service} and {opts.db_service} are services of the project"

@@ -1695,6 +1695,24 @@ The root helper does the work with fixed SQL (`compose-helper pg-settings`,
 `pg-set`, `pg-reset`, `db-restart`, the values checked and given on
 standard input).
 
+### A database on another machine
+
+An instance may keep its database on a PostgreSQL of another machine (one the
+customer runs, a managed one): in a workspace's **New instance**, the templates
+named *database of another machine* (`odoo-18-remote`, `odoo-19-remote`,
+`odooplm-20-remote`) ask for its host, port, role, password, database and the
+CA of its certificate. Machine admins only. Odoo reaches it over TLS with the
+certificate verified (`verify-full`: a template asking for less is refused),
+and OmniaCLI only makes the connection: it is checked before anything is made,
+its password goes to the root helper on its input (on no command line, in no
+job or access log) and stays in the instance's `.env`; when the address is a
+private one, the workspaces' firewall lets that project's network reach that
+address and port, and nothing else private. The role needs `CREATEDB` (Odoo
+makes its database, and the backup check a throwaway one). Backups, restores,
+the log, the statistics and the modules work as for the others; the tuning,
+the recovery at a minute and a staging are not offered from here, and each page
+says why. Removing the instance leaves the database there.
+
 ### Modules from the OCA catalog
 
 The **Modules** tab of an instance of a workspace (developers and admins)

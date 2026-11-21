@@ -199,6 +199,10 @@ SMTP_PORTS = (25, 465, 587, 2525, 110, 143, 993, 995)
 # {project folder: SUBNET} of those projects, root's: the boot's firewall
 # apply runs before the workspaces' disks are mounted, it reads them here
 MAIL_GUARD = Path("/etc/omniacli/mail-guard.json")
+# {project folder: {"subnet", "ip", "port"}} of the projects whose database is
+# on another machine at a private address (AD-003): their network reaches
+# that one address and port, and nothing else private; root's, as MAIL_GUARD
+DB_REMOTE = Path("/etc/omniacli/db-remote.json")
 # what a workspace's container may not reach (but the pool: docker decides)
 PRIVATE = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "100.64.0.0/10")
 
@@ -783,12 +787,16 @@ def network_pool() -> ipaddress.IPv4Network:
     return pool
 
 
-def firewall_rules(pool: ipaddress.IPv4Network) -> dict[str, list[list[str]]]:
-    """The rules of the two chains, as iptables arguments after -A <chain>."""
+def firewall_rules(pool: ipaddress.IPv4Network, remote: list[dict] = ()) -> dict[str, list[list[str]]]:
+    """The rules of the two chains, as iptables arguments after -A <chain>.
+    remote: the databases of other machines at private addresses, each let
+    through from its project's network only, to its address and port only."""
     src = ["-s", str(pool)]
     replies = [*src, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "RETURN"]
+    reached = [["-s", r["subnet"], "-d", r["ip"], "-p", "tcp", "--dport", str(r["port"]), "-j", "RETURN"]
+               for r in remote]
     return {
-        CHAIN_FORWARD: [replies, [*src, "-d", str(pool), "-j", "RETURN"],
+        CHAIN_FORWARD: [replies, [*src, "-d", str(pool), "-j", "RETURN"], *reached,
                         *([*src, "-d", net, "-j", "DROP"] for net in PRIVATE)],
         CHAIN_INPUT: [replies, [*src, "-j", "DROP"]],
     }
@@ -828,7 +836,7 @@ def firewall_apply() -> dict:
     if clash:
         raise HelperError(f"workspaces.network {pool} overlaps networks of this machine: {', '.join(clash)}")
     guarded = mail_guarded()
-    rules = {**firewall_rules(pool), CHAIN_MAIL: mail_guard_rules(guarded.values())}
+    rules = {**firewall_rules(pool, list(db_remote_file().values())), CHAIN_MAIL: mail_guard_rules(guarded.values())}
     for chain, chain_rules in rules.items():
         _fill(chain, chain_rules)
     # docker makes DOCKER-USER, and keeps its rules; at boot this runs first
@@ -845,6 +853,42 @@ def _fill(chain: str, rules: list[list[str]]) -> None:
     _iptables("-F", chain)
     for rule in rules:
         _iptables("-A", chain, *rule)
+
+
+def db_remote_file() -> dict[str, dict]:
+    """DB_REMOTE as it is on disk, only the entries that are what they should be."""
+    try:
+        data = json.loads(DB_REMOTE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    found = {}
+    for folder, value in (data.items() if isinstance(data, dict) else ()):
+        try:
+            subnet = str(ipaddress.ip_network(str(value["subnet"])))
+            ip = ipaddress.ip_address(str(value["ip"]))
+            port = int(value["port"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if ip.version == 4 and 1 <= port <= 65535 and str(folder).startswith("/"):
+            found[str(folder)] = {"subnet": subnet, "ip": str(ip), "port": port}
+    return found
+
+
+def db_remote_set(folder: Path, entry: dict | None) -> None:
+    """The exception of a project written (entry) or taken away (None), and
+    the firewall made again when it is on."""
+    kept = db_remote_file()
+    before = dict(kept)
+    if entry is None:
+        kept.pop(str(folder), None)
+    else:
+        kept[str(folder)] = entry
+    if kept == before:
+        return
+    DB_REMOTE.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    _write(DB_REMOTE, json.dumps(kept, indent=1, sort_keys=True) + "\n", mode=0o600)
+    if firewall_in_place():
+        firewall_apply()
 
 
 def mail_guard_rules(subnets) -> list[list[str]]:
@@ -1080,6 +1124,76 @@ ROLES_KEY = "_roles"
 # the key that asks the mail of the production caught (a staging's,
 # UX-008 §5.3), kept in instance.json: what conf and the page read there
 MAIL_KEY = "_mail_capture"
+# the database of another machine an instance of a remote template uses
+# (AD-003): {"host", "port", "user", "password", "database", "ca"}
+REMOTE_KEY = "_remote"
+REMOTE_HOST = re.compile(r"(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?")
+REMOTE_NAME = re.compile(r"[a-z_][a-z0-9_]{0,62}")
+# no quote, blank, $ or backslash: it goes into .env as it is
+REMOTE_PASSWORD = re.compile(r"[A-Za-z0-9_.~!@#%^&*+=:,/-]{8,128}")
+REMOTE_CA_MAX = 64 * 1024
+REMOTE_CA_FILE = "db-ca.pem"
+# "_remote": "-" in the values: the connection is read on the input
+REMOTE_STDIN = "-"
+REMOTE_INPUT = 128 * 1024
+
+
+def remote_spec(value) -> dict:
+    """The connection to a database of another machine, checked: a host that
+    is not this machine, a port, a role and a database by their names, a
+    password .env can hold, and the CA its certificate is verified against
+    (PEM). HelperError says what is wrong, never the password."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            raise HelperError(f"{REMOTE_KEY} is not JSON") from None
+    if not isinstance(value, dict):
+        raise HelperError(f"{REMOTE_KEY}: the host, port, user, password, database and ca of the database")
+    host = str(value.get("host") or "").strip().lower()
+    if not REMOTE_HOST.fullmatch(host):
+        raise HelperError(f"{host!r} is not a host name or an address")
+    try:
+        if ipaddress.ip_address(host).is_loopback:
+            raise HelperError("a database of another machine is not on this one (127.0.0.1): use a dedicated one")
+    except ValueError:
+        if host == "localhost":
+            raise HelperError("a database of another machine is not on this one (localhost): use a dedicated one") from None
+    port = str(value.get("port") or "5432").strip()
+    if not (port.isdigit() and 1 <= int(port) <= 65535):
+        raise HelperError(f"{port!r} is not a port")
+    user, database = str(value.get("user") or "").strip(), str(value.get("database") or "").strip()
+    for what, name in (("role", user), ("database", database)):
+        if not REMOTE_NAME.fullmatch(name):
+            raise HelperError(f"{name!r} is not the name of a {what} (a-z, 0-9, _)")
+    if user in ("postgres",):
+        raise HelperError("the superuser postgres is not for Odoo: give a role of this instance only")
+    password = str(value.get("password") or "")
+    if not REMOTE_PASSWORD.fullmatch(password):
+        raise HelperError("the password of the role: 8 to 128 of letters, digits and _.~!@#%^&*+=:,/- (no blank, quote or $)")
+    ca = str(value.get("ca") or "").strip()
+    lines = ca.splitlines()
+    if (len(ca) > REMOTE_CA_MAX or not lines or lines[0] != "-----BEGIN CERTIFICATE-----"
+            or lines[-1] != "-----END CERTIFICATE-----"
+            or any(not re.fullmatch(r"[A-Za-z0-9+/=]{1,76}|-----(BEGIN|END) CERTIFICATE-----", line) for line in lines)):
+        raise HelperError("the CA of the database's certificate: one or more certificates in PEM "
+                          "(-----BEGIN CERTIFICATE----- ...), without it the server is not verified")
+    return {"host": host, "port": int(port), "user": user, "password": password, "database": database, "ca": ca + "\n"}
+
+
+def _private_address(host: str) -> str | None:
+    """The IPv4 address of host when it is a private one (the firewall of the
+    workspaces stops those): its exception names it. None: a public one, or
+    a name with none."""
+    try:
+        found = sorted({info[4][0] for info in socket.getaddrinfo(host, None, socket.AF_INET)})
+    except (OSError, UnicodeError):
+        return None
+    for address in found:
+        ip = ipaddress.ip_address(address)
+        if any(ip in ipaddress.ip_network(net) for net in PRIVATE):
+            return address
+    return None
 MAIL_META = "mail_capture"
 # and handed to mailboxes its Odoo reads (UX-008 §5.4): a staging made from a
 # template with the inbox service; one of before catches the outgoing mail only
@@ -1120,6 +1234,17 @@ def create(name: str, storage: str, instance: str, template_name: str, values_js
         raise HelperError(f"{ROLES_KEY} is a list of roles with production in it ({', '.join(ROLES)})")
     roles = [r for r in ROLES if r in roles]
     # asked of a template of before (no service to catch it): not caught, said in the answer
+    remote = given.pop(REMOTE_KEY, None)
+    if remote == REMOTE_STDIN:
+        # its password and its CA come on the input: on no command line, in no log
+        remote = sys.stdin.read(REMOTE_INPUT + 1)
+        if len(remote) > REMOTE_INPUT:
+            raise HelperError(f"{REMOTE_KEY} on the input is too long")
+    if template.on_remote:
+        remote = remote_spec(remote)
+    elif remote is not None:
+        raise HelperError(f"{template.name} has its own database: {REMOTE_KEY} is for a template of a database "
+                          "of another machine")
     mail = given.pop(MAIL_KEY, False) in (True, "1", "true") and template.captures_mail()
     inbox = mail and template.receives_mail()
     try:
@@ -1137,18 +1262,22 @@ def create(name: str, storage: str, instance: str, template_name: str, values_js
                        "role": machinedb.env_name(name, instance), "major": template.postgres}
         except machinedb.ClusterError as exc:
             raise HelperError(str(exc)) from None
+    if remote and roles != ["production"]:
+        raise HelperError("an instance on a database of another machine has its production only")
     _, caller_uid, _ = caller()
     ports = pick_ports(2 * len(roles))
     if not firewall_in_place():
         firewall("on")
     subnets = pick_subnets(len(roles))
-    database = machine["role"] if machine else instance.replace("-", "_")
+    database = machine["role"] if machine else remote["database"] if remote else instance.replace("-", "_")
     made = {"workspace": name, "instance": instance, "template": template.name, "version": template.version,
             "database": database, "odoo_service": template.odoo_service, "db_service": template.db_service,
             "values": values, "roles": {}, "mail_capture": mail, "mail_inbox": inbox,
             "database_mode": template.database}
     meta = {"template": template.name, "version": template.version, "database": database,
-            **({MAIL_META: True} if mail else {}), **({INBOX_META: True} if inbox else {})}
+            **({MAIL_META: True} if mail else {}), **({INBOX_META: True} if inbox else {}),
+            # where its database is, for the pages (no password here: the file is read by OmniaCLI's user)
+            **({"database_on": f"{remote['host']}:{remote['port']}"} if remote else {})}
     folder.mkdir(mode=0o755)
     on_cluster = False
     try:
@@ -1167,6 +1296,9 @@ def create(name: str, storage: str, instance: str, template_name: str, values_js
                    "SUBNET": subnets[index], "SLICE": slice_name(name)}
             if machine:
                 env.update({"DB_CLUSTER": machine["major"], "DB_USER": machine["role"], "DB_SOCKET": machine["socket"]})
+            if remote:
+                env.update({"DB_REMOTE": "1", "DB_HOST": remote["host"], "DB_PORT": str(remote["port"]),
+                            "DB_USER": remote["user"], "DB_PASSWORD": remote["password"]})
             caught = captures_mail(meta, role)
             if caught:
                 # read by docker compose in .env: the template's mail service runs
@@ -1182,6 +1314,14 @@ def create(name: str, storage: str, instance: str, template_name: str, values_js
                                             mail_capture=caught,
                                             db_template=machinedb.template_name(name) if machine else ""),
                    mode=0o644)
+            if remote:
+                # the CA Odoo verifies the database's certificate against (PGSSLROOTCERT)
+                _write(project / "config" / REMOTE_CA_FILE, remote["ca"], mode=0o644)
+                private = _private_address(remote["host"])
+                if private:
+                    db_remote_set(project, {"subnet": subnets[index], "ip": private, "port": remote["port"]})
+                made["remote"] = {"host": remote["host"], "port": remote["port"], "user": remote["user"],
+                                  "database": remote["database"], "private": private}
             for item in template.data:
                 path = project / item["path"]
                 path.mkdir(mode=0o755, parents=True)
@@ -1199,6 +1339,8 @@ def create(name: str, storage: str, instance: str, template_name: str, values_js
                 machinedb.env_remove(machine["major"], machine["role"])
             except machinedb.ClusterError:
                 pass
+        for role in roles:
+            db_remote_set(folder / role, None)
         shutil.rmtree(folder, ignore_errors=True)
         raise
     if mail:
@@ -1356,12 +1498,16 @@ def remove(name: str, storage: str, instance: str) -> dict:
             except machinedb.ClusterError as exc:
                 raise HelperError(f"{exc}: the instance stays, its containers stopped; remove it again "
                                   "once the machine's cluster answers") from None
+    # a database of another machine is not this machine's to drop: it stays there, said in the answer
+    left = [f"{r['host']}:{r['port']}" for r in (composehelper.on_remote(folder / role) for role in ROLES) if r]
+    for role in ROLES:
+        db_remote_set(folder / role, None)
     shutil.rmtree(folder)
     # its network is free again: no SMTP rule left on it
     if _mail_guard_file():
         mail_guard_apply()
     return {"workspace": name, "instance": instance, "removed": str(folder),
-            **({"machine": dropped} if dropped else {})}
+            **({"machine": dropped} if dropped else {}), **({"database_left_on": left} if left else {})}
 
 
 def _env(project: Path) -> dict[str, str]:
@@ -2078,9 +2224,15 @@ PITR_ON_CLUSTER = ("point-in-time recovery is for a dedicated database: this ins
                    "cluster; move it to a dedicated database first")
 
 
+PITR_ON_REMOTE = ("point-in-time recovery is of the machine that has the database: this instance's database is "
+                  "on another machine, and it is not offered from here")
+
+
 def _dedicated(project: Path) -> Path:
     if composehelper.on_cluster(project) is not None:
         raise HelperError(PITR_ON_CLUSTER)
+    if composehelper.on_remote(project) is not None:
+        raise HelperError(PITR_ON_REMOTE)
     return project
 
 
@@ -2096,6 +2248,9 @@ def pitr_state(name: str, storage: str, instance: str, role: str) -> dict:
     project = _project(name, storage, instance, role)
     if composehelper.on_cluster(project) is not None:
         return {"enabled": False, "machine": True, "bases": [], "segments": 0, "archive_size": 0,
+                "first": None, "last": None, "failed": 0}
+    if composehelper.on_remote(project) is not None:
+        return {"enabled": False, "remote": True, "bases": [], "segments": 0, "archive_size": 0,
                 "first": None, "last": None, "failed": 0}
     return pitrhelper.state(project)
 

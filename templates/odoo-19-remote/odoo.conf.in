@@ -1,0 +1,13 @@
+[options]
+; written by OmniaCLI from its template odoo-19-remote: changed here, it is
+; written again at the next change of the instance's parameters
+addons_path = {{ADDONS_PATH}}
+data_dir = /var/lib/odoo
+http_interface = 0.0.0.0
+proxy_mode = True
+db_name = {{DB_NAME}}
+dbfilter = ^{{DB_NAME}}$
+list_db = False
+; a database of another machine: over TLS, the server's certificate verified
+db_sslmode = verify-full
+admin_passwd = {{ADMIN_PASSWD}}

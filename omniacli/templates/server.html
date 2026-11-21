@@ -1338,6 +1338,12 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     if (!resp || !resp.ok) return;
     const data = await resp.json();
     box.hidden = false;
+    if (data.remote) {
+      // its database is on another machine (AD-003): the recovery is that machine's
+      box.querySelector(".pitr-state").textContent = {{ _("Not from here: the database of this instance is on another machine, and the recovery at a minute is of who runs it.") | tojson }};
+      for (const part of box.querySelectorAll(".pitr-off, .pitr-on, .pitr-details")) part.hidden = true;
+      return;
+    }
     if (data.machine) {
       // on the machine's cluster: not here (AD-006), the way to have it said
       box.querySelector(".pitr-state").textContent = {{ _("Not on the machine's cluster: it is there for a dedicated database. Move this database into a dedicated one (Settings › Technical details) to switch it on.") | tojson }};

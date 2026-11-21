@@ -12,8 +12,17 @@ l'annullamento (AD-007: Odoo fermo 8,3 s e 4,5 s su un database di 21 MiB).
 **Non costruito, per scelta dichiarata a schermo: AD-006.** Il ripristino a un minuto resta dei database dedicati:
 su un'istanza del cluster la pagina dice «spostala in un database dedicato per averlo». È coerente con la forma mista
 (il cliente che vuole il ripristino a un minuto tiene il dedicato) e toglie il costo di §0 (estrarre tutto il cluster
-per un cliente). Se serve sul cluster, AD-006 resta il disegno da costruire. Non costruiti nemmeno il database su
-un'altra macchina (AD-003) e la replica di lettura (AD-004). Codice letto alla revisione 57a005c (`carlo_dev_2026`).
+per un cliente). Se serve sul cluster, AD-006 resta il disegno da costruire.
+
+**AD-003, costruito il 21/11/2026 nel caso «di terzi»** (release 2026.1.5464): template `odoo-18/19-remote` e
+`odooplm-20-remote`, senza servizio database; Odoo raggiunge `DB_HOST:DB_PORT` in TLS con `verify-full` e la CA data
+alla creazione (un template che chiede meno è rifiutato). OmniaCLI fa solo la connessione: la connessione è
+controllata prima di creare, arriva all'helper sull'input (mai su una riga di comando né in un log), il firewall dei
+workspace lascia passare quel solo indirizzo e porta dalla rete di quel progetto, la rimozione lascia il database dov'è
+e lo dice. Regolazione, ripristino a un minuto e staging sono rifiutati con il motivo. Provato fra due macchine di
+prova: connessioni TLS 1.3 viste dal database, una CA sbagliata rifiutata, backup riuscito.
+**Non costruito di AD-003:** il caso «cluster di un altro OmniaCLI collegato», dove OmniaCLI prepara da solo ruolo,
+database, riga `hostssl` e firewall sull'altra macchina. **Non costruita la replica di lettura (AD-004).** Codice letto alla revisione 57a005c (`carlo_dev_2026`).
 Origine: Carlo, 21/11/2026, UX-008 D2: «Farei un Postgresql per Macchina ma attenzione che la singola istanza potrebbe far uso di un Postgresql su un altra macchina. Poi va considerato il caso di Odoo19 che può montare 2 database in cluster». Riferimento: la scheda PostgreSQL del pannello di riferimento (schermate 04-05 del 21/11/2026).
 
 ## 0. Il costo della decisione, in numeri (da confermare)

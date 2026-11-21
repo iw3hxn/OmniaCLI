@@ -295,6 +295,24 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
         <select id="instance-template">{% for t in templates %}<option value="{{ t.name }}">{{ tr(t.label) }} ({{ t.version }})</option>{% endfor %}</select>
       </div>
       <div class="form-grid" id="template-fields" style="margin-top: 8px"></div>
+      {# a database of another machine (AD-003): its connection, asked only for such a template #}
+      <div id="remote-fields" hidden>
+        <p class="muted" style="font-size: 13px; margin: 10px 0 4px">{{ _("The database is on another machine: Odoo reaches it over TLS and checks its certificate against the CA below. OmniaCLI only makes the connection: the database is tuned, backed up as a server and kept by who runs that machine. Machine admins only.") }}</p>
+        <div class="form-grid">
+          <label for="rd-host">{{ _("Host of the database") }}</label>
+          <input type="text" id="rd-host" class="mono" autocomplete="off" spellcheck="false" placeholder="db.example.com" title="{{ _('The name the certificate of that PostgreSQL is made for: it is checked against it') }}">
+          <label for="rd-port">{{ _("Port") }}</label>
+          <input type="number" id="rd-port" class="mono" value="5432" min="1" max="65535" style="width: 110px">
+          <label for="rd-user">{{ _("Role") }}</label>
+          <input type="text" id="rd-user" class="mono" autocomplete="off" spellcheck="false" title="{{ _('A role of this instance only, never the superuser; it needs CREATEDB to make its database and the throwaway one of the backup check') }}">
+          <label for="rd-password">{{ _("Password of the role") }}</label>
+          <input type="password" id="rd-password" autocomplete="new-password" title="{{ _('It is written in the instance only (its .env, read by root): never in a job or in the access log') }}">
+          <label for="rd-database">{{ _("Database") }}</label>
+          <input type="text" id="rd-database" class="mono" autocomplete="off" spellcheck="false" title="{{ _('The name of the database Odoo makes there, or of an empty one already made for it') }}">
+          <label for="rd-ca">{{ _("CA of its certificate (PEM)") }}</label>
+          <textarea id="rd-ca" class="mono" rows="4" spellcheck="false" placeholder="-----BEGIN CERTIFICATE-----" title="{{ _('The certificate of the authority that signed the certificate of that PostgreSQL: without it the server is not verified and the instance is not made') }}"></textarea>
+        </div>
+      </div>
       <p class="muted" style="font-size: 13px">{{ _("The new database has the user admin with password admin: change it at the first login.") }}</p>
     </div>
     <div id="from-archive" hidden>
@@ -513,7 +531,12 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
     if (archive && !archivesAsked) { archivesAsked = true; loadArchives(); }
     const name = instanceName(), good = NAME.test(name);
     $("in-name-help").textContent = T.badName; $("in-name-help").hidden = good || name === "";
-    $("create-instance").disabled = !good;
+    // a database of another machine: its connection whole before Create
+    const chosen = templates.find((x) => x.name === templateSelect.value);
+    const remote = !!chosen && chosen.database === "remote";
+    $("remote-fields").hidden = !remote;
+    const whole = !remote || ["rd-host", "rd-port", "rd-user", "rd-password", "rd-database", "rd-ca"].every((id) => $(id).value.trim());
+    $("create-instance").disabled = !good || !whole;
     $("fa-create").disabled = !good || !faSelect.value;
   }
   function openInstance() {
@@ -534,7 +557,12 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
       const values = {};
       for (const input of fieldsBox.querySelectorAll("[data-field]")) values[input.dataset.field] = input.value;
       $("create-instance").disabled = true;
-      const data = await post("instances/create", {instance: instanceName(), template: templateSelect.value, values}, $("in-error"));
+      const body = {instance: instanceName(), template: templateSelect.value, values};
+      if (!$("remote-fields").hidden) {
+        body.remote = {host: $("rd-host").value.trim(), port: Number($("rd-port").value), user: $("rd-user").value.trim(),
+                       password: $("rd-password").value, database: $("rd-database").value.trim(), ca: $("rd-ca").value.trim()};
+      }
+      const data = await post("instances/create", body, $("in-error"));
       if (data) jobPage(data.job); else instanceChanged();
     };
     $("fa-create").onclick = async () => {

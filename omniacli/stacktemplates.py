@@ -45,16 +45,25 @@ NAME = re.compile(r"[a-z0-9][a-z0-9.-]{0,62}")
 FIELD_NAME = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
 # the variables OmniaCLI gives every instance (in .env and odoo.conf)
 GENERATED = ("PROJECT", "HTTP_PORT", "WEBSOCKET_PORT", "DB_PASSWORD", "DB_SUPER_PASSWORD", "SUBNET", "SLICE",
-             "DB_USER", "DB_SOCKET")
+             "DB_USER", "DB_SOCKET", "DB_HOST", "DB_PORT")
 CONF_PLACEHOLDERS = ("ADDONS_PATH", "DB_NAME", "ADMIN_PASSWD", "DB_TEMPLATE")
 # a template whose database is the machine's cluster (template.json
 # "database": "machine", docs/adr/postgresql-della-macchina.md AD-001): no
 # database service of its own; its Odoo service mounts the cluster's socket,
 # exactly so, read only, and no other service does. The servers file says
 # db_service MACHINE_DB_SERVICE of its instances (machinedb.DB_SERVICE)
-DATABASE_MODES = ("dedicated", "machine")
+# "database": "remote" (AD-003): no database service either; its Odoo service
+# reaches a PostgreSQL of another machine (DB_HOST, DB_PORT) over TLS with
+# the server's certificate verified against the CA given at the creation
+# (config/db-ca.pem), never less
+DATABASE_MODES = ("dedicated", "machine", "remote")
+REMOTE_SSL = ("PGSSLMODE", "verify-full")
+REMOTE_CA = ("PGSSLROOTCERT", "/etc/odoo/db-ca.pem")
+REMOTE_CONF = "db_sslmode = verify-full"
 SOCKET_MOUNT = f"${{DB_SOCKET}}:{machinedb.SOCKET_IN_ODOO}:ro"
 MACHINE_DB_SERVICE = machinedb.DB_SERVICE
+# the servers file's db_service of an instance on a database of another machine
+REMOTE_DB_SERVICE = "remote"
 # a value of a field: one line, no quote that .env would read
 VALUE = re.compile(r"[^\n\r\"'`$\\]{0,200}")
 # what a template's compose.yaml may hold, and nothing else
@@ -260,6 +269,15 @@ class Template:
     def on_machine(self) -> bool:
         return self.database == "machine"
 
+    @property
+    def on_remote(self) -> bool:
+        return self.database == "remote"
+
+    @property
+    def own_database(self) -> bool:
+        """A database service of its own in the project (the dedicated one)."""
+        return self.database == "dedicated"
+
     def parameter(self, name: str) -> Parameter | None:
         return next((p for p in self.parameters if p.name == name), None)
 
@@ -410,7 +428,8 @@ def load_template(folder: Path) -> Template:
     template = Template(
         folder=folder, name=name, label=str(meta.get("label") or name), version=str(meta.get("version") or ""),
         odoo_service=str(meta.get("odoo_service") or "odoo"),
-        db_service=MACHINE_DB_SERVICE if mode == "machine" else str(meta.get("db_service") or "db"),
+        db_service={"machine": MACHINE_DB_SERVICE, "remote": REMOTE_DB_SERVICE}.get(
+            mode, str(meta.get("db_service") or "db")),
         database=mode, postgres=postgres, dedicated=dedicated if mode == "machine" else "",
         addons_path=[str(p) for p in meta.get("addons_path") or []],
         customer_addons=str(meta.get("customer_addons") or ""), data=data, fields=fields,
@@ -503,9 +522,23 @@ def check_compose(template: Template) -> list[str]:
             found.append(f"services.{template.db_service}: a template on the machine's cluster has no such service")
         if "{{DB_TEMPLATE}}" not in template.conf:
             found.append("odoo.conf.in: db_template = {{DB_TEMPLATE}} is required on the machine's cluster")
+    elif template.on_remote:
+        odoo = data["services"].get(template.odoo_service)
+        if not isinstance(odoo, dict):
+            found.append(f"service {template.odoo_service} is required")
+        else:
+            env = odoo.get("environment") if isinstance(odoo.get("environment"), dict) else {}
+            for key, value in (REMOTE_SSL, REMOTE_CA):
+                if str(env.get(key)) != value:
+                    found.append(f"services.{template.odoo_service}.environment: {key}: {value} is required "
+                                 "(a database of another machine is reached over verified TLS only)")
+        if template.db_service in data["services"]:
+            found.append(f"services.{template.db_service}: a template on a database of another machine has no such service")
+        if REMOTE_CONF not in template.conf:
+            found.append(f"odoo.conf.in: {REMOTE_CONF} is required for a database of another machine")
     elif template.odoo_service not in data["services"] or template.db_service not in data["services"]:
         found.append(f"services {template.odoo_service} and {template.db_service} are required")
-    for name in (template.odoo_service, *(() if template.on_machine else (template.db_service,))):
+    for name in (template.odoo_service, *((template.db_service,) if template.own_database else ())):
         if isinstance(data["services"].get(name), dict) and data["services"][name].get("profiles"):
             found.append(f"services.{name}: runs always, without profiles")
     for name in PLACEHOLDER.findall(template.conf):

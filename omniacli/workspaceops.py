@@ -56,9 +56,15 @@ def docker_missing() -> str | None:
     return None if shutil.which("docker", path=os.environ.get("PATH", "") + ":/usr/bin:/usr/local/bin") else DOCKER_MISSING
 
 
-async def _helper(job: Job, *args: str, timeout: float = HELPER_TIMEOUT) -> dict:
+def workspacehelper_remote_key() -> str:
+    from .workspacehelper import REMOTE_KEY
+    return REMOTE_KEY
+
+
+async def _helper(job: Job, *args: str, timeout: float = HELPER_TIMEOUT, input: bytes | None = None) -> dict:
+    """input: what the helper reads on its input (a secret: never an argument, never logged)."""
     job.log("$ " + " ".join(helper(*args)))
-    code, out = await capture(helper(*args), timeout=timeout)
+    code, out = await capture(helper(*args), timeout=timeout, input=input)
     if code:
         raise JobFailed(out or f"workspace-helper {args[0]} failed ({code})")
     try:
@@ -93,7 +99,7 @@ async def apply_limits(job: Job, ws: Workspace) -> dict:
 
 
 async def create_instance(job: Job, ws: Workspace, instance: str, template: stacktemplates.Template,
-                          values: dict[str, str], setup: dict | None = None) -> dict:
+                          values: dict[str, str], setup: dict | None = None, remote: dict | None = None) -> dict:
     """The disk, the project of its production, its database, started: the
     server's data for the servers file (its production, type docker). The
     copies to try things on are stagings beside it (stagings.py), not a
@@ -102,12 +108,22 @@ async def create_instance(job: Job, ws: Workspace, instance: str, template: stac
     New instance dialog asks them; never in the job's log."""
     if not ws.storage or not ws.limits.get("disk_gb"):
         raise JobFailed(f"workspace {ws.name} has no storage or no disk limit: the machine's admins set them")
+    # the connection of a database of another machine may come among the values (the app's make_instance)
+    values = dict(values)
+    given = values.pop(workspacehelper_remote_key(), None)
+    remote = remote or (given if isinstance(given, dict) else None)
     job.log(f"--- the disk of workspace {ws.name} ({ws.limits['disk_gb']:g} GB, in {ws.storage})")
     await _helper(job, "disk", ws.name, ws.storage, str(int(ws.limits["disk_gb"])))
     await apply_limits(job, ws)
     job.log(f"--- instance {instance} from template {template.name} {template.version}")
+    # a database of another machine (AD-003): its connection on the helper's input, said without its password
+    if remote:
+        job.log(f"--- its database is {remote.get('database')} on {remote.get('host')}:{remote.get('port')}, "
+                f"as {remote.get('user')}, over TLS verified against the CA given")
     made = await _helper(job, "create", ws.name, ws.storage, instance, template.name,
-                         json.dumps({**values, "_roles": ["production"]}))
+                         json.dumps({**values, "_roles": ["production"],
+                                     **({workspacehelper_remote_key(): "-"} if remote else {})}),
+                         input=json.dumps(remote).encode() if remote else None)
     try:
         modules = values.get("INIT_MODULES") or "base"
         language = values.get("INIT_LANG") or ""
@@ -170,7 +186,10 @@ async def drop_disk(job: Job | None, ws: Workspace) -> str:
 
 
 async def remove_instance(job: Job, ws: Workspace, instance: str) -> None:
-    await _helper(job, "remove", ws.name, ws.storage, instance)
+    removed = await _helper(job, "remove", ws.name, ws.storage, instance)
+    for where in removed.get("database_left_on") or []:
+        # a database of another machine is not this machine's to drop (AD-003)
+        job.log(f"Its database stays on {where}: it is of who runs that machine, to drop there")
 
 
 class SpaceError(Exception):

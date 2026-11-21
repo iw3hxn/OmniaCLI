@@ -341,6 +341,7 @@
  "No staging yet.": "Ancora nessuna staging.",
  "No staging: a staging is a dated copy of production, to try an update without touching it.": "Nessuna staging: una staging è una copia datata della produzione, per provare un aggiornamento senza toccarla.",
  "Not available: the database does not record the statistics of the queries. It is switched on in PostgreSQL's configuration": "Non disponibile: il database non registra le statistiche delle query. Si attiva nella configurazione di PostgreSQL",
+ "Not from here: the database of this instance is on another machine, and the recovery at a minute is of who runs it.": "Non da qui: il database di questa istanza è su un'altra macchina, e il ripristino a un minuto è di chi la gestisce.",
  "Not on the machine's cluster: it is there for a dedicated database. Move this database into a dedicated one (Settings › Technical details) to switch it on.": "Non sul cluster della macchina: c'è per un database dedicato. Sposta questo database in uno dedicato (Impostazioni › Dettagli tecnici) per accenderlo.",
  "Not readable": "Non leggibile",
  "Nothing leaves: the message is kept in this tab and goes to the mailbox of its address in this staging. Odoo reads it with Read now, or by itself within 5 minutes when reception is on.": "Non esce niente: il messaggio resta in questa scheda e va nella casella del suo indirizzo in questa staging. Odoo lo legge con Leggi adesso, o da solo entro 5 minuti se la ricezione è attiva.",
