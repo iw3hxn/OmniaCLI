@@ -90,7 +90,7 @@
         document.getElementById("login-as-keep").hidden = !data.keep;
         document.getElementById("login-as-keep-command").textContent = data.keep || "";
         nginxAdd.onclick = async () => {
-          if (!confirm(T.nginxQ.replace("{host}", data.host))) return;
+          if (!await omniaAsk(T.nginxQ.replace("{host}", data.host), nginxAdd)) return;
           const made = await fetch(data.nginx, {method: "POST", headers: {Accept: "application/json"}}).catch(() => null);
           const answer = made ? await made.json().catch(() => ({})) : {};
           if (made && made.ok && answer.job) { location.href = `{{ prefix }}/jobs/${answer.job}`; return; }

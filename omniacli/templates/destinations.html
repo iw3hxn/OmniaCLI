@@ -167,7 +167,7 @@
       result.className = (ok ? "status success" : "error") + " dest-result";
     });
     tr.querySelector("[data-delete]")?.addEventListener("click", async () => {
-      if (!confirm(T.deleteQ.replace("{name}", name))) return;
+      if (!await omniaAsk(T.deleteQ.replace("{name}", name), {{ _("Delete") | tojson }}, {danger: true})) return;
       const {ok, data} = await post("delete", {name});
       if (!ok) { error.textContent = data.error || data.detail || T.refused; error.hidden = false; return; }
       location.reload();

@@ -1514,7 +1514,7 @@ async def test_package_update_is_confirmed_with_its_scripts_named(client, env):
     test.package = None
     page = (await client.get("/servers/srv?view=test", headers={"Authorization": AUTH})).text
     # without a package the pull asks nothing, as before
-    assert "its own scripts" not in page and 'confirm("Git pull srv/test?' not in page
+    assert "its own scripts" not in page and 'data-confirm="Git pull srv/test?' not in page
 
 
 def test_postgres_cpu(tmp_path):

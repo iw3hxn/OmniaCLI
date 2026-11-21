@@ -101,7 +101,7 @@
   });
   for (const button of document.querySelectorAll("[data-close]")) {
     button.addEventListener("click", async () => {
-      if (!confirm({{ _("Close this tunnel? Its address stops answering at once.") | tojson }})) return;
+      if (!await omniaAsk({{ _("Close this tunnel? Its address stops answering at once.") | tojson }}, button, {danger: true})) return;
       if (await post(`/api/tunnels/${encodeURIComponent(button.dataset.close)}/close`)) location.reload();
     });
   }

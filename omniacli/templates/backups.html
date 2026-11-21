@@ -237,7 +237,7 @@
   });
 
   async function removeBackup(r) {
-    if (!confirm(T.removeQ.replace("{name}", r.label).replace("{when}", whenText(r.time)))) return;
+    if (!await omniaAsk(T.removeQ.replace("{name}", r.label).replace("{when}", whenText(r.time)), {{ _("Delete") | tojson }}, {danger: true})) return;
     const resp = await fetch(`${r.base}/api/servers/${encodeURIComponent(r.server)}/${r.role}/backups/delete`, {method: "POST",
       headers: {"Content-Type": "application/json", Accept: "application/json"}, body: JSON.stringify({file: r.file})}).catch(() => null);
     const data = resp ? await resp.json().catch(() => ({})) : {};

@@ -15,11 +15,18 @@ try { const t = localStorage.getItem("omniacli.theme"); if (t) document.document
 // which comes back to this page. A read goes at once; an action asks first,
 // since what the page holds unsaved is lost (the action is not sent again)
 window.OmniaLogin = window.OmniaLogin || (function () {
-  let leaving = false;
-  function expired(method) {
-    if (leaving) return;
+  let leaving = false, asking = false;
+  async function expired(method) {
+    if (leaving || asking) return;
     const read = !method || ["GET", "HEAD"].includes(method.toUpperCase());
-    if (!read && !confirm({{ _("Your login has expired: log in again?\n\nWhat is not saved on this page is lost.") | tojson }})) return;
+    if (!read) {
+      // the page's question (window.omniaAsk, in the body); asked once for the requests failing together
+      asking = true;
+      const yes = await window.omniaAsk({{ _("Your login has expired: log in again?\n\nWhat is not saved on this page is lost.") | tojson }},
+                                        {{ _("Log in") | tojson }});
+      asking = false;
+      if (!yes) return;
+    }
     leaving = true;
     location.assign("/login?next=" + encodeURIComponent(location.pathname + location.search));
   }
@@ -558,9 +565,10 @@ window.whenText = (iso) => {
   const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/.exec(String(iso || ""));
   return m ? `${m[3]}/${m[2]}/${m[1]} ${m[4]}:${m[5]}` : String(iso || "");
 };
-// the page's own dialogs instead of the browser's (alert, prompt): a message,
-// and the name typed to confirm what cannot be undone (its button stays off
-// until the name is written as it is); both close with Esc, posting nothing
+// the page's own dialogs instead of the browser's (alert, confirm, prompt): a
+// message, a question, a text to write, and the name typed to confirm what
+// cannot be undone (its button stays off until the name is written as it
+// is); all close with Esc, posting nothing, and come one after the other
 (function () {
   const dialog = document.createElement("dialog");
   dialog.className = "omnia-ask";
@@ -571,17 +579,26 @@ window.whenText = (iso) => {
   const text = dialog.querySelector(".omnia-ask-text"), nameBox = dialog.querySelector(".omnia-ask-name");
   const input = nameBox.querySelector("input"), go = dialog.querySelector(".omnia-ask-go");
   const cancel = dialog.querySelector(".omnia-ask-cancel");
-  let done = () => {};
-  const finish = (answer) => { const d = done; done = () => {}; dialog.close(); d(answer); };
+  let done = () => {}, writing = false;
+  // a text to write answers what is written (null: Cancel), the others true or false
+  const finish = (answer) => { const d = done; done = () => {}; dialog.close(); d(writing ? (answer ? input.value : null) : answer); };
   go.addEventListener("click", () => finish(true));
   cancel.addEventListener("click", () => finish(false));
-  dialog.addEventListener("close", () => finish(false));
-  input.addEventListener("input", () => { go.disabled = input.value !== input.dataset.name; });
-  const open = (message, labels, name) => new Promise((resolve) => {
+  // Enter in the text: the go button, when it is on
+  dialog.querySelector("form").addEventListener("submit", (event) => { event.preventDefault(); if (!go.disabled) finish(true); });
+  // Esc: a No; the close of a dialog already shown again is not its own
+  dialog.addEventListener("close", () => { if (!dialog.open) finish(false); });
+  input.addEventListener("input", () => { if (!writing) go.disabled = input.value !== input.dataset.name; });
+  let queue = Promise.resolve();
+  // entry: {name} to be typed as it is, {value} a text to write, starting from value
+  const open = (message, labels, entry) => (queue = queue.then(() => show(message, labels, entry)));
+  const show = (message, labels, entry) => new Promise((resolve) => {
     if (!dialog.isConnected) document.body.append(dialog);
+    const name = entry && "name" in entry ? String(entry.name) : "";
+    writing = !!entry && "value" in entry;
     text.textContent = message;
-    nameBox.hidden = !name;
-    input.value = ""; input.dataset.name = name || "";
+    nameBox.hidden = !name && !writing;
+    input.value = writing ? String(entry.value ?? "") : ""; input.dataset.name = name;
     go.textContent = labels.go; go.title = labels.goTitle || labels.go;
     go.className = "omnia-ask-go" + (labels.danger ? " primary danger" : " primary");
     go.disabled = !!name;
@@ -589,13 +606,40 @@ window.whenText = (iso) => {
     cancel.title = {{ _("Closes without changing anything") | tojson }};
     done = resolve;
     dialog.showModal();
-    (name ? input : go).focus();
+    if (writing) { input.focus(); input.select(); } else (name ? input : go).focus();
   });
   // a message (what alert did): resolves when it is closed
   window.omniaSay = (message) => open(String(message), {go: {{ _("Close") | tojson }}, goTitle: {{ _("Closes this message") | tojson }}});
   // true when the name was typed and the button pressed
   window.omniaTypeName = (message, name, goLabel) => open(String(message), {
-    go: goLabel, goTitle: goLabel, danger: true, cancel: {{ _("Cancel") | tojson }}}, String(name));
+    go: goLabel, goTitle: goLabel, danger: true, cancel: {{ _("Cancel") | tojson }}}, {name: String(name)});
+  // a text to write (what prompt did): what is written, null for Cancel or Esc
+  window.omniaWrite = (message, value, goLabel) => open(String(message), {
+    go: goLabel, goTitle: goLabel, cancel: {{ _("Cancel") | tojson }}}, {value});
+  // a question (what confirm did): true for the go button, false for Cancel
+  // or Esc. goLabel: the action's verb, or the button pressed (its own text
+  // without its … or ▾); danger (red) for what deletes or stops
+  window.omniaAsk = (message, goLabel, {danger = false} = {}) => {
+    const label = (goLabel instanceof Element ? goLabel.textContent : String(goLabel || "")).replace(/[…▾]/g, "").trim()
+      || {{ _("Continue") | tojson }};
+    return open(String(message), {go: label, goTitle: label, danger, cancel: {{ _("Cancel") | tojson }}});
+  };
+  // a form with data-confirm asks it before it is posted. The go button: the
+  // button pressed (data-confirm-go: another verb), red when that button is
+  // or with data-confirm-danger; on yes the form is sent again by the same
+  // button, so its name and value go too, and the form's own listeners run then
+  document.addEventListener("submit", async (event) => {
+    const form = event.target;
+    if (!(form instanceof HTMLFormElement) || !("confirm" in form.dataset)) return;
+    if (form.dataset.asked) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    const button = event.submitter && event.submitter !== form ? event.submitter : null;
+    const danger = "confirmDanger" in form.dataset || !!(button && button.classList.contains("danger"));
+    if (!await omniaAsk(form.dataset.confirm, form.dataset.confirmGo || button, {danger})) return;
+    form.dataset.asked = "1";
+    try { form.requestSubmit(button); } finally { delete form.dataset.asked; }
+  }, true);
 })();
 </script>
 <script>

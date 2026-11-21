@@ -194,7 +194,7 @@
                   restart: document.getElementById("update-restart").checked};
     if (body.mode === "chosen" && !body.modules.length) { errorBox.textContent = T.atLeastOne; return; }
     const what = body.mode === "chosen" ? body.modules.join(", ") : T.changed;
-    if (!confirm(fill(T.confirm, {what, key: `${target.server}/${target.role}`, database: target.database}))) return;
+    if (!await omniaAsk(fill(T.confirm, {what, key: `${target.server}/${target.role}`, database: target.database}), ev.submitter)) return;
     const resp = await fetch(target.url, {
       method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body),
     });

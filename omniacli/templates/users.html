@@ -253,7 +253,7 @@
   for (const button of document.querySelectorAll("[data-delete]")) {
     button.onclick = async () => {
       const K = KINDS[button.dataset.delete], row = button.closest("tr"), name = row.dataset[K.row];
-      if (!confirm(K.deleteQ.replace("{name}", name))) return;
+      if (!await omniaAsk(K.deleteQ.replace("{name}", name), button, {danger: true})) return;
       if (await post(button.dataset.delete + "/delete", {name}, errorBox)) location.reload();
     };
   }

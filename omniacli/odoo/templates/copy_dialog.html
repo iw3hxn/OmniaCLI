@@ -136,7 +136,7 @@
     const what = backup ? fill(T.theBackup, {backup}) : T.aNew
       + (no_filestore ? T.noFiles : share_filestore ? T.share : "")
       + (no_binaries ? T.noBinaries : "");
-    if (!confirm(fill(T.drop, {server: target.server, what}))) return;
+    if (!await omniaAsk(fill(T.drop, {server: target.server, what}), ev.submitter, {danger: true})) return;
     const resp = await fetch(target.url, {
       method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({backup, no_filestore, share_filestore, no_binaries}),
     });

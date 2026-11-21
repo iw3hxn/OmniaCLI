@@ -118,9 +118,13 @@
   }
   for (const kind of ["input", "click"]) document.addEventListener(kind, () => setTimeout(mark, 0));
   window.addEventListener("beforeunload", (e) => { if (!leaving && changes()) e.preventDefault(); });
-  document.getElementById("cancel").addEventListener("click", (e) => {
-    if (changes() && !confirm(T.leaveQ)) { e.preventDefault(); return; }
+  document.getElementById("cancel").addEventListener("click", async (e) => {
+    if (!changes()) { leaving = true; return; }
+    e.preventDefault();
+    const link = e.currentTarget;
+    if (!await omniaAsk(T.leaveQ, {{ _("Leave") | tojson }}, {danger: true})) return;
     leaving = true;
+    location.assign(link.href);
   });
   mark();
   const save = async () => {

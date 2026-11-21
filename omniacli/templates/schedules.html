@@ -304,14 +304,14 @@
   });
   for (const b of document.querySelectorAll("[data-delete]")) {
     b.onclick = async () => {
-      if (!confirm({{ _("Delete the schedule {name} and its history?") | tojson }}.replace("{name}", b.dataset.delete))) return;
+      if (!await omniaAsk({{ _("Delete the schedule {name} and its history?") | tojson }}.replace("{name}", b.dataset.delete), b, {danger: true})) return;
       try { await post("/api/schedules/delete", {name: b.dataset.delete}); location.reload(); }
       catch (err) { showError(err.message); }
     };
   }
   for (const b of document.querySelectorAll("[data-run]")) {
     b.onclick = async () => {
-      if (!confirm({{ _("Run {name} now?") | tojson }}.replace("{name}", b.dataset.run))) return;
+      if (!await omniaAsk({{ _("Run {name} now?") | tojson }}.replace("{name}", b.dataset.run), b)) return;
       try { const data = await post(`/api/schedules/${encodeURIComponent(b.dataset.run)}/run`);
             location.href = `${prefix}/jobs/${data.job}`; }
       catch (err) { showError(err.message); }

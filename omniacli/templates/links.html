@@ -194,7 +194,7 @@
     row.querySelector("[data-test]").onclick = () => tryLink(row);
     row.querySelector("[data-edit]").onclick = () => openDialog(row);
     row.querySelector("[data-delete]").onclick = async () => {
-      if (!confirm(T.deleteQ.replace("{name}", row.dataset.link))) return;
+      if (!await omniaAsk(T.deleteQ.replace("{name}", row.dataset.link), row.querySelector("[data-delete]"), {danger: true})) return;
       if (await post("delete", {name: row.dataset.link})) location.reload();
     };
     tryLink(row);

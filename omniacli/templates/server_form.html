@@ -369,7 +369,7 @@ function showError(text) {
 // with the same path keeps its name: it pairs test with production).
 async function formButton(box, role, spec, button) {
   const values = roleValues(box);
-  if (spec.confirm && !confirm(tx(spec.confirm).replace(/\{(\w+)\}/g, (all, key) => values[key] ?? ""))) return;
+  if (spec.confirm && !await omniaAsk(tx(spec.confirm).replace(/\{(\w+)\}/g, (all, key) => values[key] ?? ""), button)) return;
   // opened now: a tab opened after the answer may be blocked; closed if no job comes
   const tab = spec.confirm ? window.open("", "_blank") : null;
   button.disabled = true;
@@ -486,7 +486,7 @@ document.getElementById("check").addEventListener("click", async (ev) => {
 document.getElementById("form").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   const activate = ev.submitter ? ev.submitter.dataset.activate === "1" : false;
-  if (!activate && MODEL.active && !confirm({{ _("Save as draft? The server goes offline: no actions and no auto update until Test & activate.") | tojson }})) return;
+  if (!activate && MODEL.active && !await omniaAsk({{ _("Save as draft? The server goes offline: no actions and no auto update until Test & activate.") | tojson }}, {{ _("Save as draft") | tojson }})) return;
   for (const b of document.querySelectorAll("button[type=submit]")) b.disabled = true;
   const server = formServer();
   const resp = await fetch("{{ prefix }}/api/servers/save", {

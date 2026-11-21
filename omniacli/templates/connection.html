@@ -163,7 +163,7 @@
       td.appendChild(show);
       if (isAdmin && account && ["running", "queued"].includes(j.status)) {
         const stop = document.createElement("button"); stop.type = "button"; stop.className = "danger"; stop.textContent = T.stop; stop.title = T.stopHelp;
-        stop.onclick = () => { if (confirm(fill(T.askStop, {job: j.title || j.id}))) send("stop-job", {job: j.id}); };
+        stop.onclick = async () => { if (await omniaAsk(fill(T.askStop, {job: j.title || j.id}), stop, {danger: true})) send("stop-job", {job: j.id}); };
         td.appendChild(stop);
       }
     }
@@ -189,9 +189,9 @@
     refresh();
   }
   for (const button of document.querySelectorAll("[data-command]")) {
-    button.onclick = () => {
+    button.onclick = async () => {
       const c = button.dataset.command;
-      if (!confirm(fill(T.confirm, {command: T.commands[c] || c, instance: latest.instance || {{ name | tojson }}}))) return;
+      if (!await omniaAsk(fill(T.confirm, {command: T.commands[c] || c, instance: latest.instance || {{ name | tojson }}}), button, c === "stop" ? {danger: true} : {})) return;
       const params = {};
       if (c === "backup") for (const box of $("backup-options").querySelectorAll("[data-option]")) params[box.dataset.option] = box.checked;
       send(c, params);

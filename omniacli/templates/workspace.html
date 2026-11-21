@@ -690,7 +690,7 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
   for (const button of document.querySelectorAll("[data-delete]")) {
     button.onclick = async () => {
       const K = KINDS[button.dataset.delete], name = button.closest("tr").dataset[K.row];
-      if (!confirm(K.deleteQ.replace("{name}", name))) return;
+      if (!await omniaAsk(K.deleteQ.replace("{name}", name), button, {danger: true})) return;
       if (await post(button.dataset.delete + "/delete", {name})) location.reload();
     };
   }
@@ -720,7 +720,7 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
   for (const button of credentials.querySelectorAll("[data-delete-credential]")) {
     button.onclick = async () => {
       const host = button.closest("tr").dataset.host;
-      if (!confirm(T.credentialQ.replace("{host}", host))) return;
+      if (!await omniaAsk(T.credentialQ.replace("{host}", host), button, {danger: true})) return;
       if (await post("credentials/delete", {host}, $("cred-error"))) location.reload();
     };
   }

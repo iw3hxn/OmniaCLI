@@ -58,8 +58,8 @@
 <script>
   // the name is this OmniaCLI's (its links), not the server's: asked of the root, not through the link
   document.getElementById("link-rename").addEventListener("click", async (event) => {
-    const name = event.currentTarget.dataset.name;
-    const given = prompt({{ _("The new name of {name} (letters, digits and . _ -):") | tojson }}.replace("{name}", name), name);
+    const button = event.currentTarget, name = button.dataset.name;
+    const given = await omniaWrite({{ _("The new name of {name} (letters, digits and . _ -):") | tojson }}.replace("{name}", name), name, button.textContent.trim());
     if (!given || given.trim() === name) return;
     const resp = await fetch("/api/links/rename", {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
                                                  body: JSON.stringify({name, new_name: given.trim()})});

@@ -159,7 +159,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     {% if opens and st != "stopped" %}<a class="button" href="{{ inst.web_url }}" target="_blank" rel="noopener" title="{{ _('Opens {url} in a new tab', url=inst.web_url) }}">{{ _("Open Odoo") }} ↗</a>{% endif %}
     {% if login_as[inst.key] %}<button type="button" data-login-as='{{ login_as[inst.key] | tojson }}' title="{{ _('Opens Odoo in a new tab as one of its users, without their password.') }}">{{ _("Log in as…") }}</button>{% endif %}
     {% if st == "stopped" %}
-    <form method="post" action="{{ base }}/{{ 'restart' if rt == 'process' else 'start' }}" onsubmit='return confirm({{ _("Start Odoo of {name}?", name=who) | tojson }})'>
+    <form method="post" action="{{ base }}/{{ 'restart' if rt == 'process' else 'start' }}" data-confirm="{{ _("Start Odoo of {name}?", name=who) }}">
       <input type="hidden" name="next" value="{{ here }}">
       <button {{ off }} title="{{ _('Starts Odoo of {name}.', name=who) }}">{{ icon("start") }}{{ _("Start") }}</button></form>
     {% endif %}
@@ -169,18 +169,18 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
             title="{{ update_help }}">{{ icon("github") }}{{ _("Update") }}</button>
     {% else %}
     <form method="post" action="{{ base }}/pull-restart"
-          onsubmit='return confirm({{ (_("Pull, deploy and restart {key}?", key=inst.key) ~ ("\n\n" ~ package_note if package_note else "")) | tojson }})'>
+          data-confirm="{{ _("Pull, deploy and restart {key}?", key=inst.key) ~ ("\n\n" ~ package_note if package_note else "") }}">
       <button {{ off }} title="{{ update_help }}">{{ icon("github") }}{{ _("Update") }}</button></form>
     {% endif %}
     {% endif %}
     {% if not can_act and st != "stopped" and (rt != "process" or pid) %}
-    <form method="post" action="{{ base }}/restart" onsubmit='return confirm({{ _("Restart Odoo of {name}?", name=who) | tojson }})'>
+    <form method="post" action="{{ base }}/restart" data-confirm="{{ _("Restart Odoo of {name}?", name=who) }}">
       <input type="hidden" name="next" value="{{ here }}">
       <button {{ off }} title="{{ _('Restarts Odoo: whoever is connected loses the connection for a few seconds. It changes neither the code nor the database.') }}">{{ icon("restart") }}{{ _("Restart") }}</button></form>
     {% endif %}
     {% if merge %}
     <form method="post" action="{{ prefix }}/servers/{{ server.name }}/merge"
-          onsubmit='return confirm({{ _("Back up production, merge the commits deployed on test into production, push, update modules and restart production {server}?", server=server.name) | tojson }})'>
+          data-confirm="{{ _("Back up production, merge the commits deployed on test into production, push, update modules and restart production {server}?", server=server.name) }}">
       <span title="{{ _('Backs up production, merges into its repositories the commits running now on test (the tried commit, not the tip of the branch), pushes them, updates the modules and restarts production. It stops if test has uncommitted changes or unpushed commits. Not available while a job works on production or test.') }}">
       <button class="danger" {% if busy[server.production.key] or busy[server.test.key] %}disabled{% endif %}>{{ _("Bring to production…") }}</button></span></form>
     {% endif %}
@@ -196,17 +196,17 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
       <summary class="button" title="{{ _('The other actions: stop, code, backups, consoles, replacing the database') }}">{{ _("More") }} ▾</summary>
       <div class="more-items">
         {% if can_act and st != "stopped" and (rt != "process" or pid) %}
-        <form method="post" action="{{ base }}/restart" onsubmit='return confirm({{ _("Restart Odoo of {name}?", name=who) | tojson }})'>
+        <form method="post" action="{{ base }}/restart" data-confirm="{{ _("Restart Odoo of {name}?", name=who) }}">
           <input type="hidden" name="next" value="{{ here }}">
           <button {{ off }} title="{{ _('Restarts Odoo: whoever is connected loses the connection for a few seconds. It changes neither the code nor the database.') }}">{{ icon("restart") }}{{ _("Restart") }}</button></form>
         {% endif %}
         {% if st == "unknown" and rt in ("process", "systemd", "compose") %}
-        <form method="post" action="{{ base }}/{{ 'restart' if rt == 'process' else 'start' }}" onsubmit='return confirm({{ _("Start Odoo of {name}?", name=who) | tojson }})'>
+        <form method="post" action="{{ base }}/{{ 'restart' if rt == 'process' else 'start' }}" data-confirm="{{ _("Start Odoo of {name}?", name=who) }}">
           <input type="hidden" name="next" value="{{ here }}">
           <button {{ off }} title="{{ _('Starts Odoo of {name}.', name=who) }}">{{ icon("start") }}{{ _("Start") }}</button></form>
         {% endif %}
         {% if st != "stopped" and rt in ("process", "systemd", "compose") %}
-        <form method="post" action="{{ base }}/stop" onsubmit='return confirm({{ _("Stop Odoo of {name}? It stays stopped, also for the auto update, until Start.", name=who) | tojson }})'>
+        <form method="post" action="{{ base }}/stop" data-confirm="{{ _("Stop Odoo of {name}? It stays stopped, also for the auto update, until Start.", name=who) }}" data-confirm-danger>
           <input type="hidden" name="next" value="{{ here }}">
           <button {{ off }} title="{{ _('Stops Odoo. It stays stopped, also for the auto update, until you press Start.') }}">{{ icon("stop") }}{{ _("Stop") }}</button></form>
         {% endif %}
@@ -217,7 +217,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
         <button type="button" {{ off }} data-pull='{{ dict(pull_choices[inst.key], url=base ~ "/pull", title=_("Git pull {key}", key=inst.key), note=package_note) | tojson }}'
                 title="{{ _('Downloads the new code without restarting: Odoo keeps the code of before until it is restarted.') }}">{{ icon("github") }}{{ _("Git pull only") }}</button>
         {% else %}
-        <form method="post" action="{{ base }}/pull" {% if inst.package %}onsubmit='return confirm({{ package_note | tojson }})'{% endif %}>
+        <form method="post" action="{{ base }}/pull" {% if inst.package %}data-confirm="{{ package_note }}"{% endif %}>
           <button {{ off }} title="{{ _('Downloads the new code without restarting: Odoo keeps the code of before until it is restarted.') }}">{{ icon("github") }}{{ _("Update package") if package_only else _("Git pull only") }}</button></form>
         {% endif %}
         {% endif %}
@@ -1181,14 +1181,15 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     });
   })();
   document.querySelectorAll("[data-repo-remove]").forEach((b) => b.addEventListener("click", async () => {
-    if (!confirm(ADD.removeQ.replace("{repo}", b.dataset.repoRemove))) return;
+    if (!await omniaAsk(ADD.removeQ.replace("{repo}", b.dataset.repoRemove), b, {danger: true})) return;
     const {ok, data} = await addonsPost("repositories/remove", {server: {{ server.name | tojson }}, name: b.dataset.repoRemove});
     if (!ok || !data.job) { omniaSay(data.error || data.detail || ADD.refused); return; }
     location.href = `{{ prefix }}/jobs/${data.job}`;
   }));
   document.getElementById("archive-now")?.addEventListener("click", async (event) => {
-    if (!confirm({{ _("Make the full archive of {key}: the backup, the code of its repositories and its configuration?", key=inst.key) | tojson }})) return;
-    const resp = await fetch(event.currentTarget.dataset.url, {method: "POST",
+    const button = event.currentTarget;  // the event's currentTarget is gone after the question
+    if (!await omniaAsk({{ _("Make the full archive of {key}: the backup, the code of its repositories and its configuration?", key=inst.key) | tojson }}, button)) return;
+    const resp = await fetch(button.dataset.url, {method: "POST",
       headers: {"Content-Type": "application/json", Accept: "application/json"}, body: "{}"});
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok || !data.job) { omniaSay(data.error || data.detail || T.refused); return; }
@@ -1250,10 +1251,10 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
       }
     }
     box.querySelector(".pitr-state").textContent = said.join(" ");
-    document.getElementById("pitr-enable")?.addEventListener("click", () => { if (confirm(P.enableQ)) post("/enable"); });
+    document.getElementById("pitr-enable")?.addEventListener("click", async () => { if (await omniaAsk(P.enableQ, document.getElementById("pitr-enable"))) post("/enable"); });
     document.getElementById("pitr-base")?.addEventListener("click", () => post("/base"));
-    go?.addEventListener("click", () => {
-      if (input.value && confirm(P.restoreQ.replace("{time}", whenText(input.value)))) post("/restore", {time: input.value});
+    go?.addEventListener("click", async () => {
+      if (input.value && await omniaAsk(P.restoreQ.replace("{time}", whenText(input.value)), go)) post("/restore", {time: input.value});
     });
   })();
   // the database in Monitoring: a verdict in one line, three numbers, the rest behind Details (UX-006)
@@ -1363,7 +1364,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
         if (stops) {
           const b = document.createElement("button"); b.type = "button"; b.className = "small danger"; b.textContent = DB.stop; b.title = DB.stopTitle;
           b.addEventListener("click", async () => {
-            if (!confirm(DB.stopQ.replace("{user}", r.user || "?").replace("{time}", lasting(r.seconds || 0)))) return;
+            if (!await omniaAsk(DB.stopQ.replace("{user}", r.user || "?").replace("{time}", lasting(r.seconds || 0)), b, {danger: true})) return;
             await fetch(box.dataset.api + "/terminate", {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
                                                          body: JSON.stringify({pid: r.pid})});
             loadDatabase();
@@ -1407,11 +1408,16 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     }
     const resp = await fetch(box.dataset.api).catch(() => null);
     if (resp && resp.ok) draw(await resp.json());
-    document.getElementById("dh-enabled").addEventListener("change", (e) => {
-      if (!e.target.checked && !confirm(D.offQ)) { e.target.checked = true; return; }
-      save(e.target.checked);
+    document.getElementById("dh-enabled").addEventListener("change", async (e) => {
+      const box = e.target;
+      if (!box.checked) {
+        box.checked = true;  // on until the answer: a No leaves it as it was
+        if (!await omniaAsk(D.offQ, {{ _("Switch off") | tojson }}, {danger: true})) return;
+        box.checked = false;
+      }
+      save(box.checked);
     });
-    document.getElementById("dh-new").addEventListener("click", () => { if (confirm(D.newQ)) save(true); });
+    document.getElementById("dh-new").addEventListener("click", async () => { if (await omniaAsk(D.newQ, document.getElementById("dh-new"))) save(true); });
   })();
   // the head of the Environments tab: read after the page, a git fetch and the registry take a while
   (async function () {
@@ -1467,7 +1473,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
       const b = el("button", "small", count === 1 ? S.updateOne : S.updateNow.replace("{count}", count));
       b.title = S.updateTitle;
       form.append(b);
-      form.addEventListener("submit", (e) => { if (!confirm(S.updateQ.replace("{repo}", repo))) e.preventDefault(); });
+      form.dataset.confirm = S.updateQ.replace("{repo}", repo);
       return form;
     }
     function repoLine(r) {
@@ -1498,7 +1504,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
         const form = el("form"); form.method = "post"; form.action = box.dataset.pullImage;
         const b = el("button", "small", S.newImage + " · " + S.pullImage); b.title = S.pullTitle;
         form.append(b);
-        form.addEventListener("submit", (e) => { if (!confirm(S.pullQ)) e.preventDefault(); });
+        form.dataset.confirm = S.pullQ; form.dataset.confirmGo = S.pullImage;
         version.append(form);
       } else if (data.image.update) version.append(badge(S.newImage, "warn"));
       else if (data.image.update === false) version.append(badge(S.imageSame, "ok"));
@@ -1642,7 +1648,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
         if (value || (input.type === "password" && opExt.secrets.includes(input.dataset.extra))) extra[input.dataset.extra] = value;
       }
     }
-    if (!confirm({{ _("Write the changed options in the odoo.conf of {name} and restart Odoo? Who is connected loses the connection for a few seconds.", name=who) | tojson }})) return;
+    if (!await omniaAsk({{ _("Write the changed options in the odoo.conf of {name} and restart Odoo? Who is connected loses the connection for a few seconds.", name=who) | tojson }}, document.getElementById("op-save"))) return;
     const resp = await fetch(`${box.dataset.ws}/parameters/save`, {method: "POST",
       headers: {"Content-Type": "application/json", Accept: "application/json"},
       body: JSON.stringify({server: {{ server.name | tojson }}, role: {{ param_role | tojson }}, parameters,
@@ -1656,7 +1662,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
   document.getElementById("oc-save")?.addEventListener("click", async () => {
     const box = document.querySelector('[data-section="odoo-config"]');
     const changes = changesOdooConfig(box), count = Object.keys(changes.set).length + changes.unset.length;
-    if (!count || !confirm(OC.confirm.replace("{count}", count))) return;
+    if (!count || !await omniaAsk(OC.confirm.replace("{count}", count), document.getElementById("oc-save"))) return;
     const resp = await fetch(box.dataset.url, {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
                                                body: JSON.stringify({...changes, restart: true})});
     const data = await resp.json().catch(() => ({}));
@@ -1769,7 +1775,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
           vb.type = "button"; vb.className = "small"; vb.textContent = T.verify; vb.title = T.verifyTitle;
           vb.style.marginRight = "6px";
           vb.addEventListener("click", async () => {
-            if (!confirm(T.verifyQ.replace("{file}", f.file))) return;
+            if (!await omniaAsk(T.verifyQ.replace("{file}", f.file), vb)) return;
             const resp = await fetch(`${box.dataset.api}/backups/verify`, {method: "POST",
               headers: {"Content-Type": "application/json", Accept: "application/json"}, body: JSON.stringify({file: f.file})});
             const data = await resp.json().catch(() => ({}));
@@ -1782,7 +1788,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
           const b = document.createElement("button");
           b.type = "button"; b.className = "small danger"; b.textContent = T.remove; b.title = T.removeTitle;
           b.addEventListener("click", async () => {
-            if (!confirm(T.removeQ.replace("{file}", f.file))) return;
+            if (!await omniaAsk(T.removeQ.replace("{file}", f.file), b, {danger: true})) return;
             const resp = await fetch(`${box.dataset.api}/backups/delete`, {method: "POST",
               headers: {"Content-Type": "application/json", Accept: "application/json"}, body: JSON.stringify({file: f.file})});
             const data = await resp.json().catch(() => ({}));
@@ -2280,7 +2286,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     document.getElementById("mail-all").addEventListener("click", () => { mailAll = true; loadMail(); });
     document.getElementById("mm-close").addEventListener("click", () => mailDialog.close());
     document.getElementById("mail-clear")?.addEventListener("click", async () => {
-      if (!confirm(M.clearQ)) return;
+      if (!await omniaAsk(M.clearQ, {{ _("Delete") | tojson }}, {danger: true})) return;
       const error = document.getElementById("page-error");
       error.textContent = "";
       const resp = await fetch(`${mailBox.dataset.api}/clear`, {method: "POST",

@@ -14,7 +14,7 @@
 <button type="button" onclick="document.getElementById('{{ b.dom_id }}').showModal()" {% if cls %}class="{{ cls }}"{% endif %}
         {% if a.tooltip %}title="{{ tr(a.tooltip) }}"{% endif %} {{ off }}>{% if a.icon %}{{ icon(a.icon) }}{% endif %}{{ tr(a.label) }}</button>
 <dialog id="{{ b.dom_id }}">
-  <form method="post" action="{{ b.url }}" {% if b.confirm %}onsubmit='return confirm({{ tr(b.confirm) | tojson }})'{% endif %}>
+  <form method="post" action="{{ b.url }}" {% if b.confirm %}data-confirm="{{ tr(b.confirm) }}"{% endif %}>
     <h2 style="margin-bottom: 4px">{{ tr(a.label) }}</h2>
     <p class="muted" style="margin-top: 0">{{ b.key }}</p>
     <div class="form-grid">
@@ -40,7 +40,7 @@
   </form>
 </dialog>
 {% else %}
-<form method="post" action="{{ b.url }}" {% if b.confirm %}onsubmit='return confirm({{ tr(b.confirm) | tojson }})'{% endif %}>
+<form method="post" action="{{ b.url }}" {% if b.confirm %}data-confirm="{{ tr(b.confirm) }}"{% endif %}>
   <button {% if cls %}class="{{ cls }}"{% endif %} {% if a.tooltip %}title="{{ tr(a.tooltip) }}"{% endif %} {{ off }}>{% if a.icon %}{{ icon(a.icon) }}{% endif %}{{ tr(a.label) }}</button></form>
 {% endif %}
 {% endmacro %}

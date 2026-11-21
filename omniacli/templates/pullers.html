@@ -495,7 +495,7 @@
   for (const row of document.querySelectorAll("tr[data-publication]")) {
     row.querySelector("[data-edit]").onclick = () => openPublication(row);
     row.querySelector("[data-delete]").onclick = async () => {
-      if (!confirm(T.stopQ.replace("{instance}", row.querySelector("a").textContent))) return;
+      if (!await omniaAsk(T.stopQ.replace("{instance}", row.querySelector("a").textContent), {{ _("Stop") | tojson }}, {danger: true})) return;
       if (await post("publications/delete", {instance: row.dataset.publication})) location.reload();
     };
   }
@@ -555,7 +555,7 @@
   for (const row of document.querySelectorAll("tr[data-box][data-producer]")) {
     row.querySelector("[data-edit]").onclick = () => openBox(row);
     row.querySelector("[data-delete]").onclick = async () => {
-      if (!confirm(row.dataset.confirm)) return;
+      if (!await omniaAsk(row.dataset.confirm, {{ _("Delete") | tojson }}, {danger: true})) return;
       if (await post("pullers/delete", {name: row.dataset.box})) location.reload();
     };
   }
@@ -605,7 +605,7 @@
   for (const row of document.querySelectorAll("tr[data-operated]")) {
     row.querySelector("[data-edit]").onclick = () => openOperated(row);
     row.querySelector("[data-delete]").onclick = async () => {
-      if (!confirm(T.forgetQ.replace("{name}", row.dataset.operated))) return;
+      if (!await omniaAsk(T.forgetQ.replace("{name}", row.dataset.operated), {{ _("Stop") | tojson }}, {danger: true})) return;
       if (await post("connections/delete", {name: row.dataset.operated})) location.reload();
     };
   }

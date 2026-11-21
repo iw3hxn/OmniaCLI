@@ -228,7 +228,7 @@
     if (isNew) field("remove").title = {{ _("Leaves this form and goes back to the list: no workspace is created.") | tojson }};
     field("remove").onclick = async () => {
       if (isNew) { location.href = "{{ prefix }}/workspaces"; return; }
-      if (!confirm({{ _("Delete workspace {name}? Its servers stay; its users no longer see them.") | tojson }}.replace("{name}", ws.name))) return;
+      if (!await omniaAsk({{ _("Delete workspace {name}? Its servers stay; its users no longer see them.") | tojson }}.replace("{name}", ws.name), {{ _("Delete") | tojson }}, {danger: true})) return;
       if (await post("delete", {name: ws.name})) location.href = "{{ prefix }}/workspaces";
     };
     list.appendChild(box);

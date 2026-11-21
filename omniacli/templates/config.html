@@ -70,14 +70,14 @@ async function post(url, body) {
 for (const button of document.querySelectorAll("button[data-name]")) {
   button.addEventListener("click", async () => {
     const name = button.dataset.name;
-    if (!confirm({{ _("Delete the configuration of server {name}? Databases and files are not touched.") | tojson }}.replace("{name}", name))) return;
+    if (!await omniaAsk({{ _("Delete the configuration of server {name}? Databases and files are not touched.") | tojson }}.replace("{name}", name), button, {danger: true})) return;
     if (await post("{{ prefix }}/api/servers/delete", {name})) location.reload();
   });
 }
 for (const button of document.querySelectorAll("button[data-deactivate]")) {
   button.addEventListener("click", async () => {
     const name = button.dataset.deactivate;
-    if (!confirm({{ _("Take server {name} offline (draft)? Its auto update stops and no action can run on it.") | tojson }}.replace("{name}", name))) return;
+    if (!await omniaAsk({{ _("Take server {name} offline (draft)? Its auto update stops and no action can run on it.") | tojson }}.replace("{name}", name), button, {danger: true})) return;
     if (await post(`{{ prefix }}/api/servers/${encodeURIComponent(name)}/deactivate`)) location.reload();
   });
 }

@@ -100,7 +100,7 @@
     if (target.database) {
       if (typed.value.trim() !== target.database) { errorBox.textContent = T.type.replace("{database}", target.database); return; }
       body.confirm = typed.value.trim();
-    } else if (!confirm(T.drop.replace("{key}", key).replace("{backup}", backup || file.name))) return;
+    } else if (!await omniaAsk(T.drop.replace("{key}", key).replace("{backup}", backup || file.name), go, {danger: true})) return;
     go.disabled = true;
     try {
       if (file) {

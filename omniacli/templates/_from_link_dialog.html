@@ -172,7 +172,7 @@
       body.confirm = typed.value.trim();
     } else {
       const what = backup ? T.theBackup.replace("{backup}", backup) : T.aNew;
-      if (!confirm(T.drop.replace("{key}", key).replace("{what}", what).replace("{label}", target.label))) return;
+      if (!await omniaAsk(T.drop.replace("{key}", key).replace("{what}", what).replace("{label}", target.label), ev.submitter, {danger: true})) return;
     }
     const resp = await fetch(target.url, {
       method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body),

@@ -97,7 +97,7 @@
         button.type = "button"; button.textContent = p.installed ? {{ _("Update") | tojson }} : {{ _("Install") | tojson }};
         button.title = {{ _("Downloads the published version of this plugin, checks its signed manifest and installs it through the root helper: it is a job. OmniaCLI loads it at its next restart. It asks before.") | tojson }};
         button.onclick = async () => {
-          if (!confirm((p.installed ? {{ _("Update the plugin {name} {version}?") | tojson }} : {{ _("Install the plugin {name} {version}?") | tojson }}).replace("{name}", p.name).replace("{version}", p.version))) return;
+          if (!await omniaAsk((p.installed ? {{ _("Update the plugin {name} {version}?") | tojson }} : {{ _("Install the plugin {name} {version}?") | tojson }}).replace("{name}", p.name).replace("{version}", p.version), button)) return;
           show("");
           const r = await fetch(`{{ prefix }}/api/plugins/${encodeURIComponent(p.name)}/install`, {method: "POST"});
           const d = await r.json().catch(() => ({}));
@@ -108,7 +108,7 @@
     }
   }
   document.getElementById("restart").onclick = async () => {
-    if (!confirm({{ _("Restart OmniaCLI? The pages answer again in a few seconds.") | tojson }})) return;
+    if (!await omniaAsk({{ _("Restart OmniaCLI? The pages answer again in a few seconds.") | tojson }}, {{ _("Restart") | tojson }})) return;
     show("");
     const r = await fetch("{{ prefix }}/api/omniacli/restart", {method: "POST"});
     const d = await r.json().catch(() => ({}));
