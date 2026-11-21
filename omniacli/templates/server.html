@@ -555,7 +555,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
       title="{{ _('Switches recovery at a minute on: the database starts keeping the record of every change and makes the first full copy at once, then one every night. The database restarts once, for a few seconds: in those seconds Odoo does not answer. Admins only.') }}">{{ _("Switch on…") }}</button></div>
     <div class="actions pitr-on" hidden>
       <input type="datetime-local" id="pitr-time" step="60" aria-label="{{ _('The minute to go back to') }}">
-      <span id="pitr-restore-wrap"><button type="button" id="pitr-restore" {{ off }}>{{ _("New staging at this minute") }}</button></span>
+      <span id="pitr-restore-wrap"><button type="button" id="pitr-restore" {{ off }} title="{{ _('Makes a new staging with the database of this production as it was at the minute chosen above; the production is not touched') }}">{{ _("New staging at this minute") }}</button></span>
       <button type="button" id="pitr-base" {{ off }}
         title="{{ _('Makes now the full copy of the database recovery at a minute starts from; it is made by itself every night. After a big change it shortens the recovery. It is a job.') }}">{{ _("Full copy now") }}</button>
     </div>
@@ -1183,7 +1183,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
   document.querySelectorAll("[data-repo-remove]").forEach((b) => b.addEventListener("click", async () => {
     if (!confirm(ADD.removeQ.replace("{repo}", b.dataset.repoRemove))) return;
     const {ok, data} = await addonsPost("repositories/remove", {server: {{ server.name | tojson }}, name: b.dataset.repoRemove});
-    if (!ok || !data.job) { alert(data.error || data.detail || ADD.refused); return; }
+    if (!ok || !data.job) { omniaSay(data.error || data.detail || ADD.refused); return; }
     location.href = `{{ prefix }}/jobs/${data.job}`;
   }));
   document.getElementById("archive-now")?.addEventListener("click", async (event) => {
@@ -1191,7 +1191,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     const resp = await fetch(event.currentTarget.dataset.url, {method: "POST",
       headers: {"Content-Type": "application/json", Accept: "application/json"}, body: "{}"});
     const data = await resp.json().catch(() => ({}));
-    if (!resp.ok || !data.job) { alert(data.error || data.detail || T.refused); return; }
+    if (!resp.ok || !data.job) { omniaSay(data.error || data.detail || T.refused); return; }
     location.href = `{{ prefix }}/jobs/${data.job}`;
   });
   // recovery at a minute: its state, switched on, a staging at a minute
@@ -1213,7 +1213,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
       const resp = await fetch(box.dataset.api + path, {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
                                                         body: JSON.stringify(body || {})});
       const data = await resp.json().catch(() => ({}));
-      if (!resp.ok || !data.job) { alert(data.error || data.detail || T.refused); return; }
+      if (!resp.ok || !data.job) { omniaSay(data.error || data.detail || T.refused); return; }
       location.href = `{{ prefix }}/jobs/${data.job}`;
     };
     const resp = await fetch(box.dataset.api).catch(() => null);
@@ -1648,7 +1648,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
       body: JSON.stringify({server: {{ server.name | tojson }}, role: {{ param_role | tojson }}, parameters,
                             debug: document.getElementById("op-debug").checked, ...(extra ? {extra} : {})})});
     const data = await resp.json().catch(() => ({}));
-    if (!resp.ok || !data.job) { alert(data.error || data.detail || T.refused); return; }
+    if (!resp.ok || !data.job) { omniaSay(data.error || data.detail || T.refused); return; }
     opLeaving = true;
     location.href = `{{ prefix }}/jobs/${data.job}`;
   });
@@ -1660,7 +1660,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     const resp = await fetch(box.dataset.url, {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
                                                body: JSON.stringify({...changes, restart: true})});
     const data = await resp.json().catch(() => ({}));
-    if (!resp.ok || !data.job) { alert(data.error || data.detail || T.refused); return; }
+    if (!resp.ok || !data.job) { omniaSay(data.error || data.detail || T.refused); return; }
     location.href = `{{ prefix }}/jobs/${data.job}`;
   });
 
@@ -1773,7 +1773,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
             const resp = await fetch(`${box.dataset.api}/backups/verify`, {method: "POST",
               headers: {"Content-Type": "application/json", Accept: "application/json"}, body: JSON.stringify({file: f.file})});
             const data = await resp.json().catch(() => ({}));
-            if (!resp.ok || !data.job) { alert(data.error || data.detail || T.refused); return; }
+            if (!resp.ok || !data.job) { omniaSay(data.error || data.detail || T.refused); return; }
             location.href = `{{ prefix }}/jobs/${data.job}`;
           });
           cell.appendChild(vb);
@@ -1786,7 +1786,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
             const resp = await fetch(`${box.dataset.api}/backups/delete`, {method: "POST",
               headers: {"Content-Type": "application/json", Accept: "application/json"}, body: JSON.stringify({file: f.file})});
             const data = await resp.json().catch(() => ({}));
-            if (!resp.ok) { alert(data.error || data.detail || T.refused); return; }
+            if (!resp.ok) { omniaSay(data.error || data.detail || T.refused); return; }
             loadBackups();
           });
           cell.appendChild(b);
@@ -1878,7 +1878,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
           const r = await fetch(`${box.dataset.api}/remote-backups/fetch`, {method: "POST",
             headers: {"Content-Type": "application/json", Accept: "application/json"}, body: JSON.stringify({file: f.name})});
           const d = await r.json().catch(() => ({}));
-          if (!r.ok || !d.job) { alert(d.error || d.detail || T.refused); return; }
+          if (!r.ok || !d.job) { omniaSay(d.error || d.detail || T.refused); return; }
           location.href = `{{ prefix }}/jobs/${d.job}`;
         });
         cell.append(b);
@@ -2155,9 +2155,9 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
   const deleteInstance = document.getElementById("instance-delete");
   {% if stagings and not stagings.parent and stagings.workspace %}
   if (deleteInstance) deleteInstance.addEventListener("click", () => {
-    const typed = prompt({{ _("Delete the instance {name}: containers, database and files. It cannot be undone. Write its name to confirm.", name=server.name) | tojson }});
-    post({{ (prefix ~ "/api/workspaces/" ~ stagings.workspace.name ~ "/instances/delete") | tojson }}, {server: {{ server.name | tojson }}},
-         typed === {{ server.name | tojson }});
+    omniaTypeName({{ _("Delete the instance {name}: containers, database and files. It cannot be undone. Write its name to confirm.", name=server.name) | tojson }},
+                  {{ server.name | tojson }}, {{ _("Delete the instance") | tojson }}).then((typed) =>
+      post({{ (prefix ~ "/api/workspaces/" ~ stagings.workspace.name ~ "/instances/delete") | tojson }}, {server: {{ server.name | tojson }}}, typed));
   });
   {% endif %}
   // Rebuild (UX-008 §5.2): the dialog is the confirmation; Cancel posts nothing
@@ -2183,9 +2183,9 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
   const deleteStaging = document.getElementById("staging-delete");
   {% if stagings and stagings.parent and stagings.workspace %}
   if (deleteStaging) deleteStaging.addEventListener("click", () => {
-    const typed = prompt({{ _("Delete the staging {name}: containers, database and files. It cannot be undone. Write its name to confirm.", name=server.name) | tojson }});
-    post({{ (prefix ~ "/api/workspaces/" ~ stagings.workspace.name ~ "/instances/delete") | tojson }}, {server: {{ server.name | tojson }}},
-         typed === {{ server.name | tojson }});
+    omniaTypeName({{ _("Delete the staging {name}: containers, database and files. It cannot be undone. Write its name to confirm.", name=server.name) | tojson }},
+                  {{ server.name | tojson }}, {{ _("Delete the staging") | tojson }}).then((typed) =>
+      post({{ (prefix ~ "/api/workspaces/" ~ stagings.workspace.name ~ "/instances/delete") | tojson }}, {server: {{ server.name | tojson }}}, typed));
   });
   {% endif %}
 

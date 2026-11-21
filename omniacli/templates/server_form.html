@@ -188,7 +188,7 @@ async function readBranches(tr, button) {
   }).catch(() => null);
   button.disabled = false;
   const data = resp ? await resp.json().catch(() => ({})) : {};
-  if (!resp || !resp.ok) { alert(data.error || (resp ? ERROR(resp.status) : UNREACHABLE)); return; }
+  if (!resp || !resp.ok) { omniaSay(data.error || (resp ? ERROR(resp.status) : UNREACHABLE)); return; }
   const old = tr.querySelector('[data-r="branch"]');
   const chosen = old.value.trim() || data.current;
   const select = document.createElement("select");
@@ -199,11 +199,11 @@ async function readBranches(tr, button) {
   if (chosen && !data.branches.includes(chosen)) {
     select.add(new Option(chosen + " " + {{ _("(not on the remote)") | tojson }}, chosen), 0);
   }
-  if (!select.options.length) { alert({{ _("The remote has no branches") | tojson }}); return; }
+  if (!select.options.length) { omniaSay({{ _("The remote has no branches") | tojson }}); return; }
   select.value = chosen || select.options[0].value;
   select.title = data.note || "";
   old.replaceWith(select);
-  if (data.note) alert(data.note);
+  if (data.note) omniaSay(data.note);
 }
 
 // The plugin's fields of a role box, with the values given (a type change

@@ -558,6 +558,45 @@ window.whenText = (iso) => {
   const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/.exec(String(iso || ""));
   return m ? `${m[3]}/${m[2]}/${m[1]} ${m[4]}:${m[5]}` : String(iso || "");
 };
+// the page's own dialogs instead of the browser's (alert, prompt): a message,
+// and the name typed to confirm what cannot be undone (its button stays off
+// until the name is written as it is); both close with Esc, posting nothing
+(function () {
+  const dialog = document.createElement("dialog");
+  dialog.className = "omnia-ask";
+  dialog.innerHTML = '<form method="dialog"><p class="omnia-ask-text" style="max-width: 520px; white-space: pre-line"></p>'
+    + '<p class="omnia-ask-name" hidden><input type="text" autocomplete="off" spellcheck="false" style="width: 100%"></p>'
+    + '<div class="form-actions"><button type="button" class="omnia-ask-go" title="-"></button>'
+    + '<button type="button" class="omnia-ask-cancel" title="-"></button></div></form>';
+  const text = dialog.querySelector(".omnia-ask-text"), nameBox = dialog.querySelector(".omnia-ask-name");
+  const input = nameBox.querySelector("input"), go = dialog.querySelector(".omnia-ask-go");
+  const cancel = dialog.querySelector(".omnia-ask-cancel");
+  let done = () => {};
+  const finish = (answer) => { const d = done; done = () => {}; dialog.close(); d(answer); };
+  go.addEventListener("click", () => finish(true));
+  cancel.addEventListener("click", () => finish(false));
+  dialog.addEventListener("close", () => finish(false));
+  input.addEventListener("input", () => { go.disabled = input.value !== input.dataset.name; });
+  const open = (message, labels, name) => new Promise((resolve) => {
+    if (!dialog.isConnected) document.body.append(dialog);
+    text.textContent = message;
+    nameBox.hidden = !name;
+    input.value = ""; input.dataset.name = name || "";
+    go.textContent = labels.go; go.title = labels.goTitle || labels.go;
+    go.className = "omnia-ask-go" + (labels.danger ? " primary danger" : " primary");
+    go.disabled = !!name;
+    cancel.hidden = !labels.cancel; cancel.textContent = labels.cancel || "";
+    cancel.title = {{ _("Closes without changing anything") | tojson }};
+    done = resolve;
+    dialog.showModal();
+    (name ? input : go).focus();
+  });
+  // a message (what alert did): resolves when it is closed
+  window.omniaSay = (message) => open(String(message), {go: {{ _("Close") | tojson }}, goTitle: {{ _("Closes this message") | tojson }}});
+  // true when the name was typed and the button pressed
+  window.omniaTypeName = (message, name, goLabel) => open(String(message), {
+    go: goLabel, goTitle: goLabel, danger: true, cancel: {{ _("Cancel") | tojson }}}, String(name));
+})();
 </script>
 <script>
 (function () {

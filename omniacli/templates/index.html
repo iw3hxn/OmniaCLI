@@ -64,7 +64,7 @@
     const resp = await fetch("/api/links/rename", {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
                                                  body: JSON.stringify({name, new_name: given.trim()})});
     const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) { alert(data.error || data.detail || resp.status); return; }
+    if (!resp.ok) { omniaSay(data.error || data.detail || resp.status); return; }
     // its SSH tunnel opens again under the new name: a few seconds
     const next = `/links/${encodeURIComponent(data.name)}/`;
     for (let i = 0; i < 20; i++) {
