@@ -14,6 +14,7 @@ import pytest
 
 from omniacli.app import create_app
 from omniacli.metrics import machine_memory
+from omniacli import ops as core_ops
 from omniacli.odoo import ops as odoo_ops
 from omniacli.logtail import read_since
 
@@ -816,6 +817,25 @@ async def test_web_link_follows_the_domain(client, env):
     assert "<strong>test.example.com</strong>" in page
     servers = (await client.get("/api/servers", headers={"Authorization": AUTH})).json()
     assert servers[0]["instances"]["test"]["url"] == "https://test.example.com"
+
+
+async def test_link_of_a_stopped_instance_is_not_clickable(client, env, monkeypatch):
+    test = env["settings"].instance("srv", "test")
+    test.domain = "https://test.example.com"
+
+    async def stopped(instance):
+        return "inactive"  # the unit of a stopped instance
+
+    monkeypatch.setattr(core_ops, "service_state", stopped)
+    # the Dashboard's rows open the server's page, they have no link to the
+    # instance (docs/ux/REVIEW-2026-11-18.md); the state is said
+    page = (await client.get("/", headers={"Authorization": AUTH})).text
+    assert 'class="state-dot stopped"' in page
+    assert 'href="https://test.example.com"' not in page
+    # the Open of the test in the Environments of the server page
+    page = (await client.get("/servers/srv", headers={"Authorization": AUTH})).text
+    assert 'href="https://test.example.com"' not in page
+    assert 'class="button small link-off" aria-disabled="true"' in page
 
 async def test_help_for_developers_and_admins(client):
     for user in ("admin", "dev"):

@@ -12,7 +12,9 @@
       <div id="addon-recent" class="actions" style="margin: 8px 0" hidden></div>
       <input type="text" id="addon-filter" placeholder="{{ _('Filter modules…') }}" style="margin: 8px 0">
       <div id="addon-list" class="addon-list"><span class="muted">{{ _("Loading…") }}</span></div>
-      <p class="muted" id="addon-versions" style="margin: -4px 0 8px"></p>
+      <p class="muted" style="margin: -4px 0 8px"><span id="addon-versions"></span>
+        <button type="button" id="addon-newer-pick" hidden
+                title="{{ _('Choose the installed modules with a newer version on disk (in red)') }}"></button></p>
       <label>{{ _("Other modules, comma separated") }}
         <input type="text" id="addon-extra" placeholder="{{ _('e.g. base') }}"></label>
       <p class="muted" id="addon-count"></p>
@@ -34,6 +36,7 @@
   const errorBox = document.getElementById("update-error");
   const chosenBox = document.getElementById("chosen-box");
   const recentBox = document.getElementById("addon-recent");
+  const newerPick = document.getElementById("addon-newer-pick");
   let target = null;
   const T = {{ {
     "recent": _("Recent:"), "choose": _("Choose these modules"), "selected": _("{n} selected: {modules}"),
@@ -45,6 +48,7 @@
     "loading": _("Loading…"), "inRepos": _("In the instance's repositories"),
     "others": _("Other modules in the addons path"), "noModules": _("No modules found in the addons path."),
     "noOdooBin": _("odoo-bin not found: set it in the configuration to update chosen modules."),
+    "chooseThese": _("Choose these {n}"), "chooseIt": _("Choose it"),
     "readingVersions": _("Reading the versions…"),
     "title": _("Update modules {key}"), "database": _("Database {database}"),
     "atLeastOne": _("Choose at least one module."), "changed": _("the changed modules"),
@@ -52,6 +56,7 @@
   } | tojson }};
   const fill = (text, values) => text.replace(/\{(\w+)\}/g, (m, k) => (k in values ? String(values[k]) : m));
   const muted = (text) => { const span = document.createElement("span"); span.className = "muted"; span.textContent = text; return span; };
+  let newerModules = [];  // the installed modules with a newer version on disk
 
   // The last choices of modules of each instance, kept in this browser only
   // (a viewer's convenience): the newest first, at most RECENT_MAX.
@@ -136,7 +141,7 @@
     }
     if (target !== asked) return;  // the dialog was opened again for another instance
     const modules = data.modules || {};
-    let newer = 0;
+    newerModules = [];
     for (const label of list.querySelectorAll(".addon")) {
       const m = modules[label.dataset.name];
       const span = label.querySelector(".addon-version");
@@ -145,16 +150,22 @@
       if (!m.installed) span.textContent = "  " + T.notInstalled;
       else if (m.available && m.available !== m.installed) span.textContent = `  ${m.installed} → ${m.available}`;
       else span.textContent = "  " + m.installed;
-      if (m.newer) newer += 1;
+      if (m.newer) newerModules.push(label.dataset.name);
       label.title = m.newer ? label.dataset.path + "\n" + fill(T.newerOnDisk, {installed: m.installed, available: m.available}) : label.dataset.path;
     }
+    const newer = newerModules.length;
     document.getElementById("addon-versions").textContent =
       newer ? (newer > 1 ? fill(T.newerMany, {n: newer}) : T.newerOne) : T.noneNewer;
+    newerPick.textContent = newer > 1 ? fill(T.chooseThese, {n: newer}) : T.chooseIt;
+    newerPick.hidden = !newer;
   }
+  // the modules in red become the choice, as a recent choice does
+  newerPick.onclick = () => applyRecent(newerModules);
   async function load() {
     const asked = target;
     list.replaceChildren(muted(T.loading));
     document.getElementById("addon-versions").textContent = "";
+    newerModules = []; newerPick.hidden = true;
     const resp = await fetch(`{{ prefix }}/x/odoo/servers/${target.server}/${target.role}/addons`);
     const data = await resp.json();
     if (target !== asked) return;

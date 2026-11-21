@@ -116,6 +116,7 @@
  "Folds or shows the load of your workspaces": "Richiude o mostra il carico dei tuoi workspace",
  "Folds or shows this group. The choice is kept in this browser.": "Richiude o mostra questo gruppo. La scelta resta in questo browser.",
  "For AI clients of the /mcp interface: they read, and their only actions are the MCP tools.": "Per i client AI dell'interfaccia /mcp: leggono, e le loro uniche azioni sono gli strumenti MCP.",
+ "For Odoo, <strong>Restore</strong> also takes a plain SQL dump (<code>pg_dump --format=plain</code>, of any name): it replaces only the database, the filestore stays as it is; neutralized by Odoo if asked, with a new database uuid and <code>web.base.url</code> set to the instance's address.": "Per Odoo, <strong>Ripristina</strong> accetta anche un dump SQL semplice (<code>pg_dump --format=plain</code>, con qualsiasi nome): sostituisce solo il database, il filestore resta com'è; neutralizzato da Odoo se richiesto, con un nuovo uuid del database e <code>web.base.url</code> impostato all'indirizzo dell'istanza.",
  "From": "Origine",
  "Goes back to the first step; what you wrote stays": "Torna al primo passo; quello che hai scritto resta",
  "Goes back to the page of {key}": "Torna alla pagina di {key}",
