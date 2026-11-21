@@ -87,6 +87,7 @@
 <nav class="tabs" role="tablist" aria-label="{{ _('Sections of the server') }}">
   <button type="button" role="tab" data-tab="overview" aria-selected="true" title="{{ _('The instances of this machine, the linked ones and the last jobs') }}">{{ _("Overview") }}</button>
   <button type="button" role="tab" data-tab="monitor" title="{{ _('The load of this machine: the last hour live, or a point every 5 minutes over up to 14 days') }}">{{ _("Monitoring") }}</button>
+  {% if machine_database %}<button type="button" role="tab" data-tab="database" title="{{ _('The databases of the instances of this machine: whom they serve, how much they weigh, whether they are tuned. They are tuned here.') }}">{{ _("Database") }}</button>{% endif %}
 </nav>
 {% endif %}
 <section class="tab-panel" data-panel="overview" data-bars-scope>
@@ -218,6 +219,7 @@
 </div></div>
 </section>
 {% endif %}
+{% if machine_database %}{% include "_machine_database.html" %}{% endif %}
 <script>
 // the texts of the Dashboard's scripts, in the page's language
 const DASH_T = {
@@ -567,9 +569,13 @@ const dashFill = (text, values) => text.replace(/\{(\w+)\}/g, (all, k) => (k in 
     for (const t of tabs) t.setAttribute("aria-selected", String(t.dataset.tab === name));
     for (const p of document.querySelectorAll(".tab-panel")) p.hidden = p.dataset.panel !== name;
     if (name === "monitor") window.dispatchEvent(new Event("resize"));
+    // a tab that reads only when opened (the Database tab, _machine_database.html)
+    document.dispatchEvent(new CustomEvent("omniatab:shown", {detail: {tab: name}}));
   }
   for (const t of tabs) t.addEventListener("click", () => { history.replaceState(null, "", "#" + t.dataset.tab); show(t.dataset.tab); });
-  if (tabs.length) show(location.hash === "#monitor" ? "monitor" : "overview");
+  if (tabs.length) show(location.hash.slice(1) || "overview");
+  // a link to #database (or #monitor) followed on this page itself
+  if (tabs.length) window.addEventListener("hashchange", () => show(location.hash.slice(1) || "overview"));
   // a row of the instances opens its page (its link too, for the keyboard and a new tab)
   const list = document.getElementById("server-sections");
   if (list) list.addEventListener("click", (e) => {

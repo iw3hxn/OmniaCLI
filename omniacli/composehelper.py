@@ -115,6 +115,29 @@ command of the caller's, and runs docker with an environment of its own:
                                          the company's country, read by the
                                          helper as JSON on its input (never
                                          on a command line) and checked
+    pg-settings <database service> <db>  the tuning of the dedicated database
+                                         (fixed query, JSON): version, size,
+                                         connections, the parameters of TUNED
+                                         (now, of postgresql.conf, of
+                                         postgresql.auto.conf, when a change
+                                         takes effect) and the others written
+                                         in postgresql.auto.conf; never one of
+                                         the point-in-time recovery's or the
+                                         replication's (hidden())
+    pg-set <database service> <db>       ALTER SYSTEM SET of parameters of TUNED,
+                                         {name: value} read as JSON on the
+                                         input and checked, then pg_reload_conf
+    pg-reset <database service> <db>     ALTER SYSTEM RESET of parameters of
+                                         TUNED, [names] as JSON on the input
+                                         (never RESET ALL), then pg_reload_conf
+    db-restart <database service> <db>   {"set": {...}, "reset": [...]} on the
+                                         input written as pg-set and pg-reset
+                                         do, CHECKPOINT, a fast stop, a start,
+                                         RESTART_TIMEOUT s for it to answer;
+                                         when it does not, postgresql.auto.conf
+                                         of before put back and started again.
+                                         pg_stat_statements created in db when
+                                         loaded, dropped when not. JSON
     mail-list <start> <limit>            a staging's caught mail (the service
     mail-get <message id>                mail, Mailpit, of its profile
     mail-clear                           mail-capture): in its container, the
@@ -131,6 +154,7 @@ entrypoint makes, from HOST, PORT, USER and PASSWORD (or PASSWORD_FILE).
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import pwd
@@ -139,6 +163,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 # the files docker compose reads in a project's folder by itself
@@ -195,11 +220,66 @@ PG_STATEMENTS = """SELECT coalesce(json_agg(s), '[]')::jsonb FROM (
  FROM pg_stat_statements WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
  ORDER BY total_exec_time DESC LIMIT 20) s"""
 PID = re.compile(r"[1-9][0-9]{0,9}")
+# the tuning of a dedicated database (UX-008 §6.2, AD-005): these parameters
+# only, each with the form its value takes. Whether one takes effect at once
+# or at a restart is PostgreSQL's (pg_settings.context), never written here.
+TUNED = {"max_connections": "integer", "shared_buffers": "memory", "effective_cache_size": "memory",
+         "work_mem": "memory", "maintenance_work_mem": "memory", "random_page_cost": "real",
+         "shared_preload_libraries": "libraries"}
+# never shown, never written: the point-in-time recovery's (pitrhelper writes
+# archive_* in the same postgresql.auto.conf) and the replication's
+HIDDEN_PREFIXES = ("archive_", "recovery_", "wal_", "synchronous_", "primary_", "hot_standby")
+HIDDEN_NAMES = ("restore_command", "max_wal_senders", "max_replication_slots", "max_slot_wal_keep_size",
+                "promote_trigger_file")
+
+
+def hidden(name: str) -> bool:
+    return name.startswith(HIDDEN_PREFIXES) or name in HIDDEN_NAMES
+
+
+assert not any(map(hidden, TUNED)), "a tuned parameter is one of the point-in-time recovery's"
+# a value as postgresql.conf writes it: 128MB, 1GB, 8192 (in the unit of the
+# parameter); 1.1; a list of libraries. No quote, no space: it is put in SQL
+TUNED_VALUE = {"integer": re.compile(r"[1-9][0-9]{0,5}"),
+               "memory": re.compile(r"[1-9][0-9]{0,9}(?:kB|MB|GB|TB)?"),
+               "real": re.compile(r"[0-9]{1,4}(?:\.[0-9]{1,6})?"),
+               "libraries": re.compile(r"(?:[a-z_][a-z0-9_]{0,62}(?:,[a-z_][a-z0-9_]{0,62})*)?")}
+# the only library a tuning adds; one already loaded may stay
+STATEMENTS_LIBRARY = "pg_stat_statements"
+TUNE_INPUT = 65536
+# the restart: at most so long for the database to answer again
+RESTART_TIMEOUT = 180
+STOP_TIMEOUT = 120
+_LIKE = {p: p.replace("_", "\\_") for p in HIDDEN_PREFIXES}
+_NOT_HIDDEN = " AND ".join([*(f"f.name NOT LIKE '{_LIKE[p]}%'" for p in HIDDEN_PREFIXES),
+                            "f.name NOT IN (" + ", ".join(f"'{n}'" for n in HIDDEN_NAMES) + ")"])
+_TUNED_IN = "(" + ", ".join(f"'{n}'" for n in TUNED) + ")"
+# the tuning's state, one JSON line: a value of postgresql.conf (or of an
+# included file) is the base, one of postgresql.auto.conf is ALTER SYSTEM's
+PG_SETTINGS = f"""SELECT json_build_object(
+ 'version', current_setting('server_version'),
+ 'size', pg_database_size(current_database()),
+ 'connections', (SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'client backend'),
+ 'statements_on', EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements'),
+ 'settings', (SELECT coalesce(json_agg(s ORDER BY s.name), '[]') FROM (
+     SELECT p.name, p.setting, p.unit, p.vartype, p.context, p.min_val, p.max_val, p.boot_val, p.pending_restart,
+            (SELECT f.setting FROM pg_file_settings f WHERE f.name = p.name
+               AND f.sourcefile NOT LIKE '%/postgresql.auto.conf' ORDER BY f.seqno DESC LIMIT 1) AS file_val,
+            (SELECT f.setting FROM pg_file_settings f WHERE f.name = p.name
+               AND f.sourcefile LIKE '%/postgresql.auto.conf' ORDER BY f.seqno DESC LIMIT 1) AS auto_val
+     FROM pg_settings p WHERE p.name IN {_TUNED_IN}) s),
+ 'changed', (SELECT coalesce(json_agg(c ORDER BY c.name), '[]') FROM (
+     SELECT DISTINCT ON (f.name) f.name, f.setting AS auto_val, p.setting, p.unit, p.context, p.pending_restart
+     FROM pg_file_settings f LEFT JOIN pg_settings p ON p.name = f.name
+     WHERE f.sourcefile LIKE '%/postgresql.auto.conf' AND f.name NOT IN {_TUNED_IN} AND {_NOT_HIDDEN}
+     ORDER BY f.name, f.seqno DESC) c))::jsonb"""
 # the actions that take arguments (commands())
 WITH_ARGUMENTS = ("logs", "version", "port", "dump", "load", "update", "psql", "init", "link-filestore", "login",
                   "setup", "options", "image", "verify", "pip-freeze",
                   "pg-report", "pg-terminate", "neutralize", "pip-requirements", "terminal",
-                  "mail-list", "mail-get", "mail-clear")
+                  "mail-list", "mail-get", "mail-clear", "pg-settings", "pg-set", "pg-reset", "db-restart")
+# the tuning's actions that read their values on the input (pg_tune())
+TUNE_ACTIONS = ("pg-set", "pg-reset", "db-restart")
 # a staging's caught mail (stacktemplates.MAIL_SERVICE, templates' compose.yaml):
 # Mailpit's API, on the loopback of its container only; a message's id is
 # Mailpit's (22 letters and digits); at most MAIL_LIMIT messages a time
@@ -275,6 +355,10 @@ SCRIPTS = {
                  'if psql -X -At -U "${POSTGRES_USER:-postgres}" -d "$1" '
                  '-c "SELECT 1 FROM pg_extension WHERE extname = \'pg_stat_statements\'" | grep -q 1; '
                  'then psql -X -At -U "${POSTGRES_USER:-postgres}" -d "$1" -c "$3"; else echo null; fi',
+    # the tuning's state (PG_SETTINGS), the database an argument
+    "pg-settings": 'exec psql -X -At -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-postgres}" -d "$1" -c "$2"',
+    # the SQL of the tuning (tune_sql()) on the input, never on a command line
+    "pg-input": 'exec psql -X -At -q -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-postgres}" -d "$1"',
     # a query of the database stopped: its backend ended
     "pg-terminate": 'exec psql -X -At -U "${POSTGRES_USER:-postgres}" -d "$1" '
                     '-c "SELECT pg_terminate_backend($2) FROM pg_stat_activity WHERE pid = $2 '
@@ -598,6 +682,15 @@ def commands(project: Path, action: str, args: list[str]) -> list[list[str]]:
         name = service(project, args[0])
         return [_script(name, "pg-report", _database(args[1]), PG_REPORT, PG_STATEMENTS,
                         options=("-T", *psql_options(project, name)))]
+    if action == "pg-settings":
+        # pg-settings <database service> <database>: the fixed query above
+        if len(args) != 2:
+            raise HelperError("usage: pg-settings <service> <database>")
+        name = service(project, args[0])
+        return [_script(name, "pg-settings", _database(args[1]), PG_SETTINGS,
+                        options=("-T", *psql_options(project, name)))]
+    if action in TUNE_ACTIONS:
+        raise HelperError(f"{action} reads its values on the input: compose-helper <project> {action} <service> <database>")
     if action == "pg-terminate":
         if len(args) != 3 or not PID.fullmatch(args[2]):
             raise HelperError("usage: pg-terminate <service> <database> <pid>")
@@ -759,6 +852,163 @@ def setup_input(raw: bytes) -> bytes:
     return f"OMNIACLI_SETUP = {clean!r}\n".encode() + SETUP_SCRIPT.read_bytes()
 
 
+def tune_input(action: str, raw: bytes) -> tuple[dict[str, str], list[str]]:
+    """(values to set, names to reset) of a tuning action's input (pg-set:
+    {name: value}; pg-reset: [names]; db-restart: {"set": ..., "reset": ...}),
+    checked: names of TUNED only, never a hidden one, each value of its form."""
+    try:
+        data = json.loads(raw or b"null")
+    except ValueError:
+        raise HelperError(f"{action}: the input is no JSON") from None
+    if action == "pg-set":
+        data = {"set": data}
+    elif action == "pg-reset":
+        data = {"reset": data}
+    elif data is None:
+        data = {}
+    if not isinstance(data, dict) or set(data) - {"set", "reset"}:
+        raise HelperError(f"{action}: the input takes set and reset only")
+    values, names = data.get("set") or {}, data.get("reset") or []
+    if not isinstance(values, dict) or not isinstance(names, list):
+        raise HelperError(f"{action}: set is {{name: value}}, reset a list of names")
+    for name in [*values, *names]:
+        if not isinstance(name, str) or hidden(name) or name not in TUNED:
+            raise HelperError(f"{action}: {name!r} is not a parameter the tuning touches ({', '.join(TUNED)})")
+    clean = {}
+    for name, value in values.items():
+        if not isinstance(value, str) or not TUNED_VALUE[TUNED[name]].fullmatch(value):
+            raise HelperError(f"{action}: {value!r} is not a value of {name}")
+        clean[name] = value
+    reset = list(dict.fromkeys(names))
+    if set(clean) & set(reset):
+        raise HelperError(f"{action}: a parameter is both set and reset")
+    if action != "db-restart" and not (clean or reset):
+        raise HelperError(f"{action}: no parameter given")
+    return clean, reset
+
+
+def check_libraries(value: str, loaded: str) -> None:
+    """A tuning loads no library but pg_stat_statements and those loaded now."""
+    now = {part.strip() for part in loaded.split(",") if part.strip()}
+    extra = [lib for lib in value.split(",") if lib and lib != STATEMENTS_LIBRARY and lib not in now]
+    if extra:
+        raise HelperError(f"shared_preload_libraries: {', '.join(extra)} is not loaded now, "
+                          f"and the tuning adds {STATEMENTS_LIBRARY} only")
+
+
+def tune_sql(values: dict[str, str], names: list[str]) -> str:
+    """The ALTER SYSTEM statements of checked values (tune_input()): one
+    parameter each, never RESET ALL."""
+    lines = []
+    for name, value in values.items():
+        assert name in TUNED and TUNED_VALUE[TUNED[name]].fullmatch(value), name
+        lines.append(f"ALTER SYSTEM SET {name} = '{value}';")
+    for name in names:
+        assert name in TUNED, name
+        lines.append(f"ALTER SYSTEM RESET {name};")
+    return "".join(line + "\n" for line in lines)
+
+
+# after a restart: the statistics of the queries readable when their library
+# is loaded, the extension gone when it is not (reading it would fail, and
+# with it Monitoring › Database)
+STATEMENTS_SQL = """DO $$ BEGIN
+ IF current_setting('shared_preload_libraries') ~ '(^|[ ,])pg_stat_statements([ ,]|$)' THEN
+  CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+ ELSE
+  DROP EXTENSION IF EXISTS pg_stat_statements;
+ END IF;
+END $$;
+SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements');
+"""
+# postgresql.auto.conf as it is, to be put back as it was (base64: any byte)
+AUTO_CONF_SQL = "SELECT encode(convert_to(pg_read_file('postgresql.auto.conf'), 'UTF8'), 'base64');\n"
+# a one-off container of the database service, stopped, writes the file back
+PUT_BACK = 'cat > "${PGDATA:-/var/lib/postgresql/data}/postgresql.auto.conf"'
+
+
+def _run(project: Path, *args: str, input: str | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(compose(project, *args), env=ENV, cwd=project, capture_output=True, text=True, input=input)
+
+
+def _sql(project: Path, name: str, options: tuple[str, ...], database: str, sql: str) -> str:
+    """The output of SQL given on psql's input in the running service."""
+    done = _run(project, *_script(name, "pg-input", database, options=("-T", *options)), input=sql)
+    if done.returncode:
+        raise HelperError(f"PostgreSQL refused: {(done.stderr or done.stdout).strip()[-400:]}")
+    return done.stdout
+
+
+def _answers(project: Path, name: str, timeout: float) -> str | None:
+    """None once the database answers; else why not (a container that
+    stops or restarts in a loop is said at once, with its log)."""
+    end = time.monotonic() + timeout
+    while True:
+        if _run(project, "exec", "-T", name, "pg_isready", "-q", "-h", "127.0.0.1").returncode == 0:
+            return None
+        state = _run(project, "ps", "-a", "--format", "{{.State}}", name).stdout.strip()
+        if state in ("restarting", "exited", "dead"):
+            log = _run(project, "--ansi", "never", "logs", "--no-log-prefix", "--tail", "20", name).stdout
+            fatal = [line.strip() for line in log.splitlines() if "FATAL" in line or "PANIC" in line]
+            return f"the container is {state}" + (f": {fatal[-1][-300:]}" if fatal else "")
+        if time.monotonic() > end:
+            return f"no answer within {timeout:.0f} s"
+        time.sleep(2)
+
+
+def db_restart(project: Path, name: str, options: tuple[str, ...], database: str,
+               values: dict[str, str], names: list[str]) -> int:
+    """The values written, CHECKPOINT, a fast stop (the image's stop signal
+    is SIGINT), a start; RESTART_TIMEOUT s to answer, else the
+    postgresql.auto.conf of before put back and the database started again."""
+    started = time.monotonic()
+    before = base64.b64decode("".join(_sql(project, name, options, database, AUTO_CONF_SQL).split()))
+    if values or names:
+        _sql(project, name, options, database, tune_sql(values, names))
+        print(f"written for the restart: {', '.join([*values, *names])}", flush=True)
+    _sql(project, name, options, database, "CHECKPOINT;\n")
+    stopping = time.monotonic()
+    for step in (("stop", "-t", str(STOP_TIMEOUT), name), ("start", name)):
+        done = _run(project, *step)
+        if done.returncode:
+            raise HelperError(f"docker compose {step[0]} {name} failed: {done.stderr.strip()[-300:]}")
+    problem = _answers(project, name, RESTART_TIMEOUT)
+    rolled_back = problem is not None
+    if rolled_back:
+        print(f"the database did not come back ({problem}): postgresql.auto.conf of before put back", flush=True)
+        _run(project, "stop", "-t", str(STOP_TIMEOUT), name)
+        done = _run(project, "run", "--rm", "--no-deps", "-T", "--user", "postgres", "--entrypoint", "sh", name,
+                    "-c", PUT_BACK, input=before.decode("utf-8"))
+        if done.returncode:
+            raise HelperError(f"postgresql.auto.conf of before could not be put back: {done.stderr.strip()[-300:]}")
+        _run(project, "start", name)
+        again = _answers(project, name, RESTART_TIMEOUT)
+        if again is not None:
+            raise HelperError(f"the database did not come back ({problem}), "
+                              f"nor with the values of before ({again})")
+    statements = _sql(project, name, options, database, STATEMENTS_SQL).split()[-1:] == ["t"]
+    print(json.dumps({"seconds": round(time.monotonic() - stopping, 1), "total": round(time.monotonic() - started, 1),
+                      "rolled_back": rolled_back, "reason": problem, "statements_on": statements}), flush=True)
+    return 3 if rolled_back else 0
+
+
+def pg_tune(project: Path, action: str, args: list[str], raw: bytes) -> int:
+    """pg-set, pg-reset, db-restart <database service> <database>, the values on the input."""
+    if len(args) != 2:
+        raise HelperError(f"usage: {action} <service> <database> (the values, JSON, on the input)")
+    values, names = tune_input(action, raw)
+    name, database = service(project, args[0]), _database(args[1])
+    options = psql_options(project, name)
+    if "shared_preload_libraries" in values:
+        check_libraries(values["shared_preload_libraries"],
+                        _sql(project, name, options, database, "SHOW shared_preload_libraries;\n").strip())
+    if action == "db-restart":
+        return db_restart(project, name, options, database, values, names)
+    _sql(project, name, options, database, tune_sql(values, names) + "SELECT pg_reload_conf();\n")
+    print(json.dumps({"set": sorted(values), "reset": names}))
+    return 0
+
+
 def run(argv: list[str]) -> int:
     """compose-helper <project> <action> [arguments]: the exit code of the action."""
     if len(argv) < 2:
@@ -774,6 +1024,8 @@ def run(argv: list[str]) -> int:
         return link_filestore(project, args, uid, groups)
     if action == "image":
         return image_state(project, args)
+    if action in TUNE_ACTIONS:
+        return pg_tune(project, action, args, sys.stdin.buffer.read(TUNE_INPUT))
     # login: the script on the input of odoo shell, the helper's own file;
     # the other actions keep the caller's input (load reads its zip there)
     extra = {"input": LOGIN_SCRIPT.read_bytes()} if action == "login" else {}

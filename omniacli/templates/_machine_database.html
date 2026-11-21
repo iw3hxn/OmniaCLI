@@ -1,0 +1,619 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{# The machine's Database tab (UX-008 §6.2; docs/adr/postgresql-della-macchina.md,
+   steps 1 and 2): the databases of this machine's instances, read when the
+   tab opens (GET /api/postgres, each database on its own time), one row
+   each, opened into its parameters; Propose the values… on a dedicated one
+   (GET …/proposal, POST …/apply), its planned restart done now or taken
+   away, its base values back (POST …/reset). The machine's admins only
+   (index.html includes it for them). No primary in the tab: the confirm of
+   a dialog is the dialog's. Never a parameter of the point-in-time
+   recovery or of the replication: the server leaves them out. -#}
+<style>
+.pg-table td, .pg-table th { vertical-align: top; }
+.pg-table tr.pg-row { cursor: pointer; }
+.pg-table tr.pg-row:hover td { background: var(--panel-2); }
+.pg-table td.num { text-align: right; white-space: nowrap; }
+.pg-table .pg-sub { display: block; font-weight: 400; color: var(--muted); font-size: 12px; margin-top: 2px; }
+.pg-state { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+.pg-state::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
+.pg-state.amber::before { background: var(--warn); } .pg-state.green::before { background: var(--ok); }
+.pg-state.blue::before { background: var(--info); } .pg-state.red::before { background: var(--err); }
+.pg-state.red { color: var(--err); }
+.pg-detail > td { background: var(--panel-2); padding: 12px 16px; }
+.pg-detail dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0 0 10px; }
+.pg-detail dt { font-weight: 600; } .pg-detail dd { margin: 0; }
+.pg-params { width: 100%; margin: 6px 0; }
+.pg-params td, .pg-params th { padding: 5px 8px; border-top: 1px solid var(--border); }
+.pg-params tr.pg-group td { font-weight: 600; font-size: 13px; background: var(--panel-2); }
+.pg-params tr.pg-change td { font-weight: 600; }
+.pg-params input[type="text"] { width: 9em; }
+.pg-params input.pg-bad { border-color: var(--err); color: var(--err); }
+.pg-same { color: var(--muted); font-weight: 400; font-size: 12px; margin-left: 6px; }
+.pg-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+#pg-dialog { width: min(760px, 96vw); }
+#pg-dialog .pg-when label { display: block; margin: 4px 0; }
+#pg-dialog .pg-when input[type="time"] { width: 7em; }
+</style>
+<section class="tab-panel" data-panel="database" hidden>
+  <p class="muted" id="pg-memory" hidden title="{{ _('The part of the memory of the machine the databases may use. The sum of their shared memories does not go beyond it. It is changed in Propose the values… › Advanced.') }}"></p>
+  <div class="panel">
+    <div class="section-head"><h2>{{ _("Database") }}</h2>
+      <button type="button" class="small" id="pg-reload" title="{{ _('Reads the databases of this machine again now. It changes nothing.') }}">{{ _("Read again") }}</button></div>
+    <input type="search" id="pg-search" hidden placeholder="{{ _('Search database…') }}" aria-label="{{ _('Search database…') }}" title="{{ _('Shows the rows whose instance or kind holds these words') }}">
+    <p class="muted" id="pg-loading">{{ _("Reading the databases…") }}</p>
+    <div style="overflow-x: auto"><table class="pg-table" id="pg-table" hidden>
+      <thead><tr><th>{{ _("Database") }}</th><th class="hide-sm">{{ _("Version") }}</th><th class="num">{{ _("Size") }}</th>
+        <th class="hide-sm">{{ _("Connections") }}</th><th>{{ _("Tuning") }}</th><th>{{ _("Recovery at a minute") }}</th><th></th></tr></thead>
+      <tbody id="pg-rows"></tbody>
+    </table></div>
+    <p class="muted" id="pg-empty" hidden>{{ _("No database on this machine. The first one is born with + New instance, in Overview.") }}</p>
+    <p class="muted" id="pg-remote" hidden></p>
+    <p class="error" id="pg-error" role="alert"></p>
+  </div>
+</section>
+<dialog id="pg-dialog">
+  <form method="dialog" id="pg-form">
+    <h2 id="pg-title" style="margin-bottom: 4px"></h2>
+    <p class="muted" id="pg-basis" style="margin-top: 0"></p>
+    <p class="muted" id="pg-limit" hidden></p>
+    <div style="overflow-x: auto"><table class="pg-params" id="pg-values"></table></div>
+    <div class="pg-when" id="pg-when" hidden>
+      <p style="margin: 10px 0 2px; font-weight: 600">{{ _("When") }}</p>
+      <label><input type="radio" name="pg-when" value="at" checked> {{ _("At") }} <input type="time" id="pg-time" value="05:00" aria-label="{{ _('Time of the restart') }}"> <span id="pg-day"></span></label>
+      <label><input type="radio" name="pg-when" value="now"> {{ _("Now") }}</label>
+      <p class="muted" id="pg-stops" style="margin: 4px 0 0"></p>
+    </div>
+    <p class="muted" id="pg-norestart" hidden>{{ _("No restart: the values are valid at once.") }}</p>
+    <details id="pg-advanced" style="margin-top: 10px">
+      <summary title="{{ _('The memory for the databases of this machine and the kind of disk, on which the calculation is made') }}">{{ _("Advanced") }}</summary>
+      <p style="margin: 8px 0 2px"><label>{{ _("Memory for the databases of this machine:") }} <input type="number" id="pg-memory-gb" min="0.25" step="0.25" style="width: 6em"> GB</label></p>
+      <p class="muted" id="pg-memory-default" style="margin: 0 0 6px; font-size: 13px"></p>
+      <p style="margin: 4px 0">{{ _("Disk:") }}
+        <label><input type="radio" name="pg-disk" value="ssd"> SSD</label>
+        <label><input type="radio" name="pg-disk" value="hdd"> {{ _("spinning") }}</label></p>
+      <p class="muted" style="margin: 0; font-size: 13px">{{ _("Read from the machine: a virtual disk may say it spins without spinning.") }}</p>
+    </details>
+    <p class="error" id="pg-dialog-error" role="alert"></p>
+    <div class="actions">
+      <span id="pg-go-box"><button type="button" class="primary" id="pg-go" title="{{ _('Writes the values chosen for this database') }}">{{ _("Apply") }}</button></span>
+      <button type="button" id="pg-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="pg-confirm">
+  <p id="pg-confirm-text" style="max-width: 520px"></p>
+  <div class="actions">
+    <button type="button" class="primary" id="pg-confirm-go" title="{{ _('Restarts the database now: for a few seconds the instance does not answer') }}">{{ _("Restart now") }}</button>
+    <button type="button" id="pg-confirm-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
+  </div>
+</dialog>
+<script>
+(function () {
+  const API = "{{ prefix }}/api/postgres", PREFIX = "{{ prefix }}";
+  const T = {
+    loading: {{ _("Reading the databases…") | tojson }},
+    memory: {{ _("Memory for the databases: {budget} of {total}. Assigned now: {assigned}.") | tojson }},
+    memoryBase: {{ _("Memory for the databases: {budget} of {total}. Assigned now: {assigned} ({n} databases at the base values).") | tojson }},
+    // Test as the server lists write it (_servers_part.html), in every language
+    kinds: {production: {{ _("Production") | tojson }}, test: "Test", staging: {{ _("Staging") | tojson }}},
+    dedicated: {{ _("dedicated") | tojson }},
+    system: {{ _("PostgreSQL of the system") | tojson }},
+    systemPort: {{ _("PostgreSQL of the system · port {port}") | tojson }},
+    serves: {{ _("serves: {list}") | tojson }},
+    of: {{ _("{n} of {max}") | tojson }},
+    states: {
+      base: {{ _("Base values") | tojson }},
+      tuned: {{ _("Tuned on {when}") | tojson }},
+      tunedUnknown: {{ _("Tuned · date not known") | tojson }},
+      tunedUnknownTitle: {{ _("Values written without going through here, for example copied from the production with the recovery at a minute") | tojson }},
+      scheduledOne: {{ _("Restart at {time} of {date} for 1 value") | tojson }},
+      scheduled: {{ _("Restart at {time} of {date} for {n} values") | tojson }},
+      pendingOne: {{ _("Waiting for a restart: 1 value changed outside OmniaCLI") | tojson }},
+      pending: {{ _("Waiting for a restart: {n} values changed outside OmniaCLI") | tojson }},
+      system: {{ _("Not tuned by OmniaCLI") | tojson }},
+      systemTitle: {{ _("Here OmniaCLI does not administer PostgreSQL: whoever manages the machine tunes it") | tojson }},
+      error: {{ _("Does not answer: {reason}") | tojson }},
+    },
+    pitrOn: {{ _("Switched on") | tojson }}, pitrOff: {{ _("Off") | tojson }},
+    pitrOnTitle: {{ _("Opens the Backups tab of the instance, where the recovery at a minute is") | tojson }},
+    pitrNone: {{ _("The recovery at a minute is there for the productions only") | tojson }},
+    propose: {{ _("Propose the values…") | tojson }},
+    proposeTitle: {{ _("Calculates the values of this database on the memory, the cores and the disk of the machine, and shows them beside those of now. Nothing changes until you choose Apply. The recovery at a minute is not touched.") | tojson }},
+    rowTitle: {{ _("Shows the parameters of this database") | tojson }},
+    notHere: {{ _("Not here: {key} uses a database on {host}, another machine; it is tuned there.") | tojson }},
+    serve: {{ _("Serves") | tojson }}, where: {{ _("Where") | tojson }}, pitr: {{ _("Recovery at a minute") | tojson }},
+    whereDedicated: {{ _("db service of the project, on the disk of the workspace {ws}") | tojson }},
+    whereDedicatedAlone: {{ _("db service of the project") | tojson }},
+    pitrUntil: {{ _("on, back as far as {when}") | tojson }}, pitrReading: {{ _("on, reading how far back…") | tojson }},
+    head: [{{ _("Parameter") | tojson }}, {{ _("Now") | tojson }}, {{ _("Base") | tojson }}, {{ _("When it is valid") | tojson }}],
+    atOnce: {{ _("at once") | tojson }}, atRestart: {{ _("at the restart") | tojson }},
+    restartValue: {{ _("{now} · {then} at the restart") | tojson }},
+    baseSystemTitle: {{ _("Not readable: OmniaCLI is not the administrator of the database here") | tojson }},
+    on: {{ _("statistics on") | tojson }}, off: {{ _("statistics off") | tojson }},
+    labels: {
+      max_connections: {{ _("Connections at most") | tojson }},
+      shared_buffers: {{ _("Shared memory") | tojson }},
+      effective_cache_size: {{ _("Memory the system keeps in cache") | tojson }},
+      work_mem: {{ _("Memory per operation") | tojson }},
+      maintenance_work_mem: {{ _("Memory for maintenance") | tojson }},
+      random_page_cost: {{ _("Cost of a scattered read") | tojson }},
+      shared_preload_libraries: {{ _("Statistics of the queries") | tojson }},
+    },
+    others: {{ _("Other parameters changed ({n})") | tojson }},
+    othersTitle: {{ _("The parameters of this database that do not have the base value, beside those above") | tojson }},
+    stats: {{ _("Statistics ›") | tojson }}, statsTitle: {{ _("Opens Monitoring › Database of the instance: its queries and its tables") | tojson }},
+    restartNow: {{ _("Restart now…") | tojson }},
+    restartNowTitle: {{ _("Does the planned restart now: for a few seconds {name} does not answer and whoever is connected loses the connection. If a job works on the instance, it waits for it to end.") | tojson }},
+    restart: {{ _("Restart…") | tojson }},
+    restartTitle: {{ _("Restarts the database so that the values changed outside OmniaCLI are valid: for a few seconds {name} does not answer and whoever is connected loses the connection.") | tojson }},
+    cancelRestart: {{ _("Cancel the restart of {time}") | tojson }},
+    cancelRestartTitle: {{ _("Takes the planned restart away: the values that waited for it are not written, those valid already stay. It stops nothing.") | tojson }},
+    reset: {{ _("Back to the base values…") | tojson }},
+    resetTitle: {{ _("Puts back to the base values only the parameters the tuning changed, listed in the dialog. The recovery at a minute stays as it is. Shared memory, connections and statistics want a restart, at the time you choose.") | tojson }},
+    dialogTitle: {{ _("Values for the database of {name} ({kind})") | tojson }},
+    resetDialogTitle: {{ _("Base values for the database of {name} ({kind})") | tojson }},
+    basis: {{ _("Calculated on {memory} of memory, {cores} cores and {disk} disk: the memory for the databases of this machine ({memory} of {total}), {share}.") | tojson }},
+    shareAll: {{ _("all of it for the only production") | tojson }},
+    shareMany: {{ _("{each} for each of the {n} productions") | tojson }},
+    staysBase: {{ _("{list} stay at the base values (D10).") | tojson }},
+    staysSelf: {{ _("A test or a staging stays at its base values: here the proposal changes nothing, the values can be written by hand.") | tojson }},
+    wsLimit: {{ _("The workspace {ws} has {gb} GB for Odoo and its database together: the shared memory stays under {cap}.") | tojson }},
+    disks: {ssd: "SSD", hdd: {{ _("spinning") | tojson }}},
+    groupNow: {{ _("Valid at once, without stopping anything") | tojson }},
+    groupRestart: {{ _("Valid at the restart of the database") | tojson }},
+    dialogHead: [{{ _("Parameter") | tojson }}, {{ _("Now") | tojson }}, {{ _("Proposed") | tojson }}],
+    resetHead: [{{ _("Parameter") | tojson }}, {{ _("Now") | tojson }}, {{ _("Base") | tojson }}],
+    same: {{ _("unchanged value") | tojson }},
+    day: {{ _("of {date}") | tojson }},
+    stops: {{ _("Stops for a few seconds: {name} ({kind}). Whoever is connected loses the connection.") | tojson }},
+    defaultMemory: {{ _("default: a quarter of the memory, {gb} GB · valid for every proposal of this machine") | tojson }},
+    apply: {{ _("Apply") | tojson }}, applyAt: {{ _("Apply and restart at {time}") | tojson }}, applyNow: {{ _("Apply and restart now") | tojson }},
+    applyTitle: {{ _("Writes the proposed values for this database. Those valid at once are reloaded without stopping anything. Those that ask for a restart are written at the time chosen, right before the restart: for a few seconds {name} does not answer and whoever is connected loses the connection. If it does not start again, the values of before come back. It is a job.") | tojson }},
+    resetGo: {{ _("Back to the base values") | tojson }},
+    resetHeadLine: {{ _("{n} parameters changed on {when} go back to their base values. The recovery at a minute stays as it is.") | tojson }},
+    confirm: {{ _("Restart the database of {name} ({kind}) now? Odoo does not answer for a few seconds; whoever is saving at that moment gets an error and tries again.") | tojson }},
+    nothing: {{ _("No value changed.") | tojson }},
+    notValue: {{ _("\"{value}\" is not a value: write a number followed by MB or GB, for example 1024 MB.") | tojson }},
+    notNumber: {{ _("\"{value}\" is not a number.") | tojson }},
+    atMost: {{ _("{label}: at most {max}.") | tojson }}, atLeast: {{ _("{label}: at least {min}.") | tojson }},
+    tooShared: {{ _("Shared memory: {value} goes beyond the memory for the databases of this machine ({budget}, of which {others} already assigned to the other databases).") | tojson }},
+    tooFew: {{ _("Connections at most: {value} is less than the {n} in use now plus 10 in reserve: the least here is {min}.") | tojson }},
+    refused: {{ _("Refused") | tojson }},
+  };
+  const panel = document.querySelector('[data-panel="database"]');
+  const body = document.getElementById("pg-rows"), table = document.getElementById("pg-table");
+  const errorBox = document.getElementById("pg-error"), search = document.getElementById("pg-search");
+  const KIB = 1024, MIB = 1048576, GIB = 1073741824;
+  let loaded = false, data = null;
+  const el = (tag, props, ...kids) => { const n = Object.assign(document.createElement(tag), props || {}); n.append(...kids.filter((k) => k !== null && k !== undefined)); return n; };
+  const fill = (text, values) => text.replace(/\{(\w+)\}/g, (m, k) => (k in values ? values[k] : m));
+  const dec = (n, digits) => n.toLocaleString(document.documentElement.lang || undefined, {maximumFractionDigits: digits});
+  function bytes(n) {
+    if (n === null || n === undefined) return "–";
+    if (n >= GIB) return dec(n / GIB, 2) + " GB";
+    if (n >= MIB) return dec(n / MIB, n >= 100 * MIB ? 0 : 1) + " MB";
+    return dec(n / KIB, 0) + " kB";
+  }
+  function value(p, v) {
+    if (v === null || v === undefined) return "–";
+    if (p.kind === "memory") return bytes(v);
+    if (p.kind === "libraries") return v ? T.on : T.off;
+    return dec(v, 3);
+  }
+  const typed = (p, v) => (p.kind === "memory" ? (v >= GIB && v % GIB === 0 ? `${v / GIB} GB` : `${Math.round(v / MIB)} MB`)
+    : p.kind === "real" ? dec(v, 3) : String(v));
+  function parseMemory(text) {
+    const m = /^\s*(\d+(?:[.,]\d+)?)\s*(kB|MB|GB|TB)\s*$/i.exec(text);
+    if (!m) return null;
+    const unit = {kb: KIB, mb: MIB, gb: GIB, tb: GIB * 1024}[m[2].toLowerCase()];
+    return Math.floor(parseFloat(m[1].replace(",", ".")) * unit);
+  }
+  const label = (row) => row.where === "system" ? T.system : row.server;
+  const kindText = (row) => T.kinds[row.kind] || row.kind;
+  const when = (iso) => window.whenText(iso);
+  const timeOf = (iso) => when(iso).split(" ")[1] || "";
+  const dateOf = (iso) => when(iso).split(" ")[0] || "";
+  const instanceUrl = (row) => `${PREFIX}/servers/${encodeURIComponent(row.server)}?view=${row.role}`;
+  async function call(url, init) {
+    try {
+      const resp = await fetch(url, Object.assign({headers: {Accept: "application/json", "Content-Type": "application/json"}}, init || {}));
+      const answer = await resp.json().catch(() => ({}));
+      if (!resp.ok) return {error: answer.error || answer.detail || T.refused + " (" + resp.status + ")"};
+      return answer;
+    } catch (e) { return {error: e.message}; }
+  }
+  const post = (url, payload) => call(url, {method: "POST", body: JSON.stringify(payload || {})});
+
+  function stateCell(row) {
+    const s = row.state || {}, span = el("span", {className: "pg-state"});
+    const set = (text, color, title) => { span.textContent = text; if (color) span.classList.add(color); if (title) span.title = title; };
+    if (s.code === "base_production") set(T.states.base, "amber");
+    else if (s.code === "base") set(T.states.base, "");
+    else if (s.code === "tuned") set(fill(T.states.tuned, {when: when(s.when)}), "green");
+    else if (s.code === "tuned_unknown") set(T.states.tunedUnknown, "green", T.states.tunedUnknownTitle);
+    else if (s.code === "scheduled") set(fill(s.count === 1 ? T.states.scheduledOne : T.states.scheduled, {time: timeOf(s.at), date: dateOf(s.at), n: s.count}), "blue");
+    else if (s.code === "pending") set(fill(s.count === 1 ? T.states.pendingOne : T.states.pending, {n: s.count}), "amber");
+    else if (s.code === "system") set(T.states.system, "", T.states.systemTitle);
+    else set(fill(T.states.error, {reason: s.reason || row.error || ""}), "red");
+    return span;
+  }
+  function pitrCell(row) {
+    if (row.where !== "dedicated" || row.pitr === null) return el("span", {textContent: "—", title: T.pitrNone});
+    if (row.pitr === "on") return el("a", {href: instanceUrl(row) + "#backups", textContent: T.pitrOn, title: T.pitrOnTitle});
+    return el("span", {textContent: T.pitrOff});
+  }
+  function nameCell(row) {
+    const td = el("td");
+    if (row.where === "system") {
+      td.append(el("strong", {textContent: T.system}),
+        el("span", {className: "pg-sub", textContent: fill(T.systemPort, {port: row.port})}),
+        el("span", {className: "pg-sub", textContent: fill(T.serves, {list: row.serves.map((s) => s.server + (s.role === "test" ? " (" + T.kinds.test + ")" : "")).join(", ")})}));
+      return td;
+    }
+    const badge = el("span", {className: "badge" + (row.kind === "test" ? " test-badge" : row.kind === "staging" ? " info" : " ok"), textContent: kindText(row)});
+    badge.style.marginLeft = "8px";
+    td.append(row.parent ? "↳ " : "", el("strong", {textContent: row.server}), badge, el("span", {className: "pg-sub", textContent: T.dedicated}));
+    return td;
+  }
+
+  function paramTable(row) {
+    const t = el("table", {className: "pg-params"});
+    const head = t.insertRow();
+    for (const h of T.head) head.append(el("th", {textContent: h}));
+    for (const p of row.params) {
+      const tr = t.insertRow();
+      tr.insertCell().append(T.labels[p.name] || p.name, " ", el("span", {className: "small mono", textContent: p.name}));
+      tr.insertCell().textContent = p.pending && p.at_restart !== null ? fill(T.restartValue, {now: value(p, p.now), then: value(p, p.at_restart)}) : value(p, p.now);
+      tr.insertCell().textContent = value(p, p.base);
+      tr.insertCell().textContent = p.restart ? T.atRestart : T.atOnce;
+    }
+    return t;
+  }
+  function detail(row) {
+    const box = el("div");
+    const dl = el("dl");
+    if (row.where === "system") {
+      dl.append(el("dt", {textContent: T.serve}), el("dd", {}, ...row.serves.flatMap((s, i) => [i ? ", " : "", el("a", {href: instanceUrl(s), textContent: s.server})])));
+      dl.append(el("dt", {textContent: T.where}), el("dd", {textContent: fill(T.systemPort, {port: row.port})}));
+      box.append(dl, el("p", {className: "muted", textContent: T.states.systemTitle, title: T.baseSystemTitle}));
+      return box;
+    }
+    dl.append(el("dt", {textContent: T.serve}), el("dd", {}, el("a", {href: instanceUrl(row), textContent: row.server + " (" + kindText(row) + ")"})));
+    dl.append(el("dt", {textContent: T.where}), el("dd", {textContent: row.workspace ? fill(T.whereDedicated, {ws: row.workspace}) : T.whereDedicatedAlone}));
+    if (row.pitr !== null) {
+      const dd = el("dd", {textContent: row.pitr === "on" ? T.pitrReading : T.pitrOff.toLowerCase()});
+      dl.append(el("dt", {textContent: T.pitr}), dd);
+      if (row.pitr === "on") call(`${PREFIX}/api/servers/${encodeURIComponent(row.server)}/pitr`).then((d) => {
+        dd.textContent = d && d.first ? fill(T.pitrUntil, {when: when(d.first)}) : T.pitrOn.toLowerCase();
+      });
+    }
+    box.append(dl);
+    if (row.error) return box;
+    box.append(paramTable(row));
+    if (row.changed.length) {
+      const more = el("details", {}, el("summary", {textContent: fill(T.others, {n: row.changed.length}), title: T.othersTitle}));
+      const t = el("table", {className: "pg-params"});
+      for (const c of row.changed) {
+        const tr = t.insertRow();
+        tr.insertCell().append(el("span", {className: "small mono", textContent: c.name}));
+        tr.insertCell().textContent = (c.pending ? (c.written || "") + " · " + T.atRestart : (c.now || "") + (c.unit ? " " + c.unit : ""));
+        tr.insertCell().textContent = c.restart ? T.atRestart : T.atOnce;
+      }
+      more.append(t);
+      box.append(more);
+    }
+    const actions = el("div", {className: "pg-actions"});
+    const name = row.server + " (" + kindText(row) + ")";
+    if (row.restart) {
+      actions.append(el("button", {type: "button", className: "small", textContent: T.restartNow, title: fill(T.restartNowTitle, {name}),
+        onclick: () => confirmRestart(row, () => restartNow(row))}));
+      actions.append(el("button", {type: "button", className: "small", textContent: fill(T.cancelRestart, {time: timeOf(row.restart.at)}),
+        title: T.cancelRestartTitle, onclick: () => cancelRestart(row)}));
+    } else if (row.state.code === "pending") {
+      actions.append(el("button", {type: "button", className: "small", textContent: T.restart, title: fill(T.restartTitle, {name}),
+        onclick: () => confirmRestart(row, () => restartNow(row))}));
+    }
+    if (row.tuned && !row.restart) {
+      actions.append(el("button", {type: "button", className: "small danger", textContent: T.reset, title: T.resetTitle, onclick: () => openReset(row)}));
+    }
+    actions.append(el("a", {href: instanceUrl(row) + "#monitor", textContent: T.stats, title: T.statsTitle}));
+    box.append(actions);
+    return box;
+  }
+
+  function draw() {
+    const rows = data.rows;
+    body.replaceChildren();
+    const m = data.memory;
+    const memory = document.getElementById("pg-memory");
+    if (m && m.total_gb) {
+      memory.textContent = fill(m.at_base ? T.memoryBase : T.memory, {budget: dec(m.memory_gb, 2) + " GB", total: dec(m.total_gb, 1) + " GB",
+        assigned: dec(m.assigned / GIB, 2) + " GB", n: m.at_base});
+      memory.hidden = false;
+    }
+    for (const row of rows) {
+      const tr = body.insertRow();
+      tr.className = "pg-row"; tr.title = T.rowTitle; tr.tabIndex = 0;
+      tr.dataset.text = [label(row), kindText(row), ...(row.serves || []).map((s) => s.server)].join(" ").toLowerCase();
+      tr.append(nameCell(row));
+      tr.append(el("td", {className: "hide-sm", textContent: row.version || "–"}));
+      tr.append(el("td", {className: "num", textContent: bytes(row.size)}));
+      tr.append(el("td", {className: "hide-sm", textContent: row.connections === undefined || row.connections === null ? "–"
+        : fill(T.of, {n: row.connections, max: row.max_connections})}));
+      tr.append(el("td", {}, stateCell(row)));
+      tr.append(el("td", {}, pitrCell(row)));
+      const act = el("td");
+      if (row.where === "dedicated" && !row.error && !row.restart) {
+        act.append(el("button", {type: "button", className: "small", textContent: T.propose, title: T.proposeTitle,
+          onclick: (e) => { e.stopPropagation(); openProposal(row); }}));
+      }
+      tr.append(act);
+      const more = body.insertRow();
+      more.className = "pg-detail"; more.hidden = rows.length !== 1;
+      more.append(el("td", {colSpan: 7}, detail(row)));
+      const toggle = (e) => { if (!e.target.closest("a, button")) more.hidden = !more.hidden; };
+      tr.addEventListener("click", toggle);
+      tr.addEventListener("keydown", (e) => { if (e.key === "Enter") toggle(e); });
+    }
+    table.hidden = !rows.length;
+    document.getElementById("pg-empty").hidden = rows.length > 0;
+    search.hidden = rows.length <= 8;
+    const remote = document.getElementById("pg-remote");
+    remote.textContent = data.remote.map((r) => fill(T.notHere, {key: r.server + (r.role === "test" ? " (" + T.kinds.test + ")" : ""), host: r.host})).join(" ");
+    remote.hidden = !data.remote.length;
+    filter();
+  }
+  function filter() {
+    const words = search.value.toLowerCase().split(/\s+/).filter(Boolean);
+    for (const tr of body.querySelectorAll("tr.pg-row")) {
+      tr.hidden = !words.every((w) => tr.dataset.text.includes(w));
+      if (tr.hidden) tr.nextElementSibling.hidden = true;
+    }
+  }
+  search.addEventListener("input", filter);
+  async function load() {
+    loaded = true;
+    errorBox.textContent = "";
+    document.getElementById("pg-loading").hidden = false;
+    const answer = await call(API);
+    document.getElementById("pg-loading").hidden = true;
+    if (answer.error) { errorBox.textContent = answer.error; return; }
+    data = answer;
+    draw();
+  }
+  document.getElementById("pg-reload").addEventListener("click", load);
+  document.addEventListener("omniatab:shown", (e) => { if (e.detail.tab === "database" && !loaded) load(); });
+
+  // --- restart now, cancel the planned restart
+  const confirmBox = document.getElementById("pg-confirm");
+  let confirmed = null;
+  function confirmRestart(row, then) {
+    if (row.kind !== "production") { then(); return; }
+    document.getElementById("pg-confirm-text").textContent = fill(T.confirm, {name: row.server, kind: kindText(row)});
+    confirmed = then;
+    confirmBox.showModal();
+  }
+  document.getElementById("pg-confirm-go").addEventListener("click", () => { confirmBox.close(); const go = confirmed; confirmed = null; if (go) go(); });
+  document.getElementById("pg-confirm-cancel").addEventListener("click", () => { confirmed = null; confirmBox.close(); });
+  const rowApi = (row) => `${API}/${encodeURIComponent(row.server)}/${encodeURIComponent(row.role)}`;
+  async function restartNow(row) {
+    const answer = await post(rowApi(row) + "/restart");
+    if (answer.error || !answer.job) { errorBox.textContent = answer.error || T.refused; return; }
+    location.href = `${PREFIX}/jobs/${answer.job}`;
+  }
+  async function cancelRestart(row) {
+    const answer = await post(rowApi(row) + "/restart/cancel");
+    if (answer.error) { errorBox.textContent = answer.error; return; }
+    load();
+  }
+
+  // --- the dialog: Propose the values… and Back to the base values…
+  const dialog = document.getElementById("pg-dialog"), values = document.getElementById("pg-values");
+  const go = document.getElementById("pg-go"), goBox = document.getElementById("pg-go-box");
+  const dialogError = document.getElementById("pg-dialog-error"), whenBox = document.getElementById("pg-when");
+  const time = document.getElementById("pg-time"), memoryInput = document.getElementById("pg-memory-gb");
+  let current = null;   // {mode: "propose"|"reset", row, answer, inputs: {name: input}}
+  let opened = 0;
+  document.getElementById("pg-cancel").addEventListener("click", () => dialog.close());
+  const whenChoice = () => (document.querySelector('input[name="pg-when"]:checked') || {}).value || "now";
+  function nextDay(hhmm) {
+    const [h, m] = (hhmm || "05:00").split(":").map(Number), now = new Date(), at = new Date(now);
+    at.setHours(h || 0, m || 0, 0, 0);
+    if (at <= now) at.setDate(at.getDate() + 1);
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${pad(at.getDate())}/${pad(at.getMonth() + 1)}/${at.getFullYear()}`;
+  }
+  function changes() {
+    // {name: value posted} of the rows that change, and the reasons the primary is off
+    const out = {}, why = [], c = current, lim = c.answer.limits;
+    for (const p of c.row.params) {
+      const input = c.inputs[p.name];
+      if (!input) continue;
+      const now = p.pending && p.at_restart !== null ? p.at_restart : p.now;
+      let v;
+      input.classList.remove("pg-bad");
+      if (p.kind === "libraries") v = input.checked;
+      else if (p.kind === "memory") {
+        v = parseMemory(input.value);
+        if (v === null) { why.push(fill(T.notValue, {value: input.value})); input.classList.add("pg-bad"); continue; }
+        v = v >= MIB ? Math.floor(v / MIB) * MIB : v;
+      } else {
+        v = Number(input.value.replace(",", "."));
+        if (input.value.trim() === "" || !isFinite(v) || (p.kind === "integer" && !Number.isInteger(v))) {
+          why.push(fill(T.notNumber, {value: input.value})); input.classList.add("pg-bad"); continue;
+        }
+      }
+      const [low, high] = p.kind === "libraries" ? [null, null] : (lim.bounds[p.name] || [null, null]);
+      const name = T.labels[p.name] || p.name;
+      if (high !== null && v > high) { why.push(fill(T.atMost, {label: name, max: value(p, high)})); input.classList.add("pg-bad"); }
+      else if (low !== null && v < low) { why.push(fill(T.atLeast, {label: name, min: value(p, low)})); input.classList.add("pg-bad"); }
+      if (p.name === "shared_buffers" && v !== now && v > lim.shared_max) {
+        why.push(fill(T.tooShared, {value: bytes(v), budget: bytes(lim.budget), others: bytes(lim.others)})); input.classList.add("pg-bad");
+      }
+      if (p.name === "max_connections" && v !== now && v < lim.connections_min) {
+        why.push(fill(T.tooFew, {value: v, n: lim.connections, min: lim.connections_min})); input.classList.add("pg-bad");
+      }
+      const tr = input.closest("tr"), same = tr.querySelector(".pg-same");
+      tr.classList.toggle("pg-change", v !== now);
+      same.hidden = v !== now;
+      if (v !== now) out[p.name] = p.kind === "libraries" ? v : input.value.trim();
+    }
+    return {out, why};
+  }
+  function update() {
+    const c = current;
+    if (!c) return;
+    let restart, ready, why = [];
+    if (c.mode === "reset") {
+      restart = c.names.some((n) => (c.byName[n] || {}).restart);
+      ready = c.names.length > 0;
+    } else {
+      const found = changes();
+      why = found.why;
+      restart = Object.keys(found.out).some((n) => c.byName[n].restart);
+      ready = !why.length && Object.keys(found.out).length > 0;
+      if (!why.length && !Object.keys(found.out).length) why.push(T.nothing);
+    }
+    whenBox.hidden = !restart;
+    document.getElementById("pg-norestart").hidden = restart || c.mode === "reset";
+    document.getElementById("pg-day").textContent = fill(T.day, {date: nextDay(time.value)});
+    document.getElementById("pg-stops").textContent = fill(T.stops, {name: c.row.server, kind: kindText(c.row)});
+    const name = c.row.server + " (" + kindText(c.row) + ")";
+    go.textContent = c.mode === "reset" ? T.resetGo : !restart ? T.apply : whenChoice() === "now" ? T.applyNow : fill(T.applyAt, {time: time.value});
+    go.title = c.mode === "reset" ? T.resetTitle : fill(T.applyTitle, {name});
+    go.disabled = !ready;
+    goBox.title = ready ? "" : why.join(" ");
+    dialogError.textContent = why.length && why[0] !== T.nothing ? why.join(" ") : "";
+  }
+  function row3(t, p, now, cell) {
+    const tr = t.insertRow();
+    tr.insertCell().append(T.labels[p.name] || p.name, " ", el("span", {className: "small mono", textContent: p.name}));
+    tr.insertCell().textContent = now;
+    const td = tr.insertCell();
+    td.append(...cell);
+    return tr;
+  }
+  function drawValues() {
+    const c = current, t = values;
+    t.replaceChildren();
+    const head = t.insertRow();
+    for (const h of (c.mode === "reset" ? T.resetHead : T.dialogHead)) head.append(el("th", {textContent: h}));
+    c.inputs = {};
+    const proposed = c.mode === "reset" ? {} : c.answer.proposal.values;
+    const params = c.mode === "reset" ? c.row.params.filter((p) => c.names.includes(p.name)) : c.row.params;
+    for (const [restart, title] of [[false, T.groupNow], [true, T.groupRestart]]) {
+      const rows = params.filter((p) => p.restart === restart);
+      if (!rows.length) continue;
+      const g = t.insertRow();
+      g.className = "pg-group";
+      g.append(el("td", {colSpan: 3, textContent: title}));
+      for (const p of rows) {
+        const now = p.pending && p.at_restart !== null ? p.at_restart : p.now;
+        if (c.mode === "reset") { row3(t, p, value(p, now), [value(p, p.base)]).classList.add("pg-change"); continue; }
+        const v = p.name in proposed ? proposed[p.name] : now;
+        let input;
+        if (p.kind === "libraries") input = el("input", {type: "checkbox", checked: !!v, title: T.labels[p.name]});
+        else input = el("input", {type: "text", value: typed(p, v), title: T.labels[p.name], spellcheck: false});
+        input.addEventListener("input", update);
+        input.addEventListener("change", update);
+        c.inputs[p.name] = input;
+        row3(t, p, value(p, now), [input, el("span", {className: "pg-same", textContent: T.same})]);
+      }
+    }
+  }
+  function basis(answer) {
+    const m = answer.machine, row = answer.row;
+    const memory = dec(m.memory_gb, 2) + " GB";
+    let text;
+    if (row.kind !== "production") text = T.staysSelf;
+    else {
+      const n = answer.productions, each = answer.proposal.share;
+      text = fill(T.basis, {memory, cores: m.cores, disk: T.disks[m.disk] || m.disk, total: m.total_gb ? dec(m.total_gb, 1) + " GB" : "–",
+        share: n > 1 ? fill(T.shareMany, {each: bytes(each), n}) : T.shareAll});
+      if (answer.stays.length) text += " " + fill(T.staysBase, {list: answer.stays.map((s) => s.server + " (" + kindText(s) + ")").join(", ")});
+    }
+    document.getElementById("pg-basis").textContent = text;
+    const limit = document.getElementById("pg-limit");
+    limit.hidden = !(answer.workspace_gb && row.kind === "production");
+    if (!limit.hidden) limit.textContent = fill(T.wsLimit, {ws: answer.workspace, gb: dec(answer.workspace_gb, 2), cap: bytes(answer.workspace_gb * GIB / 4)});
+  }
+  async function propose(row, memory, disk) {
+    const mine = ++opened;
+    const q = new URLSearchParams();
+    if (memory) q.set("memory_gb", memory);
+    if (disk) q.set("disk", disk);
+    const answer = await call(`${rowApi(row)}/proposal?${q}`);
+    if (mine !== opened) return;
+    if (answer.error) { dialogError.textContent = answer.error; go.disabled = true; return; }
+    current = {mode: "propose", row: answer.row, answer, byName: Object.fromEntries(answer.row.params.map((p) => [p.name, p]))};
+    document.getElementById("pg-title").textContent = fill(T.dialogTitle, {name: row.server, kind: kindText(row)});
+    basis(answer);
+    memoryInput.value = answer.machine.memory_gb;
+    document.getElementById("pg-memory-default").textContent = fill(T.defaultMemory, {gb: dec(answer.machine.default_gb, 2)});
+    for (const r of document.querySelectorAll('input[name="pg-disk"]')) r.checked = r.value === answer.machine.disk;
+    drawValues();
+    update();
+  }
+  function prepare(row) {
+    current = null;
+    dialogError.textContent = "";
+    values.replaceChildren();
+    document.getElementById("pg-basis").textContent = T.loading;
+    document.getElementById("pg-limit").hidden = true;
+    document.getElementById("pg-advanced").hidden = false;
+    whenBox.hidden = true;
+    const preset = row.kind === "production" ? "at" : "now";
+    for (const r of document.querySelectorAll('input[name="pg-when"]')) r.checked = r.value === preset;
+    time.value = "05:00";
+    go.disabled = true;
+  }
+  function openProposal(row) {
+    prepare(row);
+    go.textContent = T.apply;
+    document.getElementById("pg-title").textContent = fill(T.dialogTitle, {name: row.server, kind: kindText(row)});
+    dialog.showModal();
+    propose(row);
+  }
+  function openReset(row) {
+    prepare(row);
+    document.getElementById("pg-advanced").hidden = true;
+    const names = (row.tuned && row.tuned.params) || [];
+    current = {mode: "reset", row, names, byName: Object.fromEntries(row.params.map((p) => [p.name, p]))};
+    document.getElementById("pg-title").textContent = fill(T.resetDialogTitle, {name: row.server, kind: kindText(row)});
+    document.getElementById("pg-basis").textContent = fill(T.resetHeadLine, {n: names.length, when: when(row.tuned.tuned)});
+    drawValues();
+    update();
+    dialog.showModal();
+  }
+  for (const r of document.querySelectorAll('input[name="pg-when"]')) r.addEventListener("change", update);
+  time.addEventListener("input", () => { document.querySelector('input[name="pg-when"][value="at"]').checked = true; update(); });
+  let again = null;
+  const reproposal = () => { clearTimeout(again); again = setTimeout(() => { if (current && current.mode === "propose")
+    propose(current.row, memoryInput.value, (document.querySelector('input[name="pg-disk"]:checked') || {}).value); }, 400); };
+  memoryInput.addEventListener("input", reproposal);
+  for (const r of document.querySelectorAll('input[name="pg-disk"]')) r.addEventListener("change", reproposal);
+  async function submit() {
+    const c = current;
+    const later = !whenBox.hidden && whenChoice() === "at";
+    const payload = {when: later ? time.value : "now"};
+    let url;
+    if (c.mode === "reset") url = rowApi(c.row) + "/reset";
+    else {
+      url = rowApi(c.row) + "/apply";
+      payload.values = changes().out;
+      payload.memory_gb = memoryInput.value;
+      payload.disk = (document.querySelector('input[name="pg-disk"]:checked') || {}).value;
+    }
+    go.disabled = true;
+    const answer = await post(url, payload);
+    if (answer.error || !answer.job) { dialogError.textContent = answer.error || T.refused; go.disabled = false; return; }
+    location.href = `${PREFIX}/jobs/${answer.job}`;
+  }
+  go.addEventListener("click", () => {
+    if (!current || go.disabled) return;
+    const now = !whenBox.hidden && whenChoice() === "now";
+    if (now && current.row.kind === "production") { dialog.close(); confirmRestart(current.row, submit); return; }
+    submit();
+  });
+})();
+</script>

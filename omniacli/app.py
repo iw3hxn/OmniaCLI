@@ -41,7 +41,7 @@ from starlette.requests import ClientDisconnect, HTTPConnection
 from . import (backupcheck, backupchoices, checks, deployhooks, destinations, instancearchive, private, restoreroom, consumer, disks, gitcredentials, linkcopy, listgroups, ops, packages, plugins, pluginstore, puller, publisher,
                schedules, selflog, sshlinks, shell, stacktemplates, templatestore, tunnel, workspacehelper, workspaceops)
 from .accesslog import AccessLog
-from . import i18n, loginas, machines, pgreport, stagings, workspaceweb
+from . import i18n, loginas, machines, pgreport, pgtuning, stagings, workspaceweb
 from . import stagingmail
 from .diskhistory import DiskHistory, DiskRecorder
 from .auth import ROLES as ACCESS_ROLES
@@ -653,6 +653,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         monitor.start()
         await asyncio.to_thread(save_login_hosts)
         pitr_tasks.append(asyncio.get_running_loop().create_task(pitr_loop()))
+        postgres_tasks.append(asyncio.get_running_loop().create_task(postgres_loop()))
         disk_recorder.start()
         load_recorder.start()
         tunnels.start()
@@ -673,6 +674,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                            ("disk history", disk_recorder.stop), ("load history", load_recorder.stop),
                            ("load sampler", sampler.stop),
                            ("monitor", monitor.stop), ("point-in-time recovery", stop_pitr),
+                           ("planned database restarts", stop_postgres),
                            ("auto update", updater.stop), ("schedules", scheduler.stop),
                            ("link clients", link_clients.close)):
             # a task of its own, waited for and never cancelled from here: a
@@ -1027,6 +1029,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             "jobs": visible_jobs(me, jobs.recent(len(jobs.jobs)))[:10],
             # a user of workspaces: the load of each of its workspaces instead
             "load_workspaces": sorted((ws, role) for ws, role in me.workspaces if ws in settings.workspaces) if me.scoped else [],
+            # the Database tab (UX-008 §6.2): the machine's admins only
+            "machine_database": shown is None and machine_admin(me),
         })
         return _TEMPLATES.TemplateResponse(request, "index.html", context)
 
@@ -1163,6 +1167,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 "core_groups": core_groups,
                 # the plugin's settings of each instance, as its fields name them
                 "settings_rows": {i.key: settings_rows(i) for i in shown},
+                # the Database row of Settings (UX-008 §6.2.6), from the tuning's record
+                "db_line": {i.key: database_line(i) for i in shown},
+                "machine_admin": machine_admin(request.state.user),
                 "repo_status": {i.key: s for i, s in zip(shown, statuses)},
                 "repo_urls": repo_urls,
                 "odoo_params": odoo_params, "param_role": param_role,
@@ -3966,6 +3973,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     # --- point-in-time recovery of a workspace instance's database (pitrhelper.py)
 
     pitr_file = settings.servers_file.parent / "pitr.json"
+    # the record of the tuning of the dedicated databases (the machine's Database tab)
+    tuning = pgtuning.Store(settings.jobs_dir.parent / pgtuning.FILE)
+    postgres_tasks: list[asyncio.Task] = []
     PITR_RESTORE_TIMEOUT = 6 * 3600
 
     def pitr_target(server: str):
@@ -6888,6 +6898,510 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             response = JSONResponse({"ok": True})
             set_session_cookie(request, response, sessions.create(me.name, settings.users[me.name]))
             return response
+
+    # --- the machine's Database tab (UX-008 §6.2; docs/adr/postgresql-della-macchina.md
+    # AD-005, steps 1 and 2): the dedicated databases of this machine read, a
+    # proposal of values, the values written (those valid at once now, those of
+    # a restart right before it, now or at a time chosen), the base values
+    # back. The machine's admins only; the record in pgtuning.Store.
+
+    POSTGRES_EVERY = 20
+    POSTGRES_HELPER_TIMEOUT = 120
+    # the restart: 3 minutes to answer, as many again to put the values of before back
+    POSTGRES_RESTART_TIMEOUT = 900
+
+    def postgres_admin(me: Principal) -> None:
+        if not machine_admin(me):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "An admin of the machine is required")
+
+    def postgres_machine() -> dict:
+        """The memory for the databases of the machine (saved, else D13's
+        default), the machine's memory and its disk's kind."""
+        saved = tuning.load()["machine"]
+        total = pgtuning.machine_memory_gb()
+        odoo = sum(float(ws.limits.get("memory_gb") or 0) for ws in settings.workspaces.values())
+        default = pgtuning.default_memory_gb(total, odoo)
+        root = next(iter(settings.storage_roots.values()), "/")
+        disk = saved.get("disk") if saved.get("disk") in pgtuning.DISKS else pgtuning.disk_kind(Path(root))
+        return {"memory_gb": float(saved.get("memory_gb") or default), "default_gb": default,
+                "total_gb": round(total, 1) if total else None, "odoo_gb": odoo, "disk": disk,
+                "cores": os.cpu_count() or 1}
+
+    def postgres_kind(srv: Server, role: str, known: dict) -> tuple[str, str]:
+        """production, test or staging (the production of a copy of another's),
+        and that other: a staging's test is under it too."""
+        parent = str((known.get(srv.name) or {}).get("parent") or "")
+        return ("staging" if parent and role == "production" else role), parent
+
+    async def postgres_rows(lang: str) -> dict:
+        """Every database of this machine's instances, read in parallel, each
+        within its own time: the dedicated ones (a compose project's service),
+        this machine's PostgreSQL (one row for the instances it serves), and
+        those on another machine (the line Not here)."""
+        known = await asyncio.to_thread(stagings.load, stagings_file)
+        pitr = await asyncio.to_thread(deployhooks.load, pitr_file)
+        records = (await asyncio.to_thread(tuning.load))["clusters"]
+        dedicated, system, remote = [], {}, []
+        for srv in settings.active_servers():
+            for role in ("production", "test"):
+                inst = srv.instances.get(role)
+                if inst is None:
+                    continue
+                if inst.restart.type == "compose":
+                    kind, parent = postgres_kind(srv, role, known)
+                    dedicated.append({"key": inst.key, "server": srv.name, "role": role, "kind": kind,
+                                      "parent": parent, "where": "dedicated", "instance": inst,
+                                      "workspace": ws_found[0].name if (ws_found := workspace_of(srv.name)) else "",
+                                      "pitr": ("on" if srv.name in pitr else "off") if kind == "production" else None})
+                    continue
+                try:
+                    shell = inst.plugin.db_shell(inst)
+                except Exception:  # noqa: BLE001 - a plugin's config that cannot be read: no row
+                    shell = None
+                if shell is None:
+                    continue
+                place = pgreport.where(inst, shell[1])
+                if place["where"] == "remote":
+                    remote.append({"key": inst.key, "server": srv.name, "role": role, "host": place["host"]})
+                else:
+                    port = str(shell[1].get("PGPORT") or 5432)
+                    system.setdefault(port, []).append(inst)
+
+        async def one(row: dict) -> dict:
+            inst = row.pop("instance")
+            record = records.get(row["key"]) or {}
+            row.update({"tuned": {k: record.get(k) for k in ("tuned", "by", "params", "memory_gb")}
+                        if record.get("tuned") else None, "restart": record.get("restart")})
+            try:
+                found = await pgtuning.read(inst)
+            except (JobFailed, ValueError) as exc:
+                row.update({"error": i18n.tr(lang, str(exc)), "params": [], "changed": [],
+                            "state": pgtuning.state(row["kind"], None, record, i18n.tr(lang, str(exc)))})
+                return row
+            params = pgtuning.parameters(found)
+            row.update({"version": str(found.get("version") or "").split(" ")[0], "size": found.get("size"),
+                        "connections": found.get("connections"),
+                        "max_connections": (pgtuning.by_name(params).get("max_connections") or {}).get("now"),
+                        "statements_on": bool(found.get("statements_on")), "params": params,
+                        "changed": pgtuning.changed(found), "error": None,
+                        "state": pgtuning.state(row["kind"], params, record)})
+            return row
+
+        async def shared(port: str, served: list[Instance]) -> dict:
+            row = {"key": f"system:{port}", "kind": "system", "where": "system", "port": port, "params": [],
+                   "changed": [], "serves": [{"key": i.key, "server": i.server, "role": i.role} for i in served],
+                   "state": {"code": "system"}, "error": None}
+            reports = await asyncio.gather(*(asyncio.wait_for(pgreport.report(i), pgtuning.READ_TIMEOUT)
+                                             for i in served), return_exceptions=True)
+            good = [r for r in reports if isinstance(r, dict)]
+            if not good:
+                bad = next((r for r in reports if isinstance(r, BaseException)), None)
+                reason = "no answer" if isinstance(bad, asyncio.TimeoutError) or bad is None else str(bad)
+                row.update({"error": i18n.tr(lang, reason), "state": {"code": "error", "reason": i18n.tr(lang, reason)}})
+                return row
+            row.update({"version": str(good[0].get("version") or "").split(" ")[0],
+                        "size": sum(int(r.get("size") or 0) for r in good),
+                        "connections": sum(int(r.get("connections") or 0) for r in good),
+                        "max_connections": good[0].get("max_connections")})
+            return row
+
+        rows = await asyncio.gather(*(one(r) for r in dedicated), *(shared(p, s) for p, s in system.items()))
+        done = [r for r in rows if r["where"] == "dedicated"]
+        # by instance: the production, its test, its stagings under it, the newest first
+        order = {"production": 0, "test": 1}
+        top = sorted((r for r in done if not (r["parent"] and any(p["server"] == r["parent"] for p in done))),
+                     key=lambda r: (r["server"], order.get(r["role"], 2)))
+        out = []
+        for row in top:
+            out.append(row)
+            if row["role"] == "production":
+                children = sorted((r for r in done if r["parent"] == row["server"] and r not in top),
+                                  key=lambda r: order.get(r["role"], 2))
+                out += sorted(children, key=lambda r: r["server"], reverse=True)
+        out += [r for r in rows if r["where"] == "system"]
+        return {"rows": out, "remote": remote}
+
+    def postgres_row(rows: list[dict], server: str, role: str) -> dict:
+        found = next((r for r in rows if r.get("key") == f"{server}/{role}" and r["where"] == "dedicated"), None)
+        if found is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND,
+                                f"{server}/{role} has no database of its own here: only a dedicated one is tuned")
+        return found
+
+    def postgres_memory(machine: dict, rows: list[dict]) -> dict:
+        read = [r for r in rows if r["where"] == "dedicated" and r.get("params")]
+        return {**machine, "assigned": sum(pgtuning.shared_of(r["params"]) for r in read),
+                "at_base": sum(1 for r in read if r["state"]["code"] in ("base", "base_production"))}
+
+    @app.get("/api/postgres")
+    async def postgres_list(request: Request, me: Principal = Depends(current_user)):
+        """The databases of this machine (UX-008 §6.2.12)."""
+        postgres_admin(me)
+        found = await postgres_rows(request_language(request))
+        machine = await asyncio.to_thread(postgres_machine)
+        return {**found, "memory": postgres_memory(machine, found["rows"]), "now": datetime.datetime.now().isoformat(
+            timespec="seconds")}
+
+    def postgres_basis(row: dict, machine: dict, memory_gb: float, disk: str, rows: list[dict]) -> dict:
+        ws = settings.workspaces.get(row.get("workspace") or "")
+        limit = float(ws.limits.get("memory_gb") or 0) if ws is not None else 0
+        proposal = pgtuning.propose(row, rows, memory_gb, disk, limit or None)
+        limits = pgtuning.limits(row, rows, memory_gb, int(row.get("connections") or 0))
+        stays = [{"key": r["key"], "server": r["server"], "kind": r["kind"]} for r in rows
+                 if r["where"] == "dedicated" and r["kind"] != "production" and r["key"] != row["key"]]
+        return {"proposal": proposal, "limits": limits, "machine": {**machine, "memory_gb": memory_gb, "disk": disk},
+                "workspace": row.get("workspace") or "", "workspace_gb": limit or None, "stays": stays,
+                "productions": proposal["productions"], "when": "at" if row["kind"] == "production" else "now",
+                "time": pgtuning.DEFAULT_TIME,
+                "at": pgtuning.next_time(pgtuning.DEFAULT_TIME).isoformat(timespec="minutes")}
+
+    def postgres_choice(machine: dict, memory_gb, disk) -> tuple[float, str]:
+        """The memory and disk of a proposal: those asked (checked), else the machine's."""
+        memory = machine["memory_gb"]
+        if memory_gb not in (None, ""):
+            try:
+                memory = float(str(memory_gb).replace(",", "."))
+            except ValueError:
+                raise ValueError(f"{memory_gb!r} is not a number of GB") from None
+            top = machine["total_gb"] or 1024
+            if not 0.25 <= memory <= top:
+                raise ValueError(f"The memory for the databases is from 0.25 to {top:g} GB")
+        disk = disk or machine["disk"]
+        if disk not in pgtuning.DISKS:
+            raise ValueError(f"{disk!r} is not ssd or hdd")
+        return memory, disk
+
+    @app.get("/api/postgres/{server}/{role}/proposal")
+    async def postgres_proposal(request: Request, server: str, role: str, memory_gb: str = "", disk: str = "",
+                                me: Principal = Depends(current_user)):
+        """The values proposed for the database of server/role, and the base of the calculation."""
+        postgres_admin(me)
+        found = await postgres_rows(request_language(request))
+        row = postgres_row(found["rows"], server, role)
+        if row.get("error"):
+            return refuse(f"The database of {row['key']} does not answer: {row['error']}", status.HTTP_502_BAD_GATEWAY)
+        machine = await asyncio.to_thread(postgres_machine)
+        try:
+            memory, disk = postgres_choice(machine, memory_gb, disk)
+        except ValueError as exc:
+            return refuse(str(exc))
+        return {"row": row, **postgres_basis(row, machine, memory, disk, found["rows"])}
+
+    async def postgres_helper(job, inst: Instance, action: str, payload) -> list[str]:
+        """A tuning action of the root helper, its values on the input; its lines in the job."""
+        cmd = inst.restart.command(action, getattr(inst.options, "db_service", "db"), inst.options.database)
+        job.log("$ " + " ".join(cmd))
+        code, out = await ops.capture(cmd, input=json.dumps(payload).encode(), timeout=POSTGRES_HELPER_TIMEOUT)
+        for line in out.splitlines():
+            if line.strip():
+                job.log(line)
+        if code:
+            raise JobFailed(f"{action} on {inst.key} failed: {out.strip()[-300:] or code}")
+        return out.splitlines()
+
+    def postgres_record(key: str, **change) -> None:
+        """The record of a database changed: tuned (who, when), the parameters
+        written (added or removed), the memory used, its planned restart."""
+        def apply(data):
+            rec = data["clusters"].setdefault(key, {})
+            if "add" in change and change["add"]:
+                rec.update({"tuned": datetime.datetime.now().isoformat(timespec="minutes"), "by": change.get("by", ""),
+                            "params": sorted(set(rec.get("params") or []) | set(change["add"])),
+                            "memory_gb": change.get("memory_gb", rec.get("memory_gb"))})
+            if change.get("remove"):
+                rec["params"] = sorted(set(rec.get("params") or []) - set(change["remove"]))
+                if not rec["params"]:
+                    for k in ("tuned", "by", "params", "memory_gb"):
+                        rec.pop(k, None)
+            if "restart" in change:
+                if change["restart"] is None:
+                    rec.pop("restart", None)
+                else:
+                    rec["restart"] = change["restart"]
+            if not rec:
+                data["clusters"].pop(key, None)
+        tuning.update(apply)
+
+    ODOO_DB_ERRORS = re.compile(r"OperationalError|InterfaceError|connection already closed|"
+                                r"server closed the connection|terminating connection")
+
+    async def postgres_restart(job, inst: Instance, values: dict, names: list[str], by: str) -> None:
+        """The database of inst restarted (db-restart), the values of the
+        restart written right before; the record follows what was written.
+        The Odoo log lines with a database error since then are counted:
+        the requests that failed (AD-005 §5)."""
+        since = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        job.log(f"--- restart of the database of {inst.key}: CHECKPOINT, fast stop, start"
+                + (f"; written before it: {', '.join([*values, *names])}" if values or names else ""))
+        cmd = inst.restart.command("db-restart", getattr(inst.options, "db_service", "db"), inst.options.database)
+        job.log("$ " + " ".join(cmd))
+        code, out = await ops.capture(cmd, input=json.dumps({"set": values, "reset": names}).encode(),
+                                      timeout=POSTGRES_RESTART_TIMEOUT)
+        answer = {}
+        for line in out.splitlines():
+            if line.startswith("{"):
+                with contextlib.suppress(ValueError):
+                    answer = json.loads(line)
+            elif line.strip():
+                job.log(line)
+        if code == 3:
+            raise JobFailed(f"The database of {inst.key} did not come back within 3 minutes: the values of before "
+                            f"are back and it started again ({answer.get('reason') or 'no reason given'})")
+        if code:
+            raise JobFailed(f"The restart of the database of {inst.key} failed: {out.strip()[-300:] or code}")
+        await asyncio.to_thread(postgres_record, inst.key, add=list(values), by=by, remove=list(names))
+        job.log(f"--- the database of {inst.key} answers again: {answer.get('seconds', '?')} s without it, "
+                f"{answer.get('total', '?')} s in all; statistics of the queries "
+                + ("on" if answer.get("statements_on") else "off"))
+        odoo = getattr(inst.options, "odoo_service", "odoo")
+        code, log = await ops.capture(inst.restart.command("logs", odoo, "--since", since), timeout=60)
+        if code == 0:
+            errors = sum(1 for line in log.splitlines() if ODOO_DB_ERRORS.search(line))
+            job.log(f"Odoo log lines with a database error since the restart: {errors}")
+
+    def postgres_title(inst: Instance) -> str:
+        return f"the database of {inst.key}"
+
+    @app.post("/api/postgres/{server}/{role}/apply")
+    async def postgres_apply(request: Request, server: str, role: str, payload: dict = Body(...),
+                             me: Principal = Depends(current_user)):
+        """The values chosen: those valid at once written and reloaded now,
+        those of a restart written right before it, now or at the time
+        chosen (a restart planned once). A job."""
+        postgres_admin(me)
+        inst = get_instance(server, role)
+        found = await postgres_rows(request_language(request))
+        row = postgres_row(found["rows"], server, role)
+        if row.get("error"):
+            return refuse(f"The database of {row['key']} does not answer: {row['error']}", status.HTTP_502_BAD_GATEWAY)
+        if row.get("restart"):
+            return refuse(f"A restart of {postgres_title(inst)} is planned: cancel it or restart now first")
+        machine = await asyncio.to_thread(postgres_machine)
+        try:
+            memory, disk = postgres_choice(machine, payload.get("memory_gb"), payload.get("disk"))
+            values = pgtuning.checked(row, payload.get("values") or {},
+                                      pgtuning.limits(row, found["rows"], memory, int(row.get("connections") or 0)))
+            params = pgtuning.by_name(row["params"])
+            at_once = {n: v for n, v in values.items() if not params[n]["restart"]}
+            later = {n: v for n, v in values.items() if params[n]["restart"]}
+            when = str(payload.get("when") or "now")
+            at = None if not later or when == "now" else pgtuning.next_time(when)
+        except ValueError as exc:
+            return refuse(str(exc))
+        if not values:
+            return refuse("Nothing to apply: the values are those of now")
+        if memory != machine["memory_gb"] or disk != machine["disk"]:
+            def keep(data):
+                data["machine"].update({"memory_gb": memory, "disk": disk})
+            await asyncio.to_thread(tuning.update, keep)
+        by = str(me)
+
+        async def action(job):
+            job.log(f"--- values for {postgres_title(inst)} on {memory:g} GB for the databases, disk {disk}")
+            if at_once:
+                await postgres_helper(job, inst, "pg-set", at_once)
+                await asyncio.to_thread(postgres_record, inst.key, add=list(at_once), by=by, memory_gb=memory)
+                job.log(f"--- valid now, without stopping anything: {', '.join(f'{n} {v}' for n, v in at_once.items())}")
+            if not later:
+                job.log("No restart: the values are valid now")
+            elif at is None:
+                await postgres_restart(job, inst, later, [], by)
+            else:
+                await asyncio.to_thread(postgres_record, inst.key, restart={
+                    "at": at.isoformat(timespec="minutes"), "set": later, "reset": [], "by": by, "job": None})
+                job.log(f"--- restart of {postgres_title(inst)} planned at {at:%Y-%m-%d %H:%M} for {len(later)} values, "
+                        f"written then: {', '.join(f'{n} {v}' for n, v in later.items())}")
+        ws = workspace_of(server)
+        job = jobs.submit(f"Tune {postgres_title(inst)}", [inst.key], f"manual: {me}", action,
+                          workspace=ws[0].name if ws else "")
+        return {"job": job.id}
+
+    def postgres_fire(key: str, by: str) -> Job | None:
+        """The planned restart of the database of key, as a job (it waits for
+        a job running on the instance); the plan is taken when it starts."""
+        server, _, role = key.partition("/")
+        inst = settings.instance(server, role)
+        if inst is None:
+            return None
+
+        async def action(job):
+            taken = {}
+
+            def take(data):
+                rec = data["clusters"].get(key) or {}
+                plan = rec.get("restart") or {}
+                if plan.get("job") == job.id:
+                    taken.update(plan)
+                    rec.pop("restart", None)
+            await asyncio.to_thread(tuning.update, take)
+            if not taken:
+                job.log("The planned restart was cancelled before it started: nothing done")
+                return
+            await postgres_restart(job, inst, dict(taken.get("set") or {}), list(taken.get("reset") or []),
+                                   taken.get("by") or by)
+        ws = workspace_of(server)
+        job = jobs.submit(f"Restart {postgres_title(inst)} (planned)", [inst.key], by, action,
+                          workspace=ws[0].name if ws else "")
+
+        def mark(data):
+            plan = (data["clusters"].get(key) or {}).get("restart")
+            if plan is not None:
+                plan["job"] = job.id
+        tuning.update(mark)
+        return job
+
+    def postgres_due(now: datetime.datetime | None = None) -> list[str]:
+        """The planned restarts whose time has come, fired; one OmniaCLI was
+        stopped for (more than MISSED_AFTER late) moved to the next day at the
+        same time: never a restart late in the working day."""
+        now = now or datetime.datetime.now()
+        fired, moved = [], {}
+        for key, rec in tuning.load()["clusters"].items():
+            plan = rec.get("restart")
+            if not plan:
+                continue
+            try:
+                at = datetime.datetime.fromisoformat(str(plan.get("at")))
+            except ValueError:
+                continue
+            job = jobs.get(plan.get("job") or "")
+            if at > now or (job is not None and not job.finished_flag):
+                continue
+            if (now - at).total_seconds() > pgtuning.MISSED_AFTER:
+                while at <= now:
+                    at += datetime.timedelta(days=1)
+                moved[key] = at
+                _logger.warning("the planned restart of the database of %s was missed: moved to %s", key, at)
+                continue
+            if postgres_fire(key, plan.get("by") or "planned restart") is not None:
+                fired.append(key)
+        if moved:
+            def move(data):
+                for key, at in moved.items():
+                    plan = (data["clusters"].get(key) or {}).get("restart")
+                    if plan is not None:
+                        plan.update({"at": at.isoformat(timespec="minutes"), "job": None})
+            tuning.update(move)
+        return fired
+
+    async def stop_postgres() -> None:
+        for task in postgres_tasks:
+            task.cancel()
+        await asyncio.gather(*postgres_tasks, return_exceptions=True)
+        postgres_tasks.clear()
+
+    async def postgres_loop() -> None:
+        while True:
+            await asyncio.sleep(POSTGRES_EVERY)
+            try:
+                postgres_due()
+            except Exception:  # noqa: BLE001 - the loop must survive
+                _logger.exception("the planned restarts of the databases failed")
+
+    @app.post("/api/postgres/{server}/{role}/restart")
+    async def postgres_restart_now(server: str, role: str, me: Principal = Depends(current_user)):
+        """The planned restart done now, or a restart for the values changed outside OmniaCLI."""
+        postgres_admin(me)
+        inst = get_instance(server, role)
+        if inst.restart.type != "compose":
+            return refuse(f"{inst.key} has no database of its own here: only a dedicated one is restarted")
+        plan = (await asyncio.to_thread(tuning.cluster, inst.key)).get("restart")
+        if plan:
+            running = jobs.get(plan.get("job") or "")
+            if running is not None and not running.finished_flag:
+                return {"job": running.id}
+            job = postgres_fire(inst.key, f"manual: {me}")
+            return {"job": job.id}
+        by = str(me)
+        ws = workspace_of(server)
+        job = jobs.submit(f"Restart {postgres_title(inst)}", [inst.key], f"manual: {me}",
+                          lambda job: postgres_restart(job, inst, {}, [], by), workspace=ws[0].name if ws else "")
+        return {"job": job.id}
+
+    @app.post("/api/postgres/{server}/{role}/restart/cancel")
+    async def postgres_restart_cancel(server: str, role: str, me: Principal = Depends(current_user)):
+        """The planned restart taken away: the values waiting for it are not
+        written; those valid already stay. Nothing is stopped."""
+        postgres_admin(me)
+        inst = get_instance(server, role)
+        gone = {}
+
+        def cancel(data):
+            rec = data["clusters"].get(inst.key) or {}
+            gone.update(rec.pop("restart", None) or {})
+            if not rec:
+                data["clusters"].pop(inst.key, None)
+        await asyncio.to_thread(tuning.update, cancel)
+        if not gone:
+            return refuse(f"No restart of {postgres_title(inst)} is planned")
+        queued = jobs.get(gone.get("job") or "")
+        if queued is not None and queued.status == "queued":
+            jobs.stop(queued.id, str(me))
+        access_log.record("action", me.kind, me.name, "", f"planned restart of {postgres_title(inst)} cancelled")
+        return {"ok": True}
+
+    @app.post("/api/postgres/{server}/{role}/reset")
+    async def postgres_reset(request: Request, server: str, role: str, payload: dict = Body(...),
+                             me: Principal = Depends(current_user)):
+        """The parameters the tuning wrote (the record says which, never the
+        point-in-time recovery's) back to their base values: those valid at
+        once now, those of a restart at it, now or at the time chosen."""
+        postgres_admin(me)
+        inst = get_instance(server, role)
+        found = await postgres_rows(request_language(request))
+        row = postgres_row(found["rows"], server, role)
+        if row.get("error"):
+            return refuse(f"The database of {row['key']} does not answer: {row['error']}", status.HTTP_502_BAD_GATEWAY)
+        if row.get("restart"):
+            return refuse(f"A restart of {postgres_title(inst)} is planned: cancel it or restart now first")
+        params = pgtuning.by_name(row["params"])
+        names = [n for n in (row.get("tuned") or {}).get("params") or [] if n in params]
+        if not names:
+            return refuse(f"The database of {inst.key} was not tuned here: nothing to put back")
+        at_once = [n for n in names if not params[n]["restart"]]
+        later = [n for n in names if params[n]["restart"]]
+        try:
+            when = str(payload.get("when") or "now")
+            at = None if not later or when == "now" else pgtuning.next_time(when)
+        except ValueError as exc:
+            return refuse(str(exc))
+        by = str(me)
+
+        async def action(job):
+            job.log(f"--- back to the base values: {', '.join(names)}; point-in-time recovery untouched")
+            if at_once:
+                await postgres_helper(job, inst, "pg-reset", at_once)
+                await asyncio.to_thread(postgres_record, inst.key, remove=at_once)
+            if later and at is None:
+                await postgres_restart(job, inst, {}, later, by)
+            elif later:
+                await asyncio.to_thread(postgres_record, inst.key, restart={
+                    "at": at.isoformat(timespec="minutes"), "set": {}, "reset": later, "by": by, "job": None})
+                job.log(f"--- restart of {postgres_title(inst)} planned at {at:%Y-%m-%d %H:%M} for {len(later)} values")
+        ws = workspace_of(server)
+        job = jobs.submit(f"Base values for {postgres_title(inst)}", [inst.key], f"manual: {me}", action,
+                          workspace=ws[0].name if ws else "")
+        return {"job": job.id}
+
+    def database_line(inst: Instance) -> dict | None:
+        """The Database row of the instance's Settings (UX-008 §6.2.6), from
+        the record: PostgreSQL is not read, the page is not slowed."""
+        if inst.restart.type == "compose":
+            rec = tuning.cluster(inst.key)
+            return {"where": "dedicated", "tuned": rec.get("tuned") if rec.get("params") else None,
+                    "restart": (rec.get("restart") or {}).get("at")}
+        try:
+            shell = inst.plugin.db_shell(inst)
+        except Exception:  # noqa: BLE001 - a config that cannot be read: no row
+            return None
+        if shell is None:
+            return None
+        place = pgreport.where(inst, shell[1])
+        if place["where"] == "remote":
+            return {"where": "remote", "host": place["host"]}
+        return {"where": "system", "port": str(shell[1].get("PGPORT") or 5432)}
+
+    app.state.postgres_due = postgres_due
 
     return app
 

@@ -747,11 +747,25 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     <summary title="{{ _('The type of the instance, its services, its port, its log and the commands to work on it from a shell') }}">{{ _("Technical details") }}</summary>
     <dl class="set-grid">
       <dt>{{ _("Type") }}</dt><dd>{{ tr(inst.plugin.label) }}</dd>
-      {% for label, value, kind in settings_rows[inst.key] if kind != "checkbox" %}
+      {# the database service's name gives way to the Database row (UX-008 §6.2.6) #}
+      {% set dbl = (db_line or {}).get(inst.key) %}
+      {% for label, value, kind in settings_rows[inst.key] if kind != "checkbox" and not (dbl and label == "Database service") %}
       <dt>{{ tr(label) }}</dt>
       {% if value is none or value == "" %}<dd class="muted">–</dd>
       {% else %}<dd class="{{ 'mono' if kind in ('path', 'number') }}">{{ value }}</dd>{% endif %}
       {% endfor %}
+      {% if dbl %}
+      <dt>{{ _("Database") }}</dt>
+      <dd data-db-line="{{ dbl.where }}" {% if not machine_admin %}title="{{ _('The administrator of the machine tunes it') }}"{% endif %}>
+        {% if dbl.where == "dedicated" %}{{ _("dedicated") }} ·
+          {% if dbl.restart %}{{ _("restart at {time} of {date}", time=dbl.restart[11:16], date=when(dbl.restart)[:10]) }}
+          {% elif dbl.tuned %}{{ _("tuned on {when}", when=when(dbl.tuned)) }}
+          {% else %}{{ _("base values") }}{% endif %}
+        {% elif dbl.where == "system" %}{{ _("PostgreSQL of the system (port {port}) · not tuned by OmniaCLI", port=dbl.port) }}
+        {% else %}{{ _("on {host} · tuned there", host=dbl.host) }}{% endif %}
+        {% if machine_admin and dbl.where == "dedicated" %}<a href="{{ prefix }}/#database" title="{{ _('Opens the Database tab of the machine, where this database is tuned') }}">{{ _("Database of the machine ›") }}</a>{% endif %}
+      </dd>
+      {% endif %}
       <dt>{{ _("Log") }}</dt><dd class="mono">{{ inst.log_label }}</dd>
       {% if rt == "process" %}
       <dt>{{ tr(inst.plugin.label) }}</dt><dd>{% if pid %}{{ _("started by OmniaCLI: running, pid") }} <span class="mono">{{ pid }}</span>{% else %}{{ _("started by OmniaCLI:") }} <span class="muted">{{ _("stopped") }}</span>{% endif %}</dd>
@@ -1208,7 +1222,11 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
               cacheCause: {{ _("{p}% of the reads come from memory: the rest goes to the disk and slows down.") | tojson }},
               stop: {{ _("Stop…") | tojson }}, stopQ: {{ _("Stop the query of {user} running for {time}?") | tojson }},
               stopTitle: {{ _("Closes the connection that runs this query: the query is interrupted, its transaction is rolled back and the request of Odoo that waited for it gets an error. Odoo stays on.") | tojson }},
-              noStatements: {{ _("Not available: the database does not record the statistics of the queries. It is switched on in PostgreSQL's configuration") | tojson }},
+              noStatements: {{ _("Statistics of the queries not available.") | tojson }},
+              // who switches them on (UX-008 §6.2.6): the machine's Database tab, for its admins
+              statementsLink: {{ (_("Switch them on in the database of the machine ›") if machine_admin else "") | tojson }},
+              statementsTitle: {{ _("Opens the Database tab of the machine: Propose the values… switches the statistics of the queries on, with a restart of the database") | tojson }},
+              statementsWho: {{ _("The administrator of the machine switches them on.") | tojson }},
               showAll: {{ _("Show all ({n})") | tojson }}, showAllTitle: {{ _("Shows the rows left out of this list") | tojson }},
               states: {active: {{ _("working") | tojson }}, "idle in transaction": {{ _("transaction left open") | tojson }},
                        "idle in transaction (aborted)": {{ _("transaction failed, left open") | tojson }}},
@@ -1274,7 +1292,9 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
       const key = holder.dataset.dbTable, rows = data[key];
       if (key === "statements" && rows === null) {
         const p = Object.assign(document.createElement("p"), {className: "muted", textContent: DB.noStatements + " "});
-        p.append(Object.assign(document.createElement("span"), {className: "mono small", textContent: "pg_stat_statements"}));
+        p.append(Object.assign(document.createElement("span"), {className: "mono small", textContent: "pg_stat_statements"}), " ");
+        p.append(DB.statementsLink ? Object.assign(document.createElement("a"), {href: "{{ prefix }}/#database", textContent: DB.statementsLink, title: DB.statementsTitle})
+          : DB.statementsWho);
         holder.replaceChildren(p); continue;
       }
       if (!rows || !rows.length) { holder.replaceChildren(Object.assign(document.createElement("p"), {className: "muted", textContent: DB.none})); continue; }
