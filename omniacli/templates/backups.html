@@ -77,6 +77,7 @@
     showAll: {{ _("Show every backup") | tojson }}, showAllTitle: {{ _("Shows every backup again") | tojson }},
     waiting: {{ _("{name}: asking…") | tojson }},
     down: {{ _("{name} does not answer: {why}. Its backups are not here.") | tojson }},
+    older: {{ _("{name} answers, but its OmniaCLI is older and has no such list yet: its backups show here once it is updated.") | tojson }},
     tab: {{ _("Opens the Backups tab of the instance") | tojson }}, test: {{ _("Test") | tojson }},
     stagingWord: {{ _("Staging") | tojson }},
     kinds: {scheduled: {{ _("automatic") | tojson }}, "pre-update": {{ _("before an update") | tojson }}, manual: {{ _("by hand") | tojson }}},
@@ -177,7 +178,7 @@
     for (const m of MACHINES) {
       const data = found[m.name];
       if (!data) { extra.push(machineRow(m, T.waiting.replace("{name}", m.name))); continue; }
-      if (data.error) { extra.push(machineRow(m, T.down.replace("{name}", m.name).replace("{why}", data.error), true)); continue; }
+      if (data.error) { extra.push(machineRow(m, (data.older ? T.older : T.down).replace("{name}", m.name).replace("{why}", data.error), true)); continue; }
       all = all.concat(rowsOf(m, data));
       ok += (data.tonight || {}).ok || 0; bad += (data.tonight || {}).failed || 0;
     }

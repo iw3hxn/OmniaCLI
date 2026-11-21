@@ -59,9 +59,12 @@
     unscheduled: {{ _("{n} without scheduled backups") | tojson }},
     unscheduledTitle: {{ _("Shows only the productions with no automatic backups: a broken disk would lose them") | tojson }},
     allScheduled: {{ _("every production backs up by itself") | tojson }},
+    noneRead: {{ _("their backups cannot be read: the OmniaCLI of those machines is older") | tojson }},
+    someUnread: {{ _("the backups of {n} productions cannot be read: the OmniaCLI of their machine is older") | tojson }},
     showAll: {{ _("Show every instance") | tojson }}, showAllTitle: {{ _("Shows every instance again") | tojson }},
     waiting: {{ _("{name}: asking…") | tojson }},
     down: {{ _("{name} does not answer: {why}. Its instances are not here.") | tojson }},
+    older: {{ _("{name} answers, but its OmniaCLI is older and has no such list yet: its instances show here once it is updated.") | tojson }},
     open: {{ _("Opens its page: its environments, backups, log") | tojson }},
     stagingOf: {{ _("Staging of {name}") | tojson }}, stagingWord: {{ _("Staging") | tojson }},
     running: {{ _("Running") | tojson }}, stopped: {{ _("Stopped") | tojson }}, unknown: {{ _("State unknown") | tojson }},
@@ -161,7 +164,7 @@
     for (const m of MACHINES) {
       const data = found[m.name];
       if (!data) { extra.push(machineRow(m, T.waiting.replace("{name}", m.name))); continue; }
-      if (data.error) { extra.push(machineRow(m, T.down.replace("{name}", m.name).replace("{why}", data.error), true)); continue; }
+      if (data.error) { extra.push(machineRow(m, (data.older ? T.older : T.down).replace("{name}", m.name).replace("{why}", data.error), true)); continue; }
       all = all.concat(machineRows(m, data));
     }
     // the counts: of every row read, the filter's the same as the rows it leaves
@@ -183,7 +186,8 @@
       }
     } else {
       onlyUnscheduled = false;
-      counts.append(T.allScheduled);
+      const unread = tops.filter((r) => !r.server.backup_schedule).length;
+      counts.append(!unread ? T.allScheduled : unread === tops.length ? T.noneRead : T.someUnread.replace("{n}", unread));
     }
     let shown = onlyUnscheduled ? missing : all;
     if (words.length) shown = shown.filter((r) => words.every((w) => r.text.includes(w)));

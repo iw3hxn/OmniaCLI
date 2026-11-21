@@ -6238,6 +6238,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         here and sees the whole machine."""
         return sorted(settings.link_targets) if me.kind == "user" and visible_servers(me) is None else []
 
+    LINK_LIST_OLDER = "its OmniaCLI is older: it has no such list yet"
+
     async def link_list(request: Request, me: Principal, name: str, path: str):
         """(what a link answered to GET path, "") or (None, why not), asked
         with me's name and role and in the page's language."""
@@ -6251,7 +6253,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         except httpx.HTTPError as exc:
             return None, describe_error(exc)
         if resp.status_code == 404:
-            return None, "its OmniaCLI is older: it has no such list yet"
+            return None, LINK_LIST_OLDER
         if resp.status_code != 200:
             return None, f"answered HTTP {resp.status_code}"
         try:
@@ -6299,7 +6301,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if found is not None and not isinstance(found, list):
             found, why = None, "it did not answer a list"
         if found is None:
-            return {"name": link, "link": link, "error": i18n.tr(request_language(request), why)}
+            return {"name": link, "link": link, "error": i18n.tr(request_language(request), why),
+                    # it answers, it is only older than this list
+                    "older": why == LINK_LIST_OLDER}
         return {"name": link, "link": link, "servers": found}
 
     def backup_rows(request: Request, me: Principal) -> dict:
@@ -6366,7 +6370,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if found is not None and not (isinstance(found, dict) and isinstance(found.get("rows"), list)):
             found, why = None, "it did not answer a list"
         if found is None:
-            return {"name": link, "link": link, "error": i18n.tr(request_language(request), why)}
+            return {"name": link, "link": link, "error": i18n.tr(request_language(request), why),
+                    # it answers, it is only older than this list
+                    "older": why == LINK_LIST_OLDER}
         return {"name": link, "link": link, "rows": found["rows"], "tonight": found.get("tonight") or {}}
 
     @app.post("/api/servers/{server}/stagings/from-backup", dependencies=[Depends(admin)])
