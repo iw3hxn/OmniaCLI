@@ -26,6 +26,14 @@
 .last-action { color: var(--muted); margin: 4px 0 0; }
 .last-action .status::before { display: none; }
 @media (max-width: 700px) { .stat-row { grid-template-columns: 1fr; } }
+/* Monitoring: the period (UX-008 §6.3), one choice of four */
+.period { display: inline-flex; flex-wrap: wrap; margin: 0 0 12px; border: 1px solid var(--border); border-radius: var(--r-lg); overflow: hidden; }
+.period button { border: 0; border-radius: 0; box-shadow: none; background: var(--panel); padding: 6px 12px; color: var(--muted); font-weight: 600; }
+.period button + button { border-left: 1px solid var(--border); }
+.period button[aria-pressed="true"] { background: var(--panel-2); color: var(--text); box-shadow: inset 0 -2px 0 var(--accent); }
+.tiles.tiles-4 { grid-template-columns: repeat(4, 1fr); }
+@media (max-width: 900px) { .tiles.tiles-4 { grid-template-columns: 1fr 1fr; } }
+.tile-sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
 </style>
 {% set count = namespace(instances=0, stagings=0) %}
 {% for row in rows %}{% if row.parent %}{% set count.stagings = count.stagings + 1 %}{% else %}{% set count.instances = count.instances + 1 %}{% endif %}{% endfor %}
@@ -78,7 +86,7 @@
 {% if machine %}
 <nav class="tabs" role="tablist" aria-label="{{ _('Sections of the server') }}">
   <button type="button" role="tab" data-tab="overview" aria-selected="true" title="{{ _('The instances of this machine, the linked ones and the last jobs') }}">{{ _("Overview") }}</button>
-  <button type="button" role="tab" data-tab="monitor" title="{{ _('The load of this machine and of each instance over the last hour') }}">{{ _("Monitoring") }}</button>
+  <button type="button" role="tab" data-tab="monitor" title="{{ _('The load of this machine: the last hour live, or a point every 5 minutes over up to 14 days') }}">{{ _("Monitoring") }}</button>
 </nav>
 {% endif %}
 <section class="tab-panel" data-panel="overview" data-bars-scope>
@@ -133,9 +141,18 @@
 </section>
 {% if machine %}
 <section class="tab-panel" data-panel="monitor" hidden>
-<p class="muted" style="margin: 0 0 10px">{{ _("The whole machine, last hour: every Odoo instance, PostgreSQL and the rest together.") }}</p>
+<div class="period" role="group" aria-label="{{ _('Period') }}">
+  <button type="button" data-period="hour" aria-pressed="false" title="{{ _('The last hour live: a sample every 5 seconds, with the share of PostgreSQL and of each instance') }}">{{ _("Last hour") }}</button>
+  <button type="button" data-period="1" aria-pressed="false" title="{{ _('The last 24 hours from the history: a point every 5 minutes, the mean and the maximum') }}">{{ _("24 hours") }}</button>
+  <button type="button" data-period="7" aria-pressed="false" title="{{ _('The last 7 days from the history: a point every 5 minutes, the mean and the maximum') }}">{{ _("7 days") }}</button>
+  <button type="button" data-period="14" aria-pressed="false" title="{{ _('The last 14 days from the history: a point every 5 minutes, the mean and the maximum') }}">{{ _("14 days") }}</button>
+</div>
+<p class="muted period-note" hidden></p>
+<p class="muted" data-view="live" style="margin: 0 0 10px">{{ _("The whole machine, last hour: every Odoo instance, PostgreSQL and the rest together.") }}</p>
+<p class="muted" data-view="history" style="margin: 0 0 10px" hidden>{{ _("The whole machine, a point every 5 minutes (the mean and the maximum of its samples), kept 14 days; the disk once a day. A time OmniaCLI was not running is a gap in the lines.") }}</p>
 <div class="machine-grid">
   <section class="panel machine-panel" data-link="">
+    <div class="live-view">
     <div class="tiles">
       <div class="tile"><div class="tile-label">{{ _("CPU now") }}</div><div class="tile-value" data-tile="cpu">–</div></div>
       <div class="tile"><div class="tile-label">{{ _("Received") }}</div><div class="tile-value" data-tile="rx">–</div></div>
@@ -149,6 +166,24 @@
     <div class="chart-box"><svg class="chart" data-chart="net" role="img" aria-label="{{ _("Network traffic of this machine over the last hour") }}"></svg><div class="chart-tip" hidden></div></div>
     <h3 class="chart-title">{{ _("Disks, free space") }}</h3>
     <div class="disk-list"><span class="muted">{{ _("Loading…") }}</span></div>
+    </div>
+    <div class="history-view" hidden>
+    <div class="tiles tiles-4">
+      <div class="tile"><div class="tile-label">{{ _("CPU") }}</div><div class="tile-value" data-hist="cpu">–</div><div class="tile-sub" data-hist-sub="cpu"></div></div>
+      <div class="tile"><div class="tile-label">{{ _("Memory") }}</div><div class="tile-value" data-hist="mem">–</div><div class="tile-sub" data-hist-sub="mem"></div></div>
+      <div class="tile"><div class="tile-label">{{ _("Disk") }}</div><div class="tile-value" data-hist="disk">–</div><div class="tile-sub" data-hist-sub="disk"></div></div>
+      <div class="tile"><div class="tile-label">{{ _("Network") }}</div><div class="tile-value" data-hist="net">–</div><div class="tile-sub" data-hist-sub="net"></div></div>
+    </div>
+    <p class="muted history-state" style="margin: 6px 0 0"></p>
+    <h3 class="chart-title">{{ _("CPU, % of the whole machine") }} <span class="muted" style="font-weight: 400"><span class="key s1"></span>{{ _("mean") }}<span class="key s2"></span>{{ _("maximum") }}</span></h3>
+    <div class="chart-box"><svg class="chart" data-hist-chart="cpu" role="img" aria-label="{{ _('CPU of this machine over the period, mean and maximum of every 5 minutes') }}"></svg><div class="chart-tip" hidden></div></div>
+    <h3 class="chart-title">{{ _("Memory, GB") }} <span class="muted" style="font-weight: 400"><span class="key s1"></span>{{ _("in use") }}<span class="key s2"></span>{{ _("in all") }}</span></h3>
+    <div class="chart-box"><svg class="chart" data-hist-chart="mem" role="img" aria-label="{{ _('Memory of this machine over the period, in use and in all') }}"></svg><div class="chart-tip" hidden></div></div>
+    <h3 class="chart-title">{{ _("Network, per second") }} <span class="muted" style="font-weight: 400"><span class="key s1"></span>{{ _("received") }}<span class="key s2"></span>{{ _("sent") }}</span></h3>
+    <div class="chart-box"><svg class="chart" data-hist-chart="net" role="img" aria-label="{{ _('Network traffic of this machine over the period') }}"></svg><div class="chart-tip" hidden></div></div>
+    <h3 class="chart-title">{{ _("Disk, free space, GB") }} <span class="muted mono small hist-mount" style="font-weight: 400"></span></h3>
+    <div class="chart-box"><svg class="chart" data-hist-chart="disk" role="img" aria-label="{{ _('Free space of the main disk of this machine, once a day') }}"></svg><div class="chart-tip" hidden></div></div>
+    </div>
   </section>
 </div>
 </section>
@@ -550,6 +585,139 @@ const dashFill = (text, values) => text.replace(/\{(\w+)\}/g, (all, k) => (k in 
   });
 })();
 </script>
+{% if machine %}
+<script>
+(function () {
+  // Monitoring's period (UX-008 §6.3): the last hour live (the panel above),
+  // or 24 hours, 7 or 14 days from the history (GET /api/metrics/history),
+  // a point every 5 minutes; the choice is kept in this browser
+  const H = {
+    cpuSub: {{ _("mean {mean} · maximum {max} on {when}") | tojson }},
+    memSub: {{ _("{used} of {total} now · maximum {max}") | tojson }},
+    diskSub: {{ _("free {percent} · full in about {days} days") | tojson }},
+    diskFree: {{ _("free {percent}") | tojson }},
+    netSub: {{ _("received {rx}, sent {tx} in the period") | tojson }},
+    noDisk: {{ _("no daily history of the disk yet") | tojson }},
+    starts: {{ _("The history starts on {date}: the period of {period} fills up by itself.") | tojson }},
+    older: {{ _("Its OmniaCLI is older: there is only the last hour.") | tojson }},
+    http: {{ _("No answer: HTTP {status}") | tojson }}, noAnswer: {{ _("No answer.") | tojson }},
+    cpuTip: {{ _("mean {mean} · maximum {max}") | tojson }},
+    memTip: {{ _("in use {used} of {total}") | tojson }},
+    netTip: {{ _("received {rx} · sent {tx}") | tojson }},
+    diskTip: {{ _("free {free}") | tojson }},
+    periods: {"1": {{ _("24 hours") | tojson }}, "7": {{ _("7 days") | tojson }}, "14": {{ _("14 days") | tojson }}},
+  };
+  const KEY = "omniacli.monitor.period";
+  const GB = 1073741824;
+  const lang = document.documentElement.lang || undefined;
+  const fill = (text, values) => text.replace(/\{(\w+)\}/g, (all, k) => (k in values ? values[k] : all));
+  const num = (v, digits) => v.toLocaleString(lang, {minimumFractionDigits: digits, maximumFractionDigits: digits});
+  const pct = (v) => (v === null || v === undefined ? "–" : num(v, 0) + "%");
+  const gb = (bytes) => (bytes === null || bytes === undefined ? "–" : num(bytes / GB, 1) + " GB");
+  const rate = (b) => (b === null || b === undefined ? "–" : b >= 1048576 ? num(b / 1048576, 1) + " MiB/s"
+    : b >= 1024 ? num(b / 1024, 0) + " KiB/s" : num(b, 0) + " B/s");
+  const two = (n) => String(n).padStart(2, "0");
+  // dd/mm/yyyy hh:mm of this browser's time (as window.whenText)
+  const when = (t) => { const d = new Date(t * 1000);
+    return `${two(d.getDate())}/${two(d.getMonth() + 1)}/${d.getFullYear()} ${two(d.getHours())}:${two(d.getMinutes())}`; };
+  const day = (t) => when(t).slice(0, 10);
+  const buttons = [...document.querySelectorAll("[data-period]")];
+  const panel = document.querySelector(".machine-panel");
+  if (!panel || !buttons.length) return;
+  const live = panel.querySelector(".live-view"), hist = panel.querySelector(".history-view");
+  const note = document.querySelector(".period-note"), state = panel.querySelector(".history-state");
+  const base = panel.dataset.link ? "/links/" + encodeURIComponent(panel.dataset.link) : "{{ prefix }}";
+  let period = "14", data = null, older = false;
+  try {
+    const kept = localStorage.getItem(KEY);
+    if (buttons.some((b) => b.dataset.period === kept)) period = kept;
+  } catch (e) { /* no storage: 14 days */ }
+
+  function choose(chosen, keep) {
+    if (older && chosen !== "hour") chosen = "hour";
+    period = chosen;
+    for (const b of buttons) b.setAttribute("aria-pressed", String(b.dataset.period === chosen));
+    const isLive = chosen === "hour";
+    live.hidden = !isLive; hist.hidden = isLive;
+    for (const p of document.querySelectorAll("[data-view]")) p.hidden = p.dataset.view !== (isLive ? "live" : "history");
+    if (keep) { try { localStorage.setItem(KEY, chosen); } catch (e) { /* no storage */ } }
+    if (isLive) window.dispatchEvent(new Event("resize"));  // the live charts drawn while hidden
+    else load();
+  }
+
+  async function load() {
+    const days = period;
+    let resp;
+    try { resp = await fetch(`${base}/api/metrics/history?days=${days}`); }
+    catch (e) { state.textContent = H.noAnswer; return; }
+    if (resp.status === 404) {
+      // an OmniaCLI of before the history: its live hour only
+      older = true;
+      note.textContent = H.older; note.hidden = false;
+      for (const b of buttons) if (b.dataset.period !== "hour") { b.disabled = true; b.title = H.older; }
+      choose("hour", false);
+      return;
+    }
+    if (!resp.ok) { state.textContent = fill(H.http, {status: resp.status}); return; }
+    const answer = await resp.json().catch(() => null);
+    if (!answer || period !== days) return;  // another period was chosen meanwhile
+    data = answer;
+    draw();
+  }
+
+  function draw() {
+    if (!data || hist.hidden) return;
+    const points = data.points, s = data.summary || {};
+    const to = data.now, from = to - data.days * 86400, gap = data.interval * 1.5;
+    state.textContent = "";
+    note.hidden = !(data.started && data.started > from);
+    if (!note.hidden) note.textContent = fill(H.starts, {date: when(data.started), period: H.periods[String(data.days)]});
+    const tile = (k, value, sub) => {
+      panel.querySelector(`[data-hist="${k}"]`).textContent = value;
+      panel.querySelector(`[data-hist-sub="${k}"]`).textContent = sub;
+    };
+    const lastWith = (k) => [...points].reverse().find((p) => p[k] !== null && p[k] !== undefined);
+    const cpuNow = lastWith("cpu");
+    tile("cpu", cpuNow ? pct(cpuNow.cpu) : "–", s.cpu_mean === null || s.cpu_mean === undefined ? ""
+      : fill(H.cpuSub, {mean: pct(s.cpu_mean), max: pct(s.cpu_max), when: s.cpu_max_t ? when(s.cpu_max_t) : "–"}));
+    const mib = (v) => (v === null || v === undefined ? null : v * 1048576);
+    tile("mem", s.ram_now && s.ram_total ? pct(s.ram_now / s.ram_total * 100) : "–", s.ram_now === null || s.ram_now === undefined ? ""
+      : fill(H.memSub, {used: gb(mib(s.ram_now)), total: gb(mib(s.ram_total)), max: gb(mib(s.ram_max))}));
+    const disk = data.disk, lastDay = disk && disk.points.length ? disk.points[disk.points.length - 1] : null;
+    if (lastDay) {
+      const percent = pct(lastDay.free / lastDay.total * 100), f = disk.forecast || {};
+      let sub = fill(H.diskFree, {percent});
+      if (f.full) sub = fill(H.diskSub, {percent, days: num(Math.max(1, Math.round((new Date(f.full + "T00:00:00") - new Date()) / 86400000)), 0)});
+      else if (f.reason) sub += " · " + OmniaDisk.reasonText(f.reason);
+      tile("disk", gb(lastDay.free), sub);
+    } else tile("disk", "–", H.noDisk);
+    tile("net", s.rx_bytes === null || s.rx_bytes === undefined ? "–" : gb((s.rx_bytes || 0) + (s.tx_bytes || 0)),
+         s.rx_bytes === null || s.rx_bytes === undefined ? "" : fill(H.netSub, {rx: gb(s.rx_bytes), tx: gb(s.tx_bytes)}));
+    const common = {gap, from, to, when};
+    const chart = (k) => panel.querySelector(`[data-hist-chart="${k}"]`);
+    OmniaCharts.draw(chart("cpu"), points, "cpu", {...common, also: "cpu_max", unit: "%", minMax: 10, format: (v) => num(v, 0),
+      tip: (p) => fill(H.cpuTip, {mean: pct(p.cpu), max: pct(p.cpu_max)})});
+    const memory = points.map((p) => ({t: p.t, used: p.ram === null ? null : p.ram / 1024, total: p.ram_total === null ? null : p.ram_total / 1024}));
+    OmniaCharts.draw(chart("mem"), memory, "used", {...common, also: "total", minMax: 1, format: (v) => num(v, 1),
+      tip: (p) => fill(H.memTip, {used: num(p.used, 1) + " GB", total: p.total === null ? "–" : num(p.total, 1) + " GB"})});
+    OmniaCharts.draw(chart("net"), points, "rx", {...common, also: "tx", minMax: 1024, format: rate, padLeft: 70,
+      tip: (p) => fill(H.netTip, {rx: rate(p.rx), tx: rate(p.tx)})});
+    panel.querySelector(".hist-mount").textContent = disk ? disk.mount : "";
+    // a day is drawn at its midnight here; a day not recorded breaks the line
+    const days = disk ? disk.points.map((d) => ({t: new Date(d.day + "T00:00:00").getTime() / 1000, free: d.free / GB})) : [];
+    OmniaCharts.draw(chart("disk"), days, "free", {gap: 1.5 * 86400, from: days.length ? Math.min(from, days[0].t) : from, to, when: day, minMax: 1, format: (v) => num(v, 0),
+      tip: (p) => fill(H.diskTip, {free: num(p.free, 1) + " GB"})});
+  }
+
+  for (const b of buttons) b.addEventListener("click", () => choose(b.dataset.period, true));
+  choose(period, false);
+  // the charts drawn while the tab was hidden have no size: drawn again when shown
+  window.addEventListener("resize", draw);
+  // a new point every 5 minutes: asked again once a minute while shown
+  setInterval(() => { if (!document.hidden && !hist.hidden && hist.offsetParent !== null) load(); }, 60000);
+})();
+</script>
+{% endif %}
 {% if load_workspaces %}
 <script>
 (function () {

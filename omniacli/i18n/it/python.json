@@ -359,6 +359,7 @@
  "connections.{name}.link: {value} is not a name of letters, digits and . _ -": "La macchina di inoltro di {name} ({value}): scegli un collegamento della pagina Collegamenti.",
  "connections.{name}.puller: {value} is not a name of letters, digits and . _ -": "Il nome della casella ({value}, per {name}): lettere, cifre e . _ - (fa parte degli indirizzi).",
  "connections.{name}: a name is letters, digits and . _ - (it is part of URLs)": "Il nome {name}: lettere, cifre e . _ - (fa parte degli indirizzi).",
+ "days must be 1, 7 or 14": "i giorni devono essere 1, 7 o 14",
  "disk_gb: {problem}": "disk_gb: {problem}",
  "docker compose pull, then up -d: the containers made again with the newer images": "docker compose pull, poi up -d: i container ricreati con le immagini più recenti",
  "docker found": "docker trovato",

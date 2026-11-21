@@ -5,7 +5,12 @@
    lines over the main one (the shares of the machine's CPU: opts.lines,
    each {cls: "c2".."c8", value: (point) => number or null}; a null breaks
    the line). OmniaCharts.legend(el, items) writes their legend: items
-   [{label, cls ("s1", "s2", "c2"...), value: text}]. #}
+   [{label, cls ("s1", "s2", "c2"...), value: text}].
+   A history over days (opts.gap: seconds) breaks every line, and its area,
+   where a point has no value or the next point is more than gap seconds
+   away: a time OmniaCLI was not running is a gap, never a zero. opts.from
+   and opts.to fix the time axis (the whole period, also before the first
+   point); opts.when(t) writes a time of the axis and of the tooltip. #}
 <script>
 const OmniaCharts = (function () {
   const NS = "http://www.w3.org/2000/svg";
@@ -29,7 +34,8 @@ const OmniaCharts = (function () {
 
   // Draw points[key] into the svg. opts: {spark, unit, format, minMax,
   // also: a second key on the same axis, lines: more lines on the same
-  // axis, tip: (point) => tooltip text, padLeft: room for longer y axis labels}
+  // axis, tip: (point) => tooltip text, padLeft: room for longer y axis labels,
+  // gap, from, to, when: a history over days (above)}
   function draw(svg, points, key, opts) {
     opts = opts || {};
     const fmt = opts.format || ((v) => v.toFixed(1));
@@ -49,7 +55,8 @@ const OmniaCharts = (function () {
       }
       return;
     }
-    const t0 = data[0].t, t1 = data[data.length - 1].t;
+    const t0 = opts.from || data[0].t, t1 = opts.to || data[data.length - 1].t;
+    const axisTime = opts.when || hhmm, tipTime = opts.when || hhmmss;
     const lines = opts.lines || [];
     const max = niceMax(Math.max(opts.minMax || 0, ...keys.flatMap((k) => data.map((p) => p[k] || 0)),
                                  ...lines.flatMap((l) => data.map((p) => l.value(p) || 0))));
@@ -66,21 +73,44 @@ const OmniaCharts = (function () {
       }
       for (const [t, anchor] of [[t0, "start"], [t1, "end"]]) {
         const label = el("text", {x: x(t), y: H - 6, "text-anchor": anchor, class: "chart-axis"});
-        label.textContent = hhmm(t);
+        label.textContent = axisTime(t);
         svg.appendChild(label);
       }
     }
-    const path = (k) => data.map((p, i) => `${i ? "L" : "M"}${x(p.t).toFixed(1)},${y(p[k] || 0).toFixed(1)}`).join("");
-    const line = path(key);
+    // the runs of points of a line: one only, unless a history breaks it (opts.gap)
+    const runs = (value) => {
+      if (!opts.gap) return [data];
+      const found = [];
+      let run = null, before = null;
+      for (const p of points) {
+        const v = value(p);
+        if (v === null || v === undefined) { run = null; continue; }
+        if (!run || p.t - before.t > opts.gap) { run = []; found.push(run); }
+        run.push(p);
+        before = p;
+      }
+      return found;
+    };
+    // a run of one point is a dot (the line's round cap)
+    const runPath = (run, value) => run.map((p, i) => `${i ? "L" : "M"}${x(p.t).toFixed(1)},${y(value(p) || 0).toFixed(1)}`).join("")
+      + (run.length === 1 ? `L${x(run[0].t).toFixed(1)},${y(value(run[0]) || 0).toFixed(1)}` : "");
+    const keyOf = (k) => (p) => p[k];
+    const mainRuns = runs(keyOf(key));
+    const line = mainRuns.map((run) => runPath(run, keyOf(key))).join("");
     const base = y(0).toFixed(1);
-    svg.appendChild(el("path", {d: `${line}L${x(t1).toFixed(1)},${base}L${x(t0).toFixed(1)},${base}Z`, class: "chart-area"}));
-    if (opts.also) svg.appendChild(el("path", {d: path(opts.also), class: "chart-line chart-line-2"}));
+    const area = mainRuns.map((run) => runPath(run, keyOf(key))
+      + `L${x(run[run.length - 1].t).toFixed(1)},${base}L${x(run[0].t).toFixed(1)},${base}Z`).join("");
+    svg.appendChild(el("path", {d: area, class: "chart-area"}));
+    if (opts.also) svg.appendChild(el("path", {d: runs(keyOf(opts.also)).map((run) => runPath(run, keyOf(opts.also))).join(""),
+                                               class: "chart-line chart-line-2"}));
     for (const l of lines) {
       // a point without the value (not measured then) breaks the line
-      let d = "", gap = true;
+      let d = "", gap = true, before = null;
       for (const p of data) {
         const v = l.value(p);
         if (v === null || v === undefined) { gap = true; continue; }
+        if (opts.gap && before && p.t - before.t > opts.gap) gap = true;
+        before = p;
         d += `${gap ? "M" : "L"}${x(p.t).toFixed(1)},${y(v).toFixed(1)}`;
         gap = false;
       }
@@ -106,8 +136,8 @@ const OmniaCharts = (function () {
       dot.setAttribute("cx", x(best.t)); dot.setAttribute("cy", y(best[key]));
       cross.setAttribute("visibility", "visible"); dot.setAttribute("visibility", "visible");
       if (tip) {
-        tip.textContent = opts.tip ? `${hhmmss(best.t)} · ${opts.tip(best)}`
-          : `${hhmmss(best.t)} · ${fmt(best[key])}${opts.unit || ""} · ` + (best.procs === 1 ? T.process : T.processes).replace("{n}", best.procs);
+        tip.textContent = opts.tip ? `${tipTime(best.t)} · ${opts.tip(best)}`
+          : `${tipTime(best.t)} · ${fmt(best[key])}${opts.unit || ""} · ` + (best.procs === 1 ? T.process : T.processes).replace("{n}", best.procs);
         tip.hidden = false;
         const left = (x(best.t) / W) * box.width;
         tip.style.left = Math.min(Math.max(left, 70), box.width - 70) + "px";

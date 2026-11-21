@@ -100,6 +100,8 @@ from .links import LIST_TIMEOUT, LinkClients, describe_error, link_headers, prox
 from .monitor import FILE as MONITOR_FILE, Monitor
 from .logtail import read_since
 from .metrics import Sampler
+from . import metricshistory
+from .metricshistory import MetricsHistory, MetricsRecorder
 from .scheduler import AutoUpdater
 from .sessions import COOKIE, LIFETIME, LoginLimiter, SessionStore
 
@@ -424,6 +426,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return result
 
     disk_recorder = DiskRecorder(settings, disk_history, workspaces=workspace_disks)
+    # the machine's load, a point every 5 minutes for 14 days, next to the disks' history
+    load_history = MetricsHistory(settings.jobs_dir.parent / "load_history.json")
+    load_recorder = MetricsRecorder(sampler, load_history)
     link_clients = LinkClients(link_transport)
     # the links through SSH: their ssh -L, and OmniaCLI's key, next to the links file
     ssh_tunnels = sshlinks.SshTunnels((settings.links_file or settings.servers_file).parent / "ssh")
@@ -647,6 +652,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         await asyncio.to_thread(save_login_hosts)
         pitr_tasks.append(asyncio.get_running_loop().create_task(pitr_loop()))
         disk_recorder.start()
+        load_recorder.start()
         tunnels.start()
         ssh_tunnels.sync(settings.link_targets)
         pullers.start()
@@ -662,7 +668,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         # (a child process that does not die) is said, and the others stop
         for what, stop in (("consumers", consumers.stop), ("publications", publications.stop),
                            ("pullers", pullers.stop), ("tunnels", tunnels.stop), ("ssh tunnels", ssh_tunnels.close),
-                           ("disk history", disk_recorder.stop), ("load sampler", sampler.stop),
+                           ("disk history", disk_recorder.stop), ("load history", load_recorder.stop),
+                           ("load sampler", sampler.stop),
                            ("monitor", monitor.stop), ("point-in-time recovery", stop_pitr),
                            ("auto update", updater.stop), ("schedules", scheduler.stop),
                            ("link clients", link_clients.close)):
@@ -688,6 +695,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     app.state.settings, app.state.jobs, app.state.updater = settings, jobs, updater
     app.state.sampler = sampler
     app.state.disk_history, app.state.disk_recorder = disk_history, disk_recorder
+    app.state.load_history, app.state.load_recorder = load_history, load_recorder
     app.state.access_log = access_log
     app.state.tunnels = tunnels
     app.state.ssh_tunnels = ssh_tunnels
@@ -1232,6 +1240,28 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 }
         return {"cores": sampler.cores, "interval": 5,
                 "machine": sampler.machine_series(since) if shown is None else [], "instances": data}
+
+    @app.get("/api/metrics/history")
+    async def metrics_history(request: Request, days: int = 14):
+        """This machine's load over the last days (1, 7 or 14): a point every
+        5 minutes (metricshistory), the tiles' numbers, and the daily free
+        space of its main disk (/, else the biggest) with its forecast. Like
+        the machine's load of /api/metrics, not for a user of workspaces (who
+        does not reach this route: WORKSPACE_ROUTES)."""
+        if visible_servers(request.state.user) is not None:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Not open to the users of workspaces")
+        if days not in (1, 7, 14):
+            return refuse("days must be 1, 7 or 14")
+        found = load_history.window(days)
+        disk = None
+        entries = disk_history.disks
+        mount = "/" if "/" in entries else max(entries, key=lambda m: entries[m]["points"][-1][3], default=None)
+        if mount is not None:
+            oldest = (datetime.date.today() - datetime.timedelta(days=days)).isoformat()
+            disk = {"mount": mount, "forecast": disk_history.forecast_of(mount),
+                    "points": [{"day": p[0], "used": p[1], "free": p[2], "total": p[3]}
+                               for p in entries[mount]["points"] if p[0] >= oldest]}
+        return {"interval": metricshistory.BUCKET, "days": days, "now": int(time.time()), **found, "disk": disk}
 
     @app.get("/api/disks")
     async def disk_space():

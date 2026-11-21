@@ -161,6 +161,6 @@ const OmniaDisk = (function () {
             used: r.total - r.free, free: r.free, total: r.total, reserved: r.reserved,
             forecast: under ? under.forecast : null, href: under ? "{{ prefix }}/disks#" + encodeURIComponent(under.mount) : null};
   }
-  return {render, message, workspace, realDisk, level, size, forecastText};
+  return {render, message, workspace, realDisk, level, size, forecastText, reasonText};
 })();
 </script>
