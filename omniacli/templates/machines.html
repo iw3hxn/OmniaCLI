@@ -241,6 +241,9 @@
     noHostKey: {{ _("The host key cannot be read") | tojson }}, addressFirst: {{ _("Write the server's address") | tojson }},
     version: {{ _("OmniaCLI {version}") | tojson }}, ram: {{ _("RAM") | tojson }}, here: {{ _("This machine") | tojson }},
     stagings: {{ _("{count} stagings") | tojson }}, staging: {{ _("1 staging") | tojson }},
+    portal: {{ _("The customers log in at") | tojson }}, noPortal: {{ _("The customers' portal has no address yet.") | tojson }},
+    noPortalGo: {{ _("Give it one") | tojson }},
+    noPortalTitle: {{ _("Opens the Options of that machine, where its customers' portal gets its address") | tojson }},
     steps: [{{ _("Connecting") | tojson }}, {{ _("The system") | tojson }}, {{ _("Updates") | tojson }},
             {{ _("nginx, certbot and Docker") | tojson }}, "OmniaCLI", {{ _("The link back") | tojson }},
             {{ _("The link's token") | tojson }}, {{ _("The Odoo instances") | tojson }}, {{ _("The firewall") | tojson }},
@@ -319,6 +322,13 @@
     if (s.cores) facts.append(el("span", {text: fill(T.cores, {count: s.cores})}));
     if (s.version) facts.append(el("span", {text: fill(T.version, {version: s.version})}));
     box.append(facts);
+    if (s.portal) {
+      box.append(el("div", {class: "m-note"}, T.portal + " ",
+        el("a", {class: "mono", href: s.portal, target: "_blank", rel: "noopener", text: s.portal})));
+    } else if (s.portal === "") {
+      box.append(el("div", {class: "m-note"}, T.noPortal + " ",
+        el("a", {href: `${baseOf(card)}/options#portal-address-panel`, title: T.noPortalTitle, text: T.noPortalGo})));
+    }
     return box;
   }
 
@@ -385,6 +395,8 @@
     const root = all.find((d) => d.mount === "/") || all[0];
     stats[card.name] = {
       version: info.version, cores: metrics && metrics.cores,
+      // where its customers log in: "" none yet, undefined an OmniaCLI of before
+      portal: info.portal,
       cpu: recent.length ? recent.reduce((a, b) => a + b, 0) / recent.length : null, cpuSeries: points.slice(-60),
       disk: root ? {percent: root.used / root.total * 100, used: bytes(root.used), total: bytes(root.total)} : null,
       ram: ramPoint ? ramPoint.ram / ramPoint.ram_total * 100 : null,

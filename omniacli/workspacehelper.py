@@ -8,6 +8,7 @@
     omniacli workspace-helper limits <workspace> <cpus> <memory in GB>
     omniacli workspace-helper login-path check | add | remove | sync <host or all>
     omniacli workspace-helper login-path keep on | off
+    omniacli workspace-helper portal <host or -> | portal-names
     omniacli workspace-helper pitr-enable | pitr-base | pitr-state <workspace> <storage> <instance> <role>
     omniacli workspace-helper pitr-restore <workspace> <storage> <source> <target> <time> <source db> <target db>
     omniacli workspace-helper space
@@ -82,6 +83,17 @@ site and its certificate are removed.
 
 web-names <workspace>: the names the other sites of nginx answer on (nginx
 -T), which the workspace may not take; it reads only.
+
+portal <host or ->: the customers' portal, OmniaCLI's own panel on host
+(docs/portale-clienti.md), /etc/nginx/conf.d/omniacli-_portal.conf: port 80
+answers the challenges and sends to https, 443 passes everything to the
+service's address (/etc/default/omniacli), websockets too, with HSTS and a
+limit on the login form; a name another site of nginx answers on is
+refused, nginx -t or the file before back; Let's Encrypt's certificate when
+the name leads here (_reaches_here), else a self-signed one; "-" removes
+site and certificates. Refused where OmniaCLI does not keep nginx (no
+workspaces.storage: a machine with its Odoo of before).
+portal-names: the names the other sites answer on; it reads only.
 
 firewall on|apply|off: the workspaces' containers reach the internet only.
 Their networks are /24s of one pool (workspaces.network of the main
@@ -1629,6 +1641,136 @@ def web_taken(name: str) -> dict:
     return {"elsewhere": workspaceweb.names_elsewhere(dump.stdout, str(path))}
 
 
+# --- the customers' portal (Options › Customers' portal): OmniaCLI's own
+# panel on a name of this machine, written as the workspaces' sites are
+
+# why the portal is not written here: OmniaCLI went on a machine that already
+# had its Odoo (provision.sh existing, no workspaces.storage): its nginx is
+# whoever administers the machine's, as the Addresses dialog says
+NOT_OUR_NGINX = ("This machine's nginx is kept by whoever administers it (OmniaCLI went beside an Odoo of before, "
+                 "without workspaces): OmniaCLI does not write a site here")
+# days a self-signed certificate of the portal is made for, and the days
+# before its end it is made again
+SELF_SIGNED_DAYS, SELF_SIGNED_RENEW = 90, 14
+
+
+def _portal_site() -> Path:
+    return NGINX_SITES / f"omniacli-{workspaceweb.PORTAL}.conf"
+
+
+def _self_signed(host: str) -> tuple[str, str] | None:
+    """A certificate of the portal's own for host, while Let's Encrypt cannot
+    give one (no DNS yet, a machine on a private network): the browser warns,
+    the traffic is encrypted. Made again for another name or near its end;
+    None when openssl cannot make it."""
+    folder = OWN_CERTS / workspaceweb.PORTAL
+    chain, key, name = folder / "fullchain.pem", folder / "privkey.pem", folder / "name"
+    fresh = chain.is_file() and subprocess.run(
+        [_tool("openssl"), "x509", "-in", str(chain), "-noout", "-checkend", str(SELF_SIGNED_RENEW * 86400)],
+        env=ENV, capture_output=True, stdin=subprocess.DEVNULL).returncode == 0
+    if fresh and key.is_file() and name.is_file() and name.read_text(encoding="utf-8").strip() == host:
+        return str(chain), str(key)
+    OWN_CERTS.mkdir(mode=0o700, parents=True, exist_ok=True)
+    folder.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(folder, 0o700)
+    new_chain, new_key = folder / "fullchain.pem.new", folder / "privkey.pem.new"
+    try:
+        done = subprocess.run([_tool("openssl"), "req", "-x509", "-newkey", "ec", "-pkeyopt",
+                               "ec_paramgen_curve:prime256v1", "-nodes", "-days", str(SELF_SIGNED_DAYS),
+                               "-subj", f"/CN={host}", "-addext", f"subjectAltName=DNS:{host}",
+                               "-keyout", str(new_key), "-out", str(new_chain)],
+                              env=ENV, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        if done.returncode or not new_chain.is_file() or not new_key.is_file():
+            return None
+        os.chmod(new_key, 0o600)
+        os.replace(new_chain, chain)
+        os.replace(new_key, key)
+        _write(name, host + "\n", mode=0o600)
+    finally:
+        new_chain.unlink(missing_ok=True)
+        new_key.unlink(missing_ok=True)
+    return str(chain), str(key)
+
+
+def _portal_removed(path: Path) -> str:
+    """The portal's site gone, with its certificates."""
+    said = _put_site(path, None) if path.exists() else "no site"
+    if (LETSENCRYPT / f"omniacli-{workspaceweb.PORTAL}").exists():
+        _run("certbot", "delete", "--cert-name", f"omniacli-{workspaceweb.PORTAL}", "--non-interactive")
+    folder = OWN_CERTS / workspaceweb.PORTAL
+    for name in ("fullchain.pem", "privkey.pem", "name"):
+        (folder / name).unlink(missing_ok=True)
+    if folder.is_dir():
+        folder.rmdir()
+    return said
+
+
+def portal(host: str) -> dict:
+    """The customers' portal on host, "-": none. Only where OmniaCLI keeps the
+    machine's nginx (workspaces.storage of the main configuration); host a
+    host name no other site of nginx answers on (nginx -T). The site, nginx
+    -t or the one before back; then, when host leads to this nginx, Let's
+    Encrypt's certificate, else a self-signed one (said in the result)."""
+    if not storage_roots():
+        raise HelperError(NOT_OUR_NGINX)
+    path = _portal_site()
+    made = {"site": str(path), "address": "", "https": False, "certificate": "", "certificate_error": None}
+    if host == "-":
+        made["nginx"] = _portal_removed(path)
+        return made
+    try:
+        host = config.address_name("address", host)
+    except ConfigError as exc:
+        raise HelperError(str(exc)) from None
+    made["address"] = host
+    dump = subprocess.run([_tool("nginx"), "-T"], env=ENV, capture_output=True, text=True)
+    if dump.returncode:
+        raise HelperError(f"nginx -T: {dump.stderr.strip()}")
+    taken = workspaceweb.clashes([host], workspaceweb.names_elsewhere(dump.stdout, str(path)))
+    if taken:
+        raise HelperError("a name another site of nginx answers on: " + ", ".join(taken))
+    _hash_bucket(dump.stdout)
+    Path(workspaceweb.ACME_ROOT).mkdir(mode=0o755, exist_ok=True)
+    before = workspaceweb.portal_name_in(path.read_text(encoding="utf-8")) if path.is_file() else ""
+    lineage = LETSENCRYPT / f"omniacli-{workspaceweb.PORTAL}"
+    if before and before != host and lineage.exists():
+        # the certificate of the name of before: another name gets its own
+        _run("certbot", "delete", "--cert-name", f"omniacli-{workspaceweb.PORTAL}", "--non-interactive", check=False)
+    ipv6 = Path("/proc/net/if_inet6").exists()
+    omniacli = omniacli_address()
+    tls = _tls(workspaceweb.PORTAL, "letsencrypt") if before == host else None
+    kind = "letsencrypt" if tls else ""
+    if tls is None:
+        tls = _self_signed(host)
+        kind = "self-signed" if tls else ""
+    made["nginx"] = _put_site(path, workspaceweb.portal_conf_text(host, tls, ipv6, omniacli))
+    if not _resolves(host):
+        made["certificate_error"] = f"{host} is not in DNS yet"
+    elif kind != "letsencrypt" and not _reaches_here(host):
+        made["certificate_error"] = f"{host} does not lead to this machine's nginx"
+    else:
+        made["certificate_error"] = _certbot(workspaceweb.PORTAL, [host])
+        found = _tls(workspaceweb.PORTAL, "letsencrypt") if made["certificate_error"] is None else None
+        if found and found != tls:
+            tls, kind = found, "letsencrypt"
+            made["nginx"] = _put_site(path, workspaceweb.portal_conf_text(host, tls, ipv6, omniacli))
+    made["https"], made["certificate"] = tls is not None, kind
+    return made
+
+
+def portal_taken() -> dict:
+    """The names the other sites of nginx answer on, but the portal's own:
+    what the portal's address may not take (ours: OmniaCLI keeps this nginx).
+    It reads only."""
+    ours = bool(storage_roots())
+    if not ours:
+        return {"elsewhere": {}, "ours": False}
+    dump = subprocess.run([_tool("nginx"), "-T"], env=ENV, capture_output=True, text=True)
+    if dump.returncode:
+        raise HelperError(f"nginx -T: {dump.stderr.strip()}")
+    return {"elsewhere": workspaceweb.names_elsewhere(dump.stdout, str(_portal_site())), "ours": True}
+
+
 def _openssl(*args: str) -> str:
     done = subprocess.run([_tool("openssl"), *args], env=ENV, capture_output=True, text=True,
                           stdin=subprocess.DEVNULL)
@@ -1919,7 +2061,8 @@ ACTIONS = {"disk": (disk, 3), "drop": (drop, 2), "limits": (limits, 3), "create"
            "conf": (conf, 5), "space": (space, 0),
            "storage-setup": (storage_setup, 0), "storage-check": (storage_check, 1), "storage-reset": (storage_reset, 1),
            "pitr-enable": (pitr_enable, 4), "pitr-base": (pitr_base, 4), "pitr-state": (pitr_state, 4),
-           "pitr-restore": (pitr_restore, 7), "login-path": (login_path, 2)}
+           "pitr-restore": (pitr_restore, 7), "login-path": (login_path, 2),
+           "portal": (portal, 1), "portal-names": (portal_taken, 0)}
 
 
 def run(argv: list[str]) -> dict:

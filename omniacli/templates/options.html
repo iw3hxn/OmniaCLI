@@ -19,6 +19,27 @@
   {% else %}{{ _("nothing is restricted: Shell, Claude and psql are open to developers and admins.") }}{% endif %}
   <span class="muted">{{ _("Root sets it with") }} <span class="mono">machine:</span> {{ _("in the main configuration.") }}</span></p>
 </section>
+<section class="panel" id="portal-address-panel">
+  <h2 style="margin-bottom: 4px">{{ _("Address of the portal") }}</h2>
+  <p class="muted" style="font-size: 13px; margin-top: 0">{{ _("The name the customers (the users of the workspaces) open in the browser to log in to their own part of this machine. OmniaCLI publishes itself there in https, with a certificate of Let's Encrypt; each user sees only its workspaces.") }}</p>
+  <p id="portal-now" style="margin: 0 0 10px">{% if portal_url %}{{ _("The customers log in at") }} <a class="mono" href="{{ portal_url }}" target="_blank" rel="noopener">{{ portal_url }}</a>{% else %}<strong>{{ _("The portal has no address yet:") }}</strong> {{ _("the customers cannot log in from the internet, and the invitations carry the address you see now. Choose a name, point its DNS record to this machine, then Publish.") }}{% endif %}</p>
+  {% if portal_refused %}<p class="banner" style="margin: 0">{{ tr(portal_refused) }}</p>{% else %}
+  <div class="form-grid">
+    <label for="portal-address">{{ _("Address") }}</label>
+    <div>
+      <div style="display: flex; gap: 8px; flex-wrap: wrap">
+        <input type="text" id="portal-address" class="mono" style="flex: 1; min-width: 220px" value="{{ options.portal_address }}" placeholder="portale.esempio.it"
+               autocomplete="off" spellcheck="false" title="{{ _('A host name of yours whose DNS record points to this machine, for example portale.esempio.it; not a name of a workspace') }}">
+        <button type="button" id="portal-check" title="{{ _('Checks the name: that it is free on this machine and where its DNS record points. It changes nothing.') }}">{{ _("Check the name") }}</button>
+        <button type="button" class="primary" id="portal-publish" title="{{ _('Publishes the portal at this name: the site of nginx, then the certificate, in a job you follow; the invitations carry this address from then on.') }}">{{ _("Publish") }}</button>
+        {% if options.portal_address %}<button type="button" class="danger" id="portal-remove" title="{{ _('Takes the portal away: the site and its certificate are removed, the customers no longer log in from the internet. It asks first.') }}">{{ _("Take away…") }}</button>{% endif %}
+      </div>
+      <p id="portal-dns" class="muted" style="font-size: 13px; margin: 6px 0 0" aria-live="polite"></p>
+    </div>
+  </div>
+  <div id="portal-error" class="banner" hidden style="margin-top: 10px"></div>
+  {% endif %}
+</section>
 <div id="error" class="banner" hidden></div>
 <form id="form" autocomplete="off">
   <section class="panel">
@@ -105,6 +126,10 @@
       <label for="provider-label">{{ _("Name of the provider") }}</label>
       <input type="text" id="provider-label" maxlength="100" value="{{ options.provider_label }}" placeholder="{{ _('the provider') }}"
              title="{{ _('The name the users of the workspaces read for who started a job for the machine (a link, an administrator), for example your company name; empty: the provider, in their language') }}">
+      <label for="portal-staff">{{ _("Users of the machine") }}</label>
+      <label style="display: inline-flex; gap: 6px; align-items: center"><input type="checkbox" id="portal-staff" style="width: auto" {{ "checked" if options.portal_staff }}
+             title="{{ _('Off (advised): at the address of the portal only the users of the workspaces log in; the administrators and developers of the machine come in through their link. On: they log in there too, from the internet.') }}">
+        {{ _("log in at the address of the portal too") }}</label>
     </div>
   </section>
   <div class="actions">
@@ -138,7 +163,8 @@ document.getElementById("form").addEventListener("submit", async (ev) => {
                        protocol: document.getElementById("syslog-protocol").value,
                        port: Number(document.getElementById("syslog-port").value || 514),
                        ca_file: document.getElementById("syslog-ca").value.trim()}},
-      portal: {provider: document.getElementById("provider-label").value.trim()},
+      portal: {provider: document.getElementById("provider-label").value.trim(),
+               staff: document.getElementById("portal-staff").checked},
     }),
   }).catch(() => null);
   const data = resp ? await resp.json().catch(() => ({})) : {};
@@ -146,5 +172,55 @@ document.getElementById("form").addEventListener("submit", async (ev) => {
   box.textContent = data.error || (resp ? {{ _("Error") | tojson }} + " " + resp.status : {{ _("OmniaCLI cannot be reached") | tojson }});
   box.hidden = false;
 });
+(function () {
+  const input = document.getElementById("portal-address");
+  if (!input) return;
+  const T = {here: {{ _("{name} points here.") | tojson }}, elsewhere: {{ _("{name} points to {addresses}, not to this machine ({here}): change its DNS record, or Let's Encrypt will not give the certificate.") | tojson }},
+             unknown: {{ _("{name} points to {addresses}: this machine's public address is not known (behind NAT), so whether that is here is not known.") | tojson }},
+             none: {{ _("{name} has no DNS record yet: make one (A) to this machine's address{here}, then Publish.") | tojson }},
+             taken: {{ _("{name} is not free: {taken}") | tojson }}, nginx: {{ _("The other sites of nginx cannot be read: {error}") | tojson }},
+             empty: {{ _("Write the address of the portal") | tojson }}, unreachable: {{ _("OmniaCLI cannot be reached") | tojson }},
+             remove: {{ _("Take the customers' portal away from {name}? Its site and certificate are removed: the customers no longer log in from the internet, and the invitations made from now carry the address you see now.") | tojson }},
+             removeGo: {{ _("Take away") | tojson }}};
+  const dns = document.getElementById("portal-dns"), box = document.getElementById("portal-error");
+  const fill = (text, values) => text.replace(/\{(\w+)\}/g, (m, k) => (k in values ? values[k] : m));
+  async function send(url, body) {
+    const resp = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
+                                   body: JSON.stringify(body)}).catch(() => null);
+    const data = resp ? await resp.json().catch(() => ({})) : {};
+    return {ok: !!resp && resp.ok, data, reached: !!resp};
+  }
+  function said(text) { box.textContent = text; box.hidden = !text; }
+  async function check() {
+    said(""); dns.textContent = "";
+    const host = input.value.trim();
+    if (!host) { said(T.empty); return null; }
+    const {ok, data, reached} = await send("{{ prefix }}/api/portal/check", {host});
+    if (!ok) { said(data.error || (reached ? "" : T.unreachable)); return null; }
+    if (data.error) { said(data.error); return null; }
+    if (data.taken) { said(fill(T.taken, {name: data.name, taken: data.taken})); return null; }
+    const values = {name: data.name, addresses: (data.addresses || []).join(", "), here: (data.here || []).join(", ")};
+    if (data.dns === "none") values.here = values.here ? ` (${values.here})` : "";
+    dns.textContent = fill(T[data.dns] || "", values) + (data.nginx_error ? " " + fill(T.nginx, {error: data.nginx_error}) : "");
+    return data;
+  }
+  async function publish(host) {
+    said("");
+    const {ok, data, reached} = await send("{{ prefix }}/api/portal/publish", {host});
+    if (ok && data.job) { location.href = `{{ prefix }}/jobs/${data.job}?back=${encodeURIComponent(location.pathname)}`; return; }
+    said(data.error || (reached ? "" : T.unreachable));
+  }
+  document.getElementById("portal-check").addEventListener("click", check);
+  input.addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); check(); } });
+  document.getElementById("portal-publish").addEventListener("click", async () => {
+    const data = await check();
+    if (data) await publish(data.name);
+  });
+  const remove = document.getElementById("portal-remove");
+  if (remove) remove.addEventListener("click", async () => {
+    if (!await omniaAsk(fill(T.remove, {name: {{ options.portal_address | tojson }}}), T.removeGo, {danger: true})) return;
+    await publish("");
+  });
+})();
 </script>
 {% endblock %}

@@ -1319,9 +1319,10 @@ async def test_own_role_self_delete_and_last_admin(client):
 async def test_link_and_mcp_tokens_from_the_web(client):
     data = (await access(client, "links/save", {"name": "partner", "role": "user", "new": True})).json()
     link = {"Authorization": f"Bearer {data['token']}"}
-    assert (await client.get("/api/info", headers=link)).json() == {
-        "app": "OmniaCLI", "version": (await client.get("/api/info", headers=link)).json()["version"],
-        "caller": "link partner", "role": "user"}
+    info = (await client.get("/api/info", headers=link)).json()
+    # portal: no address yet ("", or None where OmniaCLI keeps no nginx: test_portal_address)
+    assert info == {"app": "OmniaCLI", "version": info["version"], "caller": "link partner", "role": "user",
+                    "portal": info["portal"]} and info["portal"] in ("", None)
     assert (await access(client, "links/save", {"name": "partner", "role": "developer"})).json()["token"] is None
     assert (await client.get("/api/info", headers=link)).json()["role"] == "developer"
     assert "already exists" in (await access(client, "links/save", {"name": "partner", "role": "user", "new": True})).json()["error"]

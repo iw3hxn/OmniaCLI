@@ -111,6 +111,94 @@ def conf_text(workspace: str, sites: list[dict], tls: tuple[str, str] | None, ip
     return "\n".join(out) + "\n"
 
 
+# --- the customers' portal: OmniaCLI's own panel on a name of the machine
+# (Options › Customers' portal), so that the users of the workspaces log in
+# from the internet; the machine's people keep coming through their link
+
+# the name of the portal where the helper keeps it: no workspace is named so
+# (WORKSPACE_NAME has no _), so its site, certificate and self-signed
+# certificate never meet a workspace's (omniacli-<workspace>.conf)
+PORTAL = "_portal"
+# the largest request: a backup uploaded from the browser or an MCP client
+# (uploads.MAX_SIZE, 50 GiB), streamed to OmniaCLI, not kept by nginx first
+PORTAL_MAX_BODY = "50g"
+# the live pages (consoles, logs, a job's lines) keep their websocket open
+PORTAL_TIMEOUT = "3600s"
+# the login and the invitations' form: tries a minute from one address
+# (POST only), then 429; OmniaCLI's own limit per address and name follows
+PORTAL_LOGIN_RATE = "10r/m"
+PORTAL_LOGIN_BURST = 5
+PORTAL_HSTS = "max-age=31536000"
+
+# the panel is the edge here: the address and the scheme are nginx's own,
+# never one a client sent (uvicorn trusts them from 127.0.0.1 only: cli.py)
+_PORTAL_HEADERS = (
+    ("Host", "$host"),
+    ("X-Forwarded-Host", "$host"),
+    ("X-Forwarded-For", "$remote_addr"),
+    ("X-Forwarded-Proto", "https"),
+    ("X-Real-IP", "$remote_addr"),
+)
+
+
+def portal_conf_text(host: str, tls: tuple[str, str] | None, ipv6: bool, omniacli: str) -> str:
+    """The portal's site: port 80 answers Let's Encrypt's challenges and
+    sends the rest to https; 443 passes the whole panel to OmniaCLI (omniacli:
+    host:port, omniacli_address), its websockets too, with HSTS, the body of
+    a backup upload and a limit on the login form. Without a certificate
+    (tls None) port 80 answers 503 and there is no 443."""
+    listen80 = ["    listen 80;"] + (["    listen [::]:80;"] if ipv6 else [])
+    out = ["# written by omniacli workspace-helper: the customers' portal, OmniaCLI's own panel.",
+           "# Changed here, it is written again when the portal's address is published (Options).", "",
+           "server {", *listen80, f"    server_name {host};",
+           "    location /.well-known/acme-challenge/ {", f"        root {ACME_ROOT};", "    }",
+           "    location / {", "        return 301 https://$host$request_uri;" if tls else "        return 503;",
+           "    }", "}"]
+    if tls is None:
+        return "\n".join(out) + "\n"
+
+    def passed(indent: str) -> list[str]:
+        return [f"{indent}proxy_pass http://{omniacli};",
+                *(f"{indent}proxy_set_header {name} {value};" for name, value in _PORTAL_HEADERS)]
+
+    form = [f"        limit_req zone=omniacli_portal_login burst={PORTAL_LOGIN_BURST} nodelay;",
+            "        limit_req_status 429;", *passed("        ")]
+    listen443 = ["    listen 443 ssl;"] + (["    listen [::]:443 ssl;"] if ipv6 else [])
+    out = [*out[:3],
+           # http context (conf.d is read inside http): the key is empty, so not
+           # counted, but for a form sent
+           "map $request_method $omniacli_portal_form {", "    POST $binary_remote_addr;", '    default "";', "}",
+           f"limit_req_zone $omniacli_portal_form zone=omniacli_portal_login:1m rate={PORTAL_LOGIN_RATE};",
+           "map $http_upgrade $omniacli_portal_upgrade {", "    default upgrade;", '    "" "";', "}", "",
+           *out[3:], "",
+           "server {", *listen443, f"    server_name {host};",
+           f"    ssl_certificate {tls[0]};", f"    ssl_certificate_key {tls[1]};",
+           "    ssl_protocols TLSv1.2 TLSv1.3;",
+           f"    client_max_body_size {PORTAL_MAX_BODY};",
+           "    proxy_request_buffering off;",
+           f"    proxy_read_timeout {PORTAL_TIMEOUT};", f"    proxy_send_timeout {PORTAL_TIMEOUT};",
+           # one HSTS, nginx's, on its own errors (502) too
+           "    proxy_hide_header Strict-Transport-Security;",
+           f'    add_header Strict-Transport-Security "{PORTAL_HSTS}" always;',
+           "    location = /login {", *form, "    }",
+           "    location ^~ /invite/ {", *form, "    }",
+           "    location / {", *passed("        "),
+           "        proxy_http_version 1.1;",
+           "        proxy_set_header Upgrade $http_upgrade;",
+           "        proxy_set_header Connection $omniacli_portal_upgrade;",
+           # a job's lines and a log come as they are written
+           "        proxy_buffering off;",
+           "        proxy_redirect off;",
+           "    }", "}"]
+    return "\n".join(out) + "\n"
+
+
+def portal_name_in(text: str) -> str:
+    """The name the portal's site answers on (its first server_name), "" for none."""
+    match = _SERVER_NAME.search(text or "")
+    return match.group(1).split()[0] if match and match.group(1).split() else ""
+
+
 _FILE = re.compile(r"^# configuration file (.+):$")
 _SERVER_NAME = re.compile(r"(?:^|[;{}\s])server_name\s+([^;]*);")
 

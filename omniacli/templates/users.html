@@ -31,6 +31,9 @@
     <button type="button" class="primary" id="new-item"></button>
   </div>
 </div>
+{% if portal_url %}<div class="banner info" id="portal-where">{{ _("The customers log in at") }} <a class="mono" href="{{ portal_url }}" target="_blank" rel="noopener">{{ portal_url }}</a>: {{ _("the invitations of the users of the workspaces carry this address.") }}</div>
+{% elif portal_settable %}<div class="banner" id="portal-where">{{ _("The customers' portal has no address yet: the customers cannot log in from the internet, and their invitations carry the address you see now.") }}
+  <a href="{{ prefix }}/options#portal-address-panel" title="{{ _('Opens the Options, where the administrators of the machine give the portal its address') }}">{{ _("Give it an address in Options") }}</a></div>{% endif %}
 <div id="error" class="banner" hidden></div>
 <nav class="tabs" role="tablist" aria-label="{{ _('Who gets in') }}">
   <button type="button" role="tab" data-tab="people" aria-selected="true" title="{{ _('The people who log in here with a name and a password') }}">{{ _("People") }} ({{ users | length }})</button>

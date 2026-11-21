@@ -1227,8 +1227,10 @@ Odoo 20, PostgreSQL 17). Its database's superuser is `postgres`, with a
 password Odoo does not know, and Odoo connects as `odoo`, without superuser;
 the top of the workspace's disk is `0750`, for root and OmniaCLI's group.
 
-The root helper, `omniacli workspace-helper disk|drop|limits|create|remove|web|owncert|firewall|template-install|conf|space`
-(`workspacehelper.py`), takes names only (workspace, instance, template), a
+The root helper, `omniacli workspace-helper disk|drop|limits|create|remove|web|owncert|firewall|template-install|conf|space|portal`
+(`workspacehelper.py`; `portal`: the customers' portal, OmniaCLI's own panel
+on a name of the machine for the users of the workspaces, set in Options:
+`docs/portale-clienti.md`), takes names only (workspace, instance, template), a
 storage of `workspaces.storage` of the main configuration, which only root
 writes, a template of the package's folder, and refuses a folder or a
 template the caller could change. The databases go through the compose

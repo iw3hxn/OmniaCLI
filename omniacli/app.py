@@ -250,6 +250,10 @@ ADDRESS_TAKEN_ELSEWHERE = frozenset({"it is under the domain of another workspac
                                      "another site of this machine answers on it"})
 # a name taken, as a user of workspaces is told: not where, not by whom
 NAME_NOT_AVAILABLE = "This name is not available: choose another one"
+# a user of the machine (not of a workspace) at the customers' portal, while
+# Options do not let them in there (docs/portale-clienti.md)
+PORTAL_STAFF_REFUSED = ("This address is the customers' portal: the users of this machine come in through "
+                        "their link, not from here")
 _MIN_PASSWORD = 8
 # what the proxy of a link passes on, each way (never the caller's credentials,
 # never the other instance's WWW-Authenticate: the browser would ask for them)
@@ -607,6 +611,34 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                        settings.jobs_dir.parent / "publications", published_instance,
                                        published_backup_options, _version())
 
+    # --- the customers' portal (docs/portale-clienti.md): this OmniaCLI on a
+    # name of the machine, published by the root helper (workspacehelper.portal)
+
+    def portal_url() -> str:
+        """https://<the portal's address>, "" when it has none."""
+        address = settings.options.portal_address
+        return f"https://{address}" if address else ""
+
+    def on_portal(request: HTTPConnection) -> bool:
+        """The request came through the portal's site: nginx passes its name as
+        Host (a link, an SSH tunnel, a browser on the machine reach the service
+        by its own address)."""
+        address = settings.options.portal_address
+        host = request.headers.get("host", "").lower()
+        return bool(address) and (host == address or host == f"{address}:443")
+
+    def portal_admits(request: HTTPConnection, name: str) -> bool:
+        """name may log in where this request came from: on the portal, the
+        users of the workspaces only, unless the machine's users were let in
+        there too (Options); everywhere else, everyone as before."""
+        return (not on_portal(request) or settings.options.portal_staff
+                or settings.user_role(name) == WORKSPACE_ROLE)
+
+    def public_base(request: Request) -> str:
+        """Where a person or a client reaches this OmniaCLI: the portal when it
+        has an address, else the address of this request."""
+        return portal_url() or str(request.base_url).rstrip("/")
+
     def identify(request: HTTPConnection) -> Principal:
         # a WebSocket has no method: it is checked as a post (no token, same origin)
         method = request.scope.get("method", "WEBSOCKET")
@@ -655,6 +687,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Login required", headers={_LOGIN_HEADER: "required"})
         if method not in ("GET", "HEAD") and not _same_origin(request):
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Cross-site request refused")
+        if not portal_admits(request, name):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, PORTAL_STAFF_REFUSED)
         role = settings.user_role(name)
         if role == WORKSPACE_ROLE:
             # its role is decided for each request (in_workspaces)
@@ -1021,6 +1055,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             limiter.failed(ip, name)
             access_log.record("failed", "user", name, ip, "login form")
             return login_page(request, next_path, "Wrong user name or password.", 401)
+        if not portal_admits(request, name):
+            # the password was right: said only once it is, as a wrong one would be otherwise
+            access_log.record("failed", "user", name, ip, "login form: a user of the machine at the customers' portal")
+            return login_page(request, next_path, PORTAL_STAFF_REFUSED + ".", 403)
         limiter.succeeded(ip, name)
         access_log.record("login", "user", name, ip, "login form", role=settings.user_role(name))
         response = RedirectResponse(next_path, status.HTTP_303_SEE_OTHER)
@@ -1465,8 +1503,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     @app.get("/api/info")
     async def info(user: Principal = Depends(current_user)):
-        """What a linking instance checks: this version and the caller's role."""
-        return {"app": "OmniaCLI", "version": _version(), "caller": str(user), "role": user.role}
+        """What a linking instance checks: this version and the caller's role;
+        and where the customers log in (the portal, "" for none yet, None
+        where it cannot be published: OmniaCLI does not keep nginx)."""
+        return {"app": "OmniaCLI", "version": _version(), "caller": str(user), "role": user.role,
+                "portal": portal_url() or ("" if settings.storage_roots else None)}
 
     @app.get("/api/servers")
     async def server_list(request: Request):
@@ -3304,7 +3345,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
              "sites": site_names(ws), "certificates": CERTIFICATES,
              "tokens": [{"name": n, "role": settings.token_role(n)} for n in sorted(settings.tokens)
                         if settings.token_workspace(n) == ws.name],
-             "mcp_url": str(request.base_url).rstrip("/") + "/mcp",
+             "mcp_url": public_base(request) + "/mcp",
              # the links an archive may be copied through: the machine's admins'
              "links": sorted(settings.link_targets) if me.kind == "user" and not me.workspaces and me.can("admin")
              else [],
@@ -5757,6 +5798,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 "user_roles": USER_ROLES,
                 "min_password": _MIN_PASSWORD,
                 "can_mail": bool(settings.options.smtp_host),
+                # where the customers log in (docs/portale-clienti.md)
+                "portal_url": portal_url(), "portal_settable": bool(settings.storage_roots),
                 "invitation_hours": INVITATION_HOURS,
                 "link_names": sorted(settings.link_targets),
             },
@@ -5766,7 +5809,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     async def help_page(request: Request):
         """How to create a link and how to connect an MCP client."""
         # seen through a link, the address the browser knows is the other instance's
-        base = "https://<address of this OmniaCLI>" if prefix_of(request) else str(request.base_url).rstrip("/")
+        base = portal_url() or ("https://<address of this OmniaCLI>" if prefix_of(request) else str(request.base_url).rstrip("/"))
         return _TEMPLATES.TemplateResponse(request, "help.html", {"base_url": base})
 
     @app.get("/plugins", dependencies=[Depends(admin)])
@@ -6082,11 +6125,17 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                           workspace=workspace)
         path = f"/invite/{token}"
         base = str(request.base_url)
-        if prefix_of(request):
+        # the customers' portal, where the person will log in: for a user of
+        # the machine only when Options let them in there
+        portal = portal_url() if (settings.options.portal_staff or settings.user_role(name) == WORKSPACE_ROLE) else ""
+        if portal:
+            base = portal
+        elif prefix_of(request):
             # through a link the browser knows this machine by the address the other reaches it at
             base = request.headers.get("X-OmniaCLI-Address", "")
         url = base.rstrip("/") + path if re.fullmatch(r"https?://[^\s/]+(/[^\s]*)?", base) else ""
-        return {"invite_path": path, "invite_url": url, "expires": moment(made.expires)}
+        # portal: the link is this machine's own address, the linking OmniaCLI keeps it
+        return {"invite_path": path, "invite_url": url, "expires": moment(made.expires), "portal": bool(portal)}
 
     async def mail_invitation(request: Request, email: str, name: str, url: str) -> str:
         """The link by e-mail, through the SMTP server of the Options page:
@@ -6264,9 +6313,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                           resp.status_code if 400 <= resp.status_code < 500 else status.HTTP_502_BAD_GATEWAY)
         data["page"] = f"/links/{machine}/workspaces/{workspace}#users"
         if data.get("invite_path"):
-            # the person opens it on the other machine, at the address this one knows it by
-            data["invite_url"] = link.url.rstrip("/") + str(data["invite_path"])
-            data["through_ssh"] = link.ssh is not None
+            # the person opens it on the other machine: at its customers' portal
+            # when it has one (its own address, it said so), else at the address
+            # this one knows it by
+            if not (data.get("portal") and str(data.get("invite_url") or "").startswith("https://")):
+                data["invite_url"] = link.url.rstrip("/") + str(data["invite_path"])
+            data["through_ssh"] = link.ssh is not None and not data.get("portal")
             data["mail_problem"] = await mail_invitation(request, email, body["name"], data["invite_url"])
         return data
 
@@ -7578,8 +7630,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     # --- options of the system ------------------------------------------
 
     @app.get("/options", dependencies=[Depends(admin)])
-    async def options_page(request: Request):
+    async def options_page(request: Request, me: Principal = Depends(current_user)):
         return _TEMPLATES.TemplateResponse(request, "options.html", {
+            "portal_url": portal_url(), "portal_refused": portal_refusal(me),
             "options": settings.options, "options_file": settings.options_file, "machine": settings.machine,
             "font_sizes": SHELL_FONT_SIZES, "idle_hours": TUNNEL_IDLE_HOURS,
             "retention_limits": AUDIT_RETENTION_LIMITS, "syslog_protocols": SYSLOG_PROTOCOLS})
@@ -7603,9 +7656,15 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             payload = {**payload, "audit": {"retention_days": current.audit_retention_days, "syslog": {
                 "host": current.syslog_host, "port": current.syslog_port, "protocol": current.syslog_protocol,
                 "ca_file": current.syslog_ca_file}}}
-        if "portal" not in payload:
+        current = settings.options
+        portal = payload.get("portal")
+        if not isinstance(portal, dict):
             # the name the customers read: not posted keeps the saved one
-            payload = {**payload, "portal": {"provider": settings.options.provider_label}}
+            portal = {"provider": current.provider_label}
+        # the portal's address changes only when it is published (portal_publish):
+        # its site is written with it
+        payload = {**payload, "portal": {**portal, "address": current.portal_address,
+                                         "staff": portal.get("staff", current.portal_staff)}}
         try:
             options = parse_options(payload)
         except ConfigError as exc:
@@ -7618,6 +7677,114 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         apply_audit_options()
         audit_status_cache.clear()
         return {"ok": True}
+
+    # --- the customers' portal: its address, published by the root helper ----
+
+    def portal_refusal(me: Principal) -> str:
+        """Why me may not publish the portal here, "" when it may: the admins of
+        the machine only, where OmniaCLI keeps nginx (its workspaces)."""
+        if not machine_admin(me):
+            return "Only the administrators of the machine publish the customers' portal"
+        if not settings.storage_roots:
+            return workspacehelper.NOT_OUR_NGINX
+        return ""
+
+    def portal_name(value) -> str:
+        """A host name for the portal, or ConfigError with why not: not one of
+        the workspaces' names, nor under their domains."""
+        name = address_name("address", value)
+        taken = address_taken(name, settings.workspaces, "", "", "")
+        if taken:
+            raise ConfigError(f"address: {name} is taken: {taken}")
+        return name
+
+    def portal_certificate_said(host: str, error: str) -> str:
+        """Why Let's Encrypt gave no certificate, in one sentence: certbot's
+        own lines (its log, its forum) are in the job's log."""
+        if any(mark in error.lower() for mark in ("challenges have failed", "failed to authenticate",
+                                                   "connection refused", "timeout during connect")):
+            return (f"Let's Encrypt did not reach {host} on port 80: its DNS record leads elsewhere, "
+                    "or this machine is not reachable from the internet")
+        lines = [line for line in error.splitlines()
+                 if line.strip() and not line.startswith(("Saving debug log", "Ask for help"))]
+        return "; ".join(lines)[:300]
+
+    @app.get("/api/portal", dependencies=[Depends(admin)])
+    async def portal_get(me: Principal = Depends(current_user)):
+        """The portal's address and whether it may be published here."""
+        return {"address": settings.options.portal_address, "url": portal_url(),
+                "staff": settings.options.portal_staff, "refused": portal_refusal(me)}
+
+    @app.post("/api/portal/check", dependencies=[Depends(admin)])
+    async def portal_check(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """The address as the Options page shows it before Publish: a host
+        name, free (the workspaces, the other sites of nginx), and where its
+        DNS points: here, elsewhere (with this machine's address), none."""
+        lang = request_language(request)
+        refused = portal_refusal(me)
+        if refused:
+            return refuse(refused)
+        row = {"name": str(payload.get("host") or "").strip().lower().rstrip("."), "error": "", "taken": "",
+               "dns": "", "addresses": []}
+        try:
+            row["name"] = portal_name(payload.get("host"))
+        except ConfigError as exc:
+            row["error"] = i18n.tr(lang, str(exc).removeprefix("address: "))
+            return row
+        try:
+            found = await workspaceops.ask("portal-names")
+            hit = workspaceweb.takers(row["name"], {str(k): str(v) for k, v in (found.get("elsewhere") or {}).items()})
+            if hit:
+                row["taken"] = i18n.tr(lang, f"used by {hit[0][1]}")
+        except JobFailed as exc:
+            row["nginx_error"] = i18n.tr(lang, str(exc).removeprefix("workspace-helper: "))
+        here = await asyncio.to_thread(workspaceweb.machine_addresses, shutil.which("ip"))
+        row["addresses"] = await asyncio.to_thread(workspaceweb.addresses_of, row["name"])
+        row["dns"], row["here"] = workspaceweb.dns_state(row["addresses"], here), sorted(here)
+        return row
+
+    @app.post("/api/portal/publish", dependencies=[Depends(admin)])
+    async def portal_publish(payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """The portal published on host (empty: taken away), as a job: the
+        site, the certificate, then the address saved in the options."""
+        refused = portal_refusal(me)
+        if refused:
+            return refuse(refused)
+        given = str(payload.get("host") or "").strip()
+        try:
+            host = portal_name(given) if given else ""
+        except ConfigError as exc:
+            return refuse(str(exc).removeprefix("address: "))
+
+        async def action(job):
+            if host:
+                job.log(f"--- the customers' portal at {host}")
+            else:
+                job.log("--- the customers' portal taken away" + (f" from {settings.options.portal_address}"
+                                                                 if settings.options.portal_address else ""))
+            made = await workspaceops._helper(job, "portal", host or "-")
+            job.log(f"nginx: {made.get('nginx')}")
+            options = dataclasses.replace(settings.options, portal_address=host)
+            try:
+                await asyncio.to_thread(save_options, settings.options_file, options)
+            except OSError as exc:
+                raise JobFailed(f"the site is written, but {settings.options_file} is not: {exc}") from exc
+            settings.options = options
+            job.result.update(made)
+            if not host:
+                return
+            job.log(f"https://{host}")
+            why = portal_certificate_said(host, str(made.get("certificate_error") or ""))
+            if made.get("certificate_error"):
+                job.log(f"Let's Encrypt: {made['certificate_error']}")
+            if made.get("certificate") == "self-signed":
+                job.warn(f"{host} has a certificate of this machine's own for now, which the browsers warn about: "
+                         f"Let's Encrypt's comes once {host} points here and the portal is published again"
+                         + (f" ({why})" if why else ""))
+            elif not made.get("https"):
+                job.warn(f"{host} has no certificate yet: {why or 'openssl did not make one'}")
+        title = f"Customers' portal at {host}" if host else "Customers' portal taken away"
+        return {"ok": True, "job": jobs.submit(title, [], f"manual: {me}", action).id}
 
     # --- scheduled actions ----------------------------------------------
 
@@ -7910,7 +8077,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         # on the instance's own name when it has one (its nginx passes it here):
         # OmniaCLI itself may answer on 127.0.0.1 only
         url = (f"{instance.site}{workspaceweb.HOOKS_PATH}deploy/{instance.server}/{instance.role}" if instance.site
-               else str(request.base_url).rstrip("/") + f"/hooks/deploy/{instance.server}/{instance.role}")
+               else public_base(request) + f"/hooks/deploy/{instance.server}/{instance.role}")
         return {"enabled": bool(hook.get("secret")), "url": url,
                 "last": hook.get("last"), "can_edit": me.can(backup_role(instance)),
                 "repositories": [r.name for r in instance.repositories]}

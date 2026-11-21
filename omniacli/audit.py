@@ -57,7 +57,7 @@ AUDITED_BY_ROUTE = frozenset({
 # lists of servers and jobs, the settings, the load
 NOT_SENSITIVE = frozenset({
     "/favicon.ico", "/icon-180.png", "/login-background.jpg", "/login", "/.omniacli/login", "/language/{code}",
-    "/", "/dashboard/servers", "/servers/{server}", "/api/info", "/api/servers", "/api/metrics",
+    "/", "/dashboard/servers", "/servers/{server}", "/api/info", "/api/portal", "/api/servers", "/api/metrics",
     "/api/metrics/history", "/api/disks", "/api/disks/history", "/disks",
     "/api/servers/{server}/{role}/uptime", "/api/servers/{server}/{role}/summary",
     "/api/servers/{server}/{role}/pull-preview", "/api/servers/{server}/{role}/backup/choices",

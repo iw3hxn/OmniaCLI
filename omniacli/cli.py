@@ -19,6 +19,12 @@ from .config import ConfigError, load_settings
 from .packagesign import SigningError, load_private_key, new_private_key, sign_file, verify_local
 
 
+# who may say the client's address and scheme (X-Forwarded-For, -Proto):
+# the nginx of this machine (the customers' portal, the workspaces' sites),
+# never a client, nor the FORWARDED_ALLOW_IPS of an environment
+TRUSTED_PROXIES = "127.0.0.1,::1"
+
+
 def _serve(args) -> int:
     import uvicorn
 
@@ -30,6 +36,7 @@ def _serve(args) -> int:
         host=args.host,
         port=args.port,
         proxy_headers=True,
+        forwarded_allow_ips=TRUSTED_PROXIES,
     )
     return 0
 

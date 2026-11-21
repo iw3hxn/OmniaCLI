@@ -1599,6 +1599,11 @@ class Options:
     # how the users of workspaces read the machine's people (a link's user,
     # a machine admin) in their jobs: empty is "the provider" in their language
     provider_label: str = ""
+    # the customers' portal: the name this OmniaCLI is published on for the
+    # users of the workspaces (workspacehelper.portal), "" for none; staff:
+    # the machine's own users log in there too (else through their link only)
+    portal_address: str = ""
+    portal_staff: bool = False
 
 
 SMTP_SECURITY = ("starttls", "ssl", "none")
@@ -1688,12 +1693,17 @@ def parse_options(data) -> Options:
     provider = str(portal.get("provider") or "").strip()
     if len(provider) > 100 or any(ord(c) < 32 for c in provider):
         raise ConfigError("portal.provider: one line of at most 100 characters")
+    address = address_name("portal.address", portal["address"]) if portal.get("address") else ""
+    staff = portal.get("staff", False)
+    if not isinstance(staff, bool):
+        raise ConfigError("portal.staff must be true or false")
     return Options(shell_font_size=size, tunnel_idle_hours=idle, tunnel_bind=bind, tunnel_ports=ports,
                    smtp_host=texts["host"], smtp_port=port, smtp_security=security, smtp_user=texts["user"],
                    smtp_password=texts["password"], mail_from=texts["from"],
                    monitor_notify=parse_notify(monitor.get("notify"), "monitor.notify"),
                    audit_retention_days=retention, syslog_host=syslog_host, syslog_port=syslog_port,
-                   syslog_protocol=protocol, syslog_ca_file=ca_file, provider_label=provider)
+                   syslog_protocol=protocol, syslog_ca_file=ca_file, provider_label=provider,
+                   portal_address=address, portal_staff=staff)
 
 
 def load_options(path: Path) -> Options:
@@ -1725,8 +1735,10 @@ def save_options(path: Path, options: Options) -> None:
         if options.syslog_host:
             data["audit"]["syslog"] = {"host": options.syslog_host, "port": options.syslog_port,
                                        "protocol": options.syslog_protocol, "ca_file": options.syslog_ca_file}
-    if options.provider_label:
-        data["portal"] = {"provider": options.provider_label}
+    portal = {"provider": options.provider_label, "address": options.portal_address, "staff": options.portal_staff}
+    portal = {key: value for key, value in portal.items() if value}
+    if portal:
+        data["portal"] = portal
     text = yaml.safe_dump(data, sort_keys=False)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
