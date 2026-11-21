@@ -352,7 +352,7 @@
  "{label}: at least {min}.": "{label}: almeno {min}.",
  "{label}: at most {max}.": "{label}: al massimo {max}.",
  "{left} of {all}": "{left} di {all}",
- "{list} stay at the base values (D10).": "{list}: restano ai valori di base (D10).",
+ "{list} stay at the base values: the memory goes to the productions.": "{list}: resta ai valori di base, la memoria va alle produzioni.",
  "{now} · {then} at the restart": "{now} · {then} al riavvio",
  "{n} core": "{n} core",
  "{n} cores": "{n} core",

@@ -755,7 +755,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
       {% else %}<dd class="{{ 'mono' if kind in ('path', 'number') }}">{{ value }}</dd>{% endif %}
       {% endfor %}
       {% if dbl %}
-      <dt>{{ _("Database") }}</dt>
+      <dt>{{ _("Database server") }}</dt>
       <dd data-db-line="{{ dbl.where }}" {% if not machine_admin %}title="{{ _('The administrator of the machine tunes it') }}"{% endif %}>
         {% if dbl.where == "dedicated" %}{{ _("dedicated") }} ·
           {% if dbl.restart %}{{ _("restart at {time} of {date}", time=dbl.restart[11:16], date=when(dbl.restart)[:10]) }}
@@ -1898,7 +1898,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
                                                       {minimumFractionDigits: 1, maximumFractionDigits: 1}) + " GB";
     function machine() { return (sd.querySelector('input[name="sd-machine"]:checked') || {}).value || ""; }
     // the address and the workspace of the machine chosen
-    function show() {
+    function showChoice() {
       const there = (form.machines || []).find((m) => m.name === machine());
       advanced.hidden = !there;
       create.title = there ? S.createThere : S.createHere;
@@ -1909,10 +1909,10 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
       const chosen = there.workspaces.find((w) => w.name === wsSelect.value) || {};
       address.textContent = chosen.address || S.noAddress;
     }
-    wsSelect.addEventListener("change", show);
+    wsSelect.addEventListener("change", showChoice);
     function radio(value, text, title, checked) {
       const input = Object.assign(document.createElement("input"), {type: "radio", name: "sd-machine", value, checked});
-      input.addEventListener("change", show);
+      input.addEventListener("change", showChoice);
       const label = document.createElement("label");
       label.className = "sd-server"; label.title = title;
       label.append(input, " " + text);
@@ -1933,7 +1933,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
       document.getElementById("sd-servers").hidden = !(data.machines || []).length;
       const names = (data.unlisted || []).map((u) => `${u.name} (${u.why})`);
       document.getElementById("sd-unlisted").textContent = names.length ? S.unlisted.replace("{names}", names.join(", ")) : "";
-      show();
+      showChoice();
       create.disabled = false;
     }
     newStaging.addEventListener("click", () => {

@@ -155,7 +155,7 @@
     basis: {{ _("Calculated on {memory} of memory, {cores} cores and {disk} disk: the memory for the databases of this machine ({memory} of {total}), {share}.") | tojson }},
     shareAll: {{ _("all of it for the only production") | tojson }},
     shareMany: {{ _("{each} for each of the {n} productions") | tojson }},
-    staysBase: {{ _("{list} stay at the base values (D10).") | tojson }},
+    staysBase: {{ _("{list} stay at the base values: the memory goes to the productions.") | tojson }},
     staysSelf: {{ _("A test or a staging stays at its base values: here the proposal changes nothing, the values can be written by hand.") | tojson }},
     wsLimit: {{ _("The workspace {ws} has {gb} GB for Odoo and its database together: the shared memory stays under {cap}.") | tojson }},
     disks: {ssd: "SSD", hdd: {{ _("spinning") | tojson }}},
