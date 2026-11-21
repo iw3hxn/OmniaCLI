@@ -26,6 +26,7 @@ import shutil
 import socket
 import tempfile
 import time
+import types
 import zipfile
 from dataclasses import asdict
 from pathlib import Path
@@ -47,6 +48,7 @@ from . import (backupcheck, backupchoices, checks, deployhooks, destinations, in
 from .accesslog import REQUEST as AUDIT_REQUEST, AccessLog
 from . import audit, siem
 from . import i18n, loginas, machines, modulecatalog, pgreport, pgtuning, stagings, workspaceweb
+from . import machinedb
 from . import stagingmail
 from . import dumpinfo
 from . import totp
@@ -3866,9 +3868,13 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if space is not None:
             room = workspaceops.room(space, settings.workspaces, storage, None) or {}
             free_gb, room_gb = int(room.get("allowed", 0) / workspaceops.GB), quick_room(space)
-        return {"versions": [{"major": m, "label": found[f"odoo-{m}"].label} for m in majors],
+        # the database (AD-001, AD-007): the machine's cluster by default when it
+        # is there and the version has a template on it, dedicated otherwise
+        cluster = bool(machinedb.registry())
+        return {"versions": [{"major": m, "label": found[f"odoo-{m}"].label,
+                              "machine": f"odoo-{m}-machine" in found} for m in majors],
                 "storage": bool(settings.storage_roots), "address": await asyncio.to_thread(public_address),
-                "free_gb": free_gb, "room_gb": room_gb, "min_gb": QUICK_DISK_GB[0]}
+                "free_gb": free_gb, "room_gb": room_gb, "min_gb": QUICK_DISK_GB[0], "cluster": cluster}
 
     @app.post("/api/instances/new", dependencies=[Depends(admin)])
     async def quick_instance(payload: dict = Body(...), me: Principal = Depends(current_user)):
@@ -3879,8 +3885,21 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         its production answers there and its test on test.<domain>."""
         major = str(payload.get("version") or "").strip()
         template = f"odoo-{major}"
-        if template not in await asyncio.to_thread(workspaceops.templates):
+        found_templates = await asyncio.to_thread(workspaceops.templates)
+        if template not in found_templates:
             return refuse(f"No Odoo {major} here (no template {template})")
+        # its database: the machine's cluster (the default when there is one) or one of its own
+        database = str(payload.get("database") or ("machine" if machinedb.registry()
+                                                    and f"{template}-machine" in found_templates else "dedicated"))
+        if database not in ("machine", "dedicated"):
+            return refuse("database is machine or dedicated")
+        if database == "machine":
+            if not machinedb.registry():
+                return refuse("This machine has no cluster of its own yet: make it in Dashboard › Database, "
+                              "or choose a dedicated database")
+            if f"{template}-machine" not in found_templates:
+                return refuse(f"Odoo {major} has no template on the machine's cluster: choose a dedicated database")
+            template = f"{template}-machine"
         if not settings.storage_roots:
             return refuse(f"No storage for workspaces on this machine: {workspaceops.HELPERS_HINT}")
         if workspaceops.docker_missing():
@@ -4200,6 +4219,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         the address the staging would get there; the workspace of that name,
         new, when there is none."""
         found_templates = await asyncio.to_thread(workspaceops.templates)
+        # a template on the machine's cluster: only where the cluster is
+        if template in found_templates and found_templates[template].on_machine and not machinedb.registry():
+            found_templates = {k: v for k, v in found_templates.items() if k != template}
         out = {"template": template in found_templates,
                "labels": sorted({t.label for t in found_templates.values()}),
                "storage": bool(settings.storage_roots), "docker": workspaceops.docker_missing() is None,
@@ -4696,6 +4718,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         (a volume of its own, its service made again: a few seconds without
         database), a first base backup; then one each night."""
         ws, instance, prod = pitr_target(server)
+        if on_machine_db(prod):
+            return refuse(workspacehelper.PITR_ON_CLUSTER)
 
         async def action(job):
             found = await workspaceops._helper(job, "pitr-enable", ws.name, ws.storage, instance, "production",
@@ -4725,7 +4749,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 for server, info in (await asyncio.to_thread(deployhooks.load, pitr_file)).items():
                     found = workspace_of(server)
                     srv = settings.servers.get(server)
-                    if found is None or srv is None or srv.production is None or jobs.is_busy(srv.production.key):
+                    if found is None or srv is None or srv.production is None or jobs.is_busy(srv.production.key) \
+                            or on_machine_db(srv.production):
                         continue
                     try:
                         last = datetime.datetime.fromisoformat(str(info.get("base") or "")).timestamp()
@@ -4751,6 +4776,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     @app.post("/api/servers/{server}/pitr/base", dependencies=[Depends(admin)])
     async def pitr_base(server: str, me: Principal = Depends(current_user)):
         ws, instance, prod = pitr_target(server)
+        if on_machine_db(prod):
+            return refuse(workspacehelper.PITR_ON_CLUSTER)
         job = jobs.submit(f"Base backup for point-in-time recovery of {prod.key}", [prod.key], f"manual: {me}",
                           lambda job: pitr_base_job(job, ws, instance, server), workspace=ws.name)
         return {"job": job.id}
@@ -4761,6 +4788,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         minute: its cluster made again from the archive, the filestore of
         now linked (Odoo never changes a file there, only adds), neutralized."""
         ws, instance, prod = pitr_target(server)
+        if on_machine_db(prod):
+            return refuse(workspacehelper.PITR_ON_CLUSTER)
         when = str(payload.get("time") or "").strip()
         try:
             at = datetime.datetime.fromisoformat(when)
@@ -9364,11 +9393,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         pitr = await asyncio.to_thread(deployhooks.load, pitr_file)
         records = (await asyncio.to_thread(tuning.load))["clusters"]
         dedicated, system, remote = [], {}, []
+        clusters = await machine_clusters()
         for srv in settings.active_servers():
             for role in ("production", "test"):
                 inst = srv.instances.get(role)
                 if inst is None:
                     continue
+                if inst.restart.type == "compose" and on_machine_db(inst):
+                    continue  # a row of the machine's cluster, among those it serves
                 if inst.restart.type == "compose":
                     kind, parent = postgres_kind(srv, role, known)
                     dedicated.append({"key": inst.key, "server": srv.name, "role": role, "kind": kind,
@@ -9401,7 +9433,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                             "state": pgtuning.state(row["kind"], None, record, i18n.tr(lang, str(exc)))})
                 return row
             params = pgtuning.parameters(found)
-            row.update({"version": str(found.get("version") or "").split(" ")[0], "size": found.get("size"),
+            row.update({"version": str(found.get("version") or "").split(" ")[0], "size": found.get("cluster_size") if row["where"] == "machine" else found.get("size"),
                         "connections": found.get("connections"),
                         "max_connections": (pgtuning.by_name(params).get("max_connections") or {}).get("now"),
                         "statements_on": bool(found.get("statements_on")), "params": params,
@@ -9427,7 +9459,19 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                         "max_connections": good[0].get("max_connections")})
             return row
 
-        rows = await asyncio.gather(*(one(r) for r in dedicated), *(shared(p, s) for p, s in system.items()))
+        machine_rows = []
+        for found in clusters.get("clusters") or []:
+            major = str(found.get("major") or "")
+            target = cluster_target(major, str(found.get("project") or ""))
+            serves = sorted(f"{e.get('workspace')}-{e.get('instance')}" for e in (found.get("environments") or {}).values())
+            machine_rows.append({"key": target.key, "server": MACHINE_KEY, "role": major, "kind": "machine",
+                                 "parent": "", "where": "machine", "instance": target, "workspace": "", "pitr": None,
+                                 "major": major, "storage": found.get("storage") or "",
+                                 "promised": int(found.get("promised") or 0), "running": bool(found.get("running")),
+                                 "serves": [{"key": f"{s}/production", "server": s, "role": "production"}
+                                            for s in serves]})
+        rows = await asyncio.gather(*(one(r) for r in machine_rows), *(one(r) for r in dedicated),
+                                    *(shared(p, s) for p, s in system.items()))
         done = [r for r in rows if r["where"] == "dedicated"]
         # by instance: the production, its test, its stagings under it, the newest first
         order = {"production": 0, "test": 1}
@@ -9441,17 +9485,78 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                   key=lambda r: order.get(r["role"], 2))
                 out += sorted(children, key=lambda r: r["server"], reverse=True)
         out += [r for r in rows if r["where"] == "system"]
-        return {"rows": out, "remote": remote}
+        # the machine's cluster first: it serves many
+        out = [r for r in rows if r["where"] == "machine"] + out
+        return {"rows": out, "remote": remote, "cluster": cluster_offer(clusters)}
+
+    # --- the machine's cluster (AD-001, steps 3 and 4): a row of the tab, its
+    # tuning as a dedicated one's (compose-helper on its project, service db,
+    # database postgres), made and taken away by the root helper
+    MACHINE_KEY = "_machine"
+    MACHINE_TIMEOUT = 900
+    cluster_targets: dict[str, types.SimpleNamespace] = {}
+
+    def on_machine_db(inst: Instance) -> bool:
+        return getattr(inst.options, "db_service", "") == machinedb.DB_SERVICE
+
+    def cluster_target(major: str, project: str) -> types.SimpleNamespace:
+        """What the tuning's code takes of an instance, for the cluster of
+        major: its key, its helper's commands, its service and database."""
+        key = f"{MACHINE_KEY}/{major}"
+        target = types.SimpleNamespace(
+            key=key, server=MACHINE_KEY, role=major, cluster=True, project=project,
+            options=types.SimpleNamespace(db_service=machinedb.SERVICE, database="postgres", odoo_service=None),
+            restart=types.SimpleNamespace(type="compose", service=project,
+                                          command=lambda *args: workspaceops.compose(project, *args)))
+        cluster_targets[key] = target
+        return target
+
+    async def machine_clusters() -> dict:
+        """The root helper's machine-db-state, {} on a machine without
+        workspaces or when it does not answer (said in the log)."""
+        if not settings.storage_roots or not machinedb.registry():
+            return {}
+        try:
+            return await workspaceops.ask("machine-db-state", timeout=pgtuning.READ_TIMEOUT * 4)
+        except JobFailed as exc:
+            _logger.warning("the machine's cluster cannot be read: %s", exc)
+            return {}
+
+    def cluster_offer(clusters: dict) -> dict:
+        """What + Machine's cluster needs: whether one may be made here, the
+        majors without one, the storage it goes on, why not."""
+        made = {str(c.get("major")) for c in clusters.get("clusters") or []} or set(machinedb.registry())
+        why = ("no storage for workspaces on this machine" if not settings.storage_roots
+               else workspaceops.docker_missing() or "")
+        missing = [m for m in machinedb.MAJORS if m not in made]
+        return {"made": sorted(made), "missing": missing, "storage": next(iter(settings.storage_roots), ""),
+                "why": why}
+
+    def known_cluster(major: str):
+        """The target of the cluster of major as the root's record says it
+        (/etc/omniacli/machine-db.json, readable), None when none is made."""
+        found = machinedb.registry().get(major) if major in machinedb.MAJORS else None
+        return cluster_target(major, str(found.get("project") or "")) if found else None
+
+    def tuning_target(server: str, role: str):
+        """The instance whose dedicated database is tuned, or the machine's cluster."""
+        if server == MACHINE_KEY:
+            target = known_cluster(role)
+            if target is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, f"No cluster of PostgreSQL {role} on this machine")
+            return target
+        return get_instance(server, role)
 
     def postgres_row(rows: list[dict], server: str, role: str) -> dict:
-        found = next((r for r in rows if r.get("key") == f"{server}/{role}" and r["where"] == "dedicated"), None)
+        found = next((r for r in rows if r.get("key") == f"{server}/{role}" and r["where"] in ("dedicated", "machine")),
+                     None)
         if found is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND,
                                 f"{server}/{role} has no database of its own here: only a dedicated one is tuned")
         return found
 
     def postgres_memory(machine: dict, rows: list[dict]) -> dict:
-        read = [r for r in rows if r["where"] == "dedicated" and r.get("params")]
+        read = [r for r in rows if r["where"] in ("dedicated", "machine") and r.get("params")]
         return {**machine, "assigned": sum(pgtuning.shared_of(r["params"]) for r in read),
                 "at_base": sum(1 for r in read if r["state"]["code"] in ("base", "base_production"))}
 
@@ -9464,6 +9569,56 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return {**found, "memory": postgres_memory(machine, found["rows"]), "now": datetime.datetime.now().isoformat(
             timespec="seconds")}
 
+    @app.post("/api/postgres/machine/create")
+    async def postgres_machine_create(payload: Optional[dict] = Body(None), me: Principal = Depends(current_user)):
+        """+ Machine's cluster: the PostgreSQL of the machine made (a job of the
+        root helper, machine-db-create), its data on the first storage."""
+        postgres_admin(me)
+        payload = payload if isinstance(payload, dict) else {}
+        offer = cluster_offer({})
+        if offer["why"]:
+            return refuse(f"No cluster of the machine here: {offer['why']}")
+        major = str(payload.get("major") or (offer["missing"] or [""])[0])
+        if major not in machinedb.MAJORS:
+            return refuse(f"PostgreSQL {major or '?'} is not one the machine's cluster runs "
+                          f"({', '.join(machinedb.MAJORS)})")
+        if major not in offer["missing"]:
+            return refuse(f"The machine's cluster of PostgreSQL {major} exists already")
+        storage = str(payload.get("storage") or offer["storage"])
+        if storage not in settings.storage_roots:
+            return refuse(f"{storage!r} is not a storage of this machine")
+
+        async def action(job):
+            job.log(f"--- the machine's PostgreSQL {major}: a container of its own, its data on the storage "
+                    f"{storage}, no port, reached by its socket")
+            found = await workspaceops._helper(job, "machine-db-create", storage, major, timeout=MACHINE_TIMEOUT)
+            job.log(f"PostgreSQL {found.get('version', '').split(' ')[0]} answers; it runs as {found.get('user')}, "
+                    f"its socket in {found.get('socket')}. The new instances are made on it from now on.")
+            job.result = {**job.result, "cluster": major}
+        job = jobs.submit(f"Machine's PostgreSQL {major}", [f"{MACHINE_KEY}/{major}"], f"manual: {me}", action)
+        return {"job": job.id}
+
+    @app.post("/api/postgres/machine/{major}/remove")
+    async def postgres_machine_remove(major: str, me: Principal = Depends(current_user)):
+        """The machine's cluster taken away, when it serves nothing."""
+        postgres_admin(me)
+        if known_cluster(major) is None:
+            return refuse(f"No cluster of PostgreSQL {major} on this machine", status.HTTP_404_NOT_FOUND)
+        served = machine_served()
+        if served:
+            return refuse(f"The machine's cluster serves {', '.join(i.key for i in served)}: move them to a "
+                          "dedicated database or delete them first")
+
+        async def action(job):
+            found = await workspaceops._helper(job, "machine-db-remove", major, timeout=MACHINE_TIMEOUT)
+            job.log(f"The machine's PostgreSQL {major} is taken away: {found.get('removed')}; "
+                    f"its user {found.get('user')}, the image {found.get('image')}")
+            await asyncio.to_thread(postgres_record, f"{MACHINE_KEY}/{major}", remove=list(pgtuning.PARAMETERS),
+                                    restart=None)
+        job = jobs.submit(f"Remove the machine's PostgreSQL {major}", [f"{MACHINE_KEY}/{major}"], f"manual: {me}",
+                          action)
+        return {"job": job.id}
+
     def postgres_basis(row: dict, machine: dict, memory_gb: float, disk: str, rows: list[dict]) -> dict:
         ws = settings.workspaces.get(row.get("workspace") or "")
         limit = float(ws.limits.get("memory_gb") or 0) if ws is not None else 0
@@ -9473,7 +9628,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                  if r["where"] == "dedicated" and r["kind"] != "production" and r["key"] != row["key"]]
         return {"proposal": proposal, "limits": limits, "machine": {**machine, "memory_gb": memory_gb, "disk": disk},
                 "workspace": row.get("workspace") or "", "workspace_gb": limit or None, "stays": stays,
-                "productions": proposal["productions"], "when": "at" if row["kind"] == "production" else "now",
+                "productions": proposal["productions"], "when": "at" if row["kind"] in pgtuning.SHARING else "now",
                 "time": pgtuning.DEFAULT_TIME,
                 "at": pgtuning.next_time(pgtuning.DEFAULT_TIME).isoformat(timespec="minutes")}
 
@@ -9575,13 +9730,23 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         job.log(f"--- the database of {inst.key} answers again: {answer.get('seconds', '?')} s without it, "
                 f"{answer.get('total', '?')} s in all; statistics of the queries "
                 + ("on" if answer.get("statements_on") else "off"))
-        odoo = getattr(inst.options, "odoo_service", "odoo")
-        code, log = await ops.capture(inst.restart.command("logs", odoo, "--since", since), timeout=60)
-        if code == 0:
-            errors = sum(1 for line in log.splitlines() if ODOO_DB_ERRORS.search(line))
-            job.log(f"Odoo log lines with a database error since the restart: {errors}")
+        # the machine's cluster: the log of every instance it serves
+        served = machine_served() if getattr(inst, "cluster", False) else [inst]
+        for one in served:
+            odoo = getattr(one.options, "odoo_service", "odoo")
+            code, log = await ops.capture(one.restart.command("logs", odoo, "--since", since), timeout=60)
+            if code == 0:
+                errors = sum(1 for line in log.splitlines() if ODOO_DB_ERRORS.search(line))
+                job.log(f"Odoo log lines with a database error since the restart"
+                        + (f" ({one.key})" if len(served) > 1 or one is not inst else "") + f": {errors}")
+
+    def machine_served() -> list[Instance]:
+        return [i for srv in settings.active_servers() for i in srv.instances.values()
+                if i.restart.type == "compose" and on_machine_db(i)]
 
     def postgres_title(inst: Instance) -> str:
+        if getattr(inst, "cluster", False):
+            return f"the machine's PostgreSQL {inst.role}"
         return f"the database of {inst.key}"
 
     @app.post("/api/postgres/{server}/{role}/apply")
@@ -9591,7 +9756,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         those of a restart written right before it, now or at the time
         chosen (a restart planned once). A job."""
         postgres_admin(me)
-        inst = get_instance(server, role)
+        inst = tuning_target(server, role)
         found = await postgres_rows(request_language(request))
         row = postgres_row(found["rows"], server, role)
         if row.get("error"):
@@ -9642,7 +9807,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         """The planned restart of the database of key, as a job (it waits for
         a job running on the instance); the plan is taken when it starts."""
         server, _, role = key.partition("/")
-        inst = settings.instance(server, role)
+        inst = known_cluster(role) if server == MACHINE_KEY else settings.instance(server, role)
         if inst is None:
             return None
 
@@ -9724,7 +9889,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     async def postgres_restart_now(server: str, role: str, me: Principal = Depends(current_user)):
         """The planned restart done now, or a restart for the values changed outside OmniaCLI."""
         postgres_admin(me)
-        inst = get_instance(server, role)
+        inst = tuning_target(server, role)
         if inst.restart.type != "compose":
             return refuse(f"{inst.key} has no database of its own here: only a dedicated one is restarted")
         plan = (await asyncio.to_thread(tuning.cluster, inst.key)).get("restart")
@@ -9745,7 +9910,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         """The planned restart taken away: the values waiting for it are not
         written; those valid already stay. Nothing is stopped."""
         postgres_admin(me)
-        inst = get_instance(server, role)
+        inst = tuning_target(server, role)
         gone = {}
 
         def cancel(data):
@@ -9769,7 +9934,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         point-in-time recovery's) back to their base values: those valid at
         once now, those of a restart at it, now or at the time chosen."""
         postgres_admin(me)
-        inst = get_instance(server, role)
+        inst = tuning_target(server, role)
         found = await postgres_rows(request_language(request))
         row = postgres_row(found["rows"], server, role)
         if row.get("error"):
@@ -9807,11 +9972,15 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     def database_line(inst: Instance) -> dict | None:
         """The Database row of the instance's Settings (UX-008 §6.2.6), from
-        the record: PostgreSQL is not read, the page is not slowed."""
+        the record: PostgreSQL is not read, the page is not slowed. With the
+        move it may make (AD-007) and whether a move left its undo beside it."""
         if inst.restart.type == "compose":
-            rec = tuning.cluster(inst.key)
-            return {"where": "dedicated", "tuned": rec.get("tuned") if rec.get("params") else None,
-                    "restart": (rec.get("restart") or {}).get("at")}
+            machine = on_machine_db(inst)
+            key = f"{MACHINE_KEY}/{next(iter(machinedb.registry()), '')}" if machine else inst.key
+            rec = tuning.cluster(key)
+            return {"where": "machine" if machine else "dedicated",
+                    "tuned": rec.get("tuned") if rec.get("params") else None,
+                    "restart": (rec.get("restart") or {}).get("at"), **move_offer(inst)}
         try:
             shell = inst.plugin.db_shell(inst)
         except Exception:  # noqa: BLE001 - a config that cannot be read: no row
@@ -9822,6 +9991,128 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if place["where"] == "remote":
             return {"where": "remote", "host": place["host"]}
         return {"where": "system", "port": str(shell[1].get("PGPORT") or 5432)}
+
+    # --- a move between a dedicated database and the machine's cluster (AD-007, step 6)
+
+    MOVE_TIMEOUT = 6 * 3600 + 600
+
+    def machine_twin_of(template) -> str:
+        """The template on the machine's cluster of a dedicated one, "" when none."""
+        # a template of before (or a plugin's) has neither: no twin
+        twins = [t for t in workspaceops.templates().values()
+                 if getattr(t, "on_machine", False) and getattr(t, "dedicated", "") == template.name]
+        return twins[0].name if twins else ""
+
+    def move_offer(inst: Instance) -> dict:
+        """{"move": machine|dedicated|"" , "why": why not, "kept": the undo of a move is there}
+        of the production of a workspace's instance."""
+        found = workspace_of(inst.server)
+        if found is None or inst.role != "production":
+            return {"move": "", "why": "", "kept": False}
+        ws, instance = found
+        project = Path(inst.restart.service)
+        kept = any((project / name).exists() for name in (workspacehelper.KEPT, workspacehelper.MOVES))
+        if on_machine_db(inst):
+            return {"move": "dedicated", "why": "", "kept": kept}
+        template = instance_template(ws, instance)
+        if template is None:
+            return {"move": "", "why": "its template is not on this machine any more", "kept": kept}
+        if not machine_twin_of(template):
+            return {"move": "", "why": f"the template {template.name} has no twin on the machine's cluster",
+                    "kept": kept}
+        if not machinedb.registry():
+            return {"move": "", "why": "this machine has no cluster of its own yet (Dashboard › Database)",
+                    "kept": kept}
+        if settings.servers.get(inst.server) is not None and settings.servers[inst.server].test is not None:
+            return {"move": "", "why": "it has a test of its own: on the machine's cluster an instance has its "
+                                       "production only", "kept": kept}
+        return {"move": "machine", "why": "", "kept": kept}
+
+    @app.post("/api/servers/{server}/database/move")
+    async def database_move(server: str, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """Move… (AD-007): the production's database to the machine's cluster
+        or back to one of its own, a job: Odoo stops for the time of the copy,
+        the copy is checked, the servers file follows. On a move to the
+        cluster the dedicated database stays beside it, the undo, until
+        Free the space of before…"""
+        if not machine_admin(me):
+            return refuse("Only an admin of the machine moves a database", status.HTTP_403_FORBIDDEN)
+        to = str((payload or {}).get("to") or "")
+        if to not in ("machine", "dedicated"):
+            return refuse("to is machine or dedicated")
+        srv = settings.servers.get(server)
+        found = workspace_of(server)
+        if srv is None or srv.production is None or found is None:
+            return refuse(f"{server} is not an instance of a workspace", status.HTTP_404_NOT_FOUND)
+        ws, instance = found
+        offer = await asyncio.to_thread(move_offer, srv.production)
+        if offer["move"] != to:
+            return refuse(f"{server} cannot move to " + ("the machine's cluster" if to == "machine"
+                                                         else "a dedicated database") + (f": {offer['why']}"
+                                                                                          if offer["why"] else ""))
+        if server_busy(server):
+            return refuse(f"{server} is busy: wait for its job")
+        size = None
+        with contextlib.suppress(JobFailed, asyncio.TimeoutError):
+            size = int((await asyncio.wait_for(pgreport.report(srv.production), pgtuning.READ_TIMEOUT)).get("size") or 0)
+
+        async def action(job):
+            where = "the machine's cluster" if to == "machine" else "a dedicated database"
+            job.log(f"--- {server}: its database to {where}"
+                    + (f" ({size >> 20} MiB)" if size else "") + "; Odoo stops for the time of the copy")
+            made = await workspaceops._helper(job, "machine-db-move", ws.name, ws.storage, instance, to,
+                                              timeout=MOVE_TIMEOUT)
+            async with config_lock:
+                current = settings.servers.get(server)
+                if current is None:
+                    raise JobFailed(f"{server} is no longer in the servers file: its database moved anyway")
+                data = server_to_dict(current)
+                data["production"] = {**data["production"], "database": made["database"],
+                                      "db_service": machinedb.DB_SERVICE if to == "machine" else "db"}
+                parsed = parse_servers({server: data}, settings.logs_dir)[server]
+                error = await store({**settings.servers, server: parsed})
+            if error is not None:
+                raise JobFailed(f"the database moved, but the servers file was not written: {error.body.decode()}")
+            if to == "machine" and made.get("pitr_was_on"):
+                await asyncio.to_thread(pitr_record, server, enabled=False)
+                job.warn("The recovery at a minute is off on the machine's cluster: what was archived before the "
+                         "move stays in the folder of the dedicated database, until Free the space of before")
+            elif to == "dedicated" and made.get("pitr"):
+                await asyncio.to_thread(pitr_record, server, enabled=True)
+                job.log("The recovery at a minute archives again: a new full copy is made tonight")
+            job.log(f"Database {made['database']} (it was {made['before']}): installed modules|users|partners "
+                    f"{made['counts']} on both sides; Odoo was stopped {made['seconds_down']} s")
+            if to == "machine":
+                job.log("The dedicated database stays beside it, stopped: Move to a dedicated database brings it "
+                        "back; Free the space of before deletes it")
+            job.result = {**job.result, "server": server, "database": made["database"], "to": to,
+                          "seconds_down": made["seconds_down"]}
+        title = f"Move {server} to " + ("the machine's cluster" if to == "machine" else "a dedicated database")
+        job = jobs.submit(title, [f"{server}/production"], f"manual: {me}", action, workspace=ws.name)
+        return {"job": job.id}
+
+    @app.post("/api/servers/{server}/database/purge")
+    async def database_purge(server: str, me: Principal = Depends(current_user)):
+        """Free the space of before… : what a move left (the dedicated
+        database of before, its archive, the dumps) deleted, the undo gone."""
+        if not machine_admin(me):
+            return refuse("Only an admin of the machine frees it", status.HTTP_403_FORBIDDEN)
+        srv = settings.servers.get(server)
+        found = workspace_of(server)
+        if srv is None or srv.production is None or found is None:
+            return refuse(f"{server} is not an instance of a workspace", status.HTTP_404_NOT_FOUND)
+        if not (await asyncio.to_thread(move_offer, srv.production))["kept"]:
+            return refuse(f"{server} keeps nothing of a move")
+        if server_busy(server):
+            return refuse(f"{server} is busy: wait for its job")
+        ws, instance = found
+
+        async def action(job):
+            made = await workspaceops._helper(job, "machine-db-purge", ws.name, ws.storage, instance)
+            job.log("Deleted: " + (", ".join(made.get("removed") or []) or "nothing"))
+        job = jobs.submit(f"Free the space of before of {server}", [f"{server}/production"], f"manual: {me}", action,
+                          workspace=ws.name)
+        return {"job": job.id}
 
     app.state.postgres_due = postgres_due
 

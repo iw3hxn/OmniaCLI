@@ -164,6 +164,14 @@ command of the caller's, and runs docker with an environment of its own:
                                          {mode: state|on|fetch, domain:
                                          <name>.test} as JSON on the input
 
+A project on the machine's cluster (its .env says DB_CLUSTER, machinedb.py)
+has no database service: its database actions (modules, psql, pg-report,
+pg-terminate) name the service "machine" and run in its Odoo service as the
+environment's own role; its tuning is the cluster's (refused here); load and
+verify give its role CREATEDB for their time only, and load and init leave
+the database its role's, closed to the others (machinedb.close). verify
+names its throwaway database <role>-verify-<hex> there.
+
 A database name is [A-Za-z0-9_.-], a module [a-z0-9_]; a service must be one
 of the project's. They reach the container's shell as its arguments, never
 in a script's text. The database connection is the one the official image's
@@ -188,6 +196,8 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+
+from . import machinedb
 
 # the files docker compose reads in a project's folder by itself
 COMPOSE_FILES = ("compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml")
@@ -282,6 +292,7 @@ _TUNED_IN = "(" + ", ".join(f"'{n}'" for n in TUNED) + ")"
 PG_SETTINGS = f"""SELECT json_build_object(
  'version', current_setting('server_version'),
  'size', pg_database_size(current_database()),
+ 'cluster_size', (SELECT sum(pg_database_size(oid)) FROM pg_database WHERE datallowconn),
  'connections', (SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'client backend'),
  'statements_on', EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements'),
  'settings', (SELECT coalesce(json_agg(s ORDER BY s.name), '[]') FROM (
@@ -425,7 +436,7 @@ SCRIPTS = {
     "pip-freeze": "exec python3 -m pip freeze --user --disable-pip-version-check",
     # a backup restored for a try: the zip from the input, the check in
     # OMNIACLI_CHECK; the database dropped on the way out, whatever happened
-    "verify": ODOO_DB + 'd="omniacli_verify_$(od -An -N4 -tx1 /dev/urandom | tr -d " \\n")"; '
+    "verify": ODOO_DB + 'd="${OMNIACLI_VERIFY:-omniacli_verify_}$(od -An -N4 -tx1 /dev/urandom | tr -d " \\n")"; '
                         'f="$(mktemp /tmp/omniacli-verify-XXXXXX.zip)"; '
                         'trap \'odoo db drop "$d" >&2 2>&1; rm -f "$f"\' EXIT; '
                         'cat > "$f"; odoo db load --neutralize "$d" "$f" >&2 || exit 1; '
@@ -450,6 +461,14 @@ SCRIPTS = {
                         'exec python3 -m pip install --user --break-system-packages --disable-pip-version-check '
                         '--no-warn-script-location -r "$f"; else echo "$1 has no requirements.txt"; fi',
 }
+# a project on the machine's cluster (machinedb.py): its database actions
+# run in its Odoo service as the environment's own role (the PG* Odoo has),
+# never as the cluster's superuser: what they read is that database's
+MACHINE_ODOO = "odoo"
+for _name in ("pg-modules", "psql", "pg-report", "pg-terminate"):
+    SCRIPTS["machine-" + _name] = ODOO_DB + SCRIPTS[_name].replace(' -U "${POSTGRES_USER:-postgres}"', "")
+# the actions where Odoo drops and creates its database (CREATEDB, in them only)
+CREATES_DATABASE = ("load", "verify")
 _ENV_LINE = re.compile(r"\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=")
 # logs: a service's output with the time of each line, the last N lines or
 # those since a time (UTC, as docker writes it)
@@ -617,12 +636,36 @@ def psql_options(project: Path, service_name: str) -> tuple[str, ...]:
     if done.returncode:
         raise HelperError(f"cannot ask {service_name} who it runs as: {done.stderr.strip()}")
     ids = done.stdout.split()
-    if len(ids) > 1:
-        return ("--user", "postgres")
+    # a container of a user of its own (the machine's cluster): as that user,
+    # who alone reads its superuser's password
     if ids and ids[0] != "0":
         return ()
+    if len(ids) > 1:
+        return ("--user", "postgres")
     raise HelperError(f"{service_name} runs as root and has no user postgres: "
                       "psql is not opened, its \\! would run as root")
+
+
+def on_cluster(project: Path) -> dict | None:
+    """{"major", "role"} of a project on the machine's cluster, else None."""
+    try:
+        return machinedb.environment(project)
+    except machinedb.ClusterError as exc:
+        raise HelperError(str(exc)) from None
+
+
+def db_target(project: Path, name: str, terminal: bool = False) -> tuple[str, str, tuple[str, ...]]:
+    """(service, prefix of the script, exec options) a database action of
+    the service name runs with: the project's database service as its
+    postgres; on the machine's cluster (name machinedb.DB_SERVICE) its Odoo
+    service, as the environment's role."""
+    if on_cluster(project) is None:
+        svc = service(project, name)
+        return svc, "", (() if terminal else ("-T",)) + psql_options(project, svc)
+    if name != machinedb.DB_SERVICE:
+        raise HelperError(f"{project} is on the machine's cluster: its database is {machinedb.DB_SERVICE}, "
+                          "reached from its Odoo service")
+    return service(project, MACHINE_ODOO), "machine-", () if terminal else ("-T",)
 
 
 def commands(project: Path, action: str, args: list[str]) -> list[list[str]]:
@@ -677,9 +720,8 @@ def commands(project: Path, action: str, args: list[str]) -> list[list[str]]:
         # modules <database service> <database>: the fixed query above
         if len(args) != 2:
             raise HelperError("usage: modules <service> <database>")
-        name = service(project, args[0])
-        return [_script(name, "pg-modules", _database(args[1]), MODULES_QUERY,
-                        options=("-T", *psql_options(project, name)))]
+        name, prefix, options = db_target(project, args[0])
+        return [_script(name, prefix + "pg-modules", _database(args[1]), MODULES_QUERY, options=options)]
     if action == "init":
         # init <odoo service> <database> <modules> [<language>]: a new database,
         # in a container of its own (the image's entrypoint gives the connection)
@@ -708,7 +750,10 @@ def commands(project: Path, action: str, args: list[str]) -> list[list[str]]:
         # be stopped), the check given in its environment
         if len(args) != 1:
             raise HelperError("usage: verify <service>")
-        return [["run", "--rm", "-T", "-e", "OMNIACLI_CHECK=" + VERIFY_SCRIPT.read_text(),
+        env = on_cluster(project)
+        # on the machine's cluster: a name only its own pg_hba line reaches
+        prefix = ["-e", "OMNIACLI_VERIFY=" + machinedb.verify_prefix(env["role"])] if env else []
+        return [["run", "--rm", "-T", "-e", "OMNIACLI_CHECK=" + VERIFY_SCRIPT.read_text(), *prefix,
                  "--entrypoint", "sh", service(project, args[0]), "-c", SCRIPTS["verify"], "sh"]]
     if action == "options":
         # options <odoo service>: in the running service
@@ -729,8 +774,8 @@ def commands(project: Path, action: str, args: list[str]) -> list[list[str]]:
         # psql <database service> <database>: on a terminal, the web shell's
         if len(args) != 2:
             raise HelperError("usage: psql <service> <database>")
-        name = service(project, args[0])
-        return [_script(name, "psql", _database(args[1]), options=psql_options(project, name))]
+        name, prefix, options = db_target(project, args[0], terminal=True)
+        return [_script(name, prefix + "psql", _database(args[1]), options=options)]
     if action == "neutralize":
         # neutralize <odoo service> <database>: in a container of its own
         if len(args) != 2:
@@ -741,13 +786,15 @@ def commands(project: Path, action: str, args: list[str]) -> list[list[str]]:
         # pg-report <database service> <database>: the fixed queries above
         if len(args) != 2:
             raise HelperError("usage: pg-report <service> <database>")
-        name = service(project, args[0])
-        return [_script(name, "pg-report", _database(args[1]), PG_REPORT, PG_STATEMENTS,
-                        options=("-T", *psql_options(project, name)))]
+        name, prefix, options = db_target(project, args[0])
+        return [_script(name, prefix + "pg-report", _database(args[1]), PG_REPORT, PG_STATEMENTS, options=options)]
     if action == "pg-settings":
         # pg-settings <database service> <database>: the fixed query above
         if len(args) != 2:
             raise HelperError("usage: pg-settings <service> <database>")
+        if on_cluster(project) is not None:
+            raise HelperError(f"{project} is on the machine's cluster: it is tuned as the cluster, "
+                              "in the Database tab of the machine")
         name = service(project, args[0])
         return [_script(name, "pg-settings", _database(args[1]), PG_SETTINGS,
                         options=("-T", *psql_options(project, name)))]
@@ -756,8 +803,8 @@ def commands(project: Path, action: str, args: list[str]) -> list[list[str]]:
     if action == "pg-terminate":
         if len(args) != 3 or not PID.fullmatch(args[2]):
             raise HelperError("usage: pg-terminate <service> <database> <pid>")
-        name = service(project, args[0])
-        return [_script(name, "pg-terminate", _database(args[1]), args[2], options=("-T", *psql_options(project, name)))]
+        name, prefix, options = db_target(project, args[0])
+        return [_script(name, prefix + "pg-terminate", _database(args[1]), args[2], options=options)]
     if action == "mail-list":
         # mail-list <start> <limit>: the caught messages, the newest first
         if len(args) != 2 or not all(a.isdigit() and len(a) <= 6 for a in args) \
@@ -1169,10 +1216,12 @@ def _sql(project: Path, name: str, options: tuple[str, ...], database: str, sql:
 
 def _answers(project: Path, name: str, timeout: float) -> str | None:
     """None once the database answers; else why not (a container that
-    stops or restarts in a loop is said at once, with its log)."""
+    stops or restarts in a loop is said at once, with its log). The
+    machine's cluster listens on its socket only."""
     end = time.monotonic() + timeout
+    host = machinedb.SOCKET_IN_DB if machinedb.is_cluster(project) else "127.0.0.1"
     while True:
-        if _run(project, "exec", "-T", name, "pg_isready", "-q", "-h", "127.0.0.1").returncode == 0:
+        if _run(project, "exec", "-T", name, "pg_isready", "-q", "-h", host).returncode == 0:
             return None
         state = _run(project, "ps", "-a", "--format", "{{.State}}", name).stdout.strip()
         if state in ("restarting", "exited", "dead"):
@@ -1205,8 +1254,8 @@ def db_restart(project: Path, name: str, options: tuple[str, ...], database: str
     if rolled_back:
         print(f"the database did not come back ({problem}): postgresql.auto.conf of before put back", flush=True)
         _run(project, "stop", "-t", str(STOP_TIMEOUT), name)
-        done = _run(project, "run", "--rm", "--no-deps", "-T", "--user", "postgres", "--entrypoint", "sh", name,
-                    "-c", PUT_BACK, input=before.decode("utf-8"))
+        done = _run(project, "run", "--rm", "--no-deps", "-T", *(options or ("--user", "postgres")),
+                    "--entrypoint", "sh", name, "-c", PUT_BACK, input=before.decode("utf-8"))
         if done.returncode:
             raise HelperError(f"postgresql.auto.conf of before could not be put back: {done.stderr.strip()[-300:]}")
         _run(project, "start", name)
@@ -1225,13 +1274,23 @@ def pg_tune(project: Path, action: str, args: list[str], raw: bytes) -> int:
     if len(args) != 2:
         raise HelperError(f"usage: {action} <service> <database> (the values, JSON, on the input)")
     values, names = tune_input(action, raw)
+    if on_cluster(project) is not None:
+        raise HelperError(f"{project} is on the machine's cluster: it is tuned as the cluster, "
+                          "in the Database tab of the machine")
     name, database = service(project, args[0]), _database(args[1])
     options = psql_options(project, name)
     if "shared_preload_libraries" in values:
         check_libraries(values["shared_preload_libraries"],
                         _sql(project, name, options, database, "SHOW shared_preload_libraries;\n").strip())
     if action == "db-restart":
-        return db_restart(project, name, options, database, values, names)
+        code = db_restart(project, name, options, database, values, names)
+        if machinedb.is_cluster(project):
+            # the statistics of the queries in the database of each environment
+            try:
+                machinedb.sync_statements(project)
+            except machinedb.ClusterError as exc:
+                print(f"WARNING: the statistics of the queries of the environments: {exc}", flush=True)
+        return code
     _sql(project, name, options, database, tune_sql(values, names) + "SELECT pg_reload_conf();\n")
     print(json.dumps({"set": sorted(values), "reset": names}))
     return 0
@@ -1272,16 +1331,43 @@ def run(argv: list[str]) -> int:
         name, options, cut = logs_options(project, args)
         if cut:
             return logs_cut(project, [*LOGS, *options, name], cut)
-    for cmd in commands(project, action, args):
+    cmds = commands(project, action, args)
+    env = on_cluster(project) if action in (*CREATES_DATABASE, "init") else None
+    if env is None:
+        return _each(project, cmds, extra)
+    return on_machine(project, env, action, args, cmds, extra)
+
+
+def _each(project: Path, cmds: list[list[str]], extra: dict) -> int:
+    for cmd in cmds:
         code = subprocess.run(compose(project, *cmd), env=ENV, cwd=project, **extra).returncode
         if code:
             return code
     return 0
 
 
+def on_machine(project: Path, env: dict, action: str, args: list[str], cmds: list[list[str]], extra: dict) -> int:
+    """An action on the machine's cluster that creates a database: CREATEDB
+    for the environment's role during it only (AD-002), and the database
+    closed after (its role's, no CONNECT for PUBLIC)."""
+    try:
+        if action in CREATES_DATABASE:
+            machinedb.allow_createdb(env["major"], env["role"], True)
+        try:
+            code = _each(project, cmds, extra)
+        finally:
+            if action in CREATES_DATABASE:
+                machinedb.allow_createdb(env["major"], env["role"], False)
+        if code == 0 and action in ("load", "init"):
+            machinedb.close(machinedb.project_of(env["major"]), env["role"], _database(args[1]))
+        return code
+    except machinedb.ClusterError as exc:
+        raise HelperError(str(exc)) from None
+
+
 def main(argv: list[str]) -> int:
     try:
         return run(argv)
-    except HelperError as exc:
+    except (HelperError, machinedb.ClusterError) as exc:
         print(f"compose-helper: {exc}", file=sys.stderr)
         return 2

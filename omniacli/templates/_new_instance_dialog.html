@@ -90,6 +90,18 @@
             <input type="text" id="ni-name" class="mono" maxlength="32" placeholder="odoo19" autocomplete="off"></div>
         </div>
       </details>
+      {# its database (docs/adr/postgresql-della-macchina.md AD-007): the machine's
+         cluster by default where there is one; a database of its own is the
+         advanced choice. Not shown for a machine whose OmniaCLI does not say it #}
+      <details id="ni-db" style="margin-top: 8px" hidden>
+        <summary class="muted" style="cursor: pointer; font-size: 13px" id="ni-db-summary" title="{{ _('Where the database of the new instance lives: in the PostgreSQL of the machine, beside the others, or in one of its own') }}"></summary>
+        <div role="radiogroup" aria-label="{{ _('Database') }}" style="margin-top: 8px">
+          <label style="display: block; margin: 4px 0" id="ni-db-machine-label"><input type="radio" name="ni-db" value="machine" id="ni-db-machine"> {{ _("Of the machine") }}
+            <span class="ni-help" style="display: block; margin-left: 22px">{{ _("Its own role and its data on its disk, in the PostgreSQL of this machine: one memory for all, no recovery at a minute.") }}</span></label>
+          <label style="display: block; margin: 4px 0"><input type="radio" name="ni-db" value="dedicated" id="ni-db-dedicated"> {{ _("Dedicated") }}
+            <span class="ni-help" style="display: block; margin-left: 22px">{{ _("A PostgreSQL of its own, in its project: isolated, with the recovery at a minute; it takes more memory.") }}</span></label>
+        </div>
+      </details>
       <label class="ni-saved"><input type="checkbox" id="ni-saved"> {{ _("I have saved the admin's password") }}</label>
     </div>
     <div class="ni-foot">
@@ -123,7 +135,10 @@
              free: {{ _("{free} GB free") | tojson }},
              hereTitle: {{ _("Makes the instance on this machine") | tojson }},
              serverTitle: {{ _("Makes the instance on {name}, through its link: its job opens there") | tojson }},
-             offTitle: {{ _("Cannot make an instance there: {why}") | tojson }}};
+             offTitle: {{ _("Cannot make an instance there: {why}") | tojson }},
+             dbMachine: {{ _("Database: of the machine") | tojson }}, dbDedicated: {{ _("Database: dedicated") | tojson }},
+             noCluster: {{ _("This machine has no PostgreSQL of its own yet: an admin makes it in Dashboard › Database") | tojson }},
+             noTwin: {{ _("This version has no template on the machine's cluster") | tojson }}};
   const dialog = document.getElementById("new-instance"), versions = document.getElementById("ni-versions");
   const error = document.getElementById("ni-error"), create = document.getElementById("ni-create");
   const nameField = document.getElementById("ni-name");
@@ -194,7 +209,7 @@
     versions.replaceChildren();
     for (const [i, v] of (data.versions || []).entries()) {
       const input = Object.assign(document.createElement("input"), {type: "radio", name: "ni-version", value: String(v.major), checked: i === 0});
-      input.addEventListener("change", () => { nameField.placeholder = `odoo${v.major}`; });
+      input.addEventListener("change", () => { nameField.placeholder = `odoo${v.major}`; database(data, v); });
       const card = document.createElement("label");
       card.className = "ni-version"; card.title = v.label;
       const big = document.createElement("b"); big.textContent = `${v.major}.0`;
@@ -203,10 +218,26 @@
       versions.append(card);
     }
     if (versions.children.length) nameField.placeholder = `odoo${data.versions[0].major}`;
+    database(data, (data.versions || [])[0]);
     if (data.address) document.getElementById("ni-dns").textContent = T.dns.replace("{address}", data.address);
     error.textContent = "";
     ready();
   }
+  // the database of the version chosen: of the machine when it can, else dedicated
+  const dbBox = document.getElementById("ni-db"), dbMachine = document.getElementById("ni-db-machine");
+  const dbDedicated = document.getElementById("ni-db-dedicated"), dbSummary = document.getElementById("ni-db-summary");
+  function database(data, version) {
+    dbBox.hidden = !("cluster" in data) || !version;
+    if (dbBox.hidden) return;
+    const why = !data.cluster ? T.noCluster : !version.machine ? T.noTwin : "";
+    dbMachine.disabled = !!why;
+    document.getElementById("ni-db-machine-label").title = why;
+    (why ? dbDedicated : dbMachine).checked = true;
+    summarize();
+  }
+  const summarize = () => { dbSummary.textContent = dbMachine.checked ? T.dbMachine : T.dbDedicated; };
+  dbMachine.addEventListener("change", summarize);
+  dbDedicated.addEventListener("change", summarize);
   // by delegation: the dialog may come before its button in the page
   document.addEventListener("click", async (event) => {
     if (!event.target.closest("[data-new-instance]")) return;
@@ -233,7 +264,8 @@
       body: JSON.stringify({version: picked.value, name: nameField.value.trim(),
                             domain: document.getElementById("ni-domain").value.trim(),
                             language: document.getElementById("ni-language").value,
-                            country: document.getElementById("ni-country").value, password: password.value})}).catch(() => null);
+                            country: document.getElementById("ni-country").value, password: password.value,
+                            ...(dbBox.hidden ? {} : {database: dbMachine.checked ? "machine" : "dedicated"})})}).catch(() => null);
     const data = resp ? await resp.json().catch(() => ({})) : {};
     create.textContent = T.create; ready();
     if (!resp || !resp.ok || !data.job) { error.textContent = data.error || data.detail || T.refused; return; }

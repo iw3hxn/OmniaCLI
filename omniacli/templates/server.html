@@ -980,13 +980,21 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
       {% if dbl %}
       <dt>{{ _("Database server") }}</dt>
       <dd data-db-line="{{ dbl.where }}" {% if not machine_admin %}title="{{ _('The administrator of the machine tunes it') }}"{% endif %}>
-        {% if dbl.where == "dedicated" %}{{ _("dedicated") }} ·
+        {% if dbl.where in ("dedicated", "machine") %}{{ _("dedicated") if dbl.where == "dedicated" else _("machine's cluster") }} ·
           {% if dbl.restart %}{{ _("restart at {time} of {date}", time=dbl.restart[11:16], date=when(dbl.restart)[:10]) }}
           {% elif dbl.tuned %}{{ _("tuned on {when}", when=when(dbl.tuned)) }}
           {% else %}{{ _("base values") }}{% endif %}
         {% elif dbl.where == "system" %}{{ _("PostgreSQL of the system (port {port}) · not tuned by OmniaCLI", port=dbl.port) }}
         {% else %}{{ _("on {host} · tuned there", host=dbl.host) }}{% endif %}
-        {% if machine_admin and dbl.where == "dedicated" %}<a href="{{ prefix }}/#database" title="{{ _('Opens the Database tab of the machine, where this database is tuned') }}">{{ _("Database of the machine ›") }}</a>{% endif %}
+        {% if machine_admin and dbl.where in ("dedicated", "machine") %}<a href="{{ prefix }}/#database" title="{{ _('Opens the Database tab of the machine, where this database is tuned') }}">{{ _("Database of the machine ›") }}</a>{% endif %}
+        {# the move (AD-007): a job, Odoo stopped for the copy; its undo kept beside it until freed #}
+        {% if machine_admin and (dbl.move or dbl.kept) %}
+        <span class="db-move" style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px">
+          {% if dbl.move == "machine" %}<button type="button" class="small" data-db-move="machine" data-ask="{{ _('Move the database of {server} into the machine\'s cluster? Odoo stops for the time of the copy (about a minute for a small database); the dedicated database stays beside it, stopped, as the undo.', server=server.name) }}" title="{{ _('Copies the database into the PostgreSQL of the machine (pg_dump, then pg_restore in the tablespace on the workspace\'s disk), checks the copy and starts Odoo on it. The dedicated database stays, stopped: Move to a dedicated database brings it back. The recovery at a minute stops. It is a job.') }}">{{ _("Move into the machine's cluster…") }}</button>
+          {% elif dbl.move == "dedicated" %}<button type="button" class="small" data-db-move="dedicated" data-ask="{{ _('Move the database of {server} into a database of its own? Odoo stops for the time of the copy; the copy on the machine\'s cluster is deleted once the dedicated one holds it.', server=server.name) }}" title="{{ _('Copies the database from the machine\'s cluster into a PostgreSQL of its own (the one of before when kept), checks the copy and starts Odoo on it; then its database on the cluster is deleted. It is a job.') }}">{{ _("Move into a dedicated database…") }}</button>{% endif %}
+          {% if dbl.kept %}<button type="button" class="small danger" data-db-purge data-ask="{{ _('Delete what the move of {server} left: the database of before and its copies? The move can no longer be undone from them.', server=server.name) }}" title="{{ _('Deletes the database of before the move, its archive of the recovery at a minute and the copies made for the move, freeing their space on the workspace\'s disk. The move can then be undone only by moving again. It is a job.') }}">{{ _("Free the space of before…") }}</button>{% endif %}
+        </span>
+        {% elif machine_admin and dbl.why %}<span class="muted" style="display: block; font-size: 13px" title="{{ _('Why this database cannot move into the machine\'s cluster') }}">{{ _("It stays dedicated: {why}", why=tr(dbl.why)) }}</span>{% endif %}
       </dd>
       {% endif %}
       <dt>{{ _("Log") }}</dt><dd class="mono">{{ inst.log_label }}</dd>
@@ -1006,6 +1014,26 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     {% if shell_paths.get(inst.key) %}{{ shell_paths_box(shell_paths.get(inst.key)) }}{% endif %}
   </details>
 </section>
+<script>
+// the move of the database (AD-007): asked in the page's dialog, a job
+(function () {
+  const api = {{ (prefix ~ "/api/servers/" ~ server.name ~ "/database") | tojson }};
+  const go = async (button, path, body, danger) => {
+    if (!await window.omniaAsk(button.dataset.ask, button, {danger})) return;
+    const resp = await fetch(api + path, {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
+                                          body: JSON.stringify(body || {})}).catch(() => null);
+    const data = resp ? await resp.json().catch(() => ({})) : {};
+    if (!resp || !resp.ok || !data.job) { window.omniaSay(data.error || data.detail || {{ _("Refused") | tojson }}); return; }
+    location.href = `{{ prefix }}/jobs/${data.job}`;
+  };
+  for (const button of document.querySelectorAll("[data-db-move]")) {
+    button.addEventListener("click", () => go(button, "/move", {to: button.dataset.dbMove}, false));
+  }
+  for (const button of document.querySelectorAll("[data-db-purge]")) {
+    button.addEventListener("click", () => go(button, "/purge", {}, true));
+  }
+})();
+</script>
 {% endif %}
 
 {% for dialog in dialogs %}{% include dialog %}{% endfor %}
@@ -1310,6 +1338,12 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     if (!resp || !resp.ok) return;
     const data = await resp.json();
     box.hidden = false;
+    if (data.machine) {
+      // on the machine's cluster: not here (AD-006), the way to have it said
+      box.querySelector(".pitr-state").textContent = {{ _("Not on the machine's cluster: it is there for a dedicated database. Move this database into a dedicated one (Settings › Technical details) to switch it on.") | tojson }};
+      for (const part of box.querySelectorAll(".pitr-off, .pitr-on, .pitr-details")) part.hidden = true;
+      return;
+    }
     const offBox = box.querySelector(".pitr-off"), onBox = box.querySelector(".pitr-on");
     if (offBox) offBox.hidden = data.enabled;
     if (onBox) onBox.hidden = !data.enabled;

@@ -49,6 +49,9 @@ SYSTEM_GB = 1
 # the step of a proposed memory, and the least one
 STEP = 16 * MIB
 DISKS = ("ssd", "hdd")
+# who shares the memory for the databases (D10): the productions' dedicated
+# databases and the machine's cluster
+SHARING = ("production", "machine")
 # a planned restart OmniaCLI was not running for: done the next day at the same time, never late in the day
 MISSED_AFTER = 15 * 60
 # the restart's default time for a production (D11): after the automatic backups of 03:00
@@ -249,9 +252,10 @@ def propose(target: dict, rows: list[dict], memory_gb: float, disk: str, limit_g
     params = by_name(target["params"])
     budget = memory_gb * GIB
     others = [r for r in rows if r["key"] != target["key"] and r.get("params")]
-    held = sum(shared_of(r["params"]) for r in others if r["kind"] != "production")
-    productions = sum(1 for r in rows if r["kind"] == "production" and r.get("params"))
-    if target["kind"] != "production":
+    # the machine's cluster takes its share as a production does: it serves productions
+    held = sum(shared_of(r["params"]) for r in others if r["kind"] not in SHARING)
+    productions = sum(1 for r in rows if r["kind"] in SHARING and r.get("params"))
+    if target["kind"] not in SHARING:
         values = {name: p["at_restart"] if p["at_restart"] is not None else p["now"] for name, p in params.items()}
         share = None
     else:
@@ -277,8 +281,11 @@ def limits(target: dict, rows: list[dict], memory_gb: float, connections: int) -
     database may take (the memory less what the others hold), the fewest
     connections (those in use and RESERVE), the bounds of pg_settings."""
     others = sum(shared_of(r["params"]) for r in rows if r["key"] != target["key"] and r.get("params"))
+    # the machine's cluster: never fewer than its environments' roles may open (AD-005 §7)
+    promised = int(target.get("promised") or 0)
     return {"shared_max": int(memory_gb * GIB - others), "others": others, "budget": int(memory_gb * GIB),
-            "connections_min": int(connections) + RESERVE, "connections": int(connections),
+            "connections_min": max(int(connections), promised) + RESERVE, "connections": max(int(connections), promised),
+            "promised": promised,
             "bounds": {p["name"]: [p["min"], p["max"]] for p in target["params"] if p["kind"] != "libraries"}}
 
 
@@ -409,4 +416,4 @@ def state(kind: str, params: list[dict] | None, record: dict, error: str | None 
         return {"code": "tuned", "when": record["tuned"]}
     if params and written_outside(params):
         return {"code": "tuned_unknown"}
-    return {"code": "base_production" if kind == "production" else "base"}
+    return {"code": "base_production" if kind in SHARING else "base"}

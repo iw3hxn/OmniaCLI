@@ -51,7 +51,10 @@ def where(instance, env: dict | None) -> dict:
     """Where the database is: the compose project's own service, this
     machine's PostgreSQL, or another machine (db_host of its config)."""
     if env is None:
-        return {"where": "service", "host": f"{getattr(instance.options, 'db_service', 'db')} of the project"}
+        service = getattr(instance.options, "db_service", "db")
+        if service == "machine":
+            return {"where": "machine", "host": "the machine's cluster"}
+        return {"where": "service", "host": f"{service} of the project"}
     host = env.get("PGHOST", "")
     remote = host not in LOCAL_HOSTS and not host.startswith("/")
     return {"where": "remote" if remote else "local",

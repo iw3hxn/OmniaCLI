@@ -80,7 +80,7 @@ def test_the_helpers_verify(tmp_path, monkeypatch):
     assert "verify_check.py" not in cmd[4] and "OMNIACLI-VERIFY" in cmd[4]
     script = cmd[cmd.index("-c") + 1]
     # a database of its own, dropped on the way out whatever happens; neutralized
-    assert 'd="omniacli_verify_' in script and "trap 'odoo db drop \"$d\"" in script
+    assert 'd="${OMNIACLI_VERIFY:-omniacli_verify_}' in script and "trap 'odoo db drop \"$d\"" in script
     assert 'odoo db load --neutralize "$d"' in script
     with pytest.raises(composehelper.HelperError):
         composehelper.commands(tmp_path, "verify", ["odoo", "x"])

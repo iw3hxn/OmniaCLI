@@ -143,7 +143,7 @@ from pathlib import Path
 
 import yaml
 
-from . import composehelper, config, pitrhelper, stacktemplates, templatestore, workspaceweb
+from . import composehelper, config, machinedb, pitrhelper, stacktemplates, templatestore, workspaceweb
 from .composehelper import ENV, HelperError, caller
 from .config import (CERTIFICATES, DOMAIN_NAME, OMNIACLI_COMMAND, SUBDOMAIN, TEST_LABEL, WORKSPACE_NAME,
                      ConfigError, parse_storage_roots, web_names)
@@ -1126,18 +1126,31 @@ def create(name: str, storage: str, instance: str, template_name: str, values_js
         values = template.values({str(k): str(v) for k, v in given.items()})
     except stacktemplates.TemplateError as exc:
         raise HelperError(str(exc)) from None
+    # on the machine's cluster (AD-001): the production alone, a name unique
+    # on the cluster, its socket; the cluster must be there already
+    machine = None
+    if template.on_machine:
+        if roles != ["production"]:
+            raise HelperError("an instance on the machine's cluster has its production only: its copies are stagings")
+        try:
+            machine = {"socket": str(machinedb.socket_folder(template.postgres)),
+                       "role": machinedb.env_name(name, instance), "major": template.postgres}
+        except machinedb.ClusterError as exc:
+            raise HelperError(str(exc)) from None
     _, caller_uid, _ = caller()
     ports = pick_ports(2 * len(roles))
     if not firewall_in_place():
         firewall("on")
     subnets = pick_subnets(len(roles))
-    database = instance.replace("-", "_")
+    database = machine["role"] if machine else instance.replace("-", "_")
     made = {"workspace": name, "instance": instance, "template": template.name, "version": template.version,
             "database": database, "odoo_service": template.odoo_service, "db_service": template.db_service,
-            "values": values, "roles": {}, "mail_capture": mail, "mail_inbox": inbox}
+            "values": values, "roles": {}, "mail_capture": mail, "mail_inbox": inbox,
+            "database_mode": template.database}
     meta = {"template": template.name, "version": template.version, "database": database,
             **({MAIL_META: True} if mail else {}), **({INBOX_META: True} if inbox else {})}
     folder.mkdir(mode=0o755)
+    on_cluster = False
     try:
         _write(folder / INSTANCE_FILE, json.dumps(meta) + "\n")
         for index, role in enumerate(roles):
@@ -1152,6 +1165,8 @@ def create(name: str, storage: str, instance: str, template_name: str, values_js
                    "WEBSOCKET_PORT": str(ws_port), "DB_PASSWORD": stacktemplates.new_password(),
                    "DB_SUPER_PASSWORD": stacktemplates.new_password(),
                    "SUBNET": subnets[index], "SLICE": slice_name(name)}
+            if machine:
+                env.update({"DB_CLUSTER": machine["major"], "DB_USER": machine["role"], "DB_SOCKET": machine["socket"]})
             caught = captures_mail(meta, role)
             if caught:
                 # read by docker compose in .env: the template's mail service runs
@@ -1164,7 +1179,8 @@ def create(name: str, storage: str, instance: str, template_name: str, values_js
             (project / "config").mkdir(mode=0o755)
             _write(project / "config" / "odoo.conf",
                    stacktemplates.conf_text(template, database, stacktemplates.new_password(), [],
-                                            mail_capture=caught),
+                                            mail_capture=caught,
+                                            db_template=machinedb.template_name(name) if machine else ""),
                    mode=0o644)
             for item in template.data:
                 path = project / item["path"]
@@ -1173,7 +1189,16 @@ def create(name: str, storage: str, instance: str, template_name: str, values_js
                     os.chown(path, *_owner(item["owner"]))
             made["roles"][role] = {"folder": str(project), "http_port": http_port, "websocket_port": ws_port,
                                    "subnet": subnets[index]}
+            if machine:
+                # its role, its tablespace on this disk, its database, its line of pg_hba
+                on_cluster = True
+                made["machine"] = machinedb.env_add(machine["major"], name, mount, instance, env["DB_PASSWORD"])
     except BaseException:
+        if on_cluster:
+            try:
+                machinedb.env_remove(machine["major"], machine["role"])
+            except machinedb.ClusterError:
+                pass
         shutil.rmtree(folder, ignore_errors=True)
         raise
     if mail:
@@ -1263,7 +1288,8 @@ def conf(name: str, storage: str, instance: str, role: str, spec_json: str) -> d
     caught = captures_mail(meta, role)
     text = stacktemplates.conf_text(template, str(meta.get("database") or ""),
                                     password or stacktemplates.new_password(), repos, values, debug, extra,
-                                    mail_capture=caught)
+                                    mail_capture=caught,
+                                    db_template=machinedb.template_name(name) if template.on_machine else "")
     _write(conf_file, text, mode=0o644)
     kept = {k: v for k, v in values.items() if v != template.parameter(k).default
             and not (caught and k in stacktemplates.MAIL_PARAMETERS)}
@@ -1314,6 +1340,7 @@ def remove(name: str, storage: str, instance: str) -> dict:
     folder = mount / instance
     if folder.is_symlink() or not folder.is_dir():
         raise HelperError(f"no instance {instance} in workspace {name}")
+    dropped = []
     for role in ROLES:
         project = folder / role
         if any((project / f).is_file() for f in composehelper.COMPOSE_FILES):
@@ -1321,11 +1348,20 @@ def remove(name: str, storage: str, instance: str) -> dict:
                                   env=ENV, cwd=project).returncode
             if code:
                 raise HelperError(f"docker compose down of {project} failed ({code}): nothing removed")
+        # on the machine's cluster: its database, its role, its line of pg_hba
+        env = composehelper.on_cluster(project)
+        if env is not None:
+            try:
+                dropped.append(machinedb.env_remove(env["major"], env["role"]))
+            except machinedb.ClusterError as exc:
+                raise HelperError(f"{exc}: the instance stays, its containers stopped; remove it again "
+                                  "once the machine's cluster answers") from None
     shutil.rmtree(folder)
     # its network is free again: no SMTP rule left on it
     if _mail_guard_file():
         mail_guard_apply()
-    return {"workspace": name, "instance": instance, "removed": str(folder)}
+    return {"workspace": name, "instance": instance, "removed": str(folder),
+            **({"machine": dropped} if dropped else {})}
 
 
 def _env(project: Path) -> dict[str, str]:
@@ -2035,16 +2071,33 @@ def _project(name: str, storage: str, instance: str, role: str) -> Path:
     return project
 
 
+# point-in-time recovery: of a dedicated database only. On the machine's
+# cluster it would be the cluster's (AD-006, a temporary cluster): not built,
+# an instance that needs it moves to a dedicated database
+PITR_ON_CLUSTER = ("point-in-time recovery is for a dedicated database: this instance is on the machine's "
+                   "cluster; move it to a dedicated database first")
+
+
+def _dedicated(project: Path) -> Path:
+    if composehelper.on_cluster(project) is not None:
+        raise HelperError(PITR_ON_CLUSTER)
+    return project
+
+
 def pitr_enable(name: str, storage: str, instance: str, role: str) -> dict:
-    return pitrhelper.enable(_project(name, storage, instance, role))
+    return pitrhelper.enable(_dedicated(_project(name, storage, instance, role)))
 
 
 def pitr_base(name: str, storage: str, instance: str, role: str) -> dict:
-    return pitrhelper.base(_project(name, storage, instance, role))
+    return pitrhelper.base(_dedicated(_project(name, storage, instance, role)))
 
 
 def pitr_state(name: str, storage: str, instance: str, role: str) -> dict:
-    return pitrhelper.state(_project(name, storage, instance, role))
+    project = _project(name, storage, instance, role)
+    if composehelper.on_cluster(project) is not None:
+        return {"enabled": False, "machine": True, "bases": [], "segments": 0, "archive_size": 0,
+                "first": None, "last": None, "failed": 0}
+    return pitrhelper.state(project)
 
 
 def pitr_restore(name: str, storage: str, source: str, target: str, when: str, source_db: str,
@@ -2052,8 +2105,367 @@ def pitr_restore(name: str, storage: str, source: str, target: str, when: str, s
     """source's production database, as it was at when, into target's production."""
     if source == target:
         raise HelperError("the source and the target are one instance")
-    return pitrhelper.restore(_project(name, storage, source, "production"),
-                              _project(name, storage, target, "production"), when, source_db, target_db)
+    return pitrhelper.restore(_dedicated(_project(name, storage, source, "production")),
+                              _dedicated(_project(name, storage, target, "production")), when, source_db, target_db)
+
+
+# --- the machine's PostgreSQL cluster (machinedb.py; docs/adr/postgresql-della-macchina.md)
+
+def _cluster(call, *args):
+    try:
+        return call(*args)
+    except machinedb.ClusterError as exc:
+        raise HelperError(str(exc)) from None
+
+
+def machine_db_create(storage: str, major: str) -> dict:
+    """machine-db-create <storage> <major>: the cluster of PostgreSQL major,
+    its data on storage, the storages of the workspaces mounted in it."""
+    roots = storage_roots()
+    if storage not in roots:
+        raise HelperError(f"{storage!r} is not a storage of workspaces.storage ({', '.join(roots) or 'none'})")
+    bound_roots = [str(bind_storage(name)) for name in roots]
+    return _cluster(machinedb.create, storage, bind_storage(storage), major, bound_roots, str(OMNIACLI_COMMAND))
+
+
+def machine_db_remove(major: str) -> dict:
+    return _cluster(machinedb.remove, major)
+
+
+def machine_db_state() -> dict:
+    return _cluster(machinedb.state)
+
+
+def machine_db_mounts() -> dict:
+    return _cluster(machinedb.mounts)
+
+
+# a move (AD-007): what the project was is kept beside it, the undo of the
+# move; what the dumps of a move are, read by the cluster's user
+KEPT = ".dedicated"
+MOVES = ".move"
+ODOO_DATA_FILESTORE = Path("data") / "filestore" / "filestore"
+# a project's files a move rewrites, kept as they were
+MOVED_FILES = ("compose.yaml", ".env", "config/odoo.conf", ROLE_FILE)
+CLUSTER_KEYS = ("DB_CLUSTER", "DB_USER", "DB_SOCKET")
+
+
+def machine_twin(template: stacktemplates.Template) -> stacktemplates.Template:
+    """The template on the machine's cluster whose dedicated twin is template."""
+    found = [t for t in stacktemplates.available([TEMPLATES, templatestore.INSTALLED]).values()
+             if t.on_machine and t.dedicated == template.name]
+    if not found:
+        raise HelperError(f"no template on the machine's cluster for {template.name} here")
+    return max(found, key=lambda t: stacktemplates.version_key(t.version))
+
+
+def _meta(folder: Path) -> dict:
+    try:
+        meta = json.loads((folder / INSTANCE_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise HelperError(f"{folder} holds no {INSTANCE_FILE}: not an instance made by this helper") from None
+    if not isinstance(meta, dict):
+        raise HelperError(f"{folder / INSTANCE_FILE} is not an object")
+    return meta
+
+
+def _dc(project: Path, *args: str, input=None, stdout=None, check: bool = True,
+        timeout: float | None = None) -> subprocess.CompletedProcess:
+    text = stdout is None and not isinstance(input, bytes)
+    done = subprocess.run(composehelper.compose(project, *args), env=ENV, cwd=project, input=input, timeout=timeout,
+                          stdout=stdout if stdout is not None else subprocess.PIPE, stderr=subprocess.PIPE, text=text)
+    if check and done.returncode:
+        err = done.stderr if isinstance(done.stderr, str) else (done.stderr or b"").decode(errors="replace")
+        raise HelperError(f"docker compose {' '.join(args[:4])} in {project.name} failed: {err.strip()[-400:]}")
+    return done
+
+
+def _dedicated_sql(project: Path, database: str, sql: str) -> str:
+    """SQL as the postgres of the project's database service (its socket's trust)."""
+    done = _dc(project, "exec", "-T", "--user", "postgres", "db", "psql", "-X", "-At", "-q", "-v", "ON_ERROR_STOP=1",
+               "-U", "postgres", "-d", database, input=sql, check=False)
+    if done.returncode:
+        raise HelperError(f"the dedicated database refused: {(done.stderr or done.stdout).strip()[-400:]}")
+    return done.stdout
+
+
+def _dedicated_ready(project: Path, timeout: float = 180) -> None:
+    end = time.monotonic() + timeout
+    while _dc(project, "exec", "-T", "db", "pg_isready", "-q", "-h", "127.0.0.1", check=False).returncode:
+        if time.monotonic() > end:
+            raise HelperError(f"the dedicated database of {project} does not answer within {timeout:.0f} s")
+        time.sleep(2)
+
+
+def _keep_files(project: Path, folder: Path, into: Path) -> None:
+    """The files a move rewrites, as they are, into into (root's only)."""
+    machinedb._folder(into, 0o700)
+    for name in MOVED_FILES:
+        source = project / name
+        if source.is_file() and not source.is_symlink():
+            target = into / name.replace("/", "__")
+            shutil.copy2(source, target)
+    shutil.copy2(folder / INSTANCE_FILE, into / INSTANCE_FILE)
+
+
+def _put_back(project: Path, folder: Path, kept: Path) -> None:
+    for name in MOVED_FILES:
+        source = kept / name.replace("/", "__")
+        if source.is_file():
+            shutil.copy2(source, project / name)
+    if (kept / INSTANCE_FILE).is_file():
+        shutil.copy2(kept / INSTANCE_FILE, folder / INSTANCE_FILE)
+
+
+def _rename_filestore(project: Path, old: str, new: str) -> bool:
+    store = project / ODOO_DATA_FILESTORE
+    source, target = store / old, store / new
+    if old == new or not source.is_dir() or source.is_symlink():
+        return False
+    if target.exists():
+        raise HelperError(f"{target} exists already: the filestore of {old} is not renamed over it")
+    os.rename(source, target)
+    return True
+
+
+def _env_without(values: dict, keys) -> dict:
+    return {k: v for k, v in values.items() if k not in keys}
+
+
+def _counts_line(text: str) -> str:
+    lines = [line for line in text.splitlines() if line.strip()]
+    return lines[-1].strip() if lines else ""
+
+
+def machine_db_move(name: str, storage: str, instance: str, to: str) -> dict:
+    """machine-db-move <workspace> <storage> <instance> machine|dedicated:
+    the production of instance moved to the machine's cluster or back to a
+    database of its own (AD-007). Odoo stopped, pg_dump -Fc, the database
+    made on the other side, pg_restore, the installed modules, users and
+    partners counted on both sides, then the project switched and started.
+    Whatever fails before the switch, the instance runs as it was; the data
+    of the side left stays (its pgdata on a move to the cluster: the undo)
+    until machine-db-purge."""
+    if to not in ("machine", "dedicated"):
+        raise HelperError("machine-db-move takes machine or dedicated")
+    image, mount = workspace(name, storage)
+    _name("instance", instance)
+    if not mounted(image, mount):
+        raise HelperError(f"the disk of workspace {name} is not mounted")
+    folder = mount / instance
+    project = folder / "production"
+    if project.is_symlink() or not (project / "compose.yaml").is_file():
+        raise HelperError(f"no project {instance}/production in workspace {name}")
+    if (folder / "test" / ".env").is_file():
+        raise HelperError(f"{instance} has a test of its own: on the machine's cluster an instance has its "
+                          "production only (its copies are stagings)")
+    meta = _meta(folder)
+    template = template_named(str(meta.get("template") or ""))
+    if to == "machine":
+        return _cluster(_to_machine, name, storage, mount, instance, folder, project, meta, template)
+    return _cluster(_to_dedicated, name, storage, mount, instance, folder, project, meta, template)
+
+
+def _to_machine(name, storage, mount, instance, folder, project, meta, template) -> dict:
+    if template.on_machine or composehelper.on_cluster(project) is not None:
+        raise HelperError(f"{instance} is on the machine's cluster already")
+    twin = machine_twin(template)
+    major = twin.postgres
+    cluster = machinedb.project_of(major)
+    values = _env(project)
+    password, old = values.get("DB_PASSWORD", ""), str(meta.get("database") or "")
+    role = machinedb.env_name(name, instance)
+    uid, gid = machinedb.pg_user()
+    moves = machinedb._folder(project / MOVES, 0o700, uid, gid)
+    dump = moves / "to-machine.dump"
+    size = int(_dedicated_sql(project, old, "SELECT pg_database_size(current_database());\n").strip() or 0)
+    before = _counts_line(_dedicated_sql(project, old, machinedb.COUNTS))
+    pitr = pitrhelper.enabled(project)
+    started = time.monotonic()
+    _dc(project, "stop", template.odoo_service, timeout=300)
+    added = False
+    try:
+        with open(dump, "wb") as fh:
+            _dc(project, "exec", "-T", "--user", "postgres", "db", "pg_dump", "-Fc", "-U", "postgres", "-d", old,
+                stdout=fh, timeout=6 * 3600)
+        os.chown(dump, uid, gid)
+        os.chmod(dump, 0o600)
+        machinedb.env_add(major, name, mount, instance, password)
+        added = True
+        listing = machinedb._run(cluster, "exec", "-T", machinedb.SERVICE, "pg_restore", "-l", str(dump)).stdout
+        extensions, kept_list = machinedb.restore_list(listing)
+        list_file = moves / "to-machine.list"
+        machinedb.write(list_file, kept_list, mode=0o600, uid=uid, gid=gid)
+        machinedb.make_extensions(lambda db, q: machinedb.sql(cluster, db, q), role, extensions)
+        jobs = str(max(1, min(os.cpu_count() or 1, 8)))
+        done = machinedb._run(cluster, "exec", "-T", machinedb.SERVICE, "pg_restore", "-j", jobs, "--no-owner",
+                              "--no-acl", f"--role={role}", "-U", "postgres", "-d", role, "-L", str(list_file),
+                              str(dump), check=False, timeout=6 * 3600)
+        if done.returncode:
+            raise HelperError(f"pg_restore into the machine's cluster failed: {(done.stderr or '').strip()[-600:]}")
+        machinedb.close(cluster, role, role)
+        after = _counts_line(machinedb.sql(cluster, role, machinedb.COUNTS))
+        if after != before:
+            raise HelperError(f"the copy does not hold what the database holds (installed modules|users|partners: "
+                              f"{before} there, {after} on the cluster)")
+    except BaseException:
+        if added:
+            try:
+                machinedb.env_remove(major, role)
+            except machinedb.ClusterError:
+                pass
+        _dc(project, "up", "-d", check=False, timeout=600)
+        raise
+    kept = project / KEPT
+    _keep_files(project, folder, kept)
+    renamed = False
+    try:
+        _dc(project, "down", "--remove-orphans", timeout=600)
+        _write(project / "compose.yaml", twin.compose)
+        _write(project / ".env", stacktemplates.env_text({**values, "DB_CLUSTER": major, "DB_USER": role,
+                                                         "DB_SOCKET": str(machinedb.socket_folder(major))}),
+               mode=0o600)
+        moved = {"template": template.name, "version": template.version, "database": old, "pitr": pitr,
+                 "at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        _write(folder / INSTANCE_FILE, json.dumps({**meta, "template": twin.name, "version": twin.version,
+                                                   "database": role, "moved_from": moved}) + "\n")
+        renamed = _rename_filestore(project, old, role)
+        conf(name, storage, instance, "production", "{}")
+        _dc(project, "up", "-d", "--remove-orphans", timeout=600)
+    except BaseException:
+        _dc(project, "down", "--remove-orphans", check=False, timeout=600)
+        _put_back(project, folder, kept)
+        if renamed:
+            _rename_filestore(project, role, old)
+        _dc(project, "up", "-d", check=False, timeout=600)
+        try:
+            machinedb.env_remove(major, role)
+        except machinedb.ClusterError:
+            pass
+        raise
+    return {"to": "machine", "database": role, "before": old, "size": size, "counts": after,
+            "seconds_down": round(time.monotonic() - started, 1), "template": twin.name, "pitr_was_on": pitr,
+            "kept": [str(kept), str(project / "data" / "pgdata")],
+            "undo": f"omniacli workspace-helper machine-db-move {name} {storage} {instance} dedicated"}
+
+
+def _to_dedicated(name, storage, mount, instance, folder, project, meta, template) -> dict:
+    env = composehelper.on_cluster(project)
+    if not template.on_machine or env is None:
+        raise HelperError(f"{instance} has a dedicated database already")
+    twin = template_named(template.dedicated)
+    major, role = env["major"], env["role"]
+    cluster = machinedb.project_of(major)
+    moved = meta.get("moved_from") if isinstance(meta.get("moved_from"), dict) else {}
+    old = str(moved.get("database") or instance.replace("-", "_"))
+    kept = project / KEPT
+    values = _env(project)
+    uid, gid = machinedb.pg_user()
+    moves = machinedb._folder(project / MOVES, 0o700, uid, gid)
+    dump = moves / "to-dedicated.dump"
+    size = machinedb.database_size(major, role)
+    before = _counts_line(machinedb.sql(cluster, role, machinedb.COUNTS))
+    started = time.monotonic()
+    _dc(project, "stop", timeout=300)
+    machine_files = moves / "machine"
+    try:
+        with open(dump, "wb") as fh:
+            machinedb._run(cluster, "exec", "-T", machinedb.SERVICE, "pg_dump", "-Fc", "-U", "postgres", "-d", role,
+                           stdout=fh, timeout=6 * 3600)
+        os.chown(dump, uid, gid)
+        os.chmod(dump, 0o600)
+        listing = machinedb._run(cluster, "exec", "-T", machinedb.SERVICE, "pg_restore", "-l", str(dump)).stdout
+        extensions, kept_list = machinedb.restore_list(listing)
+    except BaseException:
+        _dc(project, "up", "-d", check=False, timeout=600)
+        raise
+    _keep_files(project, folder, machine_files)
+    renamed = False
+    try:
+        _dc(project, "down", "--remove-orphans", timeout=600)
+        # the compose.yaml of before when kept (with its archive of the recovery
+        # at a minute), else the twin's; .env of now without the cluster's
+        if (kept / "compose.yaml").is_file():
+            shutil.copy2(kept / "compose.yaml", project / "compose.yaml")
+        else:
+            _write(project / "compose.yaml", twin.compose)
+        dedicated_env = {**_env_without(values, CLUSTER_KEYS),
+                         "DB_SUPER_PASSWORD": values.get("DB_SUPER_PASSWORD") or stacktemplates.new_password()}
+        _write(project / ".env", stacktemplates.env_text(dedicated_env), mode=0o600)
+        for item in twin.data:
+            path = project / item["path"]
+            if not path.exists():
+                path.mkdir(mode=0o755, parents=True)
+                if item["owner"]:
+                    os.chown(path, *_owner(item["owner"]))
+        if not (project / "dbinit" / "odoo-role.sh").is_file():
+            (project / "dbinit").mkdir(mode=0o755, exist_ok=True)
+            _write(project / "dbinit" / "odoo-role.sh", DB_ROLE_SCRIPT)
+        _dc(project, "up", "-d", "db", timeout=600)
+        _dedicated_ready(project)
+        _dedicated_sql(project, "postgres", f"DROP DATABASE IF EXISTS {machinedb.ident(old)} WITH (FORCE);\n")
+        _dedicated_sql(project, "postgres", f"CREATE DATABASE {machinedb.ident(old)} OWNER odoo TEMPLATE template0 "
+                                            "ENCODING 'UTF8' LC_COLLATE 'C';\n")
+        machinedb.make_extensions(lambda db, q: _dedicated_sql(project, db, q), old, extensions)
+        _dc(project, "exec", "-T", "--user", "postgres", "db", "sh", "-c", "cat > /tmp/omniacli-restore.list",
+            input=kept_list)
+        with open(dump, "rb") as fh:
+            done = subprocess.run(composehelper.compose(project, "exec", "-T", "--user", "postgres", "db",
+                                                        "pg_restore", "--no-owner", "--no-acl", "--role=odoo",
+                                                        "-U", "postgres", "-d", old, "-L",
+                                                        "/tmp/omniacli-restore.list"),
+                                  env=ENV, cwd=project, stdin=fh, capture_output=True, text=True, timeout=6 * 3600)
+        if done.returncode:
+            raise HelperError(f"pg_restore into the dedicated database failed: {done.stderr.strip()[-600:]}")
+        after = _counts_line(_dedicated_sql(project, old, machinedb.COUNTS))
+        if after != before:
+            raise HelperError(f"the copy does not hold what the database holds (installed modules|users|partners: "
+                              f"{before} on the cluster, {after} there)")
+        restored = {k: v for k, v in meta.items() if k != "moved_from"}
+        _write(folder / INSTANCE_FILE, json.dumps({**restored, "template": twin.name, "version": twin.version,
+                                                   "database": old}) + "\n")
+        renamed = _rename_filestore(project, role, old)
+        conf(name, storage, instance, "production", "{}")
+        _dc(project, "up", "-d", "--remove-orphans", timeout=600)
+    except BaseException:
+        _dc(project, "down", "--remove-orphans", check=False, timeout=600)
+        _put_back(project, folder, machine_files)
+        if renamed:
+            _rename_filestore(project, old, role)
+        _dc(project, "up", "-d", check=False, timeout=600)
+        raise
+    machinedb.env_remove(major, role)
+    # the files of before the move to the cluster are the project's again
+    shutil.rmtree(machine_files, ignore_errors=True)
+    shutil.rmtree(kept, ignore_errors=True)
+    pitr = pitrhelper.enabled(project)
+    return {"to": "dedicated", "database": old, "before": role, "size": size, "counts": after,
+            "seconds_down": round(time.monotonic() - started, 1), "template": twin.name, "pitr": pitr,
+            "kept": [str(dump)],
+            "undo": f"omniacli workspace-helper machine-db-move {name} {storage} {instance} machine"}
+
+
+def machine_db_purge(name: str, storage: str, instance: str) -> dict:
+    """machine-db-purge <workspace> <storage> <instance>: what a move left
+    (the undo) taken away once its admin confirms: on the cluster, the old
+    database folder, its archive of the recovery at a minute and the files
+    of before; dedicated, the dumps of the move."""
+    image, mount = workspace(name, storage)
+    _name("instance", instance)
+    if not mounted(image, mount):
+        raise HelperError(f"the disk of workspace {name} is not mounted")
+    project = mount / instance / "production"
+    if project.is_symlink() or not (project / "compose.yaml").is_file():
+        raise HelperError(f"no project {instance}/production in workspace {name}")
+    gone = []
+    paths = [project / MOVES]
+    if composehelper.on_cluster(project) is not None:
+        paths += [project / KEPT, project / "data" / "pgdata", project / "data" / "wal"]
+    for path in paths:
+        if path.exists() and not path.is_symlink():
+            shutil.rmtree(path)
+            gone.append(str(path))
+    return {"workspace": name, "instance": instance, "removed": gone}
 
 
 ACTIONS = {"disk": (disk, 3), "drop": (drop, 2), "limits": (limits, 3), "create": (create, 5), "remove": (remove, 3),
@@ -2062,7 +2474,10 @@ ACTIONS = {"disk": (disk, 3), "drop": (drop, 2), "limits": (limits, 3), "create"
            "storage-setup": (storage_setup, 0), "storage-check": (storage_check, 1), "storage-reset": (storage_reset, 1),
            "pitr-enable": (pitr_enable, 4), "pitr-base": (pitr_base, 4), "pitr-state": (pitr_state, 4),
            "pitr-restore": (pitr_restore, 7), "login-path": (login_path, 2),
-           "portal": (portal, 1), "portal-names": (portal_taken, 0)}
+           "portal": (portal, 1), "portal-names": (portal_taken, 0),
+           "machine-db-create": (machine_db_create, 2), "machine-db-remove": (machine_db_remove, 1),
+           "machine-db-state": (machine_db_state, 0), "machine-db-mounts": (machine_db_mounts, 0),
+           "machine-db-move": (machine_db_move, 4), "machine-db-purge": (machine_db_purge, 3)}
 
 
 def run(argv: list[str]) -> dict:
@@ -2079,7 +2494,7 @@ def run(argv: list[str]) -> dict:
 def main(argv: list[str]) -> int:
     try:
         print(json.dumps(run(argv)))
-    except HelperError as exc:
+    except (HelperError, machinedb.ClusterError) as exc:
         print(f"workspace-helper: {exc}", file=sys.stderr)
         return 2
     return 0

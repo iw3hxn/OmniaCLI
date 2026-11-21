@@ -375,7 +375,9 @@ def test_the_odoo_actions(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("answer, code, options", [
     ("0\n999\n", 0, ("--user", "postgres")),  # postgres:17, root by default
-    ("999\n999\n", 0, ("--user", "postgres")),
+    ("999\n999\n", 0, ()),  # postgres already: its own user
+    # the machine's cluster: its own user, who alone reads the superuser's password
+    ("1234\n999\n", 0, ()),
     ("1001\n", 0, ()),  # no user postgres, not root: the image's own
 ])
 def test_psql_never_as_root(tmp_path, monkeypatch, answer, code, options):

@@ -94,6 +94,9 @@ COPY_FILESTORE = (("share", "shared with production (hard links, no extra disk s
                   ("copy", "a copy of production's"),
                   ("none", "none (test without attachments)"))
 
+# the db_service of an instance on the machine's cluster (machinedb.DB_SERVICE)
+MACHINE_DB = "machine"
+
 MCP_HELP = """Servers of type docker: Odoo 18 or later in a Docker Compose project, driven
 through OmniaCLI's root helper. update_test updates the changed modules
 (click-odoo-update) before the restart. A backup zip is odoo db dump's: the
@@ -323,8 +326,9 @@ class DockerPlugin(ServicePlugin):
                                                      "--stop-after-init --no-http", "kind": "command"},
             {"label": "Install Python packages", "value": f"{cd}exec {opts.odoo_service} python3 -m pip install "
                                                           "--user --break-system-packages ...", "kind": "command"},
-            {"label": "psql", "value": f"{cd}exec {opts.db_service} sh -c 'exec psql -U \"$POSTGRES_USER\" {db}'",
-             "kind": "command"},
+            # on the machine's cluster: from the Odoo service, as its own role
+            {"label": "psql", "value": f"{cd}exec {opts.odoo_service} psql {db}" if opts.db_service == MACHINE_DB
+             else f"{cd}exec {opts.db_service} sh -c 'exec psql -U \"$POSTGRES_USER\" {db}'", "kind": "command"},
             {"label": "Bash in the container", "value": f"{cd}exec {opts.odoo_service} bash", "kind": "command"},
         ]
 
@@ -395,9 +399,12 @@ class DockerPlugin(ServicePlugin):
                     present.add(json.loads(line).get("Service"))
                 except (ValueError, AttributeError):
                     continue  # a warning of docker compose
-            missing = [s for s in (opts.odoo_service, opts.db_service) if s not in present]
+            # on the machine's cluster the database is no service of the project
+            wanted = (opts.odoo_service,) if opts.db_service == MACHINE_DB else (opts.odoo_service, opts.db_service)
+            missing = [s for s in wanted if s not in present]
             found.append(Check(target, "Services", not missing,
-                               f"{opts.odoo_service} and {opts.db_service} are services of the project" if not missing
+                               (f"{opts.odoo_service} and {opts.db_service} are services of the project"
+                                if len(wanted) > 1 else f"{opts.odoo_service} is a service of the project") if not missing
                                else f"no container of {', '.join(missing)} in the project (never started, "
                                     "or not one of its services)"))
         return found

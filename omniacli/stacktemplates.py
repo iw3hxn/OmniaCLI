@@ -38,12 +38,23 @@ from pathlib import Path
 
 import yaml
 
-FILES = ("template.json", "compose.yaml", "odoo.conf.in")
+from . import machinedb
+
+FILES =("template.json", "compose.yaml", "odoo.conf.in")
 NAME = re.compile(r"[a-z0-9][a-z0-9.-]{0,62}")
 FIELD_NAME = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
 # the variables OmniaCLI gives every instance (in .env and odoo.conf)
-GENERATED = ("PROJECT", "HTTP_PORT", "WEBSOCKET_PORT", "DB_PASSWORD", "DB_SUPER_PASSWORD", "SUBNET", "SLICE")
-CONF_PLACEHOLDERS = ("ADDONS_PATH", "DB_NAME", "ADMIN_PASSWD")
+GENERATED = ("PROJECT", "HTTP_PORT", "WEBSOCKET_PORT", "DB_PASSWORD", "DB_SUPER_PASSWORD", "SUBNET", "SLICE",
+             "DB_USER", "DB_SOCKET")
+CONF_PLACEHOLDERS = ("ADDONS_PATH", "DB_NAME", "ADMIN_PASSWD", "DB_TEMPLATE")
+# a template whose database is the machine's cluster (template.json
+# "database": "machine", docs/adr/postgresql-della-macchina.md AD-001): no
+# database service of its own; its Odoo service mounts the cluster's socket,
+# exactly so, read only, and no other service does. The servers file says
+# db_service MACHINE_DB_SERVICE of its instances (machinedb.DB_SERVICE)
+DATABASE_MODES = ("dedicated", "machine")
+SOCKET_MOUNT = f"${{DB_SOCKET}}:{machinedb.SOCKET_IN_ODOO}:ro"
+MACHINE_DB_SERVICE = machinedb.DB_SERVICE
 # a value of a field: one line, no quote that .env would read
 VALUE = re.compile(r"[^\n\r\"'`$\\]{0,200}")
 # what a template's compose.yaml may hold, and nothing else
@@ -239,6 +250,15 @@ class Template:
     compose: str
     conf: str
     parameters: list[Parameter] = field(default_factory=list)
+    # dedicated (a db service of its own) or machine (the machine's cluster
+    # of PostgreSQL postgres); a machine one names its dedicated twin
+    database: str = "dedicated"
+    postgres: str = ""
+    dedicated: str = ""
+
+    @property
+    def on_machine(self) -> bool:
+        return self.database == "machine"
 
     def parameter(self, name: str) -> Parameter | None:
         return next((p for p in self.parameters if p.name == name), None)
@@ -317,7 +337,8 @@ class Template:
         return {f.name: f.check(given.get(f.name)) for f in self.fields}
 
     def to_dict(self) -> dict:
-        return {"name": self.name, "label": self.label, "version": self.version,
+        return {"name": self.name, "label": self.label, "version": self.version, "database": self.database,
+                "dedicated": self.dedicated,
                 "fields": [{"name": f.name, "label": f.label, "default": f.default, "choices": f.choices,
                             "pattern": f.pattern} for f in self.fields],
                 "parameters": [p.to_dict() for p in self.parameters]}
@@ -379,9 +400,18 @@ def load_template(folder: Path) -> Template:
         except TemplateError as exc:
             raise TemplateError(f"{name}: the default of {exc}") from None
         parameters.append(param)
+    mode = str(meta.get("database") or "dedicated")
+    if mode not in DATABASE_MODES:
+        raise TemplateError(f"{name}: database {mode!r} is not one of {', '.join(DATABASE_MODES)}")
+    postgres, dedicated = str(meta.get("postgres") or ""), str(meta.get("dedicated") or "")
+    if mode == "machine" and (postgres not in machinedb.MAJORS or not NAME.fullmatch(dedicated)):
+        raise TemplateError(f"{name}: a template on the machine's cluster names its PostgreSQL "
+                            f"({', '.join(machinedb.MAJORS)}) and its dedicated twin")
     template = Template(
         folder=folder, name=name, label=str(meta.get("label") or name), version=str(meta.get("version") or ""),
-        odoo_service=str(meta.get("odoo_service") or "odoo"), db_service=str(meta.get("db_service") or "db"),
+        odoo_service=str(meta.get("odoo_service") or "odoo"),
+        db_service=MACHINE_DB_SERVICE if mode == "machine" else str(meta.get("db_service") or "db"),
+        database=mode, postgres=postgres, dedicated=dedicated if mode == "machine" else "",
         addons_path=[str(p) for p in meta.get("addons_path") or []],
         customer_addons=str(meta.get("customer_addons") or ""), data=data, fields=fields,
         compose=(folder / "compose.yaml").read_text(encoding="utf-8"),
@@ -445,6 +475,8 @@ def check_compose(template: Template) -> list[str]:
             if not (isinstance(port, str) and PORT.fullmatch(port)):
                 found.append(f"{where}.ports: {port!r} is not 127.0.0.1:${{VARIABLE}}:<port>")
         for mount in svc.get("volumes") or []:
+            if mount == SOCKET_MOUNT and template.on_machine and svc_name == template.odoo_service:
+                continue
             match = MOUNT.fullmatch(mount) if isinstance(mount, str) else None
             if match is None:
                 found.append(f"{where}.volumes: {mount!r} is not ./<folder>:<path>[:ro] or ../<folder>:<path>[:ro]")
@@ -462,9 +494,18 @@ def check_compose(template: Template) -> list[str]:
             found.append(f"{where}.logging: json-file with max-size and max-file is required")
     if "DB_SUPER_PASSWORD" in str((data["services"].get(template.odoo_service) or {}).get("environment")):
         found.append(f"services.{template.odoo_service}: the database's superuser password is not for Odoo")
-    if template.odoo_service not in data["services"] or template.db_service not in data["services"]:
+    if template.on_machine:
+        if template.odoo_service not in data["services"]:
+            found.append(f"service {template.odoo_service} is required")
+        elif SOCKET_MOUNT not in ((data["services"][template.odoo_service] or {}).get("volumes") or []):
+            found.append(f"services.{template.odoo_service}: the machine's cluster is reached by {SOCKET_MOUNT}")
+        if template.db_service in data["services"]:
+            found.append(f"services.{template.db_service}: a template on the machine's cluster has no such service")
+        if "{{DB_TEMPLATE}}" not in template.conf:
+            found.append("odoo.conf.in: db_template = {{DB_TEMPLATE}} is required on the machine's cluster")
+    elif template.odoo_service not in data["services"] or template.db_service not in data["services"]:
         found.append(f"services {template.odoo_service} and {template.db_service} are required")
-    for name in (template.odoo_service, template.db_service):
+    for name in (template.odoo_service, *(() if template.on_machine else (template.db_service,))):
         if isinstance(data["services"].get(name), dict) and data["services"][name].get("profiles"):
             found.append(f"services.{name}: runs always, without profiles")
     for name in PLACEHOLDER.findall(template.conf):
@@ -483,7 +524,7 @@ def env_text(values: dict[str, str]) -> str:
 
 def conf_text(template: Template, database: str, admin_password: str, customer_repos: list[str],
               parameters: dict | None = None, debug: bool = False, extra: dict | None = None,
-              mail_capture: bool = False) -> str:
+              mail_capture: bool = False, db_template: str = "") -> str:
     """The Odoo configuration: the image's addons, then the customer's
     repositories; then the editable parameters (checked: parameter_values),
     the other options (checked: extra_options) and, with debug,
@@ -496,11 +537,15 @@ def conf_text(template: Template, database: str, admin_password: str, customer_r
         extra = {k: v for k, v in (extra or {}).items() if k not in MAIL_PARAMETERS}
     addons = [*template.addons_path,
               *(f"{template.customer_addons}/{repo}" for repo in customer_repos if template.customer_addons)]
-    values = {"ADDONS_PATH": ",".join(addons), "DB_NAME": database, "ADMIN_PASSWD": admin_password}
+    values = {"ADDONS_PATH": ",".join(addons), "DB_NAME": database, "ADMIN_PASSWD": admin_password,
+              "DB_TEMPLATE": db_template or "template0"}
     text = PLACEHOLDER.sub(lambda m: values[m.group(1)], template.conf)
     lines = []
     for name, value in (parameters or {}).items():
         param = template.parameter(name)
+        if template.on_machine and name == "db_maxconn":
+            # the cluster lets its role open so many, whatever a bound says
+            value = min(int(value), machinedb.ROLE_LIMIT)
         if param is not None and not (param.type in ("text", "password") and value == ""):
             lines.append(f"{name} = {param.conf_value(value)}")
     for name, value in (extra or {}).items():

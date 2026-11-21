@@ -1,0 +1,133 @@
+# Odoo 18 Community (the official image odoo:18.0) on the machine's PostgreSQL cluster: a template of OmniaCLI's
+# workspaces (docs/workspaces.md). OmniaCLI writes .env (the variables below)
+# and config/odoo.conf; filestore and database are folders of the instance,
+# on its workspace's disk; the ports listen on this machine only, the network
+# is one OmniaCLI's firewall knows (SUBNET), the containers are in the
+# workspace's systemd slice, its CPU and memory (SLICE). The containers' own
+# files are read only: what they write goes on the disk (Odoo's /tmp, where
+# dumps and loads are staged) or into a small tmpfs, never onto docker's disk.
+# The database is the machine's cluster (docs/adr/postgresql-della-macchina.md):
+# no service of its own, its Unix socket mounted read only (DB_SOCKET), a
+# role of this environment only (DB_USER), no superuser, no CREATEDB but in
+# OmniaCLI's jobs; its data in the workspace's tablespace, on this disk.
+name: ${PROJECT}
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: ${SUBNET}
+services:
+  odoo:
+    image: ${IMAGE}
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 1024
+    cgroup_parent: ${SLICE}
+    ports:
+      - "127.0.0.1:${HTTP_PORT}:8069"
+      - "127.0.0.1:${WEBSOCKET_PORT}:8072"
+    environment:
+      HOST: /run/omniacli-db
+      PORT: "5432"
+      USER: ${DB_USER}
+      PASSWORD: ${DB_PASSWORD}
+      # the same connection for a command typed in the container (odoo shell,
+      # click-odoo, psql): the image's entrypoint reads HOST..., they read PG*
+      PGHOST: /run/omniacli-db
+      PGPORT: "5432"
+      PGUSER: ${DB_USER}
+      PGPASSWORD: ${DB_PASSWORD}
+    volumes:
+      - ./data/filestore:/var/lib/odoo
+      - ./data/tmp:/tmp
+      # a volume of the image, otherwise an anonymous one on docker's disk
+      - ./data/extra-addons:/mnt/extra-addons:ro
+      - ./config:/etc/odoo:ro
+      # the customer's repositories of this role (production or test)
+      - ./addons:/mnt/customer-addons:ro
+      # the machine's cluster: its socket, nothing else of it
+      - ${DB_SOCKET}:/run/omniacli-db:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+  # a staging's mail, caught (UX-008 §5.3): Mailpit (MIT), only with
+  # COMPOSE_PROFILES=mail-capture in .env, which the helper writes for a
+  # staging. A neutralized database sends through the server odoo neutralize
+  # adds, host "invalid" port 1025 (base/data/neutralize.sql, Odoo 16 to 20):
+  # that name is this service in the project's network, as "mail" is, the
+  # smtp_server of the staging's odoo.conf. No port published: its API listens
+  # on the loopback of its container only, read by compose-helper mail-*.
+  mail:
+    image: axllent/mailpit:v1.33.1
+    profiles: ["mail-capture"]
+    restart: unless-stopped
+    read_only: true
+    user: "65534:65534"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 64
+    cgroup_parent: ${SLICE}
+    networks:
+      default:
+        aliases:
+          - invalid
+    environment:
+      MP_DATABASE: /data/mailpit.db
+      MP_SMTP_BIND_ADDR: 0.0.0.0:1025
+      MP_UI_BIND_ADDR: 127.0.0.1:8025
+      MP_MAX_MESSAGES: "500"
+      MP_DISABLE_VERSION_CHECK: "true"
+      # every message to an address of a .test domain (the staging's alias
+      # domain, UX-008 §5.4) handed on to the service inbox, never elsewhere:
+      # the mailboxes Odoo reads by IMAP (a message to anyone else stays here)
+      MP_SMTP_RELAY_HOST: inbox
+      MP_SMTP_RELAY_PORT: "3025"
+      MP_SMTP_RELAY_AUTH: none
+      MP_SMTP_RELAY_ALLOW_INSECURE: "true"
+      MP_SMTP_RELAY_MATCHING: '(?i)@[a-z0-9.-]+\.test$$'  # $$: a $ for compose
+      MP_SMTP_RELAY_PRESERVE_MESSAGE_IDS: "true"
+    volumes:
+      - ./data/mail:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+  # a staging's incoming mail (UX-008 §5.4): GreenMail (Apache-2.0), one
+  # IMAP mailbox per address, any password, in memory (a restart empties it,
+  # the Mail tab reads Mailpit's copy). Mailpit hands it the messages to a
+  # .test address (SMTP 3025); Odoo's incoming servers read catchall@ and
+  # its aliases on inbox:3143, which compose-helper mail-inbox writes. Same
+  # profile as mail, no port published, its API on its own loopback.
+  inbox:
+    image: greenmail/standalone:2.1.5
+    profiles: ["mail-capture"]
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 128
+    cgroup_parent: ${SLICE}
+    environment:
+      GREENMAIL_OPTS: >-
+        -Dgreenmail.setup.test.smtp -Dgreenmail.setup.test.imap
+        -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.auth.disabled
+        -Dgreenmail.api.hostname=127.0.0.1
+      JAVA_OPTS: -Djava.net.preferIPv4Stack=true -Xmx128m -XX:+UseSerialGC
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
