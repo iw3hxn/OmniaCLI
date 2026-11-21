@@ -6,8 +6,9 @@
 {% from "_list.html" import list_search, grouped, item with context %}
 {# a job's status: its words and its badge (Last jobs, the summary, the script below) #}
 {% set job_status = {"queued": _("queued"), "running": _("running"), "success": _("success"), "failed": _("failed"),
-                     "interrupted": _("interrupted"), "stopped": _("stopped")} %}
-{% set job_badge = {"queued": "warn", "running": "warn", "success": "ok", "failed": "error", "interrupted": "error", "stopped": "error"} %}
+                     "interrupted": _("interrupted"), "stopped": _("stopped"), "warned": _("success with warnings")} %}
+{% set job_badge = {"queued": "warn", "running": "warn", "success": "ok", "failed": "error", "interrupted": "error", "stopped": "error",
+                    "warned": "warn"} %}
 <style>
 /* the server's page (docs/ux/REVIEW-2026-11-18.md, mockup 2): its facts, three
    numbers, its load as bars, its instances with their stagings under them */
@@ -119,9 +120,9 @@
   {% include "_servers_part.html" %}
   </div>
 </div>
-{% set outcome = {"success": _("done"), "failed": _("failed"), "running": _("running"), "queued": _("queued"), "interrupted": _("interrupted"), "stopped": _("stopped")} %}
+{% set outcome = {"success": _("done"), "failed": _("failed"), "running": _("running"), "queued": _("queued"), "interrupted": _("interrupted"), "stopped": _("stopped"), "warned": _("success with warnings")} %}
 <p class="last-action">{% if jobs %}{% set job = jobs[0] %}{{ _("Last action:") }} <a href="{{ prefix }}/jobs/{{ job.id }}">{{ tr(job.title) }}</a>
-  · <span class="status {{ job.status }}">{{ outcome.get(job.status, job.status) }}</span>{% if job.duration %} · {{ job.duration }}{% endif %} · {{ job.created[8:10] }}/{{ job.created[5:7] }} {{ job.created[11:16] }}
+  · {% set said = job.outcome or job.status %}<span class="status {{ said }}">{{ outcome.get(said, said) }}</span>{% if job.duration %} · {{ job.duration }}{% endif %} · {{ job.created[8:10] }}/{{ job.created[5:7] }} {{ job.created[11:16] }}
   · {% endif %}<a href="{{ prefix }}/jobs">{{ _("all the actions") }}</a></p>
 <div class="toasts" id="toasts" aria-live="polite"></div>
 <template id="mini-runner">{{ runner("mini") }}</template>
@@ -404,7 +405,7 @@ const dashFill = (text, values) => text.replace(/\{(\w+)\}/g, (all, k) => (k in 
       if (i) servers.appendChild(document.createTextNode(", "));
       servers.appendChild(link);
     });
-    statusCell(tr.insertCell(), job.status);
+    statusCell(tr.insertCell(), job.outcome || job.status);
     tr.insertCell().textContent = job.source;
     const created = tr.insertCell(); created.className = "muted"; created.textContent = whenText(job.created);
     tr.insertCell().className = "muted job-finished";
@@ -428,7 +429,7 @@ const dashFill = (text, values) => text.replace(/\{(\w+)\}/g, (all, k) => (k in 
         filterJobs();
       }
       const st = tr.querySelector(".job-status");
-      if (statusOf(st) !== job.status) statusCell(st, job.status);
+      if (statusOf(st) !== (job.outcome || job.status)) statusCell(st, job.outcome || job.status);
       tr.querySelector(".job-finished").textContent = whenText(job.finished || "");
       tr.querySelector(".job-duration").textContent = job.duration || "";
       tr.querySelector(".job-error").textContent = job.error || "";
