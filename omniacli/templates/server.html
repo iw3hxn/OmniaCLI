@@ -16,6 +16,7 @@
 {% block content %}
 {% from "_icons.html" import icon %}
 {% from "_actions.html" import action_button with context %}
+{% from "_instance_link.html" import instance_link %}
 {% from "_console.html" import logbox, console_script with context %}
 {# an ISO time as the page shows it: 17/11/2026 22:48 #}
 {% macro when(iso) %}{% if iso %}{{ iso[8:10] }}/{{ iso[5:7] }}/{{ iso[0:4] }} {{ iso[11:16] }}{% else %}—{% endif %}{% endmacro %}
@@ -367,12 +368,12 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
       <tr><th>{{ _("Address") }}</th><th>{{ _("Type") }}</th><th class="hide-sm">{{ _("Copied on") }}</th><th>{{ _("State") }}</th><th class="hide-sm"></th></tr>
       <tr><td><strong>{{ title }}</strong>{{ other_names(server.name ~ "/production") }}</td><td><span class="badge ok">{{ _("Production") }}</span></td><td class="when hide-sm">—</td>
           <td>{{ state_word("busy" if is_busy else st) }}</td>
-          <td class="row-open hide-sm">{% if opens %}<a class="button small" href="{{ inst.web_url }}" target="_blank" rel="noopener" title="{{ _('Opens {url} in a new tab', url=inst.web_url) }}">{{ _("Open") }} ↗</a>{% endif %}{{ addresses_button(server.name ~ "/production", title) }}</td></tr>
+          <td class="row-open hide-sm">{% if opens %}{% call instance_link(inst.web_url, st, "button small", tr(inst.plugin.label) ~ " " ~ title) %}{{ _("Open") }} ↗{% endcall %}{% endif %}{{ addresses_button(server.name ~ "/production", title) }}</td></tr>
       {% if server.test %}
       <tr><td>↳ <a href="{{ prefix }}/servers/{{ server.name }}?view=test"><strong>{{ host_of(server.test.web_url, "Test") }}</strong></a>{{ other_names(server.name ~ "/test") }}</td>
           <td><span class="badge test-badge">Test</span></td><td class="when hide-sm">—</td>
           <td>{{ state_word("busy" if busy[server.test.key] else test_state) }}</td>
-          <td class="row-open hide-sm">{% if host_of(server.test.web_url, "") %}<a class="button small" href="{{ server.test.web_url }}" target="_blank" rel="noopener" title="{{ _('Opens {url} in a new tab', url=server.test.web_url) }}">{{ _("Open") }} ↗</a>{% endif %}{{ addresses_button(server.name ~ "/test", host_of(server.test.web_url, "Test")) }}</td></tr>
+          <td class="row-open hide-sm">{% if host_of(server.test.web_url, "") %}{% call instance_link(server.test.web_url, test_state, "button small", tr(inst.plugin.label) ~ " " ~ host_of(server.test.web_url, "Test")) %}{{ _("Open") }} ↗{% endcall %}{% endif %}{{ addresses_button(server.name ~ "/test", host_of(server.test.web_url, "Test")) }}</td></tr>
       {% endif %}
       {% for s in stagings.rows if stagings %}
       <tr><td>↳ <a href="{{ prefix }}/servers/{{ s.server }}"><strong>{{ host_of(s.url, s.server) }}</strong></a>{{ other_names(s.server ~ "/production") }}</td>
@@ -519,7 +520,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
 {% endif %}
 
 {% if can_act %}
-<section class="tab-panel panel" data-panel="backups" hidden data-url="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}/backups"
+<section class="tab-panel panel" data-panel="backups" hidden data-url="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}/backups{{ '?dumps=1' if inst.plugin.restores_sql }}"
          data-api="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}">
   {% if inst.plugin.has_backup %}
   <div class="section-head"><h2>{{ _("Backups") }}</h2>
