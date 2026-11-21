@@ -372,3 +372,14 @@ async def test_the_options_page_sets_the_policy(client, env):
     assert env["settings"].options.second_factor == "everybody"
     assert [e["detail"] for e in entries(client.app, "second-factor")] == [
         "required for: portal -> everybody (Options)"]
+
+
+def test_drop_user_ends_the_other_sessions(tmp_path):
+    """A reset or switch-off of the second step ends the user's sessions (but the one that asked)."""
+    from omniacli.sessions import SessionStore
+    store = SessionStore(tmp_path / "s.json")
+    users = {"ann": "hash-a", "bob": "hash-b"}
+    one, two, other = store.create("ann", "hash-a"), store.create("ann", "hash-a"), store.create("bob", "hash-b")
+    assert store.drop_user("ann", keep=one) == 1
+    assert store.user(one, users) == "ann" and store.user(two, users) is None and store.user(other, users) == "bob"
+    assert store.drop_user("ann") == 1 and store.user(one, users) is None

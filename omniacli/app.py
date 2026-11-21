@@ -9258,6 +9258,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if result is None:
             return code_failed(request, me, "two-step switch-off")
         await asyncio.to_thread(second_factors.disable, me.name)
+        # its other sessions end; this one stays (it just gave a code)
+        sessions.drop_user(me.name, keep=request.cookies.get(COOKIE))
         access_log.record("second-factor", "user", me.name, request.client.host if request.client else "",
                           "switched off (Account)" + (", with a recovery code" if result[0] == "recovery" else ""),
                           role=settings.user_role(me.name))
@@ -9271,6 +9273,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if not second_factors.on(name):
             return refuse(f"{name} has no two-step verification on")
         await asyncio.to_thread(second_factors.disable, name)
+        # every session of that user ends: it logs in again and sets the second step up
+        sessions.drop_user(name)
         access_log.record("second-factor", "user", name, request.client.host if request.client else "",
                           f"reset by {me}{where}: it sets it up again", role=settings.user_role(name))
         return {"ok": True}

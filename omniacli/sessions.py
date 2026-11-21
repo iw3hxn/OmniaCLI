@@ -85,6 +85,19 @@ class SessionStore:
             return None
         return found["user"]
 
+    def drop_user(self, user: str, keep: str | None = None) -> int:
+        """End every session of user but the one of keep (its own token): a
+        second step reset or switched off must not leave a session made
+        without it, or with a code someone else may know. How many ended."""
+        kept = _digest(keep) if keep else None
+        with self._lock:
+            gone = [k for k, v in self._sessions.items() if v.get("user") == user and k != kept]
+            for k in gone:
+                del self._sessions[k]
+            if gone:
+                self._save()
+        return len(gone)
+
     def drop(self, token: str | None) -> None:
         if not token:
             return
