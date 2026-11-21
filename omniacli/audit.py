@@ -26,6 +26,7 @@ SENSITIVE_READS = {
     "/api/servers/{server}/{role}/login-as/users": "users of the instance's database",
     "/api/servers/{server}/production/mail": "caught mail (list)",
     "/api/servers/{server}/production/mail/{mail_id}": "caught mail (message)",
+    "/api/servers/{server}/production/mail/inbox": "caught mail (reception state, mailboxes)",
     "/api/servers/{server}/{role}/backups": "backups list",
     "/api/servers/{server}/{role}/remote-backups": "backups list (destination)",
     "/api/backups": "backups list (every machine)",
