@@ -1,6 +1,9 @@
 # AD-001…AD-007 — PostgreSQL della macchina
 
-Stato: proposto il 21/11/2026, aspetta la conferma di Carlo sui costi di §0. Codice letto alla revisione 57a005c (`carlo_dev_2026`).
+Stato: **accettato il 21/11/2026, nella forma mista** (Carlo, dopo i costi di §0: «va bene il misto»). Il cluster
+della macchina è il default per le istanze nuove (clienti piccoli, staging, test); il database dedicato di oggi resta
+un'opzione per il cliente grande o delicato, con ripristino a un minuto e replica solo suoi; le istanze esistenti restano
+dedicate e si spostano a richiesta con un job annullabile (AD-007). Si costruisce nell'ordine di §9. Codice letto alla revisione 57a005c (`carlo_dev_2026`).
 Origine: Carlo, 21/11/2026, UX-008 D2: «Farei un Postgresql per Macchina ma attenzione che la singola istanza potrebbe far uso di un Postgresql su un altra macchina. Poi va considerato il caso di Odoo19 che può montare 2 database in cluster». Riferimento: la scheda PostgreSQL del pannello di riferimento (schermate 04-05 del 21/11/2026).
 
 ## 0. Il costo della decisione, in numeri (da confermare)
