@@ -1,0 +1,401 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{# The log of an Odoo instance, in Odoo's records: a record is its head
+   (time, pid, level, database, logger) and the lines under it (a
+   traceback), shown, filtered and copied as one block.
+
+   {% from "_odoo_log.html" import odoolog, odoolog_script with context %}
+   {{ odoolog(key, height) }}   the widget: From when (live, or a span read
+                                with --since/--until), the levels with their
+                                counts, a text filter, Follow, text size, Expand
+   {{ odoolog_script() }}       once per page, after console_script() (it
+                                uses OmniaConsole.tools); then
+                                OmniaOdooLog.attach(box, url) with the URL of
+                                /api/servers/<server>/<role>/log/records -#}
+
+{% set LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] %}
+
+{% macro odoolog(key, height="60vh") -%}
+<div class="console-box olog" data-console="{{ key }}" data-font="{{ console_font }}"
+     data-font-min="{{ console_font_sizes[0] }}" data-font-max="{{ console_font_sizes[1] }}">
+  <div class="console-bar">
+    <label title="{{ _('Which part of the log to read: Now follows it live (its last 300 lines, then what Odoo writes); the others read the lines Odoo wrote in that span, at most 10000') }}">{{ _("From when") }}
+      <select class="olog-span">
+        <option value="now" title="{{ _('The last 300 lines, then what Odoo writes, every 2 seconds') }}">{{ _("Now (live)") }}</option>
+        <option value="hour" title="{{ _('The lines written in the last 60 minutes') }}">{{ _("Last hour") }}</option>
+        <option value="six" title="{{ _('The lines written in the last 6 hours') }}">{{ _("Last 6 hours") }}</option>
+        <option value="night" title="{{ _('The lines written today from 00:00 to 07:00 (your clock)') }}">{{ _("Last night 00-07") }}</option>
+        <option value="today" title="{{ _('The lines written today from 00:00 (your clock)') }}">{{ _("Today") }}</option>
+        <option value="custom" title="{{ _('The lines written from a date and time you choose') }}">{{ _("A date and time…") }}</option>
+      </select></label>
+    <span class="olog-custom" hidden>
+      <input type="datetime-local" class="olog-from" aria-label="{{ _('From (date and time, your clock)') }}" title="{{ _('From (date and time, your clock)') }}">
+      –
+      <input type="datetime-local" class="olog-to" aria-label="{{ _('To (empty: now)') }}" title="{{ _('To (empty: now)') }}">
+      <button type="button" class="olog-read" title="{{ _('Reads the lines Odoo wrote from this date and time: the first 10000 of them') }}">{{ _("Read") }}</button>
+    </span>
+    <span class="console-tags olog-levels">
+      {% for level in LEVELS %}<button type="button" class="console-tag tag-{{ level }}" data-tag="{{ level }}" aria-pressed="false" title="{{ _('Only the {level} records, each with its lines (a traceback); pressed again, every record', level=level) }}"><span class="olog-n">0</span> {{ level }}</button>{% endfor %}
+    </span>
+    <input type="search" class="console-search" placeholder="{{ _('Filter text') }}" aria-label="{{ _('Show only the records with this text, in their head or in their lines') }}" title="{{ _('Show only the records with this text, in their head or in their lines') }}">
+    <label class="olog-follow" title="{{ _('Keeps the newest line in view as Odoo writes') }}"><input type="checkbox" class="console-follow" checked> {{ _("Follow") }}</label>
+    <span class="console-state muted"></span>
+    <span class="console-tools">
+      <button type="button" class="console-smaller" title="{{ _('Smaller text (kept in this browser for this kind of console)') }}">A−</button>
+      <span class="console-size mono muted" title="{{ _('Text size in pixels') }}"></span>
+      <button type="button" class="console-larger" title="{{ _('Larger text (kept in this browser for this kind of console)') }}">A+</button>
+      <button type="button" class="console-expand" title="{{ _('Widens the log to the whole window; Esc goes back') }}">{{ _("Expand") }}</button>
+    </span>
+  </div>
+  <p class="olog-note muted">
+    <span class="olog-said"></span>
+    <button type="button" class="olog-keep" hidden title="{{ _('Reads the same span again, keeping its first lines instead of its last') }}"></button>
+    <button type="button" class="olog-earlier" title="{{ _('Reads the lines Odoo wrote before the first one shown: one more hour, or a span as long as the one chosen') }}">{{ _("Load earlier") }}</button>
+  </p>
+  <div class="console-out olog-out" style="height: {{ height }}">
+    <div class="olog-records"></div>
+    <div class="olog-empty" hidden><span class="olog-empty-said"></span>
+      <button type="button" class="olog-earlier" title="{{ _('Reads the lines Odoo wrote before the first one shown: one more hour, or a span as long as the one chosen') }}">{{ _("Load earlier") }}</button></div>
+  </div>
+</div>
+{%- endmacro %}
+
+{% macro odoolog_script() -%}
+<style>
+.olog .olog-out { background: var(--code-bg); color: var(--code-text); padding: 12px; border-radius: var(--r);
+  overflow: auto; margin: 0; font-family: var(--mono); line-height: 1.4; }
+.olog .olog-records { white-space: pre-wrap; word-break: break-all; }
+.olog .olog-note { margin: 0 0 6px; font-size: 13px; display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
+.olog .olog-note button, .olog .olog-empty button { padding: 1px 8px; font-size: 12px; }
+.olog .console-bar > label { display: inline-flex; gap: 6px; align-items: center; margin: 0; }
+.olog .olog-span { width: auto; }
+.olog .olog-n { font-weight: 600; }
+.olog .console-tag.zero { opacity: .55; }
+.olog-rec { position: relative; padding-right: 8.5em; }
+.olog-rec.lvl-DEBUG { opacity: .7; }
+.olog-rec.lvl-WARNING > .olog-head { color: #f0c060; }
+.olog-rec.lvl-ERROR, .olog-rec.lvl-CRITICAL { border-left: 3px solid #ff7b7b; padding-left: 6px; margin: 2px 0;
+  background: rgba(255, 90, 90, .07); }
+.olog-rec.lvl-ERROR > .olog-head, .olog-rec.lvl-CRITICAL > .olog-head { color: #ff7b7b; font-weight: 600; }
+.olog-rec.stray > .olog-head { font-style: italic; }
+.olog-copy { position: absolute; top: 0; right: 0; padding: 0 6px; font-size: 11px; opacity: 0; }
+.olog-rec:hover > .olog-copy, .olog-copy:focus { opacity: 1; }
+.olog-empty { color: var(--code-text); padding: 18px 4px; font-family: var(--font, inherit); white-space: normal; }
+.olog-empty button { margin-left: 8px; }
+</style>
+<script>
+const OmniaOdooLog = (function () {
+  const T = {{ {
+    "copy": _("Copy the block"), "copyTitle": _("Copies this record, its head and every line under it, to paste elsewhere"),
+    "copied": _("Block copied ({lines} lines)"),
+    "copyFailed": _("This browser did not let the page copy: the block is selected, press Ctrl+C (⌘C on a Mac) to copy it."),
+    "stray": _("Written by Python itself, not by Odoo's logger: an exception nothing caught"),
+    "withText": _("with «{text}»"),
+    "emptyLast": _("No {what} line in the last {lines} lines, since {time} on {date}"),
+    "emptySpan": _("No {what} line in the {lines} lines from {from} to {to}"),
+    "nothingLast": _("Nothing in the log since {time} on {date}"),
+    "nothingSpan": _("Nothing in the log from {from} to {to}"),
+    "saidLast": _("Last {lines} lines, since {time} on {date}, followed live"),
+    "saidSpan": _("{lines} lines from {from} to {to}"),
+    "truncatedLast": _("Truncated: the span has {total} lines, here are the last {count}"),
+    "truncatedFirst": _("Truncated: here are the first {count} lines of the span, more follow"),
+    "showFirst": _("Show the first {count}"), "showLast": _("Show the last {count}"),
+    "showFirstTitle": _("Reads the same span again, keeping its first lines instead of its last"),
+    "showLastTitle": _("Reads the same span again, keeping its last lines instead of its first"),
+    "trimmed": _("the oldest lines left the view: choose a span in From when to read them"),
+    "reading": _("Reading…"), "read": _("read at {time}"), "updated": _("updated {time}"),
+    "unreachable": _("not reachable, retrying…"), "lazy": _("loads when visible"), "error": _("Error {status}"),
+    "badSpan": _("Choose a date and time to start from, before the one to end at"),
+    "rotated": _("----- log file rotated or truncated -----"),
+  } | tojson }};
+  const MAX_RECORDS = 20000, EVERY = 2000, HOUR = 3600 * 1000;
+  const fill = (text, values) => text.replace(/\{(\w+)\}/g, (m, k) => (k in values ? String(values[k]) : m));
+  const pad = (n) => String(n).padStart(2, "0");
+  const utc = (date) => date.toISOString().slice(0, 19) + "Z";
+  // a UTC time on the viewer's clock, as the page writes it (window.whenText: gg/mm/aaaa hh:mm)
+  const local = (iso) => {
+    const d = iso instanceof Date ? iso : new Date(iso);
+    if (isNaN(d)) return "";
+    return window.whenText(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`);
+  };
+  const dateTime = (iso) => { const [date, time] = local(iso).split(" "); return {date: date || "", time: time || ""}; };
+
+  // the span of a choice of From when, on the viewer's clock: [from, to, keep]
+  function spanOf(choice, box) {
+    const now = new Date(), midnight = new Date(now);
+    midnight.setHours(0, 0, 0, 0);
+    if (choice === "hour") return [new Date(now - HOUR), now, "last"];
+    if (choice === "six") return [new Date(now - 6 * HOUR), now, "last"];
+    if (choice === "today") return [midnight, now, "last"];
+    if (choice === "night") return [midnight, new Date(Math.min(now, midnight.getTime() + 7 * HOUR)), "last"];
+    const from = new Date(box.querySelector(".olog-from").value), toValue = box.querySelector(".olog-to").value;
+    const to = toValue ? new Date(toValue) : now;
+    if (isNaN(from) || isNaN(to) || from >= to) return null;
+    return [from, to, "first"];
+  }
+
+  function attach(box, url) {
+    const out = box.querySelector(".olog-out"), list = box.querySelector(".olog-records");
+    const empty = box.querySelector(".olog-empty"), emptySaid = box.querySelector(".olog-empty-said");
+    const said = box.querySelector(".olog-said"), keepButton = box.querySelector(".olog-keep");
+    const state = box.querySelector(".console-state"), follow = box.querySelector(".console-follow");
+    const choice = box.querySelector(".olog-span"), custom = box.querySelector(".olog-custom");
+    const levelButtons = [...box.querySelectorAll(".olog-levels .console-tag")];
+    const earlierButtons = [...box.querySelectorAll(".olog-earlier")];
+    let records = [], chosen = new Set(), text = "";
+    // the live log: its position; a span: its bounds and which end is kept
+    let mode = "now", pos = null, inode = null, timer = null, visible = false, busy = false, round = 0;
+    let earliest = null, spanTo = null, keep = "last", lines = 0, truncated = null, trimmed = false, asked = null;
+
+    OmniaConsole.tools(box, (size) => { out.style.fontSize = size + "px"; }, () => {
+      if (follow.checked && mode === "now") out.scrollTop = out.scrollHeight;
+    }, true);
+
+    const shown = (rec) => (!chosen.size || chosen.has(rec.level))
+      && (!text || rec.low.includes(text));
+    function draw(rec) {
+      rec.low = rec.lines.join("\n").toLowerCase();
+      if (!rec.el) {
+        rec.el = document.createElement("div");
+        const copy = document.createElement("button");
+        copy.type = "button"; copy.className = "olog-copy"; copy.textContent = T.copy; copy.title = T.copyTitle;
+        const head = document.createElement("span"), body = document.createElement("span");
+        head.className = "olog-head"; body.className = "olog-body";
+        rec.el.append(copy, head, body);
+        rec.el.rec = rec;
+      }
+      rec.el.className = "olog-rec lvl-" + (rec.level || "none") + (rec.stray ? " stray" : "");
+      rec.el.title = rec.stray ? T.stray : "";
+      rec.el.children[1].textContent = rec.lines[0] + "\n";
+      rec.el.children[2].textContent = rec.lines.length > 1 ? rec.lines.slice(1).join("\n") + "\n" : "";
+      rec.el.hidden = !shown(rec);
+    }
+    function refilter() {
+      for (const rec of records) rec.el.hidden = !shown(rec);
+      tell();
+    }
+    // the counts on the level buttons, the line over the log, the message of an empty view
+    function tell() {
+      const count = {};
+      for (const rec of records) if (rec.level) count[rec.level] = (count[rec.level] || 0) + 1;
+      for (const button of levelButtons) {
+        const n = count[button.dataset.tag] || 0;
+        button.querySelector(".olog-n").textContent = n;
+        button.classList.toggle("zero", !n);
+      }
+      const at = dateTime(earliest), span = {from: local(earliest), to: local(spanTo), lines};
+      said.textContent = mode === "now" ? fill(T.saidLast, {lines, ...at}) : fill(T.saidSpan, span);
+      if (trimmed) said.textContent += " · " + T.trimmed;
+      keepButton.hidden = !truncated;
+      if (truncated) {
+        said.textContent += " · " + fill(keep === "last" ? T.truncatedLast : T.truncatedFirst,
+                                         {total: truncated, count: lines});
+        keepButton.textContent = fill(keep === "last" ? T.showFirst : T.showLast, {count: lines});
+        keepButton.title = keep === "last" ? T.showFirstTitle : T.showLastTitle;
+      }
+      for (const button of earlierButtons) button.hidden = trimmed || !earliest;
+      const filtered = chosen.size || text;
+      const none = !records.some((rec) => !rec.el.hidden);
+      empty.hidden = !none || (busy && !records.length);
+      if (!none) return;
+      out.scrollTop = 0;
+      const what = [[...chosen].join("/"), text ? fill(T.withText, {text}) : ""].filter(Boolean).join(" ");
+      emptySaid.textContent = filtered
+        ? fill(mode === "now" ? T.emptyLast : T.emptySpan, {what, ...at, ...span})
+        : fill(mode === "now" ? T.nothingLast : T.nothingSpan, {...at, ...span});
+    }
+    // records added after (live) or before (Load earlier) those shown; a first
+    // one without head (level null) is the rest of the record above it
+    function add(found, before) {
+      if (!found.length) return;
+      if (before) {
+        const first = records[0];
+        if (first && first.level === null) {
+          found[found.length - 1].lines.push(...first.lines);
+          first.el.remove();
+          records.shift();
+        }
+        for (const rec of found) draw(rec);
+        list.prepend(...found.map((rec) => rec.el));
+        records = [...found, ...records];
+        return;
+      }
+      const last = records[records.length - 1];
+      if (last && found[0].level === null) {
+        last.lines.push(...found.shift().lines);
+        draw(last);
+      }
+      for (const rec of found) draw(rec);
+      list.append(...found.map((rec) => rec.el));
+      records.push(...found);
+      while (records.length > MAX_RECORDS) {
+        const gone = records.shift();
+        lines -= gone.lines.length;
+        gone.el.remove();
+        trimmed = true;
+      }
+      if (follow.checked) out.scrollTop = out.scrollHeight;
+    }
+    function clear() {
+      records = []; list.replaceChildren(); lines = 0; truncated = null; trimmed = false;
+      pos = null; inode = null; earliest = null; spanTo = null;
+      if (timer) { clearTimeout(timer); timer = null; }
+    }
+    async function get(query) {
+      const resp = await fetch(url + (query ? "?" + new URLSearchParams(query) : ""));
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.error || fill(T.error, {status: resp.status}));
+      return data;
+    }
+
+    // Now: the last lines, then those after pos
+    async function poll() {
+      timer = null;
+      if (mode !== "now" || busy || !visible || document.hidden) return;
+      busy = true;
+      const mine = round;
+      let again = EVERY;
+      try {
+        const data = await get(pos === null ? null : {pos, inode});
+        if (mine !== round) return;
+        if (pos === null) earliest = data.first || utc(new Date());
+        if (data.rotated) add([{level: null, lines: [T.rotated]}]);
+        add(data.records);
+        lines += data.lines;
+        pos = data.pos; inode = data.inode;
+        state.textContent = fill(T.updated, {time: new Date().toLocaleTimeString()});
+        if (data.more) again = 0;
+      } catch (e) {
+        if (mine !== round) return;
+        state.textContent = e instanceof TypeError ? T.unreachable : e.message;
+        again = e instanceof TypeError ? 5000 : 10000;
+      } finally {
+        if (mine === round) { busy = false; tell(); schedule(again); }
+      }
+    }
+    function schedule(ms) { if (mode === "now" && !timer && visible && !document.hidden) timer = setTimeout(poll, ms); }
+
+    // a span: its records, the first or the last of it
+    async function readSpan(from, to, keepEnd) {
+      clear();
+      mode = "span"; keep = keepEnd; earliest = utc(from); spanTo = utc(to); asked = [from, to];
+      busy = true; round++;
+      const mine = round;
+      state.textContent = T.reading;
+      tell();
+      try {
+        const data = await get({since: earliest, until: spanTo, keep});
+        if (mine !== round) return;
+        add(data.records);
+        lines = data.lines;
+        truncated = data.truncated ? (data.total === null ? "?" : data.total) : null;
+        if (data.truncated && keep === "last" && data.first) earliest = data.first;
+        state.textContent = fill(T.read, {time: new Date().toLocaleTimeString()});
+        out.scrollTop = keep === "last" ? out.scrollHeight : 0;
+      } catch (e) {
+        if (mine === round) state.textContent = e instanceof TypeError ? T.unreachable : e.message;
+      } finally {
+        if (mine === round) { busy = false; tell(); }
+      }
+    }
+    // Load earlier: the hour (or a span as long as the one chosen) before the first line read
+    async function earlier() {
+      if (!earliest || busy) return;
+      const to = new Date(earliest);
+      const length = mode === "span" && spanTo ? Math.max(HOUR, new Date(spanTo) - new Date(earliest)) : HOUR;
+      const from = new Date(to - Math.min(length, 30 * 24 * HOUR));
+      busy = true;
+      const mine = round, height = out.scrollHeight;
+      state.textContent = T.reading;
+      try {
+        const data = await get({since: utc(from), until: utc(to), keep: "last"});
+        if (mine !== round) return;
+        add(data.records, true);
+        lines += data.lines;
+        // past the cap, what was not read lies between from and the first line given
+        earliest = data.truncated && data.first ? data.first : utc(from);
+        state.textContent = fill(T.read, {time: new Date().toLocaleTimeString()});
+        out.scrollTop += out.scrollHeight - height;
+      } catch (e) {
+        if (mine === round) state.textContent = e instanceof TypeError ? T.unreachable : e.message;
+      } finally {
+        if (mine === round) { busy = false; tell(); schedule(EVERY); }
+      }
+    }
+
+    function choose() {
+      const value = choice.value;
+      custom.hidden = value !== "custom";
+      box.querySelector(".olog-follow").hidden = value !== "now";
+      if (value === "custom") {
+        const from = box.querySelector(".olog-from");
+        if (!from.value) {
+          const d = new Date(Date.now() - HOUR);
+          from.value = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+        }
+        from.focus();
+        return;
+      }
+      if (value === "now") {
+        clear();
+        mode = "now"; round++; busy = false;
+        tell();
+        schedule(0);
+        return;
+      }
+      readSpan(...spanOf(value, box));
+    }
+    choice.addEventListener("change", choose);
+    box.querySelector(".olog-read").addEventListener("click", () => {
+      const span = spanOf("custom", box);
+      if (!span) { window.omniaSay(T.badSpan); return; }
+      readSpan(...span);
+    });
+    keepButton.addEventListener("click", () => {
+      if (asked) readSpan(...asked, keep === "last" ? "first" : "last");
+    });
+    for (const button of earlierButtons) button.addEventListener("click", earlier);
+    for (const button of levelButtons) {
+      button.addEventListener("click", () => {
+        const on = button.getAttribute("aria-pressed") !== "true";
+        button.setAttribute("aria-pressed", on);
+        if (on) chosen.add(button.dataset.tag); else chosen.delete(button.dataset.tag);
+        refilter();
+      });
+    }
+    box.querySelector(".console-search").addEventListener("input", (ev) => {
+      text = ev.target.value.trim().toLowerCase();
+      refilter();
+    });
+    follow.addEventListener("change", () => { if (follow.checked) out.scrollTop = out.scrollHeight; });
+    // Copy the block: the record's head and its lines; without the browser's
+    // permission, selected for Ctrl+C
+    list.addEventListener("click", async (ev) => {
+      const button = ev.target.closest(".olog-copy");
+      if (!button) return;
+      const rec = button.parentElement.rec;
+      try {
+        await navigator.clipboard.writeText(rec.lines.join("\n") + "\n");
+        state.textContent = fill(T.copied, {lines: rec.lines.length});
+      } catch (e) {
+        const range = document.createRange();
+        range.setStart(rec.el.children[1], 0);
+        range.setEnd(rec.el.children[2], rec.el.children[2].childNodes.length);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        window.omniaSay(T.copyFailed);
+      }
+    });
+
+    new IntersectionObserver((entries) => {
+      visible = entries.some((e) => e.isIntersecting);
+      if (visible) schedule(0);
+    }).observe(out);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) schedule(0); });
+    state.textContent = T.lazy;
+    tell();
+  }
+  return {attach};
+})();
+</script>
+{%- endmacro %}

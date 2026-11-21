@@ -115,6 +115,7 @@ from .plugin_api import ENTRY_POINT_GROUP, PLUGIN_API, ActionRefused, Host, rest
 from .pullcrypto import new_key
 from .links import LIST_TIMEOUT, LinkClients, describe_error, link_headers, proxy_websocket
 from .monitor import FILE as MONITOR_FILE, Monitor
+from . import logtail
 from .logtail import read_since
 from .metrics import Sampler
 from . import metricshistory
@@ -250,7 +251,7 @@ WORKSPACE_ROUTES = frozenset({
     "/servers/{server}/{role}/restart", "/servers/{server}/{role}/start", "/servers/{server}/{role}/stop",
     "/servers/{server}/{role}/backup", "/api/servers/{server}/{role}/backups",
     "/backups/{server}/{role}/{name}", "/servers/{server}/{role}/x/{plugin}/{action}",
-    "/servers/{server}/{role}/log", "/api/servers/{server}/{role}/log",
+    "/servers/{server}/{role}/log", "/api/servers/{server}/{role}/log", "/api/servers/{server}/{role}/log/records",
     "/workspaces/{workspace}", "/api/workspaces/{workspace}/members/save",
     "/api/workspaces/{workspace}/members/delete", "/api/workspaces/{workspace}/instances/create",
     "/api/workspaces/{workspace}/instances/delete", "/api/workspaces/{workspace}/web/save",
@@ -2264,6 +2265,48 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         except OSError as exc:
             return JSONResponse({"error": f"Cannot read {instance.log_file}: {exc.strerror}"},
                                 status_code=404)
+
+    @app.get("/api/servers/{server}/{role}/log/records")
+    async def log_records(server: str, role: str, pos: Optional[int] = None, inode: Optional[int] = None,
+                          since: str = "", until: str = "", keep: str = "last"):
+        """The log in Odoo's records ({records, counts, lines, first, last...}).
+        With since (UTC, until missing: now) the records of that span, the
+        first or the last logtail.MAX_LINES lines of it (keep); without, the
+        last 300 lines, then those after pos, as /log follows them."""
+        instance = get_instance(server, role)
+        span = None
+        if since or until:
+            if keep not in ("first", "last"):
+                return JSONResponse({"error": "keep is first or last"}, status_code=400)
+            try:
+                span = logtail.parse_span(since, until)
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
+        try:
+            if instance.log_file is None:
+                got = await (ops.compose_span(instance, *span, keep, logtail.MAX_LINES) if span
+                             else ops.compose_log(instance, pos))
+            elif span:
+                got = await asyncio.to_thread(logtail.read_span, instance.log_file, *span, keep)
+                if not got.pop("timed"):
+                    return JSONResponse({"error": f"The lines of {instance.log_file} carry no time of Odoo: "
+                                                  "only the live log reads it"}, status_code=422)
+            else:
+                got = await asyncio.to_thread(read_since, instance.log_file, pos, inode)
+        except ops.LogUnavailable as exc:
+            return JSONResponse({"error": f"Cannot read {instance.log_label}: {exc}"}, status_code=404)
+        except OSError as exc:
+            return JSONResponse({"error": f"Cannot read {instance.log_file}: {exc.strerror}"}, status_code=404)
+        found = logtail.records(got.pop("lines"))
+        if instance.log_file is not None:
+            # a file: the times are those Odoo wrote, in the machine's time zone
+            heads = [logtail.head_time(r["lines"][0]) for r in found if r["level"] and not r.get("stray")]
+            got.update(first=logtail.local_to_iso(heads[0] if heads else None),
+                       last=logtail.local_to_iso(heads[-1] if heads else None))
+        got.update(records=found, counts=logtail.counts(found), lines=sum(len(r["lines"]) for r in found))
+        if span:
+            got.update(since=logtail.iso_utc(span[0]), until=logtail.iso_utc(span[1]), keep=keep)
+        return got
 
     @app.get("/omniacli/log", dependencies=[Depends(admin)])
     async def own_log_page(request: Request):

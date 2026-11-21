@@ -17,7 +17,8 @@
 {% from "_icons.html" import icon %}
 {% from "_actions.html" import action_button with context %}
 {% from "_instance_link.html" import instance_link %}
-{% from "_console.html" import logbox, console_script with context %}
+{% from "_console.html" import console_script with context %}
+{% from "_odoo_log.html" import odoolog, odoolog_script with context %}
 {# an ISO time as the page shows it: 17/11/2026 22:48 #}
 {% macro when(iso) %}{% if iso %}{{ iso[8:10] }}/{{ iso[5:7] }}/{{ iso[0:4] }} {{ iso[11:16] }}{% else %}—{% endif %}{% endmacro %}
 {# an instance's address without its scheme; none (localhost): its server's name #}
@@ -480,7 +481,8 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
 </section>
 
 <section class="tab-panel panel" data-panel="log" hidden>
-  <div class="log-panel" data-log="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}/log">{{ logbox("server-log", height="60vh") }}</div>
+  {# the log in Odoo's records: from when, the levels with their counts, a record copied as one block #}
+  <div class="log-panel" data-log="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}/log/records">{{ odoolog("server-log", height="60vh") }}</div>
 </section>
 
 {% if mail_capture %}
@@ -1012,6 +1014,13 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
 {% if login_as %}{% include "_login_as_dialog.html" %}{% endif %}
 {% include "_charts.html" %}
 {{ console_script() }}
+{{ odoolog_script() }}
+<script>
+// the Log tab: the instance's log in Odoo's records
+(function () {
+  for (const panel of document.querySelectorAll(".log-panel")) OmniaOdooLog.attach(panel.querySelector(".console-box"), panel.dataset.log);
+})();
+</script>
 <script>
 (function () {
   const panels = [...document.querySelectorAll(".instance-panel")];
@@ -2541,7 +2550,6 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
   }
   watchJobs();
 
-  for (const panel of document.querySelectorAll(".log-panel")) OmniaLog.attach(panel.querySelector(".console-box"), panel.dataset.log);
   show((location.hash || "#overview").slice(1));
 })();
 </script>

@@ -33,7 +33,9 @@ command of the caller's, and runs docker with an environment of its own:
     start, stop, restart, state          up -d; stop; up -d then restart; ps -a
     pull                                 pull, then up -d
     logs <service> --tail <N>            the last N lines (1 to 10000) of the
-    logs <service> --since <time>        service, or those since a UTC time,
+    logs <service> --since <time>        service, or those since a UTC time
+         [--until <time>] [--first|--last <N>]  (to a UTC time; only the first or
+                                         the last N of them, counted),
                                          each with its time
     port <service> <port>                where the machine publishes the port
     version <odoo service>               odoo --version
@@ -171,6 +173,7 @@ entrypoint makes, from HOST, PORT, USER and PASSWORD (or PASSWORD_FILE).
 from __future__ import annotations
 
 import base64
+import collections
 import email.message
 import email.policy
 import email.utils
@@ -784,15 +787,67 @@ def commands(project: Path, action: str, args: list[str]) -> list[list[str]]:
         name = service(project, args[0])
         return [_script(name, "terminal", options=terminal_options(project, name))]
     if action == "logs":
-        # logs <service> --tail <N> | --since <time>
-        if len(args) != 3 or args[1] not in ("--tail", "--since"):
-            raise HelperError("usage: logs <service> --tail <lines> | --since <time>")
-        if args[1] == "--tail" and not (args[2].isdigit() and 1 <= int(args[2]) <= MAX_TAIL):
-            raise HelperError(f"--tail takes 1 to {MAX_TAIL} lines")
-        if args[1] == "--since" and not SINCE.fullmatch(args[2]):
-            raise HelperError("--since takes a UTC time, as 2026-10-28T16:48:50.380582551Z")
-        return [[*LOGS, args[1], args[2], service(project, args[0])]]
+        name, options, _cut = logs_options(project, args)
+        return [[*LOGS, *options, name]]
     raise HelperError(f"unknown action {action!r}: {', '.join([*ACTIONS, *WITH_ARGUMENTS])}")
+
+
+LOGS_USAGE = "usage: logs <service> --tail <lines> | --since <time> [--until <time>] [--first|--last <lines>]"
+
+
+def logs_options(project: Path, args: list[str]) -> tuple[str, list[str], tuple[str, int] | None]:
+    """logs <service> --tail <N> | --since <time> [--until <time>] [--first|--last <N>]:
+    (the service, the options of docker compose logs, the cut the helper
+    makes itself: ("first" or "last", N) or None). docker's own --tail is
+    taken on the whole log before --since and --until, so the last N lines
+    of a span in the past would be none: the helper counts them."""
+    if len(args) < 3 or len(args) % 2 == 0:
+        raise HelperError(LOGS_USAGE)
+    given: dict[str, str] = {}
+    for flag, value in zip(args[1::2], args[2::2]):
+        if flag not in ("--tail", "--since", "--until", "--first", "--last") or flag in given:
+            raise HelperError(LOGS_USAGE)
+        given[flag] = value
+    for flag in ("--tail", "--first", "--last"):
+        if flag in given and not (given[flag].isdigit() and 1 <= int(given[flag]) <= MAX_TAIL):
+            raise HelperError(f"{flag} takes 1 to {MAX_TAIL} lines")
+    for flag in ("--since", "--until"):
+        if flag in given and not SINCE.fullmatch(given[flag]):
+            raise HelperError(f"{flag} takes a UTC time, as 2026-10-28T16:48:50.380582551Z")
+    if "--tail" in given and len(given) > 1:
+        raise HelperError("--tail goes alone: the last lines of the whole log")
+    if "--tail" not in given and "--since" not in given:
+        raise HelperError(LOGS_USAGE)
+    if "--first" in given and "--last" in given:
+        raise HelperError("--first or --last, not both")
+    options = [part for flag in ("--tail", "--since", "--until") if flag in given for part in (flag, given[flag])]
+    cut = next(((flag[2:], int(given[flag])) for flag in ("--first", "--last") if flag in given), None)
+    return service(project, args[0]), options, cut
+
+
+def logs_cut(project: Path, cmd: list[str], cut: tuple[str, int]) -> int:
+    """docker compose logs, of which only the first or the last N lines are
+    written, then a last line "#omniacli-logs total=<lines> kept=<N>"
+    (total "more" when the first N were kept and the rest not read)."""
+    keep, count = cut
+    proc = subprocess.Popen(compose(project, *cmd), env=ENV, cwd=project, stdout=subprocess.PIPE)
+    kept: collections.deque[bytes] = collections.deque(maxlen=count if keep == "last" else None)
+    total: int | str = 0
+    for line in proc.stdout:
+        if keep == "first" and len(kept) >= count:
+            total = "more"
+            proc.kill()
+            break
+        kept.append(line)
+        total += 1
+    proc.stdout.close()
+    code = proc.wait()
+    out = sys.stdout.buffer
+    for line in kept:
+        out.write(line)
+    out.write(f"#omniacli-logs total={total} kept={len(kept)}\n".encode())
+    out.flush()
+    return 0 if total == "more" else code
 
 
 def data_folder(project: Path, service_name: str) -> Path:
@@ -1213,6 +1268,10 @@ def run(argv: list[str]) -> int:
             raise HelperError("mail-send takes no arguments: the message, JSON, on the input")
         cmd, message = mail_send(project, sys.stdin.buffer.read(MAIL_INPUT + 1))
         return subprocess.run(compose(project, *cmd), env=ENV, cwd=project, input=message).returncode
+    if action == "logs":
+        name, options, cut = logs_options(project, args)
+        if cut:
+            return logs_cut(project, [*LOGS, *options, name], cut)
     for cmd in commands(project, action, args):
         code = subprocess.run(compose(project, *cmd), env=ENV, cwd=project, **extra).returncode
         if code:

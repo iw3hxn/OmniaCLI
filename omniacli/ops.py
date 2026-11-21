@@ -472,7 +472,7 @@ async def compose_log(instance: Instance, pos: int | None = None, initial: int =
     code, out = await capture(instance.restart.command("logs", service, *args), timeout=LOG_TIMEOUT)
     if code:
         raise LogUnavailable(out.splitlines()[-1] if out else f"docker compose logs ended with {code}")
-    lines, last = [], pos
+    lines, last, first_moment = [], pos, None
     for raw in out.splitlines():
         found = _LOG_LINE.match(_ANSI.sub("", raw))
         if not found:
@@ -482,11 +482,45 @@ async def compose_log(instance: Instance, pos: int | None = None, initial: int =
         if pos is not None and moment <= pos:
             continue
         lines.append(found.group(3))
+        first_moment = first_moment or found.group(1) + "Z"
         last = moment if last is None else max(last, moment)
     if last is None:
         # nothing yet: what is written from now on
         last = int(datetime.datetime.now(datetime.timezone.utc).timestamp() * 1_000_000)
-    return {"lines": lines, "pos": last, "inode": 0, "rotated": False, "more": False}
+    return {"lines": lines, "pos": last, "inode": 0, "rotated": False, "more": False,
+            "first": first_moment}
+
+
+# the helper's last line after a cut span: the lines of the span, those given
+_LOG_CUT = re.compile(r"#omniacli-logs total=(\d+|more) kept=(\d+)")
+
+
+async def compose_span(instance: Instance, since: datetime.datetime, until: datetime.datetime,
+                       keep: str = "last", cap: int = 10000) -> dict:
+    """The log of a compose instance from since to until, as
+    logtail.read_span gives a file's: {lines, total, truncated, first, last}
+    (first and last: the UTC times of the first and last line, ISO).
+    total is None when the first cap lines were kept and the rest not read."""
+    service = instance.plugin.log_service(instance)
+    if not service:
+        raise LogUnavailable(f"{instance.plugin.label} names no service whose output is its log")
+    stamp = lambda moment: _since(int(moment.timestamp()) * 1_000_000)  # noqa: E731
+    args = ["--since", stamp(since), "--until", stamp(until), f"--{keep}", str(cap)]
+    code, out = await capture(instance.restart.command("logs", service, *args), timeout=LOG_TIMEOUT)
+    if code:
+        raise LogUnavailable(out.splitlines()[-1] if out else f"docker compose logs ended with {code}")
+    lines, moments, total = [], [], None
+    for raw in out.splitlines():
+        cut = _LOG_CUT.fullmatch(raw.strip())
+        if cut:
+            total = None if cut.group(1) == "more" else int(cut.group(1))
+            continue
+        found = _LOG_LINE.match(_ANSI.sub("", raw))
+        if found:
+            lines.append(found.group(3))
+            moments.append(found.group(1) + "Z")
+    return {"lines": lines, "total": total, "truncated": total is None or total > len(lines),
+            "first": moments[0] if moments else None, "last": moments[-1] if moments else None}
 
 
 def _service(instance: Instance) -> str:

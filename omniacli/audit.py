@@ -22,6 +22,7 @@ from pathlib import Path
 SENSITIVE_READS = {
     # customer data
     "/api/servers/{server}/{role}/log": "instance log",
+    "/api/servers/{server}/{role}/log/records": "instance log (records, a span of time)",
     "/api/servers/{server}/{role}/database": "database statistics",
     "/api/servers/{server}/{role}/login-as/users": "users of the instance's database",
     "/api/servers/{server}/production/mail": "caught mail (list)",

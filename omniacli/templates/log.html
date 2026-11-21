@@ -17,10 +17,14 @@
     <a class="button" href="{{ prefix }}/servers/{{ instance.server }}?view={{ instance.role }}" title="{{ _('Goes back to the page of {key}', key=instance.key) }}">{{ _("Back to {key}", key=instance.key) }}</a>
   </div>
 </div>
-{% from "_console.html" import logbox, console_script with context %}
-<section class="panel" id="log">{{ logbox("log") }}</section>
+{% from "_console.html" import console_script with context %}
+{% from "_odoo_log.html" import odoolog, odoolog_script with context %}
+<section class="panel" id="log">{{ odoolog("log", height="70vh") }}</section>
 {{ console_script() }}
+{{ odoolog_script() }}
 <script>
-OmniaLog.attach(document.querySelector("#log .console-box"), "{{ prefix }}/api/servers/{{ instance.server }}/{{ instance.role }}/log");
+(function () {
+  OmniaOdooLog.attach(document.querySelector("#log .console-box"), "{{ prefix }}/api/servers/{{ instance.server }}/{{ instance.role }}/log/records");
+})();
 </script>
 {% endblock %}
