@@ -146,28 +146,28 @@ them. Paths and service names above are examples. Details:
 
 ## Step 6: Add your first server
 
-1. Open **Servers → Discover**: it finds every Odoo running on the machine,
+1. Open **Settings › Servers by hand → Discover**: it finds every Odoo running on the machine,
    and every systemd unit that starts one. Save the ones you want as drafts.
 2. Open each draft and complete what its notes say.
 3. Run **Test & activate**. Each failed check says what is missing, with the
    sudoers line or the command to add. Fix, run it again, until the server
    is active.
 
-![The Servers page: two active servers and a draft waiting for Test & activate](images/servers.png)
+![Settings › Servers by hand: the servers, each with Test, Edit, Clone, Set to draft and Delete](images/servers.png)
 
-The server now appears on the **Dashboard** with the state of its Odoo and the
-Start / Stop / Restart buttons.
+The server now appears on the machine's page (**Servers**, then the
+machine) with the state of its Odoo; its page has Start / Stop / Restart.
 
-![The Dashboard](images/dashboard.png)
+![The page of a machine, with its instances](images/dashboard.png)
 
 ## Step 7: Run your first job
 
-On the server's page, press **Git pull + restart** on the test instance:
-OmniaCLI pulls the repositories, updates the changed modules
-(`click-odoo-update`) and restarts it. The job runs live on the **Jobs**
-page, and the Odoo log is shown on the server's page.
+On the instance's page, press **Update** (a git pull and restart): OmniaCLI
+pulls the repositories, updates the changed modules (`click-odoo-update`)
+and restarts it. The job runs live on the **Jobs** page, and the Odoo log is
+in the instance's Log tab.
 
-![The page of a server: production and test side by side, with their actions, load and live log](images/server.png)
+![The page of an instance: its environments, with the actions in the head](images/server.png)
 
 Every job has its own page, with its state and its output:
 

@@ -10,9 +10,21 @@ a **test** instance. An instance has one or more git working copies, a
 database, an Odoo config file, a log file and a systemd service, an init.d
 script, or an Odoo that OmniaCLI starts itself.
 
+- **Servers**: every machine, this one and the linked ones, as a card with
+  its state, CPU, memory, disk and instances; a machine's page with its
+  instances and stagings, its load (the last hour live, or up to 14 days) and
+  its databases, which it tunes. **Instances** and **Backups**: one list of
+  every machine's, with the productions that have no scheduled backup and the
+  automatic backups that did not succeed.
 - **Dashboard**: every server with the state of its Odoo, Start / Stop /
   Restart, its CPU, and the CPU, network and disks of the machine, with the
   day each disk will be full.
+- **Stagings**: a dated, neutralized copy of a production, on this machine
+  or on a linked one, rebuilt with the data or with data and code; the mail
+  its Odoo sends is caught and read on its page, and a person writes to it
+  as an outside sender.
+- **Addresses** of an instance (other names, redirects), its **modules**
+  added from the catalog of the OCA, and its configuration of Odoo.
 - **Deploy**: git pull (submodules included), update of the changed or chosen
   modules, restart; auto update in a time window; merge of what was tested
   into production, after a backup.
@@ -29,7 +41,10 @@ script, or an Odoo that OmniaCLI starts itself.
   instance's folder.
 - **MCP**: AI clients (Claude Code and others) read, update test instances
   and back them up through a token.
-- Users with roles (user, developer, admin), an access log, and a Help page.
+- Users with roles (user, developer, admin), an access log (kept a year,
+  chained, also sent to a SIEM: what NIS 2 asks), and a Help page.
+- The pages in English or Italian, light or dark; every question asked in
+  the page's own dialog, never the browser's.
 
 ## Quick start
 
@@ -49,13 +64,25 @@ Step by step, from the package to the first job: [Quickstart](docs/quickstart.md
 
 ## Screenshots
 
-The screenshots show demo data.
+The screenshots show demo data, on two test machines (`lab1`, `lab2`)
+operated from a third OmniaCLI through its links.
 
-**Login**
+**Login**, in English or Italian.
 
 ![The login page](docs/images/login.jpg)
 
-**Dashboard**: on top, one row for the machine OmniaCLI runs on (CPU and
+**Servers**: every machine as a card, this one and the linked ones, with its
+state, CPU, memory, disk, instances and OmniaCLI's version; **+ Add a server**
+prepares a new one (see [Machines](#machines)).
+
+![The Servers page](docs/images/machines.png)
+
+**A machine's page**: its instances, each staging right under its
+production, the free space and the load; the tabs Monitoring and Database
+(below).
+
+On the Dashboard of the machine OmniaCLI runs on, on top, one row for the
+machine (CPU and
 network of the last 15 minutes, its disks: a disk opens its history); a
 click on the row opens its whole load below it (the last hour's charts, its
 disks with their estimate), another closes it, as each viewer left it, then
@@ -82,26 +109,87 @@ reads the same: used, free and size, a bar that turns orange under 15% free
 and red under 5%, and the estimate (the day it is full, the growth a day, or
 why there is none yet), orange within 90 days of full and red within 30.
 
-![The Dashboard](docs/images/dashboard.png)
+![The page of a machine](docs/images/dashboard.png)
+
+**Monitoring** of a machine: the last hour live, or a point every 5 minutes
+over 24 hours, 7 or 14 days (here 24 hours, the history a few hours old).
+
+![The Monitoring tab of a machine](docs/images/monitoring.png)
+
+**Database** of a machine (its admins): each instance's database, its size,
+connections, tuning and recovery at a minute; **Propose the values…**
+computes the values for the memory the machine has.
+
+![The Database tab of a machine](docs/images/machine-database.png)
+
+![The dialog that proposes the values of a database](docs/images/database-tuning.png)
+
+**Instances** and **Backups** of every machine: the stagings under their
+production, the productions without a scheduled backup (a filter), each
+backup with its machine, its kind and its outcome.
+
+![The Instances list of every machine](docs/images/instances.png)
+
+![The Backups list of every machine](docs/images/backups.png)
 
 **Disks**: each disk's used space by day, with the dashed forecast up to the
 day it is full.
 
 ![The Disks page](docs/images/disks.png)
 
-**A server**: production and test side by side, with their actions, load and
-live log; *Merge test to production* and *Copy production to test* at the top.
+**An instance**: its addresses and state in the head, with Open Odoo, Log in
+as…, Update and More; the tabs Environments (production, test and stagings,
+also those on another machine), Backups, Log, Monitoring, Modules, Settings.
 
-![The page of a server](docs/images/server.png)
+![The page of an instance](docs/images/server.png)
+
+**New staging**: a copy of production as it is now, on this machine or on a
+linked one with the same template; **Rebuild…** makes a staging again with
+the data only, or with data and code.
+
+![The New staging dialog](docs/images/new-staging.png)
+
+![The Rebuild dialog of a staging](docs/images/rebuild.png)
+
+**Mail** of a staging: what its Odoo sent, caught here, by mailbox; **Write
+as…** sends it a message as an outside sender, which its Odoo reads as it
+reads a real mailbox.
+
+![The Mail tab of a staging](docs/images/staging-mail.png)
+
+![The Write as dialog](docs/images/write-as.png)
+
+**Addresses…** of an environment: other names and redirects, with where the
+DNS of each name points.
+
+![The Addresses dialog](docs/images/addresses.png)
+
+**Modules**: the repositories of the instance and the catalog of the OCA for
+its version of Odoo, searched by name or by what a module does.
+
+![The Modules tab of an instance](docs/images/modules-tab.png)
+
+![The Add modules dialog](docs/images/modules.png)
 
 **Update modules**: the changed modules or chosen ones. The last choices of
 modules of the instance come back as buttons (*Recent*). Each module shows the
 version installed in the database and the one on disk the update brings
 (`19.0.1.2 → 19.0.1.3`); an installed module with a newer version on disk is
 red. The versions are read after the list, by the instance's Python with
-Odoo's own `adapt_version` and `parse_version`.
+Odoo's own `adapt_version` and `parse_version`. A Docker Compose instance,
+as here, takes the modules typed, or the changed ones when left empty.
 
 ![The Update modules dialog](docs/images/update-dialog.png)
+
+**Backup**: what goes in the zip, its weight, and whether its restore fits.
+
+![The Backup dialog](docs/images/backup-dialog.png)
+
+**A question of the page**: every action that cannot be undone asks in the
+page's own dialog, its verb on the button (red for what stops or deletes),
+Cancel or Esc for no.
+
+![A confirmation in the page's own dialog](docs/images/page-dialog.png)
 
 **Copy production to test**: a new backup of production, or one already made.
 
@@ -115,17 +203,22 @@ step, the transfer with its size, speed and time left.
 
 ![A Copy from link job during the transfer](docs/images/copy-from-link-job.png)
 
-**A job**, and the **Servers** page where servers are added, tested and
-activated.
+**A job**, and **Settings › Servers by hand**, where servers are added,
+discovered, tested and activated.
 
 ![A job](docs/images/job.png)
 
-![The Servers page](docs/images/servers.png)
+![The Servers by hand page](docs/images/servers.png)
 
 **A job stopped by an administrator**: a module update that never ended,
 stopped with *Stop job*.
 
 ![A stopped job](docs/images/job-stopped.png)
+
+**Access log**: who did what, kept at least a year, its entries chained;
+filters and exports for an auditor.
+
+![The Access log](docs/images/access-log.png)
 
 ## What it does
 
@@ -137,11 +230,11 @@ stopped with *Stop job*.
 | Restart | ✓ | ✓ | the instance's systemd or init.d restart, `docker compose up -d` then `restart` of a compose project (a type that runs in one, through the root helper `compose-helper`), or OmniaCLI's own start of `odoo-bin` (see below) |
 | Start, Stop | ✓ | ✓ | `systemctl start`/`stop` of a systemd service (each needs its sudoers line, the **Start/Stop permission** check prints them), `docker compose up -d`/`stop` of a compose project (the helper's line), or OmniaCLI's own Odoo; a stopped Odoo stays stopped for the auto update |
 | Backup | ✓ | ✓ | `click-odoo-backupdb` → `<backup_dir>/<server>/<role>/<db>_<timestamp>.zip`, database and filestore (the backups are OmniaCLI's own: `<backup_dir>/<server>` and `<server>/<role>` are made mode 700 and every zip there 600, made, downloaded from a link or a relay, or uploaded; a folder or file of another user is left as it is); with **Without filestore** checked, the database only (`--no-filestore`), `<db>_<timestamp>_nofilestore.zip`. With **Without binary columns** checked, the binary fields kept in the database (`bytea` columns: previews and printouts of older PLM databases) are left empty: the dialog lists every one that holds data, the biggest first, with its size, and ticks those of at least **Ticked from (MB)** (10); the dialog always shows the weight of the backup and whether a restore into the same instance fits on this machine (see **Weight and room** below). The dump is made by `omniacli/odoo/binary_dump.py` in the instance's venv: `pg_dump --section` pre-data, data (`--exclude-table-data` of the tables with an emptied column) and post-data on one exported snapshot, the rows of those tables copied with the column `NULL` (`''` where `NOT NULL`), into the same zip (`dump.sql`, `manifest.json`, `filestore/`), `<db>_<timestamp>_nobinaries.zip`, restored as any other; Odoo 10 to 19 (Python 2.7 and 3). The dialog opens with the instance's last choice (`<backup_dir>/<server>/<role>/.backup_choices.json`): a column ticked or left unticked then keeps it, a column new since is ticked by its size; the backups without the dialog (Copy production to test, Copy from link, schedules, MCP) take those ticks. The backup before a merge always has the filestore and every column |
-| Backup before an update | ✓ | ✓ | with **Backup before an update** in the instance's settings (on for the production of an instance made by **New instance**): a backup (the last Backup dialog's choices) before a pull that brings commits (Pull and restart, the auto update, a schedule's pull, a repository's **Update** in the Addons tab), before **Update modules** and **Pull image**; named `pre-update_<file>.zip`, the last 3 kept. A pull that brings nothing makes none. When the backup fails, nothing is pulled or updated |
+| Backup before an update | ✓ | ✓ | with **Backup before an update** in the instance's settings (on for the production of an instance made by **New instance**): a backup (the last Backup dialog's choices) before a pull that brings commits (Pull and restart, the auto update, a schedule's pull, a repository's **Update…** in the Modules tab), before **Update modules** and **Pull image**; named `pre-update_<file>.zip`, the last 3 kept. A pull that brings nothing makes none. When the backup fails, nothing is pulled or updated |
 | Delete a backup | ✓ | ✓ | the Backups tab lists each zip with its kind (automatic, before an update, by hand) and a **Delete** button: an admin's for a production, a developer's for a test; refused while a job works on the instance; in the access log |
 | pip requirements | ✓ | ✓ | `<venv_bin>/python -m pip install -r` the `requirements.txt` next to `odoo-bin` and that of every repository having one, in one call |
 | pip click-odoo | ✓ | ✓ | `<venv_bin>/python -m pip install click-odoo-contrib`, the scripts OmniaCLI runs in the venv |
-| Merge test to production | | ✓ | backup production, merge, push, update modules, restart production |
+| Merge test to production | | ✓ | (the button **Bring to production…**, on the test's page) backup production, merge, push, update modules, restart production |
 | Weight and room | ✓ | ✓ | the Backup, Copy production to test and Copy from link dialogs show, for a new backup, its weight (the database on disk less the binary columns left out, its dump: that size plus once more the binary rows kept, which pg_dump writes in hex, the filestore when it is in the backup) and, disk by disk, whether its restore fits on the instance that receives it: the zip in its backup folder, the backup unpacked (Odoo's restore unpacks it first: beside the zip, see **Restore**; with `run_as` in `/var/tmp`), PostgreSQL's data folder (`SHOW data_directory`; not a superuser: `pg_lsclusters` by the port; PostgreSQL on another machine: not checked, and said so) and the filestore, against the room free there plus the database and filestore the restore drops first. The estimates are on the high side (the zip is not counted compressed); the dialogs warn, they do not refuse. Copy from link asks the weight to the OmniaCLI there through the link (an older one, or a puller, tells none) |
 | Copy production to test | ✓ → | ✓ | a popup asks which backup of production: a new one (**shared with production** by default, see below; or with the filestore; or without it, test has no attachments) or one already made; then stop test, `click-odoo-restoredb --copy --force --neutralize` into the test database (drops it and its filestore first; `--neutralize` from Odoo 16: no scheduled actions, no outgoing mail), `click-odoo-update`, start test. **Without binary columns** empties, in the new backup, the columns ticked in production's last Backup dialog (none chosen yet: those of at least 10 MB). **Filestore shared with production**: the backup is made without filestore, and after the restore test's filestore (`<data_dir>/filestore/<db>`) is a tree of hard links to production's files, made by the test's venv python as its `run_as` user: no extra disk space, test reads every attachment, and what test writes or deletes does not touch production's files (Odoo never rewrites a filestore file, it only writes new ones and unlinks). Refused, before anything is touched, when an Odoo config sets no `data_dir` or the two filestores are not on the same filesystem, or the test user may not link production's files (`fs.protected_hardlinks`). Refused when production and test run different Odoo versions, and on Odoo 20+ (click-odoo-restoredb refuses it). A systemd test needs its Start/Stop sudoers lines; an init.d one is not stopped, it is restarted at the end |
 | Copy from link | ✓ (admin) | ✓ | for an instance with a **Database from link**: a popup asks which backup of that instance of the linked OmniaCLI: a new one, made there now (with or without the filestore; an OmniaCLI there older than 2026.1.12 makes it with the filestore), or one already there; whether to neutralize; whether to set every user's password to `admin` (off by default: **Log in as**, below, opens the copy as any of its users with their passwords kept; when ticked, after the restore `click-odoo` runs `odoo/reset_passwords.py`, which writes the pbkdf2_sha512 hash in SQL, so no password policy refuses it; in `password` from Odoo 12, in `password_crypt` on Odoo 10 and 11 with auth_crypt; refused before anything is touched when the Odoo version is unknown); whether to **only load the database** (off by default, for development: the instance is not stopped, its modules are not updated and it is not restarted; Odoo's drop of the database ends its connections); and for a production its database name, typed. The zip is downloaded into this instance's backups as `<link>_<file>` (through `<file>.part`: a cut download leaves nothing), then restored as above: stop, `click-odoo-restoredb --copy --force [--neutralize]`, the passwords, `click-odoo-update`, start. Refused, before anything is touched, when the backup's `manifest.json` names another Odoo version than the instance's. What comes from the other machine is checked before anything is touched: a file that is no backup fails the job, also in a schedule, with the instance and its database intact |
@@ -155,11 +248,28 @@ prepared before Test & activate. The job's log opens in a new tab.
 
 - **Dashboard**: one row per live server, with the CPU of production and
   test over the last 15 minutes. The server's name opens its page, for the
-  maintenance: CPU and memory charts of the last hour, the actions, the
-  settings and the live log. *Merge test to production* is on that page. The
-  buttons **Production** and **Test** open the instance itself in a new tab,
-  at its **Domain name** (server form) or at `http://localhost:<its port>`;
-  the same link is next to the instance's name on the server's page.
+  maintenance. **Open Odoo** opens the instance itself in a new tab, at its
+  **Domain name** (server form) or at `http://localhost:<its port>`; the same
+  link is next to each environment in Environments.
+- **The instance's page**: a head with its address, its state, its type,
+  server and database, and the actions of every day (Open Odoo, Log in as…,
+  **Update**: a git pull and restart, Start when it is stopped; More for the
+  rest: Restart, Stop, Update modules, the backups, the consoles, the
+  database replaced or the instance deleted), then five tabs:
+  **Environments** (production, its test and its stagings, also those on
+  another machine, with **+ New staging**), **Backups** (the list, the
+  automatic backups, the copies out, the recovery at a minute), **Log**,
+  **Monitoring** (CPU and memory of the last hour, the database's health),
+  **Modules** (the repositories, the updates of the code, the catalog of the
+  OCA) and **Settings** (the Odoo options, the technical details). A staging
+  has **Overview** in place of Environments and, when its mail is caught,
+  **Mail**. The tabs a role may not use are not there. *Merge test to
+  production* is the test's **Bring to production…**.
+- **The page's own dialogs**: every question (Restart?, Stop?, Delete…) is
+  asked in a dialog of the page, the action's verb on its button (red for
+  what deletes or stops), Cancel and Esc for no; deleting an instance or a
+  staging asks its name typed. No page calls the browser's `alert`,
+  `confirm` or `prompt` (a test checks every template).
 - **Load**: every 5 seconds OmniaCLI samples each live instance. A systemd
   instance is measured on its unit's cgroup (cgroup v2): CPU of the main
   process and every worker, memory as the resident size of its processes. An
@@ -168,10 +278,10 @@ prepared before Test & activate. The job's log opens in a new tab.
 - **Test** (server form): runs the same checks on what the form holds, saves
   nothing and leaves the form open, to fix and test again. **Branches** (a
   repository row) reads the remote's branches (`git ls-remote --heads`) and
-  turns the Branch cell into a list of them. The Servers page (`/config`)
+  turns the Branch cell into a list of them. The page **Settings › Servers by hand** (`/config`)
   has a search field: every word typed, in a server's name, status,
   database, repository names or branches.
-- **Discover** (Servers page, admins): for a machine where OmniaCLI is new.
+- **Discover** (Settings › Servers by hand, admins): for a machine where OmniaCLI is new.
   It finds the Odoo instances there, from the processes running (an
   `odoo-bin`, `odoo` or `openerp-server` started by a python) and from the
   systemd units that start one, stopped ones too. For each it shows what it
@@ -575,7 +685,7 @@ The configuration has six files and a folder:
   scripts a scheduled action may run, put there by hand.
 - the **servers file** (`servers_file`, see `servers.example.yaml`): the
   servers and their instances. It is edited from the web interface
-  (**Servers** page: new, edit, clone, delete), so the user running
+  (**Settings › Servers by hand**: new, edit, clone, delete), so the user running
   OmniaCLI must be able to write it. Every save is validated like the file at
   startup, the previous version is kept as `<file>.bak`, and the auto update
   loops restart with the new settings. Clone copies a server's configuration
@@ -625,25 +735,57 @@ The **Help** page (menu Help, developers and admins) explains step by step
 how to create a link, how to connect an MCP client and every field of the
 server form, with example data only.
 
-The **Access log** (Users page, admins) lists the logins with date, time and
-address: a user's login is the login form; a link or an MCP token, which send
-their token with every request, log in with their first request after 30
-minutes without requests from the same address. Logouts are listed, and so
-is every call to `/mcp`, with its JSON-RPC method and tool, every shell opened
-and closed, every **action** of whoever passed the login (what changes
-something: the request, its answer and the name, role, host, server or kind it
-names, never a password or a token; the routes that only poll or check are
-left out) and every **download** of a backup. It is kept in `access.jsonl` in
-the logs folder next to `jobs_dir` (`/var/lib/omniacli/logs` for the package).
+The **Access log** (Settings › Users › Access log, admins) lists the logins
+with date, time and address: a user's login is the login form; a link or an
+MCP token, which send their token with every request, log in with their
+first request after 30 minutes without requests from the same address.
+Logouts are listed, and so is every call to `/mcp`, with its JSON-RPC method
+and tool, every shell opened and closed, every **action** of whoever passed
+the login (every request that changes something, POST, PUT or DELETE, so a
+route added later is logged by itself: the request, its answer and the name,
+role, host, server or kind it names, never a password or a token), every
+**download** of a backup, every **read** of customer or security data (an
+instance's log, its database statistics, the caught mail of a staging and its
+mailboxes, the lists of backups and archives, an Odoo config, the users of a
+database for Log in as, the access log itself and its exports, OmniaCLI's
+log, the git credentials: the same page by the same person from the same
+address once in 10 minutes), and the end of every **job** with its outcome.
+Each entry has the local time and UTC, who (and on whose behalf, through a
+link), the role and the workspace in effect, the address, the method, the
+route's template (`/servers/{server}/{role}/restart`), the server, the
+environment, the HTTP code and the jobs it started. The reads logged are
+listed in one place, `audit.py` (`SENSITIVE_READS`): every other GET route
+is listed there as not sensitive, or a test fails, so whoever adds a route
+decides. It is kept in `access.jsonl` in the logs folder next to `jobs_dir`
+(`/var/lib/omniacli/logs` for the package). The page filters by period,
+user, event and text, and exports CSV and JSON. A workspace's admins read
+their workspace's entries only (its page, **Access log**): what was done and
+read on its instances, by anyone, and the logins of its users and tokens.
 
 Wrong passwords and tokens, and the logins refused for too many failures, need
 no login, so they have a file of their own, `access-failed.jsonl`, and cannot
 push out the rest: of them at most 10 a minute from an address and 300 from all
 addresses are written, the others counted in one entry at the end of the
-minute. Past 5 MiB a file moves to `<file>.1`, and so on up to `<file>.10`.
+minute. Past 5 MiB a file moves to `<file>.1`, and so on; a file past the
+tenth goes only when its newest entry is older than **audit.retention_days**
+(Options, 365 by default; 0: by size only, up to `<file>.10`), so no entry
+younger than that is dropped for room. The machine's page and the log's warn
+when the disk will not hold the period, and when the clock is not
+synchronised (`timedatectl`, else `chronyc`).
 
-These files are written by OmniaCLI's user, so whoever has a shell as that user
-can change them: to keep them out of reach, send them to another machine.
+**Integrity**: each line carries in `prev` the SHA-256 of the line before, a
+chain for each file that goes on across the rotation. **Check the chain**
+on the page (`GET /api/access/verify`) or `omniacli verify-access-log -c
+/etc/omniacli/omniacli.yaml` (exit 1, with file and line, when it breaks)
+show a line changed, taken out or added in the middle; not the last lines
+taken out, nor a whole oldest file. These files are written by OmniaCLI's
+user, so whoever has a shell as that user, or root, can change them: to keep
+them out of reach, send them to another machine. **SIEM** (Options): every
+entry, as soon as written, goes to a syslog server in RFC 5424 (UDP, TCP or
+TCP with TLS), from a thread with its queue: a SIEM that does not answer
+never stops an action, and its failure is logged once. What NIS 2 asks and
+how this answers it: [docs/nis2-audit.md](docs/nis2-audit.md) (in Italian;
+the retention of a year is to be confirmed against the national rules).
 
 The **Log** page (admins) shows OmniaCLI's own log: the requests it serves,
 its calls to the links, its errors, with the follow and errors-only switches
@@ -1012,7 +1154,7 @@ The job, and that of **Delete the instance…** (the instance's own page, More; 
 the Jobs page and its own page also when the creation failed (the server
 then leaves the workspace) or after the removal.
 
-**The customer's modules**: on the instance's page, **Settings › Code › Add a
+**The customer's modules**: on the instance's page, **Modules › Code › Add a
 repository** takes an `https://` address (no user or token in it: those are
 the workspace's git credentials, on the workspace's page under External
 services), a branch and, under Advanced, another branch for test and a name
@@ -1145,10 +1287,12 @@ the pool:
   dropped;
 - `OMNIACLI-WS-MAIL`, jumped from `DOCKER-USER`: the network of a staging
   whose mail is caught (UX-008 §5.3) is refused SMTP (`25`, `465`, `587`,
-  `2525`, a TCP reset) to anything outside itself, whatever server its
-  database is given (a mail server switched on again, a backup restored
-  without neutralizing); its `mail` service, on `1025` in the same network,
-  is reached. `create` and `remove` make it again from the instances of the
+  `2525`) and IMAP and POP (`110`, `143`, `993`, `995`), a TCP reset, to
+  anything outside itself, whatever server its database is given (a mail
+  server switched on again, a backup restored without neutralizing): it
+  sends no mail and never reads, and so empties, a real mailbox switched on
+  in its Odoo; its `mail` service, on `1025` in the same network, and its
+  `inbox` are reached. `create` and `remove` make it again from the instances of the
   mounted disks; the projects are kept in `/etc/omniacli/mail-guard.json`
   (root's), which `firewall apply` reads at boot, before the disks.
 
@@ -1165,7 +1309,7 @@ their names; the workspace's admins choose the rest on its page (**Names**):
 | Name | Goes to |
 |---|---|
 | `<domain>`, `test.<domain>` | production and test of the **main instance** (none chosen: these names go nowhere) |
-| `<instance>.<domain>`, `<instance>.test.<domain>` | production and test of every other instance (the main one answers on the domain only) |
+| `<instance>.<domain>`, `<instance>.test.<domain>` | production and test of every other instance (the main one answers on the domain only; its own names of before, `<main>.<domain>` and `<main>.test.<domain>`, send to its address with a `301`, so old links keep working) |
 | `<sub>.<domain>`, `<sub>.test.<domain>` | a **subdomain**: production and test of the instance it is given to |
 
 A subdomain is one label (`a-z 0-9 -`), never `test` nor an instance's name;
@@ -1309,14 +1453,110 @@ gets a JSON `{"text": ...}`: Slack's and Teams' incoming webhooks,
 Telegram's `https://api.telegram.org/bot<token>/sendMessage?chat_id=<id>`,
 ntfy. Only a webhook's host is ever written in a log.
 
+### Instances and Backups of every machine
+
+**Instances** (`/instances`, the menu): the instances of this machine and of
+every link, each machine asked on its own, so one that does not answer is a
+row of its own saying why and does not hold up the others. Each staging is
+right under its production (`↳`), the Odoo version as a badge, the state,
+and the automatic backups of each production: the last one, the last one
+that did not succeed (red), or *No scheduled backup*; the count of those
+without in the head is a filter. **+ New instance** may choose a linked
+machine (the machine's admins). A workspace's admins see their own
+instances only.
+
+**Backups** (`/backups`, the menu; developers read and download): the
+backups of every machine, newest first, 50 a page, each with its kind
+(automatic, before an update, by hand), size and outcome (its restore tried
+or not), and the automatic runs that did not succeed as rows of their own,
+with their job; in the head, tonight's count. The menu of a row: **Download**,
+**Restore into a new instance…** (a new staging of its production with the
+database of that backup, neutralized, `POST
+/api/servers/<server>/stagings/from-backup`; refused for a backup whose
+restore failed when tried) and **Delete…**. An OmniaCLI too old to list its
+backups is named, not counted.
+
 ### Stagings, deploy on push, monitoring
 
-**Refresh from production** (a staging's page, the admins of the machine or
-of its workspace): a new backup of the parent's production restored into the
-staging's, neutralized; its code stays as it is, and the date of the copy is
-the refresh's.
+**New staging** (Environments of a production, the admins of the machine or
+of its workspace): a dialog says the size of the copy (the backup's
+estimate), the address it will have (`stg-<yyyymmdd>.<its address>`) and,
+for the machine's admins, the machines it may go to: this one, and every
+linked one with the same template and the room for it, the others named with
+the reason. **Create the staging** makes a backup of the production, an
+instance `<instance>-stg-<yyyymmdd>` (`-2`, `-3` on the same day) from the
+same template in the same workspace, and loads the backup there,
+neutralized; its test stays stopped. On another machine, the backup goes
+through the link (`POST /api/stagings/receive` there), the staging is made
+there in the workspace of the same name (made when missing) and records
+that its production is here: the production's Environments list it with
+its machine (asked through the links), and its own page names its
+production without a link. The choice is an admin's of the machine, logged
+in or acting through a link for a person (the pages of a linked machine,
+as an integrator works); a workspace's admin makes it here. Refused when the workspace has all its instances (raise the
+limit, or delete a staging), when the room is short there, or when the
+template is gone.
 
-**Deploy on push** (an instance's Settings tab; a production's by an admin):
+**Rebuild…** (a staging's note, the same admins; it replaces Refresh from
+production): makes the staging again from its production as it is now, a
+new backup loaded and neutralized, its address kept. **Data only** (the
+default) keeps the staging's code, to try new code on today's data; **Data
+and code** also puts each repository back at the commit the production has
+checked out (fetched from the production's own clones, the missing ones
+cloned, the extra ones taken away), before the data. The date of the copy
+is the rebuild's. Not for a staging whose production is on another machine:
+that one is made again from its production's page.
+
+**The mail of a staging**: a staging made from the templates `odoo-18`,
+`odoo-19` (2026.1.2 and later) or `odooplm-20` (2026.1.8) has a service
+`mail` ([Mailpit](https://mailpit.axllent.org/), MIT, profile
+`mail-capture`, no port published) that answers SMTP in its project's
+network as `mail` and as `invalid`, the host of the server `odoo neutralize`
+puts in the database, so everything its Odoo sends arrives there and goes
+nowhere else; the firewall refuses the rest (`OMNIACLI-WS-MAIL`, above). The
+**Mail** tab of the staging (every role of the workspace) lists it, newest
+first: received on, to, subject and sender; a message opens in a dialog,
+its text in a sandboxed frame without scripts, with the names of its
+attachments; it is read again every 10 seconds while open, **Empty…** (an
+admin's) deletes the messages. *Restore a backup…* into such a staging
+neutralizes the database even with Neutralize off, and Settings › Odoo
+options shows its SMTP parameters read only. A staging made before has no
+tab: its note says *no outgoing mail*.
+
+**Mailboxes and Write as…**: a staging of the templates `odoo-18`,
+`odoo-19` (2026.1.3) or `odooplm-20` (2026.1.9) also has a service `inbox`
+([GreenMail](https://greenmail-mail-test.github.io/greenmail/), Apache-2.0,
+one IMAP mailbox per address, in memory), which Mailpit hands the messages
+to an address of the staging's own domain, its name under `.test`
+(`acme-odoo-stg-20261121-4.test`: `.test` exists nowhere outside). The tab
+then has a **Mailbox** menu (every address of the caught mail, with its
+messages: what Odoo sent to `customer@example.com` and what it wrote back)
+and:
+
+- **Switch reception on** (developers and admins): `odoo/mail_inbox.py` in
+  `odoo shell` puts the staging's domain on every company and its named
+  aliases there, one incoming IMAP server for `catchall@` and each alias (at
+  most 60) on the `inbox` service, archives every other incoming server (a
+  real one would read, and empty, the customer's real mailbox) and every
+  outgoing one but the caught `invalid:1025`, and switches on the two mail
+  crons only. It refuses a database that is not neutralized. Run again, it
+  writes nothing;
+- **Read now**: the same, then Odoo's outgoing queue sent and every mailbox
+  read at once, not in 5 minutes; it says how many messages came in;
+- **Write as…**: a message from an outside sender (a customer, a supplier)
+  to an address of the staging (its catchall or an alias), made by the root
+  helper (`compose-helper mail-send`, its values checked, at most 10
+  recipients) and handed to Mailpit: it stays in the staging, and Odoo
+  reads it as it reads a real mailbox (a new lead, a message in a chatter).
+  **Reply** on a message writes from its recipient to its `Reply-To`,
+  quoted, with `In-Reply-To` and `References`, so Odoo puts it in the
+  chatter of its record.
+
+The mailboxes are in memory: a restart of the staging empties those Odoo has
+not read yet (the tab keeps its copy).
+
+**Deploy on push** (an instance's Modules tab, *Update at every push* under
+Updates of the code; a production's by an admin):
 switched on, it gives an address and a secret for the repository's webhook
 (GitHub: content type JSON, the secret signs the body, `X-Hub-Signature-256`;
 GitLab: the secret as its token, `X-Gitlab-Token`; Bitbucket and a CI:
@@ -1343,9 +1583,21 @@ actions' notices. The head of the Environments tab says whether it answers,
 since when, its uptime over the last 24 hours and its answer time; MCP's
 `diagnose_instance` too. The last day of checks is kept in `monitor.json`.
 
+**The machine's load over 14 days** (a machine's page, Monitoring; not for
+a user of workspaces): every 5 minutes a point of the machine's load, from
+the sampler's samples (CPU mean and maximum, memory in use and in all, bytes
+received and sent), kept 14 days in `load_history.json` next to the disks'
+history (4,032 points, about 250 KB). **Last hour · 24 hours · 7 days · 14
+days** (14 by default, kept in the browser): four tiles (CPU with its mean
+and its maximum and when, memory now and its maximum, the main disk's free
+space and its forecast, the traffic of the period) and a chart for each; a
+time OmniaCLI was not running is a gap in the lines, never a zero
+(`GET /api/metrics/history?days=1|7|14`). A linked OmniaCLI without the
+history keeps the live hour and says so.
+
 ### The database: its health, back to a minute
 
-The **Database** tab of an instance (developers; Docker Compose and venv)
+**Monitoring › Database** of an instance (developers; Docker Compose and venv)
 reads PostgreSQL's own statistics with fixed queries (`pg-report` of the
 compose helper in the database container; `psql` as Odoo connects for a
 venv): size, connections, cache hits, the queries running for more than 5
@@ -1368,6 +1620,89 @@ its database renamed as the staging names it, its roles given the staging's
 passwords, the filestore of now linked (Odoo only adds files there), and
 neutralized (`odoo neutralize`). Production is never touched; when it fails
 the staging's data of before is put back.
+
+### The machine's databases: their tuning
+
+The **Database** tab of a machine's page (the machine's admins only; through
+a link, when the OmniaCLI there has it and the link acts there as its
+admin) answers whether the databases of the machine are tuned for the
+machine they have. It is steps 1 and 2 of the decision on PostgreSQL
+([AD-001…AD-007](docs/adr/postgresql-della-macchina.md), accepted in its
+mixed form: a cluster of the machine for the new instances, the dedicated
+databases of today kept); the cluster of the machine is not built yet.
+
+- **Read** when the tab opens, each database within its own time (one that
+  does not answer is a row saying why): a row for each instance's database,
+  the stagings under their production, with its PostgreSQL version, size,
+  connections, **tuning** (*Base values*: amber on a production; *Tuned on
+  …*; *Restart at 05:00 … for 2 values*; *Waiting for a restart* when a
+  value was changed elsewhere) and its recovery at a minute. A database of
+  the system's PostgreSQL is one row, *Not tuned by OmniaCLI*; one on another
+  machine (`db_host`) is named, to be tuned there. A row opens its main
+  parameters (now, base, and whether it is valid at once or at the restart,
+  from `pg_settings.context`) and any other parameter written in
+  `postgresql.auto.conf`. Above them, the memory for the databases: a quarter
+  of the machine's by default.
+- **Propose the values…** (a dedicated database): seven parameters
+  (`effective_cache_size`, `work_mem`, `maintenance_work_mem`,
+  `random_page_cost`, then at the restart `shared_buffers`,
+  `max_connections`, and `shared_preload_libraries` for the statistics of
+  the queries), computed on the memory for the databases, the cores and the
+  disk: the productions share that memory, tests and stagings keep their
+  base values, and a workspace's memory limit keeps the shared memory under
+  a quarter of it. Each value can be changed before **Apply**; those valid
+  at once are written at once (`ALTER SYSTEM SET` of those seven only, then
+  `pg_reload_conf`), those of the restart **at an hour** (05:00 by
+  default) or **now**, written right before the restart: `CHECKPOINT`, a
+  fast stop, a start. A database that does not answer within
+  3 minutes gets its `postgresql.auto.conf` of before back, byte for byte,
+  and starts again; the job says so. The planned restart waits for a job on
+  the instance, survives a restart of OmniaCLI and, missed while it was
+  stopped, moves to the next day at the same time. **Cancel the restart of
+  05:00**, **Restart now…** and **Back to the base values…** (only what
+  OmniaCLI wrote) are in the row's details.
+- The parameters of the recovery at a minute and of the replication
+  (`archive_*`, `restore_command`, `wal_level`, ...) are never shown nor
+  written. The record (who tuned, when, what, on which memory) is
+  `postgres_tuning.json` next to the jobs; the instance's Settings ›
+  Technical details read it, without asking PostgreSQL.
+
+The root helper does the work with fixed SQL (`compose-helper pg-settings`,
+`pg-set`, `pg-reset`, `db-restart`, the values checked and given on
+standard input).
+
+### Modules from the OCA catalog
+
+The **Modules** tab of an instance of a workspace (developers and admins)
+holds its repositories (**Code**: each with its branch and last commit,
+**Update…**, **Delete…**, **+ Add a repository**), the **Updates of the
+code** (the auto update, deploy on push) and **+ Add modules**: the catalog
+of the [OCA](https://odoo-community.org/)'s modules for the instance's
+version of Odoo.
+
+- **The catalog** is read with git from github.com, no API and no paid
+  service: the repositories from `OCA/repo-maintainer-conf`, a
+  `git ls-remote` of each one's branch of that version, and for the changed
+  ones only a shallow, sparse clone of their `__manifest__.py` and
+  `requirements.txt`, read with `ast.literal_eval`, never run. It is kept in
+  `<state>/catalog/oca-<version>.json` with its date, read again every night
+  and with **Read the catalog again** (the machine's admins); when
+  github.com does not answer, the copy on disk is used.
+- **Search** by name or by what a module does (at most 50 rows): each module
+  with its summary, technical name, repository and licence, and its state:
+  installed, installed in test, in the code, to add.
+- **Install…** says what it takes: the repositories to add and the modules
+  they bring (resolved through the catalog, dependencies of dependencies
+  included), the Python packages; it is refused when a dependency is neither
+  in the instance nor in the catalog (an Enterprise module). Then a job: the
+  missing repositories added as **Add a repository** does (production and
+  test restarted), a backup first for a production, `odoo -i` in the
+  running service (the scheduled actions of a neutralized database kept
+  off), a restart, the module's state checked. In test by a developer, in
+  production by an admin, after a confirmation; a staging's own copy by a
+  developer.
+
+An instance outside a workspace has the table of its repositories only.
 
 ### Is a backup good
 
@@ -1913,7 +2248,10 @@ the new public key on every instance; a stolen one, the same at once.
 
 ## Machines
 
-**Configure › Machines** (`/machines`, the machine's admins) prepares a
+**Servers** (`/machines`, the menu; **+ Add a server** is the machine's
+admins') shows every machine as a card (this one and the linked ones: its
+state, CPU with its last minutes, memory, disk, instances and stagings,
+cores, OmniaCLI's version, read through the link) and prepares a
 new server from here, as a hosting panel does: a clean Ubuntu 22.04 or 24.04
 or Debian 11, 12 or 13 (amd64 or arm64), given by its address and an SSH user, ends
 linked to this OmniaCLI with its workspaces ready, in about 10 to 20
@@ -1954,7 +2292,8 @@ minutes.
    Every step can run again. Then the link is saved here, through SSH, and
    the job waits for that OmniaCLI to answer through it.
 
-The machine is then on the Dashboard under **Linked**, and its pages
+The machine is then a card of **Servers** and on the Dashboard under
+**Linked**, and its pages
 (Workspaces, its instances) open here through the link. The provisioning
 key may be taken out of root's `authorized_keys` there: the link does not
 use it.
@@ -1964,7 +2303,9 @@ use it.
 Step 1 of **Add a server** asks what is on it. **Odoo already runs there**
 (a hosting panel's server, one installed by hand) changes the job: nothing of
 the machine is upgraded, installed beside it or closed, and it takes about
-5 minutes.
+5 minutes. Such a server may also be an Ubuntu 20.04: OmniaCLI alone, on the
+Python 3.12 the package downloads (the system's is 3.8); a clean 20.04 is
+refused, with what to choose.
 
 1. `provision.sh existing`: `apt-get update` and only what OmniaCLI needs
    (`acl`, `python3-venv`, `curl`), OmniaCLI from its package without the
@@ -2131,6 +2472,7 @@ provides: OmniaCLI installed by hand on Python 3.9 runs without it.
 | `list_actions`, `run_action` | the actions of the instance's type (Docker: Pull image, Update modules...; a venv's: pip...), run with their parameters; on a production as above |
 | `verify_backup` | a backup checked (SHA-256) and restored for a try in a database of its own, dropped after |
 | `full_archive` | the full archive of an instance in its backups (a production's: admin token) |
+| `database_report` | (developer token) the health of an instance's database, as Monitoring › Database shows it |
 | `stop_job` | stops a running job |
 | `list_links`, `linked_tools`, `call_linked` | (a machine's token) the OmniaCLI this one is linked to, and their tools called through the link: one MCP for every machine |
 | `backup_test` | a backup (database and filestore) of the **test** instance; `options: {"no_filestore": true}` for the database only, `{"no_binaries": true}` with the binary columns emptied (those ticked in the instance's last Backup dialog, or `"binary_columns": ["table.column", ...]`) |
@@ -2176,6 +2518,8 @@ asks its name in `confirm`). A client is set up once, here.
 workspace's page (its admins) makes a key, a token bound to it (`workspace:` in the users file): it sees
 and reaches that workspace's servers and jobs only, with its role there, and
 never the machine's tools (`read_server`, `add_draft_server`, the drafts).
+Its pages and REST routes are a user's of the workspace: never the
+machine's, nor another customer's backups.
 
 Then, in Claude Code:
 
