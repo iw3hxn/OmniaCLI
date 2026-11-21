@@ -58,7 +58,12 @@ instance (production too) and list_backups lists an instance's backups, each
 with the path to download it; these two and dev_setup also reach the draft
 servers (complete ones) with an admin token. read_server gives a
 server's whole configuration and add_draft_server adds a server as a draft:
-an administrator makes it live from the web interface (Test & activate)."""
+an administrator makes it live from the web interface (Test & activate).
+To restore a database from outside as a new instance ("restore the database
+X on the server Y creating a new neutralized instance"): upload_backup gives
+a URL to PUT the file to (with link=<machine> it is sent on there), then
+restore_new_instance, first with dry_run=true: it tells the modules without
+code, which you report to the user before restoring with dry_run=false."""
 
 
 def _instructions() -> str:
@@ -73,7 +78,7 @@ TOOL_ROLES = {"update_test": "developer", "backup_test": "developer",
               "restart_instance": "developer", "start_instance": "developer", "stop_instance": "developer",
               "list_actions": "developer", "run_action": "developer", "verify_backup": "developer",
               "full_archive": "developer", "stop_job": "developer", "update_production": "admin",
-              "database_report": "developer"}
+              "database_report": "developer", "upload_backup": "admin", "restore_new_instance": "admin"}
 # the tools of the machine's tokens only: a workspace's token never reaches them
 MACHINE_TOOLS = {"read_server", "add_draft_server", "list_links", "linked_tools", "call_linked"}
 # the role of the token of the request being served, for the list of tools,
@@ -163,12 +168,13 @@ def _rpc_server(body: bytes) -> str:
 
 def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampler: Sampler,
                authenticator: Authenticator, access_log: AccessLog, add_draft,
-               link_call=None, uptime=None) -> tuple[Route, object]:
+               link_call=None, uptime=None, restores: dict | None = None) -> tuple[Route, object]:
     """The /mcp route and the session manager to run in the app's lifespan.
     add_draft(name, data): the app's own way to add a draft server;
     link_call(link, user, role, payload): a JSON-RPC payload to the /mcp of
     a linked OmniaCLI, its answer (LookupError: no such link); uptime(key):
-    the monitor's view of an instance."""
+    the monitor's view of an instance; restores: the app's upload (a URL to
+    PUT a database to) and restore (a new instance from it)."""
     server = MCPServer(name="OmniaCLI", instructions=_instructions())
 
     def caller(ctx: Context) -> str:
@@ -734,6 +740,85 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         if not jobs.stop(job_id, f"mcp: {caller(ctx)}"):
             raise ToolError(f"{job_id} is not running")
         return _job_dict(job)
+
+    # --- a database from outside into a new instance ----------------------
+
+    def calls_through_a_link(ctx: Context) -> bool:
+        _, _, token = (ctx.headers or {}).get("authorization", "").partition(" ")
+        return authenticator.token_name(token.strip()) is None
+
+    @server.tool()
+    def upload_backup(ctx: Context, name: str, size: int, workspace: str = "", link: str = "",
+                      sha256: str = "") -> dict:
+        """(admin token) Step 1 of "restore the database X on the server Y as a
+        new instance": a one-time upload URL (valid 30 minutes, for this token
+        only) where you PUT the file with the same Authorization: Bearer header.
+        The file: an Odoo backup zip (dump.sql, filestore/, manifest.json, as
+        odoo db dump or the database manager make it), name ending in .zip, or
+        a plain SQL dump of pg_dump, name ending in .sql. size: its exact size
+        in bytes; sha256: its SHA-256, checked when given. workspace: the
+        workspace that will hold the new instance (a workspace's token: its
+        own). link: the linked machine to send it to (list_links), e.g.
+        upload_backup(name="acme.zip", size=1234, workspace="acme",
+        link="lab1"): you still PUT here, this OmniaCLI sends it on (a job,
+        get_job) and keeps no copy. Then restore_new_instance (through
+        call_linked for a link) with the file the answer names."""
+        need(ctx, "upload_backup")
+        if restores is None:
+            raise ToolError("This OmniaCLI takes no upload")
+        if calls_through_a_link(ctx):
+            raise ToolError("upload_backup through a link: call it on the OmniaCLI you talk to, with link=<this machine>")
+        _, _, token = (ctx.headers or {}).get("authorization", "").partition(" ")
+        request = getattr(ctx.request_context, "request", None)
+        base = str(getattr(request, "base_url", "") or "")
+        try:
+            return restores["upload"](authenticator.token_name(token.strip()), scope_of(ctx), workspace, name, size,
+                                      sha256, link, base)
+        except ActionRefused as exc:
+            raise ToolError(str(exc)) from exc
+
+    @server.tool()
+    async def restore_new_instance(ctx: Context, file: str, workspace: str = "", dry_run: bool = True,
+                                   name: str = "", neutralize: bool = True, staging_of: str = "",
+                                   backup_of: str = "", add_repositories: bool = False,
+                                   allow_missing: bool = False, wait_seconds: int = 0) -> dict:
+        """(admin token) Step 2 of "restore the database X on the server Y as a
+        new neutralized instance": a new instance of workspace made from the
+        template of the database's Odoo version, the file restored into it,
+        neutralized (no scheduled actions, no outgoing mail) unless
+        neutralize=false. file: the name upload_backup answered (the
+        workspace's import area), or with backup_of=<server> a backup of
+        that server (list_backups). FIRST call it with dry_run=true (the
+        default): nothing starts, the answer says the Odoo version, the
+        modules installed in the database that have no code in the new
+        instance, grouped by where they are (in_oca: OCA repositories of the
+        catalog, which add_repositories=true adds; not_found: to be provided,
+        e.g. a customer's private repository or Odoo Enterprise) and the
+        room. Tell the user and ask before the second call, dry_run=false
+        (with add_repositories=true and, only if the user accepts the
+        missing modules, allow_missing=true): it answers a job (get_job).
+        name: the new instance's name (default: the database's);
+        staging_of=<a production of the workspace> makes it a staging of it
+        (dated, its mail caught). For a linked machine: call_linked(link,
+        "restore_new_instance", {...}). Example: restore_new_instance(
+        file="acme.zip", workspace="acme") then restore_new_instance(
+        file="acme.zip", workspace="acme", dry_run=false,
+        add_repositories=true)."""
+        need(ctx, "restore_new_instance")
+        if restores is None:
+            raise ToolError("This OmniaCLI makes no instance from a database")
+        try:
+            answer = await restores["restore"](caller(ctx), role_of(ctx), scope_of(ctx), workspace=workspace,
+                                               file=file, backup_of=backup_of, name=name, neutralize=neutralize,
+                                               staging_of=staging_of, dry_run=dry_run,
+                                               add_repositories_=add_repositories, allow_missing=allow_missing)
+        except ActionRefused as exc:
+            raise ToolError(str(exc)) from exc
+        job = jobs.get(answer.get("job") or "") if not dry_run else None
+        if job is not None:
+            await _wait(job, wait_seconds)
+            answer["job"] = _job_dict(job, tail=30)
+        return answer
 
     server.streamable_http_app(
         streamable_http_path="/mcp", stateless_http=True, json_response=True,

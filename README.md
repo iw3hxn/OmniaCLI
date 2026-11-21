@@ -2481,6 +2481,8 @@ provides: OmniaCLI installed by hand on Python 3.9 runs without it.
 | `read_server` | (admin token) a server's whole configuration, active or draft |
 | `add_draft_server` | (admin token) a new server, always a **draft**: it goes live only with Test & activate on the web |
 | `dev_setup` | what a client needs to rebuild an instance locally: remote URLs (without credentials), branches, commits, `addons_path` as repository folders, Odoo and Python versions, the Odoo config options without secrets nor server paths, and the backups to download |
+| `upload_backup` | (admin token) a one-time URL (30 minutes, this token only, the size told, the SHA-256 checked when given) to `PUT` a database from outside: an Odoo backup zip or a plain SQL dump, into a workspace's import area; with `link` this OmniaCLI sends it on to that linked machine and keeps no copy |
+| `restore_new_instance` | (admin token) a new instance of a workspace from that file (or `backup_of` a server's backup): the template of its Odoo version (from the dump's module `base`, or its manifest), restored neutralized; first `dry_run` (the default) tells, starting nothing, the modules installed in the database without code in the new instance, grouped by OCA repository of the catalog (`add_repositories` adds them) or not found (a private repository, Odoo Enterprise); refused while modules are missing unless `allow_missing`; `staging_of` makes it a staging of a production (its mail caught). On a linked machine through `call_linked` |
 
 With an admin token `dev_setup`, `backup` and `list_backups` also reach the
 draft servers (saved complete), and their backups download with that token;

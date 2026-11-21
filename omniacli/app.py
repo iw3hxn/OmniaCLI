@@ -11,6 +11,7 @@ import csv
 import dataclasses
 import datetime
 import functools
+import hashlib
 import importlib.metadata
 import importlib.util
 import io
@@ -46,6 +47,9 @@ from .accesslog import REQUEST as AUDIT_REQUEST, AccessLog
 from . import audit, siem
 from . import i18n, loginas, machines, modulecatalog, pgreport, pgtuning, stagings, workspaceweb
 from . import stagingmail
+from . import dumpinfo
+from . import uploads as uploads_mod
+from .uploads import Uploads
 from .diskhistory import DiskHistory, DiskRecorder
 from .auth import ROLES as ACCESS_ROLES
 from .auth import WORKSPACE_ROLE, Authenticator, Principal, hash_password, hash_token, new_token, verify_password
@@ -190,6 +194,8 @@ _STATIC = Path(__file__).parent / "static"
 # a backup zip (verify, destinations, downloads of zips only); a restore
 # also takes a SQL dump (sqldump.RESTORE_NAME)
 _BACKUP_NAME = re.compile(r"[A-Za-z0-9._-]+\.zip")
+# where an MCP client PUTs the database its upload_backup asked for
+UPLOAD_ROUTE = "/api/uploads/{ticket}"
 # a value of a checklist field (backup_fields): a name, schema.table.column
 _CHECKLIST_VALUE = re.compile(r"[A-Za-z0-9_.$:-]{1,200}")
 # the terminal of the shell page: xterm.js 6.0.0 and its fit addon 0.11.0
@@ -277,6 +283,8 @@ WORKSPACE_ROUTES = frozenset({
     # the Modules tab: the catalog of the OCA, with the role in the workspace (UX-008 §7)
     "/api/servers/{server}/modules", "/api/servers/{server}/modules/catalog", "/api/servers/{server}/modules/plan",
     "/api/servers/{server}/{role}/modules", "/api/servers/{server}/{role}/modules/install",
+    # the PUT of an upload_backup URL (a workspace's token, for its workspace)
+    UPLOAD_ROUTE,
 })
 
 
@@ -564,7 +572,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if name is not None:
                 # an MCP client's token: it may read what its role allows (and
                 # download backups); its actions go through the MCP tools only
-                if method not in ("GET", "HEAD"):
+                # the one write a token makes outside /mcp: the PUT of the
+                # upload URL its upload_backup got (one time, for it only)
+                upload = method == "PUT" and getattr(request.scope.get("route"), "path", "") == UPLOAD_ROUTE
+                if method not in ("GET", "HEAD") and not upload:
                     raise HTTPException(status.HTTP_403_FORBIDDEN, "A token may only read")
                 workspace = settings.token_workspace(name)
                 if workspace:
@@ -726,7 +737,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
         mcp_route, mcp_manager = create_mcp(settings, jobs, updater, sampler, authenticator, access_log,
                                             lambda name, data: add_draft_server(name, data), mcp_link_call,
-                                            lambda key: monitor.view(key))
+                                            lambda key: monitor.view(key),
+                                            # defined further down, with the workspaces' code
+                                            {"upload": lambda *a, **k: upload_ticket(*a, **k),
+                                             "restore": lambda *a, **k: restore_new(*a, **k)})
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -3693,7 +3707,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return new_instance, name
 
     def staging_job(ws_name: str, new_instance: str, template, fill, record: dict, title: str,
-                    keys: list[str], me: Principal, now: datetime.datetime, not_made=None):
+                    keys: list[str], me: Principal, now: datetime.datetime, not_made=None, source: str = ""):
         """The job of a staging whose name reserve_staging took: the instance
         made from template, its mail caught (UX-008 §5.3), fill(job, its
         production) loading it (what it returns goes in its record), its test
@@ -3719,7 +3733,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             await asyncio.to_thread(stagings.save, stagings_file, data)
             job.result = {**job.result, "server": name, "port": made.production.options.http_port}
 
-        return jobs.submit(title, [*keys, f"{name}/production", f"{name}/test"], f"manual: {me}", action,
+        return jobs.submit(title, [*keys, f"{name}/production", f"{name}/test"], source or f"manual: {me}", action,
                            workspace=ws_name)
 
     @app.get("/api/servers/{server}/stagings/new", dependencies=[Depends(admin)])
@@ -3870,7 +3884,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return await staging_elsewhere(request, server, machine, str(payload.get("workspace") or "").strip(), me)
         return await new_staging(server, me)
 
-    async def new_staging(server: str, me: Principal, load=None, title: str = "", extra: dict | None = None):
+    async def new_staging(server: str, me: Principal, load=None, title: str = "", extra: dict | None = None,
+                          source: str = ""):
         """A staging of server beside it; load(job, parent production, the
         staging's production) fills it (default: a backup made now, restored
         neutralized); extra goes in its record (stagings.py)."""
@@ -3898,7 +3913,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return await (load or backup_and_restore)(job, settings.servers[server].production, target)
 
         job = staging_job(ws.name, new_instance, template, fill, {"parent": server, **(extra or {})},
-                          title or f"Staging {name} of {server}", [f"{server}/production"], me, now)
+                          title or f"Staging {name} of {server}", [f"{server}/production"], me, now, source=source)
         return {"job": job.id, "server": name}
 
     async def staging_elsewhere(request: Request, server: str, machine: str, workspace: str, me: Principal):
@@ -7811,6 +7826,479 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
         return await new_staging(server, me, load=restore_the_file,
                                  title=f"Staging of {server} from the backup {name}")
+
+    # --- a database from outside into a new instance (MCP upload_backup and
+    # restore_new_instance): the file put with an HTTP PUT into a workspace's
+    # import area, here or sent on to a linked machine; the modules its
+    # database has installed compared with the code the new instance gets;
+    # the instance made from the template of its version, loaded, neutralized
+
+    uploads = Uploads()
+    # Odoo's own modules of each template's image, read from its instances here
+    core_memo: dict[str, set[str]] = {}
+
+    def imports_folder(ws_name: str) -> Path:
+        """Where the databases sent to a workspace wait (700, 600 each)."""
+        return settings.backup_dir / ".imports" / ws_name
+
+    def outgoing_folder() -> Path:
+        """Where a database put here for a linked machine waits to be sent on."""
+        return settings.backup_dir / ".imports" / ".outgoing"
+
+    def free_name(folder: Path, name: str) -> Path:
+        """folder/name, or name with -2, -3... before its suffix when it is taken."""
+        stem, suffix = name.rsplit(".", 1)
+        dest, number = folder / name, 2
+        while dest.exists():
+            dest, number = folder / f"{stem}-{number}.{suffix}", number + 1
+        return dest
+
+    def database_problem(path: Path, name: str) -> str | None:
+        """Why the file received is not a database to restore: a zip with a
+        dump.sql (named .zip), or a plain SQL dump of pg_dump (named .sql)."""
+        if name.endswith(".zip"):
+            return backup_problem_of(path, name)
+        return sqldump.problem(path, name)
+
+    def backup_problem_of(path: Path, name: str) -> str | None:
+        try:
+            with zipfile.ZipFile(path) as zf:
+                found = "dump.sql" in zf.namelist()
+        except (OSError, zipfile.BadZipFile):
+            return f"{name} is not a zip file"
+        return None if found else f"{name} is not an Odoo backup: it has no dump.sql"
+
+    async def receive_file(request: Request, folder: Path, name: str, size: int | None = None,
+                           sha256: str = "") -> tuple[Path | None, JSONResponse | None, str]:
+        """The raw body into folder/name (another name when taken) through a
+        .part file: whole and a database, or absent. (path, None, its
+        SHA-256) or (None, the refusal, "")."""
+        folder = private.backup_folder(folder)
+        length = request.headers.get("content-length", "")
+        if size is not None and length != str(size):
+            return None, refuse(f"{name}: upload_backup was told {size} bytes, the request says "
+                                f"{length or 'no Content-Length'}: ask for a new URL with the right size"), ""
+        free = shutil.disk_usage(folder).free
+        if length.isdigit() and free - int(length) < puller.MIN_FREE:
+            return None, refuse(f"There is no room on {here_name()}: {int(length) >> 20} MiB sent, "
+                                f"{free >> 20} MiB free", status.HTTP_507_INSUFFICIENT_STORAGE), ""
+        dest = free_name(folder, name)
+        handle, part_name = tempfile.mkstemp(dir=folder, prefix=f".{dest.name}.", suffix=".part")
+        part, digest, count = Path(part_name), hashlib.sha256(), 0
+        try:
+            with os.fdopen(handle, "wb") as out:
+                async for chunk in request.stream():
+                    count += len(chunk)
+                    if size is not None and count > size:
+                        return None, refuse(f"{name}: more than the {size} bytes told"), ""
+                    digest.update(chunk)
+                    out.write(chunk)
+            if length.isdigit() and count != int(length):
+                return None, refuse(f"{name}: {count} of {length} bytes received"), ""
+            if sha256 and digest.hexdigest() != sha256:
+                return None, refuse(f"{name}: its SHA-256 is {digest.hexdigest()}, not {sha256} as told: "
+                                    "the file changed on its way, nothing kept"), ""
+            problem = await asyncio.to_thread(database_problem, part, name)
+            if problem:
+                return None, refuse(problem), ""
+            os.replace(part, dest)
+            os.chmod(dest, 0o600)
+        except (ClientDisconnect, OSError) as exc:
+            return None, refuse(f"{name} was not received whole: {exc}"), ""
+        finally:
+            part.unlink(missing_ok=True)
+        return dest, None, digest.hexdigest()
+
+    def refusal_text(answer) -> str | None:
+        """The message of a refusal of refuse(), None when answer is not one."""
+        if not isinstance(answer, JSONResponse):
+            return None
+        try:
+            return str(json.loads(answer.body).get("error") or answer.body.decode())
+        except ValueError:
+            return answer.body.decode(errors="replace")
+
+    def upload_ticket(token: str, scope: str, workspace: str, name: str, size, sha256: str, link: str,
+                      base_url: str) -> dict:
+        """upload_backup: a URL to PUT one database to (ActionRefused: why not)."""
+        name = re.sub(r"[^A-Za-z0-9._-]", "_", Path(str(name or "")).name)
+        if not uploads_mod.NAME.fullmatch(name):
+            raise ActionRefused("name: the file's name, ending in .zip (an Odoo backup: dump.sql, filestore, "
+                                "manifest.json) or .sql (a plain SQL dump of pg_dump)")
+        if isinstance(size, bool) or not isinstance(size, int) or not 0 < size <= uploads_mod.MAX_SIZE:
+            raise ActionRefused(f"size: the file's size in bytes, at most {uploads_mod.MAX_SIZE >> 30} GiB")
+        sha256 = str(sha256 or "").strip().lower()
+        if sha256 and not re.fullmatch(r"[0-9a-f]{64}", sha256):
+            raise ActionRefused("sha256: the file's SHA-256 as 64 hexadecimal digits, or nothing")
+        workspace = str(workspace or "").strip() or scope
+        if scope and workspace != scope:
+            raise ActionRefused(f"This token is of workspace {scope}: it uploads there only")
+        if not WORKSPACE_NAME.fullmatch(workspace or ""):
+            raise ActionRefused("workspace: the workspace the database is for (list_servers shows them)")
+        if link:
+            if scope:
+                raise ActionRefused("A workspace's token does not reach the linked machines")
+            if link not in settings.link_targets:
+                raise ActionRefused(f"No link {link}: see list_links")
+            folder = outgoing_folder()
+        else:
+            if workspace not in settings.workspaces:
+                raise ActionRefused(f"No workspace {workspace} here")
+            folder = imports_folder(workspace)
+        free = shutil.disk_usage(private.backup_folder(folder)).free
+        if free - size < puller.MIN_FREE:
+            raise ActionRefused(f"There is no room on {here_name()} for {size >> 20} MiB: {free >> 20} MiB free")
+        ticket = uploads.issue(token, workspace, name, size, sha256, link)
+        path = f"/api/uploads/{ticket}"
+        there = f" on {link}" if link else ""
+        return {
+            "url": base_url.rstrip("/") + path, "path": path, "method": "PUT",
+            "headers": {"Authorization": "Bearer <the same token as this MCP connection>",
+                        "Content-Type": "application/octet-stream", "Content-Length": str(size)},
+            "expires_in_seconds": int(uploads.ttl), "size": size, "one_time": True,
+            "then": (f"PUT the file's bytes as the body. The answer names the file kept in the import area of "
+                     f"workspace {workspace}{there}"
+                     + (f" and the job that sends it on to {link}: follow it with get_job, then call "
+                        f"call_linked(link={link!r}, tool='restore_new_instance', arguments={{'workspace': "
+                        f"{workspace!r}, 'file': <the job's result file>}})" if link else
+                        ": give it to restore_new_instance as file")),
+        }
+
+    @app.put(UPLOAD_ROUTE)
+    async def upload_put(request: Request, ticket: str, me: Principal = Depends(current_user)):
+        """The PUT of an upload_backup URL: the bearer token that asked it,
+        the size it told; the file into the workspace's import area, or here
+        and then sent on to the linked machine (a job)."""
+        if me.kind != "token":
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "The bearer token that asked upload_backup is required")
+        name = me.name
+        found = uploads.take(ticket, name)
+        if isinstance(found, str):
+            return refuse(found, status.HTTP_404_NOT_FOUND)
+        folder = outgoing_folder() if found.link else imports_folder(found.workspace)
+        if not found.link and found.workspace not in settings.workspaces:
+            return refuse(f"No workspace {found.workspace} here any more", status.HTTP_404_NOT_FOUND)
+        dest, refused, digest = await receive_file(request, folder, found.name, found.size, found.sha256)
+        if refused is not None:
+            return refused
+        answer = {"file": dest.name, "size": dest.stat().st_size, "sha256": digest, "workspace": found.workspace}
+        if not found.link:
+            return answer
+        link, workspace = settings.link_targets.get(found.link), found.workspace
+        if link is None:
+            dest.unlink(missing_ok=True)
+            return refuse(f"No link {found.link} any more: nothing kept", status.HTTP_404_NOT_FOUND)
+        headers = link_headers(link, re.sub(r"[^A-Za-z0-9._@-]", "-", f"mcp-{name}")[:64], me.role)
+
+        async def send_on(job):
+            progress = job.result["progress"] = {
+                "steps": [{"id": "download", "label": "Transfer", "where": f"{here_name()} → {link.name}"}],
+                "step": "download", "done": 0, "total": 0}
+            try:
+                there = await linkcopy.upload(job, link_clients.client(link), link, headers, dest,
+                                              "/api/imports/receive", {"workspace": workspace, "file": dest.name},
+                                              progress)
+            finally:
+                # never kept here: it goes on, or it goes
+                dest.unlink(missing_ok=True)
+            if not str(there.get("file") or ""):
+                raise JobFailed(f"{link.name} kept no file")
+            job.result.update(link=link.name, workspace=workspace, file=there["file"], sha256=digest)
+            job.log(f"{there['file']} is in the import area of workspace {workspace} on {link.name}: "
+                    f"restore_new_instance there (call_linked)")
+
+        job = jobs.submit(f"Send {dest.name} to workspace {workspace} on {link.name}", [], f"mcp: {name}", send_on)
+        return {**answer, "link": link.name, "job": job.id}
+
+    @app.post("/api/imports/receive", dependencies=[Depends(admin)])
+    async def import_receive(request: Request, workspace: str = "", file: str = "",
+                             me: Principal = Depends(current_user)):
+        """A database sent by a linked OmniaCLI (its upload_backup with link),
+        the raw body: into the import area of workspace, whole and a
+        database, or nothing; then restore_new_instance takes it."""
+        if me.kind == "token":
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "A token may only read")
+        ws = a_workspace(workspace)
+        if not uploads_mod.NAME.fullmatch(file):
+            return refuse("A database is sent with its file name, .zip or .sql")
+        dest, refused, digest = await receive_file(request, imports_folder(ws.name), file)
+        if refused is not None:
+            return refused
+        return {"file": dest.name, "size": dest.stat().st_size, "sha256": digest, "workspace": ws.name}
+
+    async def core_modules(template) -> tuple[set[str] | None, list[str]]:
+        """(Odoo's own modules of template's image, the instances it was read
+        from): those every instance made here from template knows and that
+        are not in its repositories (an instance restored from another
+        database also knows that one's); None when none answers."""
+        if template.name in core_memo:
+            return core_memo[template.name], ["(read before)"]
+        found, used = None, []
+        for ws in list(settings.workspaces.values()):
+            for instance in ws.instances():
+                srv = settings.servers.get(workspaceops.server_name(ws, instance))
+                if srv is None or srv.production is None:
+                    continue
+                made_from = await asyncio.to_thread(instance_template, ws, instance)
+                if made_from is None or made_from.name != template.name:
+                    continue
+                known, _ = await known_modules(srv.production)
+                if not known:
+                    continue
+                code = await asyncio.to_thread(code_modules, srv)
+                mine = {m for m, state in known.items() if state != "uninstallable"} - code
+                found = mine if found is None else found & mine
+                used.append(srv.name)
+        if found:
+            core_memo[template.name] = found
+        return found, used
+
+    def new_instance_name(ws: Workspace, given: str, info: dict, path: Path) -> str:
+        """The name asked, checked; or one from the dump's database (or the
+        file), free in ws."""
+        if given:
+            if not WORKSPACE_NAME.fullmatch(given):
+                raise ActionRefused("name: 1-32 lower case letters, digits and -")
+            base = given
+        else:
+            raw = info.get("database") or path.name.split(".")[0]
+            base = re.sub(r"[^a-z0-9]+", "-", raw.lower()).strip("-")[:24].strip("-") or "restored"
+        taken = set(ws.instances()) | {TEST_LABEL, *ws.subdomains}
+        name, number = base, 2
+        while name in taken or workspaceops.server_name(ws, name) in settings.servers or instance_name_problem(ws, name):
+            if given:
+                raise ActionRefused(f"{given} is taken in workspace {ws.name}, or one of its addresses is: "
+                                    "choose another name")
+            name, number = f"{base[:28]}-{number}", number + 1
+        return name
+
+    def template_of_major(major: int):
+        found = workspaceops.templates()
+        if f"odoo-{major}" in found:
+            return found[f"odoo-{major}"]
+        return next((t for t in found.values() if modulecatalog.series_of(t.name, t.label) == f"{major}.0"), None)
+
+    async def restore_new(who: str, role: str, scope: str, workspace: str = "", file: str = "",
+                          backup_of: str = "", name: str = "", neutralize: bool = True, staging_of: str = "",
+                          dry_run: bool = True, add_repositories_: bool = False, allow_missing: bool = False) -> dict:
+        """restore_new_instance: the plan (dry_run), or the job of a new
+        instance of workspace loaded with file (ActionRefused: why not)."""
+        me = Principal(who, role, "token")
+        workspace = str(workspace or "").strip() or scope
+        if scope and workspace != scope:
+            raise ActionRefused(f"This token is of workspace {scope}: it restores there only")
+        ws = settings.workspaces.get(workspace)
+        if ws is None:
+            raise ActionRefused(f"No workspace {workspace!r} here: give workspace (list_servers names the servers, "
+                                "<workspace>-<instance>)")
+        # the file: in the workspace's import area, or a backup of one of its servers
+        file = str(file or "").strip()
+        if not sqldump.RESTORE_NAME.fullmatch(file):
+            raise ActionRefused("file: the name upload_backup answered, or a backup of list_backups with backup_of")
+        if backup_of:
+            server, _, from_role = backup_of.partition("/")
+            if server not in ws.servers or server not in settings.servers or (from_role or "production") not in ROLES:
+                raise ActionRefused(f"backup_of: a server of workspace {ws.name} (and /test for its test)")
+            folder = settings.backup_dir / server / (from_role or "production")
+        else:
+            folder = imports_folder(ws.name)
+        path = folder / file
+        if not path.is_file():
+            raise ActionRefused(f"No file {file} in " + (f"the backups of {backup_of}" if backup_of
+                                                         else f"the import area of workspace {ws.name}: upload it with upload_backup"))
+        try:
+            info = await asyncio.to_thread(dumpinfo.read, path)
+        except dumpinfo.DumpError as exc:
+            raise ActionRefused(str(exc)) from None
+        major = info["major"]
+        if major is None:
+            raise ActionRefused(f"{file} says no Odoo version (no manifest.json, no version of the module base)")
+        # the template: the production's of staging_of, else the one of its version
+        parent = None
+        if staging_of:
+            if staging_of not in ws.servers:
+                raise ActionRefused(f"staging_of: a production of workspace {ws.name}")
+            found = staging_source(staging_of)
+            if not isinstance(found, tuple):
+                raise ActionRefused(refusal_text(found))
+            parent = found
+            template = await asyncio.to_thread(instance_template, ws, found[2])
+            if template is None:
+                raise ActionRefused(f"The template {staging_of} was made from is not on this machine any more")
+            if modulecatalog.series_of(template.name, template.label) not in (None, f"{major}.0"):
+                raise ActionRefused(f"{file} is a database of Odoo {major}, {staging_of} runs another version "
+                                    f"({template.label}): a staging of it cannot hold it")
+        else:
+            template = await asyncio.to_thread(template_of_major, major)
+            if template is None:
+                raise ActionRefused(f"{file} is a database of Odoo {major}: this machine has no template of Odoo "
+                                    f"{major} (Templates)")
+        series = f"{major}.0"
+        # what the new instance's code will have: Odoo's own modules (its
+        # stagings are made from the template without repositories either)
+        core, read_from = await core_modules(template)
+        installed = info["modules"] or []
+        catalog = catalog_for(series)
+        missing = [m for m in installed if core is None or m not in core]
+        groups: dict[str, list[str]] = {}
+        not_found = []
+        for module in missing:
+            entry = catalog.modules.get(module)
+            if entry is not None:
+                groups.setdefault(entry["repository"], []).append(module)
+            elif core is not None:
+                not_found.append(module)
+        unchecked = [m for m in missing if core is None and m not in catalog.modules]
+        source = modulecatalog.GitSource()
+        oca = [{"repository": repo, "url": source.url(repo), "branch": series, "modules": mods}
+               for repo, mods in sorted(groups.items())]
+        try:
+            free = workspace_free(await workspaceops.space(), ws)
+        except workspaceops.SpaceError:
+            free = None
+        # the dump unpacked, and the database it becomes: its tables and
+        # indexes take about three times its text (methydor_poc, 21/11/2026:
+        # 37 MB of dump.sql, 112 MB of database), plus the files
+        need = 4 * info["size"]
+        instance = None if parent else new_instance_name(ws, str(name or "").strip(), info, path)
+        server = workspaceops.server_name(ws, instance) if instance else f"{staging_of} (a staging, dated today)"
+        report = {
+            "file": file, "database": info["database"], "odoo": series, "kind": info["kind"],
+            "filestore": info["filestore"] if info["kind"] == "zip" else False,
+            "installed_modules": len(installed) if info["modules"] is not None else None,
+            "new_instance": {"workspace": ws.name, "server": server, "template": template.name,
+                             "neutralize": True if parent else bool(neutralize),
+                             "staging_of": staging_of or None, "mail_caught": bool(parent)},
+            "room": {"needed_gb": round(need / workspaceops.GB, 1),
+                     "free_gb": None if free is None else round(free / workspaceops.GB, 1)},
+            "missing_modules": {
+                "count": sum(len(r["modules"]) for r in oca) + len(not_found) + len(unchecked),
+                "in_oca": oca, "not_found": not_found,
+                "not_checked": unchecked,
+                "odoo_core_read_from": read_from if core is not None else [],
+                "catalog_read": catalog.meta().get("read"),
+            },
+        }
+        if info["modules"] is None:
+            report["missing_modules"]["note"] = ("The dump has no table of modules that can be read (not a COPY of "
+                                                 "ir_module_module): nothing was compared")
+        if core is None:
+            report["missing_modules"]["note"] = (
+                f"No instance made from {template.name} answers on this machine: Odoo's own modules are not known, "
+                "so the modules not in the catalog are not_checked; they are checked again once the instance is made, "
+                "before the restore")
+        if free is not None and need > free:
+            report["room"]["problem"] = (f"Workspace {ws.name} has {report['room']['free_gb']} GB free, about "
+                                         f"{report['room']['needed_gb']} GB are needed: make room (delete a staging)")
+        blocking = [*not_found, *unchecked] if not allow_missing else []
+        oca_blocking = oca if not (add_repositories_ or allow_missing) else []
+        if dry_run:
+            parts = [f"{file}: an Odoo {series} database ({report['installed_modules']} modules installed)"]
+            if oca:
+                parts.append(f"{sum(len(r['modules']) for r in oca)} of its modules are in the OCA repositories "
+                             f"{', '.join(r['repository'] for r in oca)} (branch {series}): add_repositories=true adds them")
+            if not_found:
+                parts.append(f"{len(not_found)} are nowhere here ({', '.join(not_found[:10])}"
+                             + ("..." if len(not_found) > 10 else "") + "): their code must be provided, e.g. the "
+                             "customer's private repository or Odoo Enterprise, else allow_missing=true restores "
+                             "without them (Odoo logs errors and their data stays unreachable)")
+            if not oca and not not_found and not unchecked:
+                parts.append("every installed module is available")
+            report["dry_run"] = True
+            report["message"] = ". ".join(parts) + "."
+            report["next"] = ("Nothing was started. Ask the user to confirm, then call restore_new_instance again with "
+                              "the same arguments and dry_run=false" + (", add_repositories=true" if oca else "")
+                              + (", allow_missing=true" if not_found or unchecked else "") + ".")
+            return report
+        if "problem" in report["room"]:
+            raise ActionRefused(report["room"]["problem"])
+        if blocking or oca_blocking:
+            names = [*blocking, *(m for r in oca_blocking for m in r["modules"])]
+            raise ActionRefused(
+                f"{len(names)} modules installed in {file} have no code here ({', '.join(names[:15])}"
+                + ("..." if len(names) > 15 else "") + "): nothing started. "
+                + ("add_repositories=true adds the OCA repositories that have them; " if oca_blocking else "")
+                + ("allow_missing=true restores anyway: Odoo logs errors at each start and the data of those "
+                   "modules stays unreachable until their code is added" if blocking or oca_blocking else ""))
+        wanted = [(r["repository"], r["url"], r["branch"]) for r in oca] if add_repositories_ else []
+        modules = installed
+
+        async def load(job, target) -> dict:
+            """The repositories added, the modules checked on the new
+            instance's own database, then the file restored into it."""
+            found = workspace_of(target.server)
+            if wanted and found is not None:
+                job.log(f"--- the repositories of the OCA {', '.join(w[0] for w in wanted)}, branch {series}")
+                roles = [r for r in ROLES if getattr(settings.servers[target.server], r) is not None]
+                done = await add_repositories(job, settings.workspaces[found[0].name], target.server, found[1],
+                                              [(repo, url, {r: branch for r in roles}) for repo, url, branch in wanted])
+                target = done.production
+            known, why = await known_modules(target, fresh=True)
+            still: list[str] = []
+            if known is None:
+                job.log(f"WARNING: the modules of {target.key} cannot be read ({why}): not checked again")
+            else:
+                # a repository just added is not in the database's list of
+                # modules until Odoo reads its addons again: its code counts
+                # (lab1, 21/11/2026: the 24 modules of 9 OCA repositories added
+                # were said missing, and Odoo installed them at the restore)
+                code = await asyncio.to_thread(code_modules, settings.servers[target.server])
+                still = [m for m in modules if m not in code and known.get(m) in (None, "uninstallable")]
+            if still and not allow_missing:
+                raise JobFailed(f"{len(still)} modules of {file} have no code in {target.key} "
+                                f"({', '.join(still[:15])}{'...' if len(still) > 15 else ''}): not restored, "
+                                f"{target.server} is left empty; add their code, or allow_missing=true")
+            if still:
+                job.log(f"WARNING: restored without the code of {len(still)} modules: {', '.join(still)}. Odoo logs "
+                        "errors for them and their data stays unreachable until their code is added")
+            wrapped = None
+            try:
+                if info["kind"] == "sql":
+                    wrapped = folder / f".{path.name}.{job.id}.zip"
+                    job.log(f"--- {file}, a SQL dump, made a backup zip (dump.sql, no filestore)")
+                    await asyncio.to_thread(dumpinfo.wrap_sql, path, wrapped, major, info["database"])
+                job.log(f"--- {file} into {target.key}" + (" (neutralized)" if neutralize or parent else ""))
+                await restore_fetched(job, target, wrapped or path, {"neutralize": bool(neutralize or parent)})
+            finally:
+                if wrapped is not None:
+                    wrapped.unlink(missing_ok=True)
+            job.result = {**job.result, "missing_modules": still, "modules_added_from": [w[0] for w in wanted]}
+            return {"backup": file, "from_backup": True}
+
+        if parent:
+            made = await new_staging(staging_of, me, load=lambda job, prod, target: load(job, target),
+                                     title=f"Staging of {staging_of} from {file}", source=f"mcp: {who}")
+            refused = refusal_text(made)
+            if refused:
+                raise ActionRefused(refused)
+            return {**report, "dry_run": False, "job": made["job"], "server": made["server"]}
+        if workspaceops.docker_missing():
+            raise ActionRefused(workspaceops.docker_missing())
+        if not ws.storage or not ws.limits.get("disk_gb") or settings.storage_problem(ws):
+            raise ActionRefused(f"Workspace {ws.name} cannot hold an instance: "
+                                f"{settings.storage_problem(ws) or 'no storage or no disk limit'}")
+        server = workspaceops.server_name(ws, instance)
+        async with workspaces_lock:
+            ws = settings.workspaces[ws.name]
+            mine = [n for n in ws.servers if n in settings.servers]
+            if ws.limits.get("instances") and len(mine) >= ws.limits["instances"]:
+                raise ActionRefused(f"Workspace {ws.name} has its {int(ws.limits['instances'])} instances already")
+            if server in ws.servers or server in settings.servers:
+                raise ActionRefused(f"A server named {server} exists already")
+            refused = refusal_text(await store_workspaces({**settings.workspaces,
+                                                           ws.name: dataclasses.replace(ws, servers=[*ws.servers, server])}))
+            if refused:
+                raise ActionRefused(refused)
+
+        async def action(job):
+            made = await make_instance(job, settings.workspaces[ws.name], instance, template, template.values({}))
+            await load(job, settings.servers[server].production)
+            job.result.update(server=server, port=made.production.options.http_port)
+            job.log(f"{server} is made from {file}" + (", neutralized" if neutralize else ""))
+
+        job = jobs.submit(f"Create {server} from {file}", [f"{server}/production", f"{server}/test"],
+                          f"mcp: {who}", action, workspace=ws.name)
+        return {**report, "dry_run": False, "job": job.id, "server": server}
 
     # --- the caller's own password --------------------------------------
 
