@@ -110,6 +110,8 @@ dialog.mods-dialog { width: min(960px, calc(100vw - 32px)); }
     repo: {{ _("1 new repository ({names}), added to production and test: both restart") | tojson }},
     reposOne: {{ _("{count} new repositories ({names}), added to production: it restarts") | tojson }},
     repoOne: {{ _("1 new repository ({names}), added to production: it restarts") | tojson }},
+    reposStaging: {{ _("{count} new repositories ({names}), added to this staging: it restarts") | tojson }},
+    repoStaging: {{ _("1 new repository ({names}), added to this staging: it restarts") | tojson }},
     noRepo: {{ _("no new repository: the code is there already") | tojson }},
     modules: {{ _("{count} modules") | tojson }}, module: {{ _("1 module") | tojson }},
     python: {{ _("the Python packages {names}") | tojson }}, pythonOne: {{ _("the Python package {names}") | tojson }},
@@ -223,8 +225,8 @@ dialog.mods-dialog { width: min(960px, calc(100vw - 32px)); }
     const n = plan.repositories.length, names = plan.repositories.join(", ");
     const both = plan.restarts.length > 1;
     if (!n) parts.push(M.noRepo);
-    else if (n === 1) parts.push(fill(both ? M.repo : M.repoOne, {names}));
-    else parts.push(fill(both ? M.repos : M.reposOne, {count: n, names}));
+    else if (n === 1) parts.push(fill(both ? M.repo : modsInfo.staging ? M.repoStaging : M.repoOne, {names}));
+    else parts.push(fill(both ? M.repos : modsInfo.staging ? M.reposStaging : M.reposOne, {count: n, names}));
     parts.push(plan.modules.length === 1 ? M.module : fill(M.modules, {count: plan.modules.length}));
     if (plan.python.length) parts.push(fill(plan.python.length === 1 ? M.pythonOne : M.python, {names: plan.python.join(", ")}));
     return parts.join("; ") + ".";

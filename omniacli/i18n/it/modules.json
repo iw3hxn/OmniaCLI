@@ -2,6 +2,7 @@
  "1 module": "1 modulo",
  "1 new repository ({names}), added to production and test: both restart": "1 repository nuovo ({names}), aggiunto a produzione e test: si riavviano tutte e due",
  "1 new repository ({names}), added to production: it restarts": "1 repository nuovo ({names}), aggiunto alla produzione: si riavvia",
+ "1 new repository ({names}), added to this staging: it restarts": "1 repository nuovo ({names}), aggiunto a questa staging: si riavvia",
  "A job is working on {name}: try again when it ends.": "Su {name} lavora un job: riprova quando finisce.",
  "Add modules": "Aggiungi moduli",
  "Adds the repositories missing to production and test (they restart: who is connected loses the connection for a few seconds), then installs the modules in the database chosen. In production it makes a backup first. It is a job.": "Aggiunge i repository che mancano a produzione e test (si riavviano: chi è collegato perde la connessione per qualche secondo), poi installa i moduli nel database scelto. In produzione fa prima un backup. È un job.",
@@ -46,6 +47,7 @@
  "{count} modules": "{count} moduli",
  "{count} new repositories ({names}), added to production and test: both restart": "{count} repository nuovi ({names}), aggiunti a produzione e test: si riavviano tutte e due",
  "{count} new repositories ({names}), added to production: it restarts": "{count} repository nuovi ({names}), aggiunti alla produzione: si riavvia",
+ "{count} new repositories ({names}), added to this staging: it restarts": "{count} repository nuovi ({names}), aggiunti a questa staging: si riavvia",
  "{name} is installed there already.": "{name} è già installato lì.",
  "{shown} of {total}: write more words to narrow the search.": "{shown} di {total}: scrivi altre parole per restringere la ricerca."
 }
