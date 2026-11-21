@@ -53,7 +53,22 @@ TOP_KEYS = {"name", "services", "networks"}
 NETWORKS = {"default": {"ipam": {"config": [{"subnet": "${SUBNET}"}]}}}
 SERVICE_KEYS = {"image", "restart", "depends_on", "ports", "environment", "volumes", "healthcheck",
                 "logging", "command", "user", "working_dir", "labels", "stop_grace_period", "cgroup_parent",
-                "security_opt", "cap_drop", "cap_add", "pids_limit", "read_only", "tmpfs"}
+                "security_opt", "cap_drop", "cap_add", "pids_limit", "read_only", "tmpfs", "profiles", "networks"}
+# a service that runs only when its profile is on (COMPOSE_PROFILES in .env,
+# written by the helper); its networks: the project's one, with other names
+# in it at most (a DNS name of the project's network opens nothing)
+PROFILE = re.compile(r"[a-z][a-z0-9-]{0,62}")
+ALIAS = re.compile(r"[a-z][a-z0-9-]{0,62}")
+# a staging's mail, caught in its own project (UX-008 §5.3): the service the
+# templates run with this profile only, its SMTP port, its API on the
+# loopback of its container (read by compose-helper mail-*, no port published)
+MAIL_PROFILE = "mail-capture"
+MAIL_SERVICE = "mail"
+MAIL_SMTP_PORT = 1025
+# what odoo.conf says of the mail of a staging that catches it: the service,
+# never a server of the parameters (they are not written)
+MAIL_OPTIONS = {"smtp_server": MAIL_SERVICE, "smtp_port": str(MAIL_SMTP_PORT), "smtp_ssl": "False"}
+MAIL_PARAMETERS = ("smtp_server", "smtp_port", "smtp_ssl", "smtp_user", "smtp_password")
 # every service without new privileges and capabilities, with a limit of
 # processes; what an image's entrypoint needs as root may be given back
 SECURITY_OPT = ["no-new-privileges:true"]
@@ -271,6 +286,16 @@ class Template:
             raise TemplateError(f"at most {EXTRA_MAX} other options")
         return dict(sorted(found.items()))
 
+    def captures_mail(self) -> bool:
+        """Its compose.yaml has the service that catches a staging's mail,
+        under MAIL_PROFILE (a template of before has none)."""
+        try:
+            data = yaml.safe_load(self.compose)
+        except yaml.YAMLError:
+            return False
+        svc = ((data or {}).get("services") or {}).get(MAIL_SERVICE) if isinstance(data, dict) else None
+        return isinstance(svc, dict) and svc.get("profiles") == [MAIL_PROFILE]
+
     def values(self, given: dict) -> dict[str, str]:
         """The fields' values, checked; a field not given takes its default."""
         unknown = set(given) - {f.name for f in self.fields}
@@ -390,6 +415,16 @@ def check_compose(template: Template) -> list[str]:
         added = svc.get("cap_add") or []
         if not isinstance(added, list) or not set(map(str, added)) <= CAP_ADD:
             found.append(f"{where}.cap_add: only {', '.join(sorted(CAP_ADD))}")
+        profiles = svc.get("profiles", [])
+        if not isinstance(profiles, list) or not all(isinstance(p, str) and PROFILE.fullmatch(p) for p in profiles):
+            found.append(f"{where}.profiles: a list of names (a-z 0-9 -)")
+        if "networks" in svc:
+            nets = svc["networks"]
+            aliases = (nets.get("default") or {}).get("aliases") if isinstance(nets, dict) else None
+            if not (isinstance(nets, dict) and set(nets) == {"default"} and isinstance(nets["default"], dict)
+                    and set(nets["default"]) == {"aliases"} and isinstance(aliases, list)
+                    and all(isinstance(a, str) and ALIAS.fullmatch(a) and a not in data["services"] for a in aliases)):
+                found.append(f"{where}.networks: only default with aliases, names (a-z 0-9 -) of no other service")
         limit = svc.get("pids_limit")
         if type(limit) is not int or not PIDS_LIMIT[0] <= limit <= PIDS_LIMIT[1]:
             found.append(f"{where}.pids_limit: a number, {PIDS_LIMIT[0]} to {PIDS_LIMIT[1]}, is required")
@@ -416,6 +451,9 @@ def check_compose(template: Template) -> list[str]:
         found.append(f"services.{template.odoo_service}: the database's superuser password is not for Odoo")
     if template.odoo_service not in data["services"] or template.db_service not in data["services"]:
         found.append(f"services {template.odoo_service} and {template.db_service} are required")
+    for name in (template.odoo_service, template.db_service):
+        if isinstance(data["services"].get(name), dict) and data["services"][name].get("profiles"):
+            found.append(f"services.{name}: runs always, without profiles")
     for name in PLACEHOLDER.findall(template.conf):
         if name not in CONF_PLACEHOLDERS:
             found.append(f"odoo.conf.in: {{{{{name}}}}} is not one of {', '.join(CONF_PLACEHOLDERS)}")
@@ -431,11 +469,18 @@ def env_text(values: dict[str, str]) -> str:
 
 
 def conf_text(template: Template, database: str, admin_password: str, customer_repos: list[str],
-              parameters: dict | None = None, debug: bool = False, extra: dict | None = None) -> str:
+              parameters: dict | None = None, debug: bool = False, extra: dict | None = None,
+              mail_capture: bool = False) -> str:
     """The Odoo configuration: the image's addons, then the customer's
     repositories; then the editable parameters (checked: parameter_values),
     the other options (checked: extra_options) and, with debug,
-    log_level = debug (over a log_level of the others)."""
+    log_level = debug (over a log_level of the others). With mail_capture
+    (a staging's) the SMTP server is the project's mail service, whatever
+    the parameters say."""
+    if mail_capture:
+        # written once, below: Odoo refuses a config with an option twice
+        parameters = {k: v for k, v in (parameters or {}).items() if k not in MAIL_PARAMETERS}
+        extra = {k: v for k, v in (extra or {}).items() if k not in MAIL_PARAMETERS}
     addons = [*template.addons_path,
               *(f"{template.customer_addons}/{repo}" for repo in customer_repos if template.customer_addons)]
     values = {"ADDONS_PATH": ",".join(addons), "DB_NAME": database, "ADMIN_PASSWD": admin_password}
@@ -452,6 +497,9 @@ def conf_text(template: Template, database: str, admin_password: str, customer_r
         lines.append("log_level = debug")
     if lines:
         text = text.rstrip("\n") + "\n; the parameters set on the workspace's page\n" + "\n".join(lines) + "\n"
+    if mail_capture:
+        text = text.rstrip("\n") + "\n; a staging: its mail goes to the service of its project that catches it\n" + \
+            "".join(f"{k} = {v}\n" for k, v in MAIL_OPTIONS.items())
     return text
 
 

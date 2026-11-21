@@ -42,6 +42,7 @@ from . import (backupcheck, backupchoices, checks, deployhooks, destinations, in
                schedules, selflog, sshlinks, shell, stacktemplates, templatestore, tunnel, workspacehelper, workspaceops)
 from .accesslog import AccessLog
 from . import i18n, loginas, machines, pgreport, stagings, workspaceweb
+from . import stagingmail
 from .diskhistory import DiskHistory, DiskRecorder
 from .auth import ROLES as ACCESS_ROLES
 from .auth import WORKSPACE_ROLE, Authenticator, Principal, hash_password, hash_token, new_token, verify_password
@@ -245,6 +246,9 @@ WORKSPACE_ROUTES = frozenset({
     "/api/workspaces/{workspace}/load",
     # the lists of every machine (UX-008 §4): of its workspaces' instances only
     "/instances", "/api/instances", "/backups", "/api/backups", "/api/servers/{server}/stagings/from-backup",
+    # a staging's caught mail (UX-008 §5.3)
+    "/api/servers/{server}/production/mail", "/api/servers/{server}/production/mail/{mail_id}",
+    "/api/servers/{server}/production/mail/clear",
 })
 
 
@@ -1129,6 +1133,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                  (settings.servers.get(staging_of.get("parent")) or srv).production, "web_url", None)},
                              "workspace": (workspace_of(srv.name) or (None,))[0]},
                 "is_admin_here": request.state.user.can("admin"),
+                # a staging whose mail is caught: its Mail tab (UX-008 §5.3)
+                "mail_capture": bool(staging_of) and await asyncio.to_thread(staging_mail, srv.name) is not None,
                 # the paths and the commands of an instance, for the machine's admins (ssh)
                 "shell_paths": {i.key: i.plugin.shell_paths(i) for i in shown if i.plugin is not None}
                 if request.state.user.can("admin") and not request.state.user.workspaces else {},
@@ -3404,7 +3410,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return {"backup": backup_zip.name}
 
         async def action(job):
-            made = await make_instance(job, settings.workspaces[ws.name], new_instance, template, {})
+            # its mail caught in its project, read in its Mail tab (UX-008 §5.3)
+            made = await make_instance(job, settings.workspaces[ws.name], new_instance, template,
+                                       {workspacehelper.MAIL_KEY: True})
             prod = settings.servers[server].production
             target = settings.servers[name].production
             record = await (load or backup_and_restore)(job, prod, target)
@@ -3451,6 +3459,70 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         job = jobs.submit(f"Refresh the staging {server} from {parent}", [f"{parent}/production", f"{server}/production"],
                           f"manual: {me}", action, workspace=ws[0].name if ws else "")
         return {"job": job.id}
+
+    # --- a staging's mail, caught in its project and read here (stagingmail.py, UX-008 §5.3)
+
+    def staging_mail(server: str):
+        """The production of a staging of a workspace whose mail is caught
+        (its instance.json says so: a staging made since the templates have
+        the service), or None."""
+        srv, found = settings.servers.get(server), workspace_of(server)
+        if srv is None or srv.production is None or found is None or srv.production.restart.type != "compose" \
+                or server not in stagings.load(stagings_file):
+            return None
+        ws, instance = found
+        try:
+            meta = json.loads((workspaceops.storage_path(ws) / ws.name / instance / workspacehelper.INSTANCE_FILE)
+                              .read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return srv.production if isinstance(meta, dict) and workspacehelper.captures_mail(meta, "production") else None
+
+    def no_mail(server: str):
+        return refuse(f"{server} catches no mail: it is no staging, or one made before the mail was caught "
+                      "(its outgoing mail is off)", status.HTTP_404_NOT_FOUND)
+
+    @app.get("/api/servers/{server}/production/mail")
+    async def staging_mail_list(server: str, every: bool = False, me: Principal = Depends(anyone)):
+        """The mail Odoo of the staging sent, caught: the newest first, the
+        first 50 or every one (?every=1)."""
+        instance = await asyncio.to_thread(staging_mail, server)
+        if instance is None:
+            return no_mail(server)
+        try:
+            found = await stagingmail.messages(instance, every)
+        except JobFailed as exc:
+            return refuse(str(exc), status.HTTP_502_BAD_GATEWAY)
+        return {**found, "first": stagingmail.FIRST, "can_clear": me.can("admin")}
+
+    @app.get("/api/servers/{server}/production/mail/{mail_id}")
+    async def staging_mail_get(server: str, mail_id: str, me: Principal = Depends(anyone)):
+        """One caught message as it was: who, to whom, when, its bodies and
+        the names of its attachments (not its raw headers)."""
+        instance = await asyncio.to_thread(staging_mail, server)
+        if instance is None:
+            return no_mail(server)
+        try:
+            return await stagingmail.message(instance, mail_id)
+        except LookupError as exc:
+            return refuse(str(exc), status.HTTP_404_NOT_FOUND)
+        except JobFailed as exc:
+            return refuse(str(exc), status.HTTP_502_BAD_GATEWAY)
+
+    @app.post("/api/servers/{server}/production/mail/clear")
+    async def staging_mail_clear(request: Request, server: str, me: Principal = Depends(admin)):
+        """Every caught message of the staging deleted (the workspace's admin):
+        Odoo and its queue of mail are not touched."""
+        instance = await asyncio.to_thread(staging_mail, server)
+        if instance is None:
+            return no_mail(server)
+        try:
+            await stagingmail.clear(instance)
+        except JobFailed as exc:
+            return refuse(str(exc), status.HTTP_502_BAD_GATEWAY)
+        access_log.record("action", me.kind, me.name, request.client.host if request.client else "",
+                          f"caught mail of {instance.key} deleted")
+        return {"ok": True}
 
     # --- point-in-time recovery of a workspace instance's database (pitrhelper.py)
 

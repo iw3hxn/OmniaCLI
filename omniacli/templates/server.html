@@ -259,7 +259,7 @@
 {# a staging OmniaCLI made has its backup and was neutralized; one a hosting panel made (told by its name) may not be #}
 {% if stagings.parent.backup %}
 <div class="note-box" style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap">
-  <span>{{ _("Copy of") }} <a href="{{ prefix }}/servers/{{ parent }}">{{ host_of(stagings.parent.url, parent) }}</a> {{ _("of {date}", date=when(stagings.parent.refreshed or stagings.parent.created)) }}, {{ _("neutralized: no outgoing mail, no scheduled actions.") }}</span>
+  <span>{{ _("Copy of") }} <a href="{{ prefix }}/servers/{{ parent }}">{{ host_of(stagings.parent.url, parent) }}</a> {{ _("of {date}", date=when(stagings.parent.refreshed or stagings.parent.created)) }}, {{ _("neutralized: no scheduled actions; the outgoing mail is read in the Mail tab, it does not leave.") if mail_capture else _("neutralized: no outgoing mail, no scheduled actions.") }}</span>
   {% if is_admin_here %}<button type="button" class="small" id="staging-refresh" {{ off }}
     title="{{ _('Puts in this staging the data of production as it is now: a new backup of production, loaded here and neutralized (no outgoing mail, no scheduled actions). The code of the staging stays as it is; its data of now are lost. Not available while a job works on the staging or on production. Admins only.') }}">{{ icon("restart") }}{{ _("Refresh from production…") }}</button>{% endif %}
 </div>
@@ -270,6 +270,7 @@
 {% set db_tab = can_act and inst.plugin and (inst.restart.type == "compose" or inst.plugin.db_shell(inst)) %}
 <nav class="tabs" role="tablist" aria-label="{{ _('Sections of the instance') }}">
   <button type="button" role="tab" data-tab="overview" aria-selected="true" title="{{ _('The instance, its test and its stagings, and whether it answers') }}">{{ _("Environments") if show_envs else _("Overview") }}</button>
+  {% if mail_capture %}<button type="button" role="tab" data-tab="mail" title="{{ _('What Odoo of this staging sent: caught here, it did not leave') }}">{{ _("Mail") }}</button>{% endif %}
   {% if can_act %}<button type="button" role="tab" data-tab="backups" title="{{ _('The backups of this instance, the automatic ones and the recovery at a minute') }}">{{ _("Backups") }}</button>{% endif %}
   <button type="button" role="tab" data-tab="log" title="{{ _('The log of its Odoo, followed live') }}">{{ _("Log") }}</button>
   {# Monitoring: the load once it is measured, and the database for who may act (UX-006: five tabs) #}
@@ -338,6 +339,42 @@
 <section class="tab-panel panel" data-panel="log" hidden>
   <div class="log-panel" data-log="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}/log">{{ logbox("server-log", height="60vh") }}</div>
 </section>
+
+{% if mail_capture %}
+{# a staging's mail, caught in its project and read through OmniaCLI (UX-008 §5.3): no primary, nothing is made here #}
+<section class="tab-panel panel" data-panel="mail" hidden data-api="{{ prefix }}/api/servers/{{ server.name }}/production/mail">
+  <div class="section-head">
+    <p class="mail-state" role="status" style="margin: 0">{{ _("Reading…") }}</p>
+    <div class="head-actions">
+      <button type="button" class="small" id="mail-reload" title="{{ _('Reads the caught mail again now. It changes nothing.') }}">{{ _("Read again") }}</button>
+      {% if is_admin_here %}<button type="button" class="small danger" id="mail-clear" title="{{ _('Deletes every caught message of this staging. It does not touch Odoo nor its queue of mail.') }}">{{ _("Empty…") }}</button>{% endif %}
+    </div>
+  </div>
+  <p class="muted mail-empty" hidden>{{ _("No message. What Odoo of this staging sends (invoices, invitations, notices) arrives here and does not leave.") }}</p>
+  <div class="scroll"><table class="mail-table" hidden>
+    <tr><th>{{ _("Received on") }}</th><th>{{ _("Mail to") }}</th><th>{{ _("Subject") }}</th></tr>
+  </table></div>
+  <p class="mail-more" hidden><button type="button" class="small" id="mail-all" title="{{ _('Shows the rows left out of this list') }}"></button></p>
+  <dialog id="mail-message" aria-labelledby="mm-subject" style="width: min(900px, calc(100vw - 32px))">
+    <h2 id="mm-subject"></h2>
+    <dl class="sum-grid">
+      <dt>{{ _("Mail from") }}</dt><dd id="mm-from"></dd>
+      <dt>{{ _("Mail to") }}</dt><dd id="mm-to"></dd>
+      <dt data-mm="cc">Cc</dt><dd id="mm-cc" data-mm="cc"></dd>
+      <dt>{{ _("Date") }}</dt><dd id="mm-date"></dd>
+    </dl>
+    <p class="muted" id="mm-reading">{{ _("Reading…") }}</p>
+    {# the message as it was, without its scripts: no allow-scripts, no allow-same-origin #}
+    <iframe id="mm-body" sandbox="" referrerpolicy="no-referrer" title="{{ _('The message as it was') }}"
+            style="width: 100%; height: 55vh; border: 1px solid var(--border); border-radius: var(--r); background: #fff"></iframe>
+    <p id="mm-files" hidden><strong>{{ _("Attachments:") }}</strong> <span></span></p>
+    <p class="error" id="mm-error" role="alert"></p>
+    <div class="actions">
+      <button type="button" id="mm-close" title="{{ _('Closes the message: it is not sent, nothing changes') }}">{{ _("Close") }}</button>
+    </div>
+  </dialog>
+</section>
+{% endif %}
 
 {% if can_act %}
 <section class="tab-panel panel" data-panel="backups" hidden data-url="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}/backups"
@@ -827,6 +864,7 @@
       p.hidden = p.dataset.panel !== name || (p.classList.contains("instance-charts") && !loadMeasured);
     }
     if (name === "backups") loadBackups();
+    if (name === "mail") loadMail();
     if (name === "settings" && document.querySelector('[data-section="odoo-config"]')) loadOdooConfig();
     if (name === "monitor") {
       since = 0; for (const k in series) delete series[k]; refresh();
@@ -1774,6 +1812,109 @@
          typed === {{ server.name | tojson }});
   });
   {% endif %}
+
+  // the Mail tab of a staging (UX-008 §5.3): read again every 10 s while it is open
+  const mailBox = document.querySelector('[data-panel="mail"]');
+  const M = {
+    caught: {{ _("Caught: the mail Odoo of this staging sends arrives here and does not leave.") | tojson }},
+    count: {{ _("{count} messages, the last on {date}.") | tojson }},
+    one: {{ _("1 message, on {date}.") | tojson }},
+    unread: {{ _("The caught mail cannot be read now: {error}") | tojson }},
+    all: {{ _("Show all ({n})") | tojson }}, allTitle: {{ _("Shows the rows left out of this list") | tojson }},
+    rowTitle: {{ _("Opens the message as it was, without sending it") | tojson }},
+    clearQ: {{ _("Delete every caught message of {server}? It cannot be undone; Odoo and its queue of mail are not touched.", server=server.name) | tojson }},
+    noText: {{ _("The message has no text.") | tojson }},
+  };
+  const MAIL_EVERY = 10000, SUBJECT_MAX = 80;
+  let mailTimer = null, mailRound = 0, mailAll = false;
+  async function loadMail() {
+    if (!mailBox) return;
+    clearTimeout(mailTimer);
+    const round = ++mailRound;
+    const state = mailBox.querySelector(".mail-state");
+    let data = null, error = "";
+    try {
+      const resp = await fetch(mailBox.dataset.api + (mailAll ? "?every=1" : ""), {headers: {Accept: "application/json"}});
+      data = await resp.json().catch(() => ({}));
+      if (!resp.ok) { error = data.error || data.detail || String(resp.status); data = null; }
+    } catch (e) { error = e.message; }
+    // another round started meanwhile (a click on Read again): that one draws
+    if (round !== mailRound) return;
+    if (data) drawMail(data); else state.textContent = M.unread.replace("{error}", error);
+    if (!mailBox.hidden) mailTimer = setTimeout(loadMail, MAIL_EVERY);
+  }
+  function drawMail(data) {
+    const rows = data.messages || [], total = data.total || 0;
+    const state = mailBox.querySelector(".mail-state");
+    state.textContent = !total ? M.caught : M.caught + " " +
+      (total === 1 ? M.one : M.count.replace("{count}", total)).replace("{date}", whenText(rows[0] && rows[0].received));
+    mailBox.querySelector(".mail-empty").hidden = total > 0;
+    const table = mailBox.querySelector(".mail-table");
+    table.hidden = !rows.length;
+    table.querySelectorAll("tr:not(:first-child)").forEach((r) => r.remove());
+    for (const m of rows) {
+      const tr = document.createElement("tr");
+      tr.className = "click-row"; tr.tabIndex = 0; tr.title = M.rowTitle;
+      const received = document.createElement("td"); received.className = "when"; received.textContent = whenText(m.received);
+      const to = document.createElement("td"); to.textContent = (m.to || []).join(", ");
+      const subject = document.createElement("td");
+      const text = document.createElement("div");
+      text.textContent = m.subject.length > SUBJECT_MAX ? m.subject.slice(0, SUBJECT_MAX - 1) + "…" : m.subject;
+      text.title = m.subject;
+      const from = document.createElement("div"); from.className = "muted"; from.style.fontSize = "13px"; from.textContent = m.from;
+      subject.append(text, from);
+      tr.append(received, to, subject);
+      tr.addEventListener("click", () => openMail(m.id));
+      tr.addEventListener("keydown", (e) => { if (e.key === "Enter") openMail(m.id); });
+      table.append(tr);
+    }
+    const more = mailBox.querySelector(".mail-more"), button = document.getElementById("mail-all");
+    more.hidden = total <= rows.length;
+    button.textContent = M.all.replace("{n}", total); button.title = M.allTitle;
+  }
+  const mailDialog = document.getElementById("mail-message");
+  async function openMail(id) {
+    const $ = (selector) => mailDialog.querySelector(selector);
+    for (const s of ["#mm-subject", "#mm-from", "#mm-to", "#mm-cc", "#mm-date", "#mm-error"]) $(s).textContent = "";
+    $("#mm-body").srcdoc = ""; $("#mm-files").hidden = true; $("#mm-reading").hidden = false;
+    mailDialog.showModal();
+    let m = null;
+    try {
+      const resp = await fetch(`${mailBox.dataset.api}/${encodeURIComponent(id)}`, {headers: {Accept: "application/json"}});
+      m = await resp.json().catch(() => ({}));
+      if (!resp.ok) { $("#mm-error").textContent = m.error || m.detail || T.refused; m = null; }
+    } catch (e) { $("#mm-error").textContent = M.unread.replace("{error}", e.message); }
+    $("#mm-reading").hidden = true;
+    if (!m) return;
+    $("#mm-subject").textContent = m.subject; $("#mm-from").textContent = m.from;
+    $("#mm-to").textContent = (m.to || []).join(", "); $("#mm-cc").textContent = (m.cc || []).join(", ");
+    for (const e of mailDialog.querySelectorAll('[data-mm="cc"]')) e.hidden = !(m.cc || []).length;
+    $("#mm-date").textContent = whenText(m.date);
+    // the HTML as it was, in a frame without scripts; a text alone as text
+    const pre = document.createElement("pre");
+    pre.style.cssText = "white-space: pre-wrap; font: 13px/1.5 ui-monospace, monospace; margin: 12px";
+    pre.textContent = m.text || M.noText;
+    $("#mm-body").srcdoc = m.html || pre.outerHTML;
+    const files = m.attachments || [];
+    $("#mm-files").hidden = !files.length;
+    $("#mm-files span").textContent = files.map((f) => f.name).join(", ");
+  }
+  if (mailBox) {
+    document.getElementById("mail-reload").addEventListener("click", loadMail);
+    document.getElementById("mail-all").addEventListener("click", () => { mailAll = true; loadMail(); });
+    document.getElementById("mm-close").addEventListener("click", () => mailDialog.close());
+    document.getElementById("mail-clear")?.addEventListener("click", async () => {
+      if (!confirm(M.clearQ)) return;
+      const error = document.getElementById("page-error");
+      error.textContent = "";
+      const resp = await fetch(`${mailBox.dataset.api}/clear`, {method: "POST",
+        headers: {Accept: "application/json", "Content-Type": "application/json"}, body: "{}"}).catch(() => null);
+      const data = resp ? await resp.json().catch(() => ({})) : {};
+      if (!resp || !resp.ok) { error.textContent = data.error || data.detail || T.refused; return; }
+      mailAll = false;
+      loadMail();
+    });
+  }
 
   // a job of this server started or ended: the page again, with its buttons and state of now
   let busyBefore = null;

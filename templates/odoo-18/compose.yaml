@@ -95,3 +95,39 @@ services:
       options:
         max-size: "50m"
         max-file: "5"
+  # a staging's mail, caught (UX-008 §5.3): Mailpit (MIT), only with
+  # COMPOSE_PROFILES=mail-capture in .env, which the helper writes for a
+  # staging. A neutralized database sends through the server odoo neutralize
+  # adds, host "invalid" port 1025 (base/data/neutralize.sql, Odoo 16 to 20):
+  # that name is this service in the project's network, as "mail" is, the
+  # smtp_server of the staging's odoo.conf. No port published: its API listens
+  # on the loopback of its container only, read by compose-helper mail-*.
+  mail:
+    image: axllent/mailpit:v1.33.1
+    profiles: ["mail-capture"]
+    restart: unless-stopped
+    read_only: true
+    user: "65534:65534"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 64
+    cgroup_parent: ${SLICE}
+    networks:
+      default:
+        aliases:
+          - invalid
+    environment:
+      MP_DATABASE: /data/mailpit.db
+      MP_SMTP_BIND_ADDR: 0.0.0.0:1025
+      MP_UI_BIND_ADDR: 127.0.0.1:8025
+      MP_MAX_MESSAGES: "500"
+      MP_DISABLE_VERSION_CHECK: "true"
+    volumes:
+      - ./data/mail:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

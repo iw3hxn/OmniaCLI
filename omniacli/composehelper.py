@@ -115,6 +115,13 @@ command of the caller's, and runs docker with an environment of its own:
                                          the company's country, read by the
                                          helper as JSON on its input (never
                                          on a command line) and checked
+    mail-list <start> <limit>            a staging's caught mail (the service
+    mail-get <message id>                mail, Mailpit, of its profile
+    mail-clear                           mail-capture): in its container, the
+                                         API on its own loopback (no port
+                                         published): the messages from the
+                                         newest, one message, all deleted;
+                                         JSON as Mailpit answers
 
 A database name is [A-Za-z0-9_.-], a module [a-z0-9_]; a service must be one
 of the project's. They reach the container's shell as its arguments, never
@@ -191,7 +198,16 @@ PID = re.compile(r"[1-9][0-9]{0,9}")
 # the actions that take arguments (commands())
 WITH_ARGUMENTS = ("logs", "version", "port", "dump", "load", "update", "psql", "init", "link-filestore", "login",
                   "setup", "options", "image", "verify", "pip-freeze",
-                  "pg-report", "pg-terminate", "neutralize", "pip-requirements", "terminal")
+                  "pg-report", "pg-terminate", "neutralize", "pip-requirements", "terminal",
+                  "mail-list", "mail-get", "mail-clear")
+# a staging's caught mail (stacktemplates.MAIL_SERVICE, templates' compose.yaml):
+# Mailpit's API, on the loopback of its container only; a message's id is
+# Mailpit's (22 letters and digits); at most MAIL_LIMIT messages a time
+MAIL_SERVICE = "mail"
+MAIL_API = "http://127.0.0.1:8025/api/v1"
+MAIL_ID = re.compile(r"[A-Za-z0-9]{8,40}")
+MAIL_LIMIT = 500
+MAIL_START = 100000
 # a repository of the instance's addons (/mnt/customer-addons/<name>)
 REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 DATABASE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,62}")
@@ -284,6 +300,14 @@ SCRIPTS = {
     # the Python packages a repository of addons asks (its requirements.txt),
     # as the image's user in its home (/var/lib/odoo/.local, on the volume of
     # the instance's data: they stay when the container is made again)
+    # a staging's caught mail, in the mail service's container (busybox: wget
+    # reads, nc deletes, wget has no DELETE): the numbers and the id checked
+    "mail-list": f'exec wget -q -T 20 -O - "{MAIL_API}/messages?start=$1&limit=$2"',
+    "mail-get": f'exec wget -q -T 20 -O - "{MAIL_API}/message/$1"',
+    "mail-clear": 'r="$(printf "DELETE /api/v1/messages HTTP/1.0\\r\\nHost: 127.0.0.1\\r\\nContent-Length: 0\\r\\n\\r\\n" '
+                  '| nc -w 20 127.0.0.1 8025 | head -n 1)"; '
+                  'case "$r" in "HTTP/1."?" 200"*) echo cleared;; '
+                  '*) echo "the mail service answered: ${r:-nothing}" >&2; exit 1;; esac',
     "pip-requirements": 'f="/mnt/customer-addons/$1/requirements.txt"; if [ -f "$f" ]; then '
                         'exec python3 -m pip install --user --break-system-packages --disable-pip-version-check '
                         '--no-warn-script-location -r "$f"; else echo "$1 has no requirements.txt"; fi',
@@ -579,6 +603,20 @@ def commands(project: Path, action: str, args: list[str]) -> list[list[str]]:
             raise HelperError("usage: pg-terminate <service> <database> <pid>")
         name = service(project, args[0])
         return [_script(name, "pg-terminate", _database(args[1]), args[2], options=("-T", *psql_options(project, name)))]
+    if action == "mail-list":
+        # mail-list <start> <limit>: the caught messages, the newest first
+        if len(args) != 2 or not all(a.isdigit() and len(a) <= 6 for a in args) \
+                or int(args[0]) > MAIL_START or not 1 <= int(args[1]) <= MAIL_LIMIT:
+            raise HelperError(f"usage: mail-list <start, 0 to {MAIL_START}> <limit, 1 to {MAIL_LIMIT}>")
+        return [_script(service(project, MAIL_SERVICE), "mail-list", str(int(args[0])), str(int(args[1])))]
+    if action == "mail-get":
+        if len(args) != 1 or not MAIL_ID.fullmatch(args[0]):
+            raise HelperError("usage: mail-get <message id, 8 to 40 letters and digits>")
+        return [_script(service(project, MAIL_SERVICE), "mail-get", args[0])]
+    if action == "mail-clear":
+        if args:
+            raise HelperError("mail-clear takes no arguments")
+        return [_script(service(project, MAIL_SERVICE), "mail-clear")]
     if action == "terminal":
         # terminal <odoo service>: on the caller's terminal, never as root
         if len(args) != 1:

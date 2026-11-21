@@ -949,6 +949,15 @@ def _owner(spec: str) -> tuple[int, int]:
 
 # the key of create's values that says which roles it makes, never a template's
 ROLES_KEY = "_roles"
+# the key that asks the mail of the production caught (a staging's,
+# UX-008 §5.3), kept in instance.json: what conf and the page read there
+MAIL_KEY = "_mail_capture"
+MAIL_META = "mail_capture"
+
+
+def captures_mail(meta: dict, role: str) -> bool:
+    """The role's mail is caught in its project (a staging's production)."""
+    return role == "production" and meta.get(MAIL_META) is True
 
 
 def create(name: str, storage: str, instance: str, template_name: str, values_json: str) -> dict:
@@ -974,6 +983,8 @@ def create(name: str, storage: str, instance: str, template_name: str, values_js
     if not isinstance(roles, list) or "production" not in roles or not set(roles) <= set(ROLES):
         raise HelperError(f"{ROLES_KEY} is a list of roles with production in it ({', '.join(ROLES)})")
     roles = [r for r in ROLES if r in roles]
+    # asked of a template of before (no service to catch it): not caught, said in the answer
+    mail = given.pop(MAIL_KEY, False) in (True, "1", "true") and template.captures_mail()
     try:
         values = template.values({str(k): str(v) for k, v in given.items()})
     except stacktemplates.TemplateError as exc:
@@ -986,11 +997,12 @@ def create(name: str, storage: str, instance: str, template_name: str, values_js
     database = instance.replace("-", "_")
     made = {"workspace": name, "instance": instance, "template": template.name, "version": template.version,
             "database": database, "odoo_service": template.odoo_service, "db_service": template.db_service,
-            "values": values, "roles": {}}
+            "values": values, "roles": {}, "mail_capture": mail}
+    meta = {"template": template.name, "version": template.version, "database": database,
+            **({MAIL_META: True} if mail else {})}
     folder.mkdir(mode=0o755)
     try:
-        _write(folder / INSTANCE_FILE, json.dumps({"template": template.name, "version": template.version,
-                                                   "database": database}) + "\n")
+        _write(folder / INSTANCE_FILE, json.dumps(meta) + "\n")
         for index, role in enumerate(roles):
             project = folder / role
             project.mkdir(mode=0o755)
@@ -1003,6 +1015,10 @@ def create(name: str, storage: str, instance: str, template_name: str, values_js
                    "WEBSOCKET_PORT": str(ws_port), "DB_PASSWORD": stacktemplates.new_password(),
                    "DB_SUPER_PASSWORD": stacktemplates.new_password(),
                    "SUBNET": subnets[index], "SLICE": slice_name(name)}
+            caught = captures_mail(meta, role)
+            if caught:
+                # read by docker compose in .env: the template's mail service runs
+                env["COMPOSE_PROFILES"] = stacktemplates.MAIL_PROFILE
             _write(project / "compose.yaml", template.compose)
             _write(project / ".env", stacktemplates.env_text(env), mode=0o600)
             # what postgres:17 runs at its first start, for a template that mounts it
@@ -1010,7 +1026,8 @@ def create(name: str, storage: str, instance: str, template_name: str, values_js
             _write(project / "dbinit" / "odoo-role.sh", DB_ROLE_SCRIPT)
             (project / "config").mkdir(mode=0o755)
             _write(project / "config" / "odoo.conf",
-                   stacktemplates.conf_text(template, database, stacktemplates.new_password(), []),
+                   stacktemplates.conf_text(template, database, stacktemplates.new_password(), [],
+                                            mail_capture=caught),
                    mode=0o644)
             for item in template.data:
                 path = project / item["path"]
@@ -1102,8 +1119,11 @@ def conf(name: str, storage: str, instance: str, role: str, spec_json: str) -> d
         password = _admin_password(conf_file.read_text(encoding="utf-8"))
     except OSError:
         password = None
+    # a staging's production: its mail stays caught, whatever the parameters say
+    caught = captures_mail(meta, role)
     text = stacktemplates.conf_text(template, str(meta.get("database") or ""),
-                                    password or stacktemplates.new_password(), repos, values, debug, extra)
+                                    password or stacktemplates.new_password(), repos, values, debug, extra,
+                                    mail_capture=caught)
     _write(conf_file, text, mode=0o644)
     kept = {k: v for k, v in values.items() if v != template.parameter(k).default}
     _write(project / ROLE_FILE, json.dumps({"repositories": repos, "parameters": kept, "debug": debug,
@@ -1111,6 +1131,7 @@ def conf(name: str, storage: str, instance: str, role: str, spec_json: str) -> d
     return {"workspace": name, "instance": instance, "role": role, "repositories": repos,
             "parameters": {k: ("" if template.parameter(k).type == "password" and v else v) for k, v in values.items()},
             "debug": debug, "extra": sorted(extra), "template": template.name, "version": template.version,
+            "mail_capture": caught,
             "compose": "the database connection for commands typed in the container added" if compose_changed else ""}
 
 
