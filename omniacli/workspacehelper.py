@@ -69,13 +69,19 @@ was, kept in <role>/omniacli.json, root's.
 remove: docker compose down -v of both projects, then the instance's folder.
 
 web: the workspace's nginx site, /etc/nginx/conf.d/omniacli-<workspace>.conf,
-from the names of <spec> ({domain, main, subdomains, certificate}: README,
-Domains of a workspace) and the ports of the instances on its disk, read
-here; a name another site of nginx answers on is refused; nginx -t, or the
-file before is put back; then, for certificate letsencrypt, certbot
-(--webroot, one certificate omniacli-<workspace> for all the names) and the
-site again with https. No domain or no instance: the site and its
-certificate are removed.
+from the names of <spec> ({domain, main, subdomains, certificate, aliases,
+redirects}: README, Domains of a workspace) and the ports of the instances
+on its disk, read here; an alias is one more name of its environment's
+server block, a redirect a server block of its own answering 301 to a name
+of its environment; a name another site of nginx answers on is refused;
+nginx -t, or the file before is put back; then, for certificate
+letsencrypt, certbot (--webroot, one certificate omniacli-<workspace> for
+all the names; an alias or a redirect only once this nginx answers a probe
+on its name) and the site again with https. No domain or no instance: the
+site and its certificate are removed.
+
+web-names <workspace>: the names the other sites of nginx answer on (nginx
+-T), which the workspace may not take; it reads only.
 
 firewall on|apply|off: the workspaces' containers reach the internet only.
 Their networks are /24s of one pool (workspaces.network of the main
@@ -108,11 +114,13 @@ import json
 import os
 import pwd
 import re
+import secrets
 import shutil
 import socket
 import stat
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 
 import yaml
@@ -1227,8 +1235,50 @@ def web_spec(spec_json: str, instances: list[str]) -> dict:
     certificate = str(spec.get("certificate") or "letsencrypt")
     if certificate not in CERTIFICATES:
         raise HelperError(f"the certificate is one of {', '.join(CERTIFICATES)}")
+    # the other names of an environment (UX-008 §6.1): host names only, no
+    # wildcard, checked as the service checks them
+    try:
+        aliases, redirects = config.parse_addresses("names", spec.get("aliases"), spec.get("redirects"), instances)
+    except ConfigError as exc:
+        raise HelperError(str(exc)) from None
     return {"domain": domain, "main": main, "subdomains": {str(k): str(v) for k, v in subdomains.items()},
-            "certificate": certificate}
+            "certificate": certificate, "aliases": aliases, "redirects": redirects}
+
+
+def _addresses(sites: list[dict], spec: dict) -> tuple[list[dict], list[str]]:
+    """The aliases put in their sites (site["aliases"]), and the redirects
+    grouped by the name they go to: ([{names, to}], notes). An environment
+    not on the disk has none; a redirect to a name its environment no longer
+    has goes to its first name, and a note says so."""
+    generated = {n for site in sites for n in site["names"]}
+    groups: dict[str, list[str]] = {}
+    notes = []
+    for site in sites:
+        instance, role = site["instance"], site["role"]
+        site["aliases"] = list(spec["aliases"].get(instance, {}).get(role, []))
+        for name in site["aliases"]:
+            if name in generated:
+                raise HelperError(f"{name} is a name of the workspace already: it is no other name")
+        own = [*site["names"], *site["aliases"]]
+        for name, to in spec["redirects"].get(instance, {}).get(role, {}).items():
+            if name in generated:
+                raise HelperError(f"{name} is a name of the workspace already: it is no redirect")
+            if to not in own:
+                notes.append(f"the redirect {name} went to {to}, no name of {config.environment_label(instance, role)} now: it goes to {own[0]}")
+                to = own[0]
+            groups.setdefault(to, []).append(name)
+    taken = {}
+    for site in sites:
+        for name in site["aliases"]:
+            if name in taken:
+                raise HelperError(f"{name} is a name of {taken[name]} and of {config.environment_label(site['instance'], site['role'])}")
+            taken[name] = config.environment_label(site['instance'], site['role'])
+    for names in groups.values():
+        for name in names:
+            if name in taken:
+                raise HelperError(f"{name} is a name of {taken[name]} and a redirect")
+            taken[name] = "a redirect"
+    return [{"names": names, "to": to} for to, names in groups.items()], notes
 
 
 def _sites(mount: Path, spec: dict, instances: list[str]) -> list[dict]:
@@ -1288,6 +1338,26 @@ def _resolves(host: str) -> bool:
         return bool(socket.getaddrinfo(host, 80, proto=socket.IPPROTO_TCP))
     except (OSError, UnicodeError):
         return False
+
+
+def _reaches_here(host: str) -> bool:
+    """http://host reaches this nginx: it answers a token put in the
+    challenges' folder, as Let's Encrypt will ask (behind a proxy or a
+    router too). host is a checked host name (config.address_name)."""
+    folder = Path(workspaceweb.ACME_ROOT) / ".well-known" / "acme-challenge"
+    folder.mkdir(mode=0o755, parents=True, exist_ok=True)
+    token = secrets.token_urlsafe(24)
+    probe = folder / token
+    _write(probe, token)
+    try:
+        request = urllib.request.Request(f"http://{host}/.well-known/acme-challenge/{token}",
+                                         headers={"User-Agent": "omniacli-workspace-helper"})
+        with urllib.request.urlopen(request, timeout=8) as answer:
+            return answer.read(256).decode("ascii", "replace").strip() == token
+    except (OSError, ValueError):
+        return False
+    finally:
+        probe.unlink(missing_ok=True)
 
 
 def _certbot(name: str, names: list[str]) -> str | None:
@@ -1350,12 +1420,16 @@ def web(name: str, storage: str, spec_json: str) -> dict:
             _run("certbot", "delete", "--cert-name", f"omniacli-{name}", "--non-interactive")
         return made
     sites = _sites(mount, spec, instances)
+    redirects, made["redirects_moved"] = _addresses(sites, spec)
     names = [n for site in sites for n in site["names"]]
-    made["names"] = names
+    # the other names (aliases, redirects): after the workspace's, in the certificate too
+    extra = [n for site in sites for n in site["aliases"]] + [n for r in redirects for n in r["names"]]
+    made["names"] = names + [n for site in sites for n in site["aliases"]]
+    made["redirects"] = {n: r["to"] for r in redirects for n in r["names"]}
     dump = subprocess.run([_tool("nginx"), "-T"], env=ENV, capture_output=True, text=True)
     if dump.returncode:
         raise HelperError(f"nginx -T: {dump.stderr.strip()}")
-    taken = workspaceweb.clashes(names, workspaceweb.names_elsewhere(dump.stdout, str(path)))
+    taken = workspaceweb.clashes(names + extra, workspaceweb.names_elsewhere(dump.stdout, str(path)))
     if taken:
         raise HelperError("names other sites of nginx answer on: " + ", ".join(taken))
     _hash_bucket(dump.stdout)
@@ -1364,21 +1438,37 @@ def web(name: str, storage: str, spec_json: str) -> dict:
     ipv6 = Path("/proc/net/if_inet6").exists()
     tls = _tls(name, spec["certificate"])
     omniacli = omniacli_address()
-    made["nginx"] = _put_site(path, workspaceweb.conf_text(name, sites, tls, ipv6, omniacli))
+    made["nginx"] = _put_site(path, workspaceweb.conf_text(name, sites, tls, ipv6, omniacli, redirects))
     if spec["certificate"] == "letsencrypt":
         # one name with no DNS record would fail the whole certificate: it is
         # asked for the names that resolve, the others are said (on http until
-        # their record is there and the site is published again)
+        # their record is there and the site is published again). An other
+        # name (www.customer.com) often still points to the customer's old
+        # site: it goes in only when this nginx answers its challenge
         known = [n for n in names if _resolves(n)]
-        made["without_dns"] = [n for n in names if n not in known]
+        reached = [n for n in extra if _resolves(n) and _reaches_here(n)]
+        made["without_dns"] = [n for n in names + extra if not _resolves(n)]
+        made["elsewhere"] = [n for n in extra if n not in reached and n not in made["without_dns"]]
+        known += reached
         made["certificate_error"] = _certbot(name, known) if known else "no name of the workspace is in DNS yet"
         if made["certificate_error"] is None and tls is None:
             tls = _tls(name, spec["certificate"])
-            made["nginx"] = _put_site(path, workspaceweb.conf_text(name, sites, tls, ipv6, omniacli))
+            made["nginx"] = _put_site(path, workspaceweb.conf_text(name, sites, tls, ipv6, omniacli, redirects))
     elif tls is None:
         made["certificate_error"] = "no certificate of the customer's yet: upload it"
     made["https"] = tls is not None
     return made
+
+
+def web_taken(name: str) -> dict:
+    """The names the other sites of this machine's nginx answer on (nginx -T),
+    but the workspace's own site: what its Addresses dialog may not take
+    (UX-008 §6.1). It reads only."""
+    path = NGINX_SITES / f"omniacli-{_name('workspace', name)}.conf"
+    dump = subprocess.run([_tool("nginx"), "-T"], env=ENV, capture_output=True, text=True)
+    if dump.returncode:
+        raise HelperError(f"nginx -T: {dump.stderr.strip()}")
+    return {"elsewhere": workspaceweb.names_elsewhere(dump.stdout, str(path))}
 
 
 def _openssl(*args: str) -> str:
@@ -1667,7 +1757,7 @@ def pitr_restore(name: str, storage: str, source: str, target: str, when: str, s
 
 
 ACTIONS = {"disk": (disk, 3), "drop": (drop, 2), "limits": (limits, 3), "create": (create, 5), "remove": (remove, 3),
-           "web": (web, 3), "owncert": (owncert, 2), "firewall": (firewall, 1), "template-install": (template_install, 1),
+           "web": (web, 3), "web-names": (web_taken, 1), "owncert": (owncert, 2), "firewall": (firewall, 1), "template-install": (template_install, 1),
            "conf": (conf, 5), "space": (space, 0),
            "storage-setup": (storage_setup, 0), "storage-check": (storage_check, 1), "storage-reset": (storage_reset, 1),
            "pitr-enable": (pitr_enable, 4), "pitr-base": (pitr_base, 4), "pitr-state": (pitr_state, 4),

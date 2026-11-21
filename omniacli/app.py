@@ -85,7 +85,14 @@ from .config import (
     save_links,
     save_options,
     save_publications,
+    ADDRESSES_MAX,
+    address_name,
+    addresses_follow,
+    address_taken,
     apply_sites,
+    environment_label,
+    environment_names,
+    generated_names,
     web_names,
     save_pullers,
     save_servers,
@@ -253,6 +260,9 @@ WORKSPACE_ROUTES = frozenset({
     # a staging's caught mail (UX-008 §5.3)
     "/api/servers/{server}/production/mail", "/api/servers/{server}/production/mail/{mail_id}",
     "/api/servers/{server}/production/mail/clear",
+    # the Addresses dialog of an environment (UX-008 §6.1): its admins (admin)
+    "/api/servers/{server}/{role}/addresses", "/api/servers/{server}/{role}/addresses/check",
+    "/api/servers/{server}/{role}/addresses/save",
 })
 
 
@@ -1148,6 +1158,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                  (settings.servers.get(staging_of.get("parent")) or srv).production, "web_url", None)},
                              "workspace": (workspace_of(srv.name) or (None,))[0]},
                 "is_admin_here": request.state.user.can("admin"),
+                # the other names of each row of Environments, and its ⚙ Addresses… (UX-008 §6.1)
+                "addresses": address_rows(request.state.user, [
+                    (srv.name, r) for r in ROLES if getattr(srv, r) is not None]
+                    + [(r["server"], "production") for r in staging_rows(srv.name)]),
                 # a staging whose mail is caught: its Mail tab (UX-008 §5.3)
                 "mail_capture": bool(staging_of) and await asyncio.to_thread(staging_mail, srv.name) is not None,
                 # the paths and the commands of an instance, for the machine's admins (ssh)
@@ -2571,9 +2585,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         main = (now or "") if gone and ws.main == gone else ws.main
         subdomains = {sub: (now if gone and target == gone else target) for sub, target in ws.subdomains.items()}
         instances = ws.instances()
-        return dataclasses.replace(
+        after = dataclasses.replace(
             ws, main=main if main in instances else "",
             subdomains={s: t for s, t in subdomains.items() if t in instances and s not in instances})
+        return addresses_follow(before, after, gone, now)
 
     def submit_publish(ws: Workspace, source: str):
         """A job: the workspace's nginx site and certificate, as it is when the job runs."""
@@ -2586,11 +2601,16 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                            source, action)
 
     def site_names(ws: Workspace) -> list[dict]:
+        """The names of each environment, with its other names and redirects
+        (set in its Addresses dialog, read only here: UX-008 D5)."""
         try:
-            return web_names(ws.domain, [i for i in ws.instances() if workspaceops.server_name(ws, i) in settings.servers],
-                             ws.main, ws.subdomains) if ws.domain else []
+            sites = web_names(ws.domain, [i for i in ws.instances() if workspaceops.server_name(ws, i) in settings.servers],
+                              ws.main, ws.subdomains) if ws.domain else []
         except ConfigError:
             return []
+        return [{**s, "aliases": ws.aliases.get(s["instance"], {}).get(s["role"], []),
+                 "redirects": [f"{n} → {to}" for n, to in ws.redirects.get(s["instance"], {}).get(s["role"], {}).items()]}
+                for s in sites]
 
     def workspace_rows() -> list[dict]:
         return [{**ws.to_dict(), "name": ws.name, "storage_problem": settings.storage_problem(ws),
@@ -2818,7 +2838,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             before = settings.workspaces.get(name)
             if before is not None:
                 # the names are the workspace's admins' (its page)
-                data.update(main=before.main, subdomains=before.subdomains, certificate=before.certificate)
+                data.update(main=before.main, subdomains=before.subdomains, certificate=before.certificate,
+                            aliases=before.to_dict().get("aliases"), redirects=before.to_dict().get("redirects"))
             try:
                 found = parse_workspaces({**{n: ws.to_dict() for n, ws in settings.workspaces.items()}, name: data},
                                          settings.storage_roots)
@@ -2987,6 +3008,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if instance == TEST_LABEL or instance in ws.subdomains:
             return refuse(f"{instance} is {'the name of the test sites' if instance == TEST_LABEL else 'a subdomain'} "
                           "of the workspace: an instance needs another name")
+        if instance_name_problem(ws, instance):
+            return refuse(instance_name_problem(ws, instance))
         name = workspaceops.server_name(ws, instance)
         template = (await asyncio.to_thread(workspaceops.templates)).get(str(payload.get("template") or ""))
         if template is None:
@@ -3256,7 +3279,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return refuse("An instance's name is 1-32 lower case letters, digits and -")
         if instance == TEST_LABEL or instance in ws.subdomains:
             return refuse(f"{instance} is a name the workspace's sites use: an instance needs another name")
-        archive = await asyncio.to_thread(archive_path, ws, str(payload.get("archive") or ""))
+        if instance_name_problem(ws, instance):
+            return refuse(instance_name_problem(ws, instance))
+        archive =await asyncio.to_thread(archive_path, ws, str(payload.get("archive") or ""))
         if archive is None:
             return refuse("No such archive for this workspace", status.HTTP_404_NOT_FOUND)
         manifest = instancearchive.read_manifest(archive) or {}
@@ -4199,6 +4224,178 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         except (ValueError, IndexError):
             made = {}
         return {"ok": True, **made, "job": submit_publish(ws, f"manual: {me}").id}
+
+    # --- the Addresses dialog of an environment (UX-008 §6.1) ----------------
+    # Its other names (aliases) and the names that send to it (redirects), in
+    # the workspace's nginx site the root helper writes (web). Only where
+    # OmniaCLI writes that site: an instance of a workspace, never an instance
+    # adopted from a server, whose nginx is whoever administers the machine's.
+
+    NOT_OUR_SITE = "The site is kept by whoever administers the machine: OmniaCLI does not touch nginx here"
+
+    def address_owner(server: str, role: str):
+        """(workspace, instance) of the environment server/role whose site
+        OmniaCLI writes, or why not (a text)."""
+        srv = settings.servers.get(server)
+        if srv is None or role not in ROLES or getattr(srv, role) is None:
+            return f"No instance {server}/{role}"
+        found = workspace_of(server)
+        if found is None or getattr(srv, role).restart.type != "compose":
+            return NOT_OUR_SITE
+        ws, instance = found
+        if not ws.storage:
+            return f"Workspace {ws.name} has no storage: the machine's admins set it"
+        if not ws.domain:
+            return f"Workspace {ws.name} has no domain yet: its site is written once the machine's admins give it one"
+        return ws, instance
+
+    def address_rows(me: Principal, envs: list[tuple[str, str]]) -> dict[str, dict]:
+        """For the Environments table: {server/role: {names, can, reason}},
+        names its aliases and redirects (everyone reads them), can and reason
+        of the ⚙ (its admins only: UX-008 §3)."""
+        rows = {}
+        for server, role in envs:
+            owner = address_owner(server, role)
+            if isinstance(owner, tuple):
+                ws, instance = owner
+                names = [*ws.aliases.get(instance, {}).get(role, []),
+                         *(f"{n} → {to}" for n, to in ws.redirects.get(instance, {}).get(role, {}).items())]
+            else:
+                names = []
+            rows[f"{server}/{role}"] = {"names": names, "can": isinstance(owner, tuple) and me.can("admin"),
+                                        "reason": "" if isinstance(owner, tuple) else owner}
+        return rows
+
+    def addresses_of_env(server: str, role: str):
+        owner = address_owner(server, role)
+        if not isinstance(owner, tuple):
+            code = status.HTTP_404_NOT_FOUND if owner.startswith("No instance") else status.HTTP_400_BAD_REQUEST
+            return refuse(owner, code)
+        return owner
+
+    async def nginx_elsewhere(ws: Workspace) -> dict[str, str]:
+        """The names the other sites of nginx answer on (the helper's web-names)."""
+        found = await workspaceops.ask("web-names", ws.name)
+        return {str(k): str(v) for k, v in (found.get("elsewhere") or {}).items()}
+
+    @app.get("/api/servers/{server}/{role}/addresses", dependencies=[Depends(admin)])
+    async def addresses_get(server: str, role: str):
+        """What the dialog shows: the main address (the workspace's rule),
+        the other names, the redirects, the names a redirect may go to."""
+        owner = addresses_of_env(server, role)
+        if not isinstance(owner, tuple):
+            return owner
+        ws, instance = owner
+        own = [n for n, at in generated_names(ws).items() if at == (instance, role)]
+        return {"workspace": ws.name, "main": own[0] if own else "", "workspace_names": own,
+                "aliases": ws.aliases.get(instance, {}).get(role, []),
+                "redirects": [{"from": n, "to": to} for n, to in ws.redirects.get(instance, {}).get(role, {}).items()],
+                "max": ADDRESSES_MAX}
+
+    @app.post("/api/servers/{server}/{role}/addresses/check", dependencies=[Depends(admin)])
+    async def addresses_check(server: str, role: str, request: Request, payload: dict = Body(...),
+                              me: Principal = Depends(current_user)):
+        """Each name as the dialog shows it before Save: a host name, free
+        (OmniaCLI's workspaces, the other sites of nginx), and where its DNS
+        points: here, elsewhere (with this machine's address), none."""
+        owner = addresses_of_env(server, role)
+        if not isinstance(owner, tuple):
+            return owner
+        ws, instance = owner
+        given = payload.get("names")
+        if not isinstance(given, list) or len(given) > 2 * ADDRESSES_MAX:
+            return refuse(f"names: a list of at most {2 * ADDRESSES_MAX} names")
+        try:
+            elsewhere, nginx_error = await nginx_elsewhere(ws), ""
+        except JobFailed as exc:
+            elsewhere, nginx_error = {}, str(exc).removeprefix("workspace-helper: ")
+        here = await asyncio.to_thread(workspaceweb.machine_addresses, shutil.which("ip"))
+        rows = []
+        for raw in given:
+            row = {"name": str(raw or "").strip().lower().rstrip("."), "error": "", "taken": "", "dns": "", "addresses": []}
+            try:
+                row["name"] = address_name("name", raw)
+            except ConfigError as exc:
+                row["error"] = str(exc).removeprefix("name: ")
+                rows.append(row)
+                continue
+            taken = address_taken(row["name"], settings.workspaces, ws.name, instance, role)
+            hit = workspaceweb.takers(row["name"], elsewhere)
+            if not taken and hit:
+                # the file of another site is the machine's: its admins only
+                taken = f"used by {hit[0][1]}" if machine_admin(me) else "another site of this machine answers on it"
+            row["taken"] = taken or ""
+            rows.append(row)
+        found = await asyncio.gather(*(asyncio.to_thread(workspaceweb.addresses_of, r["name"])
+                                       for r in rows if not r["error"]))
+        for row, addresses in zip([r for r in rows if not r["error"]], found):
+            row["addresses"], row["dns"] = addresses, workspaceweb.dns_state(addresses, here)
+        lang = request_language(request)
+        for row in rows:
+            row["error"], row["taken"] = i18n.tr(lang, row["error"]), i18n.tr(lang, row["taken"])
+        return {"rows": rows, "here": sorted(here), "nginx_error": i18n.tr(lang, nginx_error)}
+
+    @app.post("/api/servers/{server}/{role}/addresses/save", dependencies=[Depends(admin)])
+    async def addresses_save(server: str, role: str, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """The other names and the redirects of the environment, saved in its
+        workspace; then a job writes the site again and asks for the
+        certificate (Odoo does not restart)."""
+        aliases, redirects = payload.get("aliases"), payload.get("redirects")
+        if not isinstance(aliases, list) or not isinstance(redirects, list) or \
+                any(not isinstance(r, dict) for r in redirects):
+            return refuse("aliases: a list of names; redirects: a list of pairs from, to")
+        async with workspaces_lock:
+            owner = addresses_of_env(server, role)
+            if not isinstance(owner, tuple):
+                return owner
+            ws, instance = owner
+            try:
+                aliases = [address_name("name", n) for n in aliases]
+                pairs = {address_name("name", r.get("from")): address_name("name", r.get("to")) for r in redirects}
+            except ConfigError as exc:
+                return refuse(str(exc).removeprefix("name: "))
+            if len(pairs) != len(redirects) or len(set(aliases)) != len(aliases):
+                return refuse("A name is twice in the addresses of this environment")
+            data = ws.to_dict()
+            for key, value in (("aliases", aliases), ("redirects", pairs)):
+                envs = {i: dict(r) for i, r in (data.get(key) or {}).items()}
+                envs.setdefault(instance, {})[role] = value
+                data[key] = {i: r for i, r in envs.items() if any(r.values())}
+            try:
+                found = parse_workspaces({**{n: w.to_dict() for n, w in settings.workspaces.items()}, ws.name: data},
+                                         settings.storage_roots)
+            except ConfigError as exc:
+                return refuse(str(exc).removeprefix(f"workspaces.{ws.name}: "))
+            new = found[ws.name]
+            if (new.aliases, new.redirects) == (ws.aliases, ws.redirects):
+                return {"ok": True}
+            # a name another site of nginx has would fail every publish of the
+            # workspace after this one: refused here, not in the job
+            added = [n for n, i, r in new.extra_names() if (i, r) == (instance, role)]
+            try:
+                elsewhere = await nginx_elsewhere(ws)
+            except JobFailed as exc:
+                return refuse(f"The other sites of nginx cannot be read: {str(exc).removeprefix('workspace-helper: ')}")
+            for name in added:
+                hit = workspaceweb.takers(name, elsewhere)
+                if hit:
+                    # the file of another site is the machine's: its admins only
+                    return refuse(f"{name} is used by {hit[0][1]}: choose another name" if machine_admin(me)
+                                  else f"Another site of this machine answers on {name}: choose another name")
+            refused = await store_workspaces(found)
+            if refused:
+                return refused
+        return {"ok": True, "job": submit_publish(new, f"manual: {me}").id}
+
+    def instance_name_problem(ws: Workspace, instance: str) -> str | None:
+        """Why a new instance may not be named instance: one of the names it
+        would answer on is another one's alias or redirect already."""
+        names = {n for n, at in generated_names(dataclasses.replace(
+            ws, servers=[*ws.servers, workspaceops.server_name(ws, instance)])).items() if at[0] == instance}
+        for name, other, role in ws.extra_names():
+            if name in names:
+                return f"{instance} would answer on {name}, another name of {environment_label(other, role)}: an instance needs another name"
+        return None
 
     def workspace_instance(ws: Workspace, payload: dict):
         """(server name, instance) of a request on an instance of ws; a response when refused."""

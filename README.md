@@ -1195,6 +1195,27 @@ The certificate, one for all the names of the workspace:
   root's only. The names it covers are shown once it is uploaded;
   renewing it is the customer's.
 
+**Other names and redirects of an environment** (UX-008 §6.1): the ⚙
+**Addresses…** of each row of Environments on the instance's page (the
+workspace's admins) adds names outside the workspace's rule. An **other
+address** (`www.customer.com`) is one more name of the environment's server
+block; a **redirect** (`customer.com`, to one of the environment's
+addresses) is a server block of its own answering `301
+https://<address>$request_uri`, from http straight there and from https.
+Every other name still goes to https. A name is a host name (no wildcard,
+no address), at most 20 for an environment, not a name of the workspace,
+not under another workspace's domain, nor taken by another environment or
+by another site of nginx (`nginx -T`, read by the helper's `web-names`,
+before the save and again in the job). They are kept in the workspaces
+file (`aliases`, `redirects`: `{instance: {role: …}}`), follow their
+instance when it is renamed, and go with it. The certificate is the
+workspace's: an other name goes in once this nginx answers a probe on its
+name (a token in the challenges' folder, fetched on `http://<name>/`), so a
+name still pointing to the customer's old site does not fail the others;
+the dialog shows where each name's DNS points. Odoo does not restart. Not
+offered on an instance whose nginx OmniaCLI does not write (a server added
+from an existing machine): there the ⚙ is off, with the reason.
+
 A workspace without a domain or without instances has no site, and its
 certificate of Let's Encrypt is deleted. nginx, certbot and Docker come with
 the second package of every release, `omniacli-workspaces`

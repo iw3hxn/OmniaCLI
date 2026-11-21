@@ -1006,6 +1006,10 @@ SUBDOMAIN = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 TEST_LABEL = "test"
 # where the certificate of a workspace's names comes from
 CERTIFICATES = ("letsencrypt", "own")
+# the other names of one environment (UX-008 §6.1), aliases and redirects together
+ADDRESSES_MAX = 20
+# the first label of a staging's names (web_names): never another name's
+STAGING_LABEL = re.compile(r"stg-\d{8}(?:-\d+)?")
 
 
 @dataclass
@@ -1032,6 +1036,11 @@ class Workspace:
     parameter_bounds: dict[str, list[int]] = field(default_factory=dict)
     # who is told when one of its instances goes down (monitor.py), set by its admins
     notify: list[str] = field(default_factory=list)
+    # the other names of an environment (UX-008 §6.1, its admins): names it
+    # answers on too, {instance: {role: [name]}}, and names that send their
+    # visitors to one of its names with a 301, {instance: {role: {name: to}}}
+    aliases: dict[str, dict[str, list[str]]] = field(default_factory=dict)
+    redirects: dict[str, dict[str, dict[str, str]]] = field(default_factory=dict)
 
     def instances(self) -> list[str]:
         """The instances of the workspace: its servers <name>-<instance>."""
@@ -1058,7 +1067,87 @@ class Workspace:
             data["parameter_bounds"] = {k: list(v) for k, v in self.parameter_bounds.items()}
         if self.notify:
             data["notify"] = list(self.notify)
+        if self.aliases:
+            data["aliases"] = {i: {r: list(n) for r, n in roles.items()} for i, roles in self.aliases.items()}
+        if self.redirects:
+            data["redirects"] = {i: {r: dict(n) for r, n in roles.items()} for i, roles in self.redirects.items()}
         return data
+
+    def extra_names(self) -> list[tuple[str, str, str]]:
+        """(name, instance, role) of every alias and redirect of the workspace."""
+        found = [(n, i, r) for i, roles in self.aliases.items() for r, names in roles.items() for n in names]
+        return found + [(n, i, r) for i, roles in self.redirects.items() for r, names in roles.items() for n in names]
+
+
+def environment_label(instance: str, role: str) -> str:
+    """An environment as a message names it: main, main (test)."""
+    return instance if role == "production" else f"{instance} (test)"
+
+
+def _environments(where: str, data, instances: list[str]) -> dict[str, dict]:
+    """{instance: {role: value}} of aliases or redirects, the instance and the
+    role checked; an empty one left out."""
+    if data in (None, ""):
+        return {}
+    if not isinstance(data, dict):
+        raise ConfigError(f"{where}: a mapping {{instance: {{role: names}}}}")
+    found = {}
+    for instance, roles in data.items():
+        instance = str(instance)
+        if instance not in instances:
+            raise ConfigError(f"{where}: {instance!r} is not an instance of the workspace")
+        if not isinstance(roles, dict) or any(str(r) not in ROLES for r in roles):
+            raise ConfigError(f"{where}.{instance}: a mapping {{production or test: names}}")
+        kept = {str(r): v for r, v in roles.items() if v}
+        if kept:
+            found[instance] = kept
+    return found
+
+
+def address_name(where: str, value) -> str:
+    """A name an environment may answer on besides the workspace's: a host
+    name (no wildcard, no address), lower case, not a staging's."""
+    name = str(value or "").strip().lower().rstrip(".")
+    if not DOMAIN_NAME.fullmatch(name):
+        raise ConfigError(f"{where}: {name!r} is not a host name (as www.customer.com; no * and no address)")
+    if STAGING_LABEL.fullmatch(name.split(".", 1)[0]):
+        raise ConfigError(f"{where}: {name} starts as the names of the stagings (stg-<date>): choose another")
+    return name
+
+
+def parse_addresses(where: str, aliases, redirects, instances: list[str]) -> tuple[dict, dict]:
+    """(aliases, redirects) of a workspace's data, each name a host name
+    (address_name), at most ADDRESSES_MAX for an environment. The target of a
+    redirect is a host name too; that it is one of its environment's names is
+    checked where those are known (check_addresses, the root helper)."""
+    found_aliases: dict[str, dict[str, list[str]]] = {}
+    for instance, roles in _environments(f"{where}.aliases", aliases, instances).items():
+        for role, names in roles.items():
+            if not isinstance(names, list):
+                raise ConfigError(f"{where}.aliases.{instance}.{role}: a list of names")
+            found_aliases.setdefault(instance, {})[role] = list(dict.fromkeys(
+                address_name(f"{where}.aliases.{instance}.{role}", n) for n in names))
+    found_redirects: dict[str, dict[str, dict[str, str]]] = {}
+    for instance, roles in _environments(f"{where}.redirects", redirects, instances).items():
+        for role, pairs in roles.items():
+            if not isinstance(pairs, dict):
+                raise ConfigError(f"{where}.redirects.{instance}.{role}: a mapping {{name: the name it goes to}}")
+            here = f"{where}.redirects.{instance}.{role}"
+            found_redirects.setdefault(instance, {})[role] = {
+                address_name(here, k): address_name(f"{here}.{k}", v) for k, v in pairs.items()}
+    for instance in set(found_aliases) | set(found_redirects):
+        for role in ROLES:
+            own = found_aliases.get(instance, {}).get(role, [])
+            sent = found_redirects.get(instance, {}).get(role, {})
+            if len(own) + len(sent) > ADDRESSES_MAX:
+                raise ConfigError(f"{where}: {environment_label(instance, role)} has more than {ADDRESSES_MAX} other names")
+            both = sorted(set(own) & set(sent))
+            if both:
+                raise ConfigError(f"{where}: {both[0]} is a name of {environment_label(instance, role)} and a redirect at once")
+            loop = sorted(n for n, to in sent.items() if to in sent)
+            if loop:
+                raise ConfigError(f"{where}: the redirect {loop[0]} goes to a redirect, not to an address")
+    return found_aliases, found_redirects
 
 
 def parse_workspace(name: str, data: dict, storage_roots=()) -> Workspace:
@@ -1128,8 +1217,9 @@ def parse_workspace(name: str, data: dict, storage_roots=()) -> Workspace:
         if not re.fullmatch(r"[a-z_]{1,40}", str(key)) or low > high:
             raise ConfigError(f"{where}.parameter_bounds.{key}: a parameter name and min <= max")
         bounds[str(key)] = [low, high]
+    aliases, redirects = parse_addresses(where, data.get("aliases"), data.get("redirects"), instances)
     return replace(ws, main=main, subdomains=subdomains, certificate=certificate, parameter_bounds=bounds,
-                   notify=parse_notify(data.get("notify"), f"{where}.notify"))
+                   notify=parse_notify(data.get("notify"), f"{where}.notify"), aliases=aliases, redirects=redirects)
 
 
 def parse_workspaces(data, storage_roots=()) -> dict[str, Workspace]:
@@ -1153,7 +1243,92 @@ def parse_workspaces(data, storage_roots=()) -> dict[str, Workspace]:
         for other, other_ws in domains.items():
             if domain and other and domain != other and domain.endswith("." + other):
                 raise ConfigError(f"domain {domain} of workspace {ws_name} is under {other} of workspace {other_ws}")
+    check_addresses(found)
     return found
+
+
+def generated_names(ws: Workspace) -> dict[str, tuple[str, str]]:
+    """The names web_names gives the workspace's environments, both roles of
+    every instance (what it may have): {name: (instance, role)}."""
+    if not ws.domain:
+        return {}
+    try:
+        sites = web_names(ws.domain, ws.instances(), ws.main, ws.subdomains)
+    except ConfigError:
+        return {}
+    return {n: (s["instance"], s["role"]) for s in sites for n in s["names"]}
+
+
+def address_taken(name: str, workspaces: dict, ws_name: str, instance: str, role: str) -> str | None:
+    """Why name is not free for the environment (ws_name, instance, role)
+    among OmniaCLI's own workspaces, None when it is (the other sites of the
+    machine's nginx are the root helper's: workspaceweb.clashes). Another
+    workspace is not named: its admins may be another customer."""
+    for other in workspaces.values():
+        mine = other.name == ws_name
+        if not mine and other.domain and (name == other.domain or name.endswith("." + other.domain)):
+            return "it is under the domain of another workspace of this machine"
+        # one of the workspace's own names, of this environment too: no other name
+        owner = generated_names(other).get(name)
+        if owner is not None:
+            return f"it is a name of {environment_label(*owner)}" if mine else "another workspace of this machine answers on it"
+        for extra, i, r in other.extra_names():
+            if extra == name and not (mine and (i, r) == (instance, role)):
+                return f"it is a name of {environment_label(i, r)}" if mine else "another workspace of this machine answers on it"
+    return None
+
+
+def environment_names(ws: Workspace, instance: str, role: str) -> list[str]:
+    """The names (instance, role) of ws answers on: the workspace's, then its aliases."""
+    own = [n for n, at in generated_names(ws).items() if at == (instance, role)]
+    return own + [n for n in ws.aliases.get(instance, {}).get(role, []) if n not in own]
+
+
+def addresses_follow(before: Workspace, ws: Workspace, gone: str | None, now: str | None) -> Workspace:
+    """The aliases and redirects of ws after its instance gone became now
+    (None: deleted): moved with it, or dropped. A redirect to a name of the
+    workspace that changed with it goes to the name in the same place (the
+    instance renamed: shop.acme.it → store.acme.it); one whose name is gone
+    is dropped, as an instance's are when it is deleted."""
+    instances = ws.instances()
+
+    def moved(data: dict) -> dict:
+        out = {}
+        for instance, roles in data.items():
+            instance = now if gone and instance == gone else instance
+            if instance and instance in instances:
+                out[instance] = roles
+        return out
+    aliases, redirects = moved(ws.aliases), moved(ws.redirects)
+    after = replace(ws, aliases=aliases, redirects={})
+    kept: dict[str, dict[str, dict[str, str]]] = {}
+    for instance, roles in redirects.items():
+        was = gone if now and instance == now else instance
+        for role, pairs in roles.items():
+            old, new = environment_names(before, was, role), environment_names(after, instance, role)
+            for name, to in pairs.items():
+                if to not in new and to in old and old.index(to) < len(new):
+                    to = new[old.index(to)]
+                if to in new:
+                    kept.setdefault(instance, {}).setdefault(role, {})[name] = to
+    return replace(after, redirects=kept)
+
+
+def check_addresses(workspaces: dict) -> None:
+    """Every alias and redirect is one environment's only, and a redirect
+    goes to a name of its environment."""
+    for ws in workspaces.values():
+        for name, instance, role in ws.extra_names():
+            taken = address_taken(name, workspaces, ws.name, instance, role)
+            if taken:
+                raise ConfigError(f"workspaces.{ws.name}: {name} is taken: {taken}")
+        for instance, roles in ws.redirects.items():
+            for role, pairs in roles.items():
+                names = environment_names(ws, instance, role)
+                for name, to in pairs.items():
+                    if to not in names:
+                        raise ConfigError(f"workspaces.{ws.name}: the redirect {name} goes to {to}, "
+                                          f"which is no address of {environment_label(instance, role)}")
 
 
 # a staging's instance (stagings.py): <its production's instance>-stg-<yyyymmdd>[-n]

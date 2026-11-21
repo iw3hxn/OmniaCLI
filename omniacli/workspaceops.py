@@ -272,7 +272,7 @@ def disk_problem(found: dict | None, workspaces: dict[str, Workspace], ws: Works
 def web_spec(ws: Workspace) -> str:
     """The names of the workspace for the root helper (it reads the ports)."""
     return json.dumps({"domain": ws.domain, "main": ws.main, "subdomains": ws.subdomains,
-                       "certificate": ws.certificate})
+                       "certificate": ws.certificate, "aliases": ws.aliases, "redirects": ws.redirects})
 
 
 async def publish(job: Job, ws: Workspace) -> dict:
@@ -285,10 +285,17 @@ async def publish(job: Job, ws: Workspace) -> dict:
     made = await _helper(job, "web", ws.name, ws.storage, web_spec(ws))
     for name in made.get("names", []):
         job.log(("https://" if made.get("https") else "http://") + name)
+    for name, to in (made.get("redirects") or {}).items():
+        job.log(f"{name} → {to}")
+    for note in made.get("redirects_moved") or []:
+        job.log(note)
     job.log(f"nginx: {made.get('nginx')}")
     if made.get("without_dns"):
         job.log("Not in DNS yet, so not in the certificate (point them to this machine, then publish again): "
                 + ", ".join(made["without_dns"]))
+    if made.get("elsewhere"):
+        job.log("In DNS, but pointing to another machine, so not in the certificate (point them here, "
+                "then publish again): " + ", ".join(made["elsewhere"]))
     if made.get("certificate_error"):
         job.log(f"The certificate is not there yet: {made['certificate_error']}")
     return made

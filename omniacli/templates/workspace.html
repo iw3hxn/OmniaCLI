@@ -107,7 +107,8 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
     <tr><th>{{ _("Instance") }}</th><th>{{ _("Copy") }}</th><th>{{ _("Addresses") }}</th></tr>
     {% for site in sites %}
     <tr><td>{{ site.instance }}</td><td>{{ tr(site.role) }}</td>
-      <td class="mono">{% for n in site.names %}<a href="https://{{ n }}/" target="_blank" rel="noopener">{{ n }} ↗</a>{% if not loop.last %}<br>{% endif %}{% endfor %}</td></tr>
+      <td class="mono">{% for n in site.names + site.aliases %}<a href="https://{{ n }}/" target="_blank" rel="noopener">{{ n }} ↗</a>{% if not loop.last %}<br>{% endif %}{% endfor %}
+        {% for r in site.redirects %}<br><span class="muted">{{ r }}</span>{% endfor %}</td></tr>
     {% endfor %}
   </table>
   </div>

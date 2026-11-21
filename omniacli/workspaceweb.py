@@ -7,7 +7,11 @@ take."""
 
 from __future__ import annotations
 
+import ipaddress
+import json
 import re
+import socket
+import subprocess
 
 # the challenges of Let's Encrypt (certbot --webroot), root's
 ACME_ROOT = "/var/lib/omniacli-acme"
@@ -41,30 +45,45 @@ def _headers(indent: str) -> list[str]:
 
 
 def conf_text(workspace: str, sites: list[dict], tls: tuple[str, str] | None, ipv6: bool,
-              omniacli: str | None = None) -> str:
-    """sites: [{instance, role, names, http_port, websocket_port}]. Port 80
-    answers the challenges and sends the rest to https; without a
+              omniacli: str | None = None, redirects: list[dict] = ()) -> str:
+    """sites: [{instance, role, names, aliases (optional), http_port,
+    websocket_port}]; an alias is one more name of its site (UX-008 §6.1).
+    Port 80 answers the challenges and sends the rest to https; without a
     certificate yet (tls None) it answers 503, and there is no 443.
+    redirects: [{names, to}], names that send to https://<to> with a 301 and
+    the same path, from http (straight there) and from https; a server
+    block of their own, answering the challenges of their names on port 80.
     omniacli: the address OmniaCLI listens on (127.0.0.1:8090): each name
     passes it LOGIN_PATH, the links of Log in as (loginas.py), and HOOKS_PATH,
     the webhooks of deploy on push (deployhooks.py)."""
-    names = [n for site in sites for n in site["names"]]
+    names = [n for site in sites for n in (*site["names"], *site.get("aliases", ()))]
     out = [f"# written by omniacli workspace-helper: the names of workspace {workspace}.",
            "# Changed here, it is written again at the workspace's next change.", ""]
     listen80 = ["    listen 80;"] + (["    listen [::]:80;"] if ipv6 else [])
-    out += ["server {", *listen80, f"    server_name {' '.join(names)};",
-            "    location /.well-known/acme-challenge/ {", f"        root {ACME_ROOT};", "    }",
+    challenges = ["    location /.well-known/acme-challenge/ {", f"        root {ACME_ROOT};", "    }"]
+    out += ["server {", *listen80, f"    server_name {' '.join(names)};", *challenges,
             "    location / {",
             "        return 301 https://$host$request_uri;" if tls else "        return 503;",
             "    }", "}"]
+    for redirect in redirects:
+        out += ["", f"# {' '.join(redirect['names'])} → {redirect['to']}", "server {", *listen80,
+                f"    server_name {' '.join(redirect['names'])};", *challenges,
+                "    location / {",
+                f"        return 301 https://{redirect['to']}$request_uri;" if tls else "        return 503;",
+                "    }", "}"]
     if tls is None:
         return "\n".join(out) + "\n"
     listen443 = ["    listen 443 ssl;"] + (["    listen [::]:443 ssl;"] if ipv6 else [])
+    for redirect in redirects:
+        out += ["", f"# {' '.join(redirect['names'])} → {redirect['to']}", "server {", *listen443,
+                f"    server_name {' '.join(redirect['names'])};",
+                f"    ssl_certificate {tls[0]};", f"    ssl_certificate_key {tls[1]};",
+                "    location / {", f"        return 301 https://{redirect['to']}$request_uri;", "    }", "}"]
     for site in sites:
         # Odoo threaded (workers = 0) answers its websocket on its http port
         ws_port = site["websocket_port"] or site["http_port"]
         out += ["", f"# {site['instance']} {site['role']}", "server {", *listen443,
-                f"    server_name {' '.join(site['names'])};",
+                f"    server_name {' '.join((*site['names'], *site.get('aliases', ())))};",
                 f"    ssl_certificate {tls[0]};", f"    ssl_certificate_key {tls[1]};",
                 f"    client_max_body_size {MAX_BODY};",
                 f"    proxy_read_timeout {TIMEOUT};", f"    proxy_send_timeout {TIMEOUT};",
@@ -122,20 +141,72 @@ def names_elsewhere(dump: str, own_file: str) -> dict[str, str]:
 def clashes(names: list[str], elsewhere: dict[str, str]) -> list[str]:
     """The names another site takes: the same name, or a wildcard of it
     (*.acme.it, .acme.it, www.*)."""
+    return [f"{name} ({other} in {path})" for name in names for other, path in takers(name, elsewhere)]
+
+
+def takers(name: str, elsewhere: dict[str, str]) -> list[tuple[str, str]]:
+    """(server name, file) of the other sites that answer on name."""
     found = []
-    for name in names:
-        for other, path in elsewhere.items():
-            if other.startswith("*."):
-                hit = name.endswith(other[1:])
-            elif other.startswith("."):
-                hit = name == other[1:] or name.endswith(other)
-            elif other.endswith(".*"):
-                hit = name.startswith(other[:-1])
-            else:
-                hit = name == other
-            if hit:
-                found.append(f"{name} ({other} in {path})")
+    for other, path in elsewhere.items():
+        if other.startswith("*."):
+            hit = name.endswith(other[1:])
+        elif other.startswith("."):
+            hit = name == other[1:] or name.endswith(other)
+        elif other.endswith(".*"):
+            hit = name.startswith(other[:-1])
+        else:
+            hit = name == other
+        if hit:
+            found.append((other, path))
     return found
+
+
+def addresses_of(host: str) -> list[str]:
+    """The addresses DNS gives host (A and AAAA), sorted; none: no record."""
+    try:
+        found = socket.getaddrinfo(host, 80, proto=socket.IPPROTO_TCP)
+    except (OSError, UnicodeError):
+        return []
+    return sorted({info[4][0] for info in found})
+
+
+def machine_addresses(ip: str | None) -> set[str]:
+    """The public addresses of this machine: those of its interfaces (ip:
+    the path of ip, its addr) and the IPv4 it goes out with (a UDP connect
+    sends nothing); none behind NAT, where the public address is the router's."""
+    found = set()
+    try:
+        done = subprocess.run([ip, "-j", "addr", "show"], capture_output=True, text=True, timeout=5) if ip else None
+        for link in json.loads(done.stdout or "[]") if done else []:
+            for info in link.get("addr_info") or []:
+                found.add(str(info.get("local") or ""))
+    except (OSError, ValueError, AttributeError, subprocess.SubprocessError):
+        pass
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("192.0.2.1", 9))
+            found.add(sock.getsockname()[0])
+    except OSError:
+        pass
+    public = set()
+    for address in found:
+        try:
+            if ipaddress.ip_address(address).is_global:
+                public.add(address)
+        except ValueError:
+            continue
+    return public
+
+
+def dns_state(found: list[str], here: set[str]) -> str:
+    """none: no record; here: one of its addresses is this machine's;
+    elsewhere: none is (this machine's public addresses known); unknown: it
+    has a record, this machine's public address is not known (behind NAT)."""
+    if not found:
+        return "none"
+    if set(found) & here:
+        return "here"
+    return "elsewhere" if here else "unknown"
 
 
 def workers(conf: str) -> int:

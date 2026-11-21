@@ -84,6 +84,14 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
 .sd-choice input { margin-top: 3px; }
 .sd select { width: 100%; }
 .sd-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+/* Addresses… of an environment (UX-008 §6.1) */
+.addr-names { margin-top: 2px; }
+.addr-list { list-style: none; padding: 0; margin: 0 0 6px; }
+.addr-list li { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 6px; }
+.addr-list input, .addr-list select { flex: 1 1 180px; min-width: 0; }
+.addr-list input.bad { border-color: var(--err); }
+.addr-state { flex-basis: 100%; font-size: 13px; }
+.addr-state.bad { color: var(--err); }
 </style>
 {% macro shell_paths_box(paths) %}
   {# where the instance lives and the commands to work on it from a shell of the machine (ssh) #}
@@ -99,6 +107,14 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     </dl>
   </details>
 {% endmacro %}
+{# the other names of a row of Environments, and its ⚙ (UX-008 §6.1): the dialog where OmniaCLI writes the
+   site (an instance of a workspace); elsewhere, for its admins, the ⚙ off with the reason; no ⚙ for the others #}
+{% macro other_names(key) %}{% set a = (addresses or {}).get(key) %}{% if a and a.names %}<div class="mono small muted addr-names">{{ a.names | join(" · ") }}</div>{% endif %}{% endmacro %}
+{% macro addresses_button(key, label) %}{% set a = (addresses or {}).get(key) %}
+{%- if a and a.can %} <button type="button" class="small addr-open" data-env="{{ key }}" data-label="{{ label }}"
+  title="{{ _('The names this environment answers on and the redirects to it') }}">⚙ {{ _("Addresses…") }}</button>
+{%- elif a and is_admin_here and a.reason %} <span title="{{ tr(a.reason) }}"><button type="button" class="small" disabled title="{{ tr(a.reason) }}">⚙ {{ _("Addresses…") }}</button></span>
+{%- endif %}{% endmacro %}
 {% set inst = instances[0] %}
 {# its state: running, stopped or unknown #}
 {% if inst.restart.type == "process" %}
@@ -347,20 +363,20 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     </div>
     <div class="scroll"><table class="copies">
       <tr><th>{{ _("Address") }}</th><th>{{ _("Type") }}</th><th class="hide-sm">{{ _("Copied on") }}</th><th>{{ _("State") }}</th><th class="hide-sm"></th></tr>
-      <tr><td><strong>{{ title }}</strong></td><td><span class="badge ok">{{ _("Production") }}</span></td><td class="when hide-sm">—</td>
+      <tr><td><strong>{{ title }}</strong>{{ other_names(server.name ~ "/production") }}</td><td><span class="badge ok">{{ _("Production") }}</span></td><td class="when hide-sm">—</td>
           <td>{{ state_word("busy" if is_busy else st) }}</td>
-          <td class="row-open hide-sm">{% if opens %}<a class="button small" href="{{ inst.web_url }}" target="_blank" rel="noopener" title="{{ _('Opens {url} in a new tab', url=inst.web_url) }}">{{ _("Open") }} ↗</a>{% endif %}</td></tr>
+          <td class="row-open hide-sm">{% if opens %}<a class="button small" href="{{ inst.web_url }}" target="_blank" rel="noopener" title="{{ _('Opens {url} in a new tab', url=inst.web_url) }}">{{ _("Open") }} ↗</a>{% endif %}{{ addresses_button(server.name ~ "/production", title) }}</td></tr>
       {% if server.test %}
-      <tr><td>↳ <a href="{{ prefix }}/servers/{{ server.name }}?view=test"><strong>{{ host_of(server.test.web_url, "Test") }}</strong></a></td>
+      <tr><td>↳ <a href="{{ prefix }}/servers/{{ server.name }}?view=test"><strong>{{ host_of(server.test.web_url, "Test") }}</strong></a>{{ other_names(server.name ~ "/test") }}</td>
           <td><span class="badge test-badge">Test</span></td><td class="when hide-sm">—</td>
           <td>{{ state_word("busy" if busy[server.test.key] else test_state) }}</td>
-          <td class="row-open hide-sm">{% if host_of(server.test.web_url, "") %}<a class="button small" href="{{ server.test.web_url }}" target="_blank" rel="noopener" title="{{ _('Opens {url} in a new tab', url=server.test.web_url) }}">{{ _("Open") }} ↗</a>{% endif %}</td></tr>
+          <td class="row-open hide-sm">{% if host_of(server.test.web_url, "") %}<a class="button small" href="{{ server.test.web_url }}" target="_blank" rel="noopener" title="{{ _('Opens {url} in a new tab', url=server.test.web_url) }}">{{ _("Open") }} ↗</a>{% endif %}{{ addresses_button(server.name ~ "/test", host_of(server.test.web_url, "Test")) }}</td></tr>
       {% endif %}
       {% for s in stagings.rows if stagings %}
-      <tr><td>↳ <a href="{{ prefix }}/servers/{{ s.server }}"><strong>{{ host_of(s.url, s.server) }}</strong></a></td>
+      <tr><td>↳ <a href="{{ prefix }}/servers/{{ s.server }}"><strong>{{ host_of(s.url, s.server) }}</strong></a>{{ other_names(s.server ~ "/production") }}</td>
           <td><span class="badge info">{{ _("Staging") }}</span></td><td class="when hide-sm">{{ when(s.created) }}</td>
           <td>{{ state_word("busy" if s.busy else s.state) }}</td>
-          <td class="row-open hide-sm">{% if host_of(s.url, "") %}<a class="button small" href="{{ s.url }}" target="_blank" rel="noopener" title="{{ _('Opens {url} in a new tab', url=s.url) }}">{{ _("Open") }} ↗</a>{% endif %}</td></tr>
+          <td class="row-open hide-sm">{% if host_of(s.url, "") %}<a class="button small" href="{{ s.url }}" target="_blank" rel="noopener" title="{{ _('Opens {url} in a new tab', url=s.url) }}">{{ _("Open") }} ↗</a>{% endif %}{{ addresses_button(s.server ~ "/production", host_of(s.url, s.server)) }}</td></tr>
       {% endfor %}
     </table></div>
     {% if stagings and stagings.can and not stagings.rows %}<p class="muted" style="margin: 8px 0 0">{{ _("No staging: a staging is a dated copy of production, to try an update without touching it.") }}</p>{% endif %}
@@ -390,6 +406,33 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
         <button type="button" id="sd-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
         <button type="submit" class="primary" id="sd-create" disabled
                 title="{{ _('Makes a backup of production, creates the staging from the same template and loads the backup into it, neutralized. It is a job.') }}">{{ _("Create the staging") }}</button>
+      </div>
+    </form>
+  </dialog>
+  {% endif %}
+  {% if addresses and addresses.values() | selectattr("can") | list %}
+  {# Addresses… of an environment (UX-008 §6.1): read when opened (GET …/addresses), nothing posted before Save #}
+  <dialog id="addr-dialog" class="sd" aria-labelledby="addr-title">
+    <form id="addr-form" novalidate>
+      <h2 id="addr-title">{{ _("Addresses") }} <span class="muted" id="addr-env"></span></h2>
+      <div class="sd-field"><div class="sd-label">{{ _("Main address") }}</div>
+        <div><a id="addr-main" class="mono" target="_blank" rel="noopener"></a></div>
+        <div class="sd-help muted">{{ _("It is the workspace's rule") }} (<a id="addr-ws" href="#">{{ _("Names on the web") }}</a>).</div></div>
+      <div class="sd-field"><div class="sd-label">{{ _("Other addresses") }}</div>
+        <p class="muted sd-help" id="addr-empty" hidden>{{ _("Only the main address. Another name (www.customer.com) or a redirect is added here below.") }}</p>
+        <ul class="addr-list" id="addr-aliases"></ul>
+        <button type="button" class="small" id="addr-add-alias"
+                title="{{ _('Another name that opens this environment: the DNS of the name must point to this machine. It takes effect with Save and publish.') }}">+ {{ _("Add an address") }}</button></div>
+      <div class="sd-field"><div class="sd-label">{{ _("Redirects") }}</div>
+        <ul class="addr-list" id="addr-redirects"></ul>
+        <button type="button" class="small" id="addr-add-redirect"
+                title="{{ _('A name that takes the visitors to another address of this environment, with the same path. It takes effect with Save and publish.') }}">+ {{ _("Add a redirect") }}</button></div>
+      <p class="sd-help">{{ _("Always on HTTPS: whoever opens http:// is taken to https://.") }}</p>
+      <p id="addr-error" class="error" role="alert"></p>
+      <div class="sd-foot">
+        <button type="button" id="addr-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
+        <button type="submit" class="primary" id="addr-save" disabled
+                title="{{ _('Saves the names, writes again the nginx site of the workspace and asks for the certificate for the new names too. Odoo does not restart. It is a job. A name without a DNS record stays out of the certificate. Disabled until something is changed.') }}">{{ _("Save and publish") }}</button>
       </div>
     </form>
   </dialog>
@@ -1954,6 +1997,155 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
       location.href = `{{ prefix }}/jobs/${data.job}`;
     });
   }
+  // Addresses… of an environment (UX-008 §6.1): its own scope, nothing posted before Save and publish
+  (function addressesDialog() {
+    const dialog = document.getElementById("addr-dialog");
+    if (!dialog) return;
+    const A = {name: {{ _("Name") | tojson }}, to: {{ _("goes to") | tojson }},
+               remove: {{ _("Takes this name away: it takes effect with Save and publish") | tojson }},
+               pick: {{ _("The address the visitors of this name are taken to") | tojson }},
+               here: {{ _("✓ points here") | tojson }},
+               elsewhere: {{ _("✗ points to {found}: make an A record towards {here}. It stays out of the certificate until the DNS points here.") | tojson }},
+               elsewhereNoHere: {{ _("✗ points to {found}, not here. It stays out of the certificate until the DNS points here.") | tojson }},
+               none: {{ _("No DNS record: make an A record towards {here}. It stays out of the certificate until the DNS points here.") | tojson }},
+               noneNoHere: {{ _("No DNS record yet: it stays out of the certificate until the DNS points here.") | tojson }},
+               unknown: {{ _("points to {found}: the public address of this machine is not known here, the job checks it.") | tojson }},
+               taken: {{ _("already used: {why}") | tojson }}, twice: {{ _("twice in this dialog") | tojson }},
+               own: {{ _("it is a name of this environment already") | tojson }},
+               checking: {{ _("Checking…") | tojson }}, unread: {{ _("The addresses cannot be read now: try again in a moment.") | tojson }},
+               refused: {{ _("Refused") | tojson }}, nginx: {{ _("The other sites of this machine were not read ({error}): the job checks them.") | tojson }}};
+    const api = {{ (prefix ~ "/api/servers/") | tojson }};
+    const aliases = document.getElementById("addr-aliases"), redirects = document.getElementById("addr-redirects");
+    const save = document.getElementById("addr-save"), error = document.getElementById("addr-error");
+    let env = "", data = null, start = "", checked = {}, timer = null;
+    const names = (list) => [...list.querySelectorAll("input.addr-name")].map((i) => i.value.trim().toLowerCase().replace(/\.$/, "")).filter(Boolean);
+    function state() {
+      return JSON.stringify({aliases: names(aliases),
+                             redirects: [...redirects.children].map((li) => ({from: li.querySelector("input").value.trim().toLowerCase().replace(/\.$/, ""),
+                                                                               to: li.querySelector("select").value})).filter((r) => r.from)});
+    }
+    function removeButton(li) {
+      const b = Object.assign(document.createElement("button"), {type: "button", className: "small", textContent: "✕", title: A.remove});
+      b.setAttribute("aria-label", A.remove);
+      b.addEventListener("click", () => { li.remove(); refresh(); });
+      return b;
+    }
+    function nameInput(value) {
+      const input = Object.assign(document.createElement("input"), {type: "text", className: "mono addr-name", value: value || "",
+                                                                    placeholder: "www.customer.com", spellcheck: false});
+      input.setAttribute("aria-label", A.name); input.autocapitalize = "off";
+      input.addEventListener("input", () => { refresh(); clearTimeout(timer); timer = setTimeout(check, 600); });
+      input.addEventListener("change", check);
+      return input;
+    }
+    const line = () => Object.assign(document.createElement("div"), {className: "addr-state muted"});
+    function aliasRow(value) {
+      const li = document.createElement("li");
+      li.append(nameInput(value), removeButton(li), line());
+      aliases.append(li);
+      return li;
+    }
+    function redirectRow(from, to) {
+      const li = document.createElement("li");
+      const select = document.createElement("select");
+      select.title = A.pick; select.dataset.want = to || "";
+      select.addEventListener("change", () => { select.dataset.want = select.value; refresh(); });
+      li.append(nameInput(from), Object.assign(document.createElement("span"), {textContent: "→ " + A.to}), select, removeButton(li), line());
+      redirects.append(li);
+      return li;
+    }
+    // the targets of a redirect: the environment's names, then its other names as typed now
+    function targets() {
+      const all = [...(data.workspace_names || []), ...names(aliases)];
+      for (const select of redirects.querySelectorAll("select")) {
+        const want = select.dataset.want || all[0] || "";
+        select.replaceChildren(...[...new Set(all)].map((n) => Object.assign(document.createElement("option"), {value: n, textContent: n, selected: n === want})));
+      }
+    }
+    // each name's line: what the last check said, and twice in the dialog
+    function draw() {
+      const seen = {};
+      for (const input of dialog.querySelectorAll("input.addr-name")) {
+        const name = input.value.trim().toLowerCase().replace(/\.$/, "");
+        if (name) seen[name] = (seen[name] || 0) + 1;
+      }
+      let bad = false;
+      for (const input of dialog.querySelectorAll("input.addr-name")) {
+        const name = input.value.trim().toLowerCase().replace(/\.$/, ""), out = input.parentElement.querySelector(".addr-state");
+        const row = checked[name];
+        let text = "", wrong = false;
+        if (!name) text = "";
+        else if (seen[name] > 1 || (data.workspace_names || []).includes(name)) { text = seen[name] > 1 ? A.twice : A.own; wrong = true; }
+        else if (!row) text = A.checking;
+        else if (row.error) { text = row.error; wrong = true; }
+        else if (row.taken) { text = A.taken.replace("{why}", row.taken); wrong = true; }
+        else {
+          const here = (checked.__here || []).join(", "), found = (row.addresses || []).join(", ");
+          text = row.dns === "here" ? A.here
+            : row.dns === "elsewhere" ? (here ? A.elsewhere : A.elsewhereNoHere).replace("{found}", found).replace("{here}", here)
+            : row.dns === "unknown" ? A.unknown.replace("{found}", found)
+            : (here ? A.none : A.noneNoHere).replace("{here}", here);
+        }
+        input.classList.toggle("bad", wrong);
+        out.classList.toggle("bad", wrong);
+        out.textContent = text;
+        bad = bad || wrong || (name && !row);
+      }
+      return bad;
+    }
+    function refresh() {
+      targets();
+      document.getElementById("addr-empty").hidden = Boolean(aliases.children.length || redirects.children.length);
+      const bad = draw();
+      save.disabled = !data || bad || state() === start;
+    }
+    async function check() {
+      const wanted = [...new Set([...names(aliases), ...names(redirects)])].filter((n) => !(n in checked));
+      if (!wanted.length) { refresh(); return; }
+      const resp = await fetch(`${api}${env}/addresses/check`, {method: "POST", headers: {Accept: "application/json", "Content-Type": "application/json"},
+                                                                 body: JSON.stringify({names: wanted})}).catch(() => null);
+      const found = resp ? await resp.json().catch(() => ({})) : {};
+      if (!resp || !resp.ok) { error.textContent = found.error || found.detail || A.unread; return; }
+      checked.__here = found.here || [];
+      error.textContent = found.nginx_error ? A.nginx.replace("{error}", found.nginx_error) : "";
+      wanted.forEach((n, i) => { if (found.rows && found.rows[i]) checked[n] = found.rows[i]; });
+      refresh();
+    }
+    async function open(button) {
+      env = button.dataset.env; data = null; checked = {}; error.textContent = "";
+      aliases.replaceChildren(); redirects.replaceChildren(); save.disabled = true;
+      document.getElementById("addr-env").textContent = "· " + button.dataset.label;
+      dialog.showModal();
+      const resp = await fetch(`${api}${env}/addresses`, {headers: {Accept: "application/json"}}).catch(() => null);
+      const got = resp ? await resp.json().catch(() => ({})) : {};
+      if (!resp || !resp.ok) { error.textContent = got.error || got.detail || A.unread; return; }
+      data = got;
+      const main = document.getElementById("addr-main");
+      main.textContent = data.main + " ↗"; main.href = `https://${data.main}/`;
+      main.title = {{ _("Opens {url} in a new tab") | tojson }}.replace("{url}", `https://${data.main}/`);
+      document.getElementById("addr-ws").href = `{{ prefix }}/workspaces/${encodeURIComponent(data.workspace)}#names`;
+      (data.aliases || []).forEach((n) => aliasRow(n));
+      (data.redirects || []).forEach((r) => redirectRow(r.from, r.to));
+      targets();
+      start = state();
+      refresh();
+      check();
+    }
+    document.querySelectorAll(".addr-open").forEach((b) => b.addEventListener("click", () => open(b)));
+    document.getElementById("addr-add-alias").addEventListener("click", () => { aliasRow("").querySelector("input").focus(); refresh(); });
+    document.getElementById("addr-add-redirect").addEventListener("click", () => { redirectRow("", "").querySelector("input").focus(); refresh(); });
+    document.getElementById("addr-cancel").addEventListener("click", () => dialog.close());
+    document.getElementById("addr-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (save.disabled) return;
+      save.disabled = true; error.textContent = "";
+      const resp = await fetch(`${api}${env}/addresses/save`, {method: "POST", headers: {Accept: "application/json", "Content-Type": "application/json"},
+                                                                body: state()}).catch(() => null);
+      const got = resp ? await resp.json().catch(() => ({})) : {};
+      if (!resp || !resp.ok) { error.textContent = got.error || got.detail || A.refused; save.disabled = false; return; }
+      if (got.job) location.href = `{{ prefix }}/jobs/${got.job}`; else dialog.close();
+    });
+  })();
   const deleteInstance = document.getElementById("instance-delete");
   {% if stagings and not stagings.parent and stagings.workspace %}
   if (deleteInstance) deleteInstance.addEventListener("click", () => {
