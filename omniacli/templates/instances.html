@@ -1,0 +1,220 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{% extends "base.html" %}
+{% block title %}{{ _("Instances") }} · OmniaCLI{% endblock %}
+{% block content %}
+{# The instances of every machine (docs/ux/UX-008 §4.1): this machine's and
+   each link's, asked all at once (GET /api/instances, ?link=<name>): a machine
+   that does not answer is a row of its own and holds no other back. Each
+   production at its address, its stagings right under it; its test is no row.
+   The Backup column says whether each production backs up by itself; the
+   count of those that do not is a filter. No buttons in the rows. #}
+<style>
+.inst-counts { color: var(--muted); }
+.inst-counts a[aria-pressed="true"] { font-weight: 650; }
+.inst-search { margin-bottom: 12px; } .inst-search input { width: min(420px, 100%); }
+.inst-rows td { vertical-align: middle; }
+.inst-rows .staging-mark { color: var(--muted); margin-right: 4px; }
+.inst-rows .badge { margin-left: 6px; }
+.inst-rows .row-name { margin-left: 6px; font-size: 13px; }
+.inst-backup.warn, .inst-backup.warn a { color: var(--warn); }
+.inst-backup.error, .inst-backup.error a { color: var(--err); }
+.inst-machine td { color: var(--muted); }
+.inst-machine.down td { color: var(--err); }
+.inst-pager { display: flex; gap: 8px; align-items: center; justify-content: flex-end; margin-top: 12px; }
+@media (max-width: 700px) { .inst-rows .hide-sm { display: none; } }
+</style>
+<div class="page-head">
+  <div><h1>{{ _("Instances") }}</h1>
+    <p class="inst-counts" id="inst-counts" role="status">{{ _("Loading…") }}</p></div>
+  <div class="actions">
+    {% if quick_instance %}<button type="button" class="primary" data-new-instance
+      title="{{ _('Makes a new Odoo instance on the server you choose, from its version only: a workspace of its own, a production and a test; with a domain, the production answers there and the test on test.<domain>. It is a job.') }}">+ {{ _("New instance") }}</button>{% endif %}
+  </div>
+</div>
+<section class="panel">
+  <div class="inst-search" id="inst-search-box" hidden>
+    <input type="search" id="inst-search" placeholder="{{ _('Search instance, address, server, workspace…') }}" aria-label="{{ _('Search instance, address, server, workspace…') }}">
+  </div>
+  <div class="scroll">
+  <table class="inst-rows">
+    <thead><tr><th>{{ _("Instance") }}</th>{% if links %}<th>{{ _("Server") }}</th>{% endif %}<th>{{ _("State") }}</th><th>{{ _("Backup") }}</th></tr></thead>
+    <tbody id="inst-rows"></tbody>
+  </table>
+  </div>
+  <p class="muted" id="inst-empty" hidden>{{ _("No instance on any machine.") }}{% if quick_instance %} {{ _("+ New instance makes one from the Odoo version only.") }}{% endif %}</p>
+  <div class="inst-pager" id="inst-pager" hidden>
+    <button type="button" class="small" id="inst-prev" title="{{ _('Shows the 50 rows before these') }}">‹ {{ _("Previous") }}</button>
+    <span class="muted" id="inst-page"></span>
+    <button type="button" class="small" id="inst-next" title="{{ _('Shows the 50 rows after these') }}">{{ _("Next") }} ›</button>
+  </div>
+</section>
+{% if quick_instance %}{% include "_new_instance_dialog.html" %}{% endif %}
+<script>
+(function () {
+  const PAGE = 50, SEARCH_FROM = 8, SERVER_COLUMN = {{ (links | length > 0) | tojson }};
+  const MACHINES = [{name: {{ here_name | tojson }}, link: ""}, ...{{ links | tojson }}.map((name) => ({name, link: name}))];
+  const T = {
+    instance: {{ _("{n} instance") | tojson }}, instances: {{ _("{n} instances") | tojson }},
+    staging: {{ _("{n} staging") | tojson }}, stagings: {{ _("{n} stagings") | tojson }},
+    unscheduled: {{ _("{n} without scheduled backups") | tojson }},
+    unscheduledTitle: {{ _("Shows only the productions with no automatic backups: a broken disk would lose them") | tojson }},
+    allScheduled: {{ _("every production backs up by itself") | tojson }},
+    showAll: {{ _("Show every instance") | tojson }}, showAllTitle: {{ _("Shows every instance again") | tojson }},
+    waiting: {{ _("{name}: asking…") | tojson }},
+    down: {{ _("{name} does not answer: {why}. Its instances are not here.") | tojson }},
+    open: {{ _("Opens its page: its environments, backups, log") | tojson }},
+    stagingOf: {{ _("Staging of {name}") | tojson }}, stagingWord: {{ _("Staging") | tojson }},
+    running: {{ _("Running") | tojson }}, stopped: {{ _("Stopped") | tojson }}, unknown: {{ _("State unknown") | tojson }},
+    busy: {{ _("Job running") | tojson }},
+    last: {{ _("last {when}") | tojson }}, lastFailed: {{ _("✗ last one did not succeed {when}") | tojson }},
+    lastFailedTitle: {{ _("Opens the job of the last automatic backup: {why}") | tojson }},
+    none: {{ _("⚠ No scheduled backup") | tojson }},
+    noneTitle: {{ _("Opens the Backups tab of the instance, where the automatic backups are switched on") | tojson }},
+    noneYet: {{ _("scheduled, none made yet") | tojson }},
+    stagingNone: {{ _("The stagings are copies: they have no scheduled backups") | tojson }},
+    notRead: {{ _("Not read: the OmniaCLI of that machine is older") | tojson }},
+    page: {{ _("{from}–{to} of {all}") | tojson }},
+  };
+  const body = document.getElementById("inst-rows"), counts = document.getElementById("inst-counts");
+  const search = document.getElementById("inst-search");
+  const found = {};
+  let onlyUnscheduled = location.hash === "#unscheduled", page = 0;
+  const el = (tag, attrs, ...children) => {
+    const node = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs || {})) if (v !== undefined && v !== null && v !== false) node.setAttribute(k, v);
+    node.append(...children.filter((c) => c !== null && c !== undefined));
+    return node;
+  };
+  const host = (url, name) => {
+    const text = String(url || "").replace(/^[a-z]+:\/\//, "").replace(/\/.*$/, "");
+    return text && !/^(localhost|127\.0\.0\.1)(:|$)/.test(text) ? text : name;
+  };
+
+  // the rows of one machine: its productions by address, each one's stagings right under it, the newest first
+  function machineRows(machine, data) {
+    const base = machine.link ? `/links/${encodeURIComponent(machine.link)}` : "";
+    const rows = (data.servers || []).filter((s) => s.instances && (s.instances.production || s.instances.test)).map((s) => {
+      const inst = s.instances.production || s.instances.test;
+      const label = host(inst.url, s.name);
+      return {machine, base, server: s, inst, label, staging: !!s.parent, parent: s.parent || "",
+              text: [label, s.name, machine.name, s.version, s.workspace, inst.database, s.parent ? "staging" : ""].join(" ").toLowerCase()};
+    });
+    const names = new Set(rows.map((r) => r.server.name));
+    const tops = rows.filter((r) => !r.parent || !names.has(r.parent)).sort((a, b) => a.label.localeCompare(b.label));
+    const out = [];
+    for (const top of tops) {
+      out.push(top);
+      out.push(...rows.filter((r) => r.parent === top.server.name && r !== top)
+        .sort((a, b) => String(b.server.created).localeCompare(String(a.server.created))));
+    }
+    return out;
+  }
+  const unscheduled = (row) => !row.staging && row.server.backup_schedule && !row.server.backup_schedule.scheduled;
+
+  function stateCell(row) {
+    if (row.inst.busy) return el("span", {class: "state-dot busy"}, T.busy);
+    const st = row.inst.state;
+    return el("span", {class: `state-dot ${st || ""}`}, {running: T.running, stopped: T.stopped}[st] || T.unknown);
+  }
+  function backupCell(row) {
+    const bs = row.server.backup_schedule, td = el("td", {class: "inst-backup"});
+    if (row.staging) { td.append(el("span", {class: "muted", title: T.stagingNone}, "—")); return td; }
+    if (!bs) { td.append(el("span", {class: "muted", title: T.notRead}, "—")); return td; }
+    if (!bs.scheduled) {
+      td.classList.add("warn");
+      td.append(el("a", {href: `${row.base}/servers/${encodeURIComponent(row.server.name)}#backups`, title: T.noneTitle}, T.none));
+    } else if (bs.last && !bs.last.ok) {
+      td.classList.add("error");
+      const text = T.lastFailed.replace("{when}", whenText(bs.last.time));
+      const why = T.lastFailedTitle.replace("{why}", bs.last.message || bs.last.status);
+      td.append(bs.last.job ? el("a", {href: `${row.base}/jobs/${encodeURIComponent(bs.last.job)}`, title: why}, text)
+                            : el("span", {title: bs.last.message || bs.last.status}, text));
+    } else if (bs.last) {
+      td.append(T.last.replace("{when}", whenText(bs.last.time)));
+    } else {
+      td.append(el("span", {class: "muted"}, T.noneYet));
+    }
+    return td;
+  }
+  function instanceRow(row) {
+    const page = `${row.base}/servers/${encodeURIComponent(row.server.name)}`;
+    const name = el("td", {},
+      row.staging ? el("span", {class: "staging-mark", "aria-hidden": "true"}, "↳") : null,
+      el("a", {href: page, title: T.open}, el("strong", {}, row.label)),
+      row.staging ? el("span", {class: "badge info", title: T.stagingOf.replace("{name}", row.parent)}, T.stagingWord) : null,
+      !SERVER_COLUMN && row.server.version ? el("span", {class: "badge"}, row.server.version) : null,
+      row.label !== row.server.name ? el("span", {class: "muted row-name hide-sm"}, row.server.name) : null);
+    const cells = [name];
+    if (SERVER_COLUMN) cells.push(el("td", {}, row.machine.name, row.server.version ? el("span", {class: "badge"}, row.server.version) : null));
+    cells.push(el("td", {}, stateCell(row)), backupCell(row));
+    return el("tr", {"data-server": row.server.name, "data-machine": row.machine.name,
+                     class: row.staging ? "staging-row" : null, "data-unscheduled": unscheduled(row) ? "1" : null}, ...cells);
+  }
+  function machineRow(machine, text, down) {
+    return el("tr", {class: "inst-machine" + (down ? " down" : ""), "data-machine-row": machine.name},
+              el("td", {colspan: SERVER_COLUMN ? 4 : 3}, text));
+  }
+
+  function draw() {
+    const words = (search.value || "").toLowerCase().split(/\s+/).filter(Boolean);
+    let all = [], extra = [];
+    for (const m of MACHINES) {
+      const data = found[m.name];
+      if (!data) { extra.push(machineRow(m, T.waiting.replace("{name}", m.name))); continue; }
+      if (data.error) { extra.push(machineRow(m, T.down.replace("{name}", m.name).replace("{why}", data.error), true)); continue; }
+      all = all.concat(machineRows(m, data));
+    }
+    // the counts: of every row read, the filter's the same as the rows it leaves
+    const tops = all.filter((r) => !r.staging), missing = all.filter(unscheduled);
+    counts.replaceChildren(
+      (tops.length === 1 ? T.instance : T.instances).replace("{n}", tops.length), " · ",
+      (all.length - tops.length === 1 ? T.staging : T.stagings).replace("{n}", all.length - tops.length), " · ");
+    if (missing.length) {
+      const filter = el("a", {href: "#unscheduled", title: T.unscheduledTitle, "aria-pressed": String(onlyUnscheduled), id: "inst-filter"},
+                        T.unscheduled.replace("{n}", missing.length));
+      filter.addEventListener("click", (event) => { event.preventDefault(); onlyUnscheduled = !onlyUnscheduled; page = 0;
+        history.replaceState(null, "", onlyUnscheduled ? "#unscheduled" : location.pathname + location.search); draw(); });
+      counts.append(filter);
+      if (onlyUnscheduled) {
+        const back = el("a", {href: location.pathname, title: T.showAllTitle}, T.showAll);
+        back.addEventListener("click", (event) => { event.preventDefault(); onlyUnscheduled = false; page = 0;
+          history.replaceState(null, "", location.pathname + location.search); draw(); });
+        counts.append(" · ", back);
+      }
+    } else {
+      onlyUnscheduled = false;
+      counts.append(T.allScheduled);
+    }
+    let shown = onlyUnscheduled ? missing : all;
+    if (words.length) shown = shown.filter((r) => words.every((w) => r.text.includes(w)));
+    document.getElementById("inst-search-box").hidden = all.length <= SEARCH_FROM;
+    const pages = Math.max(1, Math.ceil(shown.length / PAGE));
+    page = Math.min(page, pages - 1);
+    const slice = shown.slice(page * PAGE, page * PAGE + PAGE);
+    body.replaceChildren(...slice.map(instanceRow), ...extra);
+    document.getElementById("inst-empty").hidden = !!(all.length || extra.length) || words.length > 0;
+    const pager = document.getElementById("inst-pager");
+    pager.hidden = shown.length <= PAGE;
+    document.getElementById("inst-page").textContent = T.page.replace("{from}", shown.length ? page * PAGE + 1 : 0)
+      .replace("{to}", page * PAGE + slice.length).replace("{all}", shown.length);
+    document.getElementById("inst-prev").disabled = page === 0;
+    document.getElementById("inst-next").disabled = page >= pages - 1;
+  }
+  search.addEventListener("input", () => { page = 0; draw(); });
+  document.getElementById("inst-prev").addEventListener("click", () => { page -= 1; draw(); });
+  document.getElementById("inst-next").addEventListener("click", () => { page += 1; draw(); });
+  draw();
+  // every machine at once: each row group is drawn when its machine answers
+  for (const m of MACHINES) {
+    const url = "/api/instances" + (m.link ? `?link=${encodeURIComponent(m.link)}` : "");
+    fetch(url, {headers: {Accept: "application/json"}})
+      .then(async (resp) => {
+        const data = await resp.json().catch(() => ({}));
+        found[m.name] = resp.ok ? data : {error: data.error || data.detail || String(resp.status)};
+      })
+      .catch((e) => { found[m.name] = {error: String(e && e.message || e)}; })
+      .then(draw);
+  }
+})();
+</script>
+{% endblock %}

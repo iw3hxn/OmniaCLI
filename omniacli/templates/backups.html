@@ -1,0 +1,274 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{% extends "base.html" %}
+{% block title %}{{ _("Backups") }} · OmniaCLI{% endblock %}
+{% block content %}
+{# The backups of every machine (docs/ux/UX-008 §4.2): this machine's and
+   each link's, asked all at once (GET /api/backups, ?link=<name>), the newest
+   first, 50 a page. An automatic run that did not succeed is a row of its own
+   with its job. The page only reads: no primary; each row's menu downloads,
+   makes a staging of the production from the file (its dialog), deletes. #}
+<style>
+.bk-counts { color: var(--muted); }
+.bk-counts a[aria-pressed="true"] { font-weight: 650; }
+.bk-search { margin-bottom: 12px; } .bk-search input { width: min(420px, 100%); }
+.bk-rows td { vertical-align: middle; }
+.bk-rows .badge { margin-left: 6px; }
+.bk-rows .num { text-align: right; white-space: nowrap; }
+.bk-rows .kind { color: var(--muted); font-size: 13px; }
+.bk-ok { color: var(--ok); } .bk-bad, .bk-bad a { color: var(--err); }
+.bk-machine td { color: var(--muted); } .bk-machine.down td { color: var(--err); }
+.bk-pager { display: flex; gap: 8px; align-items: center; justify-content: flex-end; margin-top: 12px; }
+.row-menu { position: relative; display: inline-block; }
+.row-menu > summary { list-style: none; cursor: pointer; }
+.row-menu > summary::-webkit-details-marker { display: none; }
+.row-menu-items { position: absolute; right: 0; top: calc(100% + 4px); z-index: 15; display: flex; flex-direction: column; gap: 4px;
+  width: max-content; min-width: 230px; padding: 8px; background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--r-lg); box-shadow: var(--shadow-lg); }
+.row-menu-items button, .row-menu-items .button { width: 100%; justify-content: flex-start; box-shadow: none; text-align: left; }
+#fb-dialog { width: min(560px, calc(100vw - 32px)); }
+#fb-dialog .actions { justify-content: flex-end; }
+</style>
+<div class="page-head">
+  <div><h1>{{ _("Backups") }}</h1>
+    <p class="bk-counts" id="bk-counts" role="status">{{ _("Loading…") }}</p></div>
+</div>
+<section class="panel">
+  <div class="bk-search" id="bk-search-box" hidden>
+    <input type="search" id="bk-search" placeholder="{{ _('Search instance, server, file…') }}" aria-label="{{ _('Search instance, server, file…') }}">
+  </div>
+  <div class="scroll">
+  <table class="bk-rows">
+    <thead><tr><th>{{ _("Instance") }}</th>{% if links %}<th>{{ _("Server") }}</th>{% endif %}<th>{{ _("Made on") }}</th>
+      <th class="num">{{ _("Size") }}</th><th>{{ _("Outcome") }}</th><th></th></tr></thead>
+    <tbody id="bk-rows"></tbody>
+  </table>
+  </div>
+  <p class="muted" id="bk-empty" hidden>{{ _("No backup on any machine. The automatic backups are switched on in the Backups tab of each instance.") }}</p>
+  <div class="bk-pager" id="bk-pager" hidden>
+    <button type="button" class="small" id="bk-prev" title="{{ _('Shows the 50 backups newer than these') }}">‹ {{ _("Previous") }}</button>
+    <span class="muted" id="bk-page"></span>
+    <button type="button" class="small" id="bk-next" title="{{ _('Shows the 50 backups older than these') }}">{{ _("Next") }} ›</button>
+  </div>
+</section>
+
+<dialog id="fb-dialog" aria-labelledby="fb-title">
+  <form method="dialog" id="fb-form">
+    <h2 id="fb-title">{{ _("Restore into a new instance") }}</h2>
+    <p id="fb-what"></p>
+    <p class="muted" id="fb-says"></p>
+    <p class="error" id="fb-error" role="alert"></p>
+    <div class="actions">
+      <button type="button" id="fb-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
+      <span title="{{ _('Makes a new staging beside the production, from the same template, and restores this file into it neutralized. It is a job.') }}" id="fb-why"><button type="submit" class="primary" id="fb-create"
+        title="{{ _('Makes a new staging beside the production, from the same template, and restores this file into it neutralized. It is a job.') }}">{{ _("Create the staging from this backup") }}</button></span>
+    </div>
+  </form>
+</dialog>
+<script>
+(function () {
+  const PAGE = 50, SEARCH_FROM = 8, SERVER_COLUMN = {{ (links | length > 0) | tojson }}, LANG = {{ lang | tojson }};
+  const MACHINES = [{name: {{ here_name | tojson }}, link: ""}, ...{{ links | tojson }}.map((name) => ({name, link: name}))];
+  const T = {
+    backup: {{ _("{n} backup") | tojson }}, backups: {{ _("{n} backups") | tojson }},
+    tonight: {{ _("tonight: {ok} succeeded") | tojson }},
+    tonightTitle: {{ _("The automatic backups of the last 24 hours") | tojson }},
+    failedOne: {{ _("{n} run did not succeed") | tojson }}, failedMany: {{ _("{n} runs did not succeed") | tojson }},
+    failedTitle: {{ _("Shows only the automatic backups of the last 24 hours that did not succeed") | tojson }},
+    showAll: {{ _("Show every backup") | tojson }}, showAllTitle: {{ _("Shows every backup again") | tojson }},
+    waiting: {{ _("{name}: asking…") | tojson }},
+    down: {{ _("{name} does not answer: {why}. Its backups are not here.") | tojson }},
+    tab: {{ _("Opens the Backups tab of the instance") | tojson }}, test: {{ _("Test") | tojson }},
+    stagingWord: {{ _("Staging") | tojson }},
+    kinds: {scheduled: {{ _("automatic") | tojson }}, "pre-update": {{ _("before an update") | tojson }}, manual: {{ _("by hand") | tojson }}},
+    archive: {{ _("full archive") | tojson }},
+    ready: {{ _("Ready") | tojson }}, tried: {{ _("✓ restore tried {date}") | tojson }},
+    triedBad: {{ _("✗ the restore did not succeed") | tojson }}, neverTried: {{ _("Never restored for a try") | tojson }},
+    notDone: {{ _("Did not succeed: {why}") | tojson }}, openJob: {{ _("Opens the job of this automatic backup") | tojson }},
+    actions: {{ _("Actions") | tojson }},
+    actionsTitle: {{ _("Download, restore into a new instance, delete") | tojson }},
+    download: {{ _("Download") | tojson }},
+    downloadTitle: {{ _("Downloads the zip file of the backup (database and attachments) to this computer. It changes nothing.") | tojson }},
+    stage: {{ _("Restore into a new instance…") | tojson }},
+    stageTitle: {{ _("Makes a new staging of the production with the database of this backup, neutralized. The production and the backup do not change. It is a job.") | tojson }},
+    remove: {{ _("Delete…") | tojson }},
+    removeTitle: {{ _("Deletes this backup file from this machine. It cannot be undone. For production an admin is needed.") | tojson }},
+    removeQ: {{ _("Delete the backup of {name} of {when}? It cannot be undone.") | tojson }},
+    what: {{ _("Backup of {name} of {when} · {size}") | tojson }},
+    says: {{ _("It becomes a staging of {name}, neutralized: no outgoing mail, no scheduled actions. The production does not change.") | tojson }},
+    createTitle: {{ _("Makes a new staging beside the production, from the same template, and restores this file into it neutralized. It is a job.") | tojson }},
+    badBackup: {{ _("This backup did not restore when it was tried on {date}: choose another one") | tojson }},
+    refused: {{ _("Refused") | tojson }},
+    page: {{ _("{from}–{to} of {all}") | tojson }},
+  };
+  const body = document.getElementById("bk-rows"), counts = document.getElementById("bk-counts");
+  const search = document.getElementById("bk-search");
+  const found = {};
+  let onlyFailed = location.hash === "#failed", page = 0, chosen = null;
+  const el = (tag, attrs, ...children) => {
+    const node = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs || {})) if (v !== undefined && v !== null && v !== false) node.setAttribute(k, v);
+    node.append(...children.filter((c) => c !== null && c !== undefined));
+    return node;
+  };
+  const number = new Intl.NumberFormat(LANG, {maximumFractionDigits: 1});
+  function sizeText(bytes) {
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    let value = Number(bytes) || 0, unit = 0;
+    while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit += 1; }
+    return `${number.format(value)} ${units[unit]}`;
+  }
+  const dateOnly = (iso) => whenText(iso).slice(0, 10);
+
+  function rowsOf(machine, data) {
+    const base = machine.link ? `/links/${encodeURIComponent(machine.link)}` : "";
+    return (data.rows || []).map((r) => ({...r, machine, base,
+      text: [r.label, r.server, machine.name, r.file || "", r.version || ""].join(" ").toLowerCase()}));
+  }
+  function instanceCell(r) {
+    const tab = `${r.base}/servers/${encodeURIComponent(r.server)}${r.role === "test" ? "?view=test" : ""}#backups`;
+    return el("td", {}, el("a", {href: tab, title: T.tab}, el("strong", {}, r.label)),
+      r.role === "test" ? el("span", {class: "badge test-badge"}, T.test) : null,
+      r.staging ? el("span", {class: "badge info"}, T.stagingWord) : null,
+      !SERVER_COLUMN && r.version ? el("span", {class: "badge"}, r.version) : null);
+  }
+  function menu(r) {
+    const items = el("div", {class: "row-menu-items"});
+    items.append(el("a", {class: "button small", href: r.base + r.download, download: r.file, title: T.downloadTitle}, T.download));
+    if (r.can_stage) {
+      const b = el("button", {type: "button", class: "small", title: T.stageTitle}, T.stage);
+      b.addEventListener("click", () => openStaging(r));
+      items.append(b);
+    }
+    if (r.can_delete) {
+      const b = el("button", {type: "button", class: "small danger", title: T.removeTitle}, T.remove);
+      b.addEventListener("click", () => removeBackup(r));
+      items.append(b);
+    }
+    return el("details", {class: "row-menu"}, el("summary", {class: "button small", title: T.actionsTitle}, `${T.actions} ▾`), items);
+  }
+  function backupRow(r) {
+    const cells = [instanceCell(r)];
+    if (SERVER_COLUMN) cells.push(el("td", {}, r.machine.name, r.version ? el("span", {class: "badge"}, r.version) : null));
+    if (r.failed) {
+      const text = T.notDone.replace("{why}", r.message || r.status);
+      cells.push(el("td", {}, whenText(r.time), " ", el("span", {class: "kind"}, "· " + T.kinds.scheduled)),
+                 el("td", {class: "num muted"}, "—"),
+                 el("td", {class: "bk-bad"}, r.job ? el("a", {href: `${r.base}/jobs/${encodeURIComponent(r.job)}`, title: T.openJob}, text) : text),
+                 el("td", {}));
+      return el("tr", {"data-failed": "1"}, ...cells);
+    }
+    const kind = (T.kinds[r.kind] || "") + (r.archive ? " · " + T.archive : "");
+    const v = r.verified;
+    const outcome = v && v.ok ? el("span", {class: "bk-ok", title: v.detail || ""}, T.tried.replace("{date}", dateOnly(v.time)))
+      : v ? el("span", {class: "bk-bad", title: v.detail || ""}, T.triedBad)
+      : el("span", {title: T.neverTried}, T.ready);
+    cells.push(el("td", {title: r.file}, whenText(r.time), " ", el("span", {class: "kind"}, "· " + kind)),
+               el("td", {class: "num"}, sizeText(r.size)), el("td", {}, outcome), el("td", {class: "num"}, menu(r)));
+    return el("tr", {"data-file": r.file}, ...cells);
+  }
+  function machineRow(machine, text, down) {
+    return el("tr", {class: "bk-machine" + (down ? " down" : ""), "data-machine-row": machine.name},
+              el("td", {colspan: SERVER_COLUMN ? 6 : 5}, text));
+  }
+
+  function draw() {
+    const words = (search.value || "").toLowerCase().split(/\s+/).filter(Boolean);
+    let all = [], extra = [], ok = 0, bad = 0;
+    for (const m of MACHINES) {
+      const data = found[m.name];
+      if (!data) { extra.push(machineRow(m, T.waiting.replace("{name}", m.name))); continue; }
+      if (data.error) { extra.push(machineRow(m, T.down.replace("{name}", m.name).replace("{why}", data.error), true)); continue; }
+      all = all.concat(rowsOf(m, data));
+      ok += (data.tonight || {}).ok || 0; bad += (data.tonight || {}).failed || 0;
+    }
+    all.sort((a, b) => String(b.time).localeCompare(String(a.time)));
+    const files = all.filter((r) => !r.failed), failedTonight = all.filter((r) => r.failed && r.tonight);
+    counts.replaceChildren((files.length === 1 ? T.backup : T.backups).replace("{n}", files.length),
+      " · ", sizeText(files.reduce((sum, r) => sum + (r.size || 0), 0)), " · ",
+      el("span", {title: T.tonightTitle}, T.tonight.replace("{ok}", ok)), ", ");
+    if (bad) {
+      const filter = el("a", {href: "#failed", title: T.failedTitle, "aria-pressed": String(onlyFailed), id: "bk-filter"},
+                        (bad === 1 ? T.failedOne : T.failedMany).replace("{n}", bad));
+      filter.addEventListener("click", (event) => { event.preventDefault(); onlyFailed = !onlyFailed; page = 0;
+        history.replaceState(null, "", onlyFailed ? "#failed" : location.pathname + location.search); draw(); });
+      counts.append(filter);
+      if (onlyFailed) {
+        const back = el("a", {href: location.pathname, title: T.showAllTitle}, T.showAll);
+        back.addEventListener("click", (event) => { event.preventDefault(); onlyFailed = false; page = 0;
+          history.replaceState(null, "", location.pathname + location.search); draw(); });
+        counts.append(" · ", back);
+      }
+    } else {
+      onlyFailed = false;
+      counts.append(T.failedMany.replace("{n}", 0));
+    }
+    let shown = onlyFailed ? failedTonight : all;
+    if (words.length) shown = shown.filter((r) => words.every((w) => r.text.includes(w)));
+    document.getElementById("bk-search-box").hidden = all.length <= SEARCH_FROM;
+    const pages = Math.max(1, Math.ceil(shown.length / PAGE));
+    page = Math.min(page, pages - 1);
+    const slice = shown.slice(page * PAGE, page * PAGE + PAGE);
+    body.replaceChildren(...slice.map(backupRow), ...extra);
+    document.getElementById("bk-empty").hidden = !!(all.length || extra.length) || words.length > 0;
+    document.getElementById("bk-pager").hidden = shown.length <= PAGE;
+    document.getElementById("bk-page").textContent = T.page.replace("{from}", shown.length ? page * PAGE + 1 : 0)
+      .replace("{to}", page * PAGE + slice.length).replace("{all}", shown.length);
+    document.getElementById("bk-prev").disabled = page === 0;
+    document.getElementById("bk-next").disabled = page >= pages - 1;
+  }
+  async function load(machine) {
+    const url = "/api/backups" + (machine.link ? `?link=${encodeURIComponent(machine.link)}` : "");
+    try {
+      const resp = await fetch(url, {headers: {Accept: "application/json"}});
+      const data = await resp.json().catch(() => ({}));
+      found[machine.name] = resp.ok ? data : {error: data.error || data.detail || String(resp.status)};
+    } catch (e) { found[machine.name] = {error: String(e && e.message || e)}; }
+    draw();
+  }
+  search.addEventListener("input", () => { page = 0; draw(); });
+  document.getElementById("bk-prev").addEventListener("click", () => { page -= 1; draw(); });
+  document.getElementById("bk-next").addEventListener("click", () => { page += 1; draw(); });
+  draw();
+  MACHINES.forEach(load);
+  // one row menu open at a time; a click elsewhere closes it
+  document.addEventListener("click", (event) => {
+    for (const open of document.querySelectorAll(".row-menu[open]")) if (!open.contains(event.target)) open.open = false;
+  });
+
+  async function removeBackup(r) {
+    if (!confirm(T.removeQ.replace("{name}", r.label).replace("{when}", whenText(r.time)))) return;
+    const resp = await fetch(`${r.base}/api/servers/${encodeURIComponent(r.server)}/${r.role}/backups/delete`, {method: "POST",
+      headers: {"Content-Type": "application/json", Accept: "application/json"}, body: JSON.stringify({file: r.file})}).catch(() => null);
+    const data = resp ? await resp.json().catch(() => ({})) : {};
+    if (!resp || !resp.ok) { counts.textContent = data.error || data.detail || T.refused; return; }
+    load(r.machine);
+  }
+
+  // Restore into a new instance (D6): a staging of the production, from the file
+  const dialog = document.getElementById("fb-dialog"), create = document.getElementById("fb-create");
+  const why = document.getElementById("fb-why"), fbError = document.getElementById("fb-error");
+  function openStaging(r) {
+    chosen = r;
+    document.getElementById("fb-what").textContent = T.what.replace("{name}", r.label).replace("{when}", whenText(r.time)).replace("{size}", sizeText(r.size));
+    document.getElementById("fb-says").textContent = T.says.replace("{name}", r.label);
+    const bad = r.verified && !r.verified.ok;
+    create.disabled = !!bad;
+    why.title = bad ? T.badBackup.replace("{date}", dateOnly(r.verified.time)) : T.createTitle;
+    fbError.textContent = "";
+    dialog.showModal();
+  }
+  document.getElementById("fb-cancel").addEventListener("click", () => dialog.close());
+  document.getElementById("fb-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!chosen || create.disabled) return;
+    create.disabled = true; fbError.textContent = "";
+    const resp = await fetch(`${chosen.base}/api/servers/${encodeURIComponent(chosen.server)}/stagings/from-backup`, {method: "POST",
+      headers: {"Content-Type": "application/json", Accept: "application/json"}, body: JSON.stringify({file: chosen.file})}).catch(() => null);
+    const data = resp ? await resp.json().catch(() => ({})) : {};
+    create.disabled = false;
+    if (!resp || !resp.ok || !data.job) { fbError.textContent = data.error || data.detail || T.refused; return; }
+    location.href = `${chosen.base}/jobs/${encodeURIComponent(data.job)}`;
+  });
+})();
+</script>
+{% endblock %}

@@ -136,6 +136,10 @@ def _page_context(request: Request) -> dict:
         "scoped": bool(user and user.scoped),
         # the workspaces whose users it manages (admin there)
         "my_workspaces": [ws for ws, role in user.workspaces if role == "admin"] if user and user.scoped else [],
+        # the Backups of every machine (UX-008 §4.2): a developer's, or a
+        # user of workspaces who is a developer in one of them at least
+        "backups_menu": bool(user and (any(r in ("developer", "admin") for _, r in user.workspaces)
+                                       if user.scoped else user.can("developer"))),
         # a user who logged in with a password (not a token or a link)
         "account": user.name if user and user.kind == "user" else None,
         # in the footer of every page after the login
@@ -239,6 +243,8 @@ WORKSPACE_ROUTES = frozenset({
     "/api/workspaces/{workspace}/destinations/delete", "/api/workspaces/{workspace}/destinations/check",
     "/api/workspaces/{workspace}/destinations/key",
     "/api/workspaces/{workspace}/load",
+    # the lists of every machine (UX-008 §4): of its workspaces' instances only
+    "/instances", "/api/instances", "/backups", "/api/backups", "/api/servers/{server}/stagings/from-backup",
 })
 
 
@@ -1196,6 +1202,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 # a staging: the production it is a copy of, and when (stagings.py)
                 "parent": known.get(srv.name, {}).get("parent", ""),
                 "created": known.get(srv.name, {}).get("created", ""),
+                # the Instances of every machine (UX-008 §4.1): its Odoo, and
+                # whether its production backs up by itself (none for a staging)
+                "version": odoo_version(srv.name), "workspace": settings.workspace_of(srv.name) or "",
+                "backup_schedule": backup_schedule_state(srv.production, request_language(request))
+                if srv.production is not None and srv.name not in known else None,
             }
             for srv in live
         ]
@@ -6109,6 +6120,220 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     async def workspace_destination_key(request: Request, workspace: str, payload: dict = Body(...),
                                         me: Principal = Depends(current_user)):
         return destination_key(request, me, a_workspace(workspace).name, payload)
+
+    # --- the lists of every machine: Instances and Backups (docs/ux/UX-008 §4) --
+    # this machine's lists, and each link's asked through it, one request a
+    # machine (the page asks them all at once: one that does not answer is a
+    # row saying so, and does not hold the others back)
+
+    # a run of the automatic backups that did not start or did not end
+    BACKUP_NOT_DONE = ("failed", "interrupted", "stopped", "skipped")
+    # "tonight" of the Backups page: the runs of the last day
+    TONIGHT = datetime.timedelta(hours=24)
+
+    def backup_schedule_state(instance: Instance, lang: str) -> dict:
+        """Whether the instance backs up by itself, and its last run ended
+        or refused: {scheduled, last: {time, status, ok, job, message} | None}."""
+        sch = scheduler.schedules.get(backup_schedule_name(instance))
+        runs = scheduler.history.runs(sch.name, jobs) if sch is not None else []
+        last = next((r for r in runs if r.get("status") in (SUCCESS, *BACKUP_NOT_DONE)), None)
+        return {"scheduled": bool(sch is not None and sch.enabled and sch.backup),
+                "last": None if last is None else {
+                    "time": last.get("time"), "status": last.get("status"), "ok": last.get("status") == SUCCESS,
+                    "job": last.get("job"), "message": i18n.tr(lang, last.get("message") or "")}}
+
+    def odoo_version(server: str) -> str:
+        """The Odoo of a workspace's instance, as 19.0, from the template it was
+        made from; empty for one made elsewhere."""
+        found = workspace_of(server)
+        if found is None:
+            return ""
+        ws, instance = found
+        try:
+            meta = json.loads((workspaceops.storage_path(ws) / ws.name / instance / workspacehelper.INSTANCE_FILE)
+                              .read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return ""
+        major = re.fullmatch(r"[a-z]+-(\d+)", str(meta.get("template") or "") if isinstance(meta, dict) else "")
+        return f"{major.group(1)}.0" if major else ""
+
+    def here_name() -> str:
+        """This machine's name in the lists of every machine."""
+        return machines.here_name(socket.gethostname())
+
+    def listed_links(me: Principal) -> list[str]:
+        """The links whose lists join this machine's: for a user who logs in
+        here and sees the whole machine."""
+        return sorted(settings.link_targets) if me.kind == "user" and visible_servers(me) is None else []
+
+    async def link_list(request: Request, me: Principal, name: str, path: str):
+        """(what a link answered to GET path, "") or (None, why not), asked
+        with me's name and role and in the page's language."""
+        link = settings.link_targets.get(name) if name in listed_links(me) else None
+        if link is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"No link {name}")
+        headers = {**link_headers(link, me.name, me.role), "Accept": "application/json",
+                   "Accept-Language": request_language(request)}
+        try:
+            resp = await link_clients.client(link).get(path, headers=headers, timeout=LIST_TIMEOUT)
+        except httpx.HTTPError as exc:
+            return None, describe_error(exc)
+        if resp.status_code == 404:
+            return None, "its OmniaCLI is older: it has no such list yet"
+        if resp.status_code != 200:
+            return None, f"answered HTTP {resp.status_code}"
+        try:
+            return resp.json(), ""
+        except ValueError:
+            return None, "it did not answer JSON"
+
+    def role_on(me: Principal, server: str) -> str | None:
+        """me's role on server: its own; for a user of workspaces, its role in
+        the server's workspace (None: none)."""
+        if not me.scoped:
+            return me.role
+        workspace = settings.workspace_of(server)
+        return me.workspace_role(workspace) if workspace else None
+
+    def reaches(role: str | None, needed: str) -> bool:
+        return role is not None and ACCESS_ROLES.index(role) >= ACCESS_ROLES.index(needed)
+
+    def sees_backups(me: Principal) -> bool:
+        return any(reaches(r, "developer") for _, r in me.workspaces) if me.scoped else me.can("developer")
+
+    def new_instance_here(me: Principal) -> bool:
+        """New instance (a version only): the machine's admins, workspaces allowed here."""
+        return (visible_servers(me) is None and me.can("admin") and bool(settings.storage_roots)
+                and workspaceops.docker_missing() is None)
+
+    @app.get("/instances")
+    async def instances_page(request: Request, me: Principal = Depends(current_user)):
+        """The instances of every machine: this one's and each link's, their
+        stagings under them, whether each production backs up by itself."""
+        links = listed_links(me)
+        return _TEMPLATES.TemplateResponse(request, "instances.html", {
+            "here_name": here_name(), "links": links, "quick_instance": new_instance_here(me),
+            # the new instance on a link's machine too (the dialog asks each one its versions)
+            "ni_links": links if me.can("admin") else []})
+
+    @app.get("/api/instances")
+    async def instances_list(request: Request, link: str = "", me: Principal = Depends(current_user)):
+        """The instances of this machine ({name, servers, links}: the rows of
+        /api/servers, the links whose lists join it), or of one link
+        ({name, link, servers} or {name, link, error})."""
+        if not link:
+            return {"name": here_name(), "link": "", "servers": await server_list(request), "links": listed_links(me)}
+        found, why = await link_list(request, me, link, "/api/servers")
+        if found is not None and not isinstance(found, list):
+            found, why = None, "it did not answer a list"
+        if found is None:
+            return {"name": link, "link": link, "error": i18n.tr(request_language(request), why)}
+        return {"name": link, "link": link, "servers": found}
+
+    def backup_rows(request: Request, me: Principal) -> dict:
+        """The backups of this machine me may see, the newest first, with the
+        automatic runs that did not end well as rows of their own, and the
+        count of the runs of the last day."""
+        lang = request_language(request)
+        known = stagings.load(stagings_file)
+        since = (datetime.datetime.now() - TONIGHT).isoformat(timespec="seconds")
+        rows, tonight = [], {"ok": 0, "failed": 0}
+        for srv in settings.active_servers():
+            mine = role_on(me, srv.name)
+            if not reaches(mine, "developer"):
+                continue
+            for role, inst in srv.instances.items():
+                if not inst.plugin.has_backup:
+                    continue
+                folder = backup_folder(inst)
+                common = {"server": srv.name, "role": role, "label": inst.domain or inst.site or srv.name,
+                          "version": odoo_version(srv.name), "staging": srv.name in known}
+                # a staging of the production with the database of the file (D6)
+                stage = (reaches(mine, "admin") and role == "production" and srv.name not in known
+                         and workspace_of(srv.name) is not None and inst.plugin.has_restore)
+                for p in (sorted(folder.glob("*.zip")) if folder.is_dir() else []):
+                    stat = p.stat()
+                    rows.append({**common, "file": p.name, "size": stat.st_size,
+                                 "time": datetime.datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
+                                 "kind": ("scheduled" if p.name.startswith(schedules.SCHEDULED_PREFIX)
+                                          else "pre-update" if p.name.startswith(ops.PRE_UPDATE_PREFIX) else "manual"),
+                                 "archive": p.name.startswith(instancearchive.PREFIX)
+                                 or p.name.startswith(schedules.SCHEDULED_PREFIX + instancearchive.PREFIX),
+                                 "download": f"/backups/{srv.name}/{role}/{p.name}",
+                                 "verified": backupcheck.state(folder, p.name).get("verified"),
+                                 "can_delete": reaches(mine, backup_role(inst)), "can_stage": stage})
+                sch = scheduler.schedules.get(backup_schedule_name(inst))
+                for run in scheduler.history.runs(sch.name, jobs) if sch is not None else []:
+                    done = run.get("status")
+                    if str(run.get("time") or "") >= since and done in (SUCCESS, *BACKUP_NOT_DONE):
+                        tonight["ok" if done == SUCCESS else "failed"] += 1
+                    if done in BACKUP_NOT_DONE:
+                        # of the last day: what the count of the page's head filters
+                        rows.append({**common, "failed": True, "time": run.get("time"), "status": done,
+                                     "tonight": str(run.get("time") or "") >= since,
+                                     "job": run.get("job"), "message": i18n.tr(lang, run.get("message") or "")})
+        rows.sort(key=lambda r: str(r.get("time") or ""), reverse=True)
+        return {"rows": rows, "tonight": tonight}
+
+    @app.get("/backups")
+    async def backups_page(request: Request, me: Principal = Depends(current_user)):
+        """The backups of every machine: this one's and each link's."""
+        if not sees_backups(me):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "The developer role is required")
+        return _TEMPLATES.TemplateResponse(request, "backups.html", {"here_name": here_name(), "links": listed_links(me)})
+
+    @app.get("/api/backups")
+    async def backups_list(request: Request, link: str = "", me: Principal = Depends(current_user)):
+        """The backups of this machine ({name, rows, tonight, links}), or of
+        one link ({name, link, rows, tonight} or {name, link, error})."""
+        if not sees_backups(me):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "The developer role is required")
+        if not link:
+            return {"name": here_name(), "link": "", **backup_rows(request, me), "links": listed_links(me)}
+        found, why = await link_list(request, me, link, "/api/backups")
+        if found is not None and not (isinstance(found, dict) and isinstance(found.get("rows"), list)):
+            found, why = None, "it did not answer a list"
+        if found is None:
+            return {"name": link, "link": link, "error": i18n.tr(request_language(request), why)}
+        return {"name": link, "link": link, "rows": found["rows"], "tonight": found.get("tonight") or {}}
+
+    @app.post("/api/servers/{server}/stagings/from-backup", dependencies=[Depends(admin)])
+    async def staging_from_backup(server: str, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """A new staging of server's production with the database of one of
+        its backups, neutralized (UX-008 D6): new_staging, its load the
+        restore of that file. The production and the file do not change."""
+        srv = settings.servers.get(server)
+        if srv is None or srv.production is None:
+            return refuse(f"No server {server} with a production", status.HTTP_404_NOT_FOUND)
+        source = srv.production
+        name = str(payload.get("file") or "")
+        folder = backup_folder(source).resolve()
+        path = (folder / name).resolve()
+        if not _BACKUP_NAME.fullmatch(name) or path.parent != folder or not path.is_file():
+            return refuse("No such backup", status.HTTP_404_NOT_FOUND)
+        tried = backupcheck.state(folder, name).get("verified")
+        if tried and not tried.get("ok"):
+            try:
+                when = datetime.datetime.fromisoformat(str(tried.get("time"))).strftime("%d/%m/%Y")
+            except ValueError:
+                when = str(tried.get("time") or "")
+            return refuse(f"This backup did not restore when it was tried on {when}: choose another one")
+        archive = instancearchive.read_manifest(path) is not None
+        problem = None if archive else source.plugin.backup_problem(path)
+        if problem:
+            return refuse(problem)
+
+        async def restore_the_file(job, prod, target) -> dict:
+            job.log(f"--- the backup {name} of {prod.key} into {target.key}, neutralized")
+            if archive:
+                with instancearchive.backup_of(path) as inner:
+                    await restore_fetched(job, target, inner, {"neutralize": True})
+            else:
+                await target.plugin.restore(job, target, path, {"neutralize": True})
+            return {"backup": name, "from_backup": True}
+
+        return await new_staging(server, me, load=restore_the_file,
+                                 title=f"Staging of {server} from the backup {name}")
 
     # --- the caller's own password --------------------------------------
 

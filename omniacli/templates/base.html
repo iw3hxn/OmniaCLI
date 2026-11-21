@@ -514,12 +514,20 @@ summary { cursor: pointer; color: var(--muted); }
 <header class="topbar">
   <a class="brand" href="{{ prefix }}/"><img src="/icon-180.png" alt=""><span class="brand-name">Omnia<span>CLI</span></span></a>
   <nav class="topnav" aria-label="{{ _('Menu') }}">
-    {% if is_admin and not scoped and not prefix %}<a class="nav-link" href="/machines" {% if here.startswith("/machines") %}aria-current="page"{% endif %}
+    {# UX-008 D8: Instances and Backups are the lists of every machine; this machine's
+       Dashboard opens from the logo and from Servers #}
+    {% set machine_admin = is_admin and not scoped and not prefix %}
+    {% if machine_admin %}<a class="nav-link" href="/machines" {% if here.startswith("/machines") or here == "/" %}aria-current="page"{% endif %}
        title="{{ _('The machines OmniaCLI manages, with their load') }}">{{ _("Servers") }}</a>
     {% elif prefix.startswith("/links/") %}<a class="nav-link" href="/machines" {% if here == prefix ~ "/" %}aria-current="page"{% endif %}
        title="{{ _('The machines OmniaCLI manages, with their load') }}">{{ _("Servers") }}</a>{% endif %}
-    <a class="nav-link" href="{{ prefix }}/#instances" {% if here.startswith(prefix ~ "/servers/") or (here == "/" and not prefix) %}aria-current="page"{% endif %}
+    {% if prefix %}<a class="nav-link" href="{{ prefix }}/#instances" {% if here.startswith(prefix ~ "/servers/") %}aria-current="page"{% endif %}
        title="{{ _('The Odoo instances of this machine, with their stagings') }}">{{ _("Instances") }}</a>
+    {% else %}<a class="nav-link" href="/instances" {% if here == "/instances" or here.startswith("/servers/") or (here == "/" and not machine_admin) %}aria-current="page"{% endif %}
+       title="{{ _('The Odoo instances of every machine, with their stagings and whether each production backs up by itself') }}">{{ _("Instances") }}</a>
+    {% if backups_menu %}<a class="nav-link" href="/backups" {% if here == "/backups" %}aria-current="page"{% endif %}
+       title="{{ _('The backups of every machine, the newest first, and the automatic ones that did not succeed') }}">{{ _("Backups") }}</a>{% endif %}
+    {% endif %}
     {% for ws in my_workspaces %}{{ nav("/workspaces/" ~ ws, ws) }}{% endfor %}
     {# the instances operated through a relay (consumer.py): every user sees them #}
     {% if not prefix %}{% for c in puller_connections %}<a class="nav-link" title="{{ _('An instance of another OmniaCLI operated from here through a relay machine (Publications)') }}" href="/pullers/connections/{{ c }}">{{ c }}</a>{% endfor %}{% endif %}

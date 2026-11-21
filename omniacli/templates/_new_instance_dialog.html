@@ -33,6 +33,9 @@
 .ni-password button { padding: 6px 10px; }
 .ni-once { color: var(--err); }
 .ni-saved { display: flex; gap: 8px; align-items: center; justify-content: flex-end; margin-top: 12px; font-size: 14px; }
+.ni-servers { margin: 0 0 14px; }
+.ni-label { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+.ni-server { display: inline-flex; gap: 6px; align-items: center; margin: 0 16px 4px 0; }
 @media (max-width: 600px) { .ni-fields { grid-template-columns: 1fr; } }
 </style>
 <dialog id="new-instance" aria-labelledby="ni-title">
@@ -42,6 +45,17 @@
       <p class="muted" style="margin: 0">{{ _("Choose the Odoo version: OmniaCLI makes its database, its containers and its disk.") }}</p>
     </div>
     <div class="ni-body">
+      {% if ni_links %}
+      {# the Instances of every machine (UX-008 §4.1): this machine, then the links that
+         answer with a version and room for workspaces; the others named under them #}
+      <div class="ni-servers" role="radiogroup" aria-labelledby="ni-server-label">
+        <div class="ni-label" id="ni-server-label">{{ _("Server") }}</div>
+        <div id="ni-server-list">
+          <label class="ni-server"><input type="radio" name="ni-server" value="" checked> {{ _("This machine") }} <span class="muted">({{ here_name }})</span></label>
+        </div>
+        <div class="ni-help" id="ni-unlisted"></div>
+      </div>
+      {% endif %}
       <div class="ni-versions" id="ni-versions" role="radiogroup" aria-label="{{ _('Odoo version') }}"></div>
       <div class="ni-fields">
         <div class="wide"><label for="ni-domain">{{ _("Domain") }}</label>
@@ -86,12 +100,18 @@
 </dialog>
 <script>
 (function () {
-  const PREFIX = {{ prefix | tojson }};
+  const PREFIX = {{ prefix | tojson }}, LINKS = {{ (ni_links or []) | tojson }};
+  // the machine the instance is made on: this one, or a link's through it
+  let base = PREFIX, linksAsked = false;
   const T = {creating: {{ _("Creating…") | tojson }}, create: {{ _("Create the instance") | tojson }},
              refused: {{ _("Refused") | tojson }}, none: {{ _("No Odoo template on this machine") | tojson }},
              community: {{ _("Community") | tojson }}, copied: {{ _("Copied") | tojson }},
              dns: {{ _("Its DNS name: create an A record with the value {address}, ports 80 and 443 open; it answers there with HTTPS. Empty: added later.") | tojson }},
-             short: {{ _("The admin's password is 8 characters at least") | tojson }}};
+             short: {{ _("The admin's password is 8 characters at least") | tojson }},
+             unlisted: {{ _("Not listed: {names}.") | tojson }}, noAnswer: {{ _("does not answer") | tojson }},
+             noStorage: {{ _("no storage for workspaces") | tojson }}, noVersion: {{ _("no Odoo template") | tojson }},
+             notAdmin: {{ _("the link is not an admin there") | tojson }},
+             serverTitle: {{ _("Makes the instance on {name}, through its link: its job opens there") | tojson }}};
   const dialog = document.getElementById("new-instance"), versions = document.getElementById("ni-versions");
   const error = document.getElementById("ni-error"), create = document.getElementById("ni-create");
   const nameField = document.getElementById("ni-name");
@@ -113,7 +133,7 @@
     catch (e) { password.select(); }
   });
   async function load() {
-    const resp = await fetch(`${PREFIX}/api/instances/versions`, {headers: {Accept: "application/json"}}).catch(() => null);
+    const resp = await fetch(`${base}/api/instances/versions`, {headers: {Accept: "application/json"}}).catch(() => null);
     const data = resp && resp.ok ? await resp.json().catch(() => ({})) : {};
     versions.replaceChildren();
     for (const [i, v] of (data.versions || []).entries()) {
@@ -138,6 +158,33 @@
     newPassword();
     dialog.showModal();
     if (!loaded) await load();
+    if (!linksAsked) askLinks();
+  });
+  // the links that can make one: asked all at once, the others named with why not
+  async function askLinks() {
+    linksAsked = true;
+    const list = document.getElementById("ni-server-list"), unlisted = document.getElementById("ni-unlisted");
+    if (!list || !LINKS.length) return;
+    const why = {};
+    await Promise.all(LINKS.map(async (name) => {
+      const resp = await fetch(`/links/${encodeURIComponent(name)}/api/instances/versions`, {headers: {Accept: "application/json"}}).catch(() => null);
+      const data = resp && resp.ok ? await resp.json().catch(() => null) : null;
+      if (!data) { why[name] = resp && resp.status === 403 ? T.notAdmin : T.noAnswer; return; }
+      if (!data.storage) { why[name] = T.noStorage; return; }
+      if (!(data.versions || []).length) { why[name] = T.noVersion; return; }
+      const input = Object.assign(document.createElement("input"), {type: "radio", name: "ni-server", value: name});
+      const label = document.createElement("label");
+      label.className = "ni-server"; label.title = T.serverTitle.replace("{name}", name);
+      label.append(input, " " + name);
+      list.append(label);
+    }));
+    const names = LINKS.filter((n) => why[n]).map((n) => `${n} (${why[n]})`);
+    unlisted.textContent = names.length ? T.unlisted.replace("{names}", names.join(", ")) : "";
+  }
+  document.addEventListener("change", (event) => {
+    if (event.target.name !== "ni-server") return;
+    base = event.target.value ? `/links/${encodeURIComponent(event.target.value)}` : PREFIX;
+    loaded = false; error.textContent = ""; ready(); load();
   });
   document.getElementById("ni-cancel").addEventListener("click", () => dialog.close());
   document.getElementById("ni-form").addEventListener("submit", async (event) => {
@@ -146,7 +193,7 @@
     if (!picked || !saved.checked) return;
     if (password.value.length < 8) { error.textContent = T.short; password.focus(); return; }
     error.textContent = ""; create.disabled = true; create.textContent = T.creating;
-    const resp = await fetch(`${PREFIX}/api/instances/new`, {
+    const resp = await fetch(`${base}/api/instances/new`, {
       method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
       body: JSON.stringify({version: picked.value, name: nameField.value.trim(),
                             domain: document.getElementById("ni-domain").value.trim(),
@@ -155,7 +202,7 @@
     const data = resp ? await resp.json().catch(() => ({})) : {};
     create.textContent = T.create; ready();
     if (!resp || !resp.ok || !data.job) { error.textContent = data.error || data.detail || T.refused; return; }
-    location.href = `${PREFIX}/jobs/${data.job}`;
+    location.href = `${base}/jobs/${data.job}`;
   });
 })();
 </script>
