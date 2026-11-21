@@ -481,6 +481,12 @@ Dati:
 
 Visita dal vivo del pannello di riferimento con Carlo, 21/11/2026 (note `confronto-pannello-21-11.md`, schermate 01-28); decisioni di Carlo dello stesso giorno (regola del primario; costruire A, B, C, D). Estende UX-001…005 (`UX-001-hosting-panel-parity.md`), UX-006 (§3 regola 1 sostituita, §10), UX-007 (Nomi sul web, D5). Nessun ticket `T`/`HT` collegato.
 
+**Correzione del 21/11/2026 (§5.3, verificata nel sorgente di Odoo 18.0 e 19.0):** `odoo neutralize`
+(`odoo/addons/base/data/neutralize.sql`) non lascia Odoo sul server SMTP dell'odoo.conf: disattiva i server di posta del
+database e ne inserisce uno finto, attivo, `invalid:1025`, apposta per non usare quello della riga di comando. La
+cattura quindi è un servizio con il nome di rete `invalid` sulla porta 1025 nel progetto della staging. Provato su
+Docker con i template 18 e 19: la posta mandata da una staging neutralizzata arriva lì.
+
 ## Decisioni prese
 
 Il 21/11/2026 si costruisce con le raccomandate (D1-D9) finché Carlo non dice altro; D2 l'ha decisa Carlo il 21/11/2026,
