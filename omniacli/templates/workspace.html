@@ -217,6 +217,12 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
     · <a href="{{ prefix }}/workspaces/{{ ws.name | urlencode }}/destinations" title="{{ _('Opens the destinations where the automatic backups of the instances of the workspace are copied, encrypted') }}">{{ _("Open") }} ›</a></p>
 </section>
 
+<section class="panel" id="access-log">
+  <h2>{{ _("Access log") }}</h2>
+  <p class="ws-line">{{ _("Who did what on the instances of this workspace and when: logins, actions, reads of its data, jobs, the integrator's too. Filtered by user, period and event, exported as CSV or JSON for your auditors.") }}
+    · <a href="{{ prefix }}/workspaces/{{ ws.name | urlencode }}/audit" title="{{ _('Opens the access log of this workspace: its entries only, the newest first') }}">{{ _("Open") }} ›</a></p>
+</section>
+
 <section class="panel" id="git-credentials">
   <h2>{{ _("Git credentials") }}</h2>
   <p class="muted ws-line" style="margin-bottom: 10px">{{ _("The user and token OmniaCLI reads the private repositories of the instances with, one for each git server (github.com, bitbucket.org…).") }}</p>

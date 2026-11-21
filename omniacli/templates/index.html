@@ -54,6 +54,15 @@
     {% if machine %}<a class="button" href="{{ prefix }}/disks" title="{{ _('The disks of this machine, their free space and when they fill up') }}">{{ _("Disks") }}</a>{% endif %}
   </div>
 </div>
+{% if audit and (audit.room.low or audit.clock.synced is false or audit.siem.failing) %}
+{# the access log of NIS 2 (docs/nis2-audit.md): what may make it incomplete or its times wrong #}
+<div class="banner warn" id="audit-warning">
+  {% if audit.room.low %}{{ _("The disk of the access log may not hold it for its {days} days: {free} free, about {needed} still needed.", days=audit.retention_days, free=audit.room.free | filesizeformat(true), needed=audit.room.needed | filesizeformat(true)) }}{% endif %}
+  {% if audit.clock.synced is false %}{{ _("The system clock is not synchronised: the times of the access log may be wrong.") }}{% endif %}
+  {% if audit.siem.failing %}{{ _("Sending the access log to the SIEM fails: {count} entries wait.", count=audit.siem.waiting) }}{% endif %}
+  <a href="{{ prefix }}/access" title="{{ _('Opens the access log, with its retention, the clock and the SIEM') }}">{{ _("Access log") }} ›</a>
+</div>
+{% endif %}
 {% if linked_name and is_admin %}
 <script>
   // the name is this OmniaCLI's (its links), not the server's: asked of the root, not through the link

@@ -17,7 +17,9 @@ case "$1" in
         rmdir /etc/systemd/system/omniacli.service.d 2>/dev/null || true
         rmdir /etc/omniacli 2>/dev/null || true
         # the configuration, the histories, the logs and the scripts go; the
-        # backups stay
+        # backups stay. The logs hold the access log, all its numbered files
+        # (accesslog.py, kept by time for NIS 2): docs/nis2-audit.md says to
+        # export it before a purge
         rm -rf /var/lib/omniacli/jobs /var/lib/omniacli/logs /var/lib/omniacli/scripts \
             /var/lib/omniacli/pullers /var/lib/omniacli/publications /var/lib/omniacli/connections \
             /var/lib/omniacli/packages /var/lib/omniacli/plugins /var/lib/omniacli/templates /var/lib/omniacli/catalog

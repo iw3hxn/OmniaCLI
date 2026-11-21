@@ -7,11 +7,13 @@ from __future__ import annotations
 import asyncio
 import configparser
 import contextlib
+import csv
 import dataclasses
 import datetime
 import functools
 import importlib.metadata
 import importlib.util
+import io
 import ipaddress
 import json
 import logging
@@ -40,7 +42,8 @@ from starlette.requests import ClientDisconnect, HTTPConnection
 
 from . import (backupcheck, backupchoices, checks, deployhooks, destinations, instancearchive, private, restoreroom, consumer, disks, gitcredentials, linkcopy, listgroups, ops, packages, plugins, pluginstore, puller, publisher,
                schedules, selflog, sqldump, sshlinks, shell, stacktemplates, templatestore, tunnel, workspacehelper, workspaceops)
-from .accesslog import AccessLog
+from .accesslog import REQUEST as AUDIT_REQUEST, AccessLog
+from . import audit, siem
 from . import i18n, loginas, machines, modulecatalog, pgreport, pgtuning, stagings, workspaceweb
 from . import stagingmail
 from .diskhistory import DiskHistory, DiskRecorder
@@ -56,6 +59,8 @@ from .config import (
     SHELL_FONT_SIZE,
     SHELL_FONT_SIZES,
     TUNNEL_IDLE_HOURS,
+    AUDIT_RETENTION_LIMITS,
+    SYSLOG_PROTOCOLS,
     USER_ROLES,
     WORKSPACE_LIMITS,
     Access,
@@ -100,7 +105,7 @@ from .config import (
     server_text,
     server_to_dict,
 )
-from .jobs import SUCCESS, JobFailed, JobManager, filter_jobs
+from .jobs import STARTED as JOBS_STARTED, SUCCESS, JobFailed, JobManager, filter_jobs
 from .plugin_api import ENTRY_POINT_GROUP, PLUGIN_API, ActionRefused, Host, restore_fetched
 from .pullcrypto import new_key
 from .links import LIST_TIMEOUT, LinkClients, describe_error, link_headers, proxy_websocket
@@ -257,6 +262,8 @@ WORKSPACE_ROUTES = frozenset({
     "/api/workspaces/{workspace}/destinations/delete", "/api/workspaces/{workspace}/destinations/check",
     "/api/workspaces/{workspace}/destinations/key",
     "/api/workspaces/{workspace}/load",
+    # its access log (NIS 2), for its admins: its entries only
+    "/workspaces/{workspace}/audit", "/api/workspaces/{workspace}/audit/export",
     # the lists of every machine (UX-008 §4): of its workspaces' instances only
     "/instances", "/api/instances", "/backups", "/api/backups", "/api/servers/{server}/stagings/from-backup",
     # a staging's caught mail (UX-008 §5.3)
@@ -374,19 +381,24 @@ _AUDIT_MAX_BODY = 64 * 1024
 _NOT_AUDITED = re.compile(r"/logout|/api/pullers/[^/]+/producer|/api/servers/(check|branches)|/api/links/[^/]+/test")
 
 
-async def _audit_target(request: Request) -> str:
-    """ name=... role=... of a small JSON request, for the access log."""
+async def _audit_body(request: Request) -> dict:
+    """A small JSON request's body, for what the access log says of it ({}
+    for any other)."""
     if "json" not in request.headers.get("content-type", ""):
-        return ""
+        return {}
     length = request.headers.get("content-length", "")
     if not length.isdigit() or int(length) > _AUDIT_MAX_BODY:
-        return ""
+        return {}
     try:
         body = json.loads(await request.body())
     except ValueError:
-        return ""
-    if not isinstance(body, dict):
-        return ""
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+async def _audit_target(request: Request) -> str:
+    """ name=... role=... of a small JSON request, for the access log."""
+    body = await _audit_body(request)
     return "".join(f" {key}={body[key]}" for key in _AUDIT_FIELDS if isinstance(body.get(key), (str, int)))
 
 
@@ -464,6 +476,58 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     except ConfigError as exc:
         schedules_error = str(exc)
     access_log = AccessLog(settings.logs_dir / "access.jsonl")
+
+    def audit_fields(scope: dict) -> dict:
+        """What an entry recorded while serving scope says of it: who with
+        which role, the route, and the server, environment and workspace."""
+        user = (scope.get("state") or {}).get("user")
+        params = scope.get("path_params") or {}
+        fields = {"method": scope.get("method") or ("WEBSOCKET" if scope.get("type") == "websocket" else ""),
+                  "route": audit.route_template(scope)}
+        if isinstance(user, Principal):
+            fields.update(role=user.role, on_behalf=user.on_behalf)
+        server, workspace = str(params.get("server") or ""), str(params.get("workspace") or "")
+        if server:
+            fields["server"] = server
+            workspace = workspace or settings.workspace_of(server) or ""
+        if params.get("role"):
+            fields["env"] = str(params["role"])
+        if not workspace and params.get("job_id"):
+            job = jobs.get(str(params["job_id"]))
+            if job is not None:
+                workspace = job.workspace or next(
+                    (ws for ws in map(settings.workspace_of, job.servers) if ws), "")
+        fields["workspace"] = workspace
+        return fields
+
+    def audit_scope_of(kind: str, name: str) -> list[str]:
+        """The workspaces an entry of no workspace belongs to: those of a user
+        of workspaces (its logins), of a workspace's token."""
+        if kind == "user" and name in settings.users and settings.user_role(name) == WORKSPACE_ROLE:
+            return [ws for ws, _ in settings.memberships(name)]
+        if kind in ("token", "mcp") and settings.token_workspace(name):
+            return [settings.token_workspace(name)]
+        return []
+
+    def audit_job_ended(job) -> None:
+        """The outcome of a job, after the entry of the request that started it."""
+        workspace = job.workspace or next((ws for ws in map(settings.workspace_of, job.servers) if ws), "")
+        access_log.record("job", "job", job.source, "",
+                          f"{job.title}: {job.status}" + (f" ({job.error})" if job.error else ""),
+                          context=False, job=[job.id], workspace=workspace, server=",".join(job.servers),
+                          status=job.status)
+
+    siem_forwarder = siem.Forwarder(lambda text: access_log.record("siem", "system", "", "", text, context=False))
+
+    def apply_audit_options() -> None:
+        options = settings.options
+        access_log.retention_days = options.audit_retention_days
+        siem_forwarder.configure(options.syslog_host, options.syslog_port, options.syslog_protocol,
+                                 options.syslog_ca_file)
+
+    access_log.enrich, access_log.scope_of, access_log.forward = audit_fields, audit_scope_of, siem_forwarder.send
+    jobs.listeners.append(audit_job_ended)
+    apply_audit_options()
     # OmniaCLI's own log (selflog), shown to the admins
     own_log_file = settings.logs_dir / "omniacli.log"
     # the browsers' logins: next to the jobs, like the access log
@@ -748,17 +812,60 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     @app.middleware("http")
     async def audit_actions(request: Request, call_next):
         """Every request that changes something, by whoever passed the login,
-        in the access log: a route added later is logged by itself."""
-        if request.method in ("GET", "HEAD") or _NOT_AUDITED.fullmatch(request.url.path):
+        in the access log: a route added later is logged by itself; of the
+        reads, those of customer or security data (audit.SENSITIVE_READS),
+        the same page at most once in READ_GAP."""
+        reading = request.method in ("GET", "HEAD")
+        if not reading and _NOT_AUDITED.fullmatch(request.url.path):
             return await call_next(request)
-        target = await _audit_target(request)
-        response = await call_next(request)
+        body = {} if reading else await _audit_body(request)
+        started: list[str] = []
+        mark = JOBS_STARTED.set(started)
+        try:
+            response = await call_next(request)
+        finally:
+            JOBS_STARTED.reset(mark)
         user = getattr(request.state, "user", None)
-        if user is not None:
-            who = f" for {user.on_behalf}" if user.on_behalf else ""
-            access_log.record("action", user.kind, user.name, request.client.host if request.client else "",
-                              f"{request.method} {request.url.path}{target} -> {response.status_code}{who}"[:300])
+        if user is None:
+            return response
+        ip = request.client.host if request.client else ""
+        who = f" for {user.on_behalf}" if user.on_behalf else ""
+        template = audit.route_template(request.scope)
+        if reading:
+            what = audit.SENSITIVE_READS.get(template)
+            if what is None or not access_log.first_read((user.kind, user.name, ip, request.url.path)):
+                return response
+            access_log.record("read", user.kind, user.name, ip,
+                              f"{what}: {request.method} {request.url.path} -> {response.status_code}{who}"[:300],
+                              what=what, status=response.status_code)
+            return response
+        target = "".join(f" {key}={body[key]}" for key in _AUDIT_FIELDS if isinstance(body.get(key), (str, int)))
+        extra = {"status": response.status_code, "job": started}
+        named = str(body.get("server") or "") if isinstance(body.get("server"), str) else ""
+        if named and not request.scope.get("path_params", {}).get("server"):
+            extra.update(server=named, workspace=settings.workspace_of(named) or "")
+        access_log.record("action", user.kind, user.name, ip,
+                          f"{request.method} {request.url.path}{target} -> {response.status_code}{who}"[:300],
+                          **extra)
         return response
+
+    class AuditScope:
+        """The request (or websocket) being served, for what the access log
+        records while serving it (accesslog.REQUEST)."""
+
+        def __init__(self, inner):
+            self.inner = inner
+
+        async def __call__(self, scope, receive, send):
+            if scope["type"] not in ("http", "websocket"):
+                return await self.inner(scope, receive, send)
+            mark = AUDIT_REQUEST.set(scope)
+            try:
+                await self.inner(scope, receive, send)
+            finally:
+                AUDIT_REQUEST.reset(mark)
+
+    app.add_middleware(AuditScope)
 
     @app.exception_handler(StarletteHTTPException)
     async def to_login(request: Request, exc: StarletteHTTPException):
@@ -808,7 +915,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             access_log.record("failed", "user", name, ip, "login form")
             return login_page(request, next_path, "Wrong user name or password.", 401)
         limiter.succeeded(ip, name)
-        access_log.record("login", "user", name, ip, "login form")
+        access_log.record("login", "user", name, ip, "login form", role=settings.user_role(name))
         response = RedirectResponse(next_path, status.HTTP_303_SEE_OTHER)
         set_session_cookie(request, response, sessions.create(name, settings.users[name]))
         return response
@@ -1064,6 +1171,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             "load_workspaces": sorted((ws, role) for ws, role in me.workspaces if ws in settings.workspaces) if me.scoped else [],
             # the Database tab (UX-008 §6.2): the machine's admins only
             "machine_database": shown is None and machine_admin(me),
+            # the access log's room, the clock, the SIEM (NIS 2): the machine's admins
+            "audit": await asyncio.to_thread(audit_status) if shown is None and machine_admin(me) else None,
         })
         return _TEMPLATES.TemplateResponse(request, "index.html", context)
 
@@ -5473,16 +5582,122 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         asyncio.get_running_loop().call_later(1.0, os._exit, 75)
         return {"ok": True}
 
+    # --- the access log (NIS 2, docs/nis2-audit.md) ----------------------
+
+    def audit_day(value: str, end: bool = False) -> int | None:
+        """A day gg/mm/aaaa or aaaa-mm-dd of this machine's time, as ns: its
+        start (end: the start of the day after); None when empty or not one."""
+        value = (value or "").strip()
+        for shape in ("%Y-%m-%d", "%d/%m/%Y"):
+            try:
+                day = datetime.datetime.strptime(value, shape)
+            except ValueError:
+                continue
+            if end:
+                day += datetime.timedelta(days=1)
+            return int(day.astimezone().timestamp()) * 10**9
+        return None
+
+    def audit_entries(since: str, until: str, who: str, event: str, q: str, workspace: str | None) -> list[dict]:
+        """The entries of the period (the last 5000 when it has no start),
+        of who and of event, with every word of q, of workspace (None:
+        every one of them, and those of the machine), the newest first."""
+        start, stop = audit_day(since), audit_day(until, end=True)
+        entries = access_log.period(start or 0, stop) if start or stop else access_log.recent(5000)
+        found = []
+        for e in entries:
+            if workspace is not None and e.get("workspace") != workspace and workspace not in (e.get("workspaces") or []):
+                continue
+            if who and who.lower() not in f"{e.get('name', '')} {e.get('on_behalf', '')}".lower():
+                continue
+            if event and e.get("event") != event:
+                continue
+            if q and not matches(" ".join(str(v) for v in e.values()), q):
+                continue
+            found.append(e)
+        return found
+
+    _AUDIT_COLUMNS = ("utc", "time", "event", "kind", "name", "on_behalf", "role", "workspace", "ip", "method",
+                      "route", "server", "env", "status", "job", "detail", "prev")
+
+    def audit_export(entries: list[dict], fmt: str, label: str) -> Response:
+        """The entries as a CSV or a JSON file to save, the oldest first."""
+        entries = entries[::-1]
+        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M")
+        if fmt == "json":
+            body, media, suffix = json.dumps(entries, ensure_ascii=False, indent=1) + "\n", "application/json", "json"
+        else:
+            out = io.StringIO()
+            writer = csv.writer(out)
+            writer.writerow(_AUDIT_COLUMNS)
+            for e in entries:
+                row = []
+                for key in _AUDIT_COLUMNS:
+                    value = e.get(key, "")
+                    row.append(" ".join(map(str, value)) if isinstance(value, list) else value)
+                writer.writerow(row)
+            body, media, suffix = out.getvalue(), "text/csv; charset=utf-8", "csv"
+        return Response(body, media_type=media,
+                        headers={"Content-Disposition": f'attachment; filename="access-{label}-{stamp}.{suffix}"'})
+
+    audit_status_cache: dict = {}
+
+    def audit_status() -> dict:
+        """What the machine page says of the access log: its room, the clock,
+        the SIEM; measured at most every minute."""
+        now = time.monotonic()
+        if audit_status_cache and now - audit_status_cache["at"] < 60:
+            return audit_status_cache["status"]
+        found = {"retention_days": settings.options.audit_retention_days,
+                 "room": audit.room(access_log.span(), settings.options.audit_retention_days, access_log.path.parent),
+                 "clock": audit.clock_status(), "siem": siem_forwarder.status()}
+        audit_status_cache.update(at=now, status=found)
+        return found
+
+    def audit_context(request: Request, since: str, until: str, who: str, event: str, q: str,
+                      workspace: Workspace | None) -> dict:
+        entries = audit_entries(since, until, who, event, q, workspace.name if workspace else None)
+        return {"entries": entries[:500], "total": len(entries), "q": q, "since": since, "until": until,
+                "who": who, "event": event, "ws": workspace, "log_file": access_log.path,
+                "failed_file": access_log.failed_path,
+                "status": audit_status() if workspace is None else None}
+
     @app.get("/access", dependencies=[Depends(admin)])
-    async def access_page(request: Request, q: str = ""):
-        """The access log: logins, failed logins and MCP calls, the newest first."""
-        entries = await asyncio.to_thread(access_log.recent, 5000)
-        found = [e for e in entries if matches(" ".join(str(v) for v in e.values()), q)]
-        return _TEMPLATES.TemplateResponse(
-            request, "access.html",
-            {"entries": found[:500], "total": len(found), "q": q, "log_file": access_log.path,
-             "failed_file": access_log.failed_path},
-        )
+    async def access_page(request: Request, q: str = "", since: str = "", until: str = "", who: str = "",
+                          event: str = ""):
+        """The access log: logins, failed logins, actions, reads of customer
+        or security data, MCP calls, jobs; the newest first."""
+        context = await asyncio.to_thread(audit_context, request, since, until, who, event, q, None)
+        return _TEMPLATES.TemplateResponse(request, "access.html", context)
+
+    @app.get("/api/access/export", dependencies=[Depends(admin)])
+    async def access_export(since: str = "", until: str = "", who: str = "", event: str = "", q: str = "",
+                            format: str = "csv"):
+        """The entries of a period, as the page filters them: CSV or JSON."""
+        entries = await asyncio.to_thread(audit_entries, since, until, who, event, q, None)
+        return audit_export(entries, format, "machine")
+
+    @app.get("/api/access/verify", dependencies=[Depends(admin)])
+    async def access_verify():
+        """Whether the chain of the access log holds, and where it breaks."""
+        return await asyncio.to_thread(access_log.verify)
+
+    @app.get("/workspaces/{workspace}/audit", dependencies=[Depends(admin)])
+    async def workspace_audit(request: Request, workspace: str, q: str = "", since: str = "", until: str = "",
+                              who: str = "", event: str = ""):
+        """The access log of a workspace, for its admins (their auditors):
+        what was done on its instances and by its users, by anyone, the
+        machine's admins too; never the machine's own entries."""
+        ws = a_workspace(workspace)
+        context = await asyncio.to_thread(audit_context, request, since, until, who, event, q, ws)
+        return _TEMPLATES.TemplateResponse(request, "access.html", context)
+
+    @app.get("/api/workspaces/{workspace}/audit/export", dependencies=[Depends(admin)])
+    async def workspace_audit_export(workspace: str, since: str = "", until: str = "", who: str = "",
+                                     event: str = "", q: str = "", format: str = "csv"):
+        ws = a_workspace(workspace)
+        entries = await asyncio.to_thread(audit_entries, since, until, who, event, q, ws.name)
+        return audit_export(entries, format, ws.name)
 
     @app.post("/api/access/users/save")
     async def user_save(payload: dict = Body(...), me: Principal = Depends(admin)):
@@ -6776,7 +6991,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     async def options_page(request: Request):
         return _TEMPLATES.TemplateResponse(request, "options.html", {
             "options": settings.options, "options_file": settings.options_file, "machine": settings.machine,
-            "font_sizes": SHELL_FONT_SIZES, "idle_hours": TUNNEL_IDLE_HOURS})
+            "font_sizes": SHELL_FONT_SIZES, "idle_hours": TUNNEL_IDLE_HOURS,
+            "retention_limits": AUDIT_RETENTION_LIMITS, "syslog_protocols": SYSLOG_PROTOCOLS})
 
     @app.post("/api/options/save", dependencies=[Depends(admin)])
     async def options_save(payload: dict = Body(...)):
@@ -6791,6 +7007,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             payload = {**payload, "mail": {**mail, "password": settings.options.smtp_password}}
         if "monitor" not in payload:
             payload = {**payload, "monitor": {"notify": list(settings.options.monitor_notify)}}
+        if "audit" not in payload:
+            # the access log's: not posted keeps the saved ones (a script of before)
+            current = settings.options
+            payload = {**payload, "audit": {"retention_days": current.audit_retention_days, "syslog": {
+                "host": current.syslog_host, "port": current.syslog_port, "protocol": current.syslog_protocol,
+                "ca_file": current.syslog_ca_file}}}
         try:
             options = parse_options(payload)
         except ConfigError as exc:
@@ -6800,6 +7022,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         except OSError as exc:
             return refuse(f"Cannot write {settings.options_file}: {exc}", 500)
         settings.options = options
+        apply_audit_options()
+        audit_status_cache.clear()
         return {"ok": True}
 
     # --- scheduled actions ----------------------------------------------

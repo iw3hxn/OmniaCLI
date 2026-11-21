@@ -1491,6 +1491,10 @@ TUNNEL_IDLE = 4
 TUNNEL_IDLE_HOURS = (1, 720)
 TUNNEL_BIND = "127.0.0.1"
 TUNNEL_PORTS = "18000-18099"
+# the access log's period (NIS 2): days; 0 = by size only, as before
+AUDIT_RETENTION_DAYS = 365
+AUDIT_RETENTION_LIMITS = (0, 3650)
+SYSLOG_PROTOCOLS = ("udp", "tcp", "tls")
 
 
 @dataclass
@@ -1510,6 +1514,13 @@ class Options:
     mail_from: str = ""
     # who is told when an instance goes down, a disk fills, a certificate ends
     monitor_notify: list = field(default_factory=list)
+    # the access log (accesslog.py, docs/nis2-audit.md): the days every
+    # entry is kept at least, and the SIEM each entry is sent to (siem.py)
+    audit_retention_days: int = AUDIT_RETENTION_DAYS
+    syslog_host: str = ""
+    syslog_port: int = 514
+    syslog_protocol: str = "udp"  # SYSLOG_PROTOCOLS
+    syslog_ca_file: str = ""
 
 
 SMTP_SECURITY = ("starttls", "ssl", "none")
@@ -1578,10 +1589,27 @@ def parse_options(data) -> Options:
     monitor = data.get("monitor") or {}
     if not isinstance(monitor, dict):
         raise ConfigError("monitor must be a mapping")
+    audit = data.get("audit") or {}
+    syslog = (audit.get("syslog") or {}) if isinstance(audit, dict) else None
+    if not isinstance(audit, dict) or not isinstance(syslog, dict):
+        raise ConfigError("audit and audit.syslog must be mappings")
+    retention = _whole(audit.get("retention_days", AUDIT_RETENTION_DAYS), "audit.retention_days", AUDIT_RETENTION_LIMITS)
+    syslog_host = str(syslog.get("host") or "").strip()
+    if syslog_host and not re.fullmatch(r"[A-Za-z0-9.:_-]{1,253}", syslog_host):
+        raise ConfigError(f"audit.syslog.host: {syslog_host!r} is not a host name or an IP address")
+    protocol = str(syslog.get("protocol") or "udp")
+    if protocol not in SYSLOG_PROTOCOLS:
+        raise ConfigError(f"audit.syslog.protocol: one of {', '.join(SYSLOG_PROTOCOLS)}")
+    syslog_port = _whole(syslog.get("port", 6514 if protocol == "tls" else 514), "audit.syslog.port", (1, 65535))
+    ca_file = str(syslog.get("ca_file") or "").strip()
+    if ca_file and (not ca_file.startswith("/") or any(ord(c) < 32 for c in ca_file) or len(ca_file) > 1024):
+        raise ConfigError("audit.syslog.ca_file: an absolute path, or empty for the system's certificates")
     return Options(shell_font_size=size, tunnel_idle_hours=idle, tunnel_bind=bind, tunnel_ports=ports,
                    smtp_host=texts["host"], smtp_port=port, smtp_security=security, smtp_user=texts["user"],
                    smtp_password=texts["password"], mail_from=texts["from"],
-                   monitor_notify=parse_notify(monitor.get("notify"), "monitor.notify"))
+                   monitor_notify=parse_notify(monitor.get("notify"), "monitor.notify"),
+                   audit_retention_days=retention, syslog_host=syslog_host, syslog_port=syslog_port,
+                   syslog_protocol=protocol, syslog_ca_file=ca_file)
 
 
 def load_options(path: Path) -> Options:
@@ -1608,6 +1636,11 @@ def save_options(path: Path, options: Options) -> None:
                         "user": options.smtp_user, "password": options.smtp_password, "from": options.mail_from}
     if options.monitor_notify:
         data["monitor"] = {"notify": list(options.monitor_notify)}
+    if options.audit_retention_days != AUDIT_RETENTION_DAYS or options.syslog_host:
+        data["audit"] = {"retention_days": options.audit_retention_days}
+        if options.syslog_host:
+            data["audit"]["syslog"] = {"host": options.syslog_host, "port": options.syslog_port,
+                                       "protocol": options.syslog_protocol, "ca_file": options.syslog_ca_file}
     text = yaml.safe_dump(data, sort_keys=False)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")

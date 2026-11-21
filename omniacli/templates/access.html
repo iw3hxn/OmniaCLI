@@ -1,42 +1,93 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{#- The access log (NIS 2, docs/nis2-audit.md): the machine's, for its admins
+    (ws none), or a workspace's, for its admins (ws: its entries only). -#}
 {% extends "base.html" %}
 {% block title %}{{ _("Access log") }} · OmniaCLI{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
-{{ crumbs([(_("Settings"), "/settings"), (_("Users"), "/users"), (_("Access log"), None)]) }}
+{% if ws %}{{ crumbs([(_("Settings"), "/settings"), (_("Workspace {name}", name=ws.name), "/workspaces/" ~ ws.name), (_("Access log"), None)]) }}
+{% else %}{{ crumbs([(_("Settings"), "/settings"), (_("Users"), "/users"), (_("Access log"), None)]) }}{% endif %}
 {% endblock %}
 {% block content %}
 {% set events = {"login": _("Login"), "logout": _("Logout"), "failed": _("Failed login"), "mcp": _("MCP call"),
-                 "shell": _("Shell"), "action": _("Action"), "download": _("Download"), "login-as": _("Log in as")} %}
+                 "shell": _("Shell"), "tunnel": _("Tunnel"), "action": _("Action"), "read": _("Read"),
+                 "download": _("Download"), "login-as": _("Log in as"), "job": _("Job ended"),
+                 "delete backup": _("Backup deleted"), "show destination key": _("Destination key shown"),
+                 "siem": _("SIEM")} %}
 {% set kinds = {"user": _("login page"), "link": _("link"), "token": _("MCP token (API)"), "mcp": _("MCP"),
-                "burst": _("many attempts")} %}
-{% set badges = {"failed": "error", "login": "ok", "logout": "", "action": "info", "login-as": "warn"} %}
+                "burst": _("many attempts"), "job": _("job"), "hook": _("deploy hook"), "system": _("OmniaCLI")} %}
+{% set badges = {"failed": "error", "login": "ok", "logout": "", "action": "info", "login-as": "warn", "read": "warn",
+                 "siem": "error"} %}
+{% set here = prefix ~ ("/workspaces/" ~ ws.name ~ "/audit" if ws else "/access") %}
+{% set export = prefix ~ ("/api/workspaces/" ~ ws.name ~ "/audit/export" if ws else "/api/access/export") %}
+{% set query = {"since": since, "until": until, "who": who, "event": event, "q": q} | dictsort | selectattr(1) | list %}
 <div class="page-head">
   <div>
-    <h1>{{ _("Access log") }}</h1>
-    <p>{{ _("Who logged in, from where, and what they asked: logins, MCP calls, actions and downloads.") }}</p>
+    <h1>{{ _("Access log") }}{% if ws %} · {{ ws.name }}{% endif %}</h1>
+    <p>{% if ws %}{{ _("What was done on the instances of this workspace and by its users, by anyone, the integrator's admins too: logins, actions, reads of its data, jobs. For its auditors: export a period as CSV or JSON.") }}
+    {% else %}{{ _("Who logged in, from where, and what they did: logins, actions, reads of customer and security data, MCP calls, downloads, jobs.") }}{% endif %}</p>
   </div>
 </div>
+{% if status %}
+{% set room = status.room %}
 <section class="panel">
-  <form class="actions job-filter" method="get" action="{{ prefix }}/access" style="margin: 0 0 12px">
-    <input type="search" name="q" value="{{ q }}" placeholder="{{ _('Search user, address, event, tool…') }}" aria-label="{{ _('Search') }}">
-    <button class="primary" title="{{ _('Shows the entries that have every word written, in any column, among the last 5000') }}">{{ _("Search") }}</button>
-    {% if q %}<a class="button" href="{{ prefix }}/access" title="{{ _('Shows all the entries again') }}">{{ _("Clear") }}</a>{% endif %}
+  <h2 style="margin-bottom: 8px">{{ _("Retention and integrity") }}</h2>
+  {% if room.low %}<div class="banner warn">{{ _("The disk of the access log may not hold it for its whole period: {free} free, about {needed} still needed at the pace of these days ({per_day} a day). Free some room or move the logs: no entry younger than the period is dropped, and when the disk is full new entries are lost.", free=room.free | filesizeformat(true), needed=room.needed | filesizeformat(true), per_day=room.per_day | filesizeformat(true)) }}</div>{% endif %}
+  {% if status.clock.synced is false %}<div class="banner warn">{{ _("The system clock is not synchronised ({detail}): the times of the entries may be wrong. Enable NTP (timedatectl set-ntp true) or chrony.", detail=status.clock.detail) }}</div>
+  {% elif status.clock.synced is none %}<div class="banner info">{{ _("Whether the system clock is synchronised is not known here ({detail}).", detail=status.clock.detail) }}</div>{% endif %}
+  {% if status.siem.failing %}<div class="banner warn">{{ _("Sending to the SIEM fails ({why}): {count} entries wait to be sent.", why=status.siem.failing, count=status.siem.waiting) }}</div>{% endif %}
+  <div class="form-grid">
+    <span>{{ _("Kept at least") }}</span>
+    <span>{% if status.retention_days %}{{ _("{days} days", days=status.retention_days) }}{% else %}{{ _("by size only (10 files of 5 MB)") }}{% endif %}
+      <a href="{{ prefix }}/options#audit" title="{{ _('Opens the Options page, where the period and the SIEM are set') }}">{{ _("change") }}</a></span>
+    <span>{{ _("Oldest entry") }}</span>
+    <span>{% if room.first %}<span data-when-ns="{{ room.first }}"></span>{% else %}—{% endif %}
+      · {{ _("{size} in {files} files, about {per_day} a day", size=room.bytes | filesizeformat(true), files=room.files, per_day=room.per_day | filesizeformat(true)) }}
+      {% if room.free is not none %}· {{ _("{free} free on its disk", free=room.free | filesizeformat(true)) }}{% endif %}</span>
+    <span>{{ _("System clock") }}</span>
+    <span>{% if status.clock.synced %}<span class="status success">{{ _("synchronised") }}</span>{% elif status.clock.synced is false %}<span class="status failed">{{ _("not synchronised") }}</span>{% else %}{{ _("unknown") }}{% endif %}
+      <span class="muted mono">{{ status.clock.source }} {{ status.clock.detail }}</span></span>
+    <span>{{ _("SIEM (syslog)") }}</span>
+    <span>{% if status.siem.target %}<span class="mono">{{ status.siem.target }}</span> · {{ _("{count} sent since OmniaCLI started", count=status.siem.sent) }}{% if status.siem.dropped %}, {{ _("{count} dropped", count=status.siem.dropped) }}{% endif %}{% else %}{{ _("none") }}{% endif %}</span>
+    <span>{{ _("Chain of the entries") }}</span>
+    <span><button type="button" id="verify" title="{{ _('Reads every entry kept and checks that each one carries the hash of the one before it (GET /api/access/verify): a line changed, removed or added shows where') }}">{{ _("Check the chain") }}</button>
+      <span id="verify-result"></span></span>
+  </div>
+</section>
+{% endif %}
+<section class="panel">
+  <form class="actions job-filter" method="get" action="{{ here }}" style="margin: 0 0 12px; flex-wrap: wrap">
+    <label>{{ _("From") }} <input type="date" name="since" value="{{ since }}" title="{{ _('The first day of the period (this machine’s time); empty: the last 5000 entries') }}"></label>
+    <label>{{ _("To") }} <input type="date" name="until" value="{{ until }}" title="{{ _('The last day of the period, included') }}"></label>
+    <input type="text" name="who" value="{{ who }}" placeholder="{{ _('User') }}" aria-label="{{ _('User') }}" title="{{ _('The entries of a user, a token or a link (a part of the name is enough), or of who acted through a link') }}">
+    <select name="event" aria-label="{{ _('Event') }}" title="{{ _('The entries of one kind only') }}">
+      <option value="">{{ _("Every event") }}</option>
+      {% for key, label in events | dictsort(by="value") %}<option value="{{ key }}" {{ "selected" if event == key }}>{{ label }}</option>{% endfor %}
+    </select>
+    <input type="search" name="q" value="{{ q }}" placeholder="{{ _('Search address, route, detail…') }}" aria-label="{{ _('Search') }}">
+    <button class="primary" title="{{ _('Shows the entries of the period, the user and the event chosen that have every word written, in any column') }}">{{ _("Search") }}</button>
+    {% if query %}<a class="button" href="{{ here }}" title="{{ _('Shows the last entries again, with no filter') }}">{{ _("Clear") }}</a>{% endif %}
+    <a class="button" href="{{ export }}?{{ (query + [('format', 'csv')]) | urlencode }}" title="{{ _('Saves the entries these filters find, the whole period and not only the 500 shown, as a CSV file (the oldest first)') }}">{{ _("Export CSV") }}</a>
+    <a class="button" href="{{ export }}?{{ (query + [('format', 'json')]) | urlencode }}" title="{{ _('Saves the entries these filters find as a JSON file, every field of each entry, the hash of the chain too') }}">{{ _("Export JSON") }}</a>
   </form>
   <p class="muted" style="margin: 0 0 10px">{% if total == 1 %}{{ _("1 entry") }}{% else %}{{ _("{count} entries", count=total) }}{% endif %}{% if total > entries | length %}, {{ _("the last {count} shown", count=entries | length) }}{% endif %}.</p>
   <div class="scroll">
   <table>
-    <tr><th>{{ _("Date and time") }}</th><th>{{ _("Event") }}</th><th>{{ _("Who") }}</th><th>{{ _("Through") }}</th><th>{{ _("Address") }}</th><th>{{ _("Detail") }}</th></tr>
+    <tr><th>{{ _("Date and time") }}</th><th>{{ _("Event") }}</th><th>{{ _("Who") }}</th><th>{{ _("Through") }}</th><th>{{ _("Role") }}</th>
+      <th>{{ _("Workspace") }}</th><th>{{ _("Address") }}</th><th>{{ _("Outcome") }}</th><th>{{ _("Detail") }}</th></tr>
     {% for e in entries %}
     <tr>
-      <td class="mono muted" style="white-space: nowrap">{{ e.time | replace("T", " ") }}</td>
+      <td class="mono muted" style="white-space: nowrap" data-when="{{ e.time }}" title="{{ e.time }}{% if e.utc %} · UTC {{ e.utc }}{% endif %}">{{ e.time | replace("T", " ") }}</td>
       <td class="{{ 'error' if e.event == 'failed' }}"><span class="badge {{ badges.get(e.event, '') }}">{{ events.get(e.event, e.event) }}</span></td>
-      <td>{{ e.name or "—" }}</td>
+      <td>{{ e.name or "—" }}{% if e.on_behalf %} <span class="muted">({{ _("for {name}", name=e.on_behalf) }})</span>{% endif %}</td>
       <td>{{ kinds.get(e.kind, e.kind) }}</td>
+      <td>{{ e.role or "" }}</td>
+      <td>{{ e.workspace or (e.workspaces | join(", ") if e.workspaces else "") }}</td>
       <td class="mono">{{ e.ip }}</td>
-      <td class="mono">{% if e.kind == "link" and e.detail and e.event not in ("failed", "shell", "action", "download") %}{{ _("acting for {name}", name=e.detail) }}{% else %}{{ e.detail }}{% endif %}</td>
+      <td class="mono">{{ e.status if e.status is defined else "" }}{% for id in e.job or [] %} <a href="{{ prefix }}/jobs/{{ id }}" title="{{ _('Opens the job this entry started or ended, with its log') }}">{{ _("job") }}</a>{% endfor %}</td>
+      <td class="mono">{% if e.kind == "link" and e.detail and e.event not in ("failed", "shell", "action", "download", "read") %}{{ _("acting for {name}", name=e.detail) }}{% else %}{{ e.detail }}{% endif %}</td>
     </tr>
     {% else %}
-    <tr><td colspan="6" class="muted">{{ _("No entries match.") if q else _("No accesses logged yet.") }}</td></tr>
+    <tr><td colspan="9" class="muted">{{ _("No entries match.") if query else _("No accesses logged yet.") }}</td></tr>
     {% endfor %}
   </table>
   </div>
@@ -44,6 +95,36 @@
 <details class="panel">
   <summary title="{{ _('Shows what goes into this log and the files it is saved in') }}">{{ _("What is logged, and where") }}</summary>
   <p class="muted" style="margin-bottom: 0">{{ _("A user's login and logout are those of the login page; a link or an MCP token logs in with its first request after 30 minutes without requests from the same address; a failed login is a wrong password or token; every MCP call is listed with its method and tool, every action with what was asked and the answer, every download of a backup with its file.") }}
-  {{ _("Saved in") }} <span class="mono">{{ log_file }}</span>, {{ _("the failed logins in") }} <span class="mono">{{ failed_file }}</span>.</p>
+  {{ _("Every read of customer data (an instance's log, its database, the caught mail, the backups) or of security data (this log, OmniaCLI's log, the credentials) is listed too, the same page once every 10 minutes; every job's end with its outcome. Each entry carries the hash of the one before it, so that a change shows.") }}
+  {% if not ws %}{{ _("Saved in") }} <span class="mono">{{ log_file }}</span>, {{ _("the failed logins in") }} <span class="mono">{{ failed_file }}</span>.{% endif %}</p>
 </details>
+<script>
+  // the times as people write them (gg/mm/aaaa hh:mm); the whole one, with UTC, in the title
+  for (const cell of document.querySelectorAll("[data-when]")) cell.textContent = window.whenText(cell.dataset.when);
+  for (const cell of document.querySelectorAll("[data-when-ns]")) {
+    const at = new Date(Number(cell.dataset.whenNs) / 1e6);
+    const pad = (n) => String(n).padStart(2, "0");
+    cell.textContent = window.whenText(`${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}T${pad(at.getHours())}:${pad(at.getMinutes())}`);
+  }
+  const verify = document.getElementById("verify");
+  if (verify) verify.addEventListener("click", async () => {
+    const out = document.getElementById("verify-result");
+    verify.disabled = true;
+    out.textContent = {{ _("checking…") | tojson }};
+    const resp = await fetch("{{ prefix }}/api/access/verify", {headers: {Accept: "application/json"}}).catch(() => null);
+    const data = resp && resp.ok ? await resp.json().catch(() => null) : null;
+    verify.disabled = false;
+    if (!data) { out.textContent = {{ _("OmniaCLI cannot be reached") | tojson }}; return; }
+    if (data.ok) {
+      out.innerHTML = '<span class="status success"></span>';
+      out.firstChild.textContent = {{ _("intact: {count} entries, each one follows the one before") | tojson }}.replace("{count}", data.entries);
+      return;
+    }
+    out.textContent = "";
+    const lines = data.breaks.map((b) => `${b.file}:${b.line} — ${b.reason}`).join("\n");
+    omniaSay({{ _("The chain breaks: the entries named were changed, or lines were removed or added before them.") | tojson }} + "\n\n" + lines);
+    out.innerHTML = '<span class="status failed"></span>';
+    out.firstChild.textContent = {{ _("broken: {count} places") | tojson }}.replace("{count}", data.breaks.length);
+  });
+</script>
 {% endblock %}

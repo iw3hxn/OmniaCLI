@@ -593,8 +593,9 @@ async def test_access_log(client, env):
         ("login", "user", "admin"), ("failed", "user", "admin")]
     assert entries[0]["time"][:4].isdigit() and entries[1]["detail"] == "login form"
     page = await client.get("/access")
-    assert page.status_code == 200 and "Failed login" in page.text
-    assert "Failed login" not in (await client.get("/access?q=nothing-matches")).text
+    assert page.status_code == 200 and ">Failed login</span>" in page.text
+    # the badge of an entry; the list of the events names it too
+    assert ">Failed login</span>" not in (await client.get("/access?q=nothing-matches")).text
 
 
 async def test_failures_cannot_push_out_the_access_log(tmp_path, monkeypatch):
@@ -620,7 +621,8 @@ async def test_access_log_keeps_its_older_files(tmp_path, monkeypatch):
     from omniacli import accesslog
 
     monkeypatch.setattr(accesslog, "MAX_BYTES", 100)
-    log = accesslog.AccessLog(tmp_path / "access.jsonl")
+    # retention_days 0: by size only, as before the period of NIS 2 (test_audit.py)
+    log = accesslog.AccessLog(tmp_path / "access.jsonl", retention_days=0)
     for n in range(40):
         log.record("action", "user", f"u{n}", "", "")
     assert (tmp_path / "access.jsonl.5").exists()

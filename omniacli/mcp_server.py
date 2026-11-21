@@ -148,6 +148,19 @@ def _rpc_summary(body: bytes) -> str:
     return ", ".join(found)
 
 
+def _rpc_server(body: bytes) -> str:
+    """The server a tools/call names in its arguments ("" when none, or several calls)."""
+    try:
+        data = json.loads(body or b"null")
+    except ValueError:
+        return ""
+    if not isinstance(data, dict) or not isinstance(data.get("params"), dict):
+        return ""
+    arguments = data["params"].get("arguments")
+    server = arguments.get("server") if isinstance(arguments, dict) else None
+    return server[:64] if isinstance(server, str) else ""
+
+
 def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampler: Sampler,
                authenticator: Authenticator, access_log: AccessLog, add_draft,
                link_call=None, uptime=None) -> tuple[Route, object]:
@@ -769,7 +782,10 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
                 chunks.append(message.get("body", b""))
                 more = message.get("more_body", False)
             body = b"".join(chunks)
-            access_log.record("mcp", kind, name, ip, _rpc_summary(body) or f"{scope.get('method', '')} /mcp")
+            server = _rpc_server(body)
+            access_log.record("mcp", kind, name, ip, _rpc_summary(body) or f"{scope.get('method', '')} /mcp",
+                              role=role, server=server,
+                              workspace=workspace or (settings.workspace_of(server) if server else "") or "")
             _ROLE.set(role)
             _SCOPE.set(workspace)
             _WHO.set(who)

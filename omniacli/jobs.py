@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import datetime
 import json
 import logging
@@ -27,6 +28,9 @@ QUEUED, RUNNING, SUCCESS, FAILED, INTERRUPTED, STOPPED = (
     "stopped",
 )
 FINISHED = (SUCCESS, FAILED, INTERRUPTED, STOPPED)
+# the ids of the jobs the request being served started (app.py: its entry in
+# the access log names them)
+STARTED: contextvars.ContextVar[list | None] = contextvars.ContextVar("omniacli_jobs_started", default=None)
 
 
 class JobFailed(Exception):
@@ -117,6 +121,8 @@ class JobManager:
         # the task of each job not finished, and who asked to stop it
         self._running: dict[str, asyncio.Task] = {}
         self._stop_by: dict[str, str] = {}
+        # called with each job that ends (the access log: its outcome)
+        self.listeners: list[Callable[[Job], None]] = []
         self._load()
 
     def _load(self) -> None:
@@ -181,6 +187,9 @@ class JobManager:
             old_id, _ = self.jobs.popitem(last=False)
             (self.jobs_dir / f"{old_id}.json").unlink(missing_ok=True)
         self._save(job)
+        started = STARTED.get()
+        if started is not None:
+            started.append(job.id)
         task = asyncio.get_running_loop().create_task(self._run(job, action))
         self._tasks.add(task)
         self._running[job.id] = task
@@ -234,3 +243,9 @@ class JobManager:
             self._save(job)
             for lock in reversed(held):
                 lock.release()
+            if job.finished_flag:
+                for listener in self.listeners:
+                    try:
+                        listener(job)
+                    except Exception:  # noqa: BLE001 - a listener must not change the job's end
+                        _logger.exception("job %s: a listener of its end failed", job.id)

@@ -13,6 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from .accesslog import AccessLog
 from .auth import ROLES, hash_password, hash_token, new_token
 from .config import ConfigError, load_settings
 from .packagesign import SigningError, load_private_key, new_private_key, sign_file, verify_local
@@ -74,6 +75,17 @@ def _check_config(args) -> int:
             print(f"  [{mark}] {check.target:<10} {check.name}: {check.detail}")
         failed = failed or not ok
     return 1 if failed else 0
+
+
+def _verify_access_log(args) -> int:
+    """The chain of the access log (accesslog.py): 0 intact, 1 broken."""
+    folder = Path(args.logs_dir) if args.logs_dir else load_settings(args.config).logs_dir
+    found = AccessLog(folder / "access.jsonl").verify()
+    for broken in found["breaks"]:
+        print(f"{broken['file']}:{broken['line']}: {broken['reason']}")
+    print(f"{found['entries']} entries in {folder}: " + ("the chain is intact" if found["ok"] else
+                                                          f"the chain breaks in {len(found['breaks'])} places"))
+    return 0 if found["ok"] else 1
 
 
 def _passphrase(prompt: str, repeat: bool) -> bytes:
@@ -256,6 +268,12 @@ def main(argv: list[str] | None = None) -> int:
     check = sub.add_parser("check-config", help="run the Test & activate checks on every server")
     check.add_argument("-c", "--config", default="omniacli.yaml")
     check.set_defaults(func=_check_config)
+
+    verify_log = sub.add_parser("verify-access-log",
+                                help="check that no entry of the access log was changed, removed or added (its hash chain)")
+    verify_log.add_argument("-c", "--config", default="omniacli.yaml")
+    verify_log.add_argument("--logs-dir", help="the folder of access.jsonl, instead of the configuration's")
+    verify_log.set_defaults(func=_verify_access_log)
 
     args = parser.parse_args(argv)
     try:

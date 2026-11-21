@@ -74,6 +74,30 @@
              placeholder="{{ _('emails or webhook URLs, separated by commas') }}">
     </div>
   </section>
+  <section class="panel" id="audit">
+    <h2 style="margin-bottom: 4px">{{ _("Access log (NIS 2)") }}</h2>
+    <p class="muted" style="font-size: 13px; margin-top: 0">{{ _("Every entry of the access log is kept at least this many days: past it, the oldest files go when the log grows, never a younger entry. 0 keeps 10 files of 5 MB, as before. Each entry can also be sent, as it is written, to a SIEM by syslog (RFC 5424): a SIEM that does not answer never stops an action, its failure is written in the log.") }}</p>
+    <div class="form-grid">
+      <label for="audit-retention">{{ _("Keep (days)") }}</label>
+      <input type="number" id="audit-retention" class="mono" required min="{{ retention_limits[0] }}" max="{{ retention_limits[1] }}" step="1"
+             value="{{ options.audit_retention_days }}"
+             title="{{ _('The days every entry is kept at least ({low}-{high}); 365 by default: confirm the period your NIS 2 obligations ask for', low=retention_limits[0], high=retention_limits[1]) }}">
+      <label for="syslog-host">{{ _("SIEM: syslog server") }}</label>
+      <input type="text" id="syslog-host" class="mono" value="{{ options.syslog_host }}" placeholder="{{ _('empty: none') }}"
+             title="{{ _('The host name or IP address of the syslog server every entry is sent to; empty: none') }}">
+      <label for="syslog-protocol">{{ _("Protocol") }}</label>
+      <select id="syslog-protocol" title="{{ _('UDP: no answer, a lost entry is not known; TCP: in order, with a reconnection; TLS: TCP encrypted, the server checked against the system certificates or the CA file') }}">
+        {% for value, label in (("udp", "UDP"), ("tcp", "TCP"), ("tls", "TCP + TLS")) %}
+        <option value="{{ value }}" {{ "selected" if options.syslog_protocol == value }}>{{ label }}</option>{% endfor %}
+      </select>
+      <label for="syslog-port">{{ _("Port") }}</label>
+      <input type="number" id="syslog-port" class="mono" min="1" max="65535" value="{{ options.syslog_port }}"
+             title="{{ _('514 for UDP and TCP, 6514 for TLS, as a rule') }}">
+      <label for="syslog-ca">{{ _("CA file (TLS)") }}</label>
+      <input type="text" id="syslog-ca" class="mono" value="{{ options.syslog_ca_file }}" placeholder="/etc/ssl/certs/siem-ca.pem"
+             title="{{ _('The certificate of the authority that signed the syslog server’s, an absolute path on this machine; empty: the system certificates') }}">
+    </div>
+  </section>
   <div class="actions">
     <button type="submit" class="primary" title="{{ _('Saves the options of this page for every user of this OmniaCLI: they hold from now. A password left empty keeps the saved one. The page stays open.') }}">{{ _("Save") }}</button>
     <a class="button" href="{{ prefix }}/settings" title="{{ _('Goes back to Settings: what was changed here and not saved is lost.') }}">{{ _("Cancel") }}</a>
@@ -100,6 +124,11 @@ document.getElementById("form").addEventListener("submit", async (ev) => {
              password: document.getElementById("mail-password").value,
              from: document.getElementById("mail-from").value.trim()},
       monitor: {notify: document.getElementById("monitor-notify").value.split(/[\s,;]+/).filter(Boolean)},
+      audit: {retention_days: Number(document.getElementById("audit-retention").value),
+              syslog: {host: document.getElementById("syslog-host").value.trim(),
+                       protocol: document.getElementById("syslog-protocol").value,
+                       port: Number(document.getElementById("syslog-port").value || 514),
+                       ca_file: document.getElementById("syslog-ca").value.trim()}},
     }),
   }).catch(() => null);
   const data = resp ? await resp.json().catch(() => ({})) : {};
