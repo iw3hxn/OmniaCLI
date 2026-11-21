@@ -3,7 +3,17 @@
 Stato: **accettato il 21/11/2026, nella forma mista** (Carlo, dopo i costi di §0: «va bene il misto»). Il cluster
 della macchina è il default per le istanze nuove (clienti piccoli, staging, test); il database dedicato di oggi resta
 un'opzione per il cliente grande o delicato, con ripristino a un minuto e replica solo suoi; le istanze esistenti restano
-dedicate e si spostano a richiesta con un job annullabile (AD-007). Si costruisce nell'ordine di §9. Codice letto alla revisione 57a005c (`carlo_dev_2026`).
+dedicate e si spostano a richiesta con un job annullabile (AD-007). Si costruisce nell'ordine di §9.
+
+**Costruito al 21/11/2026 (release 2026.1.5463)**, provato su una macchina di prova: il cluster della macchina
+(AD-001), l'isolamento per ruolo, database e tablespace (AD-002: il ruolo di un ambiente entra solo nel suo database),
+la regolazione del cluster (AD-005), backup, ripristino e staging delle sue istanze, lo spostamento nei due sensi con
+l'annullamento (AD-007: Odoo fermo 8,3 s e 4,5 s su un database di 21 MiB).
+**Non costruito, per scelta dichiarata a schermo: AD-006.** Il ripristino a un minuto resta dei database dedicati:
+su un'istanza del cluster la pagina dice «spostala in un database dedicato per averlo». È coerente con la forma mista
+(il cliente che vuole il ripristino a un minuto tiene il dedicato) e toglie il costo di §0 (estrarre tutto il cluster
+per un cliente). Se serve sul cluster, AD-006 resta il disegno da costruire. Non costruiti nemmeno il database su
+un'altra macchina (AD-003) e la replica di lettura (AD-004). Codice letto alla revisione 57a005c (`carlo_dev_2026`).
 Origine: Carlo, 21/11/2026, UX-008 D2: «Farei un Postgresql per Macchina ma attenzione che la singola istanza potrebbe far uso di un Postgresql su un altra macchina. Poi va considerato il caso di Odoo19 che può montare 2 database in cluster». Riferimento: la scheda PostgreSQL del pannello di riferimento (schermate 04-05 del 21/11/2026).
 
 ## 0. Il costo della decisione, in numeri (da confermare)
