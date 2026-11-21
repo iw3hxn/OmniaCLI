@@ -474,6 +474,27 @@ class DockerPlugin(ServicePlugin):
             partial.unlink(missing_ok=True)
         return dest
 
+    async def backup_estimate(self, instance: Instance) -> dict:
+        """The database's size from its own PostgreSQL (pg-report) and the
+        files from the environment's newest backup, when there is one: the
+        filestore lives in the project's data, which this user cannot read.
+        None of the backup's lists (a compose dump takes the whole database)."""
+        from .. import pgreport
+        try:
+            database = int((await pgreport.report(instance)).get("size") or 0)
+        except JobFailed as exc:
+            raise JobFailed(f"the size of the database cannot be read: {exc}") from exc
+        files = None
+        if self._host is not None:
+            folder = self._host.backup_folder(instance)
+            zips = sorted(folder.glob("*.zip"), key=lambda p: p.stat().st_mtime) if folder.is_dir() else []
+            full = [z for z in zips if NO_FILESTORE not in z.stem]
+            # the newest backup with the filestore holds it and a dump of the
+            # database: what is beyond the database is the files, about
+            if full:
+                files = max(full[-1].stat().st_size - database, 0)
+        return {"database": database, "files": files}
+
     def backup_fields(self) -> list[Field]:
         return [Field("no_filestore", "Without filestore", kind="checkbox", default=False,
                       help=f"Database only, no attachments: a smaller backup (Odoo {NO_FILESTORE_MAJOR} and "

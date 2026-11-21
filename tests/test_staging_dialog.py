@@ -314,3 +314,37 @@ async def test_rebuild_with_data_only_or_with_code(two, acme, env):
     assert not (Path(staging.repositories[0].path).parent / "extra").exists()
     # a staging made outside a workspace cannot have its code back; not a staging: none
     assert (await two.post("/api/servers/acme-odoo/stagings/refresh", headers=POST, json={"code": True})).status_code == 404
+
+
+def test_the_estimate_of_a_compose_instance(tmp_path, monkeypatch):
+    """A compose environment's backup estimate: the database's size from its
+    PostgreSQL, the files from its newest backup with the filestore."""
+    import asyncio
+    import os
+
+    from omniacli import pgreport
+    from omniacli.docker import DockerPlugin
+
+    async def report(instance):
+        return {"size": 30_000_000}
+    monkeypatch.setattr(pgreport, "report", report)
+    folder = tmp_path / "b"
+    folder.mkdir()
+    (folder / "db_1.zip").write_bytes(b"x" * 10)
+    (folder / "db_2.zip").write_bytes(b"x" * 50_000)
+    (folder / "db_3_nofilestore.zip").write_bytes(b"x" * 5)
+    for i, name in enumerate(("db_1.zip", "db_2.zip", "db_3_nofilestore.zip")):
+        os.utime(folder / name, (1000 + i, 1000 + i))
+
+    class Host:
+        def backup_folder(self, instance):
+            return folder
+    plugin = DockerPlugin()
+    plugin._host = Host()
+    found = asyncio.run(plugin.backup_estimate(object()))
+    assert found == {"database": 30_000_000, "files": 0}
+    (folder / "db_2.zip").write_bytes(b"x" * 40_000_000)
+    os.utime(folder / "db_2.zip", (1001, 1001))
+    assert asyncio.run(plugin.backup_estimate(object())) == {"database": 30_000_000, "files": 10_000_000}
+    plugin._host = None
+    assert asyncio.run(plugin.backup_estimate(object()))["files"] is None
