@@ -806,10 +806,10 @@ async def test_web_link_follows_the_domain(client, env):
     test.options.odoo_config.write_text("[options]\nhttp_port = 8123\n")
     page = (await client.get("/servers/srv?view=test", headers={"Authorization": AUTH})).text
     # Open Odoo, on localhost too (a developer's machine)
-    assert 'class="button primary" href="http://localhost:8123" target="_blank"' in page
+    assert 'class="button" href="http://localhost:8123" target="_blank"' in page
     test.domain = "https://test.example.com"
     page = (await client.get("/servers/srv?view=test", headers={"Authorization": AUTH})).text
-    assert 'class="button primary" href="https://test.example.com" target="_blank"' in page
+    assert 'class="button" href="https://test.example.com" target="_blank"' in page
     assert "<h1>test.example.com" in page
     # the Dashboard names it by its address
     page = (await client.get("/", headers={"Authorization": AUTH})).text

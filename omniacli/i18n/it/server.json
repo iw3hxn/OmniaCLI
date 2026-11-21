@@ -368,6 +368,7 @@
  "Save and restart": "Salva e riavvia",
  "Saved in {file}, readable by its owner only.": "Salvate in {file}, leggibile solo dal suo proprietario.",
  "Saves database and filestore in a zip on this machine; the dialog has the choices, for example without filestore. The file shows in the Backups tab.": "Salva database e filestore in uno zip su questa macchina; nel dialogo le scelte, per esempio senza filestore. Il file compare nella scheda Backup.",
+ "Saves database and filestore in a zip on this machine; the dialog has the choices, for example without filestore. The file shows in the list here below.": "Salva database e filestore in uno zip su questa macchina; il dialogo ha le scelte, per esempio senza filestore. Il file compare nell'elenco qui sotto.",
  "Saves the time, the rotation, the destination and the notices of the automatic backups of this instance. The next backup starts at the chosen time, not now: for one at once use More › Back up now. Disabled until something is changed.": "Salva orario, conservazione, destinazione e avvisi dei backup automatici di questa istanza. Il prossimo backup parte all'orario scelto, non adesso: per uno subito usa Altro › Backup adesso. Disattivato finché non cambi qualcosa.",
  "Secret key": "Chiave segreta",
  "Secret: copy it now, it is not shown again": "Segreto: copialo adesso, non si mostra più",

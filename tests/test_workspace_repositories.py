@@ -380,10 +380,15 @@ async def test_five_tabs_and_one_primary(workspaces, client, env, monkeypatch, t
     tabs = re.findall(r'role="tab" data-tab="([a-z-]+)"', page)
     assert tabs == ["overview", "backups", "log", "monitor", "settings"], tabs
     assert not re.search(r'data-panel="(database|addons|odoo-config)"', page)
-    # outside the dialogs: the head's primary only
+    # outside the dialogs (rule of 21/11, as the reference panel): the head is neutral, a tab has at most one
+    # primary, its creating action
     body = re.sub(r"<dialog.*?</dialog>", "", page, flags=re.S)
     body = re.sub(r"<script.*?</script>", "", body, flags=re.S)
-    assert len(re.findall(r'class="[^"]*\bprimary\b[^"]*"', body)) == 1, re.findall(r'class="[^"]*\bprimary\b[^"]*"[^>]*>', body)
+    head = body[body.index('<div class="head-actions">'):body.index('<nav class="tabs"')]
+    assert not re.findall(r'class="[^"]*\bprimary\b', head)
+    for name in tabs:
+        panels = "".join(re.findall(r'<section class="tab-panel[^"]*" data-panel="%s".*?</section>' % name, body, flags=re.S))
+        assert len(re.findall(r'class="[^"]*\bprimary\b[^"]*"', panels)) <= 1, name
     assert len(re.findall(r"<th>Repository</th>", page)) <= 1
 
 

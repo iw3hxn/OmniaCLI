@@ -126,28 +126,28 @@
 
   {% if can_restart %}
   <div class="head-actions">
-    {# one primary: Start when stopped, else Open Odoo at its address (a hosting panel's); Update and the rest beside it #}
-    {% if opens and st != "stopped" %}<a class="button primary" href="{{ inst.web_url }}" target="_blank" rel="noopener" title="{{ _('Opens {url} in a new tab', url=inst.web_url) }}">{{ _("Open Odoo") }} ↗</a>{% endif %}
+    {# the head is neutral (UX-006 rule 1 as of 21/11): the primary of the page is the creating action of the tab in view #}
+    {% if opens and st != "stopped" %}<a class="button" href="{{ inst.web_url }}" target="_blank" rel="noopener" title="{{ _('Opens {url} in a new tab', url=inst.web_url) }}">{{ _("Open Odoo") }} ↗</a>{% endif %}
     {% if login_as[inst.key] %}<button type="button" data-login-as='{{ login_as[inst.key] | tojson }}' title="{{ _('Opens Odoo in a new tab as one of its users, without their password.') }}">{{ _("Log in as…") }}</button>{% endif %}
     {% if st == "stopped" %}
     <form method="post" action="{{ base }}/{{ 'restart' if rt == 'process' else 'start' }}" onsubmit='return confirm({{ _("Start Odoo of {name}?", name=who) | tojson }})'>
       <input type="hidden" name="next" value="{{ here }}">
-      <button class="{{ '' if is_busy else 'primary' }}" {{ off }} title="{{ _('Starts Odoo of {name}.', name=who) }}">{{ icon("start") }}{{ _("Start") }}</button></form>
+      <button {{ off }} title="{{ _('Starts Odoo of {name}.', name=who) }}">{{ icon("start") }}{{ _("Start") }}</button></form>
     {% endif %}
     {% if can_act and st != "stopped" %}
     {% if pull_choices[inst.key] %}
-    <button type="button" class="{{ '' if is_busy or opens else 'primary' }}" {{ off }} data-pull='{{ dict(pull_choices[inst.key], url=base ~ "/pull-restart", title=_("Pull, deploy and restart {key}", key=inst.key), note=package_note) | tojson }}'
+    <button type="button" {{ off }} data-pull='{{ dict(pull_choices[inst.key], url=base ~ "/pull-restart", title=_("Pull, deploy and restart {key}", key=inst.key), note=package_note) | tojson }}'
             title="{{ update_help }}">{{ icon("github") }}{{ _("Update") }}</button>
     {% else %}
     <form method="post" action="{{ base }}/pull-restart"
           onsubmit='return confirm({{ (_("Pull, deploy and restart {key}?", key=inst.key) ~ ("\n\n" ~ package_note if package_note else "")) | tojson }})'>
-      <button class="{{ '' if is_busy or opens else 'primary' }}" {{ off }} title="{{ update_help }}">{{ icon("github") }}{{ _("Update") }}</button></form>
+      <button {{ off }} title="{{ update_help }}">{{ icon("github") }}{{ _("Update") }}</button></form>
     {% endif %}
     {% endif %}
     {% if not can_act and st != "stopped" and (rt != "process" or pid) %}
     <form method="post" action="{{ base }}/restart" onsubmit='return confirm({{ _("Restart Odoo of {name}?", name=who) | tojson }})'>
       <input type="hidden" name="next" value="{{ here }}">
-      <button class="{{ '' if is_busy or opens else 'primary' }}" {{ off }} title="{{ _('Restarts Odoo: whoever is connected loses the connection for a few seconds. It changes neither the code nor the database.') }}">{{ icon("restart") }}{{ _("Restart") }}</button></form>
+      <button {{ off }} title="{{ _('Restarts Odoo: whoever is connected loses the connection for a few seconds. It changes neither the code nor the database.') }}">{{ icon("restart") }}{{ _("Restart") }}</button></form>
     {% endif %}
     {% if merge %}
     <form method="post" action="{{ prefix }}/servers/{{ server.name }}/merge"
@@ -302,7 +302,7 @@
   <div class="panel">
     <div class="section-head">
       <h2>{{ _("Environments") }}</h2>
-      {% if stagings and stagings.can %}<button type="button" id="staging-new" {{ off }}
+      {% if stagings and stagings.can %}<button type="button" class="primary" id="staging-new" {{ off }}
         title="{{ _('A copy of production as it is now, neutralized (no outgoing mail, no scheduled actions), at an address of its own. Production stays on. Not available while a job works on production.') }}">+ {{ _("New staging") }}</button>{% endif %}
     </div>
     <div class="scroll"><table class="copies">
@@ -343,6 +343,9 @@
 <section class="tab-panel panel" data-panel="backups" hidden data-url="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}/backups"
          data-api="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}">
   {% if inst.plugin.has_backup %}
+  <div class="section-head"><h2>{{ _("Backups") }}</h2>
+    <button type="button" class="primary" {{ off }} data-backup="{{ base }}/backup" data-download="0" data-key="{{ inst.key }}"
+      title="{{ _('Saves database and filestore in a zip on this machine; the dialog has the choices, for example without filestore. The file shows in the list here below.') }}">{{ icon("backup") }}{{ _("Back up now") }}</button></div>
   {# the automatic backups (UX-006): what they do in one line, the form behind it (open while they are off) #}
   <p class="ab-line" id="ab-status" role="status" hidden></p>
   <details class="backup-auto" id="ab-details" hidden>
@@ -729,7 +732,7 @@
   {% if is_admin_here %}<div class="actions" style="justify-content: flex-end; margin-top: 12px">
     <span class="muted" id="op-changed"></span>
     <span title="{{ _('Writes the changed options in its odoo.conf and restarts Odoo: who is connected loses the connection for a few seconds. Disabled until an option is changed.') }}">
-      <button type="button" id="op-save" disabled data-busy="{{ 1 if is_busy else '' }}">{{ _("Save and restart") }}</button></span>
+      <button type="button" class="primary" id="op-save" disabled data-busy="{{ 1 if is_busy else '' }}">{{ _("Save and restart") }}</button></span>
   </div>{% endif %}
 </section>
 {% endif %}
@@ -750,7 +753,7 @@
   {% if is_admin %}<div class="actions oc-actions" hidden style="justify-content: flex-end; margin-top: 12px">
     <span class="muted oc-changed"></span>
     <span title="{{ _('Writes the changed options in the config file and restarts Odoo: who is connected loses the connection for a few seconds. Disabled until an option is changed.') }}">
-      <button type="button" id="oc-save" disabled>{{ _("Save and restart") }}</button></span>
+      <button type="button" class="primary" id="oc-save" disabled>{{ _("Save and restart") }}</button></span>
   </div>{% endif %}
 </section>
 {% endif %}
