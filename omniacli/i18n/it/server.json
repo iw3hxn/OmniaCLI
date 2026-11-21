@@ -535,6 +535,7 @@
  "The load of the instance over the last hour and how its database is": "Il carico dell'istanza nell'ultima ora e come sta il suo database",
  "The log of its Odoo, followed live": "Il log del suo Odoo, seguito dal vivo",
  "The log of the instance, followed as it grows:": "Il log dell'istanza, seguito mentre cresce:",
+ "The mail of this staging goes to the Mail tab: these values are not used": "La posta di questa staging va alla scheda Posta: questi valori non si usano",
  "The message as it was": "Il messaggio com'era",
  "The message has no text.": "Il messaggio non ha testo.",
  "The minute is outside the range that can be reached: choose one between {first} and {last}.": "Il minuto è fuori dall'intervallo raggiungibile: scegline uno fra il {first} e il {last}.",

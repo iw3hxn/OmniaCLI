@@ -77,6 +77,12 @@ def storage_where_it_is(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def mail_guard_here(monkeypatch, tmp_path):
+    """The capturing stagings' SMTP rules are kept in the test's folder, not in /etc/omniacli."""
+    monkeypatch.setattr(workspacehelper, "MAIL_GUARD", tmp_path / "mail-guard.json")
+
+
+@pytest.fixture(autouse=True)
 def docker_here(monkeypatch):
     """Workspace instances are made in the tests whether docker is installed or not."""
     from omniacli import workspaceops

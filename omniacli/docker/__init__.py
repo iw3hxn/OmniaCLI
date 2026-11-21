@@ -63,6 +63,7 @@ from ..plugin_api import (
     backup_before_update,
     backup_into,
     capture,
+    catches_mail,
     login_answer,
     pip_lines,
     restart,
@@ -524,6 +525,11 @@ class DockerPlugin(ServicePlugin):
         elif major is not None and found != major:
             raise JobFailed(f"{backup_zip.name} is a database of Odoo {found}, {instance.key} runs Odoo "
                             f"{major}: a database is not loaded into another version")
+        if catches_mail(instance) and not neutralize:
+            # its mail is read in the Mail tab: a production's database would send it, or try to
+            neutralize = True
+            job.log(f"--- {instance.key} is a staging whose mail is caught: the database is neutralized "
+                    "even though it was not asked")
         if not neutralize:
             job.log("WARNING: not neutralized: the copy keeps the scheduled actions and outgoing mail "
                     "servers of the backup")

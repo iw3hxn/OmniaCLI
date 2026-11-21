@@ -4985,21 +4985,34 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return None
         return workspaceops.templates().get(str(meta.get("template") or ""))
 
+    def role_catches_mail(ws: Workspace, instance: str, role: str) -> bool:
+        """The role's mail is caught in its project (a staging's production,
+        UX-008 §5.3): its odoo.conf takes no SMTP option of the page."""
+        try:
+            meta = json.loads((workspaceops.storage_path(ws) / ws.name / instance / workspacehelper.INSTANCE_FILE)
+                              .read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        return isinstance(meta, dict) and workspacehelper.captures_mail(meta, role)
+
     def role_parameters(ws: Workspace, instance: str, role: str) -> dict | None:
         """What the page shows of a role: each parameter with its value (a
-        password: whether it is set), the debug switch."""
+        password: whether it is set), the debug switch; of a staging whose
+        mail is caught the SMTP ones marked mail, shown and not changed."""
         template = instance_template(ws, instance)
         if template is None or not template.parameters:
             return None
         state = workspacehelper.role_state(workspaceops.storage_path(ws) / ws.name / instance / role)
+        caught = role_catches_mail(ws, instance, role)
         rows = []
         for param in template.parameters:
             value = state["parameters"].get(param.name, param.default)
             bounds = ws.parameter_bounds.get(param.name) or [param.min, param.max]
             rows.append({**param.to_dict(), "min": bounds[0], "max": bounds[1],
                          "value": "" if param.type == "password" else value,
-                         "set": bool(value) if param.type == "password" else None})
-        return {"parameters": rows, "debug": state["debug"], "extra": state["extra"]}
+                         "set": bool(value) if param.type == "password" else None,
+                         "mail": caught and param.name in stacktemplates.MAIL_PARAMETERS})
+        return {"parameters": rows, "debug": state["debug"], "extra": state["extra"], "mail_capture": caught}
 
     @app.post("/api/workspaces/{workspace}/parameters/options", dependencies=[Depends(admin)])
     async def parameters_options(workspace: str, payload: dict = Body(...)):
@@ -5039,7 +5052,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                            if k in locked},
                 "extra": {k: ("" if stacktemplates.SECRET_OPTION.search(k) else v) for k, v in state["extra"].items()},
                 "secrets": sorted(k for k in state["extra"] if stacktemplates.SECRET_OPTION.search(k)),
-                "locked": sorted(locked)}
+                "locked": sorted(locked),
+                # a staging whose mail is caught: its SMTP options are the mail service's, not changed here
+                "mail": sorted(stacktemplates.MAIL_PARAMETERS)
+                if await asyncio.to_thread(role_catches_mail, ws, name[len(ws.name) + 1:], role) else []}
 
     @app.post("/api/workspaces/{workspace}/parameters/save", dependencies=[Depends(admin)])
     async def parameters_save(workspace: str, payload: dict = Body(...), me: Principal = Depends(current_user)):
@@ -5060,6 +5076,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if template is None:
             return refuse(f"{name} was not made from a template installed here")
         given = {str(k): v for k, v in (payload.get("parameters") or {}).items()}
+        # a staging whose mail is caught: its SMTP options are not saved (its odoo.conf has the mail service's)
+        caught = await asyncio.to_thread(role_catches_mail, ws, instance, role)
+        if caught:
+            given = {k: v for k, v in given.items() if k not in stacktemplates.MAIL_PARAMETERS}
         saved = workspacehelper.role_state(workspaceops.storage_path(ws) / ws.name / instance / role)["parameters"]
         for param in template.parameters:
             # a password left empty keeps the one saved
@@ -5081,6 +5101,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             # the other options (the Extended view), the whole set: a secret
             # left empty keeps the one saved
             extra = payload.get("extra")
+            if isinstance(extra, dict) and caught:
+                extra = {k: v for k, v in extra.items() if k not in stacktemplates.MAIL_PARAMETERS}
             if isinstance(extra, dict):
                 saved_extra = workspacehelper.role_state(
                     workspaceops.storage_path(ws) / ws.name / instance / role)["extra"]

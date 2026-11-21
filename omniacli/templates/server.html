@@ -864,13 +864,15 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
   {% if not is_admin_here %}<p class="muted" style="font-size: 13px">{{ _("An admin changes them.") }}</p>{% endif %}
   <div class="scroll"><table class="oc-table">
     <tr><th>{{ _("Option") }}</th><th>{{ _("Value") }}</th></tr>
+    {% set mail_reason = _("The mail of this staging goes to the Mail tab: these values are not used") %}
     {% for p in odoo_params.parameters %}
-    <tr data-name="{{ p.name }}">
+    {% set off = not is_admin_here or p.mail %}
+    <tr data-name="{{ p.name }}"{% if p.mail %} class="op-locked" title="{{ mail_reason }}"{% endif %}>
       <td><div class="oc-label">{{ tr(p.label) }}</div><div class="oc-help"><span class="mono">{{ p.name }}</span>{% if p.min is not none and p.max is not none %} · {{ _("from {min} to {max}", min=p.min, max=p.max) }}{% endif %}</div></td>
-      <td>{% if p.type == "bool" %}<input type="checkbox" data-param="{{ p.name }}" {{ "checked" if p.value }} {{ "disabled" if not is_admin_here }} style="width: auto" aria-label="{{ tr(p.label) }}">
-        {% elif p.type == "password" %}<input type="password" data-param="{{ p.name }}" autocomplete="off" {{ "disabled" if not is_admin_here }} placeholder="{{ _('set: empty keeps it') if p.set else '' }}" aria-label="{{ tr(p.label) }}">
-        {% elif p.type in ("int", "mb") %}<input type="number" data-param="{{ p.name }}" value="{{ p.value }}" {% if p.min is not none %}min="{{ p.min }}"{% endif %} {% if p.max is not none %}max="{{ p.max }}"{% endif %} {{ "disabled" if not is_admin_here }} class="mono" aria-label="{{ tr(p.label) }}">
-        {% else %}<input type="text" data-param="{{ p.name }}" value="{{ p.value }}" {{ "disabled" if not is_admin_here }} class="mono" aria-label="{{ tr(p.label) }}">{% endif %}</td>
+      <td>{% if p.type == "bool" %}<input type="checkbox" data-param="{{ p.name }}" {{ "checked" if p.value }} {{ "disabled" if off }}{% if p.mail %} data-mail="1" title="{{ mail_reason }}"{% endif %} style="width: auto" aria-label="{{ tr(p.label) }}">
+        {% elif p.type == "password" %}<input type="password" data-param="{{ p.name }}" autocomplete="off" {{ "disabled" if off }}{% if p.mail %} data-mail="1" title="{{ mail_reason }}"{% endif %} placeholder="{{ _('set: empty keeps it') if p.set else '' }}" aria-label="{{ tr(p.label) }}">
+        {% elif p.type in ("int", "mb") %}<input type="number" data-param="{{ p.name }}" value="{{ p.value }}" {% if p.min is not none %}min="{{ p.min }}"{% endif %} {% if p.max is not none %}max="{{ p.max }}"{% endif %} {{ "disabled" if off }}{% if p.mail %} data-mail="1" title="{{ mail_reason }}"{% endif %} class="mono" aria-label="{{ tr(p.label) }}">
+        {% else %}<input type="text" data-param="{{ p.name }}" value="{{ p.value }}" {{ "disabled" if off }}{% if p.mail %} data-mail="1" title="{{ mail_reason }}"{% endif %} class="mono" aria-label="{{ tr(p.label) }}">{% endif %}</td>
     </tr>
     {% endfor %}
     <tr><td><div class="oc-label">{{ _("Debug log") }}</div><div class="oc-help"><span class="mono">log_level debug</span> · {{ _("much more in the log: for a while") }}</div></td>
@@ -1552,6 +1554,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
   const OP = {reading: {{ _("Reading the options of its Odoo…") | tojson }},
               failed: {{ _("The options cannot be read: {error}") | tojson }},
               locked: {{ _("Set by the template or the server") | tojson }},
+              mail: {{ _("The mail of this staging goes to the Mail tab: these values are not used") | tojson }},
               secret: {{ _("set: empty keeps it") | tojson }},
               changedOne: {{ _("1 option changed: at the save Odoo restarts") | tojson }},
               changed: {{ _("{count} options changed: at the save Odoo restarts") | tojson }},
@@ -1639,8 +1642,10 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
         input.className = "mono";
       }
       input.dataset.extra = o.name; input.setAttribute("aria-label", o.name);
+      // a staging's mail is caught: its SMTP options are the mail service's
+      const mail = (data.mail || []).includes(o.name);
       // a greyed one shows what its odoo.conf has
-      input.value = locked ? (data.values[o.name] || "") : (data.extra[o.name] || "");
+      input.value = locked ? (data.values[o.name] || "") : (mail ? "" : (data.extra[o.name] || ""));
       if (locked && o.kind === "bool" && input.value && ![...input.options].some((x) => x.value === input.value)) {
         input.append(new Option(input.value, input.value)); input.value = data.values[o.name];
       }
@@ -1648,6 +1653,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
       if (secret && data.secrets.includes(o.name)) { input.placeholder = OP.secret; tr.classList.add("op-set"); }
       else if (o.default !== null && o.default !== undefined && o.default !== "") input.placeholder = OP.defaultIs.replace("{value}", o.default);
       if (locked) { input.disabled = true; input.title = OP.locked; tr.classList.add("op-locked"); }
+      else if (mail) { input.disabled = true; input.title = OP.mail; tr.title = OP.mail; tr.classList.add("op-locked"); }
       else if (!canEdit) input.disabled = true;
       right.append(input);
       tr.append(left, right); table.append(tr);
@@ -1665,7 +1671,8 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
   {% if can_act and odoo_params and inst.type != "odoo" and is_admin_here %}
   document.getElementById("op-save")?.addEventListener("click", async () => {
     const box = document.querySelector('[data-section="odoo-config"]'), parameters = {};
-    for (const input of box.querySelectorAll("[data-param]")) {
+    // a staging's SMTP options are not sent: its mail goes to the Mail tab
+    for (const input of box.querySelectorAll("[data-param]:not([data-mail])")) {
       parameters[input.dataset.param] = input.type === "checkbox" ? input.checked : input.value;
     }
     // the Extended view, once read: its whole set (a secret left empty keeps the one saved)

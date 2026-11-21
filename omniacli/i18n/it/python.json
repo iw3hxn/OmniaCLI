@@ -83,6 +83,7 @@
  "--- values for the database of {key} on {gb} GB for the databases, disk {disk}": "--- valori per il database di {key} su {gb} GB per i database, disco {disk}",
  "--- workspace {name} has no storage: no site": "--- il workspace {name} non ha uno storage: nessun sito",
  "--- {count} repositories of the OCA have a branch {series}": "--- {count} repository dell'OCA hanno un branch {series}",
+ "--- {key} is a staging whose mail is caught: the database is neutralized even though it was not asked": "--- {key} è una staging la cui posta viene catturata: il database viene neutralizzato anche se non è stato chiesto",
  "--- {key} is an init.d service: not stopped, restarted at the end": "--- {key} è un servizio init.d: non fermato, riavviato alla fine",
  "--- {label}: the choice of the backup dialog of {when} ({by}): {choice}": "--- {label}: la scelta della finestra di backup del {when} ({by}): {choice}",
  "--- {package} in {venv_bin} as {run_as}": "--- {package} in {venv_bin} come {run_as}",

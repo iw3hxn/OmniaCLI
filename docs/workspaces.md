@@ -320,7 +320,10 @@ cannot dump without the filestore: there only the copy is offered (the
   projects' networks are /24s of one pool (`workspaces.network`, default
   `10.213.0.0/16`), so the rules are fixed: `OMNIACLI-WS-FWD` from
   `DOCKER-USER` (replies pass, the pool to itself left to docker, private
-  ranges dropped) and `OMNIACLI-WS-IN` first in `INPUT` (replies pass, the
+  ranges dropped), `OMNIACLI-WS-MAIL` from `DOCKER-USER` (a staging whose
+  mail is caught: SMTP 25/465/587/2525 refused outside its own network,
+  its projects kept in `/etc/omniacli/mail-guard.json` for the boot) and
+  `OMNIACLI-WS-IN` first in `INPUT` (replies pass, the
   rest dropped: container→host traffic is INPUT, and nginx's answers from
   Odoo come back that way), applied again at boot by
   `omniacli-workspaces-firewall.service` before docker. *Verified* on

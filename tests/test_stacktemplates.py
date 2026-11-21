@@ -259,7 +259,8 @@ def test_create_and_remove(root, monkeypatch):
     assert "SLICE=omniacli_acme.slice\n" in env
     # each role its network of the pool, the firewall on before
     assert "SUBNET=10.213.0.0/24\n" in env and made["roles"]["test"]["subnet"] == "10.213.1.0/24"
-    assert root["state"]["jumps"] == {("DOCKER-USER", "OMNIACLI-WS-FWD"), ("INPUT", "OMNIACLI-WS-IN")}
+    assert root["state"]["jumps"] == {("DOCKER-USER", "OMNIACLI-WS-FWD"), ("DOCKER-USER", "OMNIACLI-WS-MAIL"),
+                                      ("INPUT", "OMNIACLI-WS-IN")}
     assert (root["systemd"] / workspacehelper.FIREWALL_UNIT).is_file()
     # the two roles have their own password
     test_env = (storage / "acme" / "main" / "test" / ".env").read_text()

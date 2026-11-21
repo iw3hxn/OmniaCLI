@@ -181,7 +181,10 @@ Posizione: dopo Panoramica. Le schede della staging diventano Panoramica · Post
   - un servizio SMTP di cattura con API di lettura (per esempio Mailpit, licenza MIT) nel progetto compose della staging, raggiungibile solo dall'Odoo della staging;
   - `smtp_server` del suo odoo.conf punta lì;
   - `odoo neutralize` spegne già i server di posta del database, quindi Odoo usa quello dell'odoo.conf;
-  - nessuna porta pubblica nuova: la scheda legge attraverso OmniaCLI.
+  - nessuna porta pubblica nuova: la scheda legge attraverso OmniaCLI;
+  - la rete del progetto della staging rifiuta l'SMTP (25, 465, 587, 2525) verso fuori di sé (catena `OMNIACLI-WS-MAIL` del firewall dei workspace): un server di posta riattivato nel database non manda niente;
+  - «Ripristina un backup…» nella staging neutralizza sempre il database, anche con Neutralizza spento, e il job lo dice;
+  - Impostazioni › Opzioni di Odoo: i parametri SMTP in sola lettura, `title` «La posta di questa staging va alla scheda Posta: questi valori non si usano»; non si salvano.
 
 | Pulsante | Chi | Tipo | Etichetta | `title` |
 |---|---|---|---|---|

@@ -608,6 +608,25 @@ def pip_lines(out: str) -> bytes:
     return ("\n".join(lines) + "\n").encode()
 
 
+# what a workspace instance was made from (workspacehelper.INSTANCE_FILE), and
+# its key that says a staging's mail is caught in its project (MAIL_META)
+INSTANCE_FILE = "instance.json"
+MAIL_CAPTURE = "mail_capture"
+
+
+def catches_mail(instance: Instance) -> bool:
+    """The instance is the production of a staging whose mail is caught in its
+    compose project (UX-008 §5.3): its Odoo is given the project's mail
+    service, and its database is neutralized whatever a restore was asked."""
+    if instance.role != "production" or instance.restart.type != "compose":
+        return False
+    try:
+        meta = json.loads((Path(instance.restart.service).parent / INSTANCE_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(meta, dict) and meta.get(MAIL_CAPTURE) is True
+
+
 # the methods a plugin must write as async def
 async def restore_fetched(job: Job, instance: Instance, backup_zip: Path, options: dict) -> None:
     """The restore of a backup downloaded from another machine: what came may

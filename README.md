@@ -1142,7 +1142,15 @@ the pool:
 - `OMNIACLI-WS-IN`, jumped first from `INPUT`: the replies pass (nginx
   reaches Odoo through docker's proxy on `127.0.0.1`, the answer comes in
   from the container), anything else from the pool to this machine is
-  dropped.
+  dropped;
+- `OMNIACLI-WS-MAIL`, jumped from `DOCKER-USER`: the network of a staging
+  whose mail is caught (UX-008 §5.3) is refused SMTP (`25`, `465`, `587`,
+  `2525`, a TCP reset) to anything outside itself, whatever server its
+  database is given (a mail server switched on again, a backup restored
+  without neutralizing); its `mail` service, on `1025` in the same network,
+  is reached. `create` and `remove` make it again from the instances of the
+  mounted disks; the projects are kept in `/etc/omniacli/mail-guard.json`
+  (root's), which `firewall apply` reads at boot, before the disks.
 
 The first instance turns it on (`firewall on`): the rules, and the unit
 `omniacli-workspaces-firewall.service`, which applies them again at every

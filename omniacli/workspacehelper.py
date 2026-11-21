@@ -91,7 +91,12 @@ what they send to private addresses (the LAN, other networks of the
 machine) but to the pool itself (docker's own rules decide between its
 networks), OMNIACLI-WS-IN, jumped first from INPUT, drops what they send to
 this machine; replies pass in both (nginx reaches Odoo through docker-proxy,
-the answer comes in from the container). on: the rules, and the unit
+the answer comes in from the container); OMNIACLI-WS-MAIL, jumped from
+DOCKER-USER, refuses SMTP (25, 465, 587, 2525) from the network of a staging
+whose mail is caught to anything outside that network (its mail service is
+in it), whatever its database says; create and remove make it again, from
+the instances of the mounted disks and /etc/omniacli/mail-guard.json, where
+they are kept for the boot (the disks come after). on: the rules, and the unit
 omniacli-workspaces-firewall.service that applies them at every boot before
 docker; apply: the rules only (what the unit runs); off: both removed.
 create puts them on first.
@@ -173,6 +178,13 @@ SUBNET_PREFIX = 24
 FIREWALL_UNIT = "omniacli-workspaces-firewall.service"
 CHAIN_FORWARD = "OMNIACLI-WS-FWD"
 CHAIN_INPUT = "OMNIACLI-WS-IN"
+# the mail of a capturing staging (UX-008 §5.3) never leaves, whatever its
+# database says: its project's network may not reach SMTP outside itself
+CHAIN_MAIL = "OMNIACLI-WS-MAIL"
+SMTP_PORTS = (25, 465, 587, 2525)
+# {project folder: SUBNET} of those projects, root's: the boot's firewall
+# apply runs before the workspaces' disks are mounted, it reads them here
+MAIL_GUARD = Path("/etc/omniacli/mail-guard.json")
 # what a workspace's container may not reach (but the pool: docker decides)
 PRIVATE = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "100.64.0.0/10")
 
@@ -685,6 +697,8 @@ def drop(name: str, storage: str) -> dict:
             mount.rmdir()
     freed = image.stat().st_size // GB if image.exists() else 0
     image.unlink(missing_ok=True)
+    if _mail_guard_file():
+        mail_guard_apply()
     return {"workspace": name, "dropped": str(image), "size_gb": freed}
 
 
@@ -771,7 +785,7 @@ def _iptables(*args: str, check: bool = True) -> str:
 
 
 def _jumps() -> list[tuple[str, str]]:
-    return [("DOCKER-USER", CHAIN_FORWARD), ("INPUT", CHAIN_INPUT)]
+    return [("DOCKER-USER", CHAIN_FORWARD), ("DOCKER-USER", CHAIN_MAIL), ("INPUT", CHAIN_INPUT)]
 
 
 def _has_jump(parent: str, chain: str) -> bool:
@@ -799,17 +813,105 @@ def firewall_apply() -> dict:
              if net.overlaps(pool) and not (iface.startswith("br-") and net.subnet_of(pool))]
     if clash:
         raise HelperError(f"workspaces.network {pool} overlaps networks of this machine: {', '.join(clash)}")
-    for chain, rules in firewall_rules(pool).items():
-        _iptables("-N", chain, check=False)
-        _iptables("-F", chain)
-        for rule in rules:
-            _iptables("-A", chain, *rule)
+    guarded = mail_guarded()
+    rules = {**firewall_rules(pool), CHAIN_MAIL: mail_guard_rules(guarded.values())}
+    for chain, chain_rules in rules.items():
+        _fill(chain, chain_rules)
     # docker makes DOCKER-USER, and keeps its rules; at boot this runs first
     _iptables("-N", "DOCKER-USER", check=False)
     for parent, chain in _jumps():
         if not _has_jump(parent, chain):
             _iptables("-I", parent, "1", "-j", chain)
-    return {"firewall": "on", "pool": str(pool), "chains": [CHAIN_FORWARD, CHAIN_INPUT]}
+    return {"firewall": "on", "pool": str(pool), "chains": [CHAIN_FORWARD, CHAIN_MAIL, CHAIN_INPUT],
+            "mail_guarded": sorted(guarded.values())}
+
+
+def _fill(chain: str, rules: list[list[str]]) -> None:
+    _iptables("-N", chain, check=False)
+    _iptables("-F", chain)
+    for rule in rules:
+        _iptables("-A", chain, *rule)
+
+
+def mail_guard_rules(subnets) -> list[list[str]]:
+    """A capturing staging's network: SMTP refused but to itself (its mail
+    service, on 1025, is in it), whatever server its Odoo is given."""
+    ports = ",".join(str(p) for p in SMTP_PORTS)
+    return [["-s", net, "!", "-d", net, "-p", "tcp", "-m", "multiport", "--dports", ports,
+             "-j", "REJECT", "--reject-with", "tcp-reset"] for net in sorted(set(subnets))]
+
+
+def _mail_guard_file() -> dict[str, str]:
+    try:
+        data = json.loads(MAIL_GUARD.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    found = {}
+    for folder, value in (data.items() if isinstance(data, dict) else ()):
+        try:
+            found[str(folder)] = str(ipaddress.ip_network(str(value)))
+        except ValueError:
+            continue
+    return found
+
+
+def _capturing_projects(mount: Path) -> dict[str, str]:
+    """{production folder: SUBNET} of the instances of a mounted disk whose mail is caught."""
+    found = {}
+    for meta_file in sorted(mount.glob(f"*/{INSTANCE_FILE}")):
+        project = meta_file.parent / "production"
+        try:
+            meta = json.loads(meta_file.read_text(encoding="utf-8"))
+            if isinstance(meta, dict) and captures_mail(meta, "production"):
+                found[str(project)] = str(ipaddress.ip_network(_env(project).get("SUBNET", "")))
+        except (OSError, ValueError):
+            continue
+    return found
+
+
+def mail_guarded() -> dict[str, str]:
+    """The projects whose SMTP is refused, kept in MAIL_GUARD: those of the
+    mounted disks read again (a staging made or removed), those of a disk
+    or a storage not mounted yet (at boot the firewall comes before them) as
+    they were kept; a disk gone or a storage taken out, its entries gone
+    (its subnet may be another project's tomorrow)."""
+    kept = _mail_guard_file()
+    try:
+        roots = storage_roots()
+    except HelperError:
+        return kept
+    found: dict[str, str] = {}
+    for root in roots:
+        base = bound(root)
+        disks = base / ".disks"
+        if (not disks.is_dir() or disks.is_symlink()) and not _is_mount(base):
+            # the storage not bound yet: what was kept on it stays
+            found.update({f: n for f, n in kept.items() if Path(f).parent.parent.parent == base})
+            continue
+        # bound: what is on its disks now, a disk gone taking its entries
+        images = [] if disks.is_symlink() or not disks.is_dir() else sorted(disks.glob("*.img"))
+        for image in images:
+            mount = base / image.stem
+            if image.is_symlink() or not WORKSPACE_NAME.fullmatch(image.stem):
+                continue
+            if mounted(image, mount):
+                found.update(_capturing_projects(mount))
+            else:
+                found.update({f: n for f, n in kept.items() if Path(f).parent.parent == mount})
+    if found != kept:
+        MAIL_GUARD.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+        _write(MAIL_GUARD, json.dumps(found, indent=1, sort_keys=True) + "\n", mode=0o600)
+    return found
+
+
+def mail_guard_apply() -> dict:
+    """The SMTP rules of the capturing stagings made again, when one is made
+    or removed; the jump only while the firewall is on (create puts it on)."""
+    guarded = mail_guarded()
+    _fill(CHAIN_MAIL, mail_guard_rules(guarded.values()))
+    if _has_jump("DOCKER-USER", CHAIN_FORWARD) and not _has_jump("DOCKER-USER", CHAIN_MAIL):
+        _iptables("-I", "DOCKER-USER", "1", "-j", CHAIN_MAIL)
+    return {"mail_guarded": sorted(guarded.values())}
 
 
 def firewall_unit_text() -> str:
@@ -836,6 +938,7 @@ def firewall(mode: str) -> dict:
                 _iptables("-D", parent, "-j", chain)
             _iptables("-F", chain, check=False)
             _iptables("-X", chain, check=False)
+        MAIL_GUARD.unlink(missing_ok=True)
         if unit.exists():
             _run("systemctl", "disable", FIREWALL_UNIT, check=False)
             unit.unlink()
@@ -854,6 +957,8 @@ def _taken_subnets() -> list[ipaddress.IPv4Network]:
                 taken.append(ipaddress.ip_network(value))
             except (OSError, ValueError):
                 continue
+    # a capturing staging's network, while its rules stand (its disk not mounted)
+    taken += [ipaddress.ip_network(net) for net in _mail_guard_file().values()]
     ids = _run("docker", "network", "ls", "-q").split()
     if ids:
         out = _run("docker", "network", "inspect", "-f", "{{range .IPAM.Config}}{{.Subnet}} {{end}}", *ids)
@@ -1048,6 +1153,9 @@ def create(name: str, storage: str, instance: str, template_name: str, values_js
     except BaseException:
         shutil.rmtree(folder, ignore_errors=True)
         raise
+    if mail:
+        # its network may not reach SMTP outside itself, from now and at every boot
+        made["mail_guarded"] = mail_guard_apply()["mail_guarded"]
     return made
 
 
@@ -1134,7 +1242,11 @@ def conf(name: str, storage: str, instance: str, role: str, spec_json: str) -> d
                                     password or stacktemplates.new_password(), repos, values, debug, extra,
                                     mail_capture=caught)
     _write(conf_file, text, mode=0o644)
-    kept = {k: v for k, v in values.items() if v != template.parameter(k).default}
+    kept = {k: v for k, v in values.items() if v != template.parameter(k).default
+            and not (caught and k in stacktemplates.MAIL_PARAMETERS)}
+    if caught:
+        # not kept: its odoo.conf has the mail service's, and so has the page
+        extra = {k: v for k, v in extra.items() if k not in stacktemplates.MAIL_PARAMETERS}
     _write(project / ROLE_FILE, json.dumps({"repositories": repos, "parameters": kept, "debug": debug,
                                             **({"extra": extra} if extra else {})}) + "\n")
     return {"workspace": name, "instance": instance, "role": role, "repositories": repos,
@@ -1187,6 +1299,9 @@ def remove(name: str, storage: str, instance: str) -> dict:
             if code:
                 raise HelperError(f"docker compose down of {project} failed ({code}): nothing removed")
     shutil.rmtree(folder)
+    # its network is free again: no SMTP rule left on it
+    if _mail_guard_file():
+        mail_guard_apply()
     return {"workspace": name, "instance": instance, "removed": str(folder)}
 
 
