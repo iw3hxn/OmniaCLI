@@ -33,7 +33,7 @@ def test_the_rule_of_a_staging_s_network():
     [rule] = workspacehelper.mail_guard_rules(["10.213.4.0/24", "10.213.4.0/24"])
     # from its network to anything but itself (its mail service is in it), the SMTP ports refused at once
     assert rule == ["-s", "10.213.4.0/24", "!", "-d", "10.213.4.0/24", "-p", "tcp", "-m", "multiport",
-                    "--dports", "25,465,587,2525", "-j", "REJECT", "--reject-with", "tcp-reset"]
+                    "--dports", "25,465,587,2525,110,143,993,995", "-j", "REJECT", "--reject-with", "tcp-reset"]
     assert str(stacktemplates.MAIL_SMTP_PORT) not in rule[rule.index("--dports") + 1].split(",")
     assert workspacehelper.mail_guard_rules([]) == []
 

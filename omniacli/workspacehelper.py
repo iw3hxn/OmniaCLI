@@ -92,7 +92,7 @@ machine) but to the pool itself (docker's own rules decide between its
 networks), OMNIACLI-WS-IN, jumped first from INPUT, drops what they send to
 this machine; replies pass in both (nginx reaches Odoo through docker-proxy,
 the answer comes in from the container); OMNIACLI-WS-MAIL, jumped from
-DOCKER-USER, refuses SMTP (25, 465, 587, 2525) from the network of a staging
+DOCKER-USER, refuses SMTP (25, 465, 587, 2525) and IMAP/POP (110, 143, 993, 995) from the network of a staging
 whose mail is caught to anything outside that network (its mail service is
 in it), whatever its database says; create and remove make it again, from
 the instances of the mounted disks and /etc/omniacli/mail-guard.json, where
@@ -181,7 +181,9 @@ CHAIN_INPUT = "OMNIACLI-WS-IN"
 # the mail of a capturing staging (UX-008 §5.3) never leaves, whatever its
 # database says: its project's network may not reach SMTP outside itself
 CHAIN_MAIL = "OMNIACLI-WS-MAIL"
-SMTP_PORTS = (25, 465, 587, 2525)
+# and IMAP/POP: a real mailbox switched on by hand in its Odoo would be read and
+# emptied by the staging's fetchmail (its own inbox service is in its network)
+SMTP_PORTS = (25, 465, 587, 2525, 110, 143, 993, 995)
 # {project folder: SUBNET} of those projects, root's: the boot's firewall
 # apply runs before the workspaces' disks are mounted, it reads them here
 MAIL_GUARD = Path("/etc/omniacli/mail-guard.json")
