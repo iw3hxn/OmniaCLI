@@ -216,34 +216,310 @@ Ogni riga della tabella Ambienti (Produzione, Test, staging) ha in fondo un ⚙ 
 | aggiungi redirect | idem | secondario `.small` | + Aggiungi un reindirizzamento | «Un nome che porta i visitatori su un altro indirizzo di questo ambiente, con lo stesso percorso. Vale con Salva e pubblica.» |
 | salva | idem | primario del dialogo | Salva e pubblica | «Salva i nomi, riscrive il sito nginx del workspace e chiede il certificato anche per i nomi nuovi. Odoo non si riavvia. È un job. Un nome senza record DNS resta fuori dal certificato.» **(route da creare: `/web/save` con `aliases` e `redirects` per istanza e ruolo; `web_names` e `conf_text` con i blocchi 301; `POST /web/check-names` per lo stato DNS)** |
 
-### 6.2 Impostazioni › «Database» (per istanza, D2)
+### 6.2 La scheda Database della macchina (sostituisce la §6.2 del 21/11)
 
-È una sezione nuova fra «Opzioni di Odoo» e «Dettagli tecnici». Solo per le istanze compose.
+Cosa si costruisce: i passi 1 e 2 di §9 di `docs/adr/postgresql-della-macchina.md` (AD-001…AD-007, accettato il 21/11/2026 nella forma mista). Dal passo 3 in poi questa sezione si estende; la riga del cluster della macchina oggi non c'è, nemmeno come segnaposto.
 
-- **Riga di stato, sempre in vista**, con pallino e parola:
-  - ambra: «Valori di base di PostgreSQL: pensati per una macchina piccola. 128 MB di memoria condivisa, su 2 GB che il database può usare.»;
-  - verde: «Regolato per 2 GB il 21/11/2026 10:00.»
-- Secondario **«Regola sulla memoria…»**. Apre un dialogo con:
-  - la base del calcolo, in una riga: «Calcolato su 2 GB: il limite di memoria del workspace odoo19 (4 GB), diviso fra i suoi 2 database (produzione e test).» Senza limite, la memoria della macchina divisa fra i database della macchina;
-  - la tabella Parametro · Adesso · Proposto. Le righe che cambiano sono in grassetto; quelle che chiedono un riavvio hanno la parola «riavvio»;
-  - accende anche le statistiche delle query, quelle che Monitoraggio › Database dice «non disponibili»;
-  - **Applica e riavvia il database** (primario del dialogo) · Annulla. Prima la conferma: «Il database si riavvia: per qualche secondo Odoo non risponde.»
-- **«Parametri (6) ▸»**, chiuso. Ogni riga ha l'etichetta italiana, il nome in `.small mono`, «default: …» e il valore. Le righe di base sono:
+**Cosa c'è oggi (21/11/2026, revisione d9c431c).**
+- La pagina della macchina (`/` e `/links/<n>/`, `index.html`) ha due schede, Panoramica e Monitoraggio. Nessuna parla dei database.
+- Le statistiche di un database stanno solo nell'istanza, in Monitoraggio › Database (`/api/servers/{s}/{role}/database`, `pgreport.report`, query fisse `PG_REPORT`/`PG_STATEMENTS`).
+- Nessun codice legge `pg_settings`. L'helper accetta solo query fisse (`composehelper.SCRIPTS`).
+- L'unico `ALTER SYSTEM` di oggi è quello del ripristino a un minuto (`pitrhelper.py` righe 131-133: `archive_mode`, `archive_command`, `archive_timeout`). Il ripristino a un minuto a sua volta aggiunge `archive_mode = 'off'` al `postgresql.auto.conf` della staging (riga 246).
+- Il servizio `db` dei template (`templates/odoo-19/compose.yaml`) è `postgres:17` con `read_only: true` e `cgroup_parent: ${SLICE}`: la sua memoria sta dentro la slice del workspace.
+
+#### 6.2.1 Dove sta, chi la vede, primario
+
+- **Pagine**: Dashboard `/` e `/links/<n>/`. Le schede diventano **Panoramica · Monitoraggio · Database**; l'indirizzo è `#database`.
+- **Chi la vede**: solo l'admin della macchina (`machine_admin`: `is_admin`, non `scoped`). Per gli altri la scheda non c'è, non compare vuota.
+  - Su `/links/<n>/` la pagina è quella dell'OmniaCLI collegato: la scheda c'è solo se quell'OmniaCLI è aggiornato, e se il collegamento agisce là come admin della macchina.
+- **`title` della scheda**: «I database delle istanze di questa macchina: a chi servono, quanto pesano, se sono regolati. Si regolano qui.»
+- **Primario**: nessuno. In questi passi la scheda non crea niente, e «Proponi i valori…» è un'azione di riga, una per database (regola 1 di §2).
+  - Dal passo 3 il primario sarà **+ Cluster della macchina**, solo finché il cluster della macchina non esiste.
+  - Il pulsante di conferma di un dialogo resta il primario del dialogo.
+- **Persona e device**: l'integratore (Carlo), desktop 1440×900. A 375×812 la tabella scorre in orizzontale; Versione e Connessioni si nascondono (`hide-sm`).
+- **Il lavoro primario**: «I database di questa macchina sono regolati per la macchina che hanno, e quale devo regolare?»
+- **Quando si legge**: all'apertura della scheda, non al caricamento della Dashboard. I database si leggono in parallelo, ognuno con il suo tempo massimo. Uno che non risponde diventa la sua riga e non blocca gli altri (regola 2 di §2).
+
+#### 6.2.2 Sopra la piega
+
+1. **Riga della memoria** (dal passo 2), una sola:
+   - «Memoria per i database: 4 GB su 15 GB. Assegnata adesso: 0,25 GB (2 database ai valori di base).»;
+   - `title`: «La parte della memoria della macchina che i database possono usare. La somma delle loro memorie condivise non la supera. Si cambia in Proponi i valori… › Avanzate.»
+2. **Tabella «Database»**, con «Rileggi» (secondario `.small`) nella testata della sezione.
+
+| Colonna | Contenuto |
+|---|---|
+| Database | A chi serve, in grassetto: «odoo19-odoo», badge «Produzione» / «Test» / «Staging». Le staging stanno sotto la loro produzione, come «↳ odoo19-odoo-stg-20261121». Sotto, in `.small`: «dedicato» oppure «PostgreSQL di sistema · porta 5432». Il PostgreSQL di sistema è una riga sola, con le sue istanze elencate in `.small`: «serve: odoo16.cliente.it, odoo17.cliente.it» |
+| Versione | «17.12» |
+| Dimensione | Il database di Odoo, non l'intero cluster: «27 MB», allineata a destra. Il PostgreSQL di sistema somma i database delle sue istanze |
+| Connessioni | «3 su 100» |
+| Regolazione | Pallino e parola, vedi gli stati qui sotto |
+| Ripristino a un minuto | «Acceso» (link alla scheda Backup dell'istanza) / «Spento» / «—» per test e staging, con `title` «Il ripristino a un minuto c'è solo per le produzioni» |
+| (azione) | «Proponi i valori…» `.small`, solo sui dedicati. Sul PostgreSQL di sistema niente |
+
+**Gli stati di Regolazione** (verificati uno per uno, mai il solo colore):
+
+| Stato | Quando | Testo |
+|---|---|---|
+| ambra | produzione con i valori dell'immagine | «Valori di base» |
+| grigio | test o staging con i valori dell'immagine | «Valori di base» |
+| verde | regolato da qui | «Regolato il 21/11/2026 10:00» |
+| verde | valori diversi da quelli di base, ma senza un registro di OmniaCLI (per esempio una staging rifatta con il ripristino a un minuto, che copia la configurazione della produzione) | «Regolato · data non nota». `title`: «Valori scritti senza passare da qui, per esempio copiati dalla produzione con il ripristino a un minuto» |
+| blu | riavvio programmato | «Riavvio alle 05:00 del 22/11/2026 per 2 valori» |
+| ambra | `pending_restart` vero, ma nessun riavvio programmato da OmniaCLI | «In attesa di riavvio: 1 valore cambiato fuori da OmniaCLI» |
+| grigio | PostgreSQL di sistema | «Non regolato da OmniaCLI». `title`: «Qui OmniaCLI non amministra PostgreSQL: lo regola chi gestisce la macchina» |
+| rosso | lettura fallita | «Non risponde: <motivo in italiano>» |
+
+3. **Riga muta sotto la tabella**, solo se esiste il caso: «Non qui: odoo-x.cliente.it usa un database su 10.0.0.5:5432, un'altra macchina; si regola là.» Viene da `pgreport.where` = `remote`.
+
+- **Molte righe**: ordine per istanza e poi produzione, test, staging. Ricerca sopra 8 righe. Paginazione non serve: una macchina con 50 database è fuori misura.
+- **Vuoto**: «Nessun database su questa macchina. Il primo nasce con + Nuova istanza, in Panoramica.»
+
+#### 6.2.3 Il dettaglio di un database (la riga si apre)
+
+Un clic sulla riga apre sotto di lei il dettaglio. È chiuso per default, ma aperto se il database è uno solo. Il `title` della riga è «Mostra i parametri di questo database».
+
+- **Tre righe `dl`**:
+  - Serve: il link all'istanza;
+  - Dove: «servizio db del progetto, sul disco del workspace odoo19»;
+  - Ripristino a un minuto: «acceso, si torna fino al 20/11/2026 10:40», dal `GET …/pitr` che esiste.
+- **I parametri principali**. Colonne: Parametro · Adesso · Di base · Quando vale. Il nome tecnico va dopo l'etichetta, in `.small mono` (regola 5 di §2).
   - Connessioni al massimo `max_connections`;
   - Memoria condivisa `shared_buffers`;
   - Memoria che il sistema tiene in cache `effective_cache_size`;
   - Memoria per operazione `work_mem`;
   - Memoria per la manutenzione `maintenance_work_mem`;
-  - Costo di una lettura sparsa `random_page_cost`.
+  - Costo di una lettura sparsa `random_page_cost`;
+  - Statistiche delle query `shared_preload_libraries` → «accese» / «spente».
+- **«Quando vale»**: «subito» oppure «al riavvio». Si legge da `pg_settings.context` (`postmaster` = al riavvio), mai da una lista scritta a mano.
+  - Con `pending_restart` la cella Adesso dice «128 MB · 1 GB al riavvio».
+- **«Di base»** è il valore a cui riporta «Torna ai valori di base». Si legge da `pg_file_settings`: la riga di `postgresql.conf` se c'è, altrimenti `boot_val`.
+  - Non è il `boot_val` del pannello di riferimento, che per `shared_buffers` dice 8 MB mentre il valore di base vero dell'immagine è 128 MB.
+  - Sul PostgreSQL di sistema vale «—», con `title` «Non leggibile: OmniaCLI qui non è amministratore del database».
+- **«Altri parametri cambiati (N) ▸»**, chiuso, solo se N > 0. Elenca i parametri scritti in `postgresql.auto.conf` oltre ai sette, esclusi quelli della lista HIDE. La rete di sicurezza è questa: un valore cambiato non resta mai invisibile.
+- **Azioni del dettaglio** (admin della macchina, solo sui dedicati), tutte secondarie `.small`:
+  - con un riavvio programmato: «Riavvia adesso…» e «Annulla il riavvio delle 05:00»;
+  - con `pending_restart` da fuori: «Riavvia…»;
+  - se Regolato: «Torna ai valori di base…» (pericolo).
+- **Link «Statistiche ›»** a Monitoraggio › Database dell'istanza: le query e le tabelle restano lì.
 
-  «Mostra tutti i parametri (N)» è spento. Un parametro avanzato cambiato resta visibile anche da spento.
-- Il salvataggio è quello della scheda: «Salva e riavvia» (primario di Impostazioni). Il conteggio dice cosa riavvia: «1 opzione di Odoo, 2 del database: si riavviano Odoo e il database».
-- **HIDE e protezione**: i parametri del ripristino a un minuto (`archive_mode`, `archive_command`, `wal_level`) non si vedono e non si regolano qui. Lo fa «Attiva…» del ripristino a un minuto.
+#### 6.2.4 Passo 2: il dialogo «Proponi i valori…»
+
+Il titolo nomina l'oggetto: «Valori per il database di odoo19-odoo (Produzione)».
+
+1. **La base del calcolo**, in una riga: «Calcolato su 4 GB di memoria, 8 core e disco SSD: la memoria per i database di questa macchina (4 GB su 15 GB), tutta per l'unica produzione. La staging odoo19-odoo-stg-20261121 resta ai valori di base (D10).»
+   - Se il workspace ha un limite di memoria, la riga lo aggiunge, perché il database dedicato sta dentro quel limite: «Il workspace odoo19 ha 4 GB per Odoo e il suo database insieme: la memoria condivisa resta sotto 1 GB.»
+   - Le formule le fissa il dev-lead.
+2. **La tabella Parametro · Adesso · Proposto**, in due gruppi con un'intestazione ciascuno.
+   - Le righe che cambiano sono in grassetto; quelle invariate dicono «invariato», in grigio.
+   - Il Proposto è un campo modificabile, controllato mentre si scrive (§6.2.8).
+   - Esempio ber, coi numeri di AD-005 §2. Da questo esempio il fatto che `effective_cache_size` scenda sotto il suo 4 GB di base va accettato:
+
+| Gruppo | Parametro | Adesso | Proposto |
+|---|---|---|---|
+| Valgono subito, senza fermare niente | Memoria che il sistema tiene in cache `effective_cache_size` | 4 GB | **3 GB** |
+| | Memoria per operazione `work_mem` | 4 MB | **8 MB** |
+| | Memoria per la manutenzione `maintenance_work_mem` | 64 MB | **256 MB** |
+| | Costo di una lettura sparsa `random_page_cost` | 4 | **1,1** |
+| Valgono al riavvio del database | Memoria condivisa `shared_buffers` | 128 MB | **1 GB** |
+| | Connessioni al massimo `max_connections` | 100 | invariato |
+| | Statistiche delle query `shared_preload_libraries` | spente | **accese** (casella, già spuntata, D12) |
+
+3. **«Quando»**, solo se una riga del secondo gruppo cambia. È una radio:
+   - ● «Alle [05:00] del 22/11/2026» oppure ○ «Adesso»;
+   - il default lo decide D11: un database di produzione → a un'ora; solo test o staging → adesso;
+   - sotto, la riga delle istanze che si fermano: «Si ferma per qualche secondo: odoo19-odoo (Produzione). Chi è collegato perde la connessione.»;
+   - se nessuna riga del secondo gruppo cambia: «Nessun riavvio: i valori valgono subito.»
+4. **«Avanzate ▸»**, chiuso:
+   - «Memoria per i database di questa macchina: [4] GB», con sotto «default: un quarto della memoria, 4 GB · vale per tutte le proposte di questa macchina». Cambiarla rifà la proposta;
+   - «Disco: ● SSD ○ a piatti», letto dalla macchina e correggibile: un disco virtuale può dichiararsi a piatti senza esserlo.
+5. **Pulsanti**:
+   - il primario del dialogo ha un'etichetta che segue la scelta: «Applica», «Applica e riavvia alle 05:00» o «Applica e riavvia adesso»;
+   - accanto c'è Annulla, che chiude senza nessuna POST;
+   - «adesso» su una produzione chiede conferma: «Riavviare adesso il database di odoo19-odoo (Produzione)? Odoo non risponde per qualche secondo; chi sta salvando in quel momento riceve un errore e riprova.»
+
+**Cosa fa Applica** (un job sull'istanza; se un job ci lavora già, si accoda):
+- scrive e ricarica subito i valori del primo gruppo (`ALTER SYSTEM SET` dei soli parametri della tabella, poi `pg_reload_conf`);
+- **i valori del secondo gruppo li scrive all'ora scelta**, subito prima del riavvio, nello stesso job. Il riavvio è `CHECKPOINT`, poi arresto veloce, poi partenza;
+- se a quell'ora un job lavora sull'istanza (un backup), il riavvio aspetta che finisca;
+- se il database non riparte entro 3 minuti, i valori di prima tornano al loro posto da soli e il database riparte. Il job lo dice;
+- registra chi ha regolato, quando, i parametri toccati e la memoria di base usata. Da questo registro vengono «Regolato il …» e l'elenco di «Torna ai valori di base».
+
+#### 6.2.5 Riavvio, annullamento, valori di base
+
+- **«Annulla il riavvio delle 05:00»**: toglie il riavvio programmato. I valori che lo aspettavano non si scrivono; quelli che valevano subito restano. Non chiede conferma: non ferma e non cancella niente.
+- **«Riavvia adesso…»**: esegue subito il riavvio programmato. Chiede la conferma di §6.2.4.
+- **«Torna ai valori di base…»** apre lo stesso dialogo, con la tabella Adesso · Di base e lo stesso «Quando».
+  - Contiene i soli parametri che il registro dice toccati dalla regolazione, mai `archive_*`.
+  - La riga in testa: «Tornano ai valori di base 6 parametri cambiati il 21/11/2026 10:00. Il ripristino a un minuto resta com'è.»
+  - Il primario del dialogo è «Torna ai valori di base».
+  - Con le statistiche delle query accese, il ritorno toglie anche l'estensione dal database. Altrimenti Monitoraggio › Database si romperebbe (vedi Non verificato).
+
+#### 6.2.6 Nella pagina dell'istanza
+
+- **Impostazioni › Dettagli tecnici**: la riga «Servizio database» diventa «Database», in sola lettura, per chiunque veda Impostazioni:
+  - «dedicato · regolato il 21/11/2026 10:00» / «dedicato · valori di base» / «dedicato · riavvio alle 05:00 del 22/11/2026»;
+  - «PostgreSQL di sistema (porta 5432) · non regolato da OmniaCLI»;
+  - «su 10.0.0.5:5432 · si regola là».
+  - Il link «Database della macchina ›» (`/#database`) c'è solo per l'admin della macchina. Per gli altri c'è il `title` «Lo regola l'amministratore della macchina».
+  - Il dato viene dal registro della regolazione: la pagina non legge PostgreSQL e non rallenta.
+- **Monitoraggio › Database**: «Statistiche delle query non disponibili». Per l'admin della macchina si aggiunge il link «Accendile nel database della macchina ›»; per gli altri, «Le accende l'amministratore della macchina.»
+- **Della vecchia §6.2 non resta niente** nell'istanza: né la sezione Impostazioni › Database, né «Regola sulla memoria…», né i parametri, né il conteggio del database accanto a «Salva e riavvia».
+
+#### 6.2.7 HIDE / DEFER
+
+- **Mai a schermo, nemmeno in «Altri parametri cambiati», mai toccati**: i parametri del ripristino a un minuto e della replica.
+  - `archive_mode`, `archive_command`, `archive_timeout`, `restore_command`, `recovery_target_*`;
+  - `wal_level`, `max_wal_senders`, `max_replication_slots`, `wal_keep_size`, `primary_conninfo`, `hot_standby`, `synchronous_*`.
+  - Lo stato del ripristino a un minuto si vede solo come «Acceso» / «Spento».
+- **Il catalogo intero di `pg_settings`** (circa 350 parametri): non c'è. Per chi ne ha bisogno resta psql (Altro › psql nell'istanza).
+- **I parametri che l'immagine scrive in `postgresql.conf`** (`listen_addresses`, `lc_*`, `timezone`, `max_wal_size`…): non contano come «cambiati».
+- **I due pulsanti del pannello di riferimento** (ottimizzazione di base e regolazione automatica): diventano un solo «Proponi i valori…», per Hick.
+- **L'interruttore «database esterno»**: non qui. È per istanza, con AD-003 (passo 7).
+- **I database tecnici del cluster** (`postgres`, `template0/1`), ruoli, superuser, `pg_hba`: non si vedono.
+- **Statistiche delle query, tabelle, query lente**: restano nel Monitoraggio dell'istanza. Qui c'è il link «Statistiche ›».
+- **La riga del cluster della macchina**: assente fino al passo 3, senza segnaposto.
+
+#### 6.2.8 Prevenzione ed errori (in italiano, con il rimedio)
+
+- **Prima del clic**, il primario del dialogo è `disabled` e il motivo sta nel `title` dello `span`:
+  - «Memoria condivisa: 6 GB supera la memoria per i database di questa macchina (4 GB, di cui 0,13 GB già assegnati alla staging).»;
+  - «Connessioni al massimo: 20 è meno delle 34 in uso adesso più 10 di riserva: il minimo qui è 44.»;
+  - «"1 G" non è un valore: scrivi un numero seguito da MB o GB, per esempio 1024 MB.»;
+  - un valore fuori da `min_val`/`max_val` di `pg_settings`: «Memoria per operazione: al massimo 2 GB.»
+- **Errori dal server**, da `refuse()` con la chiave italiana:
+  - «Il database di odoo19-odoo-stg-20261121 non risponde: il container è fermo. Le altre righe sono aggiornate.»;
+  - «Il database di odoo19-odoo non è ripartito entro 3 minuti: sono tornati i valori di prima ed è ripartito. Il motivo è nel job.»;
+  - «Su odoo19-odoo lavora un job (backup): il riavvio parte quando finisce.» Questo è uno stato, non un errore.
+
+#### 6.2.9 Pulsanti
 
 | Pulsante | Chi | Tipo | Etichetta | `title` |
 |---|---|---|---|---|
-| regola | admin del workspace | secondario | Regola sulla memoria… | «Propone i parametri di PostgreSQL per la memoria che questo database può usare; li vedi prima di applicarli. Applicati, il database si riavvia.» **(route da creare: `GET/POST /api/servers/{s}/{role}/postgres`, `ALTER SYSTEM` nel container del database)** |
-| mostra tutti | admin, developer | interruttore | Mostra tutti i parametri (N) | «Mostra anche i parametri che si cambiano di rado; quelli già cambiati si vedono sempre» |
+| scheda | admin della macchina | `[role=tab]` | Database | «I database delle istanze di questa macchina: a chi servono, quanto pesano, se sono regolati. Si regolano qui.» |
+| rileggi | idem | secondario `.small` | Rileggi | «Rilegge adesso i database di questa macchina. Non cambia niente.» |
+| proponi | idem, solo sui dedicati | secondario `.small` | Proponi i valori… | «Calcola i valori di questo database sulla memoria, i core e il disco della macchina, e li mostra accanto a quelli di adesso. Non cambia niente finché non scegli Applica. Il ripristino a un minuto non si tocca.» **(route da creare: `GET /api/postgres/{cluster}/proposal`)** |
+| applica | idem | primario del dialogo | Applica / Applica e riavvia alle 05:00 / Applica e riavvia adesso | «Scrive i valori proposti per questo database. Quelli che valgono subito si ricaricano senza fermare niente. Quelli che chiedono un riavvio si scrivono all'ora scelta, subito prima del riavvio: per qualche secondo <istanza> non risponde e chi è collegato perde la connessione. Se non riparte, tornano i valori di prima. È un job.» **(route da creare: `POST /api/postgres/{cluster}/apply`)** |
+| riavvia adesso | idem | secondario `.small`, conferma | Riavvia adesso… | «Fa adesso il riavvio programmato: per qualche secondo <istanza> non risponde e chi è collegato perde la connessione. Se un job lavora sull'istanza, aspetta che finisca.» **(route da creare: `POST /api/postgres/{cluster}/restart`)** |
+| annulla riavvio | idem | secondario `.small` | Annulla il riavvio delle 05:00 | «Toglie il riavvio programmato: i valori che lo aspettavano non si scrivono, quelli che valevano già restano. Non ferma niente.» **(route da creare: `POST /api/postgres/{cluster}/restart/cancel`)** |
+| torna ai valori di base | idem, solo se Regolato | pericolo `.small`, dialogo | Torna ai valori di base… | «Rimette ai valori di base solo i parametri che la regolazione ha cambiato, elencati nel dialogo. Il ripristino a un minuto resta com'è. Memoria condivisa, connessioni e statistiche vogliono un riavvio, all'ora che scegli.» **(route da creare: `POST /api/postgres/{cluster}/reset`)** |
+| avanzate | idem | `summary` | Avanzate | «La memoria per i database di questa macchina e il tipo di disco, su cui si fa il calcolo» |
+| altri parametri | idem | `summary` | Altri parametri cambiati (N) | «I parametri di questo database che non hanno il valore di base, oltre a quelli qui sopra» |
+| link nell'istanza | admin della macchina | link | Database della macchina › | «Apre la scheda Database della macchina, dove questo database si regola» |
+
+#### 6.2.10 Il necessario
+
+- **Stato del sistema**:
+  - la colonna Regolazione, con i suoi sette stati;
+  - la riga della memoria assegnata;
+  - «Quando vale» e «al riavvio» nei parametri;
+  - il job dell'applicazione apre la fascia del job (UX-005);
+  - la riga «Database» di Impostazioni nell'istanza.
+- **Annulla**:
+  - Annulla o Esc nel dialogo, senza nessuna POST;
+  - «Annulla il riavvio delle …»;
+  - «Torna ai valori di base…»;
+  - il ritorno automatico ai valori di prima se il database non riparte.
+- **Prevenzione dell'errore**:
+  - la somma delle memorie condivise non supera la memoria per i database;
+  - connessioni ≥ quelle in uso più la riserva;
+  - unità e intervalli controllati mentre si scrive;
+  - il riavvio si accoda a un job in corso;
+  - i valori del riavvio scritti solo al riavvio;
+  - mai un RESET ALL, mai i parametri del ripristino a un minuto o della replica;
+  - riavvio adesso di una produzione solo con conferma.
+- **Messaggio d'errore**: §6.2.8. Nessun nome tecnico se non dopo l'etichetta.
+- **Aiuto**: il `title` di ogni pulsante e di ogni stato non ovvio; la riga della base del calcolo; lo stato vuoto che porta a + Nuova istanza.
+- **Costo dell'attesa**: la scheda è completa in meno di 2 s con 9 database. Un database fermo non la rallenta oltre il suo tempo massimo.
+
+#### 6.2.11 Criteri di accettazione (Playwright, su ber)
+
+Profili: admin della macchina, admin del workspace odoo19, developer, user. Viewport 1440×900, IT.
+
+Dati: `odoo19-odoo` di produzione ai valori di base, con il ripristino a un minuto acceso, più la staging `odoo19-odoo-stg-20261121`.
+
+1. **Visibilità**:
+   - come admin della macchina le schede `[role=tab]` sono 3, e una dice «Database»;
+   - come admin del workspace, developer e user le schede «Database» sono 0, e `GET /api/postgres` dà 403.
+2. **Tabella**:
+   - le righe sono tante quanti i servizi `db` dei progetti compose della macchina, più una per ogni PostgreSQL di sistema: su ber 2;
+   - la Versione corrisponde a `/^17\.\d+$/`;
+   - le Connessioni corrispondono a `/^\d+ su 100$/`;
+   - la produzione dice «Valori di base» e «Acceso»;
+   - la staging dice «Valori di base» e «—».
+3. **Primario**: nella scheda, `.primary:visible` fuori da `dialog[open]` = 0. Con il dialogo aperto, `dialog[open] .primary` = 1.
+4. **HIDE**: nessun testo della scheda e del dialogo contiene `archive_`, `wal_level`, `max_wal_senders`, `restore_command`, `recovery_target` o `primary_conninfo`. Vale anche con «Altri parametri cambiati» aperto.
+5. **Etichette**:
+   - ogni riga dei parametri ha un'etichetta che non corrisponde a `/^[a-z_]+$/`, e il nome dentro `.small.mono`;
+   - il gruppo di ogni riga del dialogo coincide con `pg_settings.context` letto nel container: `shared_buffers` e `max_connections` stanno «al riavvio», gli altri quattro «subito».
+6. **Base del calcolo**: la riga contiene «15 GB» e un numero di GB per i database; la «Memoria condivisa» proposta è di 1 GB o meno.
+7. **Applica «alle 05:00»**:
+   - subito dopo il job, `SHOW work_mem` è il valore proposto;
+   - `SHOW shared_buffers` è ancora 128MB e `pending_restart` è falso per tutti i parametri: i valori del riavvio non sono ancora scritti;
+   - la riga dice «Riavvio alle 05:00 del 22/11/2026 per 2 valori»;
+   - `SHOW archive_mode` = on, e la riga `archive_command` di `postgresql.auto.conf` è identica a prima.
+8. **Annulla il riavvio**: dopo l'ora, lo `StartedAt` del container `db` non è cambiato e `SHOW shared_buffers` = 128MB.
+9. **Riavvia adesso**:
+   - la conferma contiene «odoo19-odoo»;
+   - Annulla non fa nessuna POST;
+   - dopo la conferma, `SHOW shared_buffers` = il valore proposto, e `/web/login` risponde 200 entro 60 s;
+   - il job registra la durata del riavvio e le richieste di Odoo fallite (prova di AD-005 §5).
+10. **Prevenzione**:
+    - con 20 connessioni o 6 GB di memoria condivisa, il primario è `disabled` e ha uno `span[title]`, e nessuna POST parte;
+    - con la staging fermata (`docker stop` del suo `db`) la sua riga dice «Non risponde» e la scheda è completa in meno di 2 s.
+11. **Torna ai valori di base**:
+    - dopo il riavvio i 7 parametri sono al valore di base, e `archive_mode` = on;
+    - Monitoraggio › Database dell'istanza si legge ancora, senza errori.
+12. **Istanza**:
+    - come admin del workspace, Impostazioni › Dettagli tecnici contiene «Database» e «dedicato · regolato il» (o «valori di base»), e nessun link a `#database`;
+    - come admin della macchina il link c'è e porta alla scheda.
+13. **Comuni** (criterio 10 di §11): ogni pulsante, `summary` e `[role=tab]` ha un `title` non vuoto e diverso dal testo; nessuna data `aaaa-mm-gg`; nessuna parola inglese fuori da `.mono.small`.
+
+#### 6.2.12 Route e azioni dell'helper da creare
+
+I nomi sono indicativi: li fissa il dev-lead.
+
+| Route / azione | Effetto |
+|---|---|
+| `GET /api/postgres` (admin della macchina) | I database della macchina, letti in parallelo: per ognuno a chi serve, versione, dimensione, connessioni, stato della regolazione, ripristino a un minuto, i 7 parametri e gli altri cambiati; più i database remoti per la riga «Non qui» |
+| `GET /api/postgres/{cluster}/proposal?memory_gb=&disk=` | La proposta e la riga della base del calcolo |
+| `POST /api/postgres/{cluster}/apply` | Job: valori «subito» e reload; valori «al riavvio» più riavvio, adesso o a un'ora (azione programmata **una volta sola**: oggi `schedules.py` conosce solo le espressioni cron); salva la memoria per i database della macchina se è cambiata |
+| `POST /api/postgres/{cluster}/restart`, `…/restart/cancel`, `…/reset` | Riavvio adesso, riavvio tolto, ritorno ai valori di base dei soli parametri toccati |
+| helper `pg-settings <service> <db>` | Query fissa su `pg_settings` e `pg_file_settings`, già filtrata della lista HIDE |
+| helper `pg-set` / `pg-reset <service> <db>` | `ALTER SYSTEM SET/RESET` di una lista chiusa di nomi; i valori arrivano sull'input come JSON e sono controllati |
+| helper `db-restart <service>` | `CHECKPOINT`, arresto veloce, partenza, attesa dello stato healthy; se non arriva, valori di prima e partenza |
+| dato dell'istanza `db_tuning` | Dal registro della regolazione, per la riga di Impostazioni, senza leggere PostgreSQL |
+
+Si toglie da §9 la riga `GET/POST /api/servers/{s}/{role}/postgres`.
+
+#### 6.2.13 Decisioni di Carlo
+
+10. **D10 — Su cosa si regolano i dedicati di oggi.**
+    - **Raccomandata: la memoria per i database va alle produzioni; test e staging restano ai valori di base**, e «Proponi i valori…» per loro propone poco o niente.
+      - Su ber: 4 GB per i database. La produzione `odoo19-odoo` ha 1 GB di memoria condivisa, la staging resta a 128 MB.
+      - Con 3 clienti e 9 database: 6 × 128 MB = 0,75 GB a test e staging; restano 3,25 GB, circa 1,08 GB per produzione, cioè circa 270 MB di memoria condivisa ciascuna.
+    - Alternativa: parti uguali fra tutti i database. Su ber 2 GB a testa, staging compresa. Con 9 database, 0,44 GB ciascuno: le staging, che sono copie temporanee, tolgono memoria alle produzioni.
+11. **D11 — Il riavvio, adesso o a un'ora, per default.**
+    - **Raccomandata: dipende da cosa si ferma.** Se si ferma una produzione, è preselezionato «alle 05:00», dopo i backup automatici delle 03:00 (il default di oggi). Se si ferma solo un test o una staging, «adesso».
+      - Su ber, regolare `odoo19-odoo` di giorno non ferma nessuno: il riavvio arriva alle 05:00.
+    - Alternativa: «adesso» sempre preselezionato. Un clic in meno, ma un clic distratto ferma un cliente in orario di lavoro.
+12. **D12 — Le statistiche delle query dentro la proposta.**
+    - **Raccomandata: sì, come riga già spuntata.** Accenderle non costa una riga in più: chiedono un riavvio, e la proposta ne chiede già uno per la memoria condivisa. Così Monitoraggio › Database smette di dire «non disponibili».
+    - Alternativa: un'azione a sé. È un secondo riavvio della produzione.
+13. **D13 — Il default della memoria per i database.**
+    - **Raccomandata: un quarto della memoria della macchina**, al massimo la memoria meno quella che i workspace riservano a Odoo, meno 1 GB per il sistema. Su ber: 15 GB, quindi 4 GB. Si cambia in Avanzate.
+    - Alternativa: nessun default; il primo «Proponi i valori…» lo chiede. Una domanda in più per ogni macchina.
+
+#### 6.2.14 Cosa cambia nel resto di UX-008
+
+- **§1, la riga «Impostazioni › Database»** diventa «Macchina › **Database** | «I database di questa macchina sono regolati per la macchina che hanno?» | nessuno (dal passo 3: + Cluster della macchina)».
+- **§3, la riga «Impostazioni › Database»** diventa:
+  - Macchina › Database: admin della macchina sì; admin del workspace, developer e user no;
+  - rete di sicurezza: la riga «Database» in Impostazioni › Dettagli tecnici dell'istanza.
+- **§8**: «Applica e riavvia il database» si sostituisce con «Riavvia adesso…, Torna ai valori di base…».
+- **§11, il criterio 7** si sostituisce con i criteri di §6.2.11.
+- **§12, il punto 6** diventa «La scheda Database della macchina, passi 1 e 2 di AD-005». Prima il passo 1, che non scrive niente.
+- **«Decisioni prese»**: D2 resta chiusa dall'ADR accettato.
 
 ### 6.3 Macchina › Monitoraggio, fino a 14 giorni
 
