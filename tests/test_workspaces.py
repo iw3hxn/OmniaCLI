@@ -242,7 +242,7 @@ async def test_the_workspace_page_is_four_tabs_and_one_primary(workspaces, clien
     page = (await client.get("/workspaces/acme", headers=basic("mario"))).text
     assert re.findall(r'role="tab" data-tab="(\w+)"', page) == ["instances", "names", "users", "services"]
     assert len(re.findall(r'class="[^"]*\bprimary\b', page.split("<dialog")[0])) == 1
-    assert '<p class="ws-disk-line">' in page and 'href="/servers/srv#settings"' in page
+    assert '<p class="ws-disk-line">' in page and 'href="/servers/srv#modules"' in page
     # a row read each: its fields are in the dialog
     assert '<tr data-user="luca" data-role="user"' in page and 'data-edit="members"' in page
     for gone in ("data-add-repo", "data-save-params", "data-remove-instance", "Add repository", "Odoo parameters of",

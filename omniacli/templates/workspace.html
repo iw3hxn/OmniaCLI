@@ -84,8 +84,8 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
           <a class="mono" href="https://{{ site.names[0] }}/" target="_blank" rel="noopener">{{ site.names[0] }} ↗</a>
           {% if site.names[1:] %}<a class="ws-side" href="#names" title="{{ _('Its other names, on the tab Names on the web') }}">+{{ site.names[1:] | length }}</a>{% endif %}</div>
         {% else %}<span class="muted">{{ _("no name on the web yet") }}</span>{% endfor %}</td>
-      <td style="text-align: right"><a class="ws-side" href="{{ prefix }}/servers/{{ name }}#settings"
-        title="{{ _('Opens the settings of the instance: its repositories, the options of its Odoo, its updates') }}">{{ _("Code and options") }} ›</a></td>
+      <td style="text-align: right"><a class="ws-side" href="{{ prefix }}/servers/{{ name }}#modules"
+        title="{{ _('Opens the Modules tab of the instance: its repositories, the modules of the catalog, its code updates') }}">{{ _("Code and modules") }} ›</a></td>
     </tr>
     {% else %}
     <tr><td colspan="3" class="muted">{% if new_instance %}{{ _("No instances yet. New instance makes one from a template, or from a full archive of another machine.") }}{% else %}{{ _("No instances yet.") }}{% endif %}</td></tr>

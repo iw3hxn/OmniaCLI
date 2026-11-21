@@ -53,7 +53,7 @@ async def test_the_parameters_of_a_role(made, client):
     settings, helper, calls, confs = made["settings"], made["helper"], made["calls"], made["confs"]
     # the workspace's page sends to the instance's Settings, which hold the parameters (UX-007): not twice
     page = (await client.get("/workspaces/acme", headers=basic("mario"))).text
-    assert 'href="/servers/acme-main#settings"' in page and "data-param=" not in page
+    assert 'href="/servers/acme-main#modules"' in page and "data-param=" not in page
     page = (await client.get("/servers/acme-main", headers=basic("mario"))).text
     assert 'data-section="odoo-config"' in page and 'data-param="limit_time_cpu"' in page
     url = "/api/workspaces/acme/parameters/save"

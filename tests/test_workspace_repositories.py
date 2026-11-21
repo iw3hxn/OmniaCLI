@@ -145,7 +145,7 @@ async def test_add_and_remove(instance, client):
     assert resp.status_code == 400 and "already" in resp.json()["error"]
     # the workspace's page sends to the instance's Settings, which list the repositories (UX-007): not twice
     page = (await client.get("/workspaces/acme", headers=post_as("mario"))).text
-    assert 'href="/servers/acme-main#settings"' in page and "17.0-dev" not in page
+    assert 'href="/servers/acme-main#modules"' in page and "17.0-dev" not in page
     for view, branch in (("", "17.0"), ("?view=test", "17.0-dev")):
         page = (await client.get("/servers/acme-main" + view, headers=post_as("mario"))).text
         assert 'data-repo="custom"' in page and f'>{branch}</td>' in page, view
