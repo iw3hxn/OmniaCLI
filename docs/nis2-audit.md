@@ -12,8 +12,10 @@ dimostra che non è stato alterato e chi lo legge.
 > le tempistiche di conservazione dei log». **La norma non fissa un numero di mesi**: chiede che il periodo sia
 > deciso sul rischio e scritto. I 365 giorni predefiniti sono quindi una scelta di OmniaCLI, non un obbligo: chi
 > segue la conformità la conferma o la cambia in Impostazioni › Opzioni › Registro degli accessi, e la scrive nella
-> propria procedura (punto 4). Non controllato qui: se la determinazione che ha aggiornato le specifiche di base
-> (n. 379907/2025) ha cambiato il testo di questa misura, e l'allegato 2 per i soggetti essenziali.
+> propria procedura (punto 4). L'allegato 2 (soggetti essenziali) ha lo stesso testo, letto lo stesso giorno. La
+> determinazione n. 379907/2025, che ha sostituito la 164179 dal 15/01/2026, secondo le domande frequenti NIS
+> dell'ACN (DSB.1) ha aggiunto alla parte sui log la sola parola «acquisiti» (si conservano i log acquisiti): nessun
+> numero di mesi nemmeno lì. Il testo degli allegati della 379907 non è stato letto direttamente, solo le FAQ.
 >
 > Sulla verifica in due passaggi, stessa fonte, misura **PR.AA-03** punto 2: «per almeno i sistemi informativi e di
 > rete rilevanti e in accordo agli esiti della valutazione del rischio […] sono impiegate modalità di
