@@ -11,7 +11,7 @@ import stat
 
 from omniacli import deployhooks, ops
 
-from .conftest import sh
+from .conftest import LINK_TOKEN, sh
 from .test_app import AUTH, POST, client, wait_job  # noqa: F401 - the client fixture
 from .test_workspaces import post_as
 
@@ -46,6 +46,11 @@ async def test_deploy_on_push(client, env, monkeypatch):
     api = "/api/servers/srv/test/deploy-hook"
     data = (await client.get(api, headers={"Authorization": AUTH})).json()
     assert not data["enabled"] and data["url"].endswith("/hooks/deploy/srv/test")
+    # read through a link (a panel's tunnel), with no name and no portal address: the place of the address, not
+    # the tunnel's 127.0.0.1:<port>, which no repository reaches
+    through = {"Authorization": f"Bearer {LINK_TOKEN}", "X-OmniaCLI-Prefix": "/links/omnia", "X-OmniaCLI-User": "carlo"}
+    seen = (await client.get(api, headers=through)).json()["url"]
+    assert seen == "https://<address of this OmniaCLI>/hooks/deploy/srv/test"
     data = (await client.post(api, headers=POST, json={"enabled": True})).json()
     secret = data["secret"]
     assert data["enabled"] and secret

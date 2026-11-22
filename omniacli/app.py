@@ -9593,8 +9593,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         hook = deployhooks.load(deploy_hooks_file).get(instance.key) or {}
         # on the instance's own name when it has one (its nginx passes it here):
         # OmniaCLI itself may answer on 127.0.0.1 only
+        # read through a link, this request's address is the tunnel's of the panel that asks (127.0.0.1:<port>),
+        # which no repository reaches: without a name or a portal address, the place of the address is said
+        base = public_base(request) if portal_url() or not prefix_of(request) else "https://<address of this OmniaCLI>"
         url = (f"{instance.site}{workspaceweb.HOOKS_PATH}deploy/{instance.server}/{instance.role}" if instance.site
-               else public_base(request) + f"/hooks/deploy/{instance.server}/{instance.role}")
+               else base + f"/hooks/deploy/{instance.server}/{instance.role}")
         lang, view = request_language(request), customer_view(request)
         off = deploys.paused(deploys_folder, instance.key) if hook.get("secret") else None
         last = dict(hook["last"]) if isinstance(hook.get("last"), dict) else None
