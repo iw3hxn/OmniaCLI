@@ -64,8 +64,8 @@ Step by step, from the package to the first job: [Quickstart](docs/quickstart.md
 
 ## Screenshots
 
-The screenshots show demo data, on two test machines (`lab1`, `lab2`)
-operated from a third OmniaCLI through its links.
+The screenshots show demo data, on two test machines (`lab1`, `lab2`),
+each seen from its own OmniaCLI and the other through their link.
 
 **Login**, in English or Italian.
 
@@ -112,41 +112,49 @@ why there is none yet), orange within 90 days of full and red within 30.
 ![The page of a machine](docs/images/dashboard.png)
 
 **Monitoring** of a machine: the last hour live, or a point every 5 minutes
-over 24 hours, 7 or 14 days (here 24 hours, the history a few hours old).
+over 24 hours, 7 or 14 days (here 24 hours, the history twenty hours old).
 
 ![The Monitoring tab of a machine](docs/images/monitoring.png)
 
-**Database** of a machine (its admins): each instance's database, its size,
-connections, tuning and recovery at a minute; **Propose the values…**
-computes the values for the memory the machine has.
+**Database** of a machine (its admins): the machine's cluster with the
+instances it serves and its read replica on another machine (here on `lab1`),
+then each instance's own database; its size, connections, tuning and recovery
+at a minute; **Propose the values…** computes the values for the memory the
+machine has.
 
 ![The Database tab of a machine](docs/images/machine-database.png)
 
 ![The dialog that proposes the values of a database](docs/images/database-tuning.png)
 
-**Instances** and **Backups** of every machine: the stagings under their
-production, the productions without a scheduled backup (a filter), each
+**Instances** (its **List** tab) and **Backups** of every machine: the
+stagings under their production, the productions without a scheduled backup (a filter), each
 backup with its machine, its kind and its outcome.
 
 ![The Instances list of every machine](docs/images/instances.png)
 
 ![The Backups list of every machine](docs/images/backups.png)
 
-**The map**: the same instances as a diagram, where each thing configured is
+**The map** (the **Map** tab of Instances): the same instances as a diagram,
+where each thing configured is
 (the machines and their links, the workspaces, the names, the databases,
 where the backups go) and what moves now (the jobs, a transfer). It reads
 only.
 
 ![The map of the infrastructure](docs/images/infrastructure-map.png)
 
-**Disks**: each disk's used space by day, with the dashed forecast up to the
-day it is full.
+**Disks** (Settings › Disks, or **Disks** on a machine's page): each disk's
+used space by day and the estimate of the day it is full, with the dashed
+forecast once there are seven days of history (here two: no forecast yet);
+the workspaces' disks come after the machine's.
 
 ![The Disks page](docs/images/disks.png)
 
-**An instance**: its addresses and state in the head, with Open Odoo, Log in
-as…, Update and More; the tabs Environments (production, test and stagings,
-also those on another machine), Backups, Log, Monitoring, Modules, Settings.
+**An instance**: its name and state in the head, a problem with its names
+said under the title (here the test machine's names have no certificate),
+with Open Odoo, Log in as…, Update and More; the tabs Overview (its Odoo
+version, whether it answers, and its environments: production, test and
+stagings, also those on another machine), Backups, Log, Monitoring, Modules,
+Settings.
 
 ![The page of an instance](docs/images/server.png)
 
@@ -188,7 +196,8 @@ as here, takes the modules typed, or the changed ones when left empty.
 
 ![The Update modules dialog](docs/images/update-dialog.png)
 
-**Backup**: what goes in the zip, its weight, and whether its restore fits.
+**Backup**: what goes in the zip, its weight, and whether its restore fits
+(a Docker Compose instance, as here, has no room check of a restore).
 
 ![The Backup dialog](docs/images/backup-dialog.png)
 
@@ -198,17 +207,21 @@ Cancel or Esc for no.
 
 ![A confirmation in the page's own dialog](docs/images/page-dialog.png)
 
-**Copy production to test**: a new backup of production, or one already made.
+**Copy production to test** (in More, on the test of an instance that has
+one): a new backup of production, or one already made; a Docker Compose
+instance, as here, makes a new one and asks what test's filestore becomes
+(shared with production, a copy of it, none).
 
 ![The Copy production to test dialog](docs/images/copy-dialog.png)
 
 **Copy from link**: a backup made on a linked instance (a new one or one
 already there), transferred here and restored; the job page follows each
-step, the transfer with its size, speed and time left.
+step, the transfer with its size, speed and time left (here its last step,
+the restore).
 
 ![The Copy from link dialog](docs/images/copy-from-link.png)
 
-![A Copy from link job during the transfer](docs/images/copy-from-link-job.png)
+![A Copy from link job during the restore](docs/images/copy-from-link-job.png)
 
 **A job**, and **Settings › Servers by hand**, where servers are added,
 discovered, tested and activated.
