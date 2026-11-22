@@ -1,0 +1,219 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{# The machine's SSH access tab (README, SSH access): the keys OmniaCLI added
+   to the accounts of this machine (GET /api/machine/ssh-keys, read when the
+   tab opens), each with its name, account, type, fingerprint, who added it
+   and when, Remove… (POST …/ssh-keys/remove); + Add a key… the tab's only
+   primary (POST …/ssh-keys/add: name, the .pub line, the account); under
+   the table, for each account, how many keys are there that OmniaCLI did
+   not add, with their fingerprints, so the list is not taken for the whole
+   truth; what the SSH server says (root's login, where it reads the keys).
+   The machine's admins only (index.html includes it for them), never a
+   user of workspaces. Its script is an IIFE of its own. -#}
+<style>
+.ssh-table td { vertical-align: top; }
+.ssh-table td.mono { overflow-wrap: anywhere; }
+.ssh-others { margin-top: 12px; }
+.ssh-others details { margin: 6px 0; }
+.ssh-others ul { margin: 6px 0 0; padding-left: 20px; }
+.ssh-others li { overflow-wrap: anywhere; }
+#ssh-dialog { width: min(640px, calc(100vw - 32px)); }
+#ssh-dialog textarea { width: 100%; min-height: 6em; }
+#ssh-dialog label { display: block; margin: 10px 0 4px; font-weight: 600; }
+#ssh-dialog input[type=text], #ssh-dialog select { width: 100%; }
+</style>
+<section class="tab-panel" data-panel="ssh" hidden>
+  <div class="panel">
+    <div class="section-head"><h2>{{ _("SSH access") }}</h2>
+      <span class="pg-head-actions">
+        <button type="button" class="primary small" id="ssh-add-open" title="{{ _('Lets a person log in to this machine over SSH with their key: paste the public half, choose the account') }}">{{ _("+ Add a key…") }}</button>
+        <button type="button" class="small" id="ssh-reload" title="{{ _('Reads the keys of the accounts of this machine again now. It changes nothing.') }}">{{ _("Read again") }}</button>
+      </span></div>
+    <p class="muted">{{ _("The keys OmniaCLI added to the accounts of this machine: whoever has the private half of one logs in over SSH as that account. Only these are added and removed here.") }}</p>
+    <p class="muted" id="ssh-loading">{{ _("Reading the keys…") }}</p>
+    <p id="ssh-sshd" hidden></p>
+    <div style="overflow-x: auto"><table class="ssh-table" id="ssh-table" hidden>
+      <thead><tr><th>{{ _("Name") }}</th><th>{{ _("Account") }}</th><th class="hide-sm">{{ _("Type") }}</th><th>{{ _("Fingerprint") }}</th>
+        <th class="hide-sm">{{ _("Added by") }}</th><th>{{ _("Added") }}</th><th></th></tr></thead>
+      <tbody id="ssh-rows"></tbody>
+    </table></div>
+    <p class="muted" id="ssh-empty" hidden>{{ _("OmniaCLI has added no key to this machine yet.") }}</p>
+    <div class="ssh-others" id="ssh-others"></div>
+    <p class="error" id="ssh-error" role="alert"></p>
+  </div>
+</section>
+<dialog id="ssh-dialog" aria-labelledby="ssh-dialog-title">
+  <form method="dialog" id="ssh-form">
+    <h2 id="ssh-dialog-title">{{ _("Add a key") }}</h2>
+    <label for="ssh-name">{{ _("Name") }}</label>
+    <input type="text" id="ssh-name" maxlength="64" autocomplete="off" placeholder="{{ _('Whose it is, or which computer: Mario, laptop') }}">
+    <label for="ssh-key">{{ _("Public key") }}</label>
+    <textarea id="ssh-key" class="mono" spellcheck="false" autocomplete="off" placeholder="ssh-ed25519 AAAA… mario@laptop"></textarea>
+    <p class="muted" style="margin: 4px 0 0">{{ _("The line of the .pub file (for example ~/.ssh/id_ed25519.pub). Never the private key.") }}</p>
+    <label for="ssh-account">{{ _("It opens the account") }}</label>
+    <select id="ssh-account" title="{{ _('The account of this machine the person logs in as: root, or a user of the machine with a login shell') }}"></select>
+    <p class="muted" id="ssh-account-note" style="margin: 4px 0 0"></p>
+    <p class="error" id="ssh-dialog-error" role="alert"></p>
+    <div class="actions">
+      <button type="button" class="primary" id="ssh-add-go" title="{{ _('Writes the key at the end of the authorized_keys of the account chosen, after ssh-keygen has read it; the other keys stay as they are') }}">{{ _("Add the key") }}</button>
+      <button type="button" id="ssh-add-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
+    </div>
+  </form>
+</dialog>
+<script>
+(function () {
+  const API = "{{ prefix }}/api/machine/ssh-keys";
+  const T = {
+    refused: {{ _("Refused") | tojson }},
+    remove: {{ _("Remove…") | tojson }},
+    removeTitle: {{ _("Takes this key out of the account: whoever has it can no longer log in with it") | tojson }},
+    removeAsk: {{ _("Remove the key {name} ({fingerprint}) from {account}? Whoever has it can no longer log in as {account} with it. The other keys stay.") | tojson }},
+    removeGo: {{ _("Remove the key") | tojson }},
+    removeGoTitle: {{ _("Takes the key out of the authorized_keys of the account") | tojson }},
+    others: {{ _("{account}: {n} keys OmniaCLI did not add") | tojson }},
+    otherOne: {{ _("{account}: 1 key OmniaCLI did not add") | tojson }},
+    othersTitle: {{ _("Keys put there by hand or by whoever prepared the machine (the key OmniaCLI itself came in with, a link): not changed here") | tojson }},
+    noOthers: {{ _("{account}: no other key") | tojson }},
+    options: {{ _("with options") | tojson }},
+    noComment: {{ _("no comment") | tojson }},
+    rootKey: {{ _("The SSH server lets root log in with a key.") | tojson }},
+    rootNo: {{ _("The SSH server does not let root log in (PermitRootLogin no): a key added to root opens nothing until it does.") | tojson }},
+    rootCommands: {{ _("The SSH server lets root run forced commands only (PermitRootLogin forced-commands-only): a key added to root does not open a shell.") | tojson }},
+    noPubkey: {{ _("The SSH server does not take keys (PubkeyAuthentication no): a key added here opens nothing until it does.") | tojson }},
+    otherFile: {{ _("The SSH server reads the keys from {file}, not from ~/.ssh/authorized_keys: keys are not added here.") | tojson }},
+    sshdUnknown: {{ _("What the SSH server allows could not be read (sshd -T).") | tojson }},
+    rootNote: {{ _("root: every power on the machine.") | tojson }},
+    userNote: {{ _("{account}: what that user may do, sudo included if it has it.") | tojson }},
+  };
+  const fill = (text, values) => text.replace(/\{(\w+)\}/g, (all, k) => (k in values ? values[k] : all));
+  const $ = (id) => document.getElementById(id);
+  const dialog = $("ssh-dialog");
+  let loaded = false, data = null;
+
+  async function call(url, init) {
+    try {
+      const resp = await fetch(url, Object.assign({headers: {Accept: "application/json", "Content-Type": "application/json"}}, init || {}));
+      const answer = await resp.json().catch(() => ({}));
+      if (!resp.ok) return {error: answer.error || answer.detail || T.refused + " (" + resp.status + ")"};
+      return answer;
+    } catch (e) { return {error: e.message}; }
+  }
+  const post = (url, payload) => call(url, {method: "POST", body: JSON.stringify(payload || {})});
+  function cell(text, className) {
+    const td = document.createElement("td");
+    if (className) td.className = className;
+    td.textContent = text;
+    return td;
+  }
+  function sshdText(answer) {
+    const facts = answer.sshd || {};
+    if (!Object.keys(facts).length) return T.sshdUnknown;
+    if (!answer.reads_file) return fill(T.otherFile, {file: facts.authorizedkeysfile});
+    const parts = [];
+    if (facts.pubkeyauthentication === "no") parts.push(T.noPubkey);
+    const root = facts.permitrootlogin;
+    parts.push(root === "no" ? T.rootNo : root === "forced-commands-only" ? T.rootCommands : T.rootKey);
+    return parts.join(" ");
+  }
+  function draw() {
+    const rows = $("ssh-rows"), others = $("ssh-others");
+    rows.replaceChildren(); others.replaceChildren();
+    const keys = [];
+    for (const account of data.accounts) for (const key of account.keys) keys.push({...key, account: account.account});
+    for (const key of keys) {
+      const tr = document.createElement("tr");
+      tr.append(cell(key.name), cell(key.account, "mono"), cell(key.type, "mono hide-sm"), cell(key.fingerprint, "mono"),
+                cell(key.by, "hide-sm"), cell(window.whenText(key.at)));
+      const td = document.createElement("td");
+      td.style.textAlign = "right";
+      const button = document.createElement("button");
+      button.type = "button"; button.className = "small danger"; button.textContent = T.remove; button.title = T.removeTitle;
+      button.addEventListener("click", () => removeKey(key));
+      td.append(button); tr.append(td); rows.append(tr);
+    }
+    $("ssh-table").hidden = !keys.length;
+    $("ssh-empty").hidden = !!keys.length;
+    for (const account of data.accounts) {
+      if (account.error) {
+        const p = document.createElement("p"); p.className = "error";
+        p.textContent = `${account.account}: ${account.error}`;
+        others.append(p);
+        continue;
+      }
+      const n = account.others.length;
+      if (!n) {
+        const p = document.createElement("p"); p.className = "muted"; p.textContent = fill(T.noOthers, {account: account.account});
+        others.append(p);
+        continue;
+      }
+      const details = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.textContent = fill(n === 1 ? T.otherOne : T.others, {account: account.account, n});
+      summary.title = T.othersTitle;
+      const list = document.createElement("ul");
+      for (const other of account.others) {
+        const li = document.createElement("li");
+        li.className = "mono small";
+        li.textContent = [other.type, other.fingerprint, other.comment || T.noComment, other.options ? T.options : ""].filter(Boolean).join(" · ");
+        list.append(li);
+      }
+      details.append(summary, list);
+      others.append(details);
+    }
+    const sshd = $("ssh-sshd");
+    sshd.hidden = false;
+    sshd.className = data.reads_file && (data.sshd || {}).permitrootlogin !== "no" ? "muted" : "error";
+    sshd.textContent = sshdText(data);
+    $("ssh-add-open").disabled = !data.reads_file;
+  }
+  async function load() {
+    loaded = true;
+    $("ssh-error").textContent = "";
+    $("ssh-loading").hidden = false;
+    const answer = await call(API);
+    $("ssh-loading").hidden = true;
+    if (answer.error) { $("ssh-error").textContent = answer.error; return; }
+    data = answer;
+    draw();
+  }
+  async function removeKey(key) {
+    const ok = await window.omniaAsk(fill(T.removeAsk, {name: key.name, fingerprint: key.fingerprint, account: key.account}),
+                                     T.removeGo, {danger: true, goTitle: T.removeGoTitle});
+    if (!ok) return;
+    const answer = await post(`${API}/remove`, {account: key.account, fingerprint: key.fingerprint});
+    if (answer.error) { $("ssh-error").textContent = answer.error; return; }
+    await load();
+  }
+  function accountNote() {
+    const account = $("ssh-account").value;
+    $("ssh-account-note").textContent = account === "root" ? T.rootNote : fill(T.userNote, {account});
+  }
+  function openAdd() {
+    if (!data) return;
+    const select = $("ssh-account");
+    select.replaceChildren(...data.accounts.filter((a) => !a.error).map((a) => {
+      const option = document.createElement("option"); option.value = option.textContent = a.account; return option;
+    }));
+    $("ssh-name").value = ""; $("ssh-key").value = ""; $("ssh-dialog-error").textContent = "";
+    $("ssh-add-go").disabled = false;
+    accountNote();
+    dialog.showModal();
+    $("ssh-name").focus();
+  }
+  async function add() {
+    $("ssh-add-go").disabled = true;
+    $("ssh-dialog-error").textContent = "";
+    const answer = await post(`${API}/add`, {name: $("ssh-name").value, key: $("ssh-key").value, account: $("ssh-account").value});
+    $("ssh-add-go").disabled = false;
+    if (answer.error) { $("ssh-dialog-error").textContent = answer.error; return; }
+    dialog.close();
+    await load();
+  }
+  $("ssh-reload").addEventListener("click", load);
+  $("ssh-add-open").addEventListener("click", openAdd);
+  $("ssh-add-go").addEventListener("click", add);
+  $("ssh-add-cancel").addEventListener("click", () => dialog.close());
+  $("ssh-account").addEventListener("change", accountNote);
+  $("ssh-form").addEventListener("submit", (event) => event.preventDefault());
+  document.addEventListener("omniatab:shown", (e) => { if (e.detail.tab === "ssh" && !loaded) load(); });
+})();
+</script>

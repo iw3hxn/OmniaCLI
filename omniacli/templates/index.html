@@ -98,6 +98,7 @@
   <button type="button" role="tab" data-tab="overview" aria-selected="true" title="{{ _('The instances of this machine, the linked ones and the last jobs') }}">{{ _("Overview") }}</button>
   <button type="button" role="tab" data-tab="monitor" title="{{ _('The load of this machine: the last hour live, or a point every 5 minutes over up to 14 days') }}">{{ _("Monitoring") }}</button>
   {% if machine_database %}<button type="button" role="tab" data-tab="database" title="{{ _('The databases of the instances of this machine: whom they serve, how much they weigh, whether they are tuned. They are tuned here.') }}">{{ _("Database") }}</button>{% endif %}
+  {% if machine_ssh %}<button type="button" role="tab" data-tab="ssh" title="{{ _('The SSH keys that let people log in to this machine: those OmniaCLI added, and how many others there are') }}">{{ _("SSH access") }}</button>{% endif %}
 </nav>
 {% endif %}
 <section class="tab-panel" data-panel="overview" data-bars-scope>
@@ -230,6 +231,7 @@
 </section>
 {% endif %}
 {% if machine_database %}{% include "_machine_database.html" %}{% endif %}
+{% if machine_ssh %}{% include "_machine_ssh.html" %}{% endif %}
 <script>
 // the texts of the Dashboard's scripts, in the page's language
 const DASH_T = {

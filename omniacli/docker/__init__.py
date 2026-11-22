@@ -454,6 +454,25 @@ class DockerPlugin(ServicePlugin):
         job.log(f"--- install {', '.join(modules)} in database {opts.database}")
         await _helper(job, instance, "update", opts.odoo_service, opts.database, "--install", ",".join(modules))
 
+    async def update_named_modules(self, job: Job, instance: Instance, modules: list[str]) -> None:
+        """odoo -u <modules> --stop-after-init (compose-helper update
+        --modules), a neutralized database's crons kept off: a module
+        uploaded again as a .zip, installed already."""
+        bad = [m for m in modules if not MODULE.fullmatch(m)]
+        if not modules or bad:
+            raise JobFailed(f"invalid module list: {', '.join(bad) or 'empty'}")
+        opts = instance.options
+        job.log(f"--- update {', '.join(modules)} in database {opts.database}")
+        await _helper(job, instance, "update", opts.odoo_service, opts.database, "--modules", ",".join(modules))
+
+    async def update_module_list(self, job: Job, instance: Instance) -> None:
+        """Apps › Update the module list in the instance's database, in its
+        running service (compose-helper update-list): the modules of its
+        addons path, a module uploaded as a .zip too, shown in Apps."""
+        opts = instance.options
+        job.log(f"--- the list of the modules of database {opts.database} updated")
+        await _helper(job, instance, "update-list", opts.odoo_service, opts.database)
+
     async def known_modules(self, instance: Instance) -> dict[str, str]:
         """{module: state} of what the instance's database knows
         (ir_module_module, compose-helper modules); JobFailed when it does

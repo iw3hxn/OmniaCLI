@@ -2300,6 +2300,61 @@ version of Odoo.
 
 An instance outside a workspace has the table of its repositories only.
 
+### Modules uploaded as a .zip
+
+Under **Code** in the Modules tab of an instance of a workspace, its admins
+(the machine's, the workspace's, a person through a link; the same as
+**+ Add a repository**, since the code reaches production) have
+**Upload a module (.zip)…** and the list of the modules uploaded, with
+their version, where they are, who uploaded them and when.
+
+- **The zip is checked before anything is written** (`moduleupload.py`):
+  at most 50 MB, 200 MB unpacked, 5000 entries, none encrypted; no name
+  that is absolute, holds `..` or a backslash, no symbolic link, no special
+  file; one or more modules, each a folder with its `__manifest__.py`, at
+  the top of the zip or in its one folder (GitHub's *Download ZIP*); the
+  manifest read with `ast.literal_eval`, never run, installable. What is
+  outside the modules' folders (a README) is not unpacked. A version of
+  another series than the instance's Odoo (`18.0.1.0.0` on Odoo 19) is
+  said, not refused; so is a dependency the instance does not have. A
+  module of the same name as one of a repository of the instance, or of
+  Odoo itself (its database knows it and no zip brought it), is refused: it
+  would hide the other in the addons path.
+- **Where it goes**: the same way as a repository, a folder of each role's
+  `addons/` (OmniaCLI's own, mounted read only in the container as
+  `/mnt/customer-addons`), `omniacli-uploads`, named in the role's
+  `odoo.conf` (`workspaceops.write_conf` keeps it there whatever repository
+  is added or removed later), with `.omniacli-uploads.json` beside the
+  modules (who, when, from which file). A repository may not take that name.
+- **Put them in** is a job: the modules into production and test (each in
+  place of the one of the same name), their `odoo.conf`, a restart, then
+  Odoo's *Update the module list* in each database (`compose-helper
+  update-list`: a fixed line of `odoo shell` in the running service), so
+  they are in Apps. **Then** chooses whether they are also installed now,
+  through the rules of **Install…**: in test by an admin of the instance, in
+  production after a confirmation with a backup first, in the staging
+  itself for a staging (its test is stopped and not restarted); one
+  installed there already is updated (`-u`) instead.
+- **A module uploaded before** is replaced only when its name is typed in
+  the dialog (several: `a, b`); the job's log says it was replaced. The
+  module of before is deleted.
+- **A staging** made here takes the production's uploaded modules (copied
+  before its database is loaded), and so does **Rebuild… › Data and
+  code**; a staging made on another machine does not (its modules go
+  there by uploading the zip again), nor does a full archive.
+- **Not for an instance adopted from a server that has Odoo already**:
+  its addons path is in its own `odoo.conf`, which OmniaCLI does not write;
+  the upload is refused with that reason, and the module goes in one of
+  its repositories.
+- **Not built**: pushing the module to a new repository on GitHub, and
+  deleting an uploaded module from the page (by hand: its folder in
+  `addons/omniacli-uploads` of both roles, after uninstalling it in Apps).
+
+The zip goes as the raw body of the request (`_upload.html`), so it goes
+through a link too (`/links/<name>/…`: the proxy passes the body). It is
+kept for an hour, private to OmniaCLI's user (`module-uploads/pending/`
+next to `jobs_dir`), until **Put them in**.
+
 ### Is a backup good
 
 Every backup made here has its **SHA-256** written when it is made, in
@@ -2893,6 +2948,52 @@ The machine is then a card of **Servers** and on the Dashboard under
 (Workspaces, its instances) open here through the link. The provisioning
 key may be taken out of root's `authorized_keys` there: the link does not
 use it.
+
+### SSH access
+
+The machine's page has a tab **SSH access** for its admins (logged in here,
+or a person on the pages of a linked machine; never a machine acting by
+itself through its link, never a user of workspaces, whose pages and
+routes do not have it): the keys that let developers log in over SSH.
+
+- **The list** is of the keys OmniaCLI added, each with its name, the
+  account it opens, its type, its fingerprint (SHA-256, as `ssh-keygen -l`
+  writes it), who added it and when. Under it, for each account, how many
+  keys are there that OmniaCLI did not add, each with its type, fingerprint
+  and comment: OmniaCLI's provisioning key, a link's, a person's put by
+  hand. They are shown so that nobody takes the list for the whole truth,
+  and they are never changed here. Then what the SSH server allows
+  (`sshd -T`): root's login, keys taken or not.
+- **+ Add a key…**: a name, the public key pasted as its `.pub` file writes
+  it (one line; a private key, options before the key, `ssh-dss` and RSA
+  keys under 2048 bits are refused), and the account it opens: **root**, or
+  a user of the machine with a uid from 1000, a login shell of
+  `/etc/shells` and a home (`ubuntu`, a developer's own user). Why: a
+  developer either administers the machine (root) or works as the user
+  made for that; the system accounts (`odoo`, `postgres`, `www-data`,
+  under uid 1000) are not for logging in, and the user OmniaCLI runs as is
+  never offered, since a key there would reach OmniaCLI's configuration and
+  tokens around the panel. Users are not made here.
+- **Remove…** takes out the key OmniaCLI added, after a question.
+
+The root helper writes (`workspace-helper ssh-keys | ssh-key-add <account>
+| ssh-key-remove <account> <fingerprint>`, `sshkeys.py`; the key on its
+input, never an argument). It touches only the lines it wrote, marked in
+their comment (`omniacli-managed by=… at=… name=…`, percent-encoded): a key
+is added at the end, a key is taken out where it is, every other line kept
+byte for byte and in its place. It checks the key with `ssh-keygen -l`
+first, refuses one the account has already, writes the whole file through a
+temporary file in `~/.ssh` renamed over it, mode 600 and owned by the
+account (`~/.ssh` made 700 when missing), never through a link (a
+`~/.ssh` or an `authorized_keys` that is a symbolic link is refused), one
+change at a time (a lock on `~/.ssh`). It refuses when `sshd` reads the
+keys from another file than `~/.ssh/authorized_keys` (`AuthorizedKeysFile`),
+and the page says when root may not log in (`PermitRootLogin no`).
+
+Every add and remove is in the access log: who (and for whom, through a
+link), the key's fingerprint and type, its name, the account; the list is a
+read of security data, logged too. It needs the helpers' sudo line
+(`OMNIACLI_WORKSPACES=1`, Workspaces); without it the tab says so.
 
 ### A server that already has Odoo
 

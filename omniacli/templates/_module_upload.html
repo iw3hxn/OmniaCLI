@@ -1,0 +1,216 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{# Modules uploaded as a .zip (README, Modules uploaded as a .zip), in the
+   Code section of the Modules tab of a workspace's instance, for its
+   admins (server.html includes it where Add a repository is): the modules
+   uploaded into each role (GET /api/servers/<s>/modules/uploaded, read
+   when the tab opens), and Upload a module (.zip)…: the zip sent
+   (OmniaUpload, the raw body, POST …/modules/upload?name=) and checked,
+   the dialog says what it holds, what is refused, what is said, which
+   modules it replaces (their names typed), and what then (only put in, or
+   installed in test or production, with the install's rules); Put it in
+   starts the job (POST …/modules/upload/<id>/apply) and its page opens.
+   Pushing the module to GitHub is not done here. Its script is an IIFE of
+   its own. -#}
+{% include "_upload.html" %}
+<div class="mu-box" id="mu-box" data-api="{{ prefix }}/api/servers/{{ server.name }}" data-jobs="{{ prefix }}/jobs/">
+  <div class="mu-head">
+    <h3>{{ _("Modules uploaded as a .zip") }}</h3>
+    <span {% if is_busy %}title="{{ _('A job is working on {name}: try again when it ends.', name=server.name) }}"{% endif %}>
+    <button type="button" class="small" id="mu-open" {{ off }}
+      title="{{ _('Sends a zip of one or more Odoo modules from this computer: it is checked first, then put in production and test, and installed if you choose') }}">{{ _("Upload a module (.zip)…") }}</button></span>
+  </div>
+  <p class="muted" id="mu-none">{{ _("No module uploaded as a .zip.") }}</p>
+  <div class="scroll"><table class="addons-table" id="mu-table" hidden>
+    <thead><tr><th>{{ _("Module") }}</th><th>{{ _("Version") }}</th><th class="hide-sm">{{ _("Where") }}</th><th class="hide-sm">{{ _("Uploaded by") }}</th><th>{{ _("Uploaded") }}</th></tr></thead>
+    <tbody id="mu-rows"></tbody>
+  </table></div>
+  <input type="file" id="mu-file" accept=".zip,application/zip" hidden>
+</div>
+<dialog id="mu-dialog" aria-labelledby="mu-title" style="width: min(720px, calc(100vw - 32px))">
+  <form method="dialog" id="mu-form">
+    <h2 id="mu-title">{{ _("Upload a module") }}</h2>
+    <p id="mu-sending"></p>
+    <div id="mu-checked" hidden>
+      <ul class="mu-modules" id="mu-modules"></ul>
+      <div id="mu-warnings"></div>
+      <p class="error" id="mu-refused" hidden></p>
+      <div id="mu-replace" hidden>
+        <p class="error" id="mu-replace-text"></p>
+        <label for="mu-replace-input" id="mu-replace-label"></label>
+        <input type="text" id="mu-replace-input" class="mono" autocomplete="off" spellcheck="false" style="width: 100%">
+      </div>
+      <label for="mu-then" class="mu-label">{{ _("Then") }}</label>
+      <select id="mu-then" title="{{ _('After the modules are in the instance: only that (they are installed later from Odoo’s Apps), or installed now in one database') }}"></select>
+      <p class="muted" id="mu-note"></p>
+      <p class="muted small">{{ _("Pushing the module to a repository on GitHub is not done here: add the repository with + Add a repository when it is there.") }}</p>
+    </div>
+    <p class="error" id="mu-error" role="alert"></p>
+    <div class="actions">
+      <span id="mu-go-wrap"><button type="button" class="primary" id="mu-go" disabled title="{{ _('Puts the modules in production and test, restarts them, updates the list of the modules of their databases, and installs them where chosen. It is a job.') }}">{{ _("Put them in") }}</button></span>
+      <button type="button" id="mu-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
+    </div>
+  </form>
+</dialog>
+<style>
+.mu-box { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
+.mu-head { display: flex; justify-content: space-between; align-items: center; gap: 8px 16px; flex-wrap: wrap; }
+.mu-head h3 { margin: 0; font-size: 15px; }
+.mu-modules { padding-left: 20px; margin: 6px 0 10px; }
+.mu-modules li { margin: 4px 0; }
+.mu-label { display: block; font-size: 13px; font-weight: 600; margin: 12px 0 4px; }
+#mu-replace label { display: block; font-size: 13px; margin: 6px 0 4px; }
+</style>
+<script>
+(function () {
+  const box = document.getElementById("mu-box"), dialog = document.getElementById("mu-dialog");
+  if (!box || !dialog) return;
+  const api = box.dataset.api;
+  const U = {
+    sending: {{ _("Sending {file}: {percent}%") | tojson }},
+    checking: {{ _("Checking {file}…") | tojson }},
+    holds: {{ _("{file} ({size}) holds:") | tojson }},
+    module: {{ _("{name} · {module} · version {version}") | tojson }},
+    noVersion: {{ _("no version") | tojson }},
+    replace: {{ _("Already uploaded, it is replaced: {names}. The modules of before are deleted.") | tojson }},
+    replaceLabel: {{ _("Type {names} to replace them") | tojson }},
+    only: {{ _("Only put them in the instance") | tojson }},
+    install: {test: {{ _("Install them in test") | tojson }}, production: {{ _("Install them in production") | tojson }}},
+    installStaging: {{ _("Install them in the staging") | tojson }},
+    restarts: {{ _("{roles} restart: who is connected loses the connection for a few seconds. The list of the modules of their databases is updated: they are in Odoo’s Apps.") | tojson }},
+    productionNote: {{ _("In production: a backup first, then the modules are installed (those installed already are updated) and production restarts.") | tojson }},
+    updateNote: {{ _("Those installed there already are updated (-u).") | tojson }},
+    roles: {production: {{ _("Production") | tojson }}, test: {{ _("Test environment") | tojson }}},
+    go: {{ _("Put them in") | tojson }},
+    goInstall: {{ _("Put them in and install") | tojson }},
+    busy: {{ _("A job is working on {name}: try again when it ends.") | tojson }},
+    refused: {{ _("Refused") | tojson }},
+    both: {{ _("production and test") | tojson }},
+  };
+  const fill = (text, values) => text.replace(/\{(\w+)\}/g, (all, k) => (k in values ? values[k] : all));
+  const $ = (id) => document.getElementById(id);
+  let checked = null, loaded = false;
+
+  async function load() {
+    loaded = true;
+    let data;
+    try {
+      const resp = await fetch(`${api}/modules/uploaded`, {headers: {Accept: "application/json"}});
+      data = await resp.json();
+      if (!resp.ok) return;
+    } catch (e) { return; }
+    const rows = {};
+    for (const [role, list] of Object.entries(data.roles || {})) {
+      for (const row of list) {
+        const kept = rows[row.module] || (rows[row.module] = {...row, where: []});
+        kept.where.push(U.roles[role] || role);
+      }
+    }
+    const body = $("mu-rows");
+    body.replaceChildren(...Object.values(rows).map((row) => {
+      const tr = document.createElement("tr");
+      for (const [text, cls] of [[`${row.name || row.module} (${row.module})`, ""], [row.version || "–", "mono"],
+                                 [row.where.join(", "), "hide-sm"], [row.by || "–", "hide-sm"], [window.whenText(row.uploaded), ""]]) {
+        const td = document.createElement("td"); td.textContent = text; if (cls) td.className = cls; tr.append(td);
+      }
+      return tr;
+    }));
+    $("mu-table").hidden = !body.children.length;
+    $("mu-none").hidden = !!body.children.length;
+  }
+  function step(sending) {
+    $("mu-checked").hidden = sending;
+    $("mu-sending").hidden = !sending;
+  }
+  function li(text, className) {
+    const item = document.createElement(className === "p" ? "p" : "li");
+    item.textContent = text;
+    if (className && className !== "p") item.className = className;
+    return item;
+  }
+  function choices() {
+    const select = $("mu-then");
+    const options = [["", U.only]];
+    for (const r of checked.roles) {
+      if (!r.refused) options.push([r.role, checked.staging ? U.installStaging : U.install[r.role]]);
+    }
+    select.replaceChildren(...options.map(([value, text]) => {
+      const option = document.createElement("option"); option.value = value; option.textContent = text; return option;
+    }));
+  }
+  function note() {
+    const role = $("mu-then").value;
+    const names = checked.restarts.length > 1 ? U.both : U.roles[checked.restarts[0]];
+    const parts = [fill(U.restarts, {roles: names.charAt(0).toUpperCase() + names.slice(1)})];
+    if (role === "production" && !checked.staging) parts.push(U.productionNote);
+    else if (role) parts.push(U.updateNote);
+    $("mu-note").textContent = parts.join(" ");
+    $("mu-go").textContent = role ? U.goInstall : U.go;
+    allowGo();
+  }
+  function allowGo() {
+    const typed = $("mu-replace-input").value.trim().split(/\s+/).join(" ");
+    const replaceOk = !checked.replaced.length || typed === checked.replaced.join(", ");
+    $("mu-go").disabled = !!checked.refused.length || !replaceOk || checked.busy;
+  }
+  function show(answer, file) {
+    checked = answer;
+    step(false);
+    const list = $("mu-modules");
+    list.replaceChildren(...answer.modules.map((m) => li(fill(U.module, {name: m.name, module: m.module, version: m.version || U.noVersion}))));
+    list.before(li(fill(U.holds, {file: answer.file, size: window.sizeText(answer.size)}), "p"));
+    const warnings = $("mu-warnings");
+    warnings.replaceChildren(...[...answer.modules.filter((m) => m.warning).map((m) => m.warning),
+                                 ...answer.warnings.filter((w) => !answer.modules.some((m) => m.warning === w))]
+      .map((w) => { const p = li(w, "p"); p.className = "muted"; return p; }));
+    $("mu-refused").hidden = !answer.refused.length;
+    $("mu-refused").textContent = answer.refused.join(" ");
+    $("mu-replace").hidden = !answer.replaced.length;
+    const names = answer.replaced.join(", ");
+    $("mu-replace-text").textContent = fill(U.replace, {names});
+    $("mu-replace-label").textContent = fill(U.replaceLabel, {names});
+    $("mu-replace-input").value = "";
+    const wrap = $("mu-go-wrap");
+    if (answer.busy) wrap.title = fill(U.busy, {name: "{{ server.name }}"}); else wrap.removeAttribute("title");
+    choices();
+    note();
+  }
+  function send(file) {
+    checked = null;
+    $("mu-error").textContent = "";
+    $("mu-go").disabled = true;
+    step(true);
+    for (const p of dialog.querySelectorAll("#mu-checked > p:not([id]):not(.small)")) p.remove();
+    $("mu-sending").textContent = fill(U.sending, {file: file.name, percent: 0});
+    dialog.showModal();
+    OmniaUpload.send(`${api}/modules/upload`, file, {type: "application/zip", progress: (percent) => {
+      $("mu-sending").textContent = percent >= 100 ? fill(U.checking, {file: file.name})
+                                                   : fill(U.sending, {file: file.name, percent: Math.floor(percent)});
+    }}).then((answer) => show(answer, file), (error) => { $("mu-sending").textContent = ""; $("mu-error").textContent = error.message; });
+  }
+  async function go() {
+    $("mu-go").disabled = true;
+    $("mu-error").textContent = "";
+    const role = $("mu-then").value;
+    const body = {replace: $("mu-replace-input").value, install: role};
+    if (role === "production" && !checked.staging) body.confirm = true;
+    let data = {}, ok = false;
+    try {
+      const resp = await fetch(`${api}/modules/upload/${encodeURIComponent(checked.id)}/apply`, {method: "POST",
+        headers: {"Content-Type": "application/json", Accept: "application/json"}, body: JSON.stringify(body)});
+      data = await resp.json().catch(() => ({}));
+      ok = resp.ok && data.job;
+    } catch (e) { data = {error: e.message}; }
+    if (!ok) { $("mu-error").textContent = data.error || data.detail || U.refused; allowGo(); return; }
+    location.href = box.dataset.jobs + data.job;
+  }
+  $("mu-open").addEventListener("click", () => { $("mu-file").value = ""; $("mu-file").click(); });
+  $("mu-file").addEventListener("change", () => { const file = $("mu-file").files[0]; if (file) send(file); });
+  $("mu-then").addEventListener("change", note);
+  $("mu-replace-input").addEventListener("input", allowGo);
+  $("mu-go").addEventListener("click", go);
+  $("mu-cancel").addEventListener("click", () => dialog.close());
+  $("mu-form").addEventListener("submit", (event) => event.preventDefault());
+  document.querySelector('.tabs [data-tab="modules"]')?.addEventListener("click", () => { if (!loaded) load(); });
+  if (location.hash === "#modules") load();
+})();
+</script>

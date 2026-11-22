@@ -50,6 +50,7 @@ from . import audit, siem
 from . import i18n, loginas, machines, modulecatalog, pgreport, pgtuning, stagings, workspaceweb
 from . import clusterpitr, inframap, linkedcluster, machinedb, managedreplica
 from . import stagingmail
+from . import moduleupload, sshkeys
 from . import dumpinfo
 from . import totp
 from . import uploads as uploads_mod
@@ -347,6 +348,9 @@ WORKSPACE_ROUTES = frozenset({
     # the Modules tab: the catalog of the OCA, with the role in the workspace (UX-008 §7)
     "/api/servers/{server}/modules", "/api/servers/{server}/modules/catalog", "/api/servers/{server}/modules/plan",
     "/api/servers/{server}/{role}/modules", "/api/servers/{server}/{role}/modules/install",
+    # modules uploaded as a .zip (README, Modules uploaded as a .zip): its admins, as a repository
+    "/api/servers/{server}/modules/upload", "/api/servers/{server}/modules/upload/{ident}/apply",
+    "/api/servers/{server}/modules/uploaded",
     # the PUT of an upload_backup URL (a workspace's token, for its workspace)
     UPLOAD_ROUTE,
     # what the backup and restore dialogs show (sizes only), with the role
@@ -1459,6 +1463,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             "load_workspaces": sorted((ws, role) for ws, role in me.workspaces if ws in settings.workspaces) if me.scoped else [],
             # the Database tab (UX-008 §6.2): the machine's admins only
             "machine_database": shown is None and machine_admin(me),
+            # the SSH access tab (README, SSH access): the machine's admins, a person through a link too
+            "machine_ssh": shown is None and machine_admin(me) and not a_machine(me),
             # the access log's room, the clock, the SIEM (NIS 2): the machine's admins
             "audit": await asyncio.to_thread(audit_status) if shown is None and machine_admin(me) else None,
         })
@@ -4930,6 +4936,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return {"backup": backup_zip.name}
 
         async def fill(job, target) -> dict:
+            # the modules uploaded as a .zip into the production go with it (README, Modules uploaded as a .zip)
+            copy_uploads(job, server, target.server)
+            if uploads_folder(*workspace_of(target.server), "production").is_dir():
+                await workspaceops.write_conf(job, *workspace_of(target.server), "production",
+                                              [r.name for r in target.repositories])
             return await (load or backup_and_restore)(job, settings.servers[server].production, target)
 
         on = enterprise_of(settings.servers[server])
@@ -5171,6 +5182,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             await ops.update_submodules(job, dataclasses.replace(repo, branch=theirs.branch))
             rows.append({"name": repo.name, "path": str(repo.path), "branch": theirs.branch, "remote": repo.remote})
         gone = [r for name, r in mine.items() if name not in {t.name for t in prod.repositories}]
+        # the modules uploaded as a .zip, as the production has them
+        copy_uploads(job, parent, server)
         await workspaceops.write_conf(job, ws, instance, "production", [r["name"] for r in rows])
         done = await set_repositories(server, {"production": rows})
         for repo in gone:
@@ -6023,6 +6036,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return refuse(str(exc))
         if any(r.name == repo for role in roles for r in getattr(server, role).repositories):
             return refuse(f"{name} has a repository {repo} already")
+        if repo == moduleupload.FOLDER:
+            return refuse(f"{repo} is the folder of the modules uploaded as a .zip: give the repository another name")
 
         async def action(job):
             await add_repositories(job, ws, name, instance, [(repo, url, branches)])
@@ -6262,7 +6277,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return found, why
 
     def code_modules(srv) -> set[str]:
-        """The modules in the repositories of the instance's roles."""
+        """The modules in the repositories of the instance's roles, and those uploaded as a .zip."""
         found = set()
         for role in ROLES:
             inst = getattr(srv, role)
@@ -6270,6 +6285,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 for manifest in repo.path.glob("*/__manifest__.py"):
                     if modulecatalog.MODULE.fullmatch(manifest.parent.name):
                         found.add(manifest.parent.name)
+        made = workspace_of(srv.name)
+        if made is not None:
+            for role in ROLES:
+                if getattr(srv, role) is not None:
+                    found.update(moduleupload.record(uploads_folder(made[0], made[1], role)))
         return found
 
     def repository_names(srv) -> set[str]:
@@ -6462,6 +6482,276 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if "Error" in line or "error" in line:
                 return line.strip()[-300:]
         return "Odoo gave no reason"
+
+    # --- modules uploaded as a .zip (README, Modules uploaded as a .zip;
+    # moduleupload.py): sent, checked and kept aside (POST …/modules/upload),
+    # then put in production and test with a job (…/upload/<id>/apply)
+
+    upload_dir = settings.jobs_dir.parent / "module-uploads"
+    # the zips checked and not put yet: id → {server, path, file, checked, by, at}
+    pending_uploads: dict[str, dict] = {}
+    UPLOAD_TTL = 3600
+
+    def uploads_folder(ws: Workspace, instance: str, role: str) -> Path:
+        return workspaceops.addons_folder(ws, instance, role) / moduleupload.FOLDER
+
+    def upload_instance(server: str, me: Principal):
+        """(workspace, instance, server, series) of an instance me may upload a
+        module to: a workspace's (an adopted Odoo keeps its addons path in its
+        own odoo.conf, which OmniaCLI does not write), an admin's of it, a
+        person (not a machine acting by itself); a refusal otherwise."""
+        srv = settings.servers.get(server)
+        if srv is not None and workspace_of(server) is None:
+            return refuse(f"{server} is not an instance of a workspace: its Odoo keeps its addons path in its own "
+                          "odoo.conf, which OmniaCLI does not write. Put the module in one of its repositories")
+        found = modules_instance(server)
+        if not isinstance(found, tuple):
+            return found
+        if a_machine(me) or not me.can("admin"):
+            raise HTTPException(status.HTTP_403_FORBIDDEN,
+                                "Uploading a module is for the admins of the instance, as adding a repository")
+        return found
+
+    def repository_modules(srv) -> dict[str, str]:
+        """{module: repository} of the modules in the repositories of the instance's roles."""
+        found = {}
+        for role in ROLES:
+            inst = getattr(srv, role)
+            for repo in (inst.repositories if inst is not None else []):
+                for manifest in repo.path.glob("*/__manifest__.py"):
+                    found.setdefault(manifest.parent.name, repo.name)
+        return found
+
+    def uploaded_modules(ws: Workspace, instance: str, srv) -> dict[str, dict]:
+        """{role: {module: its record}} of the modules uploaded into each role."""
+        return {role: moduleupload.record(uploads_folder(ws, instance, role))
+                for role in ROLES if getattr(srv, role) is not None}
+
+    def drop_old_uploads() -> None:
+        now = time.time()
+        for ident, item in list(pending_uploads.items()):
+            if now - item["at"] > UPLOAD_TTL:
+                pending_uploads.pop(ident, None)
+                item["path"].unlink(missing_ok=True)
+
+    async def upload_facts(ws: Workspace, instance: str, srv, series: str, checked: dict) -> dict:
+        """What putting the checked modules in the instance does: which it
+        replaces, which are refused (a module of a repository, of Odoo
+        itself), what is said (another series, a dependency missing)."""
+        repos = await asyncio.to_thread(repository_modules, srv)
+        uploaded = await asyncio.to_thread(uploaded_modules, ws, instance, srv)
+        known, why, _, _ = await modules_view(srv)
+        had = set().union(*(set(r) for r in uploaded.values()))
+        mine = {m["module"] for m in checked["modules"]}
+        refused, warnings = [], [m["warning"] for m in checked["modules"] if m["warning"]]
+        anywhere = set().union(*(set(k or {}) for k in known.values()))
+        for module in sorted(mine):
+            if module in repos:
+                refused.append(f"{module} is in the repository {repos[module]} of {srv.name} already: update it there")
+            elif module in anywhere and module not in had:
+                refused.append(f"{module} is a module of Odoo itself or of its image: it is not replaced by a zip")
+        present = anywhere | set(repos) | had | mine
+        for row in checked["modules"]:
+            missing = [d for d in row["depends"] if d not in present]
+            if missing:
+                warnings.append(f"{row['module']} depends on {', '.join(missing)}, not in {srv.name}: installing it "
+                                "fails until they are there")
+        if why and not any(known.values()):
+            warnings.append(f"The databases of {srv.name} did not answer: the modules of Odoo are not checked")
+        states = {m: {role: (known.get(role) or {}).get(m) for role in known} for m in mine}
+        return {"replaced": sorted(mine & had), "refused": refused, "warnings": warnings, "states": states}
+
+    @app.post("/api/servers/{server}/modules/upload", dependencies=[Depends(admin)])
+    async def module_upload(request: Request, server: str, name: str = "", me: Principal = Depends(current_user)):
+        """A zip of one or more Odoo modules sent by the browser (the raw
+        body), checked and kept aside for an hour: what it holds and what
+        putting it in the instance does. Nothing is written in the instance."""
+        found = upload_instance(server, me)
+        if not isinstance(found, tuple):
+            return found
+        ws, instance, srv, series = found
+        file = Path(name).name
+        if not moduleupload.NAME.fullmatch(file):
+            return refuse("The file must be a .zip with a plain name (letters, digits, . _ - and spaces)")
+        drop_old_uploads()
+        folder = private.backup_folder(upload_dir / "pending")
+        ident = secrets.token_hex(12)
+        dest = folder / f"{ident}.zip"
+        size = 0
+        try:
+            with open(dest, "xb") as out:
+                os.chmod(dest, 0o600)
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > moduleupload.MAX_ZIP:
+                        raise moduleupload.Refused(f"The zip is larger than {moduleupload.MAX_ZIP >> 20} MB")
+                    out.write(chunk)
+            checked = await asyncio.to_thread(moduleupload.check, dest, series)
+        except moduleupload.Refused as exc:
+            dest.unlink(missing_ok=True)
+            return refuse(str(exc))
+        except ClientDisconnect:
+            dest.unlink(missing_ok=True)
+            return refuse(f"{file}: the upload was interrupted")
+        facts = await upload_facts(ws, instance, srv, series, checked)
+        pending_uploads[ident] = {"server": server, "path": dest, "file": file, "checked": checked, "by": str(me),
+                                  "at": time.time()}
+        say = functools.partial(i18n.tr, request_language(request))
+        staging = is_staging(server)
+        roles = install_roles(me, srv, staging)
+        return {"id": ident, "file": file, "size": size, "series": series, "staging": staging,
+                "modules": [{**m, "warning": say(m["warning"]) if m["warning"] else None} for m in checked["modules"]],
+                "replaced": facts["replaced"], "refused": [say(t) for t in facts["refused"]],
+                "warnings": [say(t) for t in facts["warnings"]], "states": facts["states"],
+                "roles": [{"role": role, "refused": say(why) if why else None} for role, why in roles.items()],
+                "restarts": [r for r in ROLES if getattr(srv, r) is not None and not (staging and r == "test")],
+                "busy": server_busy(server)}
+
+    @app.post("/api/servers/{server}/modules/upload/{ident}/apply", dependencies=[Depends(admin)])
+    async def module_upload_apply(request: Request, server: str, ident: str, payload: dict = Body(...),
+                                  me: Principal = Depends(current_user)):
+        """A job: the modules of the zip checked before into production and
+        test (each in place of the one of the same name uploaded before, with
+        the names typed), their odoo.conf, a restart, Update the module list;
+        then, when asked, installed (or updated, when they are installed) in
+        one role, through the install's own rules (a backup first in
+        production, after a confirmation)."""
+        found = upload_instance(server, me)
+        if not isinstance(found, tuple):
+            return found
+        ws, instance, srv, series = found
+        drop_old_uploads()
+        item = pending_uploads.get(ident)
+        if item is None or item["server"] != server:
+            return refuse("This upload is not here any more (an hour has passed, or it was used): send the zip again",
+                          status.HTTP_404_NOT_FOUND)
+        checked = item["checked"]
+        facts = await upload_facts(ws, instance, srv, series, checked)
+        if facts["refused"]:
+            return refuse(facts["refused"][0])
+        typed = " ".join(str(payload.get("replace") or "").split())
+        wanted = ", ".join(facts["replaced"])
+        if facts["replaced"] and typed != wanted:
+            return refuse(f"Type {wanted} to replace the modules uploaded before")
+        staging = is_staging(server)
+        role = str(payload.get("install") or "")
+        allowed = install_roles(me, srv, staging)
+        if role:
+            if role not in allowed:
+                return refuse(f"{server} has no {role} to install in" if getattr(srv, role, None) is None
+                              else f"The test of the staging {server} is stopped: install in the staging itself")
+            if allowed[role]:
+                raise HTTPException(status.HTTP_403_FORBIDDEN, allowed[role])
+        production = role == "production" and not staging
+        if production and payload.get("confirm") is not True:
+            return refuse(f"Installing in the production of {server} asks for a confirmation: a backup first, and "
+                          "production restarts")
+        if server_busy(server):
+            return refuse(f"A job is running on {server}: try again when it ends")
+        pending_uploads.pop(ident, None)
+        modules = [m["module"] for m in checked["modules"]]
+        roles = [r for r in ROLES if getattr(srv, r) is not None]
+        running = [r for r in roles if not (staging and r == "test")]
+
+        async def action(job):
+            stamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+            try:
+                for each in roles:
+                    folder = uploads_folder(ws, instance, each)
+                    staged = workspaceops.addons_folder(ws, instance, each) / f".omniacli-upload-{ident}"
+                    if staged.exists():
+                        shutil.rmtree(staged)
+                    try:
+                        await asyncio.to_thread(moduleupload.unpack, item["path"], checked, staged)
+                        before = await asyncio.to_thread(moduleupload.put, folder, staged, checked["modules"],
+                                                         item["by"], item["file"], stamp)
+                    except moduleupload.Refused as exc:
+                        raise JobFailed(str(exc)) from None
+                    finally:
+                        if staged.exists():
+                            shutil.rmtree(staged)
+                    job.log(f"--- {', '.join(modules)} of {item['file']} in the uploaded modules of {each}"
+                            + (f": {', '.join(before)} replaced" if before else ""))
+            finally:
+                item["path"].unlink(missing_ok=True)
+            current = settings.servers[server]
+            for each in roles:
+                state = workspacehelper.role_state(workspaceops.storage_path(ws) / ws.name / instance / each)
+                if moduleupload.FOLDER not in state["repositories"]:
+                    await workspaceops.write_conf(job, ws, instance, each,
+                                                  [r.name for r in getattr(current, each).repositories])
+            for each in running:
+                inst = getattr(current, each)
+                await ops.restart(job, inst)
+                lister = getattr(inst.plugin, "update_module_list", None)
+                if lister is not None:
+                    await lister(job, inst)
+                known_memo.pop(inst.key, None)
+            job.result = {"server": server, "modules": modules}
+            if not role:
+                job.log(f"{', '.join(modules)} in {server}: install them from Odoo's Apps, or with Upload a module "
+                        "again")
+                return
+            inst = getattr(current, role)
+            known, why_not = await known_modules(inst, fresh=True)
+            installed = [m for m in modules if (known or {}).get(m) in modulecatalog.INSTALLED]
+            new = [m for m in modules if m not in installed]
+            if production:
+                await ops.backup_before_update(job, dataclasses.replace(inst, backup_before_update=True),
+                                               backup_folder(inst))
+            first = len(job.lines)
+            try:
+                if new:
+                    await inst.plugin.install_modules(job, inst, new)
+                if installed:
+                    await inst.plugin.update_named_modules(job, inst, installed)
+            except JobFailed:
+                raise JobFailed(f"{', '.join(modules)}: not installed in {inst.key}: {odoo_error(job.lines[first:])}. "
+                                "The full log is in the job.") from None
+            finally:
+                known_memo.pop(inst.key, None)
+            await ops.restart(job, inst)
+            known, why_not = await known_modules(inst, fresh=True)
+            if known is None:
+                job.log(f"WARNING: whether {', '.join(modules)} are installed is not known: {why_not}")
+            else:
+                missing = [m for m in modules if known.get(m) not in modulecatalog.INSTALLED]
+                if missing:
+                    raise JobFailed(f"{', '.join(missing)}: not installed in {inst.key}: "
+                                    f"{odoo_error(job.lines[first:])}. The full log is in the job.")
+                job.log(f"{', '.join(modules)} installed in {inst.key}" + (f" ({', '.join(installed)} updated)"
+                                                                            if installed else ""))
+            job.result = {**job.result, "role": role}
+
+        job = jobs.submit(f"Upload {', '.join(modules)} into {server}", [f"{server}/{r}" for r in roles],
+                          f"manual: {me}", action, workspace=ws.name)
+        access_log.record("action", me.kind, me.name, request.client.host if request.client else "",
+                          f"modules {', '.join(modules)} of {item['file']} uploaded into {server}"
+                          + (f", {', '.join(facts['replaced'])} replaced" if facts["replaced"] else "")
+                          + (f", installed in {role}" if role else ""), server=server, workspace=ws.name)
+        return {"job": job.id}
+
+    @app.get("/api/servers/{server}/modules/uploaded", dependencies=[Depends(developer)])
+    async def modules_uploaded(server: str):
+        """The modules uploaded as a .zip into each role: name, version, who, when, the file."""
+        found = modules_instance(server)
+        if not isinstance(found, tuple):
+            return found
+        ws, instance, srv, _ = found
+        rows = await asyncio.to_thread(uploaded_modules, ws, instance, srv)
+        return {"roles": {role: [{"module": m, **r} for m, r in kept.items()] for role, kept in rows.items()}}
+
+    def copy_uploads(job, parent: str, staging: str) -> None:
+        """The modules uploaded into parent's production into the staging's
+        production (its folder made again from them); its odoo.conf follows
+        with write_conf."""
+        source, target = workspace_of(parent), workspace_of(staging)
+        if source is None or target is None:
+            return
+        copied = moduleupload.copy_folder(uploads_folder(source[0], source[1], "production"),
+                                          uploads_folder(target[0], target[1], "production"))
+        if copied:
+            job.log(f"--- the uploaded modules of {parent} ({', '.join(copied)}) copied into {staging}")
 
     def instance_template(ws: Workspace, instance: str):
         """The template an instance was made from (the higher version installed), or None."""
@@ -10869,6 +11159,77 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     def postgres_admin(me: Principal) -> None:
         if not machine_admin(me):
             raise HTTPException(status.HTTP_403_FORBIDDEN, "An admin of the machine is required")
+
+    # --- SSH access (README, SSH access): the keys of the people who log in to
+    # the machine, written by the root helper (sshkeys.py) in the accounts'
+    # authorized_keys, only the lines it marked; the machine's admins, a
+    # person through any panel too, never a machine acting by itself
+    def ssh_admin(me: Principal) -> None:
+        if not machine_admin(me) or a_machine(me):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "The SSH keys of the machine are for its admins")
+
+    def ssh_refusal(text: str) -> str:
+        text = text.removeprefix("workspace-helper: ").strip()
+        if "sudo" in text and ("password" in text or "not allowed" in text):
+            return ("sudo does not let OmniaCLI run its root helper here: the SSH keys are written by root "
+                    "(OMNIACLI_WORKSPACES=1, README, SSH access)")
+        return text
+
+    @app.get("/api/machine/ssh-keys")
+    async def ssh_keys_list(request: Request, me: Principal = Depends(current_user)):
+        """The accounts a key may open, the keys OmniaCLI added to each (name,
+        type, fingerprint, who, when) and the others there (their fingerprints)."""
+        ssh_admin(me)
+        try:
+            found = await workspaceops.ask("ssh-keys")
+        except JobFailed as exc:
+            return refuse(ssh_refusal(str(exc)), status.HTTP_502_BAD_GATEWAY)
+        lang = request_language(request)
+        for row in found.get("accounts") or []:
+            if row.get("error"):
+                row["error"] = i18n.tr(lang, row["error"])
+        return found
+
+    @app.post("/api/machine/ssh-keys/add")
+    async def ssh_key_add(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """A public key (name, the .pub line, the account it opens) at the end
+        of the account's authorized_keys; in the access log with its fingerprint."""
+        ssh_admin(me)
+        try:
+            account = sshkeys.check_account(payload.get("account"))
+            name = sshkeys.check_name(payload.get("name"))
+            sshkeys.check_pasted(payload.get("key"))
+        except sshkeys.KeyRefused as exc:
+            return refuse(str(exc))
+        given = json.dumps({"name": name, "key": str(payload.get("key")).strip(), "by": str(me)}).encode()
+        try:
+            done = await workspaceops.ask("ssh-key-add", account, input=given)
+        except JobFailed as exc:
+            return refuse(ssh_refusal(str(exc)))
+        access_log.record("action", me.kind, me.name, request.client.host if request.client else "",
+                          f"SSH key {done.get('fingerprint')} ({done.get('type')}, {name}) added: it opens "
+                          f"{account} on this machine" + (f", for {me.on_behalf}" if me.on_behalf else ""))
+        return done
+
+    @app.post("/api/machine/ssh-keys/remove")
+    async def ssh_key_remove(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """A key OmniaCLI added taken out of the account's authorized_keys."""
+        ssh_admin(me)
+        try:
+            account = sshkeys.check_account(payload.get("account"))
+        except sshkeys.KeyRefused as exc:
+            return refuse(str(exc))
+        found = str(payload.get("fingerprint") or "")
+        if not sshkeys.FINGERPRINT.fullmatch(found):
+            return refuse(f"{found!r} is not the fingerprint of a key (SHA256:…)")
+        try:
+            done = await workspaceops.ask("ssh-key-remove", account, found)
+        except JobFailed as exc:
+            return refuse(ssh_refusal(str(exc)))
+        access_log.record("action", me.kind, me.name, request.client.host if request.client else "",
+                          f"SSH key {found} ({done.get('type')}, {done.get('name')}) removed: it no longer opens "
+                          f"{account} on this machine" + (f", for {me.on_behalf}" if me.on_behalf else ""))
+        return done
 
     def postgres_machine() -> dict:
         """The memory for the databases of the machine (saved, else D13's

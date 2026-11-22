@@ -54,6 +54,10 @@ command of the caller's, and runs docker with an environment of its own:
                                          odoo -i a,b --stop-after-init, in
                                          the running service, an existing
                                          database (the catalog of modules)
+    update-list <odoo service> <db>      Odoo's Update the module list (a fixed
+                                         line of odoo shell, in the running
+                                         service): the modules of the addons
+                                         path known to the database, in Apps
     modules <database service> <db>      the modules the database knows, each
                                          name|state (fixed query)
     terminal <odoo service>              a login shell in the running service,
@@ -315,7 +319,7 @@ WITH_ARGUMENTS = ("logs", "version", "port", "dump", "load", "update", "psql", "
                   "setup", "options", "image", "verify", "pip-freeze",
                   "pg-report", "pg-terminate", "neutralize", "pip-requirements", "terminal",
                   "mail-list", "mail-get", "mail-clear", "pg-settings", "pg-set", "pg-reset", "db-restart",
-                  "modules", "mail-send", "mail-inbox")
+                  "modules", "mail-send", "mail-inbox", "update-list")
 # the tuning's actions that read their values on the input (pg_tune())
 TUNE_ACTIONS = ("pg-set", "pg-reset", "db-restart")
 # a staging's caught mail (stacktemplates.MAIL_SERVICE, templates' compose.yaml):
@@ -408,6 +412,10 @@ SCRIPTS = {
     # modules of the catalog installed into an existing database (UX-008 §7.2), without demo data
     "install-modules": ODOO_DB + CRONS_BEFORE + 'odoo -d "$1" -i "$2" --stop-after-init --no-http '
                                                 '--without-demo=all; ' + CRONS_AFTER,
+    # Apps › Update the module list, as Odoo's button does: a fixed line, the database as $1
+    "update-list": ODOO_DB + "echo 'print(\"omniacli: modules updated, added:\", "
+                             "env[\"ir.module.module\"].update_list()); env.cr.commit()' | "
+                             'odoo shell -d "$1" --no-http --log-level=warn',
     "pg-modules": 'exec psql -X -At -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-postgres}" -d "$1" -c "$2"',
     "psql": 'exec psql -U "${POSTGRES_USER:-postgres}" "$1"',
     # the report: its line, then pg_stat_statements' when the extension is there
@@ -767,6 +775,11 @@ def commands(project: Path, action: str, args: list[str]) -> list[list[str]]:
             script = "update-modules" if args[2] == "--modules" else "install-modules"
             return [_script(service(project, args[0]), script, _database(args[1]), ",".join(modules))]
         raise HelperError("usage: update <service> <database> [--modules a,b | --install a,b]")
+    if action == "update-list":
+        # update-list <odoo service> <database>: the fixed line above, in the running service
+        if len(args) != 2:
+            raise HelperError("usage: update-list <service> <database>")
+        return [_script(service(project, args[0]), "update-list", _database(args[1]))]
     if action == "modules":
         # modules <database service> <database>: the fixed query above
         if len(args) != 2:

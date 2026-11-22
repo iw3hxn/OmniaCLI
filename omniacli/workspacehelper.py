@@ -32,6 +32,7 @@
     (machine-db-return takes <workspace>.<storage>.<instance> too: the database of that instance comes back)
     omniacli workspace-helper machine-db-moved <workspace> <storage> <instance>   (where it is now, JSON, on the input)
     omniacli workspace-helper space
+    omniacli workspace-helper ssh-keys | ssh-key-add <account> | ssh-key-remove <account> <SHA256:...>
     omniacli workspace-helper storage-setup | storage-check <storage> | storage-reset <storage>
     omniacli workspace-helper enterprise-sync <version>
     omniacli workspace-helper enterprise <workspace> <storage> <instance> on|off
@@ -116,6 +117,15 @@ the name leads here (_reaches_here), else a self-signed one; "-" removes
 site and certificates. Refused where OmniaCLI does not keep nginx (no
 workspaces.storage: a machine with its Odoo of before).
 portal-names: the names the other sites answer on; it reads only.
+
+ssh-keys | ssh-key-add <account> ({name, key, by} on the input) |
+ssh-key-remove <account> <fingerprint>: the SSH keys of the people who log in
+to the machine (README, SSH access; sshkeys.py): root, or a user with a login
+shell from uid 1000, never the one OmniaCLI runs as; only the lines of
+~/.ssh/authorized_keys OmniaCLI wrote (the mark omniacli-managed in their
+comment) are added or taken out, the others kept as they are, in their
+place; the key checked with ssh-keygen -l first, the file written 600 for
+its account through a temporary file renamed over it, no link followed.
 
 firewall on|apply|off: the workspaces' containers reach the internet only.
 Their networks are /24s of one pool (workspaces.network of the main
@@ -276,6 +286,7 @@ from .composehelper import ENV, HelperError, caller
 from .config import (CERTIFICATES, DOMAIN_NAME, OMNIACLI_COMMAND, SUBDOMAIN, TEST_LABEL, WORKSPACE_NAME,
                      ConfigError, parse_storage_roots, web_names)
 from .pluginstore import SYSTEM_CONFIG
+from . import sshkeys
 
 # the templates root runs: the package's (build_deb.sh), root's. sudo does
 # not pass the environment on (OMNIACLI_TEMPLATES is for the tests, as
@@ -3728,6 +3739,44 @@ def _to_dedicated(name, storage, mount, instance, folder, project, meta, templat
             "undo": f"omniacli workspace-helper machine-db-move {name} {storage} {instance} machine"}
 
 
+def _service_users() -> set[str]:
+    """The user OmniaCLI runs as (who called sudo) and the package's: no key opens them."""
+    return {caller()[0], "omniacli"}
+
+
+def _ssh(call, *args):
+    try:
+        return call(*args, _service_users())
+    except (sshkeys.KeyRefused, OSError) as exc:
+        raise HelperError(str(exc)) from None
+
+
+def ssh_keys() -> dict:
+    """ssh-keys: the accounts a key may open, the keys OmniaCLI added to each
+    and the others there; it reads only."""
+    return _ssh(sshkeys.state)
+
+
+def ssh_key_add(account: str) -> dict:
+    """ssh-key-add <account>: {name, key, by} on the input, the key written at
+    the end of the account's authorized_keys (sshkeys.add)."""
+    raw = sys.stdin.read(sshkeys.INPUT_MAX + 1)
+    if len(raw) > sshkeys.INPUT_MAX:
+        raise HelperError("the key on the input is too long")
+    try:
+        given = json.loads(raw)
+    except ValueError:
+        raise HelperError("the key on the input is not JSON {name, key, by}") from None
+    if not isinstance(given, dict):
+        raise HelperError("the key on the input is JSON {name, key, by}")
+    return _ssh(sshkeys.add, account, given)
+
+
+def ssh_key_remove(account: str, fingerprint: str) -> dict:
+    """ssh-key-remove <account> <SHA256:...>: the lines OmniaCLI wrote with that key taken out."""
+    return _ssh(sshkeys.remove, account, fingerprint)
+
+
 def machine_db_purge(name: str, storage: str, instance: str) -> dict:
     """machine-db-purge <workspace> <storage> <instance>: what a move left
     (the undo) taken away once its admin confirms: on the cluster, the old
@@ -4015,6 +4064,10 @@ def run(argv: list[str]) -> dict:
     if os.geteuid() != 0:
         raise HelperError("run it as root, through sudo")
     return action(*argv[1:])
+
+
+# the SSH keys of the people who log in to the machine (README, SSH access; sshkeys.py)
+ACTIONS.update({"ssh-keys": (ssh_keys, 0), "ssh-key-add": (ssh_key_add, 1), "ssh-key-remove": (ssh_key_remove, 2)})
 
 
 def main(argv: list[str]) -> int:

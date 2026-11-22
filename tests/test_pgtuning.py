@@ -530,7 +530,8 @@ async def test_restart_now_and_back_to_the_base_values(machine, client, env):
 async def test_the_tab_on_the_dashboard(machine, workspaces, client):
     page = (await client.get("/", headers={"Authorization": AUTH})).text
     tabs = re.findall(r'<button[^>]*role="tab"[^>]*>', page)
-    assert len(tabs) == 3 and any('data-tab="database"' in t for t in tabs)
+    # Overview, Monitoring, Database and SSH access (README, SSH access)
+    assert len(tabs) == 4 and any('data-tab="database"' in t for t in tabs)
     assert all('title="' in t for t in tabs)
     assert 'data-panel="database"' in page and 'id="pg-dialog"' in page
     # no primary in the tab itself: the only one is the dialog's confirm (and the confirm of a restart)

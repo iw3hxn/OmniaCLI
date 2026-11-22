@@ -44,6 +44,7 @@ SENSITIVE_READS = {
     "/credentials": "git credentials",
     "/enterprise": "Odoo Enterprise access (its address, its SSH key)",
     "/x/odoo/servers/{server}/{role}/odoo-config": "Odoo configuration file",
+    "/api/machine/ssh-keys": "SSH keys of the machine",
 }
 
 # reads the route logs itself, with more than a read would say
@@ -74,7 +75,7 @@ NOT_SENSITIVE = frozenset({
     "/api/servers/{server}/stagings/elsewhere", "/api/stagings/host", "/api/servers/{server}/pitr",
     "/api/servers/{server}/{role}/addresses", "/api/catalog", "/api/servers/{server}/modules",
     "/api/servers/{server}/modules/catalog", "/api/servers/{server}/modules/plan",
-    "/api/servers/{server}/{role}/modules", "/users", "/help", "/plugins", "/api/plugins/available",
+    "/api/servers/{server}/{role}/modules", "/api/servers/{server}/modules/uploaded", "/users", "/help", "/plugins", "/api/plugins/available",
     "/links", "/machines", "/api/machines", "/links/{name}",
     # through a link: the linked OmniaCLI logs it, with who acts here
     "/links/{name}/{path:path}",

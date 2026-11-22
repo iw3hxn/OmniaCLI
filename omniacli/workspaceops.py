@@ -14,7 +14,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from . import config, ops, stacktemplates, templatestore, workspacehelper
+from . import config, moduleupload, ops, stacktemplates, templatestore, workspacehelper
 from .config import OMNIACLI_COMMAND, Workspace, environment_names, generated_names
 from .jobs import Job, JobFailed
 from .ops import capture, run
@@ -521,7 +521,13 @@ async def clone(job: Job, ws: Workspace, instance: str, role: str, name: str, ur
 
 
 async def write_conf(job: Job, ws: Workspace, instance: str, role: str, repositories: list[str]) -> dict:
-    """The role's odoo.conf again, its addons path naming these repositories."""
+    """The role's odoo.conf again, its addons path naming these repositories,
+    and the folder of the modules uploaded as a .zip when the role has it
+    (moduleupload.py: it stays in the addons path whatever repository is
+    added or taken away)."""
+    uploads = addons_folder(ws, instance, role) / moduleupload.FOLDER
+    if uploads.is_dir() and not uploads.is_symlink() and moduleupload.FOLDER not in repositories:
+        repositories = [*repositories, moduleupload.FOLDER]
     job.log(f"--- odoo.conf of {role}: the addons of {', '.join(repositories) or 'no repository'}")
     return await _helper(job, "conf", ws.name, ws.storage, instance, role, json.dumps({"repositories": repositories}))
 
