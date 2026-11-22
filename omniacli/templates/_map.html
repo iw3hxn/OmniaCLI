@@ -258,6 +258,13 @@ window.OmniaMap = (function () {
     load: {{ _("CPU {cpu} % · RAM {ram} %") | tojson }}, free: {{ _("{size} free on disk") | tojson }},
     cluster: {{ _("PostgreSQL {major} of the machine") | tojson }},
     clusterTitle: {{ _("The machine's own PostgreSQL cluster, which the instances without a database of their own use") | tojson }},
+    // the read replica of a cluster made by OmniaCLI on another machine (UX-010 §9)
+    replicaOf: {{ _("replica of {link} · {state}") | tojson }},
+    replicaOn: {{ _("replica on {machine} · {state}") | tojson }},
+    replicaTitle: {{ _("A read-only copy of the PostgreSQL of another machine, kept up to date: the Database tab says how far behind it is") | tojson }},
+    replicaStates: {copying: {{ _("copying") | tojson }}, sync: {{ _("in sync {s} s") | tojson }}, behind: {{ _("behind by {s} s") | tojson }},
+      off: {{ _("not connected") | tojson }}, lost: {{ _("to be made again") | tojson }}, promoted: {{ _("promoted") | tojson }},
+      replaced: {{ _("replaced on {when}") | tojson }}, silent: {{ _("its machine does not answer") | tojson }}, "": {{ _("being read") | tojson }}},
     instance: {{ _("{n} instance") | tojson }}, instances: {{ _("{n} instances") | tojson }},
     wsTitle: {{ _("Opens the schema of the workspace {name}: its names, environments, databases and where its backups go") | tojson }},
     wsPageTitle: {{ _("Opens the page of the workspace {name}: its instances, names, users and services") | tojson }},
@@ -981,12 +988,25 @@ window.OmniaMap = (function () {
       for (const line of wrap(words, w - pad * 2, 12)) { g.append(txt(pad, y + 12, line, m.older ? "" : "t-warn")); y += LINE; }
       y += 6;
     }
+    // the words of a replica's state, as the Database tab says them
+    const replicaWord = (r) => fill(T.replicaStates[r.code] !== undefined ? T.replicaStates[r.code] : T.replicaStates[""],
+      {s: r.lag === null || r.lag === undefined ? 0 : r.lag, when: r.since ? whenText(r.since) : "?"});
+    const replicaPill = (text, bad) => {
+      g.append(S("g", {class: "map-item", "data-item": "replica"}, S("title", {}, T.replicaTitle),
+        S("rect", {class: "shape ext", x: pad + 14, y, width: w - pad * 2 - 14, height: 24, rx: 12}),
+        txt(pad + 26, y + 16, cut("⛁ " + text, w - pad * 2 - 40, 12), bad ? "t-warn" : "t-muted")));
+      y += 30;
+    };
     for (const c of m.cluster || []) {
       g.append(S("g", {class: "map-item", "data-item": "cluster"}, S("title", {}, T.clusterTitle),
         S("rect", {class: "shape", x: pad, y, width: w - pad * 2, height: 26, rx: 13}),
-        txt(pad + 12, y + 17, "⛁ " + fill(T.cluster, {major: c.major}), "t-muted")));
+        txt(pad + 12, y + 17, "⛁ " + fill(T.cluster, {major: c.major}), c.replica && c.replica.code === "replaced" ? "t-muted t-italic" : "t-muted")));
       y += 34;
+      // its read replica on another machine, under it, with the Database tab's word for its state
+      if (c.replica) replicaPill(fill(T.replicaOn, {machine: c.replica.machine, state: replicaWord(c.replica)}), ["off", "lost"].includes(c.replica.code));
     }
+    // the replicas of other machines' clusters this machine hosts: nodes inside its box
+    for (const r of m.replicas || []) replicaPill(fill(T.replicaOf, {link: r.link, state: replicaWord(r)}), ["off", "lost", "silent"].includes(r.code));
     const chips = (m.workspaces || []).map((ws) => ({ws, list: ws.instances || []}));
     if ((m.loose || []).length) chips.push({ws: null, list: m.loose});
     const cols = w >= 420 ? 2 : 1, gap = 10, cw = (w - pad * 2 - gap * (cols - 1)) / cols, ch = 78;

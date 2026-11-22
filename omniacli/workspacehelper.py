@@ -15,6 +15,14 @@
     omniacli workspace-helper machine-db-archive-on <major> <budget in GB> <bases kept> <GB left free> restart|no-restart
     omniacli workspace-helper machine-db-recover <workspace> <storage> <source> <target> <time>
     omniacli workspace-helper machine-db-recover-sweep
+    omniacli workspace-helper machine-db-replica-facts | -state | -drop | -replaced <major>
+    omniacli workspace-helper machine-db-replica-allow | -ready <major>   (their values, JSON, on the input)
+    omniacli workspace-helper machine-db-replica-cap <major> <GB>
+    omniacli workspace-helper machine-db-replica-read <workspace> <storage> <instance> on|off
+    omniacli workspace-helper machine-db-replica-follow <workspace> <storage> <instance>
+    omniacli workspace-helper machine-db-replica-make <major> prepare|copy|start   (prepare: its values on the input)
+    omniacli workspace-helper machine-db-replica-hosted | -promote | -remove <major>
+    omniacli workspace-helper machine-db-replica-sync <major>   (its values, JSON, on the input)
     omniacli workspace-helper space
     omniacli workspace-helper storage-setup | storage-check <storage> | storage-reset <storage>
 
@@ -137,6 +145,24 @@ database of a staging of the same workspace, through a temporary cluster
 that is deleted whatever happens. machine-db-recover-sweep: what a recovery
 that was killed left, deleted.
 
+machine-db-replica-*: a read replica of the machine's cluster on another
+machine, a linked OmniaCLI's (managedreplica.py, AD-004). On the machine
+that has the cluster: facts (what the other machine says before), allow
+(the replication's role with the verifier of its password, one slot, a cap
+on the changes it holds, one line of pg_hba.conf, the firewall), ready
+(where the replica answers and its CA), state, cap, drop, replaced (the
+replica was promoted: the cluster stopped, for good); read on|off (an
+instance of the cluster reads from the replica: db_replica_host and
+db_replica_port in its odoo.conf, never empty, db_sslmode verify-full and
+the replica's CA in PGSSLROOTCERT by a compose.override.yaml, the firewall
+of the workspaces letting that address and port through); follow (after a
+promotion: the instance takes the replica as its database, over TLS, as an
+instance on the cluster of a linked machine does). On the machine that
+hosts the replica: make prepare (its project, the room checked, the
+password of the replication on the input), copy (pg_basebackup over TLS),
+start (a hot standby), hosted (what it is doing), sync (pg_hba.conf and
+the tablespaces' folders from what the primary has now), promote, remove.
+
 template-install <template>: a template downloaded from the download
 server, checked with the key of the main configuration, into
 /var/lib/omniacli-templates/<template> (templatestore.py); of it and the
@@ -167,7 +193,8 @@ from pathlib import Path
 
 import yaml
 
-from . import clusterpitr, composehelper, config, machinedb, pitrhelper, stacktemplates, templatestore, workspaceweb
+from . import (clusterpitr, composehelper, config, machinedb, managedreplica, pitrhelper, stacktemplates,
+               templatestore, workspaceweb)
 from .composehelper import ENV, HelperError, caller
 from .config import (CERTIFICATES, DOMAIN_NAME, OMNIACLI_COMMAND, SUBDOMAIN, TEST_LABEL, WORKSPACE_NAME,
                      ConfigError, parse_storage_roots, web_names)
@@ -900,24 +927,27 @@ def _fill_at_once(chains: dict[str, list[list[str]]]) -> None:
         raise HelperError(f"iptables-restore: {(done.stderr or done.stdout).strip()}")
 
 
-def db_listen_file() -> dict[str, list[str]]:
-    """DB_LISTEN as it is on disk, only what is right: a cluster's bridge, IPv4 addresses."""
+def db_listen_file() -> dict:
+    """DB_LISTEN as it is on disk, only what is right: a cluster's bridge
+    with IPv4 addresses, or the bridge of a replica hosted here with the
+    address it is reached from and the address and port it goes out to."""
     try:
         data = json.loads(DB_LISTEN.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     found = {}
-    for bridge, addresses in (data.items() if isinstance(data, dict) else ()):
-        if not machinedb.BRIDGE.fullmatch(str(bridge)) or not isinstance(addresses, list):
+    for bridge, value in (data.items() if isinstance(data, dict) else ()):
+        if not machinedb.BRIDGE.fullmatch(str(bridge)) or not isinstance(value, (list, dict)):
             continue
         try:
-            found[str(bridge)] = sorted({machinedb.address(a) for a in addresses})
+            coming, going = machinedb.reached(value)
         except machinedb.ClusterError:
             continue
+        found[str(bridge)] = {"from": coming, "to": [list(pair) for pair in going]} if isinstance(value, dict) else coming
     return found
 
 
-def db_firewall_apply() -> dict[str, list[str]]:
+def db_firewall_apply() -> dict:
     """The chains of the clusters that listen made again from DB_LISTEN and
     jumped first; with none listening, the chains and their jumps are gone."""
     state = db_listen_file()
@@ -941,12 +971,13 @@ def db_firewall_apply() -> dict[str, list[str]]:
     return state
 
 
-def db_firewall() -> dict[str, list[str]]:
-    """The clusters that listen read again (their grants), kept in DB_LISTEN
-    for the boot, the chains made again; the unit that applies them at
-    every boot written when it is not there yet."""
+def db_firewall() -> dict:
+    """The clusters that listen read again (their grants, the machine of
+    their replica) and the replicas hosted here, kept in DB_LISTEN for the
+    boot, the chains made again; the unit that applies them at every boot
+    written when it is not there yet."""
     try:
-        state = machinedb.firewall_state()
+        state = {**machinedb.firewall_state(), **managedreplica.firewall_state()}
     except machinedb.ClusterError as exc:
         raise HelperError(str(exc)) from None
     if state:
@@ -1247,6 +1278,16 @@ REMOTE_STDIN = "-"
 # the firewall exception of a project's read replica: its entry of DB_REMOTE, the project's folder and this
 REPLICA_SUFFIX = "#replica"
 REMOTE_INPUT = 128 * 1024
+# an instance of the machine's cluster that reads from the cluster's replica on another machine
+# (AD-004): instance.json's key (host:port; never shown to a workspace's user), the CA the
+# replica's certificate is verified against, the override that gives it to Odoo's container
+REPLICA_META = "replica_read"
+REPLICA_CA_FILE = "db-replica-ca.pem"
+REPLICA_OVERRIDE = "compose.override.yaml"
+REPLICA_OVERRIDE_MARK = "# written by omniacli workspace-helper machine-db-replica-read"
+ODOO_WITH_REPLICA = 18
+# what an instance was before its cluster was replaced by its replica (a promotion): kept beside it
+PROMOTED = ".before-promotion"
 
 
 def remote_spec(value) -> dict:
@@ -1497,8 +1538,10 @@ def create(name: str, storage: str, instance: str, template_name: str, values_js
 
 
 def _replica_of(meta: dict) -> tuple[str, int] | None:
-    """(host, port) of the read replica an instance was given at its creation (instance.json), or None."""
-    host, sep, port = str(meta.get("replica_on") or "").rpartition(":")
+    """(host, port) of the read replica an instance was given at its creation
+    (instance.json), or of the replica of the machine's cluster it reads from
+    (REPLICA_META), or None."""
+    host, sep, port = str(meta.get("replica_on") or meta.get(REPLICA_META) or "").rpartition(":")
     if sep and REMOTE_HOST.fullmatch(host) and port.isdigit() and 1 <= int(port) <= 65535:
         return host, int(port)
     return None
@@ -1587,7 +1630,7 @@ def conf(name: str, storage: str, instance: str, role: str, spec_json: str) -> d
                                     password or stacktemplates.new_password(), repos, values, debug, extra,
                                     mail_capture=caught,
                                     db_template=machinedb.template_name(name) if template.on_machine else "",
-                                    replica=_replica_of(meta))
+                                    replica=_replica_of(meta), replica_verified=bool(meta.get(REPLICA_META)))
     _write(conf_file, text, mode=0o644)
     kept = {k: v for k, v in values.items() if v != template.parameter(k).default
             and not (caught and k in stacktemplates.MAIL_PARAMETERS)}
@@ -2590,6 +2633,257 @@ def machine_db_recover_sweep() -> dict:
     return _cluster(clusterpitr.sweep)
 
 
+# --- a read replica of the machine's cluster on another machine (managedreplica.py, AD-004)
+
+REPLICA_INPUT = 256 * 1024
+
+
+def _input_json(what: str) -> dict:
+    raw = sys.stdin.read(REPLICA_INPUT + 1)
+    if len(raw) > REPLICA_INPUT:
+        raise HelperError(f"the values of {what} on the input are too long")
+    try:
+        spec = json.loads(raw)
+    except ValueError:
+        raise HelperError(f"the values of {what} are not JSON") from None
+    if not isinstance(spec, dict):
+        raise HelperError(f"the values of {what} are not a JSON object")
+    return spec
+
+
+def machine_db_replica_facts(major: str) -> dict:
+    return _cluster(managedreplica.facts, major)
+
+
+def machine_db_replica_allow(major: str) -> dict:
+    """machine-db-replica-allow <major>, its values as JSON on the input
+    (managedreplica.allow): the machine that will host the replica let in.
+    The firewall closes the cluster's network before its port opens, and
+    lets that machine's address in after."""
+    spec = _input_json("a replica")
+    try:
+        bridge = machinedb.bridge_name(major)
+    except machinedb.ClusterError as exc:
+        raise HelperError(str(exc)) from None
+    kept = db_listen_file()
+    if bridge not in kept:
+        DB_LISTEN.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+        _write(DB_LISTEN, json.dumps({**kept, bridge: []}, indent=1, sort_keys=True) + "\n", mode=0o600)
+        if not (SYSTEMD / FIREWALL_UNIT).is_file():
+            firewall("on")
+        else:
+            db_firewall_apply()
+    try:
+        made = _cluster(managedreplica.allow, major, spec)
+    finally:
+        allowed = db_firewall()
+    return {**made, "firewall": allowed.get(bridge, [])}
+
+
+def machine_db_replica_ready(major: str) -> dict:
+    return _cluster(managedreplica.ready, major, _input_json("a replica"))
+
+
+def machine_db_replica_state(major: str) -> dict:
+    return _cluster(managedreplica.state, major)
+
+
+def machine_db_replica_cap(major: str, value: str) -> dict:
+    return _cluster(managedreplica.set_cap, major, value)
+
+
+def machine_db_replica_drop(major: str) -> dict:
+    try:
+        done = _cluster(managedreplica.drop, major)
+    finally:
+        allowed = db_firewall()
+    return {**done, "firewall": allowed.get(machinedb.bridge_name(major), [])}
+
+
+def machine_db_replica_replaced(major: str) -> dict:
+    return _cluster(managedreplica.replaced, major)
+
+
+def machine_db_replica_make(major: str, step: str) -> dict:
+    """machine-db-replica-make <major> prepare | copy | start: the replica of
+    the cluster of a linked machine made here, a step at a time (the job says
+    each). prepare takes its values as JSON on the input, the password of
+    the replication's role among them; what fails at any step is taken away
+    by machine-db-replica-remove."""
+    if step == "prepare":
+        spec = {**_input_json("a replica"), "major": major}
+        storage = str(spec.get("storage") or "")
+        roots = storage_roots()
+        if storage not in roots:
+            raise HelperError(f"{storage!r} is not a storage of workspaces.storage ({', '.join(roots) or 'none'})")
+        made = _cluster(managedreplica.prepare, spec, bind_storage(storage), str(OMNIACLI_COMMAND))
+        # its network reached from the primary's machine only, going out to the primary's port only
+        db_firewall()
+        return made
+    if step == "copy":
+        return _cluster(managedreplica.copy, major)
+    if step == "start":
+        return _cluster(managedreplica.start, major)
+    raise HelperError("machine-db-replica-make <major> prepare, copy or start")
+
+
+def machine_db_replica_hosted(major: str) -> dict:
+    return _cluster(managedreplica.hosted_state, major)
+
+
+def machine_db_replica_sync(major: str) -> dict:
+    return _cluster(managedreplica.sync, major, _input_json("a replica"))
+
+
+def machine_db_replica_promote(major: str) -> dict:
+    try:
+        return _cluster(managedreplica.promote, major)
+    finally:
+        # promoted, it follows nothing: its network goes out nowhere
+        db_firewall()
+
+
+def machine_db_replica_remove(major: str) -> dict:
+    try:
+        return _cluster(managedreplica.remove, major)
+    finally:
+        db_firewall()
+
+
+def odoo_major(template_name: str) -> int | None:
+    """The Odoo a template is of, from its name (odoo-18-machine: 18;
+    odooplm-20-machine: 20, the Odoo its label declares); None for a name
+    that says none."""
+    found = re.match(r"[a-z]+-(\d{1,3})(?:-|$)", template_name or "")
+    return int(found.group(1)) if found else None
+
+
+def replica_override(service: str) -> str:
+    return (f"{REPLICA_OVERRIDE_MARK}: this instance reads from the\n"
+            "# read replica of the machine's cluster, on another machine. The CA the replica's certificate is\n"
+            "# verified against, for libpq (the cluster itself is reached by its socket, where TLS is not used)\n"
+            f"services:\n  {service}:\n    environment:\n      PGSSLROOTCERT: /etc/odoo/{REPLICA_CA_FILE}\n")
+
+
+def machine_db_replica_read(name: str, storage: str, instance: str, mode: str) -> dict:
+    """machine-db-replica-read <workspace> <storage> <instance> on | off: the
+    production of an instance on the machine's cluster reads from the
+    cluster's replica (Odoo 18 and later), or from its cluster only again.
+    Its files are written; whoever asked restarts its Odoo."""
+    if mode not in ("on", "off"):
+        raise HelperError("machine-db-replica-read <workspace> <storage> <instance> on or off")
+    project = _project(name, storage, instance, "production")
+    folder = project.parent
+    meta = _meta(folder)
+    env = composehelper.on_cluster(project)
+    if env is None:
+        raise HelperError(f"{instance} is not on the machine's cluster: only an instance on it reads from its replica")
+    template = template_named(str(meta.get("template") or ""))
+    override, ca_file = project / REPLICA_OVERRIDE, project / "config" / REPLICA_CA_FILE
+    exception = Path(str(project) + REPLICA_SUFFIX)
+    if override.exists() and not override.read_text(encoding="utf-8", errors="replace").startswith(REPLICA_OVERRIDE_MARK):
+        raise HelperError(f"{override} is not OmniaCLI's: it is not written over")
+    if mode == "off":
+        was = str(meta.pop(REPLICA_META, "") or "")
+        override.unlink(missing_ok=True)
+        ca_file.unlink(missing_ok=True)
+        _write(folder / INSTANCE_FILE, json.dumps(meta) + "\n")
+        db_remote_set(exception, None)
+        conf(name, storage, instance, "production", "{}")
+        return {"reads": False, "was": bool(was), "odoo_service": template.odoo_service}
+    version = odoo_major(template.name)
+    if version is None or version < ODOO_WITH_REPLICA:
+        raise HelperError(f"Odoo {version or '?'} cannot read from a replica: it can from {ODOO_WITH_REPLICA} on "
+                          "(db_replica_host)")
+    target = _cluster(managedreplica.target, env["major"])
+    if target["state"] != "ready":
+        raise HelperError("the replica took the cluster's place: there is nothing to read beside it")
+    try:
+        spec_host = machinedb.reached_as([target["host"]])[0]
+    except machinedb.ClusterError as exc:
+        raise HelperError(str(exc)) from None
+    _write(ca_file, target["ca"], mode=0o644)
+    _write(override, replica_override(template.odoo_service))
+    _write(folder / INSTANCE_FILE, json.dumps({**meta, REPLICA_META: f"{spec_host}:{target['port']}"}) + "\n")
+    private = _private_address(spec_host)
+    if private:
+        # the workspaces' firewall stops private addresses: this one address and port pass, from this project's network
+        db_remote_set(exception, {"subnet": _env(project).get("SUBNET", ""), "ip": private, "port": target["port"]})
+    conf(name, storage, instance, "production", "{}")
+    return {"reads": True, "host": spec_host, "port": target["port"], "private": bool(private),
+            "odoo_service": template.odoo_service}
+
+
+def remote_twin(template: stacktemplates.Template) -> stacktemplates.Template:
+    """The template on a database of another machine of the same Odoo as a
+    template on the machine's cluster (odoo-18-machine: odoo-18-remote)."""
+    name = f"{template.dedicated}-remote"
+    found = [t for t in stacktemplates.available([TEMPLATES, templatestore.INSTALLED]).values()
+             if t.on_remote and t.name == name]
+    if not found:
+        raise HelperError(f"no template {name} here: {template.name} cannot follow its database to another machine")
+    return max(found, key=lambda t: stacktemplates.version_key(t.version))
+
+
+def machine_db_replica_follow(name: str, storage: str, instance: str) -> dict:
+    """machine-db-replica-follow <workspace> <storage> <instance>: after the
+    replica of the machine's cluster was promoted and the cluster stopped,
+    the instance takes the promoted copy as its database: its project
+    written again as one on a database of another machine (the template's
+    remote twin: TLS, the certificate verified against the replica's CA),
+    with the role, the password and the database it had. What it was is kept
+    beside it (PROMOTED). Asked again, it answers that it is done."""
+    project = _project(name, storage, instance, "production")
+    folder = project.parent
+    meta = _meta(folder)
+    env = composehelper.on_cluster(project)
+    if env is None:
+        if meta.get("promoted_from") and composehelper.on_remote(project):
+            return {"already": True, "database": str(meta.get("database") or ""), "db_service": stacktemplates.REMOTE_DB_SERVICE}
+        raise HelperError(f"{instance} is not on the machine's cluster")
+    target = _cluster(managedreplica.target, env["major"])
+    if target["state"] != "replaced":
+        raise HelperError("the machine's cluster was not replaced by its replica: its instances stay on it")
+    template = template_named(str(meta.get("template") or ""))
+    twin = remote_twin(template)
+    values = _env(project)
+    database = str(meta.get("database") or env["role"])
+    remote = remote_spec({"host": target["host"], "port": target["port"], "user": env["role"],
+                          "password": values.get("DB_PASSWORD", ""), "database": database, "ca": target["ca"],
+                          "link": target["link"], "major": env["major"]})
+    kept = project / PROMOTED
+    _keep_files(project, folder, kept)
+    try:
+        _dc(project, "down", "--remove-orphans", timeout=600)
+        _write(project / "compose.yaml", twin.compose)
+        _write(project / ".env", stacktemplates.env_text({
+            **_env_without(values, CLUSTER_KEYS), "DB_REMOTE": "1", "DB_HOST": remote["host"],
+            "DB_PORT": str(remote["port"]), "DB_USER": remote["user"]}), mode=0o600)
+        (project / REPLICA_OVERRIDE).unlink(missing_ok=True)
+        (project / "config" / REPLICA_CA_FILE).unlink(missing_ok=True)
+        db_remote_set(Path(str(project) + REPLICA_SUFFIX), None)
+        _write(project / "config" / REMOTE_CA_FILE, remote["ca"], mode=0o644)
+        private = _private_address(remote["host"])
+        if private:
+            db_remote_set(project, {"subnet": values.get("SUBNET", ""), "ip": private, "port": remote["port"]})
+        moved = {"template": template.name, "version": template.version, "at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        _write(folder / INSTANCE_FILE, json.dumps({
+            **{k: v for k, v in meta.items() if k != REPLICA_META}, "template": twin.name, "version": twin.version,
+            "database_on": f"{remote['host']}:{remote['port']}", "database_link": remote["link"],
+            "database_major": remote["major"], "promoted_from": moved}) + "\n")
+        conf(name, storage, instance, "production", "{}")
+        _dc(project, "up", "-d", "--remove-orphans", timeout=600)
+    except BaseException:
+        # as it was: on a cluster that is stopped it does not work either, but nothing is half written
+        _dc(project, "down", "--remove-orphans", check=False, timeout=600)
+        _put_back(project, folder, kept)
+        (project / "config" / REMOTE_CA_FILE).unlink(missing_ok=True)
+        db_remote_set(project, None)
+        raise
+    return {"already": False, "database": database, "db_service": stacktemplates.REMOTE_DB_SERVICE,
+            "host": remote["host"], "port": remote["port"], "template": twin.name, "kept": str(kept)}
+
+
 # a move (AD-007): what the project was is kept beside it, the undo of the
 # move; what the dumps of a move are, read by the cluster's user
 KEPT = ".dedicated"
@@ -2800,6 +3094,8 @@ def _to_machine(name, storage, mount, instance, folder, project, meta, template)
 
 
 def _to_dedicated(name, storage, mount, instance, folder, project, meta, template) -> dict:
+    if meta.get(REPLICA_META):
+        raise HelperError(f"{instance} reads from the replica of the machine's cluster: stop reading from it first")
     env = composehelper.on_cluster(project)
     if not template.on_machine or env is None:
         raise HelperError(f"{instance} has a dedicated database already")
@@ -2932,7 +3228,15 @@ ACTIONS = {"disk": (disk, 3), "drop": (drop, 2), "limits": (limits, 3), "create"
            "machine-db-port": (machine_db_port, 2),
            "machine-db-archive-state": (machine_db_archive_state, 1), "machine-db-archive-on": (machine_db_archive_on, 5),
            "machine-db-archive-off": (machine_db_archive_off, 1), "machine-db-archive-base": (machine_db_archive_base, 1),
-           "machine-db-recover": (machine_db_recover, 5), "machine-db-recover-sweep": (machine_db_recover_sweep, 0)}
+           "machine-db-recover": (machine_db_recover, 5), "machine-db-recover-sweep": (machine_db_recover_sweep, 0),
+           "machine-db-replica-facts": (machine_db_replica_facts, 1), "machine-db-replica-allow": (machine_db_replica_allow, 1),
+           "machine-db-replica-ready": (machine_db_replica_ready, 1), "machine-db-replica-state": (machine_db_replica_state, 1),
+           "machine-db-replica-cap": (machine_db_replica_cap, 2), "machine-db-replica-drop": (machine_db_replica_drop, 1),
+           "machine-db-replica-replaced": (machine_db_replica_replaced, 1),
+           "machine-db-replica-read": (machine_db_replica_read, 4), "machine-db-replica-follow": (machine_db_replica_follow, 3),
+           "machine-db-replica-make": (machine_db_replica_make, 2), "machine-db-replica-hosted": (machine_db_replica_hosted, 1),
+           "machine-db-replica-sync": (machine_db_replica_sync, 1), "machine-db-replica-promote": (machine_db_replica_promote, 1),
+           "machine-db-replica-remove": (machine_db_replica_remove, 1)}
 
 
 def run(argv: list[str]) -> dict:

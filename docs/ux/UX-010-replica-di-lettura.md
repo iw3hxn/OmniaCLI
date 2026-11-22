@@ -292,3 +292,32 @@ Le cinque decisioni del §11 restano di Carlo. Per non fermare la build valgono 
   scritture si perdono. Il dialogo «Promuovi…» lo dice con questi numeri.
 - **D4**: l'avviso del monitor c'è (replica non collegata da 10 minuti, o oltre 1 GB tenuto).
 - **D5**: il cliente legge «Letture: anche da una replica», senza nomi.
+
+## Dopo la verifica (22/11/2026, lab1 = R, lab2 = P)
+
+Costruito in `managedreplica.py`, `_machine_database.html`, `server.html`; i numeri sono nell'ADR (AD-004, opzione A).
+
+- **«Non verificato», le tre voci.**
+  - La lettura che segue subito un salvataggio **va alla replica** (Odoo 19, stessa sessione): con la replica indietro
+    la pagina mostra il valore di prima. Il dialogo «Leggi dalla replica…» lo dice con i secondi di ritardo di adesso.
+  - `odooplm-20`: il ramo non è stato letto (l'immagine non è sulle macchine di prova). Il pulsante segue la versione
+    dichiarata dal template.
+  - Il tempo della promozione: non «circa 30 s» ma una istanza dopo l'altra, circa 10 s ciascuna (8 s la prima
+    produzione, 47 s l'ultima di cinque). Il dialogo dice «circa 10 s ciascuna, N s per l'ultima».
+- **Differenze dal contratto.**
+  - Il dialogo di creazione ha due campi in più, perché le due soglie sono regolabili solo lì: il tetto delle
+    modifiche tenute da P (D1) e lo spazio da lasciare libero su R. Il tetto si cambia poi dal dettaglio di P, «Cambia
+    il tetto…».
+  - Eliminazione da P: P non può chiamare R. Il dialogo dice «lab1 cancella la sua copia al suo prossimo giro, entro
+    un minuto» se R ha interrogato P nell'ultimo minuto e mezzo, altrimenti «lab1 non risponde: la sua copia, se c'è
+    ancora, resta là».
+  - Stati in più sulla riga di R: «Riceve · lab2 non risponde dal …» (la replica riceve ma il pannello di P non dice
+    il ritardo) e «Ha perso il suo aggancio» (oltre il tetto).
+  - Dimensioni: la colonna è la somma dei database, «Spazio» è quello che la copia occupa sul disco di R con le
+    modifiche che tiene, «Da quando» i byte copiati: tre numeri vicini, non uguali.
+  - La pagina del job scrive ancora MiB (il suo formattatore non è stato toccato).
+  - Mappa: nodo dentro R e parola di stato sotto il cluster di P nello schema a più macchine (S1), voce `replica` in
+    «Da guardare»; la linea puntinata fra le due macchine non è disegnata, e lo schema di una macchina sola (S2) non
+    mostra la replica.
+- **Criteri del §10**: 1-7 e 9-15 provati sulle due macchine; 8 (Odoo 17) solo nei test, perché non esiste un template
+  17. Le schermate sono in IT e EN, come admin della macchina e come admin del workspace `acme`.

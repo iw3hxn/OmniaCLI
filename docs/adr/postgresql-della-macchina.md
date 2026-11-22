@@ -161,8 +161,75 @@ database può dare l'indirizzo della sua replica di lettura; OmniaCLI lo control
 (`db_replica_host`, `db_replica_port`, Odoo dalla 18), lo conserva alle riscritture e lo lascia passare nel firewall.
 Provato con una replica in streaming vera: la replica vede la connessione TLS di Odoo. Se il primario cade Odoo non
 passa alla replica da solo, e il campo lo dice.
-**Non costruita:** la replica creata e gestita da OmniaCLI per un database dedicato o per il cluster della macchina
-(la copia in streaming del cluster su un'altra macchina). Codice letto alla revisione 57a005c (`carlo_dev_2026`).
+**AD-004, opzione A, costruita il 22/11/2026: la replica di lettura del cluster della macchina, fatta e gestita
+da OmniaCLI** (`managedreplica.py`, `workspace-helper machine-db-replica-*`; contratto UX-010). Due macchine: **P** ha
+il cluster, **R** è un altro OmniaCLI con un collegamento (HTTPS o SSH) verso P e ospita la replica. Tutto si chiede
+da R attraverso il collegamento; P non chiama mai R: quello che P ha da dire a R (eliminata, sostituita) R lo legge
+al giro successivo (ogni 20 s). Provato su lab2 (P) e lab1 (R).
+- **Su P**: un ruolo solo per la replica (`omniacli.replica`, REPLICATION, la password nasce su R e a P arriva il suo
+  verificatore SCRAM), uno slot fisico riservato subito, `hostssl replication <ruolo> <indirizzo di R>/32
+  scram-sha-256`, quell'indirizzo nel firewall del cluster, e un tetto a quanto lo slot trattiene
+  (`max_slot_wal_keep_size`, 20 GB, regolabile: senza riavvio). La porta TLS si apre come in AD-003 se è chiusa (il
+  container si rifà: detto nel dialogo, sul pulsante e chiesto due volte). Una replica per cluster.
+- **Su R**: un progetto suo accanto a quello del cluster (`<storage>/.machine-db/replica17`), `pg_basebackup -Fp -X
+  stream` attraverso lo slot, in TLS `verify-full` contro la CA di P; un hot standby in un container irrigidito
+  (`read_only`, `cap_drop: ALL`, la slice del cluster), con `archive_mode=off` sulla riga di comando (non archivia
+  mai, nemmeno promosso), in ascolto in TLS su una porta libera con una CA e un certificato suoi; `pg_hba.conf` lascia
+  entrare solo l'indirizzo di P, come il ruolo di ogni istanza di P verso il suo database; il firewall lascia entrare
+  P e lascia uscire la replica solo verso la porta di P. **I tablespace** di P puntano a percorsi dei dischi dei suoi
+  workspace: il container monta una cartella della replica (`roots/<n>`) al posto di ogni storage di P, come nel
+  cluster temporaneo di AD-006; la cartella di un tablespace nato dopo la crea il giro di R, dai percorsi che P dice.
+  Il superuser della copia ha la password di P, che R non conosce: root entra dal socket, che è un tmpfs del
+  container.
+- **Leggere dalla replica** è una scelta per istanza di P (admin della macchina, Odoo dalla 18): `db_replica_host` e
+  `db_replica_port` in `odoo.conf`, mai vuoti, più `db_sslmode = verify-full`; la CA di R arriva al container di Odoo
+  come `PGSSLROOTCERT` con un `compose.override.yaml` (il `compose.yaml` dell'istanza non cambia di un byte, AD-007).
+  Il primario resta il socket Unix, dove libpq non usa TLS: provato, Odoo parte e scrive con `verify-full`.
+- **Misure (22/11/2026, lab1 e lab2, PostgreSQL 17.12, Odoo 19):**
+  - creazione: cluster di 164 MB, job 8,4 s (P 2 s, copia di 181 MB in 3,9 s, avvio 1,6 s); cluster di 2,6 GB,
+    copia di 2.622 MB in 5,2-6,6 s, job 9,6-11 s. Durante la copia le due righe dicono «copia in corso» con i byte;
+  - in pari: 0 s; con il replay della replica in pausa, 25 s dopo la riga dice «in ritardo di 25 s»;
+  - replica ferma: la riga chiusa di P dice «non collegata» 1,2 s dopo; con 200 MB scritti la riga dice «tiene
+    196 MB», lo slot 205.687.016 byte (rapporto 1,00); una seconda volta 302 MB contro 299 MB;
+  - tetto: portato a 0,1 GB con 208 MB trattenuti, al checkpoint lo slot è `lost` e la riga dice che va rifatta;
+  - eliminazione da P: 23 s con un'istanza che legge (12 s il suo riavvio), slot e ruolo spariti, R cancella la sua
+    copia al giro dopo (entro 45 s); da R: 16 s. Con il pannello di P fermo l'eliminazione da R finisce e dice cosa
+    resta là; con il pannello di R fermo quella da P finisce, la copia resta e R la cancella entro 45 s dal suo avvio;
+  - lettura accesa o spenta: job di 12 s; sulla replica `pg_stat_ssl` mostra TLS 1.3 da 172.30.0.12 con il ruolo
+    dell'istanza; `/web/login` 200; una scrittura riesce;
+  - **una lettura subito dopo un salvataggio va alla replica** (la voce di «Non verificato» di UX-010): con il replay
+    in pausa, `read`, `web_read` e `web_search_read` della stessa sessione restituiscono il valore vecchio per almeno
+    3 s dopo un `write` riuscito; con la replica al passo, il valore nuovo subito;
+  - scheda Database: la route risponde in 0,6-0,9 s, la pagina in 1,4-2,1 s;
+  - avviso del monitor: registrato dopo 10 minuti senza collegamento (su lab2 nessun destinatario configurato:
+    nessuna mail vista partire);
+  - **promozione con P che risponde**: 47,5 s in tutto; arresto di P 0,3 s, promozione 0,4 s; la prima produzione
+    risponde 8 s dopo l'arresto, l'ultima delle cinque istanze dopo 47 s (una dopo l'altra, circa 10 s ciascuna);
+  - **promozione con il pannello di P fermo**: 0,8 s; un'istanza di P ha scritto sul cluster vecchio dopo la
+    promozione (la finestra detta nel dialogo: quella scrittura è persa); riavviato il pannello di P, R ha fermato il
+    suo cluster 4 s dopo e puntato le cinque istanze in 48 s.
+- **La promozione** ferma prima P (se risponde e non si ferma, niente viene promosso), poi `pg_promote` quando tutto
+  il ricevuto è applicato, poi ogni istanza di P diventa un'istanza su un database di un'altra macchina (il gemello
+  `-remote` del suo template: TLS `verify-full`, ruolo, password e database di prima; quello che era resta accanto,
+  in `.before-promotion`). D3 come scelta in UX-010: il cluster di P riparte come sempre, e dopo una promozione fatta
+  mentre P non rispondeva R riprova ogni 10 s. **I database che P ha concesso ad altre macchine** sono nella copia,
+  ma le loro istanze continuano a cercarli su P e restano senza database: il dialogo li nomina, niente li ripunta
+  (su lab1 `acme-linked` ha smesso di rispondere, come detto).
+- **Non costruito**: la replica di un database dedicato; più di una replica per cluster, e più di una ospitata per
+  macchina; le letture per le istanze di altre macchine (le concessioni); P ricostruito come replica dopo una
+  promozione; la regolazione della replica (ha i valori di P: se R ha meno memoria di quanta P ne ha assegnata, la
+  replica non parte e il job lo dice); il rinnovo del certificato della replica (10 anni). Se P sta dietro un NAT
+  l'indirizzo con cui R lo vede arrivare non si può correggere dal dialogo. Uno storage aggiunto a P dopo la creazione
+  non è montato nella replica: va rifatta.
+- **Non verificato**: su quale ramo di Odoo gira il template `odooplm-20` (l'immagine non è sulle macchine di
+  prova): il pulsante segue la versione dichiarata dal template (20, quindi acceso). Odoo 17: nessun template 17 in
+  OmniaCLI, il rifiuto è coperto solo dai test. Il comportamento con decine di GB e su una rete vera (la copia qui
+  viaggia a 400-500 MB/s fra due container della stessa macchina). La mappa ha il nodo della replica dentro il riquadro di R e la parola di stato
+  sotto il cluster di P solo nello schema a più macchine (S1), più la voce `replica` in «Da guardare»: la linea
+  puntinata fra il cluster di P e il nodo di R non è disegnata, e lo schema di una macchina sola (S2) non mostra la
+  replica.
+**Non costruita:** la replica creata e gestita da OmniaCLI per un database dedicato. Codice letto alla revisione
+57a005c (`carlo_dev_2026`).
 Origine: Carlo, 21/11/2026, UX-008 D2: «Farei un Postgresql per Macchina ma attenzione che la singola istanza potrebbe far uso di un Postgresql su un altra macchina. Poi va considerato il caso di Odoo19 che può montare 2 database in cluster». Riferimento: la scheda PostgreSQL del pannello di riferimento (schermate 04-05 del 21/11/2026).
 
 ## 0. Il costo della decisione, in numeri (da confermare)

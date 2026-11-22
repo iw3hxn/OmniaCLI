@@ -1939,6 +1939,110 @@ is on the storage of that cluster, without the cap of a workspace's disk.
 The recovery at a minute, a staging and the move of an existing instance onto
 a linked cluster are not offered.
 
+### A read replica of the machine's cluster
+
+The machine's PostgreSQL cluster may have **one read replica on another
+machine**, made and run by OmniaCLI: a copy of the whole cluster, kept up to
+date at each change (PostgreSQL's own physical replication), which the
+instances of the cluster can read from (Odoo 18 and later). Two machines: the
+one that has the cluster, and another OmniaCLI **with a link to it** (HTTPS
+or SSH: a plain-HTTP link is refused), which hosts the copy. Everything is
+asked from the machine that hosts it, through its link; machine admins only.
+
+- **Made** in the Database tab of the machine that will host it, **+ Replica
+  of another machine…**. The dialog reads that machine first and says before
+  the click: the size of the whole cluster and whose data it holds (its
+  instances, the databases it gave to other machines: the copy holds the
+  data of every customer of that cluster), the room free here and the room
+  that stays free (2 GB, changed in the dialog; the replica is refused when
+  the copy does not fit), the time expected, the round trip between the two
+  machines, the address this machine is seen with there (proposed, changed
+  for a NAT), and what changes there: a role for the replication only (its
+  password is made here; only its SCRAM verifier is sent), one line of
+  `pg_hba.conf` (`hostssl replication` for this machine's one address), that
+  address in its firewall, and a hold on its changes with a **cap** (20 GB,
+  changed in the dialog and later in that machine's tab): beyond it the
+  replica loses its place and is made again, so that machine's disk never
+  fills for a replica that is gone. When that cluster does not listen yet it
+  is made again once to open its TLS port: said in the dialog, on the button
+  and asked once more. The job has three steps: that machine lets this one
+  in, the copy (`pg_basebackup` over TLS, its certificate verified against
+  its CA and its name), the start.
+- **What it is here**: a project of its own beside the machine's cluster's
+  (`<storage>/.machine-db/replica17`), a hot standby in a hardened container
+  (read only, no capability, the slice of the machine's PostgreSQL), which
+  never archives. It listens over TLS on a free port, with a CA and a
+  certificate of its own; its `pg_hba.conf` lets in only the address of the
+  machine that has the cluster, as the role of each of its instances, to its
+  database; the firewall lets that address reach it and lets it go out to
+  the primary's port only. The tablespaces of the primary are at paths of
+  its workspaces' disks: the container mounts a folder of the replica's own
+  at each of those storage roots, so nothing of this machine is at those
+  paths (and no workspace's disk cap holds them here). The copy keeps the
+  password of the primary's superuser, which this machine never learns: root
+  reaches it by a socket that is a tmpfs of its container.
+- **Its state is on the closed row** of both tabs: *Copying: 64 % · 91 MB of
+  142 MB*, *In sync · 2 s*, *Behind by 45 s* (above 10 s), *Not receiving
+  from … since …* with the reason, *Promoted on …*; on the cluster's row,
+  *Replica on lab1: in sync · 2 s* and the badge **keeps 3.2 GB** when the
+  replica is not connected or the cluster keeps 1 GB or more for it. The
+  seconds are measured on the machine that has the cluster: 0 when the
+  replica applied all that was written, else the age of the oldest change it
+  has not applied. A machine that does not answer becomes the reason in the
+  row, with what it said last. Out of the panel, the monitor warns when the
+  replica is not connected for ten minutes or more than 1 GB is kept for it,
+  and the map has it among what is to look at.
+- **Read from the replica…** is chosen per instance, in the instance's page
+  (Settings › Technical details, *Database server*), by the machine's admin
+  of the machine that has the cluster: `odoo.conf` gets `db_replica_host` and
+  `db_replica_port` (never an empty one) and `db_sslmode = verify-full`, the
+  replica's CA goes to Odoo's container as `PGSSLROOTCERT` by a
+  `compose.override.yaml` (the instance's `compose.yaml` is not touched; the
+  cluster itself is its Unix socket, where TLS is not used), the workspaces'
+  firewall lets that one address and port through, and Odoo restarts (a job,
+  about 12 s). Odoo sends there the reads of the pages that do not write and
+  keeps writing to its cluster. **There is no failover**: when the cluster
+  stops, Odoo stops; when the replica does not answer, Odoo reads from the
+  cluster for 20 minutes and tries again. A read right after a save does go
+  to the replica (measured on Odoo 19): with the replica behind, a page may
+  show for those seconds the value of before. Odoo 17 has no such option:
+  the button is off, with why. A workspace's user reads *Reads: also from a
+  replica* and nothing else: no machine, no address, no port, no size, in the
+  page, in the routes and in the jobs.
+- **Drop the replica…** from either machine. From the one that hosts it: the
+  other is asked to drop what it keeps (its instances that read go back to
+  their cluster and restart), then the copy and its container are deleted;
+  when the other machine does not answer the copy goes all the same and the
+  job says what stays there. From the one that has the cluster: its part
+  goes and the disk it held is freed; the other machine asks at each look
+  (every 20 s) and deletes its copy by itself; one that has not asked for a
+  minute is said, with the copy that may stay there.
+- **Promote…** (in the row's detail on the machine that hosts it; the name of
+  the other machine typed) makes the copy the database of that machine's
+  instances, for good: its PostgreSQL is stopped first, then the copy takes
+  the writes, then its instances are pointed here over TLS (each becomes an
+  instance on a database of another machine, with the role, the password and
+  the database it had; what it was is kept beside it) and restarted, one
+  after the other, the productions first. Measured on two test machines with
+  five instances: the first production back 8 s after the stop, the last
+  instance after 47 s. When that machine **does not answer**, the dialog says
+  that its PostgreSQL cannot be stopped, that the two copies diverge if it
+  still runs, and asks the name typed to confirm that it is off; the copy
+  takes the writes, and OmniaCLI tries every 10 s to stop that PostgreSQL and
+  to point its instances here when the machine answers again: what its
+  instances write there meanwhile is lost. The cluster that was replaced
+  stays stopped, its row says *Replaced by the replica on … on …*, and **Take
+  the cluster away…** deletes it. The databases that cluster gave to other
+  machines are in the copy, but their instances keep looking for them there
+  and have no database until each is made again: the dialog names them.
+
+Every action is a job and is in the access log of both machines, with the
+user and the link. Not built: a replica of a dedicated database, more than
+one replica per cluster or per hosting machine, reads for the instances of
+other machines, the old primary made a replica again after a promotion, the
+tuning of the replica (it has the values of its primary), a renewal of its
+certificate.
+
 ### Modules from the OCA catalog
 
 The **Modules** tab of an instance of a workspace (developers and admins)

@@ -24,6 +24,7 @@ after it got it. No root, no helper: only what OmniaCLI's own user does.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -36,6 +37,8 @@ import statistics
 import struct
 import time
 from urllib.parse import urlsplit
+
+import httpx
 
 from .config import LinkTarget
 
@@ -217,6 +220,23 @@ def check(host: str, port: int, ca: str, user: str, database: str, address: str 
             raw.close()
         except OSError:
             pass
+
+
+async def odoo_answers(port: int, timeout: float) -> tuple[bool, float]:
+    """(the Odoo on port of this machine answers /web/login, the seconds
+    waited): after its database changed place, how long it took to be back."""
+    started = time.monotonic()
+    async with httpx.AsyncClient(follow_redirects=False) as client:
+        while True:
+            try:
+                resp = await client.get(f"http://127.0.0.1:{int(port)}/web/login", timeout=10)
+                if resp.status_code < 500:
+                    return True, round(time.monotonic() - started, 1)
+            except httpx.HTTPError:
+                pass
+            if time.monotonic() - started > timeout:
+                return False, round(time.monotonic() - started, 1)
+            await asyncio.sleep(1)
 
 
 def public_address(value: str) -> bool:

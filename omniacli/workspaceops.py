@@ -73,9 +73,10 @@ async def _helper(job: Job, *args: str, timeout: float = HELPER_TIMEOUT, input: 
         raise JobFailed(f"workspace-helper {args[0]} answered no JSON: {out}") from None
 
 
-async def ask(*args: str, timeout: float = HELPER_TIMEOUT) -> dict:
-    """A helper's answer read for a page, without a job."""
-    code, out = await capture(helper(*args), timeout=timeout)
+async def ask(*args: str, timeout: float = HELPER_TIMEOUT, input: bytes | None = None) -> dict:
+    """A helper's answer read for a page, without a job; input: what the
+    helper reads on its input (never an argument, never logged)."""
+    code, out = await capture(helper(*args), timeout=timeout, input=input)
     if code:
         raise JobFailed(out or f"workspace-helper {args[0]} failed ({code})")
     try:

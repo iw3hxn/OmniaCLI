@@ -557,7 +557,8 @@ def env_text(values: dict[str, str]) -> str:
 
 def conf_text(template: Template, database: str, admin_password: str, customer_repos: list[str],
               parameters: dict | None = None, debug: bool = False, extra: dict | None = None,
-              mail_capture: bool = False, db_template: str = "", replica: tuple[str, int] | None = None) -> str:
+              mail_capture: bool = False, db_template: str = "", replica: tuple[str, int] | None = None,
+              replica_verified: bool = False) -> str:
     """The Odoo configuration: the image's addons, then the customer's
     repositories; then the editable parameters (checked: parameter_values),
     the other options (checked: extra_options) and, with debug,
@@ -594,8 +595,15 @@ def conf_text(template: Template, database: str, admin_password: str, customer_r
     if replica:
         # AD-004: Odoo (18 and later) sends its read-only requests to the replica, the writes to the
         # database; it never moves to the replica by itself when the database is gone
-        text = text.rstrip("\n") + "\n; the read replica of its database, given at the creation\n" + \
+        said = ("the read replica of the machine's cluster, on another machine" if replica_verified
+                else "the read replica of its database, given at the creation")
+        text = text.rstrip("\n") + f"\n; {said}\n" + \
             f"db_replica_host = {replica[0]}\ndb_replica_port = {int(replica[1])}\n"
+        if replica_verified and not re.search(r"(?m)^db_sslmode\s*=", text):
+            # Odoo reaches the replica with the user, the password and the sslmode of the database
+            # (sql_db.connection_info_for): verify-full, with the replica's CA in PGSSLROOTCERT. The
+            # database itself is the cluster's Unix socket, where libpq does not use TLS at all
+            text += "db_sslmode = verify-full\n"
     return text
 
 

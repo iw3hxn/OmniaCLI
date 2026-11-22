@@ -91,6 +91,11 @@ NOT_SENSITIVE = frozenset({
     # a database on the cluster of a linked OmniaCLI (AD-003): the clusters a machine offers and the
     # round trip to it, read before the grant; the grant, its revoke and its drop are actions, logged
     "/api/postgres/machine/offer", "/api/links/{name}/postgres",
+    # a read replica of the machine's cluster on another machine (AD-004): what is said before it is
+    # made (sizes, the names of the instances, to the machine's admins and the link that asks) and
+    # what each machine sees of it; making, dropping, promoting and the reads are actions, logged
+    "/api/postgres/machine/{major}/replica/facts", "/api/postgres/machine/{major}/replica/state",
+    "/api/links/{name}/postgres/replica",
     "/x/odoo/servers/{server}/{role}/addons", "/x/odoo/servers/{server}/{role}/addons/versions",
     # an invitation's form (its use is logged by the route) and where a user of a customer may be made
     "/invite/{token}", "/api/access/workspaces", "/api/access/workspace-choices",

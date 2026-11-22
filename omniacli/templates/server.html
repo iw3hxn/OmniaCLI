@@ -987,12 +987,31 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
           {% if dbl.restart %}{{ _("restart at {time} of {date}", time=dbl.restart[11:16], date=when(dbl.restart)[:10]) }}
           {% elif dbl.tuned %}{{ _("tuned on {when}", when=when(dbl.tuned)) }}
           {% else %}{{ _("base values") }}{% endif %}
+          {# its reads from the replica of the machine's cluster (UX-010 §5.4): the machine's admins read on which
+             machine and whether it is connected (as the look of the Database tab saw it last, never PostgreSQL
+             asked here); a user of workspaces reads that it reads from a replica, and nothing else #}
+          {% set rl = (replica_line or {}).get(inst.key) %}
+          {% if machine_admin and rl and rl.reads and rl.code in ("off", "lost") %}<span class="db-replica-state" style="color: var(--warn); font-weight: 600" title="{{ _('As this machine saw the replica at {when}: Odoo goes back to the replica by itself, 20 minutes after it could not reach it', when=when(rl.read_at)) }}">· {{ _("replica not connected: it reads from the cluster") }}</span>
+          {% elif machine_admin and rl and rl.reads %}<span class="db-replica-state" title="{{ _('Odoo sends the reads of the pages that do not write to the replica, and writes to this machine\'s cluster. As this machine saw the replica at {when}', when=when(rl.read_at)) if rl.read_at else _('Odoo sends the reads of the pages that do not write to the replica, and writes to this machine\'s cluster') }}">· {{ _("reads also from the replica on {machine} ({address})", machine=rl.machine, address=rl.address) }}</span>
+          {% elif dbl.reads and not machine_admin %}<span class="db-replica-state" title="{{ _('The pages that do not write may read from a copy of the database kept up to date: a value just saved may show a few seconds late') }}">· {{ _("Reads: also from a replica") }}</span>{% endif %}
         {% elif dbl.where == "system" %}{{ _("PostgreSQL of the system (port {port}) · not tuned by OmniaCLI", port=dbl.port) }}
         {# on the cluster of a linked OmniaCLI: named, for the machine's admins (a user of workspaces reads the host) #}
         {% elif dbl.link and machine_admin %}{{ _("PostgreSQL {major} of {link} ({host}) · tuned there", major=dbl.major, link=dbl.link, host=dbl.host) }}
           {% if not prefix %}<a href="/links/{{ dbl.link | urlencode }}/#database" title="{{ _('Opens the Database tab of that machine, where its cluster is tuned and this database is listed among those used from other machines') }}">{{ _("Database of {link} ›", link=dbl.link) }}</a>{% endif %}
+        {# the promoted replica of this machine's cluster: the provider's machine, whose address a user of workspaces does not read #}
+        {% elif dbl.provider and not machine_admin %}{{ _("on another machine · tuned there") }}
         {% else %}{{ _("on {host} · tuned there", host=dbl.host) }}{% if dbl.replica %} · {{ _("read replica on {host}", host=dbl.replica) }}{% endif %}{% endif %}
         {% if machine_admin and dbl.where in ("dedicated", "machine") %}<a href="{{ prefix }}/#database" title="{{ _('Opens the Database tab of the machine, where this database is tuned') }}">{{ _("Database of the machine ›") }}</a>{% endif %}
+        {# Read from the replica… / Stop reading from the replica… (UX-010 §5.4): the machine's admins, an instance on
+           the machine's cluster whose cluster has a replica; off, with why in its box's title, for Odoo 17 and for a
+           replica that is not connected #}
+        {% set rl = (replica_line or {}).get(inst.key) %}
+        {% if machine_admin and rl and (rl.reads or rl.exists) %}
+        <span class="db-replica" style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px">
+          {% if rl.reads %}<button type="button" class="small" data-db-replica="off" data-ask="{{ _('Make {server} stop reading from the replica? Odoo reads and writes on this machine\'s cluster only, and restarts: for a few seconds it does not answer.', server=server.name) }}" title="{{ _('Odoo reads and writes on this machine\'s cluster only. Odoo restarts for a few seconds. It is a job.') }}">{{ _("Stop reading from the replica…") }}</button>
+          {% else %}<span title="{{ tr(rl.why) }}"><button type="button" class="small" data-db-replica="on" {{ "disabled" if rl.why }} data-ask="{{ _('Make {server} read from the replica on {machine}? Odoo restarts and for a few seconds does not answer. The writes stay on this machine\'s cluster. If the replica does not answer, Odoo reads from the cluster by itself for 20 minutes and then tries again. If this machine\'s cluster stops, Odoo stops: the replica does not take its place by itself. It is promoted by hand, from the Database tab of {machine}. A page that does not write may show a value just saved as it was before, for the seconds the replica is behind ({lag} s now).', server=server.name, machine=rl.machine, lag=rl.lag if rl.lag is not none else 0) }}" title="{{ _('Odoo sends to the replica on {machine} the reads of the pages that do not write, and keeps writing to this machine\'s cluster. Odoo restarts: for a few seconds it does not answer and whoever is connected loses the connection. It is a job.', machine=rl.machine) }}">{{ _("Read from the replica…") }}</button></span>{% endif %}
+        </span>
+        {% endif %}
         {# the move (AD-007): a job, Odoo stopped for the copy; its undo kept beside it until freed #}
         {% if machine_admin and (dbl.move or dbl.kept) %}
         <span class="db-move" style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px">
@@ -1037,6 +1056,10 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
   }
   for (const button of document.querySelectorAll("[data-db-purge]")) {
     button.addEventListener("click", () => go(button, "/purge", {}, true));
+  }
+  // its reads from the replica of the machine's cluster (AD-004): asked in the page's dialog, a job, Odoo restarts
+  for (const button of document.querySelectorAll("[data-db-replica]")) {
+    button.addEventListener("click", () => go(button, "/replica", {read: button.dataset.dbReplica === "on"}, false));
   }
 })();
 </script>

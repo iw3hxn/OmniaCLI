@@ -42,6 +42,13 @@ scram-sha-256 (postgres: where Odoo looks whether its database is there). The
 role's password never comes here: the other machine sends its SCRAM
 verifier. grants.json holds who asked, from which link and address.
 
+A read replica of the cluster on another machine (AD-004, managedreplica.py):
+replica.json holds who has it; pg_hba.conf has one more line, hostssl
+replication <REPLICA_ROLE> <address>/32 scram-sha-256, and the firewall lets
+that address in too. The replicas this machine hosts of other machines'
+clusters are projects beside the cluster's (HOSTED_REPLICAS), each with a
+network of its own (replica_bridge).
+
 Names are checked here and quoted; no value of a caller reaches SQL or a
 shell but through those checks. The internal names hold a dot, which no
 environment's name has (env_name: a-z 0-9 _), so they never meet."""
@@ -127,6 +134,11 @@ REACHED_AS = re.compile(r"(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?
 LINK_NAME = re.compile(r"[A-Za-z0-9._@-]{1,64}")
 CA_YEARS = 20
 CERT_YEARS = 10
+# the read replica of a cluster on another machine (managedreplica.py): the role it comes in as,
+# the cluster's record of it, and the record of the replicas this machine hosts
+REPLICA_ROLE = "omniacli.replica"
+REPLICA_FILE = "replica.json"
+HOSTED_REPLICAS = Path(os.environ.get("OMNIACLI_MACHINE_DB_REPLICA", "/etc/omniacli/machine-db-replica.json"))
 
 
 class ClusterError(Exception):
@@ -372,6 +384,31 @@ def bridge_name(major: str) -> str:
     return f"omnidb{_major(major)}"
 
 
+def replica_bridge(major: str) -> str:
+    """The bridge of the network of a replica this machine hosts."""
+    return f"omnirp{_major(major)}"
+
+
+def replica(project: Path) -> dict | None:
+    """The cluster's record of its read replica on another machine ({"link",
+    "address", "state", ...}: managedreplica.py), None when it has none."""
+    try:
+        data = json.loads((project / REPLICA_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) and data.get("address") else None
+
+
+def hosted_replicas() -> dict:
+    """{major: {"storage", "project", "link"}} of the replicas of other
+    machines' clusters this machine hosts (root's file)."""
+    try:
+        data = json.loads(HOSTED_REPLICAS.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {k: v for k, v in data.items() if k in MAJORS and isinstance(v, dict)} if isinstance(data, dict) else {}
+
+
 def compose_text(major: str, uid: int, gid: int, roots: list[str], port: int | None = None) -> str:
     """The cluster's project: no port, no network, its socket in run/, the
     storages of the workspaces mounted where they are (rslave: a disk
@@ -469,13 +506,14 @@ def make_shared(roots: list[str]) -> list[str]:
     return done
 
 
-def hba_text(envs: dict, granted: dict | None = None) -> str:
+def hba_text(envs: dict, granted: dict | None = None, replicated: dict | None = None) -> str:
     """pg_hba.conf of the cluster: the superuser (and its base backups, on
     the socket only), then a line per
     environment (its database, postgres, its throwaway databases), then a
     line per database of another machine (AD-003: that database and
     postgres, that role, that one address, over TLS; a revoked one has
-    none), then reject."""
+    none), then the replication of its read replica (AD-004: its own role,
+    the one address of the machine that hosts it, over TLS), then reject."""
     lines = ["# written by omniacli workspace-helper: who reaches which database of the machine's cluster",
              "local all postgres scram-sha-256",
              # a base backup of the recovery at a minute (clusterpitr.py): all does not name a replication connection
@@ -489,6 +527,9 @@ def hba_text(envs: dict, granted: dict | None = None) -> str:
             # postgres too, as an environment of this machine: Odoo's image waits for the server there
             # and Odoo looks there whether its database exists; no throwaway databases (no CREATEDB)
             lines.append(f'hostssl "{name}",postgres "{name}" {address(rec.get("address"))}/32 scram-sha-256')
+    if replicated and replicated.get("state") != "replaced":
+        # a replication connection only: its role is of no database
+        lines.append(f'hostssl replication "{REPLICA_ROLE}" {address(replicated.get("address"))}/32 scram-sha-256')
     lines += ["local all all reject", "host all all all reject"]
     return "\n".join(lines) + "\n"
 
@@ -512,7 +553,7 @@ def write_hba(project: Path, envs: dict) -> None:
     path = project / "conf" / "pg_hba.conf"
     before = path.read_text(encoding="utf-8") if path.is_file() else None
     uid, gid = pg_user()
-    write(path, hba_text(envs, grants(project)), mode=0o640, uid=0, gid=gid)
+    write(path, hba_text(envs, grants(project), replica(project)), mode=0o640, uid=0, gid=gid)
     try:
         errors = sql(project, "postgres", "SELECT count(*) FROM pg_hba_file_rules WHERE error IS NOT NULL;\n").strip()
         if errors != "0":
@@ -590,21 +631,35 @@ def remove(major: str) -> dict:
     no cluster is left. The image stays when a dedicated database uses it."""
     project = project_of(major)
     envs = environments(project)
-    if envs:
+    followed = replica(project) or {}
+    # replaced by its replica, promoted: its data is old and no instance uses it; it goes with all it holds
+    replaced = followed.get("state") == "replaced"
+    if followed and not replaced:
+        raise ClusterError(f"the cluster of PostgreSQL {major} has a read replica on {followed.get('link')}: "
+                           "drop the replica first")
+    if envs and not replaced:
         raise ClusterError(f"the cluster of PostgreSQL {major} holds {len(envs)} environments "
                            f"({', '.join(sorted(envs))}): move them to a dedicated database or remove them first")
     lent = grants(project)
-    if lent:
+    if lent and not replaced:
         raise ClusterError(f"the cluster of PostgreSQL {major} holds {len(lent)} databases of other machines "
                            f"({', '.join(sorted(lent))}): remove their instances there, or drop them here first")
     _run(project, "down", "--remove-orphans", timeout=600)
+    if replaced:
+        # the tablespaces on the workspaces' disks, which no cluster reads any more
+        for mount in sorted({str(rec.get("mount") or "") for rec in envs.values()}):
+            folder = Path(mount) / WS_FOLDER
+            if Path(mount).is_absolute() and folder.is_dir() and not folder.is_symlink():
+                shutil.rmtree(folder, ignore_errors=True)
+                stop_letting_through(Path(mount))
     shutil.rmtree(project)
     with_folder = project.parent
     if with_folder.is_dir() and not any(with_folder.iterdir()):
         with_folder.rmdir()
     _save_registry({k: v for k, v in registry().items() if k != major})
     left = registry()
-    if not left:
+    if not left and not hosted_replicas():
+        # a replica hosted here runs as the same user, in the same slice: they stay for it
         _remove_units()
         subprocess.run([shutil.which("userdel", path=ENV["PATH"]) or "userdel", USER], env=ENV, capture_output=True)
     used = subprocess.run([_docker(), "ps", "-a", "-q", "--filter", f"ancestor={IMAGE[major]}"], env=ENV,
@@ -620,7 +675,9 @@ def state() -> dict:
         project = Path(str(rec.get("project") or ""))
         row = {"major": major, "storage": rec.get("storage"), "project": str(project),
                "socket": str(project / "run"), "environments": environments(project), "running": False,
-               "promised": 0, "port": (listening(project) or {}).get("port"), "grants": grants(project)}
+               "promised": 0, "port": (listening(project) or {}).get("port"), "grants": grants(project),
+               # its read replica on another machine (who has it, in which state: no address of the copy's port)
+               "replica": {k: v for k, v in (replica(project) or {}).items() if k in ("link", "state", "address")} or None}
         if (project / "compose.yaml").is_file():
             done = _run(project, "ps", "--format", "{{.State}}", SERVICE, check=False)
             row["running"] = (done.stdout or "").strip() == "running"
@@ -1024,6 +1081,10 @@ def listen_off(major: str) -> dict:
     if allowed:
         raise ClusterError(f"{', '.join(allowed)} are reached from other machines through this port: revoke or "
                            "drop them first")
+    followed = replica(project) or {}
+    if followed and followed.get("state") != "replaced":
+        raise ClusterError(f"the read replica on {followed.get('link')} follows the cluster through this port: "
+                           "drop the replica first")
     uid, gid = pg_user()
     before = (project / "compose.yaml").read_text(encoding="utf-8")
     seconds = _recreate(project, compose_text(major, uid, gid, _roots_of(before)), before, "without its port")
@@ -1040,29 +1101,62 @@ def firewall_state() -> dict[str, list[str]]:
     for major, rec in sorted(registry().items()):
         project = Path(str(rec.get("project") or ""))
         if listening(project):
-            found[bridge_name(major)] = sorted({address(v.get("address")) for v in grants(project).values()
-                                                if not v.get("revoked")})
+            allowed = {address(v.get("address")) for v in grants(project).values() if not v.get("revoked")}
+            followed = replica(project) or {}
+            if followed and followed.get("state") != "replaced":
+                # the machine that hosts its read replica comes in for the replication
+                allowed.add(address(followed.get("address")))
+            found[bridge_name(major)] = sorted(allowed)
     return found
 
 
-BRIDGE = re.compile(r"omnidb\d{1,3}")
+BRIDGE = re.compile(r"omni(?:db|rp)\d{1,3}")
 
 
-def firewall_rules(state: dict[str, list[str]]) -> dict[str, list[list[str]]]:
+def reached(value) -> tuple[list[str], list[tuple[str, int]]]:
+    """(the addresses a network is reached from, the address and port it goes
+    out to) of an entry of the firewall's state: a list of addresses (a
+    cluster that listens: it never goes out), or {"from": [...], "to":
+    [[address, port], ...]} (a replica hosted here, which goes out to its
+    primary's port and nowhere else)."""
+    if isinstance(value, dict):
+        coming, going = value.get("from") or [], value.get("to") or []
+    else:
+        coming, going = value, []
+    out = []
+    for pair in going:
+        try:
+            host, port = pair
+            port = int(port)
+        except (TypeError, ValueError):
+            raise ClusterError(f"{pair!r} is not the address and port of a primary") from None
+        if not 1 <= port <= 65535:
+            raise ClusterError(f"{port} is not a port")
+        out.append((address(host), port))
+    return sorted({address(a) for a in coming}), sorted(set(out))
+
+
+def firewall_rules(state: dict) -> dict[str, list[list[str]]]:
     """What the firewall lets reach the clusters that listen (state:
     firewall_state), as iptables arguments after -A <chain>: forward (jumped
     from DOCKER-USER: docker forwards a published port, the host's own
     firewall never sees it), to a cluster's network only its port from the
     addresses of its grants, and from it only the answers; input: nothing
     from a cluster's network to this machine but answers. No address, no
-    rule: all dropped. Never a network, never every address (address)."""
+    rule: all dropped. Never a network, never every address (address). A
+    replica hosted here (reached) goes out to the port of its primary, and
+    takes its answers; nothing else leaves its network."""
     forward, into = [], []
     for bridge in sorted(state):
         if not BRIDGE.fullmatch(bridge):
             raise ClusterError(f"{bridge!r} is not the network of a cluster")
-        allowed = sorted({address(a) for a in state[bridge]})
+        allowed, going = reached(state[bridge])
         forward += [["-o", bridge, "-s", f"{a}/32", "-p", "tcp", "--dport", str(PORT_IN_DB), "-j", "RETURN"]
                     for a in allowed]
+        for host, port in going:
+            forward += [["-i", bridge, "-d", f"{host}/32", "-p", "tcp", "--dport", str(port), "-j", "RETURN"],
+                        ["-o", bridge, "-s", f"{host}/32", "-p", "tcp", "--sport", str(port), "-m", "conntrack",
+                         "--ctstate", "ESTABLISHED", "-j", "RETURN"]]
         forward += [["-o", bridge, "-j", "DROP"],
                     ["-i", bridge, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "RETURN"],
                     ["-i", bridge, "-j", "DROP"]]
