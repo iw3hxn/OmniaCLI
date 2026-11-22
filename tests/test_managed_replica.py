@@ -1051,7 +1051,7 @@ async def test_the_warning_and_what_is_to_look_at(machines):
     # the machine that hosts it has it as a node of its own
     await client.lab1.state.replica_look_hosted()
     hosted = (await client.get("/api/map", headers=ADMIN)).json()["machines"][0]["replicas"]
-    assert hosted == [{"major": "17", "link": "lab2", "lag": None, "code": "off"}]
+    assert hosted == [{"major": "17", "link": "lab2", "name": None, "lag": None, "code": "off"}]
 
 
 async def promote(client, **payload):

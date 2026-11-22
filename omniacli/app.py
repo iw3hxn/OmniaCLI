@@ -9381,6 +9381,15 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                 "uptime_24h": seen["uptime_24h"] if numbers else None},
                     "certificate": monitor.certificate(site) if site else None}
 
+        followed = set(machinedb.dedicated_sources())
+
+        def dedicated_copy(inst: Instance) -> dict | None:
+            key = dedicated_key(inst) if followed else ""
+            brief = replica_brief(key) if key in followed else None
+            if brief is None or brief["code"] == "replaced":
+                return None
+            return {**brief, "machine": brief["machine"] if machine_admin(me) else None}
+
         def full(srv: Server) -> dict:
             node = light(srv)
             info = known.get(srv.name) or {}
@@ -9396,6 +9405,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                        # reads also from a replica of the machine's cluster (UX-010): no machine, no address
                                        "reads": bool(place.get("reads")),
                                        "replica": place.get("replica") or None, "port": place.get("port"),
+                                       # the read replica of its own database on another machine (UX-011 §D): its
+                                       # machine for the machine's admins, that a copy exists for its workspace's users
+                                       "copy": dedicated_copy(srv.instances[role]),
                                        "major": cluster_major if place.get("where") == "machine" else None,
                                        # on the cluster of a linked OmniaCLI: named for who sees the machines
                                        "label": say("PostgreSQL {major} of {link}").replace(
@@ -13376,21 +13388,19 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 "lag": verdict.get("lag"), "since": rec.get("replaced_at") or verdict.get("since")}
 
     def replica_briefs() -> list[dict]:
-        """R, for the map: the copies of clusters hosted here, each as its
-        primary's machine said last (the copy of one instance's database is
-        in the Database tab, not on the map)."""
+        """R, for the map: the copies hosted here, of a cluster or of one
+        instance's own database (name: that instance, as its machine names
+        it), each as its primary's machine said last."""
         out = []
         fences = replica_fences()
         for major, entry in sorted(replica_hosted().items()):
-            if entry.get("source"):
-                continue
             seen = replica_seen.get(major) or {}
             verdict = ((seen.get("state") or {}).get("verdict") or {})
             # promoted: that machine's cluster says it was replaced, or has not heard of it yet (the retry is on)
             promoted = major in fences or (seen.get("state") or {}).get("state") == "replaced"
             # the cluster it replaced came back: stopped (its own record, a file OmniaCLI reads)
             returned = managedreplica.hosted_record(Path(str(entry.get("project") or ""))).get("state") == "returned"
-            out.append({"major": major, "link": entry.get("link"), "lag": verdict.get("lag"),
+            out.append({"major": major, "link": entry.get("link"), "name": entry.get("name") or None, "lag": verdict.get("lag"),
                         "code": "returned" if returned else "promoted" if promoted else "silent" if seen.get("error")
                         else verdict.get("code") or ""})
         return out

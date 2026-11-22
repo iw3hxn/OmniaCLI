@@ -339,7 +339,7 @@ al giro successivo (ogni 20 s). Provato su lab2 (P) e lab1 (R).
   - **Limiti.** Il ritorno dopo la promozione non c'è. Con P spento la replica di un dedicato non si promuove da
     OmniaCLI. Un database dedicato con tablespace propri è rifiutato. Il ruolo `user` del workspace non ha i
     Dettagli tecnici: legge la copia solo nei job. Se l'istanza viene eliminata mentre ha una replica, la copia resta
-    su R finché il suo admin non la elimina. La mappa non disegna la copia di un dedicato. La porta resta pubblicata
+    su R finché il suo admin non la elimina. La mappa disegna la copia di un dedicato dal 22/11/2026 (2026.1.5476): su R un nodo «replica di acme-odoo (lab1) · in pari 0 s» dentro il riquadro della macchina, come per la copia di un cluster; nel pannello dell'istanza, su P, «replica di lettura su lab2, in pari 0 s» per gli admin della macchina e «una copia su un'altra macchina del fornitore» per gli utenti del workspace. La porta resta pubblicata
     (chiusa da firewall e `pg_hba.conf`) dopo un'eliminazione. Il tempo del riavvio detto dal dialogo («circa 5 s») è
     una stima per eccesso: su un database grande dipende dal checkpoint.
 - **Non costruito**: il ritorno dopo la promozione della replica di un database dedicato; più di una replica per

@@ -15,6 +15,7 @@ import yaml
 from omniacli import composehelper, machinedb, managedreplica, stacktemplates, workspacehelper
 from omniacli.composehelper import HelperError
 
+from .test_app import AUTH, client  # noqa: F401 - the client fixture
 from .test_managed_replica import CA, GB, MB, TEMPLATES, Sql
 
 KEY = "acme.default.odoo"
@@ -551,3 +552,20 @@ def test_what_a_promotion_left_is_freed(instance, monkeypatch):
     monkeypatch.setattr(workspacehelper, "mounted", lambda image, mount: True)
     done = workspacehelper.machine_db_purge("acme", "default", "odoo")
     assert str(project / "data" / "pgdata") in done["removed"] and not (project / "data" / "pgdata").exists()
+
+
+# --- the map (UX-009) -------------------------------------------------------------------
+
+async def test_the_map_draws_the_copy_of_an_instances_database_it_hosts(client, tmp_path, monkeypatch):
+    """R: the copy of one instance's database is a node of the machine that
+    hosts it, as a cluster's copy is, named by the instance it is of."""
+    kept = tmp_path / "machine-db-replica.json"
+    kept.write_text(json.dumps({"17": {"link": "lab2", "project": str(tmp_path / "r17")},
+                                "d100": {"link": "lab1", "name": "acme-odoo", "source": KEY, "project": str(tmp_path / "rd100")}}))
+    monkeypatch.setattr(machinedb, "HOSTED_REPLICAS", kept)
+    resp = await client.get("/api/map", headers={"Authorization": AUTH})
+    assert resp.status_code == 200, resp.text
+    hosted = resp.json()["machines"][0]["replicas"]
+    assert [(r["major"], r["link"], r["name"]) for r in hosted] == [("17", "lab2", None), ("d100", "lab1", "acme-odoo")]
+    page = (Path(__file__).parent.parent / "omniacli" / "templates" / "_map.html").read_text(encoding="utf-8")
+    assert "replicaOfInstance" in page and "copyAway" in page and "db.copy" in page

@@ -261,6 +261,9 @@ window.OmniaMap = (function () {
     // the read replica of a cluster made by OmniaCLI on another machine (UX-010 §9)
     replicaOf: {{ _("replica of {link} · {state}") | tojson }},
     replicaOn: {{ _("replica on {machine} · {state}") | tojson }},
+    replicaOfInstance: {{ _("replica of {name} ({link}) · {state}") | tojson }},
+    copyOn: {{ _("read replica on {machine}, {state}") | tojson }},
+    copyAway: {{ _("a copy on another machine of the provider") | tojson }},
     replicaTitle: {{ _("A read-only copy of the PostgreSQL of another machine, kept up to date: the Database tab says how far behind it is") | tojson }},
     replicaStates: {copying: {{ _("copying") | tojson }}, sync: {{ _("in sync {s} s") | tojson }}, behind: {{ _("behind by {s} s") | tojson }},
       off: {{ _("not connected") | tojson }}, lost: {{ _("to be made again") | tojson }}, promoted: {{ _("promoted") | tojson }}, returned: {{ _("stopped") | tojson }},
@@ -793,12 +796,20 @@ window.OmniaMap = (function () {
     const env = mainEnv(i) || {};
     for (const n of env.names || []) parts.push(n.kind === "redirect" ? fill(T.panel.redirect, {name: n.name, to: n.to}) : `${n.name}, ${nameWord(n)}`);
     if (env.database) parts.push(`${T.colDb}: ${databaseText(env.database)}`
-      + (env.database.replica ? ", " + fill(T.panel.replicaLine, {host: env.database.replica}) : ""));
+      + (env.database.replica ? ", " + fill(T.panel.replicaLine, {host: env.database.replica}) : "")
+      + (env.database.copy ? ", " + copyText(env.database.copy) : ""));
     for (const m of marks(i)) parts.push(m.text.replace(/^[✓✕⚠] /, ""));
     if (i.backup && i.backup.destination) parts.push(fill(T.panel.backupTo, {name: i.backup.destination}));
     if (i.mail) parts.push(i.mail.count === null || i.mail.count === undefined ? T.mailUnread : fill(T.mail, {n: i.mail.count}));
     return parts.join(" · ");
   }
+  // the read replica of an instance's own database: where and how for who sees the machines, that it exists for the others
+  function copyText(c) {
+    if (!c.machine) return T.copyAway;
+    const word = T.replicaStates[c.code] !== undefined ? T.replicaStates[c.code] : T.replicaStates[""];
+    return fill(T.copyOn, {machine: c.machine, state: fill(word, {s: c.lag === null || c.lag === undefined ? 0 : c.lag, when: c.since ? whenText(c.since) : "?"})});
+  }
+
   function databaseText(db) {
     if (!db || !db.where) return T.panel.dbUnread;
     if (db.where === "dedicated") return T.panel.dbDedicated;
@@ -1006,7 +1017,8 @@ window.OmniaMap = (function () {
       if (c.replica) replicaPill(fill(T.replicaOn, {machine: c.replica.machine, state: replicaWord(c.replica)}), ["off", "lost"].includes(c.replica.code));
     }
     // the replicas of other machines' clusters this machine hosts: nodes inside its box
-    for (const r of m.replicas || []) replicaPill(fill(T.replicaOf, {link: r.link, state: replicaWord(r)}), ["off", "lost", "silent"].includes(r.code));
+    for (const r of m.replicas || []) replicaPill(r.name ? fill(T.replicaOfInstance, {name: r.name, link: r.link, state: replicaWord(r)})
+      : fill(T.replicaOf, {link: r.link, state: replicaWord(r)}), ["off", "lost", "silent"].includes(r.code));
     const chips = (m.workspaces || []).map((ws) => ({ws, list: ws.instances || []}));
     if ((m.loose || []).length) chips.push({ws: null, list: m.loose});
     const cols = w >= 420 ? 2 : 1, gap = 10, cw = (w - pad * 2 - gap * (cols - 1)) / cols, ch = 78;
@@ -1608,6 +1620,7 @@ window.OmniaMap = (function () {
     list.append(el("li", {}, odoo.join(" · ")));
     list.append(el("li", {"data-db": db && db.where || ""}, `${T.panel.database}: ${databaseText(db)}`));
     if (db && db.replica) list.append(el("li", {"data-replica": db.replica}, `${T.panel.replica}: ${fill(T.panel.replicaLine, {host: db.replica})}`));
+    if (db && db.copy) list.append(el("li", {"data-copy": db.copy.machine || ""}, copyText(db.copy).replace(/^./, (c) => c.toUpperCase())));
     const out = [
       el("div", {class: "map-panel-head"}, el("h2", {id: "map-panel-title"}, i.name), close()),
       el("p", {class: "muted small"}, [i.type === "staging" ? T.staging : T.production, i.version ? fill(T.panel.version, {version: i.version}) : "",
