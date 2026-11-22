@@ -29,6 +29,7 @@
     omniacli workspace-helper machine-db-replica-grant <major> <role> revoke|allow|drop
     omniacli workspace-helper machine-db-replica-lent <major>   (the primary's grants, JSON, on the input)
     omniacli workspace-helper machine-db-replica-unlisten <workspace>.<storage>.<instance>
+    (machine-db-return takes <workspace>.<storage>.<instance> too: the database of that instance comes back)
     omniacli workspace-helper machine-db-moved <workspace> <storage> <instance>   (where it is now, JSON, on the input)
     omniacli workspace-helper space
     omniacli workspace-helper storage-setup | storage-check <storage> | storage-reset <storage>
@@ -180,7 +181,7 @@ instance's compose.yaml, which is never changed; read on|off and follow
 take such an instance too (its Odoo verifies its own database's certificate
 and the replica's). machine-db-replica-unlisten: the port closed again and
 the override gone, the database's container made again, once it has no
-replica (no button asks it: by root, by hand).
+replica (Close the port… on the instance's row of the Database tab).
 
 The return after a promotion (UX-011 §A). machine-db-replica-return, on the
 machine that hosts the promoted copy: facts, allow (the cluster it
@@ -199,6 +200,15 @@ writes and is the machine's cluster again), note, purge (the data set aside
 deleted), cancel (the copy deleted, the data set aside back), forget.
 machine-db-replica-back: an instance pointed at the promoted copy goes back
 on the machine's cluster, by its socket, as it was before the promotion.
+The return of the dedicated database of one instance: machine-db-return
+<workspace>.<storage>.<instance> does the same steps on the instance's own
+data folder, on its workspace's disk, in a project of its own beside the
+instance's (.replica/return: no port, a network that goes out to the
+promoted copy's port only), which no command of the instance reaches; then
+machine-db-replica-back stops that project clean and writes the instance
+again as one with a database of its own (the template it had, kept in
+.before-promotion), its database listening as before the promotion for no
+other machine, and starts it: Odoo and its database, once.
 
 The databases other machines use, after a promotion (UX-011 §B). The
 promoted copy lets in the roles the cluster had let in, each from the
@@ -1769,6 +1779,13 @@ def remove(name: str, storage: str, instance: str) -> dict:
     if folder.is_symlink() or not folder.is_dir():
         raise HelperError(f"no instance {instance} in workspace {name}")
     dropped = []
+    coming = folder / "production" / machinedb.DEDICATED_FOLDER / managedreplica.BACK_FOLDER
+    returning = (coming / "compose.yaml").is_file() and not coming.is_symlink()
+    if returning:
+        # its database was coming back from its promoted copy (UX-011 §A): the PostgreSQL that followed it goes first
+        code = subprocess.run(machinedb.compose(coming, "down", "-v", "--remove-orphans"), env=ENV, cwd=coming).returncode
+        if code:
+            raise HelperError(f"docker compose down of {coming} failed ({code}): nothing removed")
     for role in ROLES:
         project = folder / role
         if any((project / f).is_file() for f in composehelper.COMPOSE_FILES):
@@ -1793,6 +1810,9 @@ def remove(name: str, storage: str, instance: str) -> dict:
     # its network is free again: no SMTP rule left on it
     if _mail_guard_file():
         mail_guard_apply()
+    if returning:
+        # the network its database came back on is gone: the firewall forgets it
+        db_firewall()
     return {"workspace": name, "instance": instance, "removed": str(folder),
             **({"machine": dropped} if dropped else {}), **({"database_left_on": left} if left else {})}
 
@@ -3174,8 +3194,13 @@ def machine_db_replica_back(name: str, storage: str, instance: str) -> dict:
     folder = project.parent
     meta = _meta(folder)
     moved = meta.get("promoted_from")
+    if isinstance(moved, dict) and moved.get("dedicated") and composehelper.on_remote(project) is not None:
+        return _dedicated_back(name, storage, instance, project, folder, meta, moved)
     if composehelper.on_cluster(project) is not None:
         return {"already": True, "database": str(meta.get("database") or ""), "db_service": machinedb.DB_SERVICE}
+    if composehelper.on_remote(project) is None and not moved:
+        # a database of its own again: done already
+        return {"already": True, "database": str(meta.get("database") or ""), "db_service": managedreplica.DEDICATED_SERVICE}
     if not isinstance(moved, dict) or composehelper.on_remote(project) is None:
         raise HelperError(f"{instance} was not pointed at a promoted replica: it does not go back on the machine's cluster")
     kept = project / PROMOTED
@@ -3222,6 +3247,72 @@ def machine_db_replica_back(name: str, storage: str, instance: str) -> dict:
             "template": template.name}
 
 
+def _dedicated_back(name: str, storage: str, instance: str, project: Path, folder: Path, meta: dict, moved: dict) -> dict:
+    """After the dedicated database of an instance came back from its
+    promoted replica and took the writes (UX-011 §A for one instance): the
+    project it came back in is stopped clean and taken away, and the
+    instance's own project is written again as one with a database of its
+    own, on the data that came back: the compose.yaml it had before the
+    promotion (kept beside it, PROMOTED), its .env without what pointed it
+    at the copy, its database listening over TLS as before the promotion,
+    for no other machine (the next replica restarts nothing; Close the
+    port… closes it). Odoo and its database start once. What the promotion
+    kept is deleted."""
+    key = managedreplica.dedicated_key(name, storage, instance)
+    back = _cluster(machinedb.returning, project / machinedb.DEDICATED_FOLDER) or {}
+    if back.get("state") != "done":
+        raise HelperError(f"the database of {instance} has not come back: {instance} stays on the promoted copy")
+    kept = project / PROMOTED
+    try:
+        compose = (kept / "compose.yaml").read_text(encoding="utf-8")
+    except OSError:
+        compose = ""
+    template = template_named(str(moved.get("template") or ""))
+    if not compose:
+        # what it was is not beside it any more: the template it had, as this machine has it now
+        compose = template.compose
+    if not re.search(rf"(?m)^  {managedreplica.DEDICATED_SERVICE}:\s*$", compose):
+        raise HelperError(f"what {instance} was before the promotion has no database service: it is not written back")
+    values = _env(project)
+    before = {path: path.read_bytes() for path in (project / "compose.yaml", project / ".env", folder / INSTANCE_FILE,
+                                                   project / "config" / REMOTE_CA_FILE) if path.is_file()}
+    exception = db_remote_file().get(str(project))
+    # its Odoo has had no database since the promoted copy stopped: it is not waited for
+    _dc(project, "down", "--remove-orphans", "--timeout", "2", timeout=600)
+    # the PostgreSQL that came back is stopped clean, and the project it came back in goes: never two on one data
+    _cluster(managedreplica.back_release, key)
+    try:
+        listen = _cluster(lambda: managedreplica.source(key).listening())
+        _write(project / "compose.yaml", compose)
+        _write(project / ".env", stacktemplates.env_text(_env_without(values, PROMOTED_KEYS)), mode=0o600)
+        (project / "config" / REMOTE_CA_FILE).unlink(missing_ok=True)
+        db_remote_set(project, None)
+        if listen:
+            # as it listened before the promotion: its pg_hba.conf lets the project's network in, and no machine
+            _cluster(lambda: managedreplica.source(key).took_back())
+        _write_override(project, None, listen)
+        _write(folder / INSTANCE_FILE, json.dumps({
+            **{k: v for k, v in meta.items() if k not in PROMOTED_META}, "template": template.name,
+            "version": str(moved.get("version") or template.version)}) + "\n")
+        conf(name, storage, instance, "production", "{}")
+        _dc(project, "up", "-d", "--remove-orphans", timeout=600)
+    except BaseException:
+        # as it was, pointed at the promoted copy (which is stopped): nothing is half written, and asked
+        # again the instance is written back
+        _dc(project, "down", "--remove-orphans", check=False, timeout=600)
+        for path, data in before.items():
+            path.write_bytes(data)
+        (project / REPLICA_OVERRIDE).unlink(missing_ok=True)
+        if exception:
+            db_remote_set(project, exception)
+        raise
+    shutil.rmtree(kept, ignore_errors=True)
+    # its port is this machine's again, for no address: the firewall says so
+    db_firewall()
+    return {"already": False, "database": str(meta.get("database") or managedreplica.DEDICATED_ROLE),
+            "db_service": managedreplica.DEDICATED_SERVICE, "template": template.name, "listens": bool(listen)}
+
+
 # the return after a promotion (managedreplica.py, UX-011 §A): on the machine that hosts the promoted
 # copy (machine-db-replica-return) and on the one whose cluster comes back (machine-db-return)
 
@@ -3254,7 +3345,9 @@ def machine_db_replica_return(major: str, step: str) -> dict:
 def machine_db_return(major: str, step: str) -> dict:
     """machine-db-return <major> facts | prepare | copy | start | state | wait |
     promote | note | purge | cancel | forget: the machine's cluster comes
-    back from the replica that replaced it. prepare takes its values as JSON
+    back from the replica that replaced it; or, <major> the key of an
+    instance (<workspace>.<storage>.<instance>), the dedicated database of
+    that instance does. prepare takes its values as JSON
     on the input, the password of the replication's role among them; wait
     the position the stopped copy ended at; note what the application keeps
     of a return that is done. The firewall follows: while it comes back the
@@ -3619,6 +3712,11 @@ def machine_db_purge(name: str, storage: str, instance: str) -> dict:
         raise HelperError(f"no project {instance}/production in workspace {name}")
     gone = []
     paths = [project / MOVES]
+    back = _cluster(machinedb.returning, project / machinedb.DEDICATED_FOLDER) or {}
+    if back.get("state") in ("copying", "ready"):
+        # data/pgdata is the copy that follows the promoted one, and the data of before is set aside for it
+        raise HelperError(f"the database of {instance} comes back from its promoted copy: the data of before is set "
+                          "aside for the return, and is freed when it is complete or cancelled")
     if composehelper.on_cluster(project) is not None:
         paths += [project / KEPT, project / "data" / "pgdata", project / "data" / "wal"]
     elif composehelper.on_remote(project) is not None and (_meta(project.parent).get("promoted_from") or {}).get("dedicated"):

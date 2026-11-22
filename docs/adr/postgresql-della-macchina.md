@@ -318,8 +318,40 @@ al giro successivo (ogni 20 s). Provato su lab2 (P) e lab1 (R).
   - **La promozione** vale per quell'istanza sola, e solo con P che risponde, perché l'istanza gira su P. P ferma il
     servizio `db` di quel progetto; R promuove; P riscrive il progetto come «database su un'altra macchina» (il
     gemello `-remote` del template) e lo avvia. I dati di prima restano in `data/pgdata` fino a «Libera lo spazio di
-    prima…». **Il ritorno non è costruito**: il dialogo lo dice. La copia promossa si elimina da R solo quando P
-    risponde che l'istanza non c'è più.
+    prima…». La copia promossa si elimina da R solo quando P risponde che l'istanza non c'è più.
+  - **Il ritorno** (UX-011 §A per un'istanza, costruito il 22/11/2026; `managedreplica.py` `ClusterBack` e
+    `DedicatedBack`, `back_*`; `workspace-helper machine-db-return <workspace>.<storage>.<istanza>`,
+    `machine-db-replica-back`; le stesse route del ritorno del cluster, dove `<major>` è la chiave del database).
+    Dopo la promozione l'istanza ha la sua riga nella scheda Database di P, «Sostituito dalla replica su … il …», con
+    «Prepara il ritorno…», «Completa il ritorno…» e «Annulla il ritorno…». Il codice del ritorno del cluster segue
+    adesso «un posto dove un PostgreSQL torna»: il progetto del cluster, o, per un dedicato:
+    - **i dati** tornano nella cartella dei dati dell'istanza (`data/pgdata`, sul disco del suo workspace); quelli
+      di prima si mettono da parte accanto (`pgdata.aside`), o si dice che erano già stati liberati;
+    - **il PostgreSQL che segue la copia promossa** gira in **un progetto suo** (`.replica/return` nel progetto
+      dell'istanza: `omniacli-return-<workspace>-<istanza>`), non nel progetto dell'istanza: stessa immagine, sola
+      lettura, nessuna capability, nessuna porta, nella slice del workspace, mai in archivio. La sua rete
+      (`omnirt<n>`) esce solo verso la porta della copia promossa: la regola è nel firewall dei cluster
+      (`managedreplica.returning_state`). **Perché non il servizio `db` dell'istanza durante il ritorno**: nessun
+      comando dell'istanza (riavvio, arresto, aggiornamento, `up --remove-orphans`) deve poter fermare o avviare un
+      PostgreSQL su una copia non finita; il progetto dell'istanza resta quello «su un'altra macchina» fino a
+      Completa;
+    - **Completa**: R ferma la copia promossa; P aspetta l'ultimo record (60 s al massimo, altrimenti la copia di R
+      riparte e l'istanza resta là) e prende le scritture; poi `machine-db-replica-back` ferma pulito il progetto
+      del ritorno e lo toglie (mai due PostgreSQL sugli stessi dati: se non si ferma, l'istanza non viene avviata),
+      riscrive il progetto dell'istanza con il `compose.yaml` di prima della promozione (`.before-promotion`), toglie
+      dal `.env` quello che la puntava sulla copia, e la avvia: Odoo e il suo database, una volta. Il database
+      **ascolta come prima della promozione**, per nessun'altra macchina (lo stesso stato di dopo «Elimina la
+      replica…»): «Rifai la replica…» su R non riavvia niente, «Chiudi la porta…» la chiude;
+    - **Annulla** (da P, o da R: P lo legge al giro dopo): il progetto del ritorno si ferma e sparisce, la copia si
+      cancella, i dati messi da parte tornano al loro posto; R toglie ruolo, riga e punto di ritenuta;
+    - su R le route del ritorno accettano la chiave con cui P conosce il database
+      (`<workspace>.<storage>.<istanza>`) e trovano la copia di quel collegamento (`d<n>`);
+    - «Libera lo spazio di prima…» non è offerto durante un ritorno, e root lo rifiuta; un'istanza eliminata durante
+      un ritorno spegne prima il progetto del ritorno; la riga del job di eliminazione di un'istanza su una copia
+      promossa non dice più l'indirizzo della copia (lo leggeva il cliente).
+  - **«Chiudi la porta…»** per un dedicato che ascolta ancora dopo l'eliminazione della replica: pulsante sulla riga
+    dell'istanza (`POST /api/postgres/machine/<chiave>/port/close`, `machine-db-replica-unlisten`), spento con il
+    motivo finché una replica lo segue; job della macchina, con la nota per il cliente del riavvio del suo PostgreSQL.
   - **Misure (22/11/2026, lab3 e lab4, PostgreSQL 17.12, Odoo 19, database di 44 MB):**
     - creazione: job di 6 s su R, copia di 60 MB in 1 s. Il container `db` rifatto in 0,4-0,5 s (tre volte); su 86
       richieste a `/web/login` di acme-odoo, una ogni mezzo secondo, 0 fallite. Su P è ripartito solo quel container.
@@ -332,17 +364,30 @@ al giro successivo (ogni 20 s). Provato su lab2 (P) e lab1 (R).
     - promozione di un'istanza usa e getta (acme-tmp): `/web/login` non risponde per 4,9 s; un valore scritto 1 s
       prima del clic è nella copia; le altre quattro istanze di lab4 hanno 0 richieste fallite su 185 e nessun loro
       container è ripartito;
+    - **ritorno** di acme-tmp (22/11/2026, lab4 = P, lab3 = R): Prepara in 4,8 s (copia di 60 MB in 0,7 s), 0
+      richieste fallite su tutte e cinque le istanze di lab4 e nessun container ripartito; un valore scritto su R
+      si legge sulla copia di P dopo 0,2 s. Completa in 16 s: un valore scritto su R un secondo prima del clic è
+      nel database di acme-tmp su P; `/web/login` di acme-tmp non risponde per 9,7 s (16 richieste su 129); le altre
+      quattro istanze: 0 fallite su 571, nessun container ripartito; la copia di R resta ferma, senza container.
+      «Rifai la replica…» in 5,3 s senza riavvii (0 fallite su 56). Annulla: il progetto del ritorno sparisce, i 2015
+      file dei dati di prima hanno la stessa impronta di prima di Prepara, R non tiene più niente (0 slot, 0 ruoli,
+      0 righe di replica). Con i dati di prima già liberati: Prepara fa la sua cartella, e l'annullamento da R la
+      cancella su P dopo 7 s. «Chiudi la porta…»: container `db` rifatto in 0,7 s, 0 richieste fallite su 67;
     - eliminazione da P con R che risponde: R cancella la copia al giro dopo. Con il pannello di P fermo
       l'eliminazione da R finisce e dice cosa resta là; con il pannello di R fermo quella da P finisce e lo dice;
     - come admin, developer e user del workspace: 0 volte il nome di R, il suo indirizzo, le porte e i nomi interni
       nella pagina dell'istanza, nell'elenco dei job, nelle note e nelle route; 403 sulle route della replica.
-  - **Limiti.** Il ritorno dopo la promozione non c'è. Con P spento la replica di un dedicato non si promuove da
+  - **Limiti.** Il ritorno non riaccende il ripristino a un minuto dell'istanza (la promozione lo spegne): si
+    riaccende dalla scheda Backup, e il job lo dice. Durante un ritorno il PostgreSQL che segue la copia promossa
+    usa memoria e CPU della slice del workspace, accanto a Odoo. Il tetto di quello che R tiene per il ritorno è
+    quello del cluster (20 GB), sul disco di R. Il ritorno di un dedicato con R spento non c'è, come per il
+    cluster. Con P spento la replica di un dedicato non si promuove da
     OmniaCLI. Un database dedicato con tablespace propri è rifiutato. Il ruolo `user` del workspace non ha i
     Dettagli tecnici: legge la copia solo nei job. Se l'istanza viene eliminata mentre ha una replica, la copia resta
     su R finché il suo admin non la elimina. La mappa disegna la copia di un dedicato dal 22/11/2026 (2026.1.5476): su R un nodo «replica di acme-odoo (lab1) · in pari 0 s» dentro il riquadro della macchina, come per la copia di un cluster; nel pannello dell'istanza, su P, «replica di lettura su lab2, in pari 0 s» per gli admin della macchina e «una copia su un'altra macchina del fornitore» per gli utenti del workspace. La porta resta pubblicata
     (chiusa da firewall e `pg_hba.conf`) dopo un'eliminazione. Il tempo del riavvio detto dal dialogo («circa 5 s») è
     una stima per eccesso: su un database grande dipende dal checkpoint.
-- **Non costruito**: il ritorno dopo la promozione della replica di un database dedicato; più di una replica per
+- **Non costruito**: più di una replica per
   cluster o per database dedicato, e più di una copia di cluster ospitata per macchina; le letture dalla replica per
   le istanze di altre macchine (le concessioni);
   la regolazione della replica (ha i valori di P: se R ha meno memoria di quanta P ne ha assegnata, la

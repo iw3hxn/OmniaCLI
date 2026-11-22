@@ -116,6 +116,12 @@ def _tr(language: str, text: str) -> str:
     relayed = re.match(r"(\s*[a-z0-9][a-z0-9-]*: \d\d:\d\d:\d\d )(.*)\Z", text, re.S)
     if relayed:
         return relayed.group(1) + tr(language, relayed.group(2))
+    # the line a job fails with ("FAILED: the reason"): its reason is a sentence of its own, which a pattern of
+    # a few letters is not applied to
+    failed = re.match(r"(FAILED: )(.+)\Z", text, re.S)
+    if failed and len(text.split()) > _LABEL_WORDS:
+        head = catalog(language).get("FAILED: {error}", "FAILED: {error}").replace("{error}", "")
+        return head + tr(language, failed.group(2))
     words = len(text.split())
     for pattern, target, fixed in _patterns(language):
         if fixed <= _LABEL_FIXED and words > _LABEL_WORDS:
@@ -124,10 +130,18 @@ def _tr(language: str, text: str) -> str:
         if match:
             try:
                 # the values as they are (a server named test stays test), but a value of several words
-                # that is itself a text of the catalog: the reason of a refusal, said inside another line
+                # that is itself a text of the catalog: the reason of a refusal, said inside another line;
+                # a whole sentence (more words than a label has) that the catalog has as a pattern, too:
+                # the reason a job failed for, which names an instance or a machine ("FAILED: …")
                 known = catalog(language)
-                return target.format(**{name: known.get(value, value) if " " in value else value
-                                        for name, value in match.groupdict().items()})
+
+                def inner(value: str) -> str:
+                    if " " not in value:
+                        return value
+                    if value in known:
+                        return known[value]
+                    return _tr(language, value) if len(value.split()) > _LABEL_WORDS else value
+                return target.format(**{name: inner(value) for name, value in match.groupdict().items()})
             except (KeyError, IndexError, ValueError):
                 return text
     return text

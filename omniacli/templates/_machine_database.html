@@ -49,6 +49,15 @@
    /api/postgres/replica/<major>/return/cancel) and, once the cluster is
    back, Make the replica again… (POST /api/postgres/replica/<major>/remake)
    and Drop the replica….
+   The return of the dedicated database of one instance (UX-011 §A for one
+   instance): after the promotion of its replica the instance keeps its own
+   row, which says Replaced by the replica on…, with the same Prepare the
+   return…, Complete the return… and Cancel the return… (<major> is then the
+   key of that database, row.pg); on the machine that hosts the promoted
+   copy the same lines, with the instance's name. Close the port… on the
+   row of an instance whose database still listens for a replica it no
+   longer has (POST /api/postgres/machine/<key>/port/close), off with why
+   while a replica follows it.
    The databases the cluster gave to other machines, after a promotion
    (UX-011 §B): the promoted copy's row lists them under From other machines
    with the cluster's actions (POST /api/postgres/replica/<major>/grants/
@@ -366,6 +375,9 @@
     closePort: {{ _("Close the port…") | tojson }},
     closePortTitle: {{ _("Makes the cluster reached by its socket only again, as before the first database of another machine. Its container is made again, in about a second: the instances on it lose their connections, and each may answer an error to its first request or two after that. Possible when no other machine is let in. It is a job.") | tojson }},
     closePortAsk: {{ _("Close port {port} of the machine's cluster? Its container is made again: the {n} instances on it ({list}) lose their connections, and each may answer an error to its first request or two after that.") | tojson }},
+    closePortDedicatedTitle: {{ _('Closes the port the PostgreSQL of {server} listens on, over TLS, for a read replica it no longer has: its container is made again as its compose.yaml says it, in about {s} s, and {server} does not answer for that time. The next replica opens it again, with another restart. It is a job.') | tojson }},
+    closePortDedicatedAsk: {{ _('Close port {port} of the PostgreSQL of {server}? The PostgreSQL of {server} is made again, in about {s} s: {server} does not answer for that time, and whoever is saving gets an error. No other instance restarts. The next replica of {server} makes it again to open the port.') | tojson }},
+    closePortDedicatedNot: {{ _('The read replica on {machine} follows this database through this port: drop the replica first.') | tojson }},
     removeCluster: {{ _("Take the cluster away…") | tojson }},
     removeClusterTitle: {{ _("Deletes the container of the machine's PostgreSQL and its data folder; possible only when it serves no instance. It is a job.") | tojson }},
     removeAsk: {{ _("Take the machine's PostgreSQL {major} away? Its container and its data folder are deleted; it serves no instance.") | tojson }},
@@ -426,6 +438,11 @@
       removeReplacedLentOne: {{ _(" The database another machine uses ({list}) is in the copy on {machine}.") | tojson }},
       lentOf: {{ _("{name}, of {link}") | tojson }},
       removeWaits: {{ _("{list} have not followed their database to the copy on {machine} yet: the cluster is taken away once they have.") | tojson }},
+      // an instance whose own database was replaced by its promoted copy (UX-011 §D): its row on its machine
+      replacedTitleDedicated: {{ _('The replica was promoted: the PostgreSQL of this instance is stopped here, and the instance works on the copy on {machine}. Open the row to bring its database back here.') | tojson }},
+      replacedDetailDedicated: {{ _('The database of {server} is on {machine} since {when}: {server} reads and writes there, over TLS.') | tojson }},
+      replacedKept: {{ _('The data it had here, of that moment, is still on the disk of its workspace: Free the space of before…, in its page, deletes it.') | tojson }},
+      replacedFreed: {{ _('The data it had here was freed.') | tojson }},
       // the detail on the machine that hosts it
       whose: {{ _("Whose") | tojson }}, since: {{ _("Since") | tojson }}, space: {{ _("Room") | tojson }}, holds: {{ _("What it holds") | tojson }},
       whoseLink: {{ _("Database of {link} ›") | tojson }},
@@ -492,7 +509,7 @@
       holdsDedicated: {{ _("The database of {instance}, of the workspace {ws}: one customer only. Readable by root and by the copy's user only.") | tojson }},
       promoteTitleDedicated: {{ _("Makes this copy the database of {instance}: its PostgreSQL on {link} is stopped first, then this copy takes the writes, then {instance} is pointed here and restarted. No other instance of {link} restarts. It is a job.") | tojson }},
       promoteGoTitleDedicated: {{ _("Stops the PostgreSQL of {instance} on {link}, makes this copy take the writes and points {instance} here. It cannot be undone from here.") | tojson }},
-      promoteAskDedicated: {{ _("Promote the replica of {instance} ({link})?\n1. The PostgreSQL of {instance} on {link} is stopped: {instance} does not answer.\n2. This copy takes the writes.\n3. {instance} is pointed here and restarted: about 10 s without Odoo in all.\nLag now: {lag} s, and the changes of those seconds that did not arrive are lost. After it the database of {instance} lives on {here}, and its backups go through the network.{pitr} Its stagings stay on {link} and do not change. The return is not offered for a dedicated database yet. Write {instance} to confirm.") | tojson }},
+      promoteAskDedicated: {{ _("Promote the replica of {instance} ({link})?\n1. The PostgreSQL of {instance} on {link} is stopped: {instance} does not answer.\n2. This copy takes the writes.\n3. {instance} is pointed here and restarted: about 10 s without Odoo in all.\nLag now: {lag} s, and the changes of those seconds that did not arrive are lost. After it the database of {instance} lives on {here}, and its backups go through the network.{pitr} Its stagings stay on {link} and do not change. The way back is Prepare the return…, from the row of {instance} on {link}. Write {instance} to confirm.") | tojson }},
       promotePitr: {{ _(" The recovery at a minute of {instance} stops: its last point is of the moment its PostgreSQL stops.") | tojson }},
       promoteOffDedicated: {{ _("{link} does not answer: the replica of {instance} is promoted only with {link} answering, because {instance} itself runs there and is pointed here by it.") | tojson }},
       dropTitleDedicated: {{ _("Deletes this copy and its container, and asks {link} to drop what the PostgreSQL of {instance} keeps for it. If {instance} reads from here it goes back to its database only and restarts. A new replica copies everything again. It is a job.") | tojson }},
@@ -603,6 +620,33 @@
       againTitle: {{ _("Deletes this stopped copy and makes a new one of the cluster of {link}, kept up to date. It is a job.") | tojson }},
       againAsk: {{ _("Make the replica of {link} again? This stopped copy ({size}) is deleted, then the whole cluster of {link} is copied here again: {total}, in about {time}, and kept up to date. Here {free} are free once it is deleted, and at least {reserve} stay free.") | tojson }},
       dropStoppedTitle: {{ _("Deletes this stopped copy and its container, and frees its room on this machine. {link} keeps nothing for it. It is a job.") | tojson }},
+      // the return of the dedicated database of one instance (UX-011 §A for one instance)
+      prepareTitleDedicated: {{ _('Copies here, through the link, the database of {server} that is on {machine} today, on the disk of its workspace, and keeps it up to date read only. {server} stays on {machine}: nothing stops. It is a job.') | tojson }},
+      prepareGoTitleDedicated: {{ _('Sets aside the data {server} had here and copies here that of {machine}') | tojson }},
+      completeTitleDedicated: {{ _('Stops the copy on {machine}, waits until every change has arrived here, then writes {server} again as an instance with a database of its own and restarts it. It is a job.') | tojson }},
+      completeGoTitleDedicated: {{ _('Stops the copy on {machine} and brings {server} back on its own database: from there the copy is made a replica again, or dropped') | tojson }},
+      cancelTitleDedicated: {{ _('Deletes the copy made here and puts the data {server} had here back in its place; {machine} takes away what it keeps for it and frees its disk. {server} stays on {machine}. It is a job.') | tojson }},
+      cancelAskDedicated: {{ _('Cancel the return of {server} from {machine}? The copy made here is deleted, and what {server} had here before goes back to its place; {machine} takes away what it keeps for the return. {server} stays on {machine}.') | tojson }},
+      fromTitleDedicated: {{ _('A copy of the database of {server} follows the promoted copy on {machine}, read only, until Complete the return… is chosen: open the row') | tojson }},
+      backDedicated: {{ _('Back from {machine} on {when}: again the database of {server}, on this machine') | tojson }},
+      backPendingDedicated: {{ _('Back from {machine} on {when}, but {server} is not on it yet: Complete the return… writes it back') | tojson }},
+      backPendingTitleDedicated: {{ _('The database here took the writes and the copy on {machine} is stopped, but {server} is still written as an instance on that copy: it has no database until Complete the return… is asked again') | tojson }},
+      asideNone: {{ _('Nothing is set aside: the data of before was freed already.') | tojson }},
+      stillDedicated: {{ _('{server} still works on {machine}.') | tojson }},
+      askDedicated: {{ _('Bring back to this machine the database of {server}, on {machine} today?\n1. {first}\n2. The whole database of {server} is copied here from {machine}, on the disk of the workspace {ws}: {size}, in about {time}. There {free} are free, and at least {reserve} stay free.\n3. The copy follows {machine} at each change, read only, until you choose Complete the return….\n{server} keeps working on {machine}: nothing stops. On {machine} a role, a line of access for {address} only and a point that holds its changes are made, {cap} at most.') | tojson }},
+      askAside: {{ _('The data {server} had here, stopped since {when} ({aside}), is set aside: it is not deleted until the return is complete.') | tojson }},
+      askNoAside: {{ _('The data {server} had here was freed already: there is nothing to set aside.') | tojson }},
+      completeAskDedicated: {{ _('Complete the return of {server} from {machine}?\n1. The copy on {machine} is stopped: from that moment {server} does not write.\n2. The copy here receives the last changes (lag now: {lag} s) and accepts the writes. Nothing is lost: if not everything arrived within 60 s, the copy on {machine} starts again and {server} stays there.\n3. {server} is written again as an instance with a database of its own and restarted: about 10 s without Odoo.{fourth}\nAfter it the copy on {machine} is stopped, with the data of that moment: from there it is made a replica again, or dropped. Write {machine} to confirm.') | tojson }},
+      completeAside: {{ _('\n4. The data set aside (of {when}, {aside}) is deleted.') | tojson }},
+      completeAskAgainDedicated: {{ _('Write {server} again as an instance with a database of its own, on the data that came back, and restart it? About 10 s without Odoo. Write {machine} to confirm.') | tojson }},
+      toTitleDedicated: {{ _('The database of {instance} goes back to {link}: a copy there follows this one read only, as this machine sees it') | tojson }},
+      toLineDedicated: {{ _('{link} follows this copy since {when}, read only: {state}. {instance} keeps working here until Complete the return… is chosen there.') | tojson }},
+      cancelHostedTitleDedicated: {{ _('Takes away what this copy keeps for the return of {instance} to {link} and frees its disk; {link} deletes the copy it made and puts what {instance} had there back in its place at its next look. {instance} stays here. It is a job.') | tojson }},
+      cancelHostedAskDedicated: {{ _('Cancel the return of {instance} to {link}? What this copy keeps for it is taken away and its disk freed ({held}); {link} deletes the copy it made at its next look, within a minute. {instance} stays here.') | tojson }},
+      returnedTitleDedicated: {{ _('The database of {instance} took the writes back on {link}: this copy is stopped and never starts by itself. It is made a replica again, or dropped') | tojson }},
+      againTitleDedicated: {{ _('Deletes this stopped copy and makes a new one of the PostgreSQL of {instance} on {link}, kept up to date. It is a job.') | tojson }},
+      againAskDedicated: {{ _('Make the replica of {instance} ({link}) again? This stopped copy ({size}) is deleted, then the whole database of {instance} is copied here again: {total}, in about {time}, and kept up to date. Here {free} are free once it is deleted, and at least {reserve} stay free.') | tojson }},
+      dropStoppedAskDedicated: {{ _('Drop the stopped copy of {instance} of {link} ({size})? Its data, of the moment the database went back to {link}, is deleted. A new replica copies its whole database again.') | tojson }},
       dropStoppedAsk: {{ _("Drop the stopped copy of {link} ({size})? Its data, of the moment {link} came back, is deleted. A new replica copies the whole cluster again.") | tojson }},
     },
   };
@@ -650,6 +694,13 @@
     } catch (e) { return {error: e.message}; }
   }
   const post = (url, payload) => call(url, {method: "POST", body: JSON.stringify(payload || {})});
+  // a refusal that comes after a dialog is said in the page's own box, at the bottom of the card: brought into
+  // view, because the row its button is in may be a screen above it (an open dialog says it in its own box)
+  function showError(text, box) {
+    const target = box || errorBox;
+    target.textContent = text || "";
+    if (text && target === errorBox) errorBox.scrollIntoView({block: "center", behavior: "smooth"});
+  }
 
   function stateCell(row) {
     const s = row.state || {}, span = el("span", {className: "pg-state"});
@@ -658,14 +709,18 @@
       // it has no tuning of its own: grey, said why
       const promoted = (row.here || {}).state === "promoted";
       // the cluster it had replaced came back: it follows nothing and takes no write
-      if ((row.here || {}).state === "returned") return el("span", {className: "muted", textContent: T.rt.stopped, title: fill(T.rt.returnedTitle, {link: row.link})});
+      if ((row.here || {}).state === "returned") return el("span", {className: "muted", textContent: T.rt.stopped,
+        title: fill(row.instance ? T.rt.returnedTitleDedicated : T.rt.returnedTitle, {link: row.link, instance: row.instance})});
       return el("span", {className: "muted", textContent: promoted ? T.rp.writes : fill(T.rp.follows, {link: row.link}),
         title: fill(promoted ? (row.instance ? T.rp.writesTitleDedicated : T.rp.writesTitle) : T.rp.followsTitle, {link: row.link, instance: row.instance})});
     }
     if (s.code === "replaced") {
-      const back = row.return;
+      const back = row.return, own = row.where === "dedicated";
       if (back && back.here && ["copying", "ready"].includes(back.here.state)) return backState(row);
-      set(fill(T.rp.replaced, {machine: s.link || "?", when: when(s.at)}), "grey", T.rp.replacedTitle);
+      // its database took the writes here, and the instance is not written back on it yet
+      if (own && back && back.here && back.here.state === "done") set(fill(T.rt.backPendingDedicated, {machine: back.here.machine || s.link || "?",
+        when: when(back.here.returned_at), server: row.server}), "red", fill(T.rt.backPendingTitleDedicated, {machine: back.here.machine || s.link || "?", server: row.server}));
+      else set(fill(T.rp.replaced, {machine: s.link || "?", when: when(s.at)}), "grey", own ? fill(T.rp.replacedTitleDedicated, {machine: s.link || "?"}) : T.rp.replacedTitle);
       return span;
     }
     if (s.code === "base_production") set(T.states.base, "amber");
@@ -758,7 +813,8 @@
     }
     const badge = el("span", {className: "badge" + (row.kind === "test" ? " test-badge" : row.kind === "staging" ? " info" : " ok"), textContent: kindText(row)});
     badge.style.marginLeft = "8px";
-    td.append(row.parent ? "↳ " : "", el("strong", {textContent: row.server}), badge, el("span", {className: "pg-sub", textContent: T.dedicated}));
+    td.append(row.parent ? "↳ " : "", el("strong", {textContent: row.server}), badge);
+    if ((row.state || {}).code !== "replaced") td.append(el("span", {className: "pg-sub", textContent: T.dedicated}));
     // the read replica of its own database on another machine (UX-011 §D): its state on the closed row, as a cluster's
     const copied = row.replica;
     if (copied && copied.exists && copied.state !== "replaced") {
@@ -768,6 +824,10 @@
         title: fill(T.rp.keepsTitleDedicated, {size: bytes(v.held), cap: bytes(copied.cap)})}));
       td.append(line);
     }
+    // back from the copy that had replaced it: said while the stopped copy is there, as on the cluster's row
+    const came = (row.state || {}).code !== "replaced" && row.return && row.return.here && row.return.here.state === "done" ? row.return.here : null;
+    if (came) td.append(el("span", {className: "pg-sub pg-return-line", textContent: fill(T.rt.backDedicated, {machine: came.machine || "?",
+      when: when(came.returned_at), server: row.server}), title: fill(T.rt.backTitle, {machine: came.machine || "?"})}));
     return td;
   }
 
@@ -854,7 +914,16 @@
       if (back && back.here && back.here.state === "done" && (back.pending || []).length) actions.append(el("button", {type: "button",
         className: "small danger", textContent: T.rt.complete, title: fill(T.rt.completeTitle, {machine: back.here.machine || "?"}),
         onclick: () => completeReturn(row)}));
-    } else actions.append(el("a", {href: instanceUrl(row) + "#monitor", textContent: T.stats, title: T.statsTitle}));
+    } else {
+      // it listens over TLS on a port of this machine for a read replica: closed again once it has none
+      if (row.port) {
+        const followed = row.replica && row.replica.exists ? row.replica.link || "?" : "";
+        actions.append(el("span", {title: followed ? fill(T.closePortDedicatedNot, {machine: followed}) : ""}, el("button", {type: "button", className: "small",
+          textContent: T.closePort, title: fill(T.closePortDedicatedTitle, {server: row.server, s: 5}), disabled: !!followed,
+          onclick: (e) => closePortDedicated(row, e.currentTarget)})));
+      }
+      actions.append(el("a", {href: instanceUrl(row) + "#monitor", textContent: T.stats, title: T.statsTitle}));
+    }
     box.append(actions);
     return box;
   }
@@ -865,7 +934,7 @@
   const reasonText = (code) => T.rp.reasons[code] || T.rp.reasons.unknown;
   const percent = (done, total) => (total > 0 ? Math.min(100, Math.floor(100 * done / total)) : null);
   const goTo = (answer, errors) => {
-    if (answer.error || !answer.job) { (errors || errorBox).textContent = answer.error || T.refused; return false; }
+    if (answer.error || !answer.job) { showError(answer.error || T.refused, errors); return false; }
     location.href = `${PREFIX}/jobs/${answer.job}`;
     return true;
   };
@@ -873,7 +942,8 @@
   function hostedState(row) {
     const here = row.here || {}, p = row.primary || {}, v = p.verdict || {}, link = row.link;
     if (here.error) return stateSpan(fill(T.rp.unread, {reason: here.error}), "red", fill(T.rp.offTitle, {link}));
-    if (here.state === "returned") return stateSpan(fill(T.rt.returned, {link, when: when(here.returned_at)}), "grey", fill(T.rt.returnedTitle, {link}));
+    if (here.state === "returned") return stateSpan(fill(T.rt.returned, {link, when: when(here.returned_at)}), "grey",
+      fill(row.instance ? T.rt.returnedTitleDedicated : T.rt.returnedTitle, {link, instance: row.instance}));
     if (here.state === "promoted" && row.instance) return stateSpan(fill(T.rp.promotedDedicated, {when: when(here.promoted_at), link,
       instance: row.instance}), "green", fill(T.rp.promotedTitleDedicated, {link, instance: row.instance}));
     if (here.state === "promoted") return stateSpan(fill(T.rp.promoted, {when: when(here.promoted_at), link,
@@ -898,8 +968,9 @@
   // the cluster this promoted copy replaced comes back: what this copy sees of it, in the words of a replica
   function hostedReturn(row) {
     const back = (row.here || {}).return, link = row.link;
-    const [state, color] = back.state === "stopped" ? [T.rt.toStopped, "blue"] : ownedWords(back);
-    return stateSpan(back.state === "stopped" ? state : fill(T.rt.to, {link, state}), color, fill(T.rt.toTitle, {link}));
+    const [state, color] = back.state === "stopped" ? [fill(T.rt.toStopped, {link}), "blue"] : ownedWords(back);
+    return stateSpan(back.state === "stopped" ? state : fill(T.rt.to, {link, state}), color,
+      fill(row.instance ? T.rt.toTitleDedicated : T.rt.toTitle, {link, instance: row.instance}));
   }
   // on the machine that has the cluster: the same words, with the machine that hosts the replica
   function ownedWords(r) {
@@ -990,29 +1061,35 @@
   }
   function backState(row) {
     const machine = (row.return.here || {}).machine || (row.state || {}).link || "?", [state, color] = backWords(row);
-    return stateSpan(fill(T.rt.from, {machine, state}), color, fill(T.rt.fromTitle, {machine}));
+    return stateSpan(fill(T.rt.from, {machine, state}), color, fill(row.where === "dedicated" ? T.rt.fromTitleDedicated : T.rt.fromTitle, {machine, server: row.server}));
   }
-  const returnApi = (row) => `${API}/machine/${encodeURIComponent(row.major)}/return`;
+  // row.pg: the key of the dedicated database of an instance (its return is the instance's own); a cluster has its major
+  const returnApi = (row) => `${API}/machine/${encodeURIComponent(row.pg || row.major)}/return`;
   async function prepareReturn(row, button) {
     const f = row.returnFacts;
     if (!f || f.error) return;
-    const machine = f.machine, n = (f.instances || []).length, gb = (value) => dec(value, 1) + " GB";
+    const machine = f.machine, n = (f.instances || []).length, gb = (value) => dec(value, 1) + " GB", own = row.where === "dedicated";
     const trip = f.ms === null || f.ms === undefined ? fill(T.rp.tripNone, {link: machine}) : fill(T.rp.trip, {ms: dec(f.ms, 2)});
-    const text = fill(T.rt.ask, {machine, n, when: when(f.aside.at), aside: bytes(f.aside.size), size: bytes(f.size), time: minutesText(f.seconds),
-      free: bytes(f.free), reserve: gb(f.reserve_gb), address: f.address || "?", cap: gb(f.cap_gb)}) + " " + trip;
-    if (!await window.omniaAsk(text, T.rt.prepareGo, {goTitle: fill(T.rt.prepareGoTitle, {machine})})) return;
+    const values = {machine, n, when: when(f.aside.at), aside: bytes(f.aside.size), size: bytes(f.size), time: minutesText(f.seconds),
+      free: bytes(f.free), reserve: gb(f.reserve_gb), address: f.address || "?", cap: gb(f.cap_gb), server: row.server, ws: f.workspace || row.workspace || "?"};
+    // of one instance: what it had here is set aside, when it was not freed already
+    const text = (own ? fill(T.rt.askDedicated, {...values, first: fill(f.aside.size ? T.rt.askAside : T.rt.askNoAside, values)}) : fill(T.rt.ask, values)) + " " + trip;
+    if (!await window.omniaAsk(text, T.rt.prepareGo, {goTitle: fill(own ? T.rt.prepareGoTitleDedicated : T.rt.prepareGoTitle, {machine, server: row.server})})) return;
     button.disabled = true;
     if (!goTo(await post(`${returnApi(row)}/prepare`, {cap_gb: f.cap_gb, reserve_gb: f.reserve_gb}))) button.disabled = false;
   }
   // Prepare the return…: what the two machines say is read when the row is drawn; every refusal switches the
   // button off, with why in its box's title, before any POST
   function prepareButton(row, machine) {
-    const button = el("button", {type: "button", className: "small", textContent: T.rt.prepare, title: fill(T.rt.prepareTitle, {machine}),
+    const own = row.where === "dedicated";
+    const button = el("button", {type: "button", className: "small", textContent: T.rt.prepare,
+      title: fill(own ? T.rt.prepareTitleDedicated : T.rt.prepareTitle, {machine, server: row.server}),
       disabled: true, onclick: (e) => prepareReturn(row, e.currentTarget)});
     const box = el("span", {className: "pg-return-box", title: T.loading}, button);
     call(`${returnApi(row)}/facts`).then((f) => {
       row.returnFacts = f;
-      const why = f.error ? f.error : !f.fits ? fill(T.rt.noRoom, {machine, need: bytes(f.need), aside: bytes(f.aside.size), free: bytes(f.free),
+      // (of one instance the room is its workspace's disk's: the server says it whole)
+      const why = f.error ? f.error : !f.fits && !own ? fill(T.rt.noRoom, {machine, need: bytes(f.need), aside: bytes(f.aside.size), free: bytes(f.free),
         reserve: dec(f.reserve_gb, 1) + " GB"}) : f.disk_why || "";
       button.disabled = !!why;
       box.title = why;
@@ -1021,38 +1098,58 @@
   }
   async function completeReturn(row) {
     const b = row.return, here = b.here || {}, v = (b.there || {}).verdict || {}, machine = here.machine || "?";
-    const list = b.pending || [], aside = here.aside || {};
+    const list = b.pending || [], aside = here.aside || {}, own = row.where === "dedicated", server = row.server;
     const lag = v.lag === null || v.lag === undefined ? "?" : v.lag;
-    const text = here.state === "done" ? fill(T.rt.completeAskAgain, {list: list.join(", "), machine})
+    const text = own ? (here.state === "done" ? fill(T.rt.completeAskAgainDedicated, {server, machine})
+      : fill(T.rt.completeAskDedicated, {machine, server, lag, fourth: aside.size ? fill(T.rt.completeAside, {when: when(aside.at), aside: bytes(aside.size)}) : ""}))
+      : here.state === "done" ? fill(T.rt.completeAskAgain, {list: list.join(", "), machine})
       : fill(T.rt.completeAsk, {machine, n: list.length, list: list.join(", ") || "–", lag, seconds: Math.max(10, list.length * 10),
         when: when(aside.at), aside: bytes(aside.size), lent: (row.grants || []).length ? fill(row.grants.length === 1 ? T.rt.completeLentOne : T.rt.completeLent,
           {list: row.grants.map((g) => fill(T.rp.lentOf, {name: g.name, link: g.link})).join("; ")}) : ""});
     // what cannot be undone asks the name typed: the machine whose copy is stopped
-    if (!await window.omniaTypeName(text, machine, T.rt.completeGo, fill(T.rt.completeGoTitle, {machine}))) return;
+    if (!await window.omniaTypeName(text, machine, T.rt.completeGo, fill(own ? T.rt.completeGoTitleDedicated : T.rt.completeGoTitle, {machine, server}))) return;
     goTo(await post(`${returnApi(row)}/complete`, {confirm: machine}));
   }
   function returnBlock(row) {
     const b = row.return, here = b.here || {}, there = b.there || {}, machine = here.machine || (row.state || {}).link || "?";
     const dd = el("dd", {className: "pg-archive-lines"}), aside = here.aside || {}, n = (b.pending || []).length;
+    const own = row.where === "dedicated", server = row.server;
     const line = (text, warn) => dd.append(el("div", {className: warn ? "pg-warn" : "", textContent: text}));
     line(fill(T.rt.line, {machine, address: here.host || "?", when: when(here.at), state: backWords(row)[0]}));
-    line(fill(T.rt.aside, {when: when(aside.at), size: bytes(aside.size)}));
-    line(fill(T.rt.still, {n, machine}));
+    line(own && !aside.size ? T.rt.asideNone : fill(T.rt.aside, {when: when(aside.at), size: bytes(aside.size)}));
+    line(own ? fill(T.rt.stillDedicated, {server, machine}) : fill(T.rt.still, {n, machine}));
     const actions = el("div", {className: "pg-actions"});
     // a copy that was never in sync is never completed, and never while the other machine does not answer (there
     // is no way with it off: its copy is stopped first): said before the click
     const whole = here.state === "ready" && !!here.synced && !!here.running && !!here.receiving && !b.there_error && there.state === "ready";
     actions.append(el("span", {title: whole ? "" : b.there_error ? fill(T.rt.completeSilent, {machine}) : T.rt.completeNot}, el("button", {type: "button", className: "small danger", textContent: T.rt.complete,
-      title: fill(T.rt.completeTitle, {machine}), disabled: !whole, onclick: () => completeReturn(row)})));
-    actions.append(el("button", {type: "button", className: "small danger", textContent: T.rt.cancel, title: fill(T.rt.cancelTitle, {machine}),
+      title: fill(own ? T.rt.completeTitleDedicated : T.rt.completeTitle, {machine, server}), disabled: !whole, onclick: () => completeReturn(row)})));
+    actions.append(el("button", {type: "button", className: "small danger", textContent: T.rt.cancel,
+      title: fill(own ? T.rt.cancelTitleDedicated : T.rt.cancelTitle, {machine, server}),
       onclick: async (e) => {
-        if (!await window.omniaAsk(fill(T.rt.cancelAsk, {machine, when: when(aside.at), n}), e.currentTarget, {danger: true})) return;
+        if (!await window.omniaAsk(fill(own ? T.rt.cancelAskDedicated : T.rt.cancelAsk, {machine, when: when(aside.at), n, server}), e.currentTarget, {danger: true})) return;
         goTo(await post(`${returnApi(row)}/cancel`));
       }}));
     dd.append(actions);
     return dd;
   }
+  // an instance whose own database was replaced by its promoted copy (UX-011 §D): where it is, and the way back
+  function replacedDedicated(row) {
+    const s = row.state, box = el("div"), machine = s.link || "?", here = (row.return || {}).here || {}, server = row.server;
+    const coming = ["copying", "ready"].includes(here.state);
+    if (coming) box.append(el("dl", {}, el("dt", {textContent: T.rt.title}), returnBlock(row)));
+    else box.append(el("p", {textContent: fill(T.rp.replacedDetailDedicated, {when: when(s.at), machine, server}) + " " + (row.kept ? T.rp.replacedKept : T.rp.replacedFreed)}));
+    const actions = el("div", {className: "pg-actions"});
+    // the database took the writes here and the instance is not written back yet: asked again, it is
+    if (here.state === "done") actions.append(el("button", {type: "button", className: "small danger", textContent: T.rt.complete,
+      title: fill(T.rt.completeTitleDedicated, {machine: here.machine || machine, server}), onclick: () => completeReturn(row)}));
+    else if (!coming) actions.append(prepareButton(row, machine));
+    actions.append(el("a", {href: instanceUrl(row) + "#settings", textContent: row.server + " ›", title: T.rp.readerTitle}));
+    box.append(actions);
+    return box;
+  }
   function replacedDetail(row) {
+    if (row.where === "dedicated") return replacedDedicated(row);
     const s = row.state, box = el("div"), using = row.using || [], machine = s.link || "?";
     const coming = row.return && row.return.here && ["copying", "ready"].includes(row.return.here.state);
     if (coming) box.append(el("dl", {}, el("dt", {textContent: T.rt.title}), returnBlock(row)));
@@ -1101,19 +1198,20 @@
     if (back) {
       // the return of the cluster this copy replaced: what this copy sees of it, its cap, the way to cancel it
       const dd = el("dd", {className: "pg-archive-lines"}), v = back.verdict || {};
+      const instance = row.instance;
       dd.append(el("div", {textContent: back.state === "stopped" ? fill(T.rt.toStopped, {link})
-        : fill(T.rt.toLine, {link, when: when(back.at), state: ownedWords(back)[0]})}));
+        : fill(instance ? T.rt.toLineDedicated : T.rt.toLine, {link, instance, when: when(back.at), state: ownedWords(back)[0]})}));
       dd.append(el("div", {textContent: fill(T.rt.toCap, {cap: bytes(back.cap)})}));
       if (back.state !== "stopped") dd.append(el("div", {className: "pg-actions"}, el("button", {type: "button", className: "small danger",
-        textContent: T.rt.cancel, title: fill(T.rt.cancelHostedTitle, {link}), onclick: async (e) => {
-          if (!await window.omniaAsk(fill(T.rt.cancelHostedAsk, {link, held: bytes(v.held || 0)}), e.currentTarget, {danger: true})) return;
+        textContent: T.rt.cancel, title: fill(instance ? T.rt.cancelHostedTitleDedicated : T.rt.cancelHostedTitle, {link, instance}), onclick: async (e) => {
+          if (!await window.omniaAsk(fill(instance ? T.rt.cancelHostedAskDedicated : T.rt.cancelHostedAsk, {link, instance, held: bytes(v.held || 0)}), e.currentTarget, {danger: true})) return;
           goTo(await post(`${hostedApi(row)}/return/cancel`));
         }})));
       dl.append(el("dt", {textContent: fill(T.rt.toDt, {link})}), dd);
     }
     box.append(dl);
     if (here.state === "promoted" && row.instance) {
-      // of one instance: it has no return; dropped once that instance is no longer on its machine, which says so
+      // of one instance: dropped once that instance is no longer on its machine, which says so
       const instance = row.instance, gone = !!row.orphan;
       const drop = el("button", {type: "button", className: "small danger", textContent: T.rp.drop, disabled: !gone,
         title: fill(T.rp.dropOrphanTitle, {link, instance}), onclick: async (e) => {
@@ -1127,11 +1225,13 @@
     const actions = el("div", {className: "pg-actions"});
     if (here.state === "returned") {
       // the cluster came back: this copy is stopped; a replica again, or dropped
-      actions.append(el("button", {type: "button", className: "small", textContent: T.rt.again, title: fill(T.rt.againTitle, {link}),
+      const instance = row.instance;
+      actions.append(el("button", {type: "button", className: "small", textContent: T.rt.again,
+        title: fill(instance ? T.rt.againTitleDedicated : T.rt.againTitle, {link, instance}),
         onclick: (e) => remakeHosted(row, e.currentTarget)}));
       actions.append(el("button", {type: "button", className: "small danger", textContent: T.rp.drop, title: fill(T.rt.dropStoppedTitle, {link}),
         onclick: async (e) => {
-          if (!await window.omniaAsk(fill(T.rt.dropStoppedAsk, {link, size: bytes(here.disk || here.size || 0)}), e.currentTarget, {danger: true})) return;
+          if (!await window.omniaAsk(fill(instance ? T.rt.dropStoppedAskDedicated : T.rt.dropStoppedAsk, {link, instance, size: bytes(here.disk || here.size || 0)}), e.currentTarget, {danger: true})) return;
           goTo(await post(`${hostedApi(row)}/drop`));
         }}));
       box.append(actions);
@@ -1177,17 +1277,20 @@
   // Make the replica again…: what that machine says is read first, as + Replica of another machine… does;
   // a refusal is said in the page, before any POST
   async function remakeHosted(row, button) {
-    const here = row.here || {}, link = row.link;
+    const here = row.here || {}, link = row.link, instance = row.instance;
     button.disabled = true;
-    const f = await call(`${PREFIX}/api/links/${encodeURIComponent(link)}/postgres/replica?again=1`);
+    // of one instance's database: which one, as its machine names it (row.source)
+    const f = await call(`${PREFIX}/api/links/${encodeURIComponent(link)}/postgres/replica?again=` + (instance
+      ? `${encodeURIComponent(row.source)}&which=${encodeURIComponent(row.source)}` : "1"));
     button.disabled = false;
-    if (f.error) { errorBox.textContent = f.error; return; }
+    if (f.error) { showError(f.error); return; }
     const reserve = dec(f.reserve_gb, 1) + " GB";
-    if (f.free - f.need < f.reserve_gb * GIB) { errorBox.textContent = fill(T.rp.noRoom, {link, need: bytes(f.need), free: bytes(f.free), reserve}); return; }
-    const text = fill(T.rt.againAsk, {link, size: bytes(here.disk || here.size || 0), total: bytes(f.size), time: minutesText(f.seconds),
-      free: bytes(f.free), reserve});
+    if (f.free - f.need < f.reserve_gb * GIB) { showError(fill(instance ? T.rp.noRoomDedicated : T.rp.noRoom,
+      {link, name: instance, need: bytes(f.need), free: bytes(f.free), reserve})); return; }
+    const text = fill(instance ? T.rt.againAskDedicated : T.rt.againAsk, {link, instance, size: bytes(here.disk || here.size || 0), total: bytes(f.size),
+      time: minutesText(f.seconds), free: bytes(f.free), reserve});
     if (!await window.omniaAsk(text, button)) return;
-    goTo(await post(`${hostedApi(row)}/remake`, {cap_gb: f.cap_gb, reserve_gb: f.reserve_gb}));
+    goTo(await post(`${hostedApi(row)}/remake`, instance ? {reserve_gb: f.reserve_gb} : {cap_gb: f.cap_gb, reserve_gb: f.reserve_gb}));
   }
   async function dropHosted(row, button) {
     const here = row.here || {}, p = row.primary || {}, link = row.link, readers = p.readers || [];
@@ -1398,7 +1501,7 @@
     const offer = (data && data.cluster) || {}, major = (offer.missing || [])[0];
     if (!major || !await window.omniaAsk(fill(T.clusterAsk, {major, storage: offer.storage}), e.currentTarget)) return;
     const answer = await post(`${API}/machine/create`, {major});
-    if (answer.error || !answer.job) { errorBox.textContent = answer.error || T.refused; return; }
+    if (answer.error || !answer.job) { showError(answer.error || T.refused); return; }
     location.href = `${PREFIX}/jobs/${answer.job}`;
   });
   // a database of another machine on the cluster: who uses it and from where, with what an admin of this machine may do
@@ -1427,26 +1530,32 @@
   async function grantAction(row, g, what) {
     // of the cluster, or of the promoted copy this machine hosts
     const answer = await post(`${row.where === "replica" ? hostedApi(row) : `${API}/machine/${encodeURIComponent(row.major)}`}/grants/${encodeURIComponent(g.name)}/${what}`);
-    if (answer.error || !answer.job) { errorBox.textContent = answer.error || T.refused; return; }
+    if (answer.error || !answer.job) { showError(answer.error || T.refused); return; }
     location.href = `${PREFIX}/jobs/${answer.job}`;
   }
   async function closePort(row, button) {
     if (!await window.omniaAsk(fill(T.closePortAsk, {port: row.port, n: row.serves.length, list: servedList(row)}), button)) return;
     const answer = await post(`${API}/machine/${encodeURIComponent(row.major)}/port/close`);
-    if (answer.error || !answer.job) { errorBox.textContent = answer.error || T.refused; return; }
+    if (answer.error || !answer.job) { showError(answer.error || T.refused); return; }
+    location.href = `${PREFIX}/jobs/${answer.job}`;
+  }
+  async function closePortDedicated(row, button) {
+    if (!await window.omniaAsk(fill(T.closePortDedicatedAsk, {port: row.port, server: row.server, s: 5}), button)) return;
+    const answer = await post(`${API}/machine/${encodeURIComponent(row.pg)}/port/close`);
+    if (answer.error || !answer.job) { showError(answer.error || T.refused); return; }
     location.href = `${PREFIX}/jobs/${answer.job}`;
   }
   async function removeCluster(row, button) {
     if (!await window.omniaAsk(fill(T.removeAsk, {major: row.major}), button, {danger: true})) return;
     const answer = await post(`${API}/machine/${encodeURIComponent(row.major)}/remove`);
-    if (answer.error || !answer.job) { errorBox.textContent = answer.error || T.refused; return; }
+    if (answer.error || !answer.job) { showError(answer.error || T.refused); return; }
     location.href = `${PREFIX}/jobs/${answer.job}`;
   }
   // --- the recovery at a minute of the cluster (AD-006): what there is, switched on and off, a full copy now
   const archiveApi = (row) => `${API}/machine/${encodeURIComponent(row.major)}/archive`;
   async function archivePost(row, what, payload, errors) {
     const answer = await post(`${archiveApi(row)}/${what}`, payload);
-    if (answer.error || !answer.job) { (errors || errorBox).textContent = answer.error || T.refused; return false; }
+    if (answer.error || !answer.job) { showError(answer.error || T.refused, errors); return false; }
     location.href = `${PREFIX}/jobs/${answer.job}`;
     return true;
   }
@@ -1543,7 +1652,7 @@
     document.getElementById("pg-loading").hidden = false;
     const answer = await call(API);
     document.getElementById("pg-loading").hidden = true;
-    if (answer.error) { errorBox.textContent = answer.error; return; }
+    if (answer.error) { showError(answer.error); return; }
     data = answer;
     draw();
   }
@@ -1570,12 +1679,12 @@
   const rowApi = (row) => `${API}/${encodeURIComponent(row.server)}/${encodeURIComponent(row.role)}`;
   async function restartNow(row) {
     const answer = await post(rowApi(row) + "/restart");
-    if (answer.error || !answer.job) { errorBox.textContent = answer.error || T.refused; return; }
+    if (answer.error || !answer.job) { showError(answer.error || T.refused); return; }
     location.href = `${PREFIX}/jobs/${answer.job}`;
   }
   async function cancelRestart(row) {
     const answer = await post(rowApi(row) + "/restart/cancel");
-    if (answer.error) { errorBox.textContent = answer.error; return; }
+    if (answer.error) { showError(answer.error); return; }
     load();
   }
 

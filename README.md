@@ -2137,9 +2137,12 @@ promoted as the cluster's, by the same code; what differs:
   that port of the machine, whatever docker forwards them to). The role, the
   place that holds the changes and its cap are the cluster's. After a drop
   the database goes on listening, for no address: the next replica restarts
-  nothing (`omniacli workspace-helper machine-db-replica-unlisten
-  <workspace>.<storage>.<instance>`, by root, closes the port and takes the
-  override away, making the database's container again).
+  nothing. **Close the port…**, on the instance's row of the Database tab,
+  closes it and takes the override away: the confirmation says that the
+  PostgreSQL of that instance is made again and the seconds it does not
+  answer (measured: 0.7 s), it is a job of the machine, and the customer
+  reads the restart in a job of its instance; the button is off, with why,
+  while a replica follows the database.
 - **On the machine that hosts it** the copy is a project of its own
   (`<storage>/.machine-db/replica-d<n>`), the hardened hot standby of a
   cluster's copy, on a port and a network of its own; its row is **Read
@@ -2168,8 +2171,38 @@ promoted as the cluster's, by the same code; what differs:
   backups go through the network from then, its recovery at a minute stops,
   its stagings stay where they are. The data of before stays on the
   workspace's disk until **Free the space of before…**, in the instance's
-  page. **The return is not built** for a dedicated database: the promoted
-  copy is dropped only once the instance is removed on its machine.
+  page. The promoted copy is dropped only once the instance is removed on
+  its machine.
+- **The return**: after the promotion the instance keeps its own row in the
+  Database tab of its machine, which says *Replaced by the replica on
+  \<machine\> on …* (it is no longer in the line *Not here*), with **Prepare
+  the return…**, then **Complete the return…** (the name of the other
+  machine typed; off until the return was in sync, and while that machine
+  does not answer) and **Cancel the return…**, as for the cluster. The
+  promoted copy lets the instance's machine in for the replication over
+  TLS; that machine sets the data the instance had aside (or says that it
+  was freed already), copies the promoted copy **on the instance's own data
+  folder, on its workspace's disk**, and follows it read only in **a
+  project of its own** beside the instance's (`.replica/return` in the
+  instance's project: no port, the slice of the workspace, a network that
+  goes out to the promoted copy's port only), which no command of the
+  instance reaches: the instance keeps working on the other machine, and
+  nothing stops. To complete, the promoted copy is stopped first, the copy
+  here takes the writes only once it applied the last record that copy
+  wrote (within 60 s: else that copy runs again and the instance stays
+  there), the project it came back in is stopped clean and taken away, and
+  the instance is written again as one with a database of its own (the
+  `compose.yaml` it had before the promotion) and started: Odoo and its
+  database, once (measured: about 10 s without Odoo; no other instance
+  restarts). Its database listens as before the promotion, for no other
+  machine: **Make the replica again…**, on the row of the stopped copy,
+  restarts nothing, and **Close the port…** closes it. The data set aside is
+  deleted when the return is complete, and goes back to its place when it is
+  cancelled (from either machine); **Free the space of before…** is not
+  offered under a return. The recovery at a minute, which the promotion
+  switched off, is switched on again from the instance's Backups tab. The
+  customer reads nothing during the return, and one job of its instance at
+  its end, which names no machine.
 
 ### Modules from the OCA catalog
 

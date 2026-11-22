@@ -1178,7 +1178,7 @@ def firewall_state() -> dict:
     return found
 
 
-BRIDGE = re.compile(r"omni(?:db|rp)\d{1,3}")
+BRIDGE = re.compile(r"omni(?:db|rp|rt)\d{1,3}")
 # the port of this machine the dedicated database of an instance is published on for its copy on another
 # machine (UX-011 §D): its entry of the firewall's state, {"from": [addresses], "subnet": its project's network}
 PUBLISHED = re.compile(r"port([1-9]\d{3,4})")

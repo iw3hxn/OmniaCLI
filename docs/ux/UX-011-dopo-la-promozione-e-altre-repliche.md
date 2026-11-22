@@ -287,11 +287,8 @@ Costruita la parte D. I numeri sono nell'ADR (AD-004, opzione A, «La replica di
 non è costruita.
 
 ### Differenze dal contratto
-- **Il ritorno non è costruito.** Il dialogo «Promuovi…» non dice «Si torna con Prepara il ritorno…»: dice «Il
-  ritorno non è ancora offerto per un database dedicato.» Su P non c'è «Prepara il ritorno…».
-- **Dopo la promozione** l'istanza non ha più una riga sua nella scheda Database di P: è nella frase «Non qui:
-  acme-tmp usa il database su lab3 (172.30.0.13:15433), la replica promossa; si regola là.», come le istanze del
-  cluster dopo una promozione. La pagina dell'istanza dice «sulla replica promossa su lab3 (172.30.0.13) · dal …».
+- **Il ritorno** e la riga dell'istanza dopo la promozione sono costruiti dopo: vedi «Dopo la verifica del ritorno
+  di un dedicato», in fondo. La pagina dell'istanza dice «sulla replica promossa su lab3 (172.30.0.13) · dal …».
 - **Promozione con P che non risponde: rifiutata prima del clic**, con «lab4 non risponde: la replica di acme-odoo
   si promuove solo con lab4 che risponde, perché acme-odoo gira là ed è lab4 a puntarla qui.»
 - **La copia promossa si elimina da R** solo dopo che l'istanza è stata rimossa su P: prima il pulsante è spento,
@@ -319,3 +316,61 @@ non è costruita.
    macchina. Eccezione, la stessa della parte B: l'esportazione del log degli accessi del workspace nomina chi ha
    agito sull'istanza. Nella prova è «link lab3», perché «Leggi dalla replica…» e «Libera lo spazio di prima…» sono
    stati cliccati attraverso il collegamento di lab3. Le note per il cliente hanno sorgente «system: the provider».
+
+## Dopo la verifica del ritorno di un dedicato (22/11/2026, lab4 = P, lab3 = R)
+
+Costruiti il ritorno dopo la promozione della replica di un database dedicato (§A, per un'istanza) e «Chiudi la
+porta…» per un dedicato. I numeri sono nell'ADR (AD-004, opzione A, «La replica di un database dedicato»).
+
+### Differenze dal contratto
+- **La riga dell'istanza su P** dice «Sostituito dalla replica su lab3 il …: fermo, i dati sono di quel momento»,
+  come chiede il contratto; l'istanza non è più nella frase «Non qui». Versione, dimensione e connessioni sono «–»:
+  il database non è su questa macchina. Il dettaglio dice dov'è, se i dati di prima sono ancora sul disco, e ha
+  «Prepara il ritorno…» e il link alla pagina dell'istanza. Non c'è «Togli il cluster…»: l'altra strada, quella per
+  non tornare, è già «Libera lo spazio di prima…», nella pagina dell'istanza.
+- **Dove torna.** Il contratto dice «come servizio `db` dell'istanza». Durante il ritorno il PostgreSQL che segue
+  la copia promossa gira sui dati dell'istanza ma in un progetto suo, accanto a quello dell'istanza: un riavvio o
+  un arresto dell'istanza non lo tocca. Diventa il servizio `db` dell'istanza a «Completa il ritorno…».
+- **Il dialogo «Prepara il ritorno…»** nomina l'istanza e il disco del workspace («Lì ci sono 27,29 GB liberi»).
+  Se i dati di prima erano già stati liberati, il punto 1 dice «non c'è niente da mettere da parte». Il rifiuto per
+  spazio nomina il disco del workspace.
+- **Il dialogo «Completa il ritorno…»** chiede il nome dell'altra macchina, come per il cluster (§A), non quello
+  dell'istanza. Dice «circa 10 s senza Odoo»: misurati 9,7 s.
+- **Dopo il ritorno** la riga dell'istanza torna normale, con «Tornato da lab3 il …: di nuovo il database di
+  acme-tmp, su questa macchina» finché la copia ferma esiste su R. Il database ascolta
+  ancora in TLS, per nessun indirizzo, come dopo «Elimina la replica…»: «Rifai la replica…» su R non riavvia niente.
+- **Stato in più**: se Completa ha preso le scritture ma non è riuscito a riscrivere l'istanza, la riga dice in
+  rosso «Tornato da lab3 il …, ma acme-tmp non è ancora su di lui» e «Completa il ritorno…» la riscrive.
+- **«Libera lo spazio di prima…»** non è offerto durante un ritorno: i dati di prima sono quelli messi da parte.
+- **Il ripristino a un minuto** non viene riacceso dal ritorno: il job lo dice, e il cliente lo legge nella nota.
+- **Il cliente** durante il ritorno non legge niente. Alla fine legge un job della sua istanza, «Il database di
+  acme-tmp è di nuovo su questa macchina», senza nomi. Dopo «Chiudi la porta…» legge che il suo PostgreSQL è stato
+  riavviato una volta.
+- **«Chiudi la porta…»** è sulla riga dell'istanza, non primario; è spento, con «La replica di lettura su lab3
+  segue questo database attraverso questa porta: elimina prima la replica.», finché una replica esiste. La conferma
+  dice «circa 5 s»: misurati 0,7 s.
+- **Un rifiuto dopo un dialogo** (per esempio «Cambia il tetto…» con 20) viene portato in vista: il messaggio sta
+  in fondo alla scheda.
+
+### Criteri (quelli di §A, per un'istanza)
+1. **Provato nei test**, non sulle macchine (lab4 ha già il collegamento verso lab3): senza collegamento il
+   rifiuto contiene «Aggiungi un server» e non parte niente.
+2. **Provato.** Il dialogo ha due dimensioni, «non si ferma niente» e «ms»; prima del clic le POST sono 0.
+3. **Provato.** La riga di lab4 dice «Ritorno da lab3: pronto · in pari 0 s» e quella di lab3 «Ritorno su lab4: in
+   pari · 0 s»; acme-tmp risponde 200 con `DB_HOST` verso lab3.
+4. **Provato.** Un valore scritto su lab3 si legge sulla copia di lab4 dopo 0,2-0,3 s.
+5. **Provato**, tranne «`disabled` prima del primo in pari» (nei test: la copia dura un secondo). Il dialogo vuole
+   «lab3»; con «acme-tmp» il pulsante resta spento. Un valore scritto un secondo prima del clic è su lab4; la copia
+   di lab3 è ferma; lab3 ha «Tornata a lab4 il …» e «Rifai la replica…», provato.
+6. **Provato.** Dopo «Annulla il ritorno…» i dati di prima hanno la stessa impronta (2015 file), lo stato torna
+   «Sostituito…» e lab3 non tiene più niente. Provato anche da lab3: lab4 cancella la sua copia dopo 7 s.
+7. **Provato nei test**: con l'altra macchina che non risponde Completa rifiuta e niente si ferma.
+8. **Provato.** Prepara, Completa, Annulla e Chiudi la porta sono nel log degli accessi; 0 parole vietate nel DOM.
+- **Attraverso un collegamento** (le pagine di lab4 lette dal pannello di lab3, mentre la copia è su lab3): «Elimina
+  la replica…», «Chiudi la porta…», «Prepara il ritorno…», «Annulla il ritorno…» e «Libera lo spazio di prima…».
+  Dal pannello di lab4: «Prepara il ritorno…» e «Completa il ritorno…». Dal pannello di lab3: la replica, la
+  promozione, «Rifai la replica…», «Annulla il ritorno…» sulla copia, «Elimina la replica…».
+- **Il cliente** (admin, developer, user del workspace), durante e dopo il ritorno: 0 volte il nome dell'altra
+  macchina, il suo indirizzo, le porte e i nomi interni nella pagina dell'istanza, nell'elenco delle istanze, nella
+  mappa, nei job della sua istanza; 403 sulle route del ritorno, della replica e di «Chiudi la porta…», e sui job
+  della macchina. Eccezione, la stessa di prima: l'esportazione del log degli accessi del workspace.
