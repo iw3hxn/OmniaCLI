@@ -11875,6 +11875,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return found[f"odoo-{major}"]
         return next((t for t in found.values() if modulecatalog.series_of(t.name, t.label) == f"{major}.0"), None)
 
+    def mcp_source(who: str) -> str:
+        """The source of a job an MCP call starts: a token by its name, as its workspace's users read it."""
+        return f"mcp: {who}" if who.startswith("link ") or who == "unknown" else f"mcp: token {who}"
+
     async def restore_new(who: str, role: str, scope: str, workspace: str = "", file: str = "",
                           backup_of: str = "", name: str = "", neutralize: bool = True, staging_of: str = "",
                           dry_run: bool = True, add_repositories_: bool = False, allow_missing: bool = False) -> dict:
@@ -12064,7 +12068,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
         if parent:
             made = await new_staging(staging_of, me, load=lambda job, prod, target: load(job, target),
-                                     title=f"Staging of {staging_of} from {file}", source=f"mcp: {who}")
+                                     title=f"Staging of {staging_of} from {file}", source=mcp_source(who))
             refused = refusal_text(made)
             if refused:
                 raise ActionRefused(refused)
@@ -12094,7 +12098,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             job.log(f"{server} is made from {file}" + (", neutralized" if neutralize else ""))
 
         job = jobs.submit(f"Create {server} from {file}", [f"{server}/production", f"{server}/test"],
-                          f"mcp: {who}", action, workspace=ws.name)
+                          mcp_source(who), action, workspace=ws.name)
         return {**report, "dry_run": False, "job": job.id, "server": server}
 
     # --- the caller's own password --------------------------------------

@@ -252,7 +252,12 @@ async def test_config_clone_rename_delete(client, env):
     assert list(settings.servers) == ["first", "srv2"]
     assert settings.servers_file.with_name("servers.yaml.bak").exists()
 
-    resp = await client.post("/api/servers/delete", headers=POST, json={"name": "srv2"})
+    # its auto update may have a job running right now (started above): the delete waits for it to end
+    for _ in range(100):
+        resp = await client.post("/api/servers/delete", headers=POST, json={"name": "srv2"})
+        if resp.status_code != 400 or "A job is running" not in resp.json().get("error", ""):
+            break
+        await asyncio.sleep(0.05)
     assert resp.status_code == 200 and list(load_servers(settings.servers_file)) == ["first"]
     # "first" got the same configuration but was saved as a draft
     assert len(client.app.state.updater._tasks) == 0

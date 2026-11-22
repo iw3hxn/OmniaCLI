@@ -220,7 +220,7 @@ async def test_dry_run_then_restore(restoring, client, env, tmp_path):
                       dry_run=False, add_repositories=True, allow_missing=True, wait_seconds=30)
     job = done["job"]
     assert job["status"] == "success", job
-    assert job["source"] == "mcp: boss" and job["result"]["server"] == "acme-acme-prod"
+    assert job["source"] == "mcp: token boss" and job["result"]["server"] == "acme-acme-prod"
     assert job["result"]["missing_modules"] == ["acme_private"] and job["result"]["modules_added_from"] == ["web"]
     assert restoring["cloned"] == [("acme-prod", "web", "https://github.com/OCA/web.git", "20.0")]
     assert restoring["restore"] == [("acme-acme-prod/production", ["dump.sql", "filestore/ab/abcdef", "manifest.json"],

@@ -62,7 +62,7 @@ async def test_monitor_and_update_test(client, env):
     assert log["lines"] == ["line 7", "line 8", "line 9"]
 
     job = await call(client, "update_test", server_name="srv", wait_seconds=30)
-    assert job["status"] == "success" and job["source"] == "mcp: tester", job
+    assert job["status"] == "success" and job["source"] == "mcp: token tester", job
     assert "restart odoo-test" in env["calls"].read_text()
     assert "restart odoo-production" not in env["calls"].read_text()
     assert (await call(client, "get_job", job_id=job["id"], tail=5))["id"] == job["id"]

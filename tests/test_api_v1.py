@@ -338,7 +338,7 @@ async def test_a_staging_made_and_mcp_idempotent(workspaces, client, env, monkey
     error_of(await client.post(f"{V1}/instances/nope/stagings", headers=DEVELOPER), 404, "not_found")
     from .test_mcp import call
     answer = await call(client, "create_staging", server_name="srv")
-    assert answer["server"] == "acme-odoo-stg-1" and calls[-1] == ("srv", "token tester", "mcp: tester")
+    assert answer["server"] == "acme-odoo-stg-1" and calls[-1] == ("srv", "token tester", "mcp: token tester")
     one = await call(client, "restart_instance", server_name="srv", role="test", idempotency_key="k-1")
     two = await call(client, "restart_instance", server_name="srv", role="test", idempotency_key="k-1")
     assert one["id"] == two["id"]

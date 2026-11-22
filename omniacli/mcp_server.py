@@ -220,6 +220,13 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         _, _, token = (ctx.headers or {}).get("authorization", "").partition(" ")
         return authenticator.token_name(token.strip()) or _WHO.get() or "unknown"
 
+    def source_of(ctx: Context) -> str:
+        """The source of a job an MCP call starts: "mcp: token <name>" for a token (its workspace's users
+        read its name, CustomerView.who), "mcp: link <name> (…)" for a link."""
+        _, _, token = (ctx.headers or {}).get("authorization", "").partition(" ")
+        name = authenticator.token_name(token.strip())
+        return f"mcp: token {name}" if name else f"mcp: {_WHO.get() or 'unknown'}"
+
     def role_of(ctx: Context) -> str:
         """The caller's role: its token's, or its link's capped by who acts."""
         _, _, token = (ctx.headers or {}).get("authorization", "").partition(" ")
@@ -425,7 +432,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         inst = instance(server_name, "test", ctx)
 
         async def run():
-            job = jobs.submit(f"Git pull and restart {inst.key}", [inst.key], f"mcp: {caller(ctx)}",
+            job = jobs.submit(f"Git pull and restart {inst.key}", [inst.key], source_of(ctx),
                               lambda job: ops.pull_restart(
                                   job, inst, backup_folder=settings.backup_dir / inst.server / inst.role))
             await _wait(job, wait_seconds)
@@ -463,7 +470,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
                           "download": f"/backups/{inst.server}/{inst.role}/{dest.name}"}
         flags = [k for k, v in chosen.items() if v is True]
         job = jobs.submit(f"Backup {inst.key}" + (f" ({', '.join(flags)})" if flags else ""), [inst.key],
-                          f"mcp: {caller(ctx)}", action)
+                          source_of(ctx), action)
         await _wait(job, wait_seconds)
         return _job_dict(job, tail=20)
 
@@ -673,7 +680,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
             return answer
 
     async def submit(ctx: Context, title: str, inst: Instance, action, wait_seconds: int) -> dict:
-        job = jobs.submit(title, [inst.key], f"mcp: {caller(ctx)}", action)
+        job = jobs.submit(title, [inst.key], source_of(ctx), action)
         await _wait(job, wait_seconds)
         return _job_dict(job, tail=30)
 
@@ -782,7 +789,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         instance(server_name, "production", ctx)
 
         async def run():
-            found = await api["staging"](server_name, as_principal(ctx), source=f"mcp: {caller(ctx)}")
+            found = await api["staging"](server_name, as_principal(ctx), source=source_of(ctx))
             if not isinstance(found, dict):
                 raise ToolError(_refusal(found))
             job = jobs.get(found["job"])
@@ -821,7 +828,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
             raise ToolError("This OmniaCLI goes back to no deploy through MCP")
 
         async def run():
-            found = await api["deploy_back"](inst, deploy_id, as_principal(ctx), pause, f"mcp: {caller(ctx)}")
+            found = await api["deploy_back"](inst, deploy_id, as_principal(ctx), pause, source_of(ctx))
             if not isinstance(found, Job):
                 raise ToolError(_refusal(found))
             await _wait(found, wait_seconds)
@@ -922,7 +929,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         job = jobs.get(job_id)
         if job is None or not job_seen(ctx, job):
             raise ToolError(f"No job {job_id}")
-        if not jobs.stop(job_id, f"mcp: {caller(ctx)}"):
+        if not jobs.stop(job_id, source_of(ctx)):
             raise ToolError(f"{job_id} is not running")
         return _job_dict(job)
 
