@@ -119,7 +119,7 @@ async def test_the_load_above_its_thresholds(watched):
     sampler.fill(cpu=95)
     await mon.check_load()
     [(subject, event)] = told
-    assert "[warning] CPU of the machine at 95% for 5 minutes" in subject
+    assert "[warning] CPU of the machine at 95% for 5 min" in subject
     assert (event["event"], event["level"], event["metric"], event["value"]) == ("machine.threshold", "warning", "cpu", 95)
     await mon.check_load()
     assert len(told) == 1
@@ -264,7 +264,7 @@ async def test_the_webhooks_of_options_and_the_jobs_that_fail(client, env, monke
 
 async def test_a_level_on_each_thing_to_look_at(client, env):
     mon = client.app.state.monitor
-    mon.machine["load cpu"] = {"problem": "CPU of the machine at 99% for 5 minutes (threshold 98%)", "level": "critical",
+    mon.machine["load cpu"] = {"problem": "CPU of the machine at 99% for 5 min (threshold 98%)", "level": "critical",
                                "since": "2026-11-22T10:00:00"}
     mon.machine["disk backups"] = {"problem": "/b: 5 GB free of 100 (95% in use)", "level": "warning"}
     data = (await client.get("/api/map?part=all", headers={"Authorization": AUTH})).json()

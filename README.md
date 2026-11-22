@@ -1913,7 +1913,7 @@ time; MCP's `diagnose_instance` too. The last day of checks is kept in
 **Automatic restart** (Options › Monitoring, off by default; for the whole
 machine, not per instance: one rule for every instance, which a stopped one
 does not trigger): an instance that has not answered for *After (checks in a
-row)* checks (5 by default, a check a minute) is restarted in a job of the
+row)* checks (5 by default, at least the 3 that make it down; a check a minute) is restarted in a job of the
 system, *Automatic restart of <instance>*, started by *system: monitor, no
 answer for N checks in a row (why)*, with a line in the access log. Never
 while another job works on it (the monitor does not even count then), never

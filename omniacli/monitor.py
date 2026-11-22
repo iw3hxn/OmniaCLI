@@ -299,7 +299,7 @@ class Monitor:
             mean = round(sum(values) / len(values))
             label = METRIC_LABELS[metric]
             if level is not None:
-                text = (f"{label} of the machine at {mean}% for {options.monitor_minutes} minutes "
+                text = (f"{label} of the machine at {mean}% for {options.monitor_minutes} min "
                         f"(threshold {limits[0] if level == 'warning' else limits[1]}%)")
                 rises = entry.get("level") != level and (entry.get("level") != "critical")
                 entry.update(problem=text, level=level, since=entry.get("since") or datetime.datetime.now().isoformat(
