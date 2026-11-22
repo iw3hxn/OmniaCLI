@@ -114,6 +114,9 @@ async def test_a_workspace_user_sees_its_servers_only(workspaces, client, env):
     assert "/config" not in page and "/users" not in page and 'href="/workspaces/acme"' in page
     page = (await client.get("/servers/srv?view=test", headers=basic("mario"))).text
     assert "/servers/srv/test/restart" in page and "/test/shell" not in page and "/test/psql" not in page
+    # the unit (or the compose folder) is the machine's: the kind only, as the paths box is the machine's admins'
+    assert "systemd: odoo-test" not in page and "odoo-test" not in page
+    assert "systemd: odoo-test" in (await client.get("/servers/srv?view=test", headers={"Authorization": AUTH})).text
     assert [s["name"] for s in (await client.get("/api/servers", headers=basic("mario"))).json()] == ["srv"]
     metrics = (await client.get("/api/metrics", headers=basic("mario"))).json()
     assert metrics["machine"] == [] and set(metrics["instances"]) == {"srv/production", "srv/test"}

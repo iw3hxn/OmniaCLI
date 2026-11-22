@@ -1065,7 +1065,9 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
       {% if rt == "process" %}
       <dt>{{ tr(inst.plugin.label) }}</dt><dd>{% if pid %}{{ _("started by OmniaCLI: running, pid") }} <span class="mono">{{ pid }}</span>{% else %}{{ _("started by OmniaCLI:") }} <span class="muted">{{ _("stopped") }}</span>{% endif %}</dd>
       {% else %}
-      <dt>{{ _("Service") }}</dt><dd class="mono">{{ rt }}: {{ inst.restart.service }}</dd>
+      {# the folder or the unit is the machine's: a user of workspaces reads the kind only, as the paths box is the
+         machine's admins' only #}
+      <dt>{{ _("Service") }}</dt><dd class="mono">{{ rt }}{% if not scoped %}: {{ inst.restart.service }}{% endif %}</dd>
       {% endif %}
       {% if inst.package %}
       {% set pkg = package_state[inst.key] %}
