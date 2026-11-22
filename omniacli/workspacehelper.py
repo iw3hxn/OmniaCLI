@@ -2038,7 +2038,9 @@ def web(name: str, storage: str, spec_json: str) -> dict:
         return made
     sites = _sites(mount, spec, instances)
     redirects, made["redirects_moved"] = _addresses(sites, spec)
-    redirects += _main_own_names(sites, spec, redirects)
+    # only where a record of it still leads somewhere: without one there is nothing to keep working,
+    # and a name out of DNS would be said at every publication as left out of the certificate
+    redirects += [r for r in _main_own_names(sites, spec, redirects) if _resolves(r["names"][0])]
     names = [n for site in sites for n in site["names"]]
     # the other names (aliases, redirects): after the workspace's, in the certificate too
     extra = [n for site in sites for n in site["aliases"]] + [n for r in redirects for n in r["names"]]

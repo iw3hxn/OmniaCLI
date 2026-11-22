@@ -15,7 +15,7 @@ import tempfile
 from pathlib import Path
 
 from . import config, ops, stacktemplates, templatestore, workspacehelper
-from .config import OMNIACLI_COMMAND, Workspace
+from .config import OMNIACLI_COMMAND, Workspace, environment_names, generated_names
 from .jobs import Job, JobFailed
 from .ops import capture, run
 
@@ -322,9 +322,23 @@ async def publish(job: Job, ws: Workspace) -> dict:
                 "then publish again): " + ", ".join(made["elsewhere"]))
     if made.get("certificate_error"):
         job.log(f"The certificate is not there yet: {made['certificate_error']}")
-    for warning in certificate_warnings(made):
+    for warning in certificate_warnings(made, opened_elsewhere(ws, made)):
         job.warn(warning)
     return made
+
+
+def opened_elsewhere(ws: Workspace, made: dict) -> set[str]:
+    """The workspace's names left out of the certificate whose environment
+    has another name that is in it: the environment is opened at that one
+    (config.opening_name), so the name left out is a line of the job's log,
+    not a warning of every publication (a staging's stg-<date>.<domain>
+    without a wildcard record, beside its automatic name)."""
+    left = set(made.get("without_dns") or []) | set(made.get("elsewhere") or [])
+    found = set()
+    for name, (instance, role) in generated_names(ws).items():
+        if name in left and any(n not in left for n in environment_names(ws, instance, role)):
+            found.add(name)
+    return found
 
 
 # what certbot says when the names do not lead to this machine's nginx
@@ -334,11 +348,13 @@ _DNS_REFUSALS = ("dns problem", "nxdomain", "no valid ip addresses", "unauthoriz
 _UNREACHED = ("challenges have failed", "failed to authenticate")
 
 
-def certificate_warnings(made: dict) -> list[str]:
+def certificate_warnings(made: dict, covered=()) -> list[str]:
     """The web helper's result said as the warnings of its job: the names
-    whose certificate did not come and why, one sentence each."""
-    left = list(made.get("without_dns") or []) + list(made.get("elsewhere") or [])
-    known = [n for n in made.get("names") or [] if n not in left]
+    whose certificate did not come and why, one sentence each. covered: the
+    names left out whose environment is opened at another name (opened_elsewhere): not said."""
+    out_of_it = list(made.get("without_dns") or []) + list(made.get("elsewhere") or [])
+    left = [n for n in out_of_it if n not in covered]
+    known = [n for n in made.get("names") or [] if n not in out_of_it]
     error = str(made.get("certificate_error") or "")
     out = []
     if error:

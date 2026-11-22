@@ -212,9 +212,8 @@ def test_helper_web_certificate_of_the_names_in_dns(web_root):
     made = workspacehelper.web("acme", storage, spec(subdomains={"www": "main"}))
     certbot = [c for c in state["commands"] if c[0].endswith("certbot")][0]
     assert [certbot[i + 1] for i, a in enumerate(certbot) if a == "-d"] == ["acme.it"]
-    # the main instance's own names of before (main.acme.it) follow, as redirects
-    assert made["without_dns"] == ["www.acme.it", "test.acme.it", "www.test.acme.it",
-                                   "main.acme.it", "main.test.acme.it"] and made["https"]
+    # the main instance's own names of before (main.acme.it) have no record: no redirect is kept for them
+    assert made["without_dns"] == ["www.acme.it", "test.acme.it", "www.test.acme.it"] and made["https"]
     state["dns"], state["commands"] = set(), []
     made = workspacehelper.web("acme", storage, spec())
     assert "in DNS yet" in made["certificate_error"] and not [c for c in state["commands"] if c[0].endswith("certbot")]

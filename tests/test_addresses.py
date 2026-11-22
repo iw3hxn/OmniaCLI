@@ -150,7 +150,9 @@ def test_helper_writes_the_other_names(web_root, monkeypatch):
     # no DNS record at all: out, as the workspace's names
     state["dns"], state["commands"] = {"acme.it", "test.acme.it"}, []
     made = workspacehelper.web("acme", storage, addresses_spec())
-    assert made["without_dns"] == ["www.customer.com", "customer.com", "main.acme.it", "main.test.acme.it"] and made["elsewhere"] == []
+    # the main instance's own names of before have no record any more: no redirect is kept for them, nothing is said
+    assert made["without_dns"] == ["www.customer.com", "customer.com"] and made["elsewhere"] == []
+    assert made["redirects"] == {"customer.com": "www.customer.com"}
 
 
 def test_helper_redirect_to_a_name_gone(web_root, monkeypatch):

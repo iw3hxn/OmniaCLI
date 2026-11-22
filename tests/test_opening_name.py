@@ -124,3 +124,17 @@ def test_no_name_is_an_address_when_none_came_out_with_https():
     # an environment the publication has not read yet keeps its first name
     apply_sites(servers, workspaces, {"acme": {"customer.com": {"dns": "here", "https": True}}})
     assert servers["acme-odoo-stg-20261121"].instances["production"].site == f"https://{own}"
+
+
+def test_a_name_left_out_is_no_warning_when_its_environment_opens_elsewhere():
+    from omniacli import workspaceops
+    _, workspaces = _fixture()
+    ws, own = workspaces["acme"], "stg-20261121.customer.com"
+    made = {"names": ["customer.com", own, AUTO], "https": True, "without_dns": [own], "elsewhere": []}
+    assert workspaceops.opened_elsewhere(ws, made) == {own}
+    assert workspaceops.certificate_warnings(made, {own}) == []
+    # with no other name in the certificate it is still said
+    alone = {"names": ["customer.com", own, AUTO], "https": True, "without_dns": [own, AUTO], "elsewhere": []}
+    assert workspaceops.opened_elsewhere(ws, alone) == set()
+    said = workspaceops.certificate_warnings(alone, set())
+    assert len(said) == 1 and own in said[0] and AUTO in said[0]
