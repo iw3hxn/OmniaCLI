@@ -922,6 +922,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         pitr_tasks.append(asyncio.get_running_loop().create_task(pitr_loop()))
         pitr_tasks.append(asyncio.get_running_loop().create_task(cluster_sweep()))
         pitr_tasks.append(asyncio.get_running_loop().create_task(names_that_open()))
+        pitr_tasks.append(asyncio.get_running_loop().create_task(interrupted_names_freed()))
         postgres_tasks.append(asyncio.get_running_loop().create_task(postgres_loop()))
         # defined further down, with the Database tab's code
         replica_tasks.append(asyncio.get_running_loop().create_task(replica_loop()))
@@ -4060,7 +4061,30 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if name not in ws.servers or name in settings.servers:
             return False
         last = next((j for j in reversed(jobs.jobs.values()) if name in j.servers), None)
-        return last is not None and last.status == INTERRUPTED and last.title.startswith(f"Create {name} ")
+        return last is not None and last.status == INTERRUPTED
+
+    INTERRUPTED_WAIT = float(os.environ.get("OMNIACLI_INTERRUPTED_WAIT", "5"))
+
+    async def interrupted_names_freed() -> None:
+        """At the start: the names a creation or a staging reserved in a
+        workspace when OmniaCLI was stopped under its job (no server, the
+        last job on them interrupted) leave the workspace, and what was made
+        of them goes, in a job of the system; before, such a name stayed in
+        the workspace's list for ever (a staging's name: nothing offered to
+        take it away)."""
+        await asyncio.sleep(INTERRUPTED_WAIT)
+        found = [(ws, name) for ws in list(settings.workspaces.values()) for name in ws.servers
+                 if left_by_interruption(ws, name) and ws.storage and name.startswith(f"{ws.name}-")]
+        if not found:
+            return None
+
+        async def action(job):
+            for ws, name in found:
+                job.log(f"--- {name}: its job was interrupted when OmniaCLI stopped; its name is free again")
+                await leftover_removed(job, ws, name[len(ws.name) + 1:])
+                await rename_in_workspaces(name, None)
+        return jobs.submit("Names left by jobs OmniaCLI was stopped under", [f"{n}/production" for _ws, n in found],
+                           "system: start", action, workspace=found[0][0].name)
 
     async def leftover_removed(job, ws: Workspace, instance: str) -> None:
         """What an interrupted creation left of an instance (its folder, its
@@ -15287,6 +15311,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     # the look at the read replicas, a round of it: what the loop runs (the tests call it)
     app.state.replica_look_own = replica_look_own
     app.state.replica_look_hosted = replica_look_hosted
+    app.state.interrupted_names_freed = interrupted_names_freed
     app.state.return_look = return_look
     app.state.moved_look = moved_look
     app.state.moved_seen = moved_seen

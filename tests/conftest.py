@@ -105,6 +105,8 @@ def login_path_passed(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def git_identity(monkeypatch, tmp_path):
+    # the start's look at the names interrupted jobs left: at once, so that a test sees it ended
+    monkeypatch.setenv("OMNIACLI_INTERRUPTED_WAIT", "0")
     monkeypatch.setenv("GIT_AUTHOR_NAME", "Test")
     monkeypatch.setenv("GIT_AUTHOR_EMAIL", "test@example.com")
     monkeypatch.setenv("GIT_COMMITTER_NAME", "Test")

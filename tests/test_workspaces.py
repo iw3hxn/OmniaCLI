@@ -599,6 +599,15 @@ async def test_create_and_remove_an_instance(workspaces, client, env, monkeypatc
     assert settings.workspaces["acme"].servers == ["srv", "acme-main", "acme-half"] and "acme-half" in settings.servers
     resp = await client.post(url + "delete", headers=post_as("mario"), json={"server": "acme-half"})
     assert (await wait_job(client, resp.json()["job"]))["status"] == "success"
+    # a staging's name reserved when OmniaCLI was stopped under its job: at the start it leaves the workspace
+    settings.workspaces["acme"].servers.append("acme-main-stg-20261122")
+    manager.jobs["cut2"] = Job(id="cut2", title="Staging acme-main-stg-20261122 of acme-main", status=INTERRUPTED,
+                               source="manual: mario", instances=["acme-main-stg-20261122/production"], workspace="acme")
+    ran.clear()
+    freed = await client.app.state.interrupted_names_freed()
+    assert freed is not None and (await wait_job(client, freed.id))["status"] == "success"
+    assert "acme-main-stg-20261122" not in settings.workspaces["acme"].servers
+    assert [c[-1] for c in ran] == ["main-stg-20261122"]
     removed.clear()
     published.clear()
     published.append(None)
