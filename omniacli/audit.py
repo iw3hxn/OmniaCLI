@@ -42,6 +42,7 @@ SENSITIVE_READS = {
     "/api/workspaces/{workspace}/audit/export": "access log of the workspace (export)",
     "/api/omniacli/log": "OmniaCLI's own log",
     "/credentials": "git credentials",
+    "/enterprise": "Odoo Enterprise access (its address, its SSH key)",
     "/x/odoo/servers/{server}/{role}/odoo-config": "Odoo configuration file",
 }
 

@@ -146,7 +146,8 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     <h1>{{ title }}
       {% if view == "test" %}<span class="badge test-badge" title="{{ _('The test copy of this instance: try the code here, then bring it to production') }}">Test</span>
       {% elif is_staging %}<span class="badge info" title="{{ _('A dated, neutralized copy of a production') if stagings.parent.backup else _('A copy of a production, made outside OmniaCLI') }}">{{ _("Staging") }}</span>
-      {% else %}<span class="badge ok" title="{{ _('The instance its users work on') }}">{{ _("Production") }}</span>{% endif %}</h1>
+      {% else %}<span class="badge ok" title="{{ _('The instance its users work on') }}">{{ _("Production") }}</span>{% endif %}
+      {% if enterprise and enterprise.on %}<span class="badge info" title="{{ _('Odoo Enterprise is in its addons (Settings tab)') }}">Enterprise</span>{% endif %}</h1>
     <div class="facts">
       {{ state_word("busy" if is_busy else st, state if rt != "process" else none, rt == "compose") }}
       <span>{{ tr(inst.plugin.label) }}</span>
@@ -981,6 +982,71 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
   </div>{% endif %}
 </section>
 {% endif %}
+{% if can_act and enterprise %}
+{# Odoo Enterprise (UX-012): on or off, the copy of this machine it reads; the switch for the machine's admins;
+   web_enterprise installed by its own button, never by the switch #}
+{% set ent = enterprise %}
+<section class="tab-panel panel" data-panel="settings" data-section="enterprise" hidden>
+  <div class="section-head"><h2>{{ _("Odoo Enterprise") }}</h2>
+    {% if ent.on %}<span class="badge ok" title="{{ _('The code of Odoo Enterprise is in the addons of this instance') }}">{{ _("On") }}</span>
+    {% else %}<span class="badge" title="{{ _('This instance runs Odoo Community') }}">{{ _("Off") }}</span>{% endif %}</div>
+  {% if ent.own %}
+  <p>{% if ent.on %}{{ _("Its addons_path has Odoo Enterprise already") }}{% if ent.folder %} (<span class="mono">{{ ent.folder }}</span>){% endif %}.
+     {% else %}{{ _("Its addons_path has no Odoo Enterprise.") }}{% endif %}
+     {{ _("This Odoo was on the machine before OmniaCLI: its code and its addons_path are not OmniaCLI's, so there is no switch here. Odoo Enterprise is added or taken away in its own configuration.") }}</p>
+  {% else %}
+  <p id="ent-state">{% if ent.on %}{{ _("Odoo Enterprise {series} is first in its addons path, read only, from the copy of this machine.", series=ent.series) }}
+     {% else %}{{ _("This instance runs Odoo Community.") }}{% endif %}
+     {% if ent.here %}{{ _("The copy of {series} here: {modules} modules, commit {commit}, fetched on", series=ent.series, modules=ent.here.modules, commit=(ent.here.commit or "?")[:10]) }} {{ when(ent.here.fetched) }}.
+     {% elif ent.series %}{{ _("This machine has no copy of {series} yet: switching on fetches it first.", series=ent.series) }}{% endif %}</p>
+  <p class="muted" style="font-size: 13px">{% if ent.on %}{{ _("Its database becomes Enterprise when web_enterprise is installed in it; Odoo then asks for the subscription code, which is the customer's. Switching off is refused while a module of Odoo Enterprise is installed: Odoo would not start without its code.") }}
+     {% else %}{{ _("Switching on mounts the code and restarts Odoo; no module is installed and the database stays Community until web_enterprise is installed in it (its own button, afterwards). The subscription code is the customer's.") }}{% endif %}</p>
+  {% if ent.can %}
+  <div class="actions" style="justify-content: flex-end">
+    {% if ent.on %}
+    <button type="button" id="ent-install" data-url="{{ ent.install }}" {{ off }}
+      title="{{ _('Installs web_enterprise in the database of this instance: from then on it is an Enterprise database, and Odoo asks for the customer\'s subscription code. A job.') }}">{{ _("Install web_enterprise") }}</button>
+    <button type="button" class="danger" id="ent-switch" data-url="{{ ent.url }}" data-on="0" {{ off }}
+      title="{{ _('Takes Odoo Enterprise out of the addons path and restarts Odoo. Refused while a module of Odoo Enterprise is installed in its database. A job.') }}">{{ _("Switch off…") }}</button>
+    {% else %}
+    <button type="button" id="ent-switch" data-url="{{ ent.url }}" data-on="1" {{ off }}
+      title="{{ _('Puts Odoo Enterprise {series} first in the addons path, read only, and restarts Odoo; nothing is installed in its database. A job.', series=ent.series) }}">{{ _("Switch on…") }}</button>
+    {% endif %}
+  </div>
+  {% elif ent.reason %}<p class="muted" style="font-size: 13px">{{ tr(ent.reason) }}</p>{% endif %}
+  {% endif %}
+</section>
+{% if ent.can %}
+<script>
+(function () {
+  const T = {on: {{ _("Switch Odoo Enterprise {series} on for {name}? Odoo restarts: who is connected loses the connection for a few seconds. Nothing is installed in its database.", series=ent.series, name=server.name) | tojson }},
+             off: {{ _("Switch Odoo Enterprise off for {name}? Odoo restarts and runs Community again.", name=server.name) | tojson }},
+             install: {{ _("Install web_enterprise in the database of {key}? The database becomes Enterprise: Odoo asks for the customer's subscription code.", key=inst.key) | tojson }},
+             onGo: {{ _("Switch on") | tojson }}, offGo: {{ _("Switch off") | tojson }}, installGo: {{ _("Install") | tojson }},
+             refused: {{ _("Refused") | tojson }}};
+  async function post(url, body) {
+    const resp = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
+                                   body: JSON.stringify(body)});
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || !data.job) { omniaSay(data.error || data.detail || T.refused); return; }
+    location.href = `{{ prefix }}/jobs/${data.job}`;
+  }
+  document.getElementById("ent-switch")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget, on = button.dataset.on === "1";
+    if (!await omniaAsk(on ? T.on : T.off, on ? T.onGo : T.offGo, {danger: !on})) return;
+    await post(button.dataset.url, {on});
+  });
+  document.getElementById("ent-install")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    if (!await omniaAsk(T.install, T.installGo)) return;
+    await post(button.dataset.url, {});
+  });
+})();
+</script>
+{% endif %}
+{% endif %}
+
+
 {# the technical details stay in Settings, after its options: how it runs, not its code #}
 <section class="tab-panel panel" data-panel="settings" data-section="technical" hidden>
   <details class="tech-details">

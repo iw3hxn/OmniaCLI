@@ -108,7 +108,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from . import machinedb
+from . import enterprise, machinedb
 from .machinedb import ENV, SERVICE, ClusterError
 
 # the role of the replication and its slot on the primary: internal names (a dot: no environment has one)
@@ -306,25 +306,40 @@ def dedicated_hba(subnet: str, replicated: dict | None = None) -> str:
     return "\n".join(lines) + "\n"
 
 
-def override_text(reads: str | None, listen: dict | None) -> str:
+def override_text(reads: str | None, listen: dict | None, odoo_enterprise: dict | None = None) -> str:
     """compose.override.yaml of an instance's project, OmniaCLI's: reads, the
     Odoo service that reads from a replica (the CA its certificate is
     verified against, for libpq); listen ({"port"}), the dedicated database
     published on a port of this machine over TLS for its copy on another
-    machine. "" with neither: no file."""
-    if not reads and not listen:
+    machine; odoo_enterprise ({series, service}: enterprise.of_project), the
+    Odoo service that mounts root's copy of Odoo Enterprise read only
+    (UX-012). "" with none: no file."""
+    if not reads and not listen and not odoo_enterprise:
         return ""
-    text = (f"{OVERRIDE_MARK}-read: this instance reads from the\n"
-            "# read replica of the machine's cluster, on another machine. The CA the replica's certificate is\n"
-            "# verified against, for libpq (the cluster itself is reached by its socket, where TLS is not used)\n"
-            if not listen else
-            f"{OVERRIDE_MARK}: the dedicated database of this instance has a read\n"
-            "# replica on another machine (UX-011 D). It listens over TLS on a port of this machine, which the\n"
-            "# firewall lets the machine of the replica reach, with a pg_hba.conf that lets that one address in\n"
-            "# for the replication; an Odoo that reads from the replica verifies both certificates\n")
+    if listen:
+        text = (f"{OVERRIDE_MARK}: the dedicated database of this instance has a read\n"
+                "# replica on another machine (UX-011 D). It listens over TLS on a port of this machine, which the\n"
+                "# firewall lets the machine of the replica reach, with a pg_hba.conf that lets that one address in\n"
+                "# for the replication; an Odoo that reads from the replica verifies both certificates\n")
+    elif reads:
+        text = (f"{OVERRIDE_MARK}-read: this instance reads from the\n"
+                "# read replica of the machine's cluster, on another machine. The CA the replica's certificate is\n"
+                "# verified against, for libpq (the cluster itself is reached by its socket, where TLS is not used)\n")
+    else:
+        text = f"{OVERRIDE_MARK}: Odoo Enterprise (UX-012)\n"
+    volumes = ""
+    if odoo_enterprise:
+        series = odoo_enterprise["series"]
+        text += (f"# Odoo Enterprise {series}: root's copy of the code, read only, first in the addons path of\n"
+                 "# its odoo.conf; shared by the Enterprise instances of this version on this machine\n")
+        volumes = f"    volumes:\n      - \"{enterprise.ROOT / series}:{enterprise.MOUNT}:ro\"\n"
     text += "services:\n"
     if reads:
         text += f"  {reads}:\n    environment:\n      PGSSLROOTCERT: /etc/odoo/db-replica-ca.pem\n"
+        if odoo_enterprise and odoo_enterprise["service"] == reads:
+            text += volumes
+    if odoo_enterprise and odoo_enterprise["service"] != reads:
+        text += f"  {odoo_enterprise['service']}:\n" + volumes
     if listen:
         conf = DEDICATED_CONF
         text += (f"  {DEDICATED_SERVICE}:\n    ports:\n      - \"0.0.0.0:{int(listen['port'])}:{machinedb.PORT_IN_DB}\"\n"
@@ -333,6 +348,19 @@ def override_text(reads: str | None, listen: dict | None) -> str:
                  f"              \"-c\", \"ssl_min_protocol_version=TLSv1.2\"]\n"
                  f"    volumes:\n      - ./{machinedb.DEDICATED_FOLDER}/conf:{conf}:ro\n")
     return text
+
+
+def override_listen(project: Path) -> dict | None:
+    """{"port"} of the dedicated database OmniaCLI's override of a project
+    publishes for its copy on another machine, None when it publishes none."""
+    try:
+        text = (project / OVERRIDE).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    if not text.startswith(OVERRIDE_MARK):
+        raise ClusterError(f"{project / OVERRIDE} is not OmniaCLI's: it is not written over")
+    found = re.search(rf'(?m)^  {DEDICATED_SERVICE}:\n    ports:\n      - "0\.0\.0\.0:(\d+):', text)
+    return {"port": int(found.group(1))} if found else None
 
 
 def override_reads(project: Path) -> str | None:
@@ -350,7 +378,9 @@ def override_reads(project: Path) -> str | None:
 
 
 def write_override(project: Path, reads: str | None, listen: dict | None) -> None:
-    text = override_text(reads, listen)
+    """The override written again with reads and listen, and Odoo Enterprise
+    as the instance's record says (UX-012): never lost by a replica's change."""
+    text = override_text(reads, listen, enterprise.of_project(project))
     if text:
         machinedb.write(project / OVERRIDE, text)
     else:

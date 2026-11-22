@@ -35,7 +35,7 @@ from urllib.parse import parse_qs, quote, urlsplit
 
 import httpx
 import jinja2
-from fastapi import Body, Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketException, status
+from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketException, status
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -43,7 +43,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
 from starlette.requests import ClientDisconnect, HTTPConnection
 
-from . import (backupcheck, backupchoices, checks, deployhooks, destinations, instancearchive, private, restoreroom, consumer, disks, gitcredentials, linkcopy, listgroups, ops, packages, plugins, pluginstore, puller, publisher,
+from . import (backupcheck, backupchoices, checks, deployhooks, destinations, enterprise, instancearchive, private, restoreroom, consumer, disks, gitcredentials, linkcopy, listgroups, ops, packages, plugins, pluginstore, puller, publisher,
                schedules, selflog, sqldump, sshlinks, shell, stacktemplates, templatestore, tunnel, workspacehelper, workspaceops)
 from .accesslog import REQUEST as AUDIT_REQUEST, AccessLog
 from . import audit, siem
@@ -1638,6 +1638,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 "repo_status": {i.key: s for i, s in zip(shown, statuses)},
                 "repo_urls": repo_urls,
                 "odoo_params": odoo_params, "param_role": param_role,
+                # Odoo Enterprise (UX-012): its switch in Settings, its badge in the head
+                "enterprise": await asyncio.to_thread(enterprise_line, request, srv, me),
                 "package_state": {i.key: packages.installed_state(i.package) for i in shown if i.package},
                 "auto_state": updater.state,
                 "busy": {i.key: jobs.is_busy(i.key) for i in srv.instances.values()},
@@ -1704,6 +1706,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 # the Instances of every machine (UX-008 §4.1): its Odoo, and
                 # whether its production backs up by itself (none for a staging)
                 "version": odoo_version(srv.name), "workspace": settings.workspace_of(srv.name) or "",
+                # Odoo Enterprise in its addons (UX-012): the badge of the lists
+                "enterprise": bool(enterprise_of(srv)),
                 "backup_schedule": backup_schedule_state(srv.production, request_language(request))
                 if srv.production is not None and srv.name not in known else None,
             }
@@ -1885,13 +1889,28 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     async def action_pull_restart(request: Request, server: str, role: str, user: Principal = Depends(developer)):
         instance = get_instance(server, role)
         only = await pull_choice(request, instance)
+        # Odoo Enterprise of an instance made from a template: its version fetched first (UX-012)
+        # by an admin of the machine only: the copy is shared by every Enterprise instance of the version here,
+        # other workspaces' too
+        on = enterprise_of(settings.servers[server])
+        on = on if on and not on["own"] else None
+        series = on["series"] if on and enterprise_admin(user) and enterprise_source()[0] is not None else ""
+
+        async def action(job):
+            if series:
+                await enterprise_fetch(job, series)
+            elif on:
+                job.log(f"--- Odoo Enterprise {on['series']} is not fetched: its copy is shared by every Enterprise "
+                        "instance of the version on this machine, an admin of the machine updates it")
+            await ops.pull_restart(job, instance, only=only, backup_folder=backup_folder(instance))
+
         return started(
             request,
             jobs.submit(
                 pull_title("Git pull and restart", instance, only),
-                [instance.key],
+                [instance.key, *([f"{ENTERPRISE_KEY}/{series}"] if series else [])],
                 f"manual: {user}",
-                lambda job: ops.pull_restart(job, instance, only=only, backup_folder=backup_folder(instance)),
+                action,
             )
         )
 
@@ -3456,6 +3475,324 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         ws = a_workspace(workspace)
         return await change_credentials(gitcredentials.scope_of("workspace", ws.name), payload, delete=True)
 
+    # --- Odoo Enterprise (docs/ux/UX-012) -----------------------------------
+    # Where its code comes from, once per machine (the machine's admins); one
+    # copy per version branch kept by root; a switch per instance made from a
+    # template. The token and the key never leave this machine's files.
+
+    enterprise_file = enterprise.file_of(settings.servers_file)
+    enterprise_folder = enterprise.folder_of(settings.servers_file)
+    enterprise_lock = asyncio.Lock()
+    # the jobs that fetch a version wait for each other: enterprise/<version>
+    ENTERPRISE_KEY = "enterprise"
+    ENTERPRISE_HELPER_TIMEOUT = 1800
+
+    def enterprise_source() -> tuple[enterprise.Source | None, str]:
+        """(the source saved or None, why it cannot be read)."""
+        try:
+            return enterprise.load(enterprise_file), ""
+        except enterprise.EnterpriseError as exc:
+            return None, str(exc)
+
+    def enterprise_users() -> dict[str, list[str]]:
+        """{version: the servers whose instance has Odoo Enterprise of it on}."""
+        found: dict[str, list[str]] = {}
+        for srv in settings.servers.values():
+            inst = srv.production or srv.test
+            if inst is not None and inst.restart.type == "compose" and workspace_of(srv.name) is not None:
+                on = enterprise.of_meta(instance_meta(inst))
+                if on:
+                    found.setdefault(on["series"], []).append(srv.name)
+        return found
+
+    def enterprise_of(srv) -> dict | None:
+        """{series, own, folder} when the server's Odoo has Enterprise in its
+        addons: OmniaCLI's switch (an instance made from a template), or an
+        addons_path of its own that holds web_enterprise (an Odoo that was
+        there already, read as it is); None when it has none."""
+        inst = srv.production or srv.test
+        if inst is None:
+            return None
+        if inst.restart.type == "compose":
+            on = enterprise.of_meta(instance_meta(inst)) if workspace_of(srv.name) is not None else None
+            return {"series": on["series"], "own": False, "folder": ""} if on else None
+        if inst.restart.type in ("process", "systemd") and getattr(inst.options, "odoo_config", None):
+            folder = enterprise.in_addons(enterprise.addons_of_conf(inst.options.odoo_config))
+            if folder is not None:
+                return {"series": "", "own": True, "folder": str(folder)}
+        return None
+
+    def enterprise_admin(me: Principal) -> bool:
+        """Who switches Odoo Enterprise and says where its code comes from: an
+        admin of the machine, as a person (here or through another panel), never
+        a workspace's admin (the code is reached with the machine's access, the
+        subscription is the customer's) nor a machine acting by itself."""
+        return machine_admin(me) and not a_machine(me)
+
+    async def enterprise_fetch(job, series: str) -> dict:
+        """The version branch fetched (shallow) into OmniaCLI's own working
+        copy, then copied by root into its folder the instances mount."""
+        source, why = enterprise_source()
+        if source is None:
+            raise JobFailed(why or "No source of Odoo Enterprise: set it on Settings › Odoo Enterprise")
+        options = enterprise.git_options(source, enterprise_folder)
+        target = enterprise.checkouts_of(settings.jobs_dir) / series
+        job.log(f"--- Odoo Enterprise {series}: the branch {series} of {source.url}, its last commit only")
+        if (target / ".git").is_dir():
+            await ops.run(job, ["git", *options, "-C", str(target), "remote", "set-url", "origin", source.url])
+            await ops.run(job, ["git", *options, "-C", str(target), "fetch", "--depth", "1", "--no-tags", "origin",
+                                f"+refs/heads/{series}:refs/remotes/origin/{series}"], timeout=enterprise.FETCH_TIMEOUT)
+            await ops.run(job, ["git", "-C", str(target), "reset", "--hard", "--quiet", f"origin/{series}"])
+            await ops.run(job, ["git", "-C", str(target), "clean", "-ffdxq"])
+        else:
+            if target.exists() or target.is_symlink():
+                workspaceops.remove_clone(target)
+            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            try:
+                await ops.run(job, ["git", *options, "clone", "--depth", "1", "--single-branch", "--no-tags",
+                                    "--branch", series, "--", source.url, str(target)], timeout=enterprise.FETCH_TIMEOUT)
+            except BaseException:
+                if target.exists():
+                    workspaceops.remove_clone(target)
+                raise
+        job.log(f"--- Odoo Enterprise {series}: root's copy, read only, that the instances mount")
+        found = await workspaceops._helper(job, "enterprise-sync", series, timeout=ENTERPRISE_HELPER_TIMEOUT)
+        job.log(f"Odoo Enterprise {series}: {found.get('modules')} modules at commit {str(found.get('commit'))[:10]} "
+                f"({found.get('added')} files added, {found.get('changed')} changed, {found.get('removed')} removed)")
+        return found
+
+    @app.get("/enterprise", dependencies=[Depends(admin)])
+    async def enterprise_page(request: Request, me: Principal = Depends(current_user)):
+        """Settings › Odoo Enterprise: where the code comes from, the copies
+        of each version and the instances that use them."""
+        if not enterprise_admin(me):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "An admin of the machine is required")
+        source, error = enterprise_source()
+        users = await asyncio.to_thread(enterprise_users)
+        copies = [{**found, "users": users.get(series, [])}
+                  for series, found in (await asyncio.to_thread(enterprise.states)).items()]
+        return _TEMPLATES.TemplateResponse(request, "enterprise.html", {
+            "source": source.public() if source else None, "error": error, "default_url": enterprise.DEFAULT_URL,
+            "public_key": enterprise.public_key(enterprise_folder), "file": enterprise_file,
+            "copies": copies, "root": enterprise.ROOT, "helpers": bool(settings.storage_roots)})
+
+    def enterprise_given(payload: dict) -> enterprise.Source:
+        """The source of the form: a token left empty keeps the one saved for the same address kind."""
+        saved, _ = enterprise_source()
+        url = str(payload.get("url") or "").strip()
+        token = str(payload.get("token") or "")
+        if not token and saved is not None and saved.token and enterprise.kind_of(url) == "https":
+            token = saved.token
+        return enterprise.check(url, str(payload.get("username") or "").strip(), token)
+
+    @app.post("/api/enterprise/save", dependencies=[Depends(admin)])
+    async def enterprise_save(payload: dict = Body(...), me: Principal = Depends(current_user)):
+        if not enterprise_admin(me):
+            return refuse("An admin of the machine is required", status.HTTP_403_FORBIDDEN)
+        async with enterprise_lock:
+            try:
+                source = enterprise_given(payload)
+                await asyncio.to_thread(enterprise.save, enterprise_file, source)
+            except enterprise.EnterpriseError as exc:
+                return refuse(str(exc))
+            except OSError as exc:
+                return refuse(f"Cannot write {enterprise_file}: {exc}", 500)
+        return {"ok": True, "source": source.public()}
+
+    @app.post("/api/enterprise/key", dependencies=[Depends(admin)])
+    async def enterprise_key(me: Principal = Depends(current_user)):
+        """The SSH key of Odoo Enterprise, made the first time: its public half."""
+        if not enterprise_admin(me):
+            return refuse("An admin of the machine is required", status.HTTP_403_FORBIDDEN)
+        try:
+            public = await sshlinks.ensure_key(enterprise_folder, enterprise.KEY_NAME)
+        except (sshlinks.SshError, OSError) as exc:
+            return refuse(str(exc), 500)
+        return {"ok": True, "public_key": public}
+
+    @app.post("/api/enterprise/test", dependencies=[Depends(admin)])
+    async def enterprise_test(payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """git ls-remote of the address of the form: the version branches it has."""
+        if not enterprise_admin(me):
+            return refuse("An admin of the machine is required", status.HTTP_403_FORBIDDEN)
+        try:
+            source = enterprise_given(payload)
+        except enterprise.EnterpriseError as exc:
+            return refuse(str(exc))
+        if source.kind == "ssh" and enterprise.public_key(enterprise_folder) is None:
+            return refuse("No SSH key yet: make it with «Make the key», add its public half to the GitHub account, "
+                          "then test")
+        options = await asyncio.to_thread(enterprise.git_options, source, enterprise_folder)
+        code, out = await ops.capture(["git", *options, "ls-remote", "--heads", "--", source.url],
+                                      timeout=enterprise.GIT_TIMEOUT)
+        if code:
+            return refuse(f"{source.url} cannot be read: {enterprise.last_line(out) or code}")
+        heads = enterprise.parse_heads(out)
+        return {"ok": True, "versions": enterprise.series_of(heads), "branches": len(heads)}
+
+    @app.post("/api/enterprise/update", dependencies=[Depends(admin)])
+    async def enterprise_update(payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """A version fetched again (or for the first time): a job. The
+        Enterprise instances of that version run the new code from their next
+        restart; their modules are updated by their own Update."""
+        if not enterprise_admin(me):
+            return refuse("An admin of the machine is required", status.HTTP_403_FORBIDDEN)
+        series = str(payload.get("series") or "")
+        if not enterprise.SERIES.fullmatch(series):
+            return refuse(f"{series!r} is not a version of Odoo (19.0)")
+        source, why = enterprise_source()
+        if source is None:
+            return refuse(why or "No source of Odoo Enterprise: set it on Settings › Odoo Enterprise")
+
+        async def action(job):
+            found = await enterprise_fetch(job, series)
+            users = enterprise_users().get(series, [])
+            if users:
+                job.log(f"The Enterprise instances of {series} ({', '.join(users)}) run the new code from their next "
+                        "restart; Update on each one updates its changed modules")
+            job.result = {"series": series, "commit": found.get("commit"), "modules": found.get("modules")}
+
+        job = jobs.submit(f"Fetch Odoo Enterprise {series}", [f"{ENTERPRISE_KEY}/{series}"], f"manual: {me}", action)
+        return {"job": job.id}
+
+    def enterprise_line(request: Request, srv, me: Principal) -> dict | None:
+        """The Odoo Enterprise row of an instance's Settings tab: on or off,
+        its version, its copy here, whether me may switch it and why not."""
+        inst = srv.production or srv.test
+        if inst is None or inst.plugin is None or srv.type not in ("odoo", "docker"):
+            return None
+        made = workspace_of(srv.name)
+        if made is None:
+            found = enterprise_of(srv)
+            return {"own": True, "on": bool(found), "folder": found["folder"] if found and machine_admin(me) else "",
+                    "can": False}
+        meta = instance_meta(inst)
+        series = enterprise.series_of_template(str(meta.get("template") or ""))
+        on = enterprise.of_meta(meta)
+        row = {"own": False, "on": bool(on), "series": (on or {}).get("series") or series or "",
+               "here": enterprise.state(series) if series else None, "can": False, "reason": "",
+               "url": f"{prefix_of(request)}/api/servers/{srv.name}/enterprise",
+               "install": f"{prefix_of(request)}/api/servers/{srv.name}/{inst.role}/enterprise/install"}
+        source, _ = enterprise_source()
+        if series is None:
+            row["reason"] = f"Its template {meta.get('template') or '?'} names no version of Odoo"
+        elif not enterprise_admin(me):
+            row["reason"] = "An admin of the machine switches it: the code is reached with the machine's access"
+        elif not on and row["here"] is None and source is None:
+            row["reason"] = "Say first where its code comes from: Settings › Odoo Enterprise"
+        else:
+            row["can"] = True
+        return row
+
+    async def enterprise_installed(inst, series: str) -> list[str]:
+        """The modules of Odoo Enterprise of series installed in the instance's
+        database (JobFailed when it does not answer)."""
+        names = set(enterprise.modules_in(enterprise.ROOT / series))
+        known = await inst.plugin.known_modules(inst)
+        return sorted(m for m, state in known.items() if m in names and state in enterprise.INSTALLED_STATES)
+
+    async def enterprise_refusal(srv, series: str) -> str | None:
+        """Why Odoo Enterprise may not be switched off: a module of it is
+        installed in a database of the server, or a database does not say."""
+        for inst in (srv.production, srv.test):
+            if inst is None:
+                continue
+            try:
+                found = await enterprise_installed(inst, series)
+            except JobFailed as exc:
+                return (f"The database {inst.options.database} of {inst.key} does not say which modules it has "
+                        f"installed ({exc}): start it, then switch Odoo Enterprise off")
+            if found:
+                return (f"Modules of Odoo Enterprise are installed in the database "
+                        f"{inst.options.database} of {inst.key} ({', '.join(found[:8])}{'…' if len(found) > 8 else ''}): "
+                        "Odoo would not start without their code. Uninstall them in Odoo (Apps), then switch it off")
+        return None
+
+    @app.post("/api/servers/{server}/enterprise", dependencies=[Depends(admin)])
+    async def enterprise_switch(request: Request, server: str, payload: dict = Body(...),
+                                me: Principal = Depends(current_user)):
+        """Odoo Enterprise on or off for an instance made from a template: a
+        job, which fetches its version first when this machine has no copy of
+        it, writes the instance's files (root's helper) and restarts its Odoo.
+        No module is installed: web_enterprise is installed by its own button."""
+        if not enterprise_admin(me):
+            return refuse("An admin of the machine switches Odoo Enterprise", status.HTTP_403_FORBIDDEN)
+        srv = settings.servers.get(server)
+        if srv is None:
+            return refuse(f"No server {server}", status.HTTP_404_NOT_FOUND)
+        made = workspace_of(server)
+        if made is None:
+            return refuse(f"{server} was not made from a template: its code is not OmniaCLI's, and neither is its "
+                          "addons_path. Odoo Enterprise is added there by hand")
+        ws, instance = made
+        inst = srv.production or srv.test
+        meta = instance_meta(inst)
+        series = enterprise.series_of_template(str(meta.get("template") or ""))
+        if series is None:
+            return refuse(f"Its template {meta.get('template') or '?'} names no version of Odoo")
+        on = payload.get("on") is True
+        now = enterprise.of_meta(meta)
+        if on == bool(now):
+            return refuse(f"Odoo Enterprise is on for {server} already" if on else f"Odoo Enterprise is off for {server} already")
+        if on and enterprise.state(series) is None and enterprise_source()[0] is None:
+            return refuse("Say first where its code comes from: Settings › Odoo Enterprise")
+        if not on:
+            why = await enterprise_refusal(srv, series)
+            if why:
+                return refuse(why, status.HTTP_409_CONFLICT)
+        roles = [r for r in ROLES if getattr(srv, r) is not None]
+
+        async def action(job):
+            if on and enterprise.state(series) is None:
+                job.log(f"--- this machine has no copy of Odoo Enterprise {series} yet: it is fetched first")
+                await enterprise_fetch(job, series)
+            if not on:
+                why = await enterprise_refusal(srv, series)
+                if why:
+                    raise JobFailed(why)
+            job.log(f"--- Odoo Enterprise {series} first in the addons path of {server}" if on
+                    else f"--- Odoo Enterprise {series} out of the addons path of {server}")
+            await workspaceops._helper(job, "enterprise", ws.name, ws.storage, instance, "on" if on else "off")
+            for role in roles:
+                await ops.restart(job, getattr(srv, role))
+            if on:
+                job.log(f"Odoo Enterprise {series} is in the addons of {server}. Its database is still Community "
+                        "until web_enterprise is installed (the instance's Settings tab, Install web_enterprise, or "
+                        "Odoo's Apps); the subscription code is the customer's, asked by Odoo after")
+            else:
+                job.log(f"{server} runs Odoo Community again")
+            job.result = {"server": server, "enterprise": on, "series": series}
+
+        job = jobs.submit(f"Switch Odoo Enterprise on for {server}" if on else f"Switch Odoo Enterprise off for {server}",
+                          [*(f"{server}/{r}" for r in roles), f"{ENTERPRISE_KEY}/{series}"], f"manual: {me}", action,
+                          workspace=ws.name)
+        return {"job": job.id}
+
+    @app.post("/api/servers/{server}/{role}/enterprise/install", dependencies=[Depends(admin)])
+    async def enterprise_install(server: str, role: str, me: Principal = Depends(current_user)):
+        """web_enterprise installed in the role's database: what makes a
+        database Enterprise (Odoo then asks for the customer's subscription).
+        A job, asked on purpose: switching Odoo Enterprise on installs nothing."""
+        if not enterprise_admin(me):
+            return refuse("An admin of the machine installs web_enterprise", status.HTTP_403_FORBIDDEN)
+        inst = get_instance(server, role)
+        on = enterprise.of_meta(instance_meta(inst)) if workspace_of(server) is not None else None
+        if not on:
+            return refuse(f"Odoo Enterprise is off on {server}: switch it on first")
+        if enterprise.SIGN not in enterprise.modules_in(enterprise.ROOT / on["series"]):
+            return refuse(f"The copy of Odoo Enterprise {on['series']} on this machine has no {enterprise.SIGN}")
+
+        async def action(job):
+            await inst.plugin.install_modules(job, inst, [enterprise.SIGN])
+            job.log(f"{enterprise.SIGN} is installed in {inst.options.database}: Odoo asks for the subscription "
+                    "code of the customer at the next login of an administrator")
+
+        job = jobs.submit(f"Install {enterprise.SIGN} on {inst.key}", [inst.key], f"manual: {me}", action,
+                          workspace=workspace_of(server)[0].name)
+        return {"job": job.id}
+
+
+
     @app.get("/workspaces", dependencies=[Depends(admin)])
     async def workspaces_page(request: Request):
         """The customers' workspaces (users of the machine only)."""
@@ -4374,18 +4711,29 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return new_instance, name
 
     def staging_job(ws_name: str, new_instance: str, template, fill, record: dict, title: str,
-                    keys: list[str], me: Principal, now: datetime.datetime, not_made=None, source: str = ""):
+                    keys: list[str], me: Principal, now: datetime.datetime, not_made=None, source: str = "",
+                    odoo_enterprise: str = ""):
         """The job of a staging whose name reserve_staging took: the instance
-        made from template, its mail caught (UX-008 §5.3), fill(job, its
-        production) loading it (what it returns goes in its record), its test
-        stopped, recorded (stagings.py) with record. not_made() runs when
-        the instance could not be made."""
+        made from template, its mail caught (UX-008 §5.3), Odoo Enterprise of
+        that version on when its production has it (UX-012: its copy follows),
+        fill(job, its production) loading it (what it returns goes in its
+        record), its test stopped, recorded (stagings.py) with record.
+        not_made() runs when the instance could not be made."""
         name = workspaceops.server_name(settings.workspaces[ws_name], new_instance)
 
         async def action(job):
             try:
+                if odoo_enterprise:
+                    job.log(f"--- its production is Odoo Enterprise {odoo_enterprise}: so is the staging")
+                    if enterprise.state(odoo_enterprise) is None:
+                        if enterprise_source()[0] is None:
+                            raise JobFailed(f"The production is Odoo Enterprise {odoo_enterprise}, and this machine "
+                                            "has neither a copy of it nor its source: set it on Settings › Odoo "
+                                            "Enterprise")
+                        await enterprise_fetch(job, odoo_enterprise)
                 made = await make_instance(job, settings.workspaces[ws_name], new_instance, template,
-                                           {workspacehelper.MAIL_KEY: True})
+                                           {workspacehelper.MAIL_KEY: True,
+                                            **({enterprise.CREATE_KEY: odoo_enterprise} if odoo_enterprise else {})})
             except BaseException:
                 if not_made is not None:
                     not_made()
@@ -4584,8 +4932,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         async def fill(job, target) -> dict:
             return await (load or backup_and_restore)(job, settings.servers[server].production, target)
 
+        on = enterprise_of(settings.servers[server])
         job = staging_job(ws.name, new_instance, template, fill, {"parent": server, **(extra or {})},
-                          title or f"Staging {name} of {server}", [f"{server}/production"], me, now, source=source)
+                          title or f"Staging {name} of {server}", [f"{server}/production"], me, now, source=source,
+                          odoo_enterprise=on["series"] if on and not on["own"] else "")
         return {"job": job.id, "server": name}
 
     async def staging_elsewhere(request: Request, server: str, machine: str, workspace: str, me: Principal):
@@ -4625,8 +4975,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if target_ws is None:
             return refuse(f"No workspace {chosen} on {machine} with room for the staging")
         headers = link_headers(link, me.name, me.role)
+        on = enterprise_of(settings.servers[server])
         params = {"template": template.name, "instance": instance, "parent": server, "machine": here_name(),
-                  "workspace": chosen, "label": ws.label}
+                  "workspace": chosen, "label": ws.label,
+                  # Odoo Enterprise of the production: the staging there is too (UX-012)
+                  **({"enterprise": on["series"]} if on and not on["own"] else {})}
 
         async def action(job):
             progress = job.result["progress"] = {
@@ -4659,6 +5012,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     @app.post("/api/stagings/receive", dependencies=[Depends(admin)])
     async def staging_receive(request: Request, template: str = "", instance: str = "", parent: str = "",
                               machine: str = "", workspace: str = "", label: str = "", file: str = "",
+                              enterprise_series: str = Query("", alias="enterprise"),
                               me: Principal = Depends(current_user)):
         """A staging of a production of another machine, sent by it through
         its link (staging_elsewhere there): the backup zip is the raw body,
@@ -4674,6 +5028,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 and _STAGING_PARENT.fullmatch(parent) and _STAGING_PARENT.fullmatch(machine)
                 and linkcopy.BACKUP_NAME.fullmatch(file)):
             return refuse("A staging is sent with its template, instance, parent, machine, workspace and file")
+        if enterprise_series and enterprise.series_of_template(tpl.name) != enterprise_series:
+            return refuse(f"The production is Odoo Enterprise {enterprise_series}: the template {tpl.name} is another "
+                          "version")
         if not settings.storage_roots:
             return refuse(f"No storage for workspaces on this machine: {workspaceops.HELPERS_HINT}")
         if workspaceops.docker_missing():
@@ -4727,7 +5084,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         job = staging_job(workspace, new_instance, tpl, fill, {"parent": parent, "machine": machine},
                           f"Staging {name} of {parent} on {machine}", [], me, now,
                           # no instance made: its backup goes too
-                          not_made=lambda: dest.unlink(missing_ok=True))
+                          not_made=lambda: dest.unlink(missing_ok=True), odoo_enterprise=enterprise_series)
         access_log.record("action", me.kind, me.name, request.client.host if request.client else "",
                           f"staging {name} of {parent} on {machine} received")
         return {"job": job.id, "server": name}
@@ -8262,6 +8619,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                   ("/credentials", t("Git credentials"), t("The git credentials of the servers and workspaces"), admin_here)),
             group(t("System"),
                   ("/plugins", t("Plugins"), t("What OmniaCLI knows how to run, besides Odoo"), admin_here),
+                  ("/enterprise", t("Odoo Enterprise"), t("Where the code of Odoo Enterprise comes from, and its copy of each version"), admin_here and not me.workspaces),
                   ("/options", t("Options"), t("Consoles, tunnels and the other options of this OmniaCLI"), admin_here),
                   ("/help", t("Help"), t("How OmniaCLI works, section by section"), True)),
         ]

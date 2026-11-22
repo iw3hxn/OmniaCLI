@@ -1044,6 +1044,69 @@ container that mounts it never reads it). The credentials are kept in
 `credentials/`, readable by OmniaCLI's user only; a token is never shown
 again (changing a credential with the token left empty keeps it).
 
+### Odoo Enterprise
+
+The instances made from a template (Workspaces, below) run the community image;
+**Odoo Enterprise** is added to them with a switch (docs/ux/UX-012).
+
+**Where its code comes from**, once per machine: **Settings › Odoo Enterprise**
+(`/enterprise`, the machine's admins) takes the git address of the enterprise
+repository (`git@github.com:odoo/enterprise.git` by default) and how it is
+reached:
+
+- an ssh address (`git@…:…`, `ssh://…`): **Make the key** makes an SSH key of
+  its own (`enterprise/id_ed25519_enterprise` next to the servers file, 0600 in
+  0700) and shows its public half, to add to the SSH keys of a GitHub account
+  that can read the repository (a deploy key is added only by who administers
+  the repository). The key reads everything that account reads: an account of
+  its own, which only reads, is the safer one. It is not OmniaCLI's git key of
+  the workspaces' repositories, which a workspace's admin uses;
+- an https address: a user and a token, kept in `enterprise.yaml` (0600) and
+  given to git by a store file of its own (`credential.helper=store
+  --file=…`): never in the address, on a command line or in a log.
+
+**Test** runs `git ls-remote --heads` with what the form says and lists the
+version branches (16.0, 17.0, 18.0, 19.0…); **Save** keeps it.
+
+**The code on the machine**: one copy per version branch, its last commit only
+(`git clone --depth 1`), fetched by OmniaCLI's user into
+`enterprise/checkouts/<version>` next to the jobs, then copied by the root
+helper's `enterprise-sync <version>` into
+`/var/lib/omniacli-enterprise/<version>`, root's and read only for the others,
+outside every workspace: `tar` reads the working copy as OmniaCLI's user (root
+reads nothing that user could not), root writes it without `.git` (links out
+of it, devices and set-id bits refused), file by file in place, so the folder
+the instances mount stays the same folder. A version is fetched the first time
+an instance needs it, by **Update** on its row of the page, and by the Update
+of an Enterprise instance when an admin of the machine presses it. The copy is
+**shared**: the Enterprise instances of that version run the new code from
+their next restart, and the Update of each one updates its changed modules.
+
+**Per instance**: its **Settings › Odoo Enterprise** has the switch for an
+instance made from a template, for an admin of the machine (here, or through
+another panel); a workspace's users see whether it is on, and the badge.
+**Switch on…** is a job: the root helper's `enterprise <workspace> <storage>
+<instance> on` writes OmniaCLI's `compose.override.yaml` of each role (the copy
+mounted on `/mnt/enterprise:ro`, beside the replica's part when there is one)
+and its `odoo.conf` (`/mnt/enterprise` first in `addons_path`), keeps
+`{"enterprise": {"series", "service"}}` in `instance.json`, and Odoo restarts.
+Nothing is installed: the database stays Community until **web_enterprise** is
+installed in it (**Install web_enterprise**, its own job, or Odoo's Apps);
+Odoo then asks for the subscription code, which is the customer's. **Switch
+off…** is refused while a module of the copy is installed in a database of the
+instance (Odoo would not start without its code), or while the database does
+not say: uninstall them in Odoo first. A staging of an Enterprise production is
+Enterprise from its first start, here or on a linked machine that has the copy
+or the source. An Odoo that was on the machine before (restart type `process`
+or `systemd`) has no switch: its `addons_path` is read, and an addons folder
+holding `web_enterprise` gives it the badge. Instances and the instance's page
+show an **Enterprise** badge.
+
+Tried with a stand-in repository on the lab machines, not with the real
+`odoo/enterprise`.
+
+
+
 ### Workspaces
 
 A **workspace** is a customer's closed part of the machine: its servers and

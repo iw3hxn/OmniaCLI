@@ -39,6 +39,7 @@ from pathlib import Path
 import yaml
 
 from . import machinedb
+from .enterprise import MOUNT as ENTERPRISE_MOUNT
 
 FILES =("template.json", "compose.yaml", "odoo.conf.in")
 NAME = re.compile(r"[a-z0-9][a-z0-9.-]{0,62}")
@@ -558,8 +559,9 @@ def env_text(values: dict[str, str]) -> str:
 def conf_text(template: Template, database: str, admin_password: str, customer_repos: list[str],
               parameters: dict | None = None, debug: bool = False, extra: dict | None = None,
               mail_capture: bool = False, db_template: str = "", replica: tuple[str, int] | None = None,
-              replica_verified: bool = False) -> str:
-    """The Odoo configuration: the image's addons, then the customer's
+              replica_verified: bool = False, odoo_enterprise: bool = False) -> str:
+    """The Odoo configuration: Odoo Enterprise first when it is on (UX-012:
+    root's copy, mounted on enterprise.MOUNT), the image's addons, then the customer's
     repositories; then the editable parameters (checked: parameter_values),
     the other options (checked: extra_options) and, with debug,
     log_level = debug (over a log_level of the others). With mail_capture
@@ -569,7 +571,7 @@ def conf_text(template: Template, database: str, admin_password: str, customer_r
         # written once, below: Odoo refuses a config with an option twice
         parameters = {k: v for k, v in (parameters or {}).items() if k not in MAIL_PARAMETERS}
         extra = {k: v for k, v in (extra or {}).items() if k not in MAIL_PARAMETERS}
-    addons = [*template.addons_path,
+    addons = [*([ENTERPRISE_MOUNT] if odoo_enterprise else []), *template.addons_path,
               *(f"{template.customer_addons}/{repo}" for repo in customer_repos if template.customer_addons)]
     values = {"ADDONS_PATH": ",".join(addons), "DB_NAME": database, "ADMIN_PASSWD": admin_password,
               "DB_TEMPLATE": db_template or "template0"}

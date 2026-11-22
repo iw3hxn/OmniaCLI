@@ -33,6 +33,8 @@
     omniacli workspace-helper machine-db-moved <workspace> <storage> <instance>   (where it is now, JSON, on the input)
     omniacli workspace-helper space
     omniacli workspace-helper storage-setup | storage-check <storage> | storage-reset <storage>
+    omniacli workspace-helper enterprise-sync <version>
+    omniacli workspace-helper enterprise <workspace> <storage> <instance> on|off
 
 OmniaCLI runs it with sudo (sudoers: README, Workspaces). It takes no path
 and no command of the caller's: a workspace and an instance are names
@@ -226,6 +228,21 @@ server, checked with the key of the main configuration, into
 /var/lib/omniacli-templates/<template> (templatestore.py); of it and the
 package's, create takes the higher version.
 
+enterprise-sync <version> (UX-012): the working copy of Odoo Enterprise of
+that version branch (19.0) OmniaCLI's user fetched, in the folder the main
+configuration's jobs_dir names (enterprise.checkouts_of), read by tar run as
+that user (never as root: root reads nothing the user could not) and written
+by root, without .git, into /var/lib/omniacli-enterprise/<version> (links
+out of it, devices and set-id bits refused), root's and read only for the
+others, outside every workspace, file by file in place (the folder the
+Enterprise instances mount stays the same folder); what it holds is kept in
+.state/<version>.json. A copy without one module is refused.
+enterprise <workspace> <storage> <instance> on|off: the instance's Odoo
+mounts that copy read only (its compose.override.yaml) and has it first in
+its addons_path (conf), its record keeps the version; off takes both away.
+Whoever asked restarts its Odoo, and checks first (off) that no module of it
+is installed in its database.
+
 owncert: the customer's certificate and key, {certificate, key} as JSON on
 the standard input (a key is no argument: ps shows those), checked with
 openssl (the key is the certificate's, not expired), kept in
@@ -245,14 +262,16 @@ import socket
 import stat
 import subprocess
 import sys
+import tarfile
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
 
 import yaml
 
-from . import (clusterpitr, composehelper, config, machinedb, managedreplica, pitrhelper, stacktemplates,
-               templatestore, workspaceweb)
+from . import (clusterpitr, composehelper, config, enterprise, machinedb, managedreplica, pitrhelper,
+               stacktemplates, templatestore, workspaceweb)
 from .composehelper import ENV, HelperError, caller
 from .config import (CERTIFICATES, DOMAIN_NAME, OMNIACLI_COMMAND, SUBDOMAIN, TEST_LABEL, WORKSPACE_NAME,
                      ConfigError, parse_storage_roots, web_names)
@@ -1521,6 +1540,8 @@ def create(name: str, storage: str, instance: str, template_name: str, values_js
                           "of another machine")
     mail = given.pop(MAIL_KEY, False) in (True, "1", "true") and template.captures_mail()
     inbox = mail and template.receives_mail()
+    # a staging of an Enterprise production is Enterprise from its first start (UX-012)
+    odoo_enterprise = _enterprise_asked(template, given.pop(enterprise.CREATE_KEY, ""))
     try:
         values = template.values({str(k): str(v) for k, v in given.items()})
     except stacktemplates.TemplateError as exc:
@@ -1555,7 +1576,10 @@ def create(name: str, storage: str, instance: str, template_name: str, values_js
             **({"replica_on": "%s:%d" % remote["replica"]} if remote and remote.get("replica") else {}),
             # the cluster of a linked OmniaCLI: which link and PostgreSQL (the pages name it, the removal asks it)
             **({"database_link": remote["link"], "database_major": remote["major"]}
-               if remote and remote.get("link") else {})}
+               if remote and remote.get("link") else {}),
+            **({enterprise.META: odoo_enterprise} if odoo_enterprise else {})}
+    if odoo_enterprise:
+        made["enterprise"] = odoo_enterprise["series"]
     folder.mkdir(mode=0o755)
     on_cluster = False
     try:
@@ -1582,6 +1606,8 @@ def create(name: str, storage: str, instance: str, template_name: str, values_js
                 # read by docker compose in .env: the template's mail service runs
                 env["COMPOSE_PROFILES"] = stacktemplates.MAIL_PROFILE
             _write(project / "compose.yaml", template.compose)
+            if odoo_enterprise:
+                _write_override(project, None, None)
             _write(project / ".env", stacktemplates.env_text(env), mode=0o600)
             # what postgres:17 runs at its first start, for a template that mounts it
             (project / "dbinit").mkdir(mode=0o755)
@@ -1591,7 +1617,8 @@ def create(name: str, storage: str, instance: str, template_name: str, values_js
                    stacktemplates.conf_text(template, database, stacktemplates.new_password(), [],
                                             mail_capture=caught,
                                             db_template=machinedb.template_name(name) if machine else "",
-                                            replica=remote.get("replica") if remote else None),
+                                            replica=remote.get("replica") if remote else None,
+                                            odoo_enterprise=bool(odoo_enterprise)),
                    mode=0o644)
             if remote:
                 # the CA Odoo verifies the database's certificate against (PGSSLROOTCERT)
@@ -1727,7 +1754,8 @@ def conf(name: str, storage: str, instance: str, role: str, spec_json: str) -> d
                                     password or stacktemplates.new_password(), repos, values, debug, extra,
                                     mail_capture=caught,
                                     db_template=machinedb.template_name(name) if template.on_machine else "",
-                                    replica=_replica_of(meta), replica_verified=bool(meta.get(REPLICA_META)))
+                                    replica=_replica_of(meta), replica_verified=bool(meta.get(REPLICA_META)),
+                                    odoo_enterprise=enterprise.of_meta(meta) is not None)
     _write(conf_file, text, mode=0o644)
     kept = {k: v for k, v in values.items() if v != template.parameter(k).default
             and not (caught and k in stacktemplates.MAIL_PARAMETERS)}
@@ -1739,7 +1767,7 @@ def conf(name: str, storage: str, instance: str, role: str, spec_json: str) -> d
     return {"workspace": name, "instance": instance, "role": role, "repositories": repos,
             "parameters": {k: ("" if template.parameter(k).type == "password" and v else v) for k, v in values.items()},
             "debug": debug, "extra": sorted(extra), "template": template.name, "version": template.version,
-            "mail_capture": caught,
+            "mail_capture": caught, "enterprise": (enterprise.of_meta(meta) or {}).get("series", ""),
             "compose": "the database connection for commands typed in the container added" if compose_changed else ""}
 
 
@@ -3007,8 +3035,9 @@ def replica_override(service: str) -> str:
 
 
 def _write_override(project: Path, reads: str | None, listen: dict | None) -> None:
-    """OmniaCLI's override of a project written again (managedreplica.override_text), or gone with nothing to say."""
-    text = managedreplica.override_text(reads, listen)
+    """OmniaCLI's override of a project written again (managedreplica.override_text), or gone with nothing to
+    say; Odoo Enterprise as the instance's record says (UX-012), whatever the replica's part becomes."""
+    text = managedreplica.override_text(reads, listen, enterprise.of_project(project))
     if text:
         _write(project / REPLICA_OVERRIDE, text)
     else:
@@ -3146,7 +3175,8 @@ def machine_db_replica_follow(name: str, storage: str, instance: str) -> dict:
         _write(project / ".env", stacktemplates.env_text({
             **_env_without(values, CLUSTER_KEYS), "DB_REMOTE": "1", "DB_HOST": remote["host"],
             "DB_PORT": str(remote["port"]), "DB_USER": remote["user"]}), mode=0o600)
-        (project / REPLICA_OVERRIDE).unlink(missing_ok=True)
+        # the replica's part goes; Odoo Enterprise stays (UX-012)
+        _write_override(project, None, None)
         (project / "config" / REPLICA_CA_FILE).unlink(missing_ok=True)
         db_remote_set(Path(str(project) + REPLICA_SUFFIX), None)
         _write(project / "config" / REMOTE_CA_FILE, remote["ca"], mode=0o644)
@@ -3302,7 +3332,7 @@ def _dedicated_back(name: str, storage: str, instance: str, project: Path, folde
         _dc(project, "down", "--remove-orphans", check=False, timeout=600)
         for path, data in before.items():
             path.write_bytes(data)
-        (project / REPLICA_OVERRIDE).unlink(missing_ok=True)
+        _write_override(project, None, None)
         if exception:
             db_remote_set(project, exception)
         raise
@@ -3729,6 +3759,222 @@ def machine_db_purge(name: str, storage: str, instance: str) -> dict:
     return {"workspace": name, "instance": instance, "removed": gone}
 
 
+# --- Odoo Enterprise (UX-012) ------------------------------------------------
+
+def _enterprise_series(value: str) -> str:
+    if not enterprise.SERIES.fullmatch(value or ""):
+        raise HelperError(f"{value!r} is not a version of Odoo (19.0)")
+    return value
+
+
+def _enterprise_asked(template: stacktemplates.Template, series) -> dict | None:
+    """{series, service} create gives a new instance that is to be Enterprise
+    (a staging of an Enterprise production), None when not asked."""
+    if not series:
+        return None
+    series = _enterprise_series(str(series))
+    if enterprise.series_of_template(template.name) != series:
+        raise HelperError(f"{template.name} is not Odoo {series}: its Enterprise is another version")
+    if enterprise.state(series) is None:
+        raise HelperError(f"no Odoo Enterprise {series} on this machine: it is fetched on Settings › Odoo Enterprise")
+    return {"series": series, "service": template.odoo_service}
+
+
+def _as_caller() -> dict:
+    """What subprocess takes to run a command as the user who called sudo
+    (nothing when the helper is not root: a test)."""
+    if os.geteuid() != 0:
+        return {}
+    name, uid, groups = caller()
+    return {"user": uid, "group": pwd.getpwnam(name).pw_gid, "extra_groups": groups}
+
+
+def _enterprise_read(source: Path, into: Path) -> None:
+    """source's tree, without .git, read by tar as the caller and extracted
+    here by root with the data filter (no name or link out of into, no
+    device, no set-id bit, no owner of the archive's)."""
+    with tempfile.TemporaryFile() as errors:
+        proc = subprocess.Popen([_tool("tar"), "-C", str(source), "--exclude=.git", "-cf", "-", "."],
+                                stdout=subprocess.PIPE, stderr=errors, stdin=subprocess.DEVNULL, env=ENV, cwd="/",
+                                **_as_caller())
+        try:
+            with tarfile.open(fileobj=proc.stdout, mode="r|") as archive:
+                archive.extractall(into, filter="data")
+        except (tarfile.TarError, OSError) as exc:
+            proc.kill()
+            proc.wait()
+            raise HelperError(f"the copy of {source} was refused: {exc}") from None
+        finally:
+            proc.stdout.close()
+        code = proc.wait()
+        errors.seek(0)
+        said = errors.read().decode(errors="replace").strip()
+    if code:
+        raise HelperError(f"{source} could not be read as the user of OmniaCLI: {said or code}")
+
+
+def _root_tree(top: Path) -> None:
+    """Every folder and file of top root's, read only for the others (a
+    file the archive said executable stays executable)."""
+    for dirpath, dirnames, filenames in os.walk(top):
+        for name in [*dirnames, *filenames]:
+            path = Path(dirpath) / name
+            info = path.lstat()
+            if os.geteuid() == 0:
+                os.lchown(path, 0, 0)
+            if stat.S_ISLNK(info.st_mode):
+                continue
+            os.chmod(path, 0o755 if stat.S_ISDIR(info.st_mode) or info.st_mode & 0o100 else 0o644)
+    if os.geteuid() == 0:
+        os.lchown(top, 0, 0)
+    os.chmod(top, 0o755)
+
+
+def _same(a: os.stat_result, b: os.stat_result) -> bool:
+    return (stat.S_IFMT(a.st_mode) == stat.S_IFMT(b.st_mode) and a.st_size == b.st_size
+            and int(a.st_mtime) == int(b.st_mtime) and stat.S_IMODE(a.st_mode) == stat.S_IMODE(b.st_mode))
+
+
+def _sync_tree(new: Path, live: Path) -> dict:
+    """live made equal to new in place, file by file (each one replaced at
+    once): the folder the instances mount stays the same folder. What
+    changed, as counts."""
+    counts = {"added": 0, "changed": 0, "removed": 0}
+    live.mkdir(mode=0o755, exist_ok=True)
+    seen = {Path(".")}
+    for dirpath, dirnames, filenames in os.walk(new):
+        here = Path(dirpath)
+        rel = here.relative_to(new)
+        target = live / rel
+        links = [d for d in dirnames if (here / d).is_symlink()]
+        dirnames[:] = [d for d in dirnames if d not in links]
+        for name in dirnames:
+            path = target / name
+            seen.add(rel / name)
+            if path.is_symlink() or (path.exists() and not path.is_dir()):
+                path.unlink()
+            if not path.exists():
+                path.mkdir(mode=0o755)
+                counts["added"] += 1
+        for name in [*filenames, *links]:
+            source, path = here / name, target / name
+            seen.add(rel / name)
+            try:
+                before = path.lstat()
+            except FileNotFoundError:
+                before = None
+            if before is not None and stat.S_ISDIR(before.st_mode):
+                shutil.rmtree(path)
+                before = None
+            if before is not None and _same(source.lstat(), before):
+                continue
+            os.replace(source, path)
+            counts["added" if before is None else "changed"] += 1
+    for dirpath, dirnames, filenames in os.walk(live, topdown=False):
+        here = Path(dirpath)
+        rel = here.relative_to(live)
+        for name in [*filenames, *dirnames]:
+            path = here / name
+            if rel / name in seen:
+                continue
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+            counts["removed"] += 1
+    return counts
+
+
+def enterprise_sync(series: str) -> dict:
+    series = _enterprise_series(series)
+    jobs_dir = _system().get("jobs_dir")
+    if not jobs_dir:
+        raise HelperError(f"no jobs_dir in {SYSTEM_CONFIG}: OmniaCLI's copies of Odoo Enterprise have no place")
+    source = enterprise.checkouts_of(Path(str(jobs_dir))) / series
+    if source.is_symlink() or not source.is_dir():
+        raise HelperError(f"no copy of Odoo Enterprise {series} in {source.parent}: OmniaCLI fetches it first")
+    root = enterprise.ROOT
+    root.mkdir(mode=0o755, parents=True, exist_ok=True)
+    if root.is_symlink() or (os.geteuid() == 0 and root.lstat().st_uid != 0):
+        raise HelperError(f"{root} is not root's folder")
+    os.chmod(root, 0o755)
+    (root / enterprise.STATE).mkdir(mode=0o755, exist_ok=True)
+    new = root / f".{series}.new"
+    shutil.rmtree(new, ignore_errors=True)
+    new.mkdir(mode=0o700)
+    try:
+        _enterprise_read(source, new)
+        modules = enterprise.modules_in(new)
+        if not modules:
+            raise HelperError(f"{source} holds no Odoo module: it is not Odoo Enterprise (Odoo would refuse the "
+                              "folder in its addons_path)")
+        _root_tree(new)
+        os.chmod(new, 0o700)
+        counts = _sync_tree(new, root / series)
+        _root_tree(root / series)
+    finally:
+        shutil.rmtree(new, ignore_errors=True)
+    done = subprocess.run(["git", "-C", str(source), "rev-parse", "HEAD"], capture_output=True, text=True, env=ENV,
+                          cwd="/", **_as_caller())
+    head = done.stdout.strip()
+    found = {"series": series, "commit": head if done.returncode == 0 and re.fullmatch(r"[0-9a-f]{40,64}", head) else "",
+             "fetched": time.strftime("%Y-%m-%dT%H:%M:%S"), "modules": len(modules), "folder": str(root / series),
+             **counts}
+    _write(root / enterprise.STATE / f"{series}.json", json.dumps(found) + "\n")
+    return found
+
+
+def _enterprise_override(project: Path) -> None:
+    """The project's override written again: the replica's part as it is, Odoo Enterprise as its record says."""
+    try:
+        reads, listen = managedreplica.override_reads(project), managedreplica.override_listen(project)
+    except machinedb.ClusterError as exc:
+        raise HelperError(str(exc)) from None
+    _write_override(project, reads, listen)
+
+
+def enterprise_switch(name: str, storage: str, instance: str, mode: str) -> dict:
+    if mode not in ("on", "off"):
+        raise HelperError("enterprise <workspace> <storage> <instance> on or off")
+    image, mount = workspace(name, storage)
+    _name("instance", instance)
+    if not mounted(image, mount):
+        raise HelperError(f"the disk of workspace {name} is not mounted")
+    folder = mount / instance
+    meta = _meta(folder)
+    template = template_named(str(meta.get("template") or ""))
+    series = enterprise.series_of_template(template.name)
+    roles = [r for r in ROLES if (folder / r / "compose.yaml").is_file() and not (folder / r).is_symlink()]
+    found = None
+    if mode == "on":
+        if series is None:
+            raise HelperError(f"{template.name} names no version of Odoo: it has no Enterprise")
+        found = enterprise.state(series)
+        if found is None:
+            raise HelperError(f"no Odoo Enterprise {series} on this machine: it is fetched on Settings › Odoo Enterprise")
+        changed = {**meta, enterprise.META: {"series": series, "service": template.odoo_service}}
+    else:
+        changed = {k: v for k, v in meta.items() if k != enterprise.META}
+    paths = [folder / INSTANCE_FILE, *(folder / r / p for r in roles for p in (REPLICA_OVERRIDE, "config/odoo.conf"))]
+    before = {path: path.read_bytes() for path in paths if path.is_file() and not path.is_symlink()}
+    try:
+        _write(folder / INSTANCE_FILE, json.dumps(changed) + "\n")
+        for role in roles:
+            _enterprise_override(folder / role)
+            conf(name, storage, instance, role, "{}")
+    except BaseException:
+        for path in paths:
+            if path in before:
+                path.write_bytes(before[path])
+            elif path.name == REPLICA_OVERRIDE:
+                path.unlink(missing_ok=True)
+        raise
+    return {"workspace": name, "instance": instance, "enterprise": mode == "on", "series": series or "",
+            "roles": roles, "odoo_service": template.odoo_service, "modules": (found or {}).get("modules", 0),
+            "commit": (found or {}).get("commit", "")}
+
+
+
 ACTIONS = {"disk": (disk, 3), "drop": (drop, 2), "limits": (limits, 3), "create": (create, 5), "remove": (remove, 3),
            "web": (web, 3), "web-names": (web_taken, 1), "owncert": (owncert, 2), "firewall": (firewall, 1), "template-install": (template_install, 1),
            "conf": (conf, 5), "space": (space, 0),
@@ -3756,7 +4002,8 @@ ACTIONS = {"disk": (disk, 3), "drop": (drop, 2), "limits": (limits, 3), "create"
            "machine-db-replica-back": (machine_db_replica_back, 3),
            "machine-db-replica-grant": (machine_db_replica_grant, 3), "machine-db-moved": (machine_db_moved, 3),
            "machine-db-replica-lent": (machine_db_replica_lent, 1),
-           "machine-db-replica-unlisten": (machine_db_replica_unlisten, 1)}
+           "machine-db-replica-unlisten": (machine_db_replica_unlisten, 1),
+           "enterprise-sync": (enterprise_sync, 1), "enterprise": (enterprise_switch, 4)}
 
 
 def run(argv: list[str]) -> dict:

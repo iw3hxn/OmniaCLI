@@ -98,6 +98,7 @@
     stagingNone: {{ _("The stagings are copies: they have no scheduled backups") | tojson }},
     notRead: {{ _("Not read: the OmniaCLI of that machine is older") | tojson }},
     page: {{ _("{from}–{to} of {all}") | tojson }},
+    enterpriseTitle: {{ _("Odoo Enterprise is in its addons") | tojson }},
   };
   const body = document.getElementById("inst-rows"), counts = document.getElementById("inst-counts");
   const search = document.getElementById("inst-search");
@@ -121,7 +122,8 @@
       const inst = s.instances.production || s.instances.test;
       const label = host(inst.url, s.name);
       return {machine, base, server: s, inst, label, staging: !!s.parent, parent: s.parent || "",
-              text: [label, s.name, machine.name, s.version, s.workspace, inst.database, s.parent ? "staging" : ""].join(" ").toLowerCase()};
+              text: [label, s.name, machine.name, s.version, s.workspace, inst.database, s.parent ? "staging" : "",
+                     s.enterprise ? "enterprise" : ""].join(" ").toLowerCase()};
     });
     const names = new Set(rows.map((r) => r.server.name));
     const tops = rows.filter((r) => !r.parent || !names.has(r.parent)).sort((a, b) => a.label.localeCompare(b.label));
@@ -167,6 +169,7 @@
       el("a", {href: page, title: T.open}, el("strong", {}, row.label)),
       row.staging ? el("span", {class: "badge info", title: T.stagingOf.replace("{name}", row.parent)}, T.stagingWord) : null,
       !SERVER_COLUMN && row.server.version ? el("span", {class: "badge"}, row.server.version) : null,
+      row.server.enterprise ? el("span", {class: "badge info", title: T.enterpriseTitle}, "Enterprise") : null,
       row.label !== row.server.name ? el("span", {class: "muted row-name hide-sm"}, row.server.name) : null);
     const cells = [name];
     if (SERVER_COLUMN) cells.push(el("td", {}, row.machine.name, row.server.version ? el("span", {class: "badge"}, row.server.version) : null));

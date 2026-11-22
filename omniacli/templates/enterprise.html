@@ -1,0 +1,150 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{% extends "base.html" %}
+{% block title %}{{ _("Odoo Enterprise") }} · OmniaCLI{% endblock %}
+{% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
+{{ crumbs([(_("Settings"), "/settings"), (_("Odoo Enterprise"), None)]) }}
+{% endblock %}
+{% block content %}
+<style>
+.ent-form { display: grid; grid-template-columns: minmax(120px, max-content) minmax(0, 1fr); gap: 10px 14px; align-items: center; max-width: 760px; }
+.ent-form .help { grid-column: 2; margin: -4px 0 2px; font-size: 13px; }
+.ent-key { word-break: break-all; white-space: pre-wrap; }
+.ent-result { font-size: 14px; }
+@media (max-width: 640px) { .ent-form { grid-template-columns: 1fr; } .ent-form .help { grid-column: 1; } }
+</style>
+<div class="page-head">
+  <div><h1>{{ _("Odoo Enterprise") }}</h1>
+    <p>{{ _("Where the code of Odoo Enterprise comes from, once for this machine: every instance made from a template can then be switched to Enterprise in its Settings tab.") }}
+       {{ _("The code is the partner's access; the subscription code of each database is the customer's, asked by Odoo.") }}</p></div>
+</div>
+{% if error %}<div class="banner">{{ tr(error) }}</div>{% endif %}
+{% if not helpers %}<div class="banner">{{ _("This machine has no storage for workspaces: there are no instances made from a template to switch.") }}</div>{% endif %}
+<p id="ent-error" class="error" role="alert"></p>
+<section class="panel">
+  <h2>{{ _("Where the code comes from") }}</h2>
+  <form id="ent-form" class="ent-form" autocomplete="off" novalidate>
+    <label for="ent-url">{{ _("Repository") }}</label>
+    <input type="text" id="ent-url" class="mono" value="{{ source.url if source else default_url }}" placeholder="{{ default_url }}" spellcheck="false">
+    <p class="help muted">{{ _("git@github.com:odoo/enterprise.git is reached with the key below; an https:// address with a user and a token.") }}</p>
+    <label for="ent-user" data-https>{{ _("User") }}</label>
+    <input type="text" id="ent-user" class="mono" data-https value="{{ source.username if source else '' }}">
+    <label for="ent-token" data-https>{{ _("Token") }}</label>
+    <input type="password" id="ent-token" class="mono" data-https placeholder="{{ _('set: empty keeps it') if source and source.token_set else '' }}">
+  </form>
+  <div id="ent-ssh" style="margin-top: 14px">
+    <h3 style="margin: 0 0 6px">{{ _("The SSH key of this machine for Odoo Enterprise") }}</h3>
+    {% if public_key %}
+    <pre class="copyable mono ent-key" id="ent-key">{{ public_key }}</pre>
+    {% else %}<pre class="copyable mono ent-key" id="ent-key" hidden></pre>
+    <p class="muted" id="ent-nokey">{{ _("No key yet.") }}</p>{% endif %}
+    <p class="muted" style="font-size: 13px">{{ _("Add its public half to the SSH keys of a GitHub account that can read odoo/enterprise (GitHub › Settings › SSH and GPG keys). The key reads everything that account reads: an account of its own, which only reads, is the safer one.") }}
+      {{ _("It is used for Odoo Enterprise only, never for the repositories of the workspaces.") }}</p>
+    {% if not public_key %}<button type="button" id="ent-makekey" title="{{ _('Makes the SSH key of this machine for Odoo Enterprise and shows its public half; the private half never leaves this machine') }}">{{ _("Make the key") }}</button>{% endif %}
+  </div>
+  <div class="actions" style="justify-content: flex-end; margin-top: 12px">
+    <span class="ent-result" id="ent-result"></span>
+    <button type="button" id="ent-test" title="{{ _('Reads the repository now (git ls-remote) with what the form says, saved or not, and lists the version branches it has. Nothing is downloaded.') }}">{{ _("Test") }}</button>
+    <button type="button" class="primary" id="ent-save" title="{{ _('Saves the address and how it is reached; a token left empty keeps the saved one. Nothing is downloaded until a version is fetched.') }}">{{ _("Save") }}</button>
+  </div>
+  <p class="muted" style="font-size: 13px">{{ _("Saved in {file}, readable by OmniaCLI's user only; the token is never shown again.", file=file) }}</p>
+</section>
+<section class="panel">
+  <h2>{{ _("The copies on this machine") }}</h2>
+  <p class="muted" style="font-size: 13px">{{ _("One copy per version, its last commit only, kept by root in {folder}: the Enterprise instances of that version read it, read only, and no workspace can write it. An instance switched on fetches its version the first time.", folder=root) }}</p>
+  <div class="scroll"><table>
+    <tr><th>{{ _("Version") }}</th><th>{{ _("Commit") }}</th><th>{{ _("Fetched") }}</th><th>{{ _("Modules") }}</th><th>{{ _("Used by") }}</th><th></th></tr>
+    {% for c in copies %}
+    <tr data-series="{{ c.series }}">
+      <td><strong>{{ c.series }}</strong></td><td class="mono">{{ (c.commit or "—")[:10] }}</td>
+      <td data-when="{{ c.fetched }}">{{ c.fetched }}</td><td>{{ c.modules }}</td>
+      <td>{% for name in c.users %}<a href="{{ prefix }}/servers/{{ name }}">{{ name }}</a>{{ ", " if not loop.last }}{% else %}<span class="muted">—</span>{% endfor %}</td>
+      <td><button type="button" class="small" data-update="{{ c.series }}"
+        title="{{ _('Fetches the last commit of {series} again: the Enterprise instances of {series} run it from their next restart, and their Update updates the changed modules. A job.', series=c.series) }}">{{ _("Update") }}</button></td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6" class="muted">{{ _("No copy yet.") }}</td></tr>
+    {% endfor %}
+  </table></div>
+  <div class="actions" style="margin-top: 10px">
+    <label for="ent-series" class="muted">{{ _("Version") }}</label>
+    <select id="ent-series" style="width: auto" disabled title="{{ _('The version branches the Test found') }}"><option value="">{{ _("Test first") }}</option></select>
+    <button type="button" id="ent-fetch" disabled title="{{ _('Fetches the version chosen, its last commit only, into the copy of this machine. A job. Available after a Test.') }}">{{ _("Fetch") }}</button>
+  </div>
+</section>
+<script>
+(function () {
+  const API = {{ (prefix ~ "/api/enterprise") | tojson }};
+  const T = {testing: {{ _("Reading the repository…") | tojson }}, refused: {{ _("Refused") | tojson }},
+             saved: {{ _("Saved.") | tojson }},
+             found: {{ _("{count} branches; versions: {versions}") | tojson }}, none: {{ _("no version branch") | tojson }},
+             fetchQ: {{ _("Fetch Odoo Enterprise {series}? Its last commit is downloaded and copied for the instances of this version.") | tojson }},
+             updateQ: {{ _("Fetch Odoo Enterprise {series} again? Its Enterprise instances run the new code from their next restart.") | tojson }},
+             fetchGo: {{ _("Fetch") | tojson }}};
+  const url = document.getElementById("ent-url"), result = document.getElementById("ent-result");
+  const error = document.getElementById("ent-error");
+  const kind = () => url.value.trim().startsWith("https://") ? "https" : "ssh";
+  const shape = () => {
+    for (const node of document.querySelectorAll("[data-https]")) node.hidden = kind() !== "https";
+    document.getElementById("ent-ssh").hidden = kind() !== "ssh";
+  };
+  url.addEventListener("input", shape);
+  shape();
+  const form = () => ({url: url.value.trim(), username: document.getElementById("ent-user").value.trim(),
+                       token: document.getElementById("ent-token").value});
+  async function post(path, body) {
+    const resp = await fetch(`${API}/${path}`, {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
+                                                body: JSON.stringify(body)});
+    return {ok: resp.ok, data: await resp.json().catch(() => ({}))};
+  }
+  async function job(path, body, question) {
+    if (!await omniaAsk(question, T.fetchGo)) return;
+    const {ok, data} = await post(path, body);
+    if (!ok || !data.job) { omniaSay(data.error || data.detail || T.refused); return; }
+    location.href = `{{ prefix }}/jobs/${data.job}`;
+  }
+  document.getElementById("ent-makekey")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    const {ok, data} = await post("key", {});
+    button.disabled = false;
+    if (!ok) { error.textContent = data.error || data.detail || T.refused; return; }
+    const key = document.getElementById("ent-key");
+    key.textContent = data.public_key; key.hidden = false;
+    document.getElementById("ent-nokey")?.remove();
+    button.remove();
+  });
+  document.getElementById("ent-test").addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true; error.textContent = ""; result.className = "ent-result muted"; result.textContent = T.testing;
+    const {ok, data} = await post("test", form());
+    button.disabled = false;
+    if (!ok) { result.className = "ent-result error"; result.textContent = data.error || data.detail || T.refused; return; }
+    result.className = "ent-result status success";
+    result.textContent = "✓ " + T.found.replace("{count}", data.branches).replace("{versions}", data.versions.join(", ") || T.none);
+    const select = document.getElementById("ent-series");
+    select.replaceChildren(...data.versions.map((v) => new Option(v, v)));
+    select.disabled = !data.versions.length;
+    document.getElementById("ent-fetch").disabled = !data.versions.length;
+    if (data.versions.length) select.value = data.versions[data.versions.length - 1];
+  });
+  document.getElementById("ent-save").addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true; error.textContent = "";
+    const {ok, data} = await post("save", form());
+    button.disabled = false;
+    if (!ok) { error.textContent = data.error || data.detail || T.refused; return; }
+    result.className = "ent-result status success"; result.textContent = T.saved;
+    document.getElementById("ent-token").value = "";
+  });
+  document.getElementById("ent-fetch").addEventListener("click", () => {
+    const series = document.getElementById("ent-series").value;
+    if (series) job("update", {series}, T.fetchQ.replace("{series}", series));
+  });
+  for (const button of document.querySelectorAll("[data-update]")) {
+    button.addEventListener("click", () => job("update", {series: button.dataset.update},
+                                                T.updateQ.replace("{series}", button.dataset.update)));
+  }
+  for (const node of document.querySelectorAll("[data-when]")) node.textContent = window.whenText(node.dataset.when);
+})();
+</script>
+{% endblock %}
