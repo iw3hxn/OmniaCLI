@@ -65,9 +65,39 @@ def _patterns(language: str) -> list[tuple[re.Pattern, str, int]]:
                     names.append(name)
                     parts.append(f"(?P<{name}>.+?)")
         fixed = len(_FIELD.sub("", source))
-        found.append((fixed, re.compile("".join(parts) + r"\Z", re.S), target))
+        found.append((fixed, re.compile("".join(parts) + r"\Z", re.S), target, _measured(source)))
     found.sort(key=lambda item: -item[0])
-    return [(pattern, target, fixed) for fixed, pattern, target in found]
+    return [(pattern, target, fixed, measured) for fixed, pattern, target, measured in found]
+
+
+# a value the code writes with a dot that is a measure in the text ("{cap} GB", "in {seconds} s"): with the
+# language's decimal mark; a version ("PostgreSQL {version}") is not a measure and stays as it is
+_UNITS = re.compile(r"\s?(?:[kMGT]i?B|ms|s|%|min|h)\b")
+_DECIMAL_COMMA = frozenset({"it", "de", "fr", "es", "pt", "nl"})
+_ISO = re.compile(r"(\d{4})-(\d\d)-(\d\d)[T ](\d\d):(\d\d)(?::\d\d(?:\.\d+)?)?")
+
+
+def _measured(source: str) -> frozenset:
+    """The {names} of source followed by a unit (a measure)."""
+    out = set()
+    for literal_after, (name, _) in zip([lit for lit, *_ in string.Formatter().parse(source)][1:] + [""],
+                                         [(n, None) for _lit, n, *_ in string.Formatter().parse(source)]):
+        if name and _UNITS.match(literal_after):
+            out.add(name)
+    return frozenset(out)
+
+
+def _local(language: str, name: str, value: str, measured: frozenset) -> str:
+    """A value as the language writes it: a date and time the code wrote as ISO (2026-11-22T16:37:36) as
+    the pages write it (22/11/2026 16:37), a measure with the decimal comma where the language has it."""
+    if language == DEFAULT:
+        return value
+    if _ISO.fullmatch(value):
+        found = _ISO.fullmatch(value)
+        return f"{found[3]}/{found[2]}/{found[1]} {found[4]}:{found[5]}"
+    if name in measured and language in _DECIMAL_COMMA and re.fullmatch(r"\d+\.\d+", value):
+        return value.replace(".", ",")
+    return value
 
 
 # a pattern of a few letters between its values ("{a} and {b}", "{n} of {max}", "on {host}") is for a label:
@@ -123,7 +153,7 @@ def _tr(language: str, text: str) -> str:
         head = catalog(language).get("FAILED: {error}", "FAILED: {error}").replace("{error}", "")
         return head + tr(language, failed.group(2))
     words = len(text.split())
-    for pattern, target, fixed in _patterns(language):
+    for pattern, target, fixed, measured in _patterns(language):
         if fixed <= _LABEL_FIXED and words > _LABEL_WORDS:
             continue
         match = pattern.match(text)
@@ -135,13 +165,13 @@ def _tr(language: str, text: str) -> str:
                 # the reason a job failed for, which names an instance or a machine ("FAILED: …")
                 known = catalog(language)
 
-                def inner(value: str) -> str:
+                def inner(name: str, value: str) -> str:
                     if " " not in value:
-                        return value
+                        return _local(language, name, value, measured)
                     if value in known:
                         return known[value]
                     return _tr(language, value) if len(value.split()) > _LABEL_WORDS else value
-                return target.format(**{name: inner(value) for name, value in match.groupdict().items()})
+                return target.format(**{name: inner(name, value) for name, value in match.groupdict().items()})
             except (KeyError, IndexError, ValueError):
                 return text
     return text

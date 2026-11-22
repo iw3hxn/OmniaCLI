@@ -124,3 +124,19 @@ async def test_an_error_is_said_in_the_callers_language(client, monkeypatch):
     headers = {**as_user("admin", post=True), "Accept": "application/json", "Accept-Language": "it"}
     resp = await client.post("/api/links/delete", headers=headers, json={"name": "nope"})
     assert resp.status_code == 404 and resp.json()["detail"].startswith("[it] ")
+
+
+def test_dates_and_measures_of_a_line_in_the_readers_language():
+    """A job line the code writes with an ISO date and a dot: the date as the
+    pages write it, a measure with the decimal comma; a version stays as it
+    is (22/11/2026: «fermo dal 2026-11-22T15:04:38», «13.5 GB» on Italian pages)."""
+    said = i18n.tr("it", "The replica answers and receives from lab1 (PostgreSQL 17.12, started in 1.7 s)")
+    assert said == "La replica risponde e riceve da lab1 (PostgreSQL 17.12, avviata in 1,7 s)"
+    assert i18n.tr("it", "The PostgreSQL of acme-tmp was stopped already, on 2026-11-22T15:04:38").endswith(
+        "dal 22/11/2026 15:04")
+    assert "13,5 GB" in i18n.tr("it", "A role for the replication and a place that holds the changes for the replica "
+                                      "are there: the database keeps 13.5 GB of them at most, on the disk of the "
+                                      "workspace acme, beyond which the replica is made again; pg_hba.conf lets "
+                                      "172.30.0.12 in for the replication only, over TLS")
+    # in English: as the code wrote it
+    assert i18n.tr("en", "The PostgreSQL of acme-tmp was stopped already, on 2026-11-22T15:04:38").endswith("2026-11-22T15:04:38")
