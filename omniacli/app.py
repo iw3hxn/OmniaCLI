@@ -48,7 +48,7 @@ from . import (backupcheck, backupchoices, checks, deployhooks, destinations, in
 from .accesslog import REQUEST as AUDIT_REQUEST, AccessLog
 from . import audit, siem
 from . import i18n, loginas, machines, modulecatalog, pgreport, pgtuning, stagings, workspaceweb
-from . import inframap, machinedb
+from . import inframap, linkedcluster, machinedb
 from . import stagingmail
 from . import dumpinfo
 from . import totp
@@ -3484,6 +3484,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
              # the links an archive may be copied through: the machine's admins'
              "links": sorted(settings.link_targets) if me.kind == "user" and not me.workspaces and me.can("admin")
              else [],
+             # the links whose cluster a new instance's database may be asked of (AD-003): the machine's
+             # admins', here or through a link for one of its users
+             "db_links": sorted(settings.link_targets) if machine_admin(me) and acts_for_a_person(me) else [],
              "credentials": await asyncio.to_thread(workspace_credentials, ws.name),
              # how many remote destinations its backups have (their page lists them)
              "destinations_count": len(destination_rows(ws.name)),
@@ -3491,12 +3494,19 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
              else int(ws.limits["instances"]) - len([n for n in ws.servers if n in settings.servers])},
         )
 
-    async def make_instance(job, ws: Workspace, instance: str, template, values: dict, setup: dict | None = None):
+    async def make_instance(job, ws: Workspace, instance: str, template, values: dict, setup: dict | None = None,
+                            linked: dict | None = None):
         """The job of a new instance of ws (its server already in ws.servers):
         made, written in the servers file, its names published; its server
-        out of ws again when it fails."""
+        out of ws again when it fails. linked: its database is asked first
+        of the cluster of a linked OmniaCLI (linked_grant), and given back
+        when the instance is not made."""
         name = workspaceops.server_name(ws, instance)
+        granted = None
         try:
+            if linked is not None:
+                granted = await linked_grant(job, linked)
+                values = {**values, workspacehelper.REMOTE_KEY: granted}
             data = await workspaceops.create_instance(job, ws, instance, template, values, setup)
             parsed = parse_servers({name: {**data, "status": "active"}}, settings.logs_dir)[name]
             async with config_lock:
@@ -3504,6 +3514,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if error is not None:
                 raise JobFailed(f"the instance runs, but the servers file was not written: {error.body.decode()}")
         except BaseException:
+            if granted is not None:
+                # the instance was not made: its database on the linked machine goes back
+                await linked_release(job, linked["link"], linked["major"], granted["database"], linked["who"],
+                                     linked["role"])
             await rename_in_workspaces(name, None)
             # a New instance's own workspace, left with nothing: it goes, and
             # its disk, so that the next try finds the room and the name free
@@ -3565,15 +3579,22 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return refuse(str(exc))
         # a database of another machine (AD-003): the machine's admins only (it opens the
         # workspace's network to an address), its connection checked before anything is made
+        linked = None
         if template.on_remote:
             if not machine_admin(me):
                 return refuse("Only an admin of the machine makes an instance on a database of another machine",
                               status.HTTP_403_FORBIDDEN)
-            try:
-                values = {**values, workspacehelper.REMOTE_KEY: workspacehelper.remote_spec(payload.get("remote"))}
-            except workspacehelper.HelperError as exc:
-                return refuse(str(exc))
-        elif payload.get("remote"):
+            if payload.get("linked"):
+                # on the cluster of a linked OmniaCLI: it makes the role and the database, the job asks it
+                linked = linked_request(ws, instance, payload.get("linked"), me)
+                if not isinstance(linked, dict):
+                    return linked
+            else:
+                try:
+                    values = {**values, workspacehelper.REMOTE_KEY: workspacehelper.remote_spec(payload.get("remote"))}
+                except workspacehelper.HelperError as exc:
+                    return refuse(str(exc))
+        elif payload.get("remote") or payload.get("linked"):
             return refuse(f"The template {template.name} has a database of its own: choose a template of a database "
                           "of another machine")
         setup = admin_setup(payload.get("setup") or {})
@@ -3597,7 +3618,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 return refused
 
         async def action(job):
-            await make_instance(job, ws, instance, template, values, setup or None)
+            await make_instance(job, ws, instance, template, values, setup or None, linked)
 
         job = jobs.submit(f"Create {name} from {template.name}", [f"{name}/production", f"{name}/test"],
                           f"manual: {me}", action, workspace=ws.name)
@@ -4886,9 +4907,17 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if server_busy(name):
             return refuse(f"A job is running on {name}: try again when it ends")
         instance = name[len(prefix):]
+        # its database on the cluster of a linked OmniaCLI (read before its record goes): that machine takes it back
+        production = settings.servers[name].production
+        linked = linked_database(production) if production is not None and on_remote_db(production) else None
 
         async def action(job):
-            await workspaceops.remove_instance(job, ws, instance)
+            if linked is None:
+                await workspaceops.remove_instance(job, ws, instance)
+            else:
+                await workspaceops.remove_instance(job, ws, instance, linked=True)
+                await linked_release(job, linked["link"], linked["major"], linked["database"],
+                                     me.on_behalf or me.name, me.role)
             async with config_lock:
                 error = await store({k: v for k, v in settings.servers.items() if k != name})
             if error is not None:
@@ -8957,6 +8986,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     env["database"] = {"where": place.get("where"), "host": place.get("host"),
                                        "replica": place.get("replica") or None, "port": place.get("port"),
                                        "major": cluster_major if place.get("where") == "machine" else None,
+                                       # on the cluster of a linked OmniaCLI: named for who sees the machines
+                                       "label": say("PostgreSQL {major} of {link}").replace(
+                                           "{major}", str(place.get("major"))).replace("{link}", str(place["link"]))
+                                       if whole and place.get("link") else None,
                                        } if place else None
             node.update({
                 # its production: here (its id), or on another machine (elsewhere)
@@ -9088,7 +9121,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     continue
                 targets[ident] = targets.get(ident, 0) + 1
                 databases[ident] = {"id": ident, "kind": place["where"], "host": place.get("host"),
-                                    "major": place.get("major"), "machine": inframap.HERE}
+                                    "major": place.get("major"), "machine": inframap.HERE,
+                                    "label": place.get("label")}
                 if place.get("replica"):
                     replica = f"{inframap.HERE}/replica:{place['replica']}"
                     databases[replica] = {"id": replica, "kind": "replica", "host": place["replica"], "of": ident,
@@ -10064,7 +10098,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 if inst.restart.type == "compose" and on_remote_db(inst):
                     # on another machine: the line Not here, it is tuned there
                     remote.append({"key": inst.key, "server": srv.name, "role": role,
-                                   "host": remote_db_host(inst) or "another machine"})
+                                   "host": remote_db_host(inst) or "another machine",
+                                   # the cluster of a linked OmniaCLI: named, its Database tab is where it is tuned
+                                   "link": link_now(inst) or None,
+                                   "major": remote_db_host(inst, "database_major") or None})
                     continue
                 if inst.restart.type == "compose":
                     kind, parent = postgres_kind(srv, role, known)
@@ -10134,7 +10171,15 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                  "major": major, "storage": found.get("storage") or "",
                                  "promised": int(found.get("promised") or 0), "running": bool(found.get("running")),
                                  "serves": [{"key": f"{s}/production", "server": s, "role": "production"}
-                                            for s in serves]})
+                                            for s in serves],
+                                 # reached from other machines (AD-003): its port, and who uses which database
+                                 "port": found.get("port"),
+                                 "grants": [{"name": name, "link": str(g.get("link") or ""),
+                                             "address": str(g.get("address") or ""), "by": str(g.get("by") or ""),
+                                             "at": str(g.get("at") or ""), "revoked": bool(g.get("revoked")),
+                                             "instance": "-".join(p for p in (str(g.get("workspace") or ""),
+                                                                              str(g.get("instance") or "")) if p)}
+                                            for name, g in sorted((found.get("grants") or {}).items())]})
         rows = await asyncio.gather(*(one(r) for r in machine_rows), *(one(r) for r in dedicated),
                                     *(shared(p, s) for p, s in system.items()))
         done = [r for r in rows if r["where"] == "dedicated"]
@@ -10296,6 +10341,345 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         job = jobs.submit(f"Remove the machine's PostgreSQL {major}", [f"{MACHINE_KEY}/{major}"], f"manual: {me}",
                           action)
         return {"job": job.id}
+
+    # --- a database of the machine's cluster for an instance of another machine, a linked
+    # OmniaCLI's (AD-003). This machine's side when it holds the database: the offer, the
+    # grant (asked through the link only: its name is recorded), revoke, allow again, drop,
+    # the port closed. The other side, the machine that makes the instance: linked_request,
+    # linked_grant, linked_release, GET /api/links/{name}/postgres.
+
+    async def cluster_state(major: str) -> dict | None:
+        found = await machine_clusters()
+        return next((c for c in found.get("clusters") or [] if str(c.get("major")) == major), None)
+
+    def firewall_line(done: dict) -> str:
+        """What the firewall lets reach the cluster's port after a helper's action (its answer)."""
+        allowed = ", ".join(done.get("firewall") or [])
+        return (f"The firewall lets the cluster's port be reached from {allowed} only" if allowed
+                else "The firewall lets the cluster's port be reached from no address")
+
+    @app.get("/api/postgres/machine/offer")
+    async def postgres_offer(me: Principal = Depends(current_user)):
+        """The clusters of this machine a linked OmniaCLI may ask a database
+        of: the PostgreSQL, whether it runs, its port when it listens
+        already, how many instances lose the database when it starts to."""
+        postgres_admin(me)
+        found = await machine_clusters()
+        return {"machine": here_name(), "clusters": [
+            {"major": str(c.get("major")), "running": bool(c.get("running")), "port": c.get("port"),
+             "serves": len(c.get("environments") or {}), "grants": len(c.get("grants") or {})}
+            for c in found.get("clusters") or []]}
+
+    @app.post("/api/postgres/machine/{major}/grants")
+    async def postgres_grant(major: str, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """A database of the cluster for an instance of the machine that asks
+        through its link: a job of the root helper (machine-db-grant). Its
+        result carries the port, the role, the database and the CA: no secret
+        (the role's password stays on the other machine: only its verifier comes)."""
+        postgres_admin(me)
+        if me.kind != "link":
+            return refuse("A database for another machine is asked by that machine, through its link",
+                          status.HTTP_403_FORBIDDEN)
+        if known_cluster(major) is None:
+            return refuse(f"No cluster of PostgreSQL {major} on this machine", status.HTTP_404_NOT_FOUND)
+        name, verifier = str(payload.get("name") or ""), str(payload.get("verifier") or "")
+        try:
+            source = machinedb.address(payload.get("host"))
+            reached = machinedb.reached_as([payload.get("reached_as")])[0]
+        except machinedb.ClusterError as exc:
+            return refuse(str(exc))
+        if not machinedb.ENV_NAME.fullmatch(name) or not machinedb.VERIFIER.fullmatch(verifier):
+            return refuse("A grant needs the name of its role and database and the SCRAM verifier of its password")
+        by = me.on_behalf or me.name
+        spec = {"name": name, "address": source, "verifier": verifier, "reached_as": reached, "link": me.name,
+                "by": by, "workspace": str(payload.get("workspace") or "")[:64],
+                "instance": str(payload.get("instance") or "")[:64]}
+
+        async def action(job):
+            # who asks and through which link are in the job's title and source and in the access log, not in
+            # its lines: the machine that asked shows them in its own job, which its customers may read
+            job.log(f"--- database {name} of the machine's PostgreSQL {major} for an instance of another machine: "
+                    f"let in from {source} only, over TLS")
+            made = await workspaceops._helper(job, "machine-db-grant", major, timeout=MACHINE_TIMEOUT,
+                                              input=json.dumps(spec).encode())
+            if made.get("restarted_s") is not None:
+                job.log(f"The cluster listens on port {made.get('port')} now: its container was made again in "
+                        f"{made.get('restarted_s')} s. Its instances lost their connections: each may answer an error "
+                        "to its first request or two, then goes on")
+            job.log(f"Role and database {made.get('role')} are there; pg_hba.conf lets {source} in as that role, "
+                    "to that database (and to postgres, where Odoo looks for it) only, over TLS")
+            job.log(firewall_line(made))
+            job.result = {**job.result, "grant": {k: made.get(k) for k in (
+                "role", "database", "port", "address", "ca", "names", "restarted_s", "serves", "version", "created")}}
+        job = jobs.submit(f"Database {name} of the machine's PostgreSQL {major} for {me.name}",
+                          [f"{MACHINE_KEY}/{major}"], f"manual: {me}", action)
+        return {"job": job.id}
+
+    @app.post("/api/postgres/machine/{major}/grants/{name}/{what}")
+    async def postgres_ungrant(major: str, name: str, what: str, me: Principal = Depends(current_user)):
+        """A database of another machine on the cluster: revoke (that machine
+        no longer comes in, the database stays), allow (again), drop (the
+        database and its role, as an instance of this machine removed)."""
+        postgres_admin(me)
+        if what not in ("revoke", "allow", "drop") or not machinedb.ENV_NAME.fullmatch(name):
+            return refuse("revoke, allow or drop a database of another machine", status.HTTP_404_NOT_FOUND)
+        if known_cluster(major) is None:
+            return refuse(f"No cluster of PostgreSQL {major} on this machine", status.HTTP_404_NOT_FOUND)
+        state = await cluster_state(major)
+        if state is None:
+            # whose it is cannot be told: nothing is touched
+            return refuse(f"The machine's PostgreSQL {major} cannot be read now: try again in a moment",
+                          status.HTTP_503_SERVICE_UNAVAILABLE)
+        grant = (state.get("grants") or {}).get(name)
+        if grant is None:
+            if what == "drop":
+                # asked again, or dropped here already: nothing of it is left
+                return {"ok": True, "gone": True}
+            return refuse(f"{name} is no database of another machine on PostgreSQL {major}", status.HTTP_404_NOT_FOUND)
+        whose = str(grant.get("link") or "another machine")
+        if me.kind == "link" and whose != me.name:
+            # a machine takes back what it asked for, never a database of the same name of another's
+            return refuse(f"{name} is a database of another machine here, not of {me.name}: it is not touched",
+                          status.HTTP_403_FORBIDDEN)
+
+        async def action(job):
+            done = await workspaceops._helper(job, "machine-db-ungrant", major, name, what, timeout=MACHINE_TIMEOUT)
+            source = done.get("address")
+            # whose it is stays in the title: the lines of a drop are read on the machine that asked it too
+            if what == "revoke":
+                job.log(f"Database {name} is no longer reached from {source}: its line of pg_hba.conf is gone, "
+                        f"{done.get('closed')} connections closed. The database and its role stay: Allow again, "
+                        "or Drop")
+            elif what == "allow":
+                job.log(f"Database {name} is reached from {source} again: its line of pg_hba.conf is back")
+            else:
+                job.log(f"Database {name} dropped, with its role and its line of pg_hba.conf")
+            job.log(firewall_line(done))
+            if what == "drop":
+                if not done.get("grants_left") and done.get("port"):
+                    job.log(f"The cluster still listens on port {done.get('port')}, closed to every address: "
+                            "Close the port, in the Database tab, makes it socket only again")
+            job.result = {**job.result, "ungrant": {**done, "what": what}}
+        title = {"revoke": f"Revoke database {name} of {whose} on the machine's PostgreSQL {major}",
+                 "allow": f"Allow database {name} of {whose} on the machine's PostgreSQL {major} again",
+                 "drop": f"Drop database {name} of {whose} on the machine's PostgreSQL {major}"}[what]
+        job = jobs.submit(title, [f"{MACHINE_KEY}/{major}"], f"manual: {me}", action)
+        return {"job": job.id}
+
+    @app.post("/api/postgres/machine/{major}/port/close")
+    async def postgres_port_close(major: str, me: Principal = Depends(current_user)):
+        """The cluster back to its socket only, when no other machine is let in."""
+        postgres_admin(me)
+        if known_cluster(major) is None:
+            return refuse(f"No cluster of PostgreSQL {major} on this machine", status.HTTP_404_NOT_FOUND)
+
+        async def action(job):
+            done = await workspaceops._helper(job, "machine-db-port", major, "close", timeout=MACHINE_TIMEOUT)
+            job.log(f"The port {done.get('closed')} is closed: the machine's PostgreSQL {major} is reached by its "
+                    f"socket only again; its container was made again in {done.get('restarted_s')} s. Its instances "
+                    "lost their connections: each may answer an error to its first request or two, then goes on")
+        job = jobs.submit(f"Close the port of the machine's PostgreSQL {major}", [f"{MACHINE_KEY}/{major}"],
+                          f"manual: {me}", action)
+        return {"job": job.id}
+
+    def linked_refusal(link: LinkTarget, resp: httpx.Response, major: str) -> str:
+        """Why the linked machine did not take a request about its cluster."""
+        if resp.status_code == 401:
+            return f"{link.name} refused the link's token: ask it for a new one"
+        if resp.status_code == 403:
+            return (f"{link.name} refused: a database on its cluster needs the admin role there, for the link "
+                    "and for you")
+        try:
+            said = resp.json().get("error") or resp.json().get("detail") or ""
+        except (ValueError, AttributeError):
+            said = ""
+        if resp.status_code in (404, 405) and not said:
+            return (f"{link.name} has no databases for other machines: its OmniaCLI is older than this one, "
+                    f"or it has no cluster of PostgreSQL {major}")
+        return f"{link.name}: {said or f'HTTP {resp.status_code}'}"
+
+    @app.get("/api/links/{name}/postgres")
+    async def link_postgres(name: str, me: Principal = Depends(current_user)):
+        """What New instance shows before a database is asked of the cluster
+        of a linked OmniaCLI: its clusters, how this machine reaches it, the
+        round trip measured now, the address this machine goes out with."""
+        postgres_admin(me)
+        link = settings.link_targets.get(name)
+        if link is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"No link {name}")
+        host = linkedcluster.host_of(link)
+        why = linkedcluster.unprotected(link)
+        if why:
+            return {"link": name, "host": host, "clusters": [], "error": why}
+        try:
+            resp = await link_clients.client(link).get(
+                "/api/postgres/machine/offer", timeout=LIST_TIMEOUT * 4,
+                headers={**link_headers(link, me.on_behalf or me.name, me.role), "Accept": "application/json"})
+        except httpx.HTTPError as exc:
+            return {"link": name, "host": host, "clusters": [], "error": f"{name}: {describe_error(exc)}"}
+        if resp.status_code != 200:
+            return {"link": name, "host": host, "clusters": [], "error": linked_refusal(link, resp, "?")}
+        try:
+            clusters = [c for c in resp.json().get("clusters") or [] if isinstance(c, dict)]
+        except (ValueError, AttributeError):
+            clusters = []
+        ports = [c["port"] for c in clusters if isinstance(c.get("port"), int) and 0 < c["port"] < 65536]
+        ports.append(linkedcluster.link_port(link))
+        found = await asyncio.to_thread(linkedcluster.measure, host, ports)
+        return {"link": name, "host": host, "clusters": clusters, "error": None,
+                "address": found["address"], "ms": found["ms"], "measured_on": found["port"],
+                "tries": found["tries"], "warn_ms": linkedcluster.WARN_MS, "queries": linkedcluster.PAGE_QUERIES,
+                "page_s": linkedcluster.page_seconds(found["ms"]) if found["ms"] is not None else None,
+                # a private address here and a public one there: this machine goes out through another one
+                "nat": bool(found["address"]) and not linkedcluster.public_address(found["address"])
+                and linkedcluster.public_address(host)}
+
+    def linked_request(ws: Workspace, instance: str, asked, me: Principal):
+        """What a new instance on the cluster of a linked OmniaCLI needs,
+        checked before its job: the link (protected), the PostgreSQL, the
+        address this machine is seen with there, the name of its role and
+        database (AD-002's); or the refusal."""
+        if not isinstance(asked, dict):
+            return refuse("linked: the link, its PostgreSQL and the address this machine is seen with there")
+        link = settings.link_targets.get(str(asked.get("link") or ""))
+        if link is None:
+            return refuse(f"No link {asked.get('link')!r}", status.HTTP_404_NOT_FOUND)
+        why = linkedcluster.unprotected(link)
+        if why:
+            return refuse(why)
+        major = str(asked.get("major") or "")
+        if not re.fullmatch(r"\d{1,3}", major):
+            return refuse(f"{major!r} is not a PostgreSQL of {link.name}")
+        try:
+            source = machinedb.address(asked.get("address"))
+            name = machinedb.env_name(ws.name, instance)
+            host = machinedb.reached_as([linkedcluster.host_of(link)])[0]
+        except machinedb.ClusterError as exc:
+            return refuse(str(exc))
+        return {"link": link.name, "major": major, "address": source, "name": name, "host": host,
+                "who": me.on_behalf or me.name, "role": me.role, "workspace": ws.name, "instance": instance}
+
+    async def linked_grant(job, linked: dict) -> dict:
+        """The database asked of the linked machine (its job followed here),
+        then reached as Odoo will: the connection of the instance
+        (workspacehelper.remote_spec), with the password made here. One that
+        cannot be reached is given back."""
+        link = settings.link_targets.get(linked["link"])
+        if link is None:
+            raise JobFailed(f"the link {linked['link']} is no longer here")
+        major, name, host = linked["major"], linked["name"], linked["host"]
+        password = stacktemplates.new_password()
+        client = link_clients.client(link)
+        headers = {**link_headers(link, linked["who"], linked["role"]), "Accept": "application/json"}
+        job.log(f"--- its database on PostgreSQL {major} of {link.name}: role and database {name}, let in from "
+                f"{linked['address']} only, over TLS; its password is made here and is not sent")
+        try:
+            resp = await client.post(f"/api/postgres/machine/{major}/grants", headers=headers, json={
+                "name": name, "host": linked["address"], "reached_as": host,
+                "verifier": linkedcluster.scram_verifier(password),
+                "workspace": linked["workspace"], "instance": linked["instance"]})
+        except httpx.HTTPError as exc:
+            raise JobFailed(f"{link.name}: {describe_error(exc)}") from None
+        if resp.status_code != 200:
+            raise JobFailed(linked_refusal(link, resp, major))
+        try:
+            remote_id = str(resp.json().get("job") or "")
+        except (ValueError, AttributeError):
+            remote_id = ""
+        if not remote_id:
+            raise JobFailed(f"{link.name} started no job for the database")
+        try:
+            data = await linkcopy.follow(job, client, link, headers, remote_id, "the database")
+        except (JobFailed, asyncio.CancelledError) as exc:
+            # its job failed (it made nothing, or took it back itself), or it was not seen to its end: nothing
+            # is dropped there from here, where a database of that name may be another instance's
+            if isinstance(exc, asyncio.CancelledError) or "goes on" in str(exc):
+                job.warn(f"The job of {link.name} was not followed to its end: if it made database {name} all the "
+                         "same, it stays there: an admin there drops it in its Database tab (From other machines)")
+            raise
+        try:
+            # made there by this job: from here on, what fails gives it back
+            grant = (data.get("result") or {}).get("grant") or {}
+            remote = workspacehelper.remote_spec({
+                "host": host, "port": grant.get("port"), "user": grant.get("role"), "password": password,
+                "database": grant.get("database"), "ca": grant.get("ca"), "link": link.name, "major": major})
+            found = await asyncio.to_thread(linkedcluster.check, host, remote["port"], remote["ca"], remote["user"],
+                                            remote["database"], linked["address"])
+            trip = await asyncio.to_thread(linkedcluster.measure, host, [remote["port"]])
+        except (workspacehelper.HelperError, linkedcluster.CheckFailed, asyncio.CancelledError) as exc:
+            # made there and not usable from here (or this job stopped): given back
+            await linked_release(job, link.name, major, name, linked["who"], linked["role"])
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            raise JobFailed(str(exc)) from None
+        job.log(f"PostgreSQL {major} of {link.name} answers on {host}:{remote['port']} over {found['tls']}, its "
+                "certificate verified against its CA and its name, and lets this machine in"
+                + (f"; round trip {trip['ms']:g} ms (the median of {trip['tries']} connections)"
+                   if trip["ms"] is not None else ""))
+        if trip["ms"] is not None and trip["ms"] > linkedcluster.WARN_MS:
+            job.warn(f"The round trip to the database is {trip['ms']:g} ms: a page of "
+                     f"{linkedcluster.PAGE_QUERIES} queries waits {linkedcluster.page_seconds(trip['ms']):g} s "
+                     "more for the network alone")
+        return remote
+
+    async def linked_release(job, link_name: str, major: str, database: str, who: str, role: str) -> None:
+        """The linked machine asked to take its part back: the database and
+        its role dropped, its line of pg_hba.conf, the firewall rule when no
+        other database uses it. It never fails the job: when that machine
+        does not answer, what stays there is said."""
+        stays = (f"database {database} and role {database} of its PostgreSQL {major}, their line of pg_hba.conf and "
+                 "the firewall rule for this machine's address: an admin there drops them in its Database tab "
+                 "(From other machines)")
+        link = settings.link_targets.get(link_name)
+        if link is None:
+            job.warn(f"The link {link_name} is no longer here: on that machine stay {stays}")
+            return
+        client = link_clients.client(link)
+        headers = {**link_headers(link, who, role), "Accept": "application/json"}
+        job.log(f"--- its database on PostgreSQL {major} of {link.name}: asked to drop it")
+        try:
+            resp = await client.post(f"/api/postgres/machine/{major}/grants/{database}/drop", headers=headers, json={})
+            if resp.status_code != 200:
+                raise JobFailed(linked_refusal(link, resp, major))
+            answer = resp.json()
+            if answer.get("gone"):
+                job.log(f"{link.name} had no database {database} of this machine any more: nothing stays there")
+                return
+            data = await linkcopy.follow(job, client, link, headers, str(answer.get("job") or ""),
+                                         "the removal of the database")
+        except (httpx.HTTPError, JobFailed, ValueError) as exc:
+            reason = describe_error(exc) if isinstance(exc, httpx.HTTPError) else str(exc)
+            job.warn(f"{link.name} did not take its part back ({reason}): on it stay {stays}")
+            return
+        done = (data.get("result") or {}).get("ungrant") or {}
+        still = ", ".join(done.get("firewall") or [])
+        job.log(f"PostgreSQL {major} of {link.name}: database {database} and its role dropped, its line of "
+                "pg_hba.conf removed; its firewall "
+                + (f"still lets {still} in, for other databases" if still else "lets no address in any more"))
+        if not done.get("grants_left") and done.get("port"):
+            job.log(f"Its port {done.get('port')} stays open there, closed to every address: Close the port, in "
+                    f"the Database tab of {link.name}, takes it away")
+
+    def link_now(inst: Instance) -> str:
+        """The link of an instance's database on a linked cluster, by the name
+        it has now: the one recorded at the creation, or, when that link was
+        renamed since, the link that leads to the database's host; "" for an
+        instance of any other kind, and when no link leads there any more."""
+        recorded = remote_db_host(inst, "database_link")
+        if not recorded or recorded in settings.link_targets:
+            return recorded
+        host = remote_db_host(inst).rpartition(":")[0].lower()
+        # of several links to that machine, one that may carry it (HTTPS or SSH), as the one that made it was
+        return next((link.name for link in settings.link_targets.values()
+                     if host and linkedcluster.host_of(link) == host and linkedcluster.unprotected(link) is None), "")
+
+    def linked_database(inst: Instance) -> dict | None:
+        """{"link", "major", "database"} of an instance whose database is on
+        the cluster of a linked OmniaCLI (its record), None for any other;
+        the link by the name it has now, else as it was recorded."""
+        link, major = remote_db_host(inst, "database_link"), remote_db_host(inst, "database_major")
+        return ({"link": link_now(inst) or link, "major": major, "database": inst.options.database}
+                if link and major else None)
 
     def postgres_basis(row: dict, machine: dict, memory_gb: float, disk: str, rows: list[dict]) -> dict:
         ws = settings.workspaces.get(row.get("workspace") or "")
@@ -10655,8 +11039,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         port; None when its configuration cannot be read. What the Database
         row says first, and what the map draws (UX-009)."""
         if inst.restart.type == "compose" and on_remote_db(inst):
+            # link, major: on the cluster of a linked OmniaCLI, for the machine's admins (a user of
+            # workspaces reads the host only, as of any database of another machine)
             return {"where": "remote", "host": remote_db_host(inst) or "another machine",
-                    "replica": remote_db_host(inst, "replica_on")}
+                    "replica": remote_db_host(inst, "replica_on"),
+                    "link": link_now(inst) or None,
+                    "major": remote_db_host(inst, "database_major") or None}
         if inst.restart.type == "compose":
             return {"where": "machine" if on_machine_db(inst) else "dedicated"}
         try:

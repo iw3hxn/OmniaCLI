@@ -187,9 +187,11 @@ async def drop_disk(job: Job | None, ws: Workspace) -> str:
     return f"its disk ({freed} GB) taken away"
 
 
-async def remove_instance(job: Job, ws: Workspace, instance: str) -> None:
+async def remove_instance(job: Job, ws: Workspace, instance: str, linked: bool = False) -> None:
+    """linked: its database is on the cluster of a linked OmniaCLI, which the
+    application asks to take it back after this (not a third party's, which stays)."""
     removed = await _helper(job, "remove", ws.name, ws.storage, instance)
-    for where in removed.get("database_left_on") or []:
+    for where in () if linked else removed.get("database_left_on") or []:
         # a database of another machine is not this machine's to drop (AD-003)
         job.log(f"Its database stays on {where}: it is of who runs that machine, to drop there")
 

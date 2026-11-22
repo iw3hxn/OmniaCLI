@@ -10,7 +10,11 @@
    only primary, while there is none (POST /api/postgres/machine/create);
    Take the cluster away… when it serves nothing. The confirm of a dialog is
    the dialog's. Never a parameter of the point-in-time recovery or of the
-   replication: the server leaves them out. -#}
+   replication: the server leaves them out. The cluster's row lists, under
+   From other machines, its databases an instance of a linked OmniaCLI uses
+   (AD-003): the address each is reached from, the link, who asked and when,
+   with Revoke…, Allow again, Drop… (POST …/machine/<major>/grants/<name>/
+   revoke|allow|drop) and Close the port… when none is let in. -#}
 <style>
 .pg-table td, .pg-table th { vertical-align: top; }
 .pg-table tr.pg-row { cursor: pointer; }
@@ -197,6 +201,26 @@
     confirmMachine: {{ _("Restart the machine's cluster now? The {n} instances on it ({list}) do not answer for a few seconds; whoever is saving at that moment gets an error and tries again.") | tojson }},
     clusterAsk: {{ _("Make the PostgreSQL of this machine? A container of OmniaCLI, PostgreSQL {major}, its data on the storage {storage}, no port. The new instances are made on it; the instances of now keep their database.") | tojson }},
     clusterNot: {{ _("No machine's cluster here: {why}") | tojson }},
+    // a database of the cluster used by an instance of another machine, a linked OmniaCLI's (AD-003)
+    notHereLinked: {{ _("Not here: {key} uses PostgreSQL {major} of {link} ({host}); it is tuned there, in its Database tab.") | tojson }},
+    machineSubPort: {{ _("a container of OmniaCLI, data on the storage {storage}, its socket for this machine and port {port} over TLS for other machines") | tojson }},
+    machineWherePort: {{ _("container of OmniaCLI, its data on the storage {storage}; the instances of this machine reach its socket, each with its role and its data in the tablespace on its workspace's disk; other machines reach port {port} over TLS, each from its one address and to its one database, with the data on the storage of the cluster") | tojson }},
+    grants: {{ _("From other machines") | tojson }},
+    grantsSub: {{ _("from other machines: {list}") | tojson }},
+    grantLine: {{ _("{name}: from {address}, through the link {link}, asked by {by} on {when}") | tojson }},
+    grantFor: {{ _("for its instance {instance}") | tojson }},
+    grantRevoked: {{ _("revoked: it no longer comes in, the database stays") | tojson }},
+    revoke: {{ _("Revoke…") | tojson }},
+    revokeTitle: {{ _("Takes the line of pg_hba.conf of this database away and closes its connections: the instance of the other machine stops working at once. The database and its role stay, and the firewall no longer lets that address in when no other database uses it. It is a job.") | tojson }},
+    revokeAsk: {{ _("Revoke {name}? The instance {instance} of {link} loses its database at once and stops working. The database and its role stay here: Allow again gives it back.") | tojson }},
+    allow: {{ _("Allow again") | tojson }},
+    allowTitle: {{ _("Puts the line of pg_hba.conf of this database back, for the same address: the instance of the other machine works again. It is a job.") | tojson }},
+    drop: {{ _("Drop…") | tojson }},
+    dropTitle: {{ _("Deletes this database and its role from the cluster, as the removal of an instance does. The instance of the other machine has no database any more. It cannot be undone. It is a job.") | tojson }},
+    dropAsk: {{ _("Drop the database {name} of {link}? Its data is deleted and cannot be brought back; the instance {instance} there no longer works. Write its name to confirm.") | tojson }},
+    closePort: {{ _("Close the port…") | tojson }},
+    closePortTitle: {{ _("Makes the cluster reached by its socket only again, as before the first database of another machine. Its container is made again, in about a second: the instances on it lose their connections, and each may answer an error to its first request or two after that. Possible when no other machine is let in. It is a job.") | tojson }},
+    closePortAsk: {{ _("Close port {port} of the machine's cluster? Its container is made again: the {n} instances on it ({list}) lose their connections, and each may answer an error to its first request or two after that.") | tojson }},
     removeCluster: {{ _("Take the cluster away…") | tojson }},
     removeClusterTitle: {{ _("Deletes the container of the machine's PostgreSQL and its data folder; possible only when it serves no instance. It is a job.") | tojson }},
     removeAsk: {{ _("Take the machine's PostgreSQL {major} away? Its container and its data folder are deleted; it serves no instance.") | tojson }},
@@ -278,8 +302,9 @@
       const badge = el("span", {className: "badge info", textContent: kindText(row)});
       badge.style.marginLeft = "8px";
       td.append(el("strong", {textContent: T.machine}), badge,
-        el("span", {className: "pg-sub", textContent: fill(T.machineSub, {storage: row.storage})}),
+        el("span", {className: "pg-sub", textContent: fill(row.port ? T.machineSubPort : T.machineSub, {storage: row.storage, port: row.port})}),
         el("span", {className: "pg-sub", textContent: row.serves.length ? fill(T.serves, {list: servedList(row)}) : T.machineNone}));
+      if ((row.grants || []).length) td.append(el("span", {className: "pg-sub", textContent: fill(T.grantsSub, {list: grantList(row)})}));
       return td;
     }
     const badge = el("span", {className: "badge" + (row.kind === "test" ? " test-badge" : row.kind === "staging" ? " info" : " ok"), textContent: kindText(row)});
@@ -313,8 +338,10 @@
     if (row.where === "machine") {
       dl.append(el("dt", {textContent: T.serve}), el("dd", {}, ...(row.serves.length ? row.serves.flatMap((s, i) => [i ? ", " : "",
         el("a", {href: instanceUrl(s), textContent: s.server})]) : [T.machineNone])));
-      dl.append(el("dt", {textContent: T.where}), el("dd", {textContent: fill(T.machineWhere, {storage: row.storage})}));
+      dl.append(el("dt", {textContent: T.where}), el("dd", {textContent: fill(row.port ? T.machineWherePort : T.machineWhere, {storage: row.storage, port: row.port})}));
       dl.append(el("dt", {textContent: T.pitr}), el("dd", {textContent: T.pitrMachine}));
+      // which of its databases are used from another machine, from which address, and by whom it was asked
+      if ((row.grants || []).length) dl.append(el("dt", {textContent: T.grants}), el("dd", {}, ...row.grants.map((g) => grantRow(row, g))));
     } else {
     dl.append(el("dt", {textContent: T.serve}), el("dd", {}, el("a", {href: instanceUrl(row), textContent: row.server + " (" + kindText(row) + ")"})));
     dl.append(el("dt", {textContent: T.where}), el("dd", {textContent: row.workspace ? fill(T.whereDedicated, {ws: row.workspace}) : T.whereDedicatedAlone}));
@@ -356,7 +383,9 @@
       actions.append(el("button", {type: "button", className: "small danger", textContent: T.reset, title: T.resetTitle, onclick: () => openReset(row)}));
     }
     if (row.where === "machine") {
-      if (!row.serves.length) actions.append(el("button", {type: "button", className: "small danger", textContent: T.removeCluster,
+      if (row.port && !(row.grants || []).some((g) => !g.revoked)) actions.append(el("button", {type: "button", className: "small",
+        textContent: T.closePort, title: T.closePortTitle, onclick: (e) => closePort(row, e.currentTarget)}));
+      if (!row.serves.length && !(row.grants || []).length) actions.append(el("button", {type: "button", className: "small danger", textContent: T.removeCluster,
         title: T.removeClusterTitle, onclick: (e) => removeCluster(row, e.currentTarget)}));
     } else actions.append(el("a", {href: instanceUrl(row) + "#monitor", textContent: T.stats, title: T.statsTitle}));
     box.append(actions);
@@ -401,7 +430,8 @@
     document.getElementById("pg-empty").hidden = rows.length > 0;
     search.hidden = rows.length <= 8;
     const remote = document.getElementById("pg-remote");
-    remote.textContent = data.remote.map((r) => fill(T.notHere, {key: r.server + (r.role === "test" ? " (" + T.kinds.test + ")" : ""), host: r.host})).join(" ");
+    remote.textContent = data.remote.map((r) => fill(r.link ? T.notHereLinked : T.notHere, {key: r.server + (r.role === "test" ? " (" + T.kinds.test + ")" : ""),
+      host: r.host, link: r.link, major: r.major})).join(" ");
     remote.hidden = !data.remote.length;
     // + Machine's cluster: the tab's primary while there is none
     const offer = data.cluster || {}, box = document.getElementById("pg-cluster-box"), make = document.getElementById("pg-cluster");
@@ -417,6 +447,40 @@
     if (answer.error || !answer.job) { errorBox.textContent = answer.error || T.refused; return; }
     location.href = `${PREFIX}/jobs/${answer.job}`;
   });
+  // a database of another machine on the cluster: who uses it and from where, with what an admin of this machine may do
+  const grantList = (row) => row.grants.map((g) => `${g.name} (${g.link}, ${g.address})`).join(", ");
+  function grantRow(row, g) {
+    const line = el("div", {className: "pg-grant"});
+    line.style.cssText = "display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 4px";
+    const text = [fill(T.grantLine, {name: g.name, address: g.address, link: g.link, by: g.by || "?", when: g.at ? when(g.at) : "?"})];
+    if (g.instance) text.push(fill(T.grantFor, {instance: g.instance}));
+    line.append(el("span", {textContent: text.join(", ")}));
+    if (g.revoked) {
+      line.append(el("span", {className: "badge warn", textContent: T.grantRevoked}));
+      line.append(el("button", {type: "button", className: "small", textContent: T.allow, title: T.allowTitle,
+        onclick: () => grantAction(row, g, "allow")}));
+    } else {
+      line.append(el("button", {type: "button", className: "small danger", textContent: T.revoke, title: T.revokeTitle,
+        onclick: async (e) => { if (await window.omniaAsk(fill(T.revokeAsk, {name: g.name, link: g.link, instance: g.instance || g.name}), e.currentTarget, {danger: true})) grantAction(row, g, "revoke"); }}));
+    }
+    line.append(el("button", {type: "button", className: "small danger", textContent: T.drop, title: T.dropTitle,
+      onclick: async (e) => {
+        const go = e.currentTarget.textContent.replace("…", "");
+        if (await window.omniaTypeName(fill(T.dropAsk, {name: g.name, link: g.link, instance: g.instance || g.name}), g.name, go)) grantAction(row, g, "drop");
+      }}));
+    return line;
+  }
+  async function grantAction(row, g, what) {
+    const answer = await post(`${API}/machine/${encodeURIComponent(row.major)}/grants/${encodeURIComponent(g.name)}/${what}`);
+    if (answer.error || !answer.job) { errorBox.textContent = answer.error || T.refused; return; }
+    location.href = `${PREFIX}/jobs/${answer.job}`;
+  }
+  async function closePort(row, button) {
+    if (!await window.omniaAsk(fill(T.closePortAsk, {port: row.port, n: row.serves.length, list: servedList(row)}), button)) return;
+    const answer = await post(`${API}/machine/${encodeURIComponent(row.major)}/port/close`);
+    if (answer.error || !answer.job) { errorBox.textContent = answer.error || T.refused; return; }
+    location.href = `${PREFIX}/jobs/${answer.job}`;
+  }
   async function removeCluster(row, button) {
     if (!await window.omniaAsk(fill(T.removeAsk, {major: row.major}), button, {danger: true})) return;
     const answer = await post(`${API}/machine/${encodeURIComponent(row.major)}/remove`);

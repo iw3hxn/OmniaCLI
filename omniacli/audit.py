@@ -88,6 +88,9 @@ NOT_SENSITIVE = frozenset({
     # diagram; of the caught mail the count only, no list of backups, no text, no log
     "/api/map",
     "/api/postgres/{server}/{role}/proposal",
+    # a database on the cluster of a linked OmniaCLI (AD-003): the clusters a machine offers and the
+    # round trip to it, read before the grant; the grant, its revoke and its drop are actions, logged
+    "/api/postgres/machine/offer", "/api/links/{name}/postgres",
     "/x/odoo/servers/{server}/{role}/addons", "/x/odoo/servers/{server}/{role}/addons/versions",
     # an invitation's form (its use is logged by the route) and where a user of a customer may be made
     "/invite/{token}", "/api/access/workspaces", "/api/access/workspace-choices",

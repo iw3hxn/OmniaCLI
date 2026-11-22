@@ -300,6 +300,29 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
       <div class="form-grid" id="template-fields" style="margin-top: 8px"></div>
       {# a database of another machine (AD-003): its connection, asked only for such a template #}
       <div id="remote-fields" hidden>
+        {# on the cluster of a linked OmniaCLI: that machine makes the role and the database, nothing is typed #}
+        {% if db_links %}
+        <div class="form-grid" style="margin-top: 10px">
+          <label for="rd-where">{{ _("Where the database is") }}</label>
+          <select id="rd-where" title="{{ _('On the cluster of a linked machine OmniaCLI makes the role and the database there, lets this machine in and brings the connection back. Of a third party: you give the connection its administrator gave you.') }}">
+            <option value="">{{ _("of a third party: I give its connection") }}</option>
+            {% for l in db_links %}<option value="{{ l }}">{{ _("on the cluster of {link}", link=l) }}</option>{% endfor %}
+          </select>
+        </div>
+        <div id="rd-linked" hidden>
+          <p class="muted" id="rd-linked-state" style="font-size: 13px; margin: 10px 0 4px" role="status"></p>
+          <div class="form-grid" id="rd-linked-fields" hidden>
+            <label for="rd-major">PostgreSQL</label>
+            <select id="rd-major" style="width: auto" title="{{ _('The cluster of that machine the database is made on') }}"></select>
+            <label for="rd-address">{{ _("This machine as seen from there") }}</label>
+            <input type="text" id="rd-address" class="mono" autocomplete="off" spellcheck="false" style="width: 14em" title="{{ _('The one address that machine lets in to this database (pg_hba.conf and firewall): the one this machine goes out with to reach it. Change it when this machine goes out through another address (NAT): the job checks it before anything is made here.') }}">
+          </div>
+          <p class="muted" id="rd-rtt" style="font-size: 13px; margin: 8px 0 0" hidden></p>
+          <p class="error" id="rd-rtt-warn" style="font-size: 13px; margin: 4px 0 0" hidden></p>
+          <p class="muted" id="rd-first" style="font-size: 13px; margin: 4px 0 0" hidden></p>
+        </div>
+        {% endif %}
+        <div id="rd-manual">
         <p class="muted" style="font-size: 13px; margin: 10px 0 4px">{{ _("The database is on another machine: Odoo reaches it over TLS and checks its certificate against the CA below. OmniaCLI only makes the connection: the database is tuned, backed up as a server and kept by who runs that machine. Machine admins only.") }}</p>
         <div class="form-grid">
           <label for="rd-host">{{ _("Host of the database") }}</label>
@@ -317,6 +340,7 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
             <input type="number" id="rd-replica-port" class="mono" min="1" max="65535" placeholder="5432" style="width: 110px" title="{{ _('The port of the replica: empty, the port of the database') }}"></span>
           <label for="rd-ca">{{ _("CA of its certificate (PEM)") }}</label>
           <textarea id="rd-ca" class="mono" rows="4" spellcheck="false" placeholder="-----BEGIN CERTIFICATE-----" title="{{ _('The certificate of the authority that signed the certificate of that PostgreSQL: without it the server is not verified and the instance is not made') }}"></textarea>
+        </div>
         </div>
       </div>
       <p class="muted" style="font-size: 13px">{{ _("The new database has the user admin with password admin: change it at the first login.") }}</p>
@@ -541,9 +565,93 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
     const chosen = templates.find((x) => x.name === templateSelect.value);
     const remote = !!chosen && chosen.database === "remote";
     $("remote-fields").hidden = !remote;
-    const whole = !remote || ["rd-host", "rd-port", "rd-user", "rd-password", "rd-database", "rd-ca"].every((id) => $(id).value.trim());
+    drawLinked();
+    const whole = !remote || (linkedName() ? linkedReady()
+      : ["rd-host", "rd-port", "rd-user", "rd-password", "rd-database", "rd-ca"].every((id) => $(id).value.trim()));
     $("create-instance").disabled = !good || !whole;
     $("fa-create").disabled = !good || !faSelect.value;
+  }
+  // a database on the cluster of a linked OmniaCLI (AD-003): what that machine offers, the round trip to it and
+  // the address this machine goes out with, asked when the link is chosen; nothing is made before Create
+  const LT = {
+    asking: {{ _("Asking {link} for its clusters and measuring the round trip…") | tojson }},
+    noCluster: {{ _("{link} has no machine's cluster: make it in its Database tab, or give the connection of a database yourself.") | tojson }},
+    intro: {{ _("On PostgreSQL {major} of {link}, reached at {host}: OmniaCLI makes there the role and the database of this instance, lets this machine in (one line of pg_hba.conf and the firewall, this address only, over TLS) and brings back the connection and the CA. The password is made here and never sent. The database is tuned in the Database tab of {link}; removing the instance drops it there.") | tojson }},
+    rtt: {{ _("Round trip to {host}: {ms} ms (the median of {n} connections to its port {port}).") | tojson }},
+    noRtt: {{ _("The round trip to {host} cannot be measured: no port of it answers from here. The job measures it on the database's port.") | tojson }},
+    slow: {{ _("Above {warn} ms: a page of {queries} queries waits {seconds} s more for the network alone. Choose a cluster nearer to this machine, or a dedicated database.") | tojson }},
+    nat: {{ _("This machine has a private address and {link} a public one: it goes out through another address. Write the one {link} sees.") | tojson }},
+    first: {{ _("It is the first database of another machine there: PostgreSQL {major} of {link} starts listening on a port and restarts once, in about a second. Its {n} instances lose their connections to it: each may answer an error to its first request or two after that, then goes on.") | tojson }},
+    firstAsk: {{ _("Create it? PostgreSQL {major} of {link} restarts once to listen on a port: its {n} instances lose their connections to it, and each may answer an error to its first request or two after that; whoever is saving at that moment tries again.") | tojson }},
+    stopped: {{ _("stopped") | tojson }},
+  };
+  const fillText = (text, values) => text.replace(/\{(\w+)\}/g, (m, k) => (k in values ? values[k] : m));
+  const shortNumber = (n) => Number(n).toLocaleString(document.documentElement.lang || undefined, {maximumFractionDigits: 2});
+  let linkedInfo = null;
+  function linkedName() { const where = $("rd-where"); return where ? where.value : ""; }
+  function linkedCluster() { return linkedInfo && (linkedInfo.clusters || []).find((c) => c.major === $("rd-major").value); }
+  function linkedReady() {
+    return !!(linkedInfo && !linkedInfo.error && linkedCluster() && /^\d{1,3}(\.\d{1,3}){3}$/.test($("rd-address").value.trim()));
+  }
+  function drawLinked() {
+    if (!$("rd-where")) return;
+    const link = linkedName(), info = linkedInfo, state = $("rd-linked-state");
+    $("rd-linked").hidden = !link;
+    $("rd-manual").hidden = !!link;
+    if (!link) return;
+    const cluster = info && !info.error ? linkedCluster() || (info.clusters || [])[0] : null;
+    $("rd-linked-fields").hidden = !cluster;
+    for (const id of ["rd-rtt", "rd-rtt-warn", "rd-first"]) $(id).hidden = true;
+    if (!info) { state.textContent = fillText(LT.asking, {link}); return; }
+    if (info.error) { state.textContent = info.error; return; }
+    if (!cluster) { state.textContent = fillText(LT.noCluster, {link}); return; }
+    state.textContent = fillText(LT.intro, {link, host: info.host, major: cluster.major});
+    const rtt = $("rd-rtt"), warn = $("rd-rtt-warn"), first = $("rd-first");
+    rtt.hidden = false;
+    rtt.textContent = info.ms === null ? fillText(LT.noRtt, {host: info.host})
+      : fillText(LT.rtt, {host: info.host, ms: shortNumber(info.ms), n: info.tries, port: info.measured_on});
+    const said = [];
+    if (info.ms !== null && info.ms > info.warn_ms) said.push(fillText(LT.slow, {warn: shortNumber(info.warn_ms), queries: info.queries, seconds: shortNumber(info.page_s)}));
+    if (info.nat) said.push(fillText(LT.nat, {link}));
+    warn.textContent = said.join(" ");
+    warn.hidden = !said.length;
+    first.hidden = !!cluster.port;
+    first.textContent = fillText(LT.first, {link, major: cluster.major, n: cluster.serves});
+  }
+  async function askLinked() {
+    const link = linkedName(), address = $("rd-address");
+    linkedInfo = null;
+    instanceChanged();
+    if (!link) return;
+    const resp = await fetch("{{ prefix }}/api/links/" + encodeURIComponent(link) + "/postgres", {headers: {Accept: "application/json"}}).catch(() => null);
+    const info = resp ? await resp.json().catch(() => ({})) : {};
+    if (linkedName() !== link) return;  // another one was chosen while this was asked
+    linkedInfo = resp && resp.ok ? info : {error: info.error || info.detail || T.error.replace("{status}", resp ? resp.status : "–"), clusters: []};
+    const majors = $("rd-major");
+    majors.length = 0;
+    for (const c of linkedInfo.clusters || []) majors.append(new Option(c.major + (c.running ? "" : " · " + LT.stopped), c.major));
+    if (!address.value.trim() || address.dataset.auto === "1") { address.value = linkedInfo.address || ""; address.dataset.auto = "1"; }
+    instanceChanged();
+  }
+  // Create: the first database of another machine there restarts its cluster, said and asked before
+  async function createInstance() {
+    const values = {}, button = $("create-instance");
+    for (const input of fieldsBox.querySelectorAll("[data-field]")) values[input.dataset.field] = input.value;
+    const body = {instance: instanceName(), template: templateSelect.value, values};
+    if (!$("remote-fields").hidden && linkedName()) {
+      const cluster = linkedCluster();
+      if (!cluster) return;
+      if (!cluster.port && cluster.serves > 0
+          && !await window.omniaAsk(fillText(LT.firstAsk, {link: linkedName(), major: cluster.major, n: cluster.serves}), button)) return;
+      body.linked = {link: linkedName(), major: cluster.major, address: $("rd-address").value.trim()};
+    } else if (!$("remote-fields").hidden) {
+      body.remote = {host: $("rd-host").value.trim(), port: Number($("rd-port").value), user: $("rd-user").value.trim(),
+                     password: $("rd-password").value, database: $("rd-database").value.trim(), ca: $("rd-ca").value.trim(),
+                     replica_host: $("rd-replica").value.trim(), replica_port: $("rd-replica-port").value.trim()};
+    }
+    button.disabled = true;
+    const data = await post("instances/create", body, $("in-error"));
+    if (data) jobPage(data.job); else instanceChanged();
   }
   function openInstance() {
     if (!inDialog || inDialog.open) return;
@@ -559,19 +667,11 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
     $("in-cancel").onclick = () => inDialog.close();
     for (const kindOf of ["input", "change"]) $("in-form").addEventListener(kindOf, instanceChanged);
     $("in-form").addEventListener("submit", (event) => event.preventDefault());
-    $("create-instance").onclick = async () => {
-      const values = {};
-      for (const input of fieldsBox.querySelectorAll("[data-field]")) values[input.dataset.field] = input.value;
-      $("create-instance").disabled = true;
-      const body = {instance: instanceName(), template: templateSelect.value, values};
-      if (!$("remote-fields").hidden) {
-        body.remote = {host: $("rd-host").value.trim(), port: Number($("rd-port").value), user: $("rd-user").value.trim(),
-                       password: $("rd-password").value, database: $("rd-database").value.trim(), ca: $("rd-ca").value.trim(),
-                       replica_host: $("rd-replica").value.trim(), replica_port: $("rd-replica-port").value.trim()};
-      }
-      const data = await post("instances/create", body, $("in-error"));
-      if (data) jobPage(data.job); else instanceChanged();
-    };
+    $("create-instance").onclick = createInstance;
+    if ($("rd-where")) {
+      $("rd-where").addEventListener("change", askLinked);
+      $("rd-address").addEventListener("input", () => { $("rd-address").dataset.auto = ""; });
+    }
     $("fa-create").onclick = async () => {
       $("fa-create").disabled = true;
       const data = await post("instances/from-archive", {instance: instanceName(), archive: faSelect.value,

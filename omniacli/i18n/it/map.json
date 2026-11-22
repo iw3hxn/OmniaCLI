@@ -108,6 +108,7 @@
  "Outside the workspaces": "Fuori dai workspace",
  "PostgreSQL of the system (port {port})": "PostgreSQL del sistema (porta {port})",
  "PostgreSQL {major} of the machine": "PostgreSQL {major} della macchina",
+ "PostgreSQL {major} of {link}": "PostgreSQL {major} di {link}",
  "Queued {n}": "In coda {n}",
  "Read at {when} · it updates by itself": "Letta alle {when} · si aggiorna da sola",
  "Reading the map…": "Leggo la mappa…",

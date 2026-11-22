@@ -28,23 +28,45 @@ An environment (a production or a staging of a workspace, AD-002):
   (allow_createdb), a CONNECTION LIMIT, temp files on its tablespace;
 - its database, owned by it, CONNECT and TEMPORARY taken from PUBLIC.
 
+Reached from another machine (AD-003, the cluster of a linked OmniaCLI):
+only once a database is asked for another machine (grant_add) the cluster
+listens on a port of this machine (PORTS: none a system PostgreSQL has),
+over TLS only, with a CA of its own (tls/, its key root's) and a server
+certificate for the names the other machines reach this one by; its
+container then has a network of its own (the bridge bridge_name), which
+firewall_rules lets in from the addresses of the grants only and never out.
+A grant is a role and a database of the same name (env_name of the other
+machine's workspace and instance), in the cluster's own tablespace, with one
+line of pg_hba: hostssl <database>,postgres <role> <address>/32
+scram-sha-256 (postgres: where Odoo looks whether its database is there). The
+role's password never comes here: the other machine sends its SCRAM
+verifier. grants.json holds who asked, from which link and address.
+
 Names are checked here and quoted; no value of a caller reaches SQL or a
 shell but through those checks. The internal names hold a dot, which no
 environment's name has (env_name: a-z 0-9 _), so they never meet."""
 
 from __future__ import annotations
 
+import datetime
 import hashlib
+import ipaddress
 import json
 import os
 import pwd
 import re
 import secrets
 import shutil
+import socket
 import struct
 import subprocess
 import time
 from pathlib import Path
+
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 MAJORS = ("17",)
 IMAGE = {"17": "postgres:17"}
@@ -86,6 +108,23 @@ _LIST_DROP = re.compile(r"^\d+; \d+ \d+ (?:EXTENSION|COMMENT - EXTENSION) ")
 ENV = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8"}
 READY_TIMEOUT = 180
 ACL_XATTR = "system.posix_acl_access"
+# reached from another machine (AD-003): the port of this machine the cluster
+# listens on (the first free of these; 5432 and those after it are a system
+# PostgreSQL's), what the cluster's project keeps of it, the port inside
+PORTS = range(15432, 15532)
+PORT_IN_DB = 5432
+LISTEN_FILE = "listen.json"
+GRANTS_FILE = "grants.json"
+TLS_FOLDER = "tls"
+SYSTEM_POSTGRES = Path("/etc/postgresql")
+# what another machine sends in place of the role's password: its SCRAM
+# verifier, as PostgreSQL keeps it (the password never leaves that machine)
+VERIFIER = re.compile(r"SCRAM-SHA-256\$\d{4,7}:[A-Za-z0-9+/]{16,88}={0,2}\$[A-Za-z0-9+/]{43}=:[A-Za-z0-9+/]{43}=")
+# a name another machine reaches this one by (the server certificate's)
+REACHED_AS = re.compile(r"(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?")
+LINK_NAME = re.compile(r"[A-Za-z0-9._@-]{1,64}")
+CA_YEARS = 20
+CERT_YEARS = 10
 
 
 class ClusterError(Exception):
@@ -326,16 +365,36 @@ def stop_letting_through(mount: Path) -> None:
 
 # --- the cluster -------------------------------------------------------------
 
-def compose_text(major: str, uid: int, gid: int, roots: list[str]) -> str:
+def bridge_name(major: str) -> str:
+    """The bridge of the network a listening cluster has: what the firewall names."""
+    return f"omnidb{_major(major)}"
+
+
+def compose_text(major: str, uid: int, gid: int, roots: list[str], port: int | None = None) -> str:
     """The cluster's project: no port, no network, its socket in run/, the
     storages of the workspaces mounted where they are (rslave: a disk
-    mounted later is seen), read only but its data, the slice of its own."""
+    mounted later is seen), read only but its data, the slice of its own.
+    port (AD-003, a database asked for another machine): that port of this
+    machine reaches it, over TLS only, on a network of its own."""
     mounts = "".join(
         f"      - type: bind\n        source: {root}\n        target: {root}\n        bind:\n"
         f"          propagation: rslave\n" for root in roots)
+    if port is None:
+        head = "No port and no network: the\n# instances on it reach its socket (run/), mounted read only."
+        network = "    network_mode: none\n"
+        listen = '"-c", "listen_addresses=",'
+        networks = ""
+    else:
+        head = (f"The instances of this machine\n# reach its socket (run/), mounted read only; those of another machine "
+                f"the port\n# {int(port)} of this one, over TLS, from the addresses pg_hba.conf and the firewall name.")
+        # IPv4 only: the firewall's rules and the lines of pg_hba are of IPv4 addresses
+        network = f'    networks:\n      - db\n    ports:\n      - "0.0.0.0:{int(port)}:{PORT_IN_DB}"\n'
+        listen = ('"-c", "listen_addresses=*", "-c", "ssl=on",\n'
+                  f'              "-c", "ssl_cert_file={CONF_IN_DB}/server.crt", "-c", "ssl_key_file={CONF_IN_DB}/server.key",\n'
+                  '              "-c", "ssl_min_protocol_version=TLSv1.2",')
+        networks = f"networks:\n  db:\n    driver_opts:\n      com.docker.network.bridge.name: {bridge_name(major)}\n"
     return f"""# written by omniacli workspace-helper machine-db-create: the machine's PostgreSQL {major}
-# (docs/adr/postgresql-della-macchina.md, AD-001). No port and no network: the
-# instances on it reach its socket (run/), mounted read only. It runs as
+# (docs/adr/postgresql-della-macchina.md, AD-001). {head} It runs as
 # {USER}, a user of this machine of its own, in the slice {SLICE}.
 name: omniacli-machine-db-{major}
 services:
@@ -343,8 +402,7 @@ services:
     image: {IMAGE[major]}
     restart: unless-stopped
     user: "{uid}:{gid}"
-    network_mode: none
-    read_only: true
+{network}    read_only: true
     shm_size: 256m
     tmpfs:
       - /tmp:size=64m
@@ -355,7 +413,7 @@ services:
     pids_limit: 2048
     cgroup_parent: {SLICE}
     stop_grace_period: 120s
-    command: ["postgres", "-c", "hba_file={CONF_IN_DB}/pg_hba.conf", "-c", "listen_addresses=",
+    command: ["postgres", "-c", "hba_file={CONF_IN_DB}/pg_hba.conf", {listen}
               "-c", "unix_socket_directories={SOCKET_IN_DB}", "-c", "unix_socket_permissions=0777"]
     environment:
       POSTGRES_USER: postgres
@@ -380,7 +438,7 @@ services:
       options:
         max-size: "50m"
         max-file: "5"
-"""
+{networks}"""
 
 
 def slice_text() -> str:
@@ -409,15 +467,23 @@ def make_shared(roots: list[str]) -> list[str]:
     return done
 
 
-def hba_text(envs: dict) -> str:
+def hba_text(envs: dict, granted: dict | None = None) -> str:
     """pg_hba.conf of the cluster: the superuser, then a line per
-    environment (its database, postgres, its throwaway databases), then
-    reject; no line for a network (it listens on none)."""
+    environment (its database, postgres, its throwaway databases), then a
+    line per database of another machine (AD-003: that database and
+    postgres, that role, that one address, over TLS; a revoked one has
+    none), then reject."""
     lines = ["# written by omniacli workspace-helper: who reaches which database of the machine's cluster",
              "local all postgres scram-sha-256"]
     for role in sorted(envs):
         name = _env(role)
         lines.append(f'local "{name}",postgres,"/^{name}-verify-[0-9a-f]+$" "{name}" scram-sha-256')
+    for role in sorted(granted or {}):
+        name, rec = _env(role), granted[role]
+        if not rec.get("revoked"):
+            # postgres too, as an environment of this machine: Odoo's image waits for the server there
+            # and Odoo looks there whether its database exists; no throwaway databases (no CREATEDB)
+            lines.append(f'hostssl "{name}",postgres "{name}" {address(rec.get("address"))}/32 scram-sha-256')
     lines += ["local all all reject", "host all all all reject"]
     return "\n".join(lines) + "\n"
 
@@ -441,7 +507,7 @@ def write_hba(project: Path, envs: dict) -> None:
     path = project / "conf" / "pg_hba.conf"
     before = path.read_text(encoding="utf-8") if path.is_file() else None
     uid, gid = pg_user()
-    write(path, hba_text(envs), mode=0o640, uid=0, gid=gid)
+    write(path, hba_text(envs, grants(project)), mode=0o640, uid=0, gid=gid)
     try:
         errors = sql(project, "postgres", "SELECT count(*) FROM pg_hba_file_rules WHERE error IS NOT NULL;\n").strip()
         if errors != "0":
@@ -522,6 +588,10 @@ def remove(major: str) -> dict:
     if envs:
         raise ClusterError(f"the cluster of PostgreSQL {major} holds {len(envs)} environments "
                            f"({', '.join(sorted(envs))}): move them to a dedicated database or remove them first")
+    lent = grants(project)
+    if lent:
+        raise ClusterError(f"the cluster of PostgreSQL {major} holds {len(lent)} databases of other machines "
+                           f"({', '.join(sorted(lent))}): remove their instances there, or drop them here first")
     _run(project, "down", "--remove-orphans", timeout=600)
     shutil.rmtree(project)
     with_folder = project.parent
@@ -545,11 +615,11 @@ def state() -> dict:
         project = Path(str(rec.get("project") or ""))
         row = {"major": major, "storage": rec.get("storage"), "project": str(project),
                "socket": str(project / "run"), "environments": environments(project), "running": False,
-               "promised": 0}
+               "promised": 0, "port": (listening(project) or {}).get("port"), "grants": grants(project)}
         if (project / "compose.yaml").is_file():
             done = _run(project, "ps", "--format", "{{.State}}", SERVICE, check=False)
             row["running"] = (done.stdout or "").strip() == "running"
-        row["promised"] = ROLE_LIMIT * len(row["environments"])
+        row["promised"] = ROLE_LIMIT * (len(row["environments"]) + len(row["grants"]))
         out.append(row)
     return {"clusters": out, "majors": list(MAJORS)}
 
@@ -577,10 +647,14 @@ def env_add(major: str, workspace: str, mount: Path, instance: str, password: st
     envs = environments(project)
     if role in envs and envs[role].get("instance") != instance:
         raise ClusterError(f"{role} is already an environment of another instance")
+    lent = grants(project)
+    if role in lent:
+        raise ClusterError(f"{role} is already the database of another machine on this cluster: an instance "
+                           "of this machine needs another name")
     most = int(sql(project, "postgres", "SHOW max_connections;\n").strip() or 0)
-    promised = ROLE_LIMIT * len({*envs, role})
+    promised = ROLE_LIMIT * len({*envs, *lent, role})
     if promised > most - RESERVE:
-        raise ClusterError(f"the cluster has {most} connections at most: {len(envs) + 1} environments of "
+        raise ClusterError(f"the cluster has {most} connections at most: {len({*envs, *lent, role})} environments of "
                            f"{ROLE_LIMIT} each and {RESERVE} in reserve do not fit; raise Connections at most "
                            "in the Database tab")
     uid, gid = pg_user()
@@ -694,6 +768,417 @@ def _workspace_gone(project: Path, workspace: str, mount: Path) -> dict:
             shutil.rmtree(folder)
         stop_letting_through(mount)
     return {"workspace_freed": workspace}
+
+
+# --- reached from another machine (AD-003, the cluster of a linked OmniaCLI) ----
+
+def address(value) -> str:
+    """The one IPv4 address a database of another machine is reached from:
+    never a network, never every address, never this machine itself."""
+    try:
+        found = ipaddress.ip_address(str(value or "").strip())
+    except ValueError:
+        raise ClusterError(f"{value!r} is not an address (a.b.c.d): the one the other machine comes from") from None
+    if found.version != 4 or found.is_unspecified or found.is_loopback or found.is_multicast or found.is_link_local:
+        raise ClusterError(f"{found} is not the address of another machine (one IPv4 address, not this machine's own)")
+    return str(found)
+
+
+def reached_as(names) -> list[str]:
+    """The names the other machines reach this one by, checked: what the
+    server certificate is made for (verify-full checks one of them)."""
+    found = []
+    for name in names:
+        name = str(name or "").strip().lower()
+        if not REACHED_AS.fullmatch(name) or name in ("localhost", "127.0.0.1"):
+            raise ClusterError(f"{name!r} is not a name or an address another machine reaches this one by")
+        if name not in found:
+            found.append(name)
+    return found
+
+
+def grants(project: Path) -> dict:
+    """{role: {"link", "address", "workspace", "instance", "by", "at",
+    "revoked"}} of the databases of this cluster other machines use."""
+    try:
+        data = json.loads((project / GRANTS_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {k: v for k, v in data.items() if ENV_NAME.fullmatch(k) and isinstance(v, dict)} \
+        if isinstance(data, dict) else {}
+
+
+def _save_grants(project: Path, found: dict) -> None:
+    write(project / GRANTS_FILE, json.dumps(found, indent=1, sort_keys=True) + "\n", mode=0o644)
+
+
+def listening(project: Path) -> dict | None:
+    """{"port", "bridge"} of a cluster that listens on a port of this
+    machine, None for one with its socket only."""
+    try:
+        data = json.loads((project / LISTEN_FILE).read_text(encoding="utf-8"))
+        port = int(data["port"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return {"port": port, "bridge": str(data.get("bridge") or "")} if 1024 <= port <= 65535 else None
+
+
+def system_ports(folder: Path | None = None) -> set[int]:
+    """The ports the PostgreSQL of the system has, running or not (its
+    clusters' postgresql.conf), and 5432, its own even where there is none yet."""
+    folder = folder or SYSTEM_POSTGRES
+    found = {5432}
+    for conf in folder.glob("*/*/postgresql.conf") if folder.is_dir() else ():
+        try:
+            text = conf.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        found.update(int(p) for p in re.findall(r"(?m)^\s*port\s*=\s*'?(\d{1,5})", text))
+    return found
+
+
+def _port_free(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        try:
+            probe.bind(("0.0.0.0", port))
+        except OSError:
+            return False
+    return True
+
+
+def pick_port(taken: set[int] = frozenset(), free=_port_free) -> int:
+    """The first port of PORTS nothing listens on, that no cluster of ours
+    and no PostgreSQL of the system has."""
+    avoid = set(taken) | system_ports()
+    for port in PORTS:
+        if port not in avoid and free(port):
+            return port
+    raise ClusterError(f"no port free between {PORTS[0]} and {PORTS[-1]} for the cluster to listen on")
+
+
+def _pem(key) -> str:
+    return key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                             serialization.NoEncryption()).decode()
+
+
+def _san(names: list[str]) -> x509.SubjectAlternativeName:
+    """An address is there as an address and as a name: a libpq before 15
+    compares an address with the names only."""
+    found: list[x509.GeneralName] = []
+    for name in names:
+        try:
+            found.append(x509.IPAddress(ipaddress.ip_address(name)))
+        except ValueError:
+            pass
+        found.append(x509.DNSName(name))
+    return x509.SubjectAlternativeName(found)
+
+
+def make_ca(major: str, machine: str, now: datetime.datetime | None = None) -> tuple[str, str]:
+    """(key, certificate) in PEM of the CA of a cluster: made once, its
+    certificate what the other machines verify the cluster's against."""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, f"OmniaCLI PostgreSQL {major} of {machine}"[:64])])
+    cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
+            .serial_number(x509.random_serial_number()).not_valid_before(now - datetime.timedelta(days=1))
+            .not_valid_after(now + datetime.timedelta(days=365 * CA_YEARS))
+            .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+            .add_extension(x509.KeyUsage(digital_signature=False, content_commitment=False, key_encipherment=False,
+                                         data_encipherment=False, key_agreement=False, key_cert_sign=True,
+                                         crl_sign=True, encipher_only=False, decipher_only=False), critical=True)
+            .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
+            .sign(key, hashes.SHA256()))
+    return _pem(key), cert.public_bytes(serialization.Encoding.PEM).decode()
+
+
+def make_certificate(ca_key: str, ca_cert: str, names: list[str],
+                     now: datetime.datetime | None = None) -> tuple[str, str]:
+    """(key, certificate) in PEM of the cluster's server, for names, signed by its CA."""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    signer = serialization.load_pem_private_key(ca_key.encode(), None)
+    issuer = x509.load_pem_x509_certificate(ca_cert.encode())
+    key = ec.generate_private_key(ec.SECP256R1())
+    cert = (x509.CertificateBuilder()
+            .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, names[0][:64])]))
+            .issuer_name(issuer.subject).public_key(key.public_key())
+            .serial_number(x509.random_serial_number()).not_valid_before(now - datetime.timedelta(days=1))
+            .not_valid_after(min(now + datetime.timedelta(days=365 * CERT_YEARS), issuer.not_valid_after_utc))
+            .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+            .add_extension(x509.KeyUsage(digital_signature=True, content_commitment=False, key_encipherment=False,
+                                         data_encipherment=False, key_agreement=True, key_cert_sign=False,
+                                         crl_sign=False, encipher_only=False, decipher_only=False), critical=True)
+            .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
+            .add_extension(_san(names), critical=False)
+            .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(issuer.public_key()), critical=False)
+            .sign(signer, hashes.SHA256()))
+    return _pem(key), cert.public_bytes(serialization.Encoding.PEM).decode()
+
+
+def certificate_names(pem: str) -> list[str]:
+    """The names a server certificate is made for."""
+    try:
+        cert = x509.load_pem_x509_certificate(pem.encode())
+        san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    except (ValueError, x509.ExtensionNotFound):
+        return []
+    return list(dict.fromkeys(san.get_values_for_type(x509.DNSName)))
+
+
+def ca_certificate(project: Path) -> str:
+    try:
+        return (project / TLS_FOLDER / "ca.crt").read_text(encoding="utf-8")
+    except OSError:
+        raise ClusterError("the cluster has no CA yet: it does not listen for another machine") from None
+
+
+def ensure_tls(project: Path, major: str, names: list[str]) -> bool:
+    """The cluster's CA (made once: tls/, its key root's only) and its
+    server certificate and key (conf/, the key the cluster's user's only),
+    made again when a name is not in it; True when it was made again (the
+    cluster then reads it again: a reload, no restart)."""
+    uid, gid = pg_user()
+    folder = _folder(project / TLS_FOLDER, 0o700)
+    ca_key, ca_crt = folder / "ca.key", folder / "ca.crt"
+    if not (ca_key.is_file() and ca_crt.is_file()):
+        key, cert = make_ca(major, socket.gethostname())
+        write(ca_key, key, mode=0o600)
+        write(ca_crt, cert, mode=0o644)
+    crt, key = project / "conf" / "server.crt", project / "conf" / "server.key"
+    have = certificate_names(crt.read_text(encoding="utf-8")) if crt.is_file() and key.is_file() else []
+    if have and all(name in have for name in names):
+        return False
+    wanted = list(dict.fromkeys([*have, *names]))
+    made_key, made = make_certificate(ca_key.read_text(encoding="utf-8"), ca_crt.read_text(encoding="utf-8"), wanted)
+    write(key, made_key, mode=0o600, uid=uid, gid=gid)
+    write(crt, made, mode=0o644, uid=0, gid=gid)
+    return True
+
+
+def _roots_of(text: str) -> list[str]:
+    """The storages a cluster's compose.yaml mounts, as it was written."""
+    return re.findall(r"(?m)^        source: (/\S+)$", text)
+
+
+def _recreate(project: Path, text: str, before: str, why: str) -> float:
+    """compose.yaml written and the container made again from it (a
+    checkpoint first, then PostgreSQL's fast stop: the image's stop signal):
+    the seconds the cluster did not answer. One that does not come back is
+    put back as it was, and said."""
+    try:
+        sql(project, "postgres", "CHECKPOINT;\n")
+    except ClusterError:
+        pass
+    write(project / "compose.yaml", text)
+    started = time.monotonic()
+    try:
+        _run(project, "up", "-d", "--remove-orphans", timeout=600)
+        ready(project)
+    except (ClusterError, subprocess.TimeoutExpired) as exc:
+        write(project / "compose.yaml", before)
+        _run(project, "up", "-d", "--remove-orphans", check=False, timeout=600)
+        ready(project)
+        raise ClusterError(f"the cluster did not come back {why} ({exc}): it runs as before") from None
+    return round(time.monotonic() - started, 1)
+
+
+def listen_on(major: str, names: list[str]) -> dict:
+    """The cluster listens on a port of this machine, over TLS, for names:
+    its CA and certificate, a network of its own, the port published. Its
+    container is made again: the instances on it lose the database for the
+    seconds said. Already listening: the certificate only, when a name is new."""
+    project = project_of(major)
+    names = reached_as(names)
+    if not names:
+        raise ClusterError("the name the other machine reaches this one by is missing")
+    found = listening(project)
+    changed = ensure_tls(project, major, names)
+    if found:
+        if changed:
+            sql(project, "postgres", "SELECT pg_reload_conf();\n")
+        return {**found, "restarted_s": None}
+    uid, gid = pg_user()
+    before = (project / "compose.yaml").read_text(encoding="utf-8")
+    taken = {int((listening(Path(str(v.get("project")))) or {}).get("port") or 0) for v in registry().values()}
+    port = pick_port(taken)
+    found = {"port": port, "bridge": bridge_name(major)}
+    seconds = _recreate(project, compose_text(major, uid, gid, _roots_of(before), port), before, "listening")
+    write(project / LISTEN_FILE, json.dumps(found, indent=1, sort_keys=True) + "\n")
+    return {**found, "restarted_s": seconds}
+
+
+def listen_off(major: str) -> dict:
+    """The port closed again: the cluster back to its socket only (its
+    container made again), when no database of another machine is allowed in.
+    Its CA and certificate stay, for the next time."""
+    project = project_of(major)
+    found = listening(project)
+    if not found:
+        raise ClusterError(f"the cluster of PostgreSQL {major} listens on no port")
+    allowed = sorted(k for k, v in grants(project).items() if not v.get("revoked"))
+    if allowed:
+        raise ClusterError(f"{', '.join(allowed)} are reached from other machines through this port: revoke or "
+                           "drop them first")
+    uid, gid = pg_user()
+    before = (project / "compose.yaml").read_text(encoding="utf-8")
+    seconds = _recreate(project, compose_text(major, uid, gid, _roots_of(before)), before, "without its port")
+    (project / LISTEN_FILE).unlink(missing_ok=True)
+    # the network it listened on, which no container has any more
+    subprocess.run([_docker(), "network", "rm", f"omniacli-machine-db-{major}_db"], env=ENV, capture_output=True)
+    return {"closed": found["port"], "restarted_s": seconds}
+
+
+def firewall_state() -> dict[str, list[str]]:
+    """{bridge: [addresses]} of the clusters that listen: the addresses of
+    their grants not revoked, the only ones their port is reached from."""
+    found = {}
+    for major, rec in sorted(registry().items()):
+        project = Path(str(rec.get("project") or ""))
+        if listening(project):
+            found[bridge_name(major)] = sorted({address(v.get("address")) for v in grants(project).values()
+                                                if not v.get("revoked")})
+    return found
+
+
+BRIDGE = re.compile(r"omnidb\d{1,3}")
+
+
+def firewall_rules(state: dict[str, list[str]]) -> dict[str, list[list[str]]]:
+    """What the firewall lets reach the clusters that listen (state:
+    firewall_state), as iptables arguments after -A <chain>: forward (jumped
+    from DOCKER-USER: docker forwards a published port, the host's own
+    firewall never sees it), to a cluster's network only its port from the
+    addresses of its grants, and from it only the answers; input: nothing
+    from a cluster's network to this machine but answers. No address, no
+    rule: all dropped. Never a network, never every address (address)."""
+    forward, into = [], []
+    for bridge in sorted(state):
+        if not BRIDGE.fullmatch(bridge):
+            raise ClusterError(f"{bridge!r} is not the network of a cluster")
+        allowed = sorted({address(a) for a in state[bridge]})
+        forward += [["-o", bridge, "-s", f"{a}/32", "-p", "tcp", "--dport", str(PORT_IN_DB), "-j", "RETURN"]
+                    for a in allowed]
+        forward += [["-o", bridge, "-j", "DROP"],
+                    ["-i", bridge, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "RETURN"],
+                    ["-i", bridge, "-j", "DROP"]]
+        into += [["-i", bridge, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "RETURN"],
+                 ["-i", bridge, "-j", "DROP"]]
+    return {"forward": forward, "input": into}
+
+
+def grant_add(major: str, spec: dict) -> dict:
+    """A database of this cluster for an instance of another machine
+    (AD-003): spec {"name" (env_name there), "address" (the one that machine
+    comes from), "verifier" (its role's SCRAM verifier), "reached_as" (how
+    it reaches this machine), "link", "by", "workspace", "instance"}. The
+    cluster listens (the first time: its container made again), the role
+    and the database made as an environment's (AD-002) but in the cluster's
+    own tablespace, one line of pg_hba. A name that is there already, of
+    this machine or of another, is refused and nothing of it is touched.
+    What that machine needs to connect, without any secret."""
+    project = project_of(major)
+    role = _env(str(spec.get("name") or ""))
+    source = address(spec.get("address"))
+    verifier = literal(str(spec.get("verifier") or ""), VERIFIER)
+    link, by = str(spec.get("link") or ""), str(spec.get("by") or "")
+    if not LINK_NAME.fullmatch(link):
+        raise ClusterError("a database for another machine is asked through its link")
+    envs, lent = environments(project), grants(project)
+    if role in envs:
+        raise ClusterError(f"{role} is an instance of this machine on the cluster already: the instance there "
+                           "needs another name")
+    if role in lent:
+        # never written again: a second instance of that name would take the first one's database and role
+        raise ClusterError(f"{role} is a database of another machine on this cluster already: the instance there "
+                           "needs another name, or what a removal left here is dropped first (Database tab)")
+    taken = sql(project, "postgres", f"SELECT (SELECT count(*) FROM pg_roles WHERE rolname = '{role}') + "
+                                     f"(SELECT count(*) FROM pg_database WHERE datname = '{role}');\n").strip()
+    if taken != "0":
+        raise ClusterError(f"a role or a database {role} is on the cluster already: the instance there needs "
+                           "another name")
+    most = int(sql(project, "postgres", "SHOW max_connections;\n").strip() or 0)
+    if ROLE_LIMIT * len({*envs, *lent, role}) > most - RESERVE:
+        raise ClusterError(f"the cluster has {most} connections at most: {len({*envs, *lent, role})} "
+                           f"environments of {ROLE_LIMIT} each and {RESERVE} in reserve do not fit; raise "
+                           "Connections at most in the Database tab")
+    found = listen_on(major, [str(spec.get("reached_as") or "")])
+    undo, recorded = [], False
+    try:
+        # what this grant makes goes if it fails, and only that: CREATE fails on a name made meanwhile
+        sql(project, "postgres", f"CREATE ROLE {ident(role)} INHERIT LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE "
+                                 f"NOREPLICATION CONNECTION LIMIT {ROLE_LIMIT} PASSWORD {verifier};\n")
+        undo.append(f"DROP ROLE IF EXISTS {ident(role)};\n")
+        sql(project, "postgres", f"ALTER ROLE {ident(role)} SET temp_file_limit = '{TEMP_FILE_LIMIT}';\n"
+                                 f"ALTER ROLE {ident(role)} SET idle_in_transaction_session_timeout = "
+                                 f"'{IDLE_IN_TRANSACTION}';\n")
+        sql(project, "postgres", f"CREATE DATABASE {ident(role)} OWNER {ident(role)} TEMPLATE template0 "
+                                 "ENCODING 'UTF8' LC_COLLATE 'C';\n")
+        undo.append(f"DROP DATABASE IF EXISTS {ident(role)} WITH (FORCE);\n")
+        close(project, role, role)
+        _save_grants(project, {**lent, role: {
+            "link": link, "by": by, "address": source, "revoked": False,
+            "at": datetime.datetime.now().isoformat(timespec="seconds"),
+            "workspace": str(spec.get("workspace") or ""), "instance": str(spec.get("instance") or "")}})
+        recorded = True
+        write_hba(project, envs)
+    except ClusterError:
+        # nothing of a grant that failed stays: its line, its database, its role
+        if recorded:
+            _save_grants(project, {k: v for k, v in grants(project).items() if k != role})
+        for statement in reversed(undo):
+            try:
+                sql(project, "postgres", statement)
+            except ClusterError:
+                pass
+        raise
+    return {"role": role, "database": role, "port": found["port"], "address": source, "created": True,
+            "restarted_s": found["restarted_s"], "serves": len(envs), "connection_limit": ROLE_LIMIT,
+            "names": certificate_names((project / "conf" / "server.crt").read_text(encoding="utf-8")),
+            "ca": ca_certificate(project), "version": sql(project, "postgres", "SHOW server_version;\n").strip()}
+
+
+def grant_set(major: str, role: str, revoked: bool) -> dict:
+    """A grant revoked (its line of pg_hba gone, its connections closed: the
+    other machine no longer comes in; its database and its role stay) or
+    allowed again, from the same address."""
+    project = project_of(major)
+    lent = grants(project)
+    if _env(role) not in lent:
+        raise ClusterError(f"{role} is no database of another machine on this cluster")
+    if not revoked and not listening(project):
+        raise ClusterError(f"the cluster of PostgreSQL {major} listens on no port any more: the instance there is "
+                           "made again, or its database dropped here")
+    _save_grants(project, {**lent, role: {**lent[role], "revoked": bool(revoked)}})
+    write_hba(project, environments(project))
+    closed = 0
+    if revoked:
+        closed = len(sql(project, "postgres", "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                                              f"WHERE usename = '{role}';\n").split())
+    return {"role": role, "revoked": bool(revoked), "address": lent[role].get("address"), "closed": closed,
+            "kept": [f"database {role}", f"role {role}"]}
+
+
+def grant_remove(major: str, role: str) -> dict:
+    """A grant taken away, as an environment of this machine is
+    (env_remove): its database dropped, its role, its line of pg_hba. The
+    port stays open, with no line for it, until listen_off."""
+    project = project_of(major)
+    lent = grants(project)
+    if _env(role) not in lent:
+        raise ClusterError(f"{role} is no database of another machine on this cluster")
+    dropped = []
+    left = {k: v for k, v in lent.items() if k != role}
+    _save_grants(project, left)
+    write_hba(project, environments(project))
+    if _exists(project, f"SELECT 1 FROM pg_database WHERE datname = '{role}';\n"):
+        sql(project, "postgres", f"DROP DATABASE {ident(role)} WITH (FORCE);\n")
+        dropped.append(role)
+    if _exists(project, f"SELECT 1 FROM pg_roles WHERE rolname = '{role}';\n"):
+        sql(project, "postgres", f"DROP ROLE {ident(role)};\n")
+    port = (listening(project) or {}).get("port")
+    return {"role": role, "dropped": dropped, "address": lent[role].get("address"), "port": port,
+            "still_from": sorted({str(v.get("address")) for v in left.values() if not v.get("revoked")}),
+            "grants_left": len(left)}
 
 
 def allow_createdb(major: str, role: str, on: bool) -> None:

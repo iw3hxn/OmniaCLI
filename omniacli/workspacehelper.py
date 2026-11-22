@@ -111,7 +111,16 @@ the instances of the mounted disks and /etc/omniacli/mail-guard.json, where
 they are kept for the boot (the disks come after). on: the rules, and the unit
 omniacli-workspaces-firewall.service that applies them at every boot before
 docker; apply: the rules only (what the unit runs); off: both removed.
-create puts them on first.
+create puts them on first. The same unit applies OMNIACLI-DB-FWD and
+OMNIACLI-DB-IN, of the machine's clusters that listen for other machines
+(/etc/omniacli/db-listen.json): off is refused while one listens.
+
+machine-db-grant <major> (its values, JSON, on the input) | machine-db-ungrant
+<major> <role> revoke|allow|drop | machine-db-port <major> close: a database
+of the machine's cluster for an instance of another machine, a linked
+OmniaCLI's (machinedb.py, AD-003): the cluster listens on a port over TLS
+the first time, the role and its database are made, pg_hba.conf has one
+line for that address, the firewall lets that address reach the port.
 
 template-install <template>: a template downloaded from the download
 server, checked with the key of the main configuration, into
@@ -203,6 +212,14 @@ MAIL_GUARD = Path("/etc/omniacli/mail-guard.json")
 # on another machine at a private address (AD-003): their network reaches
 # that one address and port, and nothing else private; root's, as MAIL_GUARD
 DB_REMOTE = Path("/etc/omniacli/db-remote.json")
+# the machine's clusters that listen for other machines (AD-003, a linked
+# OmniaCLI's): {bridge: [addresses]}, root's, kept here for the boot as
+# MAIL_GUARD; chain OMNIACLI-DB-FWD, jumped from DOCKER-USER, lets their port
+# be reached from those addresses only and lets nothing but answers out of
+# their network, OMNIACLI-DB-IN, jumped from INPUT, nothing from it to this machine
+DB_LISTEN = Path("/etc/omniacli/db-listen.json")
+CHAIN_DB = "OMNIACLI-DB-FWD"
+CHAIN_DB_INPUT = "OMNIACLI-DB-IN"
 # what a workspace's container may not reach (but the pool: docker decides)
 PRIVATE = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "100.64.0.0/10")
 
@@ -844,8 +861,10 @@ def firewall_apply() -> dict:
     for parent, chain in _jumps():
         if not _has_jump(parent, chain):
             _iptables("-I", parent, "1", "-j", chain)
+    # the clusters that listen for other machines, as they were kept (at boot their storage comes after)
+    listening = db_firewall_apply()
     return {"firewall": "on", "pool": str(pool), "chains": [CHAIN_FORWARD, CHAIN_MAIL, CHAIN_INPUT],
-            "mail_guarded": sorted(guarded.values())}
+            "mail_guarded": sorted(guarded.values()), **({"listening": listening} if listening else {})}
 
 
 def _fill(chain: str, rules: list[list[str]]) -> None:
@@ -853,6 +872,76 @@ def _fill(chain: str, rules: list[list[str]]) -> None:
     _iptables("-F", chain)
     for rule in rules:
         _iptables("-A", chain, *rule)
+
+
+def _fill_at_once(chains: dict[str, list[list[str]]]) -> None:
+    """The chains emptied and filled in one transaction (iptables-restore
+    --noflush): never a moment with the old rules gone and the new not there."""
+    text = "*filter\n" + "".join(f":{chain} - [0:0]\n" for chain in chains)
+    text += "".join(f"-A {chain} {' '.join(rule)}\n" for chain, rules in chains.items() for rule in rules)
+    done = subprocess.run([_tool("iptables-restore"), "-w", "--noflush"], env=ENV, input=text + "COMMIT\n",
+                          capture_output=True, text=True)
+    if done.returncode:
+        raise HelperError(f"iptables-restore: {(done.stderr or done.stdout).strip()}")
+
+
+def db_listen_file() -> dict[str, list[str]]:
+    """DB_LISTEN as it is on disk, only what is right: a cluster's bridge, IPv4 addresses."""
+    try:
+        data = json.loads(DB_LISTEN.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    found = {}
+    for bridge, addresses in (data.items() if isinstance(data, dict) else ()):
+        if not machinedb.BRIDGE.fullmatch(str(bridge)) or not isinstance(addresses, list):
+            continue
+        try:
+            found[str(bridge)] = sorted({machinedb.address(a) for a in addresses})
+        except machinedb.ClusterError:
+            continue
+    return found
+
+
+def db_firewall_apply() -> dict[str, list[str]]:
+    """The chains of the clusters that listen made again from DB_LISTEN and
+    jumped first; with none listening, the chains and their jumps are gone."""
+    state = db_listen_file()
+    jumps = [("DOCKER-USER", CHAIN_DB), ("INPUT", CHAIN_DB_INPUT)]
+    if not state:
+        for parent, chain in jumps:
+            while _has_jump(parent, chain):
+                _iptables("-D", parent, "-j", chain)
+            _iptables("-F", chain, check=False)
+            _iptables("-X", chain, check=False)
+        return state
+    try:
+        rules = machinedb.firewall_rules(state)
+    except machinedb.ClusterError as exc:
+        raise HelperError(str(exc)) from None
+    _fill_at_once({CHAIN_DB: rules["forward"], CHAIN_DB_INPUT: rules["input"]})
+    _iptables("-N", "DOCKER-USER", check=False)
+    for parent, chain in jumps:
+        if not _has_jump(parent, chain):
+            _iptables("-I", parent, "1", "-j", chain)
+    return state
+
+
+def db_firewall() -> dict[str, list[str]]:
+    """The clusters that listen read again (their grants), kept in DB_LISTEN
+    for the boot, the chains made again; the unit that applies them at
+    every boot written when it is not there yet."""
+    try:
+        state = machinedb.firewall_state()
+    except machinedb.ClusterError as exc:
+        raise HelperError(str(exc)) from None
+    if state:
+        DB_LISTEN.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+        _write(DB_LISTEN, json.dumps(state, indent=1, sort_keys=True) + "\n", mode=0o600)
+        if not (SYSTEMD / FIREWALL_UNIT).is_file():
+            firewall("on")
+    else:
+        DB_LISTEN.unlink(missing_ok=True)
+    return db_firewall_apply()
 
 
 def db_remote_file() -> dict[str, dict]:
@@ -991,6 +1080,10 @@ def firewall(mode: str) -> dict:
         _run("systemctl", "enable", FIREWALL_UNIT)
         return {**made, "unit": FIREWALL_UNIT}
     if mode == "off":
+        if db_listen_file():
+            # its rules are applied by the same unit at every boot: without it the port is open to anyone
+            raise HelperError("a cluster of this machine listens for other machines: close its port first "
+                              "(Database tab), then the firewall goes off")
         for parent, chain in _jumps():
             while _has_jump(parent, chain):
                 _iptables("-D", parent, "-j", chain)
@@ -1128,7 +1221,8 @@ MAIL_KEY = "_mail_capture"
 # (AD-003): {"host", "port", "user", "password", "database", "ca"}
 REMOTE_KEY = "_remote"
 REMOTE_HOST = re.compile(r"(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?")
-REMOTE_NAME = re.compile(r"[a-z_][a-z0-9_]{0,62}")
+# a digit first too: the name of an environment on a linked machine's cluster (machinedb.env_name)
+REMOTE_NAME = re.compile(r"[a-z0-9_][a-z0-9_]{0,62}")
 # no quote, blank, $ or backslash: it goes into .env as it is
 REMOTE_PASSWORD = re.compile(r"[A-Za-z0-9_.~!@#%^&*+=:,/-]{8,128}")
 REMOTE_CA_MAX = 64 * 1024
@@ -1195,6 +1289,16 @@ def remote_spec(value) -> dict:
         spec["replica"] = (replica, int(replica_port))
         # as they were given too: a spec checked once (the app) is checked again by the helper, as it is
         spec["replica_host"], spec["replica_port"] = replica, int(replica_port)
+    # the cluster of a linked OmniaCLI (the app asked it for this database): which link and which
+    # PostgreSQL, for the pages and for the removal, which asks that machine to take it back
+    link = str(value.get("link") or "").strip()
+    if link:
+        major = str(value.get("major") or "").strip()
+        if not machinedb.LINK_NAME.fullmatch(link) or not re.fullmatch(r"\d{1,3}", major):
+            raise HelperError("the link and the PostgreSQL of a linked machine's cluster are not what they should be")
+        if replica:
+            raise HelperError("a database on a linked machine's cluster has no read replica")
+        spec["link"], spec["major"] = link, major
     return spec
 
 
@@ -1295,7 +1399,10 @@ def create(name: str, storage: str, instance: str, template_name: str, values_js
             **({MAIL_META: True} if mail else {}), **({INBOX_META: True} if inbox else {}),
             # where its database is, for the pages (no password here: the file is read by OmniaCLI's user)
             **({"database_on": f"{remote['host']}:{remote['port']}"} if remote else {}),
-            **({"replica_on": "%s:%d" % remote["replica"]} if remote and remote.get("replica") else {})}
+            **({"replica_on": "%s:%d" % remote["replica"]} if remote and remote.get("replica") else {}),
+            # the cluster of a linked OmniaCLI: which link and PostgreSQL (the pages name it, the removal asks it)
+            **({"database_link": remote["link"], "database_major": remote["major"]}
+               if remote and remote.get("link") else {})}
     folder.mkdir(mode=0o755)
     on_cluster = False
     try:
@@ -2319,7 +2426,11 @@ def machine_db_create(storage: str, major: str) -> dict:
 
 
 def machine_db_remove(major: str) -> dict:
-    return _cluster(machinedb.remove, major)
+    done = _cluster(machinedb.remove, major)
+    if db_listen_file():
+        # a cluster that listened: its firewall rules go with it
+        db_firewall()
+    return done
 
 
 def machine_db_state() -> dict:
@@ -2328,6 +2439,72 @@ def machine_db_state() -> dict:
 
 def machine_db_mounts() -> dict:
     return _cluster(machinedb.mounts)
+
+
+# a grant's values on the input: at most these bytes
+GRANT_INPUT = 16 * 1024
+
+
+def machine_db_grant(major: str) -> dict:
+    """machine-db-grant <major>, its values as JSON on the input
+    (machinedb.grant_add): a database of the cluster for an instance of
+    another machine. The firewall closes the cluster's network before its
+    port opens, and lets that machine's address in after."""
+    raw = sys.stdin.read(GRANT_INPUT + 1)
+    if len(raw) > GRANT_INPUT:
+        raise HelperError("the values of a grant on the input are too long")
+    try:
+        spec = json.loads(raw)
+    except ValueError:
+        raise HelperError("the values of a grant are not JSON") from None
+    if not isinstance(spec, dict):
+        raise HelperError("the values of a grant are not a JSON object")
+    try:
+        bridge = machinedb.bridge_name(major)
+    except machinedb.ClusterError as exc:
+        raise HelperError(str(exc)) from None
+    kept = db_listen_file()
+    if bridge not in kept:
+        DB_LISTEN.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+        _write(DB_LISTEN, json.dumps({**kept, bridge: []}, indent=1, sort_keys=True) + "\n", mode=0o600)
+        if not (SYSTEMD / FIREWALL_UNIT).is_file():
+            firewall("on")
+        else:
+            db_firewall_apply()
+    try:
+        made = _cluster(machinedb.grant_add, major, spec)
+    finally:
+        # as the cluster is now: its port open or not, the addresses of its grants
+        allowed = db_firewall()
+    return {**made, "firewall": allowed.get(bridge, [])}
+
+
+def machine_db_ungrant(major: str, role: str, mode: str) -> dict:
+    """machine-db-ungrant <major> <role> revoke | allow | drop: the other
+    machine no longer comes in (its database stays), comes in again, or its
+    database and role are dropped; the firewall follows."""
+    if mode not in ("revoke", "allow", "drop"):
+        raise HelperError("machine-db-ungrant <major> <role> revoke, allow or drop")
+    try:
+        if mode == "drop":
+            done = _cluster(machinedb.grant_remove, major, role)
+        else:
+            done = _cluster(machinedb.grant_set, major, role, mode == "revoke")
+    finally:
+        allowed = db_firewall()
+    return {**done, "firewall": allowed.get(machinedb.bridge_name(major), [])}
+
+
+def machine_db_port(major: str, mode: str) -> dict:
+    """machine-db-port <major> close: the cluster back to its socket only,
+    when no database of another machine is allowed in; its firewall rules go."""
+    if mode != "close":
+        raise HelperError("machine-db-port <major> close")
+    try:
+        done = _cluster(machinedb.listen_off, major)
+    finally:
+        db_firewall()
+    return done
 
 
 # a move (AD-007): what the project was is kept beside it, the undo of the
@@ -2667,7 +2844,9 @@ ACTIONS = {"disk": (disk, 3), "drop": (drop, 2), "limits": (limits, 3), "create"
            "portal": (portal, 1), "portal-names": (portal_taken, 0),
            "machine-db-create": (machine_db_create, 2), "machine-db-remove": (machine_db_remove, 1),
            "machine-db-state": (machine_db_state, 0), "machine-db-mounts": (machine_db_mounts, 0),
-           "machine-db-move": (machine_db_move, 4), "machine-db-purge": (machine_db_purge, 3)}
+           "machine-db-move": (machine_db_move, 4), "machine-db-purge": (machine_db_purge, 3),
+           "machine-db-grant": (machine_db_grant, 1), "machine-db-ungrant": (machine_db_ungrant, 3),
+           "machine-db-port": (machine_db_port, 2)}
 
 
 def run(argv: list[str]) -> dict:

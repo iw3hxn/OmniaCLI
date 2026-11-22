@@ -1813,6 +1813,68 @@ and later) reads from the replica and writes to the database, with the same
 role, password and CA. Odoo does not move to the replica by itself when the
 database is gone. OmniaCLI does not make or keep that replica.
 
+**On the cluster of a linked OmniaCLI** nothing is typed. With one of those
+templates, *Where the database is* offers **on the cluster of \<link\>** for
+every link of the machine (its admins only, here or through a link for one of
+their users), and OmniaCLI does the rest through the link:
+
+- **Before Create** the dialog asks that machine for its clusters and shows
+  the **round trip** to it measured now (the median of 7 TCP connections: to
+  the database's port once this machine is let in there, to the link's own
+  port before), and the address this machine goes out with, the one that
+  machine will let in: change it when this machine goes out through another
+  one (NAT). Above **1 ms** it warns: Odoo pays about 2.5 round trips for
+  each query, so a page of 200 queries waits half a second more for the
+  network alone. The first database of another machine makes that cluster
+  listen on a port: its container is made again (half a second in the
+  measure) and the instances on it lose their connections: each may answer
+  an error to its first request or two after that; said and asked before.
+- **On that machine**: the cluster listens on a port of the machine (IPv4;
+  the first free from 15432: none a system PostgreSQL has) over TLS only, with a
+  CA of its own made once and a server certificate for the name this machine
+  reaches it by; a role and a database named as an environment of the cluster
+  (`<workspace>_<instance>`, no `CREATEDB`, 32 connections), in the cluster's
+  own tablespace; one line of `pg_hba.conf`, `hostssl <database>,postgres
+  <role> <address>/32 scram-sha-256`; and the firewall (`OMNIACLI-DB-FWD`,
+  from `DOCKER-USER`: docker forwards a published port past ufw, which never
+  sees it) lets the port be reached from the addresses of the grants only,
+  and nothing out of the cluster's network. Never a network, never
+  `0.0.0.0/0`.
+- **The password never leaves this machine**: it is made here and that
+  machine receives its SCRAM-SHA-256 verifier, which PostgreSQL keeps as it
+  is. A link over plain HTTP is refused (what it answers, the port and the
+  CA, could be changed on the way): HTTPS or SSH.
+- **Before anything is made here** the port is reached as Odoo will: TLS,
+  the certificate verified against that CA and that name (`verify-full`), the
+  role and the database asked. When the address is not the one that machine
+  sees, the job says which one it saw, or that nothing answered, and the
+  database is given back.
+- The pages say **PostgreSQL 17 of \<link\>**: the instance's *Database
+  server* row, the machine's Database tab (*Not here*), the map. A user of a
+  workspace reads the host only, as of any database of another machine.
+- **Removing the instance** asks that machine to drop the database and its
+  role and to take the line of `pg_hba.conf` away; its firewall keeps the
+  address while another database uses it. When it does not answer, the
+  removal ends all the same and its job says what stays there. A machine
+  takes back only what it asked for: a name that is on that cluster already
+  (an instance of its own, another machine's database, what a removal left)
+  is refused at the creation, and nothing of it is written or dropped.
+- **On that machine's Database tab**, the cluster's row lists *From other
+  machines*: each database with the address it is reached from, the link,
+  who asked and when; **Revoke…** (the line of `pg_hba.conf` and the
+  connections go, the database stays), **Allow again**, **Drop…**, and
+  **Close the port…** when no other machine is let in (the container is made
+  again). The grant, the revoke and the drop are in that machine's access log
+  with the link's name and the user who asked here.
+
+A backup of such an instance is made as any other (through the network). A
+backup is **not restored over it** and not checked beside it from here: Odoo
+drops the database and makes it again, and there its role makes none; it is
+refused before anything is touched. Restore it into a new instance. Its data
+is on the storage of that cluster, without the cap of a workspace's disk.
+The recovery at a minute, a staging and the move of an existing instance onto
+a linked cluster are not offered.
+
 ### Modules from the OCA catalog
 
 The **Modules** tab of an instance of a workspace (developers and admins)

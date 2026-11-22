@@ -672,6 +672,19 @@ def on_remote(project: Path) -> dict | None:
     return {"host": values.get("DB_HOST", "").strip(), "port": values.get("DB_PORT", "").strip()}
 
 
+def on_linked(project: Path) -> bool:
+    """A project whose database is on the cluster of a linked OmniaCLI: on
+    another machine, and its instance's record (instance.json, root's)
+    names the link that made it."""
+    if on_remote(project) is None:
+        return False
+    try:
+        meta = json.loads((Path(project).parent / "instance.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(meta, dict) and bool(meta.get("database_link"))
+
+
 def db_target(project: Path, name: str, terminal: bool = False) -> tuple[str, str, tuple[str, ...]]:
     """(service, prefix of the script, exec options) a database action of
     the service name runs with: the project's database service as its
@@ -1331,6 +1344,10 @@ def run(argv: list[str]) -> int:
     found = problems(project, uid, groups)
     if found:
         raise HelperError(f"{project} is not safe from user {name}:\n  " + "\n  ".join(found))
+    if action in CREATES_DATABASE and on_linked(project):
+        # Odoo drops the database and makes it again: there its role makes none, the database would be lost
+        raise HelperError(f"{project} has its database on the cluster of a linked machine, where its role makes no "
+                          f"database: {action} would drop it and not make it again")
     if action == "link-filestore":
         return link_filestore(project, args, uid, groups)
     if action == "image":

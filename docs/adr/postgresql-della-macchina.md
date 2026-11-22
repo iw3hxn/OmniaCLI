@@ -21,8 +21,66 @@ controllata prima di creare, arriva all'helper sull'input (mai su una riga di co
 workspace lascia passare quel solo indirizzo e porta dalla rete di quel progetto, la rimozione lascia il database dov'è
 e lo dice. Regolazione, ripristino a un minuto e staging sono rifiutati con il motivo. Provato fra due macchine di
 prova: connessioni TLS 1.3 viste dal database, una CA sbagliata rifiutata, backup riuscito.
-**Non costruito di AD-003:** il caso «cluster di un altro OmniaCLI collegato», dove OmniaCLI prepara da solo ruolo,
-database, riga `hostssl` e firewall sull'altra macchina. **AD-004, costruito il 21/11/2026 per il database di un'altra macchina** (release 2026.1.5465): chi gestisce il
+**AD-003, costruito il 22/11/2026 nel caso «cluster di un altro OmniaCLI collegato»** (release 2026.1.5467): alla
+creazione di un'istanza con un template `*-remote` l'admin della macchina A sceglie «sul cluster di \<link\>» e
+OmniaCLI fa il resto attraverso il collegamento.
+- **Su B** (`machinedb.py`, `workspace-helper machine-db-grant|ungrant|port`): il cluster comincia ad ascoltare solo
+  alla prima richiesta, sulla prima porta libera da 15432 (mai una di un PostgreSQL di sistema, nemmeno fermo), in solo
+  TLS, con una CA sua creata una volta (`tls/`, chiave solo di root) e un certificato server per il nome con cui A
+  raggiunge B. Il container passa da `network_mode: none` a una rete sua con la porta pubblicata (solo IPv4), quindi
+  viene rifatto: **0,5 s misurati**, detti e chiesti nel dialogo di A. Le istanze di B perdono le connessioni che
+  tenevano aperte. Due riavvii misurati su lab2: nel primo un'istanza ha risposto con un errore alle prime due
+  richieste e un'altra alla prima, 28 minuti dopo il riavvio, poi sono ripartite da sole; nel secondo, con le richieste
+  fatte subito, nessuna delle cinque ha sbagliato (è la voce «`reset()` del pool» di «Non verificato», misurata su due
+  casi soli; vale per ogni riavvio del cluster, anche quello della regolazione). Ruolo e database hanno il
+  nome di AD-002 (`<workspace>_<istanza>`, senza CREATEDB, 32 connessioni); la riga è
+  `hostssl <database>,postgres <ruolo> <indirizzo di A>/32 scram-sha-256` (`postgres` serve a Odoo per vedere se il
+  suo database c'è, come nella riga locale). Mai una rete, mai `0.0.0.0/0`.
+- **Il firewall di B non è ufw.** Docker inoltra una porta pubblicata prima che ufw la veda: misurato su lab2, con ufw
+  attivo e «deny incoming» la porta di un container pubblicato rispondeva lo stesso. La regola sta quindi dove passa il
+  traffico: catena `OMNIACLI-DB-FWD` agganciata a `DOCKER-USER` (verso la rete del cluster passa solo la sua porta dagli
+  indirizzi delle concessioni, dalla rete del cluster escono solo le risposte) e `OMNIACLI-DB-IN` su `INPUT`; le
+  riapplica a ogni avvio la unit del firewall dei workspace, da `/etc/omniacli/db-listen.json`.
+- **La password non attraversa il collegamento.** Nasce su A; a B arriva il suo verificatore SCRAM-SHA-256, che
+  PostgreSQL conserva così com'è. Un collegamento in HTTP semplice è rifiutato comunque: quello che risponde (porta e
+  CA) decide dove si collega Odoo. Servono HTTPS o SSH.
+- **L'indirizzo di A come lo vede B** è quello con cui A esce verso B (letto dal sistema, senza mandare pacchetti),
+  proposto nel dialogo e modificabile (NAT). Il job lo verifica prima di creare qualcosa su A: raggiunge la porta come
+  farà Odoo (TLS, certificato verificato contro CA e nome, ruolo e database); se `pg_hba` rifiuta dice l'indirizzo che
+  B ha visto, se il firewall scarta dice che non risponde nessuno, e il database viene restituito.
+- **Un nome già presente non si tocca.** Se sul cluster di B c'è già un ruolo o un database con quel nome (un'istanza
+  di B, il database di un'altra macchina, quello che una rimozione ha lasciato), la concessione è rifiutata e non si
+  riscrive niente: una seconda istanza con lo stesso nome prenderebbe ruolo e database della prima. A elimina su B solo
+  quello che il suo job ha creato, e B esegue da un collegamento solo le richieste sui database di quel collegamento.
+- **Rimozione**: A chiede a B di eliminare database e ruolo e togliere la riga, come `env_remove` per un'istanza di B;
+  la regola del firewall resta finché un altro database usa quell'indirizzo. Se B non risponde la rimozione su A
+  finisce lo stesso e il job dice cosa resta su B. La porta resta aperta, chiusa a tutti, finché l'admin di B non
+  sceglie «Chiudi la porta…» (container rifatto, 0,4 s).
+- **Su B** la scheda Database elenca «Da altre macchine»: database, indirizzo, collegamento, chi l'ha chiesto e
+  quando, con Revoca, Consenti di nuovo, Elimina. Concessione, revoca ed eliminazione sono nel log degli accessi di B
+  con il nome del collegamento e l'utente che ha chiesto su A.
+- **Latenza, misurata il 22/11/2026 fra due macchine di prova** (Odoo 19 su lab1, cluster su lab2, ritardo aggiunto con
+  `tc netem`): andata e ritorno di base 0,04 ms. Odoo paga circa **2,5 andate e ritorno per ogni query che conta**:
+  la prima pagina dopo un riavvio (53 query) passa da 0,55 s a 0,65 / 0,78 / 1,20 s con 1 / 2 / 5 ms (130 andate e
+  ritorno); il client web (9 query) da 6 ms a 23 / 38 / 81 / 153 ms con 1 / 2 / 5 / 10 ms (15); un elenco di 80 righe
+  (4 query) da 5 ms a 106 ms con 10 ms (10). L'esempio di questo AD (una andata e ritorno per query) sottostimava. La
+  **soglia dell'avviso è 1 ms**: una pagina di 200 query fa 500 andate e ritorno e aspetta mezzo secondo in più per
+  la sola rete. Il dialogo mostra la misura (mediana di 7 connessioni TCP) prima di Crea, e il job la ripete sulla
+  porta del database.
+- **Limiti.** Su un'istanza così un backup non si ripristina sopra e non si verifica accanto (Odoo elimina e ricrea
+  il database, e là il ruolo non ne crea): è rifiutato prima di toccare qualcosa, e si ripristina in un'istanza nuova.
+  I dati stanno sullo storage del cluster di B, senza il tetto del disco di un workspace. Se A sta dietro un NAT
+  l'indirizzo va scritto a mano. Un collegamento il cui URL passa da un proxy su un'altra macchina dà a B un nome che
+  non è il suo. Il certificato del server dura 10 anni e non si rinnova da solo. Non costruiti: lo spostamento di
+  un'istanza esistente su un cluster collegato, la staging, il ripristino a un minuto (AD-006).
+
+Provato su lab1 e lab2: istanza creata in 1 min 41 s (3-4 s la parte di B; 90 s sono il controllo del disco del
+workspace, che c'era già), Odoo risponde, `pg_stat_ssl` su
+lab2 mostra TLS 1.3 da 172.30.0.11, rifiutati un altro database, un altro ruolo, la CA sbagliata, la connessione senza
+TLS, un altro indirizzo (scartato dal firewall); la password si trova solo nel `.env` (600, root) di lab1; backup
+riuscito; revoca e riammissione da lab2; rimozione da lab1 con lab2 che risponde e con il pannello di lab2 fermo.
+
+**AD-004, costruito il 21/11/2026 per il database di un'altra macchina** (release 2026.1.5465): chi gestisce il
 database può dare l'indirizzo della sua replica di lettura; OmniaCLI lo controlla, lo scrive in `odoo.conf`
 (`db_replica_host`, `db_replica_port`, Odoo dalla 18), lo conserva alle riscritture e lo lascia passare nel firewall.
 Provato con una replica in streaming vera: la replica vede la connessione TLS di Odoo. Se il primario cade Odoo non

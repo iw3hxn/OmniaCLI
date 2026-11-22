@@ -796,7 +796,7 @@ window.OmniaMap = (function () {
     if (!db || !db.where) return T.panel.dbUnread;
     if (db.where === "dedicated") return T.panel.dbDedicated;
     if (db.where === "machine") return fill(T.panel.dbMachine, {major: db.major || "?"});
-    if (db.where === "remote") return fill(T.panel.dbRemote, {host: db.host});
+    if (db.where === "remote") return fill(T.panel.dbRemote, {host: db.label || db.host});
     return fill(T.panel.dbSystem, {port: db.port || "5432"});
   }
 
@@ -1035,7 +1035,7 @@ window.OmniaMap = (function () {
     const sub = [db.kind === "replica" ? T.replica : db.kind === "machine" ? T.dbMachine : T.dbRemote, extra].filter(Boolean).join(" · ");
     const a = S("a", {class: "map-item", "data-item": db.kind, href: "#", tabindex: "0"}, S("title", {}, T.dbTitle),
       S("rect", {class: "shape ext", x, y, width: w, height: 46, rx: 8}),
-      txt(x + 12, y + 19, cut("⛁ " + (db.kind === "machine" ? fill(T.cluster, {major: db.major || "?"}) : db.host), w - 24, 12), "t-name"),
+      txt(x + 12, y + 19, cut("⛁ " + (db.kind === "machine" ? fill(T.cluster, {major: db.major || "?"}) : (db.label || db.host)), w - 24, 12), "t-name"),
       txt(x + 12, y + 36, cut(sub, w - 24, 11), "t-muted t-small"));
     a.addEventListener("click", (event) => { event.preventDefault(); openDatabase(db.id); });
     g.append(a);
@@ -1305,7 +1305,7 @@ window.OmniaMap = (function () {
       let y = 0;
       if (dbs.length) {
         y += head(x, y, T.colDb);
-        for (const db of dbs) y += sideNode(g, db.kind, db.id, x, y, sideW, "⛁ " + (db.kind === "machine" ? fill(T.cluster, {major: db.major || "?"}) : db.host),
+        for (const db of dbs) y += sideNode(g, db.kind, db.id, x, y, sideW, "⛁ " + (db.kind === "machine" ? fill(T.cluster, {major: db.major || "?"}) : (db.label || db.host)),
           `${envsOn(db.id)} · ${db.kind === "replica" ? T.replica : db.kind === "machine" ? T.dbMachine : T.elsewhere}`, T.dbTitle, () => openDatabase(db.id)) + 14;
       }
       if (dests.length) {
@@ -1373,7 +1373,7 @@ window.OmniaMap = (function () {
       y = drawBoxes(y);
       if (dbs.length) {
         y += 8 + head(0, y + 8, T.colDb);
-        for (const db of dbs) y += sideNode(g, db.kind, db.id, 0, y, W, "⛁ " + (db.kind === "machine" ? fill(T.cluster, {major: db.major || "?"}) : db.host),
+        for (const db of dbs) y += sideNode(g, db.kind, db.id, 0, y, W, "⛁ " + (db.kind === "machine" ? fill(T.cluster, {major: db.major || "?"}) : (db.label || db.host)),
           subOf(db.kind === "replica" ? T.replica : db.kind === "machine" ? T.dbMachine : T.dbRemote, db.id), T.dbTitle, () => openDatabase(db.id)) + 10;
       }
       if (dests.length) {
@@ -1569,7 +1569,7 @@ window.OmniaMap = (function () {
     const steps = [{name: T.panel.browser, detail: ""},
       {name: T.panel.names, detail: main ? main.name : T.noName, cls: badNames(i).length ? "t-warn" : null},
       {name: T.panel.web, detail: webLabel}, {name: T.panel.odoo, detail: `${st.sign} ${st.word}`, cls: {running: "t-ok", stopped: "t-err", down: "t-err"}[st.key]},
-      {name: T.panel.database, detail: !db || !db.where ? T.panel.dbUnread : db.where === "remote" ? db.host : db.where === "machine" ? T.dbMachine : db.where === "dedicated" ? T.panel.dbDedicated : T.system}];
+      {name: T.panel.database, detail: !db || !db.where ? T.panel.dbUnread : db.where === "remote" ? (db.label || db.host) : db.where === "machine" ? T.dbMachine : db.where === "dedicated" ? T.panel.dbDedicated : T.system}];
     if (db && db.replica) steps.push({name: T.panel.replica, detail: db.replica});
     const list = el("ol", {id: "map-flow-list"}, el("li", {}, T.panel.browser));
     list.append(el("li", {}, names.length ? names.map(nameDetail).join("; ") : T.noName));
@@ -1667,7 +1667,7 @@ window.OmniaMap = (function () {
     if (replica) list.append(el("li", {}, fill(T.panel.dbReplica, {host: replica.host})));
     if (master) list.append(el("li", {}, fill(T.panel.dbOf, {host: master.host})));
     panel.replaceChildren(el("div", {class: "map-panel-head"},
-      el("h2", {id: "map-panel-title"}, db.kind === "machine" ? fill(T.cluster, {major: db.major || "?"}) : db.host), close), list);
+      el("h2", {id: "map-panel-title"}, db.kind === "machine" ? fill(T.cluster, {major: db.major || "?"}) : (db.label || db.host)), close), list);
     showPanel();
     panel.focus({preventScroll: true});
   }

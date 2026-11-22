@@ -98,6 +98,21 @@ COPY_FILESTORE = (("share", "shared with production (hard links, no extra disk s
 MACHINE_DB = "machine"
 # and of one on a database of another machine (stacktemplates.REMOTE_DB_SERVICE)
 REMOTE_DB = "remote"
+# a backup loaded drops the database and makes it again: on the cluster of a linked OmniaCLI the
+# instance's role makes no database (AD-002), so the database would be dropped and not made again
+ON_LINKED_CLUSTER = ("{key} has its database on the cluster of a linked machine, where its role makes no database: "
+                     "a backup is not loaded over it nor tried beside it from here. Restore it into a new instance")
+
+
+def on_linked_cluster(instance: Instance) -> bool:
+    """The instance's database is on the cluster of a linked OmniaCLI (its record, instance.json)."""
+    if instance.options.db_service != REMOTE_DB:
+        return False
+    try:
+        meta = json.loads((Path(instance.restart.service).parent / "instance.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(meta, dict) and bool(meta.get("database_link"))
 
 MCP_HELP = """Servers of type docker: Odoo 18 or later in a Docker Compose project, driven
 through OmniaCLI's root helper. update_test updates the changed modules
@@ -266,6 +281,8 @@ class DockerPlugin(ServicePlugin):
         """The helper's verify: the zip loaded into a database of its own, in
         a container of its own beside the instance's database, read by
         odoo/verify_check.py, dropped with its filestore."""
+        if on_linked_cluster(instance):
+            raise JobFailed(ON_LINKED_CLUSTER.format(key=instance.key))
         major, found = await instance_major(instance), backup_major(backup_zip)
         if major is not None and found is not None and found != major:
             raise JobFailed(f"{backup_zip.name} is a database of Odoo {found}, {instance.key} runs Odoo {major}: "
@@ -524,6 +541,8 @@ class DockerPlugin(ServicePlugin):
         first), update the changed modules, start it. Refused, before
         anything is touched, for a backup of another Odoo version."""
         opts = instance.options
+        if on_linked_cluster(instance):
+            raise JobFailed(ON_LINKED_CLUSTER.format(key=instance.key))
         neutralize = bool(options.get("neutralize", True))
         load_only = bool(options.get("load_only", False))
         major = await instance_major(instance)
