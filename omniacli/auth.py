@@ -73,6 +73,9 @@ class Principal:
     # role is then its role in the workspace of what the request reaches
     workspaces: tuple[tuple[str, str], ...] = ()
     scoped: bool = False
+    # a linked instance: the request is one a person's browser makes through that instance's pages (its
+    # proxy says which menu it shows them under), not one the machine makes by itself (a job, a look)
+    person: bool = False
 
     def can(self, role: str) -> bool:
         return ROLES.index(self.role) >= ROLES.index(role)

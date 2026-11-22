@@ -724,7 +724,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             cap = request.headers.get(_ROLE_CAP_HEADER, "")
             if cap in ACCESS_ROLES and ACCESS_ROLES.index(cap) < ACCESS_ROLES.index(role):
                 role = cap
-            return Principal(name, role, "link", on_behalf if _ON_BEHALF.fullmatch(on_behalf) else "")
+            return Principal(name, role, "link", on_behalf if _ON_BEHALF.fullmatch(on_behalf) else "",
+                             person=menu is not None and bool(request.state.prefix))
         # a browser: the session of the login form
         name = sessions.user(request.cookies.get(COOKIE), settings.users)
         if name is None:
@@ -10487,6 +10488,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     # the restart: 3 minutes to answer, as many again to put the values of before back
     POSTGRES_RESTART_TIMEOUT = 900
 
+    def a_machine(me: Principal) -> bool:
+        """me is another machine acting by itself through its link (a job, a
+        look), not a person who reads this machine's pages through that
+        machine's panel: what a machine asks for is its own only (its
+        replica, its database), while a person there is an admin as one who
+        logs in here, whatever panel they came through."""
+        return me.kind == "link" and not me.person
+
     def postgres_admin(me: Principal) -> None:
         if not machine_admin(me):
             raise HTTPException(status.HTTP_403_FORBIDDEN, "An admin of the machine is required")
@@ -10898,7 +10907,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         result carries the port, the role, the database and the CA: no secret
         (the role's password stays on the other machine: only its verifier comes)."""
         postgres_admin(me)
-        if me.kind != "link":
+        if not a_machine(me):
             return refuse("A database for another machine is asked by that machine, through its link",
                           status.HTTP_403_FORBIDDEN)
         if known_cluster(major) is None:
@@ -10958,7 +10967,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 return {"ok": True, "gone": True}
             return refuse(f"{name} is no database of another machine on PostgreSQL {major}", status.HTTP_404_NOT_FOUND)
         whose = str(grant.get("link") or "another machine")
-        if me.kind == "link" and whose != me.name:
+        if a_machine(me) and whose != me.name:
             # a machine takes back what it asked for, never a database of the same name of another's
             return refuse(f"{name} is a database of another machine here, not of {me.name}: it is not touched",
                           status.HTTP_403_FORBIDDEN)
@@ -11313,7 +11322,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         Its result carries the port and the CA: no secret (the password of
         the replication stays on that machine: only its verifier comes)."""
         postgres_admin(me)
-        if me.kind != "link":
+        if not a_machine(me):
             return refuse("A read replica is asked by the machine that hosts it, through its link",
                           status.HTTP_403_FORBIDDEN)
         if not pg_known(major):
@@ -11409,7 +11418,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     def replica_of_link(major: str, me: Principal):
         """The record of the replica of this PostgreSQL, when me is the link
         of the machine that hosts it; else the refusal."""
-        if me.kind != "link":
+        if not a_machine(me):
             return refuse("Asked by the machine that hosts the replica, through its link", status.HTTP_403_FORBIDDEN)
         if not pg_known(major):
             return pg_missing(major)
@@ -11451,7 +11460,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             found = await replica_state_here(major)
         except JobFailed as exc:
             return refuse(str(exc), status.HTTP_502_BAD_GATEWAY)
-        if me.kind == "link" and found.get("exists"):
+        if a_machine(me) and found.get("exists"):
             if found.get("link") != me.name:
                 # another machine's: only that there is one, and whose
                 return {"exists": True, "mine": False, "link": found.get("link"), "machine": here_name()}
@@ -11600,7 +11609,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return {"ok": True, "gone": True}
         what, target = pg_what(major), dedicated_instance(major)
         who = str(rec.get("link") or "another machine")
-        if me.kind == "link" and who != me.name:
+        if a_machine(me) and who != me.name:
             return refuse(f"The read replica of this cluster is of another machine, not of {me.name}: it is not touched",
                           status.HTTP_403_FORBIDDEN)
         if rec.get("state") == "replaced":
@@ -11633,7 +11642,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                   "Nothing restarted"], job.source)
             replica_own.pop(major, None)
             await monitor.machine_problem(replica_problem_id(major), "")
-            if me.kind != "link":
+            if not a_machine(me):
                 heard = replica_heard.get(major)
                 try:
                     recent = heard and (datetime.datetime.now() - datetime.datetime.fromisoformat(heard)
@@ -12899,7 +12908,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         """What the promoted copy hosted here sees of the return, when me may
         act on it (the link of the machine that comes back, or, link_only
         False, an admin of this machine too); else the refusal."""
-        if link_only and me.kind != "link":
+        if link_only and not a_machine(me):
             return refuse("Asked by the machine whose cluster comes back, through its link", status.HTTP_403_FORBIDDEN)
         if replica_hosted().get(major) is None:
             return refuse(f"This machine hosts no read replica of a PostgreSQL {major}", status.HTTP_404_NOT_FOUND)
@@ -12907,7 +12916,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             found = await workspaceops.ask("machine-db-replica-return", major, "state", timeout=pgtuning.READ_TIMEOUT * 4)
         except JobFailed as exc:
             return refuse(str(exc), status.HTTP_502_BAD_GATEWAY)
-        if me.kind == "link" and found.get("exists") and found.get("link") != me.name:
+        if a_machine(me) and found.get("exists") and found.get("link") != me.name:
             return refuse(f"The return on this copy is of another machine, not of {me.name}: it is not touched",
                           status.HTTP_403_FORBIDDEN)
         return found
@@ -13022,7 +13031,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 job.log(f"What this copy kept for the return of {name} is gone: the role of the replication, its line "
                         f"of pg_hba.conf, the place that held its changes ({int(done.get('freed') or 0) >> 20} MB of "
                         "them, freed)")
-                if me.kind != "link":
+                if not a_machine(me):
                     job.log(f"{name} asks this machine every {REPLICA_EVERY} s: it deletes the copy it made and puts "
                             "its data of before back at its next look")
                 job.result = {**job.result, "return_cancelled": {"freed": done.get("freed")}}
@@ -13131,7 +13140,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         """The grant name of this machine's cluster, when me is the link of
         the machine it was given to (its record, a file OmniaCLI reads);
         else the refusal."""
-        if me.kind != "link":
+        if not a_machine(me):
             return refuse("Asked by the machine that uses the database, through its link", status.HTTP_403_FORBIDDEN)
         found = machinedb.registry().get(major) if machinedb.ENV_NAME.fullmatch(name) else None
         grant = machinedb.grants(Path(str(found.get("project") or ""))).get(name) if found else None
@@ -13220,7 +13229,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if what not in ("revoke", "allow", "drop") or not machinedb.ENV_NAME.fullmatch(name):
             return refuse("revoke, allow or drop a database of another machine", status.HTTP_404_NOT_FOUND)
         entry = replica_hosted().get(major)
-        if entry is None or me.kind == "link":
+        if entry is None or a_machine(me):
             return refuse(f"This machine hosts no promoted copy of a PostgreSQL {major} for you",
                           status.HTTP_404_NOT_FOUND)
         whose = str(entry.get("link") or "")

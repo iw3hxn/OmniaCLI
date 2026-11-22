@@ -728,7 +728,9 @@ async def machines(tmp_path, monkeypatch):
         return parse_settings({"auth": auth, "backup_dir": str(conf / "backups"), "jobs_dir": str(conf / "jobs"),
                                "servers_file": "servers.yaml"}, base_dir=conf)
     holder = settings_of("lab2", {"users": {"admin": USER_HASH}, "links": {
-        "lab1": {"token": hash_token(LINK_TOKEN), "role": "admin"}}})
+        "lab1": {"token": hash_token(LINK_TOKEN), "role": "admin"},
+        # the panel a person looks at lab2 from, which hosts nothing of it
+        "central": {"token": hash_token(CENTRAL_TOKEN), "role": "admin"}}})
     holder.storage_roots = {"default": str(lab.storage)}
     holder.set_web_access(Access(users={"mario": hash_password(PASSWORD, iterations=1000)}, roles={"mario": "workspace"}))
     holder.workspaces = {"acme": Workspace("acme", "ACME", storage="default", limits={"disk_gb": 10},
@@ -767,6 +769,11 @@ async def machines(tmp_path, monkeypatch):
 
 
 THERE = {**ADMIN, "Origin": "http://lab2.test"}
+CENTRAL_TOKEN = "central-" + "c" * 40
+# what a machine sends through its link by itself (a job), and what its proxy adds for a person's browser
+CENTRAL = {"Authorization": f"Bearer {CENTRAL_TOKEN}", "X-OmniaCLI-Prefix": "/links/lab2", "X-OmniaCLI-User": "carlo",
+           "X-OmniaCLI-Role-Cap": "admin"}
+PERSON = {**CENTRAL, "X-OmniaCLI-Menu": "servers,instances,backups,settings"}
 MARIO = {"Authorization": "Basic " + __import__("base64").b64encode(f"mario:{PASSWORD}".encode()).decode()}
 MAKE = {"link": "lab2", "major": "17", "address": "203.0.113.7", "cap_gb": 20, "reserve_gb": 2}
 
@@ -961,6 +968,29 @@ async def test_the_reads_are_not_switched_on_when_they_cannot_be(machines, monke
     customer = (await client.there.get("/servers/acme-mach?view=production", headers=MARIO)).text
     assert "cannot read from a replica" not in customer and 'data-db-replica="' not in customer
     assert client.lab.reading == set()
+
+
+async def test_a_person_who_comes_through_another_panel_is_an_admin_here(machines):
+    """The replica is lab1's. A third machine acting by itself through its
+    link does not touch it; a person who reads lab2's pages through that
+    machine's panel (its proxy says the menu it shows) drops it as an admin
+    who logs in on lab2 does: on 22/11/2026 Drop the replica… answered 403
+    after the confirmation to who came from the central panel."""
+    client = machines
+    await make(client)
+    await client.lab1.state.replica_look_hosted()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=client.lab2), base_url="http://lab2.test") as raw:
+        resp = await raw.post("/api/postgres/machine/17/replica/drop", headers=CENTRAL)
+        assert resp.status_code == 403 and "not of central" in resp.json()["error"]
+        state = (await raw.get("/api/postgres/machine/17/replica/state", headers=CENTRAL)).json()
+        assert state == {"exists": True, "mine": False, "link": "lab1", "machine": state["machine"]}
+        assert (await raw.get("/api/postgres/machine/17/replica/state", headers=PERSON)).json()["mine"] is True
+        resp = await raw.post("/api/postgres/machine/17/replica/drop", headers=PERSON)
+        assert resp.status_code == 200, resp.text
+    job = await job_of(client.there, resp.json()["job"])
+    assert job["status"] == "success", job
+    assert job["source"] == "manual: link central (carlo)" or "central" in job["source"]
+    assert "it deletes its copy at its next look" in "\n".join(job["lines"]) and client.lab.record() is None
 
 
 async def test_dropped_from_the_machine_that_has_the_cluster(machines):
