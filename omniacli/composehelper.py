@@ -707,11 +707,23 @@ def db_target(project: Path, name: str, terminal: bool = False) -> tuple[str, st
     return service(project, MACHINE_ODOO), "machine-", () if terminal else ("-T",)
 
 
+# the database service of a template's project: a restart of the instance leaves it running (up -d still makes it
+# again when its own settings changed)
+RESTART_KEEPS = ("db",)
+
+
 def commands(project: Path, action: str, args: list[str]) -> list[list[str]]:
     """The docker compose commands of an action, its arguments checked."""
     if action in ACTIONS:
         if args:
             raise HelperError(f"{action} takes no arguments")
+        if action == "restart":
+            # Restart of an instance is its Odoo's (and its mail's): its PostgreSQL restarting with it cost its
+            # connections and 2-3 s more for nothing, and every change of its reads restarted it (22/11/2026)
+            listed = services(project)
+            kept = [s for s in listed if s not in RESTART_KEEPS]
+            if kept and len(kept) < len(listed):
+                return [["up", "-d"], ["restart", *kept]]
         return ACTIONS[action]
     if action == "version":
         # version <odoo service>: odoo --version

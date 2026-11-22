@@ -222,9 +222,17 @@ def test_the_helper_runs_the_actions(tmp_path, monkeypatch):
     monkeypatch.setattr(composehelper.shutil, "which", lambda name, path: "/usr/bin/docker")
     monkeypatch.setattr(composehelper, "caller", lambda: ("omniacli", *STRANGER))
     monkeypatch.setattr(composehelper, "problems", lambda project, uid, groups: [])
+    # a project without a database of its own (on the machine's cluster, on another machine): all of it restarts
+    monkeypatch.setattr(composehelper, "services", lambda project: ["odoo"])
     for action in ("restart", "start", "stop", "state"):
         assert composehelper.main([str(project), action]) == 0
     assert ran == [["up", "-d"], ["restart"], ["up", "-d"], ["stop"], ["ps", "-a", "--format", "json"]]
+    # one with its own database: Restart is its Odoo's and its mail's, the database keeps running (up -d still
+    # makes it again when its own settings changed)
+    ran.clear()
+    monkeypatch.setattr(composehelper, "services", lambda project: ["odoo", "db", "mail"])
+    assert composehelper.main([str(project), "restart"]) == 0
+    assert ran == [["up", "-d"], ["restart", "odoo", "mail"]]
 
 
 async def test_checks(with_compose, monkeypatch, tmp_path):
