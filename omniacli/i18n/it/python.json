@@ -834,6 +834,7 @@
  "its job there: {job}": "il suo job là: {job}",
  "its own database": "il suo database",
  "its template is not on this machine any more": "il suo template non è più su questa macchina",
+ "its unit {name} is stopped and not started at boot: no instance in use": "la sua unit {name} è ferma e non parte all'avvio: nessuna istanza in uso",
  "job {job} is not running": "il job {job} non è in esecuzione",
  "job {job} was not started through puller {puller}": "il job {job} non è stato avviato tramite il puller {puller}",
  "linked, but no Odoo instance was added there: the lines above say why": "collegato, ma lì non è stata aggiunta nessuna istanza Odoo: le righe sopra dicono perché",

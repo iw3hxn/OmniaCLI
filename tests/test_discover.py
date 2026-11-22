@@ -109,7 +109,7 @@ def machine(tmp_path, monkeypatch):
     systemctl = bin_dir / "systemctl"
     systemctl.write_text(f"""#!/bin/sh
 case "$1" in
-list-unit-files) printf 'odoo-prod.service enabled enabled\\nodoo-old.service disabled enabled\\ngetty@.service enabled enabled\\ncron.service enabled enabled\\n' ;;
+list-unit-files) printf 'odoo-prod.service enabled enabled\\nodoo-old.service disabled enabled\\nodoo.service disabled enabled\\ngetty@.service enabled enabled\\ncron.service enabled enabled\\n' ;;
 show) sed "s#\\$WORKDIR#$(cat {tmp_path}/workdir 2>/dev/null)#" <<'EOF'
 Id=odoo-prod.service
 ExecStart={{ path=/bin/true ; argv[]=/bin/true ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }}
@@ -124,6 +124,14 @@ User=
 WorkingDirectory=
 MainPID=0
 ActiveState=inactive
+
+Id=odoo.service
+ExecStart={{ path=/usr/bin/odoo ; argv[]=/usr/bin/odoo --config /etc/odoo/odoo.conf ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }}
+User=odoo
+WorkingDirectory=
+MainPID=0
+ActiveState=inactive
+UnitFileState=disabled
 
 Id=cron.service
 ExecStart={{ path=/usr/sbin/cron ; argv[]=/usr/sbin/cron -f ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }}
@@ -155,7 +163,9 @@ esac
 
 async def test_discover(machine):
     found = {d.label: d for d in await discover.discover([], machine["proc"])}
-    assert sorted(found) == ["process 100, unit odoo-prod.service", "process 110", "unit odoo-old.service"]
+    assert sorted(found) == ["process 100, unit odoo-prod.service", "process 110", "unit odoo-old.service", "unit odoo.service"]
+    # the unit an Odoo package installs, stopped and not started at boot (a hosting panel runs its own): no instance
+    assert found["unit odoo.service"].skip == "its unit odoo.service is stopped and not started at boot: no instance in use"
 
     prod = found["process 100, unit odoo-prod.service"]
     inst = prod.instance

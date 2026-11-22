@@ -211,7 +211,7 @@ async def units() -> list[dict]:
         return []
     code, out = await capture(["systemctl", "show", "-p", "Id", "-p", "ExecStart", "-p", "User",
                                "-p", "WorkingDirectory", "-p", "MainPID", "-p", "ActiveState",
-                               "--", *names], timeout=60)
+                               "-p", "UnitFileState", "--", *names], timeout=60)
     if code:
         return []
     found = []
@@ -253,8 +253,12 @@ def merge(running: list[Started], unit_list: list[dict]) -> list[Started]:
             state = "running"
         else:
             state = unit.get("ActiveState") or "inactive"
+        # stopped and not started at boot: the unit an Odoo package installs beside one a hosting panel runs
+        # (on 22/11/2026 the odoo.service of a machine whose Odoo is the panel's own unit), no instance in use
+        idle = state != "running" and unit.get("UnitFileState") in ("disabled", "masked")
         found.append(Started(argv=unit["argv"], user=unit.get("User") or "root",
-                             cwd=unit.get("WorkingDirectory") or None, unit=name, state=state))
+                             cwd=unit.get("WorkingDirectory") or None, unit=name, state=state,
+                             skip=f"its unit {name} is stopped and not started at boot: no instance in use" if idle else None))
     return found
 
 
