@@ -648,7 +648,7 @@ class Lab:
             return {"stopped": True, "already": already, "replaced_at": "2026-11-22T11:02:00", "seconds": 0.6,
                     "grants": ["acme_linked"], "environments": self.instances}
         if args[0] == "machine-db-replica-follow":
-            self.meta(args[3], replica_read=None, promoted_from={"template": "odoo-19-machine"},
+            self.meta(args[3], replica_read=None, promoted_from={"template": "odoo-19-machine", "at": "2026-11-22T11:02:05"},
                       database_on="203.0.113.7:15433", database_link="lab1", database_major="17")
             return {"already": False, "database": f"acme_{args[3]}", "db_service": "remote", "host": "203.0.113.7", "port": 15433}
         if args[0] == "machine-db-replica-promote":
@@ -1149,3 +1149,35 @@ async def test_the_tab_has_the_replica_in_its_words(machines):
         assert word not in texts, word
     # a workspace's admin has no Database tab
     assert 'id="pg-replica"' not in (await client.there.get("/", headers=MARIO)).text
+
+
+async def test_after_a_promotion_the_pages_say_where_the_database_is(machines):
+    """The screens after their review (UX-011, part 1): the replaced row says what it served and until
+    when, Take the cluster away… names the databases other machines use, the instance's page names the
+    machine of the copy to a machine's admin, Not here is one sentence for each place, the job's page
+    writes MB and GB."""
+    client = machines
+    await make(client)
+    job = await job_of(client, (await promote(client)).json()["job"])
+    assert job["status"] == "success", job
+    # the instance's page: the machine's admin reads which machine has the database and since when
+    page = (await client.there.get("/servers/acme-mach?view=production", headers=ADMIN)).text
+    assert "on the promoted replica on lab1 (203.0.113.7) · since 22/11/2026 11:02" in page
+    assert 'href="/#database"' in page and "on 203.0.113.7:15433 · tuned there" not in page
+    # a workspace's admin still reads no machine and no address
+    customer = (await client.there.get("/servers/acme-mach?view=production", headers=MARIO)).text
+    assert "promoted replica" not in customer and "203.0.113.7" not in customer and "lab1" not in customer
+    # Not here: the instances on the promoted copy are named with its machine, for one sentence
+    data = (await client.there.get("/api/postgres", headers=ADMIN)).json()
+    assert [(r["server"], r["promoted"], r["host"]) for r in data["remote"]] == [("acme-mach", "lab1", "203.0.113.7:15433")]
+    tab = (await client.there.get("/", headers=ADMIN)).text
+    for part in ("remote.textContent = notHere(data.remote);", "T.notHerePromotedMany", "T.listMore",
+                 # the replaced row: what it served and until when, no line of a port no one reaches
+                 "fill(T.served, {list: servedList(row), when: when(row.state.at)})", "if (!replaced) td.append(",
+                 # Take the cluster away… names the databases other machines use: they are in the copy
+                 "T.rp.removeReplacedLentOne : T.rp.removeReplacedLent"):
+        assert part in tab, part
+    # the job's page writes a size as every page does
+    shown = (await client.get(f"/jobs/{job['id']}", headers=ADMIN)).text
+    assert "window.sizeText(Math.max(0, b))" in shown and "window.sizeText(result.size)" in shown
+    assert '" GiB"' not in shown and '" MiB"' not in shown and '" KiB"' not in shown

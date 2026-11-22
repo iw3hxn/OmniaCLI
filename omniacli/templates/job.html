@@ -218,8 +218,8 @@
   // The steps: done before the current one, the current one active (failed
   // when the job ended on it), pending after; the transfer with its bytes,
   // speed and time left, from what changed since the last look.
-  const sizeText = (b) => b >= 1073741824 ? (b / 1073741824).toFixed(2) + " GiB"
-    : b >= 1048576 ? (b / 1048576).toFixed(1) + " MiB" : Math.max(0, Math.round(b / 1024)) + " KiB";
+  // one way to write a size, here as in every page (base.html): MB and GB
+  const sizeText = (b) => window.sizeText(Math.max(0, b));
   const clock = (s) => s >= 3600 ? `${Math.floor(s / 3600)}:${String(Math.floor(s / 60) % 60).padStart(2, "0")}:${String(Math.floor(s % 60)).padStart(2, "0")}`
     : `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
   let lastBytes = null, speed = 0, stepSince = {};
@@ -295,9 +295,7 @@
     if (!box.hidden) return;
     const a = document.createElement("a");
     a.href = {{ prefix | tojson }} + result.download; a.setAttribute("download", result.file);
-    const b = result.size;
-    const size = b >= 1073741824 ? (b / 1073741824).toFixed(2) + " GiB"
-      : b >= 1048576 ? (b / 1048576).toFixed(1) + " MiB" : Math.max(1, Math.round(b / 1024)) + " KiB";
+    const size = window.sizeText(result.size);
     a.className = "button primary"; a.textContent = {{ _("Download {file} ({size})") | tojson }}.replace("{file}", result.file).replace("{size}", size);
     a.title = {{ _("Downloads this backup to your computer") | tojson }};
     box.appendChild(a); box.hidden = false;

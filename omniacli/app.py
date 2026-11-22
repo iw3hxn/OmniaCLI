@@ -10266,11 +10266,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     continue  # a row of the machine's cluster, among those it serves
                 if inst.restart.type == "compose" and on_remote_db(inst):
                     # on another machine: the line Not here, it is tuned there
+                    meta = instance_meta(inst)
                     remote.append({"key": inst.key, "server": srv.name, "role": role,
-                                   "host": remote_db_host(inst) or "another machine",
+                                   "host": str(meta.get("database_on") or "") or "another machine",
                                    # the cluster of a linked OmniaCLI: named, its Database tab is where it is tuned
                                    "link": link_now(inst) or None,
-                                   "major": remote_db_host(inst, "database_major") or None})
+                                   "major": str(meta.get("database_major") or "") or None,
+                                   # the promoted replica of this machine's cluster: the machine that hosts it
+                                   "promoted": str(meta.get("database_link") or "") if meta.get("promoted_from") else ""})
                     continue
                 if inst.restart.type == "compose":
                     kind, parent = postgres_kind(srv, role, known)
@@ -10427,14 +10430,18 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         """Its database is on another machine (AD-003): no service of its own, not this machine's cluster."""
         return getattr(inst.options, "db_service", "") == stacktemplates.REMOTE_DB_SERVICE
 
-    def remote_db_host(inst: Instance, key: str = "database_on") -> str:
-        """host:port of that database (or, key replica_on, of its read replica), from the instance's
-        own record ("" when it cannot be read or there is none)."""
+    def instance_meta(inst: Instance) -> dict:
+        """The instance's own record (instance.json), {} when it cannot be read."""
         try:
             meta = json.loads((Path(inst.restart.service).parent / workspacehelper.INSTANCE_FILE).read_text("utf-8"))
         except (OSError, ValueError):
-            return ""
-        return str(meta.get(key) or "") if isinstance(meta, dict) else ""
+            return {}
+        return meta if isinstance(meta, dict) else {}
+
+    def remote_db_host(inst: Instance, key: str = "database_on") -> str:
+        """host:port of that database (or, key replica_on, of its read replica), from the instance's
+        own record ("" when it cannot be read or there is none)."""
+        return str(instance_meta(inst).get(key) or "")
 
     def cluster_target(major: str, project: str) -> types.SimpleNamespace:
         """What the tuning's code takes of an instance, for the cluster of
@@ -12407,13 +12414,18 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if inst.restart.type == "compose" and on_remote_db(inst):
             # link, major: on the cluster of a linked OmniaCLI, for the machine's admins (a user of
             # workspaces reads the host only, as of any database of another machine)
-            return {"where": "remote", "host": remote_db_host(inst) or "another machine",
-                    "replica": remote_db_host(inst, "replica_on"),
+            meta = instance_meta(inst)
+            promoted = meta.get("promoted_from") if isinstance(meta.get("promoted_from"), dict) else None
+            return {"where": "remote", "host": str(meta.get("database_on") or "") or "another machine",
+                    "replica": str(meta.get("replica_on") or ""),
                     "link": link_now(inst) or None,
-                    "major": remote_db_host(inst, "database_major") or None,
+                    "major": str(meta.get("database_major") or "") or None,
                     # the promoted replica of this machine's cluster (AD-004): the provider's machine, whose
-                    # address a user of workspaces does not read (unlike a third party's database, UX-009 D3)
-                    "provider": bool(remote_db_host(inst, "promoted_from"))}
+                    # address a user of workspaces does not read (unlike a third party's database, UX-009 D3);
+                    # the machine's admins read which machine hosts it and since when
+                    "provider": bool(promoted),
+                    "machine": str(meta.get("database_link") or "") if promoted else "",
+                    "since": str(promoted.get("at") or "") if promoted else ""}
         if inst.restart.type == "compose" and on_machine_db(inst):
             # reads: also from the replica of the cluster (AD-004); which machine, only replica_offer_of says
             return {"where": "machine", "reads": bool(remote_db_host(inst, workspacehelper.REPLICA_META))}

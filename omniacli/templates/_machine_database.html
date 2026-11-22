@@ -175,6 +175,7 @@
     system: {{ _("PostgreSQL of the system") | tojson }},
     systemPort: {{ _("PostgreSQL of the system · port {port}") | tojson }},
     serves: {{ _("serves: {list}") | tojson }},
+    served: {{ _("served: {list} until {when}") | tojson }},
     of: {{ _("{n} of {max}") | tojson }},
     states: {
       base: {{ _("Base values") | tojson }},
@@ -196,6 +197,10 @@
     proposeTitle: {{ _("Calculates the values of this database on the memory, the cores and the disk of the machine, and shows them beside those of now. Nothing changes until you choose Apply. The recovery at a minute is not touched.") | tojson }},
     rowTitle: {{ _("Shows the parameters of this database") | tojson }},
     notHere: {{ _("Not here: {key} uses a database on {host}, another machine; it is tuned there.") | tojson }},
+    notHereMany: {{ _("Not here: {list} use a database on {host}, another machine; it is tuned there.") | tojson }},
+    notHerePromoted: {{ _("Not here: {key} uses the database on {machine} ({host}), the promoted replica; it is tuned there.") | tojson }},
+    notHerePromotedMany: {{ _("Not here: {list} use the database on {machine} ({host}), the promoted replica; it is tuned there.") | tojson }},
+    listTwo: {{ _("{a} and {b}") | tojson }}, listMore: {{ _("{list} and {n} more") | tojson }},
     serve: {{ _("Serves") | tojson }}, where: {{ _("Where") | tojson }}, pitr: {{ _("Recovery at a minute") | tojson }},
     whereDedicated: {{ _("db service of the project, on the disk of the workspace {ws}") | tojson }},
     whereDedicatedAlone: {{ _("db service of the project") | tojson }},
@@ -311,6 +316,7 @@
     clusterNot: {{ _("No machine's cluster here: {why}") | tojson }},
     // a database of the cluster used by an instance of another machine, a linked OmniaCLI's (AD-003)
     notHereLinked: {{ _("Not here: {key} uses PostgreSQL {major} of {link} ({host}); it is tuned there, in its Database tab.") | tojson }},
+    notHereLinkedMany: {{ _("Not here: {list} use PostgreSQL {major} of {link} ({host}); it is tuned there, in its Database tab.") | tojson }},
     machineSubPort: {{ _("a container of OmniaCLI, data on the storage {storage}, its socket for this machine and port {port} over TLS for other machines") | tojson }},
     machineWherePort: {{ _("container of OmniaCLI, its data on the storage {storage}; the instances of this machine reach its socket, each with its role and its data in the tablespace on its workspace's disk; other machines reach port {port} over TLS, each from its one address and to its one database, with the data on the storage of the cluster") | tojson }},
     grants: {{ _("From other machines") | tojson }},
@@ -385,6 +391,9 @@
       replacedDetail: {{ _("The data of this cluster is of {when} and no instance uses it any more: the instances of this machine read and write on the database of {machine}.") | tojson }},
       replacedStill: {{ _("{list} are not pointed at the database of {machine} yet: until they are, the cluster cannot be taken away.") | tojson }},
       removeReplacedAsk: {{ _("Take the machine's PostgreSQL {major} away? It is stopped since {when} and no instance uses it: its container, its data folder and what its instances had on the workspaces' disks are deleted. The database of the instances is on {machine}.") | tojson }},
+      removeReplacedLent: {{ _(" The databases other machines use ({list}) are in the copy on {machine}.") | tojson }},
+      removeReplacedLentOne: {{ _(" The database another machine uses ({list}) is in the copy on {machine}.") | tojson }},
+      lentOf: {{ _("{name}, of {link}") | tojson }},
       // the detail on the machine that hosts it
       whose: {{ _("Whose") | tojson }}, since: {{ _("Since") | tojson }}, space: {{ _("Room") | tojson }}, holds: {{ _("What it holds") | tojson }},
       whoseLink: {{ _("Database of {link} ›") | tojson }},
@@ -567,9 +576,12 @@
     if (row.where === "machine") {
       const badge = el("span", {className: "badge info", textContent: kindText(row)});
       badge.style.marginLeft = "8px";
-      td.append(el("strong", {textContent: T.machine}), badge,
-        el("span", {className: "pg-sub", textContent: fill(row.port ? T.machineSubPort : T.machineSub, {storage: row.storage, port: row.port})}),
-        el("span", {className: "pg-sub", textContent: row.serves.length ? fill(T.serves, {list: servedList(row)}) : T.machineNone}));
+      // replaced by its replica: it serves nothing and listens for no one, and the closed row says so as the detail does
+      const replaced = (row.state || {}).code === "replaced";
+      td.append(el("strong", {textContent: T.machine}), badge);
+      if (!replaced) td.append(el("span", {className: "pg-sub", textContent: fill(row.port ? T.machineSubPort : T.machineSub, {storage: row.storage, port: row.port})}));
+      td.append(el("span", {className: "pg-sub", textContent: !row.serves.length ? T.machineNone
+        : replaced ? fill(T.served, {list: servedList(row), when: when(row.state.at)}) : fill(T.serves, {list: servedList(row)})}));
       if ((row.grants || []).length) td.append(el("span", {className: "pg-sub", textContent: fill(T.grantsSub, {list: grantList(row)})}));
       // its read replica on another machine: its state on the closed row, and what the cluster keeps for it
       const followed = row.replica;
@@ -769,7 +781,11 @@
     if (using.length) box.append(el("p", {className: "pg-warn", textContent: fill(T.rp.replacedStill, {list: using.join(", "), machine: s.link || "?"})}));
     else actions.append(el("button", {type: "button", className: "small danger", textContent: T.removeCluster, title: T.removeClusterTitle,
       onclick: async (e) => {
-        if (!await window.omniaAsk(fill(T.rp.removeReplacedAsk, {major: row.major, when: when(s.at), machine: s.link || "?"}), e.currentTarget, {danger: true})) return;
+        // the databases other machines use on this cluster are named: they are in the copy, not here
+        const given = row.grants || [], machine = s.link || "?";
+        const lent = given.length ? fill(given.length === 1 ? T.rp.removeReplacedLentOne : T.rp.removeReplacedLent,
+          {list: given.map((g) => fill(T.rp.lentOf, {name: g.name, link: g.link})).join("; "), machine}) : "";
+        if (!await window.omniaAsk(fill(T.rp.removeReplacedAsk, {major: row.major, when: when(s.at), machine}) + lent, e.currentTarget, {danger: true})) return;
         goTo(await post(`${API}/machine/${encodeURIComponent(row.major)}/remove`));
       }}));
     box.append(actions);
@@ -908,6 +924,24 @@
       {goTitle: fill(T.rp.restartGoTitle, {link: f.link})})) rpSubmit();
   });
 
+  // «Not here»: one sentence for each place, not for each instance; the instances on the same database's
+  // machine are said together, the first two by name
+  function notHere(remote) {
+    const groups = new Map();
+    for (const r of remote) {
+      const id = [r.promoted || "", r.link || "", r.major || "", r.host].join("|");
+      if (!groups.has(id)) groups.set(id, {first: r, keys: []});
+      groups.get(id).keys.push(r.server + (r.role === "test" ? " (" + T.kinds.test + ")" : ""));
+    }
+    return [...groups.values()].map(({first: r, keys}) => {
+      const many = keys.length > 1;
+      const list = keys.length > 2 ? fill(T.listMore, {list: keys.slice(0, 2).join(", "), n: keys.length - 2})
+        : many ? fill(T.listTwo, {a: keys[0], b: keys[1]}) : keys[0];
+      const text = r.promoted ? (many ? T.notHerePromotedMany : T.notHerePromoted)
+        : r.link ? (many ? T.notHereLinkedMany : T.notHereLinked) : (many ? T.notHereMany : T.notHere);
+      return fill(text, {key: list, list, host: r.host, link: r.link, major: r.major, machine: r.promoted});
+    }).join(" ");
+  }
   function draw() {
     // the cluster of this machine first, then the replicas it hosts of other machines' clusters, then the others
     const hosted = (data.replicas || []).map((r) => Object.assign({}, r, {server: fill(T.rp.of, {link: r.link}), role: r.major, serves: [],
@@ -950,8 +984,7 @@
     document.getElementById("pg-empty").hidden = rows.length > 0;
     search.hidden = rows.length <= 8;
     const remote = document.getElementById("pg-remote");
-    remote.textContent = data.remote.map((r) => fill(r.link ? T.notHereLinked : T.notHere, {key: r.server + (r.role === "test" ? " (" + T.kinds.test + ")" : ""),
-      host: r.host, link: r.link, major: r.major})).join(" ");
+    remote.textContent = notHere(data.remote);
     remote.hidden = !data.remote.length;
     // + Machine's cluster: the tab's primary while there is none
     const offer = data.cluster || {}, box = document.getElementById("pg-cluster-box"), make = document.getElementById("pg-cluster");
