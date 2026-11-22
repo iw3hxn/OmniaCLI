@@ -252,6 +252,8 @@ async def provision(job: Job, machine: Machine, ssh_folder: Path, link_public_ke
 
 
 FAILED_MARK = "PROVISION FAILED: "
+# in the reason provision.sh gives for a system it takes only with its Odoo already there (Ubuntu 20.04)
+ONLY_EXISTING = "is supported only as a server that already has Odoo"
 
 
 def failure_said(lines: list[str]) -> str | None:

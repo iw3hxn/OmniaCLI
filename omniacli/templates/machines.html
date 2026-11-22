@@ -232,7 +232,7 @@
     cores: {{ _("{count} cores") | tojson }}, instances: {{ _("{count} instances") | tojson }}, instance: {{ _("1 instance") | tojson }},
     of: {{ _("of {total}") | tojson }}, step: {{ _("Step {n} of {total}") | tojson }}, since: {{ _("for {minutes} min") | tojson }},
     unreachable: {{ _("Its OmniaCLI does not answer through the link") | tojson }}, linkOk: {{ _("The link answers") | tojson }},
-    servers: {{ _("servers") | tojson }}, online: {{ _("online") | tojson }}, preparingN: {{ _("being prepared") | tojson }},
+    servers: {{ _("servers") | tojson }}, server: {{ _("server") | tojson }}, online: {{ _("online") | tojson }}, preparingN: {{ _("being prepared") | tojson }},
     next: {{ _("Next") | tojson }}, add: {{ _("Add the server") | tojson }}, connecting: {{ _("Connecting…") | tojson }},
     cancel: {{ _("Cancel") | tojson }}, back: {{ _("Back") | tojson }}, refused: {{ _("Refused") | tojson }},
     cancelTitle: {{ _("Closes without changing anything") | tojson }}, backTitle: {{ _("Goes back to the first step; what you wrote stays") | tojson }},
@@ -356,7 +356,7 @@
     const counts = {up: 0, preparing: 0};
     for (const card of [HERE, ...cards]) {
       const state = stateOf(card);
-      if (state in counts && !card.local) counts[state] += 1;
+      if (state in counts) counts[state] += 1;
       const address = card.port && card.port !== 22 ? `${card.host}:${card.port}` : card.host;
       const name = card.linked ? el("a", {href: `${baseOf(card)}/`, text: card.local ? T.here : card.name}) : card.name;
       grid.append(el("article", {class: "mcard", "data-machine": card.name},
@@ -365,9 +365,11 @@
            el("span", {class: `m-state ${state}`}, el("i"), T[state])),
         body(card, state), foot(card, state)));
     }
+    // this machine is one of the servers shown: it is counted with the others
+    const shown = cards.length + 1;
     summary.hidden = cards.length === 0;
     summary.replaceChildren(
-      el("span", {}, el("b", {text: String(cards.length)}), T.servers),
+      el("span", {}, el("b", {text: String(shown)}), shown === 1 ? T.server : T.servers),
       el("span", {}, el("b", {text: String(counts.up)}), T.online),
       counts.preparing ? el("span", {}, el("b", {text: String(counts.preparing)}), T.preparingN) : "");
   }
@@ -473,10 +475,14 @@
     if (card) {
       field("m-host").value = card.host || ""; field("m-name").value = card.name || "";
       if (card.port) field("m-port").value = card.port;
+      // what was chosen for it the time before (or what its failure asks for), not the default
+      const chosen = form.querySelector(`input[name="m-kind"][value="${card.kind === "existing" ? "existing" : "clean"}"]`);
+      if (chosen) chosen.checked = true;
     }
     showKind();
     dialog.showModal();
-    show(card ? 2 : 1);
+    // a server whose kind is not known opens on the first step, where it is chosen
+    show(card && card.kind ? 2 : 1);
   }
   document.querySelectorAll("[data-add-machine]").forEach((b) => b.addEventListener("click", () => openWizard(null)));
   back.addEventListener("click", () => { if (step === 1) dialog.close(); else show(1); });

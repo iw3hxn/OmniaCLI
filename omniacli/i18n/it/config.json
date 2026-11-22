@@ -663,6 +663,7 @@
  "root, or a user with sudo without a password": "root, o un utente con sudo senza password",
  "running": "in esecuzione",
  "saved": "salvato",
+ "server": "server",
  "servers": "server",
  "skipped": "saltato",
  "skipped: another job is running on the instance": "saltata: un altro job è in esecuzione sull'istanza",

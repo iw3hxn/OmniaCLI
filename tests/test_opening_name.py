@@ -138,3 +138,25 @@ def test_a_name_left_out_is_no_warning_when_its_environment_opens_elsewhere():
     assert workspaceops.opened_elsewhere(ws, alone) == set()
     said = workspaceops.certificate_warnings(alone, set())
     assert len(said) == 1 and own in said[0] and AUTO in said[0]
+
+
+def test_an_env_file_only_root_reads_is_no_problem_for_the_form_check(tmp_path, monkeypatch):
+    from pathlib import Path
+    from omniacli import composehelper
+    env = tmp_path / ".env"
+    env.write_text("POSTGRES_PASSWORD=x\n")
+
+    def refused(self, *args, **kwargs):
+        raise PermissionError(13, "Permission denied", str(self))
+    monkeypatch.setattr(Path, "read_text", refused)
+    assert composehelper.env_problems(env) == [f"{env}: Permission denied"]
+    assert composehelper.env_problems(env, unread_ok=True) == []
+
+
+def test_a_system_taken_only_with_its_odoo_is_told_in_the_reason():
+    # Try again reads it to open the steps on «a server that already has Odoo»
+    said = machines.failure_said(["10:21:42 PROVISION FAILED: Ubuntu 20.04.6 LTS is supported only as a server "
+                                  "that already has Odoo (OmniaCLI alone, its instances adopted): a clean server needs …"])
+    assert machines.ONLY_EXISTING in said
+    script = (machines.PROVISION_SCRIPT).read_text()
+    assert machines.ONLY_EXISTING in script

@@ -244,7 +244,7 @@ async def test_checks(with_compose, monkeypatch, tmp_path):
     assert "Start/Stop permission" not in result
 
     allowed.add(tuple(instance.restart.command("restart")[2:]))
-    monkeypatch.setattr(checks.composehelper, "problems", lambda project, uid, groups: [])
+    monkeypatch.setattr(checks.composehelper, "problems", lambda project, uid, groups, env_unread_ok=False: [])
     result = {c.name: c for c in await checks._instance_checks(instance)}
     assert result["Service"].ok and result["Restart permission"].ok
 

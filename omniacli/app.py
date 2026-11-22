@@ -7245,6 +7245,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             card = cards.setdefault(found[1], {"name": found[1], "host": found[2], "port": None, "linked": False,
                                                "state": "", "detail": ""})
             # the reason the preparation gave when it stopped, not ssh's exit code (a job of an older OmniaCLI too)
+            said = machines.failure_said(job.lines) or ""
+            # what was chosen for it (a clean server, one that already has Odoo); of a job that did not
+            # keep it, what its failure says: a system accepted only as a server that already has Odoo
+            card["kind"] = (job.result or {}).get("kind") if isinstance(job.result, dict) else None
+            if machines.ONLY_EXISTING in said:
+                card["kind"] = "existing"
             card["job"] = {"id": job.id, "status": job.status, "created": job.created,
                            "error": i18n.tr(lang, machines.failure_said(job.lines) or job.error) if job.error else job.error,
                            "step": machines.progress(job.lines), "steps": len(machines.STEPS)}
@@ -7373,6 +7379,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         token = new_token()
 
         async def action(job):
+            # kept with the job: Try again opens the steps with the same choice, not with the default
+            job.result["kind"] = machine.kind
             await machines.provision(job, machine, ssh_folder=ssh_tunnels.folder, link_public_key=link_public,
                                      token_hash=hash_token(token))
             job.log(f"--- the link {machine.name}, through SSH as {machines.LINK_USER}")

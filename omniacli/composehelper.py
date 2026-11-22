@@ -522,9 +522,13 @@ def _fix(path: Path) -> str:
     return f"chown root: {path}; chmod go-w {path}"
 
 
-def problems(project: Path, uid: int, groups: list[int]) -> list[str]:
+def problems(project: Path, uid: int, groups: list[int], env_unread_ok: bool = False) -> list[str]:
     """Why the project is not safe from the user (uid, groups); [] when it is.
-    Root is not checked: it may do all this anyway."""
+    Root is not checked: it may do all this anyway. env_unread_ok: asked by
+    that user itself (the checks of a server's form), an .env it may not read
+    (root's, mode 600, as the workspaces make it) is no problem: the user
+    cannot have written it, and the helper, which reads it as root, judges
+    what it sets at every action."""
     if uid == 0:
         return []
     found = []
@@ -563,17 +567,19 @@ def problems(project: Path, uid: int, groups: list[int]) -> list[str]:
             found.append(f"{path} is a symbolic link: docker compose would read what it points to")
         elif _writable(st, uid, groups):
             found.append(f"{path} is writable by the user; {_fix(path)}")
-    found += env_problems(project / ".env")
+    found += env_problems(project / ".env", env_unread_ok)
     if not any((project / name).is_file() for name in COMPOSE_FILES):
         found.append(f"{project} holds no {', '.join(COMPOSE_FILES)}")
     return found
 
 
-def env_problems(env_file: Path) -> list[str]:
+def env_problems(env_file: Path, unread_ok: bool = False) -> list[str]:
     try:
         text = env_file.read_text(errors="replace")
     except FileNotFoundError:
         return []
+    except PermissionError as exc:
+        return [] if unread_ok else [f"{env_file}: {exc.strerror}"]
     except OSError as exc:
         return [f"{env_file}: {exc.strerror}"]
     keys = {m.group(1) for m in map(_ENV_LINE.match, text.splitlines()) if m}

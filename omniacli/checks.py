@@ -170,7 +170,8 @@ async def _instance_checks(instance: Instance, machine: str = MACHINE_SERVER) ->
         import pwd
 
         found = composehelper.problems(Path(restart.service), os.getuid(),
-                                       os.getgrouplist(pwd.getpwuid(os.getuid()).pw_name, os.getgid()))
+                                       os.getgrouplist(pwd.getpwuid(os.getuid()).pw_name, os.getgid()),
+                                       env_unread_ok=True)
         add("Service", not found,
             f"compose project {restart.service}: safe from {system_user()}" if not found else
             f"the compose-helper refuses {restart.service}: " + "; ".join(found))

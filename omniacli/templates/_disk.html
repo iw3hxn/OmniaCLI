@@ -58,8 +58,8 @@ const OmniaDisk = (function () {
     const needs = /^a forecast needs (\d+) days of data$/.exec(r);
     return needs ? fill(NEEDS_DAYS, {days: needs[1]}) : r;
   };
-  const size = (b) => b >= 1099511627776 ? (b / 1099511627776).toFixed(2) + " TiB"
-    : b >= 1073741824 ? (b / 1073741824).toFixed(1) + " GiB" : (b / 1048576).toFixed(0) + " MiB";
+  // the one way of writing a size (base.html): MB, GB, TB, the decimal mark of the page's language
+  const size = (b) => window.sizeText(Math.max(0, Number(b) || 0));
   const node = (tag, cls, text) => {
     const el = document.createElement(tag);
     if (cls) el.className = cls;
