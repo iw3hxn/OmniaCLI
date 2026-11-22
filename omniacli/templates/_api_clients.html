@@ -1,0 +1,73 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{# How a client is connected with a token of MCP and the REST API (README, REST API): one snippet a client, in a
+   dialog, with the token in clear only in the dialog that shows it once, <TOKEN> after. Each snippet is written from
+   the client's documentation as read on 22/11/2026:
+   - Claude Code: https://code.claude.com/docs/en/mcp (claude mcp add --transport http … --header)
+   - Claude Desktop: its config file takes local servers only (https://modelcontextprotocol.io/docs/develop/connect-local-servers),
+     a remote one through the bridge mcp-remote (https://github.com/geelen/mcp-remote, "--header Authorization:${AUTH_HEADER}")
+   - Codex: https://learn.chatgpt.com/docs/extend/mcp?surface=cli (~/.codex/config.toml, bearer_token_env_var)
+   - OpenCode: https://opencode.ai/docs/mcp-servers/ (V2: mcp.servers, type remote, oauth false, {env:NAME})
+   - Cursor: https://cursor.com/docs/context/mcp (~/.cursor/mcp.json, url and headers, ${env:NAME})
+   - VS Code: https://code.visualstudio.com/docs/agents/reference/mcp-configuration (.vscode/mcp.json, type http, ${input:id})
+   - claude.ai: https://claude.com/docs/connectors/building/authentication.md and ChatGPT:
+     https://developers.openai.com/plugins/build/auth.md: OAuth (a static header is a beta of some organisations on
+     claude.ai, none on ChatGPT), which OmniaCLI does not offer yet #}
+{% macro connect_fields(id) %}
+<div class="form-grid" style="margin-top: 10px">
+  <label for="{{ id }}-client">{{ _("Client") }}</label>
+  <div><select id="{{ id }}-client" title="{{ _('The program that will use the token: its snippet below') }}"></select></div>
+</div>
+<p class="muted" id="{{ id }}-where" style="font-size: 13px; margin: 8px 0 4px"></p>
+<pre class="console mono copyable" id="{{ id }}-snippet" style="white-space: pre-wrap; word-break: break-all"></pre>
+<p class="muted" id="{{ id }}-note" style="font-size: 13px"></p>
+{% endmacro %}
+{% macro connect_script(base) %}
+<script>
+(function () {
+  const BASE = {{ base | tojson }}, MCP = BASE + "/mcp", API = BASE + "/api/v1";
+  const T = {code: {{ _("In a terminal:") | tojson }}, desktop: {{ _("In claude_desktop_config.json (Settings › Developer › Edit Config), then restart Claude Desktop:") | tojson }},
+             codex: {{ _("In ~/.codex/config.toml, with the token in the environment variable:") | tojson }},
+             opencode: {{ _("In opencode.json, with the token in the environment variable:") | tojson }},
+             cursor: {{ _("In ~/.cursor/mcp.json, with the token in the environment variable:") | tojson }},
+             vscode: {{ _("In .vscode/mcp.json: VS Code asks the token the first time and keeps it:") | tojson }},
+             any: {{ _("Any MCP client over streamable HTTP:") | tojson }},
+             rest: {{ _("The REST API, for scripts and CI (its documentation at /api/v1/docs):") | tojson }},
+             web: {{ _("claude.ai and ChatGPT") | tojson }},
+             webText: {{ _("claude.ai and ChatGPT connect with OAuth: not yet available.") | tojson }},
+             desktopNote: {{ _("Claude Desktop reaches a remote server through the bridge mcp-remote (it needs Node.js); its Connectors ask OAuth, not yet available.") | tojson }},
+             envNote: {{ _("The token stays out of the file: set the variable where the client starts.") | tojson }}};
+  const env = (token) => "export OMNIACLI_TOKEN=" + token;
+  const json = (value) => JSON.stringify(value, null, 2);
+  const CLIENTS = [
+    ["code", "Claude Code", T.code, (t) => 'claude mcp add --transport http omniacli ' + MCP + ' --header "Authorization: Bearer ' + t + '"', ""],
+    ["desktop", "Claude Desktop", T.desktop, (t) => json({mcpServers: {omniacli: {command: "npx",
+      args: ["mcp-remote", MCP, "--header", "Authorization:${AUTH_HEADER}"], env: {AUTH_HEADER: "Bearer " + t}}}}), T.desktopNote],
+    ["codex", "Codex", T.codex, (t) => env(t) + "\n\n[mcp_servers.omniacli]\nurl = \"" + MCP + "\"\nbearer_token_env_var = \"OMNIACLI_TOKEN\"", T.envNote],
+    ["opencode", "OpenCode", T.opencode, (t) => env(t) + "\n\n" + json({$schema: "https://opencode.ai/config.json", mcp: {servers: {omniacli: {
+      type: "remote", url: MCP, oauth: false, headers: {Authorization: "Bearer {env:OMNIACLI_TOKEN}"}}}}}), T.envNote],
+    ["cursor", "Cursor", T.cursor, (t) => env(t) + "\n\n" + json({mcpServers: {omniacli: {url: MCP,
+      headers: {Authorization: "Bearer ${env:OMNIACLI_TOKEN}"}}}}), T.envNote],
+    ["vscode", "VS Code", T.vscode, () => json({inputs: [{type: "promptString", id: "omniacli-token", description: "OmniaCLI token", password: true}],
+      servers: {omniacli: {type: "http", url: MCP, headers: {Authorization: "Bearer ${input:omniacli-token}"}}}}), ""],
+    ["any", "MCP (streamable HTTP)", T.any, (t) => "URL: " + MCP + "\nAuthorization: Bearer " + t, ""],
+    ["rest", "REST API · curl", T.rest, (t) => 'curl -H "Authorization: Bearer ' + t + '" ' + API + "/instances\n" + API + "/docs", ""],
+    ["web", T.web, T.webText, null, ""],
+  ];
+  // the fields of connect_fields(id), for the token (in clear only where it is shown once; else <TOKEN>)
+  window.OmniaConnect = function (id, token) {
+    const select = document.getElementById(id + "-client"), pre = document.getElementById(id + "-snippet");
+    const where = document.getElementById(id + "-where"), note = document.getElementById(id + "-note");
+    if (!select.options.length) select.replaceChildren(...CLIENTS.map(([key, label]) => new Option(label, key)));
+    function show() {
+      const [, , text, make, extra] = CLIENTS.find((c) => c[0] === select.value) || CLIENTS[0];
+      where.textContent = text;
+      pre.textContent = make ? make(token || "<TOKEN>") : "";
+      (pre.closest(".copy-box") || pre).hidden = !make;
+      note.textContent = extra;
+    }
+    select.onchange = show;
+    show();
+  };
+})();
+</script>
+{% endmacro %}

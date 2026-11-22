@@ -5,6 +5,7 @@
 {{ crumbs([(_("Settings"), "/settings"), (_("Workspace {name}", name=ws.name), None)]) }}
 {% endblock %}
 {% block content %}
+{% from "_api_clients.html" import connect_fields, connect_script with context %}
 {# the page of a workspace (docs/ux/UX-007 §4.4): its disk in the head, four tabs (instances, names on the web, users,
    external services), every list read; a new instance, a user, a key and the notices in a dialog. The repositories,
    the Odoo options and the deletion of an instance are on the instance's page (UX-006 › Settings). #}
@@ -12,6 +13,7 @@
 {# an administrator of the machine (not of this workspace only): the form of its limits is theirs (/workspaces?edit=) #}
 {% set machine_admin = not scoped %}
 {% set limits_url = prefix ~ "/workspaces?edit=" ~ (ws.name | urlencode) %}
+{% set levels = {"user": _("read"), "developer": _("write: tests and stagings"), "admin": _("write and productions, with confirm")} %}
 {% set role_names = {"user": _("user"), "developer": _("developer"), "admin": _("admin")} %}
 {# why no instance can be made now: on the Instances tab, and in the title of the disabled primary #}
 {% set why_not | trim %}
@@ -262,18 +264,21 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
 </section>
 
 <section class="panel" id="mcp-tokens">
-  <div class="section-head"><h2>{{ _("AI assistants") }}</h2>
-    <button type="button" class="small" id="new-token" title="{{ _('Makes a key for an AI assistant: it sees only this workspace and does there what its role allows. You see it once.') }}">{{ _("New key for an assistant") }}</button></div>
-  <p class="muted ws-line" style="margin-bottom: 10px">{{ _("The keys an AI assistant (Claude, Cursor…) reads the instances of this workspace and uses its tools with: a key sees this workspace only.") }}
-    <span class="mono small" style="font-size: 12px">MCP · {{ mcp_url }}</span></p>
+  <div class="section-head"><h2>{{ _("API and AI assistants") }}</h2>
+    <button type="button" class="small" id="new-token" title="{{ _('Makes a token for an AI assistant or a CI: it sees only this workspace and does there what its level allows. You see it once.') }}">{{ _("New token") }}</button></div>
+  <p class="muted ws-line" style="margin-bottom: 10px">{{ _("The tokens an AI assistant (Claude, ChatGPT, Codex, Cursor…) or a script and a CI read the instances of this workspace and act with: a token sees this workspace only.") }}
+    <span class="mono small" style="font-size: 12px">MCP · {{ api_base }}/mcp · REST · <a href="{{ prefix }}/api/v1/docs" title="{{ _('Opens the documentation of the REST API: every route, its fields and its errors') }}">/api/v1</a></span></p>
   <div class="scroll">
   <table class="ws-table">
-    <tr><th>{{ _("Key") }}</th><th>{{ _("Role") }}</th><th></th></tr>
+    <tr><th>{{ _("Token") }}</th><th>{{ _("Level") }}</th><th></th></tr>
     {% for t in tokens %}
-    <tr data-token="{{ t.name }}" data-role="{{ t.role }}"><td><strong>{{ t.name }}</strong></td>
-      <td>{{ role_names.get(t.role, t.role) }}</td>
+    <tr data-token="{{ t.name }}" data-role="{{ t.role }}" data-ci="{{ '1' if t.ci }}" data-servers="{{ t.servers | join(', ') }}"><td><strong>{{ t.name }}</strong>
+        {% if t.ci %} <span class="badge warn" title="{{ _('A token of a CI: it never acts on a production, which is updated by hand only') }}">CI</span>{% endif %}
+        {% if t.servers %}<br><span class="muted small">{{ _("only {names}", names=t.servers | join(", ")) }}</span>{% endif %}</td>
+      <td>{{ levels.get(t.role, t.role) }}</td>
       <td><div class="actions" style="margin: 0; justify-content: flex-end">
-        <button type="button" class="small" data-edit="tokens" title="{{ _('Changes the role of the key; the key stays the same.') }}">{{ _("Edit…") }}</button>
+        <button type="button" class="small" data-connect title="{{ _('Shows how to connect a client with this token: Claude Code, Claude Desktop, Codex, OpenCode, Cursor, VS Code, the REST API') }}">{{ _("How to connect…") }}</button>
+        <button type="button" class="small" data-edit="tokens" title="{{ _('Changes the level, the CI mark and the servers of the token; the token stays the same.') }}">{{ _("Edit…") }}</button>
         <button type="button" class="small danger" data-delete="tokens" title="{{ _('Cancels the key: the assistant that uses it stops working at once.') }}">{{ _("Revoke…") }}</button>
       </div></td></tr>
     {% else %}
@@ -404,6 +409,12 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
       <label for="id-password" data-for-password>{{ _("Password") }}</label>
       <div data-for-password><input type="password" id="id-password" autocomplete="new-password" minlength="{{ min_password }}">
         <span class="muted field-help" id="id-password-help"></span></div>
+      <span class="label muted" data-for-token>CI</span>
+      <div data-for-token class="in-ways" style="margin: 0"><label title="{{ _('A production is updated by hand only: a CI token never starts, stops, updates nor backs one up, whatever its level') }}"><input type="checkbox" id="id-ci"> {{ _("A token of a CI: never on a production") }}</label></div>
+      <label for="id-servers" data-for-token>{{ _("Servers") }}</label>
+      <div data-for-token><input type="text" id="id-servers" autocomplete="off" list="id-server-names" placeholder="{{ _('all') }}">
+        <datalist id="id-server-names">{% for n in servers %}<option value="{{ n }}"></option>{% endfor %}</datalist>
+        <span class="muted field-help">{{ _("The servers it reaches, separated by commas; empty: all of them.") }}</span></div>
     </div>
     <p class="muted" id="id-elsewhere" style="font-size: 13px" hidden>{{ _("also elsewhere: its password is the machine's administrator's") }}</p>
     <p class="error" id="id-error" role="alert"></p>
@@ -417,9 +428,16 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
   <h2 id="sd-title"></h2>
   <p>{{ _("It is shown only now: copy it.") }}</p>
   <pre class="console mono copyable" id="secret-value" style="white-space: pre-wrap; word-break: break-all"></pre>
-  <p class="muted mono small" style="font-size: 13px">{{ mcp_url }}<br>Authorization: Bearer &lt;token&gt;</p>
+  {{ connect_fields("sd") }}
   <div class="actions"><button type="button" class="primary" id="sd-done" title="{{ _('Closes: the token will not be shown again. If you lose it, revoke it and make a new one.') }}">{{ _("I have copied the token") }}</button></div>
 </dialog>
+<dialog id="connect-dialog" aria-labelledby="cd-title">
+  <h2 id="cd-title"></h2>
+  <p class="muted" style="font-size: 13px">{{ _("The token is not shown again: put yours where <TOKEN> is. Lost: revoke it and make a new one.") }}</p>
+  {{ connect_fields("cd") }}
+  <div class="actions"><button type="button" id="cd-close" title="{{ _('Closes this window') }}">{{ _("Close") }}</button></div>
+</dialog>
+{{ connect_script(api_base) }}
 <dialog id="notify-dialog" aria-labelledby="nd-title">
   <form method="dialog" id="nd-form">
     <h2 id="nd-title">{{ _("Notices") }}</h2>
@@ -468,10 +486,10 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
       namePlaceholder: {{ _("new user") | tojson }},
       deleteQ: {{ _("Take {name} out of {workspace}? A user of this workspace only is deleted.", name="{name}", workspace=ws.name) | tojson }}},
     tokens: {row: "token", first: "developer", password: false,
-      newTitle: {{ _("New key for an assistant") | tojson }}, editTitle: {{ _("Edit {name}") | tojson }}, create: {{ _("Create") | tojson }},
+      newTitle: {{ _("New token") | tojson }}, editTitle: {{ _("Edit {name}") | tojson }}, create: {{ _("Create") | tojson }},
       createHelp: {{ _("Makes the key and shows it once. Disabled until the name is written.") | tojson }},
-      saveHelp: {{ _("Saves the role of the key. Disabled until it is changed.") | tojson }},
-      roleHelp: {{ _("It sees only this workspace, and does there what its role allows.") | tojson }},
+      saveHelp: {{ _("Saves the level, the CI mark and the servers of the token. Disabled until something is changed.") | tojson }},
+      roleHelp: {{ _("It sees only this workspace. user only reads; developer also acts on the tests and the stagings and makes stagings; admin also acts on a production, each time with its name in confirm.") | tojson }},
       namePlaceholder: {{ ("claude-" ~ ws.name) | tojson }},
       deleteQ: {{ _("Revoke the key {name}? The assistant that uses it stops at once.") | tojson }},
       secret: {{ _("Key {name} for an AI assistant") | tojson }}},
@@ -794,11 +812,13 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
   const way = () => (dialog.querySelector('input[name="id-way"]:checked') || {}).value;
   const isNewMember = () => kind === "members" && !editing;
   const usesPassword = () => passwordHere && (!isNewMember() || way() === "password");
-  const values = () => JSON.stringify([$("id-name").value.trim(), $("id-role").value, $("id-password").value, way()]);
+  const values = () => JSON.stringify([$("id-name").value.trim(), $("id-role").value, $("id-password").value, way(),
+                                       $("id-ci").checked, $("id-servers").value]);
   function layout() {
     for (const el of dialog.querySelectorAll("[data-for-password]")) el.hidden = !usesPassword();
     for (const el of dialog.querySelectorAll("[data-for-new]")) el.hidden = !isNewMember();
     for (const el of dialog.querySelectorAll("[data-for-mail]")) el.hidden = !isNewMember() || way() !== "invite";
+    for (const el of dialog.querySelectorAll("[data-for-token]")) el.hidden = kind !== "tokens";
   }
   function changed() {
     layout();
@@ -826,6 +846,7 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
     if ($("id-email")) $("id-email").value = "";
     $("id-elsewhere").hidden = !(K.password && row && !row.dataset.onlyHere);
     $("id-password").value = "";
+    $("id-ci").checked = !!(row && row.dataset.ci); $("id-servers").value = row && kind === "tokens" ? row.dataset.servers : "";
     $("id-password-help").textContent = T.atLeast.replace("{count}", MIN) + (row ? "; " + T.keep : "");
     $("id-save").textContent = row ? T.save : K.create;
     $("id-save").title = $("id-save").parentElement.title = row ? K.saveHelp : K.createHelp;
@@ -845,6 +866,7 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
     const K = KINDS[kind], name = $("id-name").value.trim();
     const body = {name, role: $("id-role").value};
     if (K.password) body.password = usesPassword() ? $("id-password").value : "";
+    if (kind === "tokens") Object.assign(body, {ci: $("id-ci").checked, servers: $("id-servers").value});
     const invite = isNewMember() && way() === "invite", email = invite && $("id-email") ? $("id-email").value.trim() : "";
     if (!editing) Object.assign(body, {new: true}, kind === "members" ? {invite, email} : {});
     const data = await post(kind + "/save", body, $("id-error"));
@@ -855,12 +877,23 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
       dialog.close();
       $("sd-title").textContent = K.secret.replace("{name}", name);
       $("secret-value").textContent = data.token;
+      OmniaConnect("sd", data.token);
       secret.showModal();
       return;
     }
     location.reload();
   });
   $("sd-done").onclick = () => location.reload();
+  // how to connect a client with a token: its snippets, with <TOKEN> (it is never shown again)
+  const connect = $("connect-dialog");
+  for (const button of document.querySelectorAll("[data-connect]")) {
+    button.onclick = () => {
+      $("cd-title").textContent = {{ _("Connect {name}") | tojson }}.replace("{name}", button.closest("tr").dataset.token);
+      OmniaConnect("cd", "");
+      connect.showModal();
+    };
+  }
+  $("cd-close").onclick = () => connect.close();
   secret.addEventListener("cancel", (e) => e.preventDefault());
   for (const button of document.querySelectorAll("[data-delete]")) {
     button.onclick = async () => {

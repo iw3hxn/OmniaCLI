@@ -22,7 +22,8 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from . import backupcheck, instancearchive, ops, pgreport, plugins
+from . import apiguard, backupcheck, instancearchive, ops, pgreport, plugins
+from .auth import Principal
 from .accesslog import AccessLog
 from .auth import ROLES as ACCESS_ROLES
 from .auth import Authenticator
@@ -73,12 +74,21 @@ def _instructions() -> str:
 
 # the role an MCP token needs for a tool; the others: any token
 TOOL_ROLES = {"update_test": "developer", "backup_test": "developer",
-              "backup": "admin", "list_backups": "admin",
+              # a production's backup asks the admin role, never a CI token's (apiguard.production_refusal)
+              "backup": "developer",
               "read_server": "admin", "add_draft_server": "admin",
               "restart_instance": "developer", "start_instance": "developer", "stop_instance": "developer",
               "list_actions": "developer", "run_action": "developer", "verify_backup": "developer",
-              "full_archive": "developer", "stop_job": "developer", "update_production": "admin",
+              "full_archive": "developer", "stop_job": "developer",
+              # a staging's production is updated as a test (the CI's); a production's asks admin and confirm
+              "update_production": "developer",
+              # what the REST API does too (README, REST API): the same rules
+              "create_staging": "developer", "list_deploys": "developer", "deploy_back": "developer",
               "database_report": "developer", "upload_backup": "admin", "restore_new_instance": "admin"}
+# the tools that change something: a write in the rate limit of a token (apiguard.RateLimiter)
+WRITE_TOOLS = {"update_test", "backup_test", "backup", "add_draft_server", "restart_instance", "start_instance",
+               "stop_instance", "run_action", "verify_backup", "full_archive", "stop_job", "update_production",
+               "upload_backup", "restore_new_instance", "create_staging", "deploy_back"}
 # the tools of the machine's tokens only: a workspace's token never reaches them
 MACHINE_TOOLS = {"read_server", "add_draft_server", "list_links", "linked_tools", "call_linked"}
 # the role of the token of the request being served, for the list of tools,
@@ -113,6 +123,26 @@ def _errors_only(lines: list[str]) -> list[str]:
         if level in ("ERROR", "CRITICAL"):
             kept.append(line)
     return kept
+
+
+def _rpc_tools(body: bytes) -> list[str]:
+    """The tools a JSON-RPC request calls."""
+    try:
+        data = json.loads(body or b"null")
+    except ValueError:
+        return []
+    calls = data if isinstance(data, list) else [data]
+    return [str(c["params"].get("name")) for c in calls if isinstance(c, dict) and c.get("method") == "tools/call"
+            and isinstance(c.get("params"), dict)]
+
+
+def _refusal(response) -> str:
+    """The text of a refusal of the pages' code (a JSONResponse {"error": text})."""
+    try:
+        data = json.loads(getattr(response, "body", b"") or b"null")
+    except ValueError:
+        data = None
+    return str(data.get("error")) if isinstance(data, dict) and data.get("error") else "Refused"
 
 
 def _job_dict(job: Job, tail: int = 0) -> dict:
@@ -168,14 +198,21 @@ def _rpc_server(body: bytes) -> str:
 
 def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampler: Sampler,
                authenticator: Authenticator, access_log: AccessLog, add_draft,
-               link_call=None, uptime=None, restores: dict | None = None) -> tuple[Route, object]:
+               link_call=None, uptime=None, restores: dict | None = None,
+               api: dict | None = None) -> tuple[Route, object]:
     """The /mcp route and the session manager to run in the app's lifespan.
     add_draft(name, data): the app's own way to add a draft server;
     link_call(link, user, role, payload): a JSON-RPC payload to the /mcp of
     a linked OmniaCLI, its answer (LookupError: no such link); uptime(key):
     the monitor's view of an instance; restores: the app's upload (a URL to
-    PUT a database to) and restore (a new instance from it)."""
+    PUT a database to) and restore (a new instance from it); api: what MCP
+    shares with the REST API (guard: its rate limit and idempotency keys,
+    by_hand(instance): a production, not a staging; staging, deploys and
+    deploy_back: the app's code of the pages)."""
     server = MCPServer(name="OmniaCLI", instructions=_instructions())
+    api = api or {}
+    guard = api.get("guard")
+    by_hand = api.get("by_hand") or (lambda inst: inst.role == "production")
 
     def caller(ctx: Context) -> str:
         """Who calls: the token's name, or "link <name> (<who acts there>)"."""
@@ -214,7 +251,22 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         name = authenticator.token_name(token.strip())
         return settings.token_workspace(name) if name else ""
 
+    def token_of(ctx: Context | None) -> str | None:
+        if ctx is None:
+            return None
+        _, _, token = (ctx.headers or {}).get("authorization", "").partition(" ")
+        return authenticator.token_name(token.strip())
+
+    def ci_of(ctx: Context | None) -> bool:
+        """A CI's token: it never acts on a production."""
+        name = token_of(ctx)
+        return bool(name) and settings.token_ci(name)
+
     def sees(ctx: Context | None, server_name: str) -> bool:
+        name = token_of(ctx)
+        limited = settings.token_servers(name) if name else ()
+        if limited and server_name not in limited:
+            return False
         scope = scope_of(ctx)
         if not scope:
             return True
@@ -226,6 +278,10 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
             raise ToolError(f"{tool} is for a token of the machine; this one is of workspace {scope_of(ctx)}")
 
     def job_seen(ctx: Context | None, job: Job) -> bool:
+        name = token_of(ctx)
+        limited = settings.token_servers(name) if name else ()
+        if limited and not (job.servers and set(job.servers) <= set(limited)):
+            return False
         scope = scope_of(ctx)
         return not scope or job.workspace == scope or any(sees(ctx, s) for s in job.servers)
 
@@ -348,17 +404,33 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         return _job_dict(job, tail=min(max(tail, 1), 5000))
 
     @server.tool()
-    async def update_test(server_name: str, ctx: Context, wait_seconds: int = 0) -> dict:
+    def job_log(job_id: str, ctx: Context, offset: int = 0, limit: int = 1000) -> dict:
+        """The lines of a job's log from offset (the REST API's /jobs/{id}/log):
+        call it again with next_offset until finished is true."""
+        job = jobs.get(job_id)
+        if job is None or not job_seen(ctx, job):
+            raise ToolError(f"No job {job_id}")
+        start = max(offset, 0)
+        given = job.lines[start:start + min(max(limit, 1), 5000)]
+        return {"job": job.id, "status": job.status, "offset": start, "next_offset": start + len(given),
+                "finished": job.status in FINISHED and start + len(given) >= len(job.lines), "lines": given}
+
+    @server.tool()
+    async def update_test(server_name: str, ctx: Context, wait_seconds: int = 0, idempotency_key: str = "") -> dict:
         """Update the test instance: git pull of every repository and the
         install of a new published package, update of the changed modules, restart. Waits up to wait_seconds (max 600) for
-        the job; follow it with get_job otherwise."""
+        the job; follow it with get_job otherwise. idempotency_key: the same
+        key with the same arguments within 24 hours answers the same job."""
         need(ctx, "update_test")
         inst = instance(server_name, "test", ctx)
-        job = jobs.submit(f"Git pull and restart {inst.key}", [inst.key], f"mcp: {caller(ctx)}",
-                          lambda job: ops.pull_restart(
-                              job, inst, backup_folder=settings.backup_dir / inst.server / inst.role))
-        await _wait(job, wait_seconds)
-        return _job_dict(job, tail=50)
+
+        async def run():
+            job = jobs.submit(f"Git pull and restart {inst.key}", [inst.key], f"mcp: {caller(ctx)}",
+                              lambda job: ops.pull_restart(
+                                  job, inst, backup_folder=settings.backup_dir / inst.server / inst.role))
+            await _wait(job, wait_seconds)
+            return _job_dict(job, tail=50)
+        return await once(ctx, "update_test", idempotency_key, {"server_name": server_name}, run)
 
     def backup_options(inst: Instance, options: dict | None) -> dict:
         """options checked against the plugin's backup_fields: a checkbox
@@ -405,7 +477,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
 
     @server.tool()
     async def backup_test(server_name: str, ctx: Context, wait_seconds: int = 0,
-                          options: dict | None = None) -> dict:
+                          options: dict | None = None, idempotency_key: str = "") -> dict:
         """Back up the database and filestore of a test instance; the result
         gives the path to download the zip (GET with the same bearer token).
         options: the plugin's backup choices, Odoo {"no_filestore": true}
@@ -413,13 +485,16 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         columns emptied (those ticked in the instance's last backup dialog,
         or "binary_columns": ["table.column", ...])."""
         need(ctx, "backup_test")
-        return await backup_job(instance(server_name, "test", ctx), ctx, wait_seconds, options)
+        inst = instance(server_name, "test", ctx)
+        return await once(ctx, "backup_test", idempotency_key, {"server_name": server_name, "options": options},
+                          lambda: backup_job(inst, ctx, wait_seconds, options))
 
     @server.tool()
     async def backup(server_name: str, role: str, ctx: Context, wait_seconds: int = 0,
-                     options: dict | None = None) -> dict:
-        """(admin token) Back up the database and filestore of an instance,
-        production or test. Waits up to wait_seconds (max 600); the finished
+                     options: dict | None = None, idempotency_key: str = "") -> dict:
+        """Back up the database and filestore of an instance, a test or a
+        staging (developer token), a production (admin token, never a CI's;
+        no confirm: a backup does not change it). Waits up to wait_seconds (max 600); the finished
         job's result gives the path to download the zip: an HTTP GET to the
         server's base URL + that path, with the same Authorization: Bearer
         header. options: the plugin's backup choices, Odoo
@@ -427,11 +502,15 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         with the binary columns emptied (those ticked in the instance's last
         backup dialog, or "binary_columns": ["table.column", ...])."""
         need(ctx, "backup")
-        return await backup_job(instance(server_name, role, ctx, drafts_too=True), ctx, wait_seconds, options)
+        inst = instance(server_name, role, ctx, drafts_too=True)
+        production(ctx, "backup", inst, "", confirm_needed=False)
+        return await once(ctx, "backup", idempotency_key,
+                          {"server_name": server_name, "role": role, "options": options},
+                          lambda: backup_job(inst, ctx, wait_seconds, options))
 
     @server.tool()
     def list_backups(server_name: str, role: str, ctx: Context, limit: int = 20) -> list[dict]:
-        """(admin token) An instance's backups, newest first: file, size,
+        """An instance's backups, newest first: file, size,
         time (Unix) and the path to download it (HTTP GET to the server's base
         URL + that path, with the same Authorization: Bearer header)."""
         need(ctx, "list_backups")
@@ -560,14 +639,38 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         as the web interface has its name typed."""
         need(ctx, tool)
         inst = instance(server_name, role, ctx)
-        if inst.role == "production":
-            token_role = role_of(ctx)
-            if ACCESS_ROLES.index(token_role) < ACCESS_ROLES.index("admin"):
-                raise ToolError(f"{tool} on a production needs an MCP token with role admin; this one is {token_role}")
-            if (confirm or "").strip() != inst.server:
-                raise ToolError(f"{tool} acts on the production of {inst.server}: give confirm={inst.server!r} "
-                                "once the user has agreed")
+        production(ctx, tool, inst, confirm)
         return inst
+
+    def production(ctx: Context, tool: str, inst: Instance, confirm: str, confirm_needed: bool = True) -> None:
+        """A production is updated by hand only (apiguard.production_refusal, as the REST API): an admin
+        token with confirm = its name, never a CI's token; a staging is not one."""
+        refused = apiguard.production_refusal(by_hand(inst), inst.server, role_of(ctx), ci_of(ctx), confirm or "",
+                                              tool, confirm_needed)
+        if refused is not None:
+            raise ToolError(f"{refused.code}: {refused.message}")
+
+    async def once(ctx: Context, tool: str, key: str, arguments: dict, run) -> dict:
+        """A tool that starts a job, with its idempotency_key: the same key with the same arguments
+        within 24 hours answers the job of the first call (shared with the REST API's keys)."""
+        if not key or guard is None:
+            return await run()
+        refused = guard.idempotency.check_key(key)
+        if refused is not None:
+            raise ToolError(f"{refused.code}: {refused.message}")
+        who = token_of(ctx) or caller(ctx)
+        print_ = apiguard.fingerprint("MCP", tool, {k: v for k, v in arguments.items() if k != "wait_seconds"})
+        async with guard.idempotency.lock(who, key):
+            try:
+                before = guard.idempotency.lookup(who, key, print_)
+            except apiguard.ApiError as exc:
+                raise ToolError(f"{exc.code}: {exc.message}") from None
+            if before is not None:
+                job = jobs.get(str((before["body"] or {}).get("id") or ""))
+                return _job_dict(job, tail=30) if job is not None else before["body"]
+            answer = await run()
+            guard.idempotency.remember(who, key, print_, 200, {"id": answer.get("id")})
+            return answer
 
     async def submit(ctx: Context, title: str, inst: Instance, action, wait_seconds: int) -> dict:
         job = jobs.submit(title, [inst.key], f"mcp: {caller(ctx)}", action)
@@ -609,32 +712,45 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
 
     @server.tool()
     async def restart_instance(server_name: str, role: str, ctx: Context, confirm: str = "",
-                               wait_seconds: int = 0) -> dict:
+                               wait_seconds: int = 0, idempotency_key: str = "") -> dict:
         """Restart an instance (whoever is connected loses the connection for
-        a few seconds). A production's: an admin token and confirm=<server name>."""
+        a few seconds). A production's: an admin token and confirm=<server name>. A token marked CI never acts on a production. idempotency_key:
+        the same key with the same arguments within 24 hours answers the same job."""
         inst = acting(ctx, "restart_instance", server_name, role, confirm)
-        return await submit(ctx, f"Restart {inst.key}", inst, lambda job: ops.restart(job, inst), wait_seconds)
+        return await once(ctx, "restart_instance", idempotency_key, {"server_name": server_name, "role": role},
+                          lambda: submit(ctx, f"Restart {inst.key}", inst, lambda job: ops.restart(job, inst),
+                                         wait_seconds))
 
     @server.tool()
     async def start_instance(server_name: str, role: str, ctx: Context, confirm: str = "",
-                             wait_seconds: int = 0) -> dict:
-        """Start a stopped instance. A production's: an admin token and confirm=<server name>."""
+                             wait_seconds: int = 0, idempotency_key: str = "") -> dict:
+        """Start a stopped instance. A production's: an admin token and confirm=<server name>. A token marked CI never acts on a production. idempotency_key:
+        the same key with the same arguments within 24 hours answers the same job."""
         inst = acting(ctx, "start_instance", server_name, role, confirm)
-        return await submit(ctx, f"Start {inst.key}", inst, lambda job: ops.start(job, inst), wait_seconds)
+        return await once(ctx, "start_instance", idempotency_key, {"server_name": server_name, "role": role},
+                          lambda: submit(ctx, f"Start {inst.key}", inst, lambda job: ops.start(job, inst),
+                                         wait_seconds))
 
     @server.tool()
     async def stop_instance(server_name: str, role: str, ctx: Context, confirm: str = "",
-                            wait_seconds: int = 0) -> dict:
+                            wait_seconds: int = 0, idempotency_key: str = "") -> dict:
         """Stop an instance: it stays stopped, also for the auto update, until
-        start_instance. A production's: an admin token and confirm=<server name>."""
+        start_instance. A production's: an admin token and confirm=<server name>. A token marked CI never acts on a production. idempotency_key:
+        the same key with the same arguments within 24 hours answers the same job."""
         inst = acting(ctx, "stop_instance", server_name, role, confirm)
-        return await submit(ctx, f"Stop {inst.key}", inst, lambda job: ops.stop(job, inst), wait_seconds)
+        return await once(ctx, "stop_instance", idempotency_key, {"server_name": server_name, "role": role},
+                          lambda: submit(ctx, f"Stop {inst.key}", inst, lambda job: ops.stop(job, inst),
+                                         wait_seconds))
 
     @server.tool()
-    async def update_production(server_name: str, ctx: Context, confirm: str = "", wait_seconds: int = 0) -> dict:
-        """(admin token) Update a production as update_test does a test: first a
-        backup (always, whatever the instance's setting), then git pull of its
-        repositories, the changed modules updated, a restart. confirm=<server name>."""
+    async def update_production(server_name: str, ctx: Context, confirm: str = "", wait_seconds: int = 0,
+                                idempotency_key: str = "") -> dict:
+        """Update the production instance of a server as update_test does a test:
+        first a backup (always, whatever the instance's setting), then git pull
+        of its repositories, the changed modules updated, a restart. A
+        production is updated by hand only: an admin token and
+        confirm=<server name>, never a CI token. A staging (its production is
+        a copy) is updated with a developer token, no confirm: what a CI does."""
         inst = acting(ctx, "update_production", server_name, "production", confirm)
 
         async def action(job):
@@ -642,7 +758,76 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
             made = await ops.backup(job, inst, settings.backup_dir)
             job.log(f"Backup {made.name}")
             await ops.pull_restart(job, inst)
-        return await submit(ctx, f"Backup, git pull and restart {inst.key}", inst, action, wait_seconds)
+        return await once(ctx, "update_production", idempotency_key, {"server_name": server_name},
+                          lambda: submit(ctx, f"Backup, git pull and restart {inst.key}", inst, action, wait_seconds))
+
+    def as_principal(ctx: Context) -> Principal:
+        """The token as the pages' code takes who acts."""
+        scope = scope_of(ctx)
+        return Principal(caller(ctx), role_of(ctx), "token", workspaces=((scope, role_of(ctx)),) if scope else (),
+                         scoped=bool(scope))
+
+    @server.tool()
+    async def create_staging(server_name: str, ctx: Context, wait_seconds: int = 0, idempotency_key: str = "") -> dict:
+        """(developer token) A new staging of a production of a workspace,
+        beside it: the same template, a backup of the production made now
+        restored neutralized, its mail caught, its test stopped. It does not
+        change the production: a CI token may make one. The answer has the
+        job and server, the staging's name (then update_production,
+        restart_instance... on it). idempotency_key: the same key within 24
+        hours answers the same job."""
+        need(ctx, "create_staging")
+        if api.get("staging") is None:
+            raise ToolError("This OmniaCLI makes no staging through MCP")
+        instance(server_name, "production", ctx)
+
+        async def run():
+            found = await api["staging"](server_name, as_principal(ctx), source=f"mcp: {caller(ctx)}")
+            if not isinstance(found, dict):
+                raise ToolError(_refusal(found))
+            job = jobs.get(found["job"])
+            await _wait(job, wait_seconds)
+            return {**_job_dict(job, tail=30), "server": found["server"]}
+        return await once(ctx, "create_staging", idempotency_key, {"server_name": server_name}, run)
+
+    @server.tool()
+    async def list_deploys(server_name: str, role: str, ctx: Context, limit: int = 20) -> dict:
+        """(developer token) The deploys of an instance, newest first: each job
+        that moved its code, with each repository's commit before and after,
+        who started it, its outcome; current marks the one the code is at.
+        Give an id to deploy_back to go back to it."""
+        need(ctx, "list_deploys")
+        inst = instance(server_name, role, ctx)
+        if api.get("deploys") is None:
+            raise ToolError("This OmniaCLI lists no deploys through MCP")
+        found = await api["deploys"](inst, scope_of(ctx))
+        return {"ci": found["ci"], "deploys": [
+            {**{k: r.get(k) for k in ("id", "kind", "started", "finished", "by", "outcome", "current", "error")},
+             "repositories": [{k: x.get(k) for k in ("name", "branch", "before", "after", "subject")}
+                              for x in r.get("repositories") or []]}
+            for r in found["deploys"][:min(max(limit, 1), 100)]]}
+
+    @server.tool()
+    async def deploy_back(server_name: str, role: str, deploy_id: str, ctx: Context, confirm: str = "",
+                          pause: bool = False, wait_seconds: int = 0, idempotency_key: str = "") -> dict:
+        """(developer token) Back to a deploy of list_deploys (the pages' «Back to
+        this deploy»): a backup first, each repository at that deploy's commit
+        on its branch, the changed modules updated, a restart; the database is
+        not taken back. pause: switch the instance's CI off first, so a push
+        does not deploy the branch's head again. A production's: an admin
+        token and confirm=<server name>, never a CI token."""
+        inst = acting(ctx, "deploy_back", server_name, role, confirm)
+        if api.get("deploy_back") is None:
+            raise ToolError("This OmniaCLI goes back to no deploy through MCP")
+
+        async def run():
+            found = await api["deploy_back"](inst, deploy_id, as_principal(ctx), pause, f"mcp: {caller(ctx)}")
+            if not isinstance(found, Job):
+                raise ToolError(_refusal(found))
+            await _wait(found, wait_seconds)
+            return _job_dict(found, tail=30)
+        return await once(ctx, "deploy_back", idempotency_key,
+                          {"server_name": server_name, "role": role, "deploy_id": deploy_id, "pause": pause}, run)
 
     @server.tool()
     def list_actions(server_name: str, role: str, ctx: Context) -> list[dict]:
@@ -868,6 +1053,16 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
                 more = message.get("more_body", False)
             body = b"".join(chunks)
             server = _rpc_server(body)
+            if guard is not None and kind == "mcp":
+                # the rate limit of the token, as on the REST API: a call of a tool that changes something is a write
+                write = any(t in WRITE_TOOLS for t in _rpc_tools(body))
+                refused = guard.limiter.refusal(name, write)
+                if refused is not None:
+                    access_log.record("mcp", kind, name, ip, f"refused, rate limit: {_rpc_summary(body)}"[:300],
+                                      role=role, server=server, status=429)
+                    response = JSONResponse(refused.body(), status_code=429, headers=refused.headers)
+                    await response(scope, receive, send)
+                    return
             access_log.record("mcp", kind, name, ip, _rpc_summary(body) or f"{scope.get('method', '')} /mcp",
                               role=role, server=server,
                               workspace=workspace or (settings.workspace_of(server) if server else "") or "")

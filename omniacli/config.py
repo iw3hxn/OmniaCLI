@@ -323,6 +323,10 @@ class Access:
     token_roles: dict[str, str] = field(default_factory=dict)  # {MCP token name: role}
     # {MCP token name: workspace}: such a token sees that workspace only, with its role there
     token_workspaces: dict[str, str] = field(default_factory=dict)
+    # {token name: True}: a token of a CI, which never acts on a production (README, REST API)
+    token_ci: dict[str, bool] = field(default_factory=dict)
+    # {token name: (server, ...)}: such a token reaches these servers only (of its workspace, if it has one)
+    token_servers: dict[str, tuple] = field(default_factory=dict)
 
 
 @dataclass
@@ -382,6 +386,8 @@ class Settings:
     machine: str = MACHINE_SERVER
     token_roles: dict[str, str] = field(default_factory=dict)
     token_workspaces: dict[str, str] = field(default_factory=dict)
+    token_cis: dict[str, bool] = field(default_factory=dict)
+    token_server_lists: dict[str, tuple] = field(default_factory=dict)
     fixed: Access = field(default_factory=Access)
     web: Access = field(default_factory=Access)
 
@@ -405,6 +411,11 @@ class Settings:
         self.token_roles = {**web.token_roles, **self.fixed.token_roles}
         self.token_workspaces = {**{n: w for n, w in web.token_workspaces.items() if n not in self.fixed.tokens},
                                  **self.fixed.token_workspaces}
+        # a name of the main config is all of it there: nothing of the users file's of the same name
+        self.token_cis = {**{n: v for n, v in web.token_ci.items() if n not in self.fixed.tokens},
+                          **self.fixed.token_ci}
+        self.token_server_lists = {**{n: v for n, v in web.token_servers.items() if n not in self.fixed.tokens},
+                                   **self.fixed.token_servers}
 
     def user_role(self, name: str) -> str:
         return self.user_roles.get(name, "admin")
@@ -415,6 +426,14 @@ class Settings:
     def token_workspace(self, name: str) -> str:
         """The workspace an MCP token is bound to; empty: the machine's token."""
         return self.token_workspaces.get(name, "")
+
+    def token_ci(self, name: str) -> bool:
+        """A token of a CI: it never acts on a production, whatever its role."""
+        return bool(self.token_cis.get(name))
+
+    def token_servers(self, name: str) -> tuple:
+        """The servers a token is limited to; empty: every server its workspace (or the machine) has."""
+        return tuple(self.token_server_lists.get(name) or ())
 
     @property
     def logs_dir(self) -> Path:
@@ -790,7 +809,7 @@ def parse_auth(auth: dict, where: str = "auth", need_user: bool = True) -> Acces
             raise ConfigError(f"{where}.users.{name}: password hash missing (omniacli hash-password)")
     if need_user and not users:
         raise ConfigError(f"{where}.users: at least one user is required")
-    tokens, token_roles, token_workspaces = {}, {}, {}
+    tokens, token_roles, token_workspaces, token_ci, token_servers = {}, {}, {}, {}, {}
     for name, value in (auth.get("tokens") or {}).items():
         name = str(name)
         if isinstance(value, dict):
@@ -801,6 +820,14 @@ def parse_auth(auth: dict, where: str = "auth", need_user: bool = True) -> Acces
                 if not WORKSPACE_NAME.fullmatch(workspace):
                     raise ConfigError(f"{where}.tokens.{name}.workspace: {workspace!r} is not a workspace name")
                 token_workspaces[name] = workspace
+            if value.get("ci"):
+                token_ci[name] = True
+            servers = value.get("servers") or []
+            if not isinstance(servers, list) or not all(isinstance(v, str) and SERVER_NAME.fullmatch(v)
+                                                        for v in servers):
+                raise ConfigError(f"{where}.tokens.{name}.servers: a list of server names")
+            if servers:
+                token_servers[name] = tuple(dict.fromkeys(servers))
         else:
             # the format before roles: what such a token could do then
             tokens[name], token_roles[name] = str(value), TOKEN_DEFAULT_ROLE
@@ -813,7 +840,7 @@ def parse_auth(auth: dict, where: str = "auth", need_user: bool = True) -> Acces
         if not _TOKEN_HASH.fullmatch(token):
             raise ConfigError(f"{where}.links.{name}: token is not a token hash (omniacli new-link-token)")
         links[name] = LinkAccess(token, _access_role(f"{where}.links.{name}", value.get("role")))
-    return Access(users, roles, tokens, links, token_roles, token_workspaces)
+    return Access(users, roles, tokens, links, token_roles, token_workspaces, token_ci, token_servers)
 
 
 def load_access(path: Path) -> Access:
@@ -833,7 +860,9 @@ def save_access(path: Path, access: Access) -> None:
         "users": {n: {"password": h, "role": access.roles.get(n, "admin")} for n, h in access.users.items()},
         "links": {n: {"token": link.token, "role": link.role} for n, link in access.links.items()},
         "tokens": {n: {"token": h, "role": access.token_roles.get(n, TOKEN_DEFAULT_ROLE),
-                       **({"workspace": access.token_workspaces[n]} if n in access.token_workspaces else {})}
+                       **({"workspace": access.token_workspaces[n]} if n in access.token_workspaces else {}),
+                       **({"ci": True} if access.token_ci.get(n) else {}),
+                       **({"servers": list(access.token_servers[n])} if access.token_servers.get(n) else {})}
                    for n, h in access.tokens.items()},
     }
     _write_private(path, yaml.safe_dump(data, sort_keys=False, allow_unicode=True))

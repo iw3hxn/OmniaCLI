@@ -31,6 +31,7 @@ SENSITIVE_READS = {
     "/api/servers/{server}/{role}/backups": "backups list",
     "/api/servers/{server}/{role}/remote-backups": "backups list (destination)",
     "/api/backups": "backups list (every machine)",
+    "/api/v1/instances/{server}/{role}/backups": "backups list (REST API)",
     "/api/workspaces/{workspace}/archives": "archives list",
     "/api/workspaces/{workspace}/archives/remote": "archives list (destination)",
     "/api/pullers/{name}/reports": "relayed reports",
@@ -52,6 +53,7 @@ AUDITED_BY_ROUTE = frozenset({
     "/backups/{server}/{role}/{name}",  # download, with the file
     "/api/pullers/{name}/files/{file}",  # download, with the file
     "/mcp",  # every MCP call, with its method and tool
+    "/api/v1/instances/{server}/{role}/backups/{file}",  # download (REST API), with the file
 })
 
 # pages and data that are neither customer data nor security data: the
@@ -110,6 +112,9 @@ NOT_SENSITIVE = frozenset({
     "/x/odoo/servers/{server}/{role}/addons", "/x/odoo/servers/{server}/{role}/addons/versions",
     # an invitation's form (its use is logged by the route) and where a user of a customer may be made
     "/invite/{token}", "/api/access/workspaces", "/api/access/workspace-choices",
+    # the REST API (README, REST API): its document, and the lists of instances, jobs and deploys, as the pages'
+    "/api/v1/openapi.json", "/api/v1/docs", "/api/v1/instances", "/api/v1/instances/{server}/{role}", "/api/v1/jobs",
+    "/api/v1/jobs/{job_id}", "/api/v1/jobs/{job_id}/log", "/api/v1/instances/{server}/{role}/deploys",
 })
 
 

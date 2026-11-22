@@ -3480,11 +3480,13 @@ provides: OmniaCLI installed by hand on Python 3.9 runs without it.
 | `server_status` | repositories (branch, last commit), Odoo running, CPU and memory, auto update, last jobs |
 | `pending_updates` | commits not yet pulled, per repository (`git fetch`) |
 | `read_log` | the last lines of an instance's log, optionally only ERROR/CRITICAL with their tracebacks |
-| `list_jobs`, `get_job` | the jobs, filtered by server and text, and a job's log |
+| `list_jobs`, `get_job`, `job_log` | the jobs, filtered by server and text, a job with the end of its log, its log from an offset |
 | `update_test` | git pull + update of the changed modules + restart of the **test** instance |
 | `diagnose_instance` | what is wrong with an instance, in one answer: whether it runs, CPU and memory, the ERROR records of its log, its last jobs (a failed one with the end of its log), its last backup and last restore tried |
-| `restart_instance`, `start_instance`, `stop_instance` | (developer token) on a test; on a **production** an admin token and `confirm` = the server's name |
-| `update_production` | (admin token, `confirm` = the server's name) a backup first, always, then git pull, the changed modules, a restart |
+| `restart_instance`, `start_instance`, `stop_instance` | (developer token) on a test or a staging; on a **production** an admin token and `confirm` = the server's name, never a CI token |
+| `update_production` | a backup first, always, then git pull, the changed modules, a restart: of a staging with a developer token; of a **production** with an admin token and `confirm` = the server's name, never a CI token |
+| `create_staging` | (developer token) a new staging of a production of a workspace, beside it, loaded with a backup made now, neutralized: what a CI token may do |
+| `list_deploys`, `deploy_back` | (developer token) the deploys of an instance, and Back to this deploy (a backup first, the commits of then, the changed modules, a restart); on a production as above |
 | `list_actions`, `run_action` | the actions of the instance's type (Docker: Pull image, Update modules...; a venv's: pip...), run with their parameters; on a production as above |
 | `verify_backup` | a backup checked (SHA-256) and restored for a try in a database of its own, dropped after |
 | `full_archive` | the full archive of an instance in its backups (a production's: admin token) |
@@ -3492,8 +3494,8 @@ provides: OmniaCLI installed by hand on Python 3.9 runs without it.
 | `stop_job` | stops a running job |
 | `list_links`, `linked_tools`, `call_linked` | (a machine's token) the OmniaCLI this one is linked to, and their tools called through the link: one MCP for every machine |
 | `backup_test` | a backup (database and filestore) of the **test** instance; `options: {"no_filestore": true}` for the database only, `{"no_binaries": true}` with the binary columns emptied (those ticked in the instance's last Backup dialog, or `"binary_columns": ["table.column", ...]`) |
-| `backup` | (admin token) a backup of any instance, **production** too; the same `options` |
-| `list_backups` | (admin token) an instance's backups, each with its download path |
+| `backup` | a backup of a test or a staging (developer token) or of a **production** (admin token, no `confirm`, never a CI token); the same `options` |
+| `list_backups` | an instance's backups, each with its download path (a download asks a developer token) |
 | `read_server` | (admin token) a server's whole configuration, active or draft |
 | `add_draft_server` | (admin token) a new server, always a **draft**: it goes live only with Test & activate on the web |
 | `dev_setup` | what a client needs to rebuild an instance locally: remote URLs (without credentials), branches, commits, `addons_path` as repository folders, Odoo and Python versions, the Odoo config options without secrets nor server paths, and the backups to download |
@@ -3546,9 +3548,98 @@ claude mcp add --transport http omniacli https://omniacli.example.com/mcp \
     --header "Authorization: Bearer <token>"
 ```
 
+The tools that start a job take `idempotency_key`: the same key with the
+same arguments within 24 hours answers the job of the first call (a client
+that retries starts nothing twice), with the REST API's rate limit and keys
+(below). The **API and AI assistants** tab of the Users page (and of a
+workspace's page) shows, for each token, how to connect each client (its
+**How to connect…** button): Claude Code, Claude Desktop (through
+`mcp-remote`), Codex, OpenCode, Cursor, VS Code, any MCP client over
+streamable HTTP, and the REST API. claude.ai and ChatGPT connect with OAuth,
+which OmniaCLI does not offer yet.
+
 A token also opens the pages for reading, which is how a client downloads a
 backup (`GET <base URL>/backups/...` with the same header); it can never
 POST to them.
+
+## REST API
+
+`/api/v1` is a small, stable API for scripts and CI, with the **same token**
+as MCP (one kind of token: its role is its level) and the same rules as
+MCP's tools. Its OpenAPI document is at `/api/v1/openapi.json` and a page
+that reads it at `/api/v1/docs` (with a token or logged in); the other
+`/api/*` routes are the pages' own and may change.
+
+| Route | What it does | Level |
+|---|---|---|
+| `GET /api/v1/instances` | the instances the token reaches, with their state, workspace, staging of, by hand | read |
+| `GET /api/v1/instances/{server}/{role}` | one, with the commit of each repository and its last jobs | read |
+| `GET /api/v1/jobs`, `GET /api/v1/jobs/{id}` | the jobs (`server`, `q`, `limit`), one job | read |
+| `GET /api/v1/jobs/{id}/log?offset=N` | its log from line N: ask again from `next_offset` until `finished` | read |
+| `GET /api/v1/instances/{server}/{role}/backups` | its backups, each with its `download` path | read |
+| `GET /api/v1/instances/{server}/{role}/backups/{file}` | the zip (logged as a download) | write |
+| `POST /api/v1/instances/{server}/{role}/backups` | a backup (`{"options": {"no_filestore": true}}`) | write |
+| `POST /api/v1/instances/{server}/{role}/start`, `stop`, `restart` | as the buttons | write |
+| `POST /api/v1/instances/{server}/{role}/pull` | Git pull and restart (a production's: a backup first, always) | write |
+| `GET /api/v1/instances/{server}/{role}/deploys` | its deploys, with the commits before and after | write |
+| `POST /api/v1/instances/{server}/{role}/deploys/{id}/back` | Back to this deploy (`{"pause": true}`: its CI off first) | write |
+| `POST /api/v1/instances/{server}/stagings` | a new staging of the server's production | write |
+
+Every POST answers `202` with the job (`{"job": {...}, "follow", "log"}`).
+
+**Levels**: a token's role. `user` reads; `developer` (write) also acts on
+the tests and the stagings and makes stagings; `admin` also acts on a
+production. **A production is updated by hand only** (a staging is not one):
+every action on a production asks a token with the role `admin` and
+`"confirm": "<server name>"` in that very call's body, as the pages ask its
+name typed; its backup asks the role admin and no confirm. A token marked
+**CI** (Settings › Users › API and AI assistants, or a workspace's page:
+*A token of a CI*) never acts on a production, whatever its role: it acts on
+the tests and stagings, makes stagings, reads. A token may be limited to
+some **servers** (the same dialog), and a workspace's token reaches its
+workspace only; a token limited to some servers reaches only `/api/v1`, `/mcp`
+and the downloads of its servers' backups. A token is made on those pages,
+shown once and kept as its SHA-256 in the users file
+(`tokens: {name: {token, role, workspace, ci, servers}}`); outside `/api/v1`
+a token only reads, as before.
+
+**Rate limit**: 600 reads and 60 writes in any 60 seconds per token, MCP's
+calls included (a tool that changes something is a write); past it `429`
+with `Retry-After` (seconds). **Idempotency**: a POST with an
+`Idempotency-Key` header (1-200 printable characters) answers, for 24 hours,
+the same answer and job to the same key of the same token with the same
+body (`Idempotent-Replayed: true`); with another body `409`. The keys are
+kept in `api-idempotency.json` next to the jobs folder (600), so a restart
+keeps them.
+
+**Errors** are `{"error": {"code": "...", "message": "..."}}`, the message in
+English: `unauthorized` (401), `read_only_token`, `forbidden`,
+`production_by_hand`, `production_level_required` (403), `not_found` (404),
+`confirm_required`, `refused`, `invalid_idempotency_key` (400),
+`idempotency_conflict` (409), `invalid_request` (422), `rate_limited` (429).
+
+Every call that changes something is in the access log with the token's
+name (`kind: token`), the lists of backups as a read, every download as a
+download.
+
+```bash
+OMNIACLI=https://omniacli.example.com
+TOKEN=...   # Settings › Users › API and AI assistants › New key
+H="Authorization: Bearer $TOKEN"
+
+curl -s -H "$H" $OMNIACLI/api/v1/instances
+# a backup, retried safely: the same key answers the same job
+curl -s -X POST -H "$H" -H "Idempotency-Key: ci-$BUILD_ID" -H "Content-Type: application/json" \
+     -d '{"options": {"no_filestore": false}}' $OMNIACLI/api/v1/instances/acme-odoo-stg-20261122/production/backups
+curl -s -H "$H" "$OMNIACLI/api/v1/jobs/<job id>/log?offset=0"
+curl -s -H "$H" -OJ $OMNIACLI/api/v1/instances/acme-odoo-stg-20261122/production/backups/<file>.zip
+# a staging, then its code updated and restarted (a CI token may)
+curl -s -X POST -H "$H" $OMNIACLI/api/v1/instances/acme-odoo/stagings
+curl -s -X POST -H "$H" $OMNIACLI/api/v1/instances/acme-odoo-stg-20261122/production/pull
+# a production: by hand only, an admin token and its name
+curl -s -X POST -H "$H" -H "Content-Type: application/json" -d '{"confirm": "acme-odoo"}' \
+     $OMNIACLI/api/v1/instances/acme-odoo/production/restart
+```
 
 ## Run
 

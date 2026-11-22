@@ -30,13 +30,16 @@ import types
 import zipfile
 from dataclasses import asdict
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 from urllib.parse import parse_qs, quote, urlsplit
 
 import httpx
 import jinja2
-from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketException, status
-from fastapi.exception_handlers import http_exception_handler
+from fastapi import APIRouter, Body, Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketException, status
+from fastapi import Path as PathParam
+from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.openapi.utils import get_openapi
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.templating import Jinja2Templates
@@ -47,6 +50,8 @@ from . import (backupcheck, backupchoices, checks, deployhooks, destinations, en
                schedules, selflog, sqldump, sshlinks, shell, stacktemplates, templatestore, tunnel, workspacehelper, workspaceops)
 from .accesslog import REQUEST as AUDIT_REQUEST, AccessLog
 from . import audit, siem
+from . import apiguard, apiv1
+from .apiguard import ApiError
 from . import i18n, loginas, machines, modulecatalog, pgreport, pgtuning, stagings, workspaceweb
 from . import clusterpitr, inframap, linkedcluster, machinedb, managedreplica
 from . import stagingmail
@@ -127,7 +132,7 @@ from .config import (
     server_text,
     server_to_dict,
 )
-from .jobs import INTERRUPTED, STARTED as JOBS_STARTED, SUCCESS, JobFailed, JobManager, filter_jobs
+from .jobs import FINISHED, INTERRUPTED, STARTED as JOBS_STARTED, SUCCESS, JobFailed, JobManager, filter_jobs
 from .plugin_api import ENTRY_POINT_GROUP, PLUGIN_API, ActionRefused, Host, ServicePlugin, restore_fetched
 from .pullcrypto import new_key
 from .links import LIST_TIMEOUT, LinkClients, describe_error, link_headers, proxy_websocket
@@ -374,6 +379,8 @@ WORKSPACE_ROUTES = frozenset({
     # Log in as on its instances: its admin (from_link_role), a person who
     # logs in here; not the nginx line (the machine's)
     "/api/servers/{server}/{role}/login-as/users", "/api/servers/{server}/{role}/login-as",
+    # the REST API (README, REST API), for a workspace's token: its instances and jobs, with its role there
+    *(path for _, path in apiv1.V1_TOOLS), *(path for _, path in apiv1.DOCUMENT_ROUTES),
 })
 
 
@@ -721,9 +728,20 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 # download backups); its actions go through the MCP tools only
                 # the one write a token makes outside /mcp: the PUT of the
                 # upload URL its upload_backup got (one time, for it only)
-                upload = method == "PUT" and getattr(request.scope.get("route"), "path", "") == UPLOAD_ROUTE
-                if method not in ("GET", "HEAD") and not upload:
+                template = getattr(request.scope.get("route"), "path", "")
+                upload = method == "PUT" and template == UPLOAD_ROUTE
+                # the REST API (README, REST API): there its role says what it may do, the API's own rules
+                # (apiguard.py) the rest; everywhere else it only reads, as before
+                v1 = request.url.path.startswith(apiv1.PREFIX + "/")
+                if method not in ("GET", "HEAD") and not upload and not v1:
                     raise HTTPException(status.HTTP_403_FORBIDDEN, "A token may only read")
+                limited = settings.token_servers(name)
+                if limited and not v1 and not (
+                        template == "/backups/{server}/{role}/{name}"
+                        and (request.scope.get("path_params") or {}).get("server") in limited):
+                    # a token of some servers only: the API and MCP, which keep it to them, and their downloads
+                    raise HTTPException(status.HTTP_403_FORBIDDEN,
+                                        "This token reaches some servers only: use /api/v1 or /mcp")
                 workspace = settings.token_workspace(name)
                 if workspace:
                     # a workspace's token (its admin made it for an assistant) reads
@@ -896,6 +914,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     anyone, developer, admin = needs("user"), needs("developer"), needs("admin")
 
+    # the rate limit and the idempotency keys of the REST API and of MCP together (apiguard.py)
+    guard = apiguard.Guard(settings.jobs_dir.parent)
+    # the pages' code the REST API and MCP both call, defined further down (app.state.api_hooks: the tests' way in)
+    api_hooks = {"staging": lambda *a, **k: new_staging(*a, **k),
+                 "deploy_back": lambda *a, **k: start_deploy_back(*a, **k)}
+
     if importlib.util.find_spec("mcp") is None:
         # the mcp SDK needs Python 3.10: no /mcp without it
         mcp_route, mcp_manager = None, None
@@ -927,7 +951,13 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                             lambda key: monitor.view(key),
                                             # defined further down, with the workspaces' code
                                             {"upload": lambda *a, **k: upload_ticket(*a, **k),
-                                             "restore": lambda *a, **k: restore_new(*a, **k)})
+                                             "restore": lambda *a, **k: restore_new(*a, **k)},
+                                            # what MCP shares with the REST API (README, REST API): the same rules
+                                            # and the same code of the pages, defined further down
+                                            {"guard": guard, "by_hand": lambda inst: manual_only(inst),
+                                             "staging": lambda *a, **k: api_hooks["staging"](*a, **k),
+                                             "deploys": lambda *a, **k: mcp_deploys(*a, **k),
+                                             "deploy_back": lambda *a, **k: api_hooks["deploy_back"](*a, **k)})
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -1085,6 +1115,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         """A browser without a session goes to the login form: a page it opens
         comes back after it; a form it sends (a button: Stop, Start, ...) is not
         sent again, the login goes back to the page the form was on."""
+        if request.url.path.startswith(apiv1.PREFIX + "/") and request.url.path != API_DOCS:
+            # the REST API: its errors as a program reads them, with a stable code
+            detail = exc.detail if isinstance(exc.detail, str) else "Refused"
+            code = "unauthorized" if exc.status_code == 401 else apiv1.code_of(exc.status_code)
+            return api_error(ApiError(exc.status_code, code, detail, dict(exc.headers or {})))
         if (exc.status_code == 401 and (exc.headers or {}).get(_LOGIN_HEADER)
                 and "text/html" in request.headers.get("accept", "")
                 and not request.headers.get("authorization")):
@@ -4213,9 +4248,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                   for role in ROLES if getattr(settings.servers[n], role) is not None}
                               for n in ws.servers if n in settings.servers},
              "sites": site_names(ws), "certificates": CERTIFICATES,
-             "tokens": [{"name": n, "role": settings.token_role(n)} for n in sorted(settings.tokens)
+             "tokens": [{"name": n, "role": settings.token_role(n), "ci": settings.token_ci(n),
+                         "servers": list(settings.token_servers(n))} for n in sorted(settings.tokens)
                         if settings.token_workspace(n) == ws.name],
-             "mcp_url": public_base(request) + "/mcp",
+             "mcp_url": public_base(request) + "/mcp", "api_base": api_base(request),
              # the links an archive may be copied through: the machine's admins'
              "links": sorted(settings.link_targets) if me.kind == "user" and not me.workspaces and me.can("admin")
              else [],
@@ -7295,7 +7331,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     def web_copy() -> Access:
         web = settings.web
         return Access(dict(web.users), dict(web.roles), dict(web.tokens), dict(web.links), dict(web.token_roles),
-                      dict(web.token_workspaces))
+                      dict(web.token_workspaces), dict(web.token_ci), dict(web.token_servers))
 
     async def store_access(web: Access):
         """Write the users file and make it current; a response on error."""
@@ -7356,8 +7392,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 "links": [{"name": n, "role": link.role, "fixed": n in fixed.links}
                           for n, link in sorted(settings.links.items())],
                 "tokens": [{"name": n, "role": settings.token_role(n), "fixed": n in fixed.tokens,
-                            "workspace": settings.token_workspace(n)}
+                            "workspace": settings.token_workspace(n), "ci": settings.token_ci(n),
+                            "servers": list(settings.token_servers(n))}
                            for n in sorted(settings.tokens)],
+                # how a client is connected with a token (README, REST API; _api_clients.html)
+                "api_base": api_base(request), "server_names": sorted(settings.servers),
                 "users_file": settings.users_file,
                 "roles": ACCESS_ROLES,
                 "user_roles": USER_ROLES,
@@ -7959,9 +7998,29 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             web.links[name] = LinkAccess(hash_token(token) if token else web.links[name].token, role)
             return await store_access(web) or {"ok": True, "token": token}
 
+    def token_limits(payload: dict, web: Access, name: str, allowed: set | None = None):
+        """The CI mark and the servers of a token, from the dialog (README, REST API); None, or the refusal."""
+        servers = payload.get("servers")
+        servers = [s for s in re.split(r"[\s,]+", servers) if s] if isinstance(servers, str) else servers or []
+        if not isinstance(servers, list) or not all(isinstance(s, str) for s in servers):
+            return refuse("The servers of a token are a list of names")
+        unknown = [s for s in servers if s not in settings.servers or (allowed is not None and s not in allowed)]
+        if unknown:
+            return refuse(f"No server {', '.join(unknown)} for this token")
+        if payload.get("ci"):
+            web.token_ci[name] = True
+        else:
+            web.token_ci.pop(name, None)
+        if servers:
+            web.token_servers[name] = tuple(dict.fromkeys(servers))
+        else:
+            web.token_servers.pop(name, None)
+        return None
+
     @app.post("/api/access/tokens/save", dependencies=[Depends(admin)])
     async def token_save(payload: dict = Body(...)):
-        """Create an MCP token (new: true; it is in the answer, once) or change its role."""
+        """Create a token of MCP and the REST API (new: true; it is in the answer, once) or change its role,
+        its CI mark and its servers."""
         name = str(payload.get("name") or "").strip()
         role = str(payload.get("role") or TOKEN_DEFAULT_ROLE)
         new = bool(payload.get("new"))
@@ -7970,6 +8029,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if refused:
                 return refused
             web = web_copy()
+            refused = token_limits(payload, web, name)
+            if refused:
+                return refused
             token = new_token() if new else None
             if token:
                 web.tokens[name] = hash_token(token)
@@ -7993,6 +8055,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if kind == "tokens":
                 web.token_roles.pop(name, None)
                 web.token_workspaces.pop(name, None)
+                web.token_ci.pop(name, None)
+                web.token_servers.pop(name, None)
             return await store_access(web) or {"ok": True}
 
     @app.post("/api/workspaces/{workspace}/tokens/save", dependencies=[Depends(admin)])
@@ -8015,6 +8079,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if not new and settings.token_workspace(name) != ws.name:
                 return refuse(f"No token {name} of workspace {ws.name}", status.HTTP_404_NOT_FOUND)
             web = web_copy()
+            refused = token_limits(payload, web, name, set(ws.servers))
+            if refused:
+                return refused
             token = new_token() if new else None
             if token:
                 web.tokens[name] = hash_token(token)
@@ -8033,6 +8100,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             web.tokens.pop(name, None)
             web.token_roles.pop(name, None)
             web.token_workspaces.pop(name, None)
+            web.token_ci.pop(name, None)
+            web.token_servers.pop(name, None)
             return await store_access(web) or {"ok": True}
 
     # --- links to other OmniaCLI instances -------------------------------
@@ -10323,7 +10392,17 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     def deploy_rows(request: Request, instance: Instance, entries: list, now: dict) -> list:
         """The deploys newest first as the page shows them: for a user of
         workspaces without the integrator's names (customerview.py)."""
-        view, lang = customer_view(request), request_language(request)
+        return deploy_rows_for(customer_view(request), request_language(request), instance, entries, now)
+
+    async def mcp_deploys(instance: Instance, workspace: str) -> dict:
+        """MCP's list_deploys: the rows of the page, in English, a workspace's token's without the
+        integrator's names."""
+        data = await asyncio.to_thread(deploys.load, deploys_folder, instance.key)
+        view = customer_view_of({workspace}, "en") if workspace else None
+        return {"ci": ci_on(instance),
+                "deploys": deploy_rows_for(view, "en", instance, data["deploys"], await deploys.snapshot(instance))}
+
+    def deploy_rows_for(view, lang: str, instance: Instance, entries: list, now: dict) -> list:
         folder = backup_folder(instance)
         kept = {p.name for p in folder.glob("*.zip")} if folder.is_dir() else set()
         current_sha = {name: row.get("sha") for name, row in now.items()}
@@ -10427,11 +10506,16 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         out in each repository the commit of that deploy, updates the
         changed modules and restarts; with pause, the automatic deploys
         paused first (a push would deploy the branch head again)."""
-        instance = get_instance(server, role)
+        found = await start_deploy_back(get_instance(server, role), deploy_id, me, bool(payload.get("pause")),
+                                        f"manual: {me}")
+        return found if isinstance(found, JSONResponse) else {"job": found.id}
+
+    async def start_deploy_back(instance: Instance, deploy_id: str, me: Principal, pause: bool, source: str):
+        """The job of «Back to this deploy» (the page, the REST API, MCP), or the refusal (a JSONResponse)."""
         entry = deploys.find(deploys_folder, instance.key, deploy_id)
         if entry is None:
             return refuse(f"No deploy {deploy_id} of {instance.key}", status.HTTP_404_NOT_FOUND)
-        pause = bool(payload.get("pause")) and ci_on(instance)
+        pause = pause and ci_on(instance)
         if pause and not me.can(backup_role(instance)):
             return refuse(f"The {backup_role(instance)} role switches the CI of {instance.key} off",
                           status.HTTP_403_FORBIDDEN)
@@ -10449,10 +10533,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                         "do not move its code until it is switched on again")
             await deploys.go_back(job, instance, entry, backup_folder(instance))
 
-        ws = workspace_of(server)
-        job = jobs.submit(f"Back to the deploy of {deploy_when(entry)} on {instance.key}", [instance.key],
-                          f"manual: {me}", action, workspace=ws[0].name if ws else "")
-        return {"job": job.id}
+        ws = workspace_of(instance.server)
+        return jobs.submit(f"Back to the deploy of {deploy_when(entry)} on {instance.key}", [instance.key],
+                           source, action, workspace=ws[0].name if ws else "")
 
 
     app.add_route("/hooks/deploy/{server}/{role}", deploy_hook_call, methods=["POST"])
@@ -16306,6 +16389,402 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         job = jobs.submit(f"Free the space of before of {server}", [f"{server}/production"], f"manual: {me}", action,
                           workspace=ws.name)
         return {"job": job.id}
+
+    # --- the REST API (README, REST API): /api/v1 for scripts and CI ---------
+    # A thin layer over what the pages and MCP call, with MCP's rules (apiguard.py): the token's role is its
+    # level, a production is acted on only with the admin role and confirm = its name, never by a CI token; a
+    # rate limit per token; idempotency keys on the POSTs. Its shapes and descriptions: apiv1.py.
+
+    API_DOCS = apiv1.PREFIX + "/docs"
+    P = apiv1.PREFIX
+    api_router = APIRouter(responses={code: {"model": apiv1.ErrorAnswer, "description": what} for code, what in (
+        (400, "Refused: the message says why (confirm_required, refused, invalid_request...)"),
+        (401, "No token, or not a valid one"), (403, "Not for this token (read_only_token, production_by_hand, "
+                                                       "production_level_required, forbidden)"),
+        (404, "No such instance, job, backup or deploy for this token"),
+        (409, "idempotency_conflict: the key was used with another request"),
+        (429, "rate_limited: see the Retry-After header"))})
+    IDEMPOTENCY_HEADER = Header(None, alias="Idempotency-Key",
+                                description="Any unique text (a UUID): the same key with the same request within "
+                                            "24 hours answers the first answer again, the same job; with another "
+                                            "request, 409")
+
+    def api_error(exc: ApiError) -> JSONResponse:
+        return JSONResponse(exc.body(), status_code=exc.status, headers=exc.headers)
+
+    @app.exception_handler(ApiError)
+    async def api_refused(request: Request, exc: ApiError):
+        return api_error(exc)
+
+    @app.exception_handler(RequestValidationError)
+    async def api_invalid(request: Request, exc: RequestValidationError):
+        if not request.url.path.startswith(P + "/"):
+            return await request_validation_exception_handler(request, exc)
+        said = "; ".join(f"{'.'.join(str(p) for p in e.get('loc', ()) if p != 'body')}: {e.get('msg')}"
+                         for e in exc.errors())
+        return api_error(ApiError(422, "invalid_request", said or "The request is not valid"))
+
+    def api_refusal(resp: JSONResponse) -> ApiError:
+        """A refusal of the pages' code ({"error": "text"}) as the API says it."""
+        try:
+            data = json.loads(resp.body)
+        except ValueError:
+            data = {}
+        message = data.get("error") if isinstance(data, dict) and isinstance(data.get("error"), str) else "Refused"
+        return ApiError(resp.status_code, apiv1.code_of(resp.status_code), message)
+
+    def api_token(request: Request) -> Principal:
+        """The caller of a route of the API: a token (a session has the pages), within its rate; a write
+        asks the write level (developer) at least."""
+        me = getattr(request.state, "user", None)
+        if me is None or me.kind != "token":
+            raise ApiError(401, "unauthorized", "The REST API takes a token: Authorization: Bearer <token>, made on "
+                                                "Settings › Users › API and AI assistants or on a workspace's page")
+        write = request.method not in ("GET", "HEAD")
+        refused = guard.limiter.refusal(me.name, write)
+        if refused is not None:
+            raise refused
+        if write and not me.can("developer"):
+            raise ApiError(403, "read_only_token", f"The token {me.name} has the read level: it changes nothing")
+        return me
+
+    def api_reaches(me: Principal, server: str) -> bool:
+        """The token reaches server: of its workspace (if it has one), of its list of servers (if it has one)."""
+        limited = settings.token_servers(me.name)
+        if limited and server not in limited:
+            return False
+        shown = visible_servers(me)
+        return shown is None or server in shown
+
+    def api_instance(me: Principal, server: str, role: str) -> Instance:
+        inst = settings.instance(server, role) if role in ROLES and api_reaches(me, server) else None
+        if inst is None:
+            raise ApiError(404, "not_found", f"No instance {server}/{role} for this token")
+        return inst
+
+    def api_production(me: Principal, inst: Instance, action: str, confirm: Optional[str],
+                       confirm_needed: bool = True) -> None:
+        """A production is updated by hand only: apiguard.production_refusal (MCP's acting says the same)."""
+        refused = apiguard.production_refusal(manual_only(inst), inst.server, me.role, settings.token_ci(me.name),
+                                              confirm or "", action, confirm_needed)
+        if refused is not None:
+            raise refused
+
+    def api_developer(me: Principal, what: str) -> None:
+        if not me.can("developer"):
+            raise ApiError(403, "forbidden", f"{what} needs a token with the write level (developer); "
+                                             f"this one is {me.role}")
+
+    def api_seen(me: Principal, job) -> bool:
+        limited = settings.token_servers(me.name)
+        if limited and not (job.servers and set(job.servers) <= set(limited)):
+            return False
+        return bool(visible_jobs(me, [job]))
+
+    def api_job_of(me: Principal, job_id: str):
+        job = jobs.get(job_id)
+        if job is None or not api_seen(me, job):
+            raise ApiError(404, "not_found", f"No job {job_id} for this token")
+        return job
+
+    def api_job(request: Request, job, lines: bool = False) -> dict:
+        """A job as the caller reads it (a workspace's token: without the integrator's names, customerview.py)."""
+        shown = shown_jobs(request, [job], lines)[0]
+        data = {k: getattr(shown, k) for k in ("id", "title", "status", "instances", "source", "created", "started",
+                                                "finished", "error")}
+        return {**data, "result": shown.result or {}, **({"lines": shown.lines} if lines else {})}
+
+    def api_accepted(request: Request, job, **extra) -> dict:
+        return {"job": api_job(request, job), **extra, "follow": f"{P}/jobs/{job.id}", "log": f"{P}/jobs/{job.id}/log"}
+
+    async def api_once(request: Request, me: Principal, key: Optional[str], run) -> JSONResponse:
+        """A POST that starts a job: run() answers it (a dict, or ApiError); with an Idempotency-Key the
+        same key and request within 24 hours answers the same job again (apiguard.Idempotency)."""
+        if key is None:
+            return JSONResponse(await run(), status_code=202)
+        refused = guard.idempotency.check_key(key)
+        if refused is not None:
+            raise refused
+        print_ = apiguard.fingerprint(request.method, request.url.path, await request.body())
+        async with guard.idempotency.lock(me.name, key):
+            before = guard.idempotency.lookup(me.name, key, print_)
+            if before is not None:
+                body = dict(before["body"] or {})
+                job = jobs.get(str((body.get("job") or {}).get("id") or ""))
+                if job is not None:
+                    body["job"] = api_job(request, job)
+                return JSONResponse(body, status_code=before["status"], headers={"Idempotent-Replayed": "true"})
+            answer = await run()
+            guard.idempotency.remember(me.name, key, print_, 202, answer)
+        return JSONResponse(answer, status_code=202)
+
+    def api_row(inst: Instance, state: str) -> dict:
+        known = stagings.load(stagings_file).get(inst.server, {})
+        return {"server": inst.server, "role": inst.role, "type": inst.type, "state": state,
+                "busy": jobs.is_busy(inst.key), "workspace": settings.workspace_of(inst.server) or None,
+                "staging_of": known.get("parent") or None, "by_hand": manual_only(inst),
+                "version": odoo_version(inst.server) or None, "url": inst.domain or inst.site or None,
+                "repositories": [{"name": r.name, "branch": r.branch} for r in inst.repositories]}
+
+    @api_router.get(P + "/instances", response_model=List[apiv1.InstanceRow], summary="List the instances",
+                    description="Every instance of the active servers this token reaches, with its state.")
+    async def api_instances(me: Principal = Depends(api_token)):
+        found = [i for srv in settings.active_servers() if api_reaches(me, srv.name) for i in srv.instances.values()]
+        states = await asyncio.gather(*(run_state(i) for i in found))
+        return [api_row(i, s) for i, s in zip(found, states)]
+
+    @api_router.get(P + "/instances/{server}/{role}", response_model=apiv1.InstanceDetail,
+                    summary="Read one instance",
+                    description="An instance with its state, the commit of each repository and its last jobs.")
+    async def api_instance_one(request: Request, server: str = PathParam(description="The server's name"),
+                               role: str = PathParam(description="production or test"),
+                               me: Principal = Depends(api_token)):
+        inst = api_instance(me, server, role)
+        now = await deploys.snapshot(inst)
+        recent = [j for j in jobs.recent(200) if inst.key in j.instances and api_seen(me, j)][:5]
+        return {**api_row(inst, await run_state(inst)),
+                "commits": {name: (row or {}).get("sha") for name, row in now.items()},
+                "last_jobs": [api_job(request, j) for j in recent]}
+
+    @api_router.get(P + "/jobs", response_model=List[apiv1.JobRow], summary="List the jobs",
+                    description="The last jobs this token sees, newest first.")
+    async def api_jobs(request: Request,
+                       server: str = Query("", description="Only the jobs of this server"),
+                       q: str = Query("", description="Only the jobs with every word of it (title, who, error)"),
+                       limit: int = Query(20, ge=1, le=200, description="At most this many"),
+                       me: Principal = Depends(api_token)):
+        found = [j for j in filter_jobs(jobs.recent(len(jobs.jobs)), server, q) if api_seen(me, j)]
+        return [api_job(request, j) for j in found[:limit]]
+
+    @api_router.get(P + "/jobs/{job_id}", response_model=apiv1.JobRow, summary="Read one job",
+                    description="A job's state and result: poll it until status is not queued nor running.")
+    async def api_job_one(request: Request, job_id: str = PathParam(description="The job's id"),
+                          me: Principal = Depends(api_token)):
+        return api_job(request, api_job_of(me, job_id))
+
+    @api_router.get(P + "/jobs/{job_id}/log", response_model=apiv1.JobLog, summary="Read a job's log",
+                    description="The lines of a job's log from offset: ask again from next_offset until finished.")
+    async def api_job_log(request: Request, job_id: str = PathParam(description="The job's id"),
+                          offset: int = Query(0, ge=0, description="The index of the first line wanted"),
+                          limit: int = Query(1000, ge=1, le=5000, description="At most this many lines"),
+                          me: Principal = Depends(api_token)):
+        job = api_job_of(me, job_id)
+        lines = shown_jobs(request, [job], True)[0].lines
+        given = lines[offset:offset + limit]
+        return {"job": job.id, "status": job.status, "finished": job.status in FINISHED and offset + len(given) >= len(lines),
+                "offset": offset, "next_offset": offset + len(given), "lines": given}
+
+    @api_router.get(P + "/instances/{server}/{role}/backups", response_model=List[apiv1.BackupRow],
+                    summary="List the backups", description="An instance's backup zips, newest first.")
+    async def api_backups(server: str = PathParam(description="The server's name"),
+                          role: str = PathParam(description="production or test"), me: Principal = Depends(api_token)):
+        inst = api_instance(me, server, role)
+        folder = backup_folder(inst)
+        found = sorted(folder.glob("*.zip"), key=lambda p: p.stat().st_mtime, reverse=True) if folder.is_dir() else []
+        return [{"file": p.name, "size": p.stat().st_size, "time": int(p.stat().st_mtime),
+                 "kind": ("scheduled" if p.name.startswith(schedules.SCHEDULED_PREFIX)
+                          else "pre-update" if p.name.startswith(ops.PRE_UPDATE_PREFIX) else "manual"),
+                 "download": f"{P}/instances/{server}/{role}/backups/{p.name}"} for p in found]
+
+    @api_router.get(P + "/instances/{server}/{role}/backups/{file}", summary="Download a backup",
+                    response_class=FileResponse,
+                    responses={200: {"content": {"application/zip": {}},
+                                     "description": "The zip (needs the write level, as on the pages)"}},
+                    description="The zip of a backup of the list; logged as a download in the access log.")
+    async def api_backup_file(request: Request, server: str = PathParam(description="The server's name"),
+                              role: str = PathParam(description="production or test"),
+                              file: str = PathParam(description="The backup's file name, as the list gives it"),
+                              me: Principal = Depends(api_token)):
+        inst = api_instance(me, server, role)
+        api_developer(me, "A download of a backup")
+        folder = backup_folder(inst).resolve()
+        path = (folder / file).resolve()
+        if not file.endswith(".zip") or not _BACKUP_NAME.fullmatch(file) or path.parent != folder or not path.is_file():
+            raise ApiError(404, "not_found", f"No backup {file} of {inst.key}")
+        access_log.record("download", me.kind, me.name, request.client.host if request.client else "",
+                          f"{inst.key}/{file}")
+        return FileResponse(path, media_type="application/zip", filename=file)
+
+    @api_router.post(P + "/instances/{server}/{role}/backups", status_code=202, response_model=apiv1.Accepted,
+                     summary="Make a backup",
+                     description="A backup of the instance (database and files), a job: its result gives the zip's "
+                                 "download path. A production's needs the production level and is never a CI "
+                                 "token's; it asks no confirm (a backup does not change it).")
+    async def api_backup(request: Request, server: str = PathParam(description="The server's name"),
+                         role: str = PathParam(description="production or test"),
+                         body: Optional[apiv1.BackupBody] = None, idempotency_key: Optional[str] = IDEMPOTENCY_HEADER,
+                         me: Principal = Depends(api_token)):
+        inst = api_instance(me, server, role)
+        body = body or apiv1.BackupBody()
+
+        async def run():
+            api_production(me, inst, "A backup", body.confirm, confirm_needed=False)
+            fields = {f.key: f for f in inst.plugin.backup_fields()}
+            unknown = sorted(set(body.options) - set(fields))
+            if unknown:
+                raise ApiError(400, "invalid_request", f"Unknown backup options {', '.join(unknown)}; "
+                                                       f"{inst.plugin.label} has: {', '.join(fields) or 'none'}")
+            try:
+                options = {k: _field_value(f, body.options.get(k)) for k, f in fields.items()}
+            except ActionRefused as exc:
+                raise ApiError(400, "invalid_request", str(exc)) from None
+
+            async def action(job):
+                dest = await ops.backup(job, inst, settings.backup_dir, options)
+                job.result = {"file": dest.name, "size": dest.stat().st_size,
+                              "download": f"{P}/instances/{inst.server}/{inst.role}/backups/{dest.name}"}
+            chosen = [f.label.lower() for f in fields.values() if f.kind == "checkbox" and options[f.key]]
+            job = jobs.submit(f"Backup {inst.key}" + (f" ({', '.join(chosen)})" if chosen else ""), [inst.key],
+                              f"api: {me}", action)
+            return api_accepted(request, job)
+        return await api_once(request, me, idempotency_key, run)
+
+    def api_action(name: str, verb: str, what: str):
+        """POST /instances/{server}/{role}/<name>: start, stop and restart, as the pages' buttons."""
+        @api_router.post(P + "/instances/{server}/{role}/" + name, status_code=202, response_model=apiv1.Accepted,
+                         summary=f"{verb.capitalize()} an instance", name=f"api_{name}",
+                         description=f"{what} A job. On a production: the production level, confirm = the "
+                                     "server's name, never a CI token.")
+        async def route(request: Request, server: str = PathParam(description="The server's name"),
+                        role: str = PathParam(description="production or test"),
+                        body: Optional[apiv1.ActionBody] = None,
+                        idempotency_key: Optional[str] = IDEMPOTENCY_HEADER, me: Principal = Depends(api_token)):
+            inst = api_instance(me, server, role)
+            confirm = (body or apiv1.ActionBody()).confirm
+
+            async def run():
+                api_production(me, inst, verb.capitalize(), confirm)
+                if name != "restart" and inst.restart.type not in ("systemd", "compose", "process"):
+                    raise ApiError(400, "refused", f"{verb.capitalize()} is for a systemd service, a compose project "
+                                                   f"or an {inst.plugin.label} OmniaCLI starts itself")
+                act = {"start": ops.start, "stop": ops.stop, "restart": ops.restart}[name]
+                job = jobs.submit(f"{verb.capitalize()} {inst.key}", [inst.key], f"api: {me}",
+                                  lambda job: act(job, inst))
+                return api_accepted(request, job)
+            return await api_once(request, me, idempotency_key, run)
+        return route
+
+    api_action("start", "start", "Starts a stopped instance.")
+    api_action("stop", "stop", "Stops an instance: it stays stopped, also for the auto update, until started.")
+    api_action("restart", "restart", "Restarts an instance (who is connected loses the connection for a few "
+                                     "seconds).")
+
+    @api_router.post(P + "/instances/{server}/{role}/pull", status_code=202, response_model=apiv1.Accepted,
+                     summary="Update the code (Git pull)",
+                     description="Git pull of every repository, the changed modules updated, a restart: a job (the "
+                                 "pages' Git pull and restart). On a production, by hand only: the production "
+                                 "level, confirm = the server's name, never a CI token; a backup is made first, "
+                                 "always.")
+    async def api_pull(request: Request, server: str = PathParam(description="The server's name"),
+                       role: str = PathParam(description="production or test"),
+                       body: Optional[apiv1.ActionBody] = None, idempotency_key: Optional[str] = IDEMPOTENCY_HEADER,
+                       me: Principal = Depends(api_token)):
+        inst = api_instance(me, server, role)
+        confirm = (body or apiv1.ActionBody()).confirm
+
+        async def run():
+            api_production(me, inst, "Git pull", confirm)
+            if manual_only(inst):
+                async def action(job):
+                    job.log("--- a backup first")
+                    made = await ops.backup(job, inst, settings.backup_dir)
+                    job.log(f"Backup {made.name}")
+                    await ops.pull_restart(job, inst)
+                title = f"Backup, git pull and restart {inst.key}"
+            else:
+                async def action(job):
+                    await ops.pull_restart(job, inst, backup_folder=backup_folder(inst))
+                title = f"Git pull and restart {inst.key}"
+            return api_accepted(request, jobs.submit(title, [inst.key], f"api: {me}", action))
+        return await api_once(request, me, idempotency_key, run)
+
+    @api_router.get(P + "/instances/{server}/{role}/deploys", response_model=apiv1.Deploys, summary="List the deploys",
+                    description="Each job that moved the instance's code, newest first, with the commits before and "
+                                "after: the id to go back to one (needs the write level, as on the pages).")
+    async def api_deploys(request: Request, server: str = PathParam(description="The server's name"),
+                          role: str = PathParam(description="production or test"), me: Principal = Depends(api_token)):
+        inst = api_instance(me, server, role)
+        api_developer(me, "The list of the deploys")
+        data = await asyncio.to_thread(deploys.load, deploys_folder, inst.key)
+        rows = deploy_rows(request, inst, data["deploys"], await deploys.snapshot(inst))
+        return {"ci": ci_on(inst), "deploys": [
+            {"id": r["id"], "kind": r["kind"], "started": r["started"], "finished": r["finished"], "by": r["by"],
+             "outcome": r["outcome"], "current": r["current"],
+             "repositories": [{k: x.get(k) for k in ("name", "branch", "before", "after", "subject")}
+                              for x in r["repositories"]]} for r in rows]}
+
+    @api_router.post(P + "/instances/{server}/{role}/deploys/{deploy_id}/back", status_code=202,
+                     response_model=apiv1.Accepted, summary="Go back to a deploy",
+                     description="The pages' Back to this deploy: a backup, each repository at that deploy's commit, "
+                                 "the changed modules updated, a restart (the database is not taken back). A job. "
+                                 "On a production: the production level, confirm = the server's name, never a CI "
+                                 "token.")
+    async def api_deploy_back(request: Request, server: str = PathParam(description="The server's name"),
+                              role: str = PathParam(description="production or test"),
+                              deploy_id: str = PathParam(description="The deploy's id, from the list"),
+                              body: Optional[apiv1.DeployBackBody] = None,
+                              idempotency_key: Optional[str] = IDEMPOTENCY_HEADER, me: Principal = Depends(api_token)):
+        inst = api_instance(me, server, role)
+        body = body or apiv1.DeployBackBody()
+
+        async def run():
+            api_production(me, inst, "Back to a deploy", body.confirm)
+            found = await api_hooks["deploy_back"](inst, deploy_id, me, body.pause, f"api: {me}")
+            if isinstance(found, JSONResponse):
+                raise api_refusal(found)
+            return api_accepted(request, found)
+        return await api_once(request, me, idempotency_key, run)
+
+    @api_router.post(P + "/instances/{server}/stagings", status_code=202, response_model=apiv1.Accepted,
+                     summary="Make a staging",
+                     description="A new staging of the server's production beside it in its workspace: the same "
+                                 "template, a backup of the production made now restored neutralized, its mail "
+                                 "caught. A job; server in the answer is the staging's name. It does not change the "
+                                 "production: a CI token may make one.")
+    async def api_staging(request: Request, server: str = PathParam(description="The production's server"),
+                          body: Optional[apiv1.StagingBody] = None,
+                          idempotency_key: Optional[str] = IDEMPOTENCY_HEADER, me: Principal = Depends(api_token)):
+        if not api_reaches(me, server) or settings.instance(server, "production") is None:
+            raise ApiError(404, "not_found", f"No production {server} for this token")
+
+        async def run():
+            found = await api_hooks["staging"](server, me, source=f"api: {me}")
+            if isinstance(found, JSONResponse):
+                raise api_refusal(found)
+            return api_accepted(request, jobs.get(found["job"]), server=found["server"])
+        return await api_once(request, me, idempotency_key, run)
+
+    api_openapi_cache: dict = {}
+
+    def api_document() -> dict:
+        """The OpenAPI document of /api/v1 only (the internal routes are the pages' own)."""
+        if not api_openapi_cache:
+            found = get_openapi(title=apiv1.TITLE, version=apiv1.VERSION, description=apiv1.DESCRIPTION,
+                                routes=[r for r in api_router.routes if getattr(r, "include_in_schema", True)])
+            found.setdefault("components", {})["securitySchemes"] = {
+                "bearer": {"type": "http", "scheme": "bearer",
+                           "description": "A token of Settings › Users › API and AI assistants (or of a workspace)"}}
+            found["security"] = [{"bearer": []}]
+            api_openapi_cache.update(found)
+        return api_openapi_cache
+
+    @api_router.get(P + "/openapi.json", include_in_schema=False)
+    async def api_openapi():
+        return api_document()
+
+    @api_router.get(API_DOCS, include_in_schema=False)
+    async def api_docs(request: Request):
+        return _TEMPLATES.TemplateResponse(request, "api_docs.html", {
+            "doc": api_document(), "routes": apiv1.reading(api_document()), "base": api_base(request)})
+
+    app.include_router(api_router)
+    app.state.api_guard, app.state.api_hooks = guard, api_hooks
+
+    def api_base(request: Request) -> str:
+        """Where a client reaches this OmniaCLI (through a link: the address of the panel, which is not this
+        request's)."""
+        return portal_url() or ("https://<address of this OmniaCLI>" if prefix_of(request)
+                                else str(request.base_url).rstrip("/"))
 
     app.state.postgres_due = postgres_due
     # the look at the read replicas, a round of it: what the loop runs (the tests call it)

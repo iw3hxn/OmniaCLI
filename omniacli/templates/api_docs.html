@@ -1,0 +1,45 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{# The documentation of the REST API (README, REST API): its OpenAPI document read for a person, drawn here with no
+   script from elsewhere; the descriptions are the API's own, in English (it is for programs) #}
+{% extends "base.html" %}
+{% block title %}{{ _("REST API") }} · OmniaCLI{% endblock %}
+{% block content %}
+<style>
+.api-route { margin: 0 0 18px; }
+.api-route h3 { margin: 0 0 4px; font-size: 15px; }
+.api-route .method { display: inline-block; min-width: 46px; font-weight: 600; }
+.api-route table { font-size: 13px; }
+.api-route td:first-child { white-space: nowrap; }
+</style>
+<div class="page-head">
+  <div>
+    <h1>{{ _("REST API") }} <span class="muted" style="font-size: 15px">v{{ doc.info.version }}</span></h1>
+    <p>{{ _("The routes for scripts and CI, with the same token as MCP. The texts below are the API's own, in English.") }}</p>
+  </div>
+  <div class="actions" style="margin: 0">
+    <a class="button" href="{{ prefix }}/api/v1/openapi.json" title="{{ _('Opens the OpenAPI document of these routes, for the tools that read it (a client generator, Postman…)') }}">openapi.json</a>
+  </div>
+</div>
+<section class="panel">
+  <p>{{ doc.info.description }}</p>
+  <pre class="console mono copyable">curl -H "Authorization: Bearer &lt;TOKEN&gt;" {{ base }}/api/v1/instances</pre>
+</section>
+{% for r in routes %}
+<section class="panel api-route" id="{{ r.method | lower }}-{{ r.path | replace('/', '-') | replace('{', '') | replace('}', '') }}">
+  <h3><span class="method mono">{{ r.method }}</span> <span class="mono">{{ r.path }}</span> · {{ r.summary }}</h3>
+  <p>{{ r.description }}</p>
+  {% if r.parameters or r.body %}
+  <div class="scroll"><table>
+    <tr><th>{{ _("Field") }}</th><th>{{ _("Where") }}</th><th>{{ _("Type") }}</th><th></th></tr>
+    {% for p in r.parameters %}<tr><td class="mono">{{ p.name }}{% if p.required %} *{% endif %}</td><td>{{ p.in }}</td><td class="mono">{{ p.type }}</td><td>{{ p.description }}</td></tr>{% endfor %}
+    {% for f in r.body %}<tr><td class="mono">{{ f.name }}{% if f.required %} *{% endif %}</td><td>body</td><td class="mono">{{ f.type }}</td><td>{{ f.description }}</td></tr>{% endfor %}
+  </table></div>
+  {% endif %}
+  <div class="scroll"><table>
+    <tr><th>{{ _("Answer") }}</th><th>{{ _("Type") }}</th><th></th></tr>
+    {% for a in r.responses %}<tr><td class="mono">{{ a.code }}</td><td class="mono">{{ a.type }}</td><td>{{ a.description }}
+      {% if a.fields %}<br>{% for f in a.fields %}<span class="mono">{{ f.name }}</span>: {{ f.description }}{% if not loop.last %} · {% endif %}{% endfor %}{% endif %}</td></tr>{% endfor %}
+  </table></div>
+</section>
+{% endfor %}
+{% endblock %}

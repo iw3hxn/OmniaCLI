@@ -6,8 +6,10 @@
 {% endblock %}
 {% block content %}
 {% from "_list.html" import list_search, item with context %}
+{% from "_api_clients.html" import connect_fields, connect_script with context %}
 {% include "_list.html" %}
 {% set role_names = {"user": _("user"), "developer": _("developer"), "admin": _("admin"), "workspace": _("a customer's user")} %}
+{% set levels = {"user": _("read"), "developer": _("write: tests and stagings"), "admin": _("write and productions, with confirm")} %}
 {# the users (docs/ux/UX-007 §4.2): three tabs, each a list read with one primary; what changes is in a dialog,
    a secret (a token, an invitation's link) is shown once in a dialog of its own #}
 <style>
@@ -38,7 +40,7 @@
 <nav class="tabs" role="tablist" aria-label="{{ _('Who gets in') }}">
   <button type="button" role="tab" data-tab="people" aria-selected="true" title="{{ _('The people who log in here with a name and a password') }}">{{ _("People") }} ({{ users | length }})</button>
   <button type="button" role="tab" data-tab="incoming" title="{{ _('The other OmniaCLI instances that may operate this one, each with its token') }}">{{ _("Other instances") }} ({{ links | length }})</button>
-  <button type="button" role="tab" data-tab="tokens" title="{{ _('The keys an AI assistant reads the instances and uses its tools with') }}">{{ _("AI assistants") }} ({{ tokens | length }})</button>
+  <button type="button" role="tab" data-tab="tokens" title="{{ _('The tokens of the AI assistants (MCP) and of the scripts and CI (REST API)') }}">{{ _("API and AI assistants") }} ({{ tokens | length }})</button>
 </nav>
 
 <section class="panel tab-panel" data-panel="people">
@@ -103,20 +105,25 @@
 </section>
 
 <section class="panel tab-panel" data-panel="tokens" hidden>
-  <p class="muted" style="margin: 0 0 12px">{{ _("The keys an AI assistant (Claude, Cursor…) reads the instances and uses its tools with.") }} <span class="mono" style="font-size: 12px">MCP · /mcp</span></p>
+  <p class="muted" style="margin: 0 0 12px">{{ _("The tokens an AI assistant (Claude, ChatGPT, Codex, Cursor…) or a script and a CI read the instances and act with: one token for both.") }}
+    <span class="mono" style="font-size: 12px">MCP · /mcp · REST · <a href="{{ prefix }}/api/v1/docs" title="{{ _('Opens the documentation of the REST API: every route, its fields and its errors') }}">/api/v1</a></span></p>
   <div {{ "hidden" if tokens | length <= 8 }}>{{ list_search("tokens", _("Search token, role…")) }}</div>
   <div class="scroll">
   <table data-list="tokens" class="users-table">
-    <tr><th>{{ _("Key") }}</th><th>{{ _("Role") }}</th><th></th></tr>
+    <tr><th>{{ _("Token") }}</th><th>{{ _("Level") }}</th><th></th></tr>
     {% for t in tokens %}
-    <tr data-token="{{ t.name }}" {{ item(t.name ~ " " ~ t.role) }} data-role="{{ t.role }}">
+    <tr data-token="{{ t.name }}" {{ item(t.name ~ " " ~ t.role) }} data-role="{{ t.role }}" data-ci="{{ '1' if t.ci }}" data-servers="{{ t.servers | join(', ') }}">
       <td><strong>{{ t.name }}</strong>{% if t.fixed %} <span class="badge" title="{{ _('It is changed in the main configuration file of the machine, not from here') }}">{{ _("main config") }}</span>{% endif %}
-        {% if t.workspace %} <a class="badge info" href="{{ prefix }}/workspaces/{{ t.workspace }}#mcp-tokens" title="{{ _('It sees only this workspace: opens it') }}">{{ _("workspace {name}", name=t.workspace) }}</a>{% endif %}</td>
-      <td>{{ role_names.get(t.role, t.role) }}</td>
-      <td>{% if not t.fixed %}<div class="actions" style="margin: 0; justify-content: flex-end">
-        <button type="button" class="small" data-edit="tokens" title="{{ _('Changes the role of the key; the key stays the same.') }}">{{ _("Edit…") }}</button>
+        {% if t.workspace %} <a class="badge info" href="{{ prefix }}/workspaces/{{ t.workspace }}#mcp-tokens" title="{{ _('It sees only this workspace: opens it') }}">{{ _("workspace {name}", name=t.workspace) }}</a>{% endif %}
+        {% if t.ci %} <span class="badge warn" title="{{ _('A token of a CI: it never acts on a production, which is updated by hand only') }}">CI</span>{% endif %}
+        {% if t.servers %}<span class="small-note">{{ _("only {names}", names=t.servers | join(", ")) }}</span>{% endif %}</td>
+      <td>{{ levels.get(t.role, t.role) }}</td>
+      <td><div class="actions" style="margin: 0; justify-content: flex-end">
+        <button type="button" class="small" data-connect title="{{ _('Shows how to connect a client with this token: Claude Code, Claude Desktop, Codex, OpenCode, Cursor, VS Code, the REST API') }}">{{ _("How to connect…") }}</button>
+      {% if not t.fixed %}
+        <button type="button" class="small" data-edit="tokens" title="{{ _('Changes the level, the CI mark and the servers of the token; the token stays the same.') }}">{{ _("Edit…") }}</button>
         <button type="button" class="small danger" data-delete="tokens" title="{{ _('Cancels the key: the assistant that uses it stops working at once. A key of a workspace also leaves its page.') }}">{{ _("Revoke…") }}</button>
-      </div>{% endif %}</td>
+      {% endif %}</div></td>
     </tr>
     {% else %}
     <tr><td colspan="3" class="muted">{{ _("No AI assistant gets in. Make a key to connect one.") }}</td></tr>
@@ -155,6 +162,12 @@
       <label for="id-password" data-for-password>{{ _("Password") }}</label>
       <div data-for-password><input type="password" id="id-password" autocomplete="new-password" minlength="{{ min_password }}">
         <span class="muted field-help" id="id-password-help"></span></div>
+      <span class="label" data-for-token>CI</span>
+      <div data-for-token class="id-ways"><label title="{{ _('A production is updated by hand only: a CI token never starts, stops, updates nor backs one up, whatever its level') }}"><input type="checkbox" id="id-ci"> {{ _("A token of a CI: never on a production") }}</label></div>
+      <label for="id-servers" data-for-token>{{ _("Servers") }}</label>
+      <div data-for-token><input type="text" id="id-servers" autocomplete="off" list="id-server-names" placeholder="{{ _('all') }}">
+        <datalist id="id-server-names">{% for n in server_names %}<option value="{{ n }}"></option>{% endfor %}</datalist>
+        <span class="muted field-help">{{ _("The servers it reaches, separated by commas; empty: all of them.") }}</span></div>
     </div>
     <p class="error" id="id-error" role="alert"></p>
     <div class="actions">
@@ -168,8 +181,16 @@
   <p>{{ _("It is shown only now: copy it.") }}</p>
   <pre class="console mono copyable" id="secret-value" style="white-space: pre-wrap; word-break: break-all"></pre>
   <p class="muted mono" id="sd-how" style="font-size: 13px"></p>
+  <div id="sd-connect" hidden>{{ connect_fields("sd") }}</div>
   <div class="actions"><button type="button" class="primary" id="sd-done" title="{{ _('Closes: the token will not be shown again. If you lose it, revoke it and make a new one.') }}">{{ _("I have copied the token") }}</button></div>
 </dialog>
+<dialog id="connect-dialog" aria-labelledby="cd-title">
+  <h2 id="cd-title"></h2>
+  <p class="muted" style="font-size: 13px">{{ _("The token is not shown again: put yours where <TOKEN> is. Lost: revoke it and make a new one.") }}</p>
+  {{ connect_fields("cd") }}
+  <div class="actions"><button type="button" id="cd-close" title="{{ _('Closes this window') }}">{{ _("Close") }}</button></div>
+</dialog>
+{{ connect_script(api_base) }}
 {% include "_invite_dialog.html" %}
 <script>
 (function () {
@@ -192,11 +213,11 @@
       namePlaceholder: {{ _("who links in, e.g. omniasolutions") | tojson }}, deleteQ: {{ _("Revoke link {name}? It stops working at once.") | tojson }},
       secret: {{ _("Token of link {name}: enter it in the link of the other instance.") | tojson }}, how: ""},
     tokens: {tab: "tokens", roles: {{ roles | list | tojson }}, first: "developer", row: "token",
-      newLabel: {{ _("New key for an assistant") | tojson }}, newHelp: {{ _("Makes a key for an AI assistant: it reads the instances of this machine and uses the tools its role allows. You see it once.") | tojson }},
-      newTitle: {{ _("New key for an assistant") | tojson }}, editTitle: {{ _("Edit {name}") | tojson }}, create: {{ _("Create") | tojson }},
+      newLabel: {{ _("New token") | tojson }}, newHelp: {{ _("Makes a token for an AI assistant (MCP) or a script and a CI (REST API): it reads the instances of this machine and does what its level allows. You see it once.") | tojson }},
+      newTitle: {{ _("New token") | tojson }}, editTitle: {{ _("Edit {name}") | tojson }}, create: {{ _("Create") | tojson }},
       createHelp: {{ _("Makes the key and shows it once. Disabled until the name is written.") | tojson }},
       saveHelp: {{ _("Saves the role of the key. Disabled until it is changed.") | tojson }},
-      roleHelp: {{ _("user only reads; developer also updates and backs up the test instances; admin also adds draft servers.") | tojson }},
+      roleHelp: {{ _("user only reads; developer also acts on the tests and the stagings and makes stagings; admin also acts on a production, each time with its name in confirm, and adds draft servers.") | tojson }},
       namePlaceholder: {{ _("who uses it, e.g. dev-laptop") | tojson }}, deleteQ: {{ _("Revoke MCP token {name}? It stops working at once.") | tojson }},
       secret: {{ _("Key {name} for an AI assistant") | tojson }}, how: "Authorization: Bearer <token>"},
   };
@@ -257,13 +278,15 @@
   const way = () => (dialog.querySelector('input[name="id-way"]:checked') || {}).value;
   const customer = () => kind === "users" && !editing && $("id-role").value === "workspace";
   const values = () => JSON.stringify([$("id-name").value.trim(), $("id-role").value, $("id-password").value,
-                                       $("id-workspace").value, $("id-ws-role").value, way()]);
+                                       $("id-workspace").value, $("id-ws-role").value, way(), $("id-ci").checked,
+                                       $("id-servers").value]);
   function layout() {
     const users = kind === "users", isNew = users && !editing, typed = !isNew || way() === "password";
     for (const el of dialog.querySelectorAll("[data-for-customer]")) el.hidden = !customer();
     for (const el of dialog.querySelectorAll("[data-for-new]")) el.hidden = !isNew;
     for (const el of dialog.querySelectorAll("[data-for-mail]")) el.hidden = !isNew || typed;
     for (const el of dialog.querySelectorAll("[data-for-password]")) el.hidden = !users || !typed;
+    for (const el of dialog.querySelectorAll("[data-for-token]")) el.hidden = kind !== "tokens";
     $("id-workspace-help").textContent = T.customer;
     if (customer()) loadChoices();
   }
@@ -292,6 +315,7 @@
     $("id-role-help").textContent = own ? T.ownRole : (K.roleHelp || "");
     dialog.querySelector('input[name="id-way"][value="invite"]').checked = true;
     $("id-password").value = ""; if ($("id-email")) $("id-email").value = "";
+    $("id-ci").checked = !!(row && row.dataset.ci); $("id-servers").value = row && kind === "tokens" ? row.dataset.servers : "";
     $("id-password-help").textContent = T.atLeast.replace("{count}", MIN) + (row ? "; " + T.keep : "");
     $("id-save").textContent = row ? T.save : K.create;
     $("id-save-wrap").title = $("id-save").title = row ? K.saveHelp : K.createHelp;
@@ -318,6 +342,7 @@
     } else {
       const body = {name, role: $("id-role").value};
       if (kind === "users") Object.assign(body, {password: invite ? "" : $("id-password").value, invite, email});
+      if (kind === "tokens") Object.assign(body, {ci: $("id-ci").checked, servers: $("id-servers").value});
       if (!editing) body.new = true;
       data = await post(kind + "/save", body, $("id-error"));
     }
@@ -329,13 +354,25 @@
       // a secret: once, in a dialog of its own; the page again when it is closed
       dialog.close();
       $("sd-title").textContent = K.secret.replace("{name}", name);
-      $("secret-value").textContent = data.token; $("sd-how").textContent = K.how;
+      $("secret-value").textContent = data.token; $("sd-how").textContent = kind === "tokens" ? "" : K.how;
+      $("sd-connect").hidden = kind !== "tokens";
+      if (kind === "tokens") OmniaConnect("sd", data.token);
       secret.showModal();
       return;
     }
     if (next) location.href = next; else location.reload();
   });
   $("sd-done").onclick = () => location.reload();
+  // how to connect a client with a token: its snippets, with <TOKEN> (it is never shown again)
+  const connect = $("connect-dialog");
+  for (const button of document.querySelectorAll("[data-connect]")) {
+    button.onclick = () => {
+      $("cd-title").textContent = {{ _("Connect {name}") | tojson }}.replace("{name}", button.closest("tr").dataset.token);
+      OmniaConnect("cd", "");
+      connect.showModal();
+    };
+  }
+  $("cd-close").onclick = () => connect.close();
   secret.addEventListener("cancel", (e) => e.preventDefault());
   for (const button of document.querySelectorAll("[data-delete]")) {
     button.onclick = async () => {

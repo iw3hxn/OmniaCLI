@@ -44,7 +44,10 @@ async def test_token_required(client):
                      "get_job", "update_test", "backup_test", "dev_setup", "diagnose_instance",
                      "restart_instance", "start_instance", "stop_instance", "list_actions", "run_action",
                      "verify_backup", "full_archive", "stop_job", "list_links", "linked_tools", "call_linked",
-                     "database_report"}
+                     "database_report",
+                     # what the REST API does too (README, REST API): a production's still asks admin and confirm
+                     "backup", "list_backups", "update_production", "create_staging", "list_deploys", "deploy_back",
+                     "job_log"}
     # the token reads pages but never acts on them
     assert (await client.get("/jobs", headers=BEARER)).status_code == 200
     assert (await client.post("/servers/srv/test/pull", headers={**BEARER, "Origin": f"http://{HOST}"})).status_code == 403
@@ -131,7 +134,7 @@ async def test_token_roles_choose_the_tools(client, env):
     assert {"read_server", "add_draft_server", "backup", "list_backups", "update_test"} <= names
     # the default token of the tests has no role: developer, as before roles
     names = {t["name"] for t in (await tools(HEADERS)).json()["result"]["tools"]}
-    assert "update_test" in names and "add_draft_server" not in names and "backup" not in names
+    assert "update_test" in names and "add_draft_server" not in names and "backup" in names
     names = {t["name"] for t in (await tools(viewer)).json()["result"]["tools"]}
     assert "update_test" not in names and "list_servers" in names
     # a tool called anyway is refused

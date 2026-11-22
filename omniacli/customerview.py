@@ -19,7 +19,7 @@ _HOST_PATH = re.compile(
 # the same folder as systemd names its mount unit: var-lib-omniacli\x2dstorage-....mount
 _UNIT_PATH = re.compile(r"(?<![\w.-])(?:var|opt|etc|srv|home|root|tmp|mnt|data|run|media)-[\w\\-]+\.(?:mount|automount)\b")
 # who a job's source names: "manual: <who>", "mcp: <who>"; a stop's line
-_SOURCE = re.compile(r"(?P<kind>manual|mcp): (?P<who>.+)\Z", re.S)
+_SOURCE = re.compile(r"(?P<kind>manual|mcp|api): (?P<who>.+)\Z", re.S)
 _STOPPED_BY = re.compile(r"(?P<head>(?:\d\d:\d\d:\d\d )?--- stop asked by )(?P<who>.+)\Z", re.S)
 # a linked OmniaCLI acting for one of its users: "link <name> (<who>)"
 _LINK_ACTOR = r"\blink {name}(?: \([A-Za-z0-9._@-]{{1,64}}\))?"
