@@ -1,0 +1,228 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{# The deploys of an instance (deploys.py, README Deploys), in its Modules tab: each job that changed its code,
+   its commits before and after, who started it, its outcome and the backup made before it; «Back to this
+   deploy…» on a past one, in a dialog that says what changes; the automatic deploys paused or on. No primary
+   button here: the tab's work is its code, a deploy gone back to is the exception. -#}
+{% set restore_target = restore_file.get(inst.key) if restore_file else none %}
+<section class="tab-panel panel" data-panel="modules" data-section="deploys" hidden id="deploys"
+         data-api="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}/deploys" data-key="{{ inst.key }}"
+         data-restore='{{ restore_target | tojson if restore_target else "" }}'>
+  <div class="section-head"><h2>{{ _("Deploys") }}</h2></div>
+  <p class="muted dp-intro">{{ _("Each job that changed the code of this instance: a Git pull, a deploy on push, the auto update, a repository added or changed, a deploy gone back to. The last {n} are kept, also when their job is no longer in the list of the jobs.", n=keep_deploys) }}</p>
+  <div id="dp-available"></div>
+  <div class="scroll">
+  <table class="dp-table">
+    <thead><tr><th>{{ _("When") }}</th><th>{{ _("Code") }}</th><th>{{ _("Started by") }}</th><th>{{ _("Outcome") }}</th><th>{{ _("Backup before") }}</th><th></th></tr></thead>
+    <tbody id="dp-rows"><tr><td colspan="6" class="muted">{{ _("Reading the deploys…") }}</td></tr></tbody>
+  </table>
+  </div>
+  <p class="error" id="dp-error"></p>
+</section>
+<dialog id="dp-dialog" class="sd" aria-labelledby="dp-title">
+  <form method="dialog" id="dp-form">
+    <h2 id="dp-title"></h2>
+    <ul class="dp-repos" id="dp-repos"></ul>
+    <p class="muted" id="dp-kept" hidden></p>
+    <p class="muted" id="dp-gone" hidden></p>
+    <div class="banner" id="dp-refused" hidden></div>
+    <p class="note-box" id="dp-db">{{ _("The database is not taken back: the changed modules are updated to the code of that deploy, but a module whose data changed after it (new fields or tables, data moved) may not work with its data of now. A backup of the instance as it is now is made first.") }}</p>
+    <p id="dp-next"></p>
+    <label class="sd-choice" id="dp-pause-line" title="{{ _('Switches the CI of this instance off before going back, so that no push, auto update or scheduled pull brings the head of the branch again; it is switched on again in Updates of the code.') }}">
+      <input type="checkbox" id="dp-pause-now"> <span id="dp-pause-text">{{ _("Switch the CI off first (a push, the auto update, a scheduled pull)") }}</span></label>
+    <div id="dp-restore" hidden>
+      <p class="sd-help" id="dp-restore-text"></p>
+      <button type="button" class="danger" id="dp-restore-go" title="{{ _('Opens Restore with that backup chosen: it replaces the database and the files of the instance with those of then; what was written in Odoo since is lost. It asks before.') }}">{{ _("Restore the backup of then…") }}</button>
+    </div>
+    <p class="error" id="dp-dialog-error"></p>
+    <div class="sd-foot">
+      <button type="submit" class="primary" id="dp-go" title="{{ _('Starts a job: a backup of the instance as it is now, each repository at the commit of that deploy, the changed modules updated, Odoo restarted.') }}">{{ _("Go back") }}</button>
+      <button type="button" id="dp-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
+    </div>
+  </form>
+</dialog>
+<style>
+.dp-table td { vertical-align: top; }
+.dp-table .when { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.dp-repo { margin: 0 0 4px; } .dp-repo .mono { font-size: 13px; }
+.dp-subject { color: var(--muted); font-size: 13px; }
+.dp-pause { display: inline-flex; gap: 6px; align-items: center; font-size: 14px; }
+.dp-repos { padding-left: 18px; margin: 6px 0 10px; } .dp-repos li { margin: 0 0 8px; }
+.dp-repos .dp-taken { font-size: 13px; color: var(--muted); margin: 2px 0 0; padding-left: 16px; }
+.dp-current { color: var(--ok); font-weight: 600; white-space: nowrap; }
+</style>
+<script>
+(function () {
+  const box = document.getElementById("deploys");
+  if (!box) return;
+  const T = {
+    none: {{ _("No deploy yet: the first job that changes the code of this instance is listed here.") | tojson }},
+    added: {{ _("added at {sha}") | tojson }}, removed: {{ _("taken away") | tojson }},
+    brought: {{ _("{n} commits") | tojson }}, broughtOne: {{ _("1 commit") | tojson }},
+    takenBack: {{ _("{n} commits taken away") | tojson }},
+    success: {{ _("succeeded") | tojson }}, failed: {{ _("failed") | tojson }}, warned: {{ _("with warnings") | tojson }},
+    stopped: {{ _("stopped") | tojson }}, interrupted: {{ _("interrupted") | tojson }},
+    available: {{ _("available, not deployed") | tojson }},
+    availableTitle: {{ _("A push of the branch this production follows: a production is updated by hand only, Update brings it") | tojson }},
+    newCommit: {{ _("New commit available on {repo}/{branch}: {sha} {subject}") | tojson }},
+    pushedOn: {{ _("pushed {when}") | tojson }},
+    noBackup: {{ _("none") | tojson }}, deleted: {{ _("{name} (deleted)") | tojson }},
+    current: {{ _("the code of now") | tojson }}, currentTitle: {{ _("Every repository of the instance is at the commits of this deploy") | tojson }},
+    back: {{ _("Back to this deploy…") | tojson }},
+    backTitle: {{ _("Says which commits change and what happens to the database, then starts a job that puts each repository at the commit of this deploy, updates the changed modules and restarts.") | tojson }},
+    backTo: {{ _("back to the deploy of {when}") | tojson }}, openJob: {{ _("Opens the job of this deploy") | tojson }},
+    title: {{ _("Back to the deploy of {when}") | tojson }},
+    move: {{ _("{name}: {now} → {to}") | tojson }}, same: {{ _("{name}: at {sha} already, not changed") | tojson }},
+    missing: {{ _("{name}: {now} → {to}, not in its copy: fetched from its remote first") | tojson }},
+    taken: {{ _("{n} commits after that deploy taken away:") | tojson }}, takenOne: {{ _("1 commit after that deploy taken away:") | tojson }},
+    kept: {{ _("Not in that deploy, kept as they are: {names}") | tojson }},
+    gone: {{ _("In that deploy and no longer repositories of the instance (not added back): {names}") | tojson }},
+    nextOn: {{ _("Its {what} is on: the next push or round deploys the head of the branch again, with the commits taken away. Switch its CI off to keep the code at this deploy.") | tojson }},
+    push: {{ _("CI") | tojson }}, auto: {{ _("auto update") | tojson }}, and: {{ _("{a} and {b}") | tojson }},
+    nextOff: {{ _("Its CI is off: the code stays at this deploy until a Git pull by hand, which brings the head of the branch again, with the commits taken away.") | tojson }},
+    nextManual: {{ _("A production is updated by hand only: the code stays at this deploy until a Git pull by hand, which brings the head of the branch again, with the commits taken away.") | tojson }},
+    cannotPause: {{ _("Switching the CI of this instance off is for its {role}s.") | tojson }},
+    restore: {{ _("The second way: after going back, restore the backup made before the deploy of {when} ({name}), the database as it was with the code of this deploy. What was written in Odoo since then is lost.") | tojson }},
+    restoreGone: {{ _("The backup made before the deploy of {when} ({name}) is no longer kept: the last 3 backups before an update are kept.") | tojson }},
+    restoreNone: {{ _("No backup was made before the deploy of {when}: the instance does not back up before an update.") | tojson }},
+    restoreAdmin: {{ _("An admin who logs in here restores it from Backups.") | tojson }},
+    nothing: {{ _("Every repository is at the commits of that deploy already.") | tojson }},
+    error: {{ _("Error {status}") | tojson }}, unreachable: {{ _("OmniaCLI cannot be reached") | tojson }},
+  };
+  const fill = (text, values) => text.replace(/\{(\w+)\}/g, (m, k) => (k in values ? values[k] : m));
+  const el = (tag, attrs = {}, ...children) => {
+    const node = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) if (v !== null && v !== undefined) node.setAttribute(k, v);
+    node.append(...children.filter((c) => c !== null && c !== undefined));
+    return node;
+  };
+  const short = (sha) => String(sha || "?").slice(0, 10);
+  const rows = document.getElementById("dp-rows"), errorBox = document.getElementById("dp-error");
+  const restoreTarget = box.dataset.restore ? JSON.parse(box.dataset.restore) : null;
+  let data = null, chosen = null, plan = null;
+
+  async function ask(url, body) {
+    const resp = await fetch(url, body === undefined ? {headers: {Accept: "application/json"}}
+      : {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"}, body: JSON.stringify(body)}).catch(() => null);
+    const found = resp ? await resp.json().catch(() => ({})) : {};
+    if (!resp) throw new Error(T.unreachable);
+    if (!resp.ok) throw new Error(found.error || found.detail || fill(T.error, {status: resp.status}));
+    return found;
+  }
+  function codeCell(d) {
+    const cell = el("td");
+    for (const r of d.repositories) {
+      let line;
+      if (d.kind === "available") line = `→ ${short(r.after)}`;
+      else if (!r.before) line = fill(T.added, {sha: short(r.after)});
+      else if (!r.after) line = T.removed;
+      else {
+        line = `${short(r.before)} → ${short(r.after)}`;
+        if (r.brought) line += " · " + (r.brought === 1 ? T.broughtOne : fill(T.brought, {n: r.brought}));
+        if (r.taken) line += " · " + fill(T.takenBack, {n: r.taken});
+      }
+      cell.append(el("div", {class: "dp-repo"}, el("strong", {}, r.name), " ", el("span", {class: "mono"}, line),
+                     r.subject ? el("div", {class: "dp-subject"}, r.subject) : null));
+    }
+    if (d.back_to) {
+      const to = (data.deploys || []).find((x) => x.id === d.back_to);
+      cell.append(el("div", {class: "dp-subject"}, fill(T.backTo, {when: to ? whenText(to.finished) : d.back_to})));
+    }
+    return cell;
+  }
+  function draw() {
+    document.getElementById("dp-available").replaceChildren(...(data.available || []).map((a) => el("p", {class: "note-box", "data-available": a.name},
+      fill(T.newCommit, {repo: a.name, branch: a.branch, sha: a.sha || "?", subject: a.subject}), " ",
+      el("span", {class: "muted"}, "· " + fill(T.pushedOn, {when: whenText(a.time)})))));
+    if (!data.deploys.length) { rows.replaceChildren(el("tr", {}, el("td", {colspan: "6", class: "muted"}, T.none))); return; }
+    rows.replaceChildren(...data.deploys.map((d) => {
+      const outcome = T[d.outcome] || d.outcome || "";
+      const status = d.job ? el("a", {href: "{{ prefix }}" + d.job, title: T.openJob}, outcome)
+        : d.kind === "available" ? el("span", {title: T.availableTitle}, outcome) : outcome;
+      const backup = !d.backup ? el("span", {class: "muted"}, T.noBackup)
+        : el("span", {class: "mono" + (d.backup.kept ? "" : " muted")}, d.backup.kept ? d.backup.name : fill(T.deleted, {name: d.backup.name}));
+      let action = null;
+      if (d.current) action = el("span", {class: "dp-current", title: T.currentTitle}, T.current);
+      else if (data.can_back && d.kind !== "available") {
+        action = el("button", {type: "button", class: "small", title: T.backTitle, "data-deploy": d.id}, T.back);
+        action.addEventListener("click", () => open(d, action));
+      }
+      return el("tr", {"data-deploy": d.id, "data-kind": d.kind},
+                el("td", {class: "when"}, whenText(d.finished)), codeCell(d), el("td", {}, d.by),
+                el("td", {class: "status " + (d.outcome || "")}, status, d.error ? el("div", {class: "dp-subject"}, d.error) : null),
+                el("td", {}, backup), el("td", {class: "row-open"}, action));
+    }));
+  }
+  async function load() {
+    errorBox.textContent = "";
+    try { data = await ask(box.dataset.api); draw(); } catch (e) { errorBox.textContent = e.message; }
+  }
+  // the CI switched on or off in Updates of the code: the dialog's choice follows
+  document.addEventListener("omnia-ci", load);
+
+  // --- the dialog of «Back to this deploy…»
+  const dialog = document.getElementById("dp-dialog"), list = document.getElementById("dp-repos");
+  const refusedBox = document.getElementById("dp-refused"), dialogError = document.getElementById("dp-dialog-error");
+  const pauseNow = document.getElementById("dp-pause-now"), go = document.getElementById("dp-go");
+  document.getElementById("dp-cancel").addEventListener("click", () => dialog.close());
+  async function open(d, button) {
+    chosen = d; plan = null;
+    button.disabled = true;
+    try { plan = await ask(`${box.dataset.api}/${encodeURIComponent(d.id)}/back`); }
+    catch (e) { errorBox.textContent = e.message; return; }
+    finally { button.disabled = false; }
+    document.getElementById("dp-title").textContent = fill(T.title, {when: whenText(d.finished)});
+    list.replaceChildren(...plan.repositories.map((r) => {
+      if (!r.change) return el("li", {}, fill(T.same, {name: r.name, sha: short(r.to)}));
+      const item = el("li", {}, fill(r.missing ? T.missing : T.move, {name: r.name, now: short(r.now), to: short(r.to)}),
+                      r.to_subject ? el("div", {class: "dp-subject"}, r.to_subject) : null);
+      if (r.taken) {
+        item.append(el("div", {class: "dp-taken"}, r.taken === 1 ? T.takenOne : fill(T.taken, {n: r.taken}),
+                       ...r.taken_commits.map((c) => el("div", {}, el("span", {class: "mono"}, c.sha), " ", c.subject))));
+      }
+      return item;
+    }));
+    const kept = document.getElementById("dp-kept"), gone = document.getElementById("dp-gone");
+    kept.hidden = !plan.kept.length; kept.textContent = fill(T.kept, {names: plan.kept.join(", ")});
+    gone.hidden = !plan.gone.length; gone.textContent = fill(T.gone, {names: plan.gone.join(", ")});
+    refusedBox.hidden = !plan.refused.length && plan.changes > 0;
+    refusedBox.textContent = plan.refused.length ? plan.refused.join(" · ") : T.nothing;
+    const on = [plan.ci ? T.push : null, plan.auto_update && !plan.paused ? T.auto : null].filter(Boolean);
+    document.getElementById("dp-next").textContent = !plan.automatic ? T.nextManual
+      : on.length ? fill(T.nextOn, {what: on.length === 2 ? fill(T.and, {a: on[0], b: on[1]}) : on[0]}) : T.nextOff;
+    // switching the CI off first: for a test or a staging whose CI is on, by who may switch it
+    const pauseLine = document.getElementById("dp-pause-line");
+    pauseLine.hidden = !plan.automatic || !plan.ci;
+    pauseNow.disabled = !plan.can_pause;
+    pauseNow.checked = plan.can_pause && plan.ci;
+    document.getElementById("dp-pause-text").title = plan.can_pause ? "" : fill(T.cannotPause, {role: plan.pause_role});
+    // the second way: the backup made before the first deploy taken away, the database of then
+    const restore = document.getElementById("dp-restore"), restoreText = document.getElementById("dp-restore-text");
+    const second = plan.restore_backup;
+    restore.hidden = !second;
+    if (second) {
+      const values = {when: whenText(second.before), name: second.name || ""};
+      restoreText.textContent = !second.name ? fill(T.restoreNone, values) : !second.kept ? fill(T.restoreGone, values)
+        : fill(T.restore, values) + (restoreTarget ? "" : " " + T.restoreAdmin);
+      document.getElementById("dp-restore-go").hidden = !(second.name && second.kept && restoreTarget && window.omniaRestoreOpen);
+    }
+    dialogError.textContent = "";
+    go.disabled = !!plan.refused.length || !plan.changes;
+    dialog.showModal();
+  }
+  document.getElementById("dp-restore-go").addEventListener("click", () => {
+    dialog.close();
+    window.omniaRestoreOpen(restoreTarget, box.dataset.key, plan.restore_backup.name);
+  });
+  document.getElementById("dp-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    if (!chosen || !plan) return;
+    go.disabled = true; dialogError.textContent = "";
+    try {
+      const done = await ask(`${box.dataset.api}/${encodeURIComponent(chosen.id)}/back`, {pause: pauseNow.checked && !pauseLine().hidden});
+      location.href = "{{ prefix }}/jobs/" + done.job;
+    } catch (e) { dialogError.textContent = e.message; go.disabled = false; }
+  });
+  const pauseLine = () => document.getElementById("dp-pause-line");
+  load();
+})();
+</script>

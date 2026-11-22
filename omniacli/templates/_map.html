@@ -33,6 +33,7 @@
 .map-verdict .map-count { font: inherit; color: inherit; }
 .map-watch { margin: 0 0 12px; padding: 0; list-style: none; }
 .map-watch li { padding: 3px 0; } .map-watch .mark { color: var(--warn); margin-right: 6px; }
+.map-watch .mark.critical { color: var(--err); }
 .map-legend { margin: 0 0 12px; font-size: 13px; color: var(--map-ink); }
 .map-legend ul { display: flex; flex-wrap: wrap; gap: 4px 18px; margin: 0; padding: 0; list-style: none; }
 .map-legend li { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
@@ -233,6 +234,7 @@ window.OmniaMap = (function () {
     never: {{ _("The map cannot be read: {why}. Trying again in 5 s.") | tojson }},
     more: {{ _("and {n} more") | tojson }}, moreJobsTitle: {{ _("Opens the list of the jobs") | tojson }},
     watchMoreTitle: {{ _("Shows every thing to look at") | tojson }},
+    critical: {{ _("Critical") | tojson }}, warning: {{ _("Warning") | tojson }},
     openNode: {{ _("Opens the path of this instance, here beside") | tojson }},
     openJob: {{ _("Opens the page of the job: its steps and its log; a job is stopped from there") | tojson }},
     since: {{ _("since {when}") | tojson }},
@@ -635,7 +637,9 @@ window.OmniaMap = (function () {
         line = el("a", {href: mapUrl({...Object.fromEntries(params()), focus: w.node}), title: T.openNode}, text);
         line.addEventListener("click", (event) => { event.preventDefault(); openPanel(w.node); });
       }
-      return el("li", {"data-watch": w.kind}, el("span", {class: "mark", "aria-hidden": "true"}, "⚠"), line);
+      const level = w.level === "critical" ? "critical" : "warning";
+      return el("li", {"data-watch": w.kind, "data-level": level},
+                el("span", {class: "mark " + level, title: T[level], "aria-label": T[level]}, level === "critical" ? "⛔" : "⚠"), line);
     }));
     if (watch.length > shown.length) {
       const more = el("button", {type: "button", class: "small ghost", title: T.watchMoreTitle}, fill(T.more, {n: watch.length - shown.length}));

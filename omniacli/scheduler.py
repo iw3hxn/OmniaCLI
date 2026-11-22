@@ -8,7 +8,7 @@ import asyncio
 import datetime
 import logging
 
-from . import ops
+from . import deploys, ops
 from .config import Instance, Settings
 from .jobs import JobFailed, JobManager
 
@@ -22,6 +22,8 @@ class AutoUpdater:
         # instance key -> {"checked": iso time, "message": text, "error": bool}
         self.state: dict[str, dict] = {}
         self._tasks: list[asyncio.Task] = []
+        # manual_only(instance): a production, updated by hand only (app.py); none by default
+        self.manual_only = lambda instance: False
 
     def start(self) -> None:
         for instance in self.settings.all_instances():
@@ -66,6 +68,14 @@ class AutoUpdater:
         now = now or datetime.datetime.now().time()
         if not instance.auto_update.in_window(now):
             self._set(instance, f"outside window {instance.auto_update.window_label()}")
+            return
+        if self.manual_only(instance):
+            self._set(instance, "a production is updated by hand only: the auto update does not run on it")
+            return
+        stopped = deploys.paused(deploys.folder_of(self.settings), instance.key)
+        if stopped:
+            self._set(instance, f"the CI of the instance is off (by {stopped.get('by') or '?'} since "
+                                f"{stopped.get('at') or '?'}): the auto update does not run")
             return
         lock = self.jobs.lock(instance.key)
         if lock.locked():

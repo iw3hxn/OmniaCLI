@@ -59,6 +59,9 @@ class Job:
     # server before or after (an instance created or removed): its users see
     # the job by it
     workspace: str = ""
+    # what the action tells the watchers of its end (deploys.py: the backup made
+    # before an update, the deploy gone back to); not written in the job's file
+    notes: dict = field(default_factory=dict, repr=False, compare=False)
 
     def log(self, text: str) -> None:
         stamp = datetime.datetime.now().strftime("%H:%M:%S")
@@ -141,6 +144,9 @@ class JobManager:
         self._stop_by: dict[str, str] = {}
         # called with each job that ends (the access log: its outcome)
         self.listeners: list[Callable[[Job], None]] = []
+        # awaited when a job starts (its locks held) and when it ends, before
+        # its locks are released: begin(job), end(job) (deploys.Recorder)
+        self.watchers: list = []
         self._load()
 
     def _load(self) -> None:
@@ -165,6 +171,7 @@ class JobManager:
         if not data["workspace"]:
             # the file as before: an older OmniaCLI still reads it
             del data["workspace"]
+        del data["notes"]
         tmp.write_text(json.dumps(data), encoding="utf-8")
         tmp.replace(path)
 
@@ -229,6 +236,13 @@ class JobManager:
         task.cancel()
         return True
 
+    async def _watch(self, moment: str, job: Job) -> None:
+        for watcher in self.watchers:
+            try:
+                await getattr(watcher, moment)(job)
+            except Exception:  # noqa: BLE001 - a watcher must not change the job
+                _logger.exception("job %s: a watcher of its %s failed", job.id, moment)
+
     async def _run(self, job: Job, action: Callable[[Job], Awaitable[None]]) -> None:
         locks = [self.lock(key) for key in job.instances]  # sorted: no deadlock
         if any(lock.locked() for lock in locks):
@@ -240,6 +254,7 @@ class JobManager:
                 held.append(lock)
             job.status, job.started = RUNNING, _now()
             self._save(job)
+            await self._watch("begin", job)
             await action(job)
             job.status = SUCCESS
         except asyncio.CancelledError:
@@ -259,6 +274,8 @@ class JobManager:
         finally:
             job.finished = _now()
             self._save(job)
+            if job.finished_flag and job.started:
+                await self._watch("end", job)
             for lock in reversed(held):
                 lock.release()
             if job.finished_flag:

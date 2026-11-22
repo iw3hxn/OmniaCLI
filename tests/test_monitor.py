@@ -30,7 +30,7 @@ def watched(env, tmp_path, monkeypatch):
         return states[inst.key]
     told = []
 
-    async def send(options, recipients, subject, text):
+    async def send(options, recipients, subject, text, event=None, language=""):
         told.append((tuple(recipients), subject))
         return []
     monkeypatch.setattr(monitor_module.notify, "send", send)
@@ -59,7 +59,7 @@ async def test_down_and_up_again(watched):
         assert mon.view(inst.key)["state"] == "down"
         # the machine's and the workspace's told, once
         assert told == [(("ops@acme.it", "https://hooks.example.com/x"), "OmniaCLI " + told[0][1].split(": ", 1)[0]
-                         .removeprefix("OmniaCLI ") + ": srv/test is down")]
+                         .removeprefix("OmniaCLI ") + ": [critical] srv/test is down")]
         await mon.check_instance(client, inst)
         assert len(told) == 1
         answers["ok"] = True

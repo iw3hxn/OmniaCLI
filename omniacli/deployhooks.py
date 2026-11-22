@@ -99,3 +99,31 @@ def pushed(body: bytes) -> tuple[str | None, set[str]]:
     if href and host_path(href):
         urls.add(host_path(href))
     return branch, urls
+
+
+def head_commit(body: bytes) -> tuple[str, str]:
+    """(sha, first line of its message) of the commit a push brought to the
+    head of its branch (GitHub's after and head_commit, GitLab's
+    checkout_sha and commits, Bitbucket's push.changes[].new.target); ("",
+    "") when the body does not say."""
+    try:
+        data = json.loads(body or b"{}")
+    except ValueError:
+        return "", ""
+    if not isinstance(data, dict):
+        return "", ""
+    sha, message = str(data.get("after") or data.get("checkout_sha") or ""), ""
+    head = data.get("head_commit") if isinstance(data.get("head_commit"), dict) else None
+    commits = [c for c in data.get("commits") or [] if isinstance(c, dict)]
+    if head is None and commits:
+        head = next((c for c in commits if c.get("id") == sha), commits[-1])
+    if head is not None:
+        sha = sha or str(head.get("id") or "")
+        message = str(head.get("message") or "")
+    push = data.get("push") if isinstance(data.get("push"), dict) else {}
+    for change in push.get("changes") or []:
+        target = ((change or {}).get("new") or {}).get("target") or {}
+        if isinstance(target, dict) and target.get("hash"):
+            sha, message = str(target["hash"]), str(target.get("message") or "")
+    sha = sha if re.fullmatch(r"[0-9a-f]{7,64}", sha) and set(sha) != {"0"} else ""
+    return sha, message.strip().split("\n", 1)[0][:200]

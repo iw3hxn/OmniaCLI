@@ -212,7 +212,8 @@ async def test_notices_by_webhook_and_mail(monkeypatch):
     monkeypatch.setattr(notify, "_send_mail", lambda options, to, subject, text: sent.append((to, subject)))
     problems = await notify.send(Options(), ["https://good.example.com/h", "https://bad.example.com/bot123:SECRET/x",
                                              "ops@acme.it"], "Subject", "Text")
-    assert posted[0] == ("https://good.example.com/h", {"text": "Subject\nText"})
+    assert posted[0][0] == "https://good.example.com/h" and posted[0][1]["text"] == "Subject\nText"
+    assert (posted[0][1]["event"], posted[0][1]["level"], posted[0][1]["detail"]) == ("notice", "warning", "Text")
     # no SMTP server: said; a webhook's token never in what is said
     assert problems == ["no SMTP server on the Options page: the emails are not sent",
                         "webhook to bad.example.com: HTTP 500"]
@@ -300,7 +301,7 @@ async def test_the_automatic_backups_copied_out_and_told(client, env, rclone, mo
     # unreachable: the run fails, whom it names is told
     told = []
 
-    async def send(options, recipients, subject, text):
+    async def send(options, recipients, subject, text, **kwargs):
         told.append((recipients, subject, text))
         return []
     monkeypatch.setattr(notify, "send", send)

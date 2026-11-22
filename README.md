@@ -445,7 +445,10 @@ prepared before Test & activate. The job's log opens in a new tab.
   the **psql** check (a warning) prints it.
 - **Auto update**: per instance, every `interval_minutes` within `window`,
   OmniaCLI fetches every repository. When there are new commits it runs
-  *git pull + restart* as an `auto` job.
+  *git pull + restart* as an `auto` job. Only on a test or a staging: a
+  production is updated by hand only (its form refuses the auto update, one
+  set before does not run, *Productions updated by hand only* below), and
+  it stops while the instance's CI is switched off (Deploys, below).
 - **Jobs**: every action is a job. Its output, its status and its error are
   shown live in the web page, and the last 500 are kept in `jobs_dir`.
 - Only one job runs on an instance at a time; the others wait.
@@ -1604,7 +1607,8 @@ deleted.
 schedule's `notify`: emails and `https://` webhook URLs) is told when a run
 fails (a backup, a copy out) or does not start. An email goes through the
 SMTP server of **Options** (`mail:` of `options.yaml`, mode 600); a webhook
-gets a JSON `{"text": ...}`: Slack's and Teams' incoming webhooks,
+gets a JSON `{"text": ..., "event": "schedule.failed", ...}`, signed when
+Options › Monitoring gave it a secret (Webhooks, below): Slack's and Teams' incoming webhooks,
 Telegram's `https://api.telegram.org/bot<token>/sendMessage?chat_id=<id>`,
 ntfy. Only a webhook's host is ever written in a log.
 
@@ -1799,33 +1803,146 @@ and:
 The mailboxes are in memory: a restart of the staging empties those Odoo has
 not read yet (the tab keeps its copy).
 
-**Deploy on push** (an instance's Modules tab, *Update at every push* under
-Updates of the code; a production's by an admin):
-switched on, it gives an address and a secret for the repository's webhook
-(GitHub: content type JSON, the secret signs the body, `X-Hub-Signature-256`;
-GitLab: the secret as its token, `X-Gitlab-Token`; Bitbucket and a CI:
-`X-OmniaCLI-Token`). A push of the branch an instance follows, of one of its
-repositories (matched by address, https or ssh), pulls that repository,
-updates the changed modules (a backup first when the instance asks it) and
-restarts: Git pull and restart of that repository alone. Another branch, a
-tag, an unknown repository change nothing; a call without the secret is
-refused and written in the access log. The secret is in `deploy-hooks.json`
-next to the servers file (mode 600), shown once; **New secret** replaces it.
-The address is on the instance's own name (`/.omniacli/hooks/deploy/...`,
-which its nginx passes to OmniaCLI: published again after an upgrade) when
-it has one, OmniaCLI's otherwise.
+**CI: update at every push** (an instance's Modules tab, under Updates of
+the code: the one switch of an instance's CI). On, a push of the branch an
+instance follows, of one of its repositories (matched by address, https or
+ssh), pulls that repository, updates the changed modules (a backup first
+when the instance asks it) and restarts: Git pull and restart of that
+repository alone; the auto update and the scheduled pulls of the instance
+run. Off, nothing moves its code by itself: its webhook is kept, a push is
+only noted (*not deployed: the CI is off*), the auto update and a
+scheduled pull skip it; a Git pull by hand still pulls. The first time it
+is switched on it gives an address and a secret for the repository's
+webhook (GitHub: content type JSON, the secret signs the body,
+`X-Hub-Signature-256`; GitLab: the secret as its token, `X-Gitlab-Token`;
+Bitbucket and a CI: `X-OmniaCLI-Token`); **New secret…** replaces it, **Take
+the webhook away…** removes it (its address then refuses every call). The
+line under the switch says the repositories and branches it follows, who
+switched it off and when, and the last push received with what it did. A
+new staging and a test start with it off (no inheritance from the
+production: each copy is switched on where its CI is wanted). Who switches
+it: the backup role of the instance, an admin for a staging (the machine's
+or its workspace's: it changes the code others test on and hands out a
+secret), a developer for a test; each switch is an entry of the access log
+(*CI of <instance>: on / off / new secret / webhook taken away*). Another
+branch, a tag, an unknown repository change nothing; a call without the
+secret is refused and written in the access log. The secret is in
+`deploy-hooks.json` next to the servers file (mode 600), shown once; who
+switched the CI off is in the instance's file of deploys (below). The
+address is on the instance's own name (`/.omniacli/hooks/deploy/...`, which
+its nginx passes to OmniaCLI: published again after an upgrade) when it has
+one, OmniaCLI's otherwise.
 
-**Monitoring** (`monitor.py`): every minute each live instance is asked for
-`/web/login` on its own port; it is down after 3 failed checks in a row while
-its service says it runs (one stopped on purpose is *stopped*), and told when
-it goes down and when it comes back. Each hour the disks of the backups and of
-the workspaces' storage are measured (less than 10% free: told once a day),
-each day the certificate of each workspace's names is read (ending within 14
-days: told once a day). Told: the machine's list (Options › Monitoring) and
-the workspace's (its page, **Notices**), emails and webhooks as the scheduled
-actions' notices. The head of the Environments tab says whether it answers,
-since when, its uptime over the last 24 hours and its answer time; MCP's
-`diagnose_instance` too. The last day of checks is kept in `monitor.json`.
+**Productions updated by hand only** (2026-11-22: the CI runs on the
+stagings and the tests; a production is rebuilt by hand). A production (an
+instance of role production that is not a staging) never pulls by itself:
+its CI switch is shown off and disabled, with why in its title; its form
+refuses the auto update and one set before does not run (its state says
+why); a scheduled action's Git pull on it is skipped with a warning. A
+production that had deploy on push keeps its webhook: a push of the branch
+it follows does not touch it, is recorded in its deploys as *available, not
+deployed*, and its page (Overview, and Deploys) says *New commit available
+on <repo>/<branch>: <sha> <message>* until Update (Git pull and restart, by
+hand) brings it; the same push deploys each staging of it on this machine
+that follows that branch and has its CI on. A push to a staging's (or a
+test's) own webhook deploys it and is listed on its production the same
+way. After the upgrade, a job of the system *Productions updated by hand
+only* names once each production whose deploy on push or auto update was
+on and what it does from now (`deploys/by-hand.json`: those told). A
+staging made on another machine from a production here is not reached by
+the production's push (its own webhook deploys it there).
+
+**Deploys** (`deploys.py`; an instance's Modules tab, under Updates of the
+code; developers, and the admins of its workspace): every job that changed
+the code of the instance (a Git pull, a deploy on push, the auto update, a
+scheduled pull, a repository added, changed or taken away, a staging
+rebuilt with its code, a deploy gone back to), newest first: when, each
+repository with its commit before → after, its message, how many commits
+came and went, who or what started it, its outcome with the link to its
+job, and the backup made before it (or *deleted*: the last 3 backups before
+an update are kept). The jobs' watcher reads the commit each repository has
+checked out when a job on the instance starts and when it ends (the files of
+`.git`; `git rev-parse` when they cannot be read): a job that moved one is a
+deploy, whatever started it. Kept in `deploys/<server>.<role>.json` next to
+the servers file (folder 700, files 600), the last 100 of each instance, so
+the history outlives the list of the jobs (500 of the whole machine); taken
+away with its instance. A user of workspaces reads those of its instances,
+who started them in its words (customerview.py), no path of the machine.
+
+**Back to this deploy…** (a past deploy's row): a dialog says which commit
+each repository goes to, the commits after it taken away (their messages),
+the repositories it did not know (kept as they are) or that are gone (not
+added back), that the database is **not** taken back (a module whose data
+changed after it may not work with its data of now), what the next push
+does (with the CI on, the head of the branch comes back with the commits
+taken away; **Switch the CI off first** is ticked then), and the second way:
+after going back, restore the backup made before the first deploy that came
+after it, the database as it was with that code (**Restore the backup of
+then…** opens Restore with it chosen; an admin who logs in here). **Go back**
+starts a job: a backup of the instance as it is now (always), in each
+repository `git reset --hard` to the deploy's commit on the branch it follows
+(a commit not in the copy is fetched first; refused with local changes, on
+another branch, or a deploy made on another branch), its submodules, the
+Python packages and the changed modules as after a pull, a restart. The
+branch stays the one the instance follows, so the next Git pull fast-forwards
+to its head again. A developer of the instance goes back, a production too
+(it is a manual action).
+
+**Monitoring** (`monitor.py`, Options › Monitoring): every minute each live
+instance is asked for `/web/login` on its own port; it is down after 3 failed
+checks in a row while its service says it runs (one stopped on purpose, a
+staging stopped too, is *stopped*), and told when it goes down and when it
+comes back. Every minute the CPU and the memory of the machine are read from
+the sampler's points of the last *For (minutes in a row)* (5 by default):
+every point above a threshold is that level, every point under the warning
+clears it (CPU 90% warning, 98% critical; memory 85% and 95%). Every five
+minutes the disks of the backups and of the workspaces' storage are measured
+(90% in use a warning, 95% critical: told once a day, at once when it gets
+critical); each day the certificate of each workspace's names is read
+(ending within 14 days a warning, within 3 critical: told once a day). Each
+notice has a level (info, warning, critical) in its subject, `[critical]`,
+and an `event` for the webhooks; the same problems are in «things to look
+at» of the map with their level (⛔ critical first, ⚠ warning). Told: the
+machine's list (Options › Monitoring) and the workspace's (its page,
+**Notices**); the emails in the language of Options (*Language of the
+emails*: English or Italiano). The head of the Environments tab says whether
+it answers, since when, its uptime over the last 24 hours and its answer
+time; MCP's `diagnose_instance` too. The last day of checks is kept in
+`monitor.json`.
+
+**Automatic restart** (Options › Monitoring, off by default; for the whole
+machine, not per instance: one rule for every instance, which a stopped one
+does not trigger): an instance that has not answered for *After (checks in a
+row)* checks (5 by default, a check a minute) is restarted in a job of the
+system, *Automatic restart of <instance>*, started by *system: monitor, no
+answer for N checks in a row (why)*, with a line in the access log. Never
+while another job works on it (the monitor does not even count then), never
+one whose service says it is stopped (stopped on purpose, as a staging
+stopped); the job asks once more before restarting, and one that answers
+again is not restarted. At most once every *At most once every (minutes)*
+(30): one still down after it is told (*not restarted again*), not
+restarted. The restart is told (`instance.restarted`, a warning) and stays a
+day in «things to look at»; a restart that fails is critical
+(`instance.restart_failed`).
+
+**Webhooks** (Options › Monitoring, the machine's admins): each webhook of
+the machine's list and of the workspaces' notices, with **Sign…** / **New
+secret…** (a secret shown once), **Unsign**, *Jobs that fail or warn* and
+**Send a test**. A webhook gets a JSON in English: `text` (subject and
+detail, as Slack reads it), `event` (stable: `instance.down`, `instance.up`,
+`instance.restarted`, `instance.restart_failed`, `instance.restart_held`,
+`machine.threshold`, `machine.threshold.cleared`, `certificate.ending`,
+`schedule.failed`, `job.failed`, `job.warned`, `notice.test`), `level`,
+`machine`, `time`, `subject`, `detail` and the event's own fields
+(`instance`, `job`, `metric`, `value`...). Signed, it carries
+`X-OmniaCLI-Signature-256: sha256=<HMAC-SHA256 of the body with its secret,
+hex>` and `X-OmniaCLI-Event`; the receiver computes the HMAC of the raw body
+and compares. With *Jobs that fail or warn*, each job that fails or ends
+with warnings is an event: every job for the machine's webhooks, the jobs of
+its workspace for a workspace's (without the integrator's names). The
+secrets are in `options.yaml` (mode 600), never in a page; the Options page
+saved again keeps them. A workspace's admins do not sign their own webhooks:
+the machine's admins give them the secret.
 
 **The machine's load over 14 days** (a machine's page, Monitoring; not for
 a user of workspaces): every 5 minutes a point of the machine's load, from

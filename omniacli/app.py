@@ -50,6 +50,7 @@ from . import audit, siem
 from . import i18n, loginas, machines, modulecatalog, pgreport, pgtuning, stagings, workspaceweb
 from . import clusterpitr, inframap, linkedcluster, machinedb, managedreplica
 from . import stagingmail
+from . import deploys
 from . import moduleupload, sshkeys
 from . import dumpinfo
 from . import totp
@@ -93,6 +94,11 @@ from .config import (
     parse_link,
     parse_connection,
     parse_notify,
+    MONITOR_METRICS,
+    MONITOR_MINUTES_LIMITS,
+    RESTART_AFTER_LIMITS,
+    RESTART_EVERY_LIMITS,
+    monitor_to_dict,
     parse_options,
     parse_publication,
     parse_puller,
@@ -325,7 +331,9 @@ WORKSPACE_ROUTES = frozenset({
     "/api/servers/{server}/stagings", "/api/servers/{server}/stagings/refresh",
     # the New staging dialog (UX-008 §5.1): here only, no choice of the machine
     "/api/servers/{server}/stagings/new", "/api/servers/{server}/stagings/elsewhere",
-    "/api/servers/{server}/{role}/deploy-hook", "/api/servers/{server}/pitr", "/api/servers/{server}/pitr/enable",
+    "/api/servers/{server}/{role}/deploy-hook", "/api/servers/{server}/{role}/deploys",
+    "/api/servers/{server}/{role}/deploys/{deploy_id}/back",
+    "/api/servers/{server}/pitr", "/api/servers/{server}/pitr/enable",
     "/api/servers/{server}/pitr/base", "/api/servers/{server}/pitr/restore",
     "/workspaces/{workspace}/destinations", "/api/workspaces/{workspace}/destinations/save",
     "/api/workspaces/{workspace}/destinations/delete", "/api/workspaces/{workspace}/destinations/check",
@@ -514,6 +522,15 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     authenticator = Authenticator(settings.users, settings.tokens, link_hashes())
     jobs = JobManager(settings.jobs_dir)
+
+    def instance_of_key(key: str):
+        """The instance of a job's key (server/role), None for another key."""
+        server, _, role = key.partition("/")
+        return settings.instance(server, role) if role in ROLES else None
+
+    # the deploys of each instance (deploys.py): a job that moved its commits, recorded by its end
+    deploys_folder = deploys.folder_of(settings)
+    jobs.watchers.append(deploys.Recorder(deploys_folder, instance_of_key))
     gitcredentials.bind(settings)
     updater = AutoUpdater(settings, jobs)
     async def workspace_networks() -> dict[str, list[str]]:
@@ -811,7 +828,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         user = getattr(request.state, "user", None)
         if user is None or not user.scoped:
             return None
-        mine = {ws for ws, _ in user.workspaces}
+        return customer_view_of({ws for ws, _ in user.workspaces}, request_language(request))
+
+    def customer_view_of(mine: set, lang: str) -> CustomerView:
+        """customer_view for the workspaces mine, in lang (a workspace's webhook: English)."""
         own = {n for ws in settings.workspaces.values() if ws.name in mine for n in (ws.name, *ws.servers)}
         members = {m for ws in settings.workspaces.values() if ws.name in mine for m in ws.members}
         machines_ = set(settings.link_targets) | set(settings.connections)
@@ -821,7 +841,6 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 machines_.add(host)
             if target.ssh is not None and target.ssh.host:
                 machines_.add(target.ssh.host)
-        lang = request_language(request)
         provider = settings.options.provider_label or i18n.gettext(lang, "the provider")
         # a name of its own (a server, a workspace, a member) is never taken out
         return CustomerView(provider, i18n.gettext(lang, "another machine"),
@@ -923,6 +942,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         pitr_tasks.append(asyncio.get_running_loop().create_task(cluster_sweep()))
         pitr_tasks.append(asyncio.get_running_loop().create_task(names_that_open()))
         pitr_tasks.append(asyncio.get_running_loop().create_task(interrupted_names_freed()))
+        pitr_tasks.append(asyncio.get_running_loop().create_task(productions_by_hand()))
         postgres_tasks.append(asyncio.get_running_loop().create_task(postgres_loop()))
         # defined further down, with the Database tab's code
         replica_tasks.append(asyncio.get_running_loop().create_task(replica_loop()))
@@ -1335,7 +1355,41 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return "unknown"
 
     # monitoring with notices (monitor.py): started with the app
-    monitor = Monitor(settings, jobs, run_state, settings.servers_file.parent / MONITOR_FILE)
+    monitor = Monitor(settings, jobs, run_state, settings.servers_file.parent / MONITOR_FILE, sampler=sampler,
+                      audit=lambda text: access_log.record("action", "system", "monitor", "", text, context=False),
+                      workspace_of=settings.workspace_of)
+    app.state.monitor = monitor
+
+    # a job that fails or warns told to the webhooks that asked (Options › Monitoring, notify.py): the
+    # machine's of every job, a workspace's of its own, without the integrator's names
+    job_telling: set[asyncio.Task] = set()
+
+    def job_event(job) -> None:
+        if job.outcome not in ("failed", "warned"):
+            return
+        keys = settings.options.webhook_keys
+        workspace = job.workspace or next((ws for ws in map(settings.workspace_of, job.servers) if ws), "")
+        found = [(url, None) for url in settings.options.monitor_notify if (keys.get(url) or {}).get("jobs")]
+        ws = settings.workspaces.get(workspace) if workspace else None
+        if ws is not None:
+            found += [(url, ws.name) for url in ws.notify if (keys.get(url) or {}).get("jobs")
+                      and url not in {u for u, _ in found}]
+        if not found:
+            return
+        level = "critical" if job.outcome == "failed" else "warning"
+        for url, mine in found:
+            seen = customer_view_of({mine}, "en").job(job, False) if mine else job
+            what = "failed" if job.outcome == "failed" else "ended with warnings"
+            detail = (seen.error or "") if job.outcome == "failed" else "; ".join(seen.warnings)[:1000]
+            event = {"event": f"job.{job.outcome}", "level": level, "job": job.id, "title": seen.title,
+                     "instances": list(job.instances), "by": seen.source, "workspace": workspace or None}
+            task = asyncio.get_running_loop().create_task(notify.send(
+                settings.options, [url], f"OmniaCLI {socket.gethostname()}: [{level}] the job {seen.title} {what}",
+                f"{detail}\nJob {job.id}", event=event))
+            job_telling.add(task)
+            task.add_done_callback(job_telling.discard)
+
+    jobs.listeners.append(job_event)
 
     async def run_states(servers) -> dict[str, str]:
         """{instance key: run_state} of the servers' instances, asked together."""
@@ -1628,6 +1682,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 "test_state": await run_state(srv.test) if srv.test is not None and view != "test" else None,
                 "pull_choices": pull_choices,
                 "restore_file": restore_file,
+                # the deploys kept of each instance (deploys.py); a production's new commits pushed, not deployed
+                "keep_deploys": deploys.KEEP,
+                "available": {i.key: await available_now(i, deploys.load(deploys_folder, i.key)["deploys"])
+                              for i in shown if request.state.user.can("developer") and manual_only(i)},
+                "manual_only": {i.key: manual_only(i) for i in shown},
                 "restore_fields": [_field_dict(f) for f in plugin.restore_fields()] if plugin else [],
                 "backup_fields": [_field_dict(f) for f in plugin.backup_fields()] if plugin else [],
                 "server": srv,
@@ -2642,6 +2701,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             raise HTTPException(status.HTTP_404_NOT_FOUND, "No such job")
         duration, job = job.duration, shown_jobs(request, [job], True)[0]
         data = asdict(job)
+        data.pop("notes", None)
         data["duration"] = duration
         data["lines"] = job.lines[since:]
         data["next"] = len(job.lines)
@@ -2921,6 +2981,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 parsed = parse_servers({name: server_data}, settings.logs_dir)[name]
             except (ConfigError, TypeError, ValueError, AttributeError) as exc:
                 return refuse(str(exc))
+            if parsed.production is not None and parsed.production.auto_update.enabled \
+                    and name not in stagings.load(stagings_file):
+                return refuse(BY_HAND)
             was_active = original is not None and settings.servers[original].active
             report = None
             if payload.get("activate"):
@@ -7480,7 +7543,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         problems = await notify.send(
             settings.options, [email], i18n.tr(lang, "OmniaCLI: your invitation"),
             i18n.tr(lang, f"You are invited to OmniaCLI as {name}.\n\nOpen this link to choose your password, "
-                          f"within {INVITATION_HOURS} hours (it works once):\n{url}\n"))
+                          f"within {INVITATION_HOURS} hours (it works once):\n{url}\n"), language=lang)
         return "; ".join(i18n.tr(lang, p) for p in problems)
 
     def pending_user(name: str):
@@ -8984,7 +9047,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             "portal_url": portal_url(), "portal_refused": portal_refusal(me),
             "options": settings.options, "options_file": settings.options_file, "machine": settings.machine,
             "font_sizes": SHELL_FONT_SIZES, "idle_hours": TUNNEL_IDLE_HOURS,
-            "retention_limits": AUDIT_RETENTION_LIMITS, "syslog_protocols": SYSLOG_PROTOCOLS})
+            "retention_limits": AUDIT_RETENTION_LIMITS, "syslog_protocols": SYSLOG_PROTOCOLS,
+            "metrics": MONITOR_METRICS, "minutes_limits": MONITOR_MINUTES_LIMITS,
+            "after_limits": RESTART_AFTER_LIMITS, "every_limits": RESTART_EVERY_LIMITS,
+            "webhooks": webhook_rows()})
 
     @app.post("/api/options/save", dependencies=[Depends(admin)])
     async def options_save(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
@@ -8997,8 +9063,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                            "password": current.smtp_password, "from": current.mail_from}}
         elif isinstance(mail, dict) and not mail.get("password"):
             payload = {**payload, "mail": {**mail, "password": settings.options.smtp_password}}
-        if "monitor" not in payload:
-            payload = {**payload, "monitor": {"notify": list(settings.options.monitor_notify)}}
+        if not isinstance(payload.get("monitor"), dict):
+            payload = {**payload, "monitor": monitor_to_dict(settings.options)}
+        else:
+            # the webhooks' secrets are never in the page: kept
+            payload = {**payload, "monitor": {**payload["monitor"],
+                                              "webhooks": monitor_to_dict(settings.options).get("webhooks", {})}}
         if "audit" not in payload:
             # the access log's: not posted keeps the saved ones (a script of before)
             current = settings.options
@@ -9030,6 +9100,81 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             access_log.record("second-factor", me.kind, me.name, request.client.host if request.client else "",
                               f"required for: {current.second_factor} -> {options.second_factor} (Options)")
         return {"ok": True}
+
+    # --- the webhooks of the notices: signed, told the jobs that fail (notify.py) ---
+
+    def webhook_rows() -> list[dict]:
+        """Each webhook of the machine's Monitoring and of the workspaces' notices,
+        whether its body is signed and whether it is told the jobs that fail or warn."""
+        keys, rows, seen = settings.options.webhook_keys, [], set()
+        lists = [("", settings.options.monitor_notify)] + [(ws.label or ws.name, ws.notify)
+                                                            for ws in sorted(settings.workspaces.values(), key=lambda w: w.name)]
+        for where, urls in lists:
+            for url in urls:
+                if notify.is_email(url) or url in seen:
+                    continue
+                seen.add(url)
+                parts = urlsplit(url)
+                rows.append({"url": url, "where": where,
+                             "shown": f"https://{parts.hostname}" + ("/…" if parts.path not in ("", "/") or parts.query else ""),
+                             "signed": bool((keys.get(url) or {}).get("secret")), "jobs": bool((keys.get(url) or {}).get("jobs"))})
+        return rows
+
+    async def save_webhook(url: str, secret: str | None = None, jobs_: bool | None = None, unsign: bool = False):
+        keys = {k: dict(v) for k, v in settings.options.webhook_keys.items()}
+        entry = keys.get(url) or {"secret": "", "jobs": False}
+        if secret is not None:
+            entry["secret"] = secret
+        if unsign:
+            entry["secret"] = ""
+        if jobs_ is not None:
+            entry["jobs"] = jobs_
+        if entry["secret"] or entry["jobs"]:
+            keys[url] = entry
+        else:
+            keys.pop(url, None)
+        options = dataclasses.replace(settings.options, webhook_keys=keys)
+        await asyncio.to_thread(save_options, settings.options_file, options)
+        settings.options = options
+
+    def webhook_of(payload: dict) -> str:
+        url = str(payload.get("url") or "")
+        if url not in {r["url"] for r in webhook_rows()}:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Not a webhook of Monitoring or of a workspace's notices")
+        return url
+
+    @app.post("/api/options/webhooks/secret", dependencies=[Depends(admin)])
+    async def webhook_secret(payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """A new secret the webhook's body is signed with (HMAC-SHA256): in the
+        answer once, never shown again; the one of before stops signing."""
+        if not machine_admin(me):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "An admin of the machine is required")
+        url = webhook_of(payload)
+        secret = secrets.token_urlsafe(32)
+        await save_webhook(url, secret=secret)
+        return {"secret": secret, "webhooks": webhook_rows()}
+
+    @app.post("/api/options/webhooks/save", dependencies=[Depends(admin)])
+    async def webhook_save(payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """Whether the webhook is told the jobs that fail or warn; unsigned: its secret taken away."""
+        if not machine_admin(me):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "An admin of the machine is required")
+        url = webhook_of(payload)
+        await save_webhook(url, jobs_=bool(payload["jobs"]) if "jobs" in payload else None,
+                           unsign=bool(payload.get("unsigned")))
+        return {"webhooks": webhook_rows()}
+
+    @app.post("/api/options/webhooks/test", dependencies=[Depends(admin)])
+    async def webhook_test(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """A test notice to the webhook (event notice.test), signed when it has a secret."""
+        if not machine_admin(me):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "An admin of the machine is required")
+        url = webhook_of(payload)
+        problems = await notify.send(settings.options, [url], f"OmniaCLI {socket.gethostname()}: [info] a test notice",
+                                     f"A test notice sent by {me} from Options › Monitoring.",
+                                     event={"event": "notice.test", "level": "info"})
+        lang = request_language(request)
+        return {"ok": not problems, "problems": [i18n.tr(lang, p) for p in problems]}
 
     # --- the customers' portal: its address, published by the root helper ----
 
@@ -9422,8 +9567,27 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return {"ok": True, **backup_schedule_view(instance, me)}
 
     # --- deploy on push (deployhooks.py) -------------------------------------
+    # A production is updated by hand only (Carlo, 22/11/2026: «the CI runs on the stagings, a production is
+    # rebuilt by hand only»): deploy on push and the auto update are for a test and a staging. A push of a
+    # branch a production follows is listed on it as a new commit available, not deployed, and deploys its
+    # stagings of this machine that follow that branch.
 
     deploy_hooks_file = settings.servers_file.parent / deployhooks.FILE
+    BY_HAND = ("A production is updated by hand only: deploy on push and the auto update are for its test "
+               "and its stagings")
+
+    def manual_only(instance) -> bool:
+        """A production (not a staging, whose instance is a production too): updated by hand only."""
+        return instance.role == "production" and instance.server not in stagings.load(stagings_file)
+
+    def ci_on(instance: Instance) -> bool:
+        """The CI of the instance (its switch «CI: update at every push», one per
+        instance): a test or a staging with its webhook's secret, not switched
+        off. Off, nothing moves its code by itself: no push, no auto update, no
+        scheduled pull (deploys.paused holds who switched it off, and when)."""
+        hook = deployhooks.load(deploy_hooks_file).get(instance.key) or {}
+        return bool(hook.get("secret")) and not manual_only(instance) \
+            and not deploys.paused(deploys_folder, instance.key)
 
     def deploy_hook_view(request: Request, instance: Instance, me: Principal) -> dict:
         hook = deployhooks.load(deploy_hooks_file).get(instance.key) or {}
@@ -9431,8 +9595,17 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         # OmniaCLI itself may answer on 127.0.0.1 only
         url = (f"{instance.site}{workspaceweb.HOOKS_PATH}deploy/{instance.server}/{instance.role}" if instance.site
                else public_base(request) + f"/hooks/deploy/{instance.server}/{instance.role}")
-        return {"enabled": bool(hook.get("secret")), "url": url,
-                "last": hook.get("last"), "can_edit": me.can(backup_role(instance)),
+        lang, view = request_language(request), customer_view(request)
+        off = deploys.paused(deploys_folder, instance.key) if hook.get("secret") else None
+        last = dict(hook["last"]) if isinstance(hook.get("last"), dict) else None
+        if last:
+            last["result"] = i18n.tr(lang, view.text(last.get("result") or "") if view else last.get("result") or "")
+        return {"enabled": ci_on(instance), "webhook": bool(hook.get("secret")), "url": url, "last": last,
+                "off": {**off, "by": view.who(str(off.get("by") or "")) if view else off.get("by")} if off else None,
+                "can_edit": me.can(backup_role(instance)), "role": backup_role(instance),
+                "manual": manual_only(instance), "manual_reason": i18n.tr(lang, BY_HAND),
+                "auto_update": instance.auto_update.enabled,
+                "follows": [{"name": r.name, "branch": r.branch} for r in instance.repositories],
                 "repositories": [r.name for r in instance.repositories]}
 
     @app.get("/api/servers/{server}/{role}/deploy-hook", dependencies=[Depends(developer)])
@@ -9442,26 +9615,102 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     @app.post("/api/servers/{server}/{role}/deploy-hook")
     async def deploy_hook_save(request: Request, server: str, role: str, payload: dict = Body(...),
                                me: Principal = Depends(current_user)):
-        """Deploy on push switched on (a new secret, in the answer once: the
-        address and it go in the repository's webhook) or off."""
+        """The CI of the instance: {"enabled": true} on (its webhook's secret
+        made the first time, in the answer once), {"enabled": false} off (the
+        secret kept: on again, the webhook works as it was), {"new_secret":
+        true} a new one, {"forget": true} the webhook taken away. Its role is
+        the backup role (a production's or a staging's: an admin, of the
+        machine or of its workspace; a test's: a developer). Not on a
+        production, updated by hand only: there only forget."""
         instance = get_instance(server, role)
         if not me.can(backup_role(instance)):
             raise HTTPException(status.HTTP_403_FORBIDDEN, f"The {backup_role(instance)} role is required")
         data = deployhooks.load(deploy_hooks_file)
-        secret = None
-        if payload.get("enabled"):
-            secret = deployhooks.new_secret()
-            data[instance.key] = {"secret": secret, "by": me.name}
-        else:
+        secret, said = None, ""
+        if payload.get("forget"):
             data.pop(instance.key, None)
+            await asyncio.to_thread(deploys.set_paused, deploys_folder, instance.key, None)
+            said = "webhook taken away"
+        elif manual_only(instance):
+            return refuse(BY_HAND)
+        elif payload.get("new_secret") or (payload.get("enabled") and not (data.get(instance.key) or {}).get("secret")):
+            secret = deployhooks.new_secret()
+            data[instance.key] = {**(data.get(instance.key) or {}), "secret": secret, "by": me.name}
+            said = "new secret" if payload.get("new_secret") else "on"
+        if not payload.get("forget") and "enabled" in payload:
+            await asyncio.to_thread(deploys.set_paused, deploys_folder, instance.key,
+                                    None if payload.get("enabled") else str(me))
+            said = said or ("on" if payload.get("enabled") else "off")
         await asyncio.to_thread(deployhooks.save, deploy_hooks_file, data)
+        access_log.record("action", me.kind, me.name, request.client.host if request.client else "",
+                          f"CI of {instance.key}: {said or 'unchanged'}")
         return {**deploy_hook_view(request, instance, me), "secret": secret}
+
+    async def followed_by(instance: Instance, urls: set, branch: str | None) -> list[str]:
+        """The repositories of instance at one of urls (host/path) on branch."""
+        found = []
+        for repo in instance.repositories:
+            code, out = await ops.capture(repo.git("remote", "get-url", repo.remote), cwd=repo.path)
+            if code == 0 and deployhooks.host_path(out.strip()) in urls and repo.branch == branch:
+                found.append(repo.name)
+        return found
+
+    def push_deploy(instance: Instance, followed: list[str], branch: str | None):
+        """The job of a push on a test or a staging; None when its automatic deploys are paused."""
+        if deploys.paused(deploys_folder, instance.key):
+            return None
+        ws = workspace_of(instance.server)
+        return jobs.submit(f"Deploy on push {', '.join(followed)} to {instance.key}", [instance.key],
+                           f"push ({branch})", lambda job: ops.pull_restart(
+                               job, instance, only_if_changed=True, only=set(followed),
+                               backup_folder=backup_folder(instance)),
+                           workspace=ws[0].name if ws else "")
+
+    async def note_available(instance: Instance, followed: list[str], branch: str | None, sha: str,
+                             message: str) -> bool:
+        """The commit a push brought, listed in the deploys of a production as
+        available, not deployed (its page says so until it is pulled by hand)."""
+        rows = []
+        for repo in instance.repositories:
+            if repo.name not in followed:
+                continue
+            now = await deploys.head(repo)
+            if sha and now and now.startswith(sha):
+                continue
+            rows.append({"name": repo.name, "branch": repo.branch, "before": now, "after": sha or None,
+                         "subject": message, "before_subject": "", "brought": None, "taken": None, "commits": []})
+        if not rows:
+            return False
+        stamp = datetime.datetime.now().isoformat(timespec="seconds")
+        await asyncio.to_thread(deploys.record, deploys_folder, instance.key, {
+            "id": "available-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(3),
+            "kind": "available", "started": stamp, "finished": stamp, "outcome": "available",
+            "title": f"New commit available on {', '.join(r['name'] for r in rows)} of {instance.key}",
+            "by": f"push ({branch})", "error": None, "repositories": rows, "state": None, "backup": None,
+            "back_to": None})
+        return True
+
+    def local_stagings(server: str) -> list[Instance]:
+        """The stagings of this machine made from the production of server."""
+        return [settings.servers[name].production for name, row in stagings.load(stagings_file).items()
+                if row.get("parent") == server and not row.get("machine") and name in settings.servers
+                and settings.servers[name].production is not None]
+
+    def production_of(instance: Instance) -> Instance | None:
+        """The production a test or a staging of this machine is made from (for a new commit available)."""
+        if instance.role == "test":
+            return settings.servers[instance.server].production
+        row = stagings.load(stagings_file).get(instance.server) or {}
+        parent = settings.servers.get(row.get("parent") or "") if not row.get("machine") else None
+        return parent.production if parent is not None else None
 
     async def deploy_hook_call(request: Request):
         """A push told by GitHub, GitLab, Bitbucket or a CI: with the
-        instance's secret, the repository pushed pulled if the instance
-        follows that branch, then the changed modules and a restart. A
-        Starlette route: no login, the secret is its check."""
+        instance's secret, the repository pushed pulled if the instance (a
+        test, a staging) follows that branch, then the changed modules and a
+        restart; on a production, the new commit listed (it is updated by
+        hand) and its stagings on that branch deployed. A Starlette route:
+        no login, the secret is its check."""
         server, role = request.path_params["server"], request.path_params["role"]
         instance = settings.instance(server, role) if role in ROLES else None
         hook = deployhooks.load(deploy_hooks_file).get(f"{server}/{role}") or {}
@@ -9474,29 +9723,235 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if headers.get("x-github-event") == "ping" or headers.get("x-gitlab-event") == "System Hook":
             return JSONResponse({"ok": True, "pong": True})
         branch, urls = deployhooks.pushed(body)
-        followed = []
-        for repo in instance.repositories:
-            code, out = await ops.capture(repo.git("remote", "get-url", repo.remote), cwd=repo.path)
-            if code == 0 and deployhooks.host_path(out.strip()) in urls and repo.branch == branch:
-                followed.append(repo.name)
+        sha, message = deployhooks.head_commit(body)
         record = {"time": datetime.datetime.now().isoformat(timespec="seconds"), "branch": branch}
-        if not followed:
-            record["result"] = f"nothing to do: {instance.key} follows no pushed branch {branch or '?'} of that repository"
-            job = None
+        started = []
+        if manual_only(instance):
+            followed = await followed_by(instance, urls, branch)
+            if followed:
+                await note_available(instance, followed, branch, sha, message)
+                record["result"] = (f"not deployed: {instance.key} is a production, updated by hand only; "
+                                    f"the new commit of {', '.join(followed)} is listed on its page")
+            else:
+                record["result"] = f"nothing to do: {instance.key} follows no pushed branch {branch or '?'} of that repository"
+            # its stagings here on that branch whose CI is on: that is the CI
+            for staging in local_stagings(server):
+                theirs = await followed_by(staging, urls, branch)
+                job = push_deploy(staging, theirs, branch) if theirs and ci_on(staging) else None
+                if theirs:
+                    started.append({"instance": staging.key, "job": job.id if job else None,
+                                    "note": None if job else "CI off"})
+            if started:
+                record["stagings"] = started
         else:
-            job = jobs.submit(f"Deploy on push {', '.join(followed)} to {instance.key}", [instance.key],
-                              f"push ({branch})", lambda job: ops.pull_restart(
-                                  job, instance, only_if_changed=True, only=set(followed),
-                                  backup_folder=backup_folder(instance)),
-                              workspace=(workspace_of(server) or (None,))[0].name if workspace_of(server) else "")
-            record.update(result="deploy", job=job.id, repositories=followed)
+            stopped = deploys.paused(deploys_folder, instance.key)
+            followed = await followed_by(instance, urls, branch)
+            if stopped:
+                record["result"] = (f"not deployed: the CI of {instance.key} is off "
+                                    f"(by {stopped.get('by') or '?'} since {stopped.get('at') or '?'})")
+            elif not followed:
+                record["result"] = f"nothing to do: {instance.key} follows no pushed branch {branch or '?'} of that repository"
+            else:
+                job = push_deploy(instance, followed, branch)
+                started.append({"instance": instance.key, "job": job.id, "note": None})
+                record.update(result="deploy", job=job.id, repositories=followed)
+            # its production on the same branch: told of the commit, not deployed
+            prod = production_of(instance)
+            if prod is not None and prod.key != instance.key and manual_only(prod):
+                theirs = await followed_by(prod, urls, branch)
+                if theirs:
+                    await note_available(prod, theirs, branch, sha, message)
         access_log.record("action", "hook", "push", ip, f"deploy {instance.key}: {record['result']}")
         data = deployhooks.load(deploy_hooks_file)
         if instance.key in data:
             data[instance.key]["last"] = record
             await asyncio.to_thread(deployhooks.save, deploy_hooks_file, data)
-        return JSONResponse({"ok": True, **({"job": job.id} if job else {"note": record["result"]})},
-                            status_code=202 if job else 200)
+        jobs_started = [s["job"] for s in started if s["job"]]
+        answer = {"ok": True, "note": record["result"]}
+        if jobs_started:
+            answer["job"] = jobs_started[0]
+            answer["jobs"] = jobs_started
+        if record["result"].startswith("not deployed: the CI"):
+            answer["paused"] = True
+        return JSONResponse(answer, status_code=202 if jobs_started else 200)
+
+    async def productions_by_hand() -> None:
+        """Once, after the upgrade that made a production updated by hand only: a
+        job of the system names each production whose deploy on push or auto
+        update was on, and what it does from now (deploys/by-hand.json: told)."""
+        told_file = deploys_folder / "by-hand.json"
+        try:
+            told = set(json.loads(told_file.read_text(encoding="utf-8")).get("told") or [])
+        except (OSError, ValueError, AttributeError):
+            told = set()
+        hooks = deployhooks.load(deploy_hooks_file)
+        lines = []
+        for inst in settings.all_instances():
+            if inst.key in told or not manual_only(inst):
+                continue
+            if inst.key in hooks:
+                lines.append((inst.key, f"{inst.key}: a push of its branch is no longer deployed on it: it is "
+                                        "listed on its page as a new commit available, and deploys its stagings "
+                                        "on that branch"))
+            if inst.auto_update.enabled:
+                lines.append((inst.key, f"{inst.key}: its auto update (every {inst.auto_update.interval_minutes} "
+                                        "min) does not run any more: Git pull and restart by hand"))
+        if not lines:
+            return
+        keys = sorted({key for key, _ in lines})
+
+        async def action(job):
+            job.log(BY_HAND)
+            for _, line in lines:
+                job.log(line)
+
+        jobs.submit("Productions updated by hand only", keys, "system: an upgrade of OmniaCLI", action)
+        deploys_folder.mkdir(parents=True, mode=0o700, exist_ok=True)
+        told_file.write_text(json.dumps({"told": sorted(told | set(keys))}), encoding="utf-8")
+
+    updater.manual_only = manual_only
+    scheduler.manual_only = manual_only
+
+
+    # --- the deploys of an instance and going back to one (deploys.py) ---------
+
+    def deploy_when(entry: dict) -> str:
+        return str(entry.get("finished") or entry.get("started") or "")[:16].replace("T", " ")
+
+    def deploy_rows(request: Request, instance: Instance, entries: list, now: dict) -> list:
+        """The deploys newest first as the page shows them: for a user of
+        workspaces without the integrator's names (customerview.py)."""
+        view, lang = customer_view(request), request_language(request)
+        folder = backup_folder(instance)
+        kept = {p.name for p in folder.glob("*.zip")} if folder.is_dir() else set()
+        current_sha = {name: row.get("sha") for name, row in now.items()}
+        rows, current_found = [], False
+        for entry in reversed(entries):
+            state = {name: (row or {}).get("sha") for name, row in (entry.get("state") or {}).items()}
+            current = not current_found and bool(state) and all(current_sha.get(n) == sha for n, sha in state.items())
+            current_found = current_found or current
+            by = str(entry.get("by") or "")
+            title, error = str(entry.get("title") or ""), entry.get("error")
+            if view is not None:
+                by, title = view.source(by), view.text(title)
+                error = view.text(error) if error else error
+            backup = entry.get("backup")
+            rows.append({
+                "id": entry.get("id"), "finished": entry.get("finished"), "started": entry.get("started"),
+                "title": i18n.tr(lang, title), "by": i18n.tr(lang, by), "outcome": entry.get("outcome"),
+                "error": i18n.tr(lang, error) if error else None,
+                "job": f"/jobs/{entry['job']}" if entry.get("job") and jobs.get(entry["job"]) else None,
+                "repositories": [{k: r.get(k) for k in ("name", "branch", "before", "after", "subject",
+                                                        "before_subject", "brought", "taken", "commits")}
+                                 for r in entry.get("repositories") or [] if isinstance(r, dict)],
+                "backup": {"name": backup, "kept": backup in kept} if backup else None,
+                "back_to": entry.get("back_to"), "current": current, "kind": entry.get("kind") or "deploy"})
+        return rows
+
+    async def available_now(instance: Instance, entries: list) -> list[dict]:
+        """The new commits a push listed on a production and not pulled yet:
+        the newest of each repository whose commit is not checked out (nor
+        an ancestor of what is) and that no deploy after it changed."""
+        found, seen = [], set()
+        repos = {r.name: r for r in instance.repositories}
+        for entry in reversed(entries):
+            for row in entry.get("repositories") or []:
+                name = row.get("name")
+                if name in seen or name not in repos:
+                    continue
+                seen.add(name)
+                if entry.get("kind") != "available":
+                    continue
+                sha, head = row.get("after") or "", await deploys.head(repos[name])
+                if sha and head and (head.startswith(sha) or (await ops.capture(
+                        ["git", "merge-base", "--is-ancestor", sha, head], cwd=repos[name].path, timeout=20))[0] == 0):
+                    continue
+                found.append({"name": name, "branch": row.get("branch") or repos[name].branch, "sha": sha[:10],
+                              "subject": row.get("subject") or "", "time": entry.get("finished")})
+        return found
+
+    def deploys_pause_view(request: Request, instance: Instance, me: Principal) -> dict:
+        stopped = deploys.paused(deploys_folder, instance.key)
+        view = customer_view(request)
+        if stopped and view is not None:
+            stopped = {**stopped, "by": view.who(str(stopped.get("by") or ""))}
+        return {"paused": stopped, "ci": ci_on(instance),
+                "auto_update": instance.auto_update.enabled and not manual_only(instance),
+                "automatic": not manual_only(instance),
+                "can_pause": me.can(backup_role(instance)), "pause_role": backup_role(instance)}
+
+    @app.get("/api/servers/{server}/{role}/deploys", dependencies=[Depends(developer)])
+    async def deploys_list(request: Request, server: str, role: str, me: Principal = Depends(current_user)):
+        """The deploys of the instance, newest first (the last deploys.KEEP),
+        which one its code is at now, and whether its automatic deploys are
+        paused."""
+        instance = get_instance(server, role)
+        data = await asyncio.to_thread(deploys.load, deploys_folder, instance.key)
+        now = await deploys.snapshot(instance)
+        return {"deploys": deploy_rows(request, instance, data["deploys"], now), "keep": deploys.KEEP,
+                "available": await available_now(instance, data["deploys"]) if manual_only(instance) else [],
+                "can_back": me.can("developer") and bool(instance.repositories),
+                **deploys_pause_view(request, instance, me)}
+
+    @app.get("/api/servers/{server}/{role}/deploys/{deploy_id}/back", dependencies=[Depends(developer)])
+    async def deploy_back_plan(request: Request, server: str, role: str, deploy_id: str,
+                               me: Principal = Depends(current_user)):
+        """What «Back to this deploy» would do now: the commits each
+        repository moves to, those taken away, the backup made before that
+        deploy and whether it is still there, what the next push does."""
+        instance = get_instance(server, role)
+        entry = deploys.find(deploys_folder, instance.key, deploy_id)
+        if entry is None:
+            return refuse(f"No deploy {deploy_id} of {instance.key}", status.HTTP_404_NOT_FOUND)
+        plan = await deploys.back_plan(instance, entry)
+        lang = request_language(request)
+        # the second way: the database as it was with this deploy's code is the backup made before the
+        # first deploy that came after it (the oldest of those going back takes away)
+        entries = [d for d in deploys.load(deploys_folder, instance.key)["deploys"] if d.get("kind") != "available"]
+        at = next((i for i, d in enumerate(entries) if d.get("id") == deploy_id), len(entries))
+        after = entries[at + 1] if at + 1 < len(entries) else None
+        second = None
+        if after is not None:
+            name = after.get("backup")
+            second = {"name": name, "before": after.get("started") or after.get("finished"),
+                      "kept": bool(name) and (backup_folder(instance) / name).is_file()}
+        return {**plan, "refused": [i18n.tr(lang, r) for r in plan["refused"]], "when": entry.get("finished"),
+                "restore_backup": second, **deploys_pause_view(request, instance, me)}
+
+    @app.post("/api/servers/{server}/{role}/deploys/{deploy_id}/back", dependencies=[Depends(developer)])
+    async def deploy_back(server: str, role: str, deploy_id: str, payload: dict = Body(default={}),
+                          me: Principal = Depends(current_user)):
+        """«Back to this deploy»: a job that backs the instance up, checks
+        out in each repository the commit of that deploy, updates the
+        changed modules and restarts; with pause, the automatic deploys
+        paused first (a push would deploy the branch head again)."""
+        instance = get_instance(server, role)
+        entry = deploys.find(deploys_folder, instance.key, deploy_id)
+        if entry is None:
+            return refuse(f"No deploy {deploy_id} of {instance.key}", status.HTTP_404_NOT_FOUND)
+        pause = bool(payload.get("pause")) and ci_on(instance)
+        if pause and not me.can(backup_role(instance)):
+            return refuse(f"The {backup_role(instance)} role switches the CI of {instance.key} off",
+                          status.HTTP_403_FORBIDDEN)
+        plan = await deploys.back_plan(instance, entry)
+        if plan["refused"]:
+            return refuse("; ".join(plan["refused"]))
+        if not plan["changes"]:
+            return refuse(f"The code of {instance.key} is at that deploy already")
+        who = str(me)
+
+        async def action(job):
+            if pause:
+                await asyncio.to_thread(deploys.set_paused, deploys_folder, instance.key, who)
+                job.log(f"--- the CI of {instance.key} switched off: a push, the auto update and a scheduled pull "
+                        "do not move its code until it is switched on again")
+            await deploys.go_back(job, instance, entry, backup_folder(instance))
+
+        ws = workspace_of(server)
+        job = jobs.submit(f"Back to the deploy of {deploy_when(entry)} on {instance.key}", [instance.key],
+                          f"manual: {me}", action, workspace=ws[0].name if ws else "")
+        return {"job": job.id}
+
 
     app.add_route("/hooks/deploy/{server}/{role}", deploy_hook_call, methods=["POST"])
     # the same on an instance's own name, which its nginx passes here
@@ -10093,6 +10548,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     "backup": backup_of(srv),
                     # the numbers of the monitor: from the developer up
                     "monitor": {"state": seen["state"], "since": seen["since"],
+                                "restarted": seen.get("restarted"),
+                                "restart_job": seen.get("restart_job") if numbers else None,
                                 "last_ms": seen["last_ms"] if numbers else None,
                                 "uptime_24h": seen["uptime_24h"] if numbers else None},
                     "certificate": monitor.certificate(site) if site else None}
@@ -10237,8 +10694,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                           "text": scrub(i18n.tr(lang, (view.job(job, False) if view is not None else job).title)),
                           "since": job.finished, "job": job.id, "page": f"/jobs/{job.id}"})
         if whole and machine_admin(me) and only is None:
-            watch += [{"kind": "disk", "node": inframap.HERE, "text": i18n.tr(lang, problem), "since": None}
-                      for what, problem in monitor.problems().items() if what.startswith("disk ")]
+            # the disks and the load of the machine above their thresholds (Options › Monitoring), with their level
+            watch += [{"kind": "disk" if a["what"].startswith("disk ") else "load", "node": inframap.HERE,
+                       "text": i18n.tr(lang, a["problem"]), "since": a["since"], "level": a["level"],
+                       "page": "/options#monitoring"}
+                      for a in monitor.alerts() if a["what"].startswith(("disk ", "load "))]
             # the read replica of this machine's cluster, not connected or holding 1 GB or more of its disk
             # (UX-010 §9), as the look saw it last; and a replica hosted here that its primary does not see
             watch += [{"kind": "replica", "node": inframap.HERE, "text": i18n.tr(lang, text), "since": since,
@@ -10249,7 +10709,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             ram = round(100 * point["ram"] / point["ram_total"]) if point.get("ram") and point.get("ram_total") else None
             load = {"cpu": point.get("cpu"), "ram": ram}
         result = {"at": inframap.now_text(), "part": part, "viewer": map_viewer(me),
-                  "verdict": {"ok": not watch, "watch": watch},
+                  "verdict": {"ok": not watch, "watch": inframap.leveled(watch)},
                   "tonight": tonight if sees_backups(me) else None,
                   "jobs": [job_of(j) for j in strip]}
         if part == "now":
@@ -10528,6 +10988,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     data["flow"] = found["flow"]
         if asked:
             data["tonight"] = inframap.tonight_sum(tonights) if sees_backups(me) else None
+            data["verdict"]["watch"] = inframap.leveled(data["verdict"]["watch"])
             data["verdict"]["ok"] = not data["verdict"]["watch"]
             data["jobs"].sort(key=lambda j: str(j.get("created") or ""), reverse=True)
             if part == "all":

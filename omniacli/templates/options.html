@@ -86,15 +86,80 @@
       <input type="email" id="mail-from" class="mono" value="{{ options.mail_from }}" placeholder="omniacli@example.com">
     </div>
   </section>
-  <section class="panel">
+  <section class="panel" id="monitoring">
     <h2 style="margin-bottom: 4px">{{ _("Monitoring") }}</h2>
-    <p class="muted" style="font-size: 13px; margin-top: 0">{{ _("Every minute each instance is asked for its login page; each hour the disks are measured, each day the certificates read. Told: when an instance goes down (3 checks in a row) and comes back, a disk with less than 10% free, a certificate that ends within 14 days. Each workspace's admins add their own on its page.") }}</p>
+    <p class="muted" style="font-size: 13px; margin-top: 0">{{ _("Every minute each instance is asked for its login page and the CPU and the memory of the machine are read; every five minutes the disks are measured, each day the certificates read. Told: when an instance goes down (3 checks in a row) and comes back, a threshold below passed or back under, a certificate that ends within 14 days. Each notice says its level, warning or critical, and goes in «things to look at» of the map. Each workspace's admins add their own on its page.") }}</p>
     <div class="form-grid">
       <label for="monitor-notify">{{ _("Tell") }}</label>
       <input type="text" id="monitor-notify" class="mono" value="{{ options.monitor_notify | join(', ') }}"
              placeholder="{{ _('emails or webhook URLs, separated by commas') }}">
+      <label for="notice-language">{{ _("Language of the emails") }}</label>
+      <select id="notice-language" title="{{ _('The language the emails of the notices are written in; the JSON of a webhook is always in English, with a stable event field') }}">
+        {% for value, label in (("en", "English"), ("it", "Italiano")) %}
+        <option value="{{ value }}" {{ "selected" if options.notice_language == value }}>{{ label }}</option>{% endfor %}
+      </select>
     </div>
+    <h3 class="opt-sub">{{ _("Thresholds of the machine") }}</h3>
+    <div class="scroll">
+    <table class="opt-thresholds">
+      <tr><th></th><th>{{ _("Warning at (% in use)") }}</th><th>{{ _("Critical at (% in use)") }}</th></tr>
+      {% for metric in metrics %}{% set levels = options.monitor_thresholds[metric] %}
+      <tr><td>{{ {"cpu": _("CPU"), "ram": _("Memory"), "disk": _("Disks of the backups and of the workspaces")}[metric] }}</td>
+        <td><input type="number" class="mono" min="1" max="99" step="1" required data-threshold="{{ metric }}" data-level="warning" value="{{ levels[0] }}"
+                   aria-label="{{ _('Warning at (% in use)') }}"></td>
+        <td><input type="number" class="mono" min="2" max="100" step="1" required data-threshold="{{ metric }}" data-level="critical" value="{{ levels[1] }}"
+                   aria-label="{{ _('Critical at (% in use)') }}"></td></tr>
+      {% endfor %}
+    </table>
+    </div>
+    <div class="form-grid" style="margin-top: 8px">
+      <label for="monitor-minutes">{{ _("For (minutes in a row)") }}</label>
+      <input type="number" id="monitor-minutes" class="mono" required min="{{ minutes_limits[0] }}" max="{{ minutes_limits[1] }}" step="1"
+             value="{{ options.monitor_minutes }}"
+             title="{{ _('The CPU and the memory are a warning or critical only when every reading of these minutes is above the threshold, and back to normal when every one is under the warning; a disk counts at once') }}">
+    </div>
+    <h3 class="opt-sub">{{ _("Automatic restart") }}</h3>
+    <label class="opt-check"><input type="checkbox" id="restart-enabled" style="width: auto" {{ "checked" if options.restart_down }}
+           title="{{ _('On: an instance of this machine that does not answer is restarted by the monitor, in a job of the system that says why. Off (the default): it is told, not restarted.') }}">
+      {{ _("Restart an instance that does not answer") }}</label>
+    <div class="form-grid" style="margin-top: 8px">
+      <label for="restart-after">{{ _("After (checks in a row without an answer)") }}</label>
+      <input type="number" id="restart-after" class="mono" required min="{{ after_limits[0] }}" max="{{ after_limits[1] }}" step="1" value="{{ options.restart_after }}"
+             title="{{ _('A check a minute: 5 is about five minutes without an answer') }}">
+      <label for="restart-every">{{ _("At most once every (minutes)") }}</label>
+      <input type="number" id="restart-every" class="mono" required min="{{ every_limits[0] }}" max="{{ every_limits[1] }}" step="1" value="{{ options.restart_every }}"
+             title="{{ _('One that still does not answer after its restart is told, not restarted again, until these minutes have gone by') }}">
+    </div>
+    <p class="muted" style="font-size: 13px; margin: 6px 0 0">{{ _("Never while another job works on the instance, never one whose service was stopped (on purpose, as a staging stopped).") }}</p>
+    <h3 class="opt-sub">{{ _("Webhooks") }}</h3>
+    <p class="muted" style="font-size: 13px; margin-top: 0">{{ _("Each webhook of the list above and of the workspaces' notices. Signed: its body carries X-OmniaCLI-Signature-256, the HMAC-SHA256 of the body with its secret, which the receiver checks. Jobs: it is told also each job that fails or ends with warnings (a workspace's webhook, the jobs of its workspace).") }}</p>
+    {% if webhooks %}
+    <div class="scroll">
+    <table class="opt-hooks" id="webhooks">
+      <tr><th>{{ _("Webhook") }}</th><th>{{ _("Of") }}</th><th>{{ _("Signed") }}</th><th>{{ _("Jobs that fail or warn") }}</th><th></th></tr>
+      {% for hook in webhooks %}
+      <tr data-url="{{ hook.url }}">
+        <td class="mono" title="{{ hook.url.split('?')[0] }}">{{ hook.shown }}</td>
+        <td>{{ hook.where or _("this machine") }}</td>
+        <td><span class="hook-signed">{{ _("yes") if hook.signed else _("no") }}</span>
+          <button type="button" class="small hook-secret" title="{{ _('Makes a new secret, shown once: the receiver checks the signature with it. The one of before stops signing at once.') }}">{{ _("New secret…") if hook.signed else _("Sign…") }}</button>
+          {% if hook.signed %}<button type="button" class="small ghost hook-unsign" title="{{ _('Takes its secret away: its body is sent without a signature from now') }}">{{ _("Unsign") }}</button>{% endif %}</td>
+        <td><input type="checkbox" class="hook-jobs" style="width: auto" {{ "checked" if hook.jobs }} aria-label="{{ _('Jobs that fail or warn') }}"
+                   title="{{ _('On: an event job.failed or job.warned for each job that fails or ends with warnings') }}"></td>
+        <td><button type="button" class="small hook-test" title="{{ _('Sends a notice of test (event notice.test), signed when it has a secret, and says how it went') }}">{{ _("Send a test") }}</button></td>
+      </tr>
+      {% endfor %}
+    </table>
+    </div>
+    <div id="hook-secret-box" hidden style="margin-top: 8px"><div class="muted" style="font-size: 13px">{{ _("Secret: copy it now, it is not shown again") }}</div><pre class="copyable mono" id="hook-secret"></pre></div>
+    <p class="muted" id="hook-said" aria-live="polite" style="font-size: 13px"></p>
+    {% else %}<p class="muted" style="font-size: 13px">{{ _("No webhook yet: an https:// address in the list above is one.") }}</p>{% endif %}
   </section>
+  <style>
+  .opt-sub { font-size: 15px; margin: 16px 0 6px; }
+  .opt-thresholds input { width: 90px; } .opt-thresholds td, .opt-hooks td { vertical-align: middle; }
+  .opt-check { display: inline-flex; gap: 6px; align-items: center; }
+  </style>
   <section class="panel" id="audit">
     <h2 style="margin-bottom: 4px">{{ _("Access log (NIS 2)") }}</h2>
     <p class="muted" style="font-size: 13px; margin-top: 0">{{ _("Every entry of the access log is kept at least this many days: past it, the oldest files go when the log grows, never a younger entry. 0 keeps 10 files of 5 MB, as before. Each entry can also be sent, as it is written, to a SIEM by syslog (RFC 5424): a SIEM that does not answer never stops an action, its failure is written in the log.") }}</p>
@@ -146,6 +211,58 @@
 </form>
 </div>
 <script>
+// the thresholds of Monitoring: {cpu: {warning, critical}, ram: ..., disk: ..., minutes}
+function thresholds() {
+  const found = {minutes: Number(document.getElementById("monitor-minutes").value)};
+  for (const input of document.querySelectorAll("[data-threshold]")) {
+    (found[input.dataset.threshold] = found[input.dataset.threshold] || {})[input.dataset.level] = Number(input.value);
+  }
+  return found;
+}
+// the webhooks: a secret (shown once), the jobs told or not, a test notice
+(function () {
+  const table = document.getElementById("webhooks");
+  if (!table) return;
+  const H = {yes: {{ _("yes") | tojson }}, no: {{ _("no") | tojson }}, sent: {{ _("Sent: {host} answered.") | tojson }},
+             again: {{ _("A new secret: the receiver's check fails with the old one until the new one is set there. Go on?") | tojson }},
+             againGo: {{ _("New secret") | tojson }}, unsign: {{ _("Send its notices without a signature from now?") | tojson }},
+             unsignGo: {{ _("Unsign") | tojson }}, unreachable: {{ _("OmniaCLI cannot be reached") | tojson }}};
+  const said = document.getElementById("hook-said");
+  async function post(path, body) {
+    const resp = await fetch("{{ prefix }}/api/options/webhooks/" + path, {method: "POST",
+      headers: {"Content-Type": "application/json", Accept: "application/json"}, body: JSON.stringify(body)}).catch(() => null);
+    const data = resp ? await resp.json().catch(() => ({})) : {};
+    if (!resp || !resp.ok) throw new Error(data.error || data.detail || H.unreachable);
+    return data;
+  }
+  for (const row of table.querySelectorAll("tr[data-url]")) {
+    const url = row.dataset.url;
+    row.querySelector(".hook-secret").addEventListener("click", async (ev) => {
+      if (row.querySelector(".hook-signed").textContent === H.yes && !await omniaAsk(H.again, H.againGo)) return;
+      try {
+        const data = await post("secret", {url});
+        document.getElementById("hook-secret").textContent = data.secret;
+        document.getElementById("hook-secret-box").hidden = false;
+        row.querySelector(".hook-signed").textContent = H.yes;
+        said.textContent = "";
+      } catch (e) { said.textContent = e.message; }
+    });
+    row.querySelector(".hook-unsign")?.addEventListener("click", async () => {
+      if (!await omniaAsk(H.unsign, H.unsignGo, {danger: true})) return;
+      try { await post("save", {url, unsigned: true}); row.querySelector(".hook-signed").textContent = H.no; }
+      catch (e) { said.textContent = e.message; }
+    });
+    row.querySelector(".hook-jobs").addEventListener("change", async (ev) => {
+      try { await post("save", {url, jobs: ev.target.checked}); } catch (e) { ev.target.checked = !ev.target.checked; said.textContent = e.message; }
+    });
+    row.querySelector(".hook-test").addEventListener("click", async () => {
+      try {
+        const data = await post("test", {url});
+        said.textContent = data.ok ? H.sent.replace("{host}", row.cells[0].textContent) : data.problems.join("; ");
+      } catch (e) { said.textContent = e.message; }
+    });
+  }
+})();
 document.getElementById("form").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   const box = document.getElementById("error"), saved = document.getElementById("saved");
@@ -163,7 +280,12 @@ document.getElementById("form").addEventListener("submit", async (ev) => {
              user: document.getElementById("mail-user").value.trim(),
              password: document.getElementById("mail-password").value,
              from: document.getElementById("mail-from").value.trim()},
-      monitor: {notify: document.getElementById("monitor-notify").value.split(/[\s,;]+/).filter(Boolean)},
+      monitor: {notify: document.getElementById("monitor-notify").value.split(/[\s,;]+/).filter(Boolean),
+                language: document.getElementById("notice-language").value,
+                thresholds: thresholds(),
+                restart: {enabled: document.getElementById("restart-enabled").checked,
+                          after: Number(document.getElementById("restart-after").value),
+                          every: Number(document.getElementById("restart-every").value)}},
       audit: {retention_days: Number(document.getElementById("audit-retention").value),
               syslog: {host: document.getElementById("syslog-host").value.trim(),
                        protocol: document.getElementById("syslog-protocol").value,

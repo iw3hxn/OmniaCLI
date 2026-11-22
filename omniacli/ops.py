@@ -793,11 +793,14 @@ PRE_UPDATE_PREFIX = "pre-update_"
 KEEP_PRE_UPDATE = 3
 
 
-async def backup_before_update(job: Job, instance: Instance, folder: Path | None) -> Path | None:
-    """When the instance asks for it, its backup into folder (the choices of
-    its last backup dialog) named as one made before an update; the older
-    ones beyond KEEP_PRE_UPDATE deleted. None when it makes none."""
-    if not instance.backup_before_update or folder is None or not instance.plugin.has_backup:
+async def backup_before_update(job: Job, instance: Instance, folder: Path | None,
+                               always: bool = False) -> Path | None:
+    """When the instance asks for it (always: whether it asks or not, a
+    deploy gone back to), its backup into folder (the choices of its last
+    backup dialog) named as one made before an update; the older ones
+    beyond KEEP_PRE_UPDATE deleted. None when it makes none. Its name is in
+    job.notes["backups"]: the deploys' history names it (deploys.py)."""
+    if not (instance.backup_before_update or always) or folder is None or not instance.plugin.has_backup:
         return None
     job.log("--- backup before the update")
     made = await backup_into(job, instance, folder)
@@ -805,6 +808,9 @@ async def backup_before_update(job: Job, instance: Instance, folder: Path | None
     os.replace(made, dest)
     backupcheck.rename(folder, made.name, dest.name)
     job.log(f"Backup {dest.name} ({dest.stat().st_size} bytes)")
+    notes = getattr(job, "notes", None)
+    if isinstance(notes, dict):
+        notes.setdefault("backups", {})[getattr(instance, "key", "")] = dest.name
     found = sorted((p for p in folder.glob(f"{PRE_UPDATE_PREFIX}*.zip") if p.is_file()),
                    key=lambda p: p.stat().st_mtime, reverse=True)
     for old in found[KEEP_PRE_UPDATE:]:

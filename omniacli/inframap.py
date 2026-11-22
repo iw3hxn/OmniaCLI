@@ -34,8 +34,22 @@ ELSEWHERE_EVERY = 60
 # a job that ended stays in the strip for these seconds, and to look at for a day
 JOB_SHOWN = 120
 WATCH_HOURS = 24
-# a certificate with fewer days is to look at (monitor.CERT_DAYS)
+# a certificate with fewer days is to look at (monitor.CERT_DAYS), critical with fewer than CERT_CRITICAL
 CERT_DAYS = 14
+CERT_CRITICAL = 3
+# the level of each kind of thing to look at; one of a linked OmniaCLI that sends none: a warning
+LEVELS = {"stopped": "warning", "down": "critical", "backup_failed": "critical", "certificate": "warning",
+          "names": "warning", "restarted": "warning", "job_failed": "critical", "job_warned": "warning",
+          "disk": "warning", "load": "warning", "replica": "warning", "machine_older": "warning",
+          "machine_unread": "critical"}
+
+
+def leveled(watch: list[dict]) -> list[dict]:
+    """Each thing to look at with its level (critical, warning), the critical first, in order otherwise."""
+    for item in watch:
+        if item.get("level") not in ("critical", "warning"):
+            item["level"] = LEVELS.get(item.get("kind"), "warning")
+    return sorted(watch, key=lambda w: w["level"] != "critical")
 # a link that did not answer the whole map is not asked the layer of now for
 # these seconds (the whole read, every 60, asks it again): its last reason at once
 UNANSWERED_FOR = 90
@@ -238,6 +252,11 @@ def watch_of(instance: dict, say) -> list[dict]:
     if monitor.get("state") == "down":
         out.append({"kind": "down", "node": node, "text": say("{name} does not answer", name=label),
                     "since": monitor.get("since")})
+    restarted = monitor.get("restarted")
+    if restarted and restarted >= (datetime.datetime.now() - datetime.timedelta(hours=WATCH_HOURS)).isoformat():
+        out.append({"kind": "restarted", "node": node, "since": restarted, "job": monitor.get("restart_job"),
+                    "page": f"/jobs/{monitor['restart_job']}" if monitor.get("restart_job") else None,
+                    "text": say("{name} did not answer and was restarted automatically", name=label)})
     last = (instance.get("backup") or {}).get("last")
     if last and not last.get("ok"):
         out.append({"kind": "backup_failed", "node": node, "since": last.get("time"), "job": last.get("job"),
@@ -245,6 +264,7 @@ def watch_of(instance: dict, say) -> list[dict]:
     certificate = instance.get("certificate")
     if certificate and certificate.get("days") is not None and certificate["days"] < CERT_DAYS:
         out.append({"kind": "certificate", "node": node, "since": certificate.get("checked"),
+                    "level": "critical" if certificate["days"] < CERT_CRITICAL else "warning",
                     "text": say("The certificate of {name} ends in {days} days", name=label, days=certificate["days"])})
     wrong = [n for env in (instance.get("envs") or {}).values() if env for n in bad_names(env.get("names") or [])]
     if wrong:

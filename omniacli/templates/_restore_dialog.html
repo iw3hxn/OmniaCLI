@@ -90,9 +90,10 @@
     return (await sending).file;
   }
   document.getElementById("restore-cancel").onclick = () => { if (sending) sending.abort(); dialog.close(); };
-  for (const button of document.querySelectorAll("[data-restore-file]")) {
-    button.onclick = () => {
-      target = JSON.parse(button.dataset.restoreFile); key = button.dataset.key;
+  // the dialog for target (a button's data-restore-file) of the instance key; pick: the backup chosen at
+  // its opening (Deploys: the backup of then, _deploys.html)
+  window.omniaRestoreOpen = (chosen, instanceKey, pick) => {
+      target = chosen; key = instanceKey;
       document.getElementById("restore-title").textContent = T.title.replace("{key}", key);
       document.getElementById("restore-form").reset();
       // a SQL dump has any name (17.11.2026.bck): the file chooser filters nothing
@@ -110,8 +111,13 @@
       if (neutral && /\/production\//.test(String(target.url || ""))) neutral.checked = false;
       errorBox.textContent = ""; progress.hidden = true; go.disabled = false;
       dialog.showModal();
-      load();
-    };
+      load().then(() => {
+        const radio = pick ? [...list.querySelectorAll("input[name=restore-source]")].find((r) => r.value === pick) : null;
+        if (radio) { radio.checked = true; radio.scrollIntoView({block: "nearest"}); }
+      });
+  };
+  for (const button of document.querySelectorAll("[data-restore-file]")) {
+    button.onclick = () => window.omniaRestoreOpen(JSON.parse(button.dataset.restoreFile), button.dataset.key);
   }
   document.getElementById("restore-form").addEventListener("submit", async (ev) => {
     ev.preventDefault();

@@ -24,7 +24,7 @@ from pathlib import Path
 import yaml
 from croniter import croniter
 
-from . import backupcheck, destinations, instancearchive, linkcopy, notify, ops
+from . import backupcheck, deploys, destinations, instancearchive, linkcopy, notify, ops
 from .config import ROLES, SERVER_NAME, ConfigError, LinkSource, parse_link_source, parse_notify
 from .jobs import FINISHED, Job, JobFailed, JobManager
 from .plugin_api import restore_fetched
@@ -445,6 +445,8 @@ class Scheduler:
         self.jobs = jobs
         self.link_clients = link_clients
         self.history = history
+        # manual_only(instance): a production, updated by hand only (app.py); none by default
+        self.manual_only = lambda instance: False
         # the puller connections (consumer.Consumers): a copy from a puller
         self.consumers = consumers
         self.schedules: dict[str, Schedule] = {}
@@ -526,7 +528,9 @@ class Scheduler:
     async def tell(self, schedule: Schedule, what: str, detail: str) -> list[str]:
         """The schedule's notify told: the problems of sending, if any."""
         subject = f"OmniaCLI {socket.gethostname()}: schedule {schedule.name} {what}"
-        return await notify.send(self.settings.options, schedule.notify, subject, detail)
+        return await notify.send(self.settings.options, schedule.notify, subject, detail,
+                                 event={"event": "schedule.failed", "level": "critical", "schedule": schedule.name,
+                                        "instance": schedule.instance})
 
     async def run_and_tell(self, job: Job, schedule: Schedule, instance) -> None:
         """run; when it fails, the schedule's notify told (and the job's log says so)."""
@@ -567,12 +571,19 @@ class Scheduler:
             if step.verify_weekday is not None and datetime.date.today().weekday() == step.verify_weekday \
                     and instance.plugin.has_verify:
                 await backupcheck.verify(job, instance, made)
-        if schedule.pull and not schedule.copy:
+        stopped = deploys.paused(deploys.folder_of(self.settings), instance.key) if schedule.pull else None
+        if schedule.pull and self.manual_only(instance):
+            stopped = {"by": "", "at": ""}
+            job.warn(f"{instance.key} is a production, updated by hand only: the Git pull of this schedule is skipped")
+        elif stopped:
+            job.log(f"--- Git pull skipped: the CI of {instance.key} is off "
+                    f"(by {stopped.get('by') or '?'} since {stopped.get('at') or '?'})")
+        if schedule.pull and not schedule.copy and not stopped:
             # as the auto update: the module update and the restart only when
             # something new came (after a backup of its own step, no other)
             await ops.pull_restart(job, instance, only_if_changed=True,
                                    backup_folder=None if schedule.backup else folder)
-        elif schedule.pull:
+        elif schedule.pull and not stopped:
             # the restore that follows updates the modules and starts it
             await ops.pull(job, instance)
         if schedule.copy:

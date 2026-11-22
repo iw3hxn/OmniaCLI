@@ -297,6 +297,11 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
 {% if is_busy %}{% set running_job = busy_job[inst.key] %}
 <div class="job-band" role="status">{{ _("Job running:") }} {% if running_job %}<a href="{{ prefix }}/jobs/{{ running_job.id }}">{{ tr(running_job.title) }}</a>{% endif %} — {{ _("the buttons come back when it ends.") }}</div>
 {% endif %}
+{# a push of the branch a production follows: listed, not deployed (a production is updated by hand, README Deploys) #}
+{% for row in (available or {}).get(inst.key, []) %}
+<div class="note-box" data-available="{{ row.name }}" role="status">{{ _("New commit available on {repo}/{branch}: {sha} {subject}", repo=row.name, branch=row.branch, sha=row.sha or "?", subject=row.subject) }}
+  <span class="muted">· {{ _("pushed {when}", when=when(row.time)) }} · {{ _("a production is updated by hand: Update brings it.") }}</span></div>
+{% endfor %}
 <p id="page-error" class="error" role="alert"></p>
 
 {% set show_envs = view == "production" and not is_staging and (server.test or (stagings and (stagings.rows or stagings.can))) %}
@@ -842,8 +847,11 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
   <dl class="set-grid">
     <dt>{{ _("Auto update") }}</dt>
     <dd>
-      {% if inst.auto_update.enabled %}
+      {% if inst.auto_update.enabled and manual_only[inst.key] %}
+        <span class="muted">{{ _("no: a production is updated by hand only (the auto update of its form does not run)") }}</span>
+      {% elif inst.auto_update.enabled %}
         {{ _("every {minutes} min, {window}", minutes=inst.auto_update.interval_minutes, window=tr(inst.auto_update.window_label())) }}
+        <span class="muted">· {{ _("it stops while the CI below is switched off") }}</span>
         {% set ast = auto_state.get(inst.key) %}
         {% if ast %}<br><span class="{{ 'error' if ast.error else 'muted' }}">{{ when(ast.checked) }}: {{ tr(ast.message) }}</span>{% endif %}
       {% else %}<span class="muted">{{ _("no") }}</span>{% endif %}
@@ -874,16 +882,21 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
   </div>
   {% endif %}
   {% if can_act and inst.repositories %}
-  {# deploy on push: the repository's webhook calls the instance (deployhooks.py) #}
+  {# the CI of the instance, its one switch (README Deploys): a push of a branch it follows deploys it (the
+     repository's webhook calls the instance, deployhooks.py); off, nothing moves its code by itself. A
+     production is updated by hand only: shown off, with why #}
   <div class="deploy-hook" data-api="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}/deploy-hook" hidden>
-    <label title="{{ _('On: a push on the branch of one of its repositories downloads it, updates the changed modules (a backup first, when the instance asks it) and restarts. Off: the webhook of the repository does nothing any more.') }}">
-      <input type="checkbox" id="dh-enabled" style="width: auto"> <strong>{{ _("Update at every push") }}</strong></label>
+    <label id="dh-label" title="{{ _('On: a push on the branch of one of its repositories downloads it, updates the changed modules (a backup first, when the instance asks it) and restarts; the auto update and the scheduled pulls run. Off: nothing moves its code by itself, the webhook is kept and its pushes are only noted.') }}">
+      <input type="checkbox" id="dh-enabled" style="width: auto"> <strong>{{ _("CI: update at every push") }}</strong></label>
     <span class="muted" id="dh-state" style="margin-left: 8px"></span>
+    <p class="muted" id="dh-line" style="font-size: 13px; margin: 4px 0 0"></p>
     <div id="dh-details" hidden style="margin-top: 8px">
       <div class="muted" style="font-size: 13px">{{ _("Address") }}</div><pre class="copyable mono" id="dh-url"></pre>
       <div id="dh-secret-box" hidden><div class="muted" style="font-size: 13px">{{ _("Secret: copy it now, it is not shown again") }}</div><pre class="copyable mono" id="dh-secret"></pre></div>
       <button type="button" class="small" id="dh-new"
         title="{{ _('Makes a new secret and cancels the one of before: the webhook of the repository stops working until the new one is pasted there. The secret is shown once.') }}">{{ _("New secret…") }}</button>
+      <button type="button" class="small ghost" id="dh-forget"
+        title="{{ _('Takes the webhook away: its address refuses every call from now, and switching the CI on again makes a new secret') }}">{{ _("Take the webhook away…") }}</button>
       <details style="margin-top: 8px"><summary title="{{ _('Where the address and the secret go, in GitHub and in GitLab') }}" style="font-size: 13px">{{ _("How it is connected to the repository") }}</summary>
         <p class="muted" style="font-size: 13px; margin: 6px 0 0">{{ _("The address and the secret go in the repository's webhook: GitHub, Settings › Webhooks, content type JSON; GitLab, Settings › Webhooks, Push events. A push on the branch of one of the instance's repositories then pulls it, updates the changed modules (a backup first when the instance asks it) and restarts.") }}</p></details>
     </div>
@@ -891,6 +904,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
   </div>
   {% endif %}
 </section>
+{% if can_act %}{% include "_deploys.html" %}{% endif %}
 <style>
 .oc-table { width: 100%; }
 .oc-table td { vertical-align: top; padding: 8px 10px; border-top: 1px solid var(--border); }
@@ -1705,42 +1719,59 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     }
   }
   document.getElementById("db-reload")?.addEventListener("click", loadDatabase);
-  // deploy on push: switched on gives the address and a secret, once
+  // the CI of the instance: on, its webhook's address and (once) its secret; one line of what it follows and
+  // of the last push; a production shown off, with why
   (async function () {
     const box = document.querySelector(".deploy-hook");
     if (!box) return;
     const D = {off: {{ _("Switched off") | tojson }}, on: {{ _("Switched on") | tojson }}, last: {{ _("last push {time}: {result}") | tojson }}, newQ: {{ _("A new secret: the webhook with the old one stops working. Go on?") | tojson }},
-               offQ: {{ _("Switch deploy on push off? The webhook's calls will change nothing.") | tojson }}};
+               offQ: {{ _("Switch the CI off? A push, the auto update and the scheduled pulls do not move its code until it is on again; the webhook is kept.") | tojson }},
+               forgetQ: {{ _("Take the webhook away? Its address refuses every call from now.") | tojson }},
+               follows: {{ _("Follows {repos}.") | tojson }}, offBy: {{ _("Switched off by {by}, {when}.") | tojson }},
+               noWebhook: {{ _("Switched on, it gives the address and the secret of the repository's webhook.") | tojson }},
+               noPush: {{ _("No push received yet.") | tojson }}, manualLast: {{ _("Last push {time}: {result}") | tojson }}};
+    const $ = (id) => document.getElementById(id);
     function draw(data) {
       box.hidden = false;
-      document.getElementById("dh-enabled").checked = data.enabled;
-      document.getElementById("dh-enabled").disabled = !data.can_edit;
-      document.getElementById("dh-new").hidden = !data.can_edit;
-      document.getElementById("dh-details").hidden = !data.enabled;
-      document.getElementById("dh-url").textContent = data.url;
-      if (data.secret) { document.getElementById("dh-secret").textContent = data.secret; document.getElementById("dh-secret-box").hidden = false; }
-      document.getElementById("dh-state").textContent = !data.enabled ? D.off
-        : D.on + (data.last ? " · " + D.last.replace("{time}", whenText(data.last.time)).replace("{result}", data.last.result) : "");
+      const check = $("dh-enabled");
+      check.checked = data.enabled;
+      check.disabled = !data.can_edit || data.manual;
+      if (data.manual) $("dh-label").title = data.manual_reason;
+      $("dh-new").hidden = !data.can_edit || data.manual;
+      $("dh-forget").hidden = !data.can_edit || !data.webhook;
+      $("dh-details").hidden = !data.webhook;
+      $("dh-url").textContent = data.url;
+      if (data.secret) { $("dh-secret").textContent = data.secret; $("dh-secret-box").hidden = false; }
+      $("dh-state").textContent = data.manual ? data.manual_reason : data.enabled ? D.on : D.off;
+      const repos = data.follows.map((r) => `${r.name}/${r.branch}`).join(", ");
+      const parts = [D.follows.replace("{repos}", repos)];
+      if (!data.enabled && data.off && !data.manual) parts.push(D.offBy.replace("{by}", data.off.by || "?").replace("{when}", whenText(data.off.at)));
+      if (!data.webhook && !data.manual) parts.push(D.noWebhook);
+      if (data.webhook) parts.push(data.last ? D.manualLast.replace("{time}", whenText(data.last.time)).replace("{result}", data.last.result) : D.noPush);
+      $("dh-line").textContent = parts.join(" ");
     }
-    async function save(enabled) {
+    async function save(body) {
+      $("dh-error").textContent = "";
       const resp = await fetch(box.dataset.api, {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
-                                                 body: JSON.stringify({enabled})});
-      const data = await resp.json().catch(() => ({}));
-      if (!resp.ok) { document.getElementById("dh-error").textContent = data.error || data.detail || resp.status; return; }
+                                                 body: JSON.stringify(body)}).catch(() => null);
+      const data = resp ? await resp.json().catch(() => ({})) : {};
+      if (!resp || !resp.ok) { $("dh-error").textContent = data.error || data.detail || (resp ? resp.status : ""); return; }
       draw(data);
+      document.dispatchEvent(new CustomEvent("omnia-ci", {detail: data}));
     }
     const resp = await fetch(box.dataset.api).catch(() => null);
     if (resp && resp.ok) draw(await resp.json());
-    document.getElementById("dh-enabled").addEventListener("change", async (e) => {
-      const box = e.target;
-      if (!box.checked) {
-        box.checked = true;  // on until the answer: a No leaves it as it was
+    $("dh-enabled").addEventListener("change", async (e) => {
+      const check = e.target;
+      if (!check.checked) {
+        check.checked = true;  // on until the answer: a No leaves it as it was
         if (!await omniaAsk(D.offQ, {{ _("Switch off") | tojson }}, {danger: true})) return;
-        box.checked = false;
+        check.checked = false;
       }
-      save(box.checked);
+      save({enabled: check.checked});
     });
-    document.getElementById("dh-new").addEventListener("click", async () => { if (await omniaAsk(D.newQ, document.getElementById("dh-new"))) save(true); });
+    $("dh-new").addEventListener("click", async () => { if (await omniaAsk(D.newQ, $("dh-new"))) save({new_secret: true}); });
+    $("dh-forget").addEventListener("click", async () => { if (await omniaAsk(D.forgetQ, $("dh-forget"), {danger: true})) save({forget: true}); });
   })();
   // the head of the Environments tab: read after the page, a git fetch and the registry take a while
   (async function () {

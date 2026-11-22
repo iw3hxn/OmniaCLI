@@ -83,9 +83,24 @@ async def test_deploy_on_push(client, env, monkeypatch):
     resp = await client.post("/hooks/deploy/srv/test", content=body, headers={"X-Gitlab-Token": secret})
     assert resp.status_code == 202
     await wait_job(client, resp.json()["job"])
-    # a developer switches a production's off or on: refused; off: the calls are refused
+    # a production is updated by hand only: its CI is not switched on, by anyone
     assert (await client.post("/api/servers/srv/production/deploy-hook", headers=post_as("dev"),
                               json={"enabled": True})).status_code == 403
-    await client.post(api, headers=POST, json={"enabled": False})
+    resp = await client.post("/api/servers/srv/production/deploy-hook", headers=POST, json={"enabled": True})
+    assert resp.status_code == 400 and "by hand" in resp.json()["error"]
+    view = (await client.get("/api/servers/srv/production/deploy-hook", headers={"Authorization": AUTH})).json()
+    assert view["manual"] and not view["enabled"]
+    # off: the webhook is kept, its pushes change nothing; on again, the same secret works
+    off = (await client.post(api, headers=POST, json={"enabled": False})).json()
+    assert not off["enabled"] and off["webhook"] and off["off"]["by"] == "admin"
+    resp = await client.post("/hooks/deploy/srv/test", content=body, headers={"X-Gitlab-Token": secret})
+    assert resp.status_code == 200 and resp.json()["paused"] and len(pulled) == 3
+    assert (await client.post(api, headers=POST, json={"enabled": True})).json()["secret"] is None
+    resp = await client.post("/hooks/deploy/srv/test", content=body, headers={"X-Gitlab-Token": secret})
+    assert resp.status_code == 202
+    await wait_job(client, resp.json()["job"])
+    # the webhook taken away: its calls are refused
+    await client.post(api, headers=POST, json={"forget": True})
     assert (await client.post("/hooks/deploy/srv/test", content=body,
                               headers={"X-Gitlab-Token": secret})).status_code == 403
+    assert any("CI of srv/test: off" in e["detail"] for e in client.app.state.access_log.recent())

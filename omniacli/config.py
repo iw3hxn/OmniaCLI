@@ -1632,6 +1632,28 @@ AUDIT_RETENTION_LIMITS = (0, 3650)
 SYSLOG_PROTOCOLS = ("udp", "tcp", "tls")
 
 
+# the monitor of the machine (Options › Monitoring, monitor.py): the percent of CPU, memory and disk in use
+# that is a warning and that is critical, for how many minutes in a row (CPU and memory); the restart of
+# an instance that does not answer, after how many checks in a row and at most once in how many minutes;
+# the language of the emails (a webhook's JSON is English)
+MONITOR_METRICS = ("cpu", "ram", "disk")
+MONITOR_THRESHOLDS = {"cpu": (90, 98), "ram": (85, 95), "disk": (90, 95)}
+MONITOR_MINUTES = 5
+MONITOR_MINUTES_LIMITS = (1, 120)
+RESTART_AFTER = 5
+RESTART_AFTER_LIMITS = (2, 60)
+RESTART_EVERY = 30
+RESTART_EVERY_LIMITS = (5, 1440)
+NOTICE_LANGUAGES = ("en", "it")
+# the secret a webhook's body is signed with (HMAC-SHA256), and how many webhooks have one
+WEBHOOK_SECRET = re.compile(r"[A-Za-z0-9_-]{20,200}")
+WEBHOOKS_MAX = 50
+
+
+def default_thresholds() -> dict:
+    return {metric: list(levels) for metric, levels in MONITOR_THRESHOLDS.items()}
+
+
 # a DNS service that answers <anything>.<a-b-c-d>.sslip.io with a.b.c.d: a
 # name built on the machine's public address resolves without a record of anyone's
 AUTOMATIC_NAMES = "sslip.io"
@@ -1657,6 +1679,18 @@ class Options:
     mail_from: str = ""
     # who is told when an instance goes down, a disk fills, a certificate ends
     monitor_notify: list = field(default_factory=list)
+    # {metric: [warning, critical]} percent in use (MONITOR_METRICS), for monitor_minutes in a row
+    monitor_thresholds: dict = field(default_factory=default_thresholds)
+    monitor_minutes: int = MONITOR_MINUTES
+    # an instance that does not answer for restart_after checks in a row restarted (at most once in
+    # restart_every minutes); off by default
+    restart_down: bool = False
+    restart_after: int = RESTART_AFTER
+    restart_every: int = RESTART_EVERY
+    # the language of the notices sent by email (NOTICE_LANGUAGES)
+    notice_language: str = "en"
+    # {webhook url: {"secret": its HMAC key, "jobs": the jobs that fail or warn told too}}; saved, never shown
+    webhook_keys: dict = field(default_factory=dict)
     # the access log (accesslog.py, docs/nis2-audit.md): the days every
     # entry is kept at least, and the SIEM each entry is sent to (siem.py)
     audit_retention_days: int = AUDIT_RETENTION_DAYS
@@ -1703,6 +1737,79 @@ def parse_notify(value, where: str) -> list[str]:
     if bad:
         raise ConfigError(f"{where}: {bad[0]!r} is neither an email address nor an https:// URL")
     return list(dict.fromkeys(found))
+
+
+def parse_monitor(monitor: dict) -> dict:
+    """The fields of Options of the mapping monitor: of options.yaml."""
+    thresholds = monitor.get("thresholds") or {}
+    if not isinstance(thresholds, dict):
+        raise ConfigError("monitor.thresholds must be a mapping")
+    found = default_thresholds()
+    for metric in MONITOR_METRICS:
+        given = thresholds.get(metric)
+        if given is None:
+            continue
+        if not isinstance(given, dict):
+            raise ConfigError(f"monitor.thresholds.{metric} must be a mapping of warning and critical")
+        warning = _whole(given.get("warning", found[metric][0]), f"monitor.thresholds.{metric}.warning", (1, 99))
+        critical = _whole(given.get("critical", found[metric][1]), f"monitor.thresholds.{metric}.critical", (2, 100))
+        if critical <= warning:
+            raise ConfigError(f"monitor.thresholds.{metric}: critical ({critical}%) must be above warning ({warning}%)")
+        found[metric] = [warning, critical]
+    restart = monitor.get("restart") or {}
+    if not isinstance(restart, dict):
+        raise ConfigError("monitor.restart must be a mapping")
+    enabled = restart.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ConfigError("monitor.restart.enabled must be true or false")
+    language = str(monitor.get("language") or "en")
+    if language not in NOTICE_LANGUAGES:
+        raise ConfigError(f"monitor.language: one of {', '.join(NOTICE_LANGUAGES)}")
+    webhooks = monitor.get("webhooks") or {}
+    if not isinstance(webhooks, dict) or len(webhooks) > WEBHOOKS_MAX:
+        raise ConfigError(f"monitor.webhooks: a mapping of at most {WEBHOOKS_MAX} webhook URLs")
+    keys = {}
+    for url, value in webhooks.items():
+        if not NOTIFY_WEBHOOK.fullmatch(str(url)) or not isinstance(value, dict):
+            raise ConfigError("monitor.webhooks: each key an https:// URL, each value a mapping")
+        secret = str(value.get("secret") or "")
+        if secret and not WEBHOOK_SECRET.fullmatch(secret):
+            raise ConfigError("monitor.webhooks: a secret of 20-200 letters, digits, - and _")
+        jobs = value.get("jobs", False)
+        if not isinstance(jobs, bool):
+            raise ConfigError("monitor.webhooks: jobs must be true or false")
+        if secret or jobs:
+            keys[str(url)] = {"secret": secret, "jobs": jobs}
+    return {"monitor_notify": parse_notify(monitor.get("notify"), "monitor.notify"),
+            "monitor_thresholds": found,
+            "monitor_minutes": _whole(thresholds.get("minutes", MONITOR_MINUTES), "monitor.thresholds.minutes",
+                                      MONITOR_MINUTES_LIMITS),
+            "restart_down": enabled,
+            "restart_after": _whole(restart.get("after", RESTART_AFTER), "monitor.restart.after", RESTART_AFTER_LIMITS),
+            "restart_every": _whole(restart.get("every", RESTART_EVERY), "monitor.restart.every", RESTART_EVERY_LIMITS),
+            "notice_language": language, "webhook_keys": keys}
+
+
+def monitor_to_dict(options) -> dict:
+    """The mapping monitor: of options.yaml (empty: all as by default)."""
+    data = {}
+    if options.monitor_notify:
+        data["notify"] = list(options.monitor_notify)
+    thresholds = {metric: {"warning": levels[0], "critical": levels[1]}
+                  for metric, levels in options.monitor_thresholds.items()
+                  if list(levels) != list(MONITOR_THRESHOLDS[metric])}
+    if options.monitor_minutes != MONITOR_MINUTES:
+        thresholds["minutes"] = options.monitor_minutes
+    if thresholds:
+        data["thresholds"] = thresholds
+    if options.restart_down or options.restart_after != RESTART_AFTER or options.restart_every != RESTART_EVERY:
+        data["restart"] = {"enabled": options.restart_down, "after": options.restart_after,
+                           "every": options.restart_every}
+    if options.notice_language != "en":
+        data["language"] = options.notice_language
+    if options.webhook_keys:
+        data["webhooks"] = {url: dict(value) for url, value in options.webhook_keys.items()}
+    return data
 
 
 def _whole(value, where: str, limits: tuple[int, int]) -> int:
@@ -1788,7 +1895,7 @@ def parse_options(data) -> Options:
                    automatic_names=automatic,
                    smtp_host=texts["host"], smtp_port=port, smtp_security=security, smtp_user=texts["user"],
                    smtp_password=texts["password"], mail_from=texts["from"],
-                   monitor_notify=parse_notify(monitor.get("notify"), "monitor.notify"),
+                   **parse_monitor(monitor),
                    audit_retention_days=retention, syslog_host=syslog_host, syslog_port=syslog_port,
                    syslog_protocol=protocol, syslog_ca_file=ca_file, provider_label=provider,
                    portal_address=address, portal_staff=staff, second_factor=second)
@@ -1818,8 +1925,8 @@ def save_options(path: Path, options: Options) -> None:
     if options.smtp_host:
         data["mail"] = {"host": options.smtp_host, "port": options.smtp_port, "security": options.smtp_security,
                         "user": options.smtp_user, "password": options.smtp_password, "from": options.mail_from}
-    if options.monitor_notify:
-        data["monitor"] = {"notify": list(options.monitor_notify)}
+    if monitor_to_dict(options):
+        data["monitor"] = monitor_to_dict(options)
     if options.audit_retention_days != AUDIT_RETENTION_DAYS or options.syslog_host:
         data["audit"] = {"retention_days": options.audit_retention_days}
         if options.syslog_host:
