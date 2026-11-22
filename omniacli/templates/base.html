@@ -227,6 +227,9 @@ button.primary:hover, .button.primary:hover { background: color-mix(in srgb, var
   border-color: color-mix(in srgb, var(--accent) 88%, #000); color: #fff; }
 button.danger { border-color: color-mix(in srgb, var(--err) 45%, var(--border)); color: var(--err); }
 button.danger:hover:not(:disabled) { background: var(--err-soft); border-color: var(--err); color: var(--err); }
+/* the confirm of what deletes or stops is primary and danger at once: white on red, not red on red */
+button.primary.danger, button.primary.danger:hover:not(:disabled) { background: #B42318; border-color: #B42318; color: #fff; }
+button.primary.danger:hover:not(:disabled) { background: #912018; border-color: #912018; }
 button.ghost { background: none; border-color: transparent; box-shadow: none; }
 button:disabled, .button[aria-disabled="true"] { opacity: .45; cursor: not-allowed; }
 .status { font-weight: 600; }

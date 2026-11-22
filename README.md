@@ -81,30 +81,23 @@ prepares a new one (see [Machines](#machines)).
 production, the free space and the load; the tabs Monitoring and Database
 (below).
 
-On the Dashboard of the machine OmniaCLI runs on, on top, one row for the
-machine (CPU and
-network of the last 15 minutes, its disks: a disk opens its history); a
-click on the row opens its whole load below it (the last hour's charts, its
-disks with their estimate), another closes it, as each viewer left it, then
-this instance's servers with their workspace, the state of their Odoo and
-their CPU, then (for admins) **Workspaces**, the list of the Workspaces page,
-then **Linked**, one row for each linked instance's machine (the same row;
-the name opens it), and the last jobs, updated as they run. CPU, network and
-disks are shown by one widget each (`templates/_load.html`), the same in
-every row that shows them: this machine, Linked, the servers' CPU, the
-Workspaces list.
+**This machine** (the logo, or its card in Servers) opens on three numbers
+— its Odoo instances, their stagings, the free space — and the load of now
+as three bars (CPU, RAM, disk); under them its instances, each staging right
+under its production, with a search box and **+ New instance**. The tabs
+**Monitoring** and **Database** are described below; **Disks**, top right,
+opens the history of every disk.
 Every disk is recorded once a day (kept three years, in
-`<data>/disk_history.json`): its panel row says when it will be full, from the
-trend of the last 90 days (at least 7 days of data), and **Disks** (`/disks`)
-charts each disk's used space with that forecast. The workspaces' disks are
-recorded the same way (the space their image takes, full at their
-`disk_gb`), and **Disks** charts them too.
+`<data>/disk_history.json`): **Disks** (`/disks`) charts each disk's used
+space and says when it will be full, from the trend of the last 90 days (at
+least 7 days of data). The workspaces' disks are recorded the same way (the
+space their image takes, full at their `disk_gb`), and **Disks** charts them
+too.
 
 Every page that shows a disk shows it with one widget
-(`templates/_disk.html`): the Dashboard (this machine's and the linked
-instances' disks, the folded row, a workspace's panel), Workspaces (each
-workspace's disk, the real disk under its storage with what the workspaces
-were promised there), a workspace's page, a puller's page, and Disks. Each
+(`templates/_disk.html`): Workspaces (each workspace's disk, the real
+disk under its storage with what the workspaces were promised there), a
+workspace's page, a puller's page, and Disks. Each
 reads the same: used, free and size, a bar that turns orange under 15% free
 and red under 5%, and the estimate (the day it is full, the growth a day, or
 why there is none yet), orange within 90 days of full and red within 30.
@@ -149,9 +142,9 @@ the workspaces' disks come after the machine's.
 
 ![The Disks page](docs/images/disks.png)
 
-**An instance**: its name and state in the head, a problem with its names
-said under the title (here the test machine's names have no certificate),
-with Open Odoo, Log in as…, Update and More; the tabs Overview (its Odoo
+**An instance**: its address and state in the head (a problem with its
+names is said under the title: a name out of DNS, no certificate yet), with
+Open Odoo, Log in as…, Update and More; the tabs Overview (its Odoo
 version, whether it answers, and its environments: production, test and
 stagings, also those on another machine), Backups, Log, Monitoring, Modules,
 Settings.
