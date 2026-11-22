@@ -441,6 +441,14 @@ async def test_config_check_saves_nothing(client, env):
     resp = await client.post("/api/servers/check", headers=POST, json={"name": "srv", "server": server})
     assert resp.status_code == 200 and resp.json()["checks"], resp.text
     assert resp.json()["ok"] is False and any(not c["ok"] for c in resp.json()["checks"])
+    # the checks are said in the reader's language: what is checked and its result
+    english = {c["name"] for c in resp.json()["checks"]}
+    resp_it = await client.post("/api/servers/check", headers={**POST, "Accept-Language": "it"},
+                                json={"name": "srv", "server": server})
+    italian = resp_it.json()["checks"]
+    assert "Backup folder" in english and "Cartella dei backup" in {c["name"] for c in italian}
+    assert any("scrivibile" in c["detail"] for c in italian if c["name"] == "Cartella dei backup")
+    assert [c["ok"] for c in italian] == [c["ok"] for c in resp.json()["checks"]]
     # a new name is checked too, and is not added
     resp = await client.post("/api/servers/check", headers=POST, json={"name": "brand_new", "server": server})
     assert resp.status_code == 200 and "checks" in resp.json()

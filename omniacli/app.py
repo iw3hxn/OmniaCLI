@@ -138,6 +138,20 @@ def request_language(request: HTTPConnection) -> str:
     return i18n.choose(request.cookies.get(i18n.COOKIE), request.headers.get("accept-language"))
 
 
+def checks_said(request: Request, report) -> list[dict]:
+    """The checks of a server (checks.py) as the reader's language says them:
+    what is checked and its result; the rest of each as it is."""
+    lang = request_language(request)
+    said = []
+    for check in report:
+        data = check.to_dict()
+        for key in ("name", "detail"):
+            if isinstance(data.get(key), str):
+                data[key] = i18n.tr(lang, data[key])
+        said.append(data)
+    return said
+
+
 def menu_places(user) -> list[str]:
     """The places of the top menu user sees (MENU_PLACES), as base.html draws them."""
     places = ["servers"] if user.can("admin") and not user.scoped else []
@@ -2854,7 +2868,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 "seconds": loginas.TOKEN_SECONDS}
 
     @app.post("/api/servers/save", dependencies=[Depends(admin)])
-    async def config_save(payload: dict = Body(...)):
+    async def config_save(request: Request, payload: dict = Body(...)):
         original = payload.get("original") or None
         name = str(payload.get("name") or "").strip()
         async with config_lock:
@@ -2884,7 +2898,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     return JSONResponse(
                         {"error": "The checks failed: nothing was saved, the server is "
                                   "still live with its previous settings",
-                         "checks": [c.to_dict() for c in report]},
+                         "checks": checks_said(request, report)},
                         status_code=400,
                     )
             servers = {}
@@ -2903,11 +2917,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return {
             "ok": True,
             "status": parsed.status,
-            "checks": [c.to_dict() for c in report] if report is not None else None,
+            "checks": checks_said(request, report) if report is not None else None,
         }
 
     @app.post("/api/servers/check", dependencies=[Depends(admin)])
-    async def config_check(payload: dict = Body(...)):
+    async def config_check(request: Request, payload: dict = Body(...)):
         """The checks on what the form holds: nothing is saved, the form stays open."""
         name = str(payload.get("name") or "").strip() or "new"
         server_data = dict(payload.get("server") or {})
@@ -2921,7 +2935,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             for repo in (inst.repositories if inst is not None else []):
                 repo.git_options = options
         report = await checks.check_server(parsed, settings.backup_dir, settings.machine)
-        return {"ok": checks.passed(report), "checks": [c.to_dict() for c in report]}
+        return {"ok": checks.passed(report), "checks": checks_said(request, report)}
 
     @app.post("/api/servers/branches", dependencies=[Depends(admin)])
     async def config_branches(payload: dict = Body(...)):
@@ -3040,7 +3054,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return {"ok": True, "created": [{"name": n, "error": s.error} for n, s in parsed.items()]}
 
     @app.post("/api/servers/{name}/test", dependencies=[Depends(admin)])
-    async def config_test(name: str):
+    async def config_test(request: Request, name: str):
         """Run the checks; a draft that passes them becomes active."""
         async with config_lock:
             srv = settings.servers.get(name)
@@ -3054,7 +3068,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 if error:
                     srv.status = "draft"
                     return error
-        return {"ok": ok, "status": srv.status, "checks": [c.to_dict() for c in report]}
+        return {"ok": ok, "status": srv.status, "checks": checks_said(request, report)}
 
     @app.post("/api/servers/{name}/deactivate", dependencies=[Depends(admin)])
     async def config_deactivate(name: str):
