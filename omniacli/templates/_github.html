@@ -38,6 +38,8 @@
 <script>
 (function () {
   const G = {who: {{ _("Token of {login} ({type})") | tojson }}, orgs: {{ _("organisations: {orgs}") | tojson }},
+    // GitHub's own word for who the token is, in the reader's language
+    types: {User: {{ _("a user") | tojson }}, Organization: {{ _("an organisation") | tojson }}, Bot: {{ _("a bot") | tojson }}},
              reach: {{ _("It reads {count} repositories ({private} private) of {owners}.") | tojson }},
              cut: {{ _("The list stops at the first ones: GitHub was asked no further.") | tojson }},
              none: {{ _("It reads no repository: give it the repositories in Repository access.") | tojson }},
@@ -57,7 +59,7 @@
   function draw(box, data) {
     box.replaceChildren();
     const line = (text, cls) => { const p = document.createElement("p"); p.style.margin = "2px 0"; p.textContent = text; if (cls) p.className = cls; box.append(p); };
-    line(fill(G.who, {login: data.login, type: data.type}) + (data.orgs && data.orgs.length ? " · " + fill(G.orgs, {orgs: data.orgs.join(", ")}) : ""));
+    line(fill(G.who, {login: data.login, type: G.types[data.type] || data.type}) + (data.orgs && data.orgs.length ? " · " + fill(G.orgs, {orgs: data.orgs.join(", ")}) : ""));
     if (!data.repositories) line(G.none, "missing");
     else line(fill(G.reach, {count: data.repositories, private: data.private, owners: data.owners.join(", ")}) + (data.cut ? " " + G.cut : ""));
     if (data.probe) {

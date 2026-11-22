@@ -52,7 +52,8 @@ case "$1" in
             /var/lib/omniacli/deploy-hooks.json /var/lib/omniacli/deploy-hooks.json.tmp \
             /var/lib/omniacli/destinations.yaml /var/lib/omniacli/destinations.yaml.tmp \
             /var/lib/omniacli/enterprise.yaml /var/lib/omniacli/enterprise.yaml.tmp \
-            /var/lib/omniacli/webnames.json /var/lib/omniacli/webnames.json.tmp
+            /var/lib/omniacli/webnames.json /var/lib/omniacli/webnames.json.tmp \
+            /var/lib/omniacli/github-hooks.json /var/lib/omniacli/github-hooks.json.tmp
         if [ -d /var/lib/omniacli/backups ] && [ -n "$(ls -A /var/lib/omniacli/backups)" ]; then
             echo "omniacli: the database backups are kept in /var/lib/omniacli/backups"
         else
