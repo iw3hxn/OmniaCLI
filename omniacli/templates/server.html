@@ -524,6 +524,8 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
       <button type="button" class="small" id="mail-inbox-fetch" hidden title="{{ _('Configures the mailboxes again (an alias made since gets its own), sends the outgoing queue of Odoo (to this tab), then reads every mailbox now instead of waiting for the cron (every 5 minutes)') }}">{{ _("Read now") }}</button>
     </div>{% endif %}
   </div>
+  {% elif mail_old_odoo %}
+  <p class="muted">{{ _("This staging receives no mail: Odoo {major} has no alias domain, which its mailboxes need (Odoo 17 and later). What its Odoo sends is read here.", major=mail_old_odoo) }}</p>
   {% else %}
   <p class="muted">{{ _("This staging receives no mail: it was made before its mailboxes. What its Odoo sends is read here.") }}</p>
   {% endif %}

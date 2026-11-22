@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """The Odoo in Docker Compose plugin: servers of type docker.
 
-An instance is an Odoo 18 or later that runs in a compose project (restart
+An instance is an Odoo 16 or later that runs in a compose project (restart
 type compose, its service the project's folder), from a DockerOdooPLM stack
 or the official odoo image alike. Everything it does goes through the
 project's root helper (omniacli compose-helper, composehelper.py), which
@@ -72,8 +72,10 @@ from ..plugin_api import (
     stop,
 )
 
-# the first Odoo with odoo db dump/load in its image's command line
-MIN_MAJOR = 18
+# the first Odoo with odoo db dump/load (--force, --neutralize) and odoo neutralize in its image's
+# command line: cli/db.py and cli/neutralize.py, read in odoo:16.0 of 2025-09-09 and odoo:17.0 of
+# 2026-09-08 (22/11/2026); odoo:15.0 and 14.0 have neither
+MIN_MAJOR = 16
 # odoo db dump --no-filestore: from Odoo 19
 NO_FILESTORE_MAJOR = 19
 # the port Odoo listens on in its container
@@ -114,7 +116,7 @@ def on_linked_cluster(instance: Instance) -> bool:
         return False
     return isinstance(meta, dict) and bool(meta.get("database_link"))
 
-MCP_HELP = """Servers of type docker: Odoo 18 or later in a Docker Compose project, driven
+MCP_HELP = """Servers of type docker: Odoo 16 or later in a Docker Compose project, driven
 through OmniaCLI's root helper. update_test updates the changed modules
 (click-odoo-update) before the restart. A backup zip is odoo db dump's: the
 database dump and the filestore, restored with odoo db load or Odoo's

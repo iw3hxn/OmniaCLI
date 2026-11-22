@@ -98,7 +98,11 @@ build_venv() {
         && "$VENV/bin/pip" install -q --disable-pip-version-check --no-cache-dir --no-deps \
             --only-binary=:all: --python-version 3.12 --ignore-requires-python \
             --target "$VENV/omniacli-tools" \
-            -r /opt/omniacli/requirements/tools.txt; then
+            -r /opt/omniacli/requirements/tools.txt \
+        && "$VENV/bin/pip" install -q --disable-pip-version-check --no-cache-dir --no-deps \
+            --only-binary=:all: --python-version 3.9 --ignore-requires-python \
+            --target "$VENV/omniacli-tools/py39" \
+            -r /opt/omniacli/requirements/tools-py39.txt; then
         rm -rf "$VENV.old" "$BUNDLED.old"
         # a local Python took the place of the bundled one
         case "$py_bin" in "$BUNDLED"/*) ;; *) rm -rf "$BUNDLED" ;; esac

@@ -357,7 +357,7 @@ class Template:
 
     def to_dict(self) -> dict:
         return {"name": self.name, "label": self.label, "version": self.version, "database": self.database,
-                "dedicated": self.dedicated,
+                "dedicated": self.dedicated, "postgres": self.postgres,
                 "fields": [{"name": f.name, "label": f.label, "default": f.default, "choices": f.choices,
                             "pattern": f.pattern} for f in self.fields],
                 "parameters": [p.to_dict() for p in self.parameters]}
@@ -426,12 +426,16 @@ def load_template(folder: Path) -> Template:
     if mode == "machine" and (postgres not in machinedb.MAJORS or not NAME.fullmatch(dedicated)):
         raise TemplateError(f"{name}: a template on the machine's cluster names its PostgreSQL "
                             f"({', '.join(machinedb.MAJORS)}) and its dedicated twin")
+    # a dedicated one may name the major of its database service (its image postgres:<major>): the
+    # New instance dialog says why a version whose PostgreSQL is not the cluster's is not offered there
+    if mode == "dedicated" and postgres and not re.fullmatch(r"\d{1,3}", postgres):
+        raise TemplateError(f"{name}: postgres {postgres!r} is the major of its PostgreSQL, as 17")
     template = Template(
         folder=folder, name=name, label=str(meta.get("label") or name), version=str(meta.get("version") or ""),
         odoo_service=str(meta.get("odoo_service") or "odoo"),
         db_service={"machine": MACHINE_DB_SERVICE, "remote": REMOTE_DB_SERVICE}.get(
             mode, str(meta.get("db_service") or "db")),
-        database=mode, postgres=postgres, dedicated=dedicated if mode == "machine" else "",
+        database=mode, postgres=postgres if mode != "remote" else "", dedicated=dedicated if mode == "machine" else "",
         addons_path=[str(p) for p in meta.get("addons_path") or []],
         customer_addons=str(meta.get("customer_addons") or ""), data=data, fields=fields,
         compose=(folder / "compose.yaml").read_text(encoding="utf-8"),
@@ -539,6 +543,9 @@ def check_compose(template: Template) -> list[str]:
             found.append(f"odoo.conf.in: {REMOTE_CONF} is required for a database of another machine")
     elif template.odoo_service not in data["services"] or template.db_service not in data["services"]:
         found.append(f"services {template.odoo_service} and {template.db_service} are required")
+    elif template.postgres and (data["services"][template.db_service] or {}).get("image") != f"postgres:{template.postgres}":
+        found.append(f"services.{template.db_service}.image: postgres:{template.postgres}, the PostgreSQL its "
+                     "template.json names")
     for name in (template.odoo_service, *((template.db_service,) if template.own_database else ())):
         if isinstance(data["services"].get(name), dict) and data["services"][name].get("profiles"):
             found.append(f"services.{name}: runs always, without profiles")

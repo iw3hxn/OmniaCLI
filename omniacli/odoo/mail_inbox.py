@@ -150,7 +150,9 @@ def switch_on():
     odoo_env.cr.commit()
 
 
-neutralized = odoo_env["ir.config_parameter"].sudo().get_param("database.is_neutralized")
+parameters = odoo_env["ir.config_parameter"].sudo()
+# get_param to the Odoo 20 of 2026-10; get_str (typed getters, no get_param) from the Odoo 20 of 2026-11
+neutralized = (parameters.get_str if hasattr(parameters, "get_str") else parameters.get_param)("database.is_neutralized")
 if "fetchmail.server" not in odoo_env:
     answer = {"error": "Odoo of the staging has no mail module (Discuss): install it, or an app that needs it "
                        "(CRM, Sales, Helpdesk), first"}

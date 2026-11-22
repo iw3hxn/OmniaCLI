@@ -18,7 +18,9 @@ from .test_app import AUTH, POST, client, wait_job  # noqa: F401 - the client fi
 from .test_stacktemplates import REPO_TEMPLATES, copy_template, root  # noqa: F401 - the root fixture
 from .test_workspaces import basic, post_as, workspaces  # noqa: F401 - the workspaces fixture
 
-TEMPLATES = ("odoo-18", "odoo-19", "odooplm-20")
+TEMPLATES = ("odoo-16", "odoo-17", "odoo-18", "odoo-19", "odoo-20", "odooplm-20")
+# those whose staging also has mailboxes its Odoo reads: Odoo 17 and later (mail.alias.domain)
+RECEIVING = tuple(name for name in TEMPLATES if name != "odoo-16")
 # the server odoo neutralize adds to a database (base/data/neutralize.sql, Odoo 16 to 20)
 NEUTRALIZED_HOST, NEUTRALIZED_PORT = "invalid", 1025
 

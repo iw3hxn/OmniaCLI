@@ -1617,6 +1617,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 "mail_capture": bool(staging_of) and await asyncio.to_thread(staging_mail, srv.name) is not None,
                 # and its mailboxes Odoo reads, written to as an outside sender (UX-008 §5.4)
                 "mail_inbox": bool(staging_of) and await asyncio.to_thread(staging_inbox, srv.name) is not None,
+                # an Odoo older than the alias domain: why it has no mailboxes
+                "mail_old_odoo": workspacehelper.without_alias_domain(
+                    (await asyncio.to_thread(staging_mail_meta, srv.name))[1]) if staging_of else None,
                 "mail_domain": stagingmail.domain_of(srv.name),
                 "is_developer_here": request.state.user.can("developer"),
                 # the paths and the commands of an instance, for the machine's admins (ssh)
@@ -4193,6 +4196,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     values = {**values, workspacehelper.REMOTE_KEY: workspacehelper.remote_spec(payload.get("remote"))}
                 except workspacehelper.HelperError as exc:
                     return refuse(str(exc))
+                refused = workspacehelper.replica_refused(template.name, values[workspacehelper.REMOTE_KEY])
+                if refused:
+                    return refuse(refused)
         elif payload.get("remote") or payload.get("linked"):
             return refuse(f"The template {template.name} has a database of its own: choose a template of a database "
                           "of another machine")
@@ -4527,11 +4533,28 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             free_gb, room_gb = int(room.get("allowed", 0) / workspaceops.GB), quick_room(space)
         # the database (AD-001, AD-007): the machine's cluster by default when it
         # is there and the version has a template on it, dedicated otherwise
-        cluster = bool(machinedb.registry())
-        return {"versions": [{"major": m, "label": found[f"odoo-{m}"].label,
-                              "machine": f"odoo-{m}-machine" in found} for m in majors],
+        clusters = sorted(machinedb.registry())
+        versions = []
+        for m in majors:
+            postgres = quick_machine_postgres(found, m, clusters)
+            versions.append({"major": m, "label": found[f"odoo-{m}"].label,
+                             "machine": f"odoo-{m}-machine" in found and not postgres,
+                             # the PostgreSQL the version runs on when the cluster is another one: the dialog
+                             # turns Of the machine off and says why (AD-001, one major per machine)
+                             **({"machine_postgres": postgres} if postgres else {})})
+        return {"versions": versions,
                 "storage": bool(settings.storage_roots), "address": await asyncio.to_thread(public_address),
-                "free_gb": free_gb, "room_gb": room_gb, "min_gb": QUICK_DISK_GB[0], "cluster": cluster}
+                "free_gb": free_gb, "room_gb": room_gb, "min_gb": QUICK_DISK_GB[0], "cluster": bool(clusters),
+                "cluster_postgres": clusters}
+
+    def quick_machine_postgres(found: dict, major, clusters: list[str]) -> str:
+        """The PostgreSQL Odoo <major> needs when the machine's cluster (its
+        majors, clusters) is not it: its template on the cluster's, else its
+        dedicated template's (postgres of template.json); "" when it fits or
+        when nothing says (no cluster, no major named)."""
+        twin, own = found.get(f"odoo-{major}-machine"), found.get(f"odoo-{major}")
+        needed = getattr(twin if twin is not None else own, "postgres", "") or ""
+        return needed if clusters and needed and needed not in clusters else ""
 
     @app.post("/api/instances/new", dependencies=[Depends(admin)])
     async def quick_instance(payload: dict = Body(...), me: Principal = Depends(current_user)):
@@ -4546,14 +4569,19 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if template not in found_templates:
             return refuse(f"No Odoo {major} here (no template {template})")
         # its database: the machine's cluster (the default when there is one) or one of its own
-        database = str(payload.get("database") or ("machine" if machinedb.registry()
+        clusters = sorted(machinedb.registry())
+        postgres = quick_machine_postgres(found_templates, major, clusters)
+        database = str(payload.get("database") or ("machine" if clusters and not postgres
                                                     and f"{template}-machine" in found_templates else "dedicated"))
         if database not in ("machine", "dedicated"):
             return refuse("database is machine or dedicated")
         if database == "machine":
-            if not machinedb.registry():
+            if not clusters:
                 return refuse("This machine has no cluster of its own yet: make it in Dashboard › Database, "
                               "or choose a dedicated database")
+            if postgres:
+                return refuse(f"Odoo {major} runs on PostgreSQL {postgres}, the machine's cluster is PostgreSQL "
+                              f"{', '.join(clusters)}: choose a dedicated database")
             if f"{template}-machine" not in found_templates:
                 return refuse(f"Odoo {major} has no template on the machine's cluster: choose a dedicated database")
             template = f"{template}-machine"
@@ -5256,6 +5284,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return {}
 
     def no_inbox(server: str):
+        major = workspacehelper.without_alias_domain(staging_mail_meta(server)[1])
+        if major is not None:
+            return refuse(f"{server} receives no mail: Odoo {major} has no alias domain, which its mailboxes need "
+                          f"(Odoo {workspacehelper.INBOX_FROM} and later). Its outgoing mail is caught only",
+                          status.HTTP_404_NOT_FOUND)
         return refuse(f"{server} receives no mail: it is no staging, or one made before its mailboxes "
                       "(its outgoing mail is caught only)", status.HTTP_404_NOT_FOUND)
 

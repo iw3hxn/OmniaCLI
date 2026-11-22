@@ -1514,6 +1514,30 @@ def receives_mail(meta: dict, role: str) -> bool:
     return captures_mail(meta, role) and meta.get(INBOX_META) is True
 
 
+# the first Odoo with an alias domain (mail.alias.domain), which the mailboxes of a staging need
+# (odoo/mail_inbox.py): the templates of an older one have no service inbox
+INBOX_FROM = 17
+
+
+def without_alias_domain(meta: dict) -> int | None:
+    """The Odoo of an instance's template when it is older than INBOX_FROM
+    (its staging catches the outgoing mail only), else None."""
+    major = odoo_major(str(meta.get("template") or ""))
+    return major if major is not None and major < INBOX_FROM else None
+
+
+def replica_refused(template_name: str, remote: dict | None) -> str | None:
+    """Why a read replica given with a database of another machine is
+    refused for the template's Odoo (db_replica_host, Odoo 18 and later),
+    or None."""
+    major = odoo_major(template_name)
+    # a template whose name says no Odoo (a downloaded one of its own) is left to what it says
+    if remote and remote.get("replica") and major is not None and major < ODOO_WITH_REPLICA:
+        return (f"Odoo {major} cannot read from a replica: it can from {ODOO_WITH_REPLICA} on "
+                "(db_replica_host). Leave the replica empty")
+    return None
+
+
 def create(name: str, storage: str, instance: str, template_name: str, values_json: str) -> dict:
     image, mount = workspace(name, storage)
     _name("instance", instance)
@@ -1546,6 +1570,8 @@ def create(name: str, storage: str, instance: str, template_name: str, values_js
             raise HelperError(f"{REMOTE_KEY} on the input is too long")
     if template.on_remote:
         remote = remote_spec(remote)
+        if replica_refused(template.name, remote):
+            raise HelperError(replica_refused(template.name, remote))
     elif remote is not None:
         raise HelperError(f"{template.name} has its own database: {REMOTE_KEY} is for a template of a database "
                           "of another machine")

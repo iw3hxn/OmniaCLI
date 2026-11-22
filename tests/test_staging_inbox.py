@@ -20,13 +20,13 @@ from omniacli.composehelper import HelperError
 
 from .test_app import AUTH, client  # noqa: F401 - the client fixture
 from .test_stacktemplates import REPO_TEMPLATES, root  # noqa: F401 - the root fixture
-from .test_stagingmail import LISTED, ONE, TEMPLATES, make_staging
+from .test_stagingmail import LISTED, ONE, RECEIVING, make_staging
 from .test_workspaces import basic, post_as, workspaces  # noqa: F401 - the workspaces fixture
 
 
 # --- the templates
 
-@pytest.mark.parametrize("name", TEMPLATES)
+@pytest.mark.parametrize("name", RECEIVING)
 def test_the_inbox_service_of_the_templates(name):
     template = stacktemplates.load_template(REPO_TEMPLATES / name)
     assert template.receives_mail()
@@ -421,6 +421,27 @@ def test_the_configuration_refuses_a_database_not_neutralized():
     assert "not neutralized" in answer["error"] and env.count == before
 
 
+class TypedParameters:
+    """ir.config_parameter of the Odoo 20 of 2026-11: typed getters, no get_param."""
+
+    def __init__(self, params):
+        self.params = params
+
+    def sudo(self):
+        return self
+
+    def get_str(self, key, default=""):
+        return self.params.get(key, default)
+
+
+@pytest.mark.parametrize("neutralized", [True, False])
+def test_the_configuration_reads_the_typed_parameters_of_odoo_20(neutralized):
+    env = Env(neutralized=neutralized)
+    env.models["ir.config_parameter"] = TypedParameters(env.params)
+    answer = run_script(env, "on")
+    assert answer.get("on") is True if neutralized else "not neutralized" in answer["error"]
+
+
 # --- the routes and the page
 
 @pytest.fixture
@@ -532,3 +553,17 @@ async def test_the_mail_tab_of_a_staging_that_receives(workspaces, client, env, 
     page = (await client.get(f"/servers/{staging}", headers=basic("luca"))).text
     assert 'data-tab="mail"' in page and 'class="mail-inbox' in page and 'id="mail-write-dialog"' not in page
     assert not re.search(r'<button[^>]*id="(mail-write|mail-inbox-on|mm-reply)"', page)
+
+
+async def test_a_staging_of_odoo_16_says_why_it_receives_nothing(workspaces, client, env, monkeypatch,  # noqa: F811
+                                                                 tmp_path, inbox_answers):
+    """Odoo 16 has no alias domain (mail.alias.domain): its staging catches
+    the outgoing mail only, and its page and the routes say why."""
+    staging, _ = await make_staging(workspaces, client, env, monkeypatch, tmp_path)
+    meta_file = tmp_path / "acme" / staging.removeprefix("acme-") / "instance.json"
+    meta_file.write_text(json.dumps({**json.loads(meta_file.read_text()), "template": "odoo-16"}))
+    resp = await client.get(f"/api/servers/{staging}/production/mail/inbox", headers={"Authorization": AUTH})
+    assert resp.status_code == 404 and "Odoo 16 has no alias domain" in resp.json()["error"]
+    page = (await client.get(f"/servers/{staging}", headers={"Authorization": AUTH})).text
+    assert "Odoo 16 has no alias domain, which its mailboxes need" in page
+    assert "it was made before its mailboxes" not in page

@@ -138,7 +138,8 @@
              offTitle: {{ _("Cannot make an instance there: {why}") | tojson }},
              dbMachine: {{ _("Database: of the machine") | tojson }}, dbDedicated: {{ _("Database: dedicated") | tojson }},
              noCluster: {{ _("This machine has no PostgreSQL of its own yet: an admin makes it in Dashboard › Database") | tojson }},
-             noTwin: {{ _("This version has no template on the machine's cluster") | tojson }}};
+             noTwin: {{ _("This version has no template on the machine's cluster") | tojson }},
+             otherPostgres: {{ _("This version runs on PostgreSQL {postgres}, the machine's cluster is PostgreSQL {cluster}: a dedicated database") | tojson }}};
   const dialog = document.getElementById("new-instance"), versions = document.getElementById("ni-versions");
   const error = document.getElementById("ni-error"), create = document.getElementById("ni-create");
   const nameField = document.getElementById("ni-name");
@@ -229,7 +230,9 @@
   function database(data, version) {
     dbBox.hidden = !("cluster" in data) || !version;
     if (dbBox.hidden) return;
-    const why = !data.cluster ? T.noCluster : !version.machine ? T.noTwin : "";
+    const why = !data.cluster ? T.noCluster : version.machine_postgres ? T.otherPostgres
+      .replace("{postgres}", version.machine_postgres).replace("{cluster}", (data.cluster_postgres || []).join(", "))
+      : !version.machine ? T.noTwin : "";
     dbMachine.disabled = !!why;
     document.getElementById("ni-db-machine-label").title = why;
     (why ? dbDedicated : dbMachine).checked = true;

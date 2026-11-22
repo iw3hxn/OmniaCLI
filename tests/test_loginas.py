@@ -194,6 +194,98 @@ def test_the_helper_runs_only_the_script_of_the_package(tmp_path, monkeypatch):
     assert 'OMNIACLI_LOGIN="$2" exec odoo shell -d "$1"' in composehelper.SCRIPTS["login"]
 
 
+class _Session(dict):
+    """A session of Odoo's store: a dict with attributes, as odoo.http's Session."""
+
+    def __init__(self, sid):
+        super().__init__()
+        self.__dict__["sid"] = sid
+
+    def __getattr__(self, name):
+        return self[name]
+
+    def __setattr__(self, name, value):
+        self[name] = value
+
+
+class _Store:
+    def __init__(self):
+        self.saved = []
+
+    def new(self):
+        return _Session("new-sid")
+
+    def save(self, session):
+        self.saved.append(session)
+
+
+class _User:
+    id, login, name, share, active = 7, "mario", "Mario Rossi", False, True
+
+    def exists(self):
+        return self
+
+    def with_user(self, user):
+        return self
+
+    def context_get(self):
+        return {"lang": "it_IT"}
+
+    def _compute_session_token(self, sid):
+        return f"token-of-{sid}"
+
+
+class _Users:
+    def with_context(self, **kw):
+        return self
+
+    def browse(self, uid):
+        return _User()
+
+
+class _Env(dict):
+    cr = type("cr", (), {"dbname": "erp"})
+
+
+@pytest.mark.parametrize("shape", ["http.root (Odoo 16 to the 20 of 2026-09)", "http.session (Odoo 20 of 2026-11)"])
+def test_the_script_makes_the_session_on_either_http_of_odoo(monkeypatch, capsys, shape):
+    """odoo/login_session.py: the store and the default session of Odoo 16-19
+    (http.root.session_store, http.get_default_session), or of the Odoo 20
+    built since 2026-11 (the package http, its module session with
+    session_store()); the token is the user's _compute_session_token(sid),
+    which odoo.service.security wrapped and the newer Odoo does without."""
+    import sys
+    import types
+
+    store = _Store()
+    http = types.ModuleType("odoo.http")
+    if shape.startswith("http.root"):
+        http.root = types.SimpleNamespace(session_store=store)
+        http.get_default_session = lambda: {"debug": "", "uid": None}
+    else:
+        http.session = types.SimpleNamespace(session_store=lambda: store,
+                                             get_default_session=lambda: {"_devices": {}, "uid": None})
+    release = types.ModuleType("odoo.release")
+    release.version_info = (20, 0, 0) if "Odoo 20" in shape else (16, 0, 0)
+    odoo = types.ModuleType("odoo")
+    odoo.http, odoo.release = http, release
+    monkeypatch.setitem(sys.modules, "odoo", odoo)
+    monkeypatch.setitem(sys.modules, "odoo.http", http)
+    monkeypatch.setitem(sys.modules, "odoo.release", release)
+    monkeypatch.setenv("OMNIACLI_LOGIN", "7")
+    exec(composehelper.LOGIN_SCRIPT.read_text(), {"env": _Env({"res.users": _Users()}), "__name__": "__main__"})
+    answer = login_answer(0, capsys.readouterr().out)
+    assert answer["sid"] == "new-sid" and answer["login"] == "mario"
+    assert answer["home"] == ("/odoo" if "Odoo 20" in shape else "/web")
+    session = store.saved[-1]
+    assert (session.db, session.uid, session.session_token) == ("erp", 7, "token-of-new-sid")
+    # nothing of before 16: refused, said
+    monkeypatch.setitem(sys.modules, "odoo.http", types.ModuleType("odoo.http"))
+    odoo.http = sys.modules["odoo.http"]
+    exec(composehelper.LOGIN_SCRIPT.read_text(), {"env": _Env({"res.users": _Users()}), "__name__": "__main__"})
+    assert "Odoo 16 or later" in login_answer(0, capsys.readouterr().out)["error"]
+
+
 async def test_the_native_odoo_runs_the_script_with_click_odoo(env):
     instance = env["settings"].instance("srv", "test")
     venv = instance.options.venv_bin

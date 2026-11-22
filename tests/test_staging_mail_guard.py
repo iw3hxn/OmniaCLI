@@ -201,7 +201,7 @@ def test_the_texts_are_in_italian():
                          "even though it was not asked").startswith("--- acme-stg/production è una staging")
 
 
-@pytest.mark.parametrize("name", ["odoo-18", "odoo-19", "odooplm-20"])
+@pytest.mark.parametrize("name", ["odoo-16", "odoo-17", "odoo-18", "odoo-19", "odoo-20", "odooplm-20"])
 def test_the_mail_service_is_in_the_project_s_network(name):
     """The rule spares the project's own network: the templates' mail service is on it, not on another."""
     services = yaml.safe_load(stacktemplates.load_template(REPO_TEMPLATES / name).compose)["services"]

@@ -711,6 +711,7 @@
  "This is a staging of {parent}, copied on {date}.": "Questa è una staging di {parent}, copiata il {date}.",
  "This machine has no copy of {series} yet: switching on fetches it first.": "Questa macchina non ha ancora una copia della {series}: l'attivazione la scarica prima.",
  "This machine has no storage for workspaces: there are no instances made from a template to switch.": "Questa macchina non ha storage per i workspace: non ci sono istanze create da un template in cui attivarlo.",
+ "This staging receives no mail: Odoo {major} has no alias domain, which its mailboxes need (Odoo 17 and later). What its Odoo sends is read here.": "Questa staging non riceve posta: Odoo {major} non ha il dominio degli alias, che serve alle caselle (da Odoo 17). Quello che il suo Odoo manda si legge qui.",
  "This staging receives no mail: it was made before its mailboxes. What its Odoo sends is read here.": "Questa staging non riceve posta: è nata prima delle caselle. Quello che il suo Odoo manda si legge qui.",
  "Ticked: the repositories with new commits.": "Spuntati: i repository con nuovi commit.",
  "To look at": "Da guardare",

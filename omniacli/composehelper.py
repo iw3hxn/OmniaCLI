@@ -358,6 +358,10 @@ LANGUAGE = re.compile(r"[a-z]{2,3}_[A-Z]{2}")
 # only into a container of the Odoo service for click-odoo-update
 TOOLS = Path(sys.prefix) / "omniacli-tools"
 TOOLS_MOUNT = "/opt/omniacli-tools"
+# the click of the tools (8.5) needs Python 3.10: an image with an older one
+# (odoo:16.0, Debian 11, Python 3.9) finds click 8.1.8 first, in this folder
+# of the tools (packaging/debian/requirements/tools-py39.txt)
+TOOLS_PY39 = "py39"
 # in an Odoo container: the database connection its entrypoint makes (the
 # official image's /entrypoint.sh: HOST, PORT, USER, PASSWORD or
 # PASSWORD_FILE, with their defaults), as the PG* variables Odoo and
@@ -404,7 +408,11 @@ SCRIPTS = {
                       'cat > "$f"; odoo db load --force "$1" "$f"',
     "load-neutralize": ODOO_DB + 'f="$(mktemp /tmp/omniacli-load-XXXXXX.zip)"; trap \'rm -f "$f"\' EXIT; '
                                  'cat > "$f"; odoo db load --force --neutralize "$1" "$f"',
-    "update": ODOO_DB + CRONS_BEFORE + f'export PYTHONPATH={TOOLS_MOUNT}; '
+    "update": ODOO_DB + CRONS_BEFORE + f'p={TOOLS_MOUNT}; '
+                        "python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' || "
+                        f'{{ p={TOOLS_MOUNT}/{TOOLS_PY39}:$p; [ -d {TOOLS_MOUNT}/{TOOLS_PY39} ] || echo "WARNING: '
+                        f"the Python of this image is older than 3.10 and OmniaCLI's tools have no "
+                        f'{TOOLS_PY39}/ for it: install the package again" >&2; }}; export PYTHONPATH="$p"; '
                         f'python3 {TOOLS_MOUNT}/bin/click-odoo-update -d "$1"; ' + CRONS_AFTER,
     # no outgoing mail, no scheduled actions (Odoo 16 and later)
     "neutralize": ODOO_DB + 'exec odoo neutralize -d "$1"',

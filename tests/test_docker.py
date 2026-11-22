@@ -124,11 +124,11 @@ async def test_checks(helper, monkeypatch, tmp_path):
     assert not result["Tools"].ok and result["Tools"].level == "error"
     (tmp_path / "bin").mkdir()
     (tmp_path / "bin" / "click-odoo-update").write_text("")
-    answers["version"] = (0, "Odoo Server 17.0-20240101")
+    answers["version"] = (0, "Odoo Server 15.0-20240924")
     answers["port"] = (0, "0.0.0.0:8069")
     answers["state"] = (0, '{"Service":"odoo","State":"running"}')
     result = {c.name: c for c in await inst.plugin.checks(inst)}
-    assert not result["Odoo"].ok and "needs Odoo 18" in result["Odoo"].detail
+    assert not result["Odoo"].ok and "needs Odoo 16" in result["Odoo"].detail
     assert not result["HTTP port"].ok and not result["Services"].ok and "db" in result["Services"].detail
     assert result["Tools"].ok
 

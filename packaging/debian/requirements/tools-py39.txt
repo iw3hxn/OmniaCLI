@@ -1,0 +1,8 @@
+# The click of OmniaCLI's tools (tools.txt) for an Odoo image whose Python
+# is older than 3.10: click 8.5 needs 3.10, odoo:16.0 (Debian 11) has 3.9.
+# Installed by postinst into /opt/omniacli/venv/omniacli-tools/py39 (for
+# Python 3.9, whatever the machine's), which the compose helper's update puts
+# in front of the tools on such an image only (composehelper.py, TOOLS_PY39).
+# Written by hand: click-odoo-update --help and an update tried on odoo:16.0
+# with it (22/11/2026); the rest of the tools runs there as it is.
+click==8.1.8

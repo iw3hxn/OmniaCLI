@@ -24,7 +24,6 @@ import os
 import sys
 
 from odoo import http, release
-from odoo.service import security
 
 MARK = "OMNIACLI-LOGIN "
 # where a browser lands after the login: /odoo from Odoo 18, /web before
@@ -42,9 +41,22 @@ def request_of():
     return value.strip()
 
 
+def sessions():
+    """(the session store, get_default_session) of this Odoo: http.root's
+    and http's from Odoo 16 to the Odoo 20 of 2026-09; the package http
+    and its module session (session_store()) from the Odoo 20 of 2026-11,
+    which has no odoo.service.security either. (None, None) before 16."""
+    if hasattr(http, "get_default_session") and hasattr(http, "root"):
+        return http.root.session_store, http.get_default_session
+    module = getattr(http, "session", None)
+    if callable(getattr(module, "session_store", None)) and callable(getattr(module, "get_default_session", None)):
+        return module.session_store(), module.get_default_session
+    return None, None
+
+
 def main(env):
-    # the session store and get_default_session of the http of Odoo 16
-    if not hasattr(http, "get_default_session") or not hasattr(http, "root"):
+    store, default_session = sessions()
+    if store is None:
         return {"error": "Odoo 16 or later is needed to log in as a user"}
     request = request_of()
     # env is the superuser's (click-odoo, odoo shell): it reads every user
@@ -58,14 +70,14 @@ def main(env):
     user = users.browse(int(request)).exists()
     if not user or not user.active:
         return {"error": "no active user with id %s" % request}
-    store = http.root.session_store
     session = store.new()
-    session.update(http.get_default_session())
+    session.update(default_session())
     session.db = env.cr.dbname
     session.uid = user.id
     session.login = user.login
     session.context = dict(user.with_user(user).context_get())
-    session.session_token = security.compute_session_token(session, env)
+    # what security.compute_session_token (Odoo 16 to 19) and http.session's (Odoo 20) both return
+    session.session_token = user._compute_session_token(session.sid)
     store.save(session)
     return {"sid": session.sid, "id": user.id, "login": user.login, "name": user.name,
             "home": "/odoo" if release.version_info[0] >= HOME_FROM else "/web"}

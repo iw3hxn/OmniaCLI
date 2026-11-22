@@ -545,6 +545,7 @@
  "This machine": "Questa macchina",
  "This machine has no PostgreSQL of its own yet: an admin makes it in Dashboard › Database": "Questa macchina non ha ancora un PostgreSQL suo: lo crea un admin in Dashboard › Database",
  "This version has no template on the machine's cluster": "Questa versione non ha un template sul cluster della macchina",
+ "This version runs on PostgreSQL {postgres}, the machine's cluster is PostgreSQL {cluster}: a dedicated database": "Questa versione gira su PostgreSQL {postgres}, il cluster della macchina è PostgreSQL {cluster}: un database dedicato",
  "Time of the restart": "Ora del riavvio",
  "Total": "Totale",
  "Tuned on {when}": "Regolato il {when}",

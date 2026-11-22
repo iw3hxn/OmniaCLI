@@ -1303,6 +1303,61 @@ Odoo 20, PostgreSQL 17). Its database's superuser is `postgres`, with a
 password Odoo does not know, and Odoo connects as `odoo`, without superuser;
 the top of the workspace's disk is `0750`, for root and OmniaCLI's group.
 
+#### The Odoo versions offered
+
+**New instance** (the version only) offers the Odoo of every template
+`odoo-<major>` of the machine, newest first: **Odoo 20, 19, 18, 17 and 16**,
+the official images `odoo:<major>.0` of Docker Hub, each in three templates
+alike (`odoo-<major>` with a PostgreSQL of its own, `odoo-<major>-machine` on
+the machine's cluster, `odoo-<major>-remote` on a database of another
+machine), with the same parameters (workers, the limits, the SMTP server, the
+debug log), the same compose rules and the same staging's mail service. Every
+one runs on **PostgreSQL 17**, the machine's cluster's: the `pg_dump` of each
+image dumps it (17.6 in `odoo:16.0`, 18.6 in `odoo:17.0`, 19.0 in
+`odoo:18.0`–`odoo:20.0`, read on the images of 22/11/2026) and would refuse a
+newer server; Odoo 20 needs 16 at least (`MIN_PG_VERSION`), 16 and 17 set no
+minimum. On a database of another machine that server may not be newer than
+the image's `pg_dump` either: 17 for Odoo 16, 18 for Odoo 17, 19 for 18-20.
+`odoo:16.0` and `odoo:17.0` run Odoo as uid 101 (the templates give it the
+filestore and `/tmp`), the newer ones as uid 100.
+
+What an older Odoo does not do, said where it is asked:
+
+- **Odoo 16**: its staging catches the outgoing mail, but has no mailboxes
+  nor **Write as…** (no alias domain, `mail.alias.domain`, before Odoo 17):
+  its templates have no service `inbox`, and the Mail tab says why. Its
+  image's Python is 3.9: the update of the changed modules runs the tools
+  with click 8.1.8 (`omniacli-tools/py39`, installed by the package), click
+  8.5 needing 3.10;
+- **Odoo 16 and 17**: no read replica (`db_replica_host`, Odoo 18 and
+  later): the button is off, and a template on another machine's database
+  given a replica is refused before anything is made; **Copy production to
+  test** shares the filestore from Odoo 19 only, as before (a copy for 16-18);
+- **Odoo 20**: the image of 2026-11-12 moved Odoo's sessions (the package
+  `odoo.http`, its `session.session_store()`, no `odoo.service.security`)
+  and typed `ir.config_parameter` (`get_str`, no `get_param`): **Log in
+  as…** and the mailboxes of a staging read both shapes
+  (`odoo/login_session.py`, `odoo/mail_inbox.py`). A new database of Odoo 20
+  has no sender for its mail (no alias domain, an admin without email): in
+  its staging an invitation fails with *You must either provide a sender
+  address* until **Switch reception on** puts the staging's domain on the
+  company; then it is caught from `notifications@<staging>.test`;
+- the machine's cluster is one PostgreSQL per machine (AD-001): a version
+  whose template names another major (`postgres` of its `template.json`)
+  has **Of the machine** off in the dialog, with why in its title, and the
+  creation on the cluster is refused.
+
+Not offered, measured on Docker Hub's images on 22/11/2026: **Odoo 14 and
+15** (`odoo:14.0` built 2023-11-06, `odoo:15.0` 2024-09-24, amd64 only, no
+longer updated) have neither `odoo db` (dump and load) nor `odoo neutralize`
+in their command line: the backup, the restore and the stagings of a
+compose instance run those, and a staging that cannot be neutralized would
+send the production's mail and run its crons. Log in as needs Odoo 16
+(`odoo/login_session.py`). `odoo:14.0` also carries `pg_dump` 16.0, which
+refuses the cluster's PostgreSQL 17, and Python 3.7. **Odoo 12 and 13**
+images stopped in 2021 and 2022. Such an instance stays reachable as a venv
+(type `odoo`, a venv of Odoo 10 or later, adopted as it is).
+
 The root helper, `omniacli workspace-helper disk|drop|limits|create|remove|web|owncert|firewall|template-install|conf|space|portal`
 (`workspacehelper.py`; `portal`: the customers' portal, OmniaCLI's own panel
 on a name of the machine for the users of the workspaces, set in Options:
@@ -1694,8 +1749,9 @@ cloned, the extra ones taken away), before the data. The date of the copy
 is the rebuild's. Not for a staging whose production is on another machine:
 that one is made again from its production's page.
 
-**The mail of a staging**: a staging made from the templates `odoo-18`,
-`odoo-19` (2026.1.2 and later) or `odooplm-20` (2026.1.8) has a service
+**The mail of a staging**: a staging made from the templates `odoo-16`,
+`odoo-17`, `odoo-20`, `odoo-18`, `odoo-19` (2026.1.2 and later) or
+`odooplm-20` (2026.1.8) has a service
 `mail` ([Mailpit](https://mailpit.axllent.org/), MIT, profile
 `mail-capture`, no port published) that answers SMTP in its project's
 network as `mail` and as `invalid`, the host of the server `odoo neutralize`
@@ -1710,8 +1766,9 @@ neutralizes the database even with Neutralize off, and Settings › Odoo
 options shows its SMTP parameters read only. A staging made before has no
 tab: its note says *no outgoing mail*.
 
-**Mailboxes and Write as…**: a staging of the templates `odoo-18`,
-`odoo-19` (2026.1.3) or `odooplm-20` (2026.1.9) also has a service `inbox`
+**Mailboxes and Write as…**: a staging of the templates `odoo-17`,
+`odoo-20`, `odoo-18`, `odoo-19` (2026.1.3) or `odooplm-20` (2026.1.9) also
+has a service `inbox` (not `odoo-16`: Odoo 16 has no alias domain)
 ([GreenMail](https://greenmail-mail-test.github.io/greenmail/), Apache-2.0,
 one IMAP mailbox per address, in memory), which Mailpit hands the messages
 to an address of the staging's own domain, its name under `.test`
@@ -1926,7 +1983,7 @@ standard input).
 
 An instance may keep its database on a PostgreSQL of another machine (one the
 customer runs, a managed one): in a workspace's **New instance**, the templates
-named *database of another machine* (`odoo-18-remote`, `odoo-19-remote`,
+named *database of another machine* (`odoo-16-remote` to `odoo-20-remote`,
 `odooplm-20-remote`) ask for its host, port, role, password, database and the
 CA of its certificate. Machine admins only. Odoo reaches it over TLS with the
 certificate verified (`verify-full`: a template asking for less is refused),
@@ -2754,7 +2811,8 @@ kept next to it (`.pid`).
 ## Odoo in Docker Compose (type `docker`)
 
 A server of type **Odoo (Docker Compose)** (`omniacli/docker`, built in) is
-an Odoo 18 or later that runs in a compose project: a
+an Odoo 16 or later (the first image with `odoo db` and `odoo neutralize`)
+that runs in a compose project: a
 [DockerOdooPLM](https://github.com/OmniaGit/DockerOdooPLM) stack or the
 official `odoo` image alike. Its restart type is `compose`, the service the
 project's folder, and every docker command goes through the root helper
@@ -2778,8 +2836,8 @@ servers:
 
 | What | How |
 |---|---|
-| Checks | Odoo 18 or later (`odoo --version`), the HTTP port docker publishes, OmniaCLI's tools, the two services; the core's checks of the project and of the sudoers line |
-| Git pull + restart | pull, `click-odoo-update` of the changed modules (the tools mounted into a container of its own), restart |
+| Checks | Odoo 16 or later (`odoo --version`), the HTTP port docker publishes, OmniaCLI's tools, the two services; the core's checks of the project and of the sudoers line |
+| Git pull + restart | pull, `click-odoo-update` of the changed modules (the tools mounted into a container of its own; an image whose Python is older than 3.10 finds click 8.1.8 first, in `omniacli-tools/py39`), restart |
 | Update modules | the changed modules, or those named (`odoo -u … --stop-after-init`), and a restart if asked |
 | Pull image | `docker compose pull`, then `up -d`: a newer image (a new DockerOdooPLM build) |
 | Backup | `odoo db dump`, `<db>_<time>.zip` (`_nofilestore` without filestore: from Odoo 19, Odoo 18 refuses it) |
