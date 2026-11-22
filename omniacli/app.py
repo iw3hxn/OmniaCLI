@@ -107,9 +107,11 @@ from .config import (
     addresses_follow,
     address_taken,
     apply_sites,
+    automatic_name,
     environment_label,
     environment_names,
     generated_names,
+    load_web_names,
     web_names,
     save_pullers,
     save_servers,
@@ -900,6 +902,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         await asyncio.to_thread(save_login_hosts)
         pitr_tasks.append(asyncio.get_running_loop().create_task(pitr_loop()))
         pitr_tasks.append(asyncio.get_running_loop().create_task(cluster_sweep()))
+        pitr_tasks.append(asyncio.get_running_loop().create_task(names_that_open()))
         postgres_tasks.append(asyncio.get_running_loop().create_task(postgres_loop()))
         # defined further down, with the Database tab's code
         replica_tasks.append(asyncio.get_running_loop().create_task(replica_loop()))
@@ -1541,6 +1544,13 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if i.plugin.has_login and acts_for_a_person(me) and me.can(from_link_role(i)):
                 api = f"{prefix_of(request)}/api/servers/{srv.name}/{i.role}/login-as"
                 login_as_buttons[i.key] = {"users": f"{api}/users", "url": api, "key": i.key}
+        name_problems = {}
+        owner = workspace_of(srv.name)
+        if owner is not None and owner[0].domain:
+            for i in shown:
+                found = await name_problem(owner[0], owner[1], i.role, environment_names(owner[0], owner[1], i.role))
+                if found:
+                    name_problems[i.key] = found
         # Git pull: with more than one thing to pull, the dialog chooses which
         pull_choices = {}
         for i in shown:
@@ -1559,6 +1569,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 # the workspace it is in: «On the map» opens its schema, where the node of this instance is
                 "map_workspace": settings.workspace_of(srv.name),
                 "login_as": login_as_buttons,
+                # a name of its own the DNS does not lead here: said in the head, with the record to add
+                "name_problems": name_problems,
                 # its copies: its test and its stagings (made beside it in its
                 # workspace); or the production it is a staging of
                 "stagings": {"rows": await staging_states(staging_rows(srv.name)),
@@ -2713,6 +2725,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             # this machine: the browser keeps cookies by name, not by port, so
             # OmniaCLI's own page sets Odoo's cookie for the same localhost
             return f"{request.url.scheme}://{request.headers.get('host', parts.hostname)}", f"http://{parts.netloc}"
+        if parts.hostname in ("localhost", "127.0.0.1") and user.on_behalf and request.headers.get(TUNNEL_HEADER) == "1":
+            # asked through a link by an OmniaCLI whose browser reaches its tunnels: no name of the
+            # instance opens from outside, so that OmniaCLI takes the session here, through the link,
+            # and gives it to the browser on a tunnel to the instance (login_as_through_link there)
+            return f"http://{request.headers.get('host', '127.0.0.1')}", f"http://{parts.netloc}"
         raise HTTPException(status.HTTP_409_CONFLICT,
                             "Log in as needs the instance's Domain name over https (server form, Edit), "
                             "with its nginx passing /.omniacli/login to OmniaCLI (README, Log in as); "
@@ -2926,7 +2943,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         """Write the servers file and make it current (OSError when it cannot)."""
         save_servers(settings.servers_file, servers)
         settings.servers = servers
-        apply_sites(settings.servers, settings.workspaces)
+        apply_sites(settings.servers, settings.workspaces, sites_known())
         save_login_hosts()
         gitcredentials.bind(settings)
         await updater.reload()
@@ -3092,7 +3109,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         except OSError as exc:
             return refuse(f"Cannot write {settings.workspaces_file}: {exc}", 500)
         settings.workspaces = found
-        apply_sites(settings.servers, settings.workspaces)
+        apply_sites(settings.servers, settings.workspaces, sites_known())
         gitcredentials.bind(settings)
         return None
 
@@ -3130,10 +3147,184 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     # the HTTPS and DNS state of each name as its last publication found it: the map reads it (UX-009)
     web_names_state = inframap.WebNames(settings.servers_file.parent / inframap.WEB_FILE, workspacehelper.NGINX_SITES)
 
+    def sites_known() -> dict:
+        """{workspace: {name: {dns, https}}} as the last publications found
+        the names (apply_sites); of a workspace published before that was
+        kept, what its nginx site says: the HTTPS of each name, not its DNS."""
+        return {ws.name: web_names_state.of(ws.name) for ws in settings.workspaces.values() if ws.domain}
+
+    # each instance at a name that opens, as this process knows the names (the file alone at the load)
+    apply_sites(settings.servers, settings.workspaces, sites_known())
+
+    async def names_that_open() -> None:
+        """At the start: a workspace with an environment none of whose names
+        is in DNS for this machine, and no automatic name yet (a staging made
+        by an OmniaCLI that gave none), has its names published once more, so
+        that the environment gets the name it is opened at. Nothing where
+        every environment has a name that leads here, behind NAT, or with the option off."""
+        await asyncio.sleep(20)
+        domain = settings.options.automatic_names
+        if not domain:
+            return
+        try:
+            here = await asyncio.to_thread(workspaceweb.machine_addresses, shutil.which("ip"))
+            address = public_ipv4(here)
+            if not address:
+                return
+            for ws in list(settings.workspaces.values()):
+                if not ws.domain or not ws.storage:
+                    continue
+                for instance, role in environments_of(ws):
+                    names = environment_names(ws, instance, role)
+                    name = automatic_name(ws.name, instance, role, address, domain)
+                    if not names or name is None or name in names:
+                        continue
+                    if "here" not in (await names_state(names, here)).values():
+                        submit_publish(ws, "system: a name that opens")
+                        break
+        except Exception:  # noqa: BLE001 - the start goes on: the names are published at the next change
+            _logger.exception("the names that open were not looked at")
+
+    def environments_of(ws: Workspace) -> list[tuple[str, str]]:
+        """(instance, role) of the environments of ws that exist, productions first."""
+        found = [(i, role) for i in ws.instances() if f"{ws.name}-{i}" in settings.servers
+                 for role in settings.servers[f"{ws.name}-{i}"].instances]
+        return sorted(found, key=lambda e: e[1] != "production")
+
+    async def names_state(names: list[str], here: set[str]) -> dict[str, str]:
+        """{name: none|here|elsewhere|unknown}: where the DNS leads each name, asked now."""
+        found = await asyncio.gather(*(asyncio.to_thread(workspaceweb.addresses_of, n) for n in names))
+        return {n: workspaceweb.dns_state(a, here) for n, a in zip(names, found)}
+
+    def public_ipv4(here: set[str]) -> str:
+        """The public IPv4 of this machine among here, "" when it has none (behind NAT)."""
+        return next((a for a in sorted(here) if ":" not in a), "")
+
+    async def automatic_names(job, ws: Workspace) -> tuple[Workspace, set]:
+        """An environment none of whose names leads here in DNS (a staging's
+        stg-<date>.<domain> without a wildcard record, an instance made
+        before its record) gets a name that resolves by itself, built on the
+        machine's public address (config.automatic_name), among its other
+        names: the browser is sent there (opening_name) and the certificate
+        covers it. Nothing without the option, a domain or a public IPv4.
+        (the workspace as it is now, the environments that got a name)."""
+        domain = settings.options.automatic_names
+        if not domain or not ws.domain:
+            return ws, set()
+        here = await asyncio.to_thread(workspaceweb.machine_addresses, shutil.which("ip"))
+        address = public_ipv4(here)
+        if not address:
+            return ws, set()
+        added: dict[tuple[str, str], str] = {}
+        for instance, role in environments_of(ws):
+            names = environment_names(ws, instance, role)
+            name = automatic_name(ws.name, instance, role, address, domain)
+            if not names or name is None or name in names:
+                continue
+            if "here" in (await names_state(names, here)).values():
+                continue
+            added[(instance, role)] = name
+        if not added:
+            return ws, set()
+        async with workspaces_lock:
+            current = settings.workspaces.get(ws.name)
+            if current is None:
+                return ws, set()
+            data = current.to_dict()
+            aliases = {i: {r: list(n) for r, n in roles.items()} for i, roles in (data.get("aliases") or {}).items()}
+            for (instance, role), name in added.items():
+                if name not in aliases.setdefault(instance, {}).setdefault(role, []):
+                    aliases[instance][role].append(name)
+            data["aliases"] = aliases
+            try:
+                found = parse_workspaces({**{n: w.to_dict() for n, w in settings.workspaces.items()}, ws.name: data},
+                                         settings.storage_roots)
+            except ConfigError as exc:
+                job.log(f"No automatic name: {exc}")
+                return current, set()
+            if await store_workspaces(found) is not None:
+                job.log(f"No automatic name: {settings.workspaces_file} cannot be written")
+                return current, set()
+        for (instance, role), name in added.items():
+            job.log(f"{environment_label(instance, role)}: none of its names is in DNS for this machine, "
+                    f"it also answers on {name}")
+        return settings.workspaces[ws.name], set(added)
+
+    # what name_problem read from the DNS, kept a minute: the page of an instance asks it at every load
+    name_problems_seen: dict[tuple, tuple[float, dict | None]] = {}
+    NAME_PROBLEM_SECONDS = 60
+
+    async def name_problem(ws: Workspace, instance: str, role: str, names: list[str]) -> dict | None:
+        """None when the first of names opens: the DNS leads it to this
+        machine (or where it leads cannot be told: behind NAT) and it has its
+        certificate; else {name, dns: none | elsewhere | here (in DNS, no
+        certificate yet), address: this machine's public IPv4, instead: the
+        name the environment is opened at ("" when none: only a tunnel reaches it)}.
+        Asked to the DNS now: for the page of an instance and before a staging is made."""
+        if not names:
+            return None
+        key = (ws.name, instance, role, tuple(names))
+        seen = name_problems_seen.get(key)
+        if seen is not None and time.monotonic() - seen[0] < NAME_PROBLEM_SECONDS:
+            return seen[1]
+        here = await asyncio.to_thread(workspaceweb.machine_addresses, shutil.which("ip"))
+        state = await names_state(names, here)
+        found = None
+        if state[names[0]] in ("none", "elsewhere"):
+            address = public_ipv4(here)
+            instead = next((n for n in names[1:] if state[n] == "here"), "")
+            if not instead and settings.options.automatic_names and address:
+                # the one the next publication gives it
+                instead = automatic_name(ws.name, instance, role, address, settings.options.automatic_names) or ""
+            found = {"name": names[0], "dns": state[names[0]], "address": address, "instead": instead}
+        else:
+            # in DNS, and the last publication left it without HTTPS: no certificate for it yet
+            read = sites_known().get(ws.name) or {}
+            if names[0] in read and not (read[names[0]] or {}).get("https"):
+                found = {"name": names[0], "dns": "here", "address": "",
+                         "instead": next((n for n in names[1:] if (read.get(n) or {}).get("https")), "")}
+        name_problems_seen[key] = (time.monotonic(), found)
+        return found
+
+    def not_recognized(ws: Workspace, made: dict, address: str = "") -> list[tuple[tuple[str, str], bool, str, str]]:
+        """What a publication says of the environments whose own name the
+        DNS does not lead here: [((instance, role), whether another of its
+        names opens, what is wrong and where it is opened instead, the record
+        to add)]."""
+        missing, away = set(made.get("without_dns") or []), set(made.get("elsewhere") or [])
+        said = []
+        for instance, role in environments_of(ws):
+            names = environment_names(ws, instance, role)
+            if not names or names[0] not in missing | away:
+                continue
+            name, env = names[0], environment_label(instance, role)
+            works = [n for n in names if n not in missing | away]
+            why = (f"{name} is not recognized: it has no DNS record." if name in missing
+                   else f"{name} is not recognized: its DNS record leads to another machine.")
+            where = (f"{env} is opened at https://{works[0]} instead" if works
+                     else f"{env} has no name that opens from outside: only a tunnel reaches it")
+            remedy = (f"To use {name} add an A record {name} → {address}, then publish the names again" if address
+                      else f"To use {name} add a DNS record that leads it to this machine, then publish the names again")
+            said.append(((instance, role), bool(works), f"{why} {where}", remedy))
+        return said
+
     async def publish_names(job, ws: Workspace) -> dict:
-        """workspaceops.publish, its answer kept for the map: which names came out with HTTPS and with their DNS here."""
+        """workspaceops.publish, its answer kept for the map: which names
+        came out with HTTPS and with their DNS here. Before it an environment
+        with no name in DNS gets its automatic one; after it each instance is
+        opened at a name that leads here. A name that is not recognized is a
+        warning of the job the first time (its automatic name was just given)
+        and whenever nothing opens the environment, a line of its log after."""
+        ws, added = await automatic_names(job, ws)
         made = await workspaceops.publish(job, ws)
         await asyncio.to_thread(web_names_state.record, ws.name, made)
+        apply_sites(settings.servers, settings.workspaces, sites_known())
+        save_login_hosts()
+        here = await asyncio.to_thread(workspaceweb.machine_addresses, shutil.which("ip"))
+        for env, opens, line, remedy in not_recognized(ws, made, public_ipv4(here)):
+            (job.warn if env in added or not opens else job.log)(line)
+            job.log(remedy)
+        name_problems_seen.clear()
         return made
 
     def submit_publish(ws: Workspace, source: str):
@@ -4190,6 +4381,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         new_instance = stagings.instance_name(instance, datetime.datetime.now(), set(ws.instances()))
         out = {"size": size, "address": staging_address(ws, new_instance), "template": template.name, "here": here_name(),
                "workspace": ws.name, "machines": [], "unlisted": []}
+        # said before the click: a name the DNS does not lead here, and what the staging is opened at instead
+        out["address_problem"] = await name_problem(ws, new_instance, "production", [out["address"]]) if out["address"] else None
         if chooses_machine(me):
             lang = request_language(request)
             names = sorted(settings.link_targets)
@@ -7027,10 +7220,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return _TEMPLATES.TemplateResponse(request, "machines.html", {
             "provision_key": provision_key,
             "package_url": machines.PACKAGE_URL, "link_user": machines.LINK_USER,
-            "machines": machine_cards(),
+            "machines": machine_cards(request_language(request)),
         })
 
-    def machine_cards() -> list[dict]:
+    def machine_cards(lang: str = "en") -> list[dict]:
         """The machines linked from here (their link's user is LINK_USER) and
         the ones being prepared, each with its add job when there is one: the
         last of that name, running, or failed in the last three days."""
@@ -7051,13 +7244,15 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 continue
             card = cards.setdefault(found[1], {"name": found[1], "host": found[2], "port": None, "linked": False,
                                                "state": "", "detail": ""})
-            card["job"] = {"id": job.id, "status": job.status, "error": job.error, "created": job.created,
+            # the reason the preparation gave when it stopped, not ssh's exit code (a job of an older OmniaCLI too)
+            card["job"] = {"id": job.id, "status": job.status, "created": job.created,
+                           "error": i18n.tr(lang, machines.failure_said(job.lines) or job.error) if job.error else job.error,
                            "step": machines.progress(job.lines), "steps": len(machines.STEPS)}
         return sorted(cards.values(), key=lambda c: c["name"])
 
     @app.get("/api/machines", dependencies=[Depends(admin)])
-    async def machines_json():
-        return {"machines": machine_cards()}
+    async def machines_json(request: Request):
+        return {"machines": machine_cards(request_language(request))}
 
     @app.post("/api/machines/key", dependencies=[Depends(admin)])
     async def machines_key():
@@ -7246,7 +7441,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if resp.status_code != 200 or not given.hostname:
             return JSONResponse(data or {"error": f"{link.name} answered {resp.status_code}"},
                                 status_code=resp.status_code)
-        if given.scheme != "https" or not tunnel_reaches_browser(request) or await loginas.reaches_here(given.hostname):
+        if not tunnel_reaches_browser(request):
+            return JSONResponse(data)
+        # an http link is the other machine's own (an instance no name opens from outside): only a tunnel carries it
+        if given.scheme == "https" and await loginas.reaches_here(given.hostname):
             return JSONResponse(data)
         try:
             landing = await client.get(f"{given.path}?{given.query}", headers={**headers, "host": given.netloc})
@@ -7259,8 +7457,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         try:
             opened = await tunnels.open(link, server, role, me.name, me.role)
         except tunnel.TunnelError as exc:
-            return refuse(f"The nginx of {given.hostname} does not pass {loginas.LOGIN_PATH} to OmniaCLI, "
-                          f"and no tunnel opens: {exc}", status.HTTP_502_BAD_GATEWAY)
+            return refuse((f"The nginx of {given.hostname} does not pass {loginas.LOGIN_PATH} to OmniaCLI, "
+                           if given.scheme == "https" else "No name of the instance opens from outside, ")
+                          + f"and no tunnel opens: {exc}", status.HTTP_502_BAD_GATEWAY)
         odoo = urlsplit(tunnel_url(request, opened))
         port = request.url.port or (443 if request.url.scheme == "https" else 80)
         here = f"{odoo.netloc.rsplit(':', 1)[0]}:{port}"

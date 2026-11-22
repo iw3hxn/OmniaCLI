@@ -2769,6 +2769,39 @@ Odoo installed as a package has no `odoo/release.py` next to its
 python (`/usr/lib/python3/dist-packages`), so update, restore and copy know
 it. Its code is the package's: OmniaCLI pulls nothing there.
 
+## A name that opens
+
+An environment of a workspace answers on the workspace's names (`<domain>`,
+`<instance>.<domain>`, a staging on `stg-<yyyymmdd>.<its production's name>`)
+and on its other names. Its own name works only when the DNS leads it to
+the machine: a staging's needs a wildcard record (`*.<domain>`) or one of
+its own, which a customer's domain often lacks.
+
+- **The address is a name that leads here.** **Open Odoo**, **Log in as…**,
+  the title of the page and the lists use the first of the environment's
+  names whose DNS leads to this machine and that came out with HTTPS at the
+  last publication of the names; its own name again once its record is
+  there and the names are published again.
+- **A name by itself.** When none of an environment's names is in DNS for
+  this machine, the publication gives it one built on the machine's public
+  IPv4, `<instance>-<workspace>.<a-b-c-d>.sslip.io` (`test-…` for a test),
+  among its other names: it resolves without a record of anyone's and the
+  certificate covers it. Removed in Addresses, it comes back at the next
+  publication for as long as no other name of the environment leads here.
+  `names: {automatic: <domain>}` in the options file sets another
+  domain that resolves the same way, `off` gives none. Nothing behind NAT,
+  where the machine has no public address of its own: there the page says
+  that only a tunnel reaches the environment.
+- **Said, not silent.** The job that makes the instance or the staging ends
+  with a warning — `<name> is not recognized: it has no DNS record`, where
+  it is opened instead, the `A` record to add — and its page says the same
+  under its title for as long as it is true (read from the DNS, kept a
+  minute). The dialog of a new staging says it before the staging is made.
+
+The DNS service of the automatic names is a third party's (sslip.io by
+default): a name of the customer's own, with its record, is the address to
+give to its users.
+
 ## Log in as
 
 **Log in as…**, next to an instance's address on the server page, opens

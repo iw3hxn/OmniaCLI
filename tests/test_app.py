@@ -1173,9 +1173,10 @@ async def test_link_serves_prefixed_pages_and_acts(client, env):
     data = await wait_job(client, resp.headers["location"].rsplit("/", 1)[1])
     assert data["source"] == "manual: link omnia (devuser)"
     # no page links outside the prefix (the icons are the same on every
-    # instance, and the linked instance bar links back to the linking one)
+    # instance, the linked instance bar links back to the linking one, and
+    # Open Odoo of an instance no name opens asks the linking one for its tunnel)
     unprefixed = re.compile(r'(?:href|action|data-url|data-log)="/(?!links/cliente/|favicon|icon-180|machines"|")'
-                            r'|fetch\(\s*["`]/(?!links/cliente/)')
+                            r'|fetch\(\s*["`]/(?!links/cliente/|api/tunnels/open")')
     for url in ("/", "/jobs", f"/jobs/{data['id']}", "/servers/srv/test/log", "/servers/srv?view=test"):
         page = (await client.get(url, headers=link)).text
         assert not unprefixed.findall(page), (url, unprefixed.findall(page))

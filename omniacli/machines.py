@@ -241,7 +241,26 @@ async def provision(job: Job, machine: Machine, ssh_folder: Path, link_public_ke
                 f"{sshlinks.fingerprint(machine.host_key)}), OmniaCLI from {machine.package_url}, "
                 + ("a clean server" if machine.kind == "clean" else "a server that already has Odoo"))
         with open(stdin, "rb") as script:
-            await run(job, cmd, timeout=PROVISION_TIMEOUT, stdin=script)
+            try:
+                await run(job, cmd, timeout=PROVISION_TIMEOUT, stdin=script)
+            except JobFailed:
+                # what provision.sh said before it stopped is the reason, not ssh's exit code
+                reason = failure_said(job.lines)
+                if reason is None:
+                    raise
+                raise JobFailed(reason) from None
+
+
+FAILED_MARK = "PROVISION FAILED: "
+
+
+def failure_said(lines: list[str]) -> str | None:
+    """The reason provision.sh gave when it stopped (its last PROVISION
+    FAILED line, without the mark and the job's time), None when it gave none."""
+    for line in reversed(lines):
+        if FAILED_MARK in line:
+            return line.split(FAILED_MARK, 1)[1].strip() or None
+    return None
 
 
 def left_out(item: dict) -> str:

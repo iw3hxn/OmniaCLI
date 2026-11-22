@@ -153,12 +153,25 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
       {% if title != server.name %}<span title="{{ _('Its name in OmniaCLI') }}">{{ _("server {name}", name=server.name) }}</span>{% endif %}
       {% set database = inst.plugin.describe(inst).database %}{% if database %}<span>{{ _("database {name}", name=database) }}</span>{% endif %}
     </div>
+    {# its own name is not in DNS for this machine: said where the name is read, with the record that makes it work #}
+    {% set np = (name_problems or {}).get(inst.key) %}
+    {% if np %}
+    <p class="error name-problem" role="alert" title="{{ _('Read from the DNS now. When the record is there, publish the names again (Settings, Addresses): OmniaCLI asks for the certificate and opens the instance at that name.') }}">
+      {% if np.dns == "none" %}{{ _("{name} is not recognized: it has no DNS record.", name=np.name) }}{% elif np.dns == "here" %}{{ _("{name} has no certificate yet: it does not open over HTTPS.", name=np.name) }}{% else %}{{ _("{name} is not recognized: its DNS record leads to another machine.", name=np.name) }}{% endif %}
+      {% if np.instead %}{{ _("The instance is opened at {instead} instead.", instead=np.instead) }}{% else %}{{ _("No name opens the instance from outside: only a tunnel reaches it.") }}{% endif %}
+      {% if np.dns == "here" %}{{ _("Why is in the last «Names of workspace» job; publish the names again when it is solved.") }}{% elif np.address %}{{ _("To use {name} add an A record {name} → {address}.", name=np.name, address=np.address) }}{% else %}{{ _("To use {name} add a DNS record that leads it to this machine.", name=np.name) }}{% endif %}
+    </p>
+    {% endif %}
   </div>
 
   {% if can_restart %}
   <div class="head-actions">
     {# the head is neutral (UX-006 rule 1 as of 21/11): the primary of the page is the creating action of the tab in view #}
-    {% if opens and st != "stopped" %}<a class="button" href="{{ inst.web_url }}" target="_blank" rel="noopener" title="{{ _('Opens {url} in a new tab', url=inst.web_url) }}">{{ _("Open Odoo") }} ↗</a>{% endif %}
+    {# seen through a link, an address on the machine's own localhost is not this browser's: Odoo is opened through a tunnel of the OmniaCLI in front #}
+    {% set by_tunnel = prefix.startswith("/links/") and (inst.web_url or "").startswith(("http://localhost", "http://127.0.0.1")) %}
+    {% if opens and st != "stopped" and by_tunnel %}<button type="button" id="open-by-tunnel" data-link="{{ prefix.split('/')[2] }}" data-server="{{ server.name }}" data-role="{{ inst.role }}"
+        title="{{ _('Opens Odoo in a new tab through a tunnel from this OmniaCLI to {link}: the instance has no name that opens from outside.', link=prefix.split('/')[2]) }}">{{ _("Open Odoo") }} ↗</button>
+    {% elif opens and st != "stopped" %}<a class="button" href="{{ inst.web_url }}" target="_blank" rel="noopener" title="{{ _('Opens {url} in a new tab', url=inst.web_url) }}">{{ _("Open Odoo") }} ↗</a>{% endif %}
     {% if login_as[inst.key] %}<button type="button" data-login-as='{{ login_as[inst.key] | tojson }}' title="{{ _('Opens Odoo in a new tab as one of its users, without their password.') }}">{{ _("Log in as…") }}</button>{% endif %}
     {% if st == "stopped" %}
     <form method="post" action="{{ base }}/{{ 'restart' if rt == 'process' else 'start' }}" data-confirm="{{ _("Start Odoo of {name}?", name=who) }}">
@@ -431,7 +444,8 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
         <div class="muted sd-help" id="sd-unlisted"></div>
       </div>
       <div class="sd-field"><div class="sd-label">{{ _("Address") }}</div>
-        <output id="sd-address" class="mono"></output></div>
+        <output id="sd-address" class="mono"></output>
+        <p id="sd-address-error" class="error" role="alert" hidden></p></div>
       <p class="sd-help">{{ _("Neutralized: no scheduled actions; the outgoing mail is read in the Mail tab, it does not leave.") }}</p>
       <details id="sd-advanced" hidden>
         <summary class="muted" title="{{ _('Shows the workspace the staging goes in on the other machine: the one of the same name by default, made there when it is missing') }}">{{ _("Advanced") }}</summary>
@@ -1051,6 +1065,32 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     {% if shell_paths.get(inst.key) %}{{ shell_paths_box(shell_paths.get(inst.key)) }}{% endif %}
   </details>
 </section>
+<script>
+// Open Odoo through a link, for an instance no name opens from outside: a tunnel of the OmniaCLI in front
+(function () {
+  const button = document.getElementById("open-by-tunnel");
+  if (!button) return;
+  const refused = {{ _("The tunnel does not open") | tojson }};
+  button.addEventListener("click", async () => {
+    // the tab is opened at the click (a browser blocks one opened after an answer), then sent to the tunnel
+    const tab = window.open("about:blank", "_blank");
+    let data = {};
+    try {
+      const resp = await fetch("/api/tunnels/open", {method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({link: button.dataset.link, server: button.dataset.server, role: button.dataset.role})});
+      data = await resp.json().catch(() => ({}));
+      if (resp.ok && data.url) {
+        if (tab) tab.location = data.url; else window.location = data.url;
+        return;
+      }
+    } catch (error) {
+      data = {error: String(error)};
+    }
+    if (tab) tab.close();
+    window.omniaSay(`${refused}: ${data.error || data.detail || ""}`);
+  });
+})();
+</script>
 <script>
 // the move of the database (AD-007): asked in the page's dialog, a job
 (function () {
@@ -2142,6 +2182,12 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
                noSize: {{ _("Copy of {name} as it is now: its size cannot be read.") | tojson }},
                here: {{ _("This machine") | tojson }}, unlisted: {{ _("Not listed: {names}.") | tojson }},
                noAddress: {{ _("No domain: it answers on a port of its own, shown when it is made.") | tojson }},
+               noDns: {{ _("{name} is not recognized: it has no DNS record.") | tojson }},
+               dnsAway: {{ _("{name} is not recognized: its DNS record leads to another machine.") | tojson }},
+               opensAt: {{ _("The staging will be opened at {instead} instead.") | tojson }},
+               opensNowhere: {{ _("No name will open the staging from outside: only a tunnel will reach it.") | tojson }},
+               addRecord: {{ _("To use {name} add an A record {name} → {address}.") | tojson }},
+               addSomeRecord: {{ _("To use {name} add a DNS record that leads it to this machine.") | tojson }},
                fresh: {{ _("{name} (made there)") | tojson }},
                hereTitle: {{ _("Makes the staging on this machine, beside production, in its workspace") | tojson }},
                thereTitle: {{ _("Makes the staging on {name}: the backup goes there through the link") | tojson }},
@@ -2151,6 +2197,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     const api = {{ (prefix ~ "/api/servers/" ~ server.name ~ "/stagings") | tojson }};
     const create = document.getElementById("sd-create"), sdError = document.getElementById("sd-error");
     const address = document.getElementById("sd-address"), advanced = document.getElementById("sd-advanced");
+    const addressError = document.getElementById("sd-address-error");
     const wsSelect = document.getElementById("sd-workspace");
     let form = null;
     const gb = (b) => (b / 1073741824).toLocaleString(document.documentElement.lang || undefined,
@@ -2161,6 +2208,15 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
       const there = (form.machines || []).find((m) => m.name === machine());
       advanced.hidden = !there;
       create.title = there ? S.createThere : S.createHere;
+      // a name the DNS does not lead here is said before the staging is made, with what opens instead
+      const np = !there && form.address_problem;
+      addressError.hidden = !np;
+      if (np) {
+        addressError.textContent = [np.dns === "none" ? S.noDns : S.dnsAway,
+                                    np.instead ? S.opensAt : S.opensNowhere,
+                                    np.address ? S.addRecord : S.addSomeRecord].join(" ")
+          .replaceAll("{name}", np.name).replaceAll("{instead}", np.instead).replaceAll("{address}", np.address);
+      }
       if (!there) { address.textContent = form.address || S.noAddress; return; }
       wsSelect.replaceChildren(...there.workspaces.map((w) => Object.assign(document.createElement("option"), {
         value: w.name, textContent: w.new ? S.fresh.replace("{name}", w.name) : (w.label && w.label !== w.name ? `${w.label} (${w.name})` : w.name),

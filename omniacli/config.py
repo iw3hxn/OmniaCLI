@@ -8,6 +8,7 @@ import base64
 import datetime
 import hashlib
 import ipaddress
+import json
 import os
 import re
 import shutil
@@ -1444,9 +1445,59 @@ def web_names(domain: str, instances, main: str = "", subdomains: dict[str, str]
     return found
 
 
-def apply_sites(servers: dict, workspaces: dict) -> None:
+# the HTTPS and DNS of each name as the last publication of its workspace
+# found it (inframap.WebNames writes it): {workspace: {"names": {name: {dns, https}}}}
+WEB_NAMES_FILE = "webnames.json"
+
+
+def load_web_names(path: Path) -> dict[str, dict]:
+    """{workspace: {name: {dns, https}}} of the file the publications keep; none yet is nothing known."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {ws: found["names"] for ws, found in data.items()
+            if isinstance(found, dict) and isinstance(found.get("names"), dict)}
+
+
+def opening_name(names: list[str], known: dict | None) -> str:
+    """The name an environment is opened at: the first of its names (the
+    workspace's, then its other names) whose DNS leads to this machine and
+    that came out with HTTPS, as the last publication found them; else the
+    first whose DNS leads here; else, and when nothing is known, the first.
+    A name with no DNS record (a staging's stg-<date>.<domain> without a
+    wildcard record) is not where the browser is sent."""
+    known = known or {}
+    here = [n for n in names if (known.get(n) or {}).get("dns") == "here"]
+    with_https = [n for n in here if (known.get(n) or {}).get("https")]
+    return (with_https or here or names)[0]
+
+
+def automatic_name(workspace: str, instance: str, role: str, address: str, domain: str) -> str | None:
+    """The name OmniaCLI gives by itself to an environment whose own names
+    are not in DNS: <instance>-<workspace>.<a-b-c-d>.<domain> (test-… for a
+    test), which a service as sslip.io resolves to a.b.c.d, the machine's
+    public IPv4. None without that address or that domain."""
+    try:
+        if not domain or ipaddress.ip_address(address).version != 4:
+            return None
+    except ValueError:
+        return None
+    label = f"{instance}-{workspace}" if role == "production" else f"{TEST_LABEL}-{instance}-{workspace}"
+    if len(label) > 63:
+        label = f"{label[:54]}-{hashlib.sha1(label.encode()).hexdigest()[:8]}"
+    name = f"{label}.{address.replace('.', '-')}.{domain}"
+    return name if len(name) <= 253 and DOMAIN_NAME.fullmatch(name) else None
+
+
+def apply_sites(servers: dict, workspaces: dict, known: dict | None = None) -> None:
     """The address of each instance of a workspace with a domain (Instance.site):
-    https on the first of its names, what nginx serves it on."""
+    https on the name it is opened at (opening_name) among those nginx serves
+    it on; known: {workspace: {name: {dns, https}}} (load_web_names), the
+    first name without it. None for an environment whose names were all read
+    without HTTPS: https://<name> would reach another site of the machine."""
     for srv in servers.values():
         for inst in srv.instances.values():
             inst.site = None
@@ -1458,8 +1509,17 @@ def apply_sites(servers: dict, workspaces: dict) -> None:
             sites = web_names(ws.domain, list(here), ws.main, ws.subdomains, here)
         except ConfigError:
             continue
+        found = (known or {}).get(ws.name)
         for site in sites:
-            servers[f"{ws.name}-{site['instance']}"].instances[site["role"]].site = f"https://{site['names'][0]}"
+            names = site["names"] + [n for n in ws.aliases.get(site["instance"], {}).get(site["role"], [])
+                                     if n not in site["names"]]
+            read = [found[n] for n in names if n in found] if found else []
+            if read and not any(state.get("https") for state in read if isinstance(state, dict)):
+                # the last publication left every name of it without HTTPS (no certificate yet: nginx
+                # answers 503 on them): no name opens it, its page says so and its port is its address
+                continue
+            servers[f"{ws.name}-{site['instance']}"].instances[site["role"]].site = \
+                f"https://{opening_name(names, found)}"
 
 
 def load_workspaces(path: Path, storage_roots=()) -> dict[str, Workspace]:
@@ -1572,6 +1632,11 @@ AUDIT_RETENTION_LIMITS = (0, 3650)
 SYSLOG_PROTOCOLS = ("udp", "tcp", "tls")
 
 
+# a DNS service that answers <anything>.<a-b-c-d>.sslip.io with a.b.c.d: a
+# name built on the machine's public address resolves without a record of anyone's
+AUTOMATIC_NAMES = "sslip.io"
+
+
 @dataclass
 class Options:
     """The options of the system, set on the Options page (admin)."""
@@ -1580,6 +1645,9 @@ class Options:
     tunnel_idle_hours: int = TUNNEL_IDLE
     tunnel_bind: str = TUNNEL_BIND
     tunnel_ports: str = TUNNEL_PORTS
+    # the domain of the names OmniaCLI gives by itself to an environment
+    # whose own name is not in DNS (automatic_name); empty: none is given
+    automatic_names: str = AUTOMATIC_NAMES
     # the SMTP server the notifications of the scheduled actions go through
     smtp_host: str = ""
     smtp_port: int = 587
@@ -1708,7 +1776,16 @@ def parse_options(data) -> Options:
     second = str(portal.get("second_factor") or SECOND_FACTOR_DEFAULT)
     if second not in SECOND_FACTOR_POLICIES:
         raise ConfigError(f"portal.second_factor: one of {', '.join(SECOND_FACTOR_POLICIES)}")
+    names = data.get("names") or {}
+    if not isinstance(names, dict):
+        raise ConfigError("names must be a mapping")
+    automatic = str(names.get("automatic", AUTOMATIC_NAMES) or "").strip().lower().rstrip(".")
+    if automatic in ("off", "no", "false"):
+        automatic = ""
+    if automatic and not DOMAIN_NAME.fullmatch(automatic):
+        raise ConfigError(f"names.automatic: {automatic!r} is not a domain (as sslip.io), or off")
     return Options(shell_font_size=size, tunnel_idle_hours=idle, tunnel_bind=bind, tunnel_ports=ports,
+                   automatic_names=automatic,
                    smtp_host=texts["host"], smtp_port=port, smtp_security=security, smtp_user=texts["user"],
                    smtp_password=texts["password"], mail_from=texts["from"],
                    monitor_notify=parse_notify(monitor.get("notify"), "monitor.notify"),
@@ -1736,6 +1813,8 @@ def save_options(path: Path, options: Options) -> None:
     data = {"shell": {"font_size": options.shell_font_size},
             "tunnel": {"idle_hours": options.tunnel_idle_hours, "bind": options.tunnel_bind,
                        "ports": options.tunnel_ports}}
+    if options.automatic_names != AUTOMATIC_NAMES:
+        data["names"] = {"automatic": options.automatic_names or "off"}
     if options.smtp_host:
         data["mail"] = {"host": options.smtp_host, "port": options.smtp_port, "security": options.smtp_security,
                         "user": options.smtp_user, "password": options.smtp_password, "from": options.mail_from}
@@ -2127,7 +2206,7 @@ def parse_settings(data: dict, base_dir: Path = Path(".")) -> Settings:
         fixed=fixed,
     )
     settings.set_web_access(load_access(users_file))
-    apply_sites(settings.servers, settings.workspaces)
+    apply_sites(settings.servers, settings.workspaces, load_web_names(servers_file.parent / WEB_NAMES_FILE))
     return settings
 
 

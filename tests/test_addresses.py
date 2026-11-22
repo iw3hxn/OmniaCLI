@@ -321,7 +321,9 @@ async def test_the_dialog_saves_and_publishes(dialog, client, env):
     assert resp.status_code == 200, resp.text
     assert (await wait_job(client, resp.json()["job"]))["status"] == "success"
     acme = settings.workspaces["acme"]
-    assert acme.aliases == {"main": {"production": ["www.customer.com"]}}
+    # the test, none of whose names is in DNS for this machine, got its automatic name at the publication
+    assert acme.aliases == {"main": {"production": ["www.customer.com"],
+                                     "test": ["test-main-acme.203-0-113-7.sslip.io"]}}
     assert acme.redirects == {"main": {"production": {"customer.com": "www.customer.com"}}}
     assert dialog["published"][-1] == (acme.aliases, acme.redirects)
     # Names on the web of the workspace lists them, read only (UX-008 D5)
@@ -343,7 +345,9 @@ async def test_the_dialog_saves_and_publishes(dialog, client, env):
     # everything taken away
     resp = await client.post(f"{API}/save", headers=post_as("mario"), json={"aliases": [], "redirects": []})
     await wait_job(client, resp.json()["job"])
-    assert (settings.workspaces["acme"].aliases, settings.workspaces["acme"].redirects) == ({}, {})
+    # none of its names leads here any more: each environment keeps the automatic one the publication gives it
+    assert (settings.workspaces["acme"].aliases, settings.workspaces["acme"].redirects) == (
+        {"main": {"production": ["main-acme.203-0-113-7.sslip.io"], "test": ["test-main-acme.203-0-113-7.sslip.io"]}}, {})
 
 
 @pytest.mark.parametrize("body, message", [
