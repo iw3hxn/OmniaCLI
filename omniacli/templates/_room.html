@@ -70,7 +70,7 @@ window.omniaRoom = window.omniaRoom || function (holder) {
       + fill(T.dump, {dump: sizeText(dump)})
       + (est.files === null || est.files === undefined ? "" : last.files ? fill(T.files, {files: sizeText(files)}) : T.noFiles)
       + T.estimate, "");
-    if (rm === null) return;
+    if (rm === null || (rm && rm.none)) return;
     if (rm === undefined) { line(fill(T.roomReading, {what: title})); return; }
     if (rm.error) { line(fill(T.roomError, {what: title, error: rm.error})); return; }
     line(fill(T.room, {what: title}), "");

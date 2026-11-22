@@ -121,7 +121,7 @@ from .config import (
     server_to_dict,
 )
 from .jobs import INTERRUPTED, STARTED as JOBS_STARTED, SUCCESS, JobFailed, JobManager, filter_jobs
-from .plugin_api import ENTRY_POINT_GROUP, PLUGIN_API, ActionRefused, Host, restore_fetched
+from .plugin_api import ENTRY_POINT_GROUP, PLUGIN_API, ActionRefused, Host, ServicePlugin, restore_fetched
 from .pullcrypto import new_key
 from .links import LIST_TIMEOUT, LinkClients, describe_error, link_headers, proxy_websocket
 from .monitor import FILE as MONITOR_FILE, Monitor
@@ -2019,6 +2019,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         """The disks a restore into the instance writes to, with their room
         (restoreroom.py)."""
         instance = get_instance(server, role)
+        if type(instance.plugin).restore_room is ServicePlugin.restore_room:
+            # a kind of instance with no room check (Docker Compose): nothing to say, not an error the Backup
+            # dialog showed and the browser counted (HTTP 400 at each opening)
+            return {"none": True}
         try:
             found = await instance.plugin.restore_room(instance)
         except JobFailed as exc:

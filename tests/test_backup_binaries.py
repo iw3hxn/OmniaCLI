@@ -252,3 +252,14 @@ async def test_backup_zip_is_private(client, env, scanned):
     zips = list(folder.glob("*.zip"))
     assert zips and all(stat.S_IMODE(z.stat().st_mode) == 0o600 for z in zips)
     assert stat.S_IMODE(folder.stat().st_mode) == 0o700
+
+
+async def test_no_room_check_is_nothing_to_say(client, env, monkeypatch):  # noqa: F811
+    """A kind of instance with no room check of a restore (Docker Compose):
+    the dialog's question answers none, not an error the browser counted
+    (HTTP 400 at each opening of the Backups tab, 22/11/2026)."""
+    from omniacli.plugin_api import ServicePlugin
+    plugin = type(env["settings"].servers["srv"].test.plugin)
+    monkeypatch.setattr(plugin, "restore_room", ServicePlugin.restore_room)
+    resp = await client.get("/api/servers/srv/test/restore/room", headers={"Authorization": AUTH})
+    assert resp.status_code == 200 and resp.json() == {"none": True}

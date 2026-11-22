@@ -140,3 +140,12 @@ def test_dates_and_measures_of_a_line_in_the_readers_language():
                                       "172.30.0.12 in for the replication only, over TLS")
     # in English: as the code wrote it
     assert i18n.tr("en", "The PostgreSQL of acme-tmp was stopped already, on 2026-11-22T15:04:38").endswith("2026-11-22T15:04:38")
+
+
+def test_the_labels_of_the_templates_in_italian():
+    """The New instance dialog of a workspace lists the templates by their label: in the reader's language."""
+    from pathlib import Path
+    labels = [json.loads(p.read_text())["label"] for p in (Path(__file__).parent.parent / "templates").glob("*/template.json")]
+    # "OdooPLM 20 (Odoo 20 + PostgreSQL 17)" is the same in Italian: the others have words to translate
+    worded = [label for label in labels if "image" in label or "database" in label]
+    assert worded and all(i18n.tr("it", label) != label for label in worded), [l for l in worded if i18n.tr("it", l) == l]
