@@ -68,6 +68,9 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
 
 {# A. the instances: each with its addresses; its code and its Odoo options are on its own page #}
 <section class="panel tab-panel" data-panel="instances">
+  {# the same instances as a schema (docs/ux/UX-009 §3): a link, the map changes nothing #}
+  <p class="small" style="margin: 0 0 10px; text-align: right"><a href="{{ prefix }}/instances?view=map&amp;workspace={{ ws.name | urlencode }}"
+    title="{{ _('Opens the map of this workspace: its names, environments, databases and where its backups go, as a schema. It changes nothing.') }}">{{ _("On the map") }} ›</a></p>
   {% if why_not %}
   <div class="{{ 'banner' if storage_problem else 'muted' }}" id="no-new-instance" style="margin: 0 0 12px">{{ why_not }}
     {% if machine_admin and (storage_problem or not can_create) %}<a href="{{ limits_url }}">{{ _("Limits and disk") }} ›</a>{% endif %}</div>

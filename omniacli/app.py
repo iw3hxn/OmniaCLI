@@ -48,7 +48,7 @@ from . import (backupcheck, backupchoices, checks, deployhooks, destinations, in
 from .accesslog import REQUEST as AUDIT_REQUEST, AccessLog
 from . import audit, siem
 from . import i18n, loginas, machines, modulecatalog, pgreport, pgtuning, stagings, workspaceweb
-from . import machinedb
+from . import inframap, machinedb
 from . import stagingmail
 from . import dumpinfo
 from . import totp
@@ -318,6 +318,8 @@ WORKSPACE_ROUTES = frozenset({
     "/workspaces/{workspace}/audit", "/api/workspaces/{workspace}/audit/export",
     # the lists of every machine (UX-008 §4): of its workspaces' instances only
     "/instances", "/api/instances", "/backups", "/api/backups", "/api/servers/{server}/stagings/from-backup",
+    # the map of the infrastructure (UX-009): the same instances as a diagram, its workspaces only
+    "/api/map",
     # a staging's caught mail (UX-008 §5.3)
     "/api/servers/{server}/production/mail", "/api/servers/{server}/production/mail/{mail_id}",
     "/api/servers/{server}/production/mail/clear",
@@ -921,6 +923,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                            ("monitor", monitor.stop), ("point-in-time recovery", stop_pitr),
                            ("planned database restarts", stop_postgres),
                            ("nightly catalog of modules", stop_catalog),
+                           # defined further down, with the map's code
+                           ("the map's readings", lambda: stop_map()),
                            ("auto update", updater.stop), ("schedules", scheduler.stop),
                            ("link clients", link_clients.close)):
             # a task of its own, waited for and never cancelled from here: a
@@ -1546,6 +1550,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             "server.html",
             {
                 "from_link": from_link,
+                # the workspace it is in: «On the map» opens its schema, where the node of this instance is
+                "map_workspace": settings.workspace_of(srv.name),
                 "login_as": login_as_buttons,
                 # its copies: its test and its stagings (made beside it in its
                 # workspace); or the production it is a staging of
@@ -2140,6 +2146,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                           {"id": "restore", "label": "Restore", "where": instance.key}],
                 "step": "backup", "done": 0, "total": 0,
             }
+            # the machines the data goes between ("": this one), for the map's line (UX-009)
+            job.result["transfer"] = {"from": link.name, "to": ""}
             dest = await linkcopy.fetch_backup(job, link_clients.client(link), link, headers, src,
                                                backup, backup_folder(instance), progress, backup_options)
             progress["step"] = "restore"
@@ -3110,13 +3118,22 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             subdomains={s: t for s, t in subdomains.items() if t in instances and s not in instances})
         return addresses_follow(before, after, gone, now)
 
+    # the HTTPS and DNS state of each name as its last publication found it: the map reads it (UX-009)
+    web_names_state = inframap.WebNames(settings.servers_file.parent / inframap.WEB_FILE, workspacehelper.NGINX_SITES)
+
+    async def publish_names(job, ws: Workspace) -> dict:
+        """workspaceops.publish, its answer kept for the map: which names came out with HTTPS and with their DNS here."""
+        made = await workspaceops.publish(job, ws)
+        await asyncio.to_thread(web_names_state.record, ws.name, made)
+        return made
+
     def submit_publish(ws: Workspace, source: str):
         """A job: the workspace's nginx site and certificate, as it is when the job runs."""
         async def action(job):
             current = settings.workspaces.get(ws.name)
             if current is None:
                 raise JobFailed(f"no workspace {ws.name}")
-            job.result.update(await workspaceops.publish(job, current))
+            job.result.update(await publish_names(job, current))
         return jobs.submit(f"Names of workspace {ws.name}", [f"{s}/{r}" for s in ws.servers for r in ROLES],
                            source, action)
 
@@ -3404,7 +3421,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if resources:
                 await workspaceops.apply_limits(job, current)
             if names:
-                job.result.update(await workspaceops.publish(job, current))
+                job.result.update(await publish_names(job, current))
         job = jobs.submit(f"Workspace {ws.name}: " + ", ".join(
             [w for w, on in (("CPU and memory", resources), ("names", names)) if on]),
             [f"{s}/{r}" for s in ws.servers for r in ROLES], f"manual: {me}", action)
@@ -3504,7 +3521,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         current = settings.workspaces.get(ws.name)
         if current is not None and current.domain:
             try:
-                await workspaceops.publish(job, current)
+                await publish_names(job, current)
             except JobFailed as exc:
                 job.warn(f"The instance runs, its names are not published: {exc}")
         return parsed
@@ -4355,6 +4372,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                           {"id": "download", "label": "Transfer", "where": f"{here_name()} → {machine}"},
                           {"id": "restore", "label": "Staging", "where": machine}],
                 "step": "backup", "done": 0, "total": 0}
+            # the machines the data goes between ("": this one), for the map's line (UX-009)
+            job.result["transfer"] = {"from": "", "to": machine}
             source = settings.servers[server].production
             backup_zip = await ops.backup_into(job, source, backup_folder(source), {"no_filestore": False})
             progress["step"] = "download"
@@ -4364,7 +4383,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             remote_id, name = str(answer.get("job") or ""), str(answer.get("server") or "")
             if not remote_id or not name:
                 raise JobFailed(f"{machine} started no job for the staging")
-            job.result.update(server=name, link=machine, url=f"/links/{machine}/servers/{name}")
+            job.result.update(server=name, link=machine, url=f"/links/{machine}/servers/{name}",
+                              # its job there, as the map names it: one row for the two (UX-009)
+                              follows=f"{machine}:{remote_id}")
             progress["step"] = "restore"
             await linkcopy.follow(job, client, link, headers, remote_id, "the staging")
             job.log(f"{name} on {machine}: a copy of {server} of now, neutralized")
@@ -4881,7 +4902,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             current = settings.workspaces.get(ws.name)
             if current is not None:
                 try:
-                    await workspaceops.publish(job, current)
+                    await publish_names(job, current)
                 except JobFailed as exc:
                     job.log(f"The names of the workspace are not published again: {exc}")
 
@@ -5800,7 +5821,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             current = settings.workspaces.get(ws.name)
             if current is not None and current.domain:
                 try:
-                    await workspaceops.publish(job, current)
+                    await publish_names(job, current)
                 except JobFailed as exc:
                     job.log(f"The names of the workspace are not published again: {exc}")
             if not workers and values.get("limit_time_cpu"):
@@ -8573,6 +8594,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         """This machine's name in the lists of every machine."""
         return machines.here_name(socket.gethostname())
 
+    def shown_name(me: Principal) -> str:
+        """This machine's name in the lists me reads: "" for a user of
+        workspaces, who is not told which machine its instances are on."""
+        return "" if me.scoped else here_name()
+
     def listed_links(me: Principal) -> list[str]:
         """The links whose lists join this machine's: for a user who logs in
         here and sees the whole machine."""
@@ -8589,8 +8615,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         headers = {**link_headers(link, me.name, me.role), "Accept": "application/json",
                    "Accept-Language": request_language(request)}
         try:
-            resp = await link_clients.client(link).get(path, headers=headers, timeout=LIST_TIMEOUT)
-        except httpx.HTTPError as exc:
+            # in all: httpx's timeout is of each phase, and a link that answers a byte at a time never ends by it
+            resp = await asyncio.wait_for(
+                link_clients.client(link).get(path, headers=headers, timeout=LIST_TIMEOUT), LIST_TIMEOUT)
+        except (httpx.HTTPError, asyncio.TimeoutError) as exc:
             return None, describe_error(exc)
         if resp.status_code == 404:
             return None, LINK_LIST_OLDER
@@ -8626,7 +8654,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         stagings under them, whether each production backs up by itself."""
         links = listed_links(me)
         return _TEMPLATES.TemplateResponse(request, "instances.html", {
-            "here_name": here_name(), "links": links, "quick_instance": new_instance_here(me),
+            "here_name": shown_name(me), "links": links, "quick_instance": new_instance_here(me),
             # the new instance on a link's machine too (the dialog asks each one its versions)
             "ni_links": links if me.can("admin") else []})
 
@@ -8636,7 +8664,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         /api/servers, the links whose lists join it), or of one link
         ({name, link, servers} or {name, link, error})."""
         if not link:
-            return {"name": here_name(), "link": "", "servers": await server_list(request), "links": listed_links(me)}
+            return {"name": shown_name(me), "link": "", "servers": await server_list(request), "links": listed_links(me)}
         found, why = await link_list(request, me, link, "/api/servers")
         if found is not None and not isinstance(found, list):
             found, why = None, "it did not answer a list"
@@ -8696,7 +8724,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         """The backups of every machine: this one's and each link's."""
         if not sees_backups(me):
             raise HTTPException(status.HTTP_403_FORBIDDEN, "The developer role is required")
-        return _TEMPLATES.TemplateResponse(request, "backups.html", {"here_name": here_name(), "links": listed_links(me)})
+        return _TEMPLATES.TemplateResponse(request, "backups.html", {"here_name": shown_name(me), "links": listed_links(me)})
 
     @app.get("/api/backups")
     async def backups_list(request: Request, link: str = "", me: Principal = Depends(current_user)):
@@ -8705,7 +8733,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if not sees_backups(me):
             raise HTTPException(status.HTTP_403_FORBIDDEN, "The developer role is required")
         if not link:
-            return {"name": here_name(), "link": "", **backup_rows(request, me), "links": listed_links(me)}
+            return {"name": shown_name(me), "link": "", **backup_rows(request, me), "links": listed_links(me)}
         found, why = await link_list(request, me, link, "/api/backups")
         if found is not None and not (isinstance(found, dict) and isinstance(found.get("rows"), list)):
             found, why = None, "it did not answer a list"
@@ -8714,6 +8742,615 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     # it answers, it is only older than this list
                     "older": why == LINK_LIST_OLDER}
         return {"name": link, "link": link, "rows": found["rows"], "tonight": found.get("tonight") or {}}
+
+    # --- the map of the infrastructure (docs/ux/UX-009) ----------------------
+    # One route, read only: what the lists above already say (the instances,
+    # their state, their backups) and where each thing is (the workspace, the
+    # names, the database, where the backups go), as nodes and lines; and what
+    # moves now (the jobs). Nothing here asks PostgreSQL, docker or the root
+    # helper while a request waits but the run states, as /api/servers does.
+
+    MAP_OLDER = "its OmniaCLI is older: update it to see it on the map"
+    # the run states as the last whole read found them: what part=now says is stopped
+    map_states: dict[str, str] = {}
+    mail_counts = inframap.MailCounts()
+    map_tasks: set[asyncio.Task] = set()
+    # {link: its stagings of this machine's productions}, and when they were asked
+    map_elsewhere: dict = {"at": None, "links": {}}
+    # {link: (when it did not answer the whole map, why)}: not asked the layer of now meanwhile
+    map_unanswered: dict[str, tuple[float, str]] = {}
+
+    async def map_ask(link: LinkTarget, who: str, role: str, params: dict, lang: str = ""):
+        """(what link answered to GET /api/map, "") or (None, why not), within
+        LIST_TIMEOUT in all: httpx's timeout is of each phase, and a link
+        that answers a byte at a time would hold the whole map. Asked once
+        more when the connection kept open was closed there in the meantime."""
+        headers = {**link_headers(link, who, role), "Accept": "application/json"}
+        if lang:
+            headers["Accept-Language"] = lang
+
+        async def get():
+            for last in (False, True):
+                try:
+                    return await link_clients.client(link).get("/api/map", params=params, headers=headers,
+                                                               timeout=LIST_TIMEOUT)
+                except (httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError, httpx.CloseError):
+                    if last:
+                        raise
+        try:
+            resp = await asyncio.wait_for(get(), LIST_TIMEOUT)
+        except (httpx.HTTPError, asyncio.TimeoutError) as exc:
+            return None, describe_error(exc)
+        if resp.status_code == 404:
+            return None, MAP_OLDER
+        if resp.status_code != 200:
+            return None, f"answered HTTP {resp.status_code}"
+        try:
+            return resp.json(), ""
+        except ValueError:
+            return None, "it did not answer a map"
+
+    def map_task(work) -> None:
+        task = asyncio.get_running_loop().create_task(work)
+        map_tasks.add(task)
+        task.add_done_callback(map_tasks.discard)
+
+    async def stop_map() -> None:
+        """What the map was reading by itself (a count of caught mail, the links' stagings) is left."""
+        for task in list(map_tasks):
+            task.cancel()
+        await asyncio.gather(*map_tasks, return_exceptions=True)
+
+    async def count_mail(server: str, instance: Instance) -> None:
+        """The caught mail of a staging counted (the root helper's mail-list),
+        kept for the map: never asked by a request that waits."""
+        try:
+            found = await stagingmail.messages(instance)
+        except (JobFailed, LookupError) as exc:
+            _logger.info("the caught mail of %s was not counted: %s", server, exc)
+            mail_counts.store(server, None, None)
+            return
+        rows = found.get("messages") or []
+        mail_counts.store(server, int(found.get("total") or 0), rows[0].get("received") if rows else None)
+
+    def mail_guarded(instance: Instance) -> bool | None:
+        """Whether the firewall refuses the mail ports to the staging's
+        project, from the root's record (read only); None: not readable."""
+        try:
+            data = json.loads(workspacehelper.MAIL_GUARD.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return isinstance(data, dict) and str(Path(str(instance.restart.service))) in data
+
+    def map_viewer(me: Principal) -> dict:
+        """Who reads the map: the whole machine or its workspaces, and with which role at most."""
+        if not me.scoped:
+            return {"scope": "machine", "role": me.role}
+        roles = [r for _, r in me.workspaces if r in ACCESS_ROLES] or ["user"]
+        return {"scope": "workspace", "role": max(roles, key=ACCESS_ROLES.index)}
+
+    def map_workspace(me: Principal, workspace: str) -> Workspace | None:
+        """The workspace the map is asked of; one that is not the caller's
+        is answered as one that does not exist."""
+        if not workspace:
+            return None
+        ws = settings.workspaces.get(workspace)
+        if ws is None or (me.scoped and me.workspace_role(workspace) is None):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "No such workspace")
+        return ws
+
+    def map_label(srv: Server) -> str:
+        """An instance as the lists name it: its address, else its server's name."""
+        main = srv.production or srv.test
+        return inframap.public_host((main.domain or main.site) if main is not None else None) or srv.name
+
+    def map_here(request: Request, me: Principal, part: str, only: Workspace | None, focus: str,
+                 keep: set[str] | None = None) -> dict:
+        """This machine's part of the map, for me: its workspaces (only: that
+        one), their instances (keep: those servers only), what is to look
+        at, the jobs; with focus (a server), the path of that instance. The
+        run states are map_states'."""
+        lang = request_language(request)
+        say = functools.partial(i18n.gettext, lang)
+        shown = visible_servers(me)
+        whole = shown is None
+        view = customer_view(request)
+        known = stagings.load(stagings_file)
+        live = [srv for srv in settings.active_servers() if srv.instances and (whole or srv.name in shown)
+                and (only is None or srv.name in only.servers) and (keep is None or srv.name in keep)]
+        names_shown = {srv.name for srv in live}
+        running = {key: j.id for j in jobs.jobs.values() if j.status == "running" for key in j.instances}
+        queued = {key for j in jobs.jobs.values() if j.status == "queued" for key in j.instances}
+        generated: dict[str, dict] = {}
+        day_ago = (datetime.datetime.now() - TONIGHT).isoformat(timespec="seconds")
+        tonight = {"ok": 0, "failed": 0, "unscheduled": 0}
+        found_dest = load_destinations() if part == "all" else {}
+        cluster_major = next(iter(machinedb.registry()), None) if part == "all" else None
+        # the names of machines a customer does not read: this one's, and those of its stagings' productions
+        hidden = {here_name(), *(str(i.get("machine")) for i in known.values() if i.get("machine"))} if view else set()
+        own = ({n for ws, _ in me.workspaces if ws in settings.workspaces for n in (ws, *settings.workspaces[ws].servers)}
+               | {m for ws, _ in me.workspaces if ws in settings.workspaces for m in settings.workspaces[ws].members}
+               ) if view else set()
+        hidden_re = [re.compile(rf"(?<![\w.-]){re.escape(n)}(?![\w-])") for n in sorted(hidden - own, key=len, reverse=True)]
+
+        def scrub(text):
+            """A job's text as me reads it: a customer's without the machines' names."""
+            if view is None or not isinstance(text, str):
+                return text
+            text = view.text(text)
+            for pattern in hidden_re:
+                text = pattern.sub(say("the server"), text)
+            return text
+
+        def env_names(srv: Server, role: str, inst: Instance) -> list[dict]:
+            owner = workspace_of(srv.name)
+            if owner is not None and owner[0].domain:
+                ws, instance = owner
+                if ws.name not in generated:
+                    generated[ws.name] = generated_names(ws)
+                own_names = [n for n, at in generated[ws.name].items() if at == (instance, role)]
+                return inframap.env_names(own_names, ws.aliases.get(instance, {}).get(role, []),
+                                          ws.redirects.get(instance, {}).get(role, {}), web_names_state.of(ws.name))
+            host = urlsplit(inst.domain).netloc if inst.domain else ""
+            return inframap.env_names([host], [], {}, {}) if host else []
+
+        def env_of(srv: Server, role: str) -> dict | None:
+            inst = srv.instances.get(role)
+            if inst is None:
+                return None
+            return {"state": map_states.get(inst.key, "unknown"), "busy": jobs.is_busy(inst.key),
+                    "job": running.get(inst.key), "queued": inst.key in queued and inst.key not in running,
+                    "names": env_names(srv, role, inst)}
+
+        def backup_of(srv: Server) -> dict | None:
+            """The automatic backups of a production, for who may see its backups (developer)."""
+            prod = srv.production
+            if prod is None or srv.name in known or not prod.plugin.has_backup \
+                    or not reaches(role_on(me, srv.name), "developer"):
+                return None
+            sch = scheduler.schedules.get(backup_schedule_name(prod))
+            state = backup_schedule_state(prod, lang)
+            at, night = None, {"ok": 0, "failed": 0}
+            if sch is not None:
+                minute, hour, *rest = sch.cron.split(" ")
+                if minute.isdigit() and hour.isdigit() and rest == ["*", "*", "*"]:
+                    at = f"{int(hour):02d}:{int(minute):02d}"
+                for run in scheduler.history.runs(sch.name, jobs):
+                    if str(run.get("time") or "") >= day_ago and run.get("status") in (SUCCESS, *BACKUP_NOT_DONE):
+                        night["ok" if run.get("status") == SUCCESS else "failed"] += 1
+            tonight["ok"] += night["ok"]
+            tonight["failed"] += night["failed"]
+            if not state["scheduled"]:
+                tonight["unscheduled"] += 1
+            name = sch.backup.destination if sch is not None and sch.backup and state["scheduled"] else ""
+            last = state["last"]
+            return {"scheduled": state["scheduled"], "time": at if state["scheduled"] else None,
+                    "destination": name or None, "destination_id": f"{inframap.HERE}/dest:{name}" if name else None,
+                    # its runs of the last day: what the counts of the head light
+                    "tonight": night,
+                    "last": last and {"time": last.get("time"), "ok": bool(last.get("ok")), "job": last.get("job")}}
+
+        def light(srv: Server) -> dict:
+            """What is in memory of an instance: its states, names, monitor, backup, certificate."""
+            prod = srv.production or srv.test
+            seen = monitor.view(prod.key)
+            numbers = reaches(role_on(me, srv.name), "developer")
+            site = (prod.site or "").removeprefix("https://")
+            return {"id": inframap.instance_id(srv.name), "server": srv.name, "name": map_label(srv),
+                    "type": "staging" if srv.name in known else "production",
+                    "envs": {"production": env_of(srv, "production"), "test": env_of(srv, "test")},
+                    "backup": backup_of(srv),
+                    # the numbers of the monitor: from the developer up
+                    "monitor": {"state": seen["state"], "since": seen["since"],
+                                "last_ms": seen["last_ms"] if numbers else None,
+                                "uptime_24h": seen["uptime_24h"] if numbers else None},
+                    "certificate": monitor.certificate(site) if site else None}
+
+        def full(srv: Server) -> dict:
+            node = light(srv)
+            info = known.get(srv.name) or {}
+            parent, away = str(info.get("parent") or ""), str(info.get("machine") or "")
+            prod = srv.production or srv.test
+            for role, env in node["envs"].items():
+                if env is not None:
+                    place = database_place(srv.instances[role]) or {}
+                    env["database"] = {"where": place.get("where"), "host": place.get("host"),
+                                       "replica": place.get("replica") or None, "port": place.get("port"),
+                                       "major": cluster_major if place.get("where") == "machine" else None,
+                                       } if place else None
+            node.update({
+                # its production: here (its id), or on another machine (elsewhere)
+                "parent": inframap.instance_id(parent) if parent and not away and parent in names_shown else None,
+                "elsewhere": bool(parent and away),
+                "version": odoo_version(srv.name), "created": info.get("refreshed") or info.get("created") or "",
+                # an address the reader may open: not localhost's port of an instance without a name
+                "url": inframap.public_url(prod.web_url), "page": f"/servers/{srv.name}", "mail": None})
+            if whole and parent and away:
+                # for the machine that holds its production: the map ties them (inframap.link_stagings)
+                node.update({"parent_server": parent, "parent_machine": away})
+            if srv.name in known:
+                caught, meta = staging_mail_meta(srv.name)
+                if caught is not None:
+                    if map_states.get(caught.key) == "running" and mail_counts.due(srv.name):
+                        map_task(count_mail(srv.name, caught))
+                    node["mail"] = {"capture": True, **mail_counts.of(srv.name),
+                                    "inbox": workspacehelper.receives_mail(meta, "production")}
+            return node
+
+        make = full if part == "all" else light
+        mine = None if whole else {ws for ws, _ in me.workspaces}
+        workspaces_, in_workspace = [], set()
+        for ws in sorted(settings.workspaces.values(), key=lambda w: w.name):
+            if (mine is not None and ws.name not in mine) or (only is not None and ws.name != only.name):
+                continue
+            role = me.role if whole else me.workspace_role(ws.name)
+            can_open = reaches(role, "admin")
+            point = ((disk_history.workspaces.get(ws.name) or {}).get("points") or [None])[-1]
+            in_workspace.update(ws.servers)
+            workspaces_.append({
+                "id": inframap.workspace_id(ws.name), "name": ws.name, "label": ws.label or ws.name,
+                "domain": ws.domain, "certificate": ws.certificate if ws.domain else "",
+                "can_open": can_open, "page": f"/workspaces/{ws.name}",
+                # as the daily record of the disks found it (no question to the root helper)
+                "disk": {"used": point[1], "size": point[3], "day": point[0]} if point else None,
+                "limits": dict(ws.limits) if can_open else None, "members": len(ws.members) if can_open else None,
+                "instances": [make(settings.servers[n]) for n in ws.servers if n in names_shown]})
+        loose = [make(srv) for srv in live if srv.name not in in_workspace] if whole and only is None else []
+        instances = [i for ws in workspaces_ for i in ws["instances"]] + loose
+
+        # --- the jobs: those open, those just ended, the last one; a day of those that went wrong
+        now = datetime.datetime.now()
+        found_jobs = visible_jobs(me, list(reversed(jobs.jobs.values())))
+        if only is not None:
+            found_jobs = [j for j in found_jobs if j.workspace == only.name or set(j.servers) & set(only.servers)]
+        ended = sorted((j for j in found_jobs if j.finished_flag), key=lambda j: j.finished or "", reverse=True)
+        just = (now - datetime.timedelta(seconds=inframap.JOB_SHOWN)).isoformat(timespec="seconds")
+        strip = [j for j in found_jobs if not j.finished_flag] + [j for j in ended if (j.finished or "") >= just]
+        if ended and ended[0] not in strip:
+            strip.append(ended[0])
+
+        def machine_of(name) -> str | None:
+            if name == "":
+                return inframap.HERE
+            return name if name in settings.link_targets else None
+
+        def job_of(job) -> dict:
+            read = view.job(job, False) if view is not None else job
+            progress = read.result.get("progress") if isinstance(read.result, dict) else None
+            steps = None
+            if isinstance(progress, dict) and isinstance(progress.get("steps"), list):
+                steps = {"steps": [{"id": s.get("id"), "label": scrub(i18n.tr(lang, str(s.get("label") or ""))),
+                                    # a customer is not told which machine: the server
+                                    "where": i18n.tr(lang, str(s.get("where") or "")) if whole else say("the server")}
+                                   for s in progress["steps"] if isinstance(s, dict)],
+                         "step": progress.get("step"), "done": progress.get("done") or 0,
+                         "total": progress.get("total") or 0}
+            transfer = job.result.get("transfer") if whole and isinstance(job.result, dict) else None
+            transfer = transfer if isinstance(transfer, dict) else {}
+            # the job of the linked machine this one waits for (a staging made there): one row for the two
+            there = job.result.get("follows") if whole and isinstance(job.result, dict) else None
+            return {"id": job.id, "title": scrub(i18n.tr(lang, read.title)), "status": job.status,
+                    "outcome": job.outcome, "by": scrub(read.source), "created": job.created,
+                    "started": job.started, "finished": job.finished,
+                    # by this machine's clock: the browser's may be of another time zone
+                    "age_s": inframap.seconds_since(job.started or job.created, now),
+                    "ended_s": inframap.seconds_since(job.finished, now),
+                    "follows": there if isinstance(there, str) else None,
+                    "error": scrub(i18n.tr(lang, read.error)) if read.error else None,
+                    "instances": [inframap.instance_id(s) for s in job.servers],
+                    "from": machine_of(transfer.get("from")) if transfer else None,
+                    "to": machine_of(transfer.get("to")) if transfer else None,
+                    "progress": steps, "page": f"/jobs/{job.id}"}
+
+        # --- what is to look at
+        watch = [w for i in instances for w in inframap.watch_of(i, say)]
+        backups_failed = {w.get("job") for w in watch if w["kind"] == "backup_failed"}
+        since = (now - datetime.timedelta(hours=inframap.WATCH_HOURS)).isoformat(timespec="seconds")
+        # the newest first: an action done again well on the same instances is not to look at any more
+        redone = set()
+        for job in ended:
+            again = (job.title, tuple(job.instances))
+            if job.outcome == SUCCESS:
+                redone.add(again)
+            if (job.finished or "") < since or job.outcome == SUCCESS or job.id in backups_failed or again in redone:
+                continue
+            watch.append({"kind": "job_warned" if job.outcome == "warned" else "job_failed",
+                          "node": inframap.instance_id(job.servers[0]) if job.servers else None,
+                          "text": scrub(i18n.tr(lang, (view.job(job, False) if view is not None else job).title)),
+                          "since": job.finished, "job": job.id, "page": f"/jobs/{job.id}"})
+        if whole and machine_admin(me) and only is None:
+            watch += [{"kind": "disk", "node": inframap.HERE, "text": i18n.tr(lang, problem), "since": None}
+                      for what, problem in monitor.problems().items() if what.startswith("disk ")]
+        point = sampler.machine[-1] if whole and sampler.machine else None
+        load = None
+        if point is not None:
+            ram = round(100 * point["ram"] / point["ram_total"]) if point.get("ram") and point.get("ram_total") else None
+            load = {"cpu": point.get("cpu"), "ram": ram}
+        result = {"at": inframap.now_text(), "part": part, "viewer": map_viewer(me),
+                  "verdict": {"ok": not watch, "watch": watch},
+                  "tonight": tonight if sees_backups(me) else None,
+                  "jobs": [job_of(j) for j in strip]}
+        if part == "now":
+            result["machines"] = [{"id": inframap.HERE, "answered": True, "error": None, "older": False, "load": load,
+                                   "envs": {i["id"]: {role: {k: env[k] for k in ("busy", "job", "queued")}
+                                                      for role, env in i["envs"].items() if env}
+                                            for i in instances}}]
+            return result
+
+        # --- the whole: the machine, the databases, where the backups go, the lines
+        databases, edges, used = {}, [], set()
+        for node in instances:
+            targets: dict[str, int] = {}
+            for env in node["envs"].values():
+                place = (env or {}).get("database") or {}
+                ident = inframap.database_id(place)
+                if ident is None:
+                    continue
+                targets[ident] = targets.get(ident, 0) + 1
+                databases[ident] = {"id": ident, "kind": place["where"], "host": place.get("host"),
+                                    "major": place.get("major"), "machine": inframap.HERE}
+                if place.get("replica"):
+                    replica = f"{inframap.HERE}/replica:{place['replica']}"
+                    databases[replica] = {"id": replica, "kind": "replica", "host": place["replica"], "of": ident,
+                                          "major": None, "machine": inframap.HERE}
+                    targets[replica] = targets.get(replica, 0) + 1
+            edges += [{"from": node["id"], "to": ident, "kind": "replica" if "/replica:" in ident else "database",
+                       "count": count} for ident, count in targets.items()]
+            backup = node.get("backup") or {}
+            if backup.get("destination_id"):
+                used.add(backup["destination"])
+                edges.append({"from": node["id"], "to": backup["destination_id"], "kind": "backup", "count": 1,
+                              "time": backup.get("time")})
+        try:
+            usage = shutil.disk_usage(next(iter(settings.storage_roots.values()), "/")) if whole else None
+        except OSError:
+            usage = None
+        machine = {
+            "id": inframap.HERE, "here": True, "name": None, "machine_name": here_name() if whole else None,
+            "answered": True, "error": None, "older": False, "read_at": result["at"], "version": _version(),
+            "load": load, "disk": {"free": usage.free, "total": usage.total} if usage else None,
+            # the machine's cluster, when one was made (root's record: not asked whether it runs)
+            "cluster": [{"major": major, "running": None} for major in sorted(machinedb.registry())] if whole else [],
+            "drafts": len([s for s in settings.servers.values() if s.status == "draft"]) if machine_admin(me) else None,
+            "workspaces": workspaces_, "loose": loose}
+        result.update({
+            "machines": [machine], "edges": edges, "databases": list(databases.values()),
+            "destinations": [{"id": f"{inframap.HERE}/dest:{name}", "label": name,
+                              "kind": found_dest[name].label if name in found_dest else "",
+                              "workspace": found_dest[name].workspace if name in found_dest else "",
+                              "machine": inframap.HERE} for name in sorted(used)]})
+        srv = settings.servers.get(focus) if focus else None
+        if srv is not None and srv.active and srv.name in names_shown:
+            node = next(i for i in instances if i["server"] == srv.name)
+            prod = srv.production or srv.test
+            series = sampler.series(prod.key, int(time.time()) - 600)
+            mail = node.get("mail")
+            if mail:
+                mail = {**mail, "guarded": mail_guarded(prod),
+                        "domain": stagingmail.domain_of(srv.name) if mail.get("inbox") else ""}
+            env = node["envs"].get(prod.role) or {}
+            result["flow"] = {
+                "node": node["id"], "names": env.get("names") or [],
+                # the machine by its name for who sees the machine; the server for the others
+                "web": {"label": here_name() if whole else say("the server")},
+                "odoo": {"state": env.get("state"), "test": (node["envs"].get("test") or {}).get("state")
+                         if prod.role == "production" else None, "monitor": node["monitor"],
+                         "load": [{"t": p["t"], "cpu": p.get("cpu"), "mem": p.get("mem")} for p in series]},
+                "database": env.get("database"),
+                # no reading of the workspaces' firewall without changing it yet (UX-009 D4)
+                "firewall": None, "mail": mail, "backup": node.get("backup"),
+                "stagings": [{"id": i["id"], "name": i["name"], "created": i.get("created"),
+                              "state": (i["envs"].get("production") or {}).get("state")}
+                             for i in instances if i.get("parent") == node["id"]],
+                "links": {"page": f"/servers/{srv.name}", "odoo": node["url"],
+                          "mail": f"/servers/{srv.name}#mail" if mail else None}}
+        return result
+
+    async def read_elsewhere() -> None:
+        """The stagings of this machine's productions made on the linked
+        machines, asked to each link's map (stagings_of: those only) as the
+        map itself and as a user, the least a link may be: kept for the
+        users of workspaces, who do not reach the links and whose names are
+        never sent to them. A link that does not answer keeps what it said last."""
+        here = here_name()
+
+        async def ask(link: LinkTarget):
+            data, _ = await map_ask(link, inframap.SYSTEM_ACTOR, "user", {"stagings_of": here})
+            machines_ = data.get("machines") if isinstance(data, dict) else None
+            if not isinstance(machines_, list) or not machines_ or not isinstance(machines_[0], dict):
+                return link.name, None
+            rows = [i for ws in machines_[0].get("workspaces") or [] if isinstance(ws, dict)
+                    for i in ws.get("instances") or [] if isinstance(i, dict)]
+            # an OmniaCLI there that does not know stagings_of answers its whole map: the same rows are kept
+            return link.name, [i for i in rows if i.get("parent_machine") == here and i.get("parent_server")]
+
+        for name, rows in await asyncio.gather(*(ask(link) for link in settings.link_targets.values())):
+            if rows is not None:
+                map_elsewhere["links"][name] = rows
+        for name in set(map_elsewhere["links"]) - set(settings.link_targets):
+            del map_elsewhere["links"][name]
+        map_elsewhere["at"] = time.monotonic()
+
+    async def stagings_on_links(request: Request, me: Principal, data: dict) -> None:
+        """For a user of workspaces: the stagings of its productions that
+        are on a linked machine, under their production, with no name of
+        that machine, of its workspaces or of its servers; numbered within
+        their production, the oldest first, so another customer's staging
+        never moves them."""
+        if not settings.link_targets:
+            return
+        if map_elsewhere["at"] is None:
+            await read_elsewhere()
+        elif time.monotonic() - map_elsewhere["at"] >= inframap.ELSEWHERE_EVERY:
+            map_elsewhere["at"] = time.monotonic()
+            map_task(read_elsewhere())
+        lang = request_language(request)
+        found = sorted((r for rows in map_elsewhere["links"].values() for r in rows),
+                       key=lambda r: (str(r.get("created") or ""), str(r.get("server") or "")))
+        for ws in data["machines"][0]["workspaces"]:
+            mine = {i["server"] for i in ws["instances"]}
+            numbers: dict[str, int] = {}
+            for row in found:
+                parent = row["parent_server"]
+                if parent not in mine:
+                    continue
+                numbers[parent] = numbers.get(parent, 0) + 1
+                created = str(row.get("created") or "")
+                try:
+                    day = datetime.datetime.fromisoformat(created).strftime("%d/%m")
+                except ValueError:
+                    day = ""
+                # its address when it has a name; a port of that machine is no address for the reader
+                url = inframap.public_url(row.get("url"))
+                word = i18n.gettext(lang, "Staging of {date}", date=day) if day else i18n.gettext(lang, "Staging")
+                env = (row.get("envs") or {}).get("production") or {}
+                ws["instances"].append({
+                    "id": f"elsewhere/{parent}/{numbers[parent]}", "server": None,
+                    "name": inframap.public_host(url) or word, "type": "staging",
+                    "parent": inframap.instance_id(parent), "elsewhere": True,
+                    "version": row.get("version") or "", "created": created, "url": url, "page": None,
+                    "envs": {"production": {"state": env.get("state") or "unknown", "busy": bool(env.get("busy")),
+                                            "job": None, "queued": bool(env.get("queued")), "names": [],
+                                            "database": None}, "test": None},
+                    "backup": None, "monitor": None, "certificate": None,
+                    "mail": row.get("mail") and {k: row["mail"].get(k)
+                                                 for k in ("capture", "count", "last", "counted_at", "inbox")}})
+
+    @app.get("/api/map")
+    async def infrastructure_map(request: Request, part: str = "all", machine: str = "", workspace: str = "",
+                                 focus: str = "", stagings_of: str = "", me: Principal = Depends(current_user)):
+        """The map of the infrastructure (docs/ux/UX-009): the machines (this
+        one and, for who sees the whole machine and logs in here, each
+        link's, asked to its own /api/map with the caller's role at most),
+        their workspaces and instances with their state, names, database,
+        backups, monitor and caught mail, the lines between them, the jobs
+        and what is to look at. part=now: the jobs, what is busy, the load
+        and the verdict only, from memory. machine: one machine (~: this
+        one); workspace: one workspace; focus (<machine>/<server>): the
+        path of that instance too. A user of workspaces gets its workspaces
+        only, with no name of a machine, a link or another workspace; a link
+        that does not answer or is older is a machine saying so, within
+        LIST_TIMEOUT in all. stagings_of (the name of a machine, for who
+        sees the whole of this one): the stagings made here of that
+        machine's productions and nothing else, which is what that machine
+        asks for its users of workspaces."""
+        if part not in ("all", "now"):
+            return refuse("part must be all or now")
+        if stagings_of and not me.scoped:
+            theirs = {name for name, info in stagings.load(stagings_file).items()
+                      if info.get("machine") == stagings_of and info.get("parent")}
+            map_states.update(await run_states([srv for srv in settings.active_servers() if srv.name in theirs]))
+            found = map_here(request, me, "all", None, "", theirs)
+            return {"at": found["at"], "part": "all", "viewer": found["viewer"],
+                    "machines": [{"id": inframap.HERE, "here": True, "answered": True, "loose": [],
+                                  "workspaces": [{"id": ws["id"], "instances": ws["instances"]}
+                                                 for ws in found["machines"][0]["workspaces"] if ws["instances"]]}]}
+        lang = request_language(request)
+        links = listed_links(me)
+        if machine and machine != inframap.HERE and machine not in links:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "No such machine")
+        here_asked = machine in ("", inframap.HERE)
+        only = map_workspace(me, workspace) if here_asked else None
+        focus_machine, _, focus_server = focus.rpartition("/")
+        focus_machine = focus_machine or machine or inframap.HERE
+        # one workspace of this machine: its links are not in the schema
+        asked = [n for n in links if machine == n or (not machine and only is None)]
+
+        async def ask(name: str):
+            link = settings.link_targets[name]
+            unanswered = map_unanswered.get(name)
+            if part == "now" and unanswered and time.monotonic() - unanswered[0] < inframap.UNANSWERED_FOR:
+                # it did not answer the whole map: the next whole read asks it again, this one does not wait for it
+                return name, None, unanswered[1]
+            params = {"part": part}
+            if focus_server and focus_machine == name:
+                params["focus"] = f"{inframap.HERE}/{focus_server}"
+            found, why = await map_ask(link, me.name, me.role, params, lang)
+            if found is not None:
+                found = inframap.rebase(found, name)
+                why = "" if found is not None else "it did not answer a map"
+            if found is None:
+                map_unanswered[name] = (time.monotonic(), why)
+            else:
+                map_unanswered.pop(name, None)
+            return name, found, why
+
+        # the links are asked while this machine reads its own states
+        asking = [asyncio.ensure_future(ask(n)) for n in asked]
+        data = None
+        try:
+            if here_asked:
+                shown = visible_servers(me)
+                if part == "all":
+                    map_states.update(await run_states(
+                        [srv for srv in settings.active_servers() if (shown is None or srv.name in shown)
+                         and (only is None or srv.name in only.servers)]))
+                    # what was removed since is forgotten: its states, its count of caught mail
+                    current = {inst.key for srv in settings.active_servers() for inst in srv.instances.values()}
+                    for key in set(map_states) - current:
+                        del map_states[key]
+                    mail_counts.forget(stagings.load(stagings_file))
+                data = map_here(request, me, part, only, focus_server if focus_machine == inframap.HERE else "")
+                if me.scoped and part == "all":
+                    await stagings_on_links(request, me, data)
+            answers = await asyncio.gather(*asking)
+        finally:
+            for task in asking:
+                task.cancel()
+        if data is None:
+            data = {"at": inframap.now_text(), "part": part, "viewer": map_viewer(me),
+                    "verdict": {"ok": True, "watch": []}, "tonight": None, "jobs": [], "machines": []}
+            if part == "all":
+                data.update({"edges": [], "databases": [], "destinations": []})
+        tonights = [data["tonight"]]
+        for name, found, why in answers:
+            if found is None:
+                older = why == MAP_OLDER
+                text = (i18n.gettext(lang, "{name}: its OmniaCLI is older: update it to see it on the map", name=name)
+                        if older else i18n.gettext(lang, "{name} does not answer: {why}. Its instances are not here.",
+                                                   name=name, why=i18n.tr(lang, why)))
+                data["machines"].append({
+                    "id": name, "here": False, "name": name, "machine_name": None, "answered": False,
+                    "error": i18n.tr(lang, why), "older": older, "read_at": data["at"], "version": "", "load": None,
+                    "disk": None, "cluster": [], "drafts": None, "workspaces": [], "loose": [], "envs": {}})
+                # an older one answers: it is to update, not a machine that is down
+                data["verdict"]["watch"].append({"kind": "machine_older" if older else "machine_unread", "node": name,
+                                                 "text": text, "since": None})
+                continue
+            node = found["machine"]
+            if workspace and machine == name:
+                # one workspace of that machine: one that is not there is answered as here
+                node["workspaces"] = [ws for ws in node.get("workspaces") or [] if ws.get("name") == workspace]
+                if not node["workspaces"]:
+                    raise HTTPException(status.HTTP_404_NOT_FOUND, "No such workspace")
+                node["loose"] = []
+                kept = {i["id"] for ws in node["workspaces"] for i in ws.get("instances") or []}
+                found["watch"] = [w for w in found["watch"] if w.get("node") in kept]
+                found["jobs"] = [j for j in found["jobs"] if set(j.get("instances") or []) & kept]
+                found["edges"] = [e for e in found["edges"] if e["from"] in kept]
+            data["machines"].append(node)
+            data["jobs"] += found["jobs"]
+            data["verdict"]["watch"] += found["watch"]
+            tonights.append(found["tonight"])
+            if part == "all":
+                data["edges"] += found["edges"]
+                data["databases"] += found["databases"]
+                data["destinations"] += found["destinations"]
+                if found["flow"] is not None:
+                    data["flow"] = found["flow"]
+        if asked:
+            data["tonight"] = inframap.tonight_sum(tonights) if sees_backups(me) else None
+            data["verdict"]["ok"] = not data["verdict"]["watch"]
+            data["jobs"].sort(key=lambda j: str(j.get("created") or ""), reverse=True)
+            if part == "all":
+                if here_asked:
+                    data["edges"] += [{"from": inframap.HERE, "to": name, "kind": "link", "count": 1}
+                                      for name in asked]
+                data["edges"] += inframap.link_stagings(data["machines"])
+        if part == "all":
+            used = {e["to"] for e in data["edges"]} | {e["from"] for e in data["edges"]}
+            data["databases"] = [d for d in data["databases"] if d["id"] in used]
+        return data
 
     @app.post("/api/servers/{server}/stagings/from-backup", dependencies=[Depends(admin)])
     async def staging_from_backup(server: str, payload: dict = Body(...), me: Principal = Depends(current_user)):
@@ -10011,20 +10648,17 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                           workspace=ws[0].name if ws else "")
         return {"job": job.id}
 
-    def database_line(inst: Instance) -> dict | None:
-        """The Database row of the instance's Settings (UX-008 §6.2.6), from
-        the record: PostgreSQL is not read, the page is not slowed. With the
-        move it may make (AD-007) and whether a move left its undo beside it."""
+    def database_place(inst: Instance) -> dict | None:
+        """Where the database of the instance is, from its record (PostgreSQL
+        is not read): dedicated, the machine's cluster, another machine with
+        its host:port and its read replica, the system's PostgreSQL with its
+        port; None when its configuration cannot be read. What the Database
+        row says first, and what the map draws (UX-009)."""
         if inst.restart.type == "compose" and on_remote_db(inst):
             return {"where": "remote", "host": remote_db_host(inst) or "another machine",
                     "replica": remote_db_host(inst, "replica_on")}
         if inst.restart.type == "compose":
-            machine = on_machine_db(inst)
-            key = f"{MACHINE_KEY}/{next(iter(machinedb.registry()), '')}" if machine else inst.key
-            rec = tuning.cluster(key)
-            return {"where": "machine" if machine else "dedicated",
-                    "tuned": rec.get("tuned") if rec.get("params") else None,
-                    "restart": (rec.get("restart") or {}).get("at"), **move_offer(inst)}
+            return {"where": "machine" if on_machine_db(inst) else "dedicated"}
         try:
             shell = inst.plugin.db_shell(inst)
         except Exception:  # noqa: BLE001 - a config that cannot be read: no row
@@ -10035,6 +10669,20 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if place["where"] == "remote":
             return {"where": "remote", "host": place["host"]}
         return {"where": "system", "port": str(shell[1].get("PGPORT") or 5432)}
+
+    def database_line(inst: Instance) -> dict | None:
+        """The Database row of the instance's Settings (UX-008 §6.2.6), from
+        the record: PostgreSQL is not read, the page is not slowed. With the
+        move it may make (AD-007) and whether a move left its undo beside it."""
+        place = database_place(inst)
+        if place is None or place["where"] in ("remote", "system"):
+            return place
+        machine = place["where"] == "machine"
+        key = f"{MACHINE_KEY}/{next(iter(machinedb.registry()), '')}" if machine else inst.key
+        rec = tuning.cluster(key)
+        return {"where": place["where"],
+                "tuned": rec.get("tuned") if rec.get("params") else None,
+                "restart": (rec.get("restart") or {}).get("at"), **move_offer(inst)}
 
     # --- a move between a dedicated database and the machine's cluster (AD-007, step 6)
 

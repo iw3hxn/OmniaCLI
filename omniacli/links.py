@@ -129,8 +129,14 @@ def describe_error(exc: Exception) -> str:
         if code == 404:
             return "WebSocket refused (404): a proxy there that does not pass WebSockets on, or an older OmniaCLI"
         return f"WebSocket refused ({code})"
-    if isinstance(exc, httpx.TimeoutException):
+    if isinstance(exc, (httpx.TimeoutException, asyncio.TimeoutError)):
         return "no answer in time"
     if isinstance(exc, httpx.ConnectError):
         return f"cannot connect ({exc})"
-    return f"{type(exc).__name__}: {exc}"
+    if isinstance(exc, httpx.RemoteProtocolError):
+        # the connection was taken and closed with no answer: a tunnel that is up with no panel behind it
+        return "it closed the connection without answering: OmniaCLI there is not running, or it is starting"
+    if isinstance(exc, (httpx.ReadError, httpx.WriteError, httpx.CloseError)):
+        return "the connection broke before the answer was whole"
+    # the sentence that follows ends it: no full stop of the exception's own
+    return f"{type(exc).__name__}: {exc}".rstrip(". ")

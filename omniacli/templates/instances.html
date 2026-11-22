@@ -7,7 +7,11 @@
    that does not answer is a row of its own and holds no other back. Each
    production at its address, its stagings right under it; its test is no row.
    The Backup column says whether each production backs up by itself; the
-   count of those that do not is a filter. No buttons in the rows. #}
+   count of those that do not is a filter. No buttons in the rows.
+   The view is a choice, List or Map (docs/ux/UX-009 §3): the same instances as
+   a table or as a diagram (_map.html); the choice is in the address (?view=map)
+   and kept in this browser. The Map view reads only: the creating action stays
+   with the List. #}
 <style>
 .inst-counts { color: var(--muted); }
 .inst-counts a[aria-pressed="true"] { font-weight: 650; }
@@ -36,12 +40,18 @@
 <div class="page-head">
   <div><h1>{{ _("Instances") }}</h1>
     <p class="inst-counts" id="inst-counts" role="status">{{ _("Loading…") }}</p></div>
-  <div class="actions">
+  <div class="actions" id="inst-actions">
     {% if quick_instance %}<button type="button" class="primary" data-new-instance
       title="{{ _('Makes a new Odoo instance on the server you choose, from its version only: a workspace of its own, a production and a test; with a domain, the production answers there and the test on test.<domain>. It is a job.') }}">+ {{ _("New instance") }}</button>{% endif %}
   </div>
 </div>
-<section class="panel">
+<nav class="tabs" role="tablist" id="inst-views" aria-label="{{ _('How the instances are shown') }}">
+  <button type="button" role="tab" data-view="list" aria-selected="true"
+          title="{{ _('Shows the instances as a table: each production, its stagings under it, whether it backs up by itself') }}">{{ _("List") }}</button>
+  <button type="button" role="tab" data-view="map" aria-selected="false"
+          title="{{ _('Shows the same instances as a schema: where each thing configured is and what moves now. It changes nothing.') }}">{{ _("Map") }}</button>
+</nav>
+<section class="panel" id="inst-list-view">
   <div class="inst-search" id="inst-search-box" hidden>
     <input type="search" id="inst-search" placeholder="{{ _('Search instance, address, server, workspace…') }}" aria-label="{{ _('Search instance, address, server, workspace…') }}">
   </div>
@@ -58,6 +68,7 @@
     <button type="button" class="small" id="inst-next" title="{{ _('Shows the 50 rows after these') }}">{{ _("Next") }} ›</button>
   </div>
 </section>
+{% include "_map.html" %}
 {% if quick_instance %}{% include "_new_instance_dialog.html" %}{% endif %}
 <script>
 (function () {
@@ -72,7 +83,7 @@
     noneRead: {{ _("their backups cannot be read: the OmniaCLI of those machines is older") | tojson }},
     someUnread: {{ _("the backups of {n} productions cannot be read: the OmniaCLI of their machine is older") | tojson }},
     showAll: {{ _("Show every instance") | tojson }}, showAllTitle: {{ _("Shows every instance again") | tojson }},
-    waiting: {{ _("{name}: asking…") | tojson }},
+    waiting: {{ _("{name}: asking…") | tojson }}, theServer: {{ _("The server") | tojson }},
     down: {{ _("{name} does not answer: {why}. Its instances are not here.") | tojson }},
     older: {{ _("{name} answers, but its OmniaCLI is older and has no such list yet: its instances show here once it is updated.") | tojson }},
     open: {{ _("Opens its page: its environments, backups, log") | tojson }},
@@ -160,11 +171,11 @@
     const cells = [name];
     if (SERVER_COLUMN) cells.push(el("td", {}, row.machine.name, row.server.version ? el("span", {class: "badge"}, row.server.version) : null));
     cells.push(el("td", {}, stateCell(row)), backupCell(row));
-    return el("tr", {"data-server": row.server.name, "data-machine": row.machine.name,
+    return el("tr", {"data-server": row.server.name, "data-machine": row.machine.name || null,
                      class: row.staging ? "staging-row" : null, "data-unscheduled": unscheduled(row) ? "1" : null}, ...cells);
   }
   function machineRow(machine, text, down) {
-    return el("tr", {class: "inst-machine" + (down ? " down" : ""), "data-machine-row": machine.name},
+    return el("tr", {class: "inst-machine" + (down ? " down" : ""), "data-machine-row": machine.name || null},
               el("td", {colspan: SERVER_COLUMN ? 4 : 3}, text));
   }
 
@@ -173,8 +184,9 @@
     let all = [], extra = [];
     for (const m of MACHINES) {
       const data = found[m.name];
-      if (!data) { extra.push(machineRow(m, T.waiting.replace("{name}", m.name))); continue; }
-      if (data.error) { extra.push(machineRow(m, (data.older ? T.older : T.down).replace("{name}", m.name).replace("{why}", data.error), true)); continue; }
+      const label = m.name || T.theServer;
+      if (!data) { extra.push(machineRow(m, T.waiting.replace("{name}", label))); continue; }
+      if (data.error) { extra.push(machineRow(m, (data.older ? T.older : T.down).replace("{name}", label).replace("{why}", data.error), true)); continue; }
       all = all.concat(machineRows(m, data));
     }
     // the counts: of every row read, the filter's the same as the rows it leaves
@@ -229,6 +241,33 @@
       .catch((e) => { found[m.name] = {error: String(e && e.message || e)}; })
       .then(draw);
   }
+})();
+</script>
+<script>
+(function () {
+  // List or Map: the choice of the address (?view=map), else the one kept in this browser; the Map reads
+  // only, so the creating action and the counts of the table go with the List
+  const KEY = "omniacli.instances.view", tabs = [...document.querySelectorAll("#inst-views [data-view]")];
+  const list = document.getElementById("inst-list-view"), counts = document.getElementById("inst-counts");
+  const actions = document.getElementById("inst-actions");
+  function show(view, push) {
+    for (const tab of tabs) tab.setAttribute("aria-selected", String(tab.dataset.view === view));
+    list.hidden = counts.hidden = actions.hidden = view === "map";
+    try { localStorage.setItem(KEY, view); } catch (e) {}
+    const p = new URLSearchParams(location.search);
+    if ((p.get("view") === "map") !== (view === "map")) {
+      if (view === "map") p.set("view", "map");
+      else for (const key of ["view", "machine", "workspace", "focus"]) p.delete(key);
+      history[push ? "pushState" : "replaceState"](null, "", location.pathname + (p.toString() ? "?" + p : "") + location.hash);
+    }
+    if (view === "map") OmniaMap.start(); else OmniaMap.stop();
+  }
+  const asked = () => new URLSearchParams(location.search).get("view");
+  let view = asked();
+  if (view !== "map" && view !== "list") { try { view = localStorage.getItem(KEY); } catch (e) { view = "list"; } }
+  show(view === "map" ? "map" : "list", false);
+  for (const tab of tabs) tab.addEventListener("click", () => show(tab.dataset.view, true));
+  window.addEventListener("popstate", () => show(asked() === "map" ? "map" : "list", false));
 })();
 </script>
 {% endblock %}

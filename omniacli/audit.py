@@ -84,6 +84,9 @@ NOT_SENSITIVE = frozenset({
     "/schedules", "/api/schedules/next", "/api/servers/{server}/{role}/backup-schedule",
     "/api/servers/{server}/{role}/deploy-hook", "/destinations", "/workspaces/{workspace}/destinations",
     "/instances", "/api/instances", "/backups", "/account", "/api/postgres",
+    # the map of the infrastructure (UX-009): the facts of /api/servers and /api/instances as a
+    # diagram; of the caught mail the count only, no list of backups, no text, no log
+    "/api/map",
     "/api/postgres/{server}/{role}/proposal",
     "/x/odoo/servers/{server}/{role}/addons", "/x/odoo/servers/{server}/{role}/addons/versions",
     # an invitation's form (its use is logged by the route) and where a user of a customer may be made

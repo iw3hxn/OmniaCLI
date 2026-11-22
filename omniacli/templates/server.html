@@ -384,6 +384,9 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
       {% endfor %}
       {% if stagings and stagings.elsewhere %}<tbody id="stagings-elsewhere"></tbody>{% endif %}
     </table></div>
+    {# the path of this instance on the map (docs/ux/UX-009 §3): a link, the map changes nothing #}
+    <p class="small" style="margin: 8px 0 0"><a href="{{ prefix }}/instances?view=map{% if map_workspace %}&amp;workspace={{ map_workspace | urlencode }}{% else %}&amp;machine=~{% endif %}&amp;focus={{ server.name | urlencode }}"
+      title="{{ _('Opens the map of its workspace with the path of this instance: its names, the web server, Odoo, its database. It changes nothing.') }}">{{ _("On the map") }} ›</a></p>
     {% if stagings and stagings.can and not stagings.rows %}<p class="muted" id="stagings-none" style="margin: 8px 0 0">{{ _("No staging: a staging is a dated copy of production, to try an update without touching it.") }}</p>{% endif %}
     {% if stagings and stagings.elsewhere %}
     <script>

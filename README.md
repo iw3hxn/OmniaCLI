@@ -132,6 +132,13 @@ backup with its machine, its kind and its outcome.
 
 ![The Backups list of every machine](docs/images/backups.png)
 
+**The map**: the same instances as a diagram, where each thing configured is
+(the machines and their links, the workspaces, the names, the databases,
+where the backups go) and what moves now (the jobs, a transfer). It reads
+only.
+
+![The map of the infrastructure](docs/images/infrastructure-map.png)
+
 **Disks**: each disk's used space by day, with the dashed forecast up to the
 day it is full.
 
@@ -1499,6 +1506,93 @@ database of that backup, neutralized, `POST
 /api/servers/<server>/stagings/from-backup`; refused for a backup whose
 restore failed when tried) and **Delete…**. An OmniaCLI too old to list its
 backups is named, not counted.
+
+### The map of the infrastructure
+
+**Instances › Map** (`/instances?view=map`; the choice between *List* and
+*Map* is in the address and kept in the browser): the same instances as a
+diagram, to see in a glance whether all is fine and where each thing
+configured is. No new place in the menu, and no button that acts: the map
+reads only, and every node opens the page where things are done
+(`docs/ux/UX-009-mappa-infrastruttura.md`). Three schemas, drawn as inline
+SVG in the page (no library, no network but the panel's own), in the light
+and the dark theme:
+
+- **The machines and their links** (who sees the whole machine, with a link
+  at least): a box for this machine and one for each link, with its version,
+  its load of now and its free disk, the machine's PostgreSQL cluster when
+  there is one, and a chip for each workspace (its instances and, apart,
+  its stagings, as the List counts them; the worst of their states; its
+  disk). The lines: a link (dashed, with a cross and the reason in the box,
+  when it does not answer: the others are drawn all the same; a machine that
+  answers with an OmniaCLI older than the map is *to update*, with its link
+  drawn as one that works), the stagings made on another machine (from the
+  edge of a machine's box to the other's, their count in the gap between
+  them), a transfer running now with its percentage, the databases kept on
+  another machine and their read replicas, each under the machine that uses
+  it.
+- **A machine or a workspace**, left to right: the names on the web (each
+  with its lock: HTTPS, without HTTPS, DNS not pointing here, as the last
+  publication of the names found them; for a workspace published before the
+  map kept that, the HTTPS of each name as its nginx site has it), the
+  environments (each production
+  with its test as a pill, its stagings hung under it, its automatic backup
+  of the night, the monitor when it does not answer, a certificate with
+  fewer than 14 days), the databases (a dedicated one is an icon, the
+  machine's cluster and a database on another machine are nodes with their
+  lines) and, under them, where the automatic backups are copied to; each
+  node on the right has a lane of its own for its lines, so none runs over
+  another or across a node.
+- **The path of an instance**, in a panel beside (a full sheet on a phone,
+  closed with Esc): browser, names, web server, Odoo, database and replica;
+  for a staging that catches its mail, where the mail goes and that it does
+  not leave; the automatic backup, the stagings, and the links to its page,
+  to Odoo (when it has an address the reader's browser can open: not a port
+  of the machine) and to its Mail tab.
+
+Above the schema: the verdict (*All fine*, or the things to look at: a
+production stopped, an instance that does not answer, an automatic backup
+or a job that failed in the last day, a certificate about to end, a name
+without HTTPS, a machine that does not answer), the counts of the jobs and
+of the night's backups, each one a filter that lights its nodes (and says
+how many of them are in the schema drawn, when not all), the legend
+of the signs in the schema (a state is never a colour alone: a sign and a
+word), and the jobs running now with their steps, each with how long it
+has run by the server's clock (a browser in another time zone reads the
+same). Under it, the same facts as a nested list (open on a phone, where
+the schema is drawn top to bottom), which also names what the schema folds:
+what a screen reader reads.
+
+The page reads `GET /api/map` (`part=now` every 5 seconds: the jobs, what is
+busy, the load, the verdict, from memory; the whole every 60 seconds and
+when a job starts or ends, one of two seconds too; nothing while the tab is
+hidden). A read that fails, or does not come in 15 seconds, leaves the
+schema there, dimmed, saying since when and why. The route
+puts together what OmniaCLI already knows, without asking PostgreSQL, docker
+or the root helper once more: the caught mail of a staging is counted at
+most every 5 minutes, the days of a certificate are those of the monitor's
+daily check, a workspace's disk is the one recorded that day. Its
+parameters: `machine` (`~`: this one, or a link's name), `workspace`,
+`focus` (`<machine>/<server>`: the path of that instance too). A link is
+asked its own `/api/map` with the caller's role at most and 5 seconds in
+all to answer (a link that answers a byte at a time does not hold the map,
+nor the lists of Instances and Backups); one that does not, or whose
+OmniaCLI has no map yet, is a machine saying so in plain words, and is not
+asked again by the reads of every 5 seconds until the next whole one.
+
+Who reads what is decided in the route: a user of workspaces gets its
+workspaces only (another one answers 404, as one that does not exist), with
+no name of a machine, of a link or of another workspace, the steps of its
+jobs "on the server", and its stagings made on another machine under their
+production as "on another machine" (named *Staging of dd/mm* when they have
+no name on the web: never a port of that machine). Those stagings are asked
+to the link by the map itself (`stagings_of`: those only), never with the
+customer's name, which so does not reach the link's access log. The lists
+of Instances and Backups do not tell a user of workspaces the name of the
+machine either. A user (not a developer) has no
+backups and no numbers of the monitor; the box of a workspace opens its
+page for its admins only. The firewall of the workspaces is not on the map
+yet: it cannot be read without being written.
 
 ### Stagings, deploy on push, monitoring
 

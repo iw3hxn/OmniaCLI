@@ -86,7 +86,7 @@
     failedOne: {{ _("{n} run did not succeed") | tojson }}, failedMany: {{ _("{n} runs did not succeed") | tojson }},
     failedTitle: {{ _("Shows only the automatic backups of the last 24 hours that did not succeed") | tojson }},
     showAll: {{ _("Show every backup") | tojson }}, showAllTitle: {{ _("Shows every backup again") | tojson }},
-    waiting: {{ _("{name}: asking…") | tojson }},
+    waiting: {{ _("{name}: asking…") | tojson }}, theServer: {{ _("The server") | tojson }},
     down: {{ _("{name} does not answer: {why}. Its backups are not here.") | tojson }},
     older: {{ _("{name} answers, but its OmniaCLI is older and has no such list yet: its backups show here once it is updated.") | tojson }},
     tab: {{ _("Opens the Backups tab of the instance") | tojson }}, test: {{ _("Test") | tojson }},
@@ -180,7 +180,7 @@
     return el("tr", {"data-file": r.file}, ...cells);
   }
   function machineRow(machine, text, down) {
-    return el("tr", {class: "bk-machine" + (down ? " down" : ""), "data-machine-row": machine.name},
+    return el("tr", {class: "bk-machine" + (down ? " down" : ""), "data-machine-row": machine.name || null},
               el("td", {colspan: SERVER_COLUMN ? 6 : 5}, text));
   }
 
@@ -189,8 +189,9 @@
     let all = [], extra = [], ok = 0, bad = 0;
     for (const m of MACHINES) {
       const data = found[m.name];
-      if (!data) { extra.push(machineRow(m, T.waiting.replace("{name}", m.name))); continue; }
-      if (data.error) { extra.push(machineRow(m, (data.older ? T.older : T.down).replace("{name}", m.name).replace("{why}", data.error), true)); continue; }
+      const label = m.name || T.theServer;
+      if (!data) { extra.push(machineRow(m, T.waiting.replace("{name}", label))); continue; }
+      if (data.error) { extra.push(machineRow(m, (data.older ? T.older : T.down).replace("{name}", label).replace("{why}", data.error), true)); continue; }
       all = all.concat(rowsOf(m, data));
       ok += (data.tonight || {}).ok || 0; bad += (data.tonight || {}).failed || 0;
     }

@@ -1,0 +1,1718 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{# The map of the infrastructure (docs/ux/UX-009), the Map view of the Instances
+   page: the same instances as a diagram, where each thing configured is and
+   what moves now. It reads and changes nothing: no button here acts, each node
+   opens the page it stands for. One read (GET /api/map) gives the machines,
+   their workspaces and instances, the lines and the jobs; what the reader may
+   see is decided there, never here. Three schemas, drawn as inline SVG with
+   the colours of base.html only (light and dark):
+     S1 the machines and their links (who sees the whole machine, with a link);
+     S2 a machine or a workspace: names, environments, database, where the backups go;
+     S3 the path of one instance, in the side panel.
+   The layer of now (the state, the jobs, a transfer) is drawn on the same
+   nodes: part=now every 5 s, the whole every 60 s and when the busy ones
+   change, nothing while the tab is hidden. Each schema has its list with the
+   same facts (the text alternative, open on a phone). #}
+<style>
+/* the grey of the texts that stand on the page's ground and of the outlines: the theme's muted is
+   4.47:1 there in the light theme, under the 4.5 a text needs; mixed with the text's colour it passes
+   in both themes, and stays the theme's (no colour of its own) */
+#map-view { --map-ink: var(--muted); --map-line: var(--muted); }
+@supports (color: color-mix(in srgb, red, blue)) {
+  #map-view { --map-ink: color-mix(in srgb, var(--muted) 78%, var(--text)); }
+}
+#map-view .map-ink, #map-read { color: var(--map-ink); }
+.map-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 18px; margin: 0 0 10px; }
+.map-head p { margin: 0; }
+.map-verdict { font-size: 16px; font-weight: 650; }
+.map-verdict.ok { color: var(--ok); } .map-verdict.watch { color: var(--warn); }
+.map-count { border: 0; background: none; box-shadow: none; padding: 0 2px; color: var(--text); font-weight: 600;
+  min-height: 0; text-decoration: underline dotted; text-underline-offset: 3px; }
+.map-count:hover { background: none; color: var(--info); }
+.map-count[aria-pressed="true"] { color: var(--text); text-decoration: none; outline: 2px solid var(--info); outline-offset: 2px; }
+.map-verdict .map-count { font: inherit; color: inherit; }
+.map-watch { margin: 0 0 12px; padding: 0; list-style: none; }
+.map-watch li { padding: 3px 0; } .map-watch .mark { color: var(--warn); margin-right: 6px; }
+.map-legend { margin: 0 0 12px; font-size: 13px; color: var(--map-ink); }
+.map-legend ul { display: flex; flex-wrap: wrap; gap: 4px 18px; margin: 0; padding: 0; list-style: none; }
+.map-legend li { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.map-legend svg { width: 34px; height: 12px; flex: none; }
+.map-legend .sign { font-weight: 700; }
+@media (min-width: 701px) { .map-legend > summary { display: none; } }
+@media (max-width: 700px) { .map-legend > summary { cursor: pointer; margin-bottom: 6px; } .map-legend ul { gap: 6px 14px; } }
+.map-strip { padding: 12px 16px; margin: 0 0 12px; }
+.map-strip p { margin: 0; }
+.map-job { display: block; color: var(--text); padding: 5px 0; border-bottom: 1px solid var(--border); }
+.map-job:last-of-type { border-bottom: 0; }
+.map-job:hover { text-decoration: none; background: var(--panel-2); }
+.map-job .sign { display: inline-block; width: 1.4em; font-weight: 700; }
+.map-job .who { color: var(--muted); font-size: 13px; margin-left: 6px; }
+.map-job.running .sign, .map-job.queued .sign { color: var(--info); }
+.map-job.success .sign { color: var(--ok); } .map-job.warned .sign { color: var(--warn); }
+.map-job.failed .sign, .map-job.stopped .sign, .map-job.interrupted .sign { color: var(--err); }
+/* the steps of a job (job.html's component, the same classes), compact */
+.map-strip .steps { display: flex; align-items: center; margin: 4px 0 2px 1.4em; font-size: 12px; }
+.map-strip .step { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border: 1px solid var(--border);
+  border-radius: var(--r); color: var(--muted); min-width: 0; }
+.map-strip .step-mark { width: 12px; height: 12px; flex: none; border-radius: 50%; border: 2px solid currentColor;
+  display: grid; place-items: center; font-size: 8px; line-height: 1; }
+.map-strip .step.active { color: var(--warn); border-color: var(--warn); }
+.map-strip .step.active .step-mark { border-right-color: transparent; animation: map-spin .8s linear infinite; }
+.map-strip .step.done { color: var(--ok); }
+.map-strip .step.done .step-mark { background: var(--ok); border-color: var(--ok); color: var(--panel); }
+.map-strip .step.failed { color: var(--err); border-color: var(--err); }
+.map-strip .step-where { color: var(--muted); }
+.map-strip .step-wire { flex: 0 0 22px; height: 2px; background: var(--border-strong); }
+.map-strip .step-wire.flowing { background: repeating-linear-gradient(90deg, var(--warn) 0 6px, transparent 6px 12px);
+  background-size: 24px 2px; animation: map-flow-bar .5s linear infinite; }
+.map-strip .step-wire.done { background: var(--ok); }
+@keyframes map-spin { to { transform: rotate(360deg); } }
+@keyframes map-flow-bar { from { background-position: 0 0; } to { background-position: 12px 0; } }
+@keyframes map-dash { to { stroke-dashoffset: -24; } }
+@keyframes map-pulse { 50% { opacity: .45; } }
+@media (max-width: 640px) {
+  .map-strip .steps { flex-direction: column; align-items: flex-start; }
+  .map-strip .step-wire { flex: 0 0 8px; width: 2px; height: 8px; margin-left: 13px; }
+}
+.map-crumbs { margin: 0 0 10px; font-size: 13px; color: var(--map-ink); }
+.map-crumbs a, .map-crumbs strong { margin: 0 2px; }
+.map-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin: 0 0 10px; }
+.map-tools .list-search { margin: 0; flex: 1 1 260px; }
+.map-show { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--map-ink); }
+.map-show button[aria-pressed="true"] { border-color: var(--info); color: var(--info); }
+.map-body { display: flex; align-items: flex-start; gap: 16px; }
+.map-canvas { flex: 1 1 0; min-width: 0; }
+.map-canvas.stale { opacity: .55; }
+.map-canvas svg { display: block; max-width: 100%; }
+.map-skeleton { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+.map-skeleton div { height: 150px; border: 1px dashed var(--border-strong); border-radius: var(--r-lg); background: var(--panel-2);
+  animation: map-pulse 1.4s ease-in-out infinite; }
+.map-empty { border: 1px dashed var(--border-strong); border-radius: var(--r-lg); padding: 20px; max-width: 640px; }
+.map-empty p { margin: 0 0 6px; }
+/* the diagram: only the variables of base.html, so the dark theme follows */
+.map-canvas text, .map-flow text { font-family: var(--font); font-size: 12px; fill: var(--text); }
+.map-canvas .t-name, .map-flow .t-name { font-weight: 650; font-size: 13px; }
+.map-canvas .t-head { font-weight: 700; font-size: 14px; }
+.map-canvas .t-muted, .map-flow .t-muted { fill: var(--muted); }
+.map-canvas .t-small, .map-flow .t-small { font-size: 11px; }
+.map-canvas .t-col { fill: var(--map-ink); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.map-canvas .t-italic { font-style: italic; }
+.map-canvas .t-ok, .map-flow .t-ok { fill: var(--ok); } .map-canvas .t-err, .map-flow .t-err { fill: var(--err); }
+.map-canvas .t-warn, .map-flow .t-warn { fill: var(--warn); } .map-canvas .t-info, .map-flow .t-info { fill: var(--info); }
+.map-canvas .t-label { fill: var(--map-ink); font-size: 11px; paint-order: stroke; stroke: var(--bg); stroke-width: 4px; stroke-linejoin: round; }
+.map-canvas .t-label.t-warn { fill: var(--warn); }
+.map-box { fill: var(--panel); stroke: var(--map-line); stroke-width: 1; }
+.map-box.down { fill: var(--warn-soft); stroke: var(--warn); stroke-dasharray: 6 4; }
+.map-box.older { stroke: var(--info); stroke-dasharray: 2 4; }
+.map-box.outer { fill: var(--panel-2); }
+.map-node rect.shape, .map-item rect.shape { fill: var(--panel); stroke: var(--map-line); stroke-width: 1; }
+.map-node.chip rect.shape { fill: var(--panel-2); }
+.map-node.head rect.shape { fill: transparent; stroke: transparent; }
+.map-item rect.shape.ext { fill: var(--panel-2); stroke: var(--muted); stroke-dasharray: 5 4; }
+.map-node.loose rect.shape { stroke-dasharray: 3 3; }
+.map-node.small rect.shape { fill: var(--panel-2); }
+.map-node[data-state="queued"] rect.shape { stroke: var(--info); stroke-dasharray: 4 3; }
+.map-node[data-state="busy"] rect.shape { stroke: var(--info); }
+.map-node[data-state="stopped"] rect.shape, .map-node[data-state="down"] rect.shape { stroke: var(--err); }
+.map-node, .map-item, .map-more { cursor: pointer; }
+/* the focus is the node's own outline (its shape), not the rectangle around its texts */
+.map-canvas a:focus, .map-canvas a:focus-visible { outline: none; }
+.map-node:hover rect.shape, .map-item:hover rect.shape { stroke: var(--text); }
+.map-node:focus-visible rect.shape, .map-item:focus-visible rect.shape, .map-more:focus-visible rect { stroke: var(--info); stroke-width: 2.5; }
+.map-node.plain { cursor: default; } .map-node.plain:hover rect.shape { stroke: transparent; }
+.map-node.shown rect.shape { stroke: var(--text); stroke-width: 2; }
+.map-canvas.filtering .map-node { opacity: .35; }
+.map-canvas.filtering .map-node.lit { opacity: 1; }
+.map-canvas.filtering .map-node.lit rect.shape { stroke: var(--info); stroke-width: 2.5; }
+.map-more rect { fill: var(--panel); stroke: var(--map-line); stroke-dasharray: 3 3; }
+.map-more text { fill: var(--accent); }
+.map-pill rect { fill: var(--panel); stroke: var(--map-line); }
+.map-pill.bad rect { stroke: var(--warn); }
+.map-lock { fill: none; stroke: var(--ok); stroke-width: 1.4; } .map-lock.bad { stroke: var(--warn); } .map-lock.unread { stroke: var(--muted); }
+.map-bar-bg { fill: var(--border); } .map-bar { fill: var(--muted); } .map-bar.high { fill: var(--warn); }
+.map-sign.running { fill: var(--ok); } .map-sign.stopped, .map-sign.down { fill: var(--err); }
+.map-sign.idle, .map-sign.unknown { fill: var(--muted); } .map-sign.busy, .map-sign.queued, .map-sign.older { fill: var(--info); }
+.map-sign { font-weight: 700; }
+.map-sign.busy { transform-box: fill-box; transform-origin: center; animation: map-spin 1.6s linear infinite; }
+.map-edge { fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-linejoin: round; }
+.map-edge.down { stroke: var(--warn); stroke-dasharray: 6 4; }
+.map-edge.staging, .map-edge.copy { stroke-dasharray: 7 4; }
+.map-edge.database { stroke-dasharray: 9 3 2 3; }
+.map-edge.replica { stroke-dasharray: 2 4; }
+.map-edge.name { stroke-width: 1; }
+.map-edge.moving { stroke: var(--warn); stroke-width: 2; stroke-dasharray: 6 6; animation: map-dash .6s linear infinite; }
+.map-edge.cut { stroke: var(--err); stroke-dasharray: 3 5; }
+.map-arrow { fill: var(--muted); stroke: none; } .map-arrow.moving { fill: var(--warn); }
+@media (prefers-reduced-motion: reduce) {
+  .map-sign.busy, .map-edge.moving, .map-skeleton div, .map-strip .step.active .step-mark, .map-strip .step-wire.flowing { animation: none; }
+}
+/* S3: the path of an instance, beside the diagram; a full sheet on a phone */
+.map-panel { flex: 0 0 420px; width: 420px; max-width: 100%; background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--r-lg); box-shadow: var(--shadow); padding: 16px; position: sticky; top: 72px;
+  max-height: calc(100vh - 88px); overflow-y: auto; }
+.map-panel:focus { outline: none; }
+.map-panel:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
+.map-panel h2 { font-size: 16px; overflow-wrap: anywhere; } .map-panel h3 { font-size: 13px; margin: 14px 0 6px; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .04em; }
+.map-panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.map-panel ol, .map-panel ul { margin: 6px 0 0; padding-left: 20px; font-size: 13px; } .map-panel li { margin: 2px 0; overflow-wrap: anywhere; }
+.map-panel-links { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0 0; }
+.map-flow { display: block; max-width: 100%; }
+.map-flow .shape { fill: var(--panel-2); stroke: var(--map-line); }
+.map-flow .map-edge { stroke-width: 1.5; }
+@media (max-width: 700px) {
+  .map-body { display: block; }
+  .map-panel { position: fixed; inset: 0; z-index: 30; width: auto; max-height: none; border-radius: 0; border: 0; }
+  .map-job, .map-count { min-height: 44px; } .map-count { display: inline-flex; align-items: center; }
+}
+#map-list { margin-top: 14px; } #map-list > summary { cursor: pointer; color: var(--map-ink); }
+#map-list ul { margin: 6px 0 0; padding-left: 20px; } #map-list li { margin: 3px 0; overflow-wrap: anywhere; }
+.map-drafts { margin: 10px 0 0; }
+</style>
+<div id="map-view" hidden>
+  <div class="map-head">
+    <p class="map-verdict" id="map-verdict" role="status">{{ _("Reading the map…") }}</p>
+    <p id="map-counts"></p>
+    <p class="small" id="map-read"></p>
+  </div>
+  <div class="banner warn" id="map-stale" role="status" hidden></div>
+  <ul class="map-watch" id="map-watch" hidden></ul>
+  <details class="map-legend" id="map-legend" hidden>
+    <summary title="{{ _('Shows what the signs and the lines of this schema mean') }}">{{ _("Legend") }}</summary>
+    <ul id="map-legend-list"></ul>
+  </details>
+  <section class="panel map-strip" id="map-strip" aria-live="polite" aria-label="{{ _('In progress') }}"></section>
+  <nav class="map-crumbs" id="map-crumbs" aria-label="{{ _('Where this schema is in the map') }}" hidden></nav>
+  <div class="map-tools" id="map-tools" hidden>
+    <div class="list-search" id="map-search-box" hidden>
+      <input type="search" id="map-search" placeholder="{{ _('Search instance, address, server, workspace…') }}" aria-label="{{ _('Search instance, address, server, workspace…') }}">
+    </div>
+    <span class="map-show" id="map-show" role="group" aria-label="{{ _('Show') }}" hidden>{{ _("Show") }}:
+      <button type="button" class="small" id="map-show-all" aria-pressed="true"
+              title="{{ _('Draws every machine, workspace and instance the map read') }}">{{ _("everything") }}</button>
+      <button type="button" class="small" id="map-show-watch" aria-pressed="false"
+              title="{{ _('Draws only the instances with something to look at and those a job is working on; the others stay in the list below') }}">{{ _("only to look at and in progress") }}</button>
+    </span>
+  </div>
+  <div class="map-body">
+    <div class="map-canvas" id="map-canvas">
+      <div class="map-skeleton" aria-hidden="true"><div></div><div></div><div></div></div>
+    </div>
+    <aside class="map-panel" id="map-panel" role="dialog" aria-labelledby="map-panel-title" tabindex="-1" hidden></aside>
+  </div>
+  <p class="small map-ink map-drafts" id="map-drafts" hidden></p>
+  <details id="map-list" hidden>
+    <summary id="map-list-summary" title="{{ _('The same facts as the schema, as a list: for a screen reader and for a phone') }}"></summary>
+    <div id="map-list-body"></div>
+  </details>
+</div>
+<script>
+window.OmniaMap = (function () {
+  const PREFIX = {{ prefix | tojson }}, NS = "http://www.w3.org/2000/svg", HERE = "~";
+  // a user of workspaces, or a page shown through a link: one machine, the workspace asked to the server
+  const NARROW = {{ (scoped or prefix != "") | tojson }};
+  const NOW_EVERY = 5000, WHOLE_EVERY = 60000, JOB_SHOWN = 120, READ_WITHIN = 15000;
+  const T = {
+    ok: {{ _("✓ All fine") | tojson }}, watchOne: {{ _("⚠ 1 thing to look at") | tojson }},
+    watchMany: {{ _("⚠ {n} things to look at") | tojson }},
+    watchTitle: {{ _("Lights the nodes with something to look at; pressed again, shows everything as before") | tojson }},
+    running: {{ _("In progress {n}") | tojson }}, queued: {{ _("Queued {n}") | tojson }},
+    runningTitle: {{ _("Lights the instances a job is working on now") | tojson }},
+    queuedTitle: {{ _("Lights the instances whose job waits for another one to end") | tojson }},
+    tonight: {{ _("Last night:") | tojson }}, tonightOk: {{ _("{n} backups done") | tojson }}, tonightOkOne: {{ _("1 backup done") | tojson }},
+    tonightFailed: {{ _("{n} backups failed") | tojson }}, tonightFailedOne: {{ _("1 failed") | tojson }}, tonightNone: {{ _("{n} without scheduled backups") | tojson }},
+    tonightOkTitle: {{ _("Lights the productions whose automatic backup of the last 24 hours succeeded") | tojson }},
+    tonightFailedTitle: {{ _("Lights the productions whose automatic backup of the last 24 hours failed; the Backups page lists the same runs") | tojson }},
+    tonightNoneTitle: {{ _("Lights the productions with no automatic backups: a broken disk would lose them") | tojson }},
+    here: {{ _("{n} here") | tojson }},
+    slow: {{ _("no answer in {n} s") | tojson }},
+    netError: {{ _("the panel does not answer (the network, or it is starting again)") | tojson }},
+    notMap: {{ _("the answer is not the map (the session may have ended: load the page again)") | tojson }},
+    read: {{ _("Read at {when} · it updates by itself") | tojson }},
+    stale: {{ _("Not updated since {when}: {why}. Trying again in 5 s.") | tojson }},
+    never: {{ _("The map cannot be read: {why}. Trying again in 5 s.") | tojson }},
+    more: {{ _("and {n} more") | tojson }}, moreJobsTitle: {{ _("Opens the list of the jobs") | tojson }},
+    watchMoreTitle: {{ _("Shows every thing to look at") | tojson }},
+    openNode: {{ _("Opens the path of this instance, here beside") | tojson }},
+    openJob: {{ _("Opens the page of the job: its steps and its log; a job is stopped from there") | tojson }},
+    since: {{ _("since {when}") | tojson }},
+    nothing: {{ _("Nothing in progress.") | tojson }}, lastAction: {{ _("Last action: {title}, {outcome}, at {when}.") | tojson }},
+    lastTitle: {{ _("Opens the page of the last job that ended") | tojson }},
+    jobBy: {{ _("started by {who}") | tojson }}, jobFor: {{ _("in progress for {time}") | tojson }},
+    jobQueued: {{ _("queued since {when}") | tojson }}, minutes: {{ _("{n} min") | tojson }}, seconds: {{ _("{n} s") | tojson }},
+    outcome: {success: {{ _("done") | tojson }}, warned: {{ _("done with warnings") | tojson }}, failed: {{ _("failed") | tojson }},
+              stopped: {{ _("stopped") | tojson }}, interrupted: {{ _("interrupted") | tojson }}},
+    transfer: {{ _("Transfer {percent} % · {size}") | tojson }},
+    transferNo: {{ _("Transfer · {size}") | tojson }},
+    machines: {{ _("Machines") | tojson }}, machinesTitle: {{ _("Back to every machine and its links") | tojson }},
+    crumbMachine: {{ _("Shows this machine only: its workspaces and instances") | tojson }},
+    workspace: {{ _("Workspace {name}") | tojson }}, thisOne: {{ _("this one") | tojson }}, thisMachine: {{ _("This machine") | tojson }},
+    machineTitle: {{ _("Opens the schema of {name}: its workspaces, instances, databases and where its backups go") | tojson }},
+    machineDownTitle: {{ _("Opens Links, where the link to {name} is checked") | tojson }},
+    remedy: {{ _("Check the link in Links.") | tojson }},
+    older: {{ _("OmniaCLI there is older: update it to see it on the map.") | tojson }},
+    down: {{ _("{name} does not answer: {why}. Its instances are not here.") | tojson }},
+    answers: {{ _("in service") | tojson }}, notAnswering: {{ _("does not answer") | tojson }}, toUpdate: {{ _("to update") | tojson }},
+    machineOlderTitle: {{ _("{name} answers, but its OmniaCLI has no map yet: updated, its instances show here. Opens Links.") | tojson }},
+    olderPlain: {{ _("{name} answers, but its OmniaCLI has no map yet: updated, its instances show here.") | tojson }},
+    load: {{ _("CPU {cpu} % · RAM {ram} %") | tojson }}, free: {{ _("{size} free on disk") | tojson }},
+    cluster: {{ _("PostgreSQL {major} of the machine") | tojson }},
+    clusterTitle: {{ _("The machine's own PostgreSQL cluster, which the instances without a database of their own use") | tojson }},
+    instance: {{ _("{n} instance") | tojson }}, instances: {{ _("{n} instances") | tojson }},
+    wsTitle: {{ _("Opens the schema of the workspace {name}: its names, environments, databases and where its backups go") | tojson }},
+    wsPageTitle: {{ _("Opens the page of the workspace {name}: its instances, names, users and services") | tojson }},
+    wsPlain: {{ _("The workspace {name}: its page is for its administrators") | tojson }},
+    loose: {{ _("Outside the workspaces") | tojson }},
+    looseTitle: {{ _("The instances of this machine that are in no workspace; opens the schema of the machine") | tojson }},
+    disk: {{ _("Disk: {used} of {size}, measured on {day}") | tojson }},
+    st: {running: {{ _("in service") | tojson }}, stopped: {{ _("not running") | tojson }}, idle: {{ _("not running") | tojson }},
+         unknown: {{ _("state not read") | tojson }}, queued: {{ _("queued") | tojson }}, down: {{ _("does not answer") | tojson }}},
+    busy: {{ _("in progress: {title}") | tojson }}, busyPlain: {{ _("in progress") | tojson }},
+    test: {{ _("test") | tojson }}, staging: {{ _("Staging") | tojson }}, production: {{ _("Production") | tojson }},
+    names: {{ _("{n} names on the web") | tojson }}, oneName: {{ _("1 name on the web") | tojson }}, noName: {{ _("no name on the web yet") | tojson }},
+    https: {{ _("HTTPS") | tojson }}, noHttps: {{ _("without HTTPS") | tojson }}, noDns: {{ _("DNS does not point here") | tojson }},
+    unread: {{ _("HTTPS not read yet") | tojson }}, httpsDays: {{ _("HTTPS, {days} days") | tojson }},
+    certSoon: {{ _("certificate ends in {days} days") | tojson }},
+    dedicated: {{ _("dedicated database") | tojson }}, system: {{ _("PostgreSQL of the system") | tojson }},
+    dbMachine: {{ _("machine's cluster") | tojson }}, dbRemote: {{ _("database on another machine") | tojson }},
+    replica: {{ _("replica · read only") | tojson }},
+    dbTitle: {{ _("Opens here beside where this database is and which environments use it") | tojson }},
+    backupOk: {{ _("✓ backup {time}") | tojson }}, backupFailed: {{ _("✕ backup failed {when}") | tojson }},
+    backupNone: {{ _("⚠ no scheduled backup") | tojson }}, backupWait: {{ _("backup scheduled, none made yet") | tojson }},
+    downSince: {{ _("does not answer since {time}") | tojson }}, cert: {{ _("certificate: {days} days") | tojson }},
+    copyOf: {{ _("copy of {date}") | tojson }}, mail: {{ _("✉ {n}") | tojson }}, mailUnread: {{ _("✉ not counted yet") | tojson }},
+    onMachine: {{ _("on {machine}") | tojson }}, elsewhere: {{ _("on another machine") | tojson }},
+    prodOn: {{ _("production on {machine}") | tojson }}, prodElsewhere: {{ _("production on another machine") | tojson }},
+    moreStagings: {{ _("+{n} stagings") | tojson }}, moreStagingsTitle: {{ _("Draws the other stagings of this production too") | tojson }},
+    moreInstances: {{ _("+{n} others") | tojson }}, moreInstancesTitle: {{ _("Opens the schema of this workspace alone, with every instance") | tojson }},
+    colNames: {{ _("Names on the web") | tojson }}, colEnvs: {{ _("Environments") | tojson }},
+    colDb: {{ _("Database") | tojson }}, colDest: {{ _("Backup destinations") | tojson }},
+    destTitle: {{ _("Where the automatic backups of these productions are copied to; it is set on each instance's Backups tab") | tojson }},
+    edge: {
+      link: {{ _("The link from this machine to {name}") | tojson }}, linkDown: {{ _("The link to {name} does not answer") | tojson }},
+      staging: {{ _("Stagings made there from the productions of this workspace") | tojson }},
+      moving: {{ _("Data moving now between the two machines") | tojson }},
+      database: {{ _("These environments keep their database there") | tojson }},
+      replica: {{ _("These environments read from this replica") | tojson }},
+      backup: {{ _("The automatic backup is copied there") | tojson }}, copy: {{ _("This staging is a copy of that production") | tojson }},
+      name: {{ _("This name opens that environment") | tojson }},
+    },
+    stagingsCount: {{ _("{n} stagings") | tojson }}, oneStaging: {{ _("1 staging") | tojson }},
+    envsCount: {{ _("{n} environments") | tojson }}, oneEnv: {{ _("1 environment") | tojson }},
+    legend: {
+      running: {{ _("in service") | tojson }}, stopped: {{ _("not running (a production)") | tojson }},
+      idle: {{ _("not running on purpose (a test, a staging)") | tojson }}, unknown: {{ _("state not read") | tojson }},
+      busy: {{ _("a job is working on it") | tojson }}, queued: {{ _("its job waits") | tojson }},
+      down: {{ _("does not answer") | tojson }}, warn: {{ _("something to look at") | tojson }},
+      dedicated: {{ _("database of its own") | tojson }}, mail: {{ _("caught mail") | tojson }},
+      lock: {{ _("name with HTTPS") | tojson }}, lockBad: {{ _("name without HTTPS or DNS") | tojson }},
+      lockUnread: {{ _("name whose HTTPS was not read yet") | tojson }}, older: {{ _("OmniaCLI to update") | tojson }},
+      link: {{ _("link between machines") | tojson }}, linkDown: {{ _("link that does not answer") | tojson }},
+      staging: {{ _("staging on another machine") | tojson }}, moving: {{ _("data moving now") | tojson }},
+      database: {{ _("database on another machine or on the cluster") | tojson }}, replica: {{ _("read replica") | tojson }},
+      backup: {{ _("copy of the backups") | tojson }}, copy: {{ _("copy of a production") | tojson }},
+    },
+    legendTitle: {
+      running: {{ _("A full dot: the service runs") | tojson }}, stopped: {{ _("A square: a production that is stopped is to look at") | tojson }},
+      idle: {{ _("An empty dot: a test or a staging stopped is a choice, not an alarm") | tojson }},
+      unknown: {{ _("A question mark: the state could not be read") | tojson }},
+      busy: {{ _("A turning arrow: a job runs on it now; its title is on the node") | tojson }},
+      queued: {{ _("An hourglass and a dashed outline: its job waits for another one") | tojson }},
+      down: {{ _("A cross: the monitor gets no answer, or the machine does not answer") | tojson }},
+      warn: {{ _("A warning sign with its words: a failed backup, a certificate about to end, a name without HTTPS") | tojson }},
+      dedicated: {{ _("The instance has a PostgreSQL of its own in its project: no line") | tojson }},
+      mail: {{ _("The messages this staging sent, caught: they did not leave") | tojson }},
+      lock: {{ _("A closed lock: the name answers with a certificate") | tojson }},
+      lockBad: {{ _("An open lock: no certificate for the name, or its DNS does not lead to this machine") | tojson }},
+      lockUnread: {{ _("A grey lock: the names were not read; publishing the names of the workspace again reads them") | tojson }},
+      older: {{ _("An arrow up: the machine answers, but its OmniaCLI is older than the map; it is not a machine that is down") | tojson }},
+      link: {{ _("A solid line: this machine reaches that one through its link") | tojson }},
+      linkDown: {{ _("A dashed line with a cross: the link gives no answer") | tojson }},
+      staging: {{ _("A dashed line with an arrow: stagings made on that machine from productions of this one") | tojson }},
+      moving: {{ _("A line that flows: a transfer is running, with its percentage") | tojson }},
+      database: {{ _("A dash-dot line: the environments keep their database there") | tojson }},
+      replica: {{ _("A dotted line: the environments read from that replica") | tojson }},
+      backup: {{ _("A solid line with an arrow and a time: the automatic backup is copied there at that time") | tojson }},
+      copy: {{ _("A short dashed line: the staging is a copy of the production above it, of that date") | tojson }},
+    },
+    list: {{ _("The schema as a list ({n} rows)") | tojson }},
+    oneMachine: {{ _("1 machine") | tojson }}, machinesCount: {{ _("{n} machines") | tojson }},
+    oneWorkspace: {{ _("1 workspace") | tojson }}, workspacesCount: {{ _("{n} workspaces") | tojson }},
+    svgDownOne: {{ _("1 machine does not answer") | tojson }}, svgDown: {{ _("{n} machines do not answer") | tojson }},
+    svgOlderOne: {{ _("1 machine is to update") | tojson }}, svgOlder: {{ _("{n} machines are to update") | tojson }},
+    emptyMachine: {{ _("No instance yet: one is made from the List view.") | tojson }},
+    emptyLink: {{ _("Another machine is linked from Servers › + Add a server.") | tojson }},
+    emptyWorkspace: {{ _("The workspace has no instances yet.") | tojson }},
+    emptySearch: {{ _("No instance matches “{query}”.") | tojson }},
+    emptyWatchHere: {{ _("Nothing to look at and nothing in progress here.") | tojson }},
+    emptyFilter: {{ _("Nothing to look at and nothing in progress: every instance is in the list below.") | tojson }},
+    toList: {{ _("Open the List view") | tojson }}, toListTitle: {{ _("Shows the same instances as a table, where a new one is made") | tojson }},
+    toMachines: {{ _("Open Servers") | tojson }}, toMachinesTitle: {{ _("Opens the machines, where another one is added") | tojson }},
+    drafts: {{ _("{n} server drafts, not on the map") | tojson }}, draftsTitle: {{ _("Opens the configuration, where the drafts are completed") | tojson }},
+    panel: {
+      close: {{ _("Close") | tojson }}, closeTitle: {{ _("Closes this panel and goes back to the node; Esc does the same") | tojson }},
+      request: {{ _("The path of a request") | tojson }}, mail: {{ _("The path of the mail") | tojson }}, facts: {{ _("Facts") | tojson }},
+      browser: {{ _("Browser") | tojson }}, names: {{ _("Names") | tojson }}, web: {{ _("Web server") | tojson }},
+      odoo: {{ _("Odoo") | tojson }}, database: {{ _("Database") | tojson }}, replica: {{ _("Replica") | tojson }},
+      theServer: {{ _("the server") | tojson }},
+      redirect: {{ _("{name} → {to} (redirect)") | tojson }},
+      odooLine: {{ _("Odoo: {state}") | tojson }}, testLine: {{ _("test: {state}") | tojson }},
+      monitorUp: {{ _("up since {when}, last answer {ms} ms") | tojson }}, monitorUpPlain: {{ _("answers since {when}") | tojson }},
+      monitorDown: {{ _("does not answer since {when}") | tojson }},
+      load: {{ _("load of the last 10 minutes: CPU {cpu} %, memory {mem} MiB") | tojson }},
+      dbDedicated: {{ _("Dedicated") | tojson }}, dbMachine: {{ _("Machine's cluster (PostgreSQL {major})") | tojson }},
+      dbRemote: {{ _("On another machine: {host}") | tojson }}, dbSystem: {{ _("PostgreSQL of the system (port {port})") | tojson }},
+      dbUnread: {{ _("not read") | tojson }}, replicaLine: {{ _("read only · {host}") | tojson }},
+      caught: {{ _("Caught mail: {n} messages, the last at {when}") | tojson }}, caughtNone: {{ _("Caught mail: no message") | tojson }},
+      caughtOn: {{ _("Caught mail: {n} messages, the last on {when}") | tojson }}, caughtPlain: {{ _("Caught mail: {n} messages") | tojson }},
+      caughtUnread: {{ _("Caught mail: not counted yet") | tojson }}, countedAt: {{ _("counted at {when}") | tojson }},
+      internet: {{ _("Internet") | tojson }}, guarded: {{ _("does not leave: the firewall blocks the mail ports") | tojson }},
+      notLeaving: {{ _("does not leave: Odoo of the staging sends to the catcher only") | tojson }},
+      boxes: {{ _("Mailboxes of {domain} → Odoo") | tojson }},
+      backup: {{ _("Automatic backup at {time}") | tojson }}, backupOff: {{ _("No automatic backup") | tojson }},
+      backupLastOk: {{ _("last one done at {when}") | tojson }}, backupLastFailed: {{ _("last one failed at {when}") | tojson }},
+      backupNever: {{ _("none made yet") | tojson }}, backupTo: {{ _("copied to {name}") | tojson }},
+      backupHidden: {{ _("The backups are shown from the developer role up") | tojson }},
+      stagings: {{ _("Stagings: {names}") | tojson }}, noStagings: {{ _("No staging") | tojson }},
+      version: {{ _("Odoo {version}") | tojson }},
+      page: {{ _("Open the instance's page") | tojson }}, pageTitle: {{ _("Opens its page: its environments, backups, log; what is started or stopped is there") | tojson }},
+      odooOpen: {{ _("Open Odoo") | tojson }}, odooTitle: {{ _("Opens {url} in a new tab") | tojson }},
+      mailOpen: {{ _("Open the Mail") | tojson }}, mailTitle: {{ _("Opens the Mail tab of the staging: the messages it sent, caught") | tojson }},
+      notHere: {{ _("This staging is on another machine: its page opens from there.") | tojson }},
+      dbUsers: {{ _("Used by: {names}") | tojson }}, dbReplica: {{ _("Its read replica: {host}") | tojson }},
+      dbOf: {{ _("Replica of {host}") | tojson }},
+      flowTitle: {{ _("The path of a request to {name}: browser, names, web server, Odoo, database") | tojson }},
+      mailFlowTitle: {{ _("The path of the mail of {name}: caught, it does not reach the internet") | tojson }},
+    },
+  };
+  const view = document.getElementById("map-view"), canvas = document.getElementById("map-canvas");
+  const panel = document.getElementById("map-panel");
+  let data = null, active = false, reading = false, timer = null, lastWhole = 0, busyKey = "", readAt = "";
+  // when the last answer came, by this browser's clock, and the jobs it said had ended
+  let gotAt = 0, seenEnded = new Set();
+  // generation: the schema asked changed (a click, Back) while a read was on its way; pending: a whole read to make after it
+  let generation = 0, pending = false;
+  let schemaKey = "", filter = null, onlyWatch = false, query = "", moreWatch = false;
+  let legend = new Set(), rows = [], pos = {}, drawnFor = {}, lastFocus = null;
+  const opened = new Set();
+  const phone = matchMedia("(max-width: 700px)");
+
+  const el = (tag, attrs, ...kids) => {
+    const node = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs || {})) if (v !== undefined && v !== null && v !== false) node.setAttribute(k, v);
+    node.append(...kids.filter((c) => c !== null && c !== undefined));
+    return node;
+  };
+  const S = (tag, attrs, ...kids) => {
+    const node = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs || {})) if (v !== undefined && v !== null && v !== false) node.setAttribute(k, v);
+    node.append(...kids.filter((c) => c !== null && c !== undefined));
+    return node;
+  };
+  const fill = (text, values) => Object.entries(values || {}).reduce((t, [k, v]) => t.replace(`{${k}}`, v), text);
+  // a text that fits px at that size (the system font: about .56 em a letter); the whole text is in the node's title
+  const cut = (text, px, size) => {
+    const max = Math.max(4, Math.floor(px / ((size || 12) * 0.56)));
+    text = String(text === null || text === undefined ? "" : text);
+    return text.length > max ? text.slice(0, max - 1) + "…" : text;
+  };
+  const txt = (x, y, text, cls, anchor) => S("text", {x, y, class: cls || null, "text-anchor": anchor || null}, text);
+  const sizeText = (b) => b >= 1073741824 ? (b / 1073741824).toFixed(1).replace(".", ",") + " GB"
+    : b >= 1048576 ? Math.round(b / 1048576) + " MB" : Math.max(0, Math.round(b / 1024)) + " kB";
+  const dayText = (iso) => whenText(iso).slice(0, 5);
+  const timeText = (iso) => whenText(iso).slice(11, 16);
+  const params = () => new URLSearchParams(location.search);
+  const mapUrl = (values) => {
+    const p = new URLSearchParams({view: "map"});
+    for (const [k, v] of Object.entries(values || {})) if (v) p.set(k, v);
+    return `${location.pathname}?${p}`;
+  };
+
+  // --- the data: every instance with its machine and workspace
+  function everyInstance() {
+    const out = [];
+    for (const m of (data && data.machines) || []) {
+      for (const ws of m.workspaces || []) for (const i of ws.instances || []) out.push({m, ws, i});
+      for (const i of m.loose || []) out.push({m, ws: null, i});
+    }
+    return out;
+  }
+  const findInstance = (id) => everyInstance().find((f) => f.i.id === id) || null;
+  const jobOf = (id) => ((data && data.jobs) || []).find((j) => j.id === id || j.id.endsWith(":" + id)) || null;
+  const watched = () => new Set(((data && data.verdict.watch) || []).map((w) => w.node).filter(Boolean));
+
+  // the state of an environment as §6 says it: a sign, a word, a colour; a staging or a test stopped is a choice
+  function stateOf(env, choice) {
+    if (!env) return {key: "unknown", sign: "?", word: T.st.unknown};
+    if (env.busy) {
+      const job = env.job && jobOf(env.job);
+      return {key: "busy", sign: "⟳", word: job ? fill(T.busy, {title: job.title}) : T.busyPlain};
+    }
+    if (env.queued) return {key: "queued", sign: "⏳", word: T.st.queued};
+    if (env.state === "running") return {key: "running", sign: "●", word: T.st.running};
+    if (env.state === "stopped") return choice ? {key: "idle", sign: "○", word: T.st.idle} : {key: "stopped", sign: "■", word: T.st.stopped};
+    return {key: "unknown", sign: "?", word: T.st.unknown};
+  }
+  const mainEnv = (i) => (i.envs && (i.envs.production || i.envs.test)) || null;
+  function instanceState(i) {
+    const st = stateOf(mainEnv(i), i.type === "staging" || !(i.envs && i.envs.production));
+    if (st.key !== "busy" && st.key !== "queued" && i.monitor && i.monitor.state === "down")
+      return {key: "down", sign: "✕", word: i.monitor.since ? fill(T.downSince, {time: timeText(i.monitor.since)}) : T.st.down};
+    return st;
+  }
+  const RANK = ["stopped", "down", "unknown", "queued", "busy", "running", "idle"];
+  function worst(instances) {
+    let found = null;
+    for (const i of instances) {
+      const st = instanceState(i);
+      if (!found || RANK.indexOf(st.key) < RANK.indexOf(found.key)) found = st;
+    }
+    return found || {key: "idle", sign: "○", word: T.st.idle};
+  }
+  // an instance that stays drawn when its neighbours fold: stopped in production, busy, with something to look at
+  const important = (i) => ["stopped", "down", "busy", "queued"].includes(instanceState(i).key) || watched().has(i.id);
+  const matches = (f) => {
+    if (onlyWatch && !important(f.i)) return false;
+    if (!query) return true;
+    const text = [f.i.name, f.i.server, f.i.version, f.ws && f.ws.name, f.ws && f.ws.label, f.m.name, f.m.machine_name, f.i.url]
+      .filter(Boolean).join(" ").toLowerCase();
+    return query.split(/\s+/).filter(Boolean).every((w) => text.includes(w));
+  };
+  // how many: the stagings are said apart, as the List view counts them, wherever their production is
+  function amountOf(instances) {
+    const copies = instances.filter((i) => i.type === "staging").length, own = instances.length - copies, parts = [];
+    if (own || !copies) parts.push(own === 1 ? fill(T.instance, {n: 1}) : fill(T.instances, {n: own}));
+    if (copies) parts.push(copies === 1 ? T.oneStaging : fill(T.stagingsCount, {n: copies}));
+    return parts.join(" · ");
+  }
+  // an address the reader's browser may open: not a port of the machine (an instance without a name)
+  const openable = (url) => !!url && !/^[a-z]+:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/i.test(url);
+  // the tops of a list of instances (a staging whose production is not in it is one): what folds and what does not
+  function tops(instances) {
+    const ids = new Set(instances.map((i) => i.id));
+    return instances.filter((i) => !(i.parent && ids.has(i.parent)));
+  }
+  const badNames = (i) => Object.values(i.envs || {}).filter(Boolean)
+    .flatMap((e) => e.names || []).filter((n) => n.https === false || n.dns === "none" || n.dns === "elsewhere");
+  const nameWord = (n) => n.dns === "none" || n.dns === "elsewhere" ? T.noDns : n.https === false ? T.noHttps : n.https ? T.https : T.unread;
+  const machineLabel = (m) => m.name || m.machine_name || T.thisMachine;
+
+  // --- reading
+  async function read(part) {
+    // who sees the whole machine gets every machine and chooses here (the stagings on the other machines
+    // stay beside their production); the others ask their workspace, and one that is not theirs is not there
+    const p = params(), q = new URLSearchParams({part});
+    if (NARROW && p.get("workspace")) q.set("workspace", p.get("workspace"));
+    if (part === "all" && p.get("focus")) q.set("focus", focusId());
+    // a read that does not come is a read that failed: the schema stays, with since when and why
+    const control = new AbortController(), giveUp = setTimeout(() => control.abort(), READ_WITHIN);
+    let resp, body;
+    try {
+      resp = await fetch(`${PREFIX}/api/map?${q}`, {headers: {Accept: "application/json"}, signal: control.signal});
+      body = await resp.json().catch((e) => { if (control.signal.aborted) throw e; return {}; });
+    } catch (e) {
+      throw new Error(control.signal.aborted ? fill(T.slow, {n: READ_WITHIN / 1000}) : T.netError);
+    } finally { clearTimeout(giveUp); }
+    if (!resp.ok) throw new Error(body.error || body.detail || `HTTP ${resp.status}`);
+    if (!Array.isArray(body.machines) || !body.verdict) throw new Error(T.notMap);
+    return body;
+  }
+  const busyOf = (got) => JSON.stringify([
+    (got.jobs || []).filter((j) => !j.finished).map((j) => j.id + j.status).sort(),
+    (got.machines || []).map((m) => [m.id, !!m.answered, !!m.older])]);
+  const endedOf = (got) => (got.jobs || []).filter((j) => j.finished).map((j) => j.id);
+  function applyNow(got) {
+    data.verdict = got.verdict; data.jobs = got.jobs; data.at = got.at;
+    const now = Object.fromEntries((got.machines || []).map((m) => [m.id, m]));
+    for (const f of everyInstance()) {
+      const envs = (now[f.m.id] && now[f.m.id].envs || {})[f.i.id] || {};
+      for (const [role, env] of Object.entries(f.i.envs || {})) if (env && envs[role]) Object.assign(env, envs[role]);
+    }
+    for (const m of data.machines) if (now[m.id]) m.load = now[m.id].load;
+  }
+  async function tick(whole) {
+    clearTimeout(timer);
+    if (!active || document.hidden) return;
+    if (reading) { pending = pending || whole === true; return; }
+    reading = true;
+    const mine = generation;
+    whole = whole === true || !data || Date.now() - lastWhole >= WHOLE_EVERY;
+    try {
+      const got = await read(whole ? "all" : "now");
+      if (mine !== generation) pending = true;  // the answer of the schema of before: read again
+      else {
+        gotAt = Date.now();
+        if (whole) { data = got; lastWhole = Date.now(); busyKey = busyOf(got); seenEnded = new Set(endedOf(got)); }
+        else {
+          applyNow(got);
+          // the busy ones changed (a job started or ended), or a job ended that was not there at the whole read (one
+          // of a few seconds starts and ends between two reads): the whole again, so what it changed shows
+          if (busyOf(got) !== busyKey || endedOf(got).some((id) => !seenEnded.has(id))) pending = true;
+        }
+        readAt = got.at;
+        document.getElementById("map-stale").hidden = true;
+        canvas.classList.remove("stale");
+        draw(whole);
+      }
+    } catch (e) {
+      if (mine === generation) {
+        // the schema stays, dimmed, with since when and why
+        const why = String(e && e.message || e), box = document.getElementById("map-stale");
+        box.textContent = fill(readAt ? T.stale : T.never, {when: whenText(readAt), why});
+        box.hidden = false;
+        canvas.classList.add("stale");
+        if (!data) document.getElementById("map-verdict").textContent = "";
+      }
+    }
+    reading = false;
+    if (pending) { pending = false; return tick(true); }
+    timer = setTimeout(tick, NOW_EVERY);
+  }
+  function focusId() {
+    // …&focus=<server> (the instance's page) or <machine>/<server> (a node)
+    const p = params(), focus = p.get("focus") || "";
+    return !focus || focus.includes("/") ? focus : `${p.get("machine") || HERE}/${focus}`;
+  }
+
+  // --- the head: the verdict, the counts (each one a filter), when it was read
+  function nodeOf(id) { return drawnFor[id] || id; }
+  function setFilter(key, ids) {
+    filter = filter && filter.key === key ? null : {key, ids};
+    draw(true);
+  }
+  const drawn = (id) => !!id && !!canvas.querySelector(`[data-node="${CSS.escape(nodeOf(id))}"]`);
+  function count(text, title, key, ids, total, here) {
+    // the number is of the whole map; the click lights the nodes of this schema: how many, when not all
+    total = total === undefined ? ids.length : total;
+    here = here === undefined ? ids.filter(drawn).length : here;
+    if (here !== total) text += ` (${fill(T.here, {n: here})})`;
+    const button = el("button", {type: "button", class: "map-count", title, "aria-pressed": String(!!filter && filter.key === key),
+                                 "data-count": key, "data-here": here}, text);
+    button.addEventListener("click", () => setFilter(key, ids));
+    return button;
+  }
+  // the jobs as rows: the one of a linked machine that a job of this one waits for is in that job's row
+  function ownJobs() {
+    const jobs = (data && data.jobs) || [], followed = new Set(jobs.map((j) => j.follows).filter(Boolean));
+    return jobs.filter((j) => !followed.has(j.id));
+  }
+  function filterIds(key) {
+    const all = everyInstance(), envs = (i) => Object.values(i.envs || {}).filter(Boolean);
+    if (key === "watch") return [...watched()];
+    if (key === "running") return all.filter((f) => envs(f.i).some((e) => e.busy)).map((f) => f.i.id);
+    if (key === "queued") return all.filter((f) => envs(f.i).some((e) => e.queued)).map((f) => f.i.id);
+    const night = (f) => (f.i.backup && f.i.backup.tonight) || {};
+    if (key === "ok") return all.filter((f) => night(f).ok > 0).map((f) => f.i.id);
+    if (key === "failed") return all.filter((f) => night(f).failed > 0).map((f) => f.i.id);
+    return all.filter((f) => f.i.backup && !f.i.backup.scheduled).map((f) => f.i.id);
+  }
+  function drawHead() {
+    const verdict = document.getElementById("map-verdict"), watch = data.verdict.watch || [];
+    verdict.className = "map-verdict " + (watch.length ? "watch" : "ok");
+    verdict.replaceChildren(watch.length
+      ? count(watch.length === 1 ? T.watchOne : fill(T.watchMany, {n: watch.length}), T.watchTitle, "watch", filterIds("watch"),
+              watch.length, watch.filter((w) => drawn(w.node)).length)
+      : T.ok);
+    const list = document.getElementById("map-watch");
+    list.hidden = !watch.length;
+    const shown = moreWatch ? watch : watch.slice(0, 5);
+    list.replaceChildren(...shown.map((w) => {
+      const found = w.node && findInstance(w.node);
+      const text = w.text + (w.since ? " · " + fill(T.since, {when: whenText(w.since)}) : "");
+      let line = text;
+      if (w.page) line = el("a", {href: PREFIX + w.page, title: T.openJob}, text);
+      else if (found) {
+        line = el("a", {href: mapUrl({...Object.fromEntries(params()), focus: w.node}), title: T.openNode}, text);
+        line.addEventListener("click", (event) => { event.preventDefault(); openPanel(w.node); });
+      }
+      return el("li", {"data-watch": w.kind}, el("span", {class: "mark", "aria-hidden": "true"}, "⚠"), line);
+    }));
+    if (watch.length > shown.length) {
+      const more = el("button", {type: "button", class: "small ghost", title: T.watchMoreTitle}, fill(T.more, {n: watch.length - shown.length}));
+      more.addEventListener("click", () => { moreWatch = true; drawHead(); });  // the schema is the same
+      list.append(el("li", {}, more));
+    }
+    const jobs = ownJobs(), counts = document.getElementById("map-counts");
+    const running = jobs.filter((j) => j.status === "running").length, queued = jobs.filter((j) => j.status === "queued").length;
+    counts.replaceChildren(count(fill(T.running, {n: running}), T.runningTitle, "running", filterIds("running")), " · ",
+                           count(fill(T.queued, {n: queued}), T.queuedTitle, "queued", filterIds("queued")));
+    const night = data.tonight;
+    if (night) {
+      counts.append(" · ", T.tonight, " ", count(night.ok === 1 ? T.tonightOkOne : fill(T.tonightOk, {n: night.ok}), T.tonightOkTitle, "ok", filterIds("ok")), ", ",
+                    count(night.failed === 1 ? T.tonightFailedOne : fill(T.tonightFailed, {n: night.failed}), T.tonightFailedTitle, "failed", filterIds("failed")));
+      if (night.unscheduled) counts.append(" · ", count(fill(T.tonightNone, {n: night.unscheduled}), T.tonightNoneTitle, "none", filterIds("none")));
+    }
+    document.getElementById("map-read").textContent = fill(T.read, {when: whenText(data.at)});
+  }
+
+  // --- the strip: the jobs that run or wait, those that just ended
+  // The seconds a job has run (age_s) or since it ended (ended_s): counted by its machine's clock, which is
+  // not this browser's (another time zone, a clock that is off), plus the time since the answer came. An
+  // OmniaCLI of a linked machine that does not send them: the difference of two times of the same clock.
+  function secondsOf(job, key, iso) {
+    const since = Math.max(0, (Date.now() - gotAt) / 1000);
+    if (typeof job[key] === "number") return job[key] + since;
+    const span = (new Date(data.at).getTime() - new Date(iso).getTime()) / 1000;
+    return Math.max(0, Number.isFinite(span) ? span : 0) + since;
+  }
+  function age(job) {
+    const s = Math.round(secondsOf(job, "age_s", job.started || job.created));
+    return s >= 60 ? fill(T.minutes, {n: Math.floor(s / 60)}) : fill(T.seconds, {n: s});
+  }
+  function stepsOf(job) {
+    const progress = job.progress, ids = progress.steps.map((s) => s.id);
+    const ended = !!job.finished, current = job.status === "success" ? ids.length : Math.max(0, ids.indexOf(progress.step));
+    const box = el("div", {class: "steps"});
+    progress.steps.forEach((s, i) => {
+      const state = i < current ? "done" : i > current ? "" : ended ? "failed" : "active";
+      if (i) box.append(el("div", {class: "step-wire" + (i < current ? " done" : s.id === "download" && state === "active" ? " flowing" : "")}));
+      let figures = "";
+      if (s.id === "download" && state === "active" && progress.done)
+        figures = " · " + (progress.total ? Math.floor(progress.done / progress.total * 100) + " % · " : "") + sizeText(progress.done);
+      box.append(el("div", {class: "step" + (state ? " " + state : ""), "data-step": s.id},
+        el("span", {class: "step-mark", "aria-hidden": "true"}, state === "done" ? "✓" : state === "failed" ? "!" : ""),
+        el("span", {class: "step-label"}, s.label + figures), s.where ? el("span", {class: "step-where"}, s.where) : null));
+    });
+    return box;
+  }
+  function drawStrip() {
+    const strip = document.getElementById("map-strip"), jobs = ownJobs();
+    const open = jobs.filter((j) => !j.finished);
+    const ended = jobs.filter((j) => j.finished && secondsOf(j, "ended_s", j.finished) < JOB_SHOWN);
+    const shown = [...open, ...ended].slice(0, 5), out = [];
+    for (const job of shown) {
+      const kind = job.finished ? job.outcome : job.status;
+      const sign = {running: "⟳", queued: "⏳", success: "✓", warned: "⚠"}[kind] || "✕";
+      const who = fill(T.jobBy, {who: String(job.by || "").replace(/^[a-z]+: /, "")});
+      const when = job.finished ? `${T.outcome[job.outcome] || job.outcome} · ${whenText(job.finished)}`
+        : job.status === "queued" ? fill(T.jobQueued, {when: whenText(job.created)}) : fill(T.jobFor, {time: age(job)});
+      out.push(el("a", {class: `map-job ${kind}`, href: PREFIX + job.page, title: T.openJob, "data-job": job.id},
+        el("span", {class: "sign", "aria-hidden": "true"}, sign), el("strong", {}, job.title),
+        el("span", {class: "who"}, `${when} · ${who}`), job.progress ? stepsOf(job) : null));
+    }
+    if (open.length + ended.length > shown.length)
+      out.push(el("p", {class: "small"}, el("a", {href: `${PREFIX}/jobs`, title: T.moreJobsTitle}, fill(T.more, {n: open.length + ended.length - shown.length}))));
+    if (!shown.length) {
+      const last = jobs.filter((j) => j.finished).sort((a, b) => String(b.finished).localeCompare(String(a.finished)))[0];
+      out.push(el("p", {class: "muted"}, T.nothing, last ? " " : null,
+        last ? el("a", {href: PREFIX + last.page, title: T.lastTitle},
+          fill(T.lastAction, {title: last.title, outcome: T.outcome[last.outcome] || last.outcome, when: whenText(last.finished)})) : null));
+    }
+    strip.replaceChildren(...out);
+  }
+
+  // --- drawing: the pieces
+  function lock(x, y, state) {
+    // a small lock: closed with HTTPS, open without, grey when not read
+    const cls = "map-lock" + (state === "bad" ? " bad" : state === "unread" ? " unread" : "");
+    return S("g", {class: cls, "aria-hidden": "true"},
+      S("rect", {x, y: y + 4, width: 9, height: 7, rx: 1.5}),
+      S("path", {d: state === "ok" ? `M${x + 2} ${y + 4} v-2 a2.5 2.5 0 0 1 5 0 v2` : `M${x + 2} ${y + 4} v-2 a2.5 2.5 0 0 1 5 0`}));
+  }
+  function bar(x, y, w, share) {
+    const part = Math.max(0, Math.min(1, share || 0));
+    return [S("rect", {class: "map-bar-bg", x, y, width: w, height: 4, rx: 2}),
+            S("rect", {class: "map-bar" + (part > 0.9 ? " high" : ""), x, y, width: Math.max(2, w * part), height: 4, rx: 2})];
+  }
+  function sign(x, y, st) {
+    return S("text", {x, y, class: `map-sign ${st.key}`, "text-anchor": "middle", "aria-hidden": "true"}, st.sign);
+  }
+  // a node of the schema: a link (its href opens what it stands for), reached with Tab, opened with Enter
+  function node(id, kind, st, title, href, onClick, cls) {
+    const a = S("a", {class: `map-node ${cls || ""}`, "data-node": id, "data-kind": kind, "data-state": st.key, tabindex: "0",
+                     href: href || null, role: href ? null : "group"}, S("title", {}, title));
+    if (onClick) a.addEventListener("click", (event) => {
+      if (event.metaKey || event.ctrlKey || event.shiftKey) return;
+      event.preventDefault(); onClick();
+    });
+    if (!href) a.classList.add("plain");
+    legend.add(st.key);
+    return a;
+  }
+  function navigate(values) {
+    history.pushState(null, "", mapUrl(values));
+    panel.hidden = true; delete panel.dataset.shown; delete panel.dataset.db;
+    filter = null; schemaKey = ""; opened.clear();
+    if (NARROW) {
+      // another workspace is another answer of the server: the skeleton until it comes
+      generation += 1; data = null;
+      canvas.replaceChildren(el("div", {class: "map-skeleton", "aria-hidden": "true"}, el("div"), el("div"), el("div")));
+      tick(true);
+    } else draw(true);
+  }
+  const NODE_PAD = 12, LINE = 17;
+
+  // the marks of a production: tonight's backup, the monitor, the certificate
+  function marks(i) {
+    const out = [];
+    const b = i.backup;
+    if (b) {
+      if (!b.scheduled) out.push({text: T.backupNone, cls: "t-warn", key: "warn"});
+      else if (b.last && !b.last.ok) out.push({text: fill(T.backupFailed, {when: whenText(b.last.time)}), cls: "t-err", key: "warn"});
+      else if (b.last) out.push({text: fill(T.backupOk, {time: timeText(b.last.time)}), cls: "t-muted"});
+      else out.push({text: T.backupWait, cls: "t-muted"});
+    }
+    if (i.certificate && i.certificate.days !== null && i.certificate.days < 14)
+      out.push({text: fill(T.cert, {days: i.certificate.days}), cls: "t-warn", key: "warn"});
+    return out;
+  }
+  function databaseWord(i) {
+    const db = (mainEnv(i) || {}).database;
+    if (!db) return null;
+    if (db.where === "dedicated") return "⛁ " + T.dedicated;
+    if (db.where === "system") return "⛁ " + T.system;
+    return null;
+  }
+  function instanceLines(i, single) {
+    // what the node says under its name: the address or the names, the database when it has no line, the marks
+    const lines = [], env = mainEnv(i) || {}, names = env.names || [], bad = badNames(i);
+    const all = Object.values(i.envs || {}).filter(Boolean).reduce((n, e) => n + (e.names || []).length, 0);
+    if (!single && all) lines.push({text: (bad.length ? "⚠ " : "") + (all === 1 ? T.oneName : fill(T.names, {n: all}))
+      + (bad.length ? " · " + nameWord(bad[0]) : ""), cls: bad.length ? "t-warn" : "t-muted", key: bad.length ? "warn" : null});
+    const db = databaseWord(i);
+    if (db) { lines.push({text: db, cls: "t-muted"}); legend.add("dedicated"); }
+    return lines.concat(marks(i));
+  }
+  function describe(i, f) {
+    // the same facts as the node, in words: its row of the list
+    const st = instanceState(i), parts = [`${i.name}: ${st.word}`];
+    if (i.version) parts.push(fill(T.panel.version, {version: i.version}));
+    if (i.type === "staging") {
+      parts.push(T.staging + (i.created ? ", " + fill(T.copyOf, {date: dayText(i.created)}) : ""));
+      if (whereOf(i, f)) parts.push(whereOf(i, f));
+    }
+    const test = i.envs && i.envs.production && i.envs.test;
+    if (test) parts.push(fill(T.panel.testLine, {state: stateOf(test, true).word}));
+    const env = mainEnv(i) || {};
+    for (const n of env.names || []) parts.push(n.kind === "redirect" ? fill(T.panel.redirect, {name: n.name, to: n.to}) : `${n.name}, ${nameWord(n)}`);
+    if (env.database) parts.push(`${T.colDb}: ${databaseText(env.database)}`
+      + (env.database.replica ? ", " + fill(T.panel.replicaLine, {host: env.database.replica}) : ""));
+    for (const m of marks(i)) parts.push(m.text.replace(/^[✓✕⚠] /, ""));
+    if (i.backup && i.backup.destination) parts.push(fill(T.panel.backupTo, {name: i.backup.destination}));
+    if (i.mail) parts.push(i.mail.count === null || i.mail.count === undefined ? T.mailUnread : fill(T.mail, {n: i.mail.count}));
+    return parts.join(" · ");
+  }
+  function databaseText(db) {
+    if (!db || !db.where) return T.panel.dbUnread;
+    if (db.where === "dedicated") return T.panel.dbDedicated;
+    if (db.where === "machine") return fill(T.panel.dbMachine, {major: db.major || "?"});
+    if (db.where === "remote") return fill(T.panel.dbRemote, {host: db.host});
+    return fill(T.panel.dbSystem, {port: db.port || "5432"});
+  }
+
+  // an instance (a production with its test as a pill, or a staging) drawn in g at x, y, w wide: its height
+  function whereOf(i, f) {
+    // a staging beside a production of another machine: on which one, for who sees the machines
+    if (f && f.other) return data.viewer.scope === "machine" ? fill(T.onMachine, {machine: machineLabel(f.other)}) : T.elsewhere;
+    if (!i.elsewhere) return "";
+    if (i.id.startsWith("elsewhere/")) return T.elsewhere;
+    return i.parent_machine && data.viewer.scope === "machine" ? fill(T.prodOn, {machine: i.parent_machine}) : T.prodElsewhere;
+  }
+  function drawInstance(g, f, x, y, w, depth, single, child) {
+    const i = f.i, st = instanceState(i), small = !!child;
+    const lines = small ? [] : instanceLines(i, single);
+    const h = Math.max(46, NODE_PAD + LINE * (2 + lines.length) + 6);
+    const where = whereOf(i, f);
+    const title = `${describe(i, f)}. ${i.page || i.server ? T.openNode : T.panel.notHere}`;
+    const a = node(i.id, i.type, st, title, mapUrl({...Object.fromEntries(params()), focus: i.id}), () => openPanel(i.id), small ? "small" : "");
+    a.append(S("rect", {class: "shape", x, y, width: w, height: h, rx: 8}), sign(x + 14, y + 20, st));
+    const version = !small && i.version ? i.version.replace(/\.0$/, "") : "";
+    a.append(txt(x + 26, y + 20, cut(i.name, w - 40 - (version ? 30 : 0), 13), "t-name"));
+    if (version) a.append(txt(x + w - 10, y + 20, version, "t-muted t-small", "end"));
+    const cls = {running: "t-ok", stopped: "t-err", down: "t-err", busy: "t-info", queued: "t-info"}[st.key] || "t-muted";
+    let second = st.word;
+    const extra = [];
+    if (i.mail) { extra.push(i.mail.count === null || i.mail.count === undefined ? "✉ ?" : fill(T.mail, {n: i.mail.count})); legend.add("mail"); }
+    if (where) extra.push(where);
+    const test = !small && i.envs && i.envs.production && i.envs.test;
+    let room = w - 24;
+    if (test) {
+      // its test: a pill in the node, with its own state
+      const ts = stateOf(test, true), label = `${T.test} ${ts.sign} ${ts.word}`, tw = Math.min(room * 0.55, label.length * 6.2 + 12);
+      a.append(S("rect", {class: "map-bar-bg", x: x + w - tw - 8, y: y + 26, width: tw, height: 16, rx: 8}),
+               txt(x + w - 8 - tw / 2, y + 38, cut(label, tw - 8, 11), "t-small t-muted", "middle"));
+      legend.add(ts.key); room -= tw + 6;
+    }
+    a.append(txt(x + 12, y + 20 + LINE, cut([second, ...extra].join(" · "), room, 12), cls));
+    lines.forEach((line, n) => {
+      a.append(txt(x + 12, y + 20 + LINE * (n + 2), cut(line.text, w - 24, 12), line.cls));
+      if (line.key) legend.add(line.key);
+    });
+    g.append(a);
+    pos[i.id] = {x, y, w, h};
+    rows.push({id: i.id, depth, text: describe(i, f)});
+    return h;
+  }
+  // the instances of one workspace as a tree: each production, its stagings under it (those beyond the second fold)
+  function drawTree(g, list, x, y, w, depth, single, others) {
+    const all = list, ids = new Set(all.map((f) => f.i.id));
+    const roots = all.filter((f) => !(f.i.parent && ids.has(f.i.parent))).sort((a, b) => a.i.name.localeCompare(b.i.name));
+    let cursor = y;
+    const cells = [];
+    for (const root of roots) {
+      const top = cursor;
+      cursor += drawInstance(g, root, x, cursor, w, depth, single);
+      const kids = all.filter((f) => f.i.parent === root.i.id).concat((others || []).filter((f) => f.i.parent === root.i.id))
+        .sort((a, b) => String(b.i.created).localeCompare(String(a.i.created)));
+      const keep = opened.has(root.i.id) ? kids : kids.filter((f, n) => n < 2 || important(f.i));
+      for (const kid of keep) {
+        cursor += 20;
+        g.append(txt(x + 34, cursor - 6, kid.i.created ? fill(T.copyOf, {date: dayText(kid.i.created)}) : T.staging, "t-label"));
+        const ky = cursor;
+        cursor += drawInstance(g, kid, x + 22, cursor, w - 22, depth + 1, single, true);
+        edges.push({kind: "copy", elbow: [x + 10, pos[root.i.id].y + pos[root.i.id].h, x + 22, ky + 20], title: T.edge.copy});
+      }
+      // those that fold are not drawn: the list, which is the schema in words, names them all the same
+      for (const kid of kids.filter((f) => !keep.includes(f))) rows.push({id: kid.i.id, depth: depth + 1, text: describe(kid.i, kid)});
+      if (kids.length > keep.length) {
+        cursor += 8;
+        const more = S("a", {class: "map-more", href: "#", tabindex: "0"}, S("title", {}, T.moreStagingsTitle),
+          S("rect", {x: x + 22, y: cursor, width: w - 22, height: 44, rx: 8}),
+          txt(x + 34, cursor + 26, fill(T.moreStagings, {n: kids.length - keep.length})));
+        more.addEventListener("click", (event) => { event.preventDefault(); opened.add(root.i.id); draw(true); });
+        g.append(more);
+        cursor += 44;
+      }
+      cells.push({root, y: top, h: cursor - top});
+      cursor += 12;
+    }
+    return {h: cursor - y - (roots.length ? 12 : 0), cells};
+  }
+  // the lines of the schema being drawn; the boxes under them, the labels of the lines over the nodes
+  let edges = [], boxLayer = null, labelLayer = null;
+
+  // a line between two rectangles: out of the side that faces the other, a soft curve, its label in the middle
+  function sides(a, b) {
+    if (b.x >= a.x + a.w) return [[a.x + a.w, a.y + Math.min(a.h / 2, 30)], [b.x, b.y + Math.min(b.h / 2, 30)], "h"];
+    if (b.x + b.w <= a.x) return [[a.x, a.y + Math.min(a.h / 2, 30)], [b.x + b.w, b.y + Math.min(b.h / 2, 30)], "h"];
+    if (b.y >= a.y + a.h) return [[a.x + a.w / 2, a.y + a.h], [b.x + b.w / 2, b.y], "v"];
+    return [[a.x + a.w / 2, a.y], [b.x + b.w / 2, b.y + b.h], "v"];
+  }
+  function drawEdge(g, edge) {
+    let d, mid, end = null, dir = null;
+    if (edge.elbow) {
+      const [x1, y1, x2, y2] = edge.elbow;
+      d = `M${x1} ${y1} V${y2} H${x2}`; mid = [x1, (y1 + y2) / 2];
+    } else if (edge.points) {
+      // a line drawn along its own way: a link above the machines, a line in its lane beside the nodes
+      const pts = edge.points, last = pts[pts.length - 1], before = pts[pts.length - 2];
+      d = "M" + pts.map((q) => `${q[0]} ${q[1]}`).join(" L");
+      mid = edge.labelAt || last; end = last; dir = [Math.sign(last[0] - before[0]), Math.sign(last[1] - before[1])];
+    } else {
+      let a = pos[edge.from], b = pos[edge.to];
+      if (!a || !b) return;
+      const A = edge.boxes && pos[edge.boxes[0]], B = edge.boxes && pos[edge.boxes[1]];
+      if (A && B) {
+        // between two machines: out of the machine's box at the height of the chip (side by side), or at the
+        // chip's place along it (one over the other), so the line and its label are in the gap between the boxes
+        const beside = B.x >= A.x + A.w || B.x + B.w <= A.x;
+        a = beside ? {x: A.x, w: A.w, y: a.y, h: a.h} : {x: a.x, w: a.w, y: A.y, h: A.h};
+        b = beside ? {x: B.x, w: B.w, y: b.y, h: b.h} : {x: b.x, w: b.w, y: B.y, h: B.h};
+      }
+      const [p, q, way] = sides(a, b), k = way === "h" ? Math.max(24, Math.abs(q[0] - p[0]) / 2) : Math.max(24, Math.abs(q[1] - p[1]) / 2);
+      const c1 = way === "h" ? [p[0] + Math.sign(q[0] - p[0] || 1) * k, p[1]] : [p[0], p[1] + Math.sign(q[1] - p[1] || 1) * k];
+      const c2 = way === "h" ? [q[0] - Math.sign(q[0] - p[0] || 1) * k, q[1]] : [q[0], q[1] - Math.sign(q[1] - p[1] || 1) * k];
+      d = `M${p[0]} ${p[1]} C${c1[0]} ${c1[1]} ${c2[0]} ${c2[1]} ${q[0]} ${q[1]}`;
+      // its label clear of the curve: over its higher end (side by side), or beside its middle (one over the other)
+      mid = way === "h" ? [(p[0] + q[0]) / 2, Math.min(p[1], q[1]) - 2] : [(p[0] + q[0]) / 2 + 10, (p[1] + q[1]) / 2 + 9];
+      if (way !== "h" && edge.label && !edge.anchor) edge.anchor = "start";
+      end = q; dir = way === "h" ? [Math.sign(q[0] - p[0] || 1), 0] : [0, Math.sign(q[1] - p[1] || 1)];
+    }
+    const cls = `map-edge ${edge.kind}` + (edge.down ? " down" : "") + (edge.moving ? " moving" : "");
+    g.append(S("path", {class: cls, d, "data-edge": edge.kind, "data-from": edge.from || null, "data-to": edge.to || null},
+               S("title", {}, edge.title)));
+    if (edge.arrow && end && dir) {
+      const [dx, dy] = dir, [ex, ey] = end;
+      g.append(S("path", {class: "map-arrow" + (edge.moving ? " moving" : ""),
+        d: `M${ex} ${ey} L${ex - dx * 8 - dy * 4} ${ey - dy * 8 - dx * 4} L${ex - dx * 8 + dy * 4} ${ey - dy * 8 + dx * 4} Z`}));
+    }
+    // over the nodes: a label is never under a box it passes by
+    if (edge.label) (labelLayer || g).append(S("text", {class: "t-label" + (edge.moving || edge.down ? " t-warn" : ""), x: mid[0], y: mid[1] - 5,
+                                                        "text-anchor": edge.anchor || "middle", "data-edge-label": edge.kind}, edge.label));
+    legend.add(edge.down ? "linkDown" : edge.moving ? "moving" : edge.kind);
+  }
+  // the transfer running between two machines now, {from, to, label}
+  function transfers() {
+    return ((data && data.jobs) || []).filter((j) => j.status === "running" && j.progress && j.progress.step === "download" && j.from && j.to)
+      .map((j) => ({from: j.from, to: j.to, label: j.progress.total
+        ? fill(T.transfer, {percent: Math.floor(j.progress.done / j.progress.total * 100), size: sizeText(j.progress.done)})
+        : fill(T.transferNo, {size: sizeText(j.progress.done || 0)})}));
+  }
+  function wrap(text, px, size) {
+    const max = Math.max(8, Math.floor(px / ((size || 12) * 0.56))), out = [];
+    let line = "";
+    for (const word of String(text).split(/\s+/)) {
+      if (line && (line + " " + word).length > max) { out.push(line); line = word; }
+      else line = line ? line + " " + word : word;
+    }
+    if (line) out.push(line);
+    return out;
+  }
+
+  // --- S1: the machines and their links
+  function machineGroup(m, w) {
+    const g = S("g"), local = {}, pad = 14;
+    let y = 0;
+    const list = [...(m.workspaces || []).flatMap((ws) => ws.instances || []), ...(m.loose || [])];
+    // one that answers with an OmniaCLI older than the map is to update: it is not down
+    const st = m.answered ? {key: "running", sign: "●", word: T.answers}
+      : m.older ? {key: "older", sign: "↑", word: T.toUpdate} : {key: "down", sign: "✕", word: T.notAnswering};
+    const label = machineLabel(m), admin = data.viewer.role === "admin";
+    const title = m.answered ? fill(T.machineTitle, {name: label})
+      : m.older ? fill(admin ? T.machineOlderTitle : T.olderPlain, {name: label}) : fill(T.machineDownTitle, {name: label});
+    const head = m.answered ? node(m.id, "machine", st, title, mapUrl({machine: m.id}), () => navigate({machine: m.id}), "head")
+      : node(m.id, "machine", st, title, data.viewer.role === "admin" ? "/links" : null, null, "head");
+    const box = S("rect", {class: "map-box outer" + (m.answered ? "" : m.older ? " older" : " down"), x: 0, y: 0, width: w, rx: 12});
+    g.append(box);
+    head.append(S("rect", {class: "shape", x: pad, y: pad, width: w - pad * 2, height: 62, rx: 8}), sign(pad + 14, pad + 22, st),
+                txt(pad + 26, pad + 22, cut(label + (m.here ? ` (${T.thisOne})` : ""), w - pad * 2 - 40, 14), "t-head"));
+    const sub = [m.name && m.machine_name && m.machine_name !== m.name ? m.machine_name : "", m.version ? `OmniaCLI ${m.version}` : ""].filter(Boolean).join(" · ");
+    head.append(txt(pad + 12, pad + 40, cut(`${st.word}${sub ? " · " + sub : ""}`, w - pad * 2 - 24, 12), m.answered ? "t-muted" : m.older ? "t-info" : "t-warn"));
+    const facts = [m.load && m.load.cpu !== null && m.load.cpu !== undefined ? fill(T.load, {cpu: Math.round(m.load.cpu), ram: m.load.ram === null ? "?" : m.load.ram}) : "",
+                   m.disk ? fill(T.free, {size: sizeText(m.disk.free)}) : ""].filter(Boolean).join(" · ");
+    head.append(S("text", {x: pad + 12, y: pad + 56, class: "t-muted t-small", "data-load": m.id}, cut(facts, w - pad * 2 - 24, 11)));
+    g.append(head);
+    local[m.id] = {x: 0, y: 0, w, h: 0};
+    rows.push({id: m.id, depth: 0, text: `${label}${m.here ? ` (${T.thisOne})` : ""}: ${m.answered ? st.word : fill(m.older ? T.older : T.down, {name: label, why: m.error || ""})}`
+      + (facts ? ` · ${facts}` : "")});
+    y = pad + 62 + 10;
+    if (!m.answered) {
+      const words = (m.older ? T.older : fill(T.down, {name: label, why: m.error || "?"})) + (data.viewer.role === "admin" && !m.older ? " " + T.remedy : "");
+      for (const line of wrap(words, w - pad * 2, 12)) { g.append(txt(pad, y + 12, line, m.older ? "" : "t-warn")); y += LINE; }
+      y += 6;
+    }
+    for (const c of m.cluster || []) {
+      g.append(S("g", {class: "map-item", "data-item": "cluster"}, S("title", {}, T.clusterTitle),
+        S("rect", {class: "shape", x: pad, y, width: w - pad * 2, height: 26, rx: 13}),
+        txt(pad + 12, y + 17, "⛁ " + fill(T.cluster, {major: c.major}), "t-muted")));
+      y += 34;
+    }
+    const chips = (m.workspaces || []).map((ws) => ({ws, list: ws.instances || []}));
+    if ((m.loose || []).length) chips.push({ws: null, list: m.loose});
+    const cols = w >= 420 ? 2 : 1, gap = 10, cw = (w - pad * 2 - gap * (cols - 1)) / cols, ch = 78;
+    chips.forEach((chip, n) => {
+      const cx = pad + (n % cols) * (cw + gap), cy = y + Math.floor(n / cols) * (ch + gap);
+      const ws = chip.ws, id = ws ? ws.id : `${m.id}/ws:`, name = ws ? ws.label : T.loose;
+      const wst = worst(chip.list), busy = chip.list.some((i) => instanceState(i).key === "busy");
+      // the instances and the stagings apart: the chips of a machine add up to what the List view counts
+      const amount = amountOf(chip.list), own = chip.list.filter((i) => i.type !== "staging").length;
+      const a = ws ? node(id, "workspace", wst, fill(T.wsTitle, {name}), mapUrl({machine: m.id, workspace: ws.name}),
+                          () => navigate({machine: m.id, workspace: ws.name}), "chip")
+                   : node(id, "workspace", wst, T.looseTitle, mapUrl({machine: m.id}), () => navigate({machine: m.id}), "chip loose");
+      a.setAttribute("data-count", own);
+      a.setAttribute("data-stagings", chip.list.length - own);
+      a.append(S("rect", {class: "shape", x: cx, y: cy, width: cw, height: ch, rx: 8}), sign(cx + 14, cy + 20, wst),
+               txt(cx + 26, cy + 20, cut(name, cw - 36, 13), "t-name"),
+               txt(cx + 12, cy + 38, cut(amount, cw - 24, 12), "t-muted"),
+               txt(cx + 12, cy + 55, cut(`${busy && wst.key !== "busy" ? "⟳ " : ""}${wst.word}`, cw - 24, 12), "t-muted"));
+      if (busy) legend.add("busy");
+      if (ws && ws.disk && ws.disk.size) {
+        const b = bar(cx + 12, cy + 65, cw - 24, ws.disk.used / ws.disk.size);
+        b[0].append(S("title", {}, fill(T.disk, {used: sizeText(ws.disk.used), size: sizeText(ws.disk.size), day: dayText(ws.disk.day + "T00:00")})));
+        a.append(...b);
+      }
+      g.append(a);
+      local[id] = {x: cx, y: cy, w: cw, h: ch};
+      for (const i of chip.list) drawnFor[i.id] = id;
+      rows.push({id, depth: 1, text: `${name}: ${amount} · ${wst.word}`
+        + (ws && ws.disk && ws.disk.size ? " · " + fill(T.disk, {used: sizeText(ws.disk.used), size: sizeText(ws.disk.size), day: dayText(ws.disk.day + "T00:00")}) : ""),
+        kids: chip.list.map((i) => describe(i))});
+    });
+    y += Math.ceil(chips.length / cols) * (ch + gap) - (chips.length ? gap : 0) + pad;
+    if (m.answered && !chips.length) { g.append(txt(pad, y - pad + 12, T.emptyMachine, "t-muted")); y += LINE; }
+    box.setAttribute("height", y);
+    local[m.id].h = y;
+    return {g, h: y, local};
+  }
+  function place(svg, group, x, y) {
+    group.g.setAttribute("transform", `translate(${x} ${y})`);
+    for (const [id, r] of Object.entries(group.local)) pos[id] = {x: r.x + x, y: r.y + y, w: r.w, h: r.h};
+    svg.append(group.g);
+  }
+  function external(g, db, x, y, w, extra) {
+    // a database on another machine, or its replica: a dashed box under the machine that uses it; extra: how
+    // many environments keep their data there
+    const sub = [db.kind === "replica" ? T.replica : db.kind === "machine" ? T.dbMachine : T.dbRemote, extra].filter(Boolean).join(" · ");
+    const a = S("a", {class: "map-item", "data-item": db.kind, href: "#", tabindex: "0"}, S("title", {}, T.dbTitle),
+      S("rect", {class: "shape ext", x, y, width: w, height: 46, rx: 8}),
+      txt(x + 12, y + 19, cut("⛁ " + (db.kind === "machine" ? fill(T.cluster, {major: db.major || "?"}) : db.host), w - 24, 12), "t-name"),
+      txt(x + 12, y + 36, cut(sub, w - 24, 11), "t-muted t-small"));
+    a.addEventListener("click", (event) => { event.preventDefault(); openDatabase(db.id); });
+    g.append(a);
+    pos[db.id] = {x, y, w, h: 46};
+  }
+  function drawS1(svg, W) {
+    const wide = W >= 700, gapX = 90, gapY = 44, machines = data.machines;
+    const cols = wide ? Math.max(1, Math.min(machines.length, Math.floor((W + gapX) / (330 + gapX)), 3)) : 1;
+    const mw = wide ? Math.min(520, (W - gapX * (cols - 1)) / cols) : W;
+    const gEdges = S("g", {class: "map-edges"});
+    labelLayer = S("g", {class: "map-labels"});
+    svg.append(gEdges);
+    // the links run above each row of machines: a band for them
+    const band = wide && machines.length > 1 ? 20 + 18 * Math.min(machines.length - 1, 3) : 0, rowOf = {}, colOf = {};
+    const envsOn = (id) => (data.edges || []).filter((e) => e.to === id).reduce((n, e) => n + (e.count || 1), 0);
+    let y = band, rowH = 0;
+    machines.forEach((m, n) => {
+      if (n % cols === 0 && n) { y += rowH + gapY + band; rowH = 0; }
+      const group = machineGroup(m, mw), x = (n % cols) * (mw + gapX);
+      place(svg, group, x, y);
+      rowOf[m.id] = Math.floor(n / cols); colOf[m.id] = n % cols;
+      // its databases on other machines and their replicas right under it, a tree from its box with a trunk
+      // for each: no line of a machine crosses the box of another, and none runs over another
+      let h = group.h;
+      (data.databases || []).filter((d) => d.kind !== "machine" && d.machine === m.id).forEach((db, k) => {
+        const kind = db.kind === "replica" ? "replica" : "database", count = kind === "database" ? envsOn(db.id) : 0;
+        h += 14;
+        external(svg, db, x + 36, y + h, mw - 36, count ? (count === 1 ? T.oneEnv : fill(T.envsCount, {n: count})) : "");
+        edges.push({kind, from: m.id, to: db.id, elbow: [x + 10 + 8 * (k % 3), y + group.h, x + 36, y + h + 23], title: T.edge[kind]});
+        h += 46;
+      });
+      rowH = Math.max(rowH, h);
+    });
+    y += rowH;
+    // the lines: the links, and the stagings made elsewhere (one line a pair of workspaces)
+    const moving = transfers(), by = {}, linked = {};
+    for (const e of data.edges || []) {
+      if (e.kind === "link") {
+        const m = machines.find((x) => x.id === e.to), flow = moving.find((t) => (t.from === e.from && t.to === e.to) || (t.from === e.to && t.to === e.from));
+        const a = pos[e.from], b = pos[e.to];
+        if (!m || !a || !b) continue;
+        const k = Object.keys(linked).length, level = 14 + 18 * (k % 3);
+        linked[e.to] = true;
+        let points, labelAt, anchor = "middle";
+        if (!wide) {
+          // a phone: the machines one under the other, the link comes in from above
+          points = [[b.x + 36, b.y - gapY], [b.x + 36, b.y]]; labelAt = [b.x + 46, b.y - gapY / 2 + 9]; anchor = "start";
+        } else if (rowOf[e.from] === rowOf[e.to]) {
+          const x1 = a.x + a.w - 40 - 16 * (k % 3), x2 = b.x + 36;
+          points = [[x1, a.y], [x1, a.y - level], [x2, a.y - level], [x2, b.y]]; labelAt = [(Math.max(x1, a.x + a.w) + x2) / 2, a.y - level];
+        } else {
+          // another row: out of the side of this machine, down the gap beside its column and along the band over
+          // that row, so the link runs through no machine's box and none of the databases under one
+          const gx = a.x + a.w + 14 + 8 * (k % 4), y1 = a.y + 18 + 8 * (k % 4), x2 = b.x + 36;
+          points = [[a.x + a.w, y1], [gx, y1], [gx, b.y - level], [x2, b.y - level], [x2, b.y]]; labelAt = [(gx + x2) / 2, b.y - level];
+        }
+        // one whose OmniaCLI is older answers: its link is a link that works
+        const down = !m.answered && !m.older;
+        edges.push({kind: "link", from: e.from, to: e.to, points, labelAt, anchor, down, moving: !!flow,
+                    label: flow ? flow.label : down ? "✕" : "",
+                    title: flow ? T.edge.moving : fill(down ? T.edge.linkDown : T.edge.link, {name: machineLabel(m)})});
+      } else if (!wide) {
+        // a phone: the machines one under the other, a line would cross them; the list below says the same
+        continue;
+      } else if (e.kind === "staging") {
+        const from = findInstance(e.from), to = findInstance(e.to);
+        if (!from || !to) continue;
+        const key = `${nodeOf(e.from)}|${nodeOf(e.to)}`;
+        by[key] = by[key] || {kind: "staging", from: nodeOf(e.from), to: nodeOf(e.to), boxes: [from.m.id, to.m.id], count: 0,
+                              arrow: true, title: T.edge.staging};
+        by[key].count += e.count || 1;
+      }
+    }
+    for (const e of Object.values(by)) {
+      e.label = e.count === 1 ? T.oneStaging : fill(T.stagingsCount, {n: e.count});
+      const A = pos[e.boxes[0]], B = pos[e.boxes[1]];
+      const row = rowOf[e.boxes[0]] === rowOf[e.boxes[1]], near = row && Math.abs(colOf[e.boxes[0]] - colOf[e.boxes[1]]) === 1;
+      if (A && B && !near) {
+        // not neighbours: over the machines between them (the same row), or along the gap between the two rows
+        const x1 = A.x + A.w - 60, x2 = B.x + 60, down = B.y > A.y;
+        const level = (row || !down ? A.y : B.y) - 8;
+        e.points = [[x1, row || !down ? A.y : A.y + A.h], [x1, level], [x2, level], [x2, row || down ? B.y : B.y + B.h]];
+        e.labelAt = [(x1 + x2) / 2, level];
+      }
+      edges.push(e);
+    }
+    for (const e of edges) drawEdge(gEdges, e);
+    svg.append(labelLayer);
+    return y;
+  }
+
+  // --- S2: a machine or a workspace, from the names to where the backups go
+  function workspaceBox(g, m, ws, list, x, y, w, single, others) {
+    // the box of a workspace: its head (a link to its page for who may open it) and its instances as trees
+    const pad = 12, id = ws ? ws.id : `${m.id}/ws:`, name = ws ? ws.label : T.loose;
+    const all = (ws ? ws.instances : m.loose) || [], wst = worst(all);
+    const amount = amountOf(all);
+    const box = S("rect", {class: "map-box outer", x, y, width: w, rx: 12});
+    // the box under the lines, the nodes over them: a line that crosses a workspace stays in sight
+    (boxLayer || g).append(box);
+    const open = ws && ws.can_open;
+    const a = node(id, "workspace", wst, ws ? fill(open ? T.wsPageTitle : T.wsPlain, {name}) : T.looseTitle, open ? PREFIX + ws.page : null, null, "head");
+    a.append(S("rect", {class: "shape", x: x + pad, y: y + pad, width: w - pad * 2, height: 46, rx: 8}), sign(x + pad + 14, y + pad + 20, wst),
+             txt(x + pad + 26, y + pad + 20, cut(name + (ws && ws.domain ? ` · ${ws.domain}` : ""), w - pad * 2 - 36, 14), "t-head"),
+             txt(x + pad + 12, y + pad + 38, cut(`${amount} · ${wst.word}`, w - pad * 2 - 24 - (ws && ws.disk && ws.disk.size ? 90 : 0), 12), "t-muted"));
+    if (ws && ws.disk && ws.disk.size) {
+      const b = bar(x + w - pad - 92, y + pad + 32, 80, ws.disk.used / ws.disk.size);
+      b[0].append(S("title", {}, fill(T.disk, {used: sizeText(ws.disk.used), size: sizeText(ws.disk.size), day: dayText(ws.disk.day + "T00:00")})));
+      a.append(...b);
+    }
+    g.append(a);
+    pos[id] = {x, y, w, h: 0};
+    rows.push({id, depth: 1, text: `${name}${ws && ws.domain ? ` (${ws.domain})` : ""}: ${amount} · ${wst.word}`});
+    let cursor = y + pad + 46 + 10;
+    let shown = list;
+    // beyond the sixth they fold, but one that is stopped, busy or to look at stays
+    if (!single && !opened.has(id)) {
+      const first = tops(list.map((f) => f.i)).slice(0, 6).map((i) => i.id);
+      const keep = new Set(list.filter((f) => first.includes(f.i.id) || first.includes(f.i.parent) || important(f.i)).map((f) => f.i.id));
+      shown = list.filter((f) => keep.has(f.i.id) || keep.has(f.i.parent));
+    }
+    const cols = single ? 1 : Math.max(1, Math.floor((w - pad * 2 + 12) / (236 + 12)));
+    const nw = (w - pad * 2 - 12 * (cols - 1)) / cols;
+    let cells = [];
+    if (cols === 1) {
+      const tree = drawTree(g, shown, x + pad, cursor, nw, 2, single, others);
+      cells = tree.cells; cursor += tree.h;
+    } else {
+      // several columns: each production with its stagings in a cell, the rows as tall as their tallest
+      const ids = new Set(shown.map((f) => f.i.id));
+      const roots = shown.filter((f) => !(f.i.parent && ids.has(f.i.parent))).sort((a, b) => a.i.name.localeCompare(b.i.name));
+      let rowH = 0;
+      roots.forEach((root, n) => {
+        if (n % cols === 0 && n) { cursor += rowH + 12; rowH = 0; }
+        const family = shown.filter((f) => f === root || f.i.parent === root.i.id);
+        const tree = drawTree(g, family, x + pad + (n % cols) * (nw + 12), cursor, nw, 2, single, others);
+        rowH = Math.max(rowH, tree.h);
+      });
+      cursor += rowH;
+    }
+    const hidden = tops(list.map((f) => f.i)).length - tops(shown.map((f) => f.i)).length;
+    if (hidden > 0) {
+      cursor += 10;
+      const more = S("a", {class: "map-more", href: mapUrl({machine: m.id, workspace: ws ? ws.name : ""}), tabindex: "0"},
+        S("title", {}, T.moreInstancesTitle), S("rect", {x: x + pad, y: cursor, width: w - pad * 2, height: 44, rx: 8}),
+        txt(x + pad + 12, cursor + 26, fill(T.moreInstances, {n: hidden})));
+      more.addEventListener("click", (event) => {
+        event.preventDefault();
+        if (ws) navigate({machine: m.id, workspace: ws.name}); else { opened.add(id); draw(true); }
+      });
+      g.append(more);
+      cursor += 44;
+    }
+    // what folds is not drawn: the list, which is the schema in words, names it all the same
+    const drawnIds = new Set(shown.map((f) => f.i.id)), listIds = new Set(list.map((f) => f.i.id));
+    for (const f of list.filter((f) => !drawnIds.has(f.i.id)))
+      rows.push({id: f.i.id, depth: f.i.parent && listIds.has(f.i.parent) ? 3 : 2, text: describe(f.i, f)});
+    if (!list.length) {
+      // none, or none that the search or the choice above leaves: never "no instances" under a head that counts them
+      const why = !all.length ? (ws ? T.emptyWorkspace : T.emptyMachine) : query ? fill(T.emptySearch, {query}) : T.emptyWatchHere;
+      g.append(S("text", {x: x + pad, y: cursor + 12, class: "t-muted", "data-empty": !all.length ? "none" : query ? "search" : "watch"}, cut(why, w - pad * 2, 12)));
+      cursor += LINE + 4;
+    }
+    cursor += pad;
+    box.setAttribute("height", cursor - y);
+    pos[id].h = cursor - y;
+    return {h: cursor - y, cells};
+  }
+  const nameCount = (f) => Object.values(f.i.envs || {}).reduce((n, e) => n + ((e && e.names) || []).length, 0);
+  function pills(g, f, x, y, w, stacked) {
+    // the names of an instance's environments: a pill each, with its lock and its word; a redirect in italics;
+    // stacked (a phone): under the instance's name, with no line to its node
+    let cursor = y;
+    if (stacked && nameCount(f)) { g.append(txt(x, cursor + 12, cut(f.i.name, w, 12), "t-muted")); cursor += 20; }
+    for (const [role, env] of Object.entries(f.i.envs || {})) {
+      for (const n of (env && env.names) || []) {
+        const bad = n.https === false || n.dns === "none" || n.dns === "elsewhere", unread = n.https === null && !bad;
+        const label = (role === "test" ? `${T.test}: ` : "") + (n.kind === "redirect" ? `${n.name} → ${n.to}` : n.name);
+        const word = nameWord(n);
+        const p = S("g", {class: "map-pill" + (bad ? " bad" : ""), "data-item": "name", "data-name": n.name},
+          S("title", {}, `${label} · ${word}. ${T.edge.name}`),
+          S("rect", {x, y: cursor, width: w, height: 38, rx: 19}), lock(x + 12, cursor + 12, bad ? "bad" : unread ? "unread" : "ok"),
+          txt(x + 28, cursor + 16, cut(label, w - 40, 12), n.kind === "redirect" ? "t-italic" : ""),
+          txt(x + 28, cursor + 31, cut(word, w - 40, 11), "t-small " + (bad ? "t-warn" : "t-muted")));
+        g.append(p);
+        legend.add(bad ? "lockBad" : unread ? "lockUnread" : "lock");
+        const key = `name:${f.i.id}:${role}:${n.name}`;
+        pos[key] = {x, y: cursor, w, h: 38};
+        if (pos[f.i.id] && !stacked) edges.push({kind: "name", from: key, to: f.i.id, title: T.edge.name});
+        cursor += 44;
+      }
+    }
+    return cursor - y;
+  }
+  function sideNode(g, kind, id, x, y, w, name, sub, title, onClick) {
+    const a = S("a", {class: "map-item", "data-item": kind, href: "#", tabindex: "0"}, S("title", {}, title),
+      S("rect", {class: "shape" + (kind === "remote" || kind === "replica" ? " ext" : ""), x, y, width: w, height: 46, rx: 8}),
+      txt(x + 12, y + 19, cut(name, w - 24, 13), "t-name"), txt(x + 12, y + 36, cut(sub, w - 24, 11), "t-muted t-small"));
+    a.addEventListener("click", (event) => { event.preventDefault(); if (onClick) onClick(); });
+    g.append(a);
+    pos[id] = {x, y, w, h: 46};
+    return 46;
+  }
+  function drawS2(svg, W, m, only) {
+    const wide = W >= 700, gap = 56;
+    const boxes = (m.workspaces || []).filter((ws) => !only || ws === only)
+      .map((ws) => ({ws, list: (ws.instances || []).map((i) => ({m, ws, i}))}));
+    if ((m.loose || []).length && !only) boxes.push({ws: null, list: m.loose.map((i) => ({m, ws: null, i}))});
+    for (const b of boxes) b.shown = b.list.filter(matches);
+    const single = boxes.length === 1 && !!boxes[0].ws;
+    // the stagings of these productions that are on another machine of the map: at the edge of their production
+    const mine = new Set(boxes.flatMap((b) => b.list.map((f) => f.i.id)));
+    const others = everyInstance().filter((f) => f.m.id !== m.id && f.i.parent && mine.has(f.i.parent)).map((f) => ({...f, other: f.m}));
+    const shownIds = new Set(boxes.flatMap((b) => b.shown.map((f) => f.i.id)));
+    const used = (data.edges || []).filter((e) => shownIds.has(e.from));
+    const dbs = (data.databases || []).filter((d) => used.some((e) => e.to === d.id));
+    const dests = (data.destinations || []).filter((d) => used.some((e) => e.to === d.id));
+    const hasNames = single && boxes[0].shown.some((f) => Object.values(f.i.envs || {}).some((e) => e && (e.names || []).length));
+    const sideW = 240, namesW = 250;
+    const gEdges = S("g", {class: "map-edges"}), g = S("g");
+    boxLayer = S("g"); labelLayer = S("g", {class: "map-labels"});
+    svg.append(boxLayer, gEdges, g, labelLayer);
+    let bottom = 0;
+    const head = (x, y, text) => { g.append(txt(x, y + 11, text, "t-col")); return 22; };
+    // On the right one column: the databases and, under them, where the backups go. Each of them has its own
+    // lane in the gap before the column, where the lines that reach it run: no line runs over another one's, and
+    // none crosses a node. The environments keep 300 px at least; else one under the other, as on a phone.
+    const targets = [...dbs, ...dests], lanes = Math.max(1, Math.min(targets.length, 6));
+    const sideGap = targets.length ? 20 + 7 * lanes + (dests.length ? 44 : 14) : 0;
+    const envX = hasNames ? namesW + gap : 0;
+    const envW = W - envX - (targets.length ? sideW + sideGap : 0);
+    const stacked = !(wide && envW >= 300);
+    // one under the other, a line would cross every node on its way: each database and destination names who uses it
+    const users = (id) => stacked ? [...new Set(used.filter((e) => e.to === id).map((e) => (findInstance(e.from) || {i: {name: ""}}).i.name))].join(", ") : "";
+    const subOf = (text, id) => [text, users(id)].filter(Boolean).join(" · ");
+    const envsOn = (id) => {
+      const n = used.filter((e) => e.to === id).reduce((n, e) => n + (e.count || 1), 0);
+      return n === 1 ? T.oneEnv : fill(T.envsCount, {n});
+    };
+    const boxId = (b) => b.ws ? b.ws.id : `${m.id}/ws:`;
+    if (!stacked) {
+      const top = head(envX, 0, T.colEnvs);
+      if (hasNames) head(0, 0, T.colNames);
+      if (single) {
+        const b = boxes[0], made = workspaceBox(g, m, b.ws, b.shown, envX, top, envW, true, others);
+        bottom = top + made.h;
+        // each name beside its instance; a tall stack of names only runs past its own node
+        let floor = top;
+        for (const f of b.shown.filter((x) => pos[x.i.id]).sort((p1, p2) => pos[p1.i.id].y - pos[p2.i.id].y)) {
+          const py = Math.max(pos[f.i.id].y, floor);
+          floor = py + pills(g, f, 0, py, namesW) + 4;
+        }
+        bottom = Math.max(bottom, floor);
+      } else {
+        const cols = Math.max(1, Math.floor((envW + 16) / (400 + 16))), bw = (envW - 16 * (cols - 1)) / cols;
+        const kept = boxes.filter((b) => b.shown.length || !(query || onlyWatch));
+        let y = top, rowH = 0;
+        kept.forEach((b, n) => {
+          if (n % cols === 0 && n) { y += rowH + 16; rowH = 0; }
+          rowH = Math.max(rowH, workspaceBox(g, m, b.ws, b.shown, envX + (n % cols) * (bw + 16), y, bw, false, others).h);
+          // nothing on its right: its lines leave from its side
+          b.free = n % cols === cols - 1 || n === kept.length - 1;
+        });
+        bottom = y + rowH;
+      }
+      const x = envX + envW + sideGap;
+      let y = 0;
+      if (dbs.length) {
+        y += head(x, y, T.colDb);
+        for (const db of dbs) y += sideNode(g, db.kind, db.id, x, y, sideW, "⛁ " + (db.kind === "machine" ? fill(T.cluster, {major: db.major || "?"}) : db.host),
+          `${envsOn(db.id)} · ${db.kind === "replica" ? T.replica : db.kind === "machine" ? T.dbMachine : T.elsewhere}`, T.dbTitle, () => openDatabase(db.id)) + 14;
+      }
+      if (dests.length) {
+        if (dbs.length) y += 8;
+        y += head(x, y, T.colDest);
+        for (const d of dests) y += sideNode(g, "destination", d.id, x, y, sideW, d.label, d.kind || "", T.destTitle) + 14;
+      }
+      bottom = Math.max(bottom, y);
+      // --- the lines to the column on the right
+      const laneOf = (id) => envX + envW + 10 + 7 * (targets.findIndex((t) => t.id === id) % lanes);
+      // the time on the line of a destination, when all its backups are copied at the same one (each node has its own)
+      const times = {}, labelled = new Set();
+      for (const e of used) if (e.kind === "backup" && e.time) (times[e.to] = times[e.to] || new Set()).add(e.time);
+      const line = (e, from, start) => {
+        // from the points it starts with: along to its lane, down or up the lane, into the node
+        const to = pos[e.to], lane = laneOf(e.to), last = start[start.length - 1];
+        // almost at the height it leaves from: straight in, no step of a pixel or two
+        const ty = Math.abs(last[1] - (to.y + 23)) <= 12 && start.length === 1 ? last[1] : to.y + 23;
+        const edge = {kind: e.kind, from, to: e.to, title: T.edge[e.kind], arrow: e.kind === "backup",
+                      points: [...start, [lane, last[1]], [lane, ty], [to.x, ty]]};
+        if (e.kind === "backup" && times[e.to] && times[e.to].size === 1 && !labelled.has(e.to)) {
+          labelled.add(e.to);
+          Object.assign(edge, {label: [...times[e.to]][0], labelAt: [to.x - 10, ty], anchor: "end"});
+        }
+        edges.push(edge);
+      };
+      if (single) {
+        // one workspace: a line an environment, each out of its node at a height of its own
+        const exits = {};
+        for (const e of used) {
+          const a = pos[e.from];
+          if (!a || !pos[e.to] || !["database", "replica", "backup"].includes(e.kind)) continue;
+          exits[e.from] = (exits[e.from] || 0) + 1;
+          line(e, e.from, [[a.x + a.w, a.y + Math.min(a.h / 2, 16) + 7 * (exits[e.from] - 1)]]);
+        }
+      } else {
+        // several workspaces: one line a workspace and a target, out of the side of its box when nothing is on
+        // its right, else out of its top and along the gap over its row
+        const trunks = new Set();
+        for (const e of used) {
+          const f = findInstance(e.from), b = f && boxes.find((x) => x.ws === f.ws), id = b && boxId(b), key = `${id}|${e.to}`;
+          if (!b || !pos[id] || !pos[e.to] || trunks.has(key) || !["database", "replica", "backup"].includes(e.kind)) continue;
+          trunks.add(key);
+          const r = pos[id], t = targets.findIndex((x) => x.id === e.to);
+          if (b.free) line(e, id, [[r.x + r.w, Math.min(r.y + 24 + 8 * (t % 6), r.y + r.h - 8)]]);
+          else {
+            const x0 = r.x + r.w - 24 - 8 * (t % 6), level = r.y - 6 - 4 * (t % 3);
+            line(e, id, [[x0, r.y], [x0, level]]);
+          }
+        }
+      }
+    } else {
+      // a phone: the columns one under the other, names, environments, database, destinations
+      let y = 0;
+      const drawBoxes = (yy) => {
+        for (const b of boxes.filter((b) => b.shown.length || !(query || onlyWatch))) yy += workspaceBox(g, m, b.ws, b.shown, 0, yy, W, single, others).h + 14;
+        return yy;
+      };
+      if (hasNames) {
+        y += head(0, y, T.colNames);
+        for (const f of boxes[0].shown) y += pills(g, f, 0, y, W, true);
+        y += 12;
+      }
+      y += head(0, y, T.colEnvs);
+      y = drawBoxes(y);
+      if (dbs.length) {
+        y += 8 + head(0, y + 8, T.colDb);
+        for (const db of dbs) y += sideNode(g, db.kind, db.id, 0, y, W, "⛁ " + (db.kind === "machine" ? fill(T.cluster, {major: db.major || "?"}) : db.host),
+          subOf(db.kind === "replica" ? T.replica : db.kind === "machine" ? T.dbMachine : T.dbRemote, db.id), T.dbTitle, () => openDatabase(db.id)) + 10;
+      }
+      if (dests.length) {
+        y += 8 + head(0, y + 8, T.colDest);
+        for (const d of dests) y += sideNode(g, "destination", d.id, 0, y, W, d.label, subOf(d.kind || "", d.id), T.destTitle) + 10;
+      }
+      bottom = y;
+    }
+    for (const e of edges) drawEdge(gEdges, e);
+    return bottom;
+  }
+
+  // --- the legend, the list, the crumbs
+  const LEGEND_ORDER = ["running", "stopped", "idle", "unknown", "busy", "queued", "down", "older", "warn", "dedicated", "mail",
+                        "lock", "lockBad", "lockUnread", "link", "linkDown", "staging", "moving", "database", "replica", "backup", "copy"];
+  const SIGNS = {running: "●", stopped: "■", idle: "○", unknown: "?", busy: "⟳", queued: "⏳", down: "✕", older: "↑", warn: "⚠", dedicated: "⛁", mail: "✉"};
+  const LOCKS = {lock: "ok", lockBad: "bad", lockUnread: "unread"};
+  function drawLegend() {
+    const box = document.getElementById("map-legend"), list = document.getElementById("map-legend-list");
+    const keys = LEGEND_ORDER.filter((k) => legend.has(k));
+    box.hidden = !keys.length;
+    list.replaceChildren(...keys.map((key) => {
+      let sample;
+      if (SIGNS[key]) sample = el("span", {class: "sign", "aria-hidden": "true"}, SIGNS[key]);
+      else if (LOCKS[key]) { sample = S("svg", {viewBox: "0 0 34 12", "aria-hidden": "true"}); sample.append(lock(12, -1, LOCKS[key])); }
+      else {
+        sample = S("svg", {viewBox: "0 0 34 12", "aria-hidden": "true"});
+        const kind = key === "linkDown" ? "link down" : key === "moving" ? "link moving" : key;
+        sample.append(S("path", {class: `map-edge ${kind}`, d: "M1 6 H33"}));
+      }
+      return el("li", {title: T.legendTitle[key], "data-legend": key}, sample, T.legend[key]);
+    }));
+    if (!box.dataset.set) { box.dataset.set = "1"; box.open = !phone.matches; }
+  }
+  function drawList() {
+    const box = document.getElementById("map-list"), body = document.getElementById("map-list-body");
+    box.hidden = !rows.length;
+    document.getElementById("map-list-summary").textContent = fill(T.list, {n: rows.length});
+    // nested as the schema is: machine › workspace › instance › staging
+    const root = el("ul", {id: "map-list-rows"}), stack = [{depth: -1, list: root, li: null}];
+    for (const row of rows) {
+      while (stack[stack.length - 1].depth >= row.depth) stack.pop();
+      const parent = stack[stack.length - 1];
+      if (!parent.list) { parent.list = el("ul"); parent.li.append(parent.list); }
+      const li = el("li", {"data-row": row.id}, row.text + (row.kids && row.kids.length ? " — " + row.kids.join("; ") : ""));
+      parent.list.append(li);
+      stack.push({depth: row.depth, list: null, li});
+    }
+    body.replaceChildren(root);
+    if (!box.dataset.set) { box.dataset.set = "1"; box.open = phone.matches; }
+  }
+  function drawCrumbs(m, ws) {
+    const nav = document.getElementById("map-crumbs"), parts = [];
+    const many = !NARROW && data.machines.length > 1;
+    const link = (text, values, title) => {
+      const a = el("a", {href: mapUrl(values), title}, text);
+      a.addEventListener("click", (event) => { event.preventDefault(); navigate(values); });
+      return a;
+    };
+    if (many && m) parts.push(link(T.machines, {}, T.machinesTitle));
+    else if (many) parts.push(el("strong", {}, T.machines));
+    if (m && data.viewer.scope === "machine") {
+      const label = machineLabel(m);
+      parts.push(ws ? link(label, {machine: m.id}, T.crumbMachine) : el("strong", {}, label));
+    }
+    if (ws) parts.push(el("strong", {}, fill(T.workspace, {name: ws.label})));
+    nav.hidden = parts.length < 2;
+    nav.replaceChildren(...parts.flatMap((p, n) => n ? [" › ", p] : [p]));
+  }
+
+  // --- the whole schema
+  function signature() {
+    return JSON.stringify([data.machines.map((m) => [m.id, m.answered, m.older]),
+      everyInstance().map((f) => [f.i.id, Object.values(f.i.envs || {}).map((e) => e && [e.state, e.busy, e.queued, e.job])]),
+      [...watched()].sort(), transfers(), filter && [filter.key, filter.ids], onlyWatch, query, [...opened], canvas.clientWidth,
+      params().toString()]);
+  }
+  function draw(force) {
+    if (!data) return;
+    drawStrip();
+    for (const m of data.machines) {
+      // the load of now, without drawing the schema again
+      const t = canvas.querySelector(`[data-load="${CSS.escape(m.id)}"]`);
+      if (t && m.load && m.load.cpu !== null && m.load.cpu !== undefined) {
+        const facts = [fill(T.load, {cpu: Math.round(m.load.cpu), ram: m.load.ram === null ? "?" : m.load.ram}), m.disk ? fill(T.free, {size: sizeText(m.disk.free)}) : ""].filter(Boolean).join(" · ");
+        if (t.textContent !== facts) t.textContent = facts;
+      }
+    }
+    const key = signature();
+    if (force || key !== schemaKey) {
+      schemaKey = key;
+      drawSchema();
+      if (panel.dataset.shown && !panel.hidden) fillPanel(panel.dataset.shown);
+    }
+    // after the schema: each count says how many of its nodes are in it
+    drawHead();
+  }
+  function drawSchema() {
+    const focused = document.activeElement && document.activeElement.getAttribute && document.activeElement.getAttribute("data-node");
+    legend = new Set(); rows = []; pos = {}; edges = []; drawnFor = {};
+    const p = params(), W = Math.max(280, Math.floor(canvas.clientWidth));
+    const machines = data.machines, all = everyInstance();
+    const chosen = machines.find((x) => x.id === (p.get("machine") || HERE));
+    const s1 = !NARROW && machines.length > 1 && !(p.get("machine") && chosen) && !p.get("workspace");
+    const m = s1 ? null : chosen || machines[0];
+    const ws = m && p.get("workspace") ? (m.workspaces || []).find((w) => w.name === p.get("workspace")) : null;
+    document.getElementById("map-tools").hidden = false;
+    document.getElementById("map-search-box").hidden = s1 || all.length <= 8;
+    document.getElementById("map-show").hidden = all.length + machines.length <= 30;
+    drawCrumbs(m, ws);
+    const drafts = document.getElementById("map-drafts"), here = machines.find((x) => x.here);
+    drafts.hidden = !(here && here.drafts);
+    if (here && here.drafts) drafts.replaceChildren(el("a", {href: `${PREFIX}/config`, title: T.draftsTitle}, fill(T.drafts, {n: here.drafts})));
+    const nothing = !all.length && machines.length <= 1;
+    if (!m && !s1 || nothing) {
+      // nothing to draw: say what makes the first one, never a blank page
+      const scoped = data.viewer.scope === "workspace";
+      const toList = el("a", {href: location.pathname + "?view=list", title: T.toListTitle}, T.toList);
+      canvas.replaceChildren(el("div", {class: "map-empty"}, el("p", {}, scoped || p.get("workspace") ? T.emptyWorkspace : T.emptyMachine, " ", toList),
+        !scoped && data.viewer.role === "admin" && !PREFIX ? el("p", {class: "muted"}, T.emptyLink, " ", el("a", {href: "/machines", title: T.toMachinesTitle}, T.toMachines)) : null));
+      document.getElementById("map-legend").hidden = true; document.getElementById("map-list").hidden = true;
+      return;
+    }
+    // the title of the schema drawn: all the machines, one machine, or one workspace, each number in its own form
+    const many = (n, one, more) => n === 1 ? one : fill(more, {n});
+    const inSchema = ws ? ws.instances || [] : m ? [...(m.workspaces || []).flatMap((w) => w.instances || []), ...(m.loose || [])] : all.map((f) => f.i);
+    const parts = [];
+    if (s1) parts.push(many(machines.length, T.oneMachine, T.machinesCount));
+    if (!ws) parts.push(many((m ? [m] : machines).reduce((n, x) => n + (x.workspaces || []).length, 0), T.oneWorkspace, T.workspacesCount));
+    parts.push(amountOf(inSchema));
+    const down = s1 ? machines.filter((x) => !x.answered && !x.older).length : 0, older = s1 ? machines.filter((x) => x.older).length : 0;
+    const what = ws ? fill(T.workspace, {name: ws.label}) : m && data.viewer.scope === "machine" ? machineLabel(m) : "";
+    const summary = (what ? what + ": " : "") + parts.join(", ") + (down ? "; " + many(down, T.svgDownOne, T.svgDown) : "")
+      + (older ? "; " + many(older, T.svgOlderOne, T.svgOlder) : "");
+    const svg = S("svg", {role: "img", "aria-describedby": "map-list-rows", width: W, "data-schema": s1 ? "s1" : "s2"}, S("title", {}, summary));
+    const height = s1 ? drawS1(svg, W) : drawS2(svg, W, m, ws);
+    svg.setAttribute("height", Math.ceil(height + 8));
+    svg.setAttribute("viewBox", `0 0 ${W} ${Math.ceil(height + 8)}`);
+    const out = [svg];
+    if (!svg.querySelector("[data-node][data-kind='production'], [data-node][data-kind='staging'], [data-node][data-kind='workspace']") && (onlyWatch || query))
+      out.push(el("p", {class: "muted", "data-empty": query ? "search" : "watch"}, query ? fill(T.emptySearch, {query}) : T.emptyFilter));
+    canvas.classList.toggle("filtering", !!filter);
+    if (filter) for (const id of filter.ids) {
+      const lit = svg.querySelector(`[data-node="${CSS.escape(nodeOf(id))}"]`);
+      if (lit) lit.classList.add("lit");
+    }
+    // the node whose path is open in the panel
+    const shown = !panel.hidden && panel.dataset.shown && svg.querySelector(`[data-node="${CSS.escape(nodeOf(panel.dataset.shown))}"]`);
+    if (shown) shown.classList.add("shown");
+    canvas.replaceChildren(...out);
+    drawLegend(); drawList();
+    if (focused) { const again = canvas.querySelector(`[data-node="${CSS.escape(focused)}"]`); if (again) again.focus({preventScroll: true}); }
+  }
+
+  // --- S3: the path of an instance, in the panel
+  function chain(steps, vertical, title) {
+    // boxes joined by arrows, left to right (top to bottom on a phone); a step with cut: its line is broken
+    // side by side only where each box keeps room for its words: else one under the other, as on a phone
+    const room = Math.max(300, panel.clientWidth - 34);
+    vertical = vertical || (room - 10 * (steps.length - 1)) / steps.length < 104;
+    const W = vertical ? Math.min(360, Math.max(240, panel.clientWidth - 34)) : room, gap = vertical ? 18 : 10;
+    const bw = vertical ? W : (W - gap * (steps.length - 1)) / steps.length, bh = vertical ? 46 : 58;
+    const svg = S("svg", {class: "map-flow", role: "img", width: W, height: vertical ? steps.length * (bh + gap) - gap : bh}, S("title", {}, title));
+    steps.forEach((s, n) => {
+      const x = vertical ? 0 : n * (bw + gap), y = vertical ? n * (bh + gap) : 0;
+      if (n) {
+        const from = vertical ? [x + bw / 2, y - gap] : [x - gap, y + bh / 2], to = vertical ? [x + bw / 2, y] : [x, y + bh / 2];
+        svg.append(S("path", {class: "map-edge" + (s.cut ? " cut" : ""), d: `M${from[0]} ${from[1]} L${to[0]} ${to[1]}`}));
+        if (!s.cut) svg.append(S("path", {class: "map-arrow", d: vertical ? `M${to[0]} ${to[1]} l-4 -7 h8 Z` : `M${to[0]} ${to[1]} l-7 -4 v8 Z`}));
+      }
+      svg.append(S("rect", {class: "shape", x, y, width: bw, height: bh, rx: 8}),
+        txt(x + bw / 2, y + (vertical ? 19 : 22), cut(s.name, bw - 4, 10.5), "t-name t-small", "middle"),
+        txt(x + bw / 2, y + (vertical ? 36 : 40), cut(s.detail || "", bw - 4, 10), "t-small " + (s.cls || "t-muted"), "middle"));
+    });
+    return svg;
+  }
+  function fillPanel(id) {
+    const found = findInstance(id);
+    if (!found) { closePanel(false); return; }
+    const i = found.i, flow = data.flow && data.flow.node === id ? data.flow : null, st = instanceState(i);
+    const env = mainEnv(i) || {}, names = (flow && flow.names) || env.names || [], db = (flow && flow.database) || env.database;
+    const vertical = phone.matches, scoped = data.viewer.scope === "workspace";
+    const close = () => { const b = el("button", {type: "button", class: "small", title: T.panel.closeTitle}, T.panel.close);
+      b.addEventListener("click", () => closePanel(true)); return b; };
+    const main = names.find((n) => n.kind === "main");
+    const webLabel = (flow && flow.web.label) || (scoped ? T.panel.theServer : machineLabel(found.m));
+    const nameDetail = (n) => {
+      if (n.kind === "redirect") return fill(T.panel.redirect, {name: n.name, to: n.to}) + ", " + nameWord(n);
+      const days = n.kind === "main" && i.certificate && n.https ? i.certificate.days : null;
+      return `${n.name}, ` + (days !== null && days !== undefined ? (days < 14 ? fill(T.certSoon, {days}) : fill(T.httpsDays, {days})) : nameWord(n));
+    };
+    const monitor = (flow && flow.odoo.monitor) || i.monitor;
+    const steps = [{name: T.panel.browser, detail: ""},
+      {name: T.panel.names, detail: main ? main.name : T.noName, cls: badNames(i).length ? "t-warn" : null},
+      {name: T.panel.web, detail: webLabel}, {name: T.panel.odoo, detail: `${st.sign} ${st.word}`, cls: {running: "t-ok", stopped: "t-err", down: "t-err"}[st.key]},
+      {name: T.panel.database, detail: !db || !db.where ? T.panel.dbUnread : db.where === "remote" ? db.host : db.where === "machine" ? T.dbMachine : db.where === "dedicated" ? T.panel.dbDedicated : T.system}];
+    if (db && db.replica) steps.push({name: T.panel.replica, detail: db.replica});
+    const list = el("ol", {id: "map-flow-list"}, el("li", {}, T.panel.browser));
+    list.append(el("li", {}, names.length ? names.map(nameDetail).join("; ") : T.noName));
+    list.append(el("li", {}, `${T.panel.web}: ${webLabel}`));
+    const odoo = [fill(T.panel.odooLine, {state: st.word})];
+    if (i.envs && i.envs.production && i.envs.test) odoo.push(fill(T.panel.testLine, {state: stateOf(i.envs.test, true).word}));
+    if (monitor && monitor.state === "up" && monitor.since)
+      odoo.push(monitor.last_ms !== null && monitor.last_ms !== undefined ? fill(T.panel.monitorUp, {when: whenText(monitor.since), ms: monitor.last_ms})
+        : fill(T.panel.monitorUpPlain, {when: whenText(monitor.since)}));
+    if (monitor && monitor.state === "down" && monitor.since) odoo.push(fill(T.panel.monitorDown, {when: whenText(monitor.since)}));
+    const load = (flow && flow.odoo.load) || [];
+    if (load.length) {
+      const avg = (key) => Math.round(load.reduce((n, p) => n + (p[key] || 0), 0) / load.length);
+      odoo.push(fill(T.panel.load, {cpu: avg("cpu"), mem: avg("mem")}));
+    }
+    list.append(el("li", {}, odoo.join(" · ")));
+    list.append(el("li", {"data-db": db && db.where || ""}, `${T.panel.database}: ${databaseText(db)}`));
+    if (db && db.replica) list.append(el("li", {"data-replica": db.replica}, `${T.panel.replica}: ${fill(T.panel.replicaLine, {host: db.replica})}`));
+    const out = [
+      el("div", {class: "map-panel-head"}, el("h2", {id: "map-panel-title"}, i.name), close()),
+      el("p", {class: "muted small"}, [i.type === "staging" ? T.staging : T.production, i.version ? fill(T.panel.version, {version: i.version}) : "",
+        found.ws ? found.ws.label : ""].filter(Boolean).join(" · ")),
+      el("h3", {}, T.panel.request)];
+    const svg = chain(steps, vertical, fill(T.panel.flowTitle, {name: i.name}));
+    svg.setAttribute("aria-describedby", "map-flow-list");
+    out.push(svg, list);
+    const mail = (flow && flow.mail) || i.mail;
+    if (mail && mail.capture) {
+      // a staging that catches its mail: where it goes, and that it does not leave
+      // the last one: its time when it is of today (the server's day), its date too when it is not
+      const today = String(mail.last || "").slice(0, 10) === String(data.at || "").slice(0, 10);
+      const caught = mail.count === null || mail.count === undefined ? T.panel.caughtUnread
+        : !mail.count ? T.panel.caughtNone : !mail.last ? fill(T.panel.caughtPlain, {n: mail.count})
+        : fill(today ? T.panel.caught : T.panel.caughtOn, {n: mail.count, when: today ? timeText(mail.last) : whenText(mail.last)});
+      const why = mail.guarded ? T.panel.guarded : T.panel.notLeaving;
+      const msvg = chain([{name: T.panel.odoo, detail: T.staging}, {name: "✉", detail: mail.count === null || mail.count === undefined ? "?" : String(mail.count)},
+                          {name: T.panel.internet, detail: "✕", cut: true, cls: "t-err"}], vertical, fill(T.panel.mailFlowTitle, {name: i.name}));
+      msvg.setAttribute("aria-describedby", "map-mail-list");
+      const ml = el("ol", {id: "map-mail-list"}, el("li", {}, `${T.panel.odoo} (${T.staging})`),
+        el("li", {}, caught + (mail.counted_at ? " · " + fill(T.panel.countedAt, {when: timeText(mail.counted_at)}) : "")),
+        el("li", {}, `${T.panel.internet}: ${why}`));
+      if (mail.inbox && mail.domain) ml.append(el("li", {}, fill(T.panel.boxes, {domain: mail.domain})));
+      out.push(el("h3", {}, T.panel.mail), msvg, ml);
+    }
+    const facts = el("ul");
+    const b = (flow && flow.backup) || i.backup;
+    if (b) {
+      const last = !b.last ? T.panel.backupNever : fill(b.last.ok ? T.panel.backupLastOk : T.panel.backupLastFailed, {when: whenText(b.last.time)});
+      facts.append(el("li", {"data-fact": "backup"}, b.scheduled ? [fill(T.panel.backup, {time: b.time || "?"}), last,
+        b.destination ? fill(T.panel.backupTo, {name: b.destination}) : ""].filter(Boolean).join(" · ") : T.panel.backupOff));
+    } else if (i.type === "production" && data.viewer.role === "user") facts.append(el("li", {class: "muted"}, T.panel.backupHidden));
+    const kids = everyInstance().filter((f) => f.i.parent === id);
+    if (i.type === "production") facts.append(el("li", {}, kids.length
+      ? fill(T.panel.stagings, {names: kids.map((f) => f.i.name + (f.i.created && !f.i.name.includes(dayText(f.i.created)) ? ` (${dayText(f.i.created)})` : "")).join(", ")}) : T.panel.noStagings));
+    if (facts.children.length) out.push(el("h3", {}, T.panel.facts), facts);
+    const links = el("p", {class: "map-panel-links"});
+    if (i.page) links.append(el("a", {class: "button small", href: PREFIX + i.page, title: T.panel.pageTitle}, T.panel.page));
+    else out.push(el("p", {class: "muted small"}, T.panel.notHere));
+    // its address, when it is one this browser may open: an instance without a name answers on a port of its machine
+    if (openable(i.url)) links.append(el("a", {class: "button small", href: i.url, target: "_blank", rel: "noopener", title: fill(T.panel.odooTitle, {url: i.url})}, T.panel.odooOpen + " ↗"));
+    if (mail && mail.capture && i.page) links.append(el("a", {class: "button small", href: `${PREFIX}${i.page}#mail`, title: T.panel.mailTitle}, T.panel.mailOpen));
+    links.append(close());
+    out.push(links);
+    panel.replaceChildren(...out);
+  }
+  function showPanel() {
+    const wasHidden = panel.hidden;
+    panel.hidden = false;
+    if (wasHidden) { schemaKey = ""; draw(true); }
+  }
+  function openPanel(id, keepUrl) {
+    lastFocus = id;
+    panel.dataset.shown = id; delete panel.dataset.db;
+    if (!keepUrl) {
+      const p = params(); p.set("view", "map"); p.set("focus", id);
+      history.pushState(null, "", `${location.pathname}?${p}`);
+    }
+    showPanel();
+    fillPanel(id);
+    panel.focus({preventScroll: true});
+    // its path (the load, the firewall's guard of the mail) comes with a whole read
+    if (!(data.flow && data.flow.node === id)) tick(true);
+  }
+  function openDatabase(id) {
+    const db = (data.databases || []).find((d) => d.id === id);
+    if (!db) return;
+    panel.dataset.db = id; delete panel.dataset.shown;
+    const users = (data.edges || []).filter((e) => e.to === id).map((e) => (findInstance(e.from) || {i: {name: e.from}}).i.name);
+    const replica = (data.databases || []).find((d) => d.kind === "replica" && d.of === id);
+    const master = db.of && (data.databases || []).find((d) => d.id === db.of);
+    const close = el("button", {type: "button", class: "small", title: T.panel.closeTitle}, T.panel.close);
+    close.addEventListener("click", () => closePanel(true));
+    const list = el("ul", {}, el("li", {}, db.kind === "replica" ? T.replica : db.kind === "machine" ? T.dbMachine : T.dbRemote));
+    if (users.length) list.append(el("li", {}, fill(T.panel.dbUsers, {names: [...new Set(users)].join(", ")})));
+    if (replica) list.append(el("li", {}, fill(T.panel.dbReplica, {host: replica.host})));
+    if (master) list.append(el("li", {}, fill(T.panel.dbOf, {host: master.host})));
+    panel.replaceChildren(el("div", {class: "map-panel-head"},
+      el("h2", {id: "map-panel-title"}, db.kind === "machine" ? fill(T.cluster, {major: db.major || "?"}) : db.host), close), list);
+    showPanel();
+    panel.focus({preventScroll: true});
+  }
+  function closePanel(back) {
+    if (panel.hidden) return;
+    const id = panel.dataset.shown;
+    panel.hidden = true; delete panel.dataset.shown; delete panel.dataset.db;
+    const p = params();
+    if (p.get("focus")) { p.delete("focus"); history.replaceState(null, "", `${location.pathname}?${p}`); }
+    schemaKey = ""; draw(true);
+    if (back && (id || lastFocus)) {
+      const again = canvas.querySelector(`[data-node="${CSS.escape(nodeOf(id || lastFocus))}"]`);
+      if (again) again.focus();
+    }
+  }
+  document.addEventListener("keydown", (event) => { if (event.key === "Escape" && active && !panel.hidden) closePanel(true); });
+
+  // --- the page: shown or not, the tab hidden, the window resized, Back
+  document.getElementById("map-search").addEventListener("input", (event) => { query = event.target.value.trim().toLowerCase(); draw(true); });
+  for (const [id, value] of [["map-show-all", false], ["map-show-watch", true]])
+    document.getElementById(id).addEventListener("click", () => {
+      onlyWatch = value;
+      document.getElementById("map-show-all").setAttribute("aria-pressed", String(!value));
+      document.getElementById("map-show-watch").setAttribute("aria-pressed", String(value));
+      draw(true);
+    });
+  document.addEventListener("visibilitychange", () => { if (!document.hidden && active) tick(true); else clearTimeout(timer); });
+  let resizing = null;
+  window.addEventListener("resize", () => { clearTimeout(resizing); resizing = setTimeout(() => { if (active) draw(); }, 150); });
+  window.addEventListener("popstate", () => {
+    if (!active) return;
+    panel.hidden = true; delete panel.dataset.shown; delete panel.dataset.db;
+    schemaKey = "";
+    if (NARROW) { generation += 1; data = null; tick(true); return; }
+    draw(true);
+    if (data && focusId() && findInstance(focusId())) openPanel(focusId(), true);
+  });
+  async function start() {
+    if (active) return;
+    active = true; view.hidden = false;
+    await tick(true);
+    // …&focus=<server>: its path already open
+    if (data && focusId() && findInstance(focusId())) openPanel(focusId(), true);
+  }
+  function stop() { active = false; view.hidden = true; clearTimeout(timer); }
+  return {start, stop};
+})();
+</script>

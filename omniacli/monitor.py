@@ -94,6 +94,14 @@ class Monitor:
         """The machine's problems now: disks, certificates."""
         return {k: v["problem"] for k, v in self.machine.items() if v.get("problem")}
 
+    def certificate(self, name: str) -> dict | None:
+        """{days, checked} of the certificate of name as the daily check read
+        it, None when it was not read (no check yet, or no https there)."""
+        found = self.machine.get(f"certificate {name}") or {}
+        if found.get("days") is None or not found.get("checked"):
+            return None
+        return {"days": found["days"], "checked": found["checked"]}
+
     # --- who is told -----------------------------------------------------
 
     def recipients(self, server: str | None) -> list[str]:
@@ -182,6 +190,9 @@ class Monitor:
                 problem = (f"the certificate of {name} ends in {days} days" if days is not None and days < CERT_DAYS
                            else "")
                 await self.machine_problem(f"certificate {name}", problem, server=ws.servers[0] if ws.servers else None)
+                # the days left and when they were read, a problem or not: the map shows them (UX-009)
+                self.machine[f"certificate {name}"].update(
+                    days=days, checked=datetime.datetime.now().isoformat(timespec="seconds"))
 
     async def machine_problem(self, what: str, problem: str, server: str | None = None) -> None:
         entry = self.machine.setdefault(what, {})
