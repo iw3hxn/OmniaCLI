@@ -573,6 +573,32 @@ async def test_create_and_remove_an_instance(workspaces, client, env, monkeypatc
     assert settings.workspaces["acme"].servers == ["srv", "acme-main"]
     # its server is gone from acme, its job is still acme's: seen there, failed; not in beta
     await check_job(job["id"], "failed")
+    # a name left in the workspace with no server: taken, unless its last job is a creation OmniaCLI was stopped
+    # under; then it is made again, what was left of it taken away first
+    from omniacli.jobs import INTERRUPTED, Job
+    ran = []
+
+    async def run(job, command, **kwargs):
+        ran.append(command)
+    monkeypatch.setattr(workspaceops, "run", run)
+    settings.workspaces["acme"].servers.append("acme-half")
+    resp = await client.post(url + "create", headers=post_as("mario"), json={"instance": "half", "template": "odooplm-20"})
+    assert resp.status_code == 400 and "exists already" in resp.json()["error"]
+    manager = client.app.state.jobs
+    manager.jobs["cut"] = Job(id="cut", title="Create acme-half from odooplm-20", status=INTERRUPTED, source="manual: mario",
+                              instances=["acme-half/production", "acme-half/test"], workspace="acme")
+    resp = await client.post(url + "create", headers=post_as("mario"), json={"instance": "half", "template": "odooplm-20"})
+    assert resp.status_code == 200, resp.text
+    job = await wait_job(client, resp.json()["job"])
+    assert job["status"] == "success", job["lines"]
+    assert [c[-4:] for c in ran] == [["remove", "acme", str(tmp_path / "storage"), "half"]]
+    assert "left of acme-half is taken away first" in "\n".join(job["lines"])
+    assert settings.workspaces["acme"].servers == ["srv", "acme-main", "acme-half"] and "acme-half" in settings.servers
+    resp = await client.post(url + "delete", headers=post_as("mario"), json={"server": "acme-half"})
+    assert (await wait_job(client, resp.json()["job"]))["status"] == "success"
+    removed.clear()
+    published.clear()
+    published.append(None)
     # remove: only an instance of the workspace (srv was not made by it)
     resp = await client.post(url + "delete", headers=post_as("mario"), json={"server": "srv"})
     assert resp.status_code == 404

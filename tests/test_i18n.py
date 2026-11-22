@@ -74,6 +74,22 @@ def test_what_the_code_says_is_translated_where_shown(monkeypatch):
         i18n._tr.cache_clear()
 
 
+def test_a_reason_inside_a_line_is_translated_too():
+    """A line with a part that is itself a text of the catalog (the reason
+    of a refusal, of several words): both in the reader's language; a name
+    stays as it is."""
+    stays = ("the role of the replication, its line of pg_hba.conf, the firewall rule for this machine's address and "
+             "the place that holds the changes for the replica, which grows up to its cap; its instances that read "
+             "from the replica go on trying it and read from their cluster. An admin there drops them in its Database "
+             "tab (Drop the replica…)")
+    said = i18n.tr("it", f"lab4 did not take its part back (the connection broke before the answer was whole): on it stay {stays}")
+    assert said.startswith("lab4 non ha ripreso la sua parte (la connessione si è interrotta prima che la risposta fosse "
+                           "intera): là restano il ruolo della replica")
+    assert " the " not in said and " and " not in said
+    assert i18n.tr("it", f"test did not take its part back (refused): on it stay {stays}").startswith(
+        "test non ha ripreso la sua parte (refused)")
+
+
 def test_the_language_of_a_request():
     assert i18n.choose("it", "en-US") == "it"
     assert i18n.choose(None, "it-IT,it;q=0.9,en;q=0.8") == "it"

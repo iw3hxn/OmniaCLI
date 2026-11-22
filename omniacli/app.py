@@ -119,7 +119,7 @@ from .config import (
     server_text,
     server_to_dict,
 )
-from .jobs import STARTED as JOBS_STARTED, SUCCESS, JobFailed, JobManager, filter_jobs
+from .jobs import INTERRUPTED, STARTED as JOBS_STARTED, SUCCESS, JobFailed, JobManager, filter_jobs
 from .plugin_api import ENTRY_POINT_GROUP, PLUGIN_API, ActionRefused, Host, restore_fetched
 from .pullcrypto import new_key
 from .links import LIST_TIMEOUT, LinkClients, describe_error, link_headers, proxy_websocket
@@ -3708,6 +3708,23 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
              else int(ws.limits["instances"]) - len([n for n in ws.servers if n in settings.servers])},
         )
 
+    def left_by_interruption(ws: Workspace, name: str) -> bool:
+        """name stays in ws with no server because OmniaCLI was stopped while
+        the job that made its instance ran: the last job on it is a creation
+        that reads interrupted. Such a name could be neither made nor deleted;
+        it is free again, and what was made of it goes first (leftover_removed)."""
+        if name not in ws.servers or name in settings.servers:
+            return False
+        last = next((j for j in reversed(jobs.jobs.values()) if name in j.servers), None)
+        return last is not None and last.status == INTERRUPTED and last.title.startswith(f"Create {name} ")
+
+    async def leftover_removed(job, ws: Workspace, instance: str) -> None:
+        """What an interrupted creation left of an instance (its folder, its
+        containers) taken away before it is made again."""
+        job.log(f"--- what the interrupted creation left of {workspaceops.server_name(ws, instance)} is taken away first")
+        await workspaceops.run(job, workspaceops.helper("remove", ws.name, ws.storage, instance), check=False,
+                               timeout=workspaceops.HELPER_TIMEOUT)
+
     async def make_instance(job, ws: Workspace, instance: str, template, values: dict, setup: dict | None = None,
                             linked: dict | None = None):
         """The job of a new instance of ws (its server already in ws.servers):
@@ -3820,18 +3837,21 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return refuse(f"Workspace {ws.name} cannot be used: {settings.storage_problem(ws)}")
         async with workspaces_lock:
             ws = a_workspace(workspace)
-            if name in settings.servers or name in ws.servers:
+            leftover = left_by_interruption(ws, name)
+            if name in settings.servers or (name in ws.servers and not leftover):
                 return refuse(f"A server named {name} exists already")
             mine = [n for n in ws.servers if n in settings.servers]
             if ws.limits.get("instances") and len(mine) >= ws.limits["instances"]:
                 return refuse(f"Workspace {ws.name} has its {int(ws.limits['instances'])} instances already")
             # the server is the workspace's from now: its job is seen there
-            refused = await store_workspaces({**settings.workspaces,
-                                              ws.name: dataclasses.replace(ws, servers=[*ws.servers, name])})
+            refused = await store_workspaces({**settings.workspaces, ws.name: dataclasses.replace(
+                ws, servers=[*(n for n in ws.servers if n != name), name])})
             if refused:
                 return refused
 
         async def action(job):
+            if leftover:
+                await leftover_removed(job, ws, instance)
             await make_instance(job, ws, instance, template, values, setup or None, linked)
 
         job = jobs.submit(f"Create {name} from {template.name}", [f"{name}/production", f"{name}/test"],
@@ -4093,20 +4113,24 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return refuse(f"Workspace {ws.name} cannot be used: {settings.storage_problem(ws)}")
         async with workspaces_lock:
             ws = a_workspace(workspace)
-            if name in settings.servers or name in ws.servers:
+            leftover = left_by_interruption(ws, name)
+            if name in settings.servers or (name in ws.servers and not leftover):
                 return refuse(f"A server named {name} exists already")
             mine = [n for n in ws.servers if n in settings.servers]
             if ws.limits.get("instances") and len(mine) >= ws.limits["instances"]:
                 return refuse(f"Workspace {ws.name} has its {int(ws.limits['instances'])} instances already")
-            refused = await store_workspaces({**settings.workspaces,
-                                              ws.name: dataclasses.replace(ws, servers=[*ws.servers, name])})
+            refused = await store_workspaces({**settings.workspaces, ws.name: dataclasses.replace(
+                ws, servers=[*(n for n in ws.servers if n != name), name])})
             if refused:
                 return refused
         neutralize = bool(payload.get("neutralize", True))
+        async def action(job):
+            if leftover:
+                await leftover_removed(job, ws, instance)
+            await instance_from_archive(job, ws, instance, template, archive, neutralize)
+
         job = jobs.submit(f"Create {name} from the archive {archive.name}", [f"{name}/production", f"{name}/test"],
-                          f"manual: {me}", lambda job: instance_from_archive(job, ws, instance, template, archive,
-                                                                          neutralize),
-                          workspace=ws.name)
+                          f"manual: {me}", action, workspace=ws.name)
         return {"job": job.id}
 
     # --- a new Odoo by its version only, as a hosting panel's Add instance ------

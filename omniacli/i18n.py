@@ -110,8 +110,11 @@ def _tr(language: str, text: str) -> str:
         match = pattern.match(text)
         if match:
             try:
-                # the values as they are: a server named test stays test
-                return target.format(**match.groupdict())
+                # the values as they are (a server named test stays test), but a value of several words
+                # that is itself a text of the catalog: the reason of a refusal, said inside another line
+                known = catalog(language)
+                return target.format(**{name: known.get(value, value) if " " in value else value
+                                        for name, value in match.groupdict().items()})
             except (KeyError, IndexError, ValueError):
                 return text
     return text

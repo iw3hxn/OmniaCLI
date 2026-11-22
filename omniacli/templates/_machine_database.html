@@ -468,6 +468,8 @@
       heldGrowth: {{ _("they grow by about {rate} an hour, and ") | tojson }},
       heldFull: {{ _(" (full in about {days} days)") | tojson }},
       heldFullHours: {{ _(" (full in about {hours} hours)") | tojson }},
+      heldCap: {{ _(" (at this pace the cap of {cap} is reached in about {days} days)") | tojson }},
+      heldCapHours: {{ _(" (at this pace the cap of {cap} is reached in about {hours} hours)") | tojson }},
       capLine: {{ _("It keeps {cap} of changes for the replica at most: beyond it the replica loses its place and is made again.") | tojson }},
       cap: {{ _("Change the cap…") | tojson }},
       capTitle: {{ _("Changes how much of its changes this cluster keeps at most for a replica that does not take them. Nothing restarts. It is a job.") | tojson }},
@@ -937,8 +939,13 @@
     } else line(T.rp.noReaders);
     if (v.show_held) {
       const growth = r.rate > 0 ? fill(T.rp.heldGrowth, {rate: bytes(r.rate)}) : "";
-      const hours = r.rate > 0 ? r.free / r.rate : 0;
-      const full = !hours ? "" : hours >= 48 ? fill(T.rp.heldFull, {days: Math.round(hours / 24)}) : fill(T.rp.heldFullHours, {hours: Math.max(1, Math.round(hours))});
+      // what comes first at this pace: the cap (the replica is then made again, the disk does not fill) or the disk
+      const left = Math.max(0, (r.cap || 0) - (v.held || 0)), capped = r.cap > 0 && left <= r.free;
+      const hours = r.rate > 0 ? (capped ? left : r.free) / r.rate : 0;
+      const span = hours >= 48 ? {days: Math.round(hours / 24)} : {hours: Math.max(1, Math.round(hours))};
+      const full = !hours ? "" : capped
+        ? fill(hours >= 48 ? T.rp.heldCap : T.rp.heldCapHours, {...span, cap: bytes(r.cap)})
+        : fill(hours >= 48 ? T.rp.heldFull : T.rp.heldFullHours, span);
       line(fill(v.code === "off" ? (own ? T.rp.heldDedicated : T.rp.held) : (own ? T.rp.heldConnectedDedicated : T.rp.heldConnected),
         {size: bytes(v.held), when: v.since ? when(v.since) : "?", growth, free: bytes(r.free), full, machine}), true);
     }
