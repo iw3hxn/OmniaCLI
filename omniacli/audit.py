@@ -96,6 +96,11 @@ NOT_SENSITIVE = frozenset({
     # what each machine sees of it; making, dropping, promoting and the reads are actions, logged
     "/api/postgres/machine/{major}/replica/facts", "/api/postgres/machine/{major}/replica/state",
     "/api/links/{name}/postgres/replica",
+    # the return after a promotion (UX-011 §A): what is said before it is prepared (sizes, the names
+    # of the instances, to the machine's admins and the link that asks) and what the promoted copy
+    # sees of the cluster that comes back; preparing, completing and cancelling are actions, logged
+    "/api/postgres/machine/{major}/return/facts", "/api/postgres/replica/{major}/return/facts",
+    "/api/postgres/replica/{major}/return/state",
     "/x/odoo/servers/{server}/{role}/addons", "/x/odoo/servers/{server}/{role}/addons/versions",
     # an invitation's form (its use is logged by the route) and where a user of a customer may be made
     "/invite/{token}", "/api/access/workspaces", "/api/access/workspace-choices",

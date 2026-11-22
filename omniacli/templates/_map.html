@@ -263,7 +263,7 @@ window.OmniaMap = (function () {
     replicaOn: {{ _("replica on {machine} · {state}") | tojson }},
     replicaTitle: {{ _("A read-only copy of the PostgreSQL of another machine, kept up to date: the Database tab says how far behind it is") | tojson }},
     replicaStates: {copying: {{ _("copying") | tojson }}, sync: {{ _("in sync {s} s") | tojson }}, behind: {{ _("behind by {s} s") | tojson }},
-      off: {{ _("not connected") | tojson }}, lost: {{ _("to be made again") | tojson }}, promoted: {{ _("promoted") | tojson }},
+      off: {{ _("not connected") | tojson }}, lost: {{ _("to be made again") | tojson }}, promoted: {{ _("promoted") | tojson }}, returned: {{ _("stopped") | tojson }},
       replaced: {{ _("replaced on {when}") | tojson }}, silent: {{ _("its machine does not answer") | tojson }}, "": {{ _("being read") | tojson }}},
     instance: {{ _("{n} instance") | tojson }}, instances: {{ _("{n} instances") | tojson }},
     wsTitle: {{ _("Opens the schema of the workspace {name}: its names, environments, databases and where its backups go") | tojson }},

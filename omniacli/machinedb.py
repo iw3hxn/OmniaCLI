@@ -139,6 +139,8 @@ CERT_YEARS = 10
 REPLICA_ROLE = "omniacli.replica"
 REPLICA_FILE = "replica.json"
 HOSTED_REPLICAS = Path(os.environ.get("OMNIACLI_MACHINE_DB_REPLICA", "/etc/omniacli/machine-db-replica.json"))
+# the return after a promotion (managedreplica.py, UX-011 §A): the cluster's record of it, in its project
+RETURN_FILE = "return.json"
 
 
 class ClusterError(Exception):
@@ -399,6 +401,17 @@ def replica(project: Path) -> dict | None:
     return data if isinstance(data, dict) and data.get("address") else None
 
 
+def returning(project: Path) -> dict | None:
+    """The cluster's record of its return after a promotion ({"link", "host",
+    "port", "state": copying, ready or done, ...}: managedreplica.py), None
+    when there is none."""
+    try:
+        data = json.loads((project / RETURN_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) and data.get("state") else None
+
+
 def hosted_replicas() -> dict:
     """{major: {"storage", "project", "link"}} of the replicas of other
     machines' clusters this machine hosts (root's file)."""
@@ -637,6 +650,8 @@ def remove(major: str) -> dict:
     if followed and not replaced:
         raise ClusterError(f"the cluster of PostgreSQL {major} has a read replica on {followed.get('link')}: "
                            "drop the replica first")
+    if (returning(project) or {}).get("state") in ("copying", "ready"):
+        raise ClusterError("a return is under way: cancel it first")
     if envs and not replaced:
         raise ClusterError(f"the cluster of PostgreSQL {major} holds {len(envs)} environments "
                            f"({', '.join(sorted(envs))}): move them to a dedicated database or remove them first")
@@ -1085,6 +1100,10 @@ def listen_off(major: str) -> dict:
     if followed and followed.get("state") != "replaced":
         raise ClusterError(f"the read replica on {followed.get('link')} follows the cluster through this port: "
                            "drop the replica first")
+    if followed:
+        # stopped for good: closing its port would make its container again and start it
+        raise ClusterError(f"the cluster was replaced by its replica on {followed.get('link')} and is stopped: "
+                           "its port is not touched")
     uid, gid = pg_user()
     before = (project / "compose.yaml").read_text(encoding="utf-8")
     seconds = _recreate(project, compose_text(major, uid, gid, _roots_of(before)), before, "without its port")
@@ -1094,9 +1113,12 @@ def listen_off(major: str) -> dict:
     return {"closed": found["port"], "restarted_s": seconds}
 
 
-def firewall_state() -> dict[str, list[str]]:
+def firewall_state() -> dict:
     """{bridge: [addresses]} of the clusters that listen: the addresses of
-    their grants not revoked, the only ones their port is reached from."""
+    their grants not revoked, the only ones their port is reached from. A
+    cluster that comes back after a promotion (returning) follows the
+    promoted copy: {bridge: {"from": [addresses], "to": [[address, port]]}},
+    it goes out to that one port and nowhere else."""
     found = {}
     for major, rec in sorted(registry().items()):
         project = Path(str(rec.get("project") or ""))
@@ -1107,6 +1129,13 @@ def firewall_state() -> dict[str, list[str]]:
                 # the machine that hosts its read replica comes in for the replication
                 allowed.add(address(followed.get("address")))
             found[bridge_name(major)] = sorted(allowed)
+            back = returning(project) or {}
+            if back.get("state") in ("copying", "ready"):
+                try:
+                    going = [[address(back.get("address")), int(back.get("port") or 0)]]
+                except (ClusterError, ValueError):
+                    going = []
+                found[bridge_name(major)] = {"from": sorted(allowed), "to": going}
     return found
 
 

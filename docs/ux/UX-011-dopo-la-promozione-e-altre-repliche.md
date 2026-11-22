@@ -233,3 +233,32 @@ Le tre decisioni restano di Carlo. Per costruire valgono le raccomandate, tutte 
 - **D11-1**: per la replica di un dedicato, tetto del 10 % del disco del workspace, al massimo 20 GB.
 - **D11-2**: il cliente legge che esiste una copia dei suoi dati su un'altra macchina del fornitore, senza nomi.
 - **D11-3**: lo spostamento automatico vale per tutti i collegamenti, e sposta solo un'istanza già ferma.
+
+## Dopo la verifica (22/11/2026, lab2 = P, lab1 = R)
+
+Costruite la Parte 1 e le parti A e B. C e D non sono costruite. I numeri sono nell'ADR (AD-004, opzione A).
+
+### Parte 1
+I cinque scostamenti sono corretti. La riga sostituita dice «serviva: … fino al …» e non ha più la riga della porta.
+
+### A. Il ritorno
+- **«Non verificato», prima voce.** La copia su R **non si rifà** per lasciar partire il ritorno: è già in ascolto
+  in TLS e registra le modifiche come serve a una copia che la segue (misurato su lab1). La riga in ambra e la
+  seconda conferma non sono costruite.
+- **Tempi di Completa.** Non 10 s per istanza: 9 s per la prima produzione e 26 s per l'ultima di cinque, dopo aver
+  smesso di aspettare un Odoo che non ha più database. Il dialogo dice ancora «circa 10 s ciascuna, 50 s per
+  l'ultima»: è una stima per eccesso.
+- **Differenze dal contratto.**
+  - «Completa il ritorno…» è `disabled` anche quando R non risponde, con la frase del rifiuto nello `span[title]`:
+    il rifiuto arriva prima del clic, come gli altri.
+  - Stato in più sulla riga di P: «Ritorno da lab1: riceve · lab1 non risponde dal …» (il cluster riceve ma il
+    pannello di R non dice il ritardo).
+  - Dopo il ritorno, se un'istanza non è tornata sul cluster, la riga lo dice e «Completa il ritorno…» riporta solo
+    quella.
+  - Il dialogo «Promuovi…» non dice più «Non si torna indietro da qui»: dice «Si torna con Prepara il ritorno…».
+  - Su R la colonna Regolazione della copia ferma dice «Ferma».
+  - Il job di Completa fa una copia completa per il ripristino a un minuto, e dice che i minuti passati su R non
+    si raggiungono.
+- **Criteri**: 1, 2, 3, 4, 6, 7 e 8 provati sulle due macchine. Del 5 è provato tutto tranne «`disabled` prima del
+  primo in pari», coperto dai test (la copia dura 3 s). Il riavvio dell'intera macchina R non è stato provato: la
+  copia ferma non ha un container.

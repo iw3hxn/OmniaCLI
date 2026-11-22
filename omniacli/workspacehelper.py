@@ -23,6 +23,9 @@
     omniacli workspace-helper machine-db-replica-make <major> prepare|copy|start   (prepare: its values on the input)
     omniacli workspace-helper machine-db-replica-hosted | -promote | -remove <major>
     omniacli workspace-helper machine-db-replica-sync <major>   (its values, JSON, on the input)
+    omniacli workspace-helper machine-db-replica-return <major> facts|allow|state|stop|resume|done|cancel
+    omniacli workspace-helper machine-db-return <major> facts|prepare|copy|start|state|wait|promote|note|purge|cancel|forget
+    omniacli workspace-helper machine-db-replica-back <workspace> <storage> <instance>
     omniacli workspace-helper space
     omniacli workspace-helper storage-setup | storage-check <storage> | storage-reset <storage>
 
@@ -162,6 +165,24 @@ hosts the replica: make prepare (its project, the room checked, the
 password of the replication on the input), copy (pg_basebackup over TLS),
 start (a hot standby), hosted (what it is doing), sync (pg_hba.conf and
 the tablespaces' folders from what the primary has now), promote, remove.
+
+The return after a promotion (UX-011 §A). machine-db-replica-return, on the
+machine that hosts the promoted copy: facts, allow (the cluster it
+replaced let in for the replication, from the one address it already comes
+from: the role with the verifier of a password made there, a place that
+holds the changes, its cap; nothing restarts), state, stop (the first step
+of the completion: the copy stopped clean, and where its last record is),
+resume (it runs again: the cluster did not get everything), done (it stays
+stopped for good: its container taken away), cancel. machine-db-return, on
+the machine whose cluster comes back: facts, prepare (the cluster's data
+set aside, renamed where it is; the password on the input), copy
+(pg_basebackup over TLS into the cluster's own project), start (read only,
+following the promoted copy), state, wait (until the last record of the
+stopped copy is applied; its position on the input), promote (it takes the
+writes and is the machine's cluster again), note, purge (the data set aside
+deleted), cancel (the copy deleted, the data set aside back), forget.
+machine-db-replica-back: an instance pointed at the promoted copy goes back
+on the machine's cluster, by its socket, as it was before the promotion.
 
 template-install <template>: a template downloaded from the download
 server, checked with the key of the main configuration, into
@@ -2884,6 +2905,143 @@ def machine_db_replica_follow(name: str, storage: str, instance: str) -> dict:
             "host": remote["host"], "port": remote["port"], "template": twin.name, "kept": str(kept)}
 
 
+# what machine-db-replica-follow wrote in .env for the promoted copy, taken away when the instance goes back
+PROMOTED_KEYS = ("DB_REMOTE", "DB_HOST", "DB_PORT", "DB_USER")
+PROMOTED_META = ("database_on", "database_link", "database_major", "promoted_from")
+
+
+def machine_db_replica_back(name: str, storage: str, instance: str) -> dict:
+    """machine-db-replica-back <workspace> <storage> <instance>: after the
+    machine's cluster came back from its promoted replica (UX-011 §A), the
+    instance goes back on it: its project written again as one on the
+    machine's cluster, by its socket, with the template and the cluster's
+    values it had before the promotion (kept beside it, PROMOTED); what
+    changed since (its options, its other values) stays. What the promotion
+    kept is deleted. Asked again, it answers that it is done."""
+    project = _project(name, storage, instance, "production")
+    folder = project.parent
+    meta = _meta(folder)
+    moved = meta.get("promoted_from")
+    if composehelper.on_cluster(project) is not None:
+        return {"already": True, "database": str(meta.get("database") or ""), "db_service": machinedb.DB_SERVICE}
+    if not isinstance(moved, dict) or composehelper.on_remote(project) is None:
+        raise HelperError(f"{instance} was not pointed at a promoted replica: it does not go back on the machine's cluster")
+    kept = project / PROMOTED
+    try:
+        was = _env(kept)
+        compose = (kept / "compose.yaml").read_text(encoding="utf-8")
+    except OSError:
+        was, compose = {}, ""
+    if not compose or not all(was.get(key) for key in CLUSTER_KEYS):
+        raise HelperError(f"what {instance} was before the promotion is not beside it any more: it goes back with "
+                          "Move into the machine's cluster…")
+    major = was["DB_CLUSTER"]
+    replaced = _cluster(machinedb.replica, _cluster(machinedb.project_of, major)) or {}
+    if replaced.get("state") == "replaced":
+        raise HelperError("the machine's cluster has not come back: its instances stay on the promoted copy")
+    template = template_named(str(moved.get("template") or ""))
+    values = _env(project)
+    before = {path: path.read_bytes() for path in (project / "compose.yaml", project / ".env", folder / INSTANCE_FILE,
+                                                   project / "config" / REMOTE_CA_FILE) if path.is_file()}
+    exception = db_remote_file().get(str(project))
+    try:
+        # its database, the promoted copy, is stopped: its Odoo has nothing to end, and is not waited for
+        _dc(project, "down", "--remove-orphans", "--timeout", "2", timeout=600)
+        _write(project / "compose.yaml", compose)
+        _write(project / ".env", stacktemplates.env_text({
+            **_env_without(values, PROMOTED_KEYS), **{key: was[key] for key in CLUSTER_KEYS}}), mode=0o600)
+        (project / "config" / REMOTE_CA_FILE).unlink(missing_ok=True)
+        db_remote_set(project, None)
+        _write(folder / INSTANCE_FILE, json.dumps({
+            **{k: v for k, v in meta.items() if k not in PROMOTED_META}, "template": template.name,
+            "version": str(moved.get("version") or template.version)}) + "\n")
+        conf(name, storage, instance, "production", "{}")
+        _dc(project, "up", "-d", "--remove-orphans", timeout=600)
+    except BaseException:
+        # as it was, on the promoted copy: nothing is half written
+        _dc(project, "down", "--remove-orphans", check=False, timeout=600)
+        for path, data in before.items():
+            path.write_bytes(data)
+        if exception:
+            db_remote_set(project, exception)
+        raise
+    shutil.rmtree(kept, ignore_errors=True)
+    return {"already": False, "database": str(meta.get("database") or was["DB_USER"]), "db_service": machinedb.DB_SERVICE,
+            "template": template.name}
+
+
+# the return after a promotion (managedreplica.py, UX-011 §A): on the machine that hosts the promoted
+# copy (machine-db-replica-return) and on the one whose cluster comes back (machine-db-return)
+
+def machine_db_replica_return(major: str, step: str) -> dict:
+    """machine-db-replica-return <major> facts | allow | state | stop | resume
+    | done | cancel: the promoted copy this machine hosts and the cluster it
+    replaced, which comes back. allow and cancel take their values as JSON
+    on the input (allow: the verifier of the replication's password)."""
+    if step == "facts":
+        return _cluster(managedreplica.return_facts, major)
+    if step == "allow":
+        return _cluster(managedreplica.return_allow, major, _input_json("a return"))
+    if step == "state":
+        return _cluster(managedreplica.return_state, major)
+    if step == "stop":
+        return _cluster(managedreplica.return_stop, major)
+    if step == "resume":
+        return _cluster(managedreplica.return_resume, major)
+    if step == "done":
+        try:
+            return _cluster(managedreplica.return_done, major)
+        finally:
+            # stopped for good: no one reaches its network any more
+            db_firewall()
+    if step == "cancel":
+        return _cluster(managedreplica.return_cancel, major, str(_input_json("a return").get("by") or ""))
+    raise HelperError("machine-db-replica-return <major> facts, allow, state, stop, resume, done or cancel")
+
+
+def machine_db_return(major: str, step: str) -> dict:
+    """machine-db-return <major> facts | prepare | copy | start | state | wait |
+    promote | note | purge | cancel | forget: the machine's cluster comes
+    back from the replica that replaced it. prepare takes its values as JSON
+    on the input, the password of the replication's role among them; wait
+    the position the stopped copy ended at; note what the application keeps
+    of a return that is done. The firewall follows: while it comes back the
+    cluster goes out to the promoted copy's port, and nowhere else."""
+    if step == "facts":
+        return _cluster(managedreplica.back_facts, major)
+    if step == "prepare":
+        try:
+            return _cluster(managedreplica.back_prepare, major, _input_json("a return"))
+        finally:
+            db_firewall()
+    if step == "copy":
+        return _cluster(managedreplica.back_copy, major)
+    if step == "start":
+        return _cluster(managedreplica.back_start, major)
+    if step == "state":
+        return _cluster(managedreplica.back_state, major)
+    if step == "wait":
+        return _cluster(managedreplica.back_wait, major, str(_input_json("a return").get("checkpoint") or ""))
+    if step == "promote":
+        try:
+            return _cluster(managedreplica.back_promote, major)
+        finally:
+            db_firewall()
+    if step == "note":
+        return _cluster(managedreplica.back_note, major, _input_json("a return"))
+    if step == "purge":
+        return _cluster(managedreplica.back_purge, major)
+    if step == "cancel":
+        try:
+            return _cluster(managedreplica.back_cancel, major)
+        finally:
+            db_firewall()
+    if step == "forget":
+        return _cluster(managedreplica.back_forget, major)
+    raise HelperError("machine-db-return <major> facts, prepare, copy, start, state, wait, promote, note, purge, cancel "
+                      "or forget")
+
+
 # a move (AD-007): what the project was is kept beside it, the undo of the
 # move; what the dumps of a move are, read by the cluster's user
 KEPT = ".dedicated"
@@ -3236,7 +3394,9 @@ ACTIONS = {"disk": (disk, 3), "drop": (drop, 2), "limits": (limits, 3), "create"
            "machine-db-replica-read": (machine_db_replica_read, 4), "machine-db-replica-follow": (machine_db_replica_follow, 3),
            "machine-db-replica-make": (machine_db_replica_make, 2), "machine-db-replica-hosted": (machine_db_replica_hosted, 1),
            "machine-db-replica-sync": (machine_db_replica_sync, 1), "machine-db-replica-promote": (machine_db_replica_promote, 1),
-           "machine-db-replica-remove": (machine_db_replica_remove, 1)}
+           "machine-db-replica-remove": (machine_db_replica_remove, 1),
+           "machine-db-replica-return": (machine_db_replica_return, 2), "machine-db-return": (machine_db_return, 2),
+           "machine-db-replica-back": (machine_db_replica_back, 3)}
 
 
 def run(argv: list[str]) -> dict:

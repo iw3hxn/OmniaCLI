@@ -2036,12 +2036,51 @@ asked from the machine that hosts it, through its link; machine admins only.
   machines are in the copy, but their instances keep looking for them there
   and have no database until each is made again: the dialog names them.
 
+- **The return**, after a promotion, brings the database back to the machine
+  whose cluster the replica replaced, in two steps asked from that machine.
+  It needs a link of that machine to the one that hosts the copy, over HTTPS
+  or SSH (the machine that hosts a copy asks the one that has the data: here
+  the copy is the returning cluster's); without one the button is off and
+  says so.
+  - **Prepare the return…** (the replaced row's detail) says before the click
+    what is set aside and since when, the size of the promoted copy, the room,
+    the time, the round trip. The promoted copy lets that machine in for the
+    replication from the one address it already comes from (a role with the
+    verifier of a password made there, a place that holds its changes with a
+    cap of 20 GB, one line of `pg_hba.conf`: it does not restart). The
+    cluster's data is **set aside** where it is (renamed: not copied, not
+    deleted), the copy is taken over TLS `verify-full` into the cluster's own
+    project, with the settings the cluster had (its tuning, its recovery at a
+    minute), and follows the promoted copy read only. Nothing of the
+    instances stops. Its state is on the closed row of both machines
+    (*Return from lab1: copying, 64 % · …*, *ready · in sync 2 s*, *behind by
+    45 s*, *not receiving since …*).
+  - **Complete the return…** (the name of the other machine typed) stops the
+    promoted copy first, waits until the cluster applied the last record that
+    copy wrote (60 s at most: else the copy runs again, the instances stay
+    there and nothing is lost), takes the writes, brings the instances back
+    on the cluster's socket with the template they had (what the promotion
+    kept beside each), one after the other, the productions first, deletes
+    the data set aside and makes a full copy for the recovery at a minute
+    (the minutes spent on the other machine cannot be reached). It is refused
+    when the other machine does not answer: there is no way with it off.
+    Measured with five instances: the first production back 9 s after the
+    stop, the last instance after 26 s; a row committed half a second before
+    the copy stopped was on the cluster, three times out of three.
+  - **Cancel the return…**, from either machine, deletes the copy and puts
+    the data set aside back; asked on the machine that hosts the promoted
+    copy, the other one does its part at its next look (20 s).
+  - After it the cluster's row says *Back from lab1 on …* while the stopped
+    copy is there; the copy's row says *Returned to lab2 on …: stopped*, with
+    **Make the replica again…** (the stopped copy deleted, a new replica made)
+    and **Drop the replica…**. The stopped copy has no container: it never
+    starts by itself. **Take the cluster away…** is off under a return.
+
 Every action is a job and is in the access log of both machines, with the
 user and the link. Not built: a replica of a dedicated database, more than
 one replica per cluster or per hosting machine, reads for the instances of
-other machines, the old primary made a replica again after a promotion, the
-tuning of the replica (it has the values of its primary), a renewal of its
-certificate.
+other machines, the tuning of the replica (it has the values of its
+primary), a renewal of its certificate.
 
 ### Modules from the OCA catalog
 

@@ -215,9 +215,47 @@ al giro successivo (ogni 20 s). Provato su lab2 (P) e lab1 (R).
   mentre P non rispondeva R riprova ogni 10 s. **I database che P ha concesso ad altre macchine** sono nella copia,
   ma le loro istanze continuano a cercarli su P e restano senza database: il dialogo li nomina, niente li ripunta
   (su lab1 `acme-linked` ha smesso di rispondere, come detto).
+- **Il ritorno dopo una promozione** (UX-011 §A, costruito il 22/11/2026; `managedreplica.py` `return_*` su R e
+  `back_*` su P, `workspace-helper machine-db-replica-return`, `machine-db-return`, `machine-db-replica-back`). P
+  torna primario in due passi, chiesti da P attraverso un suo collegamento verso R (HTTPS o SSH).
+  - **Prepara**: la copia promossa lascia entrare P per la replica dal solo indirizzo da cui P entra già (ruolo
+    `omniacli.replica` con il verificatore di una password nata su P, slot `omniacli_return`, tetto di 20 GB, una
+    riga `hostssl replication`). **La copia non si riavvia**: misurato su lab1, ha `wal_level=replica`, 10
+    `max_wal_senders` e 10 slot, ed è già in ascolto in TLS (lo è per costruzione: era una replica). La riga in ambra
+    del contratto non è costruita. Su P i dati del cluster si **mettono da parte** con una rinomina (`data/pgdata` e
+    la cartella `ts` di ogni workspace, sullo stesso disco: niente si copia e niente si cancella), poi
+    `pg_basebackup` in TLS `verify-full` dentro il progetto del cluster stesso. Il `postgresql.auto.conf` è quello
+    che P aveva (regolazione, ripristino a un minuto), più `primary_conninfo` e `primary_slot_name`; il
+    `compose.yaml` del cluster non cambia. Il firewall del cluster lascia uscire solo verso la porta della copia.
+  - **Completa**: R ferma la copia (arresto pulito) e dice dove comincia il suo ultimo record (`pg_controldata`);
+    P aspetta di averlo applicato, al massimo 60 s, e solo allora `pg_promote`. Se non arriva, la copia su R
+    riparte e le istanze restano là. Poi le istanze tornano sul socket con il template di prima (quello che la
+    promozione aveva tenuto in `.before-promotion`; le opzioni cambiate nel frattempo restano), i dati messi da
+    parte si cancellano e parte una copia completa per il ripristino a un minuto. Su R il container della copia
+    viene tolto: non può ripartire da solo.
+  - **Annulla**, da P o da R: la copia su P si cancella e i dati messi da parte tornano al loro posto.
+  - **Misure (22/11/2026, lab2 = P, lab1 = R, 5 istanze, cluster di 164 MB):**
+    - Prepara: 8,7-10,6 s (accesso 2 s, messa da parte immediata per 3,4 GB, copia di 181 MB in 2,9 s, avvio
+      2,5 s); nessun container delle istanze è stato rifatto;
+    - un valore scritto su acme-mach, che lavorava su lab1, si legge sul cluster di lab2 dopo 0,36 s;
+    - Completa: arresto della copia 0,5 s, attesa 0,1 s, scritture accettate dopo 1,4 s; la prima produzione
+      risponde 9 s dopo l'arresto e l'ultima delle cinque dopo 26 s (job di 31,8 s). Con l'attesa di Docker di 10 s
+      per ogni Odoo rimasto senza database erano 46 s nel primo giro e 66 s nel secondo: ora un Odoo senza database
+      non si aspetta (`--timeout 2`);
+    - niente perso in tre giri su tre: uno scrittore che conferma una riga ogni mezzo secondo si ferma all'arresto
+      della copia, e la sua ultima riga (0,5 s prima) è sul cluster di lab2;
+    - Annulla da P: 2,9 s; un valore scritto prima della promozione si rilegge nei dati tornati al loro posto, e
+      quello scritto su lab1 dopo la promozione non c'è. Annulla da R: lab2 fa la sua parte 10 s dopo;
+    - Completa con il pannello di lab1 fermo: rifiutato (409), nessun container rifatto;
+    - «Rifai la replica…»: 8,1-8,5 s; dopo un riavvio del pannello di lab1 la copia ferma è ancora ferma (non ha
+      un container).
+  - **Limiti.** Durante il ritorno i dati stanno due volte sul disco di P, e per la parte di ogni cliente sul disco
+    del suo workspace: lo spazio si controlla prima, per tutti e due. I minuti passati su R non si raggiungono con
+    il ripristino a un minuto. «Disabilitato prima del primo in pari» è coperto solo dai test: la copia qui dura
+    3 s. Il riavvio dell'intera macchina R non è stato provato.
 - **Non costruito**: la replica di un database dedicato; più di una replica per cluster, e più di una ospitata per
-  macchina; le letture per le istanze di altre macchine (le concessioni); P ricostruito come replica dopo una
-  promozione; la regolazione della replica (ha i valori di P: se R ha meno memoria di quanta P ne ha assegnata, la
+  macchina; le letture per le istanze di altre macchine (le concessioni);
+  la regolazione della replica (ha i valori di P: se R ha meno memoria di quanta P ne ha assegnata, la
   replica non parte e il job lo dice); il rinnovo del certificato della replica (10 anni). Se P sta dietro un NAT
   l'indirizzo con cui R lo vede arrivare non si può correggere dal dialogo. Uno storage aggiunto a P dopo la creazione
   non è montato nella replica: va rifatta.
@@ -392,6 +430,15 @@ In sintesi, i «due database in cluster» sono **un primario più una replica in
 - La promozione è un job: si spegne il vecchio primario prima di promuovere, si riscrive `db_host` e si riavvia Odoo.
 - Una replica del cluster della macchina contiene tutti i clienti (§0).
 - Il template odooplm-20: con quale ramo di Odoo gira non l'ho letto.
+
+**Il verso delle chiamate fra le macchine (22/11/2026).** La regola è una sola: **chiede chi ospita la copia, a chi
+ha i dati, attraverso il proprio collegamento; chi ha i dati non chiama mai**. Così una macchina esegue solo le
+richieste che arrivano da un collegamento a cui ha dato un token, e chi è spento o irraggiungibile non blocca
+nessuno: lo si legge al giro dopo.
+- **Replica** (UX-010): la copia sta su R, quindi chiede R. P non chiama R.
+- **Ritorno** (UX-011 §A): la copia sta su P, quindi chiede P, e serve un collegamento da P a R. R non chiama P: un
+  ritorno annullato su R, P lo legge al suo giro (20 s) e fa la sua parte da solo. Fa eccezione solo l'ordine dei
+  passi di Completa, che P guida: P chiede a R di fermare la copia, e R risponde con il punto in cui si è fermata.
 
 **Tracciabilità.** UX-008 D2 («Odoo19 che può montare 2 database in cluster»).
 
