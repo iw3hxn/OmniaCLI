@@ -139,6 +139,17 @@ CERT_YEARS = 10
 REPLICA_ROLE = "omniacli.replica"
 REPLICA_FILE = "replica.json"
 HOSTED_REPLICAS = Path(os.environ.get("OMNIACLI_MACHINE_DB_REPLICA", "/etc/omniacli/machine-db-replica.json"))
+# the copy of the dedicated database of an instance of another machine, hosted here (UX-011 §D): its
+# key among the hosted replicas (a cluster's copy has its major), d and the number of its network
+HOSTED_DEDICATED = re.compile(r"d[1-9]\d{2}")
+# the dedicated databases of this machine's instances a copy on another machine follows (UX-011 §D):
+# {key: {"project", "workspace", "storage", "instance", "link"}}, root's, read by the application
+DEDICATED_SOURCES = Path(os.environ.get("OMNIACLI_DEDICATED_REPLICA", "/etc/omniacli/dedicated-replica.json"))
+# the key of one: <workspace>.<storage>.<instance> (no name has a dot)
+DEDICATED_KEY = re.compile(r"([a-z0-9][a-z0-9-]{0,39})\.([a-z0-9][a-z0-9-]{0,31})\.([a-z0-9][a-z0-9-]{0,39})")
+# where an instance's project keeps what its database's copy needs (its record, its CA, its certificate,
+# its pg_hba.conf): as a cluster's project keeps them
+DEDICATED_FOLDER = ".replica"
 # the return after a promotion (managedreplica.py, UX-011 §A): the cluster's record of it, in its project
 RETURN_FILE = "return.json"
 
@@ -386,9 +397,20 @@ def bridge_name(major: str) -> str:
     return f"omnidb{_major(major)}"
 
 
+def hosted_key(key: str) -> str:
+    """The key of a replica this machine hosts, checked: the major of the
+    cluster it copies, or d and a number for the copy of an instance's
+    dedicated database."""
+    key = str(key)
+    if HOSTED_DEDICATED.fullmatch(key):
+        return key
+    return _major(key)
+
+
 def replica_bridge(major: str) -> str:
     """The bridge of the network of a replica this machine hosts."""
-    return f"omnirp{_major(major)}"
+    key = hosted_key(major)
+    return f"omnirp{key[1:] if key.startswith('d') else key}"
 
 
 def replica(project: Path) -> dict | None:
@@ -419,7 +441,20 @@ def hosted_replicas() -> dict:
         data = json.loads(HOSTED_REPLICAS.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
-    return {k: v for k, v in data.items() if k in MAJORS and isinstance(v, dict)} if isinstance(data, dict) else {}
+    return ({k: v for k, v in data.items() if (k in MAJORS or HOSTED_DEDICATED.fullmatch(k)) and isinstance(v, dict)}
+            if isinstance(data, dict) else {})
+
+
+def dedicated_sources() -> dict:
+    """{key: {"project", "workspace", "storage", "instance", "link"}} of the
+    dedicated databases of this machine's instances that have a copy on
+    another machine (root's file)."""
+    try:
+        data = json.loads(DEDICATED_SOURCES.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return ({k: v for k, v in data.items() if DEDICATED_KEY.fullmatch(k) and isinstance(v, dict)}
+            if isinstance(data, dict) else {})
 
 
 def compose_text(major: str, uid: int, gid: int, roots: list[str], port: int | None = None) -> str:
@@ -1011,12 +1046,14 @@ def ca_certificate(project: Path) -> str:
         raise ClusterError("the cluster has no CA yet: it does not listen for another machine") from None
 
 
-def ensure_tls(project: Path, major: str, names: list[str]) -> bool:
+def ensure_tls(project: Path, major: str, names: list[str], owner: tuple[int, int] | None = None) -> bool:
     """The cluster's CA (made once: tls/, its key root's only) and its
     server certificate and key (conf/, the key the cluster's user's only),
     made again when a name is not in it; True when it was made again (the
-    cluster then reads it again: a reload, no restart)."""
-    uid, gid = pg_user()
+    cluster then reads it again: a reload, no restart). owner: the user
+    PostgreSQL runs as when it is not the machine's cluster's (the database
+    of an instance: its image's own)."""
+    uid, gid = owner or pg_user()
     folder = _folder(project / TLS_FOLDER, 0o700)
     ca_key, ca_crt = folder / "ca.key", folder / "ca.crt"
     if not (ca_key.is_file() and ca_crt.is_file()):
@@ -1142,6 +1179,27 @@ def firewall_state() -> dict:
 
 
 BRIDGE = re.compile(r"omni(?:db|rp)\d{1,3}")
+# the port of this machine the dedicated database of an instance is published on for its copy on another
+# machine (UX-011 §D): its entry of the firewall's state, {"from": [addresses], "subnet": its project's network}
+PUBLISHED = re.compile(r"port([1-9]\d{3,4})")
+
+
+def published(key: str, value) -> tuple[int, list[str], str]:
+    """(the port, the addresses it is reached from, the network of the
+    project) of the entry of a published port, checked."""
+    found = PUBLISHED.fullmatch(str(key))
+    if not found or not isinstance(value, dict):
+        raise ClusterError(f"{key!r} is not the published port of a dedicated database")
+    port = int(found.group(1))
+    if not 1024 <= port <= 65535:
+        raise ClusterError(f"{port} is not a port")
+    try:
+        network = ipaddress.ip_network(str(value.get("subnet") or ""))
+    except ValueError:
+        raise ClusterError(f"{value.get('subnet')!r} is not the network of a project of this machine") from None
+    if network.version != 4 or network.prefixlen < 24 or not network.is_private:
+        raise ClusterError(f"{network} is not the network of a project of this machine")
+    return port, sorted({address(a) for a in value.get("from") or []}), str(network)
 
 
 def reached(value) -> tuple[list[str], list[tuple[str, int]]]:
@@ -1196,6 +1254,15 @@ def firewall_rules(state: dict) -> dict[str, list[list[str]]]:
     takes its answers; nothing else leaves its network."""
     forward, into = [], []
     for bridge in sorted(state):
+        if PUBLISHED.fullmatch(bridge):
+            # the dedicated database of an instance, published for its copy on another machine: its project's
+            # network is the workspaces' (their firewall); the connections made to that port of this machine
+            # (docker forwards them: the destination is the container's by now) pass from those addresses only
+            port, allowed, network = published(bridge, state[bridge])
+            made_to = ["-d", network, "-p", "tcp", "-m", "conntrack", "--ctorigdstport", str(port)]
+            forward += [[*made_to, "-s", f"{a}/32", "-j", "RETURN"] for a in allowed]
+            forward.append([*made_to, "-j", "DROP"])
+            continue
         if not BRIDGE.fullmatch(bridge):
             raise ClusterError(f"{bridge!r} is not the network of a cluster")
         allowed, going = reached(state[bridge])

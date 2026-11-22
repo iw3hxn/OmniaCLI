@@ -2102,10 +2102,74 @@ asked from the machine that hosts it, through its link; machine admins only.
     starts by itself. **Take the cluster away…** is off under a return.
 
 Every action is a job and is in the access log of both machines, with the
-user and the link. Not built: a replica of a dedicated database, more than
-one replica per cluster or per hosting machine, reads for the instances of
-other machines, the tuning of the replica (it has the values of its
-primary), a renewal of its certificate.
+user and the link. Not built: more than one replica per cluster, reads for
+the instances of other machines, the tuning of the replica (it has the
+values of its primary), a renewal of its certificate.
+
+### A read replica of a dedicated database
+
+The production of an instance **with a database of its own** (the `db`
+service of its compose project, on its workspace's disk) may have one read
+replica on another machine too: the same copy, ready to take its place, for
+one instance and one customer. It is made, seen, read from, dropped and
+promoted as the cluster's, by the same code; what differs:
+
+- **Made** with the same **+ Replica of another machine…**. The dialog asks
+  **Which PostgreSQL** only when that machine offers more than one: its
+  cluster, and the one of each production with a database of its own (never
+  a staging or a test). It says that the copy is one customer's data (the
+  workspace), the room here, and where what is kept for the replica goes: on
+  **the disk of the customer's workspace**, a tenth of that disk at most and
+  never more than 20 GB (5 GB on a workspace of 50 GB); a higher cap is
+  refused before the click. The first time, in amber, that the PostgreSQL of
+  that instance is made again to open a port over TLS (its Odoo loses its
+  connections for those seconds; no other instance restarts), asked once
+  more. A machine may host the copy of one cluster and those of any number
+  of dedicated databases, one per database.
+- **On the machine of the instance** the instance's `compose.yaml` is never
+  changed: a `compose.override.yaml` of OmniaCLI's beside it publishes the
+  database's port on a port of the machine (15432 and up) and gives
+  PostgreSQL its certificate and a `pg_hba.conf` of OmniaCLI's, kept in the
+  project's folder `.replica` with a CA of the database's own: the project's
+  own network as before, the replication's role from the one address of the
+  machine that hosts the copy over TLS, and nothing else. The workspaces'
+  firewall lets that one address reach that port (the connections made to
+  that port of the machine, whatever docker forwards them to). The role, the
+  place that holds the changes and its cap are the cluster's. After a drop
+  the database goes on listening, for no address: the next replica restarts
+  nothing (`omniacli workspace-helper machine-db-replica-unlisten
+  <workspace>.<storage>.<instance>`, by root, closes the port and takes the
+  override away, making the database's container again).
+- **On the machine that hosts it** the copy is a project of its own
+  (`<storage>/.machine-db/replica-d<n>`), the hardened hot standby of a
+  cluster's copy, on a port and a network of its own; its row is **Read
+  replica of \<instance\> (\<machine\>)**.
+- **Seen** on the instance's own row of the Database tab: *Replica on
+  \<machine\>: in sync · N s*, the *keeps N GB* badge (against the cap, on the
+  workspace's disk) and the same detail block, with **Change the cap…** and
+  **Drop the replica…**. **Move into the machine's cluster…** is not offered
+  while the database has a replica.
+- **Read from the replica…**, in the instance's page (Odoo 18 and later):
+  as for an instance of the cluster. Odoo reaches its own database over the
+  project's network, where `db_sslmode = verify-full` holds too: the
+  database's certificate names it `db`, and the CA given to Odoo is the
+  database's and the replica's.
+- **The customer** (the workspace's admins and developers, in Technical
+  details) reads *Reads: also from a replica* when the instance reads from
+  it, and *Copy of the database: also on another machine of the provider*
+  while a copy exists; and, in the jobs of its instance, that the copy was
+  made, dropped or promoted. No machine, no address, no port, no size, no
+  button: the jobs that carry them are the machine's.
+- **Promote…** asks the instance's name, and only with the machine of the
+  instance answering (the instance runs there): the PostgreSQL of that
+  instance is stopped, the copy takes the writes, the instance is pointed at
+  it over TLS (its project written again as one on a database of another
+  machine) and started. No other instance of that machine restarts. Its
+  backups go through the network from then, its recovery at a minute stops,
+  its stagings stay where they are. The data of before stays on the
+  workspace's disk until **Free the space of before…**, in the instance's
+  page. **The return is not built** for a dedicated database: the promoted
+  copy is dropped only once the instance is removed on its machine.
 
 ### Modules from the OCA catalog
 

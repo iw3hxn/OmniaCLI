@@ -236,7 +236,7 @@ Carlo ha confermato le tre raccomandate il 22/11/2026 («a-h ok»):
 
 ## Dopo la verifica (22/11/2026, lab2 = P, lab1 = R)
 
-Costruite la Parte 1 e le parti A e B. C e D non sono costruite. I numeri sono nell'ADR (AD-004, opzione A).
+Costruite la Parte 1 e le parti A e B. C non è costruita; D è costruita dopo (in fondo). I numeri sono nell'ADR (AD-004, opzione A).
 
 ### Parte 1
 I cinque scostamenti sono corretti. La riga sostituita dice «serviva: … fino al …» e non ha più la riga della porta.
@@ -280,3 +280,42 @@ I cinque scostamenti sono corretti. La riga sostituita dice «serviva: … fino 
   dell'istanza, fatto dalla 5467, nomina lab1 e 172.30.0.11.
 - **Criteri**: 1, 2, 4 e 5 provati sulle due macchine. Il 3 è provato per la pagina e le route dell'istanza, con
   le due eccezioni dette sopra.
+
+## Dopo la verifica della parte D (22/11/2026, lab4 = P, lab3 = R)
+
+Costruita la parte D. I numeri sono nell'ADR (AD-004, opzione A, «La replica di un database dedicato»). La parte C
+non è costruita.
+
+### Differenze dal contratto
+- **Il ritorno non è costruito.** Il dialogo «Promuovi…» non dice «Si torna con Prepara il ritorno…»: dice «Il
+  ritorno non è ancora offerto per un database dedicato.» Su P non c'è «Prepara il ritorno…».
+- **Dopo la promozione** l'istanza non ha più una riga sua nella scheda Database di P: è nella frase «Non qui:
+  acme-tmp usa il database su lab3 (172.30.0.13:15433), la replica promossa; si regola là.», come le istanze del
+  cluster dopo una promozione. La pagina dell'istanza dice «sulla replica promossa su lab3 (172.30.0.13) · dal …».
+- **Promozione con P che non risponde: rifiutata prima del clic**, con «lab4 non risponde: la replica di acme-odoo
+  si promuove solo con lab4 che risponde, perché acme-odoo gira là ed è lab4 a puntarla qui.»
+- **La copia promossa si elimina da R** solo dopo che l'istanza è stata rimossa su P: prima il pulsante è spento,
+  con il motivo.
+- **Il tetto** nel dialogo è un campo, con il massimo detto accanto: un valore più alto è rifiutato prima del clic.
+- **«Circa 5 s»** del riavvio è una stima per eccesso: misurati 0,4-0,5 s.
+- **Dopo «Elimina la replica…»** il PostgreSQL dell'istanza resta in ascolto in TLS, per nessun indirizzo: la
+  replica successiva non riavvia niente («sempre la prima volta»).
+- **Il ruolo `user`** del workspace non ha la sezione Dettagli tecnici: legge della copia solo nei job.
+- **Il cliente legge anche l'eliminazione** della copia, in un job senza nomi.
+- **«Cosa contiene»** dice «Leggibile solo da root e dall'utente della copia.»
+
+### Criteri
+1. **Provato.** Il dialogo su lab3 mostra «Di quale PostgreSQL» con «Il cluster della macchina: 3 istanze, 102 MB»
+   e «Quello di acme-odoo (Produzione): 44 MB». Le staging non compaiono. Al contrario, da lab4 verso lab3, che non
+   ha un cluster e ha una sola produzione dedicata con la sua staging, la scelta non c'è e il dialogo parla di
+   quell'istanza. Una macchina senza produzioni dedicate non è stata provata.
+2. **Provato.** La creazione rifà il PostgreSQL di acme-odoo una volta, in 0,4 s: 0 richieste fallite su 86.
+3. **Provato.** Replica ferma e 200 MB scritti: il badge dice «tiene 196 MB», lo slot 196,1 MB (0,0 %). Il disco del
+   workspace acme cresce di 160 MB.
+4. **Provato su un'istanza usa e getta** (acme-tmp, poi rimossa): risponde 200 dopo 4,9 s con `DB_HOST` verso lab3;
+   le altre quattro istanze di lab4 non si riavviano e hanno 0 richieste fallite.
+5. **Provato** come admin, developer e user del workspace: 0 volte «lab3», «172.30.0.13», «15432», «15433» nel DOM
+   e nelle route; nessuna dimensione nella riga del database; 403 sulle route della replica e sui job della
+   macchina. Eccezione, la stessa della parte B: l'esportazione del log degli accessi del workspace nomina chi ha
+   agito sull'istanza. Nella prova è «link lab3», perché «Leggi dalla replica…» e «Libera lo spazio di prima…» sono
+   stati cliccati attraverso il collegamento di lab3. Le note per il cliente hanno sorgente «system: the provider».

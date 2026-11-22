@@ -289,8 +289,62 @@ al giro successivo (ogni 20 s). Provato su lab2 (P) e lab1 (R).
     raggiunge: se A la vede con un altro (NAT), la prova fallisce e l'istanza non si sposta. Una concessione fatta
     su P negli ultimi 20 s prima di una promozione con P spento non è nella copia. Il log degli accessi del
     workspace, che il suo admin legge intero, mostra l'utente «automatic: database moved by lab2».
-- **Non costruito**: la replica di un database dedicato; più di una replica per cluster, e più di una ospitata per
-  macchina; le letture dalla replica per le istanze di altre macchine (le concessioni);
+- **La replica di un database dedicato** (UX-011 §D, costruita il 22/11/2026; `managedreplica.py` `Cluster`,
+  `Dedicated`, `source`). È lo stesso codice della replica del cluster: «il cluster della macchina di major N» è
+  diventato «un PostgreSQL di questa macchina», cioè il cluster o il servizio `db` della produzione di un'istanza.
+  La chiave è il major, oppure `<workspace>.<storage>.<istanza>` su P e `d<n>` su R. Nomi delle macchine di prova:
+  P = lab4, R = lab3.
+  - **Su P** il `compose.yaml` dell'istanza non cambia di un byte. Un `compose.override.yaml` di OmniaCLI pubblica la
+    porta del servizio `db` su una porta della macchina (da 15432) e dà a PostgreSQL certificato, chiave e un
+    `pg_hba.conf` di OmniaCLI, nella cartella `.replica` del progetto con una CA propria del database: la rete del
+    progetto come prima, il ruolo della replica dal solo indirizzo di R in TLS, poi `reject`. Il certificato vale
+    anche per il nome `db`, perché con la lettura dalla replica `db_sslmode = verify-full` vale anche per il database
+    dell'istanza. Si rifà solo il container `db`, non quello di Odoo.
+  - **Firewall.** La rete del progetto è quella dei workspace, quindi non si chiude il bridge come per il cluster: la
+    catena `OMNIACLI-DB-FWD` lascia passare solo da R le connessioni fatte a quella porta della macchina
+    (`conntrack --ctorigdstport`), e scarta le altre. La voce (`port<n>`) sta in `db-listen.json` per l'avvio. Dopo
+    un'eliminazione il database resta in ascolto per nessun indirizzo, come il cluster: la replica successiva non
+    riavvia niente. La porta si chiude a mano con `machine-db-replica-unlisten`.
+  - **Tetto (D11-1).** `max_slot_wal_keep_size` è il 10 % del disco del workspace, al massimo 20 GB: 2,9 GB su un
+    workspace da 29,4 GB. Un tetto più alto è rifiutato dall'helper di root, alla creazione e a «Cambia il tetto…».
+  - **Su R** un progetto suo, `<storage>/.machine-db/replica-d<n>`, con rete `omnirp<n>` e una porta sua: lo stesso
+    standby indurito della copia di un cluster. `pg_hba.conf` lascia entrare da P il ruolo `odoo` verso ogni database
+    della copia, perché il database di un dedicato non ha il nome del ruolo. R ospita la copia di un cluster e quante
+    copie di dedicati servono, una per database.
+  - **Il cliente (D11-2).** I job di P che nominano macchina, indirizzo e porta sono della macchina
+    (`_machine/<chiave>`) e l'utente del workspace riceve 403. Alla creazione, all'eliminazione e alla promozione
+    nasce un job dell'istanza scritto senza nomi, con sorgente «system: the provider». La pagina dice «Copia del
+    database: anche su un'altra macchina del fornitore».
+  - **La promozione** vale per quell'istanza sola, e solo con P che risponde, perché l'istanza gira su P. P ferma il
+    servizio `db` di quel progetto; R promuove; P riscrive il progetto come «database su un'altra macchina» (il
+    gemello `-remote` del template) e lo avvia. I dati di prima restano in `data/pgdata` fino a «Libera lo spazio di
+    prima…». **Il ritorno non è costruito**: il dialogo lo dice. La copia promossa si elimina da R solo quando P
+    risponde che l'istanza non c'è più.
+  - **Misure (22/11/2026, lab3 e lab4, PostgreSQL 17.12, Odoo 19, database di 44 MB):**
+    - creazione: job di 6 s su R, copia di 60 MB in 1 s. Il container `db` rifatto in 0,4-0,5 s (tre volte); su 86
+      richieste a `/web/login` di acme-odoo, una ogni mezzo secondo, 0 fallite. Su P è ripartito solo quel container.
+      La seconda creazione, dopo un'eliminazione, non riavvia niente;
+    - la porta pubblicata risponde da lab3 e non da un altro indirizzo della stessa rete;
+    - lettura accesa: `/web/login` non risponde per 2 s. Il riavvio dell'istanza rifà anche il suo `db`, come ogni
+      riavvio di un'istanza con database dedicato; la replica si ricollega da sola;
+    - replica ferma e 200 MB scritti: il badge dice «tiene 196 MB», lo slot tiene 196,1 MB; il disco del workspace
+      cresce di 160 MB (il resto sono segmenti già allocati);
+    - promozione di un'istanza usa e getta (acme-tmp): `/web/login` non risponde per 4,9 s; un valore scritto 1 s
+      prima del clic è nella copia; le altre quattro istanze di lab4 hanno 0 richieste fallite su 185 e nessun loro
+      container è ripartito;
+    - eliminazione da P con R che risponde: R cancella la copia al giro dopo. Con il pannello di P fermo
+      l'eliminazione da R finisce e dice cosa resta là; con il pannello di R fermo quella da P finisce e lo dice;
+    - come admin, developer e user del workspace: 0 volte il nome di R, il suo indirizzo, le porte e i nomi interni
+      nella pagina dell'istanza, nell'elenco dei job, nelle note e nelle route; 403 sulle route della replica.
+  - **Limiti.** Il ritorno dopo la promozione non c'è. Con P spento la replica di un dedicato non si promuove da
+    OmniaCLI. Un database dedicato con tablespace propri è rifiutato. Il ruolo `user` del workspace non ha i
+    Dettagli tecnici: legge la copia solo nei job. Se l'istanza viene eliminata mentre ha una replica, la copia resta
+    su R finché il suo admin non la elimina. La mappa non disegna la copia di un dedicato. La porta resta pubblicata
+    (chiusa da firewall e `pg_hba.conf`) dopo un'eliminazione. Il tempo del riavvio detto dal dialogo («circa 5 s») è
+    una stima per eccesso: su un database grande dipende dal checkpoint.
+- **Non costruito**: il ritorno dopo la promozione della replica di un database dedicato; più di una replica per
+  cluster o per database dedicato, e più di una copia di cluster ospitata per macchina; le letture dalla replica per
+  le istanze di altre macchine (le concessioni);
   la regolazione della replica (ha i valori di P: se R ha meno memoria di quanta P ne ha assegnata, la
   replica non parte e il job lo dice); il rinnovo del certificato della replica (10 anni). Se P sta dietro un NAT
   l'indirizzo con cui R lo vede arrivare non si può correggere dal dialogo. Uno storage aggiunto a P dopo la creazione
@@ -302,8 +356,8 @@ al giro successivo (ogni 20 s). Provato su lab2 (P) e lab1 (R).
   sotto il cluster di P solo nello schema a più macchine (S1), più la voce `replica` in «Da guardare»: la linea
   puntinata fra il cluster di P e il nodo di R non è disegnata, e lo schema di una macchina sola (S2) non mostra la
   replica.
-**Non costruita:** la replica creata e gestita da OmniaCLI per un database dedicato. Codice letto alla revisione
-57a005c (`carlo_dev_2026`).
+Codice letto alla revisione 57a005c (`carlo_dev_2026`); la replica di un database dedicato è costruita sopra la
+9f91aaf.
 Origine: Carlo, 21/11/2026, UX-008 D2: «Farei un Postgresql per Macchina ma attenzione che la singola istanza potrebbe far uso di un Postgresql su un altra macchina. Poi va considerato il caso di Odoo19 che può montare 2 database in cluster». Riferimento: la scheda PostgreSQL del pannello di riferimento (schermate 04-05 del 21/11/2026).
 
 ## 0. Il costo della decisione, in numeri (da confermare)

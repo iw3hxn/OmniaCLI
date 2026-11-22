@@ -1,10 +1,15 @@
 # Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""A read replica of the machine's PostgreSQL cluster, made and run by
+"""A read replica of a PostgreSQL of this machine, made and run by
 OmniaCLI (docs/adr/postgresql-della-macchina.md, AD-004 option A;
 docs/ux/UX-010-replica-di-lettura.md), root's side: what workspace-helper
-machine-db-replica-* runs. Two machines: P has the machine's cluster (the
+machine-db-replica-* runs. Two machines: P has the PostgreSQL (the
 primary), R is another OmniaCLI with a link to P and hosts the replica.
+The PostgreSQL is the machine's cluster of a major, or the dedicated
+database of the production of one instance (the db service of its compose
+project, on its workspace's disk: UX-011 §D): a Source, named by its key
+(the major, or <workspace>.<storage>.<instance>); what follows says the
+cluster, and Dedicated says where an instance's database differs.
 Everything is asked from R, through its link; P never calls R: what P has
 to say to R (dropped, replaced) R reads the next time it asks.
 
@@ -66,6 +71,18 @@ The databases the cluster gave to other machines (machinedb.grants) are in
 the copy: once promoted it lets the same roles in from the same addresses
 (UX-011 §B: promote, adopt, hosted_grant_*), one of them used by an
 instance of the very machine that hosts the copy included.
+
+The dedicated database of an instance (UX-011 §D, Dedicated). On P its db
+service listens over TLS on a port of this machine of its own, for the
+address of R only: a compose.override.yaml beside the instance's
+compose.yaml (never a change of it) publishes the port and gives PostgreSQL
+its certificate and a pg_hba.conf of OmniaCLI's (the project's own network
+as before, the replication's role from R's one address over TLS, nothing
+else), kept in the project's folder .replica with the record; the
+workspaces' firewall lets that one address reach that port. What it keeps
+for the copy is on the workspace's disk: 10 % of that disk at most, and
+never more than 20 GB (D11-1). On R the copy is a project of its own beside
+the others (replica-d<n>), as a cluster's. One replica per database.
 
 No secret is in an answer, in a log or on a command line: the password
 comes on the input and is written once in secret/."""
@@ -188,15 +205,18 @@ def verdict(state: dict | None) -> dict:
     return {**out, "code": "sync" if lag <= BEHIND_S else "behind", "lag": lag, "show_held": big, "warn": big}
 
 
-def problem(state: dict | None, who: str, now: datetime.datetime | None = None) -> str:
+def problem(state: dict | None, who: str, now: datetime.datetime | None = None,
+            whose: str = "the machine's PostgreSQL") -> str:
     """What the monitor says out of the panel (UX-010 D4): the replica not
     connected for WARN_AFTER seconds, or the cluster holding more than
-    WARN_HELD for it; "" when there is nothing to say."""
+    WARN_HELD for it; "" when there is nothing to say. whose: the
+    PostgreSQL the replica is of, when it is not the machine's cluster."""
     found = verdict(state)
     now = now or datetime.datetime.now()
     held = f"{found.get('held', 0) / GB:.1f} GB"
     if found["code"] == "lost":
-        return (f"the read replica on {who} lost its place: the cluster kept more changes for it than its cap. "
+        return (f"the read replica on {who} lost its place: {'the cluster' if whose.startswith('the machine') else whose} "
+                "kept more changes for it than its cap. "
                 "Drop it and make it again (Database tab)")
     if found["code"] == "off":
         try:
@@ -205,15 +225,418 @@ def problem(state: dict | None, who: str, now: datetime.datetime | None = None) 
             return ""
         if (now - since).total_seconds() < WARN_AFTER:
             return ""
-        return (f"the read replica on {who} is not connected since {since:%Y-%m-%d %H:%M}: the machine's PostgreSQL "
+        return (f"the read replica on {who} is not connected since {since:%Y-%m-%d %H:%M}: {whose} "
                 f"keeps {held} of changes for it, which grow until it comes back or it is dropped (Database tab)")
     if found["code"] in ("sync", "behind") and found.get("held", 0) > WARN_HELD:
-        return (f"the machine's PostgreSQL keeps {held} of changes for the read replica on {who}: the replica is "
+        return (f"{whose} keeps {held} of changes for the read replica on {who}: the replica is "
                 "connected but does not take them fast enough")
     return ""
 
 
-# --- on the primary (P): the cluster's project --------------------------------------
+# --- which PostgreSQL of this machine (P) a copy follows -------------------------------
+
+# what the dedicated database of an instance keeps for its copy at most (D11-1): a tenth of its
+# workspace's disk, and never more than this; the role Odoo has in it (the templates'); the
+# seconds its restart takes, as the dialog says them before (measured: see the ADR)
+DEDICATED_CAP_GB = 20.0
+DEDICATED_SHARE = 0.1
+DEDICATED_ROLE = "odoo"
+DEDICATED_SERVICE = "db"
+DEDICATED_RESTART_S = 5
+DEDICATED_CONF = "/etc/omniacli-db"
+OVERRIDE = "compose.override.yaml"
+OVERRIDE_MARK = "# written by omniacli workspace-helper machine-db-replica"
+
+
+def dedicated_cap_gb(disk_total: int) -> float:
+    """What the dedicated database of an instance keeps for its copy at most
+    (D11-1): 10 % of its workspace's disk, 20 GB at most, in tenths of GB."""
+    return max(CAP_RANGE[0], min(DEDICATED_CAP_GB, int(int(disk_total) * DEDICATED_SHARE * 10 / GB) / 10))
+
+
+def dedicated_project(workspace: str, storage: str, instance: str) -> Path:
+    """The project of the production of an instance of this machine (the
+    root helper puts its own check here: the workspace's disk mounted)."""
+    project = Path(machinedb.STORAGE_BASE) / storage / workspace / instance / "production"
+    if project.is_symlink() or not (project / "compose.yaml").is_file():
+        raise ClusterError(f"no project {instance}/production in workspace {workspace}")
+    return project
+
+
+def dedicated_key(workspace: str, storage: str, instance: str) -> str:
+    return f"{workspace}.{storage}.{instance}"
+
+
+def is_dedicated(key: str) -> bool:
+    return bool(machinedb.DEDICATED_KEY.fullmatch(str(key)))
+
+
+def _save_sources(data: dict) -> None:
+    path = machinedb.DEDICATED_SOURCES
+    if not data:
+        path.unlink(missing_ok=True)
+        return
+    path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    machinedb.write(path, json.dumps(data, indent=1, sort_keys=True) + "\n", mode=0o644)
+
+
+def dedicated_hba(subnet: str, replicated: dict | None = None) -> str:
+    """pg_hba.conf of the dedicated database of an instance that listens for
+    its copy: what the image wrote (the socket and the loopback of its
+    container), the project's own network with a password as before (Odoo),
+    the replication's role from the one address of the machine that hosts
+    the copy, over TLS, then reject: the port is of this machine now, and no
+    other address gets to try a password."""
+    network = ipaddress.ip_network(str(subnet))
+    lines = ["# written by omniacli workspace-helper: who reaches the PostgreSQL of this instance",
+             "local all all trust", "host all all 127.0.0.1/32 trust", "host all all ::1/128 trust",
+             "local replication all trust", "host replication all 127.0.0.1/32 trust", "host replication all ::1/128 trust",
+             f"host all all {network} scram-sha-256"]
+    if replicated and replicated.get("state") != "replaced":
+        lines.append(f'hostssl replication "{ROLE}" {machinedb.address(replicated.get("address"))}/32 scram-sha-256')
+    lines.append("host all all all reject")
+    return "\n".join(lines) + "\n"
+
+
+def override_text(reads: str | None, listen: dict | None) -> str:
+    """compose.override.yaml of an instance's project, OmniaCLI's: reads, the
+    Odoo service that reads from a replica (the CA its certificate is
+    verified against, for libpq); listen ({"port"}), the dedicated database
+    published on a port of this machine over TLS for its copy on another
+    machine. "" with neither: no file."""
+    if not reads and not listen:
+        return ""
+    text = (f"{OVERRIDE_MARK}-read: this instance reads from the\n"
+            "# read replica of the machine's cluster, on another machine. The CA the replica's certificate is\n"
+            "# verified against, for libpq (the cluster itself is reached by its socket, where TLS is not used)\n"
+            if not listen else
+            f"{OVERRIDE_MARK}: the dedicated database of this instance has a read\n"
+            "# replica on another machine (UX-011 D). It listens over TLS on a port of this machine, which the\n"
+            "# firewall lets the machine of the replica reach, with a pg_hba.conf that lets that one address in\n"
+            "# for the replication; an Odoo that reads from the replica verifies both certificates\n")
+    text += "services:\n"
+    if reads:
+        text += f"  {reads}:\n    environment:\n      PGSSLROOTCERT: /etc/odoo/db-replica-ca.pem\n"
+    if listen:
+        conf = DEDICATED_CONF
+        text += (f"  {DEDICATED_SERVICE}:\n    ports:\n      - \"0.0.0.0:{int(listen['port'])}:{machinedb.PORT_IN_DB}\"\n"
+                 f"    command: [\"postgres\", \"-c\", \"hba_file={conf}/pg_hba.conf\", \"-c\", \"ssl=on\",\n"
+                 f"              \"-c\", \"ssl_cert_file={conf}/server.crt\", \"-c\", \"ssl_key_file={conf}/server.key\",\n"
+                 f"              \"-c\", \"ssl_min_protocol_version=TLSv1.2\"]\n"
+                 f"    volumes:\n      - ./{machinedb.DEDICATED_FOLDER}/conf:{conf}:ro\n")
+    return text
+
+
+def override_reads(project: Path) -> str | None:
+    """The Odoo service OmniaCLI's override of a project makes read from a
+    replica, None when there is none. A file that is not OmniaCLI's is refused."""
+    path = project / OVERRIDE
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    if not text.startswith(OVERRIDE_MARK):
+        raise ClusterError(f"{path} is not OmniaCLI's: it is not written over")
+    found = re.search(r"(?m)^  ([A-Za-z0-9_.-]+):\n    environment:\n      PGSSLROOTCERT: ", text)
+    return found.group(1) if found else None
+
+
+def write_override(project: Path, reads: str | None, listen: dict | None) -> None:
+    text = override_text(reads, listen)
+    if text:
+        machinedb.write(project / OVERRIDE, text)
+    else:
+        (project / OVERRIDE).unlink(missing_ok=True)
+
+
+class Cluster:
+    """The machine's cluster of a major: its project is the cluster's own."""
+    kind = "cluster"
+
+    def __init__(self, major: str):
+        self.key = self.major = str(major)
+        self.project = self.folder = machinedb.project_of(major)
+        self.what = f"the machine's PostgreSQL {major}"
+        self.whose = "the machine's PostgreSQL"
+
+    def sql(self, statements: str) -> str:
+        return machinedb.sql(self.project, "postgres", statements)
+
+    def listening(self) -> dict | None:
+        return machinedb.listening(self.project)
+
+    def listen_on(self, names: list[str]) -> dict:
+        return machinedb.listen_on(self.major, names)
+
+    def write_hba(self) -> None:
+        machinedb.write_hba(self.project, self.environments())
+
+    def environments(self) -> dict:
+        return machinedb.environments(self.project)
+
+    def grants(self) -> dict:
+        return machinedb.grants(self.project)
+
+    def instances(self) -> list[str]:
+        return sorted(f"{e.get('workspace')}-{e.get('instance')}" for e in self.environments().values())
+
+    def roots(self) -> list[str]:
+        return machinedb._roots_of((self.project / "compose.yaml").read_text(encoding="utf-8"))
+
+    def ca(self) -> str:
+        return machinedb.ca_certificate(self.project)
+
+    def names(self) -> list[str]:
+        return machinedb.certificate_names((self.project / "conf" / "server.crt").read_text(encoding="utf-8"))
+
+    def cap(self, value) -> float:
+        return cap_gb(value)
+
+    def restart_refused(self) -> str:
+        return ("the machine's PostgreSQL is made again once to open its port over TLS: every instance on "
+                "it loses its connections. Confirm the restart to make the replica")
+
+    def stop(self) -> bool:
+        machinedb._run(self.project, "stop", "-t", "120", SERVICE, timeout=300)
+        done = machinedb._run(self.project, "ps", "--format", "{{.State}}", SERVICE, check=False)
+        return (done.stdout or "").strip() != "running"
+
+    def tablespace_folders(self) -> list[str]:
+        return sorted({str(Path(str(e.get("mount") or "")) / machinedb.WS_FOLDER / "ts") for e in self.environments().values()
+                       if e.get("mount")})
+
+
+class Dedicated:
+    """The dedicated database of the production of an instance: the db
+    service of its compose project, on its workspace's disk (UX-011 §D)."""
+    kind = "dedicated"
+
+    def __init__(self, key: str):
+        found = machinedb.DEDICATED_KEY.fullmatch(str(key))
+        if not found:
+            raise ClusterError(f"{key!r} is not a PostgreSQL of this machine: the major of its cluster, or "
+                               "<workspace>.<storage>.<instance> of an instance with a database of its own")
+        self.key = str(key)
+        self.workspace, self.storage, self.instance = found.groups()
+        self.project = dedicated_project(self.workspace, self.storage, self.instance)
+        self.folder = self.project / machinedb.DEDICATED_FOLDER
+        self.name = f"{self.workspace}-{self.instance}"
+        self.what = self.whose = f"the PostgreSQL of {self.name}"
+        try:
+            self.major = (self.project / "data" / "pgdata" / "PG_VERSION").read_text(encoding="utf-8").strip()
+        except OSError:
+            self.major = ""
+
+    def has_database(self) -> bool:
+        """Its project has a database service of its own (one replaced by its copy has none any more)."""
+        return bool(re.search(rf"(?m)^  {DEDICATED_SERVICE}:\s*$", (self.project / "compose.yaml").read_text(encoding="utf-8")))
+
+    def refusal(self) -> str:
+        """Why this instance's database cannot have a copy of its own, "" when it can."""
+        if not self.has_database():
+            return f"{self.name} has no database of its own: only a dedicated one has a replica of its own"
+        if not self.major:
+            return f"the database of {self.name} is not there yet"
+        if self.major not in machinedb.IMAGE:
+            return f"PostgreSQL {self.major} is not one OmniaCLI replicates ({', '.join(machinedb.IMAGE)})"
+        return ""
+
+    def _env(self) -> dict:
+        try:
+            text = (self.project / ".env").read_text(encoding="utf-8")
+        except OSError:
+            return {}
+        return dict(line.split("=", 1) for line in text.splitlines() if "=" in line and not line.startswith("#"))
+
+    def subnet(self) -> str:
+        try:
+            return str(ipaddress.ip_network(self._env().get("SUBNET", "").strip()))
+        except ValueError:
+            raise ClusterError(f"the network of {self.name} is not in its .env: its database is not published") from None
+
+    def owner(self) -> tuple[int, int]:
+        """The user PostgreSQL runs as in the instance's container: who owns its data."""
+        found = (self.project / "data" / "pgdata").stat()
+        return found.st_uid, found.st_gid
+
+    def sql(self, statements: str) -> str:
+        done = machinedb._run(self.project, "exec", "-T", "--user", "postgres", DEDICATED_SERVICE, "psql", "-X", "-At", "-q",
+                              "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "postgres", input=statements, check=False)
+        if done.returncode:
+            raise ClusterError(f"{self.what} refused: {(done.stderr or done.stdout).strip()[-400:]}")
+        return done.stdout
+
+    def _ready(self, timeout: float = READY_TIMEOUT) -> None:
+        end = time.monotonic() + timeout
+        while machinedb._run(self.project, "exec", "-T", DEDICATED_SERVICE, "pg_isready", "-q", "-h", "127.0.0.1",
+                             check=False).returncode:
+            if time.monotonic() > end:
+                raise ClusterError(f"{self.what} does not answer within {timeout:.0f} s")
+            time.sleep(0.5)
+
+    def listening(self) -> dict | None:
+        return machinedb.listening(self.folder)
+
+    def _folders(self) -> None:
+        machinedb._folder(self.folder, 0o755)
+        machinedb._folder(self.folder / "conf", 0o755)
+
+    def _write_hba_file(self) -> None:
+        machinedb.write(self.folder / "conf" / "pg_hba.conf", dedicated_hba(self.subnet(), record(self.folder)), mode=0o644)
+
+    def listen_on(self, names: list[str]) -> dict:
+        """The database listens on a port of this machine, over TLS, for
+        names (and db, the name Odoo reaches it by in its project): its CA
+        and certificate, pg_hba.conf, the override; its container is made
+        again, Odoo's is not: the seconds it did not answer. Already
+        listening: the certificate only, when a name is new. One that does
+        not come back is put back as it was, and said."""
+        names = machinedb.reached_as(names)
+        if not names:
+            raise ClusterError("the name the other machine reaches this one by is missing")
+        self._folders()
+        found = self.listening()
+        changed = machinedb.ensure_tls(self.folder, self.major, [*names, DEDICATED_SERVICE], owner=self.owner())
+        if found:
+            if changed:
+                self.sql("SELECT pg_reload_conf();\n")
+            return {**found, "restarted_s": None}
+        taken = {int((machinedb.listening(Path(str(v.get("project")))) or {}).get("port") or 0)
+                 for v in machinedb.registry().values()}
+        taken |= {int((machinedb.listening(Path(str(v.get("project") or "")) / machinedb.DEDICATED_FOLDER) or {}).get("port") or 0)
+                  for v in machinedb.dedicated_sources().values()}
+        port = machinedb.pick_port(taken)
+        found = {"port": port, "bridge": ""}
+        self._write_hba_file()
+        reads = override_reads(self.project)
+        try:
+            self.sql("CHECKPOINT;\n")
+        except ClusterError:
+            pass
+        write_override(self.project, reads, found)
+        started = time.monotonic()
+        try:
+            machinedb._run(self.project, "up", "-d", "--no-deps", DEDICATED_SERVICE, timeout=600)
+            self._ready()
+        except (ClusterError, subprocess.TimeoutExpired) as exc:
+            write_override(self.project, reads, None)
+            machinedb._run(self.project, "up", "-d", "--no-deps", DEDICATED_SERVICE, check=False, timeout=600)
+            raise ClusterError(f"{self.what} did not come back listening ({exc}): it runs as before") from None
+        seconds = round(time.monotonic() - started, 1)
+        machinedb.write(self.folder / machinedb.LISTEN_FILE, json.dumps(found, indent=1, sort_keys=True) + "\n")
+        self._registered(True)
+        return {**found, "restarted_s": seconds}
+
+    def listen_off(self) -> dict:
+        """The port closed again and the database as its compose.yaml says
+        it: its container made again; its CA and certificate go with the
+        folder. Refused while a copy follows it."""
+        followed = record(self.folder) or {}
+        if followed and followed.get("state") != "replaced":
+            raise ClusterError(f"the read replica on {followed.get('link')} follows {self.what} through this port: "
+                               "drop the replica first")
+        found = self.listening()
+        reads = override_reads(self.project)
+        seconds = None
+        if found or (self.project / OVERRIDE).exists():
+            write_override(self.project, reads, None)
+            started = time.monotonic()
+            running = machinedb._run(self.project, "ps", "--format", "{{.State}}", DEDICATED_SERVICE, check=False)
+            if (running.stdout or "").strip() == "running":
+                try:
+                    self.sql("CHECKPOINT;\n")
+                except ClusterError:
+                    pass
+                machinedb._run(self.project, "up", "-d", "--no-deps", DEDICATED_SERVICE, timeout=600)
+                self._ready()
+                seconds = round(time.monotonic() - started, 1)
+        shutil.rmtree(self.folder, ignore_errors=True)
+        self._registered(False)
+        return {"closed": (found or {}).get("port"), "restarted_s": seconds}
+
+    def write_hba(self) -> None:
+        """pg_hba.conf written again and reloaded; refused by PostgreSQL, the file of before is put back."""
+        path = self.folder / "conf" / "pg_hba.conf"
+        before = path.read_text(encoding="utf-8") if path.is_file() else None
+        self._folders()
+        self._write_hba_file()
+        if not self.listening():
+            return
+        try:
+            errors = self.sql("SELECT count(*) FROM pg_hba_file_rules WHERE error IS NOT NULL;\n").strip()
+            if errors != "0":
+                raise ClusterError(f"pg_hba.conf refused by PostgreSQL ({errors} lines in error)")
+            self.sql("SELECT pg_reload_conf();\n")
+        except ClusterError:
+            if before is not None:
+                machinedb.write(path, before, mode=0o644)
+            raise
+
+    def environments(self) -> dict:
+        return {DEDICATED_ROLE: {"workspace": self.workspace, "instance": self.instance}}
+
+    def grants(self) -> dict:
+        return {}
+
+    def instances(self) -> list[str]:
+        return [self.name]
+
+    def roots(self) -> list[str]:
+        return []
+
+    def ca(self) -> str:
+        return machinedb.ca_certificate(self.folder)
+
+    def names(self) -> list[str]:
+        return machinedb.certificate_names((self.folder / "conf" / "server.crt").read_text(encoding="utf-8"))
+
+    def disk(self) -> tuple[int, int]:
+        """(the size, the room free) of the workspace's disk the database is on."""
+        usage = shutil.disk_usage(self.project)
+        return usage.total, usage.free
+
+    def cap_limit(self) -> float:
+        return dedicated_cap_gb(self.disk()[0])
+
+    def cap(self, value) -> float:
+        limit = self.cap_limit()
+        found = cap_gb(limit if value in (None, "") else value)
+        if found > limit:
+            raise ClusterError(f"what {self.what} keeps for its replica is on the disk of the workspace {self.workspace}: "
+                               f"{limit:g} GB at most (a tenth of that disk, and never more than {DEDICATED_CAP_GB:g} GB)")
+        return found
+
+    def restart_refused(self) -> str:
+        return (f"{self.what} is restarted once to open a port over TLS: {self.name} does not answer for those "
+                "seconds. Confirm the restart to make the replica")
+
+    def stop(self) -> bool:
+        machinedb._run(self.project, "stop", "-t", "120", DEDICATED_SERVICE, timeout=300)
+        done = machinedb._run(self.project, "ps", "--format", "{{.State}}", DEDICATED_SERVICE, check=False)
+        return (done.stdout or "").strip() != "running"
+
+    def _registered(self, there: bool) -> None:
+        """Kept among the dedicated databases that listen for a copy (root's
+        file: the firewall and the application read it), or taken away."""
+        kept = machinedb.dedicated_sources()
+        if there:
+            kept[self.key] = {"project": str(self.project), "workspace": self.workspace, "storage": self.storage,
+                              "instance": self.instance}
+        else:
+            kept.pop(self.key, None)
+        _save_sources(kept)
+
+    def tablespace_folders(self) -> list[str]:
+        return []
+
+
+def source(key: str):
+    """The PostgreSQL of this machine key names: the cluster of that major,
+    or the dedicated database of an instance (<workspace>.<storage>.<instance>)."""
+    return Dedicated(key) if is_dedicated(key) else Cluster(key)
+
+
+# --- on the primary (P): the PostgreSQL's own folder ---------------------------------
 
 def record(project: Path) -> dict | None:
     return machinedb.replica(project)
@@ -251,131 +674,137 @@ def unfit_of(line: list[str], what: str = "the machine's PostgreSQL") -> str:
     return ""
 
 
-def unfit(project: Path) -> str:
-    """Why the cluster cannot feed a replica as it is, "" when it can."""
-    return unfit_of(machinedb.sql(project, "postgres", UNFIT_SQL).strip().split("|"))
+def unfit(src) -> str:
+    """Why the PostgreSQL cannot feed a replica as it is, "" when it can."""
+    return unfit_of(src.sql(UNFIT_SQL).strip().split("|"), src.whose)
+
+
+SIZE_SQL = ("SELECT (SELECT sum(pg_database_size(oid)) FROM pg_database), current_setting('server_version');\n")
 
 
 def facts(major: str) -> dict:
     """What the machine that will host the replica says before it is made:
-    the size of the whole cluster, whose data it holds, whether the cluster
-    restarts to open its port, the storages its tablespaces are under."""
-    project = machinedb.project_of(major)
-    envs, lent = machinedb.environments(project), machinedb.grants(project)
-    rec = record(project)
-    answer = {"major": major, "running": False, "size": 0, "version": "", "port": (machinedb.listening(project) or {}).get("port"),
-              "instances": sorted(f"{e.get('workspace')}-{e.get('instance')}" for e in envs.values()),
-              "grants": sorted(lent), "why": "",
-              "roots": machinedb._roots_of((project / "compose.yaml").read_text(encoding="utf-8")),
+    the size of the whole PostgreSQL, whose data it holds, whether it
+    restarts to open its port, the storages its tablespaces are under; of
+    the dedicated database of an instance, the workspace it is of, its
+    disk, and what it keeps for the copy at most."""
+    src = source(major)
+    if src.kind == "dedicated" and src.refusal():
+        raise ClusterError(src.refusal())
+    rec = record(src.folder)
+    answer = {"major": src.major, "key": src.key, "kind": src.kind, "running": False, "size": 0, "version": "",
+              "port": (src.listening() or {}).get("port"), "instances": src.instances(),
+              "grants": sorted(src.grants()), "why": "", "roots": src.roots(),
               "replica": {"link": rec.get("link"), "state": rec.get("state")} if rec else None}
     answer["restarts"] = answer["port"] is None
+    if src.kind == "dedicated":
+        total, free = src.disk()
+        answer.update(workspace=src.workspace, name=src.name, disk_total=total, disk_free=free,
+                      cap_gb=src.cap_limit(), restart_s=DEDICATED_RESTART_S)
     try:
-        size, version = machinedb.sql(project, "postgres", "SELECT (SELECT sum(pg_database_size(oid)) FROM pg_database), "
-                                                           "current_setting('server_version');\n").strip().split("|")
-        answer.update(size=int(size or 0), version=version, running=True, why=unfit(project))
+        size, version = src.sql(SIZE_SQL).strip().split("|")
+        answer.update(size=int(size or 0), version=version, running=True, why=unfit(src))
+        if src.kind == "dedicated" and not answer["why"] and tablespaces_of(src):
+            answer["why"] = (f"{src.what} has tablespaces of its own: a copy on another machine has no folder for "
+                             "them")
     except (ClusterError, ValueError):
-        answer["why"] = "the machine's PostgreSQL does not answer"
+        answer["why"] = f"{src.whose} does not answer"
     return answer
 
 
-def _drop_what_is_there(project: Path) -> None:
+def _drop_what_is_there(src) -> None:
     """The slot and the role of a replica, when they are there: its walsender ended first."""
     for _ in range(10):
-        active = machinedb.sql(project, "postgres", "SELECT coalesce(pg_terminate_backend(active_pid), false) FROM "
-                                                    f"pg_replication_slots WHERE slot_name = '{SLOT}' AND active;\n").strip()
-        machinedb.sql(project, "postgres", "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                                           f"WHERE usename = '{ROLE}';\n")
+        active = src.sql("SELECT coalesce(pg_terminate_backend(active_pid), false) FROM "
+                         f"pg_replication_slots WHERE slot_name = '{SLOT}' AND active;\n").strip()
+        src.sql(f"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = '{ROLE}';\n")
         if not active:
             break
         time.sleep(0.5)
     try:
-        machinedb.sql(project, "postgres", f"SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots "
-                                           f"WHERE slot_name = '{SLOT}';\n")
+        src.sql(f"SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots WHERE slot_name = '{SLOT}';\n")
     except ClusterError:
         # taken again meanwhile by a replica that reconnects: its role goes first, then it cannot
-        machinedb.sql(project, "postgres", f"ALTER ROLE {machinedb.ident(ROLE)} NOLOGIN;\n"
-                                           f"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = '{ROLE}';\n")
+        src.sql(f"ALTER ROLE {machinedb.ident(ROLE)} NOLOGIN;\n"
+                f"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = '{ROLE}';\n")
         time.sleep(1)
-        machinedb.sql(project, "postgres", f"SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots "
-                                           f"WHERE slot_name = '{SLOT}';\n")
-    machinedb.sql(project, "postgres", f"DROP ROLE IF EXISTS {machinedb.ident(ROLE)};\n")
+        src.sql(f"SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots WHERE slot_name = '{SLOT}';\n")
+    src.sql(f"DROP ROLE IF EXISTS {machinedb.ident(ROLE)};\n")
 
 
 def allow(major: str, spec: dict) -> dict:
     """The machine of spec ("address": the one it comes from, "verifier":
     its role's SCRAM verifier, "reached_as": how it reaches this machine,
-    "link", "by", "cap_gb", "restart": the cluster may be made again to open
-    its port) let in to copy the cluster and follow it: the role, the slot,
-    the cap, the line of pg_hba.conf. One replica per cluster. What that
-    machine needs to connect, without any secret."""
-    project = machinedb.project_of(major)
-    source = machinedb.address(spec.get("address"))
+    "link", "by", "cap_gb", "restart": the PostgreSQL may be made again to
+    open its port) let in to copy the PostgreSQL and follow it: the role,
+    the slot, the cap, the line of pg_hba.conf. One replica per PostgreSQL.
+    What that machine needs to connect, without any secret."""
+    src = source(major)
+    if src.kind == "dedicated" and src.refusal():
+        raise ClusterError(src.refusal())
+    origin = machinedb.address(spec.get("address"))
     verifier = machinedb.literal(str(spec.get("verifier") or ""), machinedb.VERIFIER)
     link, by = str(spec.get("link") or ""), str(spec.get("by") or "")
     if not machinedb.LINK_NAME.fullmatch(link):
         raise ClusterError("a replica is asked by the machine that hosts it, through its link")
-    cap = cap_gb(spec.get("cap_gb", CAP_GB))
-    found = record(project)
+    cap = src.cap(spec.get("cap_gb", CAP_GB if src.kind == "cluster" else None))
+    found = record(src.folder)
     if found:
-        raise ClusterError(f"the machine's PostgreSQL {major} has a read replica already, on {found.get('link')}: "
+        raise ClusterError(f"{src.what} has a read replica already, on {found.get('link')}: "
                            "drop it first, from there or from here")
-    why = unfit(project)
+    why = unfit(src)
     if why:
         raise ClusterError(why)
-    if machinedb.listening(project) is None and not spec.get("restart"):
-        raise ClusterError("the machine's PostgreSQL is made again once to open its port over TLS: every instance on "
-                           "it loses its connections. Confirm the restart to make the replica")
-    listen = machinedb.listen_on(major, [str(spec.get("reached_as") or "")])
-    envs = machinedb.environments(project)
+    if src.listening() is None and not spec.get("restart"):
+        raise ClusterError(src.restart_refused())
+    listen = src.listen_on([str(spec.get("reached_as") or "")])
+    envs = src.environments()
     recorded = False
     try:
         # what an attempt that did not end left: it is ours (the names are internal), it goes
-        _drop_what_is_there(project)
-        machinedb.sql(project, "postgres", f"CREATE ROLE {machinedb.ident(ROLE)} LOGIN REPLICATION NOSUPERUSER "
-                                           f"NOCREATEDB NOCREATEROLE CONNECTION LIMIT 4 PASSWORD {verifier};\n")
+        _drop_what_is_there(src)
+        src.sql(f"CREATE ROLE {machinedb.ident(ROLE)} LOGIN REPLICATION NOSUPERUSER "
+                f"NOCREATEDB NOCREATEROLE CONNECTION LIMIT 4 PASSWORD {verifier};\n")
         # reserved at once: the changes from now are kept, the copy and what follows it miss none
-        machinedb.sql(project, "postgres", f"SELECT pg_create_physical_replication_slot('{SLOT}', true);\n")
-        machinedb.sql(project, "postgres", f"ALTER SYSTEM SET max_slot_wal_keep_size = '{int(cap * 1024)}MB';\n"
-                                           "SELECT pg_reload_conf();\n")
-        _save_record(project, {"link": link, "by": by, "address": source, "at": _now(), "cap_gb": cap,
-                               "state": "copying"})
+        src.sql(f"SELECT pg_create_physical_replication_slot('{SLOT}', true);\n")
+        src.sql(f"ALTER SYSTEM SET max_slot_wal_keep_size = '{int(cap * 1024)}MB';\nSELECT pg_reload_conf();\n")
+        rec = {"link": link, "by": by, "address": origin, "at": _now(), "cap_gb": cap, "state": "copying"}
+        _save_record(src.folder, rec)
         recorded = True
-        machinedb.write_hba(project, envs)
+        src.write_hba()
     except ClusterError:
         if recorded:
-            _save_record(project, None)
+            _save_record(src.folder, None)
         try:
-            _drop_what_is_there(project)
-            machinedb.sql(project, "postgres", "ALTER SYSTEM RESET max_slot_wal_keep_size;\nSELECT pg_reload_conf();\n")
-            machinedb.write_hba(project, envs)
+            _drop_what_is_there(src)
+            src.sql("ALTER SYSTEM RESET max_slot_wal_keep_size;\nSELECT pg_reload_conf();\n")
+            src.write_hba()
         except ClusterError:
             pass
         raise
-    size, version = machinedb.sql(project, "postgres", "SELECT (SELECT sum(pg_database_size(oid)) FROM pg_database), "
-                                                       "current_setting('server_version');\n").strip().split("|")
-    return {"port": listen["port"], "restarted_s": listen["restarted_s"], "address": source, "cap_gb": cap,
-            "ca": machinedb.ca_certificate(project), "version": version, "size": int(size or 0),
-            "names": machinedb.certificate_names((project / "conf" / "server.crt").read_text(encoding="utf-8")),
-            "roots": machinedb._roots_of((project / "compose.yaml").read_text(encoding="utf-8")),
-            "environments": sorted(envs), "tablespaces": tablespaces_of(project),
-            "serves": len(envs), "grants": sorted(machinedb.grants(project))}
+    size, version = src.sql(SIZE_SQL).strip().split("|")
+    return {"port": listen["port"], "restarted_s": listen["restarted_s"], "address": origin, "cap_gb": cap,
+            "ca": src.ca(), "version": version, "size": int(size or 0), "names": src.names(), "roots": src.roots(),
+            "environments": sorted(envs), "tablespaces": tablespaces_of(src),
+            "serves": len(envs), "grants": sorted(src.grants()), "kind": src.kind, "major": src.major,
+            **({"workspace": src.workspace, "name": src.name} if src.kind == "dedicated" else {})}
 
 
-def tablespaces_of(project: Path) -> list[str]:
-    """Where the tablespaces of the cluster are: each folder the replica needs at that same path."""
-    out = machinedb.sql(project, "postgres", "SELECT pg_tablespace_location(oid) FROM pg_tablespace "
-                                             "WHERE spcname NOT IN ('pg_default', 'pg_global');\n")
+def tablespaces_of(src) -> list[str]:
+    """Where the tablespaces of the PostgreSQL are: each folder the replica needs at that same path."""
+    out = src.sql("SELECT pg_tablespace_location(oid) FROM pg_tablespace WHERE spcname NOT IN ('pg_default', 'pg_global');\n")
     return sorted(line.strip() for line in out.splitlines() if machinedb.SAFE_PATH.fullmatch(line.strip()))
 
 
 def ready(major: str, spec: dict) -> dict:
     """The replica answers on the machine that hosts it: where an instance of
     this machine reads from it (host, port) and the CA its certificate is
-    verified against, kept in the cluster's record."""
-    project = machinedb.project_of(major)
+    verified against, kept in the PostgreSQL's record."""
+    src = source(major)
+    project = src.folder
     rec = record(project)
     if not rec:
-        raise ClusterError(f"the machine's PostgreSQL {major} has no read replica")
+        raise ClusterError(f"{src.what} has no read replica")
     host = machinedb.reached_as([spec.get("host")])[0]
     port = str(spec.get("port") or "")
     if not (port.isdigit() and 1024 <= int(port) <= 65535):
@@ -482,28 +911,30 @@ def _seen(project: Path, found: dict, ready: bool, fallback: str | None, answer:
 
 
 def state(major: str, now: float | None = None) -> dict:
-    """What this machine sees of the replica of its cluster ({"exists":
+    """What this machine sees of the replica of its PostgreSQL ({"exists":
     False} with none): its record, connected or since when not, the seconds
     behind, what the slot holds against the cap, the copy's progress, the
-    disk free here and what the cluster writes in an hour."""
-    project = machinedb.project_of(major)
+    disk free here and what the PostgreSQL writes in an hour."""
+    src = source(major)
+    project = src.folder
     rec = record(project)
     if not rec:
         return {"exists": False, "major": major}
-    envs = machinedb.environments(project)
-    answer = {"exists": True, "major": major, **{k: rec.get(k) for k in (
+    envs = src.environments()
+    answer = {"exists": True, "major": major, "kind": src.kind, **{k: rec.get(k) for k in (
         "link", "by", "address", "at", "cap_gb", "state", "host", "port", "ready_at", "replaced_at", "seconds", "size")},
         "connected": False, "lag": None, "since": None, "held": 0, "wal_status": "", "progress": None, "rate": None,
-        "cap": int(float(rec.get("cap_gb") or CAP_GB) * GB), "free": shutil.disk_usage(project).free,
-        # what the machine that hosts it follows: the instances the cluster has now, and where their tablespaces are
-        "environments": sorted(envs), "instances": sorted(f"{e.get('workspace')}-{e.get('instance')}" for e in envs.values()),
-        "tablespaces": sorted({str(Path(str(e.get("mount") or "")) / machinedb.WS_FOLDER / "ts") for e in envs.values()
-                               if e.get("mount")}),
-        "grants": sorted(machinedb.grants(project)), "grant_lines": grant_lines(project)}
+        "cap": int(float(rec.get("cap_gb") or CAP_GB) * GB), "free": shutil.disk_usage(src.project).free,
+        # what the machine that hosts it follows: the instances the PostgreSQL has now, and where their tablespaces are
+        "environments": sorted(envs), "instances": src.instances(), "tablespaces": src.tablespace_folders(),
+        "grants": sorted(src.grants()), "grant_lines": grant_lines(src.project)}
+    if src.kind == "dedicated":
+        # the most it may keep, on its workspace's disk (D11-1): what Change the cap… is refused above
+        answer["cap_max"] = src.cap_limit()
     if rec.get("state") == "replaced":
         return answer
     try:
-        found = json.loads(machinedb.sql(project, "postgres", STATE_SQL).strip() or "{}")
+        found = json.loads(src.sql(STATE_SQL).strip() or "{}")
     except (ClusterError, ValueError):
         return {**answer, "unread": True}
     answer = _seen(project, found, rec.get("state") == "ready", rec.get("ready_at") or rec.get("at"), answer, now)
@@ -521,40 +952,41 @@ def grant_lines(project: Path) -> dict:
 
 
 def set_cap(major: str, value) -> dict:
-    project = machinedb.project_of(major)
-    rec = record(project)
+    src = source(major)
+    rec = record(src.folder)
     if not rec or rec.get("state") == "replaced":
-        raise ClusterError(f"the machine's PostgreSQL {major} has no read replica")
-    cap = cap_gb(value)
-    machinedb.sql(project, "postgres", f"ALTER SYSTEM SET max_slot_wal_keep_size = '{int(cap * 1024)}MB';\n"
-                                       "SELECT pg_reload_conf();\n")
-    _save_record(project, {**rec, "cap_gb": cap})
+        raise ClusterError(f"{src.what} has no read replica")
+    cap = src.cap(value)
+    src.sql(f"ALTER SYSTEM SET max_slot_wal_keep_size = '{int(cap * 1024)}MB';\nSELECT pg_reload_conf();\n")
+    _save_record(src.folder, {**rec, "cap_gb": cap})
     return {"cap_gb": cap}
 
 
 def drop(major: str) -> dict:
-    """What the cluster keeps for its replica taken away: the slot (the
+    """What the PostgreSQL keeps for its replica taken away: the slot (the
     changes it held are freed at the next checkpoint, asked here), the role,
     the line of pg_hba.conf, the cap. The copy on the other machine is that
-    machine's to delete."""
-    project = machinedb.project_of(major)
-    rec = record(project)
+    machine's to delete. Nothing restarts: a PostgreSQL that listens goes on
+    listening, for no address (pg_hba.conf, the firewall), as the cluster
+    does; the next replica finds its port open."""
+    src = source(major)
+    rec = record(src.folder)
     if not rec:
-        raise ClusterError(f"the machine's PostgreSQL {major} has no read replica")
+        raise ClusterError(f"{src.what} has no read replica")
     if rec.get("state") == "replaced":
         raise ClusterError("the replica took this cluster's place: it is not dropped from here")
     held = 0
     try:
-        held = int(float(machinedb.sql(project, "postgres", "SELECT coalesce((SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), "
-                                       f"restart_lsn) FROM pg_replication_slots WHERE slot_name = '{SLOT}'), 0);\n").strip() or 0))
+        held = int(float(src.sql("SELECT coalesce((SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), "
+                                 f"restart_lsn) FROM pg_replication_slots WHERE slot_name = '{SLOT}'), 0);\n").strip() or 0))
     except (ClusterError, ValueError):
         pass
-    _save_record(project, None)
-    machinedb.write_hba(project, machinedb.environments(project))
-    _drop_what_is_there(project)
-    machinedb.sql(project, "postgres", "ALTER SYSTEM RESET max_slot_wal_keep_size;\nSELECT pg_reload_conf();\n")
+    _save_record(src.folder, None)
+    src.write_hba()
+    _drop_what_is_there(src)
+    src.sql("ALTER SYSTEM RESET max_slot_wal_keep_size;\nSELECT pg_reload_conf();\n")
     try:
-        machinedb.sql(project, "postgres", "CHECKPOINT;\n")
+        src.sql("CHECKPOINT;\n")
     except ClusterError:
         pass
     return {"dropped": True, "link": rec.get("link"), "address": rec.get("address"), "freed": max(0, held),
@@ -562,42 +994,43 @@ def drop(major: str) -> dict:
 
 
 def replaced(major: str) -> dict:
-    """The replica was promoted, or is about to be: this cluster is stopped
-    (a checkpoint, PostgreSQL's fast stop: a replica that is connected gets
-    everything first) and stays stopped; its record says so."""
-    project = machinedb.project_of(major)
+    """The replica was promoted, or is about to be: this PostgreSQL is
+    stopped (a checkpoint, PostgreSQL's fast stop: a replica that is
+    connected gets everything first) and stays stopped; its record says so."""
+    src = source(major)
+    project = src.folder
     rec = record(project)
     if not rec:
-        raise ClusterError(f"the machine's PostgreSQL {major} has no read replica")
+        raise ClusterError(f"{src.what} has no read replica")
     if rec.get("state") == "copying":
         raise ClusterError("the replica is not a whole copy yet: it takes this cluster's place only after it was in sync")
     if rec.get("state") == "replaced":
         return {"stopped": True, "already": True, "replaced_at": rec.get("replaced_at"),
-                "environments": machinedb.environments(project), "grants": sorted(machinedb.grants(project)),
-                "grant_lines": grant_lines(project), "host": rec.get("host"), "port": rec.get("port")}
+                "environments": src.environments(), "grants": sorted(src.grants()),
+                "grant_lines": grant_lines(src.project), "host": rec.get("host"), "port": rec.get("port")}
     try:
-        machinedb.sql(project, "postgres", "CHECKPOINT;\n")
+        src.sql("CHECKPOINT;\n")
     except ClusterError:
         pass
     started = time.monotonic()
-    machinedb._run(project, "stop", "-t", "120", SERVICE, timeout=300)
-    done = machinedb._run(project, "ps", "--format", "{{.State}}", SERVICE, check=False)
-    if (done.stdout or "").strip() == "running":
-        raise ClusterError("the machine's PostgreSQL did not stop: nothing is promoted over a cluster that runs")
+    if not src.stop():
+        raise ClusterError(f"{src.whose} did not stop: nothing is promoted over a "
+                           f"{'cluster' if src.kind == 'cluster' else 'database'} that runs")
     at = _now()
     _save_record(project, {**rec, "state": "replaced", "replaced_at": at})
     return {"stopped": True, "already": False, "replaced_at": at, "seconds": round(time.monotonic() - started, 1),
-            "environments": machinedb.environments(project), "grants": sorted(machinedb.grants(project)),
-            "grant_lines": grant_lines(project), "host": rec.get("host"), "port": rec.get("port")}
+            "environments": src.environments(), "grants": sorted(src.grants()),
+            "grant_lines": grant_lines(src.project), "host": rec.get("host"), "port": rec.get("port")}
 
 
 def target(major: str) -> dict:
-    """Where an instance of this machine reaches the replica of its cluster:
-    {"host", "port", "ca", "state", "link"}; refused when there is none that
-    answers yet."""
-    rec = record(machinedb.project_of(major))
+    """Where an instance of this machine reaches the replica of its
+    PostgreSQL: {"host", "port", "ca", "state", "link"}; refused when there
+    is none that answers yet."""
+    src = source(major)
+    rec = record(src.folder)
     if not rec or rec.get("state") not in ("ready", "replaced") or not rec.get("host"):
-        raise ClusterError(f"the machine's PostgreSQL {major} has no read replica that answers")
+        raise ClusterError(f"{src.what} has no read replica that answers")
     return {"host": str(rec["host"]), "port": int(rec["port"]), "ca": certificate(rec.get("ca")),
             "state": rec["state"], "link": str(rec.get("link") or "")}
 
@@ -618,13 +1051,29 @@ def _save_hosted(data: dict) -> None:
 
 
 def project_folder(storage_root: Path, major: str) -> Path:
-    return Path(storage_root) / machinedb.FOLDER / f"{FOLDER}{machinedb._major(major)}"
+    key = machinedb.hosted_key(major)
+    return Path(storage_root) / machinedb.FOLDER / (f"{FOLDER}-{key}" if key.startswith("d") else f"{FOLDER}{key}")
+
+
+def project_name(key: str) -> str:
+    """The name of the compose project of a replica hosted here."""
+    return f"omniacli-machine-db-replica-{machinedb.hosted_key(key)}"
+
+
+def next_hosted_key(found: dict | None = None) -> str:
+    """The key of a new copy of an instance's dedicated database: d and the first number free."""
+    found = hosted() if found is None else found
+    for number in range(100, 1000):
+        if f"d{number}" not in found:
+            return f"d{number}"
+    raise ClusterError("this machine hosts too many copies of dedicated databases")
 
 
 def hosted_project(major: str) -> Path:
-    found = hosted().get(machinedb._major(major))
+    found = hosted().get(machinedb.hosted_key(major))
     if not found:
-        raise ClusterError(f"this machine hosts no read replica of a PostgreSQL {major}")
+        raise ClusterError(f"this machine hosts no read replica {major}" if str(major).startswith("d") else
+                           f"this machine hosts no read replica of a PostgreSQL {major}")
     project = Path(str(found.get("project") or ""))
     if not project.is_absolute() or project.is_symlink() or not (project / "compose.yaml").is_file():
         raise ClusterError(f"the read replica is recorded at {project}, which holds no project")
@@ -655,13 +1104,17 @@ def conninfo(host: str, port: int, application: str = APPLICATION) -> str:
             f"sslmode=verify-full sslrootcert={machinedb.CONF_IN_DB}/{PRIMARY_CA} application_name={application}")
 
 
-def compose_text(major: str, uid: int, gid: int, port: int, roots: list[str], host: str, primary_port: int) -> str:
+def compose_text(major: str, uid: int, gid: int, port: int, roots: list[str], host: str, primary_port: int,
+                 key: str | None = None) -> str:
     """The replica's project: PostgreSQL of the primary's major on a copy of
     its data, a hot standby that follows it through its slot; read only, no
     capability, the slice of the machine's PostgreSQL, its socket in a tmpfs
     of its own; port of this machine reaches it, over TLS only, on a network
     of its own; a folder of its own mounted at each storage root of the
-    primary, where the tablespaces are. It never archives, promoted or not."""
+    primary, where the tablespaces are. It never archives, promoted or not.
+    key: the copy's own, when it is not the major (the copy of the
+    dedicated database of an instance)."""
+    key = machinedb.hosted_key(key or major)
     for root in roots:
         if not machinedb.SAFE_PATH.fullmatch(root) or ".." in Path(root).parts:
             raise ClusterError(f"{root} is not the path of a storage of the primary")
@@ -670,7 +1123,7 @@ def compose_text(major: str, uid: int, gid: int, port: int, roots: list[str], ho
 # of another machine (docs/adr/postgresql-della-macchina.md, AD-004). A copy of that whole cluster,
 # kept up to date; it runs as {machinedb.USER}, in the slice {machinedb.SLICE}, and is reached on the
 # port {int(port)} of this machine, over TLS, from the address pg_hba.conf and the firewall name.
-name: omniacli-machine-db-replica-{major}
+name: {project_name(key)}
 services:
   {SERVICE}:
     image: {machinedb.IMAGE[major]}
@@ -719,12 +1172,12 @@ services:
 networks:
   db:
     driver_opts:
-      com.docker.network.bridge.name: {bridge_name(major)}
+      com.docker.network.bridge.name: {bridge_name(key)}
 """
 
 
 def hba_text(environments, address: str, link: str = "", back: bool = False, lent: dict | None = None,
-             own: dict | None = None) -> str:
+             own: dict | None = None, whole: bool = False) -> str:
     """pg_hba.conf of the replica: the superuser by the socket (a tmpfs of
     its container: root's helper only), then the one address of the primary's
     machine as each of its instances' roles, to its database and postgres
@@ -735,13 +1188,16 @@ def hba_text(environments, address: str, link: str = "", back: bool = False, len
     containers are seen with by the copy}, for a database an instance of
     this very machine uses: both let in; back (the cluster comes back,
     UX-011 §A): the primary's address for the replication, as the
-    replication's role; then reject."""
+    replication's role; then reject. whole: the copy of the dedicated
+    database of one instance, whose role reaches every database of it (its
+    own, whatever its name, and postgres)."""
     source = machinedb.address(address)
     lines = [f"# written by omniacli workspace-helper: who reaches the read replica of the PostgreSQL of {link or 'another machine'}",
              "local all postgres trust"]
     for role in sorted(environments or []):
         name = machinedb._env(role)
-        lines.append(f'hostssl "{name}",postgres "{name}" {source}/32 scram-sha-256')
+        lines.append(f'hostssl all "{name}" {source}/32 scram-sha-256' if whole else
+                     f'hostssl "{name}",postgres "{name}" {source}/32 scram-sha-256')
     for role in sorted(lent or {}):
         name, grant = machinedb._env(role), lent[role]
         if grant.get("revoked"):
@@ -766,7 +1222,7 @@ def hosted_hba(rec: dict, environments=None, lent: dict | None = None, own: dict
     databases other machines use, let in once the copy is promoted."""
     return hba_text(rec.get("environments") if environments is None else environments, str(rec.get("primary_address") or ""),
                     str(rec.get("link") or ""), back=returning(rec).get("state") in ("copying", "ready"),
-                    lent=lent if rec.get("state") == "promoted" else None, own=own)
+                    lent=lent if rec.get("state") == "promoted" else None, own=own, whole=bool(rec.get("source")))
 
 
 def own_address(value: str) -> bool:
@@ -783,7 +1239,7 @@ def copy_gateway(major: str) -> str:
     """The address the containers of this machine are seen with by the copy
     hosted here: the gateway of its network (docker masquerades what goes
     from one of its networks to another); "" when it cannot be read."""
-    done = subprocess.run([machinedb._docker(), "network", "inspect", f"omniacli-machine-db-replica-{machinedb._major(major)}_db",
+    done = subprocess.run([machinedb._docker(), "network", "inspect", f"{project_name(major)}_db",
                            "--format", "{{range .IPAM.Config}}{{.Gateway}}{{end}}"], env=ENV, capture_output=True, text=True)
     try:
         return machinedb.address((done.stdout or "").strip())
@@ -810,7 +1266,7 @@ def own_addresses(lent: dict, major: str) -> dict:
 def _write_hosted_hba(project: Path, rec: dict) -> None:
     _uid, gid = machinedb.pg_user()
     lent = hosted_grants(project) if rec.get("state") == "promoted" else {}
-    text = hosted_hba(rec, lent=lent, own=own_addresses(lent, str(rec.get("major") or "")) if lent else None)
+    text = hosted_hba(rec, lent=lent, own=own_addresses(lent, str(rec.get("key") or rec.get("major") or "")) if lent else None)
     machinedb.write(project / "conf" / "pg_hba.conf", text, mode=0o640, uid=0, gid=gid)
     replica_sql(project, "SELECT pg_reload_conf();\n", check=False)
 
@@ -877,15 +1333,30 @@ def prepare(spec: dict, storage_root: Path, command: str = "") -> dict:
     it: the name of the replica's certificate), "primary_address" (where the
     primary's machine comes from, when it is not its host's), "password" (of
     the replication's role), "roots", "environments", "tablespaces", "size",
-    "reserve_gb"}. Refused when the copy does not fit."""
+    "reserve_gb"}. Refused when the copy does not fit. The copy of the
+    dedicated database of an instance (UX-011 §D): "key" (d<n>, the copy's
+    own on this machine) and "source" ({"key", "workspace", "name"}: whose
+    database it is, on that machine), "major" the PostgreSQL it is of."""
+    key = machinedb.hosted_key(str(spec.get("key") or spec.get("major") or ""))
     major = machinedb._major(str(spec.get("major") or ""))
     storage, link = str(spec.get("storage") or ""), str(spec.get("link") or "")
     if not machinedb.STORAGE_NAME.fullmatch(storage) or not machinedb.LINK_NAME.fullmatch(link):
         raise ClusterError("a replica is made on a storage of this machine, of the cluster of one of its links")
     found = hosted()
-    if major in found:
+    origin = None
+    if key != major:
+        given = spec.get("source") if isinstance(spec.get("source"), dict) else {}
+        origin = {"key": str(given.get("key") or ""), "workspace": str(given.get("workspace") or ""),
+                  "name": str(given.get("name") or "")}
+        if not is_dedicated(origin["key"]) or not re.fullmatch(r"[a-z0-9-]{1,40}", origin["workspace"]) \
+                or not re.fullmatch(r"[a-z0-9-]{1,81}", origin["name"]):
+            raise ClusterError("the copy of a dedicated database names the instance it is of")
+        same = next((v for v in found.values() if v.get("link") == link and v.get("source") == origin["key"]), None)
+        if same:
+            raise ClusterError(f"this machine hosts a read replica of {origin['name']} of {link} already: drop it first")
+    if key in found:
         raise ClusterError(f"this machine hosts a read replica of a PostgreSQL {major} already, of "
-                           f"{found[major].get('link')}: drop it first")
+                           f"{found[key].get('link')}: drop it first")
     host = machinedb.reached_as([spec.get("host")])[0]
     port = int(spec.get("port") or 0)
     if not 1024 <= port <= 65535:
@@ -900,12 +1371,13 @@ def prepare(spec: dict, storage_root: Path, command: str = "") -> dict:
     environments = sorted(machinedb._env(str(e)) for e in spec.get("environments") or [])
     size = int(spec.get("size") or 0)
     reserve = reserve_gb(spec.get("reserve_gb", RESERVE_GB))
-    project = project_folder(storage_root, major)
+    project = project_folder(storage_root, key)
     if project.exists():
         raise ClusterError(f"{project} exists already: remove it by hand, or drop the replica first")
     fits = room(size, shutil.disk_usage(storage_root).free, reserve)
     if not fits["fits"]:
-        raise ClusterError(f"no room: the copy of the cluster of {link} takes about {fits['need'] // MB} MB, "
+        raise ClusterError(f"no room: the copy of the {'database of ' + origin['name'] if origin else 'cluster'} of {link} "
+                           f"takes about {fits['need'] // MB} MB, "
                            f"{fits['free'] / GB:.1f} GB are free here and {reserve:g} GB must stay free")
     uid, gid = machinedb.pg_user(create=True)
     if not (machinedb.SYSTEMD / machinedb.SLICE).is_file():
@@ -913,6 +1385,7 @@ def prepare(spec: dict, storage_root: Path, command: str = "") -> dict:
         subprocess.run(["systemctl", "daemon-reload"], env=ENV, check=True, capture_output=True)
     taken = {int((machinedb.listening(Path(str(v.get("project")))) or {}).get("port") or 0)
              for v in machinedb.registry().values()}
+    taken |= {int(hosted_record(Path(str(v.get("project") or ""))).get("own_port") or 0) for v in found.values()}
     own_port = machinedb.pick_port(taken)
     machinedb._folder(project.parent, 0o755)
     try:
@@ -926,22 +1399,26 @@ def prepare(spec: dict, storage_root: Path, command: str = "") -> dict:
             machinedb._folder(project / "roots" / str(index), 0o700, uid, gid)
         machinedb.write(project / "secret" / PGPASS, f"*:*:*:{ROLE}:{password}\n", mode=0o600, uid=uid, gid=gid)
         machinedb.write(project / "conf" / PRIMARY_CA, ca, mode=0o644, uid=0, gid=gid)
-        machinedb.write(project / "conf" / "pg_hba.conf", hba_text(environments, primary, link), mode=0o640, uid=0, gid=gid)
+        machinedb.write(project / "conf" / "pg_hba.conf", hba_text(environments, primary, link, whole=bool(origin)),
+                        mode=0o640, uid=0, gid=gid)
         # a CA of the replica's own and its server certificate, for the name the primary's machine reaches it by
         machinedb.ensure_tls(project, major, [own])
         for location in spec.get("tablespaces") or []:
             _owned_folder(under_roots(str(location), roots, project), uid, gid, project / "roots")
-        machinedb.write(project / "compose.yaml", compose_text(major, uid, gid, own_port, roots, host, port))
+        machinedb.write(project / "compose.yaml", compose_text(major, uid, gid, own_port, roots, host, port, key=key))
         _save_hosted_record(project, {
             "major": major, "link": link, "by": str(spec.get("by") or ""), "host": host, "port": port,
             "primary_address": primary, "address": own, "own_port": own_port, "roots": roots,
-            "environments": environments, "state": "copying", "at": _now(), "expected": size, "reserve_gb": reserve})
-        _save_hosted({**found, major: {"storage": storage, "project": str(project), "link": link}})
+            "environments": environments, "state": "copying", "at": _now(), "expected": size, "reserve_gb": reserve,
+            **({"key": key, "source": origin} if origin else {})})
+        _save_hosted({**found, key: {"storage": storage, "project": str(project), "link": link,
+                                     **({"source": origin["key"], "name": origin["name"], "workspace": origin["workspace"],
+                                         "major": major} if origin else {})}})
     except BaseException:
         shutil.rmtree(project, ignore_errors=True)
-        _save_hosted({k: v for k, v in hosted().items() if k != major})
+        _save_hosted({k: v for k, v in hosted().items() if k != key})
         raise
-    return {"major": major, "project": str(project), "port": own_port, "address": own, "primary_address": primary,
+    return {"major": major, "key": key, "project": str(project), "port": own_port, "address": own, "primary_address": primary,
             "room": fits, "user": machinedb.USER}
 
 
@@ -1121,7 +1598,7 @@ def hosted_state(major: str) -> dict:
     rec = hosted_record(project)
     answer = {"exists": True, "major": major, **{k: rec.get(k) for k in (
         "link", "by", "host", "port", "address", "own_port", "primary_address", "state", "at", "ready_at",
-        "promoted_at", "returned_at", "copy_seconds", "size", "expected", "version", "synced", "environments")},
+        "promoted_at", "returned_at", "copy_seconds", "size", "expected", "version", "synced", "environments", "source")},
         "storage": (hosted().get(major) or {}).get("storage"), "running": False, "receiving": False, "reason_code": "",
         "connections": None, "max_connections": None, "free": shutil.disk_usage(project).free}
     # what it takes on this machine's disk (its data, its tablespaces, the changes it keeps); while it is
@@ -1256,8 +1733,7 @@ def remove(major: str) -> dict:
     if parent.is_dir() and not any(parent.iterdir()):
         parent.rmdir()
     _save_hosted({k: v for k, v in hosted().items() if k != major})
-    subprocess.run([machinedb._docker(), "network", "rm", f"omniacli-machine-db-replica-{major}_db"], env=ENV,
-                   capture_output=True)
+    subprocess.run([machinedb._docker(), "network", "rm", f"{project_name(major)}_db"], env=ENV, capture_output=True)
     if not machinedb.registry() and not hosted():
         machinedb._remove_units()
         subprocess.run([shutil.which("userdel", path=ENV["PATH"]) or "userdel", machinedb.USER], env=ENV, capture_output=True)
@@ -1300,6 +1776,36 @@ def firewall_state(subnet_of=None) -> dict:
                         if net:
                             local.append(net)
             found[bridge_name(major)] = {"from": sorted(set(coming)), "to": out, **({"local": sorted(set(local))} if local else {})}
+    return {**found, **published_state()}
+
+
+def published_state() -> dict:
+    """{"port<n>": {"from": [address], "subnet"}} of the dedicated databases
+    of this machine's instances that listen for a copy on another machine
+    (machinedb.published): that port is reached from the address of the
+    machine that hosts the copy, and from no other; from none when the
+    replica was dropped (the database goes on listening, as a cluster
+    does). One whose copy was promoted is stopped and its project has no
+    database service: no entry. One whose instance is gone is forgotten."""
+    found, gone = {}, []
+    for key, entry in sorted(machinedb.dedicated_sources().items()):
+        if not Path(str(entry.get("project") or "")).is_dir():
+            gone.append(key)
+            continue
+        try:
+            src = Dedicated(key)
+            listen, rec = src.listening(), record(src.folder) or {}
+            if not listen or rec.get("state") == "replaced" or not src.has_database():
+                continue
+            found[f"port{int(listen['port'])}"] = {"from": [machinedb.address(rec["address"])] if rec else [],
+                                                   "subnet": src.subnet()}
+        except (ClusterError, OSError, ValueError, KeyError):
+            continue
+    if gone:
+        try:
+            _save_sources({k: v for k, v in machinedb.dedicated_sources().items() if k not in gone})
+        except OSError:
+            pass
     return found
 
 

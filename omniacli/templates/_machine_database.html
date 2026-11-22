@@ -31,6 +31,14 @@
    cluster keeps for it, and Drop the replica… in its detail (POST
    /api/postgres/machine/<major>/replica/drop). Never a name of the
    replication's own parameters.
+   The replica of the dedicated database of one instance (UX-011 §D): the
+   dialog asks Which PostgreSQL when that machine offers more than one (its
+   cluster, the one of each production with a database of its own), and says
+   that it is one customer's data, on which disk what is kept for the copy
+   goes, and the restart of that one PostgreSQL; its row here names the
+   instance, and on the machine of the instance the instance's own row says
+   the replica as the cluster's does (<major> is then the key of that
+   database, row.pg). Promote… asks the instance's name.
    The return after a promotion (UX-011 §A): on the replaced row of the
    machine whose cluster the replica took the place of, Prepare the return…
    (what GET /api/postgres/machine/<major>/return/facts says before, POST
@@ -153,9 +161,11 @@
   <form method="dialog" id="pgr-form">
     <h2 style="margin-bottom: 4px">{{ _("Read replica of another machine") }}</h2>
     <p style="margin: 8px 0 2px" id="pgr-which"><label>{{ _("Of which machine:") }} <select id="pgr-link" title="{{ _('The linked machines whose PostgreSQL can be copied here: those reached over HTTPS or SSH') }}"></select></label><strong id="pgr-link-one" hidden></strong></p>
+    <p style="margin: 8px 0 2px" id="pgr-source" hidden><label>{{ _("Which PostgreSQL:") }} <select id="pgr-pg" title="{{ _('What of that machine is copied here: its cluster, with every instance on it, or the PostgreSQL of one production that has a database of its own') }}"></select></label></p>
     <p class="muted" id="pgr-reading" hidden>{{ _("Reading that machine…") }}</p>
     <div id="pgr-facts" hidden>
       <p id="pgr-what" style="margin: 8px 0 4px"></p>
+      <p id="pgr-disk" style="margin: 0 0 4px" hidden></p>
       <p id="pgr-time" style="margin: 0 0 4px"></p>
       <p id="pgr-trip" style="margin: 0 0 8px"></p>
       <p style="margin: 8px 0 2px"><label><span id="pgr-address-label"></span> <input type="text" id="pgr-address" style="width: 11em" autocomplete="off" spellcheck="false" title="{{ _('The address that machine sees this one come from: the only one it lets in, and the name of the replica\'s certificate. Change it when this machine goes out through another one (NAT).') }}"></label></p>
@@ -470,7 +480,50 @@
       pDropReadersOne: {{ _("{list} goes back to reading from this cluster and restarts for a few seconds. ") | tojson }},
       pDropCopyHeard: {{ _("{machine} deletes its copy at its next look, within a minute. ") | tojson }},
       pDropCopySilent: {{ _("{machine} does not answer: its copy{size}, if it is still there, stays until its admin drops it. ") | tojson }},
+      // the replica of the dedicated database of one instance (UX-011 §D): on the machine that hosts it
+      ofDedicated: {{ _("Read replica of {instance} ({link})") | tojson }},
+      subDedicated: {{ _("Copy of the PostgreSQL of {instance} on {link} · over TLS on port {port}, for {link} only") | tojson }},
+      subPromotedDedicated: {{ _("It was the copy of the PostgreSQL of {instance} on {link} · over TLS on port {port}, for {link} only") | tojson }},
+      writesTitleDedicated: {{ _("Promoted: it has the values the PostgreSQL of {instance} had on {link}; it is not tuned from here") | tojson }},
+      promotedDedicated: {{ _("Promoted on {when}: it is the database of {instance} of {link}") | tojson }},
+      promotedTitleDedicated: {{ _("This copy takes the writes: {instance} of {link} uses it as its database, over TLS") | tojson }},
+      holdsDedicated: {{ _("The database of {instance}, of the workspace {ws}: one customer only. Readable by root and by the copy's user only.") | tojson }},
+      promoteTitleDedicated: {{ _("Makes this copy the database of {instance}: its PostgreSQL on {link} is stopped first, then this copy takes the writes, then {instance} is pointed here and restarted. No other instance of {link} restarts. It is a job.") | tojson }},
+      promoteGoTitleDedicated: {{ _("Stops the PostgreSQL of {instance} on {link}, makes this copy take the writes and points {instance} here. It cannot be undone from here.") | tojson }},
+      promoteAskDedicated: {{ _("Promote the replica of {instance} ({link})?\n1. The PostgreSQL of {instance} on {link} is stopped: {instance} does not answer.\n2. This copy takes the writes.\n3. {instance} is pointed here and restarted: about 10 s without Odoo in all.\nLag now: {lag} s, and the changes of those seconds that did not arrive are lost. After it the database of {instance} lives on {here}, and its backups go through the network.{pitr} Its stagings stay on {link} and do not change. The return is not offered for a dedicated database yet. Write {instance} to confirm.") | tojson }},
+      promotePitr: {{ _(" The recovery at a minute of {instance} stops: its last point is of the moment its PostgreSQL stops.") | tojson }},
+      promoteOffDedicated: {{ _("{link} does not answer: the replica of {instance} is promoted only with {link} answering, because {instance} itself runs there and is pointed here by it.") | tojson }},
+      dropTitleDedicated: {{ _("Deletes this copy and its container, and asks {link} to drop what the PostgreSQL of {instance} keeps for it. If {instance} reads from here it goes back to its database only and restarts. A new replica copies everything again. It is a job.") | tojson }},
+      dropAskDedicated: {{ _("Drop the replica of {instance} of {link} ({size})? {readers}A new replica copies its whole database again.") | tojson }},
+      dropReaderDedicated: {{ _("{instance} goes back to reading from its database only and restarts for a few seconds. ") | tojson }},
+      dropOfflineDedicated: {{ _("{link} does not answer: what the PostgreSQL of {instance} keeps for the replica stays there, and grows up to its cap, until its admin drops it in its Database tab. ") | tojson }},
+      dropPromotedNot: {{ _("It is the database of {instance}: it is dropped only after {instance} is removed on {link}.") | tojson }},
+      dropOrphanTitle: {{ _("Deletes this promoted copy and its container: {instance} is no longer on {link}, and no instance uses it. It cannot be undone. It is a job.") | tojson }},
+      dropOrphanAsk: {{ _("Drop the promoted copy of {instance} ({size})? {instance} is no longer on {link}: this copy is the last place its database is in, and it is deleted. It cannot be undone.") | tojson }},
+      // on the machine of the instance: its own row
+      pTitleDedicated: {{ _("The read replica of this instance's database on {machine}, as this machine sees it: open the row for what it keeps for it") | tojson }},
+      keepsTitleDedicated: {{ _("The changes this database keeps on its workspace's disk for the replica, until the replica takes them: {size} of the {cap} it keeps at most") | tojson }},
+      readsDedicated: {{ _("{server} reads from it.") | tojson }},
+      noReaderDedicated: {{ _("{server} does not read from it: it is chosen in its page, Settings › Technical details.") | tojson }},
+      heldDedicated: {{ _("The database keeps {size} of changes for the replica, not connected since {when}: {growth}the workspace's disk has {free} free{full}. If {machine} does not come back, Drop the replica… frees them.") | tojson }},
+      heldConnectedDedicated: {{ _("The database keeps {size} of changes for the replica, which is connected but does not take them fast enough: {growth}the workspace's disk has {free} free{full}.") | tojson }},
+      capTitleDedicated: {{ _("Changes how much of its changes this database keeps at most, on its workspace's disk, for a replica that does not take them: a tenth of that disk at most. Nothing restarts. It is a job.") | tojson }},
+      capAskDedicated: {{ _("The changes this database keeps for its replica at most, in GB, on its workspace's disk: a tenth of that disk at most, and never more than 20 GB. Beyond it the replica loses its place and is made again; the customer's disk never fills for a replica that is gone.") | tojson }},
+      pDropTitleDedicated: {{ _("Drops what this database keeps for the replica on {machine} and frees its workspace's disk ({held}), and asks {machine} to delete its copy. If the instance reads from it, it goes back to its database only and restarts. It is a job.") | tojson }},
+      pDropAskDedicated: {{ _("Drop the replica of {server} on {machine}{size}? {readers}It frees {held} on the workspace's disk. {copy}A new replica copies its whole database again.") | tojson }},
       // the dialog
+      choiceCluster: {{ _("The machine's cluster: {n} instances, {size}") | tojson }},
+      choiceDedicated: {{ _("The one of {name} (Production): {size}") | tojson }},
+      whatDedicated: {{ _("The copy is the PostgreSQL of {name} on {link}: {size}, the data of one customer only (workspace {ws}). Here {free} are free, and at least {reserve} stay free.") | tojson }},
+      diskDedicated: {{ _("On {link} the changes kept for the replica are on the disk of the workspace {ws} ({total}, {free} free): {cap} at most.") | tojson }},
+      capNoteDedicated: {{ _("Beyond it the replica loses its place and is made again: the disk of the workspace never fills for a replica that is gone. A tenth of that disk at most: {max}.") | tojson }},
+      capOver: {{ _("What {link} keeps for this replica is on the customer's disk: {max} at most, a tenth of it.") | tojson }},
+      changesRestartDedicated: {{ _("The PostgreSQL of {name} is made again to open a port over TLS, in about {s} s: {name} does not answer for that time, and whoever is saving gets an error.") | tojson }},
+      goRestartDedicated: {{ _("Make the replica and restart the PostgreSQL of {name}") | tojson }},
+      goTitleDedicated: {{ _("Asks {link} to let this machine in to the PostgreSQL of {name} (a role, a line for {address} only, a hold on its changes), copies it here and starts it as a replica reached over TLS. It is a job.") | tojson }},
+      restartAskDedicated: {{ _("Restart the PostgreSQL of {name} now? {name} does not answer for about {s} s; whoever is saving at that moment gets an error and tries again. No other instance of {link} restarts.") | tojson }},
+      restartGoTitleDedicated: {{ _("Makes the PostgreSQL of {name} again to open a port over TLS, then makes the replica: for about {s} s {name} does not answer") | tojson }},
+      noRoomDedicated: {{ _("No room: the copy of the database of {name} of {link} takes about {need}, here {free} are free and {reserve} must stay free.") | tojson }},
       button: {{ _("+ Replica of another machine…") | tojson }},
       notHere: {{ _("No replica here: {why}") | tojson }},
       noLink: {{ _("No link can carry a replica: {why}") | tojson }},
@@ -575,9 +628,11 @@
     const unit = {kb: KIB, mb: MIB, gb: GIB, tb: GIB * 1024}[m[2].toLowerCase()];
     return Math.floor(parseFloat(m[1].replace(",", ".")) * unit);
   }
+  // a replica hosted here: of the cluster of a machine, or of the dedicated database of one of its instances (row.instance)
+  const replicaOf = (row) => row.instance ? fill(T.rp.ofDedicated, {instance: row.instance, link: row.link}) : fill(T.rp.of, {link: row.link});
   const label = (row) => row.where === "system" ? T.system : row.where === "machine" ? T.machine
-    : row.where === "replica" ? fill(T.rp.of, {link: row.link}) : row.server;
-  const kindText = (row) => row.kind === "machine" || row.kind === "replica" ? fill(T.machineBadge, {major: row.major}) : (T.kinds[row.kind] || row.kind);
+    : row.where === "replica" ? replicaOf(row) : row.server;
+  const kindText = (row) => row.kind === "machine" || row.kind === "replica" ? fill(T.machineBadge, {major: row.pg || row.major}) : (T.kinds[row.kind] || row.kind);
   const tunable = (row) => row.where === "dedicated" || row.where === "machine";
   const servedList = (row) => (row.serves || []).map((s) => s.server).join(", ");
   const when = (iso) => window.whenText(iso);
@@ -603,7 +658,7 @@
       // the cluster it had replaced came back: it follows nothing and takes no write
       if ((row.here || {}).state === "returned") return el("span", {className: "muted", textContent: T.rt.stopped, title: fill(T.rt.returnedTitle, {link: row.link})});
       return el("span", {className: "muted", textContent: promoted ? T.rp.writes : fill(T.rp.follows, {link: row.link}),
-        title: fill(promoted ? T.rp.writesTitle : T.rp.followsTitle, {link: row.link})});
+        title: fill(promoted ? (row.instance ? T.rp.writesTitleDedicated : T.rp.writesTitle) : T.rp.followsTitle, {link: row.link, instance: row.instance})});
     }
     if (s.code === "replaced") {
       const back = row.return;
@@ -648,7 +703,9 @@
       const here = row.here || {};
       td.append(el("strong", {textContent: label(row)}), badge,
         el("span", {className: "pg-sub"}, hostedState(row)),
-        el("span", {className: "pg-sub", textContent: fill(["promoted", "returned"].includes(here.state) ? T.rp.subPromoted : T.rp.sub, {link: row.link, port: here.own_port || "?"})}));
+        el("span", {className: "pg-sub", textContent: fill(["promoted", "returned"].includes(here.state)
+          ? (row.instance ? T.rp.subPromotedDedicated : T.rp.subPromoted) : (row.instance ? T.rp.subDedicated : T.rp.sub),
+          {link: row.link, port: here.own_port || "?", instance: row.instance})}));
       if (row.fence) td.append(el("span", {className: "pg-sub pg-warn", textContent: fill(T.rp.fence, {link: row.link, s: 10})}));
       // the cluster it replaced comes back: its state on this closed row too, and what this copy keeps for it
       const back = here.state === "promoted" ? here.return : null;
@@ -700,6 +757,15 @@
     const badge = el("span", {className: "badge" + (row.kind === "test" ? " test-badge" : row.kind === "staging" ? " info" : " ok"), textContent: kindText(row)});
     badge.style.marginLeft = "8px";
     td.append(row.parent ? "↳ " : "", el("strong", {textContent: row.server}), badge, el("span", {className: "pg-sub", textContent: T.dedicated}));
+    // the read replica of its own database on another machine (UX-011 §D): its state on the closed row, as a cluster's
+    const copied = row.replica;
+    if (copied && copied.exists && copied.state !== "replaced") {
+      const line = el("span", {className: "pg-sub pg-replica-line"}, ownedState(row));
+      const v = copied.verdict || {};
+      if (v.show_held) line.append(" ", el("span", {className: "badge warn", textContent: fill(T.rp.keeps, {size: bytes(v.held)}),
+        title: fill(T.rp.keepsTitleDedicated, {size: bytes(v.held), cap: bytes(copied.cap)})}));
+      td.append(line);
+    }
     return td;
   }
 
@@ -738,6 +804,7 @@
     } else {
     dl.append(el("dt", {textContent: T.serve}), el("dd", {}, el("a", {href: instanceUrl(row), textContent: row.server + " (" + kindText(row) + ")"})));
     dl.append(el("dt", {textContent: T.where}), el("dd", {textContent: row.workspace ? fill(T.whereDedicated, {ws: row.workspace}) : T.whereDedicatedAlone}));
+    if (row.replica && row.replica.exists && row.replica.state !== "replaced") dl.append(el("dt", {textContent: T.rp.title}), ownedBlock(row));
     }
     if (row.pitr !== null && row.where !== "machine") {
       const dd = el("dd", {textContent: row.pitr === "on" ? T.pitrReading : T.pitrOff.toLowerCase()});
@@ -805,6 +872,8 @@
     const here = row.here || {}, p = row.primary || {}, v = p.verdict || {}, link = row.link;
     if (here.error) return stateSpan(fill(T.rp.unread, {reason: here.error}), "red", fill(T.rp.offTitle, {link}));
     if (here.state === "returned") return stateSpan(fill(T.rt.returned, {link, when: when(here.returned_at)}), "grey", fill(T.rt.returnedTitle, {link}));
+    if (here.state === "promoted" && row.instance) return stateSpan(fill(T.rp.promotedDedicated, {when: when(here.promoted_at), link,
+      instance: row.instance}), "green", fill(T.rp.promotedTitleDedicated, {link, instance: row.instance}));
     if (here.state === "promoted") return stateSpan(fill(T.rp.promoted, {when: when(here.promoted_at), link,
       n: (p.instances || here.environments || []).length}), "green", fill(T.rp.promotedTitle, {link}));
     if (here.state === "copying") {
@@ -845,15 +914,21 @@
   }
   function ownedState(row) {
     const r = row.replica, machine = r.link || "?", [state, color] = ownedWords(r);
-    return stateSpan(fill(T.rp.on, {machine, state}), color, fill(T.rp.pTitle, {machine}));
+    return stateSpan(fill(T.rp.on, {machine, state}), color, fill(row.where === "dedicated" ? T.rp.pTitleDedicated : T.rp.pTitle, {machine}));
   }
-  const replicaApi = (row) => `${API}/machine/${encodeURIComponent(row.major)}/replica`;
+  // row.pg: the key of the dedicated database of an instance; a cluster has its major
+  const replicaApi = (row) => `${API}/machine/${encodeURIComponent(row.pg || row.major)}/replica`;
   function ownedBlock(row) {
     const r = row.replica, v = r.verdict || {}, machine = r.link || "?", dd = el("dd", {className: "pg-archive-lines"});
     const line = (text, warn) => { const div = el("div", {className: warn ? "pg-warn" : "", textContent: text}); dd.append(div); return div; };
     line(fill(T.rp.line, {machine, address: r.address || "?", when: when(r.ready_at || r.at), state: ownedWords(r)[0]}));
-    const readers = r.readers || [];
-    if (readers.length) {
+    const readers = r.readers || [], own = row.where === "dedicated";
+    if (own) {
+      // of one instance: it reads from it, or not
+      const page = el("a", {href: `${PREFIX}/servers/${encodeURIComponent(row.server)}?view=production#settings`, textContent: row.server, title: T.rp.readerTitle});
+      const [before, after] = (readers.length ? T.rp.readsDedicated : T.rp.noReaderDedicated).split("{server}");
+      dd.append(el("div", {}, before, page, after));
+    } else if (readers.length) {
       const div = el("div", {}, T.rp.readersLabel, " ");
       readers.forEach((name, i) => div.append(i ? ", " : "", el("a", {href: `${PREFIX}/servers/${encodeURIComponent(name)}?view=production#settings`,
         textContent: name, title: T.rp.readerTitle})));
@@ -864,17 +939,17 @@
       const growth = r.rate > 0 ? fill(T.rp.heldGrowth, {rate: bytes(r.rate)}) : "";
       const hours = r.rate > 0 ? r.free / r.rate : 0;
       const full = !hours ? "" : hours >= 48 ? fill(T.rp.heldFull, {days: Math.round(hours / 24)}) : fill(T.rp.heldFullHours, {hours: Math.max(1, Math.round(hours))});
-      line(fill(v.code === "off" ? T.rp.held : T.rp.heldConnected, {size: bytes(v.held), when: v.since ? when(v.since) : "?", growth,
-        free: bytes(r.free), full, machine}), true);
+      line(fill(v.code === "off" ? (own ? T.rp.heldDedicated : T.rp.held) : (own ? T.rp.heldConnectedDedicated : T.rp.heldConnected),
+        {size: bytes(v.held), when: v.since ? when(v.since) : "?", growth, free: bytes(r.free), full, machine}), true);
     }
     line(fill(T.rp.capLine, {cap: bytes(r.cap)}));
     const actions = el("div", {className: "pg-actions"});
-    actions.append(el("button", {type: "button", className: "small", textContent: T.rp.cap, title: T.rp.capTitle, onclick: async () => {
-      const value = await window.omniaWrite(T.rp.capAsk, String(r.cap_gb || 20), T.rp.capGo, T.rp.capGoTitle);
+    actions.append(el("button", {type: "button", className: "small", textContent: T.rp.cap, title: own ? T.rp.capTitleDedicated : T.rp.capTitle, onclick: async () => {
+      const value = await window.omniaWrite(own ? T.rp.capAskDedicated : T.rp.capAsk, String(r.cap_gb || 20), T.rp.capGo, T.rp.capGoTitle);
       if (value !== null) goTo(await post(`${replicaApi(row)}/cap`, {cap_gb: value}));
     }}));
     actions.append(el("button", {type: "button", className: "small danger", textContent: T.rp.drop,
-      title: fill(T.rp.pDropTitle, {machine, held: bytes(v.held || 0)}), onclick: (e) => dropOwned(row, e.currentTarget)}));
+      title: fill(own ? T.rp.pDropTitleDedicated : T.rp.pDropTitle, {machine, held: bytes(v.held || 0)}), onclick: (e) => dropOwned(row, e.currentTarget)}));
     dd.append(actions);
     return dd;
   }
@@ -882,9 +957,10 @@
     const r = row.replica, v = r.verdict || {}, machine = r.link || "?", readers = r.readers || [];
     // the machine that hosts it asks this one at each look: one that asked in the last minute and a half deletes its copy by itself
     const heard = !!r.heard && (new Date(data.now) - new Date(r.heard)) < 90000;
-    const size = r.size ? " (" + bytes(r.size) + ")" : "";
-    const text = fill(T.rp.pDropAsk, {machine, size, held: bytes(v.held || 0),
-      readers: readers.length ? fill(readers.length === 1 ? T.rp.pDropReadersOne : T.rp.pDropReaders, {n: readers.length, list: readers.join(", ")}) : "",
+    const size = r.size ? " (" + bytes(r.size) + ")" : "", own = row.where === "dedicated";
+    const text = fill(own ? T.rp.pDropAskDedicated : T.rp.pDropAsk, {machine, size, held: bytes(v.held || 0), server: row.server,
+      readers: !readers.length ? "" : own ? fill(T.rp.dropReaderDedicated, {instance: row.server})
+        : fill(readers.length === 1 ? T.rp.pDropReadersOne : T.rp.pDropReaders, {n: readers.length, list: readers.join(", ")}),
       copy: fill(heard ? T.rp.pDropCopyHeard : T.rp.pDropCopySilent, {machine, size})});
     if (!await window.omniaAsk(text, button, {danger: true})) return;
     goTo(await post(`${replicaApi(row)}/drop`));
@@ -1006,7 +1082,8 @@
     // very machine is said so
     const given = here.lent || null, local = (given || []).filter((g) => g.local), instances = p.instances || [];
     const lent = given ? given.filter((g) => !g.local).map((g) => g.name) : p.grants || [];
-    dl.append(el("dt", {textContent: T.rp.holds}), el("dd", {textContent: instances.length
+    if (row.instance) dl.append(el("dt", {textContent: T.rp.holds}), el("dd", {textContent: fill(T.rp.holdsDedicated, {instance: row.instance, ws: row.workspace || "?"})}));
+    else dl.append(el("dt", {textContent: T.rp.holds}), el("dd", {textContent: instances.length
       ? fill(T.rp.holdsLine, {link, n: instances.length, list: instances.join(", "), lent: (lent.length ? fill(lent.length === 1 ? T.rp.holdsLentOne : T.rp.holdsLent, {n: lent.length, list: lent.join(", ")}) : "")
         + local.map((g) => fill(T.rp.holdsLocal, {name: g.name, instance: [g.workspace, g.instance].filter(Boolean).join("-") || g.name})).join("")})
       : fill(T.rp.holdsUnknown, {link})}));
@@ -1028,6 +1105,17 @@
       dl.append(el("dt", {textContent: fill(T.rt.toDt, {link})}), dd);
     }
     box.append(dl);
+    if (here.state === "promoted" && row.instance) {
+      // of one instance: it has no return; dropped once that instance is no longer on its machine, which says so
+      const instance = row.instance, gone = !!row.orphan;
+      const drop = el("button", {type: "button", className: "small danger", textContent: T.rp.drop, disabled: !gone,
+        title: fill(T.rp.dropOrphanTitle, {link, instance}), onclick: async (e) => {
+          if (!await window.omniaAsk(fill(T.rp.dropOrphanAsk, {link, instance, size: bytes(here.disk || here.size || 0)}), e.currentTarget, {danger: true})) return;
+          goTo(await post(`${hostedApi(row)}/drop`));
+        }});
+      box.append(el("div", {className: "pg-actions"}, el("span", {title: gone ? "" : fill(T.rp.dropPromotedNot, {link, instance})}, drop)));
+      return box;
+    }
     if (here.state === "promoted") return box;
     const actions = el("div", {className: "pg-actions"});
     if (here.state === "returned") {
@@ -1042,12 +1130,16 @@
       box.append(actions);
       return box;
     }
-    const whole = here.state === "ready" && !!here.synced && !!here.running;
-    const promote = el("button", {type: "button", className: "small danger", textContent: T.rp.promote, title: fill(T.rp.promoteTitle, {link}),
-      disabled: !whole, onclick: () => promoteHosted(row)});
+    const whole = here.state === "ready" && !!here.synced && !!here.running, instance = row.instance;
+    // the replica of one instance's database is promoted only with its machine answering: the instance runs there
+    const silent = !!instance && !!row.primary_error;
+    const promote = el("button", {type: "button", className: "small danger", textContent: T.rp.promote,
+      title: fill(instance ? T.rp.promoteTitleDedicated : T.rp.promoteTitle, {link, instance}),
+      disabled: !whole || silent, onclick: () => promoteHosted(row)});
     // a copy not whole is never promoted: said before the click
-    actions.append(el("span", {title: whole ? "" : T.rp.promoteNot}, promote));
-    actions.append(el("button", {type: "button", className: "small danger", textContent: T.rp.drop, title: fill(T.rp.dropTitle, {link}),
+    actions.append(el("span", {title: !whole ? T.rp.promoteNot : silent ? fill(T.rp.promoteOffDedicated, {link, instance}) : ""}, promote));
+    actions.append(el("button", {type: "button", className: "small danger", textContent: T.rp.drop,
+      title: fill(instance ? T.rp.dropTitleDedicated : T.rp.dropTitle, {link, instance}),
       onclick: (e) => dropHosted(row, e.currentTarget)}));
     box.append(actions);
     return box;
@@ -1059,6 +1151,15 @@
     const lent = given.length ? fill(offline ? T.rp.promoteLentOff : T.rp.promoteLent, {link, list: given.map((name) => lines[name]
       ? fill(T.rp.lentFor, {name, link: lines[name].link || "?", address: lines[name].address || "?"}) : name).join("; ")}) : "";
     const lag = v.lag === null || v.lag === undefined ? "?" : v.lag;
+    if (row.instance) {
+      // of one instance (UX-011 §D): its name is what is typed
+      const instance = row.instance;
+      const ask = fill(T.rp.promoteAskDedicated, {instance, link, lag, here: data.here || "?",
+        pitr: p.pitr && p.pitr.enabled ? fill(T.rp.promotePitr, {instance}) : ""});
+      if (!await window.omniaTypeName(ask, instance, T.rp.promoteGo, fill(T.rp.promoteGoTitleDedicated, {link, instance}))) return;
+      goTo(await post(`${hostedApi(row)}/promote`, {confirm: instance}));
+      return;
+    }
     const text = offline
       ? fill(T.rp.promoteAskOff, {link, when: when(row.primary_failed || data.now), retry: 10, lag, read: row.primary_at ? when(row.primary_at) : "?", lent})
       : fill(T.rp.promoteAsk, {link, n: instances.length, list: instances.join(", ") || "–", seconds: Math.max(10, instances.length * 10), lag, lent});
@@ -1083,7 +1184,10 @@
   }
   async function dropHosted(row, button) {
     const here = row.here || {}, p = row.primary || {}, link = row.link, readers = p.readers || [];
-    const text = fill(T.rp.dropAsk, {link, size: bytes(here.disk || here.size || 0),
+    const instance = row.instance;
+    const text = instance ? fill(T.rp.dropAskDedicated, {link, instance, size: bytes(here.disk || here.size || 0),
+      readers: (row.primary_error ? fill(T.rp.dropOfflineDedicated, {link, instance}) : "") + (readers.length ? fill(T.rp.dropReaderDedicated, {instance}) : "")})
+      : fill(T.rp.dropAsk, {link, size: bytes(here.disk || here.size || 0),
       readers: (row.primary_error ? fill(T.rp.dropOffline, {link}) : "")
         + (readers.length ? fill(readers.length === 1 ? T.rp.dropReadersOne : T.rp.dropReaders, {n: readers.length, link, list: readers.join(", ")}) : "")});
     if (!await window.omniaAsk(text, button, {danger: true})) return;
@@ -1094,6 +1198,7 @@
   const rpDialog = document.getElementById("pg-replica-dialog"), rpGo = document.getElementById("pgr-go");
   const rpGoBox = document.getElementById("pgr-go-box"), rpError = document.getElementById("pgr-error");
   const rpSelect = document.getElementById("pgr-link"), rpOf = (id) => document.getElementById(id);
+  const rpWhich = document.getElementById("pgr-pg");
   let rpFacts = null, rpAsked = 0;
   const rpNumber = (id) => parseFloat(String(rpOf(id).value).replace(",", "."));
   function rpUpdate() {
@@ -1105,36 +1210,51 @@
     else if (f.error) why = f.error;
     else {
       const reserve = rpNumber("pgr-reserve") || 0, address = rpOf("pgr-address").value.trim(), link = f.link;
+      // own: the dedicated database of one instance of that machine (UX-011 §D), one customer's data on its workspace's disk
+      const own = f.kind === "dedicated", name = f.name || "?", seconds = f.restart_s || 5, capMax = dec(f.cap_max || 0, 1) + " GB";
       const lent = (f.grants || []).length ? fill(f.grants.length === 1 ? T.rp.whatLentOne : T.rp.whatLent, {n: f.grants.length, list: f.grants.join(", ")}) : "";
-      rpOf("pgr-what").textContent = fill(T.rp.what, {link, size: bytes(f.size), n: (f.instances || []).length, lent, free: bytes(f.free), reserve: dec(reserve, 1) + " GB"});
+      rpOf("pgr-what").textContent = own ? fill(T.rp.whatDedicated, {link, name, size: bytes(f.size), ws: f.workspace || "?", free: bytes(f.free), reserve: dec(reserve, 1) + " GB"})
+        : fill(T.rp.what, {link, size: bytes(f.size), n: (f.instances || []).length, lent, free: bytes(f.free), reserve: dec(reserve, 1) + " GB"});
+      rpOf("pgr-disk").hidden = !own;
+      rpOf("pgr-disk").textContent = own ? fill(T.rp.diskDedicated, {link, ws: f.workspace || "?", total: bytes(f.disk_total), free: bytes(f.disk_free), cap: capMax}) : "";
       rpOf("pgr-time").textContent = fill(T.rp.time, {time: minutesText(f.seconds)});
       const trip = rpOf("pgr-trip"), slow = f.ms !== null && f.ms !== undefined && f.ms > f.warn_ms;
       trip.textContent = f.ms === null || f.ms === undefined ? fill(T.rp.tripNone, {link}) : fill(slow ? T.rp.tripWarn : T.rp.trip, {ms: dec(f.ms, 2), trips: dec(f.trips, 1)});
       trip.classList.toggle("pg-warn", slow);
       rpOf("pgr-address-label").textContent = fill(T.rp.addressLabel, {link});
       rpOf("pgr-cap-label").textContent = fill(T.rp.capLabel, {link});
-      rpOf("pgr-cap-note").textContent = fill(T.rp.capNote, {link});
+      rpOf("pgr-cap-note").textContent = own ? fill(T.rp.capNoteDedicated, {max: capMax}) : fill(T.rp.capNote, {link});
       const changes = rpOf("pgr-changes");
-      changes.textContent = f.restarts ? fill(T.rp.changesRestart, {link, n: (f.instances || []).length, list: (f.instances || []).join(", ") || "–"})
+      changes.textContent = f.restarts ? (own ? fill(T.rp.changesRestartDedicated, {name, s: seconds})
+        : fill(T.rp.changesRestart, {link, n: (f.instances || []).length, list: (f.instances || []).join(", ") || "–"}))
         : fill(T.rp.changes, {link, address: address || "?"});
       changes.classList.toggle("pg-warn", !!f.restarts);
-      rpGo.textContent = f.restarts ? fill(T.rp.goRestart, {link}) : T.rp.go;
-      rpGo.title = fill(T.rp.goTitle, {link, address: address || "?"});
-      if (f.free - f.need < reserve * GIB) why = fill(T.rp.noRoom, {link, need: bytes(f.need), free: bytes(f.free), reserve: dec(reserve, 1) + " GB"});
+      rpGo.textContent = f.restarts ? (own ? fill(T.rp.goRestartDedicated, {name}) : fill(T.rp.goRestart, {link})) : T.rp.go;
+      rpGo.title = fill(own ? T.rp.goTitleDedicated : T.rp.goTitle, {link, name, address: address || "?"});
+      if (f.free - f.need < reserve * GIB) why = fill(own ? T.rp.noRoomDedicated : T.rp.noRoom, {link, name, need: bytes(f.need), free: bytes(f.free), reserve: dec(reserve, 1) + " GB"});
       else if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(address)) why = fill(T.rp.badAddress, {link});
-      else if (!(rpNumber("pgr-cap") > 0)) why = T.rp.capAsk;
+      else if (!(rpNumber("pgr-cap") > 0)) why = own ? T.rp.capAskDedicated : T.rp.capAsk;
+      else if (own && rpNumber("pgr-cap") > f.cap_max) why = fill(T.rp.capOver, {link, max: capMax});
     }
     rpGo.disabled = !!why;
     rpGoBox.title = why;
     rpError.textContent = f && why ? why : "";
   }
-  async function rpLoad(name) {
+  // which: the PostgreSQL of that machine asked (its key there); none, the first that can be copied
+  async function rpLoad(name, which) {
     const asked = ++rpAsked;
     rpFacts = null;
+    if (!which) rpOf("pgr-source").hidden = true;
     rpUpdate();
-    const answer = await call(`${PREFIX}/api/links/${encodeURIComponent(name)}/postgres/replica`);
+    const answer = await call(`${PREFIX}/api/links/${encodeURIComponent(name)}/postgres/replica` + (which ? `?which=${encodeURIComponent(which)}` : ""));
     if (asked !== rpAsked) return;
     rpFacts = Object.assign({link: name}, answer);
+    // Which PostgreSQL: only when that machine offers more than one
+    const choices = answer.choices || [];
+    rpWhich.replaceChildren(...choices.map((c) => el("option", {value: c.key, selected: c.key === answer.which,
+      textContent: c.kind === "dedicated" ? fill(T.rp.choiceDedicated, {name: c.name, size: bytes(c.size)})
+        : fill(T.rp.choiceCluster, {n: c.instances, size: bytes(c.size)})})));
+    rpOf("pgr-source").hidden = choices.length < 2;
     if (!answer.error) {
       rpOf("pgr-address").value = answer.address || "";
       rpOf("pgr-cap").value = answer.cap_gb;
@@ -1163,6 +1283,7 @@
   }
   document.getElementById("pg-replica").addEventListener("click", openReplica);
   rpSelect.addEventListener("change", () => rpLoad(rpSelect.value));
+  rpWhich.addEventListener("change", () => rpLoad(rpFacts ? rpFacts.link : rpSelect.value, rpWhich.value));
   for (const id of ["pgr-address", "pgr-cap", "pgr-reserve"]) rpOf(id).addEventListener("input", rpUpdate);
   rpOf("pgr-cancel").addEventListener("click", () => rpDialog.close());
   rpGo.addEventListener("click", async () => {
@@ -1171,7 +1292,13 @@
     if (!f.restarts) { rpSubmit(); return; }
     // the restart of every instance on that cluster is asked once more, as the archive's and the tuning's are
     rpDialog.close();
-    const list = (f.instances || []).join(", ") || "–";
+    const list = (f.instances || []).join(", ") || "–", name = f.name || "?", s = f.restart_s || 5;
+    if (f.kind === "dedicated") {
+      // the PostgreSQL of that one instance, asked once more as the cluster's restart is
+      if (await window.omniaAsk(fill(T.rp.restartAskDedicated, {link: f.link, name, s}), fill(T.rp.goRestartDedicated, {name}),
+        {goTitle: fill(T.rp.restartGoTitleDedicated, {name, s})})) rpSubmit();
+      return;
+    }
     if (await window.omniaAsk(fill(T.rp.restartAsk, {link: f.link, n: (f.instances || []).length, list}), fill(T.rp.goRestart, {link: f.link}),
       {goTitle: fill(T.rp.restartGoTitle, {link: f.link})})) rpSubmit();
   });
@@ -1200,7 +1327,7 @@
   }
   function draw() {
     // the cluster of this machine first, then the replicas it hosts of other machines' clusters, then the others
-    const hosted = (data.replicas || []).map((r) => Object.assign({}, r, {server: fill(T.rp.of, {link: r.link}), role: r.major, serves: [],
+    const hosted = (data.replicas || []).map((r) => Object.assign({}, r, {server: replicaOf(r), role: r.major, serves: [],
       version: ((r.here || {}).version || "").split(" ")[0], size: (r.here || {}).size || (r.here || {}).copied || null,
       connections: (r.here || {}).connections, max_connections: (r.here || {}).max_connections}));
     const rows = [...data.rows.filter((r) => r.where === "machine"), ...hosted, ...data.rows.filter((r) => r.where !== "machine")];
@@ -1252,7 +1379,8 @@
     // nothing else is to be made here; off, with why for each link, when no link can carry it
     const ro = data.replica_offer || {links: []}, rbox = document.getElementById("pg-replica-box"), rmake = document.getElementById("pg-replica");
     const usable = ro.links.filter((l) => !l.why);
-    rbox.hidden = !ro.links.length || !!ro.hosted;
+    // (a machine that hosts the copy of a cluster may still host those of dedicated databases: the dialog says what is left)
+    rbox.hidden = !ro.links.length;
     rmake.disabled = !!ro.why || !usable.length;
     rmake.classList.toggle("primary", box.hidden && !rbox.hidden);
     rbox.title = ro.why ? fill(T.rp.notHere, {why: ro.why}) : usable.length ? "" : fill(T.rp.noLink, {why: ro.links.map((l) => l.why).join(" ")});

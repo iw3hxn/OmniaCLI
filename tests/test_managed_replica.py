@@ -484,9 +484,9 @@ def test_who_may_not_read_from_it(instance):
     with pytest.raises(HelperError, match="is not OmniaCLI's"):
         workspacehelper.machine_db_replica_read("acme", "default", "mach", "on")
     (project / "compose.override.yaml").unlink()
-    # an instance with a database of its own: the replica is the machine's cluster's
+    # an instance with a database of its own reads from its own replica (UX-011 D), and has none
     (project / ".env").write_text("DB_PASSWORD=x\n")
-    with pytest.raises(HelperError, match="not on the machine's cluster"):
+    with pytest.raises(HelperError, match="a database of its own with no read replica"):
         workspacehelper.machine_db_replica_read("acme", "default", "mach", "on")
     with pytest.raises(HelperError, match="on or off"):
         workspacehelper.machine_db_replica_read("acme", "default", "mach", "maybe")
