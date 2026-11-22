@@ -411,7 +411,7 @@ Ogni punto è nel testo qui sopra, al suo posto. In ordine di peso:
 10. **`/instances` e `/api/instances` non dicono più al cliente il nome della macchina** (§7); lo stesso per `/backups` e `/api/backups`.
 11. Minori: i conteggi dicono «(N qui)» quando lo schema ne mostra meno; la ricerca senza risultati dice «Nessuna istanza corrisponde a «…»»; le linee dei database hanno la loro corsia; i motivi sono in italiano; il contrasto dei grigi; l'elenco nomina anche ciò che lo schema piega e il titolo dello SVG è dello schema disegnato; «Sulla mappa» apre lo schema del workspace; la data della posta; il percorso in verticale nel pannello; un'azione rifatta bene toglie il suo avviso; le cache si svuotano di ciò che è stato rimosso.
 
-Resta di Carlo la decisione **D3** (§16): oggi `host:port` del database esterno arriva ai tre ruoli del cliente, come la riga Database della pagina dell'istanza.
+**D3** (§16) decisa da Carlo il 22/11/2026: `host:port` del database esterno di terzi resta visibile ai tre ruoli del cliente, come la riga Database della pagina dell'istanza (è il database del cliente). Il database sul cluster di un altro OmniaCLI, invece, al cliente si dice «su un'altra macchina», senza indirizzo (UX-011 §B).
 
 ## Non verificato
 

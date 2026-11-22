@@ -226,9 +226,9 @@ Ritardo adesso: 2 s, e le modifiche di quei secondi non arrivate si perdono. Dop
 - Codice: `omniacli/templates/_machine_database.html` (righe 336-462, 549-589, 673-909), `omniacli/templates/server.html` (righe 983-1014), `omniacli/app.py` (`database_place`, riga 12401; riga del cluster, riga 10295).
 - Il ritorno (§A) e lo spostamento automatico (§B) vanno scritti in AD-004 da `software-architect` prima della build: cambiano il verso delle chiamate fra le macchine.
 
-## Scelte fatte per costruire, in attesa di Carlo (22/11/2026)
+## Scelte fatte per costruire, confermate da Carlo il 22/11/2026
 
-Le tre decisioni restano di Carlo. Per costruire valgono le raccomandate, tutte regolabili:
+Carlo ha confermato le tre raccomandate il 22/11/2026 («a-h ok»):
 
 - **D11-1**: per la replica di un dedicato, tetto del 10 % del disco del workspace, al massimo 20 GB.
 - **D11-2**: il cliente legge che esiste una copia dei suoi dati su un'altra macchina del fornitore, senza nomi.

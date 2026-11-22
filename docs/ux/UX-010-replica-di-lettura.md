@@ -279,9 +279,9 @@ Non ci sono un `TS-NNN` né un `T<n>`/`HT<n>`. È la richiesta di Carlo del 22/1
 - UX-008 §2 regole 1, 2, 5 e 6, e §6.2; UX-009 §5, §7 e §13.
 - Codice: `omniacli/templates/_machine_database.html` (righe 363-463, riga del cluster e dettaglio), `omniacli/templates/server.html` (righe 983-1004, «Server del database»), `omniacli/templates/_map.html` (righe 1033-1064), `omniacli/customerview.py`.
 
-## Scelte fatte per costruire, in attesa di Carlo (22/11/2026)
+## Scelte fatte per costruire, confermate da Carlo il 22/11/2026
 
-Le cinque decisioni del §11 restano di Carlo. Per non fermare la build valgono queste, tutte regolabili o annullabili:
+Carlo ha confermato le cinque scelte qui sotto il 22/11/2026 («a-h ok»), compresa la D3 diversa dalla raccomandata:
 
 - **D1**: tetto di 20 GB alle modifiche tenute per la replica, regolabile. Oltre il tetto la replica va rifatta.
 - **D2**: 10 s fra «in pari» e «in ritardo».

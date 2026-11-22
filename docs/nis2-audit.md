@@ -138,7 +138,7 @@ OmniaCLI con il SIEM giù perde le voci in coda (restano nel file locale).
 ## Limiti noti
 
 - Il periodo di 365 giorni è una scelta, non un obbligo di legge: va confermato e documentato da chi segue la
-  conformità (vedi sopra, PR.PS-04 punto 3).
+  conformità (vedi sopra, PR.PS-04 punto 3). Per le installazioni di questo fork Carlo l'ha confermato il 22/11/2026.
 - I job di una chiamata MCP non sono legati per id alla voce `mcp`: la voce
   `job` ne dice l'autore (`mcp: <token>`), l'ora e l'esito.
 - Un job interrotto da un riavvio di OmniaCLI non ha la sua voce `job`: il job
