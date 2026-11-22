@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from omniacli import clusterpitr, machinedb, ops, stacktemplates, stagings, workspacehelper, workspaceops
+from omniacli import clusterpitr, machinedb, ops, pgtuning, stacktemplates, stagings, workspacehelper, workspaceops
 from omniacli.composehelper import HelperError
 from omniacli.jobs import JobFailed
 
@@ -393,6 +393,8 @@ def test_a_database_at_a_minute(cluster):
     assert not any('DATABASE "acme_mach"' in s for s in written)
     last = clusterpitr.state("17")["last_recovery"]
     assert last["database"] == "acme_mach" and last["temp_bytes"] > 0
+    # the staging it was written into is kept too: the page names it, not the database
+    assert last["target"] == "acme_mach_stg"
 
 
 def test_the_extensions_of_a_dump_are_the_superusers():
@@ -880,3 +882,63 @@ async def test_the_database_tab_has_the_archive_in_the_clusters_row(panel, clien
         assert part in page
     # a workspace's admin has no Database tab
     assert 'id="pg-archive"' not in (await client.get("/", headers=basic("mario"))).text
+
+
+async def test_what_the_review_of_the_screens_asked(panel, client):
+    """The after-the-fact review of the screens of the recovery at a minute (UX-010, part 1)."""
+    page = (await client.get("/", headers={"Authorization": AUTH})).text
+    # 1. an archive that is not being saved is said on the closed row, in the cell
+    cell = page[page.index("function pitrCell"):page.index("function nameCell")]
+    assert "a.failing" in cell and "T.archiveFailingBadge" in cell and "archiveFailingBadgeTitle" in page
+    # 2. the second confirm of the restart names the databases other machines use, its button its own case
+    confirm = page[page.index("function confirmRestart"):page.index('getElementById("pg-confirm-go").addEventListener')]
+    assert "T.archiveRestartGrants" in confirm and 'getElementById("pg-confirm-go").title = ' in confirm
+    assert "confirmGoTitleGrants" in confirm and "confirmGoTitleMachine" in confirm
+    # 3. Switch off… cannot be undone: the name typed, and said
+    assert "window.omniaTypeName(fill(T.archiveOffAsk" in page and "window.omniaAsk(fill(T.archiveOffAsk" not in page
+    assert "It cannot be undone: the minutes of before are lost. Write {name} to confirm." in page
+    # 4. one way to write a size, in the tab and in the instance's page: MB and GB
+    assert "const bytes = (n) => window.sizeText(n);" in page and "window.sizeText = (n) =>" in page
+    instance = (await client.get("/servers/srv?view=test", headers={"Authorization": AUTH})).text
+    # (MiB stays the unit of the memory of the charts, which is not a size on a disk)
+    assert "window.sizeText(n)" in instance and '" GiB"' not in instance and 'toFixed(1) + " MiB"' not in instance
+    # 5. the last recovery by the instance and the staging born of it
+    assert "Last recovery: {instance} " in page and "staging {staging}, at {minute}" in page
+    assert "Last recovery: {database}" not in page
+    # 6. on the machine's cluster one sentence says who switches it on
+    assert "noAdmin.hidden = !!data.machine" in instance
+    # 7. the confirm's button has a title of its own, given by who asks
+    for part in ("window.omniaTypeName = (message, name, goLabel, goTitle)", 'goTitle = ""} = {}',
+                 "window.omniaWrite = (message, value, goLabel, goTitle)", "goLabel.title"):
+        assert part in page, part
+    assert "T.archiveOffGo, T.archiveOffGoTitle)" in page and "g.name, go, T.dropTitle)" in page
+
+
+async def test_the_last_recovery_names_the_instance_and_the_staging(panel, client, monkeypatch):
+    project = str(Path(machinedb.registry()["17"]["project"]))
+    panel["state"]["last_recovery"] = {"at": "2026-11-22T04:47:00", "database": "acme_mach", "target": "acme_mach_stg",
+                                       "minute": "2026-11-22T04:40", "seconds": 14.7, "temp_bytes": 200 << 20}
+    # a staging deleted since: no name for it, the page says so
+    panel["state"]["last_failure"] = {"at": "2026-11-22T04:10:00", "database": "acme_mach", "target": "acme_gone",
+                                      "minute": "2026-11-22T04:00", "step": "replay", "reason": "killed"}
+    asked = workspaceops.ask
+
+    async def ask(*args, timeout=None):
+        if args[0] == "machine-db-state":
+            return {"majors": ["17"], "clusters": [{
+                "major": "17", "storage": "main", "project": project, "running": True, "promised": 64, "port": None,
+                "grants": {}, "environments": {"acme_mach": {"workspace": "acme", "instance": "mach"},
+                                               "acme_mach_stg": {"workspace": "acme", "instance": "mach-stg"}}}]}
+        return await asked(*args, timeout=timeout)
+
+    async def read(inst):
+        return {"version": "17.12", "settings": [], "changed": [], "cluster_size": 150 << 20, "connections": 3}
+    monkeypatch.setattr(workspaceops, "ask", ask)
+    monkeypatch.setattr(pgtuning, "read", read)
+    rows = (await client.get("/api/postgres", headers={"Authorization": AUTH})).json()["rows"]
+    archive = next(r for r in rows if r["where"] == "machine")["archive"]
+    assert (archive["last_recovery"]["instance"], archive["last_recovery"]["staging"]) == ("acme-mach", "acme-mach-stg")
+    assert archive["last_recovery"]["database"] == "acme_mach"
+    assert (archive["last_failure"]["instance"], archive["last_failure"]["staging"]) == ("acme-mach", "")
+    # the names of the instances are not a field of the row itself
+    assert "names" not in next(r for r in rows if r["where"] == "machine")

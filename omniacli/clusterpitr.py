@@ -925,7 +925,8 @@ def restore(major: str, workspace: str, source: str, target: str, when: str, sto
             _log(project, f"recovery of {source} at {at:%Y-%m-%d %H:%M} into {target} "
                           f"{'stopped' if stopped else 'failed'} while {STEPS[step]}: {reason}")
             _save_last(project, failure={"at": datetime.datetime.now().isoformat(timespec="seconds"),
-                                         "database": source, "minute": at.isoformat(timespec="minutes"),
+                                         "database": source, "target": target,
+                                         "minute": at.isoformat(timespec="minutes"),
                                          "step": step, "reason": reason[-600:]})
             if public or stopped:
                 raise
@@ -941,6 +942,7 @@ def restore(major: str, workspace: str, source: str, target: str, when: str, sto
                 path.unlink(missing_ok=True)
     seconds = round(time.monotonic() - started, 1)
     _save_last(project, recovery={"at": datetime.datetime.now().isoformat(timespec="seconds"), "database": source,
+                                  "target": target,
                                   "minute": at.isoformat(timespec="minutes"), "base": chosen["time"],
                                   "seconds": seconds, **measures})
     _log(project, f"recovery of {source} at {at:%Y-%m-%d %H:%M} into {target}: {seconds} s, "

@@ -10274,6 +10274,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
         async def one(row: dict) -> dict:
             inst = row.pop("instance")
+            names = row.pop("names", {})
             record = records.get(row["key"]) or {}
             row.update({"tuned": {k: record.get(k) for k in ("tuned", "by", "params", "memory_gb")}
                         if record.get("tuned") else None, "restart": record.get("restart")})
@@ -10296,6 +10297,13 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     row["archive"] = await workspaceops.ask("machine-db-archive-state", row["major"],
                                                             timeout=pgtuning.READ_TIMEOUT * 4)
                     row["pitr"] = "on" if row["archive"].get("enabled") else "off"
+                    # its last recovery by the names people know: the instance and the staging born of it
+                    # (the database's own name stays, for the small print); a staging deleted since has none
+                    for key in ("last_recovery", "last_failure"):
+                        last = row["archive"].get(key)
+                        if isinstance(last, dict):
+                            last["instance"] = names.get(str(last.get("database") or ""), "")
+                            last["staging"] = names.get(str(last.get("target") or ""), "")
                 except JobFailed as exc:
                     _logger.warning("the archive of the machine's PostgreSQL cannot be read: %s", exc)
             return row
@@ -10326,6 +10334,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             machine_rows.append({"key": target.key, "server": MACHINE_KEY, "role": major, "kind": "machine",
                                  "parent": "", "where": "machine", "instance": target, "workspace": "", "pitr": None,
                                  "archive": None,
+                                 # the instance of each database of the cluster, by the name its page has
+                                 "names": {name: f"{e.get('workspace')}-{e.get('instance')}"
+                                           for name, e in (found.get("environments") or {}).items()},
                                  "major": major, "storage": found.get("storage") or "",
                                  "promised": int(found.get("promised") or 0), "running": bool(found.get("running")),
                                  "serves": [{"key": f"{s}/production", "server": s, "role": "production"}

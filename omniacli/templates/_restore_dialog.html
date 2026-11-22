@@ -60,8 +60,8 @@
     error: {{ _("Error {status}") | tojson }},
   };
   const isDump = (name) => !name.toLowerCase().endsWith(".zip");
-  const sizeText = (b) => b >= 1073741824 ? (b / 1073741824).toFixed(2) + " GiB"
-    : b >= 1048576 ? (b / 1048576).toFixed(1) + " MiB" : Math.max(1, Math.round(b / 1024)) + " KiB";
+  // one way to write a size in the instance's page (base.html)
+  const sizeText = (b) => window.sizeText(b);
 
   async function load() {
     list.replaceChildren();

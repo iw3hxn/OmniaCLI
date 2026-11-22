@@ -229,6 +229,8 @@
     archiveCellTitle: {{ _("The recovery at a minute of the cluster, one for all its instances: open the row to switch it on or off") | tojson }},
     archiveOverBadge: {{ _("over the budget") | tojson }},
     archiveOverBadgeTitle: {{ _("The full copies and the record of the changes take more disk than their budget") | tojson }},
+    archiveFailingBadge: {{ _("not saving") | tojson }},
+    archiveFailingBadgeTitle: {{ _("The record of the changes is not being saved since {time}: it grows on the machine's disk until it is. Open the row.") | tojson }},
     archiveOff: {{ _("Off: an instance on the cluster can only be had again as it was at the moment of a backup.") | tojson }},
     archiveOn: {{ _("On since {when}: every instance on the cluster can go back to a minute, from {first} on.") | tojson }},
     archiveOnNone: {{ _("On since {when}: no full copy yet. The first is being made, or failed (see the last actions).") | tojson }},
@@ -238,8 +240,10 @@
     archiveRoom: {{ _("A recovery replays a temporary copy of the whole cluster, not of one database: about {need} on the machine's disk for about {time} ({free} free now, {reserve} are left free). The copy is readable by root only, holds the data of every instance on the cluster, and is deleted at the end, whatever happens.") | tojson }},
     archiveNoRoom: {{ _("No recovery can start now: its temporary copy needs about {need}, {free} are free on the machine's disk and {reserve} must stay free.") | tojson }},
     archiveRunning: {{ _("A recovery at a minute is running now.") | tojson }},
-    archiveLast: {{ _("Last recovery: {database} at {minute}, on {when}, in {seconds} s, with a temporary copy of {size}, deleted.") | tojson }},
-    archiveFailure: {{ _("Last recovery that did not end: {database} at {minute}, on {when}, while {step}. The temporary copy was deleted. Reason: {reason}") | tojson }},
+    archiveLast: {{ _("Last recovery: {instance} → staging {staging}, at {minute}, on {when}, in {seconds} s, with a temporary copy of {size}, deleted.") | tojson }},
+    archiveFailure: {{ _("Last recovery that did not end: {instance} → staging {staging}, at {minute}, on {when}, while {step}. The temporary copy was deleted. Reason: {reason}") | tojson }},
+    archiveNoStaging: {{ _("not here any more") | tojson }},
+    archiveDatabaseTitle: {{ _("The name of the database of that instance on the cluster") | tojson }},
     archiveSteps: {check: {{ _("checking the room on the machine's disk") | tojson }}, archive: {{ _("saving the changes of now") | tojson }}, unpack: {{ _("unpacking the full copy") | tojson }},
       replay: {{ _("replaying the changes up to that minute") | tojson }}, dump: {{ _("reading the database at that minute") | tojson }},
       restore: {{ _("writing the database of the staging") | tojson }}},
@@ -251,7 +255,9 @@
     archiveBaseTitle: {{ _("Makes now the full copy of the cluster the recovery at a minute starts from; it is made by itself every night. Nothing stops. It is a job.") | tojson }},
     archiveSwitchOff: {{ _("Switch off…") | tojson }},
     archiveSwitchOffTitle: {{ _("Stops recording the changes and deletes the full copies and the record kept so far: no instance on the cluster can go back to a minute any more. Nothing restarts. It is a job.") | tojson }},
-    archiveOffAsk: {{ _("Switch the recovery at a minute of the machine's cluster off? Its full copies ({bases}) and the record of the changes are deleted ({used} freed): no instance on it can go back to a minute any more, only to a backup. Nothing restarts.") | tojson }},
+    archiveOffAsk: {{ _("Switch the recovery at a minute of the machine's cluster off? Its full copies ({bases}) and the record of the changes are deleted ({used} freed): no instance on it can go back to a minute any more, only to a backup. Nothing restarts. It cannot be undone: the minutes of before are lost. Write {name} to confirm.") | tojson }},
+    archiveOffGo: {{ _("Switch off") | tojson }},
+    archiveOffGoTitle: {{ _("Deletes the full copies and the record of the changes of the cluster and stops recording. It cannot be undone. It is a job.") | tojson }},
     archiveWhat: {{ _("The cluster records every change and makes a full copy every night, on the storage {storage}, outside the disks of the workspaces: each instance on it can then go back to a minute, in a new staging. It is one for the whole cluster: it cannot be on for one instance only.") | tojson }},
     archiveRoomNote: {{ _("A recovery makes a temporary copy of the whole cluster: about {need} now, with {free} free on the machine's disk.") | tojson }},
     archiveRestart: {{ _("The cluster restarts once, in about a second, to start recording: the {n} instances on it ({list}) lose their connections, and each may answer an error to its first request or two after that.") | tojson }},
@@ -262,6 +268,9 @@
     minuteOne: {{ _("1 minute") | tojson }}, minuteMany: {{ _("{n} minutes") | tojson }},
     stopsMachine: {{ _("Stops for a few seconds: the {n} instances on it ({list}). Whoever is connected loses the connection.") | tojson }},
     confirmMachine: {{ _("Restart the machine's cluster now? The {n} instances on it ({list}) do not answer for a few seconds; whoever is saving at that moment gets an error and tries again.") | tojson }},
+    confirmGoTitle: {{ _("Restarts the database of {name} now: for a few seconds it does not answer") | tojson }},
+    confirmGoTitleMachine: {{ _("Restarts the machine's cluster now: for a few seconds its {n} instances do not answer") | tojson }},
+    confirmGoTitleGrants: {{ _("Restarts the machine's cluster now: for a few seconds its {n} instances and the databases other machines use ({list}) do not answer") | tojson }},
     clusterAsk: {{ _("Make the PostgreSQL of this machine? A container of OmniaCLI, PostgreSQL {major}, its data on the storage {storage}, no port. The new instances are made on it; the instances of now keep their database.") | tojson }},
     clusterNot: {{ _("No machine's cluster here: {why}") | tojson }},
     // a database of the cluster used by an instance of another machine, a linked OmniaCLI's (AD-003)
@@ -296,12 +305,8 @@
   const el = (tag, props, ...kids) => { const n = Object.assign(document.createElement(tag), props || {}); n.append(...kids.filter((k) => k !== null && k !== undefined)); return n; };
   const fill = (text, values) => text.replace(/\{(\w+)\}/g, (m, k) => (k in values ? values[k] : m));
   const dec = (n, digits) => n.toLocaleString(document.documentElement.lang || undefined, {maximumFractionDigits: digits});
-  function bytes(n) {
-    if (n === null || n === undefined) return "–";
-    if (n >= GIB) return dec(n / GIB, 2) + " GB";
-    if (n >= MIB) return dec(n / MIB, n >= 100 * MIB ? 0 : 1) + " MB";
-    return dec(n / KIB, 0) + " kB";
-  }
+  // one way to write a size, here and in the instance's page (base.html)
+  const bytes = (n) => window.sizeText(n);
   function value(p, v) {
     if (v === null || v === undefined) return "–";
     if (p.kind === "memory") return bytes(v);
@@ -353,8 +358,13 @@
       const a = row.archive;
       if (!a) return el("span", {textContent: "—", title: T.archiveUnread});
       const state = el("span", {textContent: a.enabled ? T.pitrOn : T.pitrOff, title: T.archiveCellTitle});
-      if (!(a.enabled && a.over)) return state;
-      return el("span", {}, state, " ", el("span", {className: "badge warn", textContent: T.archiveOverBadge, title: T.archiveOverBadgeTitle}));
+      if (!a.enabled || !(a.over || a.failing)) return state;
+      const cell = el("span", {}, state);
+      // what fills the machine's disk is said on the closed row, not only in the detail
+      if (a.failing) cell.append(" ", el("span", {className: "badge warn", textContent: T.archiveFailingBadge,
+        title: fill(T.archiveFailingBadgeTitle, {time: a.last_failed ? when(a.last_failed) : "?"})}));
+      if (a.over) cell.append(" ", el("span", {className: "badge warn", textContent: T.archiveOverBadge, title: T.archiveOverBadgeTitle}));
+      return cell;
     }
     if (row.where !== "dedicated" || row.pitr === null) return el("span", {textContent: "—", title: T.pitrNone});
     if (row.pitr === "on") return el("a", {href: instanceUrl(row) + "#backups", textContent: T.pitrOn, title: T.pitrOnTitle});
@@ -536,7 +546,7 @@
     line.append(el("button", {type: "button", className: "small danger", textContent: T.drop, title: T.dropTitle,
       onclick: async (e) => {
         const go = e.currentTarget.textContent.replace("…", "");
-        if (await window.omniaTypeName(fill(T.dropAsk, {name: g.name, link: g.link, instance: g.instance || g.name}), g.name, go)) grantAction(row, g, "drop");
+        if (await window.omniaTypeName(fill(T.dropAsk, {name: g.name, link: g.link, instance: g.instance || g.name}), g.name, go, T.dropTitle)) grantAction(row, g, "drop");
       }}));
     return line;
   }
@@ -568,7 +578,10 @@
   function archiveBlock(row) {
     const a = row.archive, dd = el("dd", {className: "pg-archive-lines"});
     if (!a) { dd.textContent = T.archiveUnread; return dd; }
-    const line = (text, warn) => dd.append(el("div", {className: warn ? "pg-warn" : "", textContent: text}));
+    const line = (text, warn) => { const div = el("div", {className: warn ? "pg-warn" : "", textContent: text}); dd.append(div); return div; };
+    // a recovery names the instance and the staging born of it; the database's own name after, small
+    const names = (r) => ({instance: r.instance || r.database, staging: r.staging || T.archiveNoStaging});
+    const technical = (div, r) => { if (r.instance && r.database) div.append(" ", el("span", {className: "small mono", textContent: r.database, title: T.archiveDatabaseTitle})); };
     const room = a.room || {};
     const sizes = {need: bytes(room.need), free: bytes(room.free), reserve: bytes(room.reserve), time: minutesText(a.seconds)};
     if (!a.enabled) line(T.archiveOff);
@@ -582,9 +595,9 @@
       if (a.recovering) line(T.archiveRunning);
     }
     const done = a.last_recovery, failed = a.last_failure;
-    if (done) line(fill(T.archiveLast, {database: done.database, minute: when(done.minute), when: when(done.at), seconds: dec(done.seconds || 0, 1), size: bytes(done.temp_bytes)}));
-    if (failed && (!done || failed.at > done.at)) line(fill(T.archiveFailure, {database: failed.database, minute: when(failed.minute), when: when(failed.at),
-      step: T.archiveSteps[failed.step] || failed.step, reason: failed.reason || ""}), true);
+    if (done) technical(line(fill(T.archiveLast, {...names(done), minute: when(done.minute), when: when(done.at), seconds: dec(done.seconds || 0, 1), size: bytes(done.temp_bytes)})), done);
+    if (failed && (!done || failed.at > done.at)) technical(line(fill(T.archiveFailure, {...names(failed), minute: when(failed.minute), when: when(failed.at),
+      step: T.archiveSteps[failed.step] || failed.step, reason: failed.reason || ""}), true), failed);
     const actions = el("div", {className: "pg-actions"});
     if (!a.enabled) {
       actions.append(el("button", {type: "button", className: "small", textContent: T.archiveSwitchOn, title: T.archiveSwitchOnTitle, onclick: () => openArchive(row)}));
@@ -592,7 +605,11 @@
       actions.append(el("button", {type: "button", className: "small", textContent: T.archiveBase, title: T.archiveBaseTitle, onclick: () => archivePost(row, "base")}));
       actions.append(el("button", {type: "button", className: "small", textContent: T.archiveChange, title: T.archiveChangeTitle, onclick: () => openArchive(row)}));
       actions.append(el("button", {type: "button", className: "small danger", textContent: T.archiveSwitchOff, title: T.archiveSwitchOffTitle,
-        onclick: async (e) => { if (await window.omniaAsk(fill(T.archiveOffAsk, {bases: a.bases.length, used: bytes(a.used)}), e.currentTarget, {danger: true})) archivePost(row, "off"); }}));
+        onclick: async () => {
+          // what cannot be undone asks the name typed (base.html), as Drop… of a database of another machine does
+          const name = kindText(row);
+          if (await window.omniaTypeName(fill(T.archiveOffAsk, {bases: a.bases.length, used: bytes(a.used), name}), name, T.archiveOffGo, T.archiveOffGoTitle)) archivePost(row, "off");
+        }}));
     }
     dd.append(actions);
     return dd;
@@ -663,9 +680,13 @@
   let confirmed = null;
   function confirmRestart(row, then) {
     if (row.kind !== "production" && row.kind !== "machine") { then(); return; }
+    // the databases other machines use lose their connections too: said here as in the dialog before
+    const lent = row.kind === "machine" ? (row.grants || []).filter((g) => !g.revoked).map((g) => g.name).join(", ") : "";
     document.getElementById("pg-confirm-text").textContent = row.kind === "machine"
-      ? fill(T.confirmMachine, {n: row.serves.length, list: servedList(row) || "–"})
+      ? fill(T.confirmMachine, {n: row.serves.length, list: servedList(row) || "–"}) + (lent ? " " + fill(T.archiveRestartGrants, {list: lent}) : "")
       : fill(T.confirm, {name: row.server, kind: kindText(row)});
+    document.getElementById("pg-confirm-go").title = row.kind !== "machine" ? fill(T.confirmGoTitle, {name: row.server})
+      : lent ? fill(T.confirmGoTitleGrants, {n: row.serves.length, list: lent}) : fill(T.confirmGoTitleMachine, {n: row.serves.length});
     confirmed = then;
     confirmBox.showModal();
   }

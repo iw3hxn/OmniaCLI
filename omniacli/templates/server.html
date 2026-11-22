@@ -643,7 +643,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
         title="{{ _('Makes now the full copy of the database recovery at a minute starts from; it is made by itself every night. After a big change it shortens the recovery. It is a job.') }}">{{ _("Full copy now") }}</button>
     </div>
     {% else %}
-    <p class="muted" style="font-size: 13px">{{ _("An admin switches it on or uses it.") }}</p>
+    <p class="muted pitr-noadmin" style="font-size: 13px">{{ _("An admin switches it on or uses it.") }}</p>
     {% endif %}
     <details class="pitr-details" hidden><summary title="{{ _('How many full copies are kept and how much room the record of the changes takes') }}">{{ _("Details") }}</summary>
       <p class="muted pitr-detail" style="font-size: 13px"></p></details>
@@ -1370,6 +1370,9 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     if (offBox) offBox.hidden = data.enabled || !!data.machine;
     if (onBox) onBox.hidden = !data.enabled;
     if (data.machine && document.getElementById("pitr-base")) document.getElementById("pitr-base").hidden = true;
+    // on the machine's cluster the state's own sentence says who switches it on: one sentence, not two admins
+    const noAdmin = box.querySelector(".pitr-noadmin");
+    if (noAdmin) noAdmin.hidden = !!data.machine;
     const said = [], input = document.getElementById("pitr-time"), go = document.getElementById("pitr-restore");
     const wrap = document.getElementById("pitr-restore-wrap"), busy = go ? go.disabled : false;
     // on the machine's cluster: one recovery at a time, and only with the room for its temporary copy
@@ -1455,7 +1458,8 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
                      calls: {{ _("times") | tojson }}, total_ms: {{ _("total time, ms") | tojson }}, mean_ms: {{ _("mean time, ms") | tojson }}}};
   const LANG = document.documentElement.lang || "en";
   const num = (n, digits = 1) => Number(n).toLocaleString(LANG, {maximumFractionDigits: digits});
-  const bytes = (n) => n >= 1 << 30 ? num(n / (1 << 30)) + " GiB" : n >= 1 << 20 ? num(n / (1 << 20)) + " MiB" : Math.round(n / 1024) + " KiB";
+  // one way to write a size, here and in the machine's Database tab (base.html)
+  const bytes = (n) => window.sizeText(n);
   const lasting = (s) => s >= 3600 ? `${Math.floor(s / 3600)} h ${Math.floor(s % 3600 / 60)} min` : s >= 60 ? `${Math.floor(s / 60)} min ${s % 60} s` : `${s} s`;
   const DB_FIRST = 10;
   async function loadDatabase() {
@@ -1884,8 +1888,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
   });
 
   // the Backups tab loads its list when it is opened
-  const sizeText = (b) => b >= 1073741824 ? (b / 1073741824).toFixed(2) + " GiB"
-    : b >= 1048576 ? (b / 1048576).toFixed(1) + " MiB" : Math.max(1, Math.round(b / 1024)) + " KiB";
+  const sizeText = (b) => window.sizeText(b);
   // a moment of this browser's clock as the page writes it: gg/mm/aaaa hh:mm
   const stamp = (ms) => { const d = new Date(ms), two = (n) => String(n).padStart(2, "0");
     return `${two(d.getDate())}/${two(d.getMonth() + 1)}/${d.getFullYear()} ${two(d.getHours())}:${two(d.getMinutes())}`; };

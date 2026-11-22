@@ -596,6 +596,16 @@ window.whenText = (iso) => {
   const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/.exec(String(iso || ""));
   return m ? `${m[3]}/${m[2]}/${m[1]} ${m[4]}:${m[5]}` : String(iso || "");
 };
+// a size as people write it, one way in every page that uses it: MB and GB, kB under 1 MB; no
+// decimal from 100 MB, one from 100 GB, two below (297.6 GB, 12.25 GB, 477 MB, 21.4 MB)
+window.sizeText = (n) => {
+  if (n === null || n === undefined || Number.isNaN(Number(n))) return "–";
+  const dec = (value, digits) => value.toLocaleString(document.documentElement.lang || undefined, {maximumFractionDigits: digits});
+  const MB = 1048576, GB = 1073741824;
+  if (n >= GB) return dec(n / GB, n >= 100 * GB ? 1 : 2) + " GB";
+  if (n >= MB) return dec(n / MB, n >= 100 * MB ? 0 : 1) + " MB";
+  return dec(n / 1024, 0) + " kB";
+};
 // the page's own dialogs instead of the browser's (alert, confirm, prompt): a
 // message, a question, a text to write, and the name typed to confirm what
 // cannot be undone (its button stays off until the name is written as it
@@ -641,19 +651,22 @@ window.whenText = (iso) => {
   });
   // a message (what alert did): resolves when it is closed
   window.omniaSay = (message) => open(String(message), {go: {{ _("Close") | tojson }}, goTitle: {{ _("Closes this message") | tojson }}});
+  // goTitle: what the go button does, said in its title in other words than its text; not given, its text
   // true when the name was typed and the button pressed
-  window.omniaTypeName = (message, name, goLabel) => open(String(message), {
-    go: goLabel, goTitle: goLabel, danger: true, cancel: {{ _("Cancel") | tojson }}}, {name: String(name)});
+  window.omniaTypeName = (message, name, goLabel, goTitle) => open(String(message), {
+    go: goLabel, goTitle: goTitle || goLabel, danger: true, cancel: {{ _("Cancel") | tojson }}}, {name: String(name)});
   // a text to write (what prompt did): what is written, null for Cancel or Esc
-  window.omniaWrite = (message, value, goLabel) => open(String(message), {
-    go: goLabel, goTitle: goLabel, cancel: {{ _("Cancel") | tojson }}}, {value});
+  window.omniaWrite = (message, value, goLabel, goTitle) => open(String(message), {
+    go: goLabel, goTitle: goTitle || goLabel, cancel: {{ _("Cancel") | tojson }}}, {value});
   // a question (what confirm did): true for the go button, false for Cancel
   // or Esc. goLabel: the action's verb, or the button pressed (its own text
   // without its … or ▾); danger (red) for what deletes or stops
-  window.omniaAsk = (message, goLabel, {danger = false} = {}) => {
+  window.omniaAsk = (message, goLabel, {danger = false, goTitle = ""} = {}) => {
     const label = (goLabel instanceof Element ? goLabel.textContent : String(goLabel || "")).replace(/[…▾]/g, "").trim()
       || {{ _("Continue") | tojson }};
-    return open(String(message), {go: label, goTitle: label, danger, cancel: {{ _("Cancel") | tojson }}});
+    // the button pressed says what it does in its own title: its confirm does that same thing
+    const title = goTitle || (goLabel instanceof Element ? goLabel.title : "") || label;
+    return open(String(message), {go: label, goTitle: title, danger, cancel: {{ _("Cancel") | tojson }}});
   };
   // a form with data-confirm asks it before it is posted. The go button: the
   // button pressed (data-confirm-go: another verb), red when that button is
