@@ -1047,6 +1047,115 @@ container that mounts it never reads it). The credentials are kept in
 `credentials/`, readable by OmniaCLI's user only; a token is never shown
 again (changing a credential with the token left empty keeps it).
 
+### GitHub
+
+No GitHub App and no OAuth app: a **fine-grained personal access token** made
+on github.com (Settings › Developer settings › Personal access tokens ›
+Fine-grained tokens) and pasted into OmniaCLI as a git credential of kind
+**GitHub token** (`github.py`). It belongs where the other credentials are:
+**Settings › Git credentials** for a server (the machine's admins), the
+workspace's page, *Git credentials › + GitHub token*, for a workspace (its
+admins: a customer may have its own GitHub). A server's wins over its
+workspace's for the same host. It is also the git credential of its host
+(its login as the user), so the clones and pulls of its repositories go over
+https with it through git's store file (0600, `credential.helper=store
+--file=…`), never on a command line; saving a plain user and token for the
+same host replaces it.
+
+The token GitHub needs:
+
+- **Resource owner**: the account or the organisation whose repositories
+  OmniaCLI reads (a fine-grained token reads one owner's: repositories of two
+  owners need two tokens, one on the server and one on its workspace, or the
+  owner's own);
+- **Repository access**: *Only select repositories* (those of the
+  instances) or *All repositories*;
+- **Repository permissions**: *Contents* read-only (clone and pull),
+  *Metadata* read-only (mandatory: the list and the branches), *Webhooks*
+  read and write (the CI: the webhook made by itself), *Commit statuses*
+  read and write (the state of a deploy on its commit). Nothing of the
+  account's permissions.
+
+**Save the token** asks GitHub who it is (`GET /user`, `/user/orgs`): the
+account and the organisations are kept with it and shown in the row, with
+its name; a token GitHub refuses is not saved. **Test** (on the form, or on
+the row of a saved one: nothing is saved or changed) says who it is, how
+many repositories it reads (and how many private, of which owners), and for
+each permission whether it has it and what it is for, **measured** on the
+first of its repositories (a fine-grained token tells no scopes): a read for
+the read ones; for the write ones a request GitHub refuses as invalid (422)
+when the token may write, and as forbidden (403, 404) when it may not — a
+webhook without an address, a status on commit `000…0`: nothing is made.
+It ends with the requests left of GitHub's hourly limit.
+
+**Add a repository › From GitHub** (an instance's Modules tab, when a GitHub
+token reaches the instance: otherwise the typed address, as before, with a
+line that says where a token is added): the repositories the token reads
+(`GET /user/repos`, 100 a page following GitHub's `Link`, at most 1,000),
+with a search box, the private ones marked, their default branch; one chosen,
+its branches (`/repos/<owner>/<name>/branches`), the Odoo version's one (19.0
+for an instance of `odoo-19`) chosen when it exists, else the default
+branch; **Add** is the job of a typed address (each role cloned on that
+branch, odoo.conf, Python packages, restart) with the clone address GitHub
+gave. The typed address stays the second choice.
+
+**The webhook made by itself**: when the CI of an instance is switched on
+(«CI: update at every push», above, Stagings) or a repository is added to an
+instance whose CI is on, and the repository is on a GitHub a token of the
+instance reaches, a job (*GitHub webhooks of <instance>*, or the job of the
+addition) makes the repository's webhook: content type JSON, push events
+only, a secret of its own, the address `https://<portal>/hooks/github/<id>`
+(the portal's address, Options › Customers' portal), else
+`https://<the instance's own name>/.omniacli/hooks/github/<id>`. **One
+webhook per repository and machine**: every instance here that follows it
+shares it, and a push it tells goes to each of them as the per-instance
+webhook does it: a test or a staging with its CI on deploys, one with its CI
+off notes it, **a production lists the new commit and does not move**
+(updated by hand only). The address and its secret are in
+`github-hooks.json` next to the servers file (600). Switched on again, the
+same webhook is updated (found by its id or its address), never doubled.
+When the CI goes off (or the webhook is taken away, or the repository
+removed) and no instance here with its CI on follows the repository any
+more, the webhook is taken away — only the one OmniaCLI made: its address
+ends with `/hooks/github/<its id>`, the mark; another webhook of the
+repository is never touched. A webhook is not made when GitHub would not
+reach the address — no portal address and no name of the instance, a
+private or loopback address, a name of a local network (`.local`, `.test`,
+`.internal`, `.lan`…), the placeholder `https://<address of this OmniaCLI>`:
+the job says why and what to do (give the instance a name in Addresses, or
+the portal an address). A refusal of GitHub (a token without *Webhooks*) is
+a warning of the job with the permission to add. The same push told twice
+(the webhook pasted by hand and the one made on GitHub) deploys once: the
+second call within 10 minutes gets the job of the first, and a production
+lists the commit once. The Modules tab says, for each repository of the
+instance on GitHub, whether its webhook is made (its address) or why not.
+
+**The state on the commit**: a deploy on push of a test or a staging writes
+a commit status, context `omniacli/<instance>` (`omniacli/<server>/test` for
+a test): *pending* on the commit pushed when it starts, then *success* on the
+commit checked out, or *failure* (*error* when stopped) on the commit
+pushed; with a link to the job when the portal has a public address (the
+instance's own name passes only the logins and the webhooks to OmniaCLI),
+none otherwise. A token without *Commit statuses* write: a line of the job
+says it, the deploy goes on. **A production's new commit, available and not
+deployed, is not a status**: a status is the state of a check, and a
+*pending* that waits for a person for days would read as a check that hangs
+(and would block a merge where the branch protection asks for that context);
+the production's page says *New commit available* instead.
+
+The API: `https://api.github.com` for `github.com`; any other host is read as
+a GitHub Enterprise Server (`https://<host>/api/v3`; tried only with the
+lab's stand-in). Calls with httpx, 20 s at most (10 to connect), the token in
+the `Authorization` header only, the certificate checked against the
+machine's trust store (as git's); `X-RateLimit-Remaining` is followed (a
+listing stops early with 5 requests left, saying the list is cut; a limit
+used up is said with the time it comes back; GitHub's secondary limit with
+its `Retry-After`); a refusal is said for a person (*GitHub refused: the
+token cannot read the webhooks of acme/addons (403): it needs «Webhooks:
+Read and write» on it*). Not built: a repository made from a module `.zip`,
+the webhook taken away when an instance is deleted (its address then answers
+*nothing to do*: take it away on GitHub), GitLab and Bitbucket.
+
 ### Odoo Enterprise
 
 The instances made from a template (Workspaces, below) run the community image;
@@ -1831,7 +1940,9 @@ secret is refused and written in the access log. The secret is in
 switched the CI off is in the instance's file of deploys (below). The
 address is on the instance's own name (`/.omniacli/hooks/deploy/...`, which
 its nginx passes to OmniaCLI: published again after an upgrade) when it has
-one, OmniaCLI's otherwise.
+one, OmniaCLI's otherwise. With a GitHub token in the git credentials, the
+webhook on GitHub is made and taken away by the switch itself, and the state
+of each deploy is written on its commit (GitHub, above).
 
 **Productions updated by hand only** (2026-11-22: the CI runs on the
 stagings and the tests; a production is rebuilt by hand). A production (an

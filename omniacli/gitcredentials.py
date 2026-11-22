@@ -42,18 +42,39 @@ class CredentialError(ValueError):
     pass
 
 
+# a credential's kinds: a user and a token for git only, or a GitHub token
+# (github.py), which is also the git credential of its host and with which
+# OmniaCLI lists the repositories, makes their webhooks and writes the state
+# of a deploy on its commit
+TOKEN_KIND, GITHUB_KIND = "token", "github"
+LABEL = re.compile(r"[^\x00-\x1f<>]{1,80}")
+
+
 @dataclass(frozen=True)
 class Credential:
     host: str
     username: str
     token: str
+    kind: str = TOKEN_KIND
+    # a GitHub token's: its name, and the account and organisations GitHub said it is
+    label: str = ""
+    account: str = ""
+    orgs: tuple = ()
+
+    @property
+    def github(self) -> bool:
+        return self.kind == GITHUB_KIND
 
     def public(self) -> dict:
         """What the pages show: never the token."""
-        return {"host": self.host, "username": self.username, "token_set": bool(self.token)}
+        found = {"host": self.host, "username": self.username, "token_set": bool(self.token)}
+        if self.github:
+            found.update(kind=self.kind, label=self.label, account=self.account, orgs=list(self.orgs))
+        return found
 
 
-def check(host: str, username: str, token: str) -> Credential:
+def check(host: str, username: str, token: str, kind: str = TOKEN_KIND, label: str = "", account: str = "",
+          orgs=()) -> Credential:
     host = host.strip().lower()
     if not HOST.fullmatch(host):
         raise CredentialError(f"{host!r} is not a host name (github.com, git.example.com:8443)")
@@ -61,7 +82,15 @@ def check(host: str, username: str, token: str) -> Credential:
         raise CredentialError("the user is 1-200 characters, no space, : @ or /")
     if not TOKEN.fullmatch(token or ""):
         raise CredentialError("the token is 1-1000 characters, no space")
-    return Credential(host, username, token)
+    if kind not in (TOKEN_KIND, GITHUB_KIND):
+        raise CredentialError(f"{kind!r} is not a kind of credential")
+    if kind != GITHUB_KIND:
+        return Credential(host, username, token)
+    label = (label or "").strip()
+    if not LABEL.fullmatch(label):
+        raise CredentialError("the name of a GitHub token is 1-80 characters")
+    orgs = tuple(sorted({str(o) for o in orgs or () if USERNAME.fullmatch(str(o))}))
+    return Credential(host, username, token, kind, label, account if USERNAME.fullmatch(account or "") else "", orgs)
 
 
 def scope_of(kind: str, name: str) -> str:
@@ -88,7 +117,9 @@ def load(path: Path) -> dict[str, dict[str, Credential]]:
             entry = entry if isinstance(entry, dict) else {}
             try:
                 cred = check(str(entry.get("host") or ""), str(entry.get("username") or ""),
-                             str(entry.get("token") or ""))
+                             str(entry.get("token") or ""), str(entry.get("kind") or TOKEN_KIND),
+                             str(entry.get("label") or ""), str(entry.get("account") or ""),
+                             entry.get("orgs") if isinstance(entry.get("orgs"), list) else ())
             except CredentialError as exc:
                 raise CredentialError(f"{path}: {scope}: {exc}") from None
             found[str(scope)][cred.host] = cred
@@ -96,8 +127,7 @@ def load(path: Path) -> dict[str, dict[str, Credential]]:
 
 
 def save(path: Path, found: dict[str, dict[str, Credential]]) -> None:
-    data = {"credentials": {scope: [{"host": c.host, "username": c.username, "token": c.token}
-                                    for c in sorted(entries.values(), key=lambda c: c.host)]
+    data = {"credentials": {scope: [_entry(c) for c in sorted(entries.values(), key=lambda c: c.host)]
                             for scope, entries in sorted(found.items()) if entries}}
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
@@ -106,6 +136,25 @@ def save(path: Path, found: dict[str, dict[str, Credential]]) -> None:
         fh.write(yaml.safe_dump(data, sort_keys=False, allow_unicode=True))
     os.chmod(tmp, 0o600)
     os.replace(tmp, path)
+
+
+def _entry(cred: Credential) -> dict:
+    entry = {"host": cred.host, "username": cred.username, "token": cred.token}
+    if cred.github:
+        entry.update(kind=cred.kind, label=cred.label, account=cred.account, orgs=list(cred.orgs))
+    return entry
+
+
+def github_tokens(settings, server: str) -> dict[str, Credential]:
+    """The GitHub tokens of a server's repositories, by host: its
+    workspace's, then its own over them (as every credential)."""
+    if settings.credentials_file is None:
+        return {}
+    try:
+        found = merged(load(settings.credentials_file), server, settings.workspace_of(server))
+    except CredentialError:
+        return {}
+    return {host: cred for host, cred in found.items() if cred.github}
 
 
 def merged(found: dict[str, dict[str, Credential]], server: str, workspace: str | None) -> dict[str, Credential]:

@@ -1,0 +1,113 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{# The GitHub token of one scope (a server or a workspace: README, GitHub): a
+   git credential of kind «GitHub token», with its name; GitHub is asked who it
+   is when it is saved. «Test» says who it is, how many repositories it reads
+   and which permissions it lacks for what. Posts JSON to url + "save" / "test"
+   with body extra merged in; the token is never shown back (empty: the one
+   saved is kept). A saved GitHub token's row of a table of credentials has a
+   button [data-gh-test] (data-gh-url, data-gh-extra, data-gh-host): its test. -#}
+{% macro github_form(url, extra, label) -%}
+<details class="gh-token">
+  <summary title="{{ _('A fine-grained personal access token of GitHub: the repositories are then picked from a list, their webhook is made by itself and the state of a deploy is written on its commit') }}">+ {{ _("GitHub token") }}</summary>
+  <div class="gh-form" data-url="{{ url }}" data-extra='{{ extra | tojson }}'>
+    <p class="muted small">{{ _("Make it on github.com: Settings › Developer settings › Personal access tokens › Fine-grained tokens. Resource owner: the account or the organisation of the repositories; Repository access: those OmniaCLI may read; Repository permissions: Contents read-only, Metadata read-only, Webhooks read and write, Commit statuses read and write. It is never shown again.") }}</p>
+    <div class="gh-fields">
+      <div><label>{{ _("Name") }}<input type="text" class="gh-label" maxlength="80" placeholder="{{ _('e.g. GitHub of the company') }}" aria-label="{{ _('Name of the GitHub token of {label}', label=label) }}"></label></div>
+      <div><label>{{ _("Token") }}<input type="password" class="mono gh-secret" autocomplete="new-password" placeholder="github_pat_… {{ _('(empty: keep the saved one)') }}" aria-label="{{ _('GitHub token of {label}', label=label) }}"></label></div>
+      <div><label>{{ _("Host") }}<input type="text" class="mono gh-host" placeholder="github.com" spellcheck="false" aria-label="{{ _('Host of the GitHub of {label}', label=label) }}"></label></div>
+    </div>
+    <div class="actions" style="justify-content: flex-start">
+      <button type="button" class="gh-try" title="{{ _('Asks GitHub with the token typed (or the saved one) who it is, how many repositories it reads and which permissions it lacks for what: nothing is saved or changed') }}">{{ _("Test") }}</button>
+      <button type="button" class="gh-save" title="{{ _('Asks GitHub who the token is, then keeps it as the git credential of its host for the repositories of {label}: an empty token keeps the saved one', label=label) }}">{{ _("Save the token") }}</button>
+    </div>
+    <div class="gh-result" hidden></div>
+    <p class="error gh-error" role="alert"></p>
+  </div>
+</details>
+{%- endmacro %}
+
+{% macro github_script() -%}
+<style>
+.gh-token { margin-top: 10px; } .gh-token > summary { cursor: pointer; font-weight: 600; }
+.gh-fields { display: grid; grid-template-columns: 1fr 1.4fr 180px; gap: 10px; margin: 8px 0; }
+.gh-fields label { display: block; font-size: 13px; font-weight: 600; } .gh-fields input { width: 100%; margin-top: 4px; }
+.gh-result { font-size: 13px; margin-top: 8px; border-left: 3px solid var(--border); padding: 4px 10px; }
+.gh-result ul { margin: 4px 0; padding-left: 4px; list-style: none; } .gh-result .ok { color: var(--ok, inherit); } .gh-result .missing { color: var(--err); }
+@media (max-width: 700px) { .gh-fields { grid-template-columns: 1fr; } }
+</style>
+<script>
+(function () {
+  const G = {who: {{ _("Token of {login} ({type})") | tojson }}, orgs: {{ _("organisations: {orgs}") | tojson }},
+             reach: {{ _("It reads {count} repositories ({private} private) of {owners}.") | tojson }},
+             cut: {{ _("The list stops at the first ones: GitHub was asked no further.") | tojson }},
+             none: {{ _("It reads no repository: give it the repositories in Repository access.") | tojson }},
+             measured: {{ _("Permissions measured on {repo}:") | tojson }},
+             has: {{ _("{permission} ({access}): yes, for {purpose}") | tojson }},
+             lacks: {{ _("{permission} ({access}): missing, for {purpose}") | tojson }},
+             allOk: {{ _("Nothing is missing.") | tojson }}, rate: {{ _("Requests left of GitHub's hourly limit: {remaining} of {limit}.") | tojson }},
+             saved: {{ _("Saved: token of {login}.") | tojson }}, asking: {{ _("Asking GitHub…") | tojson }},
+             error: {{ _("Error {status}") | tojson }}};
+  const fill = (text, values) => Object.entries(values).reduce((t, [k, v]) => t.replaceAll(`{${k}}`, v), text);
+  async function call(url, body) {
+    const resp = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
+                                   body: JSON.stringify(body)}).catch(() => null);
+    const data = resp ? await resp.json().catch(() => ({})) : {};
+    return {ok: !!resp && resp.ok, data, status: resp ? resp.status : 0};
+  }
+  function draw(box, data) {
+    box.replaceChildren();
+    const line = (text, cls) => { const p = document.createElement("p"); p.style.margin = "2px 0"; p.textContent = text; if (cls) p.className = cls; box.append(p); };
+    line(fill(G.who, {login: data.login, type: data.type}) + (data.orgs && data.orgs.length ? " · " + fill(G.orgs, {orgs: data.orgs.join(", ")}) : ""));
+    if (!data.repositories) line(G.none, "missing");
+    else line(fill(G.reach, {count: data.repositories, private: data.private, owners: data.owners.join(", ")}) + (data.cut ? " " + G.cut : ""));
+    if (data.probe) {
+      line(fill(G.measured, {repo: data.probe}));
+      const ul = document.createElement("ul");
+      for (const p of data.permissions) {
+        const li = document.createElement("li");
+        li.className = p.ok ? "ok" : "missing";
+        li.textContent = (p.ok ? "✓ " : "✗ ") + fill(p.ok ? G.has : G.lacks, {permission: p.permission, access: p.access, purpose: p["for"]});
+        ul.append(li);
+      }
+      box.append(ul);
+      if (!data.missing.length) line(G.allOk);
+    }
+    if (data.rate && data.rate.remaining != null) line(fill(G.rate, {remaining: data.rate.remaining, limit: data.rate.limit || "?"}), "muted");
+    box.hidden = false;
+  }
+  for (const form of document.querySelectorAll(".gh-form")) {
+    const $ = (cls) => form.querySelector(cls), extra = JSON.parse(form.dataset.extra || "{}");
+    const body = () => ({...extra, label: $(".gh-label").value.trim(), token: $(".gh-secret").value.trim(), host: $(".gh-host").value.trim()});
+    const run = async (action) => {
+      $(".gh-error").textContent = ""; $(".gh-result").hidden = false; $(".gh-result").textContent = G.asking;
+      const {ok, data, status} = await call(form.dataset.url + action, body());
+      if (!ok) { $(".gh-result").hidden = true; $(".gh-error").textContent = data.error || data.detail || fill(G.error, {status}); return; }
+      if (action === "test") { draw($(".gh-result"), data); return; }
+      $(".gh-secret").value = "";
+      $(".gh-result").textContent = fill(G.saved, {login: data.account.login});
+      location.reload();
+    };
+    $(".gh-try").onclick = () => run("test");
+    $(".gh-save").onclick = () => run("save");
+  }
+  for (const button of document.querySelectorAll("[data-gh-test]")) {
+    button.onclick = async () => {
+      const row = button.closest("tr");
+      let shown = row.nextElementSibling;
+      if (!shown || !shown.classList.contains("gh-result-row")) {
+        shown = document.createElement("tr"); shown.className = "gh-result-row";
+        const cell = document.createElement("td"); cell.colSpan = row.children.length;
+        cell.append(Object.assign(document.createElement("div"), {className: "gh-result"}));
+        shown.append(cell); row.after(shown);
+      }
+      const box = shown.querySelector(".gh-result");
+      box.textContent = G.asking;
+      const {ok, data, status} = await call(button.dataset.ghUrl, {...JSON.parse(button.dataset.ghExtra || "{}"), host: button.dataset.ghHost, token: ""});
+      if (!ok) { box.textContent = data.error || data.detail || fill(G.error, {status}); box.classList.add("error"); return; }
+      box.classList.remove("error");
+      draw(box, data);
+    };
+  }
+})();
+</script>
+{%- endmacro %}

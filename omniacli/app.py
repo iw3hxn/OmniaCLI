@@ -51,6 +51,7 @@ from . import i18n, loginas, machines, modulecatalog, pgreport, pgtuning, stagin
 from . import clusterpitr, inframap, linkedcluster, machinedb, managedreplica
 from . import stagingmail
 from . import deploys
+from . import github
 from . import moduleupload, sshkeys
 from . import dumpinfo
 from . import totp
@@ -317,6 +318,9 @@ WORKSPACE_ROUTES = frozenset({
     "/api/workspaces/{workspace}/instances/delete", "/api/workspaces/{workspace}/web/save",
     "/api/workspaces/{workspace}/web/publish", "/api/workspaces/{workspace}/web/certificate",
     "/api/workspaces/{workspace}/credentials/save", "/api/workspaces/{workspace}/credentials/delete",
+    # its GitHub token, and Add a repository «From GitHub» with it (README, GitHub)
+    "/api/workspaces/{workspace}/credentials/github/save", "/api/workspaces/{workspace}/credentials/github/test",
+    "/api/workspaces/{workspace}/github/repositories", "/api/workspaces/{workspace}/github/branches",
     "/api/workspaces/{workspace}/repositories/add", "/api/workspaces/{workspace}/repositories/remove",
     "/api/workspaces/{workspace}/git-key", "/api/workspaces/{workspace}/repositories/branches",
     "/api/workspaces/{workspace}/repositories/update",
@@ -3552,6 +3556,108 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         ws = a_workspace(workspace)
         return await change_credentials(gitcredentials.scope_of("workspace", ws.name), payload, delete=True)
 
+    # --- GitHub tokens (github.py): a git credential of kind «GitHub token» ---
+    # Kept with the other credentials of its scope (a server, a workspace: a customer's admins may have their own
+    # GitHub), the git credential of its host too; GitHub is asked who it is when it is saved
+
+    def github_host(payload: dict) -> str:
+        return str(payload.get("host") or "").strip().lower() or "github.com"
+
+    async def github_typed_or_saved(scope: str, payload: dict) -> tuple[str, str, dict]:
+        """(host, token, the scope's credentials): the token typed, else the
+        GitHub token saved for that host (an empty field keeps it)."""
+        host = github_host(payload)
+        found = await asyncio.to_thread(gitcredentials.load, settings.credentials_file)
+        entries = dict(found.get(scope, {}))
+        token = str(payload.get("token") or "").strip()
+        if not token and host in entries and entries[host].github:
+            token = entries[host].token
+        if not token:
+            raise gitcredentials.CredentialError("Paste the token GitHub gave: github.com › Settings › Developer "
+                                                 "settings › Fine-grained tokens")
+        return host, token, found
+
+    async def github_save(scope: str, payload: dict):
+        """A GitHub token of scope saved: GitHub tells who it is (its account
+        and organisations, kept with it) before it is kept."""
+        if settings.credentials_file is None:
+            return refuse("No credentials file in this configuration: the token has no place")
+        async with credentials_lock:
+            try:
+                host, token, found = await github_typed_or_saved(scope, payload)
+                label = str(payload.get("label") or "").strip()
+                gitcredentials.check(host, "x-access-token", token, gitcredentials.GITHUB_KIND, label)
+                async with github.Client(host, token) as gh:
+                    who = await gh.account()
+                cred = gitcredentials.check(host, who["login"] or "x-access-token", token, gitcredentials.GITHUB_KIND,
+                                            label, who["login"], who["orgs"])
+                entries = dict(found.get(scope, {}))
+                entries[host] = cred
+                found[scope] = entries
+                await asyncio.to_thread(gitcredentials.save, settings.credentials_file, found)
+            except (gitcredentials.CredentialError, github.GitHubError) as exc:
+                return refuse(str(exc))
+            except OSError as exc:
+                return refuse(f"Cannot write {settings.credentials_file}: {exc}", 500)
+            await asyncio.to_thread(gitcredentials.bind, settings)
+        return {"ok": True, "credentials": credential_rows(found, scope), "account": who}
+
+    async def github_test(request: Request, scope: str, payload: dict):
+        """«Test» of a GitHub token (typed, or the one saved): who it is, how
+        many repositories it reads, and which permissions it lacks for what,
+        measured by asking GitHub on one of them (github.Client.permissions)."""
+        lang = request_language(request)
+        if settings.credentials_file is None:
+            return refuse("No credentials file in this configuration: the token has no place")
+        try:
+            host, token, _ = await github_typed_or_saved(scope, payload)
+            async with github.Client(host, token) as gh:
+                who = await gh.account()
+                repos, cut = await gh.repositories()
+                probe = next((r for r in repos if not r["archived"]), repos[0] if repos else None)
+                rights = await gh.permissions(probe["full_name"]) if probe else []
+                rate = {"remaining": gh.remaining, "limit": gh.limit}
+        except (gitcredentials.CredentialError, github.GitHubError) as exc:
+            return refuse(str(exc))
+        owners = sorted({r["full_name"].split("/", 1)[0] for r in repos})
+        return {"ok": True, "host": host, "login": who["login"], "type": who["type"], "orgs": who["orgs"],
+                "owners": owners, "repositories": len(repos), "cut": cut, "private": sum(r["private"] for r in repos),
+                "probe": probe["full_name"] if probe else None, "rate": rate,
+                "permissions": [{**p, "for": i18n.tr(lang, p["for"])} for p in rights],
+                "missing": [p["permission"] for p in rights if not p["ok"]]}
+
+    def credential_scope(payload: dict):
+        """The scope a request of Settings › Git credentials names, or a refusal."""
+        try:
+            scope = gitcredentials.scope_of(str(payload.get("kind") or ""), str(payload.get("name") or ""))
+        except gitcredentials.CredentialError as exc:
+            return refuse(str(exc))
+        name = scope.split(":", 1)[1]
+        if name not in (settings.servers if scope.startswith("server:") else settings.workspaces):
+            return refuse(f"No {scope.split(':', 1)[0]} {name}", status.HTTP_404_NOT_FOUND)
+        return scope
+
+    @app.post("/api/credentials/github/save", dependencies=[Depends(admin)])
+    async def credentials_github_save(payload: dict = Body(...)):
+        scope = credential_scope(payload)
+        return scope if not isinstance(scope, str) else await github_save(scope, payload)
+
+    @app.post("/api/credentials/github/test", dependencies=[Depends(admin)])
+    async def credentials_github_test(request: Request, payload: dict = Body(...)):
+        scope = credential_scope(payload)
+        return scope if not isinstance(scope, str) else await github_test(request, scope, payload)
+
+    @app.post("/api/workspaces/{workspace}/credentials/github/save", dependencies=[Depends(admin)])
+    async def workspace_github_save(workspace: str, payload: dict = Body(...)):
+        """The workspace's GitHub token, set by its admins."""
+        ws = a_workspace(workspace)
+        return await github_save(gitcredentials.scope_of("workspace", ws.name), payload)
+
+    @app.post("/api/workspaces/{workspace}/credentials/github/test", dependencies=[Depends(admin)])
+    async def workspace_github_test(request: Request, workspace: str, payload: dict = Body(...)):
+        ws = a_workspace(workspace)
+        return await github_test(request, gitcredentials.scope_of("workspace", ws.name), payload)
+
     # --- Odoo Enterprise (docs/ux/UX-012) -----------------------------------
     # Where its code comes from, once per machine (the machine's admins); one
     # copy per version branch kept by root; a switch per instance made from a
@@ -6167,6 +6273,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             await add_repositories(job, ws, name, instance, [(repo, url, branches)])
             job.log(f"{repo} is in {name}: install its modules from Odoo's Apps")
             job.result = {"server": name, "repository": repo}
+            # with the CI of one of its roles on, the repository's webhook on GitHub made by itself
+            await github_sync(job, {url})
 
         job = jobs.submit(f"Add repository {repo} to {name}", [f"{name}/{role}" for role in roles],
                           f"manual: {me}", action)
@@ -6188,6 +6296,66 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         await asyncio.to_thread(gitcredentials.bind, settings)
         return {"ok": True, "public_key": public}
 
+    # --- Add a repository «From GitHub» (github.py): its repositories, then its branches ---
+
+    def github_of(ws: Workspace, payload: dict):
+        """(server name, host, its GitHub token, every token of the server) of a
+        request of «From GitHub», or a refusal; no token: host and token None."""
+        name = str(payload.get("server") or "")
+        if name not in ws.servers or name not in settings.servers:
+            return refuse(f"No instance {name} in workspace {ws.name}", status.HTTP_404_NOT_FOUND)
+        tokens = gitcredentials.github_tokens(settings, name)
+        host = str(payload.get("host") or "").strip().lower() or next(iter(sorted(tokens)), None)
+        if host is not None and host not in tokens:
+            return refuse(f"No GitHub token for {host} in the git credentials of {name}")
+        return name, host, tokens.get(host) if host else None, tokens
+
+    @app.post("/api/workspaces/{workspace}/github/repositories", dependencies=[Depends(admin)])
+    async def github_repositories(workspace: str, payload: dict = Body(...)):
+        """The repositories the instance's GitHub token reads (its workspace's or
+        its server's), for «From GitHub»: none, with tokens empty, when it has none."""
+        found = github_of(a_workspace(workspace), payload)
+        if not isinstance(found, tuple):
+            return found
+        name, host, cred, tokens = found
+        listed = [{"host": h, "label": c.label, "account": c.account} for h, c in sorted(tokens.items())]
+        if cred is None:
+            return {"tokens": [], "repositories": [], "cut": False}
+        try:
+            async with github.Client(host, cred.token) as gh:
+                repos, cut = await gh.repositories()
+        except github.GitHubError as exc:
+            return refuse(str(exc))
+        return {"tokens": listed, "host": host, "repositories": repos, "cut": cut}
+
+    @app.post("/api/workspaces/{workspace}/github/branches", dependencies=[Depends(admin)])
+    async def github_branches(workspace: str, payload: dict = Body(...)):
+        """The branches of a repository for «From GitHub», with the one to
+        choose: the Odoo version's of the instance (19.0) when it has one,
+        else the repository's default branch."""
+        found = github_of(a_workspace(workspace), payload)
+        if not isinstance(found, tuple):
+            return found
+        name, host, cred, _ = found
+        full = str(payload.get("repository") or "")
+        if cred is None:
+            return refuse(f"No GitHub token in the git credentials of {name}")
+        if not github.FULL_NAME.fullmatch(full) or ".." in full:
+            return refuse(f"{full!r} is not the name of a repository (owner/name)")
+        try:
+            async with github.Client(host, cred.token) as gh:
+                repo = await gh.repository(full)
+                branches, cut = await gh.branches(full)
+        except github.GitHubError as exc:
+            return refuse(str(exc))
+        srv = settings.servers[name]
+        inst = srv.production or srv.test
+        series = enterprise.series_of_template(str(instance_meta(inst).get("template") or "")) if inst else None
+        default = str(repo.get("default_branch") or "")
+        chosen = series if series in branches else default if default in branches else (branches[0] if branches else "")
+        return {"repository": full, "clone_url": str(repo.get("clone_url") or ""), "private": bool(repo.get("private")),
+                "default_branch": default, "series": series, "chosen": chosen, "branches": sorted(branches), "cut": cut}
+
     @app.post("/api/workspaces/{workspace}/repositories/remove", dependencies=[Depends(admin)])
     async def repository_remove(workspace: str, payload: dict = Body(...), me: Principal = Depends(current_user)):
         """A customer's repository out of an instance: out of the odoo.conf
@@ -6204,6 +6372,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return refuse(f"{name} has no repository {repo}", status.HTTP_404_NOT_FOUND)
 
         async def action(job):
+            # its address, for its webhook on GitHub taken away when no instance with the CI on follows it
+            gone = {await remote_url(r) for role in roles for r in getattr(server, role).repositories if r.name == repo}
             kept = {role: [r for r in getattr(server, role).repositories if r.name != repo] for role in roles}
             for role in roles:
                 await workspaceops.write_conf(job, ws, instance, role, [r.name for r in kept[role]])
@@ -6212,6 +6382,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 await ops.restart(job, getattr(done, role))
                 workspaceops.remove_clone(workspaceops.addons_folder(ws, instance, role) / repo)
             job.log(f"{repo} removed from {name}")
+            await github_sync(job, gone - {""})
 
         job = jobs.submit(f"Remove repository {repo} from {name}", [f"{name}/{role}" for role in roles],
                           f"manual: {me}", action)
@@ -9613,7 +9784,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     @app.get("/api/servers/{server}/{role}/deploy-hook", dependencies=[Depends(developer)])
     async def deploy_hook_get(request: Request, server: str, role: str, me: Principal = Depends(current_user)):
-        return deploy_hook_view(request, get_instance(server, role), me)
+        instance = get_instance(server, role)
+        return {**deploy_hook_view(request, instance, me), "github": await github_view(request, instance)}
 
     @app.post("/api/servers/{server}/{role}/deploy-hook")
     async def deploy_hook_save(request: Request, server: str, role: str, payload: dict = Body(...),
@@ -9647,7 +9819,17 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         await asyncio.to_thread(deployhooks.save, deploy_hooks_file, data)
         access_log.record("action", me.kind, me.name, request.client.host if request.client else "",
                           f"CI of {instance.key}: {said or 'unchanged'}")
-        return {**deploy_hook_view(request, instance, me), "secret": secret}
+        # the webhooks on GitHub of its repositories follow the switch (made, or taken away when no instance here
+        # with the CI on follows them any more): a job, which says what it did
+        sync = None
+        if payload.get("forget") or "enabled" in payload:
+            urls = {await remote_url(r) for r in instance.repositories} - {""}
+            if await github_touches(instance, urls):
+                ws = workspace_of(instance.server)
+                sync = jobs.submit(f"GitHub webhooks of {instance.key}", [instance.key], f"manual: {me}",
+                                   lambda job: github_sync(job, urls), workspace=ws[0].name if ws else "")
+        return {**deploy_hook_view(request, instance, me), "secret": secret,
+                "github": await github_view(request, instance), "github_job": sync.id if sync else None}
 
     async def followed_by(instance: Instance, urls: set, branch: str | None) -> list[str]:
         """The repositories of instance at one of urls (host/path) on branch."""
@@ -9658,27 +9840,63 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 found.append(repo.name)
         return found
 
-    def push_deploy(instance: Instance, followed: list[str], branch: str | None):
-        """The job of a push on a test or a staging; None when its automatic deploys are paused."""
+    # (instance, commit) of the pushes deployed in the last PUSH_TWICE seconds, with their job: the same push told
+    # twice (its webhook pasted by hand and the one OmniaCLI made on GitHub) deploys once
+    pushes_seen: dict[tuple[str, str], tuple[float, str]] = {}
+    PUSH_TWICE = 600
+
+    def push_deploy(instance: Instance, followed: list[str], branch: str | None, sha: str = ""):
+        """The job of a push on a test or a staging; None when its automatic
+        deploys are paused; the job of before when the same commit was just
+        deployed by another webhook. Its state is written on the commit on
+        GitHub when a GitHub token of the instance may (github_status)."""
         if deploys.paused(deploys_folder, instance.key):
             return None
+        now = time.monotonic()
+        for seen, (when, _) in list(pushes_seen.items()):
+            if now - when > PUSH_TWICE:
+                pushes_seen.pop(seen, None)
+        if sha and (instance.key, sha) in pushes_seen:
+            before = jobs.get(pushes_seen[(instance.key, sha)][1])
+            if before is not None:
+                return before
         ws = workspace_of(instance.server)
-        return jobs.submit(f"Deploy on push {', '.join(followed)} to {instance.key}", [instance.key],
-                           f"push ({branch})", lambda job: ops.pull_restart(
-                               job, instance, only_if_changed=True, only=set(followed),
-                               backup_folder=backup_folder(instance)),
-                           workspace=ws[0].name if ws else "")
+
+        async def action(job):
+            targets = await github_targets(instance, followed)
+            await github_status(job, instance, targets, "pending", sha)
+            try:
+                await ops.pull_restart(job, instance, only_if_changed=True, only=set(followed),
+                                       backup_folder=backup_folder(instance))
+            except asyncio.CancelledError:
+                await github_status(job, instance, targets, "error", sha)
+                raise
+            except Exception:
+                await github_status(job, instance, targets, "failure", sha)
+                raise
+            await github_status(job, instance, targets, "success", "")
+
+        job = jobs.submit(f"Deploy on push {', '.join(followed)} to {instance.key}", [instance.key],
+                          f"push ({branch})", action, workspace=ws[0].name if ws else "")
+        if sha:
+            pushes_seen[(instance.key, sha)] = (now, job.id)
+        return job
 
     async def note_available(instance: Instance, followed: list[str], branch: str | None, sha: str,
                              message: str) -> bool:
         """The commit a push brought, listed in the deploys of a production as
         available, not deployed (its page says so until it is pulled by hand)."""
         rows = []
+        # the same push told by two webhooks (one pasted by hand, the one made on GitHub) is listed once
+        listed = {(r.get("name"), r.get("after")) for e in deploys.load(deploys_folder, instance.key)["deploys"][-20:]
+                  if e.get("kind") == "available" for r in e.get("repositories") or [] if isinstance(r, dict)}
         for repo in instance.repositories:
             if repo.name not in followed:
                 continue
             now = await deploys.head(repo)
             if sha and now and now.startswith(sha):
+                continue
+            if sha and (repo.name, sha) in listed:
                 continue
             rows.append({"name": repo.name, "branch": repo.branch, "before": now, "after": sha or None,
                          "subject": message, "before_subject": "", "brought": None, "taken": None, "commits": []})
@@ -9740,7 +9958,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             # its stagings here on that branch whose CI is on: that is the CI
             for staging in local_stagings(server):
                 theirs = await followed_by(staging, urls, branch)
-                job = push_deploy(staging, theirs, branch) if theirs and ci_on(staging) else None
+                job = push_deploy(staging, theirs, branch, sha) if theirs and ci_on(staging) else None
                 if theirs:
                     started.append({"instance": staging.key, "job": job.id if job else None,
                                     "note": None if job else "CI off"})
@@ -9755,7 +9973,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             elif not followed:
                 record["result"] = f"nothing to do: {instance.key} follows no pushed branch {branch or '?'} of that repository"
             else:
-                job = push_deploy(instance, followed, branch)
+                job = push_deploy(instance, followed, branch, sha)
                 started.append({"instance": instance.key, "job": job.id, "note": None})
                 record.update(result="deploy", job=job.id, repositories=followed)
             # its production on the same branch: told of the commit, not deployed
@@ -9777,6 +9995,287 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if record["result"].startswith("not deployed: the CI"):
             answer["paused"] = True
         return JSONResponse(answer, status_code=202 if jobs_started else 200)
+
+    # --- GitHub (github.py): the webhook of a repository made by itself, the state of a deploy on its commit ---
+    # One webhook per repository and machine, made when an instance here that follows the repository has its CI
+    # switched on (or the repository is added to one that has it on), with the GitHub token of that instance's
+    # credentials, on an address GitHub reaches (the portal's, else an instance's own name); taken away when no
+    # instance here with the CI on follows it. Its address is /hooks/github/<id> (its mark: only those are
+    # changed or taken away) and its secret is its own (github-hooks.json, 600). A push it tells is fanned out to
+    # every instance here that follows that repository and branch, as the per-instance webhook does: a test or a
+    # staging with the CI on deploys, a production is told of the new commit and does not move.
+
+    github_hooks_file = settings.servers_file.parent / "github-hooks.json"
+    github_lock = asyncio.Lock()
+
+    async def remote_url(repo) -> str:
+        if not repo.path.is_dir():
+            return ""
+        code, out = await ops.capture(repo.git("remote", "get-url", repo.remote), cwd=repo.path)
+        return out.strip() if code == 0 else ""
+
+    def github_key(url: str) -> str | None:
+        found = github.repository_of(url)
+        return github.key_of(*found) if found else None
+
+    async def github_followers(key: str) -> list[Instance]:
+        """Every instance of this machine with a repository at key."""
+        found = []
+        for inst in settings.all_instances():
+            for repo in inst.repositories:
+                if github_key(await remote_url(repo)) == key:
+                    found.append(inst)
+                    break
+        return found
+
+    def github_token_of(host: str, servers) -> tuple[str, gitcredentials.Credential] | None:
+        """(server, its GitHub token for host) of the first of servers that has one."""
+        for server in servers:
+            cred = gitcredentials.github_tokens(settings, server).get(host)
+            if cred is not None:
+                return server, cred
+        return None
+
+    async def github_touches(instance: Instance, urls: set) -> bool:
+        """Whether one of urls is a repository a GitHub token of the instance reaches, or one whose webhook
+        OmniaCLI made (a sync has something to do)."""
+        made = await asyncio.to_thread(deployhooks.load, github_hooks_file)
+        tokens = gitcredentials.github_tokens(settings, instance.server)
+        for url in urls:
+            found = github.repository_of(url)
+            if found and (found[0] in tokens or github.key_of(*found) in made):
+                return True
+        return False
+
+    def github_hook_base(wanting: list[Instance]) -> tuple[str | None, str]:
+        """The address GitHub calls (…/hooks/github/, the id after it): the
+        portal's, else the own name of one of the instances that want it;
+        None, with why, when GitHub reaches none of them."""
+        reasons = []
+        portal = portal_url()
+        if portal:
+            why = github.unreachable(portal)
+            if why is None:
+                return portal + github.HOOK_PATH, ""
+            reasons.append(f"the portal: {why}")
+        for inst in sorted(wanting, key=lambda i: i.key):
+            if inst.site:
+                why = github.unreachable(inst.site)
+                if why is None:
+                    return f"{inst.site}{workspaceweb.HOOKS_PATH}github/", ""
+                reasons.append(f"the name of {inst.key}: {why}")
+        # the first reason only: one sentence, which the reader's language translates whole
+        said = reasons[0] if reasons else "the portal has no address and the instance no name"
+        return None, (f"GitHub would not reach this OmniaCLI ({said}): give the instance a name in Addresses, or "
+                      "the portal an address (Options › Customers' portal)")
+
+    def github_ours(hook: dict, rid: str | None, base: str | None) -> bool:
+        """A webhook of GitHub is the one OmniaCLI made: its address is ours (the mark)."""
+        url = str((hook.get("config") or {}).get("url") or "")
+        return bool(rid and url.endswith(github.HOOK_PATH + rid)) or bool(base and url.startswith(base))
+
+    async def github_sync_one(job, key: str, host: str, full: str, record: dict | None) -> dict | None:
+        """The webhook of one repository as the CI of the instances here wants
+        it: made or updated, or taken away; what github-hooks.json keeps of it."""
+        stamp = datetime.datetime.now().isoformat(timespec="seconds")
+        follow = await github_followers(key)
+        wanting = [i for i in follow if not manual_only(i) and ci_on(i)]
+        if wanting:
+            found = github_token_of(host, [i.server for i in wanting])
+            if found is None:
+                if host == "github.com":
+                    job.log(f"{full}: no GitHub token in the git credentials of {', '.join(i.key for i in wanting)}: "
+                            "its webhook is pasted by hand (Modules › Updates of the code)")
+                return record
+            server, cred = found
+            base, why = github_hook_base(wanting)
+            if base is None:
+                job.warn(f"The webhook of {full} on GitHub is not made: {why}")
+                return {**(record or {}), "host": host, "repository": full, "why": why, "at": stamp}
+            rid = (record or {}).get("rid") or secrets.token_urlsafe(9)
+            url = base + rid
+            secret = (record or {}).get("secret") or deployhooks.new_secret()
+            async with github.Client(host, cred.token) as gh:
+                hooks = await gh.hooks(full)
+                mine = (next((h for h in hooks if h.get("id") == (record or {}).get("id")), None)
+                        or next((h for h in hooks if github_ours(h, rid, base)), None))
+                if mine is not None:
+                    await gh.change_hook(full, mine["id"], url, secret)
+                    hook_id = mine["id"]
+                    job.log(f"GitHub: the webhook of {full} updated: {url} (push events)")
+                else:
+                    hook_id = (await gh.make_hook(full, url, secret))["id"]
+                    job.log(f"GitHub: the webhook of {full} made: {url} (push events, content type JSON, "
+                            "signed with a secret of its own)")
+            job.log(f"It deploys {', '.join(i.key for i in wanting)} at a push; a production that follows {full} "
+                    "is told of the new commit and is updated by hand")
+            return {"host": host, "repository": full, "id": hook_id, "url": url, "rid": rid, "secret": secret,
+                    "server": server, "instances": [i.key for i in wanting], "at": stamp, "why": None}
+        if not record or not record.get("id"):
+            return None
+        found = github_token_of(host, [record.get("server") or "", *(i.server for i in follow),
+                                       *sorted(settings.servers)])
+        if found is None:
+            job.warn(f"The webhook of {full} on GitHub stays: no GitHub token here reaches it any more; take it "
+                     "away on GitHub (the repository's Settings › Webhooks)")
+            return None
+        async with github.Client(host, found[1].token) as gh:
+            hook = await gh.hook(full, record["id"])
+            if hook is None:
+                job.log(f"GitHub: the webhook of {full} was not there any more")
+            elif github_ours(hook, record.get("rid"), None):
+                await gh.remove_hook(full, record["id"])
+                job.log(f"GitHub: the webhook of {full} taken away: no instance here with the CI on follows it")
+            else:
+                job.log(f"GitHub: the webhook {record['id']} of {full} has another address now, not OmniaCLI's: "
+                        "left as it is")
+        return None
+
+    async def github_sync(job, urls) -> None:
+        """The webhooks on GitHub of the repositories at urls, each as the CI of
+        the instances here wants it (github_sync_one); a refusal of GitHub is a
+        warning of the job, the rest goes on."""
+        keys = {}
+        for url in urls:
+            found = github.repository_of(url)
+            if found:
+                keys[github.key_of(*found)] = found
+        if not keys:
+            return
+        async with github_lock:
+            data = await asyncio.to_thread(deployhooks.load, github_hooks_file)
+            for key, (host, full) in sorted(keys.items()):
+                record = data.get(key) if isinstance(data.get(key), dict) else None
+                try:
+                    found = await github_sync_one(job, key, host, full, record)
+                except github.GitHubError as exc:
+                    job.warn(f"GitHub, the webhook of {full}: {exc}")
+                    found = {**(record or {}), "host": host, "repository": full, "why": str(exc),
+                             "at": datetime.datetime.now().isoformat(timespec="seconds")}
+                if found is None:
+                    data.pop(key, None)
+                else:
+                    data[key] = found
+            await asyncio.to_thread(deployhooks.save, github_hooks_file, data)
+
+    async def github_view(request: Request, instance: Instance) -> list[dict]:
+        """The webhook on GitHub of each repository of the instance a GitHub
+        token reaches: made (its address), or why not."""
+        lang = request_language(request)
+        data = await asyncio.to_thread(deployhooks.load, github_hooks_file)
+        tokens = gitcredentials.github_tokens(settings, instance.server)
+        rows = []
+        for repo in instance.repositories:
+            found = github.repository_of(await remote_url(repo))
+            if not found:
+                continue
+            record = data.get(github.key_of(*found))
+            record = record if isinstance(record, dict) else {}
+            if found[0] not in tokens and not record:
+                continue
+            rows.append({"name": repo.name, "repository": found[1], "made": bool(record.get("id")),
+                         "url": record.get("url") if record.get("id") else None, "at": record.get("at"),
+                         "why": i18n.tr(lang, record["why"]) if record.get("why") else None,
+                         "token": found[0] in tokens})
+        return rows
+
+    async def github_targets(instance: Instance, followed: list[str]) -> list[tuple]:
+        """(repository, host, owner/name, token) of the repositories followed a GitHub token of the instance reaches."""
+        tokens = gitcredentials.github_tokens(settings, instance.server)
+        found = []
+        for repo in instance.repositories:
+            if repo.name not in followed:
+                continue
+            where = github.repository_of(await remote_url(repo))
+            if where and where[0] in tokens:
+                found.append((repo, where[0], where[1], tokens[where[0]]))
+        return found
+
+    GITHUB_STATES = {"pending": "Deploying on {key}", "success": "Deployed on {key}",
+                     "failure": "The deploy on {key} failed", "error": "The deploy on {key} was stopped"}
+
+    async def github_status(job, instance: Instance, targets: list[tuple], state: str, sha: str) -> None:
+        """The state of a deploy of a test or a staging written on the commit
+        (context omniacli/<instance>, a link to its job when the portal has a
+        public address): the commit pushed while it runs or fails, the one
+        checked out when it succeeds. A token that may not write it: said in a
+        line, the deploy goes on."""
+        if not targets or manual_only(instance):
+            return
+        portal = portal_url()
+        link = f"{portal}/jobs/{job.id}" if portal and github.unreachable(portal) is None else None
+        context = f"{github.CONTEXT}/{instance.server}" + ("" if instance.role == "production" else f"/{instance.role}")
+        for repo, host, full, cred in targets:
+            commit = sha if state != "success" and sha else await deploys.head(repo)
+            if not commit or not github.SHA.fullmatch(commit):
+                continue
+            try:
+                async with github.Client(host, cred.token) as gh:
+                    await gh.set_status(full, commit, state, context, GITHUB_STATES[state].format(key=instance.key),
+                                        link)
+                job.log(f"GitHub: {context} {state} on {full}@{commit[:10]}")
+            except github.GitHubError as exc:
+                job.log(f"GitHub: the state of the deploy is not written on {full}: {exc}")
+
+    async def github_hook_call(request: Request):
+        """A push told by a webhook OmniaCLI made on GitHub (its secret signs the
+        body): every instance here that follows that repository and branch, as
+        the per-instance webhook does it: a test or a staging with the CI on
+        deploys, one with the CI off notes it, a production lists the new
+        commit and is not touched (updated by hand only). A Starlette route: no
+        login, the signature is its check."""
+        rid = request.path_params["rid"]
+        data = await asyncio.to_thread(deployhooks.load, github_hooks_file)
+        key, record = next(((k, r) for k, r in data.items() if isinstance(r, dict) and r.get("rid") == rid
+                            and r.get("secret")), (None, None))
+        body = await request.body()
+        headers = {k.lower(): v for k, v in request.headers.items()}
+        ip = request.client.host if request.client else ""
+        if record is None or not headers.get("x-hub-signature-256") \
+                or not deployhooks.verified(headers, body[:deployhooks.MAX_BODY], record["secret"]):
+            access_log.record("failed", "hook", "", ip, f"GitHub webhook {rid[:6]}…")
+            return JSONResponse({"error": "Unknown webhook or wrong signature"}, status_code=403)
+        event = headers.get("x-github-event", "push")
+        if event == "ping":
+            return JSONResponse({"ok": True, "pong": True})
+        if event != "push":
+            return JSONResponse({"ok": True, "note": f"not a push: {event}"})
+        branch, urls = deployhooks.pushed(body)
+        sha, message = deployhooks.head_commit(body)
+        # only the repository this webhook is of
+        urls &= {deployhooks.host_path(f"https://{record['host']}/{record['repository']}")}
+        stamp = datetime.datetime.now().isoformat(timespec="seconds")
+        notes, started = [], []
+        hooks = deployhooks.load(deploy_hooks_file)
+        for inst in (settings.all_instances() if branch and urls else []):
+            followed = await followed_by(inst, urls, branch)
+            if not followed:
+                continue
+            if manual_only(inst):
+                await note_available(inst, followed, branch, sha, message)
+                result = (f"not deployed: {inst.key} is a production, updated by hand only; the new commit of "
+                          f"{', '.join(followed)} is listed on its page")
+            elif not ci_on(inst):
+                result = f"not deployed: the CI of {inst.key} is off"
+            else:
+                job = push_deploy(inst, followed, branch, sha)
+                started.append(job.id)
+                result = "deploy"
+            notes.append(result if result != "deploy" else f"{inst.key}: deploy")
+            if inst.key in hooks:
+                hooks[inst.key]["last"] = {"time": stamp, "branch": branch, "result": result, "by": "github",
+                                           **({"job": started[-1]} if result == "deploy" else {})}
+        if notes:
+            await asyncio.to_thread(deployhooks.save, deploy_hooks_file, hooks)
+        note = "; ".join(notes) or f"nothing to do: no instance here follows branch {branch or '?'} of {record['repository']}"
+        access_log.record("action", "hook", "push", ip, f"GitHub webhook of {record['repository']}: {note}"[:300])
+        answer = {"ok": True, "note": note}
+        if started:
+            answer.update(job=started[0], jobs=started)
+        return JSONResponse(answer, status_code=202 if started else 200)
+
+    app.add_route(github.HOOK_PATH + "{rid}", github_hook_call, methods=["POST"])
+    app.add_route(workspaceweb.HOOKS_PATH + "github/{rid}", github_hook_call, methods=["POST"])
 
     async def productions_by_hand() -> None:
         """Once, after the upgrade that made a production updated by hand only: a

@@ -239,9 +239,12 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
   <table class="credentials ws-table" id="credentials">
     <tr><th>{{ _("Git server") }}</th><th>{{ _("User") }}</th><th>{{ _("Token") }}</th><th></th></tr>
     {% for c in credentials %}
-    <tr data-host="{{ c.host }}"><td class="mono">{{ c.host }}</td><td class="mono">{{ c.username }}</td>
+    <tr data-host="{{ c.host }}"><td class="mono">{{ c.host }}</td><td class="mono">{{ c.username }}
+      {% if c.kind == "github" %}<br><span class="badge" title="{{ _('A GitHub token: OmniaCLI lists its repositories, makes their webhooks and writes the state of a deploy on its commit with it') }}">GitHub · {{ c.label }}</span>{% if c.orgs %} <span class="muted small">{{ c.orgs | join(", ") }}</span>{% endif %}{% endif %}</td>
       <td>{% if c.token_set %}<span class="badge ok">{{ _("saved") }}</span>{% else %}<span class="badge">{{ _("none") }}</span>{% endif %}</td>
-      <td style="text-align: right"><button type="button" class="small danger" data-delete-credential title="{{ _('Takes out the user and token saved for that git server: its repositories are then read as the git user of this machine, so the private ones are no longer updated until new ones are saved. It asks before.') }}">{{ _("Take out…") }}</button></td></tr>
+      <td style="text-align: right; white-space: nowrap">{% if c.kind == "github" %}<button type="button" class="small" data-gh-test data-gh-url="{{ prefix }}/api/workspaces/{{ ws.name | urlencode }}/credentials/github/test" data-gh-extra="{}" data-gh-host="{{ c.host }}"
+        title="{{ _('Asks GitHub with the saved token who it is, how many repositories it reads and which permissions it lacks for what: nothing is changed') }}">{{ _("Test") }}</button>
+        {% endif %}<button type="button" class="small danger" data-delete-credential title="{{ _('Takes out the user and token saved for that git server: its repositories are then read as the git user of this machine, so the private ones are no longer updated until new ones are saved. It asks before.') }}">{{ _("Take out…") }}</button></td></tr>
     {% endfor %}
     <tr>
       <td><input type="text" class="mono cred-host" placeholder="github.com" aria-label="{{ _('Git server') }}"></td>
@@ -253,6 +256,9 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
   </table>
   </div>
   <p class="error ws-outcome" id="cred-error" role="alert"></p>
+  {% from "_github.html" import github_form, github_script with context %}
+  {{ github_form(prefix ~ "/api/workspaces/" ~ (ws.name | urlencode) ~ "/credentials/github/", {}, ws.name) }}
+  {{ github_script() }}
 </section>
 
 <section class="panel" id="mcp-tokens">
