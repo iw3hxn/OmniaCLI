@@ -39,10 +39,11 @@ from .jobs import Job, JobFailed
 from .ops import run
 
 PROVISION_SCRIPT = Path(__file__).with_name("provision.sh")
-# the package of the latest release, as the README's Quick start installs it;
-# OMNIACLI_PACKAGE_URL in OmniaCLI's environment: another one (a fork's)
+# the package of the latest release of this fork, whose features the new machine needs (an Ubuntu 20.04 that already
+# has Odoo is joined by the fork's package only: on 22/11/2026 the upstream package offered by default could not);
+# OMNIACLI_PACKAGE_URL in OmniaCLI's environment: another one
 PACKAGE_URL = os.environ.get("OMNIACLI_PACKAGE_URL") or \
-    "https://github.com/OmniaGit/OmniaCLI/releases/latest/download/OmniaCLI.deb"
+    "https://github.com/iw3hxn/OmniaCLI/releases/latest/download/OmniaCLI.deb"
 # the user on the new machine whose key may only forward to OmniaCLI
 LINK_USER = "omniacli-link"
 # OmniaCLI there, as the package installs it: the link's URL through SSH
