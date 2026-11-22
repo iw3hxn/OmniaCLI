@@ -48,7 +48,7 @@ from . import (backupcheck, backupchoices, checks, deployhooks, destinations, in
 from .accesslog import REQUEST as AUDIT_REQUEST, AccessLog
 from . import audit, siem
 from . import i18n, loginas, machines, modulecatalog, pgreport, pgtuning, stagings, workspaceweb
-from . import inframap, linkedcluster, machinedb
+from . import clusterpitr, inframap, linkedcluster, machinedb
 from . import stagingmail
 from . import dumpinfo
 from . import totp
@@ -899,6 +899,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         monitor.start()
         await asyncio.to_thread(save_login_hosts)
         pitr_tasks.append(asyncio.get_running_loop().create_task(pitr_loop()))
+        pitr_tasks.append(asyncio.get_running_loop().create_task(cluster_sweep()))
         postgres_tasks.append(asyncio.get_running_loop().create_task(postgres_loop()))
         catalog_tasks.append(asyncio.get_running_loop().create_task(catalog_loop()))
         disk_recorder.start()
@@ -4760,14 +4761,34 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             data[server] = {**data.get(server, {}), **values}
         deployhooks.save(pitr_file, data)
 
+    def cluster_pitr_view(found: dict, whole: bool) -> dict:
+        """What the page of an instance on the machine's cluster shows of
+        the cluster's archive (AD-006). whole (an admin of the machine): all
+        of it; a workspace's user: whether it is on, the range of minutes,
+        the time a recovery takes and whether the machine has the room,
+        never the sizes of the cluster (they are of every customer's data)."""
+        room = found.get("room") or {}
+        view = {"machine": True, "enabled": bool(found.get("enabled")), "first": found.get("first"),
+                "last": found.get("last"), "failed": int(found.get("failed") or 0) if found.get("failing") else 0,
+                "last_failed": found.get("last_failed") if found.get("failing") else "",
+                "seconds": found.get("seconds"), "fits": bool(room.get("fits")),
+                "recovering": bool(found.get("recovering")), "bases": [], "segments": 0, "archive_size": 0}
+        if whole:
+            view.update({"whole": True, "bases": found.get("bases") or [], "segments": found.get("segments") or 0,
+                         "archive_size": found.get("archive_size") or 0, "need": room.get("need"),
+                         "free": room.get("free"), "reserve": room.get("reserve")})
+        return view
+
     @app.get("/api/servers/{server}/pitr", dependencies=[Depends(developer)])
-    async def pitr_state(server: str):
+    async def pitr_state(server: str, me: Principal = Depends(current_user)):
         """Whether it is on, the base backups, the first and last minute a restore can reach."""
         ws, instance, _ = pitr_target(server)
         try:
             found = await workspaceops.ask("pitr-state", ws.name, ws.storage, instance, "production")
         except JobFailed as exc:
             return refuse(str(exc), status.HTTP_502_BAD_GATEWAY)
+        if found.get("machine"):
+            found = cluster_pitr_view(found, machine_admin(me))
         # this machine's time: the page tells a range that ended long ago from one that is still growing
         return {**found, "now": datetime.datetime.now().isoformat(timespec="seconds")}
 
@@ -4825,6 +4846,71 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                     pitr_base_job(job, ws, instance, server), workspace=ws.name)
             except Exception:  # noqa: BLE001 - the loop must survive
                 _logger.exception("point-in-time recovery: the nightly base backups failed")
+            try:
+                await cluster_archive_tick()
+            except Exception:  # noqa: BLE001 - the loop must survive
+                _logger.exception("recovery at a minute of the machine's PostgreSQL: the hourly round failed")
+
+    async def cluster_sweep() -> None:
+        """What a recovery of the machine's cluster that was killed left (its
+        temporary cluster, its dump) deleted: when OmniaCLI starts and each
+        hour; a recovery still running is left alone (clusterpitr.sweep)."""
+        if not settings.storage_roots or not machinedb.registry():
+            return
+        try:
+            found = await workspaceops.ask("machine-db-recover-sweep", timeout=600)
+        except JobFailed as exc:
+            _logger.warning("the temporary clusters of recoveries could not be swept: %s", exc)
+            return
+        for major, done in (found.get("swept") or {}).items():
+            if any(done.get(k) for k in ("folders", "containers", "files")):
+                _logger.warning("machine's PostgreSQL %s: what a recovery at a minute that did not end left is deleted "
+                                "(%s temporary clusters, %s containers, %s files)", major, done.get("folders"),
+                                done.get("containers"), done.get("files"))
+                access_log.record("action", "system", "", "", "temporary cluster of a recovery at a minute of the "
+                                  f"machine's PostgreSQL {major} that did not end: deleted", context=False)
+
+    async def cluster_base_job(job, major: str) -> None:
+        found = await workspaceops._helper(job, "machine-db-archive-base", major, timeout=PITR_RESTORE_TIMEOUT)
+        pruned = found.get("pruned") or {}
+        job.log(f"Full copy {found.get('base')} of the machine's PostgreSQL {major}: {found.get('size', 0) >> 20} MiB "
+                f"in {found.get('seconds')} s")
+        if pruned.get("skipped"):
+            job.log(f"Nothing older deleted: {pruned['skipped']}")
+        else:
+            job.log(f"{len(pruned.get('kept') or [])} full copies stay; deleted as older than them: "
+                    f"{pruned.get('bases', 0)} full copies, {pruned.get('segments', 0)} files of changes")
+        if found.get("over"):
+            job.warn(f"The full copies and the record of the changes take {gb_text(found.get('used', 0))} GB, more "
+                     f"than the {gb_text(found.get('budget', 0))} GB of their budget: raise it, or keep fewer full "
+                     "copies (Database tab of the machine)")
+
+    async def cluster_archive_tick() -> None:
+        """Each hour, for each cluster of the machine whose archive is on: a
+        base backup when the last is a day old, the budget passed said."""
+        await cluster_sweep()
+        if not settings.storage_roots:
+            return
+        for major in machinedb.registry():
+            key = f"{MACHINE_KEY}/{major}"
+            try:
+                found = await workspaceops.ask("machine-db-archive-state", major, timeout=120)
+            except JobFailed as exc:
+                _logger.warning("the archive of the machine's PostgreSQL %s cannot be read: %s", major, exc)
+                continue
+            if not found.get("enabled"):
+                continue
+            if found.get("over"):
+                _logger.warning("the archive of the machine's PostgreSQL %s takes %s GB, more than the %s GB of its "
+                                "budget", major, gb_text(found.get("used", 0)), gb_text(found.get("budget", 0)))
+            try:
+                last = datetime.datetime.fromisoformat(str((found.get("bases") or [{}])[-1].get("time") or ""))
+                old = (datetime.datetime.now() - last).total_seconds() >= PITR_BASE_AGE
+            except ValueError:
+                old = True
+            if old and not jobs.is_busy(key):
+                jobs.submit(f"Full copy of the machine's PostgreSQL {major} for the recovery at a minute", [key],
+                            "point-in-time recovery", lambda job, major=major: cluster_base_job(job, major))
 
     pitr_tasks: list[asyncio.Task] = []
 
@@ -4851,8 +4937,6 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         minute: its cluster made again from the archive, the filestore of
         now linked (Odoo never changes a file there, only adds), neutralized."""
         ws, instance, prod = pitr_target(server)
-        if on_machine_db(prod):
-            return refuse(workspacehelper.PITR_ON_CLUSTER)
         if on_remote_db(prod):
             return refuse(workspacehelper.PITR_ON_REMOTE)
         when = str(payload.get("time") or "").strip()
@@ -4860,6 +4944,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             at = datetime.datetime.fromisoformat(when)
         except ValueError:
             return refuse(f"{when!r} is not a time, as 2026-11-20T09:41")
+        if on_machine_db(prod):
+            return await cluster_staging_at(server, me, ws, instance, at.replace(tzinfo=None, second=0, microsecond=0))
 
         async def load(job, parent, target) -> dict:
             target_instance = target.server[len(ws.name) + 1:]
@@ -4872,6 +4958,69 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                                       target.options.database, parent.restart.service,
                                                       parent.options.database), timeout=3600)
             # neutralized as every staging: no outgoing mail, no scheduled actions
+            await ops.run(job, target.restart.command("neutralize", target.options.odoo_service,
+                                                      target.options.database), timeout=3600)
+            await ops.restart(job, target)
+            return {"pitr": at.isoformat(timespec="minutes")}
+
+        return await new_staging(server, me, load, title=f"Staging of {server} at {at:%Y-%m-%d %H:%M}")
+
+    async def cluster_staging_at(server: str, me: Principal, ws: Workspace, instance: str, at: datetime.datetime):
+        """A new staging with the database of an instance on the machine's
+        cluster as it was at a minute (AD-006): the root helper replays a
+        temporary copy of the whole cluster up to that minute, takes that
+        one database from it into the staging's database, and deletes the
+        copy whatever happens (clusterpitr.restore). Refused before a
+        staging is made when the archive is off, the minute is out of its
+        range, the machine's disk has not the room, another one is running."""
+        whole = machine_admin(me)
+        try:
+            found = await workspaceops.ask("pitr-state", ws.name, ws.storage, instance, "production")
+        except JobFailed as exc:
+            return refuse(str(exc), status.HTTP_502_BAD_GATEWAY)
+        if not found.get("enabled"):
+            return refuse("Recovery at a minute is off for the machine's PostgreSQL: an admin of the machine switches "
+                          "it on, in the Database tab of the machine")
+        first, last = str(found.get("first") or ""), str(found.get("last") or "")
+        if not first or not last:
+            return refuse("No full copy of the machine's PostgreSQL yet: the first is being made, or failed")
+        if first[:16] > last[:16]:
+            # right after the only full copy: its minute is not past yet
+            return refuse(f"The full copy a recovery starts from has just been made: the first minute that can be "
+                          f"reached is {first[:16].replace('T', ' ')}, in a moment")
+        if not first[:16] <= at.isoformat(timespec="minutes") <= last[:16]:
+            return refuse(f"{at:%Y-%m-%d %H:%M} is outside the minutes that can be reached: from "
+                          f"{first[:16].replace('T', ' ')} to {last[:16].replace('T', ' ')}")
+        if found.get("recovering"):
+            return refuse("Another recovery at a minute is running on this machine: wait for it to end",
+                          status.HTTP_409_CONFLICT)
+        room = found.get("room") or {}
+        if not room.get("fits"):
+            if whole:
+                return refuse(f"The machine's disk has not the room: the temporary copy of the machine's PostgreSQL "
+                              f"needs about {gb_text(room.get('need', 0))} GB, {gb_text(room.get('free', 0))} GB are "
+                              f"free and {gb_text(room.get('reserve', 0))} GB must stay free",
+                              status.HTTP_507_INSUFFICIENT_STORAGE)
+            return refuse("The machine's disk has not the room for the temporary copy a recovery works on: ask the "
+                          "machine's admin", status.HTTP_507_INSUFFICIENT_STORAGE)
+
+        async def load(job, parent, target) -> dict:
+            target_instance = target.server[len(ws.name) + 1:]
+            job.log(f"--- the database of {parent.key} as it was at {at:%Y-%m-%d %H:%M}: a temporary copy of the "
+                    "machine's PostgreSQL is replayed up to that minute, this database is taken from it, the copy "
+                    "is deleted")
+            done = await workspaceops._helper(job, "machine-db-recover", ws.name, ws.storage, instance, target_instance,
+                                              at.isoformat(timespec="minutes"), timeout=PITR_RESTORE_TIMEOUT)
+            steps = done.get("steps") or {}
+            job.log(f"Replayed from the full copy of {str(done.get('base') or '').replace('T', ' ')} in "
+                    f"{done.get('seconds')} s (unpacked in {steps.get('unpack', '?')} s, replayed in "
+                    f"{steps.get('replay', '?')} s, read in {steps.get('dump', '?')} s, the staging stopped in "
+                    f"{steps.get('stop', '?')} s, written in {steps.get('restore', '?')} s). The temporary copy "
+                    "is deleted")
+            await ops.run(job, target.restart.command("link-filestore", target.options.odoo_service,
+                                                      target.options.database, parent.restart.service,
+                                                      parent.options.database), timeout=3600)
+            # neutralized as every staging, before its Odoo starts: no outgoing mail, no scheduled actions
             await ops.run(job, target.restart.command("neutralize", target.options.odoo_service,
                                                       target.options.database), timeout=3600)
             await ops.restart(job, target)
@@ -10141,6 +10290,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                         "statements_on": bool(found.get("statements_on")), "params": params,
                         "changed": pgtuning.changed(found), "error": None,
                         "state": pgtuning.state(row["kind"], params, record)})
+            if row["where"] == "machine":
+                # its recovery at a minute (AD-006): the archive, its disk against the budget, a recovery's room
+                try:
+                    row["archive"] = await workspaceops.ask("machine-db-archive-state", row["major"],
+                                                            timeout=pgtuning.READ_TIMEOUT * 4)
+                    row["pitr"] = "on" if row["archive"].get("enabled") else "off"
+                except JobFailed as exc:
+                    _logger.warning("the archive of the machine's PostgreSQL cannot be read: %s", exc)
             return row
 
         async def shared(port: str, served: list[Instance]) -> dict:
@@ -10168,6 +10325,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             serves = sorted(f"{e.get('workspace')}-{e.get('instance')}" for e in (found.get("environments") or {}).values())
             machine_rows.append({"key": target.key, "server": MACHINE_KEY, "role": major, "kind": "machine",
                                  "parent": "", "where": "machine", "instance": target, "workspace": "", "pitr": None,
+                                 "archive": None,
                                  "major": major, "storage": found.get("storage") or "",
                                  "promised": int(found.get("promised") or 0), "running": bool(found.get("running")),
                                  "serves": [{"key": f"{s}/production", "server": s, "role": "production"}
@@ -10480,6 +10638,87 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     "lost their connections: each may answer an error to its first request or two, then goes on")
         job = jobs.submit(f"Close the port of the machine's PostgreSQL {major}", [f"{MACHINE_KEY}/{major}"],
                           f"manual: {me}", action)
+        return {"job": job.id}
+
+    # --- recovery at a minute of the machine's cluster (AD-006, clusterpitr.py): its archive switched on
+    # and off and its full copies, by the machine's admins only. A staging at a minute of an instance on
+    # it is asked from the instance's page (pitr_restore), by who may ask it on a dedicated database.
+
+    @app.post("/api/postgres/machine/{major}/archive/{what}")
+    async def postgres_archive(major: str, what: str, payload: Optional[dict] = Body(None),
+                               me: Principal = Depends(current_user)):
+        """on: the cluster archives its changes and makes its full copies
+        (payload budget_gb, keep, reserve_gb; restart: true once whoever asks
+        was told the cluster restarts, which it does only when it does not
+        archive yet); on again: the amounts only. off: nothing more is
+        archived, the copies and the archive deleted, no restart. base: a
+        full copy now."""
+        postgres_admin(me)
+        if what not in ("on", "off", "base"):
+            return refuse("on, off or base", status.HTTP_404_NOT_FOUND)
+        if known_cluster(major) is None:
+            return refuse(f"No cluster of PostgreSQL {major} on this machine", status.HTTP_404_NOT_FOUND)
+        payload = payload if isinstance(payload, dict) else {}
+        key = f"{MACHINE_KEY}/{major}"
+        if what == "base":
+            job = jobs.submit(f"Full copy of the machine's PostgreSQL {major} for the recovery at a minute", [key],
+                              f"manual: {me}", lambda job: cluster_base_job(job, major))
+            return {"job": job.id}
+        if what == "off":
+            async def off(job):
+                done = await workspaceops._helper(job, "machine-db-archive-off", major, timeout=MACHINE_TIMEOUT)
+                job.log(f"Recovery at a minute is off for the machine's PostgreSQL {major}: nothing more is recorded "
+                        f"from now, without a restart. The full copies and the record of the changes are deleted: "
+                        f"{done.get('freed', 0) >> 20} MiB freed. No minute of before can be reached any more")
+            job = jobs.submit(f"Recovery at a minute off for the machine's PostgreSQL {major}", [key],
+                              f"manual: {me}", off)
+            return {"job": job.id}
+        try:
+            budget, keep, reserve = clusterpitr.amounts(payload.get("budget_gb", clusterpitr.BUDGET_GB),
+                                                        payload.get("keep", clusterpitr.KEEP_BASES),
+                                                        payload.get("reserve_gb", clusterpitr.RESERVE_GB))
+        except machinedb.ClusterError as exc:
+            return refuse(str(exc))
+        try:
+            found = await workspaceops.ask("machine-db-archive-state", major, timeout=120)
+        except JobFailed as exc:
+            return refuse(str(exc), status.HTTP_502_BAD_GATEWAY)
+        restarts = found.get("archive_mode") != "on"
+        served = machine_served()
+        if restarts and not payload.get("restart"):
+            # said and asked before: every instance on the cluster loses the database for the restart
+            return refuse(f"The machine's PostgreSQL {major} restarts once to start recording the changes: "
+                          f"{len(served)} instances lose the database for a few seconds. Confirm the restart",
+                          status.HTTP_409_CONFLICT)
+
+        async def on(job):
+            since = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            done = await workspaceops._helper(job, "machine-db-archive-on", major, f"{budget:g}", str(keep),
+                                              f"{reserve:g}", "restart" if restarts else "no-restart",
+                                              timeout=PITR_RESTORE_TIMEOUT)
+            if done.get("changed") == "amounts":
+                job.log(f"The recovery at a minute of the machine's PostgreSQL {major} keeps {keep} full copies, "
+                        f"warns above {budget:g} GB and leaves {reserve:g} GB free on the disk at a recovery. "
+                        "Nothing was restarted")
+                return
+            if done.get("restarted_s") is not None:
+                job.log(f"The machine's PostgreSQL {major} restarted in {done.get('restarted_s')} s to start recording "
+                        f"the changes: its {done.get('serves')} instances and the {done.get('grants')} databases of "
+                        "other machines lost their connections; each Odoo opens them again at its next request")
+                for one in served:
+                    odoo = getattr(one.options, "odoo_service", "odoo")
+                    code, log = await ops.capture(one.restart.command("logs", odoo, "--since", since), timeout=60)
+                    if code == 0:
+                        errors = sum(1 for line in log.splitlines() if ODOO_DB_ERRORS.search(line))
+                        job.log(f"Odoo log lines with a database error since the restart ({one.key}): {errors}")
+            else:
+                job.log(f"The machine's PostgreSQL {major} records the changes from now: it was not restarted")
+            job.log(f"First full copy {done.get('base')}: {done.get('size', 0) >> 20} MiB in "
+                    f"{done.get('base_seconds')} s. From now every instance on it can go back to a minute; "
+                    "a full copy is made every night")
+        title = (f"Recovery at a minute on for the machine's PostgreSQL {major}" if not found.get("enabled")
+                 else f"Recovery at a minute of the machine's PostgreSQL {major}: full copies kept, budget, room")
+        job = jobs.submit(title, [key], f"manual: {me}", on)
         return {"job": job.id}
 
     def linked_refusal(link: LinkTarget, resp: httpx.Response, major: str) -> str:
@@ -11155,8 +11394,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 raise JobFailed(f"the database moved, but the servers file was not written: {error.body.decode()}")
             if to == "machine" and made.get("pitr_was_on"):
                 await asyncio.to_thread(pitr_record, server, enabled=False)
-                job.warn("The recovery at a minute is off on the machine's cluster: what was archived before the "
-                         "move stays in the folder of the dedicated database, until Free the space of before")
+                job.warn("The recovery at a minute this database had of its own stops with the move: on the "
+                         "machine's cluster it is the cluster's, one for all its instances (Database tab of the "
+                         "machine). What was archived before the move stays in the folder of the dedicated "
+                         "database, until Free the space of before")
             elif to == "dedicated" and made.get("pitr"):
                 await asyncio.to_thread(pitr_record, server, enabled=True)
                 job.log("The recovery at a minute archives again: a new full copy is made tonight")
@@ -11195,6 +11436,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return {"job": job.id}
 
     app.state.postgres_due = postgres_due
+    app.state.cluster_archive_tick = cluster_archive_tick
 
     return app
 

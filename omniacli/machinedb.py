@@ -102,8 +102,10 @@ STORAGE_NAME = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?")
 SAFE_PATH = re.compile(r"/[A-Za-z0-9._/-]+")
 EXTENSION = re.compile(r"[a-z][a-z0-9_]{0,62}")
 # a line of pg_restore -l that makes an extension, or comments it: the
-# superuser makes the extensions before, the environment's role the rest
-_LIST_EXTENSION = re.compile(r"^\d+; \d+ \d+ EXTENSION - ([a-z][a-z0-9_]{0,62})(?: \S+)?$")
+# superuser makes the extensions before, the environment's role the rest.
+# An extension has no owner: its line ends with the space before it
+# ("2; 3079 72392 EXTENSION - pg_trgm ", read on PostgreSQL 17)
+_LIST_EXTENSION = re.compile(r"^\d+; \d+ \d+ EXTENSION - ([a-z][a-z0-9_]{0,62})(?: \S*)?\s*$")
 _LIST_DROP = re.compile(r"^\d+; \d+ \d+ (?:EXTENSION|COMMENT - EXTENSION) ")
 ENV = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8"}
 READY_TIMEOUT = 180
@@ -468,13 +470,16 @@ def make_shared(roots: list[str]) -> list[str]:
 
 
 def hba_text(envs: dict, granted: dict | None = None) -> str:
-    """pg_hba.conf of the cluster: the superuser, then a line per
+    """pg_hba.conf of the cluster: the superuser (and its base backups, on
+    the socket only), then a line per
     environment (its database, postgres, its throwaway databases), then a
     line per database of another machine (AD-003: that database and
     postgres, that role, that one address, over TLS; a revoked one has
     none), then reject."""
     lines = ["# written by omniacli workspace-helper: who reaches which database of the machine's cluster",
-             "local all postgres scram-sha-256"]
+             "local all postgres scram-sha-256",
+             # a base backup of the recovery at a minute (clusterpitr.py): all does not name a replication connection
+             "local replication postgres scram-sha-256"]
     for role in sorted(envs):
         name = _env(role)
         lines.append(f'local "{name}",postgres,"/^{name}-verify-[0-9a-f]+$" "{name}" scram-sha-256')

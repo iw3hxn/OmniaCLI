@@ -14,7 +14,13 @@
    From other machines, its databases an instance of a linked OmniaCLI uses
    (AD-003): the address each is reached from, the link, who asked and when,
    with Revoke…, Allow again, Drop… (POST …/machine/<major>/grants/<name>/
-   revoke|allow|drop) and Close the port… when none is let in. -#}
+   revoke|allow|drop) and Close the port… when none is let in. Its
+   recovery at a minute (AD-006) is the cluster's, in its row: Switch on…
+   and Change… (the dialog pg-archive: the full copies kept, the budget of
+   their disk, the room a recovery leaves free; the restart said and asked
+   when the cluster does not record yet), Full copy now, Switch off…
+   (POST …/machine/<major>/archive/on|base|off), the disk taken against the
+   budget, what a recovery's temporary copy takes, the last one. -#}
 <style>
 .pg-table td, .pg-table th { vertical-align: top; }
 .pg-table tr.pg-row { cursor: pointer; }
@@ -41,6 +47,10 @@
 #pg-dialog { width: min(760px, 96vw); }
 #pg-dialog .pg-when label { display: block; margin: 4px 0; }
 #pg-dialog .pg-when input[type="time"] { width: 7em; }
+.pg-warn { color: var(--warn); font-weight: 600; }
+.pg-archive-lines > div { margin-bottom: 3px; }
+#pg-archive { width: min(680px, 96vw); }
+#pg-archive p.pga-note { margin: 0 0 8px; font-size: 13px; }
 </style>
 <section class="tab-panel" data-panel="database" hidden>
   <p class="muted" id="pg-memory" hidden title="{{ _('The part of the memory of the machine the databases may use. The sum of their shared memories does not go beyond it. It is changed in Propose the values… › Advanced.') }}"></p>
@@ -88,6 +98,24 @@
     <div class="actions">
       <span id="pg-go-box"><button type="button" class="primary" id="pg-go" title="{{ _('Writes the values chosen for this database') }}">{{ _("Apply") }}</button></span>
       <button type="button" id="pg-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="pg-archive">
+  <form method="dialog" id="pga-form">
+    <h2 style="margin-bottom: 4px">{{ _("Recovery at a minute of the machine's cluster") }}</h2>
+    <p class="muted" id="pga-what" style="margin-top: 0"></p>
+    <p style="margin: 8px 0 2px"><label>{{ _("Full copies kept:") }} <input type="number" id="pga-keep" min="1" max="60" step="1" style="width: 5em" title="{{ _('How many full copies of the cluster are kept: one is made every night') }}"></label></p>
+    <p class="muted pga-note">{{ _("One is made every night. The oldest minute that can be reached is that of the oldest full copy kept.") }}</p>
+    <p style="margin: 8px 0 2px"><label>{{ _("Disk for the full copies and the record of the changes:") }} <input type="number" id="pga-budget" min="0.1" step="0.1" style="width: 6em" title="{{ _('The disk the full copies and the record of the changes may take before OmniaCLI warns') }}"> GB</label></p>
+    <p class="muted pga-note">{{ _("Above it OmniaCLI warns, here and in its log. It never deletes what a recovery may need.") }}</p>
+    <p style="margin: 8px 0 2px"><label>{{ _("Room a recovery leaves free on the machine's disk:") }} <input type="number" id="pga-reserve" min="0" step="1" style="width: 6em" title="{{ _('A recovery is refused when its temporary copy would leave less than this free on the disk of the machine') }}"> GB</label></p>
+    <p class="muted pga-note" id="pga-room"></p>
+    <p id="pga-restart" style="margin: 10px 0 0"></p>
+    <p class="error" id="pga-error" role="alert"></p>
+    <div class="actions">
+      <span id="pga-go-box"><button type="button" class="primary" id="pga-go" title="{{ _('Writes these values for the recovery at a minute of the machine\'s cluster. It is a job.') }}">{{ _("Switch on") }}</button></span>
+      <button type="button" id="pga-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
     </div>
   </form>
 </dialog>
@@ -196,7 +224,42 @@
     machineWhere: {{ _("container of OmniaCLI (no port, socket only), its data on the storage {storage}; each instance has its role and its data in the tablespace on its workspace's disk") | tojson }},
     machineNone: {{ _("nothing yet: the new instances are made on it") | tojson }},
     machineStopped: {{ _("the container is stopped") | tojson }},
-    pitrMachine: {{ _("The recovery at a minute is there for the dedicated databases only: an instance that needs it moves to a dedicated database (its Settings)") | tojson }},
+    // the recovery at a minute of the cluster (AD-006): one for all its instances
+    archiveUnread: {{ _("The recovery at a minute of the cluster cannot be read now") | tojson }},
+    archiveCellTitle: {{ _("The recovery at a minute of the cluster, one for all its instances: open the row to switch it on or off") | tojson }},
+    archiveOverBadge: {{ _("over the budget") | tojson }},
+    archiveOverBadgeTitle: {{ _("The full copies and the record of the changes take more disk than their budget") | tojson }},
+    archiveOff: {{ _("Off: an instance on the cluster can only be had again as it was at the moment of a backup.") | tojson }},
+    archiveOn: {{ _("On since {when}: every instance on the cluster can go back to a minute, from {first} on.") | tojson }},
+    archiveOnNone: {{ _("On since {when}: no full copy yet. The first is being made, or failed (see the last actions).") | tojson }},
+    archiveDisk: {{ _("Full copies: {bases} ({baseSize}). With the record of the changes ({segments} files, {archiveSize}) they take {used} of the {budget} of their budget, on the storage {storage}, outside the disks of the workspaces. Full copies kept: {keep}.") | tojson }},
+    archiveOver: {{ _("Over the budget by {over}: raise it, or keep fewer full copies. Nothing a recovery may need is deleted to stay under it.") | tojson }},
+    archiveFailing: {{ _("The record of the changes is not being saved: {count} files not saved, the last at {time}. The minutes after the last file saved cannot be reached.") | tojson }},
+    archiveRoom: {{ _("A recovery replays a temporary copy of the whole cluster, not of one database: about {need} on the machine's disk for about {time} ({free} free now, {reserve} are left free). The copy is readable by root only, holds the data of every instance on the cluster, and is deleted at the end, whatever happens.") | tojson }},
+    archiveNoRoom: {{ _("No recovery can start now: its temporary copy needs about {need}, {free} are free on the machine's disk and {reserve} must stay free.") | tojson }},
+    archiveRunning: {{ _("A recovery at a minute is running now.") | tojson }},
+    archiveLast: {{ _("Last recovery: {database} at {minute}, on {when}, in {seconds} s, with a temporary copy of {size}, deleted.") | tojson }},
+    archiveFailure: {{ _("Last recovery that did not end: {database} at {minute}, on {when}, while {step}. The temporary copy was deleted. Reason: {reason}") | tojson }},
+    archiveSteps: {check: {{ _("checking the room on the machine's disk") | tojson }}, archive: {{ _("saving the changes of now") | tojson }}, unpack: {{ _("unpacking the full copy") | tojson }},
+      replay: {{ _("replaying the changes up to that minute") | tojson }}, dump: {{ _("reading the database at that minute") | tojson }},
+      restore: {{ _("writing the database of the staging") | tojson }}},
+    archiveSwitchOn: {{ _("Switch on…") | tojson }},
+    archiveSwitchOnTitle: {{ _("Switches the recovery at a minute of the cluster on, for all its instances: the cluster records every change and makes a full copy every night. The dialog says whether the cluster restarts.") | tojson }},
+    archiveChange: {{ _("Change…") | tojson }},
+    archiveChangeTitle: {{ _("Changes how many full copies are kept, the budget of their disk and the room a recovery leaves free. Nothing restarts.") | tojson }},
+    archiveBase: {{ _("Full copy now") | tojson }},
+    archiveBaseTitle: {{ _("Makes now the full copy of the cluster the recovery at a minute starts from; it is made by itself every night. Nothing stops. It is a job.") | tojson }},
+    archiveSwitchOff: {{ _("Switch off…") | tojson }},
+    archiveSwitchOffTitle: {{ _("Stops recording the changes and deletes the full copies and the record kept so far: no instance on the cluster can go back to a minute any more. Nothing restarts. It is a job.") | tojson }},
+    archiveOffAsk: {{ _("Switch the recovery at a minute of the machine's cluster off? Its full copies ({bases}) and the record of the changes are deleted ({used} freed): no instance on it can go back to a minute any more, only to a backup. Nothing restarts.") | tojson }},
+    archiveWhat: {{ _("The cluster records every change and makes a full copy every night, on the storage {storage}, outside the disks of the workspaces: each instance on it can then go back to a minute, in a new staging. It is one for the whole cluster: it cannot be on for one instance only.") | tojson }},
+    archiveRoomNote: {{ _("A recovery makes a temporary copy of the whole cluster: about {need} now, with {free} free on the machine's disk.") | tojson }},
+    archiveRestart: {{ _("The cluster restarts once, in about a second, to start recording: the {n} instances on it ({list}) lose their connections, and each may answer an error to its first request or two after that.") | tojson }},
+    archiveRestartGrants: {{ _("So do the databases other machines use ({list}).") | tojson }},
+    archiveNoRestart: {{ _("No restart: the cluster records the changes already.") | tojson }},
+    archiveNoRestartChange: {{ _("Nothing restarts: only these values change.") | tojson }},
+    archiveGo: {{ _("Switch on") | tojson }}, archiveGoRestart: {{ _("Switch on and restart now") | tojson }}, archiveSave: {{ _("Save") | tojson }},
+    minuteOne: {{ _("1 minute") | tojson }}, minuteMany: {{ _("{n} minutes") | tojson }},
     stopsMachine: {{ _("Stops for a few seconds: the {n} instances on it ({list}). Whoever is connected loses the connection.") | tojson }},
     confirmMachine: {{ _("Restart the machine's cluster now? The {n} instances on it ({list}) do not answer for a few seconds; whoever is saving at that moment gets an error and tries again.") | tojson }},
     clusterAsk: {{ _("Make the PostgreSQL of this machine? A container of OmniaCLI, PostgreSQL {major}, its data on the storage {storage}, no port. The new instances are made on it; the instances of now keep their database.") | tojson }},
@@ -284,8 +347,15 @@
     else set(fill(T.states.error, {reason: s.reason || row.error || ""}), "red");
     return span;
   }
+  const minutesText = (seconds) => { const n = Math.max(1, Math.ceil((seconds || 0) / 60)); return n === 1 ? T.minuteOne : fill(T.minuteMany, {n}); };
   function pitrCell(row) {
-    if (row.where === "machine") return el("span", {textContent: "—", title: T.pitrMachine});
+    if (row.where === "machine") {
+      const a = row.archive;
+      if (!a) return el("span", {textContent: "—", title: T.archiveUnread});
+      const state = el("span", {textContent: a.enabled ? T.pitrOn : T.pitrOff, title: T.archiveCellTitle});
+      if (!(a.enabled && a.over)) return state;
+      return el("span", {}, state, " ", el("span", {className: "badge warn", textContent: T.archiveOverBadge, title: T.archiveOverBadgeTitle}));
+    }
     if (row.where !== "dedicated" || row.pitr === null) return el("span", {textContent: "—", title: T.pitrNone});
     if (row.pitr === "on") return el("a", {href: instanceUrl(row) + "#backups", textContent: T.pitrOn, title: T.pitrOnTitle});
     return el("span", {textContent: T.pitrOff});
@@ -339,14 +409,14 @@
       dl.append(el("dt", {textContent: T.serve}), el("dd", {}, ...(row.serves.length ? row.serves.flatMap((s, i) => [i ? ", " : "",
         el("a", {href: instanceUrl(s), textContent: s.server})]) : [T.machineNone])));
       dl.append(el("dt", {textContent: T.where}), el("dd", {textContent: fill(row.port ? T.machineWherePort : T.machineWhere, {storage: row.storage, port: row.port})}));
-      dl.append(el("dt", {textContent: T.pitr}), el("dd", {textContent: T.pitrMachine}));
+      dl.append(el("dt", {textContent: T.pitr}), archiveBlock(row));
       // which of its databases are used from another machine, from which address, and by whom it was asked
       if ((row.grants || []).length) dl.append(el("dt", {textContent: T.grants}), el("dd", {}, ...row.grants.map((g) => grantRow(row, g))));
     } else {
     dl.append(el("dt", {textContent: T.serve}), el("dd", {}, el("a", {href: instanceUrl(row), textContent: row.server + " (" + kindText(row) + ")"})));
     dl.append(el("dt", {textContent: T.where}), el("dd", {textContent: row.workspace ? fill(T.whereDedicated, {ws: row.workspace}) : T.whereDedicatedAlone}));
     }
-    if (row.pitr !== null) {
+    if (row.pitr !== null && row.where !== "machine") {
       const dd = el("dd", {textContent: row.pitr === "on" ? T.pitrReading : T.pitrOff.toLowerCase()});
       dl.append(el("dt", {textContent: T.pitr}), dd);
       if (row.pitr === "on") call(`${PREFIX}/api/servers/${encodeURIComponent(row.server)}/pitr`).then((d) => {
@@ -487,6 +557,86 @@
     if (answer.error || !answer.job) { errorBox.textContent = answer.error || T.refused; return; }
     location.href = `${PREFIX}/jobs/${answer.job}`;
   }
+  // --- the recovery at a minute of the cluster (AD-006): what there is, switched on and off, a full copy now
+  const archiveApi = (row) => `${API}/machine/${encodeURIComponent(row.major)}/archive`;
+  async function archivePost(row, what, payload, errors) {
+    const answer = await post(`${archiveApi(row)}/${what}`, payload);
+    if (answer.error || !answer.job) { (errors || errorBox).textContent = answer.error || T.refused; return false; }
+    location.href = `${PREFIX}/jobs/${answer.job}`;
+    return true;
+  }
+  function archiveBlock(row) {
+    const a = row.archive, dd = el("dd", {className: "pg-archive-lines"});
+    if (!a) { dd.textContent = T.archiveUnread; return dd; }
+    const line = (text, warn) => dd.append(el("div", {className: warn ? "pg-warn" : "", textContent: text}));
+    const room = a.room || {};
+    const sizes = {need: bytes(room.need), free: bytes(room.free), reserve: bytes(room.reserve), time: minutesText(a.seconds)};
+    if (!a.enabled) line(T.archiveOff);
+    else {
+      line(a.first ? fill(T.archiveOn, {when: a.since ? when(a.since) : "?", first: when(a.first)}) : fill(T.archiveOnNone, {when: a.since ? when(a.since) : "?"}));
+      line(fill(T.archiveDisk, {bases: a.bases.length, baseSize: bytes(a.base_size), segments: a.segments, archiveSize: bytes(a.archive_size),
+        used: bytes(a.used), budget: bytes(a.budget), storage: row.storage, keep: a.keep}));
+      if (a.over) line(fill(T.archiveOver, {over: bytes(a.used - a.budget)}), true);
+      if (a.failing) line(fill(T.archiveFailing, {count: a.failed, time: a.last_failed ? when(a.last_failed) : "?"}), true);
+      line(fill(room.fits ? T.archiveRoom : T.archiveNoRoom, sizes), !room.fits);
+      if (a.recovering) line(T.archiveRunning);
+    }
+    const done = a.last_recovery, failed = a.last_failure;
+    if (done) line(fill(T.archiveLast, {database: done.database, minute: when(done.minute), when: when(done.at), seconds: dec(done.seconds || 0, 1), size: bytes(done.temp_bytes)}));
+    if (failed && (!done || failed.at > done.at)) line(fill(T.archiveFailure, {database: failed.database, minute: when(failed.minute), when: when(failed.at),
+      step: T.archiveSteps[failed.step] || failed.step, reason: failed.reason || ""}), true);
+    const actions = el("div", {className: "pg-actions"});
+    if (!a.enabled) {
+      actions.append(el("button", {type: "button", className: "small", textContent: T.archiveSwitchOn, title: T.archiveSwitchOnTitle, onclick: () => openArchive(row)}));
+    } else {
+      actions.append(el("button", {type: "button", className: "small", textContent: T.archiveBase, title: T.archiveBaseTitle, onclick: () => archivePost(row, "base")}));
+      actions.append(el("button", {type: "button", className: "small", textContent: T.archiveChange, title: T.archiveChangeTitle, onclick: () => openArchive(row)}));
+      actions.append(el("button", {type: "button", className: "small danger", textContent: T.archiveSwitchOff, title: T.archiveSwitchOffTitle,
+        onclick: async (e) => { if (await window.omniaAsk(fill(T.archiveOffAsk, {bases: a.bases.length, used: bytes(a.used)}), e.currentTarget, {danger: true})) archivePost(row, "off"); }}));
+    }
+    dd.append(actions);
+    return dd;
+  }
+  const archiveBox = document.getElementById("pg-archive"), archiveGo = document.getElementById("pga-go");
+  const archiveError = document.getElementById("pga-error");
+  let archiveRow = null;
+  const archiveRestarts = (row) => row.archive.archive_mode !== "on";
+  function openArchive(row) {
+    const a = row.archive, room = a.room || {};
+    archiveRow = row;
+    archiveError.textContent = "";
+    document.getElementById("pga-what").textContent = fill(T.archiveWhat, {storage: row.storage});
+    document.getElementById("pga-keep").value = a.keep;
+    document.getElementById("pga-budget").value = a.budget_gb;
+    document.getElementById("pga-reserve").value = a.reserve_gb;
+    document.getElementById("pga-room").textContent = fill(T.archiveRoomNote, {need: bytes(room.need), free: bytes(room.free)});
+    const restart = document.getElementById("pga-restart");
+    // what the change costs, said before (AD-005 §4): a restart only when the cluster does not record yet
+    if (a.enabled) restart.textContent = T.archiveNoRestartChange;
+    else if (!archiveRestarts(row)) restart.textContent = T.archiveNoRestart;
+    else {
+      const lent = (row.grants || []).filter((g) => !g.revoked).map((g) => g.name).join(", ");
+      restart.textContent = fill(T.archiveRestart, {n: row.serves.length, list: servedList(row) || "–"}) + (lent ? " " + fill(T.archiveRestartGrants, {list: lent}) : "");
+    }
+    restart.classList.toggle("pg-warn", !a.enabled && archiveRestarts(row));
+    archiveGo.textContent = a.enabled ? T.archiveSave : archiveRestarts(row) ? T.archiveGoRestart : T.archiveGo;
+    archiveGo.disabled = false;
+    archiveBox.showModal();
+  }
+  async function submitArchive() {
+    const row = archiveRow;
+    archiveGo.disabled = true;
+    const sent = await archivePost(row, "on", {keep: document.getElementById("pga-keep").value, budget_gb: document.getElementById("pga-budget").value,
+      reserve_gb: document.getElementById("pga-reserve").value, restart: !row.archive.enabled && archiveRestarts(row)}, archiveBox.open ? archiveError : errorBox);
+    if (!sent) archiveGo.disabled = false;
+  }
+  document.getElementById("pga-cancel").addEventListener("click", () => archiveBox.close());
+  archiveGo.addEventListener("click", () => {
+    if (!archiveRow || archiveGo.disabled) return;
+    // the restart of every instance on the cluster is asked once more, as the tuning's is
+    if (!archiveRow.archive.enabled && archiveRestarts(archiveRow)) { archiveBox.close(); confirmRestart(archiveRow, submitArchive); return; }
+    submitArchive();
+  });
   function filter() {
     const words = search.value.toLowerCase().split(/\s+/).filter(Boolean);
     for (const tr of body.querySelectorAll("tr.pg-row")) {

@@ -1739,6 +1739,69 @@ passwords, the filestore of now linked (Odoo only adds files there), and
 neutralized (`odoo neutralize`). Production is never touched; when it fails
 the staging's data of before is put back.
 
+**Back to a minute on the machine's cluster**
+([AD-006](docs/adr/postgresql-della-macchina.md); `clusterpitr.py`). An
+instance on the machine's PostgreSQL has no archive of its own:
+`archive_mode` is one for the whole cluster, so its recovery at a minute is
+one for all its instances.
+
+- **Who switches it on.** The machine's admins only, in the cluster's row of
+  the machine's **Database** tab: **Switch on…** asks how many full copies
+  are kept (7), the disk they and the record of the changes may take before
+  OmniaCLI warns (20 GB) and the room a recovery leaves free on the machine's
+  disk (2 GB). The cluster restarts **only** when it does not archive yet:
+  the dialog names the instances and the databases of other machines that
+  lose their connections, and asks once more before it restarts (0.4 and
+  0.5 s measured on a machine of the tests). **Change…** changes the three
+  amounts, **Full copy now** makes a base backup, **Switch off…** stops the
+  archive at once without a restart (`archive_command = /bin/true`;
+  `archive_mode` is off at the cluster's next restart) and deletes the copies
+  and the archive.
+- **Where it is.** In the cluster's project, `<storage>/.machine-db/pg<major>/wal`
+  (`archive/`, `base/`), on the storage's real disk, outside every
+  workspace's disk, readable by root and by the cluster's user only: it holds
+  every customer's data. A base backup is `pg_basebackup -Ft -z`, one
+  `<oid>.tar.gz` for each workspace's tablespace; one is made each night. The
+  newest full copies stay, the others go with the segments older than the
+  start of the oldest kept; nothing is deleted while a recovery runs. Above
+  the budget the row, the job of a full copy and OmniaCLI's log warn: nothing
+  a recovery may need is deleted to stay under it.
+- **A staging at a minute.** From the instance's Backups tab, by who may ask
+  it on a dedicated database (the workspace's admins): **New staging at this
+  minute**, from the minute after the oldest full copy up to the minute
+  before now. The root helper (`workspace-helper machine-db-recover`) makes a
+  **temporary cluster**: a folder of root's beside the cluster's project
+  (`recovery-<major>-<hex>`, 0700), the base backup unpacked in it, each
+  tablespace under a folder the temporary container mounts where the storage
+  is on the real machine (the real tablespaces are never mounted), the
+  archive mounted read only, no network, no port, `archive_mode` off; it
+  replays up to that minute and is promoted. `pg_dump` takes that one
+  database from it, the temporary cluster is deleted, and the dump is
+  restored into the staging's database on the machine's cluster, as the
+  staging's own role (which reaches its own database only); then the
+  filestore of now is linked, the staging neutralized and started.
+- **Said before.** The dialog says the time expected, and that for those
+  minutes a temporary copy of the machine's PostgreSQL is on the machine's
+  disk, readable by root only; to a machine's admin also its size (the whole
+  cluster, not that database alone), the free room, and that it holds every
+  customer's data. A workspace's user reads no size of the cluster, no path
+  and no name of another customer, in the page, in the refusals and in the
+  job; the reason of a failure is in `recovery.log` in the cluster's project,
+  root's. A recovery is **refused** when the temporary copy would leave less
+  than the room to leave free, when another one runs, when the minute is
+  outside the range.
+- **Deleted whatever happens.** The temporary cluster goes at the end, at a
+  failure and when the job is stopped (the helper handles the signal); what a
+  kill or a power cut leaves is deleted by the next recovery, each hour and
+  when OmniaCLI starts (`machine-db-recover-sweep`), never under a recovery
+  still running. If OmniaCLI stops mid-way the helper ends by itself and the
+  staging stays stopped, not neutralized: delete it and ask again.
+- **Not there.** A database of the cluster used by another machine (a linked
+  OmniaCLI's) is in the full copies but is not recovered from here nor from
+  there. The check of a backup of an
+  instance on the cluster still restores beside it, in the machine's
+  cluster.
+
 ### The machine's databases: their tuning
 
 The **Database** tab of a machine's page (the machine's admins only; through
@@ -1747,7 +1810,8 @@ admin) answers whether the databases of the machine are tuned for the
 machine they have. It is steps 1 and 2 of the decision on PostgreSQL
 ([AD-001…AD-007](docs/adr/postgresql-della-macchina.md), accepted in its
 mixed form: a cluster of the machine for the new instances, the dedicated
-databases of today kept); the cluster of the machine is not built yet.
+databases of today kept); the cluster of the machine is the tab's first row,
+with its recovery at a minute (above).
 
 - **Read** when the tab opens, each database within its own time (one that
   does not answer is a row saying why): a row for each instance's database,

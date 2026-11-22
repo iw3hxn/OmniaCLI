@@ -1332,7 +1332,22 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
                enableQ: {{ _("Switch recovery at a minute on for {server}? The database restarts once, for a few seconds.", server=server.name) | tojson }},
                restoreQ: {{ _("A new staging with the database of {server} as it was at {time}?") | tojson }}.replace("{server}", {{ server.name | tojson }}),
                restoreTitle: {{ _("Makes a new staging with the database of production as it was at the chosen minute, neutralized (no outgoing mail, no scheduled actions); the attachments are those of now. Production does not change.") | tojson }},
-               outside: {{ _("The minute is outside the range that can be reached: choose one between {first} and {last}.") | tojson }}};
+               outside: {{ _("The minute is outside the range that can be reached: choose one between {first} and {last}.") | tojson }},
+               // on the machine's cluster (AD-006): the archive is the cluster's, a recovery works on a temporary copy of it
+               machineOff: {{ _("Off. This instance is on the machine's PostgreSQL, whose recovery at a minute is one for all its instances: an admin of the machine switches it on, in the Database tab of the machine.") | tojson }},
+               machineLink: {{ (_("Database tab of the machine ›") if machine_admin else "") | tojson }},
+               machineLinkTitle: {{ _("Opens the Database tab of the machine, where the recovery at a minute of the machine's PostgreSQL is switched on and off") | tojson }},
+               machineHow: {{ _("This instance is on the machine's PostgreSQL: to go back to a minute OmniaCLI replays a temporary copy of it, takes this database from the copy and deletes the copy. It takes about {time}.") | tojson }},
+               machineRoom: {{ _("The temporary copy is the whole of the machine's PostgreSQL, not this database alone: about {need} of the {free} free on the machine's disk.") | tojson }},
+               machineQ: {{ _("A new staging with the database of {server} as it was at {time}? For about {minutes} a temporary copy of the machine's PostgreSQL, with this database in it, is on the machine's disk, readable by root only; it is deleted at the end, whatever happens. Production does not change.") | tojson }}.replace("{server}", {{ server.name | tojson }}),
+               machineQWhole: {{ _("A new staging with the database of {server} as it was at {time}? OmniaCLI makes a temporary copy of the whole machine's PostgreSQL: about {need} on the machine's disk ({free} free now), for about {minutes}. For that time the copy holds the data of every customer of this machine, readable by root only; it is deleted at the end, whatever happens. Production does not change.") | tojson }}.replace("{server}", {{ server.name | tojson }}),
+               machineSoon: {{ _("The full copy it starts from has just been made: the first minute that can be reached is {first}, in a moment.") | tojson }},
+               machineBusy: {{ _("Another recovery at a minute is running on this machine: wait for it to end.") | tojson }},
+               machineNoRoom: {{ _("The machine's disk has not the room for the temporary copy a recovery works on: ask the machine's admin.") | tojson }},
+               machineNoRoomWhole: {{ _("The machine's disk has not the room: the temporary copy needs about {need}, {free} are free and {reserve} must stay free (Database tab of the machine).") | tojson }},
+               machineTitle: {{ _("Makes a new staging with the database of production as it was at the chosen minute, neutralized (no outgoing mail, no scheduled actions); the attachments are those of now. It works on a temporary copy of the machine's PostgreSQL, deleted at the end. Production does not change.") | tojson }},
+               minuteOne: {{ _("1 minute") | tojson }}, minuteMany: {{ _("{n} minutes") | tojson }}};
+    const minutes = (seconds) => { const n = Math.max(1, Math.ceil((seconds || 0) / 60)); return n === 1 ? P.minuteOne : P.minuteMany.replace("{n}", n); };
     const post = async (path, body) => {
       const resp = await fetch(box.dataset.api + path, {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
                                                         body: JSON.stringify(body || {})});
@@ -1350,27 +1365,32 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
       for (const part of box.querySelectorAll(".pitr-off, .pitr-on, .pitr-details")) part.hidden = true;
       return;
     }
-    if (data.machine) {
-      // on the machine's cluster: not here (AD-006), the way to have it said
-      box.querySelector(".pitr-state").textContent = {{ _("Not on the machine's cluster: it is there for a dedicated database. Move this database into a dedicated one (Settings › Technical details) to switch it on.") | tojson }};
-      for (const part of box.querySelectorAll(".pitr-off, .pitr-on, .pitr-details")) part.hidden = true;
-      return;
-    }
     const offBox = box.querySelector(".pitr-off"), onBox = box.querySelector(".pitr-on");
-    if (offBox) offBox.hidden = data.enabled;
+    // on the machine's cluster (AD-006) the machine's admin switches it on and makes the full copies, in the machine's Database tab
+    if (offBox) offBox.hidden = data.enabled || !!data.machine;
     if (onBox) onBox.hidden = !data.enabled;
+    if (data.machine && document.getElementById("pitr-base")) document.getElementById("pitr-base").hidden = true;
     const said = [], input = document.getElementById("pitr-time"), go = document.getElementById("pitr-restore");
     const wrap = document.getElementById("pitr-restore-wrap"), busy = go ? go.disabled : false;
-    if (!data.enabled) said.push(P.off);
+    // on the machine's cluster: one recovery at a time, and only with the room for its temporary copy
+    const blocked = !data.machine || !data.enabled ? "" : data.recovering ? P.machineBusy : data.fits ? "" : !data.whole ? P.machineNoRoom
+      : P.machineNoRoomWhole.replace("{need}", bytes(data.need)).replace("{free}", bytes(data.free)).replace("{reserve}", bytes(data.reserve));
+    if (!data.enabled) said.push(data.machine ? P.machineOff : P.off);
     else {
       const first = data.first ? whenText(data.first) : "", last = data.last ? whenText(data.last) : "";
-      said.push(data.first && data.last ? P.range.replace("{first}", first).replace("{last}", last) : P.noneYet);
+      // right after the only full copy: its minute is not past yet
+      const soon = !!data.machine && !!data.first && !!data.last && data.first > data.last;
+      said.push(soon ? P.machineSoon.replace("{first}", first) : data.first && data.last ? P.range.replace("{first}", first).replace("{last}", last) : P.noneYet);
       // PostgreSQL closes a file of changes every 5 minutes when there are any: an older end means nothing changed since
       const idle = data.now && data.last ? (new Date(data.now) - new Date(data.last)) / 60000 : 0;
-      if (data.first && data.last && !data.failed) said.push(idle > 10 ? P.quiet.replace("{last}", last) : P.recent);
+      if (data.machine && data.first && data.last) {
+        said.push(P.machineHow.replace("{time}", minutes(data.seconds)));
+        if (blocked) said.push(blocked);
+        else if (data.whole) said.push(P.machineRoom.replace("{need}", bytes(data.need)).replace("{free}", bytes(data.free)));
+      } else if (data.first && data.last && !data.failed) said.push(idle > 10 ? P.quiet.replace("{last}", last) : P.recent);
       if (data.failed) said.push(P.failing.replace("{count}", data.failed).replace("{time}", whenText(data.last_failed)));
       const details = box.querySelector(".pitr-details");
-      details.hidden = !data.first;
+      details.hidden = !data.first || (!!data.machine && !data.whole);
       box.querySelector(".pitr-detail").textContent = P.detail.replace("{bases}", data.bases.length).replace("{segments}", data.segments)
         .replace("{size}", bytes(data.archive_size));
       if (input) {
@@ -1379,17 +1399,22 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
         // a minute outside the range cannot be asked for: the button says why
         const check = () => {
           const out = !input.value || !data.first || !data.last || input.value < input.min || input.value > input.max;
-          go.disabled = busy || out;
-          wrap.title = go.title = out && data.first && data.last ? P.outside.replace("{first}", first).replace("{last}", last) : P.restoreTitle;
+          go.disabled = busy || out || !!blocked;
+          wrap.title = go.title = out && data.first && data.last ? P.outside.replace("{first}", first).replace("{last}", last)
+            : blocked || (data.machine ? P.machineTitle : P.restoreTitle);
         };
         input.addEventListener("input", check); check();
       }
     }
     box.querySelector(".pitr-state").textContent = said.join(" ");
+    if (data.machine && P.machineLink) box.querySelector(".pitr-state").append(" ", Object.assign(document.createElement("a"),
+      {href: "{{ prefix }}/#database", textContent: P.machineLink, title: P.machineLinkTitle}));
     document.getElementById("pitr-enable")?.addEventListener("click", async () => { if (await omniaAsk(P.enableQ, document.getElementById("pitr-enable"))) post("/enable"); });
     document.getElementById("pitr-base")?.addEventListener("click", () => post("/base"));
     go?.addEventListener("click", async () => {
-      if (input.value && await omniaAsk(P.restoreQ.replace("{time}", whenText(input.value)), go)) post("/restore", {time: input.value});
+      const question = !data.machine ? P.restoreQ : (data.whole ? P.machineQWhole.replace("{need}", bytes(data.need)).replace("{free}", bytes(data.free))
+        : P.machineQ).replace("{minutes}", minutes(data.seconds));
+      if (input.value && await omniaAsk(question.replace("{time}", whenText(input.value)), go)) post("/restore", {time: input.value});
     });
   })();
   // the database in Monitoring: a verdict in one line, three numbers, the rest behind Details (UX-006)

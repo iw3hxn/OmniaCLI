@@ -9,10 +9,86 @@ dedicate e si spostano a richiesta con un job annullabile (AD-007). Si costruisc
 (AD-001), l'isolamento per ruolo, database e tablespace (AD-002: il ruolo di un ambiente entra solo nel suo database),
 la regolazione del cluster (AD-005), backup, ripristino e staging delle sue istanze, lo spostamento nei due sensi con
 l'annullamento (AD-007: Odoo fermo 8,3 s e 4,5 s su un database di 21 MiB).
-**Non costruito, per scelta dichiarata a schermo: AD-006.** Il ripristino a un minuto resta dei database dedicati:
-su un'istanza del cluster la pagina dice «spostala in un database dedicato per averlo». È coerente con la forma mista
-(il cliente che vuole il ripristino a un minuto tiene il dedicato) e toglie il costo di §0 (estrarre tutto il cluster
-per un cliente). Se serve sul cluster, AD-006 resta il disegno da costruire.
+**AD-006, costruito il 22/11/2026** (`clusterpitr.py`, `workspace-helper machine-db-archive-*` e
+`machine-db-recover`), provato su lab2 (cluster di 150-200 MB, cinque istanze più il database di un'altra macchina):
+- **Archivio e copie complete del cluster**, nel progetto del cluster (`<storage>/.machine-db/pg17/wal`, sul disco
+  vero dello storage, fuori dai dischi dei workspace, leggibile solo da root e dall'utente del cluster: contiene i dati
+  di tutti). PostgreSQL ci scrive da solo, perché lo storage è montato nel suo container dov'è sulla macchina: il
+  container non si rifà. Lo accende e lo spegne solo l'admin della macchina, dalla riga del cluster nella scheda
+  Database. Il cluster si riavvia **solo se `archive_mode` cambia**: il dialogo elenca le istanze e i database di
+  altre macchine che perdono le connessioni e lo chiede un'altra volta prima di riavviare. Misurato: **0,5 s e 0,4 s**;
+  su circa 120 richieste a `/web/login` di `acme-mach` e `beta-shop` (una ogni 0,36 s) una sola ha sbagliato, la
+  successiva ha risposto; l'Odoo di lab1 sul database concesso ha riaperto la connessione da solo dopo 20 s e 40 s
+  (alla sua richiesta successiva) e risponde 200. Lo spegnimento non riavvia: `archive_command = /bin/true` vale
+  subito, `archive_mode` torna `off` al prossimo riavvio del cluster; copie e archivio vengono cancellati.
+- **Copia completa**: `pg_basebackup -Ft -z`, un `<oid>.tar.gz` per ogni tablespace di workspace; 20 MiB in 2,7 s.
+  Una ogni notte. Restano le ultime N (7), le altre si cancellano con i segmenti precedenti all'inizio della più
+  vecchia rimasta; mentre un ripristino è in corso non si cancella niente (provato: una copia fatta durante un
+  ripristino dice «Nothing older deleted»). Provato con 2 copie da tenere: da 3 copie e 19 segmenti (379 MB) a 2 copie
+  e 13 segmenti (261 MB), poi con due copie nuove a 2 copie e 4 segmenti (114 MB); il segmento più vecchio rimasto è
+  sempre quello da cui parte la copia più vecchia. Il budget (20 GB) avvisa soltanto: nella riga («oltre il budget»),
+  nel job della copia e nel log; non cancella mai quello che può servire a un ripristino (provato con un budget di
+  0,1 GB contro 0,3 GB occupati).
+- **Un database a un minuto**: un cluster temporaneo in una cartella di root accanto al progetto
+  (`recovery-17-<hex>`, 700), con la copia completa estratta e l'archivio montato in sola lettura; senza rete, senza
+  porta, `archive_mode` spento, 128 MB di memoria condivisa. Poi `pg_dump` di quel solo database sul disco del suo
+  workspace, cancellazione del cluster temporaneo, e `pg_restore` nel database della staging sul cluster della
+  macchina, con il ruolo della staging. **I tablespace** (la voce di «Non verificato»): `tablespace_map` resta
+  com'è; ogni `<oid>.tar.gz` si estrae sotto una cartella del cluster temporaneo che il suo container monta al posto
+  dello storage, quindi il percorso vero porta ai file estratti e i tablespace veri non sono mai montati. Un
+  tablespace creato dopo la copia completa e prima del minuto chiesto: PostgreSQL si ferma chiedendo la cartella,
+  che viene creata nella cartella temporanea, e riparte (provato: `CREATE TABLESPACE` fatto dopo l'ultima copia
+  completa, ripristino al minuto successivo riuscito con una cartella creata e un avvio in più del cluster
+  temporaneo: replay 2,4 s invece di 1,3 s).
+- **Si cancella in ogni caso**, provato su lab2 guardando ogni volta cartella, container, rete, volumi di docker e
+  dump (prima 0, a metà 1 cartella e 1 container, dopo 0):
+  - alla fine: la cartella e il container spariscono prima che la staging venga scritta;
+  - a un errore: container ucciso a metà del replay; il job fallisce con una frase senza percorsi né nomi, il motivo
+    intero è in `recovery.log` (di root) e nella riga del cluster;
+  - a job fermato: il helper gestisce SIGTERM, SIGHUP e SIGINT; job finito 1,0 s dopo lo stop, helper uscito dopo
+    1,3 s, lock rilasciato;
+  - a pannello riavviato a metà: l'unit ha `KillMode=process`, quindi il helper sopravvive; la pulizia dell'avvio lo
+    trova in corso e non tocca niente; il helper finisce da solo e cancella (19,9 s dopo il riavvio). Il job resta
+    «interrupted» e la staging resta ferma e non neutralizzata: va cancellata e richiesta;
+  - a helper ucciso con `kill -9` a metà: cartella e container restano; al riavvio di OmniaCLI la pulizia dell'avvio
+    li cancella (entro pochi secondi dall'avvio) e lo scrive nel log e nel log degli accessi. La stessa pulizia la fanno il ripristino
+    successivo e il giro di ogni ora, mai sotto un ripristino ancora in corso (lo tiene il suo lock).
+  Il cluster temporaneo, visto a metà: cartella 700 di root (165 MB all'inizio del replay), container senza rete e
+  senza porte, in sola lettura, senza volumi di docker, con l'archivio e il segreto del superuser in sola lettura.
+- **Detto prima**: la pagina dell'istanza dà l'intervallo dei minuti (dal minuto dopo la copia più vecchia a quello
+  prima di adesso: il ripristino archivia per prima cosa il segmento in scrittura) e il tempo atteso; all'admin della
+  macchina anche lo spazio (l'intero cluster, non quel database: stimati 453-530 MB, misurati al massimo 240-340 MB) e che la
+  copia contiene i dati di tutti. Rifiuta con il motivo quando la copia temporanea lascerebbe libero meno dello
+  «spazio da lasciare libero» (2 GB, regolabile), quando un altro ripristino è in corso, quando il minuto è fuori
+  intervallo. Il rifiuto per lo spazio è provato portando lo «spazio da lasciare libero» a 400 GB con 297 GB liberi:
+  il pannello rifiuta prima di creare la staging (507), il helper rifiuta da solo se chiamato lo stesso, e niente
+  viene creato. L'utente di un workspace chiede il ripristino della sua istanza come su un database dedicato (admin
+  del workspace) e non legge dimensioni del cluster, percorsi né nomi di altri, nella pagina, nei rifiuti e nel job:
+  provato entrando su lab2 come admin del workspace `acme` (le route della macchina rispondono 403, l'istanza di un
+  altro workspace 403, il job letto da lui non ha percorsi). Il tempo atteso resta un indizio grossolano della
+  dimensione del cluster: cresce con quella.
+- **La staging ottenuta** contiene la riga scritta prima del minuto e non quella scritta dopo; è neutralizzata; il suo
+  database è del suo ruolo, nel tablespace del suo workspace; il suo ruolo entra nel suo database e in `postgres` (come
+  ogni ambiente, AD-002) e viene rifiutato da `pg_hba` sulla produzione dello stesso workspace, sul database di un
+  altro cliente e su quello di un'altra macchina. Le estensioni del dump le crea il superuser: la riga di
+  `pg_restore -l` di un'estensione finisce con uno spazio e `restore_list` non la riconosceva (valeva anche per lo
+  spostamento di AD-007); corretto e provato con `pg_trgm` e un indice trigram.
+- **Tempi misurati** (database di 20 MB): helper 14,7 s, di cui estrazione 0,5 s, replay 1,3 s, dump 0,2 s, arresto
+  dell'Odoo della staging 10 s, restore 1,6 s; il job intero 126 s, di cui 90 s sono il controllo del disco del
+  workspace che ogni nuova staging fa. Il tempo detto nel dialogo parte da quei 2 minuti fissi.
+- **Non costruito.** La verifica della domenica **resta sul cluster condiviso** (database `<ruolo>-verify-<hex>`,
+  CREATEDB per la sua durata): portarla in un cluster temporaneo vuol dire un secondo cluster vuoto raggiunto dal
+  container di Odoo, con un suo ruolo e i dati sul disco della macchina invece che su quello del workspace: non è una
+  modifica piccola, e non è fatta. Il database concesso a un'altra macchina è dentro le copie complete, ma non si
+  ripristina a un minuto né da qui né da là. Nessuna replica, nessun ripristino dell'intero cluster sul posto.
+- **Limiti.** Un solo ripristino per volta per cluster. Se l'archivio non si riesce a scrivere (disco pieno),
+  PostgreSQL tiene i segmenti in `pg_wal` finché non ci riesce: la riga lo dice («non viene salvato»), ma niente lo
+  ferma prima che riempia il disco. Il giro notturno delle copie complete è coperto da un test, non visto girare su
+  lab2 (aspetta un giorno). Il tempo e lo spazio crescono con l'intero cluster, non con il database chiesto (§0). Se
+  OmniaCLI viene fermato a metà, il helper finisce da solo ma nessuno neutralizza la staging: resta ferma, da
+  cancellare e richiedere. La stima del tempo è un modello con velocità prudenti, misurato su un solo cluster piccolo.
+  Il helper scrive nel database dell'istanza di destinazione che gli viene data, come `pitr-restore`: che sia una
+  staging appena creata lo garantisce il pannello, non il helper.
 
 **AD-003, costruito il 21/11/2026 nel caso «di terzi»** (release 2026.1.5464): template `odoo-18/19-remote` e
 `odooplm-20-remote`, senza servizio database; Odoo raggiunge `DB_HOST:DB_PORT` in TLS con `verify-full` e la CA data
@@ -303,6 +379,9 @@ In sintesi, i «due database in cluster» sono **un primario più una replica in
 
 **Tracciabilità.** README «Back to a minute»; UX-008 §6.2 (HIDE dei parametri del ripristino).
 
+**Stato.** Costruito il 22/11/2026 (in testa, «AD-006, costruito»), con una differenza dalla decisione: la verifica
+della domenica **non** gira nel cluster temporaneo, resta sul cluster condiviso com'era.
+
 ## AD-007 — Migrazione: i dedicati restano, il cluster della macchina vale per le nuove, il passaggio è un job a richiesta
 
 **Contesto.** Su ber c'è `odoo19-odoo` (produzione) con il ripristino a un minuto acceso. `instance.json` registra il template e la sua versione. Le modifiche al core di Matteo vanno tenute piccole, per poterle proporre.
@@ -355,7 +434,7 @@ In sintesi, i «due database in cluster» sono **un primario più una replica in
 - Il tempo di ripresa dopo un crash per OOM o un riavvio veloce, e quante richieste di Odoo falliscono dopo (`reset()` del pool su una connessione chiusa dal server): non misurato.
 - Che un ruolo con CREATEDB non possa creare un database in `pg_default` aggirando il tablespace: ragionato sul codice di `createdb` a memoria, non letto. Per questo AD-002 toglie CREATEDB fuori dai job.
 - Un tablespace su un'immagine loop che si riempie: se un `fsync` fallito manda in PANIC l'intero cluster. Non provato.
-- Che `pg_basebackup -Ft` con i tablespace si ripristini nel cluster temporaneo con `tablespace_map`: da provare al passo 5.
+- ~~Che `pg_basebackup -Ft` con i tablespace si ripristini nel cluster temporaneo con `tablespace_map`~~: provato il 22/11/2026 su lab2 (AD-006 in testa): `tablespace_map` resta com'è e il container temporaneo monta una sua cartella al posto dello storage.
 - Su quale ramo di Odoo gira il template odooplm-20, e quindi se ha la replica: non letto.
 - Il supporto di `host=a,b` in `db_host` più `PGTARGETSESSIONATTRS` per seguire una replica promossa: possibile in libpq, non provato con Odoo.
 - Le formule di regolazione e la quota di RAM di default sono indicazioni: nessuna misura di carico.

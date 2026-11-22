@@ -11,6 +11,10 @@
     omniacli workspace-helper portal <host or -> | portal-names
     omniacli workspace-helper pitr-enable | pitr-base | pitr-state <workspace> <storage> <instance> <role>
     omniacli workspace-helper pitr-restore <workspace> <storage> <source> <target> <time> <source db> <target db>
+    omniacli workspace-helper machine-db-archive-state | machine-db-archive-off | machine-db-archive-base <major>
+    omniacli workspace-helper machine-db-archive-on <major> <budget in GB> <bases kept> <GB left free> restart|no-restart
+    omniacli workspace-helper machine-db-recover <workspace> <storage> <source> <target> <time>
+    omniacli workspace-helper machine-db-recover-sweep
     omniacli workspace-helper space
     omniacli workspace-helper storage-setup | storage-check <storage> | storage-reset <storage>
 
@@ -122,6 +126,17 @@ OmniaCLI's (machinedb.py, AD-003): the cluster listens on a port over TLS
 the first time, the role and its database are made, pg_hba.conf has one
 line for that address, the firewall lets that address reach the port.
 
+machine-db-archive-on | -off | -base | -state <major>: the recovery at a
+minute of the machine's cluster (clusterpitr.py, AD-006): its WAL archive
+and base backups, in the cluster's project on the storage's real disk,
+switched on (a restart of the cluster only when archive_mode changes, and
+only with restart), off (no restart: the bases and the archive deleted), a
+base backup with the retention, what there is. machine-db-recover: the
+database of an instance on the cluster as it was at a minute, into the
+database of a staging of the same workspace, through a temporary cluster
+that is deleted whatever happens. machine-db-recover-sweep: what a recovery
+that was killed left, deleted.
+
 template-install <template>: a template downloaded from the download
 server, checked with the key of the main configuration, into
 /var/lib/omniacli-templates/<template> (templatestore.py); of it and the
@@ -152,7 +167,7 @@ from pathlib import Path
 
 import yaml
 
-from . import composehelper, config, machinedb, pitrhelper, stacktemplates, templatestore, workspaceweb
+from . import clusterpitr, composehelper, config, machinedb, pitrhelper, stacktemplates, templatestore, workspaceweb
 from .composehelper import ENV, HelperError, caller
 from .config import (CERTIFICATES, DOMAIN_NAME, OMNIACLI_COMMAND, SUBDOMAIN, TEST_LABEL, WORKSPACE_NAME,
                      ConfigError, parse_storage_roots, web_names)
@@ -2359,11 +2374,13 @@ def _project(name: str, storage: str, instance: str, role: str) -> Path:
     return project
 
 
-# point-in-time recovery: of a dedicated database only. On the machine's
-# cluster it would be the cluster's (AD-006, a temporary cluster): not built,
-# an instance that needs it moves to a dedicated database
-PITR_ON_CLUSTER = ("point-in-time recovery is for a dedicated database: this instance is on the machine's "
-                   "cluster; move it to a dedicated database first")
+# point-in-time recovery: an instance's own on a dedicated database
+# (pitrhelper.py); on the machine's cluster it is the cluster's (AD-006,
+# clusterpitr.py): switched on, and its base backups made, by the machine's
+# admins only, in the Database tab of the machine
+PITR_ON_CLUSTER = ("this instance is on the machine's PostgreSQL, whose recovery at a minute is one for all its "
+                   "instances: an admin of the machine switches it on and makes its full copies, in the Database "
+                   "tab of the machine")
 
 
 PITR_ON_REMOTE = ("point-in-time recovery is of the machine that has the database: this instance's database is "
@@ -2388,9 +2405,13 @@ def pitr_base(name: str, storage: str, instance: str, role: str) -> dict:
 
 def pitr_state(name: str, storage: str, instance: str, role: str) -> dict:
     project = _project(name, storage, instance, role)
-    if composehelper.on_cluster(project) is not None:
-        return {"enabled": False, "machine": True, "bases": [], "segments": 0, "archive_size": 0,
-                "first": None, "last": None, "failed": 0}
+    env = composehelper.on_cluster(project)
+    if env is not None:
+        # the cluster's archive, and what a recovery of this database would take
+        found = _cluster(clusterpitr.state, env["major"], env["role"])
+        return {"machine": True, **{k: found[k] for k in (
+            "major", "enabled", "bases", "segments", "archive_size", "first", "last", "failed", "last_failed",
+            "failing", "room", "seconds", "recovering")}}
     if composehelper.on_remote(project) is not None:
         return {"enabled": False, "remote": True, "bases": [], "segments": 0, "archive_size": 0,
                 "first": None, "last": None, "failed": 0}
@@ -2505,6 +2526,68 @@ def machine_db_port(major: str, mode: str) -> dict:
     finally:
         db_firewall()
     return done
+
+
+# --- recovery at a minute of the machine's cluster (clusterpitr.py, AD-006)
+
+def machine_db_archive_state(major: str) -> dict:
+    return _cluster(clusterpitr.state, major)
+
+
+def machine_db_archive_on(major: str, budget_gb: str, keep: str, reserve_gb: str, restart: str) -> dict:
+    """machine-db-archive-on <major> <budget in GB> <bases kept> <GB left
+    free> restart|no-restart: the archive of the cluster on, or its amounts
+    changed; no-restart refuses a cluster that would have to restart."""
+    if restart not in ("restart", "no-restart"):
+        raise HelperError("machine-db-archive-on <major> <budget> <keep> <reserve> restart|no-restart")
+    return _cluster(clusterpitr.enable, major, budget_gb, keep, reserve_gb, restart)
+
+
+def machine_db_archive_off(major: str) -> dict:
+    return _cluster(clusterpitr.disable, major)
+
+
+def machine_db_archive_base(major: str) -> dict:
+    return _cluster(clusterpitr.base, major)
+
+
+def machine_db_recover(name: str, storage: str, source: str, target: str, when: str) -> dict:
+    """machine-db-recover <workspace> <storage> <source> <target> <time>:
+    the production database of source as it was at time, into the
+    production of target (a staging of the same workspace, both on the
+    machine's cluster of one major). target's containers are stopped before
+    its database is written and stay stopped: whoever asked neutralizes it
+    and starts it."""
+    if source == target:
+        raise HelperError("the source and the target are one instance")
+    src, dst = _project(name, storage, source, "production"), _project(name, storage, target, "production")
+    env_src, env_dst = composehelper.on_cluster(src), composehelper.on_cluster(dst)
+    if env_src is None or env_dst is None:
+        raise HelperError("machine-db-recover is for two instances on the machine's PostgreSQL: one with a "
+                          "dedicated database has its own recovery at a minute (pitr-restore)")
+    if env_src["major"] != env_dst["major"]:
+        raise HelperError("the staging is on another PostgreSQL than its production")
+    try:
+        return clusterpitr.restore(env_src["major"], name, env_src["role"], env_dst["role"], when,
+                                   stop=lambda: _dc(dst, "stop", timeout=600))
+    except clusterpitr.Interrupted:
+        raise HelperError("stopped: the temporary copy is deleted, the staging holds no copy of the production") from None
+    except (HelperError, machinedb.ClusterError) as exc:
+        raise HelperError(str(exc)) from None
+    except Exception as exc:  # noqa: BLE001 - whatever it says may name the temporary cluster or another customer
+        # the reason goes to root's recovery.log; a workspace's user reads this
+        try:
+            clusterpitr._log(machinedb.project_of(env_src["major"]),
+                             f"recovery of {env_src['role']} at {when}: {type(exc).__name__}: {exc}")
+        except machinedb.ClusterError:
+            pass
+        raise HelperError("the recovery failed: the temporary copy is deleted and the production was not touched. "
+                          "The reason is in the recovery log of the machine's PostgreSQL, which the machine's "
+                          "admin reads") from None
+
+
+def machine_db_recover_sweep() -> dict:
+    return _cluster(clusterpitr.sweep)
 
 
 # a move (AD-007): what the project was is kept beside it, the undo of the
@@ -2846,7 +2929,10 @@ ACTIONS = {"disk": (disk, 3), "drop": (drop, 2), "limits": (limits, 3), "create"
            "machine-db-state": (machine_db_state, 0), "machine-db-mounts": (machine_db_mounts, 0),
            "machine-db-move": (machine_db_move, 4), "machine-db-purge": (machine_db_purge, 3),
            "machine-db-grant": (machine_db_grant, 1), "machine-db-ungrant": (machine_db_ungrant, 3),
-           "machine-db-port": (machine_db_port, 2)}
+           "machine-db-port": (machine_db_port, 2),
+           "machine-db-archive-state": (machine_db_archive_state, 1), "machine-db-archive-on": (machine_db_archive_on, 5),
+           "machine-db-archive-off": (machine_db_archive_off, 1), "machine-db-archive-base": (machine_db_archive_base, 1),
+           "machine-db-recover": (machine_db_recover, 5), "machine-db-recover-sweep": (machine_db_recover_sweep, 0)}
 
 
 def run(argv: list[str]) -> dict:
