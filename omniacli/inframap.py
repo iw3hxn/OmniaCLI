@@ -253,6 +253,26 @@ def watch_of(instance: dict, say) -> list[dict]:
     return out
 
 
+def names_by_workspace(watch: list[dict], workspaces: list[dict], say) -> list[dict]:
+    """The names of the instances of one workspace without HTTPS have one
+    cause (its domain, its certificate): one line for the workspace, every
+    instance of it marked on the map (nodes), not a line for each."""
+    for ws in workspaces:
+        ids = {i["id"] for i in ws.get("instances") or []}
+        same = [w for w in watch if w["kind"] == "names" and w.get("node") in ids]
+        if len(same) < 2:
+            continue
+        wrong = [n for i in ws["instances"] for env in (i.get("envs") or {}).values() if env
+                 for n in bad_names(env.get("names") or [])]
+        shown = ", ".join(wrong[:3]) + (", …" if len(wrong) > 3 else "")
+        first = watch.index(same[0])
+        watch = [w for w in watch if w not in same]
+        watch.insert(first, {"kind": "names", "node": same[0]["node"], "nodes": [w["node"] for w in same], "since": None,
+                             "text": say("{n} instances of {workspace}: {names} without HTTPS, or the DNS does not point here",
+                                         n=len(same), workspace=ws.get("label") or ws.get("name") or "", names=shown)})
+    return watch
+
+
 def rebase_id(value, machine: str):
     """An id of a linked machine's own map as an id of this one."""
     return machine + value[len(HERE):] if isinstance(value, str) and value.startswith(HERE + "/") else value

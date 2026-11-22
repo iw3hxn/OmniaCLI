@@ -9507,15 +9507,21 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
         # --- what is to look at
         watch = [w for i in instances for w in inframap.watch_of(i, say)]
+        watch = inframap.names_by_workspace(watch, workspaces_, say)
         backups_failed = {w.get("job") for w in watch if w["kind"] == "backup_failed"}
         since = (now - datetime.timedelta(hours=inframap.WATCH_HOURS)).isoformat(timespec="seconds")
-        # the newest first: an action done again well on the same instances is not to look at any more
+        # the newest first: an action done again on the same instances says how it went now (the one of before is
+        # history), and the jobs of an instance that is no longer here (removed: its removal ends its story) are not
+        # to look at any more
         redone = set()
         for job in ended:
             again = (job.title, tuple(job.instances))
-            if job.outcome == SUCCESS:
-                redone.add(again)
-            if (job.finished or "") < since or job.outcome == SUCCESS or job.id in backups_failed or again in redone:
+            earlier = again in redone
+            redone.add(again)
+            if (job.finished or "") < since or job.outcome == SUCCESS or job.id in backups_failed or earlier:
+                continue
+            server = job.servers[0] if job.servers else ""
+            if server and server != MACHINE_KEY and server not in settings.servers:
                 continue
             watch.append({"kind": "job_warned" if job.outcome == "warned" else "job_failed",
                           "node": inframap.instance_id(job.servers[0]) if job.servers else None,

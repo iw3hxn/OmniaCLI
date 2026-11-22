@@ -247,6 +247,7 @@
  "{n} backups failed": "{n} falliti",
  "{n} environments": "{n} ambienti",
  "{n} here": "{n} qui",
+ "{n} instances of {workspace}: {names} without HTTPS, or the DNS does not point here": "{n} istanze di {workspace}: {names} senza HTTPS, o il DNS non punta qui",
  "{n} machines": "{n} macchine",
  "{n} machines are to update": "{n} macchine da aggiornare",
  "{n} machines do not answer": "{n} macchine non rispondono",

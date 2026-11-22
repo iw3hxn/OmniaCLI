@@ -535,6 +535,16 @@ async def test_an_action_done_again_well_is_not_to_look_at(workspaces, client): 
     await wait_job(client, jobs.submit("Restart srv", ["srv/test"], "manual: admin", fine).id)
     data = (await client.get("/api/map", headers={"Authorization": AUTH})).json()
     assert [w["job"] for w in data["verdict"]["watch"] if w["kind"].startswith("job_")] == [third.id]
+    # the same action gone wrong twice: the newest says how it is now, the one of before is history
+    fourth = jobs.submit("Restart srv", ["srv/production"], "manual: admin", warned)
+    await wait_job(client, fourth.id)
+    data = (await client.get("/api/map", headers={"Authorization": AUTH})).json()
+    assert [w["job"] for w in data["verdict"]["watch"] if w["kind"].startswith("job_")] == [fourth.id]
+    # the jobs of an instance that is no longer here (removed) are not to look at any more
+    gone = jobs.submit("Create gone from odoo-19", ["gone/production"], "manual: admin", warned)
+    await wait_job(client, gone.id)
+    data = (await client.get("/api/map", headers={"Authorization": AUTH})).json()
+    assert gone.id not in [w.get("job") for w in data["verdict"]["watch"]]
 
 
 def test_the_names_of_a_site_published_before_the_map(tmp_path):
@@ -609,3 +619,26 @@ def test_why_a_link_does_not_answer_in_plain_words():
     assert describe_error(httpx.DecodingError("bad gzip.")) == "DecodingError: bad gzip"
     assert i18n.tr("it", closed).startswith("ha chiuso la connessione senza rispondere")
     assert i18n.tr("it", "cannot connect (All connection attempts failed)").startswith("connessione non riuscita: nessun indirizzo")
+
+
+def test_the_names_of_a_workspace_are_one_line():
+    """Eleven instances of one workspace whose names have no certificate were
+    eleven lines of what is to look at (lab1, 22/11/2026): one cause, one line,
+    every instance still marked on the map; one instance alone keeps its line."""
+    def say(text, **values):
+        return text.format(**values)
+
+    def node(ident, name):
+        return {"id": ident, "envs": {"production": {"names": [{"name": name, "https": False, "dns": "here"}]}}}
+    acme = {"name": "acme", "label": "ACME", "instances": [node(f"~/acme-{n}", f"{n}.acme.test") for n in "abcd"]}
+    beta = {"name": "beta", "label": "Beta", "instances": [node("~/beta-a", "a.beta.test")]}
+    watch = [{"kind": "stopped", "node": "~/x", "text": "x", "since": None}]
+    for ws in (acme, beta):
+        for i in ws["instances"]:
+            watch += inframap.watch_of({**i, "name": i["id"], "type": "production"}, say)
+    found = inframap.names_by_workspace(watch, [acme, beta], say)
+    assert [w["kind"] for w in found] == ["stopped", "names", "names"]
+    grouped = found[1]
+    assert grouped["nodes"] == ["~/acme-a", "~/acme-b", "~/acme-c", "~/acme-d"] and grouped["node"] == "~/acme-a"
+    assert grouped["text"] == "4 instances of ACME: a.acme.test, b.acme.test, c.acme.test, … without HTTPS, or the DNS does not point here"
+    assert found[2]["node"] == "~/beta-a" and "nodes" not in found[2]
