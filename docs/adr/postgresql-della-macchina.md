@@ -590,6 +590,14 @@ nessuno: lo si legge al giro dopo.
 **Stato.** Costruito il 22/11/2026 (in testa, «AD-006, costruito»), con una differenza dalla decisione: la verifica
 della domenica **non** gira nel cluster temporaneo, resta sul cluster condiviso com'era.
 
+**Deciso il 22/11/2026: la verifica della domenica resta sul cluster condiviso.** Portarla nel cluster temporaneo
+chiederebbe un secondo cluster vuoto raggiunto dal container di Odoo, con un suo ruolo, e i dati della prova sul disco
+della macchina invece che su quello del workspace del cliente: il cliente proverebbe il suo backup con spazio non
+suo, e la macchina terrebbe per qualche minuto una seconda copia dei suoi dati fuori dal suo perimetro. Il prezzo di
+restare: per la durata della prova il ruolo dell'istanza ha CREATEDB (tolto alla fine, anche se la prova fallisce) e
+il database di prova (`<ruolo>-verify-<hex>`) usa la memoria condivisa del cluster, di domenica. Si riapre se una
+prova arriva a rallentare le istanze degli altri clienti: il monitoraggio del cluster lo direbbe.
+
 ## AD-007 — Migrazione: i dedicati restano, il cluster della macchina vale per le nuove, il passaggio è un job a richiesta
 
 **Contesto.** Su ber c'è `odoo19-odoo` (produzione) con il ripristino a un minuto acceso. `instance.json` registra il template e la sua versione. Le modifiche al core di Matteo vanno tenute piccole, per poterle proporre.

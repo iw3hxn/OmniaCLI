@@ -48,7 +48,7 @@ def catalog(language: str) -> dict[str, str]:
 
 
 @functools.lru_cache(maxsize=None)
-def _patterns(language: str) -> list[tuple[re.Pattern, str]]:
+def _patterns(language: str) -> list[tuple[re.Pattern, str, int]]:
     """The catalog's texts with {name} parts as regular expressions, the
     longest fixed text first: the most specific wins."""
     found = []
@@ -67,7 +67,13 @@ def _patterns(language: str) -> list[tuple[re.Pattern, str]]:
         fixed = len(_FIELD.sub("", source))
         found.append((fixed, re.compile("".join(parts) + r"\Z", re.S), target))
     found.sort(key=lambda item: -item[0])
-    return [(pattern, target) for _fixed, pattern, target in found]
+    return [(pattern, target, fixed) for fixed, pattern, target in found]
+
+
+# a pattern of a few letters between its values ("{a} and {b}", "{n} of {max}", "on {host}") is for a label:
+# a sentence it happens to match (a line of a job with no text of its own) stays whole, not half in each language
+_LABEL_FIXED = 8
+_LABEL_WORDS = 8
 
 
 def gettext(language: str, text: str, **values) -> str:
@@ -106,7 +112,14 @@ def _tr(language: str, text: str) -> str:
     if stamp:
         rest = tr(language, stamp.group(2))
         return stamp.group(1) + rest
-    for pattern, target in _patterns(language):
+    # a line another machine's job wrote, told here under its name ("  lab1: 14:10:09 The firewall…"): its own text
+    relayed = re.match(r"(\s*[a-z0-9][a-z0-9-]*: \d\d:\d\d:\d\d )(.*)\Z", text, re.S)
+    if relayed:
+        return relayed.group(1) + tr(language, relayed.group(2))
+    words = len(text.split())
+    for pattern, target, fixed in _patterns(language):
+        if fixed <= _LABEL_FIXED and words > _LABEL_WORDS:
+            continue
         match = pattern.match(text)
         if match:
             try:

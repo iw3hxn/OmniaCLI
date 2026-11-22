@@ -12799,7 +12799,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     archive = await workspaceops.ask("machine-db-archive-state", major, timeout=pgtuning.READ_TIMEOUT * 4)
                     if archive.get("enabled"):
                         base = await workspaceops._helper(job, "machine-db-archive-base", major, timeout=MACHINE_TIMEOUT)
-                        job.log(f"Recovery at a minute: a full copy is made now ({base.get('base', '')}), the minutes "
+                        named = f" ({base['base']})" if base.get("base") else ""
+                        job.log(f"Recovery at a minute: a full copy is made now{named}, the minutes "
                                 f"from here on can be reached again; those the instances spent on {machine} cannot")
             await monitor.machine_problem("replica", "")
             await asyncio.to_thread(postgres_record, f"{MACHINE_KEY}/{major}", restart=None)
