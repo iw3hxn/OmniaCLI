@@ -1075,8 +1075,10 @@ async def test_promoted_with_the_primarys_machine_answering(machines):
     assert order == ["machine-db-replica-replaced", "machine-db-replica-promote", "machine-db-replica-replaced",
                      "machine-db-replica-follow"]
     assert [s["id"] for s in job["result"]["progress"]["steps"]] == ["stop", "promote", "point"]
-    # the databases that machine gave to others are in the copy, and their instances are without: named
-    assert "acme_linked" in " ".join(job["result"]["warnings"])
+    # the databases that machine gave to others are in the copy, which lets them in: named, with what their
+    # machines do by themselves (no warning: nothing is left without a database for good)
+    assert any("acme_linked" in line and "each machine points its instance here by itself" in line for line in job["lines"])
+    assert "warnings" not in job["result"]
     # the instance there: its database is on another machine now, as the servers file says
     inst = (await client.there.get("/api/servers", headers=ADMIN)).json()
     assert client.answered and "acme-mach" in json.dumps(inst)
@@ -1171,7 +1173,7 @@ async def test_after_a_promotion_the_pages_say_where_the_database_is(machines):
     data = (await client.there.get("/api/postgres", headers=ADMIN)).json()
     assert [(r["server"], r["promoted"], r["host"]) for r in data["remote"]] == [("acme-mach", "lab1", "203.0.113.7:15433")]
     tab = (await client.there.get("/", headers=ADMIN)).text
-    for part in ("remote.textContent = notHere(data.remote);", "T.notHerePromotedMany", "T.listMore",
+    for part in ("notHere(data.remote)", "T.notHerePromotedMany", "T.listMore",
                  # the replaced row: what it served and until when, no line of a port no one reaches
                  "fill(T.served, {list: servedList(row), when: when(row.state.at)})", "if (!replaced) td.append(",
                  # Take the cluster away… names the databases other machines use: they are in the copy

@@ -62,6 +62,11 @@ takes the writes only once it applied the last record that copy wrote, and
 R's copy stays stopped for good. There P asks, through a link of its own to
 R: the machine that hosts a copy is the one that asks.
 
+The databases the cluster gave to other machines (machinedb.grants) are in
+the copy: once promoted it lets the same roles in from the same addresses
+(UX-011 §B: promote, adopt, hosted_grant_*), one of them used by an
+instance of the very machine that hosts the copy included.
+
 No secret is in an answer, in a log or on a command line: the password
 comes on the input and is written once in secret/."""
 
@@ -494,7 +499,7 @@ def state(major: str, now: float | None = None) -> dict:
         "environments": sorted(envs), "instances": sorted(f"{e.get('workspace')}-{e.get('instance')}" for e in envs.values()),
         "tablespaces": sorted({str(Path(str(e.get("mount") or "")) / machinedb.WS_FOLDER / "ts") for e in envs.values()
                                if e.get("mount")}),
-        "grants": sorted(machinedb.grants(project))}
+        "grants": sorted(machinedb.grants(project)), "grant_lines": grant_lines(project)}
     if rec.get("state") == "replaced":
         return answer
     try:
@@ -504,6 +509,15 @@ def state(major: str, now: float | None = None) -> dict:
     answer = _seen(project, found, rec.get("state") == "ready", rec.get("ready_at") or rec.get("at"), answer, now)
     answer.pop("following", None)
     return answer
+
+
+GRANT_KEYS = ("address", "revoked", "link", "by", "at", "workspace", "instance")
+
+
+def grant_lines(project: Path) -> dict:
+    """The databases of the cluster other machines use, as the copy that
+    may take its place needs them: who comes in from which address (no secret)."""
+    return {role: {k: rec.get(k) for k in GRANT_KEYS} for role, rec in sorted(machinedb.grants(project).items())}
 
 
 def set_cap(major: str, value) -> dict:
@@ -560,7 +574,7 @@ def replaced(major: str) -> dict:
     if rec.get("state") == "replaced":
         return {"stopped": True, "already": True, "replaced_at": rec.get("replaced_at"),
                 "environments": machinedb.environments(project), "grants": sorted(machinedb.grants(project)),
-                "host": rec.get("host"), "port": rec.get("port")}
+                "grant_lines": grant_lines(project), "host": rec.get("host"), "port": rec.get("port")}
     try:
         machinedb.sql(project, "postgres", "CHECKPOINT;\n")
     except ClusterError:
@@ -574,7 +588,7 @@ def replaced(major: str) -> dict:
     _save_record(project, {**rec, "state": "replaced", "replaced_at": at})
     return {"stopped": True, "already": False, "replaced_at": at, "seconds": round(time.monotonic() - started, 1),
             "environments": machinedb.environments(project), "grants": sorted(machinedb.grants(project)),
-            "host": rec.get("host"), "port": rec.get("port")}
+            "grant_lines": grant_lines(project), "host": rec.get("host"), "port": rec.get("port")}
 
 
 def target(major: str) -> dict:
@@ -709,20 +723,32 @@ networks:
 """
 
 
-def hba_text(environments, address: str, link: str = "", back: bool = False) -> str:
+def hba_text(environments, address: str, link: str = "", back: bool = False, lent: dict | None = None,
+             own: dict | None = None) -> str:
     """pg_hba.conf of the replica: the superuser by the socket (a tmpfs of
     its container: root's helper only), then the one address of the primary's
     machine as each of its instances' roles, to its database and postgres
-    (where Odoo looks whether its database is there), over TLS; back (the
-    copy was promoted and that machine's cluster comes back, UX-011 §A):
-    that same address for the replication, as the replication's role; then
-    reject."""
+    (where Odoo looks whether its database is there), over TLS; lent (the
+    copy was promoted, UX-011 §B): the databases that cluster had given to
+    other machines, each role from the address it came in from there, a
+    revoked one from none; own: {address of this machine: the address its
+    containers are seen with by the copy}, for a database an instance of
+    this very machine uses: both let in; back (the cluster comes back,
+    UX-011 §A): the primary's address for the replication, as the
+    replication's role; then reject."""
     source = machinedb.address(address)
     lines = [f"# written by omniacli workspace-helper: who reaches the read replica of the PostgreSQL of {link or 'another machine'}",
              "local all postgres trust"]
     for role in sorted(environments or []):
         name = machinedb._env(role)
         lines.append(f'hostssl "{name}",postgres "{name}" {source}/32 scram-sha-256')
+    for role in sorted(lent or {}):
+        name, grant = machinedb._env(role), lent[role]
+        if grant.get("revoked"):
+            continue
+        come = machinedb.address(grant.get("address"))
+        for one in dict.fromkeys([come, *([machinedb.address((own or {})[come])] if (own or {}).get(come) else [])]):
+            lines.append(f'hostssl "{name}",postgres "{name}" {one}/32 scram-sha-256')
     if back:
         # a replication connection only: its role is of no database
         lines.append(f'hostssl replication "{ROLE}" {source}/32 scram-sha-256')
@@ -735,15 +761,57 @@ def returning(rec: dict) -> dict:
     return rec["return"] if isinstance(rec.get("return"), dict) else {}
 
 
-def hosted_hba(rec: dict, environments=None) -> str:
-    """pg_hba.conf of a hosted copy as its record says it."""
+def hosted_hba(rec: dict, environments=None, lent: dict | None = None, own: dict | None = None) -> str:
+    """pg_hba.conf of a hosted copy as its record says it; lent: the
+    databases other machines use, let in once the copy is promoted."""
     return hba_text(rec.get("environments") if environments is None else environments, str(rec.get("primary_address") or ""),
-                    str(rec.get("link") or ""), back=returning(rec).get("state") in ("copying", "ready"))
+                    str(rec.get("link") or ""), back=returning(rec).get("state") in ("copying", "ready"),
+                    lent=lent if rec.get("state") == "promoted" else None, own=own)
+
+
+def own_address(value: str) -> bool:
+    """value is an address of this machine itself (a socket binds to it)."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.bind((str(value), 0))
+    except OSError:
+        return False
+    return True
+
+
+def copy_gateway(major: str) -> str:
+    """The address the containers of this machine are seen with by the copy
+    hosted here: the gateway of its network (docker masquerades what goes
+    from one of its networks to another); "" when it cannot be read."""
+    done = subprocess.run([machinedb._docker(), "network", "inspect", f"omniacli-machine-db-replica-{machinedb._major(major)}_db",
+                           "--format", "{{range .IPAM.Config}}{{.Gateway}}{{end}}"], env=ENV, capture_output=True, text=True)
+    try:
+        return machinedb.address((done.stdout or "").strip())
+    except ClusterError:
+        return ""
+
+
+def hosted_grants(project: Path) -> dict:
+    """The databases of the promoted copy other machines use: as the
+    cluster's own grants, kept in the copy's project from the promotion."""
+    return machinedb.grants(project)
+
+
+def own_addresses(lent: dict, major: str) -> dict:
+    """{address of this machine a grant comes in from: the address its containers are seen with by the copy}."""
+    found = {}
+    for grant in lent.values():
+        come = str(grant.get("address") or "")
+        if come and come not in found and not grant.get("revoked") and own_address(come):
+            found[come] = copy_gateway(major)
+    return {k: v for k, v in found.items() if v}
 
 
 def _write_hosted_hba(project: Path, rec: dict) -> None:
     _uid, gid = machinedb.pg_user()
-    machinedb.write(project / "conf" / "pg_hba.conf", hosted_hba(rec), mode=0o640, uid=0, gid=gid)
+    lent = hosted_grants(project) if rec.get("state") == "promoted" else {}
+    text = hosted_hba(rec, lent=lent, own=own_addresses(lent, str(rec.get("major") or "")) if lent else None)
+    machinedb.write(project / "conf" / "pg_hba.conf", text, mode=0o640, uid=0, gid=gid)
     replica_sql(project, "SELECT pg_reload_conf();\n", check=False)
 
 
@@ -1006,6 +1074,10 @@ def sync(major: str, spec: dict) -> dict:
     environments = sorted(machinedb._env(str(e)) for e in spec.get("environments") or [])
     changed = []
     made = 0
+    if isinstance(spec.get("grants"), dict) and spec["grants"] != rec.get("lent"):
+        # who the primary lets in to which database: what this copy lets in when it is promoted
+        rec = {**rec, "lent": lent_checked(spec["grants"])}
+        _save_hosted_record(project, rec)
     for location in spec.get("tablespaces") or []:
         try:
             where = under_roots(str(location), list(rec.get("roots") or []), project)
@@ -1026,6 +1098,21 @@ def sync(major: str, spec: dict) -> dict:
     return {"changed": changed}
 
 
+def lent_checked(value) -> dict:
+    """The grants of a cluster as its machine said them, each checked: a
+    role's name, one IPv4 address; what is not right is left out."""
+    found = {}
+    for role, grant in (value.items() if isinstance(value, dict) else ()):
+        try:
+            name = machinedb._env(str(role))
+            come = machinedb.address((grant or {}).get("address"))
+        except (ClusterError, AttributeError):
+            continue
+        found[name] = {**{k: str(grant.get(k) or "")[:128] for k in ("link", "by", "at", "workspace", "instance")},
+                       "address": come, "revoked": bool(grant.get("revoked"))}
+    return found
+
+
 def hosted_state(major: str) -> dict:
     """What this machine sees of the replica it hosts: its record, whether
     its container runs, whether it receives and why not, its size, the
@@ -1044,6 +1131,11 @@ def hosted_state(major: str) -> dict:
         answer["copied"] = answer["disk"]
         return answer
     answer["copied"] = rec.get("size")
+    if rec.get("state") == "promoted":
+        # the databases other machines use live here now (UX-011 §B): who comes in from where
+        answer["lent"] = [{"name": role, **{k: grant.get(k) for k in GRANT_KEYS},
+                           "local": own_address(str(grant.get("address") or ""))}
+                          for role, grant in sorted(hosted_grants(project).items())]
     if rec.get("state") == "returned":
         # the cluster it had replaced came back: stopped for good, its data of that moment
         return answer
@@ -1070,13 +1162,17 @@ def hosted_state(major: str) -> dict:
     return answer
 
 
-def promote(major: str) -> dict:
+def promote(major: str, lent: dict | None = None) -> dict:
     """The copy takes the writes: all it received applied, then pg_promote.
-    Only one that was in sync once: a copy not whole is never promoted."""
+    Only one that was in sync once: a copy not whole is never promoted.
+    lent: the databases the primary had given to other machines, as it said
+    them when it was stopped (else as this copy read them last): from now
+    they live here, and the copy lets the same roles in from the same
+    addresses."""
     project = hosted_project(major)
     rec = hosted_record(project)
     if rec.get("state") == "promoted":
-        return {"promoted_at": rec.get("promoted_at"), "already": True}
+        return {"promoted_at": rec.get("promoted_at"), "already": True, "lent": sorted(hosted_grants(project))}
     if rec.get("state") != "ready" or not rec.get("synced"):
         raise ClusterError("the replica is not a whole copy yet: it is promoted only after it was in sync")
     started = time.monotonic()
@@ -1090,8 +1186,61 @@ def promote(major: str) -> dict:
     if replica_sql(project, "SELECT pg_is_in_recovery();\n").strip() != "f":
         raise ClusterError("the replica is still a replica after pg_promote")
     at = _now()
-    _save_hosted_record(project, {**rec, "state": "promoted", "promoted_at": at})
-    return {"promoted_at": at, "already": False, "seconds": round(time.monotonic() - started, 1)}
+    rec = {**rec, "state": "promoted", "promoted_at": at, "lent_at": at}
+    _save_hosted_record(project, rec)
+    given = lent_checked(lent if lent is not None else rec.get("lent"))
+    machinedb._save_grants(project, given)
+    _write_hosted_hba(project, rec)
+    return {"promoted_at": at, "already": False, "seconds": round(time.monotonic() - started, 1), "lent": sorted(given)}
+
+
+def adopt(major: str, lent: dict) -> dict:
+    """A copy promoted before it took the databases its primary had given to
+    other machines (by a release that did not, or while that machine had
+    said none): it takes them now, once, as its primary's machine says them."""
+    project, rec = _hosted_promoted(major)
+    if "lent_at" in rec:
+        return {"adopted": False, "lent": sorted(hosted_grants(project))}
+    given = lent_checked(lent)
+    rec = {**rec, "lent_at": _now()}
+    _save_hosted_record(project, rec)
+    machinedb._save_grants(project, given)
+    _write_hosted_hba(project, rec)
+    return {"adopted": True, "lent": sorted(given)}
+
+
+def hosted_grant_set(major: str, role: str, revoked: bool) -> dict:
+    """A database of the promoted copy another machine uses, revoked (its
+    line of pg_hba gone, its connections closed; the database and its role
+    stay) or allowed again, from the same address: as on a cluster."""
+    project, rec = _hosted_promoted(major)
+    lent = hosted_grants(project)
+    name = machinedb._env(role)
+    if name not in lent:
+        raise ClusterError(f"{role} is no database of another machine on this copy")
+    machinedb._save_grants(project, {**lent, name: {**lent[name], "revoked": bool(revoked)}})
+    _write_hosted_hba(project, rec)
+    closed = 0
+    if revoked:
+        closed = len(replica_sql(project, f"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = '{name}';\n",
+                                 check=False).split())
+    return {"role": name, "revoked": bool(revoked), "address": lent[name].get("address"), "closed": closed}
+
+
+def hosted_grant_remove(major: str, role: str) -> dict:
+    """A database of the promoted copy another machine uses taken away: its
+    line, the database, its role."""
+    project, rec = _hosted_promoted(major)
+    lent = hosted_grants(project)
+    name = machinedb._env(role)
+    if name not in lent:
+        raise ClusterError(f"{role} is no database of another machine on this copy")
+    left = {k: v for k, v in lent.items() if k != name}
+    machinedb._save_grants(project, left)
+    _write_hosted_hba(project, rec)
+    replica_sql(project, f"DROP DATABASE IF EXISTS {machinedb.ident(name)} WITH (FORCE);\n")
+    replica_sql(project, f"DROP ROLE IF EXISTS {machinedb.ident(name)};\n")
+    return {"role": name, "dropped": [name], "address": lent[name].get("address"), "grants_left": len(left)}
 
 
 def remove(major: str) -> dict:
@@ -1115,10 +1264,14 @@ def remove(major: str) -> dict:
     return {"removed": str(project), "freed": size, "link": rec.get("link"), "state": rec.get("state")}
 
 
-def firewall_state() -> dict:
+def firewall_state(subnet_of=None) -> dict:
     """{bridge: {"from": [addresses], "to": [[address, port]]}} of the
     replicas this machine hosts: reached from the primary's machine only,
-    and going out to the primary's port only (machinedb.firewall_rules)."""
+    and going out to the primary's port only (machinedb.firewall_rules). A
+    promoted one is reached also from the addresses of the databases other
+    machines use on it (UX-011 §B); one of them used by an instance of this
+    very machine, from the network of that instance's project ("local":
+    subnet_of(workspace, instance) says it, "" when there is none)."""
     found = {}
     for major, entry in sorted(hosted().items()):
         rec = hosted_record(Path(str(entry.get("project") or "")))
@@ -1131,7 +1284,22 @@ def firewall_state() -> dict:
             # a promoted one no longer goes out: nothing to follow; one the cluster came back from is stopped
             # for good, and no one reaches it
             out = [] if rec.get("state") in ("promoted", "returned") else [[primary, port]]
-            found[bridge_name(major)] = {"from": [] if rec.get("state") == "returned" else [primary], "to": out}
+            coming, local = ([] if rec.get("state") == "returned" else [primary]), []
+            if rec.get("state") == "promoted":
+                for grant in hosted_grants(Path(str(entry.get("project") or ""))).values():
+                    if grant.get("revoked"):
+                        continue
+                    try:
+                        come = machinedb.address(grant.get("address"))
+                    except ClusterError:
+                        continue
+                    if not own_address(come):
+                        coming.append(come)
+                    elif subnet_of is not None:
+                        net = subnet_of(str(grant.get("workspace") or ""), str(grant.get("instance") or ""))
+                        if net:
+                            local.append(net)
+            found[bridge_name(major)] = {"from": sorted(set(coming)), "to": out, **({"local": sorted(set(local))} if local else {})}
     return found
 
 

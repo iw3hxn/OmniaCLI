@@ -26,6 +26,9 @@
     omniacli workspace-helper machine-db-replica-return <major> facts|allow|state|stop|resume|done|cancel
     omniacli workspace-helper machine-db-return <major> facts|prepare|copy|start|state|wait|promote|note|purge|cancel|forget
     omniacli workspace-helper machine-db-replica-back <workspace> <storage> <instance>
+    omniacli workspace-helper machine-db-replica-grant <major> <role> revoke|allow|drop
+    omniacli workspace-helper machine-db-replica-lent <major>   (the primary's grants, JSON, on the input)
+    omniacli workspace-helper machine-db-moved <workspace> <storage> <instance>   (where it is now, JSON, on the input)
     omniacli workspace-helper space
     omniacli workspace-helper storage-setup | storage-check <storage> | storage-reset <storage>
 
@@ -183,6 +186,17 @@ writes and is the machine's cluster again), note, purge (the data set aside
 deleted), cancel (the copy deleted, the data set aside back), forget.
 machine-db-replica-back: an instance pointed at the promoted copy goes back
 on the machine's cluster, by its socket, as it was before the promotion.
+
+The databases other machines use, after a promotion (UX-011 §B). The
+promoted copy lets in the roles the cluster had let in, each from the
+address it came from (machine-db-replica-promote takes them on its input;
+pg_hba.conf, the firewall); machine-db-replica-grant: one of them revoked,
+allowed again, dropped, as machine-db-ungrant on a cluster. machine-db-moved,
+on the machine whose instance uses such a database: the instance pointed to
+where its database is now (the promoted copy, or the cluster again after
+its return), over TLS with that place's CA, and started again; a copy
+hosted on this very machine is reached at this machine's own address, and
+the firewalls let that one project's network through.
 
 template-install <template>: a template downloaded from the download
 server, checked with the key of the main configuration, into
@@ -873,7 +887,11 @@ def firewall_rules(pool: ipaddress.IPv4Network, remote: list[dict] = ()) -> dict
     through from its project's network only, to its address and port only."""
     src = ["-s", str(pool)]
     replies = [*src, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "RETURN"]
-    reached = [["-s", r["subnet"], "-d", r["ip"], "-p", "tcp", "--dport", str(r["port"]), "-j", "RETURN"]
+    # local: a port of this machine itself, which docker forwards to a container: by the time the rule
+    # is read the destination is that container's, so the one the connection was made to is matched
+    reached = [["-s", r["subnet"], "-p", "tcp", "-m", "conntrack", "--ctorigdst", r["ip"], "--ctorigdstport", str(r["port"]),
+                "-j", "RETURN"] if r.get("local") else
+               ["-s", r["subnet"], "-d", r["ip"], "-p", "tcp", "--dport", str(r["port"]), "-j", "RETURN"]
                for r in remote]
     return {
         CHAIN_FORWARD: [replies, [*src, "-d", str(pool), "-j", "RETURN"], *reached,
@@ -964,7 +982,14 @@ def db_listen_file() -> dict:
             coming, going = machinedb.reached(value)
         except machinedb.ClusterError:
             continue
-        found[str(bridge)] = {"from": coming, "to": [list(pair) for pair in going]} if isinstance(value, dict) else coming
+        if isinstance(value, dict):
+            try:
+                local = machinedb.local_networks(value)
+            except machinedb.ClusterError:
+                local = []
+            found[str(bridge)] = {"from": coming, "to": [list(pair) for pair in going], **({"local": local} if local else {})}
+        else:
+            found[str(bridge)] = coming
     return found
 
 
@@ -998,7 +1023,7 @@ def db_firewall() -> dict:
     boot, the chains made again; the unit that applies them at every boot
     written when it is not there yet."""
     try:
-        state = {**machinedb.firewall_state(), **managedreplica.firewall_state()}
+        state = {**machinedb.firewall_state(), **managedreplica.firewall_state(instance_subnet)}
     except machinedb.ClusterError as exc:
         raise HelperError(str(exc)) from None
     if state:
@@ -1009,6 +1034,25 @@ def db_firewall() -> dict:
     else:
         DB_LISTEN.unlink(missing_ok=True)
     return db_firewall_apply()
+
+
+def instance_subnet(workspace: str, instance: str) -> str:
+    """The network of the production of an instance of this machine (SUBNET
+    of its .env), "" when there is no such instance."""
+    if not WORKSPACE_NAME.fullmatch(workspace or "") or not WORKSPACE_NAME.fullmatch(instance or ""):
+        return ""
+    try:
+        roots = storage_roots()
+    except HelperError:
+        return ""
+    for storage in roots:
+        project = bound(storage) / workspace / instance / "production"
+        try:
+            if (project / ".env").is_file() and not project.is_symlink():
+                return str(ipaddress.ip_network(_env(project).get("SUBNET", "")))
+        except (OSError, ValueError):
+            continue
+    return ""
 
 
 def db_remote_file() -> dict[str, dict]:
@@ -1026,7 +1070,8 @@ def db_remote_file() -> dict[str, dict]:
         except (KeyError, TypeError, ValueError):
             continue
         if ip.version == 4 and 1 <= port <= 65535 and str(folder).startswith("/"):
-            found[str(folder)] = {"subnet": subnet, "ip": str(ip), "port": port}
+            # local: an address of this machine itself (a copy hosted here), which docker forwards to a container
+            found[str(folder)] = {"subnet": subnet, "ip": str(ip), "port": port, **({"local": True} if value.get("local") else {})}
     return found
 
 
@@ -2659,10 +2704,12 @@ def machine_db_recover_sweep() -> dict:
 REPLICA_INPUT = 256 * 1024
 
 
-def _input_json(what: str) -> dict:
+def _input_json(what: str, optional: bool = False) -> dict:
     raw = sys.stdin.read(REPLICA_INPUT + 1)
     if len(raw) > REPLICA_INPUT:
         raise HelperError(f"the values of {what} on the input are too long")
+    if optional and not raw.strip():
+        return {}
     try:
         spec = json.loads(raw)
     except ValueError:
@@ -2757,11 +2804,101 @@ def machine_db_replica_sync(major: str) -> dict:
 
 
 def machine_db_replica_promote(major: str) -> dict:
+    """machine-db-replica-promote <major>, optionally {"grants": {...}} as
+    JSON on the input: the databases the primary had given to other
+    machines, as it said them when it was stopped."""
+    lent = _input_json("a promotion", optional=True).get("grants")
     try:
-        return _cluster(managedreplica.promote, major)
+        return _cluster(managedreplica.promote, major, lent if isinstance(lent, dict) else None)
     finally:
-        # promoted, it follows nothing: its network goes out nowhere
+        # promoted, it follows nothing: its network goes out nowhere; it is reached from where the
+        # primary's grants came in from
         db_firewall()
+
+
+def machine_db_replica_grant(major: str, role: str, mode: str) -> dict:
+    """machine-db-replica-grant <major> <role> revoke | allow | drop: a
+    database of the promoted copy another machine uses, as machine-db-ungrant
+    on a cluster; the firewall follows."""
+    if mode not in ("revoke", "allow", "drop"):
+        raise HelperError("machine-db-replica-grant <major> <role> revoke, allow or drop")
+    try:
+        if mode == "drop":
+            done = _cluster(managedreplica.hosted_grant_remove, major, role)
+        else:
+            done = _cluster(managedreplica.hosted_grant_set, major, role, mode == "revoke")
+    finally:
+        allowed = db_firewall()
+    return {**done, "firewall": (allowed.get(managedreplica.bridge_name(major)) or {}).get("from", [])}
+
+
+def machine_db_replica_lent(major: str) -> dict:
+    """machine-db-replica-lent <major>, {"grants": {...}} as JSON on the
+    input: a copy promoted before it took the databases its primary had
+    given to other machines takes them now (managedreplica.adopt)."""
+    lent = _input_json("the databases of other machines").get("grants")
+    try:
+        return _cluster(managedreplica.adopt, major, lent if isinstance(lent, dict) else {})
+    finally:
+        db_firewall()
+
+
+# what an instance whose database moved keeps of where it is now (its record), beside database_on
+MOVED_META = "database_copy"
+
+
+def machine_db_moved(name: str, storage: str, instance: str) -> dict:
+    """machine-db-moved <workspace> <storage> <instance>, {"host", "port",
+    "ca", "machine"} as JSON on the input: the database of an instance on
+    the cluster of a linked machine is somewhere else now (the promoted copy
+    of that cluster, UX-011 §B; or that cluster again, after its return):
+    the instance is pointed there, over TLS with the certificate verified
+    against that CA, with the role, the password and the database it has,
+    and started again. machine: the machine that hosts the copy, "" when
+    the database is on its own cluster again."""
+    project = _project(name, storage, instance, "production")
+    folder = project.parent
+    meta = _meta(folder)
+    if composehelper.on_remote(project) is None or not meta.get("database_link") or meta.get("promoted_from"):
+        raise HelperError(f"{instance} has no database on the cluster of a linked machine: it follows nothing")
+    spec = _input_json("a database that moved")
+    values = _env(project)
+    remote = remote_spec({"host": spec.get("host"), "port": spec.get("port"), "user": values.get("DB_USER", ""),
+                          "password": values.get("DB_PASSWORD", ""), "database": str(meta.get("database") or ""),
+                          "ca": spec.get("ca"), "link": meta.get("database_link"), "major": meta.get("database_major")})
+    machine = str(spec.get("machine") or "")
+    if machine and not machinedb.LINK_NAME.fullmatch(machine):
+        raise HelperError("the machine that hosts the copy has not a name of a machine")
+    was = str(meta.get("database_on") or "")
+    now = f"{remote['host']}:{remote['port']}"
+    if was == now:
+        return {"already": True, "database": remote["database"]}
+    before = {path: path.read_bytes() for path in (project / ".env", folder / INSTANCE_FILE, project / "config" / REMOTE_CA_FILE)
+              if path.is_file()}
+    exception = db_remote_file().get(str(project))
+    private = _private_address(remote["host"])
+    try:
+        _write(project / ".env", stacktemplates.env_text({**values, "DB_HOST": remote["host"], "DB_PORT": str(remote["port"])}),
+               mode=0o600)
+        _write(project / "config" / REMOTE_CA_FILE, remote["ca"], mode=0o644)
+        # a copy hosted on this very machine: its port is this machine's, forwarded to its container
+        db_remote_set(project, {"subnet": values.get("SUBNET", ""), "ip": private, "port": remote["port"],
+                                **({"local": True} if managedreplica.own_address(private) else {})} if private else None)
+        copy = {"machine": machine, "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "from": was} if machine else None
+        _write(folder / INSTANCE_FILE, json.dumps({
+            **{k: v for k, v in meta.items() if k != MOVED_META}, "database_on": now,
+            **({MOVED_META: copy} if copy else {})}) + "\n")
+        conf(name, storage, instance, "production", "{}")
+        # its Odoo has had no database for a minute: it is not waited for when it is stopped to be made again
+        _dc(project, "up", "-d", "--remove-orphans", "--timeout", "2", timeout=600)
+    except BaseException:
+        for path, data in before.items():
+            path.write_bytes(data)
+        db_remote_set(project, exception)
+        raise
+    # the copy hosted here lets this instance's network in (its firewall names the networks of its grants)
+    db_firewall()
+    return {"already": False, "database": remote["database"], "from": was, "local": bool(private and managedreplica.own_address(private))}
 
 
 def machine_db_replica_remove(major: str) -> dict:
@@ -3396,7 +3533,9 @@ ACTIONS = {"disk": (disk, 3), "drop": (drop, 2), "limits": (limits, 3), "create"
            "machine-db-replica-sync": (machine_db_replica_sync, 1), "machine-db-replica-promote": (machine_db_replica_promote, 1),
            "machine-db-replica-remove": (machine_db_replica_remove, 1),
            "machine-db-replica-return": (machine_db_replica_return, 2), "machine-db-return": (machine_db_return, 2),
-           "machine-db-replica-back": (machine_db_replica_back, 3)}
+           "machine-db-replica-back": (machine_db_replica_back, 3),
+           "machine-db-replica-grant": (machine_db_replica_grant, 3), "machine-db-moved": (machine_db_moved, 3),
+           "machine-db-replica-lent": (machine_db_replica_lent, 1)}
 
 
 def run(argv: list[str]) -> dict:

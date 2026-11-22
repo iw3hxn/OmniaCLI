@@ -1,25 +1,33 @@
 # Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""What comes after a promotion (UX-011 §A): the return. The cluster a
+"""What comes after a promotion (UX-011). §A, the return: the cluster a
 replica replaced comes back: on the machine that hosts the promoted copy
 what root writes to let it in (the replication's line of pg_hba, the
 firewall), on the machine it comes back to its data set aside and put back,
 its instances back on its socket; and the two applications talking through
 the link of the machine that comes back: prepared, completed with the other
 machine answering and not, with the last changes arrived and not, cancelled
-from both sides, the replica made again."""
+from both sides, the replica made again. §B, the databases other machines
+use: the promoted copy lets the same roles in from the same addresses, also
+an instance of the very machine that hosts it; the machine whose instance
+uses one points it to where its database is now by itself, only once it has
+not answered for a minute, its machine says where it is and it answers
+there; and back, after the return."""
 import asyncio
+import dataclasses
 import json
 import os
 from pathlib import Path
 
 import pytest
 
-from omniacli import machinedb, managedreplica, stacktemplates, workspacehelper, workspaceops
+from omniacli import linkedcluster, machinedb, managedreplica, stacktemplates, workspacehelper, workspaceops
 from omniacli.composehelper import HelperError
 from omniacli.jobs import JobFailed
 
-from .test_linked_cluster import ADMIN, POST, Network, job_of
+from .conftest import LINK_TOKEN
+from .test_linked_cluster import ADMIN, POST, Network, create, job_of
+from .test_linked_cluster import machines as linked_machines  # noqa: F401
 from .test_managed_replica import (CA, MARIO, MB, GB, TEMPLATES, THERE, access_log, instance, machines, make,  # noqa: F401
                                    primary, promote)
 
@@ -793,3 +801,434 @@ async def test_the_tab_says_the_return_in_its_words(back):
     # the promotion's dialog says the way back
     assert "The way back is Prepare the return" in page and "There is no way back" not in page
     assert 'id="pg-replica"' not in (await client.there.get("/", headers=MARIO)).text
+
+
+# --- the databases other machines use, after a promotion (UX-011 §B) ----------------------------
+
+LENT = {"acme_linked": {"address": "203.0.113.7", "revoked": False, "link": "lab1", "by": "carlo", "at": "2026-11-22T02:42:04",
+                        "workspace": "acme", "instance": "linked"},
+        "beta_gone": {"address": "203.0.113.8", "revoked": True, "link": "lab3"}}
+
+
+def test_the_promoted_copy_lets_in_the_roles_the_cluster_had_let_in():
+    rec = {"environments": ["acme_mach"], "primary_address": "203.0.113.9", "link": "lab2", "state": "ready"}
+    # a copy that follows lets no one in but its primary's machine
+    assert "acme_linked" not in managedreplica.hosted_hba(rec, lent=LENT)
+    text = managedreplica.hosted_hba({**rec, "state": "promoted"}, lent=LENT)
+    lines = text.splitlines()
+    # the same role, to its database and postgres, from the same one address, over TLS; a revoked one from none
+    assert 'hostssl "acme_linked",postgres "acme_linked" 203.0.113.7/32 scram-sha-256' in lines
+    assert "beta_gone" not in text and "203.0.113.8" not in text
+    assert [x for x in lines if x.startswith("host ")] == ["host all all all reject"] and "/0 " not in text
+    # a database an instance of this very machine uses: its containers are seen with the address of the copy's
+    # own network, which is let in beside the machine's
+    text = managedreplica.hosted_hba({**rec, "state": "promoted"}, lent=LENT, own={"203.0.113.7": "172.18.0.1"})
+    assert 'hostssl "acme_linked",postgres "acme_linked" 172.18.0.1/32 scram-sha-256' in text.splitlines()
+    assert 'hostssl "acme_linked",postgres "acme_linked" 203.0.113.7/32 scram-sha-256' in text.splitlines()
+    # what a machine says of its grants is checked before it is kept: a name, one address
+    kept = managedreplica.lent_checked({**LENT, "bad name": {"address": "203.0.113.7"}, "net": {"address": "10.0.0.0/8"},
+                                        "all": {"address": "0.0.0.0"}, "none": None})
+    assert sorted(kept) == ["acme_linked", "beta_gone"] and kept["beta_gone"]["revoked"] is True
+    assert kept["acme_linked"] == {"address": "203.0.113.7", "revoked": False, "link": "lab1", "by": "carlo",
+                                   "at": "2026-11-22T02:42:04", "workspace": "acme", "instance": "linked"}
+
+
+@pytest.fixture
+def hosted(tmp_path, monkeypatch):
+    """A copy this machine hosts, in sync, PostgreSQL faked."""
+    project = tmp_path / "replica17"
+    (project / "conf").mkdir(parents=True)
+    (project / "compose.yaml").write_text("services: {}\n")
+    (project / "replica.json").write_text(json.dumps({
+        "major": "17", "link": "lab2", "primary_address": "203.0.113.9", "port": 15432, "own_port": 15433, "address": "203.0.113.7",
+        "environments": ["acme_mach"], "state": "ready", "synced": True}))
+    (project / "conf" / "pg_hba.conf").write_text(managedreplica.hosted_hba(managedreplica.hosted_record(project)))
+    monkeypatch.setattr(machinedb, "HOSTED_REPLICAS", tmp_path / "machine-db-replica.json")
+    (tmp_path / "machine-db-replica.json").write_text(json.dumps({"17": {"project": str(project), "link": "lab2", "storage": "default"}}))
+    asked = []
+
+    def sql(project, statements, check=True):
+        asked.append(statements)
+        return "f\n" if "pg_is_in_recovery" in statements else "t\n"
+    monkeypatch.setattr(managedreplica, "replica_sql", sql)
+    monkeypatch.setattr(machinedb, "pg_user", lambda create=False: (os.getuid(), os.getgid()))
+    monkeypatch.setattr(machinedb, "write", lambda path, text, mode=0o644, uid=0, gid=0: Path(path).write_text(text))
+    monkeypatch.setattr(managedreplica, "own_address", lambda value: value == "203.0.113.7")
+    monkeypatch.setattr(managedreplica, "copy_gateway", lambda major: "172.18.0.1")
+    box = type("Hosted", (), {})()
+    box.project, box.asked = project, asked
+    return box
+
+
+def test_promoted_it_keeps_the_grants_and_the_firewall_follows(hosted):
+    project = hosted.project
+    # while it follows: the grants its primary said last are kept in its record, and let no one in
+    managedreplica.sync("17", {"environments": ["acme_mach"], "tablespaces": [], "grants": LENT})
+    assert managedreplica.hosted_record(project)["lent"]["acme_linked"]["address"] == "203.0.113.7"
+    assert managedreplica.hosted_grants(project) == {} and "acme_linked" not in (project / "conf" / "pg_hba.conf").read_text()
+    assert managedreplica.firewall_state() == {"omnirp17": {"from": ["203.0.113.9"], "to": [["203.0.113.9", 15432]]}}
+    # promoted while its primary does not say: what it read last
+    done = managedreplica.promote("17")
+    assert done["lent"] == ["acme_linked", "beta_gone"]
+    hba = (project / "conf" / "pg_hba.conf").read_text().splitlines()
+    assert 'hostssl "acme_linked",postgres "acme_linked" 203.0.113.7/32 scram-sha-256' in hba
+    assert 'hostssl "acme_linked",postgres "acme_linked" 172.18.0.1/32 scram-sha-256' in hba and not any("beta_gone" in x for x in hba)
+    # the grant is of an instance of this very machine: its project's network, never every address
+    subnets = {("acme", "linked"): "10.213.10.0/24"}
+    state = managedreplica.firewall_state(lambda ws, inst: subnets.get((ws, inst), ""))
+    assert state == {"omnirp17": {"from": ["203.0.113.9"], "to": [], "local": ["10.213.10.0/24"]}}
+    rules = [" ".join(r) for r in machinedb.firewall_rules(state)["forward"]]
+    assert "-o omnirp17 -s 10.213.10.0/24 -p tcp --dport 5432 -j RETURN" in rules
+    assert rules.index("-o omnirp17 -s 10.213.10.0/24 -p tcp --dport 5432 -j RETURN") < rules.index("-o omnirp17 -j DROP")
+    for bad in (["0.0.0.0/0"], ["10.0.0.0/8"], ["8.8.8.0/24"], ["nowhere"]):
+        with pytest.raises(machinedb.ClusterError):
+            machinedb.firewall_rules({"omnirp17": {"from": [], "to": [], "local": bad}})
+    # of another machine: its one address
+    managedreplica.own_address = lambda value: False
+    assert managedreplica.firewall_state() == {"omnirp17": {"from": ["203.0.113.7", "203.0.113.9"], "to": []}}
+    # the primary said its grants when it was stopped: those, not what was read before
+    hosted_record = managedreplica.hosted_record(project)
+    (project / "replica.json").write_text(json.dumps({**hosted_record, "state": "ready"}))
+    done = managedreplica.promote("17", {"acme_new": {"address": "203.0.113.20", "link": "lab4"}})
+    assert done["lent"] == ["acme_new"] and sorted(managedreplica.hosted_grants(project)) == ["acme_new"]
+
+
+def test_a_copy_promoted_before_it_took_the_grants_takes_them_once(hosted):
+    project = hosted.project
+    with pytest.raises(machinedb.ClusterError, match="was not promoted"):
+        managedreplica.adopt("17", LENT)
+    # promoted by a release that did not take them: its record says so
+    rec = managedreplica.hosted_record(project)
+    (project / "replica.json").write_text(json.dumps({**rec, "state": "promoted", "promoted_at": "2026-11-22T06:21:45"}))
+    done = managedreplica.adopt("17", LENT)
+    assert done == {"adopted": True, "lent": ["acme_linked", "beta_gone"]}
+    assert 'hostssl "acme_linked",postgres "acme_linked" 203.0.113.7/32 scram-sha-256' in (project / "conf" / "pg_hba.conf").read_text()
+    # once: what its admin revoked or dropped since is not brought back by a look
+    managedreplica.hosted_grant_remove("17", "acme_linked")
+    assert managedreplica.adopt("17", LENT) == {"adopted": False, "lent": ["beta_gone"]}
+    assert "acme_linked" not in (project / "conf" / "pg_hba.conf").read_text()
+
+
+def test_a_database_of_the_promoted_copy_is_revoked_allowed_and_dropped(hosted):
+    project = hosted.project
+    with pytest.raises(machinedb.ClusterError, match="was not promoted"):
+        managedreplica.hosted_grant_set("17", "acme_linked", True)
+    managedreplica.promote("17", LENT)
+    hosted.asked.clear()
+    done = managedreplica.hosted_grant_set("17", "acme_linked", True)
+    assert done["revoked"] and done["address"] == "203.0.113.7"
+    assert "acme_linked" not in (project / "conf" / "pg_hba.conf").read_text()
+    assert any("pg_terminate_backend" in s and "acme_linked" in s for s in hosted.asked)
+    assert managedreplica.firewall_state(lambda ws, inst: "10.213.10.0/24") == {"omnirp17": {"from": ["203.0.113.9"], "to": []}}
+    managedreplica.hosted_grant_set("17", "acme_linked", False)
+    assert "acme_linked" in (project / "conf" / "pg_hba.conf").read_text()
+    done = managedreplica.hosted_grant_remove("17", "acme_linked")
+    assert done["dropped"] == ["acme_linked"] and done["grants_left"] == 1
+    assert any('DROP DATABASE IF EXISTS "acme_linked" WITH (FORCE)' in s for s in hosted.asked)
+    assert any('DROP ROLE IF EXISTS "acme_linked"' in s for s in hosted.asked)
+    with pytest.raises(machinedb.ClusterError, match="no database of another machine"):
+        managedreplica.hosted_grant_remove("17", "acme_linked")
+
+
+def test_the_workspaces_firewall_lets_a_project_reach_a_copy_hosted_here():
+    pool = __import__("ipaddress").ip_network("10.213.0.0/16")
+    rules = workspacehelper.firewall_rules(pool, [
+        {"subnet": "10.213.10.0/24", "ip": "172.30.0.11", "port": 15432, "local": True},
+        {"subnet": "10.213.4.0/24", "ip": "10.0.0.5", "port": 5432}])[workspacehelper.CHAIN_FORWARD]
+    lines = [" ".join(r) for r in rules]
+    # a port of this very machine is forwarded to a container: the address the connection was made to is matched
+    local = "-s 10.213.10.0/24 -p tcp -m conntrack --ctorigdst 172.30.0.11 --ctorigdstport 15432 -j RETURN"
+    assert local in lines and "-s 10.213.4.0/24 -d 10.0.0.5 -p tcp --dport 5432 -j RETURN" in lines
+    # before the private networks are dropped, and only that one project's network
+    assert lines.index(local) < lines.index("-s 10.213.0.0/16 -d 172.16.0.0/12 -j DROP")
+    assert not any("ctorigdst" in line and "10.213.4.0" in line for line in lines)
+
+
+@pytest.fixture
+def linked(tmp_path, monkeypatch):
+    """The production of acme-linked, an instance on the cluster of a linked machine, as root's helper finds it."""
+    folder = tmp_path / "acme" / "linked"
+    project = folder / "production"
+    (project / "config").mkdir(parents=True)
+    template = stacktemplates.load_template(TEMPLATES / "odoo-19-remote")
+    (project / "compose.yaml").write_text(template.compose)
+    (project / ".env").write_text("DB_REMOTE=1\nDB_HOST=172.30.0.12\nDB_PORT=15432\nDB_USER=acme_linked\n"
+                                  "DB_PASSWORD=its-own-password-0123456789\nSUBNET=10.213.10.0/24\n")
+    (project / "config" / "db-ca.pem").write_text("the CA of lab2\n")
+    (folder / "instance.json").write_text(json.dumps({
+        "template": "odoo-19-remote", "version": "1", "database": "acme_linked", "database_on": "172.30.0.12:15432",
+        "database_link": "lab2", "database_major": "17"}))
+    box = {"folder": folder, "project": project, "firewall": {}, "conf": [], "ran": [], "applied": [], "own": {"172.30.0.11"}}
+    monkeypatch.setattr(workspacehelper, "_project", lambda name, storage, inst, role: project)
+    monkeypatch.setattr(workspacehelper, "_write", lambda path, text, mode=0o644, uid=0, gid=0: Path(path).write_text(text))
+    monkeypatch.setattr(workspacehelper, "db_remote_set", lambda path, entry: box["firewall"].__setitem__(str(path), entry))
+    monkeypatch.setattr(workspacehelper, "db_remote_file", lambda: {k: v for k, v in box["firewall"].items() if v})
+    monkeypatch.setattr(workspacehelper, "db_firewall", lambda: box["applied"].append(True) or {})
+    monkeypatch.setattr(workspacehelper, "conf", lambda *args: box["conf"].append(json.loads((folder / "instance.json").read_text())))
+    monkeypatch.setattr(workspacehelper, "_dc", lambda p, *args, **kw: box["ran"].append(args))
+    monkeypatch.setattr(managedreplica, "own_address", lambda value: value in box["own"])
+    return box
+
+
+def moved(monkeypatch, **spec):
+    monkeypatch.setattr(workspacehelper.sys, "stdin", __import__("io").StringIO(json.dumps(spec)))
+    return workspacehelper.machine_db_moved("acme", "default", "linked")
+
+
+def test_an_instance_is_pointed_to_where_its_database_is_now(linked, monkeypatch):
+    project, folder = linked["project"], linked["folder"]
+    done = moved(monkeypatch, host="203.0.113.50", port=15433, ca=CA, machine="lab3")
+    assert done == {"already": False, "database": "acme_linked", "from": "172.30.0.12:15432", "local": False}
+    env = dict(line.split("=", 1) for line in (project / ".env").read_text().splitlines())
+    # the role, the password and the database it has; the place and its CA are new
+    assert (env["DB_HOST"], env["DB_PORT"], env["DB_USER"], env["DB_PASSWORD"]) == \
+        ("203.0.113.50", "15433", "acme_linked", "its-own-password-0123456789")
+    assert (project / "config" / "db-ca.pem").read_text() == CA
+    meta = json.loads((folder / "instance.json").read_text())
+    assert meta["database_on"] == "203.0.113.50:15433" and meta["database_link"] == "lab2"
+    assert meta["database_copy"]["machine"] == "lab3" and meta["database_copy"]["from"] == "172.30.0.12:15432"
+    # a public address: no exception of the workspaces' firewall; Odoo's files written again and started
+    assert linked["firewall"][str(project)] is None and linked["conf"] and linked["ran"] == [("up", "-d", "--remove-orphans", "--timeout", "2")]
+    # asked again: done
+    assert moved(monkeypatch, host="203.0.113.50", port=15433, ca=CA, machine="lab3")["already"]
+    # the copy is hosted on this very machine: reached at this machine's own address, let through as such
+    linked["applied"].clear()
+    done = moved(monkeypatch, host="172.30.0.11", port=15432, ca=CA, machine="lab1")
+    assert done["local"] and linked["firewall"][str(project)] == {"subnet": "10.213.10.0/24", "ip": "172.30.0.11", "port": 15432, "local": True}
+    assert linked["applied"]  # the copy's own firewall lets this project's network in
+    # back on the cluster of its machine: no copy in its record any more
+    done = moved(monkeypatch, host="172.30.0.12", port=15432, ca=CA, machine="")
+    meta = json.loads((folder / "instance.json").read_text())
+    assert meta["database_on"] == "172.30.0.12:15432" and "database_copy" not in meta
+    assert linked["firewall"][str(project)] == {"subnet": "10.213.10.0/24", "ip": "172.30.0.12", "port": 15432}
+
+
+def test_what_is_not_followed(linked, monkeypatch):
+    project, folder = linked["project"], linked["folder"]
+    before = (project / ".env").read_text()
+    for spec, why in (({"host": "127.0.0.1", "port": 15432, "ca": CA}, "not on this one"),
+                      ({"host": "203.0.113.50", "port": 15432, "ca": "no"}, "CA"),
+                      ({"host": "203.0.113.50", "port": 15432, "ca": CA, "machine": "a machine"}, "name of a machine")):
+        with pytest.raises(HelperError, match=why):
+            moved(monkeypatch, **spec)
+    # what fails while it is written is put back as it was
+    monkeypatch.setattr(workspacehelper, "_dc", lambda p, *args, **kw: (_ for _ in ()).throw(HelperError("docker compose up failed")))
+    with pytest.raises(HelperError, match="up failed"):
+        moved(monkeypatch, host="203.0.113.50", port=15433, ca=CA, machine="lab3")
+    assert (project / ".env").read_text() == before and (project / "config" / "db-ca.pem").read_text() == "the CA of lab2\n"
+    assert json.loads((folder / "instance.json").read_text())["database_on"] == "172.30.0.12:15432"
+    # an instance whose database is not on a linked machine's cluster follows nothing
+    (folder / "instance.json").write_text(json.dumps({"template": "odoo-19-remote", "database": "acme_linked"}))
+    with pytest.raises(HelperError, match="follows nothing"):
+        moved(monkeypatch, host="203.0.113.50", port=15433, ca=CA, machine="lab3")
+
+
+# the three machines: lab1 has an instance whose database is on lab2's cluster (test_linked_cluster's
+# machines), and a third machine hosts the promoted copy of that cluster
+
+@pytest.fixture
+async def three(linked_machines, tmp_path, monkeypatch):
+    client = linked_machines
+    made = await create(client, "erp")
+    assert (await job_of(client, made.json()["job"]))["status"] == "success"
+    # lab2's cluster as its record says it: the database it gave to lab1, its port
+    project = tmp_path / "pg17"
+    project.mkdir()
+    (project / "grants.json").write_text(json.dumps({"acme_erp": {"link": "lab1", "address": "203.0.113.7", "revoked": False}}))
+    (project / "listen.json").write_text(json.dumps({"port": 15432, "bridge": "omnidb17"}))
+    registry = tmp_path / "machine-db-2.json"
+    registry.write_text(json.dumps({"17": {"project": str(project), "storage": "default"}}))
+    monkeypatch.setattr(machinedb, "REGISTRY", registry)
+    box = type("Three", (), {})()
+    box.project, box.silent, box.inputs, box.answered = project, set(), [], []
+
+    def check(host, port, ca, user, database, address=""):
+        if (host, port) in box.silent:
+            raise linkedcluster.CheckFailed(f"{host}:{port} cannot be reached: connection refused")
+        return {"tls": "TLSv1.3"}
+
+    async def odoo_answers(port, timeout):
+        box.answered.append(port)
+        return True, 9.0
+    ask, helper = workspaceops.ask, workspaceops._helper
+
+    async def asked(*args, timeout=None, input=None):
+        found = await ask(*args, timeout=timeout)
+        if args == ("machine-db-state",):
+            found["clusters"][0].update(ca=client.cluster.ca, port=15432)
+        return found
+
+    async def helped(job, *args, timeout=None, input=None):
+        if args[0] == "machine-db-moved":
+            spec = json.loads(input)
+            box.inputs.append(spec)
+            path = tmp_path / "storage" / "acme" / args[3] / "instance.json"
+            meta = {k: v for k, v in json.loads(path.read_text()).items() if k != "database_copy"}
+            meta["database_on"] = f"{spec['host']}:{spec['port']}"
+            if spec["machine"]:
+                meta["database_copy"] = {"machine": spec["machine"], "at": "2026-11-22T06:17:20"}
+            path.write_text(json.dumps(meta))
+            return {"already": False, "database": "acme_erp"}
+        return await helper(job, *args, timeout=timeout, input=input)
+    monkeypatch.setattr(linkedcluster, "check", check)
+    monkeypatch.setattr(linkedcluster, "odoo_answers", odoo_answers)
+    monkeypatch.setattr(workspaceops, "ask", asked)
+    monkeypatch.setattr(workspaceops, "_helper", helped)
+    client.box = box
+    yield client
+
+
+def replaced_by_its_replica(box, **change):
+    (box.project / "replica.json").write_text(json.dumps({
+        "link": "lab3", "address": "203.0.113.50", "state": "replaced", "host": "203.0.113.50", "port": 15433, "ca": CA,
+        "replaced_at": "2026-11-22T06:16:00", **change}))
+
+
+async def look(client, waited=0):
+    seen = client.lab1.state.moved_seen.get("acme-erp") or {}
+    seen.pop("asked", None)
+    if waited and "down" in seen:
+        seen["down"] -= waited
+    return await client.lab1.state.moved_look()
+
+
+async def test_an_instance_follows_its_database_by_itself_only_when_it_is_stopped(three):
+    client, box = three, three.box
+    jobs_before = len((await client.get("/api/jobs", headers=ADMIN)).json()["jobs"])
+    page = "/servers/acme-erp?view=production"
+    # all is where it was: nothing to do, nothing said
+    assert await look(client) is False
+    assert "not reachable since" not in (await client.get(page, headers=ADMIN)).text
+    # the cluster was replaced, but the database still answers where it was: it is never moved by itself
+    replaced_by_its_replica(box)
+    assert await look(client) is False
+    assert "lab2 says it is on lab3, but it still answers here: it is not moved by itself" in (await client.get(page, headers=ADMIN)).text
+    # it stops answering: its machine says where it is, but not for 60 seconds yet
+    box.silent.add(("lab2.test", 15432))
+    assert await look(client) is True
+    said = (await client.get(page, headers=ADMIN)).text
+    assert "lab2 moved it to lab3, Odoo is pointed there by itself" in said and "not reachable since" in said
+    # the customer reads that it is not reachable and since when: no machine, no address, no reason
+    customer = (await client.get(page, headers=MARIO)).text
+    assert "not reachable since" in customer
+    for word in ("lab2", "lab3", "203.0.113", "connection refused", "15432"):
+        assert word not in customer, word
+    # 60 seconds, and the new place does not answer with its role: not moved
+    box.silent.add(("203.0.113.50", 15433))
+    assert await look(client, waited=61) is True and box.inputs == []
+    # its machine does not answer: said, and nothing moves
+    client.network.down = True
+    await look(client)
+    assert "lab2 does not answer" in (await client.get(page, headers=ADMIN)).text and box.inputs == []
+    client.network.down = False
+    # nor through a link that became plain HTTP: what it answers says where Odoo connects and which CA it trusts
+    link = client.lab1.state.settings.link_targets["lab2"]
+    client.lab1.state.settings.link_targets["lab2"] = dataclasses.replace(link, url="http://lab2.test")
+    await look(client)
+    assert "no link over HTTPS or SSH" in client.lab1.state.moved_seen["acme-erp"]["says_error"] and box.inputs == []
+    client.lab1.state.settings.link_targets["lab2"] = link
+    # the three hold: pointed there and restarted, by a job of no one
+    box.silent.discard(("203.0.113.50", 15433))
+    await look(client)
+    jobs = (await client.get("/api/jobs", headers=ADMIN)).json()["jobs"]
+    assert len(jobs) == jobs_before + 1
+    job = await job_of(client, next(j["id"] for j in jobs if j["title"].startswith("Database of acme-erp moved")))
+    assert job["status"] == "success" and job["source"] == "automatic: database moved by lab2"
+    assert box.inputs == [{"host": "203.0.113.50", "port": 15433, "ca": CA, "machine": "lab3"}] and box.answered == [20000]
+    # its lines name no machine and no address: the workspace's users read them
+    assert not any(word in line for line in job["lines"] for word in ("lab3", "203.0.113.50"))
+    # the pages: where it is now, to the machine's admin; nothing of it to the customer
+    said = (await client.get(page, headers=ADMIN)).text
+    assert "PostgreSQL 17 of lab2, on the promoted copy on lab3 (203.0.113.50) · since 22/11/2026 06:17" in said
+    assert "not reachable since" not in said
+    customer = (await client.get(page, headers=MARIO)).text + (await client.get("/api/map", headers=MARIO)).text \
+        + (await client.get(f"/jobs/{job['id']}", headers=MARIO)).text
+    assert "on another machine" in customer
+    for word in ("lab2", "lab3", "203.0.113"):
+        assert word not in customer, word
+    remote = (await client.get("/api/postgres", headers=ADMIN)).json()["remote"][0]
+    assert remote["copy"] == "lab3" and remote["down"] is None and remote["host"] == "203.0.113.50:15433"
+    # the move is in this machine's access log with the user «automatic», what its machine answered in that one's
+    here = [json.loads(line) for line in (client.lab1.state.settings.logs_dir / "access.jsonl").read_text().splitlines()]
+    assert any(e["event"] == "job" and e["name"] == "automatic: database moved by lab2" for e in here)
+    there = [json.loads(line) for line in (client.lab2.state.settings.logs_dir / "access.jsonl").read_text().splitlines()]
+    told = [e for e in there if "told that it is on the promoted copy on lab3 (203.0.113.50:15433)" in (e.get("detail") or "")]
+    assert len(told) == 1 and (told[0]["kind"], told[0]["name"]) == ("link", "lab1")  # once, however often it is asked
+    assert any("/followed/acme_erp -> 200" in (e.get("detail") or "") for e in there), [e.get("detail") for e in there if "followed" in (e.get("detail") or "")]
+    # that machine's Database tab says who followed
+    row = next(r for r in (await client.there.get("/api/postgres", headers=ADMIN)).json()["rows"] if r["where"] == "machine")
+    assert row["grants"][0]["followed"]["to"] == "203.0.113.50:15433" and row["waited"] == []
+    # answering there, it is left alone
+    box.inputs.clear()
+    assert await look(client, waited=61) is False and box.inputs == []
+    # the cluster came back and the copy is stopped: it follows its database back, the same way
+    (box.project / "replica.json").unlink()
+    box.silent.discard(("lab2.test", 15432))
+    box.silent.add(("203.0.113.50", 15433))
+    await look(client)
+    assert box.inputs == []  # not for 60 seconds yet
+    assert "lab2 has it on its cluster again, Odoo is pointed there by itself" in (await client.get(page, headers=ADMIN)).text
+    await look(client, waited=61)
+    for found in (await client.get("/api/jobs", headers=ADMIN)).json()["jobs"]:
+        if found["title"].startswith("Database of acme-erp moved"):
+            assert (await job_of(client, found["id"]))["status"] == "success"
+    assert box.inputs == [{"host": "lab2.test", "port": 15432, "ca": client.cluster.ca, "machine": ""}]
+    assert "PostgreSQL 17 of lab2 (lab2.test:15432) · tuned there" in (await client.get(page, headers=ADMIN)).text
+    assert any("told that it is on this machine's cluster again" in (e.get("detail") or "") for e in [
+        json.loads(line) for line in (client.lab2.state.settings.logs_dir / "access.jsonl").read_text().splitlines()])
+
+
+async def test_where_a_database_is_is_said_to_its_machine_only(three):
+    client, box = three, three.box
+    place = "/api/postgres/machine/17/grants/acme_erp/place"
+    # through the link of the machine it was given to, and to no one else
+    assert (await client.there.get(place, headers=ADMIN)).status_code == 403
+    reader = {"Authorization": "Bearer a-developer-link", "X-OmniaCLI-User": "admin", "X-OmniaCLI-Role-Cap": "admin"}
+    assert (await client.there.get(place, headers=reader)).status_code == 403
+    link = {"Authorization": f"Bearer {LINK_TOKEN}", "X-OmniaCLI-User": "admin", "X-OmniaCLI-Role-Cap": "admin"}
+    resp = await client.there.get(place, headers=link)
+    assert resp.status_code == 200 and resp.json()["place"] == "cluster" and resp.json()["port"] == 15432
+    assert (await client.there.get(place.replace("acme_erp", "other_db"), headers=link)).status_code == 404
+    replaced_by_its_replica(box)
+    found = (await client.there.get(place, headers=link)).json()
+    assert (found["place"], found["host"], found["port"], found["machine"], found["ca"]) == ("copy", "203.0.113.50", 15433, "lab3", CA)
+    # the cluster is not taken away while the database's machine has not followed it
+    row = next(r for r in (await client.there.get("/api/postgres", headers=ADMIN)).json()["rows"] if r["where"] == "machine")
+    assert row["waited"] == ["acme_erp"] and row["grants"][0]["followed"] is None
+    resp = await client.there.post("/api/postgres/machine/17/remove", headers={**ADMIN, "Origin": "http://lab2.test"})
+    assert "acme_erp have not followed their database to the copy on lab3 yet" in resp.json()["error"]
+
+
+async def test_the_promotion_gives_the_copy_the_grants_and_says_what_follows(machines):  # noqa: F811
+    client = machines
+    await make(client)
+    lines = {"acme_linked": {"address": "203.0.113.7", "revoked": False, "link": "lab1", "by": "carlo", "at": "", "workspace": "acme",
+                             "instance": "linked"}}
+    state, helper = client.lab.state, workspaceops._helper
+    client.lab.state = lambda: {**state(), "grant_lines": lines}
+    given = {}
+
+    async def helped(job, *args, timeout=None, input=None):
+        if args[0] == "machine-db-replica-promote":
+            given["promote"] = json.loads(input)
+        done = await helper(job, *args, timeout=timeout, input=input)
+        if args[0] == "machine-db-replica-replaced":
+            done["grant_lines"] = lines
+        return done
+    workspaceops._helper = helped
+    try:
+        # the look keeps what the primary says of its grants, for a promotion while it does not answer
+        await client.lab1.state.replica_look_hosted()
+        assert client.lab.inputs["sync"]["grants"] == lines
+        job = await job_of(client, (await promote(client)).json()["job"])
+    finally:
+        workspaceops._helper = helper
+    assert job["status"] == "success" and given["promote"] == {"grants": lines}
+    # a database of the promoted copy is revoked from the machine that hosts it, by its admins only
+    resp = await client.post("/api/postgres/replica/17/grants/acme_linked/revoke", headers=POST)
+    assert resp.status_code == 200 and resp.json()["job"]
+    assert (await client.there.post("/api/postgres/replica/17/grants/acme_linked/revoke", headers=THERE)).status_code in (200, 404)
+    page = (await client.get("/", headers=ADMIN)).text
+    for part in ("T.rp.promoteLentOff : T.rp.promoteLent", "T.rp.lentFor", "T.rp.holdsLocal", "hostedApi(row) :",
+                 "T.grantFollowed : T.grantNotFollowed", "T.rp.removeWaits", "T.notHereDown", "T.notHereCopy", "if (r.local) continue;"):
+        assert part in page, part

@@ -691,6 +691,8 @@ def state() -> dict:
         row = {"major": major, "storage": rec.get("storage"), "project": str(project),
                "socket": str(project / "run"), "environments": environments(project), "running": False,
                "promised": 0, "port": (listening(project) or {}).get("port"), "grants": grants(project),
+               # the CA its certificate is verified against, for a machine that asks where its database is (UX-011 §B)
+               "ca": ca_certificate(project) if listening(project) and (project / TLS_FOLDER / "ca.crt").is_file() else None,
                # its read replica on another machine (who has it, in which state: no address of the copy's port)
                "replica": {k: v for k, v in (replica(project) or {}).items() if k in ("link", "state", "address")} or None}
         if (project / "compose.yaml").is_file():
@@ -1165,6 +1167,23 @@ def reached(value) -> tuple[list[str], list[tuple[str, int]]]:
     return sorted({address(a) for a in coming}), sorted(set(out))
 
 
+def local_networks(value) -> list[str]:
+    """The networks of this machine's own projects an entry of the firewall's
+    state lets in ("local": the promoted copy hosted here holds a database
+    an instance of this very machine uses, UX-011 §B): each a private
+    network of 256 addresses at most, never every address."""
+    found = []
+    for net in (value.get("local") or []) if isinstance(value, dict) else []:
+        try:
+            network = ipaddress.ip_network(str(net))
+        except ValueError:
+            raise ClusterError(f"{net!r} is not the network of a project of this machine") from None
+        if network.version != 4 or network.prefixlen < 24 or not network.is_private:
+            raise ClusterError(f"{network} is not the network of a project of this machine")
+        found.append(str(network))
+    return sorted(set(found))
+
+
 def firewall_rules(state: dict) -> dict[str, list[list[str]]]:
     """What the firewall lets reach the clusters that listen (state:
     firewall_state), as iptables arguments after -A <chain>: forward (jumped
@@ -1182,6 +1201,9 @@ def firewall_rules(state: dict) -> dict[str, list[list[str]]]:
         allowed, going = reached(state[bridge])
         forward += [["-o", bridge, "-s", f"{a}/32", "-p", "tcp", "--dport", str(PORT_IN_DB), "-j", "RETURN"]
                     for a in allowed]
+        # an instance of this machine itself: the network of its project, which docker forwards to the port
+        forward += [["-o", bridge, "-s", net, "-p", "tcp", "--dport", str(PORT_IN_DB), "-j", "RETURN"]
+                    for net in local_networks(state[bridge])]
         for host, port in going:
             forward += [["-i", bridge, "-d", f"{host}/32", "-p", "tcp", "--dport", str(port), "-j", "RETURN"],
                         ["-o", bridge, "-s", f"{host}/32", "-p", "tcp", "--sport", str(port), "-m", "conntrack",

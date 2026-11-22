@@ -213,8 +213,7 @@ al giro successivo (ogni 20 s). Provato su lab2 (P) e lab1 (R).
   `-remote` del suo template: TLS `verify-full`, ruolo, password e database di prima; quello che era resta accanto,
   in `.before-promotion`). D3 come scelta in UX-010: il cluster di P riparte come sempre, e dopo una promozione fatta
   mentre P non rispondeva R riprova ogni 10 s. **I database che P ha concesso ad altre macchine** sono nella copia,
-  ma le loro istanze continuano a cercarli su P e restano senza database: il dialogo li nomina, niente li ripunta
-  (su lab1 `acme-linked` ha smesso di rispondere, come detto).
+  e la seguono (sotto).
 - **Il ritorno dopo una promozione** (UX-011 §A, costruito il 22/11/2026; `managedreplica.py` `return_*` su R e
   `back_*` su P, `workspace-helper machine-db-replica-return`, `machine-db-return`, `machine-db-replica-back`). P
   torna primario in due passi, chiesti da P attraverso un suo collegamento verso R (HTTPS o SSH).
@@ -253,8 +252,45 @@ al giro successivo (ogni 20 s). Provato su lab2 (P) e lab1 (R).
     del suo workspace: lo spazio si controlla prima, per tutti e due. I minuti passati su R non si raggiungono con
     il ripristino a un minuto. «Disabilitato prima del primo in pari» è coperto solo dai test: la copia qui dura
     3 s. Il riavvio dell'intera macchina R non è stato provato.
+- **I database concessi ad altre macchine seguono il loro database** (UX-011 §B, costruito il 22/11/2026). A è la
+  macchina la cui istanza usa un database del cluster di P attraverso il suo collegamento verso P.
+  - **Su R**: alla promozione la copia prende le concessioni di P (quelle che P dice quando viene fermato; se P non
+    risponde, quelle lette all'ultimo giro e tenute nel record della copia) e lascia entrare gli stessi ruoli dagli
+    stessi indirizzi: `grants.json` nel progetto della copia, righe `hostssl` in `pg_hba.conf`, indirizzi nel
+    firewall. La riga promossa ha «Da altre macchine» con Revoca, Consenti di nuovo, Elimina
+    (`machine-db-replica-grant`). Una copia promossa da una versione che non le prendeva le prende al primo giro.
+  - **Su P**: `GET …/grants/<nome>/place` dice al collegamento di A dove sta adesso il database: sulla copia
+    (indirizzo, porta e CA che R ha dato a P quando la replica è nata) o di nuovo sul cluster. La prima volta che
+    dice un posto lo scrive nel log degli accessi. A dice a P quando ha seguito (`POST …/followed/<nome>`): la riga
+    sostituita lo mostra, e «Togli il cluster…» aspetta chi non ha ancora seguito.
+  - **Su A**: un giro ogni 10 s (5 s quando un database non risponde) prova il database di ogni istanza su un
+    cluster collegato come lo proverà Odoo (TLS con il certificato verificato, ruolo e database). L'istanza si
+    sposta solo se valgono tutte e tre: non risponde da 60 s, P dice che è altrove, là risponde. Lo spostamento è
+    un job dell'helper di root (`machine-db-moved`: `.env`, CA, eccezione del firewall, `up -d`) con utente
+    «automatic: database moved by \<collegamento\>». La password non cambia e non viaggia.
+  - **A è R** (sulle macchine di prova): l'istanza raggiunge la copia all'indirizzo della macchina stessa. Misurato
+    con Docker 29: la connessione di un container verso una porta pubblicata da un'altra rete viene inoltrata al
+    container di destinazione e arriva con l'indirizzo del gateway di quella rete. Quindi `pg_hba.conf` della copia
+    ha due righe (l'indirizzo della macchina e il gateway della rete della copia), il firewall della copia lascia
+    entrare la sola rete del progetto dell'istanza, e l'eccezione del firewall dei workspace riconosce la
+    destinazione di partenza (`conntrack --ctorigdst`).
+  - **Misure (22/11/2026):**
+    - promozione con P che risponde: acme-linked risponde 89 s dopo l'arresto del cluster la prima volta (60 s di
+      attesa, 12 s di riavvio); dopo aver smesso di aspettare un Odoo senza database (`--timeout 2`, riavvio di 4 s)
+      67-72 s, misurati al ritorno;
+    - promozione con P spento (pannello e cluster fermi): la pagina dice «lab2 non risponde»; riavviato il
+      pannello di lab2, acme-linked risponde 11 s dopo;
+    - copia promossa dalla 5469: prese le concessioni 21 s dopo l'avvio del pannello, acme-linked risponde dopo
+      86 s, senza un clic;
+    - dopo il ritorno: acme-linked torna sul cluster di lab2 67-81 s dopo l'arresto della copia;
+    - come admin del workspace, la pagina e le route dell'istanza hanno 0 volte «lab1», «lab2», «172.30.».
+  - **Limiti.** «Non raggiungibile dal» è il momento in cui A l'ha visto, non quello della promozione. Se P non
+    risponde A non sposta niente: solo P dice dov'è il database. L'indirizzo della copia è quello con cui P la
+    raggiunge: se A la vede con un altro (NAT), la prova fallisce e l'istanza non si sposta. Una concessione fatta
+    su P negli ultimi 20 s prima di una promozione con P spento non è nella copia. Il log degli accessi del
+    workspace, che il suo admin legge intero, mostra l'utente «automatic: database moved by lab2».
 - **Non costruito**: la replica di un database dedicato; più di una replica per cluster, e più di una ospitata per
-  macchina; le letture per le istanze di altre macchine (le concessioni);
+  macchina; le letture dalla replica per le istanze di altre macchine (le concessioni);
   la regolazione della replica (ha i valori di P: se R ha meno memoria di quanta P ne ha assegnata, la
   replica non parte e il job lo dice); il rinnovo del certificato della replica (10 anni). Se P sta dietro un NAT
   l'indirizzo con cui R lo vede arrivare non si può correggere dal dialogo. Uno storage aggiunto a P dopo la creazione
@@ -439,6 +475,10 @@ nessuno: lo si legge al giro dopo.
 - **Ritorno** (UX-011 §A): la copia sta su P, quindi chiede P, e serve un collegamento da P a R. R non chiama P: un
   ritorno annullato su R, P lo legge al suo giro (20 s) e fa la sua parte da solo. Fa eccezione solo l'ordine dei
   passi di Completa, che P guida: P chiede a R di fermare la copia, e R risponde con il punto in cui si è fermata.
+- **Spostamento automatico** (UX-011 §B): A chiede a P dov'è il suo database, attraverso il collegamento che A ha
+  già verso P. Né P né R chiamano A: A non deve dare a nessuno un token per farsi riscrivere un'istanza. R non
+  parla con A: quello che A deve sapere di R (indirizzo, porta, CA) P lo ha già, perché R glielo ha detto quando
+  la replica è nata. Per questo, con P spento, A non si sposta finché P non risponde di nuovo.
 
 **Tracciabilità.** UX-008 D2 («Odoo19 che può montare 2 database in cluster»).
 

@@ -559,11 +559,12 @@ async def test_an_instance_on_the_cluster_of_a_link(machines):
     row = (await machines.there.get("/api/postgres", headers=ADMIN)).json()["rows"][0]
     assert row["port"] == 15432 and row["grants"] == [{
         "name": "acme_erp", "link": "lab1", "address": "203.0.113.7", "by": "admin", "at": "2026-11-22T10:00:00",
-        "revoked": False, "instance": "acme-erp"}]
+        "revoked": False, "followed": None, "instance": "acme-erp"}]
     here = (await machines.get("/api/postgres", headers=ADMIN)).json()["remote"]
     # promoted: "", it is on the cluster of a link, not on the promoted replica of this machine's own
     assert here == [{"key": "acme-erp/production", "server": "acme-erp", "role": "production",
-                     "host": "lab2.test:15432", "link": "lab2", "major": "17", "promoted": ""}]
+                     "host": "lab2.test:15432", "link": "lab2", "major": "17", "promoted": "",
+                     "down": None, "copy": "", "local": False}]
     data = (await machines.get("/api/map", headers=ADMIN)).json()
     assert [d["label"] for d in data["databases"]] == ["PostgreSQL 17 of lab2"]
     mario = {"Authorization": "Basic " + base64.b64encode(f"mario:{PASSWORD}".encode()).decode()}

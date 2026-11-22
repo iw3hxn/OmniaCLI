@@ -40,7 +40,13 @@
    copy, a line of its row, Cancel the return… (POST
    /api/postgres/replica/<major>/return/cancel) and, once the cluster is
    back, Make the replica again… (POST /api/postgres/replica/<major>/remake)
-   and Drop the replica…. -#}
+   and Drop the replica….
+   The databases the cluster gave to other machines, after a promotion
+   (UX-011 §B): the promoted copy's row lists them under From other machines
+   with the cluster's actions (POST /api/postgres/replica/<major>/grants/
+   <name>/revoke|allow|drop); the replaced row says which were followed, and
+   Take the cluster away… waits for them; Not here says a database that does
+   not answer and one that is on a promoted copy. -#}
 <style>
 .pg-table td, .pg-table th { vertical-align: top; }
 .pg-table tr.pg-row { cursor: pointer; }
@@ -331,6 +337,11 @@
     machineWherePort: {{ _("container of OmniaCLI, its data on the storage {storage}; the instances of this machine reach its socket, each with its role and its data in the tablespace on its workspace's disk; other machines reach port {port} over TLS, each from its one address and to its one database, with the data on the storage of the cluster") | tojson }},
     grants: {{ _("From other machines") | tojson }},
     grantsSub: {{ _("from other machines: {list}") | tojson }},
+    // after a promotion: where each is now, and whether its instance followed it (UX-011 §B)
+    grantFollowed: {{ _("{name} ({link}) · now on the copy of {machine}, followed on {when}") | tojson }},
+    grantNotFollowed: {{ _("{name} ({link}) · now on the copy of {machine}, not followed yet") | tojson }},
+    notHereDown: {{ _("Not here: {key} uses PostgreSQL {major} of {link}, not reachable since {when}: {reason}.") | tojson }},
+    notHereCopy: {{ _("Not here: {key} uses the database of {link} that is now on {machine} ({host}), the promoted copy; it is tuned there.") | tojson }},
     grantLine: {{ _("{name}: from {address}, through the link {link}, asked by {by} on {when}") | tojson }},
     grantFor: {{ _("for its instance {instance}") | tojson }},
     grantRevoked: {{ _("revoked: it no longer comes in, the database stays") | tojson }},
@@ -404,6 +415,7 @@
       removeReplacedLent: {{ _(" The databases other machines use ({list}) are in the copy on {machine}.") | tojson }},
       removeReplacedLentOne: {{ _(" The database another machine uses ({list}) is in the copy on {machine}.") | tojson }},
       lentOf: {{ _("{name}, of {link}") | tojson }},
+      removeWaits: {{ _("{list} have not followed their database to the copy on {machine} yet: the cluster is taken away once they have.") | tojson }},
       // the detail on the machine that hosts it
       whose: {{ _("Whose") | tojson }}, since: {{ _("Since") | tojson }}, space: {{ _("Room") | tojson }}, holds: {{ _("What it holds") | tojson }},
       whoseLink: {{ _("Database of {link} ›") | tojson }},
@@ -423,7 +435,10 @@
       promoteGoTitleOff: {{ _("Makes this copy take the writes without stopping the PostgreSQL of {link}, which does not answer: only when {link} is really off") | tojson }},
       promoteAsk: {{ _("Promote the replica of {link}?\n1. The PostgreSQL of {link} is stopped.\n2. This copy takes the writes.\n3. The {n} instances of {link} on the cluster ({list}) are pointed here and restarted one after the other, the productions first: about 10 s each, {seconds} s for the last.\nLag now: {lag} s, and the changes of those seconds that did not arrive are lost. After it the data on {link}'s cluster is old and no instance uses it. The way back is Prepare the return…, from the row of the cluster of {link}.{lent}\nWrite {link} to confirm.") | tojson }},
       promoteAskOff: {{ _("{link} does not answer since {when}: OmniaCLI cannot stop its PostgreSQL. If it is still on and an instance writes to it, the two copies diverge and the writes of one of them are lost. Promote only if {link} is really off.\nIts instances are pointed here when {link} answers again: OmniaCLI tries every {retry} s to stop its PostgreSQL and to point them, and what they write on {link} between its return and that moment is lost. Until then they do not work on this copy.\nLast lag read: {lag} s at {read}.{lent}\nWrite {link} to confirm that {link} is off.") | tojson }},
-      promoteLent: {{ _("\nThe databases other machines use on that cluster ({list}) are in this copy, but their instances keep looking for them on {link}: they have no database until each is made again.") | tojson }},
+      promoteLent: {{ _("\nThe databases other machines use on that cluster ({list}) are in this copy, which lets them in from the same addresses: each machine points its instance here by itself, within a minute of {link} telling it, and restarts it (about 10 s).") | tojson }},
+      promoteLentOff: {{ _("\nThe databases other machines use on that cluster ({list}) are in this copy, which lets them in from the same addresses: each machine points its instance here by itself, within a minute of {link} answering again: until then those instances have no database.") | tojson }},
+      lentFor: {{ _("{name}, for {link} from {address}") | tojson }},
+      holdsLocal: {{ _(" and {name}, used by {instance} of this machine") | tojson }},
       drop: {{ _("Drop the replica…") | tojson }},
       dropTitle: {{ _("Deletes this copy and its container, and asks {link} to drop what it keeps for it. The instances of {link} reading from here go back to their cluster and restart. A new replica copies everything again. It is a job.") | tojson }},
       dropAsk: {{ _("Drop the replica of {link} ({size})? {readers}A new replica copies the whole cluster again.") | tojson }},
@@ -513,6 +528,8 @@
       // the dialogs
       ask: {{ _("Bring back to this machine the database of the {n} instances, on {machine} today?\n1. The data of this cluster, stopped since {when} ({aside}), is set aside: it is not deleted until the return is complete.\n2. The whole database of {machine} is copied here: {size}, in about {time}. Here {free} are free, and at least {reserve} stay free.\n3. This cluster follows {machine} at each change, read only, until you choose Complete the return….\nThe {n} instances keep working on {machine}: nothing stops. On {machine} a role, a line of access for {address} only and a point that holds its changes are made, {cap} at most.") | tojson }},
       completeAsk: {{ _("Complete the return from {machine}?\n1. The copy on {machine} is stopped: from that moment the {n} instances do not write.\n2. This cluster receives the last changes (lag now: {lag} s) and accepts the writes. Nothing is lost: if not everything arrived within 60 s, the copy on {machine} starts again and the instances stay there.\n3. The {n} instances ({list}) come back on this cluster and restart one after the other, the productions first: about 10 s each, {seconds} s for the last.\n4. The data set aside (of {when}, {aside}) is deleted.{lent}\nAfter it the copy on {machine} is stopped, with the data of that moment: from there it is made a replica again, or dropped. Write {machine} to confirm.") | tojson }},
+      completeLent: {{ _("\nThe databases other machines use ({list}) come back here: their instances follow them by themselves within a minute.") | tojson }},
+      completeLentOne: {{ _("\nThe database another machine uses ({list}) comes back here: its instance follows it by itself within a minute.") | tojson }},
       completeAskAgain: {{ _("Bring back on this cluster the instances that are not on it yet ({list})? They restart one after the other: about 10 s each. Write {machine} to confirm.") | tojson }},
       noRoom: {{ _("No room: the copy from {machine} takes about {need}, the data set aside stays ({aside}), here {free} are free and {reserve} must stay free.") | tojson }},
       // on the machine that hosts the promoted copy
@@ -658,7 +675,10 @@
       if (!replaced) td.append(el("span", {className: "pg-sub", textContent: fill(row.port ? T.machineSubPort : T.machineSub, {storage: row.storage, port: row.port})}));
       td.append(el("span", {className: "pg-sub", textContent: !row.serves.length ? T.machineNone
         : replaced ? fill(T.served, {list: servedList(row), when: when(row.state.at)}) : fill(T.serves, {list: servedList(row)})}));
-      if ((row.grants || []).length) td.append(el("span", {className: "pg-sub", textContent: fill(T.grantsSub, {list: grantList(row)})}));
+      if ((row.grants || []).length) td.append(el("span", {className: "pg-sub pg-grants-line", textContent: fill(T.grantsSub, {list: replaced
+        ? row.grants.map((g) => fill(g.followed ? T.grantFollowed : T.grantNotFollowed, {name: g.name, link: g.link, machine: row.state.link || "?",
+          when: g.followed ? when(g.followed.at) : ""})).join("; ")
+        : grantList(row)})}));
       // its read replica on another machine: its state on the closed row, and what the cluster keeps for it
       const followed = row.replica;
       if (followed && followed.exists && followed.state !== "replaced") {
@@ -922,7 +942,8 @@
     const lag = v.lag === null || v.lag === undefined ? "?" : v.lag;
     const text = here.state === "done" ? fill(T.rt.completeAskAgain, {list: list.join(", "), machine})
       : fill(T.rt.completeAsk, {machine, n: list.length, list: list.join(", ") || "–", lag, seconds: Math.max(10, list.length * 10),
-        when: when(aside.at), aside: bytes(aside.size), lent: ""});
+        when: when(aside.at), aside: bytes(aside.size), lent: (row.grants || []).length ? fill(row.grants.length === 1 ? T.rt.completeLentOne : T.rt.completeLent,
+          {list: row.grants.map((g) => fill(T.rp.lentOf, {name: g.name, link: g.link})).join("; ")}) : ""});
     // what cannot be undone asks the name typed: the machine whose copy is stopped
     if (!await window.omniaTypeName(text, machine, T.rt.completeGo, fill(T.rt.completeGoTitle, {machine}))) return;
     goTo(await post(`${returnApi(row)}/complete`, {confirm: machine}));
@@ -957,7 +978,8 @@
     if (!coming) actions.append(prepareButton(row, machine));
     if (using.length) box.append(el("p", {className: "pg-warn", textContent: fill(T.rp.replacedStill, {list: using.join(", "), machine: s.link || "?"})}));
     // Take the cluster away…: the other way, the one of not coming back; never under a return
-    else if (coming) actions.append(el("span", {title: T.rt.removeNot}, el("button", {type: "button", className: "small danger", textContent: T.removeCluster,
+    else if (coming || (row.waited || []).length) actions.append(el("span", {title: coming ? T.rt.removeNot
+      : fill(T.rp.removeWaits, {list: row.waited.join(", "), machine})}, el("button", {type: "button", className: "small danger", textContent: T.removeCluster,
       title: T.removeClusterTitle, disabled: true})));
     else actions.append(el("button", {type: "button", className: "small danger", textContent: T.removeCluster, title: T.removeClusterTitle,
       onclick: async (e) => {
@@ -980,10 +1002,17 @@
       ? fill(T.rp.sinceCopying, {when: when(here.at)})
       : fill(T.rp.sinceLine, {when: when(here.ready_at || here.at), size: bytes(here.copied || here.expected), seconds: dec(here.copy_seconds, 1)})}));
     dl.append(el("dt", {textContent: T.rp.space}), el("dd", {textContent: fill(T.rp.spaceLine, {size: bytes(here.disk || here.size || 0), free: bytes(here.free)})}));
-    const instances = p.instances || [], lent = p.grants || [];
+    // promoted: the databases other machines use live here (its own record); one used by an instance of this
+    // very machine is said so
+    const given = here.lent || null, local = (given || []).filter((g) => g.local), instances = p.instances || [];
+    const lent = given ? given.filter((g) => !g.local).map((g) => g.name) : p.grants || [];
     dl.append(el("dt", {textContent: T.rp.holds}), el("dd", {textContent: instances.length
-      ? fill(T.rp.holdsLine, {link, n: instances.length, list: instances.join(", "), lent: lent.length ? fill(lent.length === 1 ? T.rp.holdsLentOne : T.rp.holdsLent, {n: lent.length, list: lent.join(", ")}) : ""})
+      ? fill(T.rp.holdsLine, {link, n: instances.length, list: instances.join(", "), lent: (lent.length ? fill(lent.length === 1 ? T.rp.holdsLentOne : T.rp.holdsLent, {n: lent.length, list: lent.join(", ")}) : "")
+        + local.map((g) => fill(T.rp.holdsLocal, {name: g.name, instance: [g.workspace, g.instance].filter(Boolean).join("-") || g.name})).join("")})
       : fill(T.rp.holdsUnknown, {link})}));
+    // those databases are let in from here now: revoked, allowed again, dropped as on a cluster
+    if ((given || []).length) dl.append(el("dt", {textContent: T.grants}), el("dd", {}, ...given.map((g) => grantRow(row,
+      Object.assign({}, g, {instance: [g.workspace, g.instance].filter(Boolean).join("-")})))));
     const back = here.state === "promoted" && here.return && here.return.exists ? here.return : null;
     if (back) {
       // the return of the cluster this copy replaced: what this copy sees of it, its cap, the way to cancel it
@@ -1025,8 +1054,10 @@
   }
   async function promoteHosted(row) {
     const p = row.primary || {}, v = p.verdict || {}, link = row.link, offline = !!row.primary_error;
-    const instances = p.instances || [], given = p.grants || [];
-    const lent = given.length ? fill(T.rp.promoteLent, {list: given.join(", "), link}) : "";
+    const instances = p.instances || [], given = p.grants || [], lines = p.grant_lines || {};
+    // each with the machine it is for and the address it comes in from: this copy lets the same in
+    const lent = given.length ? fill(offline ? T.rp.promoteLentOff : T.rp.promoteLent, {link, list: given.map((name) => lines[name]
+      ? fill(T.rp.lentFor, {name, link: lines[name].link || "?", address: lines[name].address || "?"}) : name).join("; ")}) : "";
     const lag = v.lag === null || v.lag === undefined ? "?" : v.lag;
     const text = offline
       ? fill(T.rp.promoteAskOff, {link, when: when(row.primary_failed || data.now), retry: 10, lag, read: row.primary_at ? when(row.primary_at) : "?", lent})
@@ -1150,7 +1181,9 @@
   function notHere(remote) {
     const groups = new Map();
     for (const r of remote) {
-      const id = [r.promoted || "", r.link || "", r.major || "", r.host].join("|");
+      // in the promoted copy this very machine hosts: it is here, in the copy's row
+      if (r.local) continue;
+      const id = [r.promoted || "", r.link || "", r.major || "", r.host, r.down ? r.server : "", r.copy || ""].join("|");
       if (!groups.has(id)) groups.set(id, {first: r, keys: []});
       groups.get(id).keys.push(r.server + (r.role === "test" ? " (" + T.kinds.test + ")" : ""));
     }
@@ -1158,10 +1191,12 @@
       const many = keys.length > 1;
       const list = keys.length > 2 ? fill(T.listMore, {list: keys.slice(0, 2).join(", "), n: keys.length - 2})
         : many ? fill(T.listTwo, {a: keys[0], b: keys[1]}) : keys[0];
-      const text = r.promoted ? (many ? T.notHerePromotedMany : T.notHerePromoted)
+      const text = r.down && r.link ? T.notHereDown : r.copy && r.link ? T.notHereCopy
+        : r.promoted ? (many ? T.notHerePromotedMany : T.notHerePromoted)
         : r.link ? (many ? T.notHereLinkedMany : T.notHereLinked) : (many ? T.notHereMany : T.notHere);
-      return fill(text, {key: list, list, host: r.host, link: r.link, major: r.major, machine: r.promoted});
-    }).join(" ");
+      return el("span", {className: r.down && r.link ? "pg-warn" : "", textContent: fill(text, {key: list, list, host: r.host, link: r.link, major: r.major,
+        machine: r.copy || r.promoted, when: r.down ? when(r.down.since) : "", reason: r.down ? r.down.why : ""}) + " "});
+    });
   }
   function draw() {
     // the cluster of this machine first, then the replicas it hosts of other machines' clusters, then the others
@@ -1205,8 +1240,9 @@
     document.getElementById("pg-empty").hidden = rows.length > 0;
     search.hidden = rows.length <= 8;
     const remote = document.getElementById("pg-remote");
-    remote.textContent = notHere(data.remote);
-    remote.hidden = !data.remote.length;
+    const elsewhere = notHere(data.remote);
+    remote.replaceChildren(...elsewhere);
+    remote.hidden = !elsewhere.length;
     // + Machine's cluster: the tab's primary while there is none
     const offer = data.cluster || {}, box = document.getElementById("pg-cluster-box"), make = document.getElementById("pg-cluster");
     box.hidden = !(offer.missing || []).length;
@@ -1254,7 +1290,8 @@
     return line;
   }
   async function grantAction(row, g, what) {
-    const answer = await post(`${API}/machine/${encodeURIComponent(row.major)}/grants/${encodeURIComponent(g.name)}/${what}`);
+    // of the cluster, or of the promoted copy this machine hosts
+    const answer = await post(`${row.where === "replica" ? hostedApi(row) : `${API}/machine/${encodeURIComponent(row.major)}`}/grants/${encodeURIComponent(g.name)}/${what}`);
     if (answer.error || !answer.job) { errorBox.textContent = answer.error || T.refused; return; }
     location.href = `${PREFIX}/jobs/${answer.job}`;
   }

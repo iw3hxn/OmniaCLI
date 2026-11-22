@@ -101,6 +101,9 @@ NOT_SENSITIVE = frozenset({
     # sees of the cluster that comes back; preparing, completing and cancelling are actions, logged
     "/api/postgres/machine/{major}/return/facts", "/api/postgres/replica/{major}/return/facts",
     "/api/postgres/replica/{major}/return/state",
+    # where a database another machine uses is now (UX-011 §B), asked by that machine every few seconds
+    # through its link: the first time each place is told the route logs it itself, as an action
+    "/api/postgres/machine/{major}/grants/{name}/place",
     "/x/odoo/servers/{server}/{role}/addons", "/x/odoo/servers/{server}/{role}/addons/versions",
     # an invitation's form (its use is logged by the route) and where a user of a customer may be made
     "/invite/{token}", "/api/access/workspaces", "/api/access/workspace-choices",

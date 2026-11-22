@@ -2032,9 +2032,28 @@ asked from the machine that hosts it, through its link; machine admins only.
   to point its instances here when the machine answers again: what its
   instances write there meanwhile is lost. The cluster that was replaced
   stays stopped, its row says *Replaced by the replica on … on …*, and **Take
-  the cluster away…** deletes it. The databases that cluster gave to other
-  machines are in the copy, but their instances keep looking for them there
-  and have no database until each is made again: the dialog names them.
+  the cluster away…** deletes it, once the databases it gave to other
+  machines were followed (below).
+- **The databases the cluster gave to other machines follow it.** They are in
+  the copy: from the promotion the copy lets the same roles in from the same
+  addresses (`pg_hba.conf`, the firewall), and its row has **From other
+  machines** with **Revoke…**, **Allow again** and **Drop…**. The machine
+  whose instance uses such a database asks the cluster's machine, through
+  its link, where the database is now, every 10 s; it points its instance
+  there **by itself**, with a job whose user is *automatic: database moved by
+  <link>*, only when the three hold: the database has not answered for 60 s
+  where it was; its machine says it is somewhere else, with the address and
+  the CA; it answers there with its role, tried as Odoo will. An Odoo whose
+  database answers is never restarted, and the instance's page says which of
+  the three is missing (*not reachable since …: lab2 moved it to lab1…*,
+  *…: lab2 does not answer*, *lab2 says it is on lab1, but it still answers
+  here*). After the return the instance follows its database back the same
+  way. A copy hosted on the very machine of the instance is reached at that
+  machine's own address. A customer reads *not reachable since …*, then *on
+  another machine*: no machine, no address, no reason. Measured: the
+  instance answers again 67 to 89 s after its database stopped (60 s of them
+  are the wait); with the cluster's machine off at the promotion, 11 s after
+  that machine answered again.
 
 - **The return**, after a promotion, brings the database back to the machine
   whose cluster the replica replaced, in two steps asked from that machine.

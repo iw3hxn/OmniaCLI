@@ -903,6 +903,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         postgres_tasks.append(asyncio.get_running_loop().create_task(postgres_loop()))
         # defined further down, with the Database tab's code
         replica_tasks.append(asyncio.get_running_loop().create_task(replica_loop()))
+        replica_tasks.append(asyncio.get_running_loop().create_task(moved_loop()))
         catalog_tasks.append(asyncio.get_running_loop().create_task(catalog_loop()))
         disk_recorder.start()
         load_recorder.start()
@@ -10274,7 +10275,15 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                    "link": link_now(inst) or None,
                                    "major": str(meta.get("database_major") or "") or None,
                                    # the promoted replica of this machine's cluster: the machine that hosts it
-                                   "promoted": str(meta.get("database_link") or "") if meta.get("promoted_from") else ""})
+                                   "promoted": str(meta.get("database_link") or "") if meta.get("promoted_from") else "",
+                                   # on a linked cluster (UX-011 §B): it does not answer (since when, why); it is on
+                                   # the promoted copy of that cluster, which may be one this very machine hosts
+                                   "down": ({"since": (moved_seen.get(srv.name) or {}).get("since"),
+                                             "why": i18n.tr(lang, str((moved_seen.get(srv.name) or {}).get("why") or ""))}
+                                            if (moved_seen.get(srv.name) or {}).get("down") is not None else None),
+                                   "copy": str((meta.get(workspacehelper.MOVED_META) or {}).get("machine") or "")
+                                   if isinstance(meta.get(workspacehelper.MOVED_META), dict) else "",
+                                   "local": hosted_here(str(meta.get("database_on") or ""))})
                     continue
                 if inst.restart.type == "compose":
                     kind, parent = postgres_kind(srv, role, known)
@@ -10402,9 +10411,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                             for s in serves],
                                  # reached from other machines (AD-003): its port, and who uses which database
                                  "port": found.get("port"),
+                                 # replaced: the databases other machines use whose instance has not followed yet
+                                 "waited": grants_waited(major),
                                  "grants": [{"name": name, "link": str(g.get("link") or ""),
                                              "address": str(g.get("address") or ""), "by": str(g.get("by") or ""),
                                              "at": str(g.get("at") or ""), "revoked": bool(g.get("revoked")),
+                                             "followed": grants_followed(major).get(name),
                                              "instance": "-".join(p for p in (str(g.get("workspace") or ""),
                                                                               str(g.get("instance") or "")) if p)}
                                             for name, g in sorted((found.get("grants") or {}).items())]})
@@ -10571,6 +10583,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return refuse(f"The machine's cluster has a read replica on {followed.get('link')}: drop the replica first")
         if (return_record(major) or {}).get("state") in ("copying", "ready"):
             return refuse("A return is under way: cancel it first.")
+        waited = grants_waited(major)
+        if waited:
+            return refuse(f"{', '.join(waited)} have not followed their database to the copy on {followed.get('link')} "
+                          "yet: the cluster is taken away once they have.")
 
         async def action(job):
             found = await workspaceops._helper(job, "machine-db-remove", major, timeout=MACHINE_TIMEOUT)
@@ -11194,6 +11210,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             await monitor.machine_problem("replica", "")
             job.result = {**job.result, "replaced": {
                 "at": done.get("replaced_at"), "already": bool(done.get("already")), "grants": done.get("grants") or [],
+                # who comes in to which database from where: the promoted copy lets the same in (no secret)
+                "grant_lines": done.get("grant_lines"),
                 "instances": sorted(i.server for i in machine_served())}}
         job = jobs.submit(f"Stop the machine's PostgreSQL {major}: its read replica takes its place",
                           [f"{MACHINE_KEY}/{major}"], f"manual: {me}", action)
@@ -11693,13 +11711,18 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 except JobFailed as exc:
                     raise JobFailed(f"{name} answers but its PostgreSQL did not stop ({exc}): nothing is promoted") from None
                 lent = (stopped.get("replaced") or {}).get("grants") or []
+                lines = (stopped.get("replaced") or {}).get("grant_lines")
             else:
+                # as this copy read them last (its record): that machine does not say
+                lines = None
                 job.warn(f"{name} does not answer: its PostgreSQL was not stopped. If it runs and an instance writes "
                          "to it, what it writes from now is lost when it is stopped")
                 lent = ((replica_seen.get(major) or {}).get("state") or {}).get("grants") or []
             progress["step"] = "promote"
-            done = await workspaceops._helper(job, "machine-db-replica-promote", major, timeout=MACHINE_TIMEOUT)
+            done = await workspaceops._helper(job, "machine-db-replica-promote", major, timeout=MACHINE_TIMEOUT,
+                                              input=json.dumps({"grants": lines} if isinstance(lines, dict) else {}).encode())
             job.log(f"This copy takes the writes ({done.get('seconds', '?')} s)")
+            lent = done.get("lent") if isinstance(done.get("lent"), list) else lent
             access_log.record("action", "system", "", "", f"read replica of PostgreSQL {major} of {name} promoted: it "
                               f"is the database of its instances (asked by {who})", context=False)
             if answers:
@@ -11716,10 +11739,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 job.warn(f"The instances of {name} are pointed here when it answers again: OmniaCLI tries every "
                          f"{REPLICA_RETRY} s to stop its PostgreSQL and to point them. What they write there "
                          "meanwhile is lost")
-            if lent:
+            if lent and answers:
+                job.log(f"The databases other machines use on the cluster of {name} ({', '.join(lent)}) are in this "
+                        f"copy, which lets them in from the same addresses: each machine points its instance here by "
+                        f"itself, within a minute of {name} telling it")
+            elif lent:
                 job.warn(f"The databases other machines use on the cluster of {name} ({', '.join(lent)}) are in this "
-                         "copy, but their instances still look for them there: they have no database until each is "
-                         "made again on a cluster that answers")
+                         f"copy, which lets them in from the same addresses: each machine points its instance here by "
+                         f"itself once {name} answers again; until then those instances have no database")
             job.result = {**job.result, "promoted": {"link": name, "seconds": round(time.monotonic() - started, 1),
                                                      "stopped_first": answers}}
         job = jobs.submit(f"Promote the read replica of PostgreSQL {major} of {name}", [replica_key(major)],
@@ -12424,6 +12451,285 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                           f"manual: {me}", action)
         return {"job": job.id}
 
+    # --- the databases other machines use, after a promotion (UX-011 §B). A is the machine whose
+    # instance uses a database of P's cluster through its link to P. The promoted copy on R lets the
+    # same roles in from the same addresses; A's instance is pointed to where its database is now by
+    # itself, and only when its database does not answer where it was: A asks P through its link (P
+    # never calls A, R never calls A), every MOVED_EVERY seconds. P's side: GET
+    # /api/postgres/machine/<major>/grants/<name>/place, POST /api/postgres/machine/<major>/followed/<name>. R's side: POST
+    # /api/postgres/replica/<major>/grants/<name>/revoke|allow|drop. A's side: the look (moved_loop).
+
+    MOVED_EVERY = 10
+    MOVED_SOON = 5
+    MOVED_AFTER = 60
+    MOVED_ASK_EVERY = 60
+    # A: what the look saw last of each instance on a linked cluster, by server; P: the CA of its
+    # cluster (root reads it, once), and what it told each machine and what each said it did
+    moved_seen: dict[str, dict] = {}
+    cluster_cas: dict[str, str] = {}
+    moved_file = settings.jobs_dir.parent / "database_moved.json"
+
+    def moved_notes() -> dict:
+        try:
+            data = json.loads(moved_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def moved_note(major: str, name: str, **values) -> None:
+        data = moved_notes()
+        data.setdefault(major, {}).setdefault(name, {}).update(values)
+        moved_file.write_text(json.dumps(data, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+
+    def grant_of_link(major: str, name: str, me: Principal):
+        """The grant name of this machine's cluster, when me is the link of
+        the machine it was given to (its record, a file OmniaCLI reads);
+        else the refusal."""
+        if me.kind != "link":
+            return refuse("Asked by the machine that uses the database, through its link", status.HTTP_403_FORBIDDEN)
+        found = machinedb.registry().get(major) if machinedb.ENV_NAME.fullmatch(name) else None
+        grant = machinedb.grants(Path(str(found.get("project") or ""))).get(name) if found else None
+        if grant is None:
+            return refuse(f"{name} is no database of another machine on PostgreSQL {major}", status.HTTP_404_NOT_FOUND)
+        if str(grant.get("link") or "") != me.name:
+            return refuse(f"{name} is a database of another machine here, not of {me.name}", status.HTTP_403_FORBIDDEN)
+        return grant
+
+    @app.get("/api/postgres/machine/{major}/grants/{name}/place")
+    async def postgres_grant_place(request: Request, major: str, name: str, me: Principal = Depends(current_user)):
+        """Where a database of this cluster another machine uses is now,
+        asked by that machine through its link (UX-011 §B): on this
+        cluster, or on the promoted copy that replaced it, with the address
+        and the CA its certificate is verified against (no secret). The
+        first time each place is told is in the access log."""
+        postgres_admin(me)
+        grant = grant_of_link(major, name, me)
+        if not isinstance(grant, dict):
+            return grant
+        rec = replica_record(major) or {}
+        if rec.get("state") == "replaced" and rec.get("host"):
+            answer = {"place": "copy", "host": str(rec["host"]), "port": int(rec.get("port") or 0), "ca": rec.get("ca"),
+                      "machine": str(rec.get("link") or ""), "since": rec.get("replaced_at")}
+        else:
+            if major not in cluster_cas:
+                state = await cluster_state(major)
+                if state is None:
+                    return refuse(f"The machine's PostgreSQL {major} cannot be read now: try again in a moment",
+                                  status.HTTP_503_SERVICE_UNAVAILABLE)
+                if state.get("ca"):
+                    cluster_cas[major] = str(state["ca"])
+            found = machinedb.registry().get(major) or {}
+            port = (machinedb.listening(Path(str(found.get("project") or ""))) or {}).get("port")
+            answer = {"place": "cluster", "host": None, "port": port, "ca": cluster_cas.get(major), "machine": None,
+                      "since": (return_record(major) or {}).get("returned_at")}
+        told = f"{answer['place']}:{answer['host'] or ''}:{answer['port'] or ''}"
+        note = (moved_notes().get(major) or {}).get(name) or {}
+        if note.get("told") != told and (answer["place"] == "copy" or note.get("told")):
+            # the question comes every few seconds: said once, when the answer changes
+            where = (f"on the promoted copy on {answer['machine']} ({answer['host']}:{answer['port']})"
+                     if answer["place"] == "copy" else "on this machine's cluster again")
+            access_log.record("action", me.kind, me.name, request.client.host if request.client else "",
+                              f"database {name} of PostgreSQL {major}: {me.name} told that it is {where}"
+                              + (f" for {me.on_behalf}" if me.on_behalf else ""))
+            await asyncio.to_thread(moved_note, major, name, told=told, told_at=replica_now(), followed=None)
+        return {**answer, "revoked": bool(grant.get("revoked")), "here": here_name()}
+
+    @app.post("/api/postgres/machine/{major}/followed/{name}")
+    async def postgres_grant_followed(major: str, name: str, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """The machine that uses a database of this cluster says its instance
+        was pointed to where the database is now: what this machine's
+        Database tab says of it."""
+        postgres_admin(me)
+        grant = grant_of_link(major, name, me)
+        if not isinstance(grant, dict):
+            return grant
+        to = str((payload or {}).get("to") or "")[:120]
+        await asyncio.to_thread(moved_note, major, name, followed={"to": to, "at": replica_now(),
+                                                                   "answers": bool((payload or {}).get("answers"))})
+        return {"ok": True}
+
+    def grants_followed(major: str) -> dict:
+        """P, for its rows: {database: {"to", "at", "answers"}} of the machines that said they followed."""
+        return {name: note["followed"] for name, note in (moved_notes().get(major) or {}).items()
+                if isinstance(note.get("followed"), dict)}
+
+    def grants_waited(major: str) -> list[str]:
+        """P: the databases other machines use whose instance has not followed
+        to the promoted copy yet (a revoked one, or one whose link is no
+        longer let in here, waits for no one)."""
+        rec = replica_record(major) or {}
+        found = machinedb.registry().get(major) or {}
+        if rec.get("state") != "replaced":
+            return []
+        where, followed = f"{rec.get('host')}:{rec.get('port')}", grants_followed(major)
+        return sorted(name for name, grant in machinedb.grants(Path(str(found.get("project") or ""))).items()
+                      if not grant.get("revoked") and str(grant.get("link") or "") in settings.links
+                      and (followed.get(name) or {}).get("to") != where)
+
+    @app.post("/api/postgres/replica/{major}/grants/{name}/{what}")
+    async def hosted_ungrant(major: str, name: str, what: str, me: Principal = Depends(current_user)):
+        """A database of the promoted copy another machine uses (the cluster
+        it replaced had given it): revoke, allow, drop, as on a cluster."""
+        postgres_admin(me)
+        if what not in ("revoke", "allow", "drop") or not machinedb.ENV_NAME.fullmatch(name):
+            return refuse("revoke, allow or drop a database of another machine", status.HTTP_404_NOT_FOUND)
+        entry = replica_hosted().get(major)
+        if entry is None or me.kind == "link":
+            return refuse(f"This machine hosts no promoted copy of a PostgreSQL {major} for you",
+                          status.HTTP_404_NOT_FOUND)
+        whose = str(entry.get("link") or "")
+
+        async def action(job):
+            done = await workspaceops._helper(job, "machine-db-replica-grant", major, name, what, timeout=MACHINE_TIMEOUT)
+            source = done.get("address")
+            if what == "revoke":
+                job.log(f"Database {name} is no longer reached from {source}: its line of pg_hba.conf is gone, "
+                        f"{done.get('closed')} connections closed. The database and its role stay: Allow again, or Drop")
+            elif what == "allow":
+                job.log(f"Database {name} is reached from {source} again: its line of pg_hba.conf is back")
+            else:
+                job.log(f"Database {name} dropped, with its role and its line of pg_hba.conf")
+            job.log(firewall_line(done))
+            job.result = {**job.result, "ungrant": {**done, "what": what}}
+        title = {"revoke": f"Revoke database {name} on the promoted copy of PostgreSQL {major} of {whose}",
+                 "allow": f"Allow database {name} on the promoted copy of PostgreSQL {major} of {whose} again",
+                 "drop": f"Drop database {name} on the promoted copy of PostgreSQL {major} of {whose}"}[what]
+        job = jobs.submit(title, [replica_key(major)], f"manual: {me}", action)
+        return {"job": job.id}
+
+    # A: the machine whose instance uses the database
+
+    def linked_instances() -> list[Instance]:
+        """The productions of this machine whose database is on the cluster of a linked machine."""
+        return [srv.production for srv in settings.active_servers()
+                if srv.production is not None and srv.production.restart.type == "compose"
+                and on_remote_db(srv.production) and linked_database(srv.production) is not None
+                and not instance_meta(srv.production).get("promoted_from")]
+
+    def hosted_here(place: str) -> bool:
+        """place (host:port) is a promoted copy this very machine hosts."""
+        for entry in replica_hosted().values():
+            rec = managedreplica.hosted_record(Path(str(entry.get("project") or "")))
+            if rec.get("state") == "promoted" and place == f"{rec.get('address')}:{rec.get('own_port')}":
+                return True
+        return False
+
+    async def database_answers(host: str, port: int, ca: str, name: str) -> str:
+        """"" when the database name answers at host:port as Odoo will ask
+        it (TLS, the certificate verified against ca, its role let in); else
+        why not."""
+        try:
+            await asyncio.to_thread(linkedcluster.check, host, int(port), ca, name, name)
+        except linkedcluster.CheckFailed as exc:
+            return str(exc)
+        return ""
+
+    def moved_job(inst: Instance, ws: Workspace, instance: str, link: LinkTarget, major: str, where: dict, since: str) -> Job:
+        """The job that points an instance to where its database is now and
+        starts it again. Its texts name no machine and no address: the
+        workspace's users read it."""
+        server, name = inst.server, inst.options.database
+
+        async def action(job):
+            job.log(f"--- the database of {server} does not answer where it was since {since[11:16]}, and the machine "
+                    "that has it says where it is now: Odoo is pointed there, over TLS with the certificate verified, "
+                    "and starts again")
+            made = await workspaceops._helper(job, "machine-db-moved", ws.name, ws.storage, instance,
+                                              timeout=MACHINE_TIMEOUT, input=json.dumps(where).encode())
+            if made.get("already"):
+                job.log("It was pointed there already")
+            now_inst = settings.servers[server].production if server in settings.servers else inst
+            answers, seconds = await replica_answers(now_inst)
+            if answers:
+                job.log(f"{server} answers again after {seconds} s, on its database where it is now")
+            else:
+                job.warn(f"{server} does not answer {seconds} s after it was pointed to where its database is now")
+            moved_seen.pop(server, None)
+            # the machine that has the database is told: its Database tab says who followed
+            try:
+                await link_clients.client(link).post(
+                    f"/api/postgres/machine/{major}/followed/{name}", timeout=LIST_TIMEOUT * 2,
+                    headers={**link_headers(link, "omniacli", "admin"), "Accept": "application/json"},
+                    json={"to": f"{where['host']}:{where['port']}", "answers": answers})
+            except httpx.HTTPError:
+                pass
+            job.result = {**job.result, "moved": {"server": server, "answers": answers, "seconds": seconds}}
+        return jobs.submit(f"Database of {server} moved: Odoo follows it", [inst.key],
+                           f"automatic: database moved by {link.name}", action, workspace=ws.name)
+
+    async def moved_look() -> bool:
+        """A: each instance on the cluster of a linked machine. Its database
+        answers where it is: nothing (its machine is asked now and then,
+        for the pages). It has not answered for MOVED_AFTER seconds, its
+        machine says it is somewhere else now, and it answers there with
+        its role: the instance is pointed there and restarted, by a job. One
+        of the three missing: nothing moves, and the page says which. True
+        when one does not answer (the next look comes sooner)."""
+        waiting = False
+        for inst in linked_instances():
+            server, name, meta = inst.server, inst.options.database, instance_meta(inst)
+            host, _, port = str(meta.get("database_on") or "").rpartition(":")
+            if not host or not port.isdigit() or jobs.is_busy(inst.key):
+                continue
+            seen = moved_seen.setdefault(server, {})
+            try:
+                ca = (Path(inst.restart.service) / "config" / workspacehelper.REMOTE_CA_FILE).read_text(encoding="utf-8")
+            except OSError:
+                ca = ""
+            why = await database_answers(host, int(port), ca, name)
+            now = time.monotonic()
+            if not why:
+                for key in ("down", "since", "why", "new_why"):
+                    seen.pop(key, None)
+            else:
+                seen.setdefault("down", now)
+                seen.setdefault("since", replica_now())
+                seen["why"] = why
+                waiting = True
+            if not why and now - seen.get("asked", -MOVED_ASK_EVERY) < MOVED_ASK_EVERY:
+                continue
+            seen["asked"] = now
+            link = settings.link_targets.get(link_now(inst))
+            major = str(meta.get("database_major") or "")
+            if link is None or linkedcluster.unprotected(link):
+                # what the link answers says where Odoo connects and which CA it trusts: never over plain HTTP
+                seen.update(says=None, says_error="no link over HTTPS or SSH leads to the machine of its database any more",
+                            elsewhere=False)
+                continue
+            says = await replica_get(link, f"/api/postgres/machine/{major}/grants/{name}/place", "omniacli", "admin",
+                                     LIST_TIMEOUT * 2)
+            if "error" in says:
+                seen.update(says=None, says_error=says["error"], elsewhere=False)
+                continue
+            there = (str(says.get("host") or linkedcluster.host_of(link)), int(says.get("port") or 0))
+            seen.update(says={"place": says.get("place"), "machine": says.get("machine") or ""}, says_error="",
+                        elsewhere=bool(there[1]) and there != (host, int(port)))
+            if not why or not seen["elsewhere"] or now - seen["down"] < MOVED_AFTER or not says.get("ca"):
+                continue
+            new_why = await database_answers(there[0], there[1], str(says["ca"]), name)
+            if new_why:
+                seen["new_why"] = new_why
+                continue
+            found = workspace_of(server)
+            if found is not None:
+                moved_job(inst, found[0], found[1], link, major, {"host": there[0], "port": there[1], "ca": says["ca"],
+                                                                  "machine": says.get("machine") or ""}, seen["since"])
+        for server in [s for s in moved_seen if s not in settings.servers]:
+            moved_seen.pop(server, None)
+        return waiting
+
+    async def moved_loop() -> None:
+        while True:
+            pause = MOVED_EVERY
+            try:
+                if settings.storage_roots and await moved_look():
+                    pause = MOVED_SOON
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - the loop must survive
+                _logger.exception("the look at the databases on linked clusters failed")
+            await asyncio.sleep(pause)
+
     # --- the look of every REPLICA_EVERY seconds, on both sides
 
     def replica_brief(major: str) -> dict | None:
@@ -12521,11 +12827,30 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 jobs.submit(f"Drop the read replica of PostgreSQL {major} of {name} (dropped there)",
                             [replica_key(major)], f"system: dropped on {name}", gone)
                 continue
-            wanted = (tuple(there.get("environments") or []), tuple(there.get("tablespaces") or []))
+            given = there.get("grant_lines") if isinstance(there.get("grant_lines"), dict) else None
+            if there.get("state") == "replaced" and given is not None:
+                # promoted before it took the databases that machine had given to others (a release that
+                # did not): it takes them now, once
+                rec = managedreplica.hosted_record(Path(str(entry.get("project") or "")))
+                if rec.get("state") == "promoted" and "lent_at" not in rec:
+                    try:
+                        done = await workspaceops.ask("machine-db-replica-lent", major, timeout=120,
+                                                      input=json.dumps({"grants": given}).encode())
+                    except JobFailed as exc:
+                        _logger.warning("the promoted copy of %s could not take its primary's grants: %s", name, exc)
+                        continue
+                    if done.get("adopted"):
+                        access_log.record("action", "system", "", "", f"promoted copy of PostgreSQL {major} of {name}: "
+                                          f"the databases other machines use on it ({', '.join(done.get('lent') or []) or 'none'}) "
+                                          "are let in from the same addresses", context=False)
+                continue
+            wanted = (tuple(there.get("environments") or []), tuple(there.get("tablespaces") or []),
+                      json.dumps(given, sort_keys=True))
             if there.get("state") == "ready" and replica_synced.get(major) != wanted:
                 try:
                     done = await workspaceops.ask("machine-db-replica-sync", major, timeout=120, input=json.dumps(
-                        {"environments": list(wanted[0]), "tablespaces": list(wanted[1])}).encode())
+                        {"environments": list(wanted[0]), "tablespaces": list(wanted[1]),
+                         **({"grants": given} if given is not None else {})}).encode())
                 except JobFailed as exc:
                     _logger.warning("the read replica of %s could not follow its instances: %s", name, exc)
                     continue
@@ -13136,14 +13461,27 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             # workspaces reads the host only, as of any database of another machine)
             meta = instance_meta(inst)
             promoted = meta.get("promoted_from") if isinstance(meta.get("promoted_from"), dict) else None
+            linked = bool(meta.get("database_link")) and not promoted
+            seen = (moved_seen.get(inst.server) or {}) if linked else {}
+            copy = meta.get(workspacehelper.MOVED_META) if isinstance(meta.get(workspacehelper.MOVED_META), dict) else None
+            says = seen.get("says") or {}
             return {"where": "remote", "host": str(meta.get("database_on") or "") or "another machine",
+                    # on the cluster of a linked machine (UX-011 §B): since when it does not answer and what its
+                    # machine says of it; where it is when it followed its database to the promoted copy
+                    "down": {"since": seen.get("since"), "machine": says.get("machine") or "",
+                             "place": says.get("place") or "", "error": seen.get("says_error") or ""}
+                    if seen.get("down") is not None else None,
+                    "still": says.get("machine") or "" if seen.get("down") is None and seen.get("elsewhere") else "",
+                    # (not "copy": a template would read the dict's own method)
+                    "on_copy": {"machine": str(copy.get("machine") or ""), "at": str(copy.get("at") or "")} if copy else None,
+                    "promoted": bool(promoted),
                     "replica": str(meta.get("replica_on") or ""),
                     "link": link_now(inst) or None,
                     "major": str(meta.get("database_major") or "") or None,
                     # the promoted replica of this machine's cluster (AD-004): the provider's machine, whose
                     # address a user of workspaces does not read (unlike a third party's database, UX-009 D3);
                     # the machine's admins read which machine hosts it and since when
-                    "provider": bool(promoted),
+                    "provider": bool(promoted) or linked,
                     "machine": str(meta.get("database_link") or "") if promoted else "",
                     "since": str(promoted.get("at") or "") if promoted else ""}
         if inst.restart.type == "compose" and on_machine_db(inst):
@@ -13305,6 +13643,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     app.state.replica_look_own = replica_look_own
     app.state.replica_look_hosted = replica_look_hosted
     app.state.return_look = return_look
+    app.state.moved_look = moved_look
+    app.state.moved_seen = moved_seen
     app.state.cluster_archive_tick = cluster_archive_tick
 
     return app

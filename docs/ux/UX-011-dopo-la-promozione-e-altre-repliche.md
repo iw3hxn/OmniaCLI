@@ -262,3 +262,21 @@ I cinque scostamenti sono corretti. La riga sostituita dice «serviva: … fino 
 - **Criteri**: 1, 2, 3, 4, 6, 7 e 8 provati sulle due macchine. Del 5 è provato tutto tranne «`disabled` prima del
   primo in pari», coperto dai test (la copia dura 3 s). Il riavvio dell'intera macchina R non è stato provato: la
   copia ferma non ha un container.
+
+### B. I database concessi
+- **«Non verificato», seconda voce.** Non 90 s garantiti: 67-89 s dall'arresto del database, di cui 60 s sono
+  l'attesa. Il primo giro ha misurato 89 s; dopo aver smesso di aspettare un Odoo senza database, 67-72 s.
+- **A è R**: costruito. L'istanza raggiunge la copia all'indirizzo della sua stessa macchina (vedi l'ADR).
+- **Differenze dal contratto.**
+  - «Non raggiungibile dal …» dice il momento in cui la macchina l'ha visto, non quello della promozione.
+  - Dopo il ritorno la pagina dice «lab2 lo ha di nuovo sul suo cluster, Odoo viene puntato là da solo».
+  - Un'istanza su un cluster collegato è della macchina del fornitore: il cliente legge «su un'altra macchina ·
+    si regola là» anche prima di una promozione, non più l'indirizzo.
+  - Sulla riga sostituita di P, «Togli il cluster…» è `disabled` finché una concessione non ha seguito. Non aspetta
+    una concessione revocata, né una il cui collegamento non è più ammesso su P.
+  - Una copia promossa da una versione precedente prende le concessioni al primo giro.
+- **Fuori dalla pagina dell'istanza** (non corretto qui): il log degli accessi del workspace mostra l'utente
+  «automatic: database moved by lab2», come mostra per intero le altre voci; il JSON del job di creazione
+  dell'istanza, fatto dalla 5467, nomina lab1 e 172.30.0.11.
+- **Criteri**: 1, 2, 4 e 5 provati sulle due macchine. Il 3 è provato per la pagina e le route dell'istanza, con
+  le due eccezioni dette sopra.
