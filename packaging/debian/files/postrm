@@ -22,7 +22,11 @@ case "$1" in
         # export it before a purge
         rm -rf /var/lib/omniacli/jobs /var/lib/omniacli/logs /var/lib/omniacli/scripts \
             /var/lib/omniacli/pullers /var/lib/omniacli/publications /var/lib/omniacli/connections \
-            /var/lib/omniacli/packages /var/lib/omniacli/plugins /var/lib/omniacli/templates /var/lib/omniacli/catalog
+            /var/lib/omniacli/packages /var/lib/omniacli/plugins /var/lib/omniacli/templates /var/lib/omniacli/catalog \
+            /var/lib/omniacli/deploys /var/lib/omniacli/module-uploads /var/lib/omniacli/enterprise \
+            /var/lib/omniacli/credentials /var/lib/omniacli/ssh
+        # the copies of Odoo Enterprise root kept for the instances (enterprise.py)
+        rm -rf /var/lib/omniacli-enterprise
         # the templates installed from the download server (the instances
         # made from them keep their own files)
         rm -rf /var/lib/omniacli-templates
@@ -46,7 +50,9 @@ case "$1" in
             /var/lib/omniacli/login-hosts.json /var/lib/omniacli/login-hosts.json.tmp \
             /var/lib/omniacli/pitr.json /var/lib/omniacli/pitr.json.tmp \
             /var/lib/omniacli/deploy-hooks.json /var/lib/omniacli/deploy-hooks.json.tmp \
-            /var/lib/omniacli/destinations.yaml /var/lib/omniacli/destinations.yaml.tmp
+            /var/lib/omniacli/destinations.yaml /var/lib/omniacli/destinations.yaml.tmp \
+            /var/lib/omniacli/enterprise.yaml /var/lib/omniacli/enterprise.yaml.tmp \
+            /var/lib/omniacli/webnames.json /var/lib/omniacli/webnames.json.tmp
         if [ -d /var/lib/omniacli/backups ] && [ -n "$(ls -A /var/lib/omniacli/backups)" ]; then
             echo "omniacli: the database backups are kept in /var/lib/omniacli/backups"
         else

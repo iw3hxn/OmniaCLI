@@ -33,10 +33,10 @@ jobs:
     # the suite takes about 3 minutes: a test that hangs ends the job
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ env.TAG }}
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Install
@@ -51,10 +51,10 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ env.TAG }}
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Version from the tag
@@ -78,7 +78,7 @@ jobs:
           cp "dist/omniacli-workspaces_${VERSION}_all.deb" dist/OmniaCLI-workspaces.deb
           gh release upload "$TAG" "dist/omniacli_${VERSION}_all.deb" dist/OmniaCLI.deb \
             "dist/omniacli-workspaces_${VERSION}_all.deb" dist/OmniaCLI-workspaces.deb --clobber
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: deb
           path: dist/omniacli_${{ steps.version.outputs.version }}_all.deb
@@ -92,10 +92,10 @@ jobs:
         runner: [ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ env.TAG }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: deb
           path: dist
