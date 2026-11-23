@@ -15060,6 +15060,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         try:
             found = await workspaceops.ask("ssh-keys")
         except JobFailed as exc:
+            if workspaceops.helpers_refused(str(exc).removeprefix("workspace-helper: ").strip()) or "sudo" in str(exc):
+                # an OmniaCLI whose root helper sudo does not allow (run from a checkout, not prepared): the tab
+                # says why, not an HTTP 502 the browser counts (as the system's updates, Options)
+                return {"unavailable": ssh_refusal(str(exc))}
             return refuse(ssh_refusal(str(exc)), status.HTTP_502_BAD_GATEWAY)
         lang = request_language(request)
         for row in found.get("accounts") or []:

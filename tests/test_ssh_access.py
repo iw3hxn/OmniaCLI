@@ -330,7 +330,8 @@ async def test_the_tab(panel, monkeypatch):
     with monkeypatch.context() as patch:
         patch.setattr(workspaceops, "ask", refused)
         resp = await client.get("/api/machine/ssh-keys", headers=ADMIN)
-    assert resp.status_code == 502 and "OMNIACLI_WORKSPACES=1" in resp.json()["error"]
+    # said in the tab, not an HTTP 502 the browser counts (an OmniaCLI not prepared, Carlo's own panel)
+    assert resp.status_code == 200 and "OMNIACLI_WORKSPACES=1" in resp.json()["unavailable"]
     # a row's error in the page's language
     data = (await client.get("/api/machine/ssh-keys", headers={**ADMIN, "Accept-Language": "it"})).json()
     assert data["accounts"][-1]["error"] == "/home/ubuntu/.ssh non è una cartella (un link non si segue)"

@@ -56,6 +56,7 @@
  "The people who come into the workspace, with a role there": "Le persone che entrano nel workspace, con un ruolo lì",
  "The workspaces of the customers of this machine and of the linked machines: where they run, their instances and who comes in.": "I workspace dei clienti di questa macchina e delle macchine collegate: dove girano, le loro istanze e chi ci entra.",
  "This machine has no workspaces nor the disk to make them. The workspaces are on the customers' machines: link one from Servers › + Add a server.": "Questa macchina non ha workspace né il disco per crearne. I workspace stanno sulle macchine dei clienti: collegane una da Server › + Aggiungi un server.",
+ "To update to see their workspaces here (an older OmniaCLI): {names}.": "Da aggiornare per vedere qui i loro workspace (un OmniaCLI più vecchio): {names}.",
  "Use now": "Consumo adesso",
  "What is to look at on its instances: the same things as the bell and the map": "Cosa c'è da guardare sulle sue istanze: le stesse cose della campanella e della mappa",
  "Without workspaces: {names}.": "Senza workspace: {names}.",

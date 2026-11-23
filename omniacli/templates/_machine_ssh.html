@@ -172,6 +172,10 @@
     const answer = await call(API);
     $("ssh-loading").hidden = true;
     if (answer.error) { $("ssh-error").textContent = answer.error; return; }
+    if (answer.unavailable) {
+      // no root helper here: the keys are not this OmniaCLI's to manage, said once, Add a key off
+      $("ssh-error").textContent = answer.unavailable; $("ssh-add-open").disabled = true; return;
+    }
     data = answer;
     draw();
   }

@@ -207,7 +207,9 @@
 .ws-watch { list-style: none; margin: 0 0 12px; padding: 0; }
 .ws-watch li { padding: 3px 0; }
 .ws-blocks { display: grid; grid-template-columns: 1fr; gap: 12px; }
-@media (min-width: 1100px) { .ws-blocks { grid-template-columns: repeat(var(--ws-cols, 3), minmax(0, 1fr)); } }
+@media (min-width: 1100px) { .ws-blocks { grid-template-columns: repeat(var(--ws-cols, 3), minmax(0, 1fr)); }
+  /* machines, instances, users: the instances' rows carry a state, a name, pills and a button */
+  .ws-blocks[style*="--ws-cols: 3"] { grid-template-columns: minmax(0, .8fr) minmax(0, 1.7fr) minmax(0, 1fr); } }
 .ws-block { background: var(--panel); border: 1px solid var(--border); border-radius: var(--r); padding: 10px 12px; min-width: 0; }
 .ws-block h3 { margin: 0 0 6px; font-size: 14px; }
 .ws-block ul { list-style: none; margin: 0; padding: 0; }
@@ -341,6 +343,7 @@
     staleSince: {{ _("Not updated since {when}: {why}") | tojson }},
     down: {{ _("{name} does not answer: {why}. Its workspaces are not here.") | tojson }},
     older: {{ _("{name} has an older OmniaCLI: update it to see its workspaces here.") | tojson }},
+    olderMany: {{ _("To update to see their workspaces here (an older OmniaCLI): {names}.") | tojson }},
     checkLink: {{ _("Check the link") | tojson }},
     checkLinkTitle: {{ _("Opens Settings › Links, where the link is tried and corrected") | tojson }},
     asking: {{ _("{name}: asking…") | tojson }}, here: {{ _("this machine") | tojson }},
@@ -706,11 +709,12 @@
     const answered = machines.filter((m) => found[m.key]);
     const skeleton = document.getElementById("ws-skeleton");
     if (answered.length && skeleton) skeleton.hidden = true;
-    const special = [], items = [];
+    const special = [], items = [], olderOnes = [];
     let all = [];
     for (const m of machines) {
       const data = found[m.key];
       if (!data) continue;
+      if (data.error && data.older) { olderOnes.push(m.name); continue; }
       if (data.error) { special.push(machineRow(m, data)); continue; }
       for (const ws of data.workspaces || []) all.push({m, ws});
     }
@@ -721,6 +725,12 @@
     // the rows that hide data first: a machine that does not answer, one that is older
     for (const s of special) table.insertBefore(s, body);
     for (const i of items) table.append(i);
+    // the machines with an older OmniaCLI: one line under the rows, not one row each above them (they hide
+    // nothing that is wrong: they only cannot say their workspaces yet)
+    if (olderOnes.length) {
+      const td = el("td", {colspan: MACHINE_COLUMN ? 6 : 5}, "↑ ", fill(T.olderMany, {names: olderOnes.join(", ")}));
+      table.append(el("tbody", {class: "ws-machine-row older", "data-machine-error": olderOnes.join(",")}, el("tr", {}, td)));
+    }
     // the counts: of every row read; the one of what is to look at is the filter
     const watched = all.filter(({ws}) => (ws.watch || []).length).length;
     const holding = new Set(all.map(({m}) => m.key)).size;
