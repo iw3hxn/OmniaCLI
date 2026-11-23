@@ -909,6 +909,7 @@
  "no answer from the producer of puller {puller} (last seen by the relay: {when})": "nessuna risposta dal producer del puller {puller} (visto l'ultima volta dal relay: {when})",
  "no answer from {where} within {seconds} s: its firewall does not see this machine come from the address given, or the port is closed on the way": "nessuna risposta da {where} entro {seconds} s: il suo firewall non vede arrivare questa macchina dall'indirizzo dato, oppure la porta è chiusa per strada",
  "no answer in time": "nessuna risposta in tempo",
+ "no certificate of the customer's yet: upload it": "il certificato del cliente non è ancora stato caricato: caricalo",
  "no choices for {key}": "nessuna scelta per {key}",
  "no container of {services} in the project (never started, or not one of its services)": "nessun container di {services} nel progetto (mai avviato, o non è uno dei suoi servizi)",
  "no copy of Odoo Enterprise {series} in {folder}: OmniaCLI fetches it first": "nessuna copia di Odoo Enterprise {series} in {folder}: OmniaCLI la scarica prima",
