@@ -113,3 +113,20 @@ def test_red_is_the_primarys_and_the_dangers_only():
     assert "--prod" not in (TEMPLATES / "_tokens.html").read_text(encoding="utf-8")
     # the links: the colour of the text
     assert "--link: var(--text);" in TOKENS
+
+
+def test_four_buttons():
+    """UX-017 §5.1: primary, secondary (the default), tertiary (.ghost), danger; 36 px (32 small, 44 at the
+    touch), flat; no coloured variant of their own any more."""
+    base = (TEMPLATES / "base.html").read_text(encoding="utf-8")
+    rule = re.search(r"\nbutton, \.button \{([^}]*)\}", base).group(1)
+    assert "min-height: var(--control-h)" in rule and "box-shadow" not in rule and "var(--fw-semibold)" in rule
+    assert re.search(r"button\.small, \.button\.small \{[^}]*min-height: var\(--control-h-sm\)", base)
+    assert re.search(r"\.icon-btn, button\.icon-btn \{[^}]*width: var\(--icon-btn\); height: var\(--icon-btn\)", base)
+    assert "@media (pointer: coarse) { :root { --control-h: 44px; --control-h-sm: 44px; --icon-btn: 44px; } }" in TOKENS
+    for gone in ("--start", "--stop", "--restart", "--light-green", "--purple", "btn-start", "btn-activate", "btn-clone",
+                 ".button.current"):
+        for page in TEMPLATES.glob("*.html"):
+            assert gone not in page.read_text(encoding="utf-8"), (gone, page.name)
+    # what destroys stays red under any brand: its own tokens, never the accent
+    assert "button.primary.danger, button.primary.danger:hover:not(:disabled) { background: var(--danger);" in base

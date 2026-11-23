@@ -51,7 +51,7 @@
   <div class="actions" style="margin: 0">
     <form method="post" action="{{ prefix }}/jobs/{{ job.id }}/stop" id="stop-form"
           data-confirm="{{ _('Stop this job? Its program is ended (SIGTERM, SIGKILL after 10 s); what the job did before stays done, a step cut halfway stays halfway.') }}">
-      <button class="danger btn-stop" title="{{ _('Ends the program of this job. What it did before stays done, a step cut halfway stays halfway. It asks before. Admins only.') }}">{{ _("Stop job") }}</button>
+      <button class="danger" title="{{ _('Ends the program of this job. What it did before stays done, a step cut halfway stays halfway. It asks before. Admins only.') }}">{{ _("Stop job") }}</button>
     </form>
   </div>
   {% endif %}

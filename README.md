@@ -4800,6 +4800,12 @@ controls and motion. A page writes `var(--…)`, never a value of its own.
   sentence, on hover and focus in a row. A state chosen (the active tab, a
   segment pressed, a card or a box chosen) is neutral, and a production is
   told by its word, not by red.
+- **Four buttons**: the primary (the brand's colour, at most one in sight in
+  a tab, a list or a dialog), the secondary (the default), the tertiary
+  (without a border: the X, the icon buttons, the header's) and the danger
+  (red text and border; filled red only on the go of the confirm of what
+  cannot be undone, red under any brand). 36 px high (32 the small ones), 44
+  on a touch screen; flat, no shadow.
 - **Less motion** asked by the system: nothing moves, one rule for every page.
 
 ### Whitelabel

@@ -69,7 +69,7 @@ body { margin: 0; background: var(--bg); color: var(--text);
   place-items: center; font-weight: 700; font-size: 13px; flex: none; text-transform: uppercase; }
 .side-tools { display: flex; gap: 6px; align-items: center; }
 .side-tools button, .side-tools .button, .side-tools select { background: transparent; color: var(--side-text);
-  border: 1px solid var(--side-hover); box-shadow: none; padding: 4px 9px; font-size: 13px; width: auto; }
+  border: 1px solid transparent; min-height: var(--control-h-sm); padding: var(--sp-4) var(--sp-10); width: auto; }
 .side-tools button:hover, .side-tools .button:hover { background: var(--side-hover); color: var(--side-current);
   border-color: var(--side-hover); }
 .lang-switch { display: inline-flex; border: 1px solid var(--side-hover); border-radius: var(--r); overflow: hidden; }
@@ -161,22 +161,32 @@ tbody tr:hover td, table tr:hover > td { background: color-mix(in srgb, var(--pa
 code, .mono { font-family: var(--mono); font-size: 12.5px; }
 .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
 .actions form { margin: 0; }
-button, .button { font: inherit; font-weight: 500; padding: 6px 13px; border-radius: var(--r); cursor: pointer;
-  border: 1px solid var(--border-strong); background: var(--panel); color: var(--text);
-  text-decoration: none; display: inline-flex; align-items: center; gap: 6px; box-shadow: var(--shadow);
-  transition: background .15s, border-color .15s, color .15s; line-height: 1.35; }
+/* the buttons (UX-017 §5.1): four variants and their sizes. The secondary is the default; .primary the one that
+   creates in a tab or a list (at most one in sight); .ghost the tertiary (low emphasis, the X, the icon buttons);
+   .danger what stops, deletes or replaces; .primary.danger only the go of the confirm of what cannot be undone */
+button, .button { font: inherit; font-size: var(--fs-14); line-height: var(--lh-20); font-weight: var(--fw-semibold);
+  min-height: var(--control-h); padding: var(--sp-6) var(--sp-12); border-radius: var(--r); cursor: pointer;
+  border: var(--bw) solid var(--border-strong); background: var(--panel); color: var(--text);
+  text-decoration: none; display: inline-flex; align-items: center; gap: var(--sp-6);
+  transition: background var(--dur-200) var(--ease-out), border-color var(--dur-200) var(--ease-out), color var(--dur-200) var(--ease-out); }
 button:hover, .button:hover { background: var(--panel-2); border-color: var(--border-strong); color: var(--text);
   text-decoration: none; }
 button.primary, .button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 button.primary:hover, .button.primary:hover { background: var(--accent-hover);
   border-color: var(--accent-hover); color: var(--on-accent); }
-button.danger { border-color: color-mix(in srgb, var(--err) 45%, var(--border)); color: var(--err); }
-button.danger:hover:not(:disabled) { background: var(--err-soft); border-color: var(--err); color: var(--err); }
-/* the confirm of what deletes or stops is primary and danger at once: white on red, not red on red */
+button.ghost, .button.ghost { background: transparent; border-color: transparent; color: var(--text); }
+button.ghost:hover, .button.ghost:hover { background: var(--panel-2); border-color: transparent; }
+button.danger, .button.danger { background: var(--panel); border-color: color-mix(in srgb, var(--err) 45%, var(--border)); color: var(--err); }
+button.danger:hover:not(:disabled), .button.danger:hover { background: var(--err-soft); border-color: var(--err); color: var(--err); }
+/* the confirm of what deletes or stops is primary and danger at once: white on red, not red on red; red in every brand */
 button.primary.danger, button.primary.danger:hover:not(:disabled) { background: var(--danger); border-color: var(--danger); color: var(--on-danger); }
 button.primary.danger:hover:not(:disabled) { background: var(--danger-hover); border-color: var(--danger-hover); }
-button.ghost { background: none; border-color: transparent; box-shadow: none; }
 button:disabled, .button[aria-disabled="true"] { opacity: .45; cursor: not-allowed; }
+/* a button that is an icon: square, tertiary; its aria-label the short name, its title the help */
+.icon-btn, button.icon-btn { width: var(--icon-btn); height: var(--icon-btn); min-height: var(--icon-btn); padding: 0;
+  justify-content: center; background: transparent; border-color: transparent; color: var(--text); flex: none; }
+.icon-btn:hover, button.icon-btn:hover { background: var(--panel-2); border-color: transparent; }
+.icon-btn .icon, .icon-btn .i { margin: 0; }
 .status { font-weight: 600; }
 .status.success { color: var(--ok); } .status.failed, .status.interrupted, .status.stopped, .error { color: var(--err); }
 .status.running, .status.queued, .status.warned { color: var(--warn); }
@@ -191,13 +201,15 @@ pre.console .ERROR, pre.console .CRITICAL { color: var(--console-err); }
 /* a command, key or token to paste elsewhere: its Copy button in the top right corner */
 .copy-box { position: relative; }
 .copy-box > pre.copyable { padding-right: 96px; }
-.copy-box > .copy-button { position: absolute; top: 6px; right: 6px; padding: 3px 10px; font-size: 12px; }
+.copy-box > .copy-button { position: absolute; top: 6px; right: 6px; min-height: var(--control-h-sm); padding: var(--sp-4) var(--sp-10);
+  background: var(--panel); }
 pre.console .WARNING { color: var(--console-warn); }
 /* the consoles (_console.html): a log or a terminal with its bar */
 .console-box { display: flex; flex-direction: column; }
 .console-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 8px; }
 .console-tags { display: inline-flex; flex-wrap: wrap; gap: 4px; }
-.console-tag { padding: 1px 8px; font-size: 12px; border-radius: 10px; }
+.console-tag { min-height: var(--control-h-sm); padding: var(--sp-4) var(--sp-10); border-radius: var(--r-pill);
+  background: transparent; border-color: var(--border-strong); }
 .console-tag[aria-pressed="true"] { background: var(--selected); border-color: var(--selected); color: var(--on-selected); }
 input[type=search].console-search { width: 14em; padding: 3px 8px; }
 .console-tools { margin-left: auto; display: inline-flex; gap: 6px; align-items: center; }
@@ -239,7 +251,7 @@ dialog h2 { font-size: 18px; margin-bottom: 8px; }
 .addon-version { white-space: pre; } .addon.addon-newer, .addon.addon-newer .addon-version { color: var(--err); }
 .instance-grid { display: grid; gap: 16px; grid-template-columns: repeat(var(--cols, 1), minmax(0, 1fr)); }
 /* a button of a row or beside a heading */
-button.small, .button.small { padding: 3px 10px; font-size: 13px; }
+button.small, .button.small { min-height: var(--control-h-sm); padding: var(--sp-4) var(--sp-10); }
 /* the tabs of a page (an instance, the Dashboard, Users, a workspace) */
 .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin: 6px 0 16px; overflow-x: auto; }
 .tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; box-shadow: none;
@@ -369,27 +381,10 @@ button .icon, a.button .icon { margin-right: 6px; vertical-align: -2px; }
 .action-groups { align-items: center; gap: 8px 0; margin-left: -13px; }
 .action-group { display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
   padding: 0 12px; border-left: 1px solid var(--border); }
-button.btn-start { border-color: var(--start); color: var(--start); }
-button.btn-stop { border-color: var(--stop); color: var(--stop); }
-button.btn-restart { border-color: var(--restart); color: var(--restart); }
-button.btn-start:hover:not(:disabled) { background: var(--start); color: var(--panel); }
-button.btn-stop:hover:not(:disabled) { background: var(--stop); color: var(--panel); }
-button.btn-restart:hover:not(:disabled) { background: var(--restart); color: var(--panel); }
-/* the Servers page: Test & activate filled green, Test light green, Edit blue, Clone purple */
-button.btn-activate { background: var(--start); border-color: var(--start); color: #fff; }
-button.btn-activate:hover:not(:disabled) { background: var(--panel); color: var(--start); border-color: var(--start); }
-button.btn-test { border-color: var(--light-green); color: var(--light-green); }
-.button.btn-edit { border-color: var(--restart); color: var(--restart); }
-.button.btn-clone { border-color: var(--purple); color: var(--purple); }
-button.btn-test:hover:not(:disabled) { background: var(--light-green); color: var(--panel); }
-.button.btn-edit:hover { background: var(--restart); color: var(--panel); }
-.button.btn-clone:hover { background: var(--purple); color: var(--panel); }
-.icon-btn { padding: 4px 6px; line-height: 0; }
-button.icon-btn .icon { margin: 0; }
 .run-state { font-size: 12px; width: 62px; display: inline-flex; align-items: center; gap: 5px; color: var(--muted); }
 .run-state::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
-.run-state.running { color: var(--start); } .run-state.running::before { background: var(--start); }
-.run-state.stopped { color: var(--stop); } .run-state.stopped::before { background: var(--stop); }
+.run-state.running { color: var(--ok); } .run-state.running::before { background: var(--ok); }
+.run-state.stopped { color: var(--err); } .run-state.stopped::before { background: var(--err); }
 .run-buttons { display: inline-flex; gap: 4px; }
 .web-link { font-size: 13px; font-weight: 400; margin-left: 12px; text-decoration: none; overflow-wrap: anywhere; }
 .web-link:hover { text-decoration: underline; }
@@ -471,7 +466,7 @@ summary { cursor: pointer; color: var(--muted); }
 /* the bell (README, The bell): the things to look at of the map new for this person */
 .bell { position: relative; }
 .bell-button { position: relative; background: transparent; color: var(--side-text); border: 1px solid var(--side-hover);
-  box-shadow: none; padding: 4px 9px; font-size: 15px; line-height: 1.2; width: auto; }
+  min-height: var(--icon-btn); padding: 0 var(--sp-6); width: auto; }
 .bell-button:hover, .bell-button[aria-expanded="true"] { background: var(--side-hover); color: var(--side-current); border-color: var(--side-hover); }
 .bell-count { position: absolute; top: -7px; right: -8px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
   background: var(--count-bg); color: var(--on-count); font-size: 11px; font-weight: 700; line-height: 18px; text-align: center; }
