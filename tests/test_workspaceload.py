@@ -69,16 +69,16 @@ def test_a_workspace_is_sampled(tmp_path, monkeypatch):
 async def test_the_list_and_its_load(workspaces, client, env):  # noqa: F811
     settings = env["settings"]
     page = (await client.get("/workspaces", headers={"Authorization": AUTH})).text
-    assert 'class="ws-row" data-ws="acme"' in page and 'class="ws-row" data-ws="beta"' in page
-    assert "New workspace" in page and 'id="edit-view" hidden' in page
+    # the rows are drawn from /api/workspaces/list (UX-013); the load of each one in its expansion, Use now
+    assert "/api/workspaces/list" in page and "New workspace" in page and 'id="edit-view"' not in page
     resp = await client.get("/api/workspaces/load", headers={"Authorization": AUTH})
     assert resp.status_code == 200 and set(resp.json()) == {"cores", "interval", "machine", "workspaces", "series"}
     # the list's sparks: each workspace's points after since
     data = (await client.get("/api/workspaces/load?since=1", headers={"Authorization": AUTH})).json()
     assert set(data["series"]) == {"acme", "beta"}
-    # the machine and each workspace in the list: the load widgets of every row
-    assert '<span class="machine-row" data-link="">' in page
-    assert page.count('class="load-cpu"') == 3 and page.count('class="load-net"') == 3
+    # the machine's load is the Servers page's (UX-013 §A8), no more a panel of the list
+    assert '<span class="machine-row" data-link="">' not in page
+    assert page.count('class="load-cpu"') == 0 and "Use now" in page
     # a user of workspaces: refused, as the page
     assert (await client.get("/api/workspaces/load", headers=basic("mario"))).status_code == 403
     assert settings.workspaces["acme"].name == "acme"
@@ -158,16 +158,19 @@ def test_the_series_of_a_workspace():
     assert sampler.workspace_series("none") == []
 
 
-async def test_the_workspaces_are_in_settings_not_on_the_dashboard(workspaces, client):  # noqa: F811
+async def test_the_workspaces_are_a_place_of_the_menu_not_of_settings(workspaces, client):  # noqa: F811
     """The server's page shows its instances (docs/ux/REVIEW-2026-11-18.md);
-    the workspaces are a place of Settings, for the machine's admins."""
+    the workspaces are a place of the menu (UX-013 §A3, D3), for the machine's admins."""
     from .test_app import basic as machine_user
 
     page = (await client.get("/", headers={"Authorization": AUTH})).text
     assert 'data-fold="workspaces"' not in page and 'href="/servers/srv"' in page
-    assert 'href="/workspaces"' in (await client.get("/settings", headers={"Authorization": AUTH})).text
+    settings_page = (await client.get("/settings", headers={"Authorization": AUTH})).text
+    # D3: no card of Settings, the menu's entry instead
+    assert 'href="/workspaces"' not in settings_page.split('<nav class="topnav"')[1].split("</nav>")[1]
+    assert '<a class="nav-link" href="/workspaces"' in settings_page
     page = (await client.get("/workspaces", headers={"Authorization": AUTH})).text
-    assert 'class="ws-row" data-ws="acme"' in page and 'id="ws-list" data-list="workspaces"' in page
+    assert 'id="ws-list" data-list="workspaces"' in page
     # a developer of the machine: no workspaces (they are the admins')
     assert 'href="/workspaces"' not in (await client.get("/settings", headers={"Authorization": machine_user("dev")})).text
 

@@ -261,8 +261,10 @@ async def test_the_workspace_page_is_four_tabs_and_one_primary(workspaces, clien
 
 async def test_workspaces_page_and_api(workspaces, client, env):
     settings = env["settings"]
-    page = (await client.get("/workspaces", headers={"Authorization": AUTH})).text
-    assert "acme.example.com" in page
+    # the list (UX-013): its rows from the route, the domain under the name
+    rows = (await client.get("/api/workspaces/list", headers={"Authorization": AUTH})).json()["workspaces"]
+    assert [w["domain"] for w in rows if w["name"] == "acme"] == ["acme.example.com"]
+    page = (await client.get("/workspaces?new=1", headers={"Authorization": AUTH})).text
     # how to add a storage: the main configuration, the folders kept, dpkg-reconfigure
     assert "Add a storage" in page and "/etc/omniacli/omniacli.yaml" in page and "dpkg-reconfigure omniacli" in page
     assert (await client.get("/workspaces", headers=basic("mario"))).status_code == 403
@@ -407,7 +409,7 @@ async def test_a_storage_taken_out_of_the_configuration(workspaces, client, env,
     resp = await client.post("/api/workspaces/save", headers=POST,
                              json={"name": "beta", "label": "Beta", "members": {"eva": "developer"}})
     assert resp.status_code == 200, resp.text
-    assert "cannot be used" in (await client.get("/workspaces", headers={"Authorization": AUTH})).text
+    assert "cannot be used" in (await client.get("/workspaces?edit=acme", headers={"Authorization": AUTH})).text
     body = {"name": "acme", "label": "ACME", "domain": "acme.example.com", "servers": ["srv"],
             "members": {"mario": "admin", "luca": "user"}, "limits": {"disk_gb": "10"}}
     resp = await client.post("/api/workspaces/save", headers=POST, json={**body, "storage": "gone"})
@@ -424,7 +426,7 @@ async def test_a_storage_taken_out_of_the_configuration(workspaces, client, env,
     # the storages of before (a list of folders): OmniaCLI starts, no workspace with a storage can be used
     settings.storage_roots, settings.storage_error = {}, "workspaces.storage is a list of folders: give each a name"
     assert "give each a name" in settings.storage_problem(settings.workspaces["acme"])
-    page = (await client.get("/workspaces", headers={"Authorization": AUTH})).text
+    page = (await client.get("/workspaces?edit=acme", headers={"Authorization": AUTH})).text
     assert "No workspace can be used: workspaces.storage is a list of folders" in page
 
 

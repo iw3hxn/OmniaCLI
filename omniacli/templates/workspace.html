@@ -2,7 +2,7 @@
 {% extends "base.html" %}
 {% block title %}{{ ws.name }} · {{ brand.name }}{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
-{{ crumbs([(_("Settings"), "/settings"), (_("Workspace {name}", name=ws.name), None)]) }}
+{{ crumbs([(_("Workspaces"), "/workspaces" if workspaces_menu else None), (ws.name, None)]) }}
 {% endblock %}
 {% block content %}
 {% from "_api_clients.html" import connect_fields, connect_script with context %}

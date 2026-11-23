@@ -1247,7 +1247,7 @@ its users. Two classes of users:
 | the machine's | the roles `user`, `developer`, `admin` (Users page) | everything their role allows, as before; workspaces change nothing for them |
 | a workspace's | role **`workspace`** (Users page) | only the servers of the workspaces it is a member of, each with **its role there** (`user`, `developer` or `admin`, with the meanings above) |
 
-The machine's admins make the workspaces (**Settings › Workspaces**,
+The machine's admins make the workspaces (**Workspaces**,
 `/workspaces`): name (`a-z 0-9 -`, it becomes part of URLs and folders),
 label, domain, storage, limits, servers and members. A server is in one
 workspace at most, and so is a domain. Saved in `workspaces.yaml` next to the
@@ -1270,13 +1270,13 @@ its folder on the new disk keeping the workspaces' disks sparse
 and start the storage's unit): it is bound from its new folder, and the
 workspaces, their instances and docker find everything where it was. A list
 of folders without names (the format of before) is refused: OmniaCLI starts,
-says so on Settings › Workspaces, and no workspace with a storage can be
+says so on Workspaces, and no workspace with a storage can be
 used until each has a name.
 
 A workspace whose storage is no longer listed there still loads: OmniaCLI
 starts, says so in its log and on both workspace pages, and the workspace
 cannot be used (no instance is created, a save keeping that storage is
-refused) until an admin picks a listed one on Settings › Workspaces or lists
+refused) until an admin picks a listed one on Workspaces or lists
 it again.
 
 Without `workspaces.storage` there is one, `default`, in
@@ -1349,6 +1349,45 @@ containers together, one systemd slice `omniacli_<workspace>.slice` written
 by the root helper's `limits` when an instance is created and when the
 limits change (a job; the containers running take them). A domain may not be under another workspace's
 (`shop.acme.it` under `acme.it`): their names would meet.
+
+#### The Workspaces menu
+
+**Workspaces** in the menu, between Servers and Instances (`/workspaces`,
+docs/ux/UX-013), lists every workspace of this machine and of its links,
+one row each: its state (what is to look at on its instances, the same items
+as the bell and the map), the machine it lives on (with links only), its
+productions and stagings, its users (with a warning for an administrator
+without two-step verification) and its disk, from the daily record of the
+disks. A click on a row shows inside it its machines, its instances (each
+production with its test and its stagings, also those on another machine)
+with **Open ↗** and **Log in as…**, its users with their role and two-step
+verification, and its use now (CPU, memory, network, read every 5 seconds
+while it is open); its name opens the workspace's page. A linked machine
+that does not answer, or whose OmniaCLI is older, is a row saying so.
+**New workspace** opens the form on this machine, or asks first on which
+machine when more than one may hold it (the machines with the disk of the
+workspaces where the reader is admin).
+
+- The rows come from `GET /api/workspaces/list` (`?link=<name>` for a
+  link's, each asked at once, 5 s in all), made of the map's own node of
+  each workspace; nothing asks the root helper or PostgreSQL meanwhile but
+  the run states. Its reads are in the access log (the members and their
+  two-step verification).
+- The machine's admins read it; a link below admin gives rows that read
+  only (no page, no users). A person of workspaces admin of two of them or
+  more has the one entry **Workspaces** instead of one entry per workspace,
+  and reads those only, without the names of the machines.
+- The workspaces are no more a card of Settings: its form (limits, disk,
+  storage, servers) opens from the page of the workspace (**Limits and
+  disk**).
+
+Carlo's decisions D1-D5 of UX-013 are built as their recommended option,
+the defaults until he answers; each one is flipped in one place, at the top
+of `omniacli/app.py`: `WORKSPACES_MENU_AFTER` (D1, the entry after Servers),
+`WORKSPACES_MENU_FROM` (D2, from 2 workspaces), `WORKSPACES_IN_SETTINGS`
+(D3, no card in Settings), `TWO_STEP_IN_ROW` (D4, the warning in the Users
+cell, outside the things to look at), `OPEN_IN_INSTANCE_ROWS` (D5, Open ↗
+beside Log in as… in the Instances list).
 
 #### Custom roles of a workspace
 
@@ -1483,7 +1522,7 @@ bounds (`odooplm-20`: `workers`, `max_cron_threads`, the `limit_time_*` and
 `limit_memory_*`, `limit_request`, `db_maxconn`, the SMTP server and
 `email_from`; the defaults are Odoo 20's), and a **debug log** switch
 (`log_level = debug`). The machine's admins may set other bounds for a
-workspace (**Bounds of the Odoo parameters** on Settings › Workspaces, one
+workspace (**Bounds of the Odoo parameters** on Workspaces, one
 `name min max` per line). Saved, the values are checked (`workers ×
 limit_memory_hard` may not exceed the workspace's `memory_gb`: the kernel
 would kill Odoo instead of Odoo stopping one request), the root helper's
@@ -1617,7 +1656,7 @@ plugins do (`templatestore.py`), next to the plugins' index:
 `omniacli-templates.json` and one archive per template,
 `omniacli-template-<name>.tar.gz` (its three files, made by `omniacli
 template-pack`, which checks them first), each with its signed manifest,
-whose version is the template's. **Settings › Workspaces › Templates**
+whose version is the template's. **Workspaces › Templates**
 (the machine's admins) lists the templates here (the package's, the
 downloaded ones, the one used) and, with **Look for published templates**,
 those published, with their signed version; **Install** runs a job: the
@@ -2943,12 +2982,19 @@ promoted as the cluster's, by the same code; what differs:
 
 The **Modules** tab of an instance of a workspace (developers and admins)
 holds its repositories (**Code**: each with its branch and last commit,
-**Update…**, **Delete…**, **+ Add a repository**), the **Updates of the
+its **State**, **Update…**, **Delete…**, **+ Add a repository**), the **Updates of the
 code** (the auto update, deploy on push) and **+ Add modules**: the catalogs
 of modules for the instance's version of Odoo — the
 [OCA](https://odoo-community.org/)'s, and the **sources** the machine's
 admins add (below).
 
+- **State** of each repository: *up to date*, *N commits to bring* (the
+  subject of the first one in its tooltip) or *not read* (the reason in its
+  tooltip, a remote that could not be fetched), with when it was read. It is
+  asked once when the tab opens, after the page is drawn, one request for
+  all the repositories (`GET /api/servers/<server>/<role>/pull-preview`, a
+  `git fetch` of each, the developer's route of the pull dialog); it only
+  informs: a production is still updated by hand.
 - **The catalog** is read with git from github.com, no API and no paid
   service: the repositories from `OCA/repo-maintainer-conf`, a
   `git ls-remote` of each one's branch of that version, and for the changed
@@ -3879,6 +3925,17 @@ later, native (click-odoo in its venv) or in Docker Compose (the helper's
    (60 seconds, used once, only on that host: the session id never travels
    in a URL), sets the cookie `session_id` (HttpOnly, Secure) and sends the
    browser to Odoo (`/odoo`, `/web` before Odoo 18).
+
+**Log in as…** is also on the rows (docs/ux/UX-013 §B): of Environments
+(production, test, every staging, those on another machine through their
+link), of the Instances list and of a workspace opened in the Workspaces
+list, hidden on a phone (the instance's page has it in its head). Each row's
+button is decided by the machine of its instance, as the route would
+decide: none below the role it needs or for a token; off, with the reason,
+for a custom role without it, an environment stopped, or no name over https
+and no tunnel; with a tunnel through a link it says so. It is the same
+dialog, route and access log. A staging asks an admin, as a production does
+(`from_link_role`).
 
 Who asked, as whom, on which instance and when the link was opened go to
 the access log (event `login-as`). Inside Odoo the user acts as themself:

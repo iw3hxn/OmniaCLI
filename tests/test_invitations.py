@@ -136,8 +136,12 @@ async def test_a_workspace_admin_invites_into_its_workspace(workspaces, client):
 
 async def test_the_workspace_list_opens_the_workspace(workspaces, client):
     page = (await client.get("/workspaces", headers={"Authorization": AUTH})).text
-    assert '"{{ prefix }}/workspaces/"' not in page and '"/workspaces/" + encodeURIComponent(row.dataset.ws)' in page
-    assert 'href="/workspaces?edit=acme"' in page
+    # the name of a row opens the workspace's page (its page from the route, under the prefix: UX-013)
+    assert '"{{ prefix }}/workspaces/"' not in page and "href(m, ws.page)" in page
+    rows = (await client.get("/api/workspaces/list", headers={"Authorization": AUTH})).json()["workspaces"]
+    assert [w["page"] for w in rows if w["name"] == "acme"] == ["/workspaces/acme"]
+    # its limits and disk: from the page of the workspace (UX-013 §A8)
+    assert 'href="/workspaces?edit=acme"' in (await client.get("/workspaces/acme", headers={"Authorization": AUTH})).text
 
 
 @pytest.fixture

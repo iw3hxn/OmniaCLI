@@ -65,6 +65,7 @@
 .last-action { color: var(--muted); margin: 4px 0 0; }
 .last-action .status::before { display: none; }
 .row-open { text-align: right; white-space: nowrap; }
+.repo-state .ok-text { color: var(--ok); } .repo-state .warn-text { color: var(--warn); font-weight: 600; }
 .button.small { padding: 3px 10px; font-size: 13px; }
 .section-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 8px; }
 .section-head h2 { margin: 0; }
@@ -116,6 +117,12 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
 {%- if a and a.can %} <button type="button" class="small addr-open" data-env="{{ key }}" data-label="{{ label }}"
   title="{{ _('The names this environment answers on and the redirects to it') }}">⚙ {{ _("Addresses…") }}</button>
 {%- elif a and is_admin_here and a.reason %} <span title="{{ tr(a.reason) }}"><button type="button" class="small" disabled title="{{ tr(a.reason) }}">⚙ {{ _("Addresses…") }}</button></span>
+{%- endif %}{% endmacro %}
+{# Log in as… on a row of Environments (UX-013 §B2), as the server decided it for that row (login_as_offer): off
+   with the reason on its span, or the button of the dialog; none where the role does not reach it #}
+{% macro row_login_as_button(key) %}{% set o = (row_login_as or {}).get(key) %}
+{%- if o and o.disabled %} <span title="{{ o.disabled }}"><button type="button" class="small" disabled data-login-as="" title="{{ o.disabled }}">{{ _("Log in as…") }}</button></span>
+{%- elif o %} <button type="button" class="small" data-login-as='{{ o | tojson }}' title="{{ o.title }}">{{ _("Log in as…") }}</button>
 {%- endif %}{% endmacro %}
 {# a button the person's custom role does not include (capabilities.py): there, disabled, saying why #}
 {% set denied = denied or {} %}
@@ -409,18 +416,18 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
       <tr><th>{{ _("Address") }}</th><th>{{ _("Type") }}</th><th class="hide-sm">{{ _("Copied on") }}</th><th>{{ _("State") }}</th><th class="hide-sm"></th></tr>
       <tr><td><strong>{{ title }}</strong>{{ other_names(server.name ~ "/production") }}</td><td><span class="badge ok">{{ _("Production") }}</span></td><td class="when hide-sm">—</td>
           <td>{{ state_word("busy" if is_busy else st) }}</td>
-          <td class="row-open hide-sm">{% if opens %}{% call instance_link(inst.web_url, st, "button small", tr(inst.plugin.label) ~ " " ~ title) %}{{ _("Open") }} ↗{% endcall %}{% endif %}{{ addresses_button(server.name ~ "/production", title) }}</td></tr>
+          <td class="row-open hide-sm">{% if opens %}{% call instance_link(inst.web_url, st, "button small", tr(inst.plugin.label) ~ " " ~ title) %}{{ _("Open") }} ↗{% endcall %}{% endif %}{{ row_login_as_button(inst.key) }}{{ addresses_button(server.name ~ "/production", title) }}</td></tr>
       {% if server.test %}
       <tr><td>↳ <a href="{{ prefix }}/servers/{{ server.name }}?view=test"><strong>{{ host_of(server.test.web_url, "Test") }}</strong></a>{{ other_names(server.name ~ "/test") }}</td>
           <td><span class="badge test-badge">Test</span></td><td class="when hide-sm">—</td>
           <td>{{ state_word("busy" if busy[server.test.key] else test_state) }}</td>
-          <td class="row-open hide-sm">{% if host_of(server.test.web_url, "") %}{% call instance_link(server.test.web_url, test_state, "button small", tr(inst.plugin.label) ~ " " ~ host_of(server.test.web_url, "Test")) %}{{ _("Open") }} ↗{% endcall %}{% endif %}{{ addresses_button(server.name ~ "/test", host_of(server.test.web_url, "Test")) }}</td></tr>
+          <td class="row-open hide-sm">{% if host_of(server.test.web_url, "") %}{% call instance_link(server.test.web_url, test_state, "button small", tr(inst.plugin.label) ~ " " ~ host_of(server.test.web_url, "Test")) %}{{ _("Open") }} ↗{% endcall %}{% endif %}{{ row_login_as_button(server.test.key) }}{{ addresses_button(server.name ~ "/test", host_of(server.test.web_url, "Test")) }}</td></tr>
       {% endif %}
       {% for s in stagings.rows if stagings %}
-      <tr><td>↳ <a href="{{ prefix }}/servers/{{ s.server }}"><strong>{{ host_of(s.url, s.server) }}</strong></a>{{ other_names(s.server ~ "/production") }}</td>
+      <tr><td>↳ <a href="{{ prefix }}/servers/{{ s.server }}" title="{{ _('Opens its page: its environments, backups, log') }}"><strong>{{ host_of(s.url, s.server) }}</strong></a>{{ other_names(s.server ~ "/production") }}</td>
           <td><span class="badge info">{{ _("Staging") }}</span></td><td class="when hide-sm">{{ when(s.created) }}</td>
           <td>{{ state_word("busy" if s.busy else s.state) }}</td>
-          <td class="row-open hide-sm">{% if host_of(s.url, "") %}<a class="button small" href="{{ s.url }}" target="_blank" rel="noopener" title="{{ _('Opens {url} in a new tab', url=s.url) }}">{{ _("Open") }} ↗</a>{% endif %}{{ addresses_button(s.server ~ "/production", host_of(s.url, s.server)) }}</td></tr>
+          <td class="row-open hide-sm">{% if host_of(s.url, "") %}<a class="button small" href="{{ s.url }}" target="_blank" rel="noopener" title="{{ _('Opens {url} in a new tab', url=s.url) }}">{{ _("Open") }} ↗</a>{% endif %}{{ row_login_as_button(s.server ~ "/production") }}{{ addresses_button(s.server ~ "/production", host_of(s.url, s.server)) }}</td></tr>
       {% endfor %}
       {% if stagings and stagings.elsewhere %}<tbody id="stagings-elsewhere"></tbody>{% endif %}
     </table></div>
@@ -437,8 +444,17 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
       const W = {staging: {{ _("Staging") | tojson }}, on: {{ _("on {machine}") | tojson }},
                  open: {{ _("Opens its page on {machine}") | tojson }},
                  there: {{ _("Open it from the page of {machine}") | tojson }},
-                 running: {{ _("Running") | tojson }}, stopped: {{ _("Stopped") | tojson }}, unknown: {{ _("State unknown") | tojson }}};
+                 running: {{ _("Running") | tojson }}, stopped: {{ _("Stopped") | tojson }}, unknown: {{ _("State unknown") | tojson }},
+                 loginAs: {{ _("Log in as…") | tojson }}};
       const el = (tag, attrs, ...kids) => { const e = Object.assign(document.createElement(tag), attrs || {}); e.append(...kids); return e; };
+      // its Log in as… as its machine decided it (UX-013 §B2): an older machine sends none
+      const loginAs = (o) => {
+        if (!o) return [];
+        const button = el("button", {type: "button", className: "small", textContent: W.loginAs, title: o.disabled || o.title});
+        if (o.disabled) { button.disabled = true; button.dataset.loginAs = ""; return [el("span", {title: o.disabled}, button)]; }
+        button.dataset.loginAs = JSON.stringify(o);
+        return [button];
+      };
       const resp = await fetch({{ (prefix ~ "/api/servers/" ~ server.name ~ "/stagings/elsewhere") | tojson }},
                                {headers: {Accept: "application/json"}}).catch(() => null);
       const data = resp && resp.ok ? await resp.json().catch(() => null) : null;
@@ -450,7 +466,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
           el("td", {}, el("span", {className: "badge info"}, W.staging)),
           el("td", {className: "when hide-sm"}, whenText(s.created)),
           el("td", {}, ({running: W.running, stopped: W.stopped})[s.state] || W.unknown),
-          el("td", {className: "row-open hide-sm"})));
+          el("td", {className: "row-open hide-sm"}, ...loginAs(s.login_as))));
         const none = document.getElementById("stagings-none");
         if (none) none.hidden = true;
       }
@@ -781,7 +797,8 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
   <div class="section-head"><h2>{{ _("Code") }}</h2></div>
   <div class="scroll">
   <table class="addons-table">
-    <tr><th>{{ _("Type") }}</th><th>{{ _("Repository") }}</th><th>{{ _("Branch") }}</th><th class="hide-sm">{{ _("Last commit") }}</th><th></th></tr>
+    <tr><th>{{ _("Type") }}</th><th>{{ _("Repository") }}</th><th>{{ _("Branch") }}</th><th class="hide-sm">{{ _("Last commit") }}</th>
+      <th title="{{ _('Whether the branch has commits not brought here yet, asked of its remote when this tab opens: it only informs, a production is still updated by hand') }}">{{ _("State") }}</th><th></th></tr>
     {% for repo in inst.repositories %}
     {% set rs = repo_status[inst.key][loop.index0] %}
     <tr data-repo="{{ repo.name }}">
@@ -791,6 +808,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
       {% set off_branch = not rs.error and rs.branch and rs.branch != repo.branch %}
       <td class="mono {{ 'error' if off_branch }}" {% if off_branch %}title="{{ _('expected {branch}', branch=repo.branch) }}"{% endif %}>{{ rs.branch if off_branch else repo.branch }}</td>
       <td class="hide-sm">{% if rs.error %}<span class="error">{{ tr(rs.error) }}</span>{% else %}<span class="mono">{{ rs.sha }}</span> <span class="muted">{{ rs.date }}</span>{% if rs.subject %}<br><span title="{{ rs.subject }}">{{ rs.subject | truncate(80, true, "…") }}</span>{% endif %}{% endif %}</td>
+      <td class="repo-state" data-repo-state="{{ repo.name }}"><span class="muted">…</span></td>
       <td style="white-space: nowrap; text-align: right">
         <button type="button" class="small" data-repo-update="{{ repo.name }}" data-role="{{ inst.role }}" {{ off }}
           title="{{ _('Brings the repository to the last commit of the branch you choose (the same: downloads the new commits; another: changes it and remembers it), installs its Python packages, updates the changed modules when the instance says so and restarts Odoo. Not available while a job works on the instance.') }}">{{ _("Update…") }}</button>
@@ -799,10 +817,51 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
       </td>
     </tr>
     {% else %}
-    <tr><td colspan="5" class="muted">{{ _("No repository yet: only the addons of the Odoo image.") }}</td></tr>
+    <tr><td colspan="6" class="muted">{{ _("No repository yet: only the addons of the Odoo image.") }}</td></tr>
     {% endfor %}
   </table>
   </div>
+  {% if inst.repositories %}
+  <script>
+  // the State of each repository (Carlo, 23/11/2026): read once, when the Modules tab opens (the page is drawn
+  // first), one request for all of them (GET …/pull-preview: a git fetch of each); it only informs
+  window.loadRepoStates = (function () {
+    let asked = false;
+    const R = {upToDate: {{ _("up to date") | tojson }}, one: {{ _("1 commit to bring") | tojson }},
+               many: {{ _("{n} commits to bring") | tojson }}, notRead: {{ _("not read") | tojson }},
+               checked: {{ _("read at {when}") | tojson }}, first: {{ _("The first one to bring: {subject}") | tojson }},
+               error: {{ _("Error {status}") | tojson }}};
+    return async function () {
+      if (asked) return;
+      asked = true;
+      const cells = [...document.querySelectorAll("[data-repo-state]")];
+      let rows = null, why = "";
+      try {
+        const resp = await fetch({{ (prefix ~ "/api/servers/" ~ server.name ~ "/" ~ inst.role ~ "/pull-preview") | tojson }},
+                                 {headers: {Accept: "application/json"}});
+        const data = await resp.json().catch(() => ({}));
+        if (resp.ok) rows = data.rows || [];
+        else why = data.error || data.detail || R.error.replace("{status}", resp.status);
+      } catch (e) { why = String(e && e.message || e); }
+      for (const cell of cells) {
+        const row = rows && rows.find((r) => r.name === cell.dataset.repoState);
+        const said = document.createElement("span"), when = document.createElement("span");
+        if (!row || row.error || row.pending === null || row.pending === undefined) {
+          said.className = "muted"; said.textContent = "? " + R.notRead; said.title = (row && row.error) || why;
+        } else if (row.pending === 0) {
+          said.className = "ok-text"; said.textContent = "✓ " + R.upToDate;
+        } else {
+          said.className = "warn-text"; said.textContent = "↓ " + (row.pending === 1 ? R.one : R.many.replace("{n}", row.pending));
+          if (row.first) said.title = R.first.replace("{subject}", row.first);
+        }
+        when.className = "small muted"; when.style.display = "block";
+        when.textContent = row && row.checked ? R.checked.replace("{when}", whenText(row.checked)) : "";
+        cell.replaceChildren(said, when);
+      }
+    };
+  })();
+  </script>
+  {% endif %}
   <dialog id="addons-update" aria-labelledby="au-title" style="width: min(560px, calc(100vw - 32px))">
     <form method="dialog">
       <h2 id="au-title"></h2>
@@ -830,8 +889,8 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
   {# with a GitHub token in the git credentials (README, GitHub): the repository and its branch picked from GitHub's
      list; the typed address stays the other way #}
   <div class="addons-from" id="addons-from" role="radiogroup" hidden>
-    <label><input type="radio" name="addons-from" value="github" checked> {{ _("From GitHub") }}</label>
-    <label><input type="radio" name="addons-from" value="address"> {{ _("By its address") }}</label>
+    <label><input type="radio" name="addons-from" value="github" checked title="{{ _('Chooses the repository and its branch in the list of the GitHub token') }}"> {{ _("From GitHub") }}</label>
+    <label><input type="radio" name="addons-from" value="address" title="{{ _('The address and the branch of the repository, typed') }}"> {{ _("By its address") }}</label>
   </div>
   <div id="addons-github" hidden>
     <p class="muted small" id="ag-state">{{ _("Reading the repositories of the GitHub token…") }}</p>
@@ -1294,7 +1353,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
 {% if from_link %}{% include "_from_link_dialog.html" %}{% endif %}
 {% if can_act %}{% include "_backup_dialog.html" %}{% include "_pull_dialog.html" %}{% endif %}
 {% if restore_file %}{% include "_restore_dialog.html" %}{% endif %}
-{% if login_as %}{% include "_login_as_dialog.html" %}{% endif %}
+{% if login_as or (row_login_as or {}).values() | select | list or (stagings and stagings.elsewhere) %}{% include "_login_as_dialog.html" %}{% endif %}
 {% include "_charts.html" %}
 {{ console_script() }}
 {{ odoolog_script() }}
@@ -1366,6 +1425,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
       p.hidden = p.dataset.panel !== name || (p.classList.contains("instance-charts") && !loadMeasured);
     }
     if (name === "backups") loadBackups();
+    if (name === "modules" && window.loadRepoStates) window.loadRepoStates();
     if (name === "mail") { loadMail(); loadInbox(); }
     if (name === "settings" && document.querySelector('[data-section="odoo-config"]')) loadOdooConfig();
     if (name === "monitor") {

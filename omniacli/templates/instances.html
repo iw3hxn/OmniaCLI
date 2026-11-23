@@ -7,7 +7,8 @@
    that does not answer is a row of its own and holds no other back. Each
    production at its address, its stagings right under it; its test is no row.
    The Backup column says whether each production backs up by itself; the
-   count of those that do not is a filter. No buttons in the rows.
+   count of those that do not is a filter. In the rows only the two actions that open Odoo, Open ↗ and
+   Log in as… (UX-013 §B2, D5: OPEN_IN_INSTANCE_ROWS), hidden on a phone; nothing that changes something.
    The view is a choice, List or Map (docs/ux/UX-009 §3): the same instances as
    a table or as a diagram (_map.html); the choice is in the address (?view=map)
    and kept in this browser. The Map view reads only: the creating action stays
@@ -25,6 +26,7 @@
 .inst-machine td { color: var(--muted); }
 .inst-machine.down td { color: var(--err); }
 .inst-pager { display: flex; gap: 8px; align-items: center; justify-content: flex-end; margin-top: 12px; }
+.inst-rows .row-open { text-align: right; white-space: nowrap; }
 @media (max-width: 700px) { .inst-rows .hide-sm { display: none; } }
 /* a phone: each row a card, its name on top, then server, state and backup */
 @media (max-width: 600px) {
@@ -57,7 +59,7 @@
   </div>
   <div class="scroll">
   <table class="inst-rows">
-    <thead><tr><th>{{ _("Instance") }}</th>{% if links %}<th>{{ _("Server") }}</th>{% endif %}<th>{{ _("State") }}</th><th>{{ _("Backup") }}</th></tr></thead>
+    <thead><tr><th>{{ _("Instance") }}</th>{% if links %}<th>{{ _("Server") }}</th>{% endif %}<th>{{ _("State") }}</th><th>{{ _("Backup") }}</th><th class="hide-sm"></th></tr></thead>
     <tbody id="inst-rows"></tbody>
   </table>
   </div>
@@ -70,9 +72,10 @@
 </section>
 {% include "_map.html" %}
 {% if quick_instance %}{% include "_new_instance_dialog.html" %}{% endif %}
+{% include "_login_as_dialog.html" %}
 <script>
 (function () {
-  const PAGE = 50, SEARCH_FROM = 8, SERVER_COLUMN = {{ (links | length > 0) | tojson }};
+  const PAGE = 50, SEARCH_FROM = 8, SERVER_COLUMN = {{ (links | length > 0) | tojson }}, OPEN_IN_ROWS = {{ open_in_rows | tojson }};
   const MACHINES = [{name: {{ here_name | tojson }}, link: ""}, ...{{ links | tojson }}.map((name) => ({name, link: name}))];
   const T = {
     instance: {{ _("{n} instance") | tojson }}, instances: {{ _("{n} instances") | tojson }},
@@ -99,9 +102,13 @@
     notRead: {{ _("Not read: the OmniaCLI of that machine is older") | tojson }},
     page: {{ _("{from}–{to} of {all}") | tojson }},
     enterpriseTitle: {{ _("Odoo Enterprise is in its addons") | tojson }},
+    loginAs: {{ _("Log in as…") | tojson }}, openOdoo: {{ _("Open") | tojson }},
+    openOdooTitle: {{ _("Opens {url} in a new tab") | tojson }},
   };
   const body = document.getElementById("inst-rows"), counts = document.getElementById("inst-counts");
   const search = document.getElementById("inst-search");
+  // ?q= (the Workspaces list's «+N more»): the list searched on it
+  if (new URLSearchParams(location.search).get("q")) search.value = new URLSearchParams(location.search).get("q");
   const found = {};
   let onlyUnscheduled = location.hash === "#unscheduled", page = 0;
   const el = (tag, attrs, ...children) => {
@@ -162,6 +169,20 @@
     }
     return td;
   }
+  // Open ↗ and Log in as… (UX-013 §B2): Log in as as the row's machine decided it (an older one sends none)
+  function actionsCell(row) {
+    const td = el("td", {class: "hide-sm row-open"});
+    const url = /^https?:\/\//.test(String(row.inst.url || "")) ? row.inst.url : (row.inst.url ? "https://" + row.inst.url : "");
+    if (OPEN_IN_ROWS && url && host(url, "")) td.append(el("a", {class: "button small", href: url, target: "_blank", rel: "noopener",
+                                                          title: T.openOdooTitle.replace("{url}", url)}, T.openOdoo + " ↗"), " ");
+    const o = row.inst.login_as;
+    if (o && o.disabled) {
+      td.append(el("span", {title: o.disabled}, el("button", {type: "button", class: "small", disabled: "disabled", "data-login-as": "", title: o.disabled}, T.loginAs)));
+    } else if (o) {
+      td.append(el("button", {type: "button", class: "small", "data-login-as": JSON.stringify(o), title: o.title}, T.loginAs));
+    }
+    return td;
+  }
   function instanceRow(row) {
     const page = `${row.base}/servers/${encodeURIComponent(row.server.name)}`;
     const name = el("td", {},
@@ -173,13 +194,13 @@
       row.label !== row.server.name ? el("span", {class: "muted row-name hide-sm"}, row.server.name) : null);
     const cells = [name];
     if (SERVER_COLUMN) cells.push(el("td", {}, row.machine.name, row.server.version ? el("span", {class: "badge"}, row.server.version) : null));
-    cells.push(el("td", {}, stateCell(row)), backupCell(row));
+    cells.push(el("td", {}, stateCell(row)), backupCell(row), actionsCell(row));
     return el("tr", {"data-server": row.server.name, "data-machine": row.machine.name || null,
                      class: row.staging ? "staging-row" : null, "data-unscheduled": unscheduled(row) ? "1" : null}, ...cells);
   }
   function machineRow(machine, text, down) {
     return el("tr", {class: "inst-machine" + (down ? " down" : ""), "data-machine-row": machine.name || null},
-              el("td", {colspan: SERVER_COLUMN ? 4 : 3}, text));
+              el("td", {colspan: SERVER_COLUMN ? 5 : 4}, text));
   }
 
   function draw() {

@@ -15,7 +15,7 @@ from omniacli.docker import DockerPlugin
 from omniacli.jobs import Job, JobFailed
 
 from .test_app import AUTH, client, wait_job  # noqa: F401 - the client fixture
-from .test_workspaces import post_as, workspaces  # noqa: F401 - the workspaces fixture
+from .test_workspaces import basic, post_as, workspaces  # noqa: F401 - the workspaces fixture
 
 URL = "https://github.com/acme/odoo-custom.git"
 
@@ -322,6 +322,22 @@ async def test_the_branches_and_a_change_of_branch(tmp_path):
         await workspaceops.update_repository(_job(), Repository("custom", copy, "18.0"), "19.0")
     with pytest.raises(JobFailed, match="not a branch name"):
         await workspaceops.update_repository(_job(), repo, "--upload-pack=x")
+
+
+async def test_the_state_column_of_the_code(instance, client):
+    """A State per repository in the Code table (Carlo, 23/11/2026): a cell each, filled by one request to the
+    pull dialog's route under the page's prefix, when the Modules tab opens (not while the page is drawn)."""
+    resp = await client.post("/api/workspaces/acme/repositories/add", headers=post_as("mario"),
+                             json={"server": "acme-main", "url": URL, "branch": "18.0", "name": "custom"})
+    assert (await wait_job(client, resp.json()["job"]))["status"] == "success"
+    page = (await client.get("/servers/acme-main", headers=basic("mario"))).text
+    table = page.split('class="addons-table"', 1)[1].split("</table>", 1)[0]
+    assert table.count('data-repo-state="custom"') == 1 and ">State</th>" in table
+    head = table.split("</tr>", 1)[0]
+    assert 'title="Whether the branch has commits not brought here yet' in head
+    script = page.split("window.loadRepoStates = ", 1)[1].split("</script>", 1)[0]
+    assert '"/api/servers/acme-main/production/pull-preview"' in script and "whenText(row.checked)" in script
+    assert 'if (name === "modules" && window.loadRepoStates) window.loadRepoStates();' in page
 
 
 async def test_the_update_dialog(instance, client, monkeypatch):

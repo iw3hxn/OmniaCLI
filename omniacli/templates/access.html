@@ -4,7 +4,7 @@
 {% extends "base.html" %}
 {% block title %}{{ _("Access log") }} · {{ brand.name }}{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
-{% if ws %}{{ crumbs([(_("Settings"), "/settings"), (_("Workspace {name}", name=ws.name), "/workspaces/" ~ ws.name), (_("Access log"), None)]) }}
+{% if ws %}{{ crumbs([(_("Workspaces"), "/workspaces" if workspaces_menu else None), (ws.name, "/workspaces/" ~ ws.name), (_("Access log"), None)]) }}
 {% else %}{{ crumbs([(_("Settings"), "/settings"), (_("Users"), "/users"), (_("Access log"), None)]) }}{% endif %}
 {% endblock %}
 {% block content %}

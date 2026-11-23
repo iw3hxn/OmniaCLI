@@ -2,86 +2,24 @@
 {% extends "base.html" %}
 {% block title %}{{ _("Workspaces") }} · {{ brand.name }}{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
-{{ crumbs([(_("Settings"), "/settings"), (_("Workspaces"), None)]) }}
+{% if form %}{{ crumbs([(_("Workspaces"), "/workspaces"), (_("Limits and disk"), None)]) }}{% endif %}
 {% endblock %}
 {% block content %}
-{% from "_load.html" import machine_row with context %}
-{% from "_list.html" import list_search with context %}
+{% include "_list.html" %}
+{% if form %}
 {% include "_charts.html" %}
 {% include "_disk.html" %}
-{% include "_load.html" %}
-{% include "_list.html" %}
-{# the workspaces (docs/ux/UX-007 §4.5): this machine, the list with one primary in the head; how it works and the
-   templates folded at the bottom. A click on a row opens the page of the workspace; its Limits and disk the form of
-   the machine for it (?edit=). #}
-<style>
-.ws-foot { margin-top: 16px; } .ws-foot > details { margin-bottom: 8px; }
-.ws-foot > details > summary { font-weight: 600; }
-.ws-foot .ws-fold { margin-top: 8px; }
-</style>
+{# the form of the machine for one workspace (?edit=<name>) or a new one (?new): its limits, disk, domain,
+   servers and users; the machine's admins only #}
 <div class="page-head">
-  <div>
-    <h1>{{ _("Workspaces") }}</h1>
-    <p>{{ _("The customers' closed parts of this machine: their servers, their users, their limits and disk.") }}</p>
-  </div>
-  <div class="actions list-only"><button type="button" class="primary" id="add" title="{{ _('Opens the form of a new workspace, a closed part of the machine for a customer with its disk, limits, domain and users. Nothing is created until you save there.') }}">{{ _("New workspace") }}</button></div>
+  <div><h1>{{ _("Workspaces") }}</h1>
+    <p>{{ _("The customers' closed parts of this machine: their servers, their users, their limits and disk.") }}</p></div>
 </div>
 <div id="error" class="banner" hidden></div>
 {% if storage_error %}<div class="banner">{{ _("No workspace can be used: {error}, in {file} (root's); then, as root, {command}.", error=tr(storage_error), file=system_config, command="dpkg-reconfigure omniacli") }}</div>{% endif %}
-{# the list: one line each, its load and its disk; a click opens its form #}
-<div class="list-only stack">
-  <section class="panel">
-    <h2>{{ _("This machine") }}</h2>
-    <div id="machine-load" style="margin-top: 8px">{{ machine_row("", _("this machine")) }}</div>
-  </section>
-  <section>
-    {{ list_search("workspaces", _("Search workspace, domain, storage, server…"), request.query_params.get("q", "")) }}
-    {% include "_workspaces_list.html" %}
-  </section>
-</div>
-<div id="edit-view" hidden>
-  <p><a href="{{ prefix }}/workspaces">{{ _("← All workspaces") }}</a></p>
+<div id="edit-view">
+  <p><a href="{{ prefix }}/workspaces" title="{{ _('Back to the list of the workspaces: what was changed here and not saved is lost') }}">{{ _("← All workspaces") }}</a></p>
   <div id="workspaces"></div>
-</div>
-{# folded at the bottom: the help of who sets the workspaces up, and the templates the new instances are made from #}
-<div class="list-only ws-foot">
-<details>
-  <summary title="{{ _('Who sees what in a workspace, how its CPU and memory are measured, where the workspaces are saved, and the servers and users known now') }}">{{ _("How it works") }}</summary>
-  <div class="panel ws-fold">
-  <p class="muted" style="margin-top: 0">{{ _("A workspace is a customer's closed part of this machine: its servers and its users, each with its role there.") }}</p>
-  <p class="muted">{{ _("The roles in a workspace are those of the Users page: user, developer, admin. A user of role workspace (Users page) sees only the servers of its workspaces, none of this machine's pages, consoles, links and configuration; the admins of a workspace manage its users. A server is in one workspace at most.") }}</p>
-  <p class="muted">{{ _("CPU and memory are those of its containers together (its systemd slice), against its limits.") }}
-    {{ _("Saved in {file}.", file=workspaces_file) }}</p>
-  <h3>{{ _("Known now") }}</h3>
-  <dl>
-    <dt>{{ _("Servers") }}</dt>
-    <dd>{% for s in servers %}<span class="mono">{{ s }}</span>{% if not loop.last %}, {% endif %}{% else %}{{ _("none") }}{% endfor %}</dd>
-    <dt>{{ _("Users of workspaces") }}</dt>
-    <dd>{% for u in users if user_roles[u] == "workspace" %}<span class="mono">{{ u }}</span>{% if not loop.last %}, {% endif %}{% else %}<span class="muted">{{ _("none (create them on the Users page with role workspace, or let a workspace's admin create them)") }}</span>{% endfor %}</dd>
-  </dl>
-  </div>
-</details>
-<details>
-  <summary title="{{ _('What the new instances are made from: the templates of the package and those published, with the version used here') }}">{{ _("Templates") }} ({{ templates | length }})</summary>
-  <div class="panel ws-fold">
-  <p class="muted" style="margin-top: 0">{{ _("What new instances are made from: the package's, and those published and downloaded here.") }}
-    {{ _("The published templates come from {index}, signed and checked with plugins.public_key of the main configuration. Of the two, the higher version is used; the instances made before keep their files.", index=templates_index) }}</p>
-  <div class="scroll" style="margin-top: 10px">
-  <table id="templates">
-    <tr><th>{{ _("Template") }}</th><th>{{ _("Package") }}</th><th>{{ _("Downloaded") }}</th><th>{{ _("Used") }}</th><th>{{ _("Published") }}</th><th></th></tr>
-    {% for t in templates %}
-    <tr data-template="{{ t.name }}"><td><strong>{{ t.name }}</strong><br><span class="muted">{{ tr(t.label) }}</span></td>
-      <td class="mono">{{ t.package or "" }}</td><td class="mono">{{ t.downloaded or "" }}</td>
-      <td class="mono">{{ t.used }}</td><td class="mono published"></td><td class="install"></td></tr>
-    {% else %}
-    <tr><td colspan="6" class="muted">{{ _("No template here.") }}</td></tr>
-    {% endfor %}
-  </table>
-  </div>
-  <div class="actions" style="align-items: center"><button type="button" id="look-templates" title="{{ _('Reads the index of the published templates and shows the version published of each, with a button to install it. It changes nothing.') }}">{{ _("Look for published templates") }}</button>
-    <span class="error" id="templates-error" role="alert"></span></div>
-  </div>
-</details>
 </div>
 {% set limit_labels = {"disk_gb": _("Disk, GB"), "cpus": _("CPUs"), "memory_gb": _("Memory, GB"), "instances": _("Instances")} %}
 <template id="ws-template">
@@ -235,6 +173,676 @@
     list.appendChild(box);
     return box;
   }
+  const all = {{ workspaces | tojson }};
+  const params = new URLSearchParams(location.search);
+  const editing = all.find((w) => w.name === params.get("edit"));
+  if (editing) addWorkspace(editing, false);
+  else if (params.has("new")) addWorkspace({}, true).querySelector(".name").focus();
+})();
+</script>
+{% else %}
+{% from "_list.html" import list_search with context %}
+{# The workspaces of this machine and of its links (docs/ux/UX-013 §A): one row each, asked machine by machine at
+   once (GET /api/workspaces/list, ?link=<name>), a machine that does not answer or is older a row of its own.
+   A row reads and opens: its name opens the workspace's page, a click elsewhere on it shows inside it its
+   machines, instances and users (they come with the row: nothing is asked then but its use now). Nothing here
+   changes anything but New workspace, which opens the form of the machine chosen. #}
+<style>
+.ws-counts { color: var(--muted); margin: 0 0 12px; }
+.ws-counts a[aria-pressed="true"] { font-weight: 650; }
+.ws-rows td { vertical-align: middle; }
+.ws-rows tbody.ws-item > tr.ws-row { cursor: pointer; height: 56px; }
+.ws-rows tbody.ws-item > tr.ws-row:hover > td { background: var(--panel-2); }
+.ws-rows .ws-toggle { min-width: 32px; padding: 2px 8px; margin-right: 6px; }
+.ws-rows .ws-toggle[aria-expanded="true"] .ws-caret { display: inline-block; transform: rotate(90deg); }
+.ws-rows .ws-name { font-weight: 650; max-width: 22ch; display: inline-block; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; vertical-align: bottom; }
+.ws-rows .ws-domain { display: block; margin: 2px 0 0 44px; }
+.ws-rows .ws-phone { display: none; margin: 2px 0 0 44px; }
+.ws-rows .ws-warn { color: var(--warn); } .ws-rows .ws-err { color: var(--err); } .ws-rows .ws-ok { color: var(--ok); }
+.ws-rows .ws-dim > td { opacity: .6; }
+.ws-machine-row td { color: var(--warn); } .ws-machine-row.older td { color: var(--info); }
+.ws-skel td div { height: 14px; border-radius: 4px; background: var(--panel-2); }
+.ws-more > td { background: var(--panel-2); padding: 12px 16px 16px; }
+.ws-watch { list-style: none; margin: 0 0 12px; padding: 0; }
+.ws-watch li { padding: 3px 0; }
+.ws-blocks { display: grid; grid-template-columns: 1fr; gap: 12px; }
+@media (min-width: 1100px) { .ws-blocks { grid-template-columns: repeat(var(--ws-cols, 3), minmax(0, 1fr)); } }
+.ws-block { background: var(--panel); border: 1px solid var(--border); border-radius: var(--r); padding: 10px 12px; min-width: 0; }
+.ws-block h3 { margin: 0 0 6px; font-size: 14px; }
+.ws-block ul { list-style: none; margin: 0; padding: 0; }
+.ws-block li { padding: 4px 0; border-top: 1px solid var(--border); display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
+.ws-block li:first-child { border-top: 0; }
+.ws-block li.ws-staging { padding-left: 18px; }
+.ws-block .ws-acts { margin-left: auto; display: inline-flex; gap: 6px; }
+.ws-users td { padding: 4px 6px; }
+.ws-use, .ws-open-ws { margin: 10px 0 0; }
+.ws-foot { margin-top: 16px; } .ws-foot > details { margin-bottom: 8px; }
+.ws-foot > details > summary { font-weight: 600; }
+.ws-foot .ws-fold { margin-top: 8px; }
+.ws-where label { display: flex; gap: 8px; align-items: baseline; padding: 6px 0; }
+@media (max-width: 700px) {
+  .ws-rows thead { display: none; }
+  .ws-rows, .ws-rows tbody { display: block; }
+  .ws-rows tr.ws-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 8px 4px; height: auto;
+    border-bottom: 1px solid var(--border); }
+  .ws-rows tr.ws-row > td { display: block; border: 0; padding: 0; }
+  .ws-rows tr.ws-row > td:first-child { flex: 1 1 60%; }
+  .ws-rows tr.ws-row > td.hide-sm { display: none; }
+  .ws-rows .ws-toggle { min-height: 44px; min-width: 44px; }
+  .ws-block .ws-acts { display: none; }
+  .ws-rows .ws-phone { display: block; }
+  .ws-rows .ws-domain, .ws-rows .ws-phone { margin-left: 50px; }
+  .ws-more, .ws-more > td, .ws-machine-row, .ws-machine-row > td, .ws-skel, .ws-skel > td { display: block; }
+}
+</style>
+<div class="page-head">
+  <div>
+    <h1>{{ _("Workspaces") }}</h1>
+    <p>{{ _("The customers of your machines: where they run, their instances and who comes in.") }}</p>
+    <p class="small muted" id="ws-read" role="status"></p>
+  </div>
+  {% if can_create %}<div class="actions"><span id="ws-new-wrap"><button type="button" class="primary" id="add" disabled
+    title="{{ _('Opens the form of a new workspace, a closed part of a machine for a customer, with its own disk, limits, domain and users. Nothing is created until you save there.') }}">{{ _("New workspace") }}</button></span></div>{% endif %}
+</div>
+<p class="ws-counts" id="ws-counts" role="status">{{ _("Loading…") }}</p>
+<div id="ws-search-box" hidden>{{ list_search("workspaces", _("Search workspace, domain, machine, instance, user…"), request.query_params.get("q", "")) }}</div>
+<div id="ws-stale" class="banner" hidden></div>
+<section class="panel">
+  <div class="scroll">
+  <table class="ws-rows" id="ws-list" data-list="workspaces">
+    <thead><tr>
+      <th title="{{ _('The name of the workspace opens its page; a click elsewhere on the row shows what is inside it') }}">{{ _("Workspace") }}</th>
+      <th title="{{ _('What is to look at on its instances: the same things as the bell and the map') }}">{{ _("State") }}</th>
+      {% if machine_column %}<th class="hide-sm" title="{{ _('The machine the workspace lives on, and the others holding its stagings') }}">{{ _("Machine") }}</th>{% endif %}
+      <th class="hide-sm" title="{{ _('Its productions and its stagings; the test of a production is not counted apart') }}">{{ _("Instances") }}</th>
+      <th class="hide-sm" title="{{ _('The people who come into the workspace, with a role there') }}">{{ _("Users") }}</th>
+      <th class="hide-sm" title="{{ _('Its disk used, of its limit, as the daily record of the disks found it') }}">{{ _("Disk") }}</th>
+    </tr></thead>
+    <tbody id="ws-machines"></tbody>
+    <tbody id="ws-skeleton" aria-hidden="true">
+      {% for _i in range(3) %}<tr class="ws-skel">{% for _c in range(5 + (1 if machine_column else 0)) %}<td><div></div></td>{% endfor %}</tr>{% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <p class="muted" id="ws-empty" hidden></p>
+</section>
+<p class="small" id="ws-loose" hidden></p>
+<p class="small muted" id="ws-without" hidden></p>
+{% if storage_roots %}
+{# folded at the bottom (UX-007 §4.5): the help of who sets the workspaces up, and the templates the new instances are made from #}
+<div class="ws-foot">
+<details>
+  <summary title="{{ _('Who sees what in a workspace, how its CPU and memory are measured, where the workspaces are saved, and the servers and users known now') }}">{{ _("How it works") }}</summary>
+  <div class="panel ws-fold">
+  <p class="muted" style="margin-top: 0">{{ _("A workspace is a customer's closed part of this machine: its servers and its users, each with its role there.") }}</p>
+  <p class="muted">{{ _("The roles in a workspace are those of the Users page: user, developer, admin. A user of role workspace (Users page) sees only the servers of its workspaces, none of this machine's pages, consoles, links and configuration; the admins of a workspace manage its users. A server is in one workspace at most.") }}</p>
+  <p class="muted">{{ _("CPU and memory are those of its containers together (its systemd slice), against its limits.") }}
+    {{ _("Saved in {file}.", file=workspaces_file) }}</p>
+  <h3>{{ _("Known now") }}</h3>
+  <dl>
+    <dt>{{ _("Servers") }}</dt>
+    <dd>{% for s in servers %}<span class="mono">{{ s }}</span>{% if not loop.last %}, {% endif %}{% else %}{{ _("none") }}{% endfor %}</dd>
+    <dt>{{ _("Users of workspaces") }}</dt>
+    <dd>{% for u in users if user_roles[u] == "workspace" %}<span class="mono">{{ u }}</span>{% if not loop.last %}, {% endif %}{% else %}<span class="muted">{{ _("none (create them on the Users page with role workspace, or let a workspace's admin create them)") }}</span>{% endfor %}</dd>
+  </dl>
+  </div>
+</details>
+<details>
+  <summary title="{{ _('What the new instances are made from: the templates of the package and those published, with the version used here') }}">{{ _("Templates") }} ({{ templates | length }})</summary>
+  <div class="panel ws-fold">
+  <p class="muted" style="margin-top: 0">{{ _("What new instances are made from: the package's, and those published and downloaded here.") }}
+    {{ _("The published templates come from {index}, signed and checked with plugins.public_key of the main configuration. Of the two, the higher version is used; the instances made before keep their files.", index=templates_index) }}</p>
+  <div class="scroll" style="margin-top: 10px">
+  <table id="templates">
+    <tr><th>{{ _("Template") }}</th><th>{{ _("Package") }}</th><th>{{ _("Downloaded") }}</th><th>{{ _("Used") }}</th><th>{{ _("Published") }}</th><th></th></tr>
+    {% for t in templates %}
+    <tr data-template="{{ t.name }}"><td><strong>{{ t.name }}</strong><br><span class="muted">{{ tr(t.label) }}</span></td>
+      <td class="mono">{{ t.package or "" }}</td><td class="mono">{{ t.downloaded or "" }}</td>
+      <td class="mono">{{ t.used }}</td><td class="mono published"></td><td class="install"></td></tr>
+    {% else %}
+    <tr><td colspan="6" class="muted">{{ _("No template here.") }}</td></tr>
+    {% endfor %}
+  </table>
+  </div>
+  <div class="actions" style="align-items: center"><button type="button" id="look-templates" title="{{ _('Reads the index of the published templates and shows the version published of each, with a button to install it. It changes nothing.') }}">{{ _("Look for published templates") }}</button>
+    <span class="error" id="templates-error" role="alert"></span></div>
+  </div>
+</details>
+</div>
+{% endif %}
+{% if can_create %}
+<dialog id="ws-where" class="ws-where" aria-labelledby="ws-where-title">
+  <form method="dialog">
+    <h2 id="ws-where-title">{{ _("On which machine?") }}</h2>
+    <p class="muted">{{ _("The new workspace is made on the machine you choose, with its disk.") }}</p>
+    <div id="ws-where-list" role="radiogroup" aria-labelledby="ws-where-title"></div>
+    <div class="actions">
+      <button type="button" class="primary" id="ws-where-go" title="{{ _('Opens the form of the new workspace on the machine chosen') }}">{{ _("Continue") }}</button>
+      <button type="button" id="ws-where-cancel" title="{{ _('Closes without creating anything') }}">{{ _("Cancel") }}</button>
+    </div>
+  </form>
+</dialog>
+{% endif %}
+{% include "_login_as_dialog.html" %}
+<script>
+(function () {
+  const PREFIX = {{ prefix | tojson }}, SEARCH_FROM = 8, PRODUCTIONS_SHOWN = 6, USERS_SHOWN = 8, WATCH_SHOWN = 5;
+  const MACHINE_COLUMN = {{ machine_column | tojson }}, TWO_STEP_IN_ROW = {{ two_step_in_row | tojson }};
+  const OPEN_IN_ROWS = {{ open_in_rows | tojson }};
+  const T = {
+    one: {{ _("{n} workspace") | tojson }}, many: {{ _("{n} workspaces") | tojson }},
+    onMachines: {{ _("{list} on {m} machines") | tojson }},
+    watchFilter: {{ _("⚠ {n} with something to look at") | tojson }},
+    watchFilterTitle: {{ _("Shows only the workspaces with something to look at: the same things as the bell and the map") | tojson }},
+    allFine: {{ _("✓ all fine") | tojson }}, showAll: {{ _("Show every workspace") | tojson }},
+    showAllTitle: {{ _("Shows every workspace again") | tojson }},
+    readAt: {{ _("Read at {when}") | tojson }},
+    staleSince: {{ _("Not updated since {when}: {why}") | tojson }},
+    down: {{ _("{name} does not answer: {why}. Its workspaces are not here.") | tojson }},
+    older: {{ _("{name} has an older OmniaCLI: update it to see its workspaces here.") | tojson }},
+    checkLink: {{ _("Check the link") | tojson }},
+    checkLinkTitle: {{ _("Opens Settings › Links, where the link is tried and corrected") | tojson }},
+    asking: {{ _("{name}: asking…") | tojson }}, here: {{ _("this machine") | tojson }},
+    expand: {{ _("Shows inside the workspace its machines, instances and users. It changes nothing.") | tojson }},
+    open: {{ _("Opens the workspace {name}: instances, names on the web, users and external services") | tojson }},
+    noOpen: {{ _("The link {link} gives you the role {role}: the page of the workspace is the administrators'.") | tojson }},
+    fine: {{ _("✓ fine") | tojson }}, toLook: {{ _("{n} to look at") | tojson }},
+    plusMachine: {{ _("+ {machine}") | tojson }}, stagingsOn: {{ _("{n} stagings on {machine}") | tojson }},
+    productions1: {{ _("{n} production") | tojson }}, productions: {{ _("{n} productions") | tojson }},
+    stagings1: {{ _("{n} staging") | tojson }}, stagings: {{ _("{n} stagings") | tojson }},
+    noInstance: {{ _("no instance") | tojson }}, allowed: {{ _("{n} of {limit} allowed") | tojson }},
+    twoStep1: {{ _("⚠ {n} administrator without two-step verification") | tojson }},
+    twoStep: {{ _("⚠ {n} administrators without two-step verification") | tojson }},
+    diskOf: {{ _("{used} of {size}") | tojson }}, diskDay: {{ _("as the daily record of the disks found it on {day}") | tojson }},
+    almostFull: {{ _("almost full") | tojson }}, noDisk: {{ _("no disk yet") | tojson }},
+    unusable: {{ _("unusable") | tojson }},
+    loose: {{ _("Instances outside the workspaces: {n}") | tojson }},
+    looseTitle: {{ _("Opens the Instances list, where the instances outside every workspace are too") | tojson }},
+    without: {{ _("Without workspaces: {names}.") | tojson }},
+    emptyLinks: {{ _("No workspace on the linked machines. A workspace is the closed part of a machine for a customer: New workspace makes one on the machine you choose.") | tojson }},
+    emptyHere: {{ _("This machine has no workspaces nor the disk to make them. The workspaces are on the customers' machines: link one from Servers › + Add a server.") | tojson }},
+    emptyMine: {{ _("No workspace yet.") | tojson }},
+    searchNone: {{ _("No workspace matches «{q}»") | tojson }},
+    watchTitle: {{ _("Things to look at") | tojson }}, since: {{ _("since {when}") | tojson }},
+    openIt: {{ _("Open") | tojson }}, openItTitle: {{ _("Opens the page where this is looked at and fixed") | tojson }},
+    moreOnMap: {{ _("and {n} more on the map") | tojson }},
+    moreOnMapTitle: {{ _("Opens the map of this workspace, with every thing to look at. It changes nothing.") | tojson }},
+    machines: {{ _("Machines") | tojson }}, instances: {{ _("Instances") | tojson }}, users: {{ _("Users") | tojson }},
+    machineHere: {{ _("the workspace here: {what}") | tojson }}, databaseOf: {{ _("the database of {name}") | tojson }},
+    machineTitle: {{ _("Opens the page of the machine {name}") | tojson }},
+    running: {{ _("in service") | tojson }}, stopped: {{ _("not running") | tojson }}, unknown: {{ _("state not read") | tojson }},
+    busy: {{ _("in progress: {title}") | tojson }}, busyPlain: {{ _("in progress") | tojson }}, queued: {{ _("queued") | tojson }},
+    test: {{ _("Test: {state}") | tojson }}, odoo: {{ _("Odoo {version}") | tojson }},
+    stagingOf: {{ _("Staging of {date}") | tojson }}, stagingWord: {{ _("Staging") | tojson }},
+    onMachine: {{ _("on {machine}") | tojson }}, onAnother: {{ _("on another machine") | tojson }},
+    instancePage: {{ _("Opens its page: its environments, backups, log") | tojson }},
+    moreProductions: {{ _("+{n} more") | tojson }},
+    moreProductionsTitle: {{ _("Opens the Instances list searched on this workspace") | tojson }},
+    onMap: {{ _("On the map") | tojson }}, onMapTitle: {{ _("Opens the map of this workspace. It changes nothing.") | tojson }},
+    noInstances: {{ _("No instance yet: one is made from the page of the workspace (New instance).") | tojson }},
+    noInstancesTitle: {{ _("Opens the page of the workspace, where New instance makes one") | tojson }},
+    usersN1: {{ _("{n} user") | tojson }}, usersN: {{ _("{n} users") | tojson }},
+    roles: {admin: {{ _("Administrator") | tojson }}, developer: {{ _("Developer") | tojson }}, user: {{ _("User") | tojson }}},
+    limitedTo: {{ _("on {n} instances") | tojson }},
+    twoStepOn: {{ _("✓ verification on") | tojson }}, twoStepOff: {{ _("— verification off") | tojson }},
+    twoStepHead: {{ _("Two-step verification") | tojson }},
+    moreUsers: {{ _("+{n} more in the page of the workspace") | tojson }},
+    moreUsersTitle: {{ _("Opens the Users tab of the workspace") | tojson }},
+    noUsers: {{ _("No user: only the administrators of the machine come in.") | tojson }},
+    use: {{ _("Use now") | tojson }}, useReading: {{ _("reading…") | tojson }},
+    cpu: {{ _("CPU {n} of {cores} cores") | tojson }}, cpuFree: {{ _("CPU {n} cores") | tojson }},
+    mem: {{ _("memory {n} of {limit}") | tojson }}, memFree: {{ _("memory {n}") | tojson }},
+    net: {{ _("network ↓ {rx}/s ↑ {tx}/s") | tojson }}, real: {{ _("real disk: {free} free") | tojson }},
+    notRead: {{ _("— not read: {why}") | tojson }}, noPoints: {{ _("no measure yet (one every 5 seconds)") | tojson }},
+    openWs: {{ _("Open the workspace {name}") | tojson }},
+    newTitleMore: {{ _("First it asks on which machine.") | tojson }},
+    noMachine: {{ _("No machine can hold a workspace: this one has no disk for the workspaces, and the links do not answer or do not give you the administrator role.") | tojson }},
+    whereInfo: {{ _("{n} workspaces · {free} free") | tojson }}, whereCount: {{ _("{n} workspaces") | tojson }},
+    whereTitle: {{ _("Makes the new workspace on {name}") | tojson }},
+    loginAs: {{ _("Log in as…") | tojson }}, openOdoo: {{ _("Open") | tojson }},
+    openOdooTitle: {{ _("Opens {url} in a new tab") | tojson }},
+    error: {{ _("Error {status}") | tojson }}, noAnswer: {{ _("No answer.") | tojson }},
+  };
+  const el = (tag, attrs, ...children) => {
+    const node = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs || {})) if (v !== undefined && v !== null && v !== false) node.setAttribute(k, v === true ? "" : v);
+    node.append(...children.filter((c) => c !== null && c !== undefined && c !== false));
+    return node;
+  };
+  const fill = (text, values) => Object.entries(values).reduce((t, [k, v]) => t.split(`{${k}}`).join(String(v)), text);
+  const plural = (n, one, many) => fill(n === 1 ? one : many, {n});
+  // a request that did not reach the panel (the browser says it in its own language): said in the page's
+  const whyOf = (e) => e instanceof TypeError ? T.noAnswer.replace(/\.$/, "") : String(e && e.message || e);
+  const GB = 1073741824;
+  const two = (n) => String(n).padStart(2, "0");
+  // this browser's now as whenText reads it; a day (2026-11-23) as people write it
+  const nowIso = () => { const d = new Date(); return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}T${two(d.getHours())}:${two(d.getMinutes())}`; };
+  const dayText = (day) => /^\d{4}-\d{2}-\d{2}/.test(String(day || "")) ? `${day.slice(8, 10)}/${day.slice(5, 7)}/${day.slice(0, 4)}` : String(day || "");
+  const roleOf = (m) => (found[m.key] || {}).viewer_role;
+
+  const params = new URLSearchParams(location.search);
+  const opened = new Set(params.getAll("open"));
+  const machines = [{name: {{ here_name | tojson }}, link: "", key: "~"},
+                    ...{{ links | tojson }}.map((name) => ({name, link: name, key: name}))];
+  const found = {};
+  let onlyWatch = location.hash === "#watch", lastGood = null;
+  const body = document.getElementById("ws-machines"), table = document.getElementById("ws-list");
+  const counts = document.getElementById("ws-counts");
+
+  const baseOf = (m) => m.link ? "" : PREFIX;
+  const href = (m, page) => page ? baseOf(m) + page : null;
+  const keyOf = (m, ws) => `${m.key}/${ws.name}`;
+  const levelOf = (ws) => (ws.watch || []).some((w) => w.level === "critical") ? 2 : (ws.watch || []).length ? 1 : 0;
+  const prods = (ws) => (ws.instances || []).filter((i) => i.type === "production");
+  const stags = (ws) => (ws.instances || []).filter((i) => i.type === "staging");
+
+  // the stagings of a workspace's productions that live on another machine of the list (whole viewers): by
+  // the name of the production's machine and server, as the map ties them (inframap.link_stagings)
+  function away(m, ws) {
+    const data = found[m.key];
+    const mine = new Set(prods(ws).map((i) => i.server));
+    const out = [];
+    if (!data || !data.machine_name) return out;
+    for (const other of machines) {
+      const there = found[other.key];
+      if (other === m || !there || !there.workspaces) continue;
+      for (const w of there.workspaces) for (const i of w.instances || []) {
+        if (i.type === "staging" && i.parent_machine === data.machine_name && mine.has(i.parent_server)) {
+          out.push({...i, machine: other});
+        }
+      }
+    }
+    return out;
+  }
+
+  function stateWord(env, kind) {
+    if (!env) return el("span", {class: "state-dot"}, T.unknown);
+    if (env.busy) return el("span", {class: "state-dot busy"}, "⟳ " + T.busyPlain);
+    if (env.queued) return el("span", {class: "state-dot busy"}, "⏳ " + T.queued);
+    if (env.state === "running") return el("span", {class: "state-dot running"}, T.running);
+    if (env.state === "stopped") {
+      // a staging or a test stopped is a choice, not an alarm
+      return kind === "production" ? el("span", {class: "state-dot stopped"}, "■ " + T.stopped)
+                                   : el("span", {class: "state-dot muted"}, "○ " + T.stopped);
+    }
+    return el("span", {class: "state-dot"}, "? " + T.unknown);
+  }
+
+  function loginAsButton(offer) {
+    if (!offer) return null;
+    if (offer.disabled) {
+      return el("span", {title: offer.disabled},
+                el("button", {type: "button", class: "small", disabled: true, "data-login-as": "", title: offer.disabled}, T.loginAs));
+    }
+    return el("button", {type: "button", class: "small", "data-login-as": JSON.stringify(offer), title: offer.title}, T.loginAs);
+  }
+  function openButton(url) {
+    if (!OPEN_IN_ROWS || !url) return null;
+    return el("a", {class: "button small", href: url, target: "_blank", rel: "noopener", title: fill(T.openOdooTitle, {url})}, T.openOdoo + " ↗");
+  }
+
+  function instanceLine(m, i, kind, where) {
+    const prod = (i.envs || {}).production || {};
+    const test = (i.envs || {}).test;
+    const page = href(where ? where : m, i.page);
+    let label = i.name;
+    if (kind === "staging" && !i.page && i.created) label = fill(T.stagingOf, {date: whenText(i.created).slice(0, 5)});
+    const li = el("li", {class: kind === "staging" ? "ws-staging" : null, "data-kind": kind, "data-server": i.server || null},
+      kind === "staging" ? el("span", {"aria-hidden": "true", class: "muted"}, "↳") : null,
+      stateWord(prod, kind),
+      page ? el("a", {href: page, title: T.instancePage}, el("strong", {}, label)) : el("strong", {}, label),
+      kind === "staging" ? el("span", {class: "badge info"}, T.stagingWord) : null,
+      i.version ? el("span", {class: "badge"}, fill(T.odoo, {version: i.version.replace(/\.0$/, "")})) : null,
+      kind === "production" && test ? el("span", {class: "badge test-badge"}, fill(T.test, {state: test.busy ? T.busyPlain : test.state === "running" ? T.running : test.state === "stopped" ? T.stopped : T.unknown})) : null,
+      prod.busy && prod.job_title ? el("span", {class: "small"}, fill(T.busy, {title: prod.job_title})) : null,
+      where ? el("span", {class: "small muted"}, fill(T.onMachine, {machine: where.name})) : null,
+      i.elsewhere && !where ? el("span", {class: "small muted"}, T.onAnother) : null);
+    const acts = el("span", {class: "ws-acts hide-sm"}, openButton(i.url), loginAsButton(prod.login_as));
+    if (acts.childNodes.length) li.append(acts);
+    return li;
+  }
+
+  function instancesBlock(m, ws) {
+    const box = el("div", {class: "ws-block"}, el("h3", {}, T.instances));
+    const all = ws.instances || [];
+    const ul = el("ul", {});
+    if (!all.length) {
+      box.append(el("p", {class: "muted"}, ws.can_open ? el("a", {href: href(m, ws.page), title: T.noInstancesTitle}, T.noInstances) : T.noInstances));
+      return box;
+    }
+    const tops = prods(ws).sort((a, b) => a.name.localeCompare(b.name));
+    // a production stopped, busy or with something to look at is always shown
+    const watched = new Set((ws.watch || []).map((w) => w.node));
+    const keep = (i) => i.envs && i.envs.production && (i.envs.production.busy || i.envs.production.state === "stopped") || watched.has(i.id);
+    const shown = tops.filter((i, n) => n < PRODUCTIONS_SHOWN || keep(i));
+    const far = away(m, ws);
+    const ids = new Set(tops.map((i) => i.id));
+    for (const p of shown) {
+      ul.append(instanceLine(m, p, "production"));
+      for (const s of stags(ws).filter((s) => s.parent === p.id)) ul.append(instanceLine(m, s, "staging"));
+      for (const s of far.filter((s) => s.parent_server === p.server)) ul.append(instanceLine(m, s, "staging", s.machine));
+    }
+    // stagings whose production is not in this workspace's list (another machine's, not readable here)
+    for (const s of stags(ws).filter((s) => !ids.has(s.parent))) ul.append(instanceLine(m, s, "staging"));
+    box.append(ul);
+    const more = tops.length - shown.length;
+    const q = encodeURIComponent(ws.name);
+    if (more > 0) box.append(el("p", {class: "small"}, el("a", {href: `${PREFIX}/instances?q=${q}`, title: T.moreProductionsTitle}, fill(T.moreProductions, {n: more}) + " ›")));
+    const map = `${PREFIX}/instances?view=map&workspace=${q}` + (m.link ? `&machine=${encodeURIComponent(m.link)}` : "");
+    box.append(el("p", {class: "small"}, el("a", {href: map, title: T.onMapTitle}, T.onMap + " ›")));
+    return box;
+  }
+
+  function machinesBlock(m, ws) {
+    const box = el("div", {class: "ws-block"}, el("h3", {}, T.machines));
+    const ul = el("ul", {});
+    const link = (mm) => el("a", {href: mm.link ? `/links/${encodeURIComponent(mm.link)}/` : `${PREFIX}/`, title: fill(T.machineTitle, {name: mm.name || T.here})}, mm.name || T.here);
+    const what = [plural(prods(ws).length, T.productions1, T.productions), plural(stags(ws).length, T.stagings1, T.stagings)].join(", ");
+    ul.append(el("li", {}, link(m), " — ", fill(T.machineHere, {what})));
+    const byMachine = {};
+    for (const s of away(m, ws)) (byMachine[s.machine.key] = byMachine[s.machine.key] || {m: s.machine, n: 0}).n += 1;
+    for (const {m: mm, n} of Object.values(byMachine)) ul.append(el("li", {}, link(mm), " — ", plural(n, T.stagings1, T.stagings)));
+    for (const i of ws.instances || []) for (const env of Object.values(i.envs || {})) {
+      const db = env && env.database;
+      if (db && db.label) ul.append(el("li", {}, db.label, " — ", fill(T.databaseOf, {name: i.name})));
+    }
+    box.append(ul);
+    return box;
+  }
+
+  function usersBlock(m, ws) {
+    const box = el("div", {class: "ws-block"}, el("h3", {}, T.users));
+    const list = ws.members_list || [];
+    if (!list.length) { box.append(el("p", {class: "muted"}, T.noUsers)); return box; }
+    // the administrators first (the server sorts them so); one without two-step verification is always shown
+    const shown = list.filter((u, n) => n < USERS_SHOWN || (u.role === "admin" && !u.two_step));
+    const rows = shown.map((u) => el("tr", {"data-user": u.name},
+      el("td", {}, u.name),
+      el("td", {}, u.custom || T.roles[u.role] || u.role, u.limited ? el("span", {class: "small muted"}, " " + fill(T.limitedTo, {n: u.limited})) : null),
+      el("td", {class: u.two_step ? "" : (u.role === "admin" ? "ws-warn" : "muted")}, u.two_step ? T.twoStepOn : T.twoStepOff)));
+    box.append(el("table", {class: "ws-users"}, el("tbody", {}, ...rows)));
+    if (list.length > shown.length) box.append(el("p", {class: "small"}, el("a", {href: href(m, ws.page) + "#users", title: T.moreUsersTitle}, fill(T.moreUsers, {n: list.length - shown.length}) + " ›")));
+    return box;
+  }
+
+  // Use now: read when the expansion opens, then every 5 s while it is open and the tab is seen
+  const useTimers = {};
+  async function readUse(m, ws, box, first) {
+    const since = Math.floor(Date.now() / 1000) - 30;
+    const base = m.link ? `/links/${encodeURIComponent(m.link)}` : PREFIX;
+    try {
+      const resp = await fetch(`${base}/api/workspaces/${encodeURIComponent(ws.name)}/load?since=${since}&disk=${first ? 1 : 0}`, {headers: {Accept: "application/json"}});
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.error || data.detail || fill(T.error, {status: resp.status}));
+      const p = (data.points || []).slice(-1)[0];
+      const lim = data.limits || {};
+      const parts = [];
+      if (!p) parts.push(T.noPoints);
+      else {
+        const cores = p.cpu === null ? null : (p.cpu / 100).toLocaleString(document.documentElement.lang || undefined, {maximumFractionDigits: 2});
+        if (cores !== null) parts.push(lim.cpus ? fill(T.cpu, {n: cores, cores: lim.cpus}) : fill(T.cpuFree, {n: cores}));
+        if (p.mem !== null && p.mem !== undefined) parts.push(lim.memory_gb ? fill(T.mem, {n: sizeText(p.mem * 1048576), limit: sizeText(lim.memory_gb * GB)}) : fill(T.memFree, {n: sizeText(p.mem * 1048576)}));
+        if (p.in !== null && p.in !== undefined) parts.push(fill(T.net, {rx: sizeText(p.in), tx: sizeText(p.out || 0)}));
+      }
+      if (first && data.real) box.dataset.real = fill(T.real, {free: sizeText(data.real.free)});
+      if (box.dataset.real) parts.push(box.dataset.real);
+      box.querySelector(".ws-use-text").textContent = parts.join(" · ");
+    } catch (e) {
+      box.querySelector(".ws-use-text").textContent = fill(T.notRead, {why: whyOf(e)});
+    }
+  }
+  function startUse(key, m, ws, box) {
+    stopUse(key);
+    readUse(m, ws, box, true);
+    useTimers[key] = setInterval(() => { if (document.visibilityState === "visible") readUse(m, ws, box, false); }, 5000);
+  }
+  function stopUse(key) { if (useTimers[key]) { clearInterval(useTimers[key]); delete useTimers[key]; } }
+
+  function expansion(m, ws, cols) {
+    const td = el("td", {colspan: cols});
+    const watch = ws.watch || [];
+    if (watch.length) {
+      const ul = el("ul", {class: "ws-watch", "aria-label": T.watchTitle});
+      for (const w of watch.slice(0, WATCH_SHOWN)) {
+        const node = (ws.instances || []).find((i) => i.id === w.node);
+        const page = w.page ? href(m, w.page) : node && node.page ? href(m, node.page) : null;
+        ul.append(el("li", {}, el("span", {class: w.level === "critical" ? "ws-err" : "ws-warn"}, w.level === "critical" ? "✕ " : "⚠ "), w.text,
+          w.since ? el("span", {class: "small muted"}, " · " + fill(T.since, {when: whenText(w.since)})) : null,
+          page ? el("span", {}, " · ", el("a", {href: page, title: T.openItTitle}, T.openIt + " ›")) : null));
+      }
+      if (watch.length > WATCH_SHOWN) {
+        const map = `${PREFIX}/instances?view=map&workspace=${encodeURIComponent(ws.name)}` + (m.link ? `&machine=${encodeURIComponent(m.link)}` : "");
+        ul.append(el("li", {}, el("a", {href: map, title: T.moreOnMapTitle}, fill(T.moreOnMap, {n: watch.length - WATCH_SHOWN}) + " ›")));
+      }
+      td.append(ul);
+    }
+    const blocks = [];
+    if (found[m.key] && found[m.key].machine_name) blocks.push(machinesBlock(m, ws));
+    blocks.push(instancesBlock(m, ws));
+    if (ws.can_open && ws.members_list) blocks.push(usersBlock(m, ws));
+    const grid = el("div", {class: "ws-blocks", style: `--ws-cols: ${blocks.length}`}, ...blocks);
+    td.append(grid);
+    if (ws.can_open) {
+      const use = el("p", {class: "small ws-use"}, el("strong", {}, T.use + ": "), el("span", {class: "ws-use-text"}, T.useReading));
+      td.append(use);
+      td.append(el("p", {class: "ws-open-ws"}, el("a", {href: href(m, ws.page), title: fill(T.open, {name: ws.name})}, fill(T.openWs, {name: ws.name}) + " ›")));
+    }
+    return el("tr", {class: "ws-more"}, td);
+  }
+
+  function rowOf(m, ws) {
+    const key = keyOf(m, ws);
+    const level = levelOf(ws);
+    const toggle = el("button", {type: "button", class: "small ws-toggle", "aria-expanded": String(opened.has(key)), title: T.expand},
+                      el("span", {class: "ws-caret", "aria-hidden": "true"}, "▸"));
+    const name = ws.can_open && ws.page
+      ? el("a", {class: "ws-name", href: href(m, ws.page), title: fill(T.open, {name: ws.name})}, ws.name)
+      : el("span", {class: "ws-name", title: m.link && roleOf(m) ? fill(T.noOpen, {link: m.name, role: T.roles[roleOf(m)] || roleOf(m)}) : ws.name}, ws.name);
+    const far = away(m, ws);
+    const farNames = [...new Set(far.map((s) => s.machine.name))];
+    const pr = prods(ws).length, st = stags(ws).length + far.length;
+    const instancesText = pr + st ? [plural(pr, T.productions1, T.productions), plural(st, T.stagings1, T.stagings)].join(" · ") : T.noInstance;
+    const limit = ws.limits && ws.limits.instances;
+    const users = ws.members_list ? String(ws.members_list.length) : (typeof ws.members === "number" ? String(ws.members) : "—");
+    const noTwoStep = TWO_STEP_IN_ROW && ws.admins_without_two_step ? plural(ws.admins_without_two_step, T.twoStep1, T.twoStep) : "";
+    let diskText = T.noDisk, diskTitle = "", diskWarn = false;
+    if (ws.disk && ws.disk.used !== null && ws.disk.used !== undefined) {
+      const size = ws.limits && ws.limits.disk_gb ? ws.limits.disk_gb * GB : ws.disk.size;
+      diskText = size ? fill(T.diskOf, {used: sizeText(ws.disk.used), size: sizeText(size)}) : sizeText(ws.disk.used);
+      diskWarn = !!size && ws.disk.used / size >= 0.9;
+      diskTitle = ws.disk.day ? fill(T.diskDay, {day: dayText(ws.disk.day)}) : "";
+    }
+    const stateTitle = (ws.watch || []).slice(0, 3).map((w) => w.text).join(" · ");
+    const state = level ? el("span", {class: level === 2 ? "ws-err" : "ws-warn", title: stateTitle}, (level === 2 ? "✕ " : "⚠ ") + fill(T.toLook, {n: ws.watch.length}))
+                        : el("span", {class: "ws-ok"}, T.fine);
+    const phone = [MACHINE_COLUMN ? m.name : null, instancesText, users !== "—" ? plural(Number(users), T.usersN1, T.usersN) : null, diskText].filter(Boolean).join(" · ");
+    const first = el("td", {}, toggle, name, ws.label && ws.label !== ws.name ? el("span", {class: "muted"}, " " + ws.label) : null,
+      ws.storage_problem ? el("span", {class: "badge error", title: ws.storage_problem}, "⚠ " + T.unusable) : null,
+      ws.domain ? el("span", {class: "small mono muted ws-domain"}, ws.domain) : null,
+      el("span", {class: "small ws-phone"}, phone));
+    const cells = [first, el("td", {}, state)];
+    if (MACHINE_COLUMN) cells.push(el("td", {class: "hide-sm"}, m.name || T.here,
+      farNames.length ? el("span", {class: "small", title: farNames.map((n) => fill(T.stagingsOn, {n: far.filter((s) => s.machine.name === n).length, machine: n})).join(", ")}, " " + fill(T.plusMachine, {machine: farNames.join(", ")})) : null));
+    cells.push(el("td", {class: "hide-sm", title: limit ? fill(T.allowed, {n: pr, limit}) : null}, instancesText));
+    cells.push(el("td", {class: "hide-sm", title: users === "—" && m.link && roleOf(m) ? fill(T.noOpen, {link: m.name, role: T.roles[roleOf(m)] || roleOf(m)}) : null},
+      users, noTwoStep ? el("span", {class: "small ws-warn", style: "display: block"}, noTwoStep) : null));
+    cells.push(el("td", {class: "hide-sm" + (diskWarn ? " ws-warn" : ""), title: diskTitle || null}, diskText, diskWarn ? " · " + T.almostFull : null));
+    const tr = el("tr", {class: "ws-row", "data-ws": ws.name, "data-machine": m.name || null, tabindex: "0"}, ...cells);
+    const text = [ws.name, ws.label, ws.domain, m.name, ...(ws.instances || []).map((i) => `${i.name} ${i.server || ""}`),
+                  ...(ws.members_list || []).map((u) => u.name)].join(" ").toLowerCase();
+    const item = el("tbody", {class: "ws-item", "data-list-item": true, "data-text": text, "data-key": key, "data-watch": String((ws.watch || []).length)}, tr);
+    const cols = cells.length;
+    function setOpen(on) {
+      toggle.setAttribute("aria-expanded", String(on));
+      const was = item.querySelector(".ws-more");
+      if (was) was.remove();
+      if (on) {
+        const more = expansion(m, ws, cols);
+        item.append(more);
+        const use = more.querySelector(".ws-use");
+        if (use) startUse(key, m, ws, use);
+        opened.add(key);
+      } else { stopUse(key); opened.delete(key); }
+      const p = new URLSearchParams(location.search);
+      p.delete("open");
+      for (const k of opened) p.append("open", k);
+      history.replaceState(null, "", location.pathname + (p.toString() ? "?" + p : "") + location.hash);
+    }
+    tr.addEventListener("click", (e) => { if (!e.target.closest("a")) setOpen(toggle.getAttribute("aria-expanded") !== "true"); });
+    tr.addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target === tr) setOpen(toggle.getAttribute("aria-expanded") !== "true"); });
+    if (opened.has(key)) setOpen(true);
+    return item;
+  }
+
+  function machineRow(m, data) {
+    const cols = MACHINE_COLUMN ? 6 : 5;
+    const older = !!data.older;
+    const td = el("td", {colspan: cols}, older ? "↑ " : "✕ ", fill(older ? T.older : T.down, {name: m.name, why: data.error}));
+    if (!older && {{ can_create | tojson }}) td.append(" ", el("a", {href: "/links", title: T.checkLinkTitle}, T.checkLink + " ›"));
+    return el("tbody", {class: "ws-machine-row" + (older ? " older" : ""), "data-machine-error": m.name}, el("tr", {}, td));
+  }
+
+  function draw() {
+    for (const key of Object.keys(useTimers)) stopUse(key);
+    const answered = machines.filter((m) => found[m.key]);
+    const skeleton = document.getElementById("ws-skeleton");
+    if (answered.length && skeleton) skeleton.hidden = true;
+    const special = [], items = [];
+    let all = [];
+    for (const m of machines) {
+      const data = found[m.key];
+      if (!data) continue;
+      if (data.error) { special.push(machineRow(m, data)); continue; }
+      for (const ws of data.workspaces || []) all.push({m, ws});
+    }
+    all.sort((a, b) => levelOf(b.ws) - levelOf(a.ws) || a.ws.name.localeCompare(b.ws.name) || String(a.m.name).localeCompare(String(b.m.name)));
+    for (const {m, ws} of all) items.push(rowOf(m, ws));
+    for (const old of table.querySelectorAll("tbody.ws-item, tbody.ws-machine-row")) old.remove();
+    body.replaceChildren();
+    // the rows that hide data first: a machine that does not answer, one that is older
+    for (const s of special) table.insertBefore(s, body);
+    for (const i of items) table.append(i);
+    // the counts: of every row read; the one of what is to look at is the filter
+    const watched = all.filter(({ws}) => (ws.watch || []).length).length;
+    const holding = new Set(all.map(({m}) => m.key)).size;
+    let text = plural(all.length, T.one, T.many);
+    if (MACHINE_COLUMN && holding > 1) text = fill(T.onMachines, {list: text, m: holding});
+    counts.replaceChildren(text, " · ");
+    if (watched) {
+      const filter = el("a", {href: "#watch", "aria-pressed": String(onlyWatch), title: T.watchFilterTitle, id: "ws-filter"}, fill(T.watchFilter, {n: watched}));
+      filter.addEventListener("click", (e) => { e.preventDefault(); onlyWatch = !onlyWatch;
+        history.replaceState(null, "", location.pathname + location.search + (onlyWatch ? "#watch" : "")); draw(); });
+      counts.append(filter);
+      if (onlyWatch) {
+        const back = el("a", {href: location.pathname, title: T.showAllTitle}, T.showAll);
+        back.addEventListener("click", (e) => { e.preventDefault(); onlyWatch = false; history.replaceState(null, "", location.pathname + location.search); draw(); });
+        counts.append(" · ", back);
+      }
+    } else { onlyWatch = false; counts.append(el("span", {class: "ws-ok"}, T.allFine)); }
+    document.getElementById("ws-search-box").hidden = all.length <= SEARCH_FROM;
+    OmniaList.attach(table);
+    filterRows();
+    // empty: what the first step is
+    const empty = document.getElementById("ws-empty");
+    const done = machines.every((m) => found[m.key]);
+    empty.hidden = !done || all.length > 0;
+    if (!all.length) empty.textContent = machines.length > 1 ? T.emptyLinks : (found["~"] && found["~"].creatable && !found["~"].creatable.ok && {{ can_create | tojson }} ? T.emptyHere : T.emptyMine);
+    // the instances outside every workspace (this machine's admins) and the machines with no workspace
+    const here = found["~"];
+    const loose = document.getElementById("ws-loose");
+    loose.hidden = !(here && here.loose);
+    if (here && here.loose) loose.replaceChildren(el("a", {href: `${PREFIX}/instances`, title: T.looseTitle}, fill(T.loose, {n: here.loose}) + " ›"));
+    const without = machines.filter((m) => found[m.key] && !found[m.key].error && !(found[m.key].workspaces || []).length && found[m.key].count !== null && found[m.key].count !== undefined);
+    const wbox = document.getElementById("ws-without");
+    wbox.hidden = !MACHINE_COLUMN || !without.length;
+    wbox.textContent = fill(T.without, {names: without.map((m) => m.link ? m.name : T.here).join(", ")});
+    if (here && here.at) document.getElementById("ws-read").textContent = fill(T.readAt, {when: whenText(here.at)});
+    newButton();
+  }
+  // the filter of what is to look at, over the search's: a row with nothing to look at is left out
+  function filterRows() {
+    if (!onlyWatch) return;
+    for (const item of table.querySelectorAll("tbody.ws-item")) if (item.dataset.watch === "0") item.hidden = true;
+  }
+  table.addEventListener("omnialist:shown", filterRows);
+
+  // New workspace (UX-013 §A6): the machines that may hold one; one goes straight to its form, two or more ask
+  function possible() {
+    return machines.filter((m) => found[m.key] && !found[m.key].error).map((m) => ({m, c: found[m.key].creatable || {ok: false}}));
+  }
+  function formOf(m) { return (m.link ? `/links/${encodeURIComponent(m.link)}` : PREFIX) + "/workspaces?new=1"; }
+  function newButton() {
+    const button = document.getElementById("add");
+    if (!button) return;
+    const ok = possible().filter((p) => p.c.ok);
+    const wrap = document.getElementById("ws-new-wrap");
+    button.disabled = !ok.length;
+    wrap.title = ok.length ? "" : T.noMachine;
+    if (!wrap.title) wrap.removeAttribute("title");
+    const first = {{ _("Opens the form of a new workspace, a closed part of a machine for a customer, with its own disk, limits, domain and users. Nothing is created until you save there.") | tojson }};
+    button.title = ok.length > 1 ? `${first} ${T.newTitleMore}` : first;
+  }
+  const add = document.getElementById("add");
+  if (add) add.addEventListener("click", () => {
+    const all = possible(), ok = all.filter((p) => p.c.ok);
+    if (!ok.length) return;
+    if (ok.length === 1) { location.href = formOf(ok[0].m); return; }
+    const dialog = document.getElementById("ws-where"), list = document.getElementById("ws-where-list");
+    list.replaceChildren();
+    let checked = false;
+    for (const {m, c} of all) {
+      const n = (found[m.key].workspaces || []).length;
+      const info = c.ok ? (c.free ? fill(T.whereInfo, {n, free: sizeText(c.free)}) : fill(T.whereCount, {n})) : c.why;
+      const radio = el("input", {type: "radio", name: "ws-where", value: m.key, disabled: !c.ok, checked: c.ok && !checked,
+                                 title: c.ok ? fill(T.whereTitle, {name: m.name || T.here}) : c.why});
+      if (c.ok) checked = true;
+      list.append(el("label", {title: c.ok ? fill(T.whereTitle, {name: m.name || T.here}) : c.why}, radio, el("strong", {}, m.name || T.here), el("span", {class: "small muted"}, info)));
+    }
+    dialog.showModal();
+  });
+  const go = document.getElementById("ws-where-go");
+  if (go) {
+    go.addEventListener("click", () => {
+      const chosen = document.querySelector('input[name="ws-where"]:checked');
+      const m = chosen && machines.find((x) => x.key === chosen.value);
+      if (m) location.href = formOf(m);
+    });
+    document.getElementById("ws-where-cancel").addEventListener("click", () => document.getElementById("ws-where").close());
+  }
+
+  // every machine at once, each drawn when it answers; again every 60 s while the tab is seen
+  async function ask(m) {
+    const url = `${PREFIX}/api/workspaces/list` + (m.link ? `?link=${encodeURIComponent(m.link)}` : "");
+    try {
+      const resp = await fetch(url, {headers: {Accept: "application/json"}});
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.error || data.detail || fill(T.error, {status: resp.status}));
+      found[m.key] = m.link ? data : {...data};
+      return true;
+    } catch (e) {
+      if (!lastGood) found[m.key] = {error: whyOf(e)};
+      else throw e;
+      return false;
+    }
+  }
+  function readAll() {
+    return Promise.all(machines.map((m) => ask(m).then(draw)));
+  }
+  readAll().then(() => { lastGood = nowIso(); });
+  setInterval(() => {
+    if (document.visibilityState !== "visible") return;
+    const stale = document.getElementById("ws-stale");
+    readAll().then(() => { lastGood = nowIso(); stale.hidden = true; table.classList.remove("ws-dim"); })
+      .catch((e) => { stale.textContent = fill(T.staleSince, {when: whenText(lastGood).slice(11), why: whyOf(e)});
+                      stale.hidden = false; table.classList.add("ws-dim"); });
+  }, 60000);
+})();
+</script>
+{% if storage_roots %}
+<script>
+(function () {
+  const errorText = (status) => {{ _("Error {status}") | tojson }}.replace("{status}", status);
   const table = document.getElementById("templates");
   // what the templates' buttons refuse is said beside them: the banner is out of sight, above
   const templatesError = document.getElementById("templates-error");
@@ -273,22 +881,8 @@
       }
     }
   };
-  const all = {{ workspaces | tojson }};
-  const params = new URLSearchParams(location.search);
-  // the form of one workspace (?edit=<name>) or of a new one (?new): the list hidden
-  function editMode(box) {
-    for (const el of document.querySelectorAll(".list-only")) el.hidden = true;
-    document.getElementById("edit-view").hidden = false;
-    return box;
-  }
-  const editing = all.find((w) => w.name === params.get("edit"));
-  if (editing) editMode(addWorkspace(editing, false));
-  else if (params.has("new")) editMode(addWorkspace({}, true)).querySelector(".name").focus();
-  document.getElementById("add").onclick = () => { location.href = "{{ prefix }}/workspaces?new=1"; };
-  if (!editing && !params.has("new")) {
-    OmniaLoad.watch(document.querySelector("#machine-load .machine-row"));
-    OmniaList.attach(document.querySelector('[data-list="workspaces"]'));
-  }
 })();
 </script>
+{% endif %}
+{% endif %}
 {% endblock %}

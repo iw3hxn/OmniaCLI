@@ -1,6 +1,6 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
-{# Log in as: drawn once on the server page, it opens for the buttons
-   data-login-as (users, url, key). It lists the instance's users; a click
+{# Log in as: drawn once on a page (the server page, the Instances list, the Workspaces list), it opens for the
+   buttons data-login-as (users, url, key, label), also those its scripts draw later. It lists the instance's users; a click
    makes that user's session and opens Odoo with it in a new tab (loginas.py). -#}
 <dialog id="login-as-dialog">
   <form method="dialog">
@@ -31,6 +31,7 @@
   const T = {
     portal: {{ _("portal") | tojson }}, admin: {{ _("administrator") | tojson }},
     noSession: {{ _("No session made") | tojson }}, title: {{ _("Log in as a user of {key}") | tojson }},
+    titleIn: {{ _("Log in as… in {name}") | tojson }},
     reading: {{ _("Reading the users…") | tojson }},
     nginxQ: {{ _("Add to the nginx site of {host} the line that passes Log in as to OmniaCLI?") | tojson }}, unreadable: {{ _("The users cannot be read") | tojson }},
     rowTitle: {{ _("Opens Odoo in a new tab as this user: their password is not read nor changed. The access log records who asked and as whom.") | tojson }},
@@ -74,10 +75,15 @@
 
   filter.addEventListener("input", draw);
   document.getElementById("login-as-cancel").addEventListener("click", () => dialog.close());
-  document.querySelectorAll("[data-login-as]").forEach((button) => {
-    button.addEventListener("click", async () => {
+  // one listener for every button data-login-as of the page, those drawn later by its scripts too (the rows of
+  // the Instances list, of the expansion of a workspace: UX-013 §B2); a disabled one says why on its span
+  document.addEventListener("click", async (event) => {
+      const button = event.target.closest("[data-login-as]");
+      if (!button || button.disabled || !button.dataset.loginAs) return;
+      event.stopPropagation();
       target = JSON.parse(button.dataset.loginAs);
-      document.getElementById("login-as-title").textContent = T.title.replace("{key}", target.key);
+      document.getElementById("login-as-title").textContent = target.label
+        ? T.titleIn.replace("{name}", target.label) : T.title.replace("{key}", target.key);
       errorBox.textContent = ""; filter.value = ""; users = [];
       list.replaceChildren(document.createTextNode(T.reading));
       dialog.showModal();
@@ -103,7 +109,6 @@
       users = data.users || [];
       draw();
       filter.focus();
-    });
   });
 })();
 </script>

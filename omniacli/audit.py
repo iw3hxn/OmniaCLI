@@ -47,6 +47,8 @@ SENSITIVE_READS = {
     "/x/odoo/servers/{server}/{role}/odoo-config": "Odoo configuration file",
     "/api/machine/ssh-keys": "SSH keys of the machine",
     "/api/access/users/sessions": "sessions of a user (addresses, browsers)",
+    # the list of the workspaces (UX-013 §A13): their members, each with its two-step verification
+    "/api/workspaces/list": "workspaces' members and their two-step verification",
 }
 
 # reads the route logs itself, with more than a read would say

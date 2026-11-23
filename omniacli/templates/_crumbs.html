@@ -2,11 +2,16 @@
 {# crumbs([(label, url), ..., (label, None)]): the last item is the current page.
    Shown through a link with the menu of who looks (central_menu): the
    machine comes first, "Servers › lab1 › ...", and a first item of this
-   machine's home ("/", its Instances) is that machine's crumb #}
+   machine's home ("/", its Instances) is that machine's crumb; a workspace's page there is
+   «Workspaces › <machine> › <workspace>», the list of who looks first #}
 {% macro crumbs(items) %}
 {% set central = central_menu is defined and central_menu is not none %}
 {% set ns = namespace(head=[], items=items) %}
-{% if central %}
+{% if central and "workspaces" in central_menu and ns.items and ns.items[0][1] == "/workspaces" %}
+  {# a workspace of a linked machine (UX-013 §A3): «Workspaces › lab1 › acme», the list of who looks first #}
+  {% set ns.head = [(ns.items[0][0], "/workspaces"), (prefix.rsplit("/", 1)[-1], prefix ~ "/")] %}
+  {% set ns.items = ns.items[1:] %}
+{% elif central %}
   {% if "servers" in central_menu %}{% set ns.head = [(_("Servers"), "/machines")] %}{% endif %}
   {% if ns.items and ns.items[0][1] == "/" %}{% set ns.items = ns.items[1:] %}{% endif %}
   {% set ns.head = ns.head + [(prefix.rsplit("/", 1)[-1], prefix ~ "/")] %}

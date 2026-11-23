@@ -316,8 +316,11 @@ async def pull_preview(instance: Instance, timeout: float = 60) -> list[dict]:
     branch and the commits not yet pulled (a fetch, in parallel), or the
     error; then the package, when the instance has one."""
     async def one(repo: Repository) -> dict:
+        # checked: when the remote was asked (the Code table's State column says it); first: the subject of
+        # the oldest commit not yet pulled, the next one an update brings
         row = {"name": repo.name, "label": repo.name, "branch": repo.branch, "remote": repo.remote,
-               "pending": None, "error": None}
+               "pending": None, "error": None, "first": "",
+               "checked": datetime.datetime.now().isoformat(timespec="seconds")}
         if not repo.path.is_dir():
             row["error"] = f"{repo.path} does not exist"
             return row
@@ -330,6 +333,9 @@ async def pull_preview(instance: Instance, timeout: float = 60) -> list[dict]:
             row["error"] = f"git rev-list failed: {out}"
         else:
             row["pending"] = int(out)
+        if row["pending"]:
+            code, out = await capture(["git", "log", "--reverse", "--format=%s", "HEAD..FETCH_HEAD"], cwd=repo.path)
+            row["first"] = out.splitlines()[0].strip() if code == 0 and out.strip() else ""
         return row
 
     rows = list(await asyncio.gather(*(one(r) for r in instance.repositories)))

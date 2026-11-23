@@ -132,14 +132,16 @@ async def test_a_production_is_an_admins(here):
     resp = await ask(here, "admin", "production", 2)
     assert resp.status_code == 200
     assert urlsplit(resp.json()["url"]).netloc == PRODUCTION
-    # the button: for whom may use it
+    # the button: for whom may use it; in the head of the page, and on the rows of Environments (UX-013 §B2)
     page = (await here.get("/servers/srv", headers=as_user("dev"))).text
-    assert "data-login-as=" not in page
+    head = page.split('<table class="copies">', 1)[0]
+    assert "data-login-as=" not in head and page.count("data-login-as=") == 1 and '"key": "srv/test"' in page
     page = (await here.get("/servers/srv?view=test", headers=as_user("dev"))).text
     assert page.count("data-login-as=") == 1 and "login-as-dialog" in page
-    for view in ("production", "test"):
-        page = (await here.get(f"/servers/srv?view={view}", headers=as_user("admin"))).text
-        assert page.count("data-login-as=") == 1
+    page = (await here.get("/servers/srv?view=production", headers=as_user("admin"))).text
+    assert page.count("data-login-as=") == 3  # the head's, the production's and the test's rows
+    page = (await here.get("/servers/srv?view=test", headers=as_user("admin"))).text
+    assert page.count("data-login-as=") == 1
     page = (await here.get("/servers/srv", headers=as_user("viewer"))).text
     assert "data-login-as=" not in page
 

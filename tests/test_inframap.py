@@ -385,7 +385,7 @@ async def test_the_map_view_of_the_instances_page(workspaces, client, mine):  # 
     assert "/api/map" in script and "document.hidden" in script
     # no new place in the menu: the same entries as the list's page
     menu = page.split('<nav class="topnav"', 1)[1].split("</nav>", 1)[0]
-    assert menu.count('class="nav-link"') == 4 and "view=map" not in menu
+    assert menu.count('class="nav-link"') == 5 and "view=map" not in menu
     # in Italian
     page = (await mine.get("/instances", headers={**as_user("admin"), "Accept-Language": "it"})).text
     assert ">Elenco</button>" in page and ">Mappa</button>" in page and "Non cambia niente." in page

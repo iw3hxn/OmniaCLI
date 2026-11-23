@@ -157,6 +157,8 @@ ROUTES = {
         ("GET", "/api/servers/{server}/{role}/uptime"), ("GET", "/api/workspaces/{workspace}/load"),
         ("GET", "/api/servers/{server}/{role}/backups"), ("GET", "/instances"), ("GET", "/api/instances"),
         ("GET", "/backups"), ("GET", "/api/backups"), ("GET", "/api/map"),
+        # the list of its workspaces (UX-013 §A): those where it is admin, checked in the route
+        ("GET", "/workspaces"), ("GET", "/api/workspaces/list"),
         # the bell: the map's things to look at of what the person sees, and its own marks
         ("GET", "/api/bell"), ("POST", "/api/bell/read"),
         ("GET", "/api/servers/{server}/production/mail"), ("GET", "/api/servers/{server}/production/mail/{mail_id}"),

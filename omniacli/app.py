@@ -171,9 +171,44 @@ def checks_said(request: Request, report) -> list[dict]:
     return said
 
 
+# UX-013, Carlo's decisions D1-D5: the recommended option of each, built as the default until he answers (README,
+# The Workspaces menu); each one is flipped here, in one place.
+# D1: the Workspaces entry of the menu goes after this place ("servers": Servers · Workspaces · Instances;
+# "backups": after Instances and Backups); MENU_PLACES and base.html follow it
+WORKSPACES_MENU_AFTER = "servers"
+# D2: a person of workspaces who is admin in this many of them or more has one Workspaces entry instead of one
+# entry per workspace (with fewer, an entry with the name of each, as before)
+WORKSPACES_MENU_FROM = 2
+# D3: the Workspaces card of Settings › People and access (False: the list of the menu is the only one)
+WORKSPACES_IN_SETTINGS = False
+# D4: an admin of a workspace without two-step verification said in the Users cell of the list, outside the things
+# to look at (False: only the column of the expansion says it)
+TWO_STEP_IN_ROW = True
+# D5: Open ↗ beside Log in as… on the rows of the Instances list (False: Log in as… only)
+OPEN_IN_INSTANCE_ROWS = True
+
+
+def admin_workspaces(user) -> list[str]:
+    """The workspaces a person of workspaces is admin of, whose page it opens (a person limited to some instances
+    of one does not: it acts on all of it); [] for the others."""
+    if not user.scoped:
+        return []
+    return [ws for ws, role in user.workspaces if role == "admin" and (user.grant(ws) is None or user.grant(ws).servers is None)]
+
+
+def workspaces_menu(user) -> bool:
+    """Whether user's menu has the Workspaces entry (UX-013 §A3): the machine's admins; a person of workspaces
+    admin of WORKSPACES_MENU_FROM of them or more (D2)."""
+    if user.scoped:
+        return len(admin_workspaces(user)) >= WORKSPACES_MENU_FROM
+    return user.can("admin")
+
+
 def menu_places(user) -> list[str]:
     """The places of the top menu user sees (MENU_PLACES), as base.html draws them."""
     places = ["servers"] if user.can("admin") and not user.scoped else []
+    if workspaces_menu(user):
+        places.append("workspaces")
     places.append("instances")
     if (any(r in ("developer", "admin") for _, r in user.workspaces) if user.scoped else user.can("developer")):
         places.append("backups")
@@ -217,8 +252,11 @@ def _page_context(request: Request) -> dict:
         "scoped": bool(user and user.scoped),
         # the workspaces whose users it manages (admin there)
         # (a person limited to some instances of one does not open its page: it acts on all of it)
-        "my_workspaces": [ws for ws, role in user.workspaces if role == "admin"
-                          and (user.grant(ws) is None or user.grant(ws).servers is None)] if user and user.scoped else [],
+        # (from WORKSPACES_MENU_FROM of them, one Workspaces entry instead: UX-013 D2)
+        "my_workspaces": admin_workspaces(user) if user and not workspaces_menu(user) else [],
+        # the Workspaces entry of the menu (UX-013 §A3), and the place it comes after (D1)
+        "workspaces_menu": bool(user and workspaces_menu(user)),
+        "workspaces_after": WORKSPACES_MENU_AFTER,
         # the Backups of every machine (UX-008 §4.2): a developer's, or a
         # user of workspaces who is a developer in one of them at least
         "backups_menu": bool(user and (any(r in ("developer", "admin") for _, r in user.workspaces)
@@ -292,7 +330,7 @@ _PREFIX_HEADER = "x-omniacli-prefix"
 # without our prefix, so the menu stays the viewer's inside a linked machine.
 # An older OmniaCLI on either side sends or reads none: each page its own menu
 _MENU_HEADER = "x-omniacli-menu"
-MENU_PLACES = ("servers", "instances", "backups", "settings")
+MENU_PLACES = ("servers", "workspaces", "instances", "backups", "settings")
 _ON_BEHALF_HEADER = "x-omniacli-user"
 # the role of that user there: a link acts with the lower of it and its own
 _ROLE_CAP_HEADER = "x-omniacli-role-cap"
@@ -385,6 +423,8 @@ WORKSPACE_ROUTES = frozenset({
     "/api/workspaces/{workspace}/load",
     # its access log (NIS 2), for its admins: its entries only
     "/workspaces/{workspace}/audit", "/api/workspaces/{workspace}/audit/export",
+    # the list of its workspaces (UX-013 §A): of those where it is admin only, from two of them its menu entry
+    "/workspaces", "/api/workspaces/list",
     # the lists of every machine (UX-008 §4): of its workspaces' instances only
     "/instances", "/api/instances", "/backups", "/api/backups", "/api/servers/{server}/stagings/from-backup",
     # the map of the infrastructure (UX-009): the same instances as a diagram, its workspaces only
@@ -2531,6 +2571,17 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 pull_choices[i.key] = {
                     "key": i.key, "rows": rows,
                     "preview": f"{prefix_of(request)}/api/servers/{srv.name}/{i.role}/pull-preview"}
+        # Log in as… on each row of Environments (UX-013 §B2): its production, its test, its stagings here
+        staging_now = await staging_states(staging_rows(srv.name))
+        row_login_as = {}
+        for i in srv.instances.values():
+            label = inframap.public_host(i.domain or i.site) or srv.name
+            row_login_as[i.key] = login_as_offer(request, me, i, await run_state(i),
+                                                 f"{label} · Test" if i.role == "test" else label)
+        for row in staging_now:
+            prod = settings.servers[row["server"]].production
+            row_login_as[prod.key] = login_as_offer(request, me, prod, row["state"],
+                                                    inframap.public_host(prod.domain or prod.site) or row["server"])
         return _TEMPLATES.TemplateResponse(
             request,
             "server.html",
@@ -2544,7 +2595,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 "name_problems": name_problems,
                 # its copies: its test and its stagings (made beside it in its
                 # workspace); or the production it is a staging of
-                "stagings": {"rows": await staging_states(staging_rows(srv.name)),
+                "row_login_as": row_login_as,
+                "stagings": {"rows": staging_now,
                              "can": request.state.user.can("admin") and workspace_of(srv.name) is not None
                              and srv.production is not None and not staging_of,
                              # what it is a copy of, at the address the page names it by (none
@@ -2658,6 +2710,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                         "port": inst.plugin.web_port(inst),
                         # its address: its domain, else its workspace's name for it; None: none
                         "url": inst.domain or inst.site,
+                        # Log in as… on its row (UX-013 §B3): for a person only, never for a token
+                        **({"login_as": login_as_offer(request, request.state.user, inst, states[inst.key],
+                                                       inframap.public_host(inst.domain or inst.site) or srv.name)}
+                           if acts_for_a_person(request.state.user) else {}),
                     }
                     for role, inst in srv.instances.items()
                 },
@@ -3748,6 +3804,46 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                             "Log in as needs the instance's Domain name over https (server form, Edit), "
                             "with its nginx passing /.omniacli/login to OmniaCLI (README, Log in as); "
                             f"the instance is opened at {web or 'no address'}")
+
+    def login_as_offer(request: Request, me: Principal, instance: Instance, state: str | None,
+                       label: str = "") -> dict | None:
+        """«Log in as…» on a row of the environments (UX-013 §B3), decided row by row as login_as_target decides,
+        before anything is asked of the network: None, no button (no login, not a person, a role below the one
+        the environment needs); {"disabled": why} (a custom role without login_as, the environment stopped, no
+        name over HTTPS and no tunnel); else what the dialog opens with (users, url, key, label) and the
+        button's title. The routes refuse all the same: this only says beforehand what they would say."""
+        if not instance.plugin.has_login or not acts_for_a_person(me):
+            return None
+        if not reaches(role_on(me, instance.server), from_link_role(instance)):
+            return None
+        lang = request_language(request)
+        name = label or instance.key
+        why = refusal(me, "login_as", None, [instance.server])
+        if why:
+            return {"disabled": i18n.tr(lang, why)}
+        if state == "stopped":
+            return {"disabled": i18n.gettext(
+                lang, "{name} is stopped: Log in as opens Odoo, which does not answer now. Start it from its page.",
+                name=name)}
+        parts = urlsplit(instance.web_url or "")
+        local = parts.hostname in ("localhost", "127.0.0.1")
+        tunnel = local and bool(me.on_behalf) and request.headers.get(TUNNEL_HEADER) == "1"
+        if not ((parts.scheme == "https" and parts.hostname) or (local and request.url.hostname == parts.hostname)
+                or tunnel):
+            return {"disabled": i18n.gettext(
+                lang, "Log in as needs a name of the instance over HTTPS (Addresses…) or a tunnel from this OmniaCLI: "
+                      "here there is neither.")}
+        api = f"{prefix_of(request)}/api/servers/{instance.server}/{instance.role}/login-as"
+        if tunnel:
+            title = i18n.gettext(lang, "Opens Odoo in a new tab as one of its users, without their password, through a "
+                                       "tunnel from this OmniaCLI to {link}: the instance has no name that opens from "
+                                       "outside.", link=prefix_of(request).rsplit("/", 1)[-1])
+        else:
+            title = i18n.gettext(lang, "Opens Odoo of {name} in a new tab as one of its users, without their password: "
+                                       "you choose them in the list. Nothing changes in the database; the access stays "
+                                       "in the access log.", name=name)
+        return {"users": f"{api}/users", "url": api, "key": instance.key, "label": name, "title": title,
+                "tunnel": tunnel}
 
     login_path_seen: dict[str, float] = {}
     LOGIN_PATH_TRIES, LOGIN_PATH_PAUSE = 10, 1.0
@@ -4905,12 +5001,36 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
 
 
-    @app.get("/workspaces", dependencies=[Depends(admin)])
-    async def workspaces_page(request: Request):
-        """The customers' workspaces (users of the machine only)."""
+    def reads_workspaces(me: Principal) -> bool:
+        """Who reads the list of the workspaces (UX-013 §A7): the machine's admins; a linked OmniaCLI for its person,
+        whatever the link's role (below admin its rows read only: can_open); a person of workspaces whose menu has
+        the Workspaces entry (D2), its own ones only. Not the machine's developers and users."""
+        if me.scoped:
+            return workspaces_menu(me)
+        return me.can("admin") or me.kind == "link"
+
+    @app.get("/workspaces")
+    async def workspaces_page(request: Request, me: Principal = Depends(current_user)):
+        """The workspaces of this machine and of its links (UX-013 §A): the page of the menu's Workspaces, its
+        rows drawn by its script from /api/workspaces/list, machine by machine; the form of a workspace of the
+        machine (?edit=<name>, ?new) for the machine's admins."""
+        if not reads_workspaces(me) or (not me.scoped and not me.can("admin")):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "The admin role is required")
+        form = "edit" in request.query_params or "new" in request.query_params
+        if form and me.scoped:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "The admin role of the machine is required")
+        if me.scoped:
+            # a person of workspaces: its list only; no form, disk, templates or machine of the machine
+            return _TEMPLATES.TemplateResponse(request, "workspaces.html", {
+                "form": False, "links": [], "machine_column": False, "storage_roots": {}, "storage_error": None,
+                "templates": [], "workspaces": [], "can_create": False, "here_name": "",
+                "two_step_in_row": TWO_STEP_IN_ROW, "open_in_rows": OPEN_IN_INSTANCE_ROWS})
+        links = listed_links(me)
         return _TEMPLATES.TemplateResponse(
             request, "workspaces.html",
-            {"workspaces": workspace_rows(), "workspaces_file": settings.workspaces_file,
+            {"form": form, "links": links, "machine_column": bool(links), "can_create": True,
+             "here_name": shown_name(me), "two_step_in_row": TWO_STEP_IN_ROW, "open_in_rows": OPEN_IN_INSTANCE_ROWS,
+             "workspaces": workspace_rows(), "workspaces_file": settings.workspaces_file,
              "servers": sorted(settings.servers), "users": sorted(settings.users),
              "user_roles": {n: settings.user_role(n) for n in settings.users},
              "storage_roots": settings.storage_roots, "storage_error": settings.storage_error,
@@ -4976,15 +5096,19 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 "series": {name: sampler.workspace_series(name, since) for name in settings.workspaces} if since else {}}
 
     @app.get("/api/workspaces/{workspace}/load")
-    async def workspace_load(workspace: str, since: int = 0):
+    async def workspace_load(workspace: str, since: int = 0, disk: bool = True, me: Principal = Depends(current_user)):
         """One workspace's load for its members (the Dashboard): its points
         after since (metrics.py), its limits, and its disk, used and size, in
-        bytes. Not the machine's load, nor the room of its real disk."""
+        bytes. Not the machine's load; the room of its real disk (real: free
+        and total) for the machine's admins only (UX-013 §A5, Use now)."""
         ws = settings.workspaces.get(workspace)
         if ws is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"No workspace {workspace}")
-        disk, disk_error = None, ""
-        if settings.storage_problem(ws):
+        asked, disk, disk_error, real = disk, None, "", None
+        if not asked:
+            # the points only: the list's Use now reads the disks once, when it opens
+            pass
+        elif settings.storage_problem(ws):
             disk_error = "its storage is not usable: ask an admin"
         elif ws.storage:
             try:
@@ -4992,13 +5116,16 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             except workspaceops.SpaceError:
                 disk_error = "the disk cannot be read now"
             else:
-                fill = workspaceops.filled(workspaceops.room(found, settings.workspaces, ws.storage, ws.name), ws)
+                r = workspaceops.room(found, settings.workspaces, ws.storage, ws.name)
+                fill = workspaceops.filled(r, ws)
                 if fill is not None:
                     # its file system, as df inside says it (not what its image takes on the real disk)
                     disk = {**fill, "forecast": disk_history.workspace_forecast(ws.name)}
+                if r is not None and machine_admin(me):
+                    real = {"free": r["free"], "total": r["total"]}
         return {"interval": 5, "points": sampler.workspace_series(ws.name, since),
                 "limits": {k: ws.limits.get(k) for k in ("cpus", "memory_gb", "disk_gb")},
-                "disk": disk, "disk_error": disk_error}
+                "disk": disk, "disk_error": disk_error, "real": real}
 
     @app.get("/api/workspaces/space", dependencies=[Depends(admin)])
     async def workspaces_space():
@@ -6001,18 +6128,22 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return out
 
     @app.get("/api/servers/{server}/stagings/elsewhere", dependencies=[Depends(admin)])
-    async def stagings_elsewhere(server: str, me: Principal = Depends(current_user)):
+    async def stagings_elsewhere(request: Request, server: str, me: Principal = Depends(current_user)):
         """The stagings of server's production made on the linked machines
         (UX-008 §5.1): each link's /api/instances, the servers whose production
         is server of this machine; a link that does not answer is left out
-        and named. For an admin of this machine, as New staging's choice."""
+        and named. For an admin of this machine, as New staging's choice;
+        with each one's Log in as… as its machine decides it (UX-013 §B2)."""
         if not chooses_machine(me) or server not in settings.servers:
             return {"stagings": [], "unread": []}
         here = here_name()
 
         async def ask(name: str):
             link = settings.link_targets[name]
-            headers = {**link_headers(link, me.name, me.role), "Accept": "application/json"}
+            headers = {**link_headers(link, me.name, me.role), "Accept": "application/json",
+                       "Accept-Language": request_language(request)}
+            if tunnel_reaches_browser(request):
+                headers[TUNNEL_HEADER] = "1"
             try:
                 resp = await link_clients.client(link).get("/api/instances", headers=headers, timeout=LIST_TIMEOUT)
                 data = clock.answered_here(resp, resp.json()) if resp.status_code == 200 else None
@@ -6023,7 +6154,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return name, [{"link": name, "server": str(srv.get("name") or ""), "created": srv.get("created") or "",
                            "state": ((srv.get("instances") or {}).get("production") or {}).get("state") or "",
                            # its page: through this machine's link, for who logs in here
-                           "url": f"/links/{name}/servers/{srv.get('name')}" if me.kind == "user" else None}
+                           "url": f"/links/{name}/servers/{srv.get('name')}" if me.kind == "user" else None,
+                           # its Log in as… there, under the link's prefix (an older OmniaCLI sends none: no button)
+                           "login_as": ((srv.get("instances") or {}).get("production") or {}).get("login_as")
+                           if me.kind == "user" else None}
                           for srv in data.get("servers") or [] if isinstance(srv, dict)
                           and srv.get("parent") == server and srv.get("parent_machine") == here]
         answers = await asyncio.gather(*(ask(n) for n in sorted(settings.link_targets)))
@@ -11270,7 +11404,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                   ("/tunnels", t("Tunnels"), t("Ports of the instances reached from your computer"), me.kind == "user" and not getattr(request.state, "prefix", ""))),
             group(t("People and access"),
                   ("/users", t("Users"), t("Who logs in, with which role"), admin_here),
-                  ("/workspaces", t("Workspaces"), t("Customers' closed parts of the machine: their instances, users, limits and names"), admin_here),
+                  ("/workspaces", t("Workspaces"), t("Customers' closed parts of the machine: their instances, users, limits and names"),
+                   # UX-013 D3: the list is the menu's Workspaces, not a second one here
+                   admin_here and WORKSPACES_IN_SETTINGS),
                   ("/credentials", t("Git credentials"), t("The git credentials of the servers and workspaces"), admin_here)),
             group(t("System"),
                   ("/plugins", t("Plugins"), t("What OmniaCLI knows how to run, besides Odoo"), admin_here),
@@ -12992,6 +13128,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"No link {name}")
         headers = {**link_headers(link, me.name, me.role), "Accept": "application/json",
                    "Accept-Language": request_language(request)}
+        if tunnel_reaches_browser(request):
+            # its rows' Log in as… (UX-013 §B4): an instance there without a name opens through a tunnel from here
+            headers[TUNNEL_HEADER] = "1"
         try:
             # in all: httpx's timeout is of each phase, and a link that answers a byte at a time never ends by it
             resp = await asyncio.wait_for(
@@ -13033,6 +13172,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         links = listed_links(me)
         return _TEMPLATES.TemplateResponse(request, "instances.html", {
             "here_name": shown_name(me), "links": links, "quick_instance": new_instance_here(me),
+            # Open ↗ beside Log in as… on the rows (UX-013 D5)
+            "open_in_rows": OPEN_IN_INSTANCE_ROWS,
             # the new instance on a link's machine too (the dialog asks each one its versions)
             "ni_links": links if me.can("admin") else []})
 
@@ -13807,6 +13948,112 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             used = {e["to"] for e in data["edges"]} | {e["from"] for e in data["edges"]}
             data["databases"] = [d for d in data["databases"] if d["id"] in used]
         return data
+
+    # --- the list of the workspaces (docs/ux/UX-013 §A): one row for each workspace of this machine, made of the
+    # map's own node of it (map_here, the same function), with what is to look at on its nodes (the same items as
+    # the map's and the bell's), its members, the Log in as… of its environments; a link's rows asked to its own
+    # route, as /api/instances does. Nothing asks the root helper or PostgreSQL while it waits but the run states.
+
+    def workspace_members(ws: Workspace) -> list[dict]:
+        """The members of ws with their role in words and their two-step verification, its admins first."""
+        return [{"name": n, "role": r, "custom": ws.member_roles.get(n, ""),
+                 "limited": len(ws.member_servers[n]) if ws.member_servers.get(n) is not None else None,
+                 "two_step": second_factors.on(n) or passkey_store.count(n) > 0}
+                for n, r in sorted(ws.members.items(), key=lambda m: (m[1] != "admin", m[0]))]
+
+    def workspace_creatable(request: Request, me: Principal) -> dict:
+        """New workspace on this machine (UX-013 §A6): for its admins, with the disk of the workspaces."""
+        lang = request_language(request)
+        if me.scoped or not me.can("admin"):
+            return {"ok": False, "why": i18n.gettext(lang, "The admin role of this machine is required")}
+        if not settings.storage_roots or settings.storage_error:
+            return {"ok": False, "why": i18n.gettext(lang, "this machine has no disk for the workspaces")}
+        try:
+            free = shutil.disk_usage(next(iter(settings.storage_roots.values()))).free
+        except OSError:
+            free = None
+        return {"ok": True, "why": "", "free": free}
+
+    async def workspace_list_here(request: Request, me: Principal) -> dict:
+        """This machine's part of the list of the workspaces, for me."""
+        shown = visible_servers(me)
+        live = [srv for srv in settings.active_servers() if shown is None or srv.name in shown]
+        map_states.update(await run_states(live))
+        data = map_here(request, me, "all", None, "")
+        if me.scoped:
+            await stagings_on_links(request, me, data)
+        machine = data["machines"][0]
+        watch = data["verdict"]["watch"]
+        mine = set(admin_workspaces(me)) if me.scoped else None
+        # the title of the job an instance is busy with, as the map's strip says it (a customer's scrubbed)
+        titles = {j["id"]: j["title"] for j in data["jobs"]}
+        rows = []
+        for node in machine["workspaces"]:
+            if mine is not None and node["name"] not in mine:
+                continue
+            ws = settings.workspaces[node["name"]]
+            ids = {node["id"], *(i["id"] for i in node["instances"])}
+            # the map's things to look at on its nodes: the same items, so the same number as the map's and the bell's
+            node["watch"] = [w for w in watch if w.get("node") in ids or set(w.get("nodes") or ()) & ids]
+            members = workspace_members(ws) if node["can_open"] else None
+            node["members_list"] = members
+            # D4: an admin without two-step verification, said in the Users cell, not among the things to look at
+            node["admins_without_two_step"] = (len([m for m in members if m["role"] == "admin" and not m["two_step"]])
+                                               if members is not None else None)
+            for inst in node["instances"]:
+                for env in (inst.get("envs") or {}).values():
+                    if env and env.get("job"):
+                        env["job_title"] = titles.get(env["job"])
+                srv = settings.servers.get(inst.get("server") or "")
+                env = (inst.get("envs") or {}).get("production")
+                if srv is not None and srv.production is not None and env is not None:
+                    env["login_as"] = login_as_offer(request, me, srv.production, env.get("state"), inst["name"])
+            rows.append(node)
+        whole = shown is None
+        return {"at": data["at"], "machine_name": machine.get("machine_name"), "workspaces": rows,
+                # the role the reader has here (through a link: the lower of the link's and the person's)
+                "viewer_role": None if me.scoped else me.role,
+                # the instances outside every workspace (A4.6): for the machine's admins
+                "loose": len(machine.get("loose") or []) if whole and me.can("admin") else None,
+                "count": len(settings.workspaces) if whole else None,
+                "creatable": workspace_creatable(request, me)}
+
+    @app.get("/api/workspaces/list")
+    async def workspaces_list(request: Request, link: str = "", me: Principal = Depends(current_user)):
+        """The workspaces of this machine ({name, link, workspaces, links, ...}: each one the map's node of it
+        with what is to look at, its members and the Log in as… of its environments), or of one link ({name,
+        link, workspaces, ...} or {name, link, error, older}), as /api/instances. A person of workspaces gets
+        those where it is admin, with no name of a machine or of another workspace (UX-013 §A7)."""
+        if not reads_workspaces(me):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "The admin role is required")
+        if not link:
+            return {"name": shown_name(me), "link": "", **await workspace_list_here(request, me),
+                    "links": listed_links(me)}
+        found, why = await link_list(request, me, link, "/api/workspaces/list")
+        if found is not None and not (isinstance(found, dict) and isinstance(found.get("workspaces"), list)):
+            found, why = None, "it did not answer a list"
+        if found is None:
+            return {"name": link, "link": link, "error": i18n.tr(request_language(request), why),
+                    # it answers, it is only older than this list
+                    "older": why == LINK_LIST_OLDER}
+        base = f"/links/{link}"
+
+        def rebased(page):
+            return base + str(page) if isinstance(page, str) and page.startswith("/") else page
+
+        rows = []
+        for node in found["workspaces"]:
+            if not isinstance(node, dict):
+                continue
+            rows.append({**node, "page": rebased(node.get("page")),
+                         "instances": [{**i, "page": rebased(i.get("page"))} for i in node.get("instances") or []
+                                       if isinstance(i, dict)],
+                         "watch": [{**w, "page": rebased(w.get("page"))} for w in node.get("watch") or []
+                                   if isinstance(w, dict)]})
+        return {"at": found.get("at"), "machine_name": found.get("machine_name"), "name": link, "link": link,
+                "workspaces": rows, "loose": found.get("loose"), "count": found.get("count"),
+                "viewer_role": found.get("viewer_role"),
+                "creatable": found.get("creatable") if isinstance(found.get("creatable"), dict) else None}
 
     # --- the bell (bell.py; README, The bell): the things to look at of the map that are new for
     # the person, from what the panel holds in memory (the map's part "now"), kept bell.EVERY seconds
