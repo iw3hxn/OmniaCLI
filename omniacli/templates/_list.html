@@ -8,7 +8,10 @@
        count; q fills it (a ?q= of the page); id may name several lists,
        space separated ("servers linked"): one field searches them all, the
        count is theirs together; wide: the field takes the whole width (the
-       Dashboard's, under the full-width row of this machine)
+       Dashboard's, under the full-width row of this machine); nothing: what
+       is said when nothing matches, {q} the words typed (else "Nothing
+       matches."); help: the field's title. In the field Esc empties it, and
+       / anywhere else on the page (not while typing) comes to it
      grouped(sections, render, id): the grouping, an option: sections of
        listgroups.sections ({name, items, groups, count}), each group a
        heading that folds, its subgroups inside it; render(items) draws the
@@ -27,9 +30,10 @@
    (bubbles; detail {searching, shown}), so a page can open its own folded
    section around the list the same way.
    OmniaList.apply(root): again, after the list was drawn again. #}
-{% macro list_search(id, placeholder, q="", wide=false) -%}
+{% macro list_search(id, placeholder, q="", wide=false, nothing="", help="") -%}
 <div class="list-search{{ ' wide' if wide }}">
-  <input type="search" data-list-search="{{ id }}" value="{{ q }}" placeholder="{{ placeholder }}" aria-label="{{ placeholder }}">
+  <input type="search" data-list-search="{{ id }}" value="{{ q }}" placeholder="{{ placeholder }}" aria-label="{{ placeholder }}"
+         {%- if nothing %} data-list-none="{{ nothing }}"{% endif %}{% if help %} title="{{ help }}"{% endif %}>
   <span class="muted list-shown" data-list-shown="{{ id }}"></span>
 </div>
 {%- endmacro %}
@@ -107,7 +111,7 @@ const OmniaList = (function () {
         empty.dataset.listEmpty = root.dataset.list;
         root.after(empty);
       }
-      empty.textContent = T.none;
+      empty.textContent = input.dataset.listNone ? input.dataset.listNone.replace("{q}", input.value.trim()) : T.none;
     } else if (empty) empty.remove();
     root.dispatchEvent(new CustomEvent("omnialist:shown", {bubbles: true, detail: {searching: wanted.length > 0, shown}}));
   }
@@ -140,10 +144,30 @@ const OmniaList = (function () {
         try { sessionStorage.setItem(key, input.value); } catch (e) { /* no storage */ }
         for (const list of listsOf(input)) apply(list);
       });
+      // Esc empties the field (a second one leaves it)
+      input.addEventListener("keydown", (event) => {
+        if (event.key !== "Escape") return;
+        event.preventDefault();
+        if (!input.value) { input.blur(); return; }
+        input.value = "";
+        input.dispatchEvent(new Event("input"));
+      });
     }
     folds(root);
     apply(root);
   }
+  // / comes to the page's first search field shown, unless one is typing or a dialog is open
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "/" || event.ctrlKey || event.metaKey || event.altKey || event.defaultPrevented) return;
+    const at = event.target;
+    if (at && (at.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(at.tagName))) return;
+    if (document.querySelector("dialog[open]")) return;
+    const field = [...document.querySelectorAll("[data-list-search]")].find((f) => f.getClientRects().length);
+    if (!field) return;
+    event.preventDefault();
+    field.focus();
+    field.select();
+  });
   return {attach, apply: (root) => { if (root) { folds(root); apply(root); } }};
 })();
 </script>

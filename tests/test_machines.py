@@ -5,6 +5,7 @@ provision.sh, then linked here through SSH."""
 
 import asyncio
 import base64
+import re
 import shlex
 import subprocess
 
@@ -12,7 +13,7 @@ import httpx
 import pytest
 import yaml
 
-from omniacli import machines, sshlinks
+from omniacli import listgroups, machines, sshlinks
 from omniacli.app import create_app
 from omniacli.auth import hash_token
 from omniacli.jobs import Job, JobFailed
@@ -215,6 +216,48 @@ async def test_an_admin_adds_a_machine(client, monkeypatch):
     assert set(cards) == {"acme-cloud", "203-0-113-11"}
     assert cards["acme-cloud"]["linked"] and cards["acme-cloud"]["job"]["status"] == "failed"
     assert machines.STEPS[cards["acme-cloud"]["job"]["step"]] == "the link "
+
+
+async def test_the_servers_show_as_cards_or_as_a_list(client):
+    """Cards | List (Matteo, 23/11/2026: with many servers the list reads better than the cards): a segmented
+    switch in the page head, the search of the list widget with its own empty state, the list's columns that
+    sort, and the linked servers' groups the rows go under."""
+    client.settings.groups = listgroups.parse_lists({"lists": {"links": [
+        {"name": "Customers", "members": ["acme-*"]}]}})
+    page = (await client.get("/machines?q=acme", headers=as_user("admin"))).text
+    # the switch: two options, each saying with its title what it shows (a title other than its text)
+    switch = re.search(r'<div class="segmented" role="group" id="m-views" aria-label="[^"]+">(.*?)</div>', page, re.S)
+    assert switch, "the switch Cards | List is in the page head"
+    options = re.findall(r'<button type="button" data-view="(\w+)" aria-pressed="false"\s+title="([^"]+)">([^<]+)</button>',
+                         switch[1])
+    assert [o[0] for o in options] == ["cards", "list"]
+    assert all(title.strip() and title.strip() != text.strip() for _, title, text in options)
+    # its choice: ?view= first, then the one kept in this browser, then the list beyond MANY servers
+    assert 'const MANY = 6, VIEW_KEY = "omniacli.machines.view", SORT_KEY = "omniacli.machines.sort"' in page
+    assert 'new URLSearchParams(location.search).get("view")' in page and "localStorage.getItem(VIEW_KEY)" in page
+    # the search: the list widget's field, filled by ?q=, its empty state and its help
+    field = re.search(r'<input type="search" data-list-search="machines"[^>]*>', page)
+    assert field and 'value="acme"' in field[0]
+    assert 'data-list-none="No server for &#34;{q}&#34;"' in field[0] and "Esc empties it" in field[0]
+    assert '<div id="m-list" data-list="machines"></div>' in page and "OmniaList.attach(list)" in page
+    # the list widget: Esc empties a field, / comes to the first one shown
+    assert 'event.key !== "Escape"' in page and 'event.key !== "/"' in page
+    # the list's columns, and the ones that sort
+    columns = re.search(r"const COLUMNS = \[(.*?)\];", page, re.S)[1]
+    assert re.findall(r'\["(\w+)", "\w*"\]', columns) == ["state", "name", "instances", "cpu", "ram", "disk", "version", "act"]
+    for key in ("name", "instances", "cpu", "ram", "disk", "version"):
+        assert re.search(rf"^    {key}: \(i\) =>", page, re.M), f"{key} sorts"
+        assert re.search(rf'^      {key}: "Sorts the servers by', page, re.M), f"the header of {key} has its title"
+    # the groups the rows go under: the linked servers' (Edit groups)
+    assert 'const GROUPS = [{"members": ["acme-*"], "name": "Customers"}];' in page
+
+
+async def test_the_servers_list_in_italian(client):
+    client.cookies.set("omniacli_lang", "it")
+    page = (await client.get("/machines", headers=as_user("admin"))).text
+    assert ">Kanban</button>" in page and ">Elenco</button>" in page
+    assert 'data-list-none="Nessun server per &#34;{q}&#34;"' in page
+    assert "Cerca server, indirizzo, istanza, workspace, database, branch, versione…" in page
 
 
 def test_the_progress_of_an_add_job():

@@ -10672,6 +10672,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             "provision_key": provision_key,
             "package_url": machines.PACKAGE_URL, "link_user": machines.LINK_USER,
             "machines": machine_cards(request_language(request)),
+            # the linked servers' groups (Edit groups, the Dashboard's Linked): the machines are links
+            "groups": [g.to_dict() for g in settings.groups.get("links", [])],
         })
 
     def machine_cards(lang: str = "en") -> list[dict]:

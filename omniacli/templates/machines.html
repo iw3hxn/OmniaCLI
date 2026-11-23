@@ -1,11 +1,16 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
-{# Machines: the servers prepared from here as cards (their state through
-   the link, their load and disk read through it), the ones being prepared
-   with their steps, and Add a server in a dialog of two steps (machines.py). -#}
+{# Machines: the servers prepared from here as cards or as a list (their state
+   through the link, their load and disk read through it), the ones being
+   prepared with their steps, and Add a server in a dialog of two steps
+   (machines.py). Cards | List: the same machines, the list one row each in
+   columns that sort, both under the linked servers' groups (Edit groups) and
+   searched by the list widget (_list.html). -#}
 {% extends "base.html" %}
 {% block title %}{{ _("Machines") }} · {{ brand.name }}{% endblock %}
 {% block crumbs %}{% endblock %}
 {% block content %}
+{% from "_list.html" import list_search with context %}
+{% include "_list.html" %}
 <style>
 .m-summary { display: flex; gap: 18px; flex-wrap: wrap; color: var(--muted); font-size: 13px; margin: -6px 0 18px; }
 .m-summary b { color: var(--text); font-size: 15px; margin-right: 4px; }
@@ -67,6 +72,42 @@
 .m-more-items button { display: block; width: 100%; text-align: left; border: 0; box-shadow: none; background: none; padding: 7px 10px; }
 .m-more-items button:hover { background: var(--panel-2); }
 .m-more-items button.danger { color: var(--err); }
+/* the menu of a row opens where there is room, above the table's own scrolling (placed by the script) */
+.m-more.m-fixed .m-more-items { position: fixed; bottom: auto; right: auto; }
+/* the list (Cards | List): one row per machine, the columns of every group's table aligned */
+.m-head-tools { display: flex; align-items: center; gap: 10px 16px; flex-wrap: wrap; margin: -6px 0 14px; }
+.m-head-tools .m-summary { margin: 0; }
+#m-search-box { flex: 1 1 320px; } .m-head-tools .list-search { margin: 0; }
+.m-box { padding: 0; overflow: hidden; }
+.m-scroll { overflow-x: auto; }
+.m-rows { table-layout: fixed; min-width: 1180px; }
+.m-rows col.c-state { width: 140px; } .m-rows col.c-inst { width: 100px; } .m-rows col.c-cpu { width: 150px; }
+.m-rows col.c-ram { width: 76px; } .m-rows col.c-disk { width: 150px; } .m-rows col.c-ver { width: 180px; } .m-rows col.c-act { width: 180px; }
+.m-rows td { vertical-align: middle; }
+.m-rows tbody tr { height: 56px; }
+.m-rows th[aria-sort] { padding: 0; }
+.m-rows .m-sort { width: 100%; text-align: left; border: 0; border-radius: 0; background: none; box-shadow: none; padding: 9px 12px;
+  font: inherit; color: inherit; text-transform: inherit; letter-spacing: inherit; white-space: nowrap; }
+.m-rows .m-sort:hover { color: var(--text); background: none; }
+.m-rows th[aria-sort="ascending"] .m-sort, .m-rows th[aria-sort="descending"] .m-sort { color: var(--text); }
+.m-rows .m-arrow { display: inline-block; width: 1em; margin-left: 4px; }
+.m-rows .m-name { overflow: hidden; }
+.m-rows .m-name a, .m-rows .m-name b { font-weight: 650; color: var(--text); }
+.m-rows .m-name a:hover { color: var(--accent); }
+.m-rows .m-line { display: block; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.m-rows .m-line.err { color: var(--err); white-space: normal; overflow-wrap: anywhere; }
+.m-rows .num { font-variant-numeric: tabular-nums; }
+.m-rows .m-pct { font-weight: 600; font-variant-numeric: tabular-nums; }
+.m-rows .m-cpu .m-pct { display: inline-block; min-width: 3.2em; text-align: right; }
+.m-rows .m-pct.warn { color: var(--warn); } .m-rows .m-pct.err { color: var(--err); }
+.m-rows .m-cpu { display: flex; align-items: center; gap: 8px; }
+.m-rows .m-spark { width: 72px; height: 18px; margin: 0; flex: none; }
+.m-rows .m-ver .mono { display: block; }
+.m-rows .m-ver .m-newer { display: block; font-size: 12px; color: var(--warn); font-weight: 600; }
+.m-rows a.m-newer { text-decoration: underline; }
+.m-rows .m-acts > div { display: flex; gap: 6px; align-items: center; justify-content: flex-end; }
+.m-rows .m-acts .button, .m-rows .m-acts button { padding: 3px 10px; font-size: 13px; white-space: nowrap; }
+.m-rows .m-acts .m-more > summary { padding: 2px 8px; }
 .m-empty { text-align: center; padding: 48px 24px; }
 .m-empty-icon { width: 72px; height: 72px; margin: 0 auto 16px; border-radius: 20px; display: grid; place-items: center;
   background: var(--accent-soft); color: var(--accent); }
@@ -118,6 +159,14 @@
 <div class="page-head">
   <div><h1>{{ _("Servers") }}</h1></div>
   <div class="actions">
+    {# Cards | List (README, Machines): ?view= wins, else the viewer's choice kept in this browser, else the list
+       beyond MANY servers on a screen wider than a phone #}
+    <div class="segmented" role="group" id="m-views" aria-label="{{ _('How the servers are shown') }}">
+      <button type="button" data-view="cards" aria-pressed="false"
+              title="{{ _('Shows each server as a card: its load as tiles, where its customers log in, the steps of one being prepared') }}">{{ _("Cards") }}</button>
+      <button type="button" data-view="list" aria-pressed="false"
+              title="{{ _('Shows one row per server, to compare many at a glance: state, load, disk and version in columns that sort') }}">{{ _("List") }}</button>
+    </div>
     {# README, Update OmniaCLI: the machines whose own source has a newer signed version, one after the other #}
     <button type="button" id="m-update-all" hidden
             title="{{ _('Updates OmniaCLI on every machine here where a newer version is published, one after the other; the first that fails stops the others') }}">{{ _("Update all…") }}</button>
@@ -127,8 +176,13 @@
 </div>
 {% if not provision_key %}<div class="banner">{{ _("OmniaCLI's key cannot be made: see its log.") }}</div>{% endif %}
 
-<div class="m-summary" id="m-summary" hidden></div>
-<div class="m-grid" id="m-grid"></div>
+<div class="m-head-tools">
+  <div class="m-summary" id="m-summary" hidden></div>
+  <div id="m-search-box" hidden>{{ list_search("machines", _("Search server, address, instance, workspace, database, branch, version…"),
+    request.query_params.get("q", ""), nothing=_('No server for "{q}"'),
+    help=_("Shows only the servers whose card or row holds every word typed, or whose instances, workspaces, databases or branches do. / comes here, Esc empties it.")) }}</div>
+</div>
+<div id="m-list" data-list="machines"></div>
 
 <section class="panel m-empty" id="m-empty" hidden>
   <div class="m-empty-icon"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01M11 7.5h6M11 16.5h6"/></svg></div>
@@ -272,12 +326,37 @@
     portal: {{ _("The customers log in at") | tojson }}, noPortal: {{ _("The customers' portal has no address yet.") | tojson }},
     noPortalGo: {{ _("Give it one") | tojson }},
     noPortalTitle: {{ _("Opens the Options of that machine, where its customers' portal gets its address") | tojson }},
+    others: {{ _("Others") | tojson }},
+    groupTitle: {{ _("Folds or shows this group. The choice is kept in this browser.") | tojson }},
+    colState: {{ _("State") | tojson }}, colStateTitle: {{ _("Whether its OmniaCLI answers through the link, or how far its preparation is") | tojson }},
+    colServer: {{ _("Server") | tojson }}, colInstances: {{ _("Instances") | tojson }}, colCpu: {{ _("CPU") | tojson }},
+    colRam: {{ _("RAM") | tojson }}, colDisk: {{ _("Disk") | tojson }}, colVersion: {{ _("OmniaCLI") | tojson }},
+    colActions: {{ _("Actions") | tojson }},
+    sortTitle: {
+      name: {{ _("Sorts the servers by name; once more, the other way round") | tojson }},
+      instances: {{ _("Sorts the servers by their productions, the most first; once more, the other way round") | tojson }},
+      cpu: {{ _("Sorts the servers by CPU of the last 30 seconds, the busiest first; once more, the other way round") | tojson }},
+      ram: {{ _("Sorts the servers by memory in use, the fullest first; once more, the other way round") | tojson }},
+      disk: {{ _("Sorts the servers by the main disk used, the fullest first; once more, the other way round") | tojson }},
+      version: {{ _("Sorts the servers by OmniaCLI's version, the oldest first; once more, the other way round") | tojson }},
+    },
+    cpuTitle: {{ _("CPU of the whole machine, mean of the last 30 seconds; the line: the last 15 minutes") | tojson }},
+    instancesTitle: {{ _("Its productions: {names}") | tojson }},
+    plusStagings: {{ _("+ {count} stagings") | tojson }}, plusStaging: {{ _("+ 1 staging") | tojson }},
     steps: [{{ _("Connecting") | tojson }}, {{ _("The system") | tojson }}, {{ _("Updates") | tojson }},
             {{ _("nginx, certbot and Docker") | tojson }}, "OmniaCLI", {{ _("The link back") | tojson }},
             {{ _("The link's token") | tojson }}, {{ _("The Odoo instances") | tojson }}, {{ _("The firewall") | tojson }},
             {{ _("The link") | tojson }}, {{ _("The instances in OmniaCLI") | tojson }}],
   };
-  const grid = document.getElementById("m-grid"), empty = document.getElementById("m-empty");
+  const list = document.getElementById("m-list"), empty = document.getElementById("m-empty");
+  const searchBox = document.getElementById("m-search-box"), searchField = searchBox.querySelector("[data-list-search]");
+  // the linked servers' groups (Edit groups): the machines are links, grouped as on the Dashboard's Linked
+  const GROUPS = {{ groups | tojson }};
+  // beyond this many servers (this one counted) the list is the default view and the search shows: more cards
+  // than a 1440 × 900 screen holds above the fold
+  const MANY = 6, VIEW_KEY = "omniacli.machines.view", SORT_KEY = "omniacli.machines.sort";
+  let view = "cards", sort = {key: "", dir: 1};
+  try { const kept = JSON.parse(localStorage.getItem(SORT_KEY) || "null"); if (kept && kept.key) sort = kept; } catch (e) { /* no storage */ }
   const summary = document.getElementById("m-summary");
   const stats = {};   // name: what its OmniaCLI said through the link, kept between redraws
   let updating = false;   // Update all… runs: its button is left as it is meanwhile
@@ -310,12 +389,27 @@
     return el("div", {class: "m-meter"}, el("div", {class: "label", text: label}),
               el("div", {class: "value"}, String(value), el("small", {text: unit})), el("div", {class: "m-bar"}, bar), extra);
   }
-  function spark(points) {
+  function spark(series) {
+    // the last 15 minutes (a sample every 5 s): one point every 15 s, the mean of three
+    const points = [];
+    for (let i = 0; i < series.length; i += 3) {
+      const part = series.slice(i, i + 3);
+      points.push(part.reduce((a, b) => a + b, 0) / part.length);
+    }
     if (points.length < 2) return null;
     const w = 120, h = 22, max = Math.max(5, ...points);
     const d = points.map((p, i) => `${(i / (points.length - 1) * w).toFixed(1)},${(h - 1 - p / max * (h - 2)).toFixed(1)}`).join(" ");
     return svg(`<svg class="m-spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true"><polyline fill="none" stroke="currentColor" stroke-width="1.5" points="${d}"/></svg>`);
   }
+
+  // a newer OmniaCLI: said by the machine itself (its own source), or, for one older than the update from the
+  // panel, by this one's; the first opens the dialog on its page, the second is done once by hand
+  function newerOf(s) {
+    if (!s || s.error) return null;
+    return s.update ? s.update.available : (central && central.latest && older(s.version, central.latest) ? central.latest : null);
+  }
+  const addressOf = (card) => (card.port && card.port !== 22 ? `${card.host}:${card.port}` : card.host);
+  const nameOf = (card) => (card.local ? T.here : card.name);
 
   function body(card, state) {
     const box = el("div", {class: "mcard-body"});
@@ -350,9 +444,7 @@
     if (s.stagings) facts.append(el("span", {text: s.stagings === 1 ? T.staging : fill(T.stagings, {count: s.stagings})}));
     if (s.cores) facts.append(el("span", {text: fill(T.cores, {count: s.cores})}));
     if (s.version) facts.append(el("span", {text: fill(T.version, {version: s.version})}));
-    // a newer OmniaCLI: said by the machine itself (its own source), or, for one older than the update from the
-    // panel, by this one's; the first opens the dialog on its page, the second is done once by hand
-    const newer = s.update ? s.update.available : (central && central.latest && older(s.version, central.latest) ? central.latest : null);
+    const newer = newerOf(s);
     if (newer) {
       const unsigned = s.update && !s.update.signed;
       const said = {class: "m-newer", text: fill(unsigned ? T.unsigned : T.available, {version: newer})};
@@ -374,41 +466,213 @@
     return box;
   }
 
-  function foot(card, state) {
-    const row = el("div", {class: "mcard-foot"});
-    const base = `${baseOf(card)}/`;
-    if (card.job && state !== "up") row.append(el("a", {class: "button", href: `${PREFIX}/jobs/${card.job.id}`, text: T.log, title: T.logTitle}));
-    if (state === "failed") row.append(el("button", {type: "button", text: T.retry, title: T.retryTitle, onclick: () => openWizard(card)}));
+  // the actions of a machine, the same on its card and its row: the log and Try again of a preparation, Open,
+  // and the "⋯" menu of a linked one
+  function actions(card, state) {
+    const out = [];
+    if (card.job && state !== "up") out.push(el("a", {class: "button", href: `${PREFIX}/jobs/${card.job.id}`, text: T.log, title: T.logTitle}));
+    if (state === "failed") out.push(el("button", {type: "button", text: T.retry, title: T.retryTitle, onclick: () => openWizard(card)}));
     if (card.linked && state !== "preparing") {
-      row.append(el("a", {class: "button", href: base, text: T.open, title: fill(T.openTitle, {name: card.local ? T.here : card.name})}));
+      out.push(el("a", {class: "button", href: `${baseOf(card)}/`, text: T.open, title: fill(T.openTitle, {name: nameOf(card)})}));
     }
-    row.append(el("span", {class: "grow"}));
-    if (card.linked && !card.local) {
-      const items = el("div", {class: "m-more-items"},
-        el("button", {type: "button", text: T.test, title: T.testTitle, onclick: (e) => testLink(card, e.target)}),
-        el("button", {type: "button", class: "danger", text: T.remove + "…", title: T.removeHelp, onclick: () => askRemove(card)}));
-      row.append(el("details", {class: "m-more"}, el("summary", {"aria-label": T.moreTitle, title: T.moreTitle, text: "⋯"}), items));
+    return out;
+  }
+  function more(card) {
+    if (!card.linked || card.local) return null;
+    const items = el("div", {class: "m-more-items"},
+      el("button", {type: "button", text: T.test, title: T.testTitle, onclick: (e) => testLink(card, e.target)}),
+      el("button", {type: "button", class: "danger", text: T.remove + "…", title: T.removeHelp, onclick: () => askRemove(card)}));
+    return el("details", {class: "m-more"}, el("summary", {"aria-label": T.moreTitle, title: T.moreTitle, text: "⋯"}), items);
+  }
+  function foot(card, state) {
+    return el("div", {class: "mcard-foot"}, ...actions(card, state), el("span", {class: "grow"}), more(card));
+  }
+
+  // the words the search finds a machine by: what its card and its row show, its groups, and the names of what
+  // it holds (instances, workspaces, databases, branches, addresses, Odoo versions), as the Dashboard's lists
+  function searchText(card, state, groups) {
+    const s = stats[card.name], parts = [nameOf(card), card.name, addressOf(card) || "", T[state], ...groups];
+    if (card.detail) parts.push(card.detail);
+    if (card.job && card.job.error) parts.push(card.job.error);
+    if (s && s.error) parts.push(s.error);
+    if (s && !s.error) {
+      if (s.version) parts.push(s.version, fill(T.version, {version: s.version}));
+      const newer = newerOf(s);
+      if (newer) parts.push(fill(T.available, {version: newer}));
+      if (s.portal) parts.push(s.portal);
+      parts.push(...(s.words || []));
     }
-    return row;
+    return parts.join(" ").toLowerCase();
+  }
+
+  function cardOf(item) {
+    const {card, state} = item;
+    const name = card.linked ? el("a", {href: `${baseOf(card)}/`, text: nameOf(card)}) : card.name;
+    return el("article", {class: "mcard", "data-machine": card.name, "data-list-item": "", "data-text": item.text},
+      el("div", {class: "mcard-head"}, el("div", {class: "mcard-icon"}, svg(ICON)),
+         el("div", {class: "mcard-title"}, el("h3", {}, name), el("span", {class: "mono", text: addressOf(card) || ""})),
+         el("span", {class: `m-state ${state}`}, el("i"), T[state])),
+      body(card, state), foot(card, state));
+  }
+
+  // List: one row per machine, in columns that sort
+  const DOT = {up: "running", starting: "busy", preparing: "busy", down: "stopped", failed: "stopped"};
+  const COLUMNS = [["state", ""], ["name", "colServer"], ["instances", "colInstances"], ["cpu", "colCpu"], ["ram", "colRam"],
+                   ["disk", "colDisk"], ["version", "colVersion"], ["act", ""]];
+  const VALUE = {
+    name: (i) => (i.card.local ? "" : i.card.name.toLowerCase()),
+    instances: (i) => (stats[i.card.name] || {}).instances,
+    cpu: (i) => (stats[i.card.name] || {}).cpu,
+    ram: (i) => (stats[i.card.name] || {}).ram,
+    disk: (i) => ((stats[i.card.name] || {}).disk || {}).percent,
+    version: (i) => (stats[i.card.name] || {}).version,
+  };
+  // the first click: names and versions from the first (the oldest), numbers from the largest
+  const FIRST = {name: 1, version: 1, instances: -1, cpu: -1, ram: -1, disk: -1};
+  function sorted(items) {
+    if (!sort.key || !VALUE[sort.key]) return items;
+    const get = VALUE[sort.key];
+    return [...items].sort((a, b) => {
+      const x = get(a), y = get(b);
+      // what is not known (a machine offline, still asked) goes last either way
+      const xn = x === null || x === undefined, yn = y === null || y === undefined;
+      if (xn || yn) return xn === yn ? 0 : xn ? 1 : -1;
+      const order = sort.key === "version" ? (older(x, y) ? -1 : older(y, x) ? 1 : 0)
+        : typeof x === "string" ? x.localeCompare(y) : x - y;
+      return order * sort.dir;
+    });
+  }
+  function head() {
+    const row = el("tr");
+    for (const [key, label] of COLUMNS) {
+      if (key === "state") { row.append(el("th", {title: T.colStateTitle, text: T.colState})); continue; }
+      if (key === "act") { row.append(el("th", {"aria-label": T.colActions})); continue; }
+      const on = sort.key === key;
+      const arrow = el("span", {class: "m-arrow", "aria-hidden": "true", text: on ? (sort.dir > 0 ? "▲" : "▼") : ""});
+      row.append(el("th", {"aria-sort": on ? (sort.dir > 0 ? "ascending" : "descending") : "none"},
+        el("button", {type: "button", class: "m-sort", "data-sort": key, title: T.sortTitle[key],
+                      onclick: () => sortBy(key)}, T[label], arrow)));
+    }
+    return el("thead", {}, row);
+  }
+  function sortBy(key) {
+    sort = sort.key === key ? {key, dir: -sort.dir} : {key, dir: FIRST[key]};
+    try { localStorage.setItem(SORT_KEY, JSON.stringify(sort)); } catch (e) { /* no storage */ }
+    draw();
+    const again = list.querySelector(`.m-sort[data-sort="${key}"]`);
+    if (again) again.focus();
+  }
+  const dash = () => el("span", {class: "muted", text: "–"});
+  const pct = (value) => el("span", {class: `m-pct ${level(value)}`, text: `${Math.round(value)}%`});
+  function rowOf(item) {
+    const {card, state} = item, s = stats[card.name], ok = s && !s.error && state === "up";
+    const name = el("td", {class: "m-name"},
+      card.linked ? el("a", {href: `${baseOf(card)}/`, title: fill(T.openTitle, {name: nameOf(card)}), text: nameOf(card)})
+        : el("b", {text: card.name}),
+      el("span", {class: "m-line mono", text: addressOf(card) || ""}));
+    if (state === "preparing" || state === "failed") {
+      const job = card.job;
+      name.append(el("span", {class: "m-line", text: `${fill(T.step, {n: job.step + 1, total: job.steps})} · ${T.steps[job.step] || ""}`}));
+      if (state === "failed" && job.error) name.append(el("span", {class: "m-line err", text: job.error}));
+    } else if (state !== "up" && card.detail) name.append(el("span", {class: "m-line err", text: card.detail}));
+    else if (s && s.error) name.append(el("span", {class: "m-line err", text: s.error}));
+    const cells = [el("td", {}, el("span", {class: `state-dot ${DOT[state]}`, text: T[state]})), name];
+    if (ok && s.instances !== null) {
+      const td = el("td", {class: "num"}, String(s.instances));
+      if (s.names && s.names.length) td.title = fill(T.instancesTitle, {names: s.names.join(", ")});
+      if (s.stagings) td.append(el("span", {class: "m-line", text: s.stagings === 1 ? T.plusStaging : fill(T.plusStagings, {count: s.stagings})}));
+      cells.push(td);
+    } else cells.push(el("td", {}, dash()));
+    cells.push(ok && s.cpu !== null ? el("td", {title: T.cpuTitle}, el("span", {class: "m-cpu"}, pct(s.cpu), spark(s.cpuSeries))) : el("td", {}, dash()));
+    cells.push(ok && s.ram !== null ? el("td", {}, pct(s.ram)) : el("td", {}, dash()));
+    cells.push(ok && s.disk ? el("td", {}, pct(s.disk.percent), el("span", {class: "m-line", text: `${s.disk.used} ${fill(T.of, {total: s.disk.total})}`}))
+      : el("td", {}, dash()));
+    const version = el("td", {class: "m-ver"});
+    if (ok && s.version) version.append(el("span", {class: "mono", text: s.version}));
+    const newer = ok ? newerOf(s) : null;
+    if (newer) {
+      if (s.update && s.update.signed && !s.update.unavailable) {
+        version.append(el("a", {class: "m-newer", href: `${baseOf(card)}/#omniacli-update`, text: fill(T.available, {version: newer}),
+                                title: fill(T.updateTitle, {name: nameOf(card)})}));
+      } else if (s.update) {
+        version.append(el("span", {class: "m-newer", text: fill(T.unsigned, {version: newer}), title: s.update.error || T.byHand}));
+      } else version.append(el("span", {class: "m-newer", text: fill(T.available, {version: newer}), title: T.byHand}));
+    }
+    if (!version.childNodes.length) version.append(dash());
+    cells.push(version);
+    const box = el("div", {}, ...actions(card, state), more(card));
+    cells.push(el("td", {class: "m-acts"}, box));
+    return el("tr", {"data-machine": card.name, "data-list-item": "", "data-text": item.text}, ...cells);
+  }
+  function table(items) {
+    const cols = el("colgroup", {}, ...["state", "name", "inst", "cpu", "ram", "disk", "ver", "act"].map((c) => el("col", {class: `c-${c}`})));
+    return el("div", {class: "panel m-box", "data-list-box": ""}, el("div", {class: "m-scroll"},
+      el("table", {class: "m-rows"}, cols, head(), el("tbody", {}, ...sorted(items).map(rowOf)))));
+  }
+
+  // the groups (listgroups.sections, in the browser): a machine under the first group that has it, itself or in a
+  // subgroup, then under the first of its subgroups that has it; the rest under Others
+  const pattern = (member) => new RegExp(`^${member.replace(/[.+^${}()|[\]\\-]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")}$`);
+  const contains = (group, name) => (group.members || []).some((m) => pattern(m).test(name))
+    || (group.groups || []).some((g) => contains(g, name));
+  function place(items, tree) {
+    const out = [];
+    let rest = items;
+    for (const group of tree) {
+      const mine = rest.filter((i) => contains(group, i.card.name));
+      rest = rest.filter((i) => !contains(group, i.card.name));
+      const [groups, own] = place(mine, group.groups || []);
+      if (mine.length) out.push({key: group.name, label: group.name, items: own, groups, count: mine.length});
+    }
+    return [out, rest];
+  }
+  function section(sec, path, level) {
+    const here = sec.key ? `${path}/${sec.key}` : path, inner = [];
+    if (sec.items.length) inner.push(view === "list" ? table(sec.items) : el("div", {class: "m-grid"}, ...sec.items.map(cardOf)));
+    for (const sub of sec.groups) inner.push(...section(sub, here, level + 1));
+    if (!sec.key) return inner;
+    return [el("details", {class: `group list-group level-${level}`, open: "", "data-group": here},
+      el("summary", {title: T.groupTitle}, el("h2", {}, `${sec.label} `, el("span", {class: "muted list-count", text: `(${sec.count})`}))),
+      ...inner)];
+  }
+  // the words of a machine's groups, for the search
+  function groupsOf(name, tree, path = []) {
+    for (const group of tree) {
+      if (contains(group, name)) return groupsOf(name, group.groups || [], [...path, group.name]);
+    }
+    return path;
   }
 
   function draw() {
-    grid.replaceChildren();
     empty.hidden = cards.length > 0;
     const counts = {up: 0, preparing: 0};
-    for (const card of [HERE, ...cards]) {
+    const items = [HERE, ...cards].map((card) => {
       const state = stateOf(card);
       if (state in counts) counts[state] += 1;
-      const address = card.port && card.port !== 22 ? `${card.host}:${card.port}` : card.host;
-      const name = card.linked ? el("a", {href: `${baseOf(card)}/`, text: card.local ? T.here : card.name}) : card.name;
-      grid.append(el("article", {class: "mcard", "data-machine": card.name},
-        el("div", {class: "mcard-head"}, el("div", {class: "mcard-icon"}, svg(ICON)),
-           el("div", {class: "mcard-title"}, el("h3", {}, name), el("span", {class: "mono", text: address})),
-           el("span", {class: `m-state ${state}`}, el("i"), T[state])),
-        body(card, state), foot(card, state)));
+      // its groups' names; one in no group is under Others
+      const found = card.local ? [] : groupsOf(card.name, GROUPS);
+      const groups = found.length || card.local || !GROUPS.length ? found : [T.others];
+      return {card, state, text: searchText(card, state, groups)};
+    });
+    // this machine first, outside the groups; the groups only when there are some
+    let sections = [{key: "", items, groups: []}];
+    if (GROUPS.length && cards.length) {
+      const [placed, rest] = place(items.slice(1), GROUPS);
+      sections = [{key: "", items: items.slice(0, 1), groups: []}, ...placed];
+      if (rest.length) sections.push({key: "Others", label: T.others, items: rest, groups: [], count: rest.length});
     }
+    // a menu "⋯" open stays open across the redraw of every 15 s
+    const open = list.querySelector(".m-more[open]");
+    const keep = open ? open.closest("[data-machine]").dataset.machine : null;
+    list.replaceChildren(...sections.flatMap((sec) => section(sec, "", 1)));
+    if (keep) {
+      const again = list.querySelector(`[data-machine="${CSS.escape(keep)}"] .m-more`);
+      if (again) again.open = true;
+    }
+    OmniaList.apply(list);
     // this machine is one of the servers shown: it is counted with the others
     const shown = cards.length + 1;
+    searchBox.hidden = shown <= MANY && !searchField.value;
     summary.hidden = cards.length === 0;
     summary.replaceChildren(
       el("span", {}, el("b", {text: String(shown)}), shown === 1 ? T.server : T.servers),
@@ -416,6 +680,50 @@
       counts.preparing ? el("span", {}, el("b", {text: String(counts.preparing)}), T.preparingN) : "");
     if (!updating) document.getElementById("m-update-all").hidden = updatable().length < 2;
   }
+
+  // Cards | List: ?view= wins, else the choice kept in this browser, else the list beyond MANY servers on a screen
+  // wider than a phone (a phone keeps the cards: a row of actions there is a card, not a wide table)
+  const viewButtons = [...document.querySelectorAll("#m-views [data-view]")];
+  function firstView() {
+    const asked = new URLSearchParams(location.search).get("view");
+    if (asked === "cards" || asked === "list") return asked;
+    try {
+      const kept = localStorage.getItem(VIEW_KEY);
+      if (kept === "cards" || kept === "list") return kept;
+    } catch (e) { /* no storage */ }
+    return cards.length + 1 > MANY && matchMedia("(min-width: 701px)").matches ? "list" : "cards";
+  }
+  function showView(chosen, kept) {
+    view = chosen;
+    for (const button of viewButtons) button.setAttribute("aria-pressed", String(button.dataset.view === chosen));
+    if (kept) {
+      try { localStorage.setItem(VIEW_KEY, chosen); } catch (e) { /* no storage */ }
+      // an address that names the view names this one now: a reload shows what was chosen
+      const params = new URLSearchParams(location.search);
+      if (params.has("view")) {
+        params.set("view", chosen);
+        history.replaceState(null, "", `${location.pathname}?${params}${location.hash}`);
+      }
+    }
+    draw();
+  }
+  for (const button of viewButtons) button.addEventListener("click", () => showView(button.dataset.view, true));
+  // a row's menu "⋯" opens over the table's own scrolling, below its button or above it when there is no room
+  list.addEventListener("toggle", (event) => {
+    const menu = event.target;
+    if (!menu.matches || !menu.matches(".m-rows .m-more") || !menu.open) return;
+    menu.classList.add("m-fixed");
+    const items = menu.querySelector(".m-more-items"), at = menu.querySelector("summary").getBoundingClientRect();
+    const height = items.offsetHeight, width = items.offsetWidth;
+    items.style.left = `${Math.max(8, at.right - width)}px`;
+    items.style.top = `${at.bottom + 6 + height > innerHeight ? Math.max(8, at.top - 6 - height) : at.bottom + 6}px`;
+  }, true);
+  // a click elsewhere, or the page scrolled, closes the open menus
+  document.addEventListener("click", (event) => {
+    for (const menu of document.querySelectorAll(".m-more[open]")) if (!menu.contains(event.target)) menu.open = false;
+  });
+  addEventListener("scroll", () => { for (const menu of list.querySelectorAll(".m-fixed[open]")) menu.open = false; }, {passive: true});
+
 
   async function getJson(url) {
     const resp = await fetch(url, {headers: {Accept: "application/json"}}).catch(() => null);
@@ -455,12 +763,17 @@
       version: info.version, cores: metrics && metrics.cores, update,
       // where its customers log in: "" none yet, undefined an OmniaCLI of before
       portal: info.portal,
-      cpu: recent.length ? recent.reduce((a, b) => a + b, 0) / recent.length : null, cpuSeries: points.slice(-60),
+      cpu: recent.length ? recent.reduce((a, b) => a + b, 0) / recent.length : null, cpuSeries: points.slice(-180),
       disk: root ? {percent: root.used / root.total * 100, used: bytes(root.used), total: bytes(root.total)} : null,
       ram: ramPoint ? ramPoint.ram / ramPoint.ram_total * 100 : null,
       // an instance is a production; its stagings (and a test of before) are its copies
       instances: Array.isArray(servers) ? servers.filter((x) => !x.parent).length : null,
       stagings: Array.isArray(servers) ? servers.filter((x) => x.parent).length : 0,
+      names: Array.isArray(servers) ? servers.filter((x) => !x.parent).map((x) => x.name) : [],
+      // what the search finds it by besides what it shows: its instances, workspaces, databases, branches, addresses
+      words: Array.isArray(servers) ? servers.flatMap((x) => [x.name, x.workspace, x.version,
+        ...Object.values(x.instances || {}).flatMap((i) => [i.database, i.url, ...(i.repositories || []).map((r) => r.branch)])])
+        .filter((w) => w !== null && w !== undefined && w !== "").map(String) : [],
     };
   }
   async function refreshStats() {
@@ -642,7 +955,8 @@
     await refresh();
   });
 
-  draw();
+  OmniaList.attach(list);
+  showView(firstView(), false);
   refreshStats();
   timer = setTimeout(refresh, 3000);
 })();

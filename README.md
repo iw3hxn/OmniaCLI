@@ -10,8 +10,8 @@ a **test** instance. An instance has one or more git working copies, a
 database, an Odoo config file, a log file and a systemd service, an init.d
 script, or an Odoo that OmniaCLI starts itself.
 
-- **Servers**: every machine, this one and the linked ones, as a card with
-  its state, CPU, memory, disk and instances; a machine's page with its
+- **Servers**: every machine, this one and the linked ones, as a card or a
+  row of a list with its state, CPU, memory, disk and instances; a machine's page with its
   instances and stagings, its load (the last hour live, or up to 14 days) and
   its databases, which it tunes. **Instances** and **Backups**: one list of
   every machine's, with the productions that have no scheduled backup and the
@@ -74,9 +74,10 @@ each seen from its own OmniaCLI and the other through their link.
 
 ![The login page](docs/images/login.jpg)
 
-**Servers**: every machine as a card, this one and the linked ones, with its
-state, CPU, memory, disk, instances and OmniaCLI's version; **+ Add a server**
-prepares a new one (see [Machines](#machines)).
+**Servers**: every machine as a card or as a row of a list (**Kanban |
+List**), this one and the linked ones, with its state, CPU, memory, disk,
+instances and OmniaCLI's version; **+ Add a server** prepares a new one (see
+[Machines](#machines)).
 
 ![The Servers page](docs/images/machines.png)
 
@@ -1041,11 +1042,12 @@ The routes, for links in the puller only (a JSON `{"error": ...}` otherwise):
 ### Groups
 
 Every list of things (the Dashboard's Servers, Workspaces and Linked, and
-the Workspaces, Settings › Servers, Users, Links, Publications, Schedules and
-Plugins pages) is one list widget (`templates/_list.html`): its search finds
-every word typed, in any case, in the browser (`?q=` fills it). Grouping is
+the Servers, Workspaces, Settings › Servers, Users, Links, Publications,
+Schedules and Plugins pages) is one list widget (`templates/_list.html`): its
+search finds every word typed, in any case, in the browser (`?q=` fills it);
+**Esc** empties the field, **/** elsewhere on the page comes to it. Grouping is
 an option of the widget, offered by the Dashboard's **Servers** and
-**Linked**: **Edit groups** (admins, `/groups`) puts their items under
+**Linked** (whose groups the **Servers** page follows too): **Edit groups** (admins, `/groups`) puts their items under
 headings and subheadings, four levels at most, in the order you choose. A
 member is a name of the list (`srv`, `cliente`) or a pattern of names
 (`acme-*`, `*`, `?` one character); an item shows under the first group
@@ -4148,6 +4150,26 @@ new server from here, as a hosting panel does: a clean Ubuntu 22.04 or 24.04
 or Debian 11, 12 or 13 (amd64 or arm64), given by its address and an SSH user, ends
 linked to this OmniaCLI with its workspaces ready, in about 10 to 20
 minutes.
+
+**Kanban | List**, in the page head, shows the same machines as cards or
+as a list, one row each (Matteo Boscolo, 23/11/2026: with many servers the
+list reads better): state, name and address, productions (+ stagings), CPU
+of the last 30 seconds with its line of the last 15 minutes, RAM, the main
+disk used of its size, OmniaCLI's version with **X available** (it opens the
+update dialog on that machine's page), **Open** and the `⋯` menu. A click on
+a header (Server, Instances, CPU, RAM, Disk, OmniaCLI) sorts by it, again the
+other way round; a machine whose value is not known (offline, still asked)
+stays last. The view is `?view=cards` or `?view=list` when the address names
+it, else the one chosen last in this browser, else the list beyond 6 servers
+(this one counted: more cards than a 1440 × 900 screen shows above the fold)
+on a screen wider than 700 px, the cards on a phone, where the list scrolls
+inside its own box. The sort is kept in the browser too. Both views follow
+the linked servers' groups (**Edit groups**, the Dashboard's Linked: the
+machines are links), this machine on top outside them. Beyond 6 servers the
+list widget's search shows (`?q=` fills it): it finds a machine by every word
+its card or row shows, its groups, and the names of what it holds (its
+instances, workspaces, databases, branches, addresses, Odoo versions), says
+*N of M*, and *No server for "…"* when nothing matches.
 
 1. **On the server, as root, paste the command** the page shows (its
    **Copy** button): it adds OmniaCLI's provisioning key
