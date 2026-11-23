@@ -61,7 +61,8 @@
       <div class="ni-versions" id="ni-versions" role="radiogroup" aria-label="{{ _('Odoo version') }}"></div>
       <div class="ni-fields">
         <div class="wide"><label for="ni-domain">{{ _("Domain") }}</label>
-          <input type="text" id="ni-domain" class="mono" placeholder="erp.example.com" autocomplete="off" spellcheck="false">
+          <input type="text" id="ni-domain" class="mono" placeholder="erp.example.com" autocomplete="off" spellcheck="false"
+                 pattern="([A-Za-z0-9]([A-Za-z0-9\-]*[A-Za-z0-9])?\.)+[A-Za-z]{2,}">
           <div class="ni-help" id="ni-dns">{{ _("Its DNS name pointing to this server, ports 80 and 443 open: it answers there with HTTPS. Empty: added later.") }}</div></div>
         <div><label for="ni-language">{{ _("Language") }}</label>
           <select id="ni-language">
@@ -262,7 +263,7 @@
     event.preventDefault();
     const picked = versions.querySelector("input:checked");
     if (!picked || !saved.checked) return;
-    if (password.value.length < 8) { error.textContent = T.short; password.focus(); return; }
+    if (password.value.length < 8) { window.omniaFieldError(password, T.short); return; }
     error.textContent = ""; create.disabled = true; create.textContent = T.creating;
     const resp = await fetch(`${base}/api/instances/new`, {
       method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},

@@ -247,6 +247,17 @@ select, textarea { font: inherit; padding: 6px 10px; width: 100%;
   border: 1px solid var(--border-input); border-radius: var(--r); background: var(--panel); color: var(--text);
   transition: border-color var(--dur-200) var(--ease-out); }
 input:hover:not(:disabled), select:hover:not(:disabled), textarea:hover:not(:disabled) { border-color: var(--muted); }
+input:disabled, select:disabled, textarea:disabled { background: var(--panel-2); color: var(--fg-disabled); }
+/* a box to tick, a choice: 18 px in the neutral colour of what is chosen; its whole label is the target (24 px high) */
+input[type=checkbox], input[type=radio] { width: var(--checkbox); height: var(--checkbox); margin: 1px 0 0; accent-color: var(--selected);
+  flex: none; vertical-align: -4px; }
+label:has(> input[type=checkbox]), label:has(> input[type=radio]) { display: inline-flex; align-items: flex-start; gap: var(--sp-8);
+  min-height: 24px; padding-block: 2px; }
+/* what a field wants, under it; what is wrong with it, under it in red with its icon (the field says so too) */
+.hint { display: block; color: var(--muted); font-size: var(--fs-12); line-height: var(--lh-18); margin-top: var(--sp-4); }
+.field-error { display: flex; align-items: flex-start; gap: var(--sp-6); color: var(--err); font-size: var(--fs-14);
+  line-height: var(--lh-20); margin-top: var(--sp-4); }
+.field-error .i { margin-top: 2px; }
 input[aria-invalid="true"], select[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--err); }
 .job-filter select, .job-filter input { width: auto; } .job-filter input { min-width: min(16em, 100%); }
 fieldset { border: 1px solid var(--border); border-radius: var(--r-lg); margin: 0 0 16px; padding: 12px 16px; }
@@ -907,6 +918,63 @@ window.sizeText = (n) => {
     }).observe(document.body, {childList: true, subtree: true});
   });
 })();
+// the fields (UX-017 §5.6): the hint beside a field is read with it (aria-describedby); a field the browser refuses
+// (required, a pattern, a type) says why under it, aria-invalid, and the first one takes the focus; typing in it takes
+// the error away. window.omniaFieldError(field, message) does the same for a refusal of the server that names a field
+(function () {
+  let count = 0;
+  const HINTS = ".hint, .ni-help, .sd-help, .oc-help, .fb-name-help";
+  const idOf = (node) => node.id || (node.id = "field-note-" + (++count));
+  const describe = (field, node) => {
+    const ids = (field.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean);
+    if (!ids.includes(idOf(node))) field.setAttribute("aria-describedby", [...ids, node.id].join(" "));
+  };
+  function hints(root) {
+    if (!root.querySelectorAll) return;
+    for (const hint of root.querySelectorAll(HINTS)) {
+      const box = hint.parentElement;
+      const field = box && box.querySelector("input:not([type=hidden]):not([type=checkbox]):not([type=radio]), select, textarea");
+      if (field && !field.contains(hint)) describe(field, hint);
+    }
+  }
+  function clear(field) {
+    field.removeAttribute("aria-invalid");
+    const note = field.dataset.errorId && document.getElementById(field.dataset.errorId);
+    if (note) note.remove();
+    const ids = (field.getAttribute("aria-describedby") || "").split(/\s+/).filter((id) => id && id !== field.dataset.errorId);
+    if (ids.length) field.setAttribute("aria-describedby", ids.join(" ")); else field.removeAttribute("aria-describedby");
+    delete field.dataset.errorId;
+  }
+  window.omniaFieldError = (field, message, focus = true) => {
+    clear(field);
+    const note = document.createElement("span");
+    note.className = "field-error";
+    note.append(window.omniaIcon("circle-x"), document.createTextNode(message));
+    field.dataset.errorId = idOf(note);
+    (field.closest("label") || field).after(note);
+    field.setAttribute("aria-invalid", "true");
+    describe(field, note);
+    if (focus) field.focus();
+  };
+  // the browser's own check: shown on the page, in its words, under the field
+  document.addEventListener("invalid", (event) => {
+    const field = event.target;
+    if (!(field instanceof HTMLElement) || !field.form) return;
+    event.preventDefault();
+    const first = [...field.form.elements].find((f) => f.willValidate && !f.validity.valid);
+    window.omniaFieldError(field, field.validationMessage, first === field);
+  }, true);
+  document.addEventListener("input", (event) => {
+    const field = event.target;
+    if (field instanceof HTMLElement && field.getAttribute("aria-invalid") === "true") clear(field);
+  });
+  document.addEventListener("DOMContentLoaded", () => {
+    hints(document);
+    new MutationObserver((changes) => {
+      for (const change of changes) for (const node of change.addedNodes) if (node.nodeType === 1) hints(node.parentElement || node);
+    }).observe(document.body, {childList: true, subtree: true});
+  });
+})();
 // an icon of the sprite (_sprite.html, Lucide) for the pages' scripts: the same node as _icons.html's icon(); decorative
 // unless label names it (the only bearer of the meaning)
 // a moving thing stops after 5 s (UX-017 §2.8, WCAG 2.2.2): when the state it shows changes, it moves again
@@ -1025,7 +1093,7 @@ window.omniaMarked = (name, text, className = "") => {
   // the tabs (UX-017 §5.3), every [role=tablist] of the page: the arrows move the focus (round), Home and End to the
   // first and the last; one tab in the order of Tab (the chosen one); Enter or Space chooses (the page's own click:
   // a tab that reads from the server reads only when chosen). Each panel named by its tab
-  const tabsOf = (list) => [...list.querySelectorAll('[role="tab"]')].filter((t) => t.closest('[role="tablist"]') === list);
+  const tabsOf = (list) => [...list.querySelectorAll('[role=tab]')].filter((t) => t.closest('[role=tablist]') === list);
   const usable = (list) => tabsOf(list).filter((t) => !t.hidden && !t.disabled && t.getClientRects().length);
   function rove(list) {
     const tabs = tabsOf(list);
@@ -1060,8 +1128,8 @@ window.omniaMarked = (name, text, className = "") => {
     }
   }
   document.addEventListener("keydown", (event) => {
-    const tab = event.target instanceof Element ? event.target.closest('[role="tab"]') : null;
-    const list = tab && tab.closest('[role="tablist"]');
+    const tab = event.target instanceof Element ? event.target.closest('[role=tab]') : null;
+    const list = tab && tab.closest('[role=tablist]');
     if (!list || event.altKey || event.ctrlKey || event.metaKey) return;
     const tabs = usable(list), at = tabs.indexOf(tab);
     const next = {ArrowRight: tabs[(at + 1) % tabs.length], ArrowLeft: tabs[(at - 1 + tabs.length) % tabs.length],
@@ -1072,12 +1140,12 @@ window.omniaMarked = (name, text, className = "") => {
     next.focus();
     next.scrollIntoView({block: "nearest", inline: "nearest"});
   });
-  const scan = (root) => { for (const list of root.querySelectorAll('[role="tablist"]')) wire(list); };
+  const scan = (root) => { for (const list of root.querySelectorAll('[role=tablist]')) wire(list); };
   document.addEventListener("DOMContentLoaded", () => {
     scan(document);
     new MutationObserver((changes) => {
       for (const change of changes) for (const node of change.addedNodes) if (node.nodeType === 1) {
-        if (node.matches('[role="tablist"]')) wire(node); else scan(node);
+        if (node.matches('[role=tablist]')) wire(node); else scan(node);
       }
     }).observe(document.body, {childList: true, subtree: true});
   });

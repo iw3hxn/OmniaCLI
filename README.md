@@ -4837,6 +4837,11 @@ controls and motion. A page writes `var(--…)`, never a value of its own.
   is said by a word, an icon and a colour, never by the colour alone: the
   badges of a good, a warned and a failed state and every banner carry their
   icon, and a production is told by its rocket.
+- **Fields**: a field's hint under it is read with it by a screen reader; a
+  field the browser or the panel refuses says why under it, in red with its
+  icon, the field marked as wrong and the first one in focus; typing in it
+  takes the message away. Boxes to tick are 18 px, their whole label the
+  target.
 - **Tables**: their headers in sentence case at 14 px, each header cell
   saying whether it heads a column or a row, and each table named for a
   screen reader by the title of its part of the page (also the tables the

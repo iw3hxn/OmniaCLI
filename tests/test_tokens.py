@@ -287,6 +287,17 @@ def test_the_tables_say_what_they_hold():
     assert 'table.setAttribute("aria-labelledby", title.id)' in base and 'th.setAttribute("scope"' in base
 
 
+def test_a_field_says_what_it_wants_and_what_is_wrong():
+    """UX-017 §5.6: a hint beside a field is read with it; a field refused says why under it (aria-invalid, the
+    message tied to it, the first one focused), and typing takes it away; boxes to tick 18 px in the neutral colour."""
+    base = (TEMPLATES / "base.html").read_text(encoding="utf-8")
+    for needed in ('field.setAttribute("aria-invalid", "true")', "describe(field, note)", 'document.addEventListener("invalid"',
+                   "window.omniaFieldError = ", "first === field", 'field.removeAttribute("aria-invalid")'):
+        assert needed in base, needed
+    assert re.search(r"input\[type=checkbox\], input\[type=radio\] \{ width: var\(--checkbox\); height: var\(--checkbox\);[^}]*accent-color: var\(--selected\)", base)
+    assert "--checkbox: 18px" in TOKENS
+
+
 async def test_the_header_on_a_phone_leaves_nothing_out(client):  # noqa: F811
     """UX-017 §5.11: under 768 px your account, the language and Log out are in the menu, never nowhere."""
     page = (await client.get("/", headers={"Authorization": AUTH, "Accept": "text/html"})).text
