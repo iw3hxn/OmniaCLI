@@ -500,7 +500,7 @@ async def test_six_tabs_and_one_primary(workspaces, client, env, monkeypatch, tm
     for name in tabs:
         panels = "".join(re.findall(r'<section class="tab-panel[^"]*" data-panel="%s".*?</section>' % name, body, flags=re.S))
         assert len(re.findall(r'class="[^"]*\bprimary\b[^"]*"', panels)) <= 1, name
-    assert len(re.findall(r"<th>Repository</th>", page)) <= 1
+    assert len(re.findall(r"<th scope=\"col\">Repository</th>", page)) <= 1
 
 
 async def test_the_page_explains_itself(workspaces, client, env):

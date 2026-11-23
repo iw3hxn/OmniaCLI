@@ -26,7 +26,7 @@ def unscheduled(servers: list[dict]) -> int:
 async def test_the_instances_of_every_machine(mine):
     page = (await mine.get("/instances", headers=as_user("admin"))).text
     # the creating action, the machine's admin only; a column for the servers (there are links)
-    assert page.count('class="primary" data-new-instance') == 1 and "<th>Server</th>" in page
+    assert page.count('class="primary" data-new-instance') == 1 and '<th scope="col">Server</th>' in page
     assert '"cliente", "down"' in page or '["cliente", "down"]' in page
     # the menu: Instances is the list of every machine, Backups beside it
     assert 'class="nav-link" href="/instances"' in page and 'class="nav-link" href="/backups"' in page
@@ -113,7 +113,7 @@ async def test_backup_schedule_and_the_failed_automatic_backups(client, env):
 async def test_what_a_user_of_workspaces_sees(workspaces, client):
     # mario, admin of acme: its instances, no links, no Server column; its backups
     page = (await client.get("/instances", headers=basic("mario"))).text
-    assert "<th>Server</th>" not in page and 'href="/instances"' in page and 'href="/backups"' in page
+    assert '<th scope="col">Server</th>' not in page and 'href="/instances"' in page and 'href="/backups"' in page
     here = (await client.get("/api/instances", headers=basic("mario"))).json()
     assert [s["name"] for s in here["servers"]] == ["srv"] and here["links"] == []
     assert (await client.get("/backups", headers=basic("mario"))).status_code == 200

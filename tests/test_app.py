@@ -1080,7 +1080,7 @@ async def test_jobs_server_column_and_filter(client, env):
     await wait_job(client, other.id)
 
     page = (await get("/jobs")).text
-    assert "<th>Server</th>" in page and 'href="/jobs?server=srv"' in page and "3 jobs" in page
+    assert '<th scope="col">Server</th>' in page and 'href="/jobs?server=srv"' in page and "3 jobs" in page
     assert '<option value="other"' in page  # a server only the jobs know
     page = (await get("/jobs?server=srv")).text
     assert "2 jobs" in page and other.id not in page and all(i in page for i in ids)
