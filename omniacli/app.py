@@ -15545,7 +15545,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if workspaceops.helpers_refused(str(exc).removeprefix("workspace-helper: ").strip()) or "sudo" in str(exc):
                 # an OmniaCLI whose root helper sudo does not allow (run from a checkout, not prepared): the tab
                 # says why, not an HTTP 502 the browser counts (as the system's updates, Options)
-                return {"unavailable": ssh_refusal(str(exc))}
+                return {"unavailable": i18n.tr(request_language(request), ssh_refusal(str(exc)))}
             return refuse(ssh_refusal(str(exc)), status.HTTP_502_BAD_GATEWAY)
         lang = request_language(request)
         for row in found.get("accounts") or []:
@@ -15608,7 +15608,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return text
 
     @app.get("/api/machine/os-updates")
-    async def os_updates_read(me: Principal = Depends(current_user)):
+    async def os_updates_read(request: Request, me: Principal = Depends(current_user)):
         """unattended-upgrades as the machine runs it: installed, on, the restart, the last run."""
         os_updates_admin(me)
         try:
@@ -15617,7 +15617,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if workspaceops.helpers_refused(str(exc).removeprefix("workspace-helper: ").strip()) or "sudo" in str(exc):
                 # an OmniaCLI whose root helper sudo does not allow (one run from a checkout, not prepared): nothing
                 # is broken, the switch is not of this OmniaCLI — said in the section, not an error of the page
-                return {"unavailable": os_updates_refusal(str(exc))}
+                return {"unavailable": i18n.tr(request_language(request), os_updates_refusal(str(exc)))}
             return refuse(os_updates_refusal(str(exc)), status.HTTP_502_BAD_GATEWAY)
 
     @app.post("/api/machine/os-updates")
