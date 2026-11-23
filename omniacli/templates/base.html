@@ -205,6 +205,28 @@ button:disabled, .button[aria-disabled="true"] { opacity: .45; cursor: not-allow
   justify-content: center; background: transparent; border-color: transparent; color: var(--text); flex: none; }
 .icon-btn:hover, button.icon-btn:hover { background: var(--panel-2); border-color: transparent; }
 .icon-btn .icon, .icon-btn .i { margin: 0; }
+/* the menus that open from a button (Altro, the menu of a row, of an environment, of a machine; UX-017 §5.10): their
+   chevron turns when open, their panel a light shadow; one script closes them with Esc or a click elsewhere */
+details > summary .i:has(use[href="#i-chevron-down"]) { transition: transform var(--dur-100) var(--ease-out); }
+details[open] > summary .i:has(use[href="#i-chevron-down"]) { transform: rotate(180deg); }
+.more-items, .row-menu-items, .m-more-items { box-shadow: var(--shadow-md) !important; border-radius: var(--r-lg) !important; }
+.more-items button, .more-items .button, .row-menu-items button, .row-menu-items .button, .m-more-items button {
+  min-height: var(--control-h); }
+.more-items button:not(.danger), .more-items .button:not(.danger), .row-menu-items button:not(.danger),
+.row-menu-items .button:not(.danger) { background: transparent; border-color: transparent; }
+.more-items button:not(.danger):hover, .more-items .button:not(.danger):hover, .row-menu-items button:not(.danger):hover,
+.row-menu-items .button:not(.danger):hover { background: var(--panel-2); }
+/* a summary is a target too: 24 px at least */
+summary { min-height: 24px; }
+/* what is being read (UX-017 §5.12): grey lines in its place, a soft pulse for at most 5 s; the words «Reading…»
+   for a screen reader at once, for the eyes after 5 s */
+.skeleton-line { display: block; height: var(--lh-20); margin: var(--sp-6) 0; border-radius: var(--r-sm); background: var(--panel-2);
+  animation: skeleton-pulse var(--dur-400) var(--ease-in-out) 12 alternate; }
+.skeleton-line.w-40 { width: 40%; } .skeleton-line.w-60 { width: 60%; } .skeleton-line.w-80 { width: 80%; }
+.skeleton-block { display: block; height: var(--h, 64px); border-radius: var(--r-sm); background: var(--panel-2);
+  animation: skeleton-pulse var(--dur-400) var(--ease-in-out) 12 alternate; }
+@keyframes skeleton-pulse { from { opacity: 1; } to { opacity: .6; } }
+.reading-quiet:not(.reading-slow) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .status { font-weight: var(--fw-semibold); }
 .status.success { color: var(--ok); } .status.failed, .status.interrupted, .status.stopped, .error { color: var(--err); }
 .status.running, .status.queued, .status.warned { color: var(--warn); }
@@ -974,6 +996,64 @@ window.sizeText = (n) => {
       for (const change of changes) for (const node of change.addedNodes) if (node.nodeType === 1) hints(node.parentElement || node);
     }).observe(document.body, {childList: true, subtree: true});
   });
+})();
+// the menus that open from a button: Esc closes the open one and gives the focus back to its button; a click
+// elsewhere closes it
+(function () {
+  const MENUS = "details.more-menu, details.row-menu, details.m-more";
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    const open = event.target instanceof Element && event.target.closest(MENUS + ", details[open]");
+    const menu = open && open.matches(MENUS) ? open : [...document.querySelectorAll(MENUS)].find((d) => d.open);
+    if (!menu || !menu.open || menu.closest("dialog[open]") && !menu.closest("dialog").contains(event.target)) return;
+    menu.open = false;
+    menu.querySelector("summary")?.focus();
+  });
+  document.addEventListener("click", (event) => {
+    for (const menu of document.querySelectorAll(MENUS)) {
+      if (menu.open && !menu.contains(event.target) && !(event.target instanceof Element && event.target.closest("dialog"))) menu.open = false;
+    }
+  });
+})();
+// what is being read: [data-skeleton="N"] on its «Reading…» line draws N grey lines before it while it says that;
+// the line is said to a screen reader at once and shown after 5 s (the panel is still at work); when the line
+// changes or hides, the grey lines go
+(function () {
+  const WIDTHS = ["w-80", "w-60", "w-40"];
+  function watch(note) {
+    if (note.dataset.skeletonOn) return;
+    note.dataset.skeletonOn = "1";
+    const reading = note.textContent.trim(), box = note.parentElement;
+    let lines = null, timer = 0;
+    if (!note.hasAttribute("role")) note.setAttribute("role", "status");
+    const arm = () => {
+      if (lines) return;
+      lines = document.createElement("div");
+      lines.setAttribute("aria-hidden", "true");
+      lines.className = "skeleton";
+      for (let i = 0; i < Number(note.dataset.skeleton || 3); i++) {
+        const line = document.createElement("span");
+        line.className = "skeleton-line " + WIDTHS[i % WIDTHS.length];
+        lines.append(line);
+      }
+      note.before(lines);
+      note.classList.add("reading-quiet");
+      note.classList.remove("reading-slow");
+      box.setAttribute("aria-busy", "true");
+      timer = setTimeout(() => note.classList.add("reading-slow"), 5000);
+    };
+    const disarm = () => {
+      clearTimeout(timer);
+      if (lines) lines.remove();
+      lines = null;
+      note.classList.remove("reading-quiet", "reading-slow");
+      box.removeAttribute("aria-busy");
+    };
+    const check = () => (!note.hidden && note.textContent.trim() === reading ? arm() : disarm());
+    check();
+    new MutationObserver(check).observe(note, {attributes: true, attributeFilter: ["hidden"], childList: true, characterData: true, subtree: true});
+  }
+  document.addEventListener("DOMContentLoaded", () => document.querySelectorAll("[data-skeleton]").forEach(watch));
 })();
 // an icon of the sprite (_sprite.html, Lucide) for the pages' scripts: the same node as _icons.html's icon(); decorative
 // unless label names it (the only bearer of the meaning)

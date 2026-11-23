@@ -4846,6 +4846,12 @@ controls and motion. A page writes `var(--…)`, never a value of its own.
   saying whether it heads a column or a row, and each table named for a
   screen reader by the title of its part of the page (also the tables the
   scripts draw); numbers on the right.
+- **Menus and reading**: a menu that opens from a button (More, the menu of
+  a row, of an environment, of a machine) turns its chevron when open and
+  closes with Esc (the focus back on its button) or a click elsewhere. What
+  is being read (the databases of a machine, the catalog of the modules, the
+  backups of every machine) shows grey lines in its place; its «Reading…»
+  is said to a screen reader at once and shown after 5 s.
 - **Space, radii, motion**: spaces on a scale of 2 to 64 px, radii 4, 8,
   12 and the pill, four durations (100 ms an icon that turns, 200 a hover, 300
   a menu or a fold, 400 a dialog or a toast) and two curves; the pages are

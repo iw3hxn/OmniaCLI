@@ -46,9 +46,6 @@
 .m-bar > span.warn { background: var(--warn); } .m-bar > span.err { background: var(--err); }
 .m-spark { display: block; width: 100%; height: 22px; margin-top: 4px; color: var(--series-1); }
 .m-facts { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: var(--fs-14); color: var(--muted); line-height: var(--lh-20);}
-.m-skeleton { height: 64px; border-radius: var(--r); background: linear-gradient(90deg, var(--panel-2), var(--border), var(--panel-2));
-  background-size: 200% 100%; animation: m-shine 1.4s linear 3; }
-@keyframes m-shine { to { background-position: -200% 0; } }
 .m-note { font-size: var(--fs-12); color: var(--muted); line-height: var(--lh-18);}
 .m-facts .m-newer { color: var(--warn); font-weight: var(--fw-semibold); }
 .m-error { font-size: var(--fs-14); color: var(--err); background: var(--err-soft); border-radius: var(--r); padding: 8px 10px;
@@ -436,7 +433,7 @@
       return box;
     }
     const s = stats[card.name];
-    if (!s) { box.append(el("div", {class: "m-skeleton"})); return box; }
+    if (!s) { box.append(el("div", {class: "skeleton-block", "aria-hidden": "true"})); return box; }
     if (s.error) { box.append(el("div", {class: "m-error", text: s.error})); return box; }
     const meters = el("div", {class: "m-meters"});
     if (s.cpu !== null) meters.append(meter(T.cpu, Math.round(s.cpu), "%", s.cpu, spark(s.cpuSeries)));

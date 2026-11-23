@@ -79,7 +79,7 @@
   <table class="bk-rows">
     <thead><tr><th scope="col">{{ _("Instance") }}</th>{% if links %}<th scope="col">{{ _("Server") }}</th>{% endif %}<th scope="col">{{ _("Made on") }}</th>
       <th scope="col" class="num">{{ _("Size") }}</th><th scope="col">{{ _("Outcome") }}</th><th scope="col"></th></tr></thead>
-    <tbody id="bk-rows"></tbody>
+    <tbody id="bk-rows"><tr aria-hidden="true"><td colspan="6"><span class="skeleton-line w-80"></span><span class="skeleton-line w-60"></span><span class="skeleton-line w-80"></span><span class="skeleton-line w-40"></span></td></tr></tbody>
   </table>
   </div>
   <p class="muted" id="bk-empty" hidden>{{ _("No backup on any machine. The automatic backups are switched on in the Backups tab of each instance.") }}</p>

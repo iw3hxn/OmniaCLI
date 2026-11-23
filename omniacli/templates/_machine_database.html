@@ -127,7 +127,7 @@
       <span id="pg-replica-box" hidden><button type="button" class="small" id="pg-replica" title="{{ _('Makes on this machine a read-only copy of the PostgreSQL of a linked machine, kept up to date at each change, which its instances can read from. The copy holds every database of that cluster. Nothing starts until Make the replica.') }}">{{ icon("plus") }}{{ _("Replica of another machine…") }}</button></span>
       <button type="button" class="small" id="pg-reload" title="{{ _('Reads the databases of this machine again now. It changes nothing.') }}">{{ _("Read again") }}</button></span></div>
     <input type="search" id="pg-search" hidden placeholder="{{ _('Search database…') }}" aria-label="{{ _('Search database…') }}" title="{{ _('Shows the rows whose instance or kind holds these words') }}">
-    <p class="muted" id="pg-loading">{{ _("Reading the databases…") }}</p>
+    <p class="muted" id="pg-loading" data-skeleton="4">{{ _("Reading the databases…") }}</p>
     <div style="overflow-x: auto"><table class="pg-table" id="pg-table" hidden>
       <thead><tr><th scope="col">{{ _("Database") }}</th><th scope="col" class="hide-sm">{{ _("Version") }}</th><th scope="col" class="num">{{ _("Size") }}</th>
         <th scope="col" class="hide-sm">{{ _("Connections") }}</th><th scope="col">{{ _("Tuning") }}</th><th scope="col">{{ _("Recovery at a minute") }}</th><th scope="col"></th></tr></thead>

@@ -254,7 +254,7 @@ def test_the_closed_scales():
             if set(re.findall(r"(?<![\w.-])(\d+)px", value)) & off_scale:
                 wrong.append(f"{name} {selector[-40:]}: {prop} {value}")
         for value in re.findall(r"(?<![\w-])border(?:-[a-z]+)*-radius\s*:\s*([^;\"}]+)", body):
-            if not all(re.fullmatch(r"var\(--r(?:-sm|-lg|-pill)?\)|0|50%|inherit", p) for p in value.split()):
+            if not all(re.fullmatch(r"var\(--r(?:-sm|-lg|-pill)?\)|0|50%|inherit", p) for p in value.replace("!important", "").split()):
                 wrong.append(f"{name} {selector[-40:]}: radius {value}")
         for value in re.findall(r"(?<![\w-])transition(?:-duration)?\s*:\s*([^;\"}]+)", body):
             if re.search(r"(?<![\w-])[\d.]+m?s\b", value) and "1.4s linear" not in value:
@@ -296,6 +296,20 @@ def test_a_field_says_what_it_wants_and_what_is_wrong():
         assert needed in base, needed
     assert re.search(r"input\[type=checkbox\], input\[type=radio\] \{ width: var\(--checkbox\); height: var\(--checkbox\);[^}]*accent-color: var\(--selected\)", base)
     assert "--checkbox: 18px" in TOKENS
+
+
+def test_menus_close_and_reading_shows_its_place():
+    """UX-017 §5.10, §5.12: one script closes the menus that open from a button (Esc gives the focus back, a click
+    elsewhere); their chevron turns; what is read shows grey lines in its place, the words said at once and shown
+    after 5 s; no pulse beyond 5 s."""
+    base = (TEMPLATES / "base.html").read_text(encoding="utf-8")
+    assert 'const MENUS = "details.more-menu, details.row-menu, details.m-more"' in base
+    assert 'menu.querySelector("summary")?.focus()' in base and "rotate(180deg)" in base
+    assert 'setTimeout(() => note.classList.add("reading-slow"), 5000)' in base
+    assert "skeleton-pulse var(--dur-400) var(--ease-in-out) 12 alternate" in base
+    for name, marker in (("_machine_database.html", 'id="pg-loading" data-skeleton='), ("_modules_tab.html", 'id="mods-line" data-skeleton='),
+                         ("backups.html", '<tbody id="bk-rows"><tr aria-hidden="true"><td colspan="6"><span class="skeleton-line')):
+        assert marker in (TEMPLATES / name).read_text(encoding="utf-8"), name
 
 
 async def test_the_header_on_a_phone_leaves_nothing_out(client):  # noqa: F811
