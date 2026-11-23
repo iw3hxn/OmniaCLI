@@ -1384,6 +1384,13 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     if (section) document.querySelector(`[data-section="${section}"]`)?.scrollIntoView();
   }
   for (const t of tabs) t.addEventListener("click", () => { history.replaceState(null, "", "#" + t.dataset.tab); show(t.dataset.tab); });
+  // a link to a tab of this same page (Log in the menu of «Ambienti e deploy», the CI sign to #updates) changes
+  // only the address: the tab follows it, and the menu it came from closes (Carlo, 23/11/2026: «premo Log ma non
+  // viene fuori»)
+  window.addEventListener("hashchange", () => {
+    for (const d of document.querySelectorAll("details[open]")) if (d.querySelector("a[href*='#']")) d.open = false;
+    show((location.hash || "#overview").slice(1));
+  });
 
   // the Odoo config tab
   const OC = {
