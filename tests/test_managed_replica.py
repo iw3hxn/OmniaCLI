@@ -736,7 +736,9 @@ async def machines(tmp_path, monkeypatch):
     holder.workspaces = {"acme": Workspace("acme", "ACME", storage="default", limits={"disk_gb": 10},
                                            members={"mario": "admin"})}
     lab2 = create_app(holder)
-    asker = settings_of("lab1", {"users": {"admin": USER_HASH}})
+    # the central panel (Replica on another server…) is let in too, as an admin
+    asker = settings_of("lab1", {"users": {"admin": USER_HASH}, "links": {
+        "central": {"token": hash_token(CENTRAL_TOKEN), "role": "admin"}}})
     asker.storage_roots = {"default": str(tmp_path / "lab1-storage")}
     network = Network(lab2)
     lab1 = create_app(asker, link_transport=network)
@@ -1213,3 +1215,136 @@ async def test_after_a_promotion_the_pages_say_where_the_database_is(machines):
     shown = (await client.get(f"/jobs/{job['id']}", headers=ADMIN)).text
     assert "window.sizeText(Math.max(0, b))" in shown and "window.sizeText(result.size)" in shown
     assert '" GiB"' not in shown and '" MiB"' not in shown and '" KiB"' not in shown
+
+
+# --- Replica on another server… (Carlo, 23/11/2026): asked on the row of the database, the server chosen ----------
+
+class Router(httpx.AsyncBaseTransport):
+    """The central panel's network: lab1.test and lab2.test, each its own application."""
+
+    def __init__(self, apps):
+        self.apps = {host: httpx.ASGITransport(app=app) for host, app in apps.items()}
+        self.requests = []
+
+    async def handle_async_request(self, request):
+        self.requests.append((request.url.host, request.method, request.url.path))
+        return await self.apps[request.url.host].handle_async_request(request)
+
+
+class Down(httpx.AsyncBaseTransport):
+    async def handle_async_request(self, request):
+        raise httpx.ConnectError("connection refused", request=request)
+
+
+@pytest.fixture
+async def central(machines, tmp_path):
+    """A panel that links lab1 and lab2 and hosts nothing (no storage): Carlo's central one."""
+    conf = tmp_path / "central"
+    conf.mkdir()
+    (conf / "links.yaml").write_text(yaml.safe_dump({"links": {
+        "lab1": {"url": "https://lab1.test", "token": CENTRAL_TOKEN},
+        "lab2": {"url": "https://lab2.test", "token": CENTRAL_TOKEN}}}))
+    settings = parse_settings({"auth": {"users": {"admin": USER_HASH}}, "backup_dir": str(conf / "backups"),
+                               "jobs_dir": str(conf / "jobs"), "servers_file": "servers.yaml"}, base_dir=conf)
+    settings.storage_roots = {}
+    router = Router({"lab1.test": machines.lab1, "lab2.test": machines.lab2})
+    app = create_app(settings, link_transport=router)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=BasicAsSession(app)), base_url="http://central.test") as panel:
+        panel.router = router
+        yield panel
+
+
+CENTRAL_POST = {**ADMIN, "Origin": "http://central.test"}
+
+
+async def test_the_central_panel_asks_on_which_server_and_drives_both_ends(machines, central):
+    client = machines
+    data = (await central.get("/api/postgres/replica/to?key=17&via=lab2", headers=ADMIN)).json()
+    # the database: the machine's cluster of lab2, with its size and the instances on it
+    assert data["error"] is None and data["source"]["kind"] == "cluster" and data["source"]["size"] == 142 * MB
+    assert data["source"]["instances"] == ["acme-mach", "beta-shop"] and data["source"]["restarts"] is False
+    # the servers it knows but the database's own; lab1 reaches lab2 through its link over HTTPS (not the plain one)
+    assert [t["target"] for t in data["targets"]] == ["lab1"]
+    lab1 = data["targets"][0]
+    assert lab1["why"] == "" and lab1["via_link"] == "lab2" and lab1["free"] == 297 * GB
+    assert lab1["need"] == managedreplica.room(142 * MB, 0, 0)["need"] and lab1["ms"] == 0.4 and lab1["address"] == "203.0.113.7"
+    assert lab1["source_major"] == "17" and lab1["arch"]
+    # nothing was asked to change on either machine
+    assert all(method == "GET" for _, method, _ in central.router.requests) and client.lab.names() == []
+    # Create: lab1 makes it through its own link to lab2; the person lands on lab1's job, through the panel's link
+    resp = await central.post("/api/postgres/replica/to", headers=CENTRAL_POST,
+                              json={"via": "lab2", "key": "17", "target": "lab1", "restart": False})
+    assert resp.status_code == 200, resp.text
+    answer = resp.json()
+    assert answer["url"] == f"/links/lab1/jobs/{answer['job']}"
+    job = await job_of(client, answer["job"])
+    assert job["status"] == "success", job
+    assert client.lab.names() == ["machine-db-replica-allow", "make-prepare", "make-copy", "make-start", "machine-db-replica-ready"]
+    # lab1's job says who asked it, through which panel; lab2 let lab1 in, from lab1's address
+    assert job["source"] == "manual: link central (admin)"
+    assert client.lab.inputs["allow"]["address"] == "203.0.113.7" and client.lab.inputs["allow"]["link"] == "lab1"
+    # one per database: asked again, the dialog says it has one already and lists no server
+    again = (await central.get("/api/postgres/replica/to?key=17&via=lab2", headers=ADMIN)).json()
+    assert "has a read replica already, on lab1" in again["error"] and again["targets"] == []
+    # the same in Italian, for a person who reads Italian
+    italian = (await central.get("/api/postgres/replica/to?key=17&via=lab2", headers={**ADMIN, "Accept-Language": "it"})).json()
+    assert "Ha già una replica di lettura, su lab1" in italian["error"]
+
+
+async def test_each_server_says_why_not(machines, central, monkeypatch):
+    client = machines
+    # another architecture: a copy follows only on the same one
+    asked = workspaceops.ask
+
+    async def on_arm(*args, **kwargs):
+        found = await asked(*args, **kwargs)
+        return {**found, "arch": "aarch64"} if args[0] == "machine-db-replica-facts" else found
+    monkeypatch.setattr(workspaceops, "ask", on_arm)
+    target = (await central.get("/api/postgres/replica/to?key=17&via=lab2", headers=ADMIN)).json()["targets"][0]
+    assert "runs on aarch64" in target["why"] and "same architecture" in target["why"]
+    resp = await central.post("/api/postgres/replica/to", headers=CENTRAL_POST, json={"via": "lab2", "key": "17", "target": "lab1"})
+    assert resp.status_code == 400 and "same architecture" in resp.json()["error"] and client.lab.names() == []
+    monkeypatch.setattr(workspaceops, "ask", asked)
+    # no room there: the copy against what it has free, with what must stay free
+    client.free["bytes"] = int(1.8 * GB)
+    target = (await central.get("/api/postgres/replica/to?key=17&via=lab2", headers=ADMIN)).json()["targets"][0]
+    assert target["why"].startswith("No room: the copy takes about 426 MB") and "2 GB must stay free" in target["why"]
+    client.free["bytes"] = 297 * GB
+    # a server that does not answer is said, with its name
+    central.router.apps["lab1.test"] = Down()
+    target = (await central.get("/api/postgres/replica/to?key=17&via=lab2", headers=ADMIN)).json()["targets"][0]
+    assert target["target"] == "lab1" and "lab1 does not answer" in target["why"]
+
+
+async def test_on_the_machine_itself(machines):
+    client = machines
+    # a machine alone, no link: no server is listed, the page says where it is chosen from
+    alone = (await client.there.get("/api/postgres/replica/to?key=17", headers=ADMIN)).json()
+    assert alone["error"] is None and alone["targets"] == [] and alone["links"] == 0
+    # lab1 looking at lab2 through its link: lab1 itself can host it once its storage is there (a central panel that
+    # hosts nothing has none); the plain link reaches lab2, which has no link to itself
+    data = (await client.get("/api/postgres/replica/to?key=17&via=lab2", headers=ADMIN)).json()
+    assert "" not in {t["target"] for t in data["targets"]}
+    (client.tmp / "lab1-storage").mkdir()
+    data = (await client.get("/api/postgres/replica/to?key=17&via=lab2", headers=ADMIN)).json()
+    by = {t["target"]: t for t in data["targets"]}
+    assert by[""]["why"] == "" and by[""]["via_link"] == "lab2"
+    assert "has no link to" in by["plain"]["why"]
+    resp = await client.post("/api/postgres/replica/to", headers=POST, json={"via": "lab2", "key": "17", "target": ""})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["url"] == f"/jobs/{resp.json()['job']}"
+    assert (await job_of(client, resp.json()["job"]))["status"] == "success"
+    # the machine's admins only
+    assert (await client.there.get("/api/postgres/replica/to?key=17", headers=MARIO)).status_code == 403
+    # which machine it is, for the panel that finds its link to it; none for a customer
+    assert (await client.there.get("/api/info", headers=ADMIN)).json()["machine"]
+    assert (await client.there.get("/api/info", headers=MARIO)).json().get("machine", "") == ""
+
+
+async def test_the_tab_has_the_button_in_its_words(machines):
+    tab = (await machines.there.get("/", headers={**ADMIN, "Accept-Language": "it"})).text
+    assert "Replica su un altro server…" in tab and "+ PostgreSQL condiviso della macchina…" in tab
+    assert "+ Cluster della macchina" not in tab
+    for part in ('id="pg-to-dialog"', "`${ROOT}/api/postgres/replica/to?key=", "location.href = ROOT + answer.url",
+                 'make.classList.toggle("primary", !box.hidden && !rows.length)'):
+        assert part in tab, part

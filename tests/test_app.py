@@ -1335,8 +1335,10 @@ async def test_link_and_mcp_tokens_from_the_web(client):
     link = {"Authorization": f"Bearer {data['token']}"}
     info = (await client.get("/api/info", headers=link)).json()
     # portal: no address yet ("", or None where OmniaCLI keeps no nginx: test_portal_address)
+    # machine: which machine it is (Replica on another server… finds its link to it by it)
     assert info == {"app": "OmniaCLI", "version": info["version"], "caller": "link partner", "role": "user",
-                    "portal": info["portal"]} and info["portal"] in ("", None)
+                    "portal": info["portal"], "machine": info["machine"]} and info["portal"] in ("", None)
+    assert info["machine"]
     assert (await access(client, "links/save", {"name": "partner", "role": "developer"})).json()["token"] is None
     assert (await client.get("/api/info", headers=link)).json()["role"] == "developer"
     assert "already exists" in (await access(client, "links/save", {"name": "partner", "role": "user", "new": True})).json()["error"]

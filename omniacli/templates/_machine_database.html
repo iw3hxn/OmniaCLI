@@ -6,8 +6,8 @@
    (GET …/proposal, POST …/apply), its planned restart done now or taken
    away, its base values back (POST …/reset). The machine's admins only
    (index.html includes it for them). The machine's cluster (step 3) is the
-   first row, tuned as a dedicated one; + Machine's cluster is the tab's
-   only primary, while there is none (POST /api/postgres/machine/create);
+   first row, tuned as a dedicated one; + Machine's shared PostgreSQL… makes it
+   while there is none, the tab's primary on a machine with no database (POST /api/postgres/machine/create);
    Take the cluster away… when it serves nothing. The confirm of a dialog is
    the dialog's. Never a parameter of the point-in-time recovery or of the
    replication: the server leaves them out. The cluster's row lists, under
@@ -63,7 +63,14 @@
    with the cluster's actions (POST /api/postgres/replica/<major>/grants/
    <name>/revoke|allow|drop); the replaced row says which were followed, and
    Take the cluster away… waits for them; Not here says a database that does
-   not answer and one that is on a promoted copy. -#}
+   not answer and one that is on a promoted copy.
+   Replica on another server… (Carlo, 23/11/2026), on the row of the machine's cluster and of a production's
+   own database: the dialog pg-to-dialog asks on which server the second database goes, among the machines
+   the panel the person is on knows (GET /api/postgres/replica/to of that panel: the central one when the
+   page came through its link, else this machine), each with its room, PostgreSQL and architecture, the
+   round trip and why not; then the plan, and Create (POST …/to): the panel asks the server chosen, through
+   its link, to make the copy through its own link to this machine. + Machine's shared PostgreSQL… is the
+   machine's cluster: one PostgreSQL here for several instances, not a copy elsewhere. -#}
 <style>
 .pg-table td, .pg-table th { vertical-align: top; }
 .pg-table tr.pg-row { cursor: pointer; }
@@ -94,7 +101,16 @@
 .pg-archive-lines > div { margin-bottom: 3px; }
 #pg-archive { width: min(680px, 96vw); }
 #pg-archive p.pga-note, #pg-replica-dialog p.pga-note { margin: 0 0 8px; font-size: 13px; }
-#pg-replica-dialog { width: min(680px, 96vw); }
+#pg-replica-dialog, #pg-to-dialog { width: min(680px, 96vw); }
+#pg-to-dialog fieldset { border: 1px solid var(--border); border-radius: 6px; margin: 8px 0; padding: 6px 10px; min-width: 0; }
+#pg-to-dialog legend { font-weight: 600; padding: 0 4px; }
+.pgt-target { display: flex; gap: 8px; align-items: flex-start; padding: 6px 0; border-top: 1px solid var(--border); cursor: pointer; }
+.pgt-target:first-child { border-top: none; }
+.pgt-target input { margin-top: 3px; flex: none; }
+.pgt-target .pg-sub { display: block; font-weight: 400; color: var(--muted); font-size: 13px; margin-top: 2px; overflow-wrap: anywhere; }
+.pgt-target.off { color: var(--muted); cursor: default; }
+.pgt-target .pgt-why { display: block; color: var(--err); font-size: 13px; margin-top: 2px; overflow-wrap: anywhere; }
+.pgt-steps { margin: 4px 0 0; padding-left: 20px; } .pgt-steps li { margin-bottom: 4px; }
 .pg-state.grey::before { background: var(--muted); }
 </style>
 <section class="tab-panel" data-panel="database" hidden>
@@ -103,7 +119,9 @@
     <div class="section-head"><h2>{{ _("Database") }}</h2>
       <span class="pg-head-actions">
       {# the tab's primary until the machine's cluster exists (UX-008 §6.2.1, step 3) #}
-      <span id="pg-cluster-box" hidden><button type="button" class="primary small" id="pg-cluster" title="{{ _('Makes the PostgreSQL of this machine: a container of OmniaCLI with its data on the storage of the workspaces, no port, reached by its socket only. The new instances are made on it, each with its own role and its data on its workspace\'s disk. It is a job; nothing that runs now stops.') }}">{{ _("+ Machine's cluster") }}</button></span>
+      {# one PostgreSQL on this machine for several instances, to save memory: not a copy on another server
+         (that is Replica on another server…, on a database's row) #}
+      <span id="pg-cluster-box" hidden><button type="button" class="small" id="pg-cluster" title="{{ _('One PostgreSQL on this machine for several instances, to save memory: a container of OmniaCLI with its data on the storage of the workspaces, no port, reached by its socket only. The new instances are made on it, each with its own role and its data on its workspace\'s disk; the instances of now keep their database. It is not a copy on another server: that is Replica on another server…, on the row of a database. It is a job; nothing that runs now stops.') }}">{{ _("+ Machine's shared PostgreSQL…") }}</button></span>
       {# on the machine that hosts it (UX-010 §5.1): the tab's primary when nothing else is to be made here #}
       <span id="pg-replica-box" hidden><button type="button" class="small" id="pg-replica" title="{{ _('Makes on this machine a read-only copy of the PostgreSQL of a linked machine, kept up to date at each change, which its instances can read from. The copy holds every database of that cluster. Nothing starts until Make the replica.') }}">{{ _("+ Replica of another machine…") }}</button></span>
       <button type="button" class="small" id="pg-reload" title="{{ _('Reads the databases of this machine again now. It changes nothing.') }}">{{ _("Read again") }}</button></span></div>
@@ -187,6 +205,27 @@
     <div class="actions">
       <span id="pgr-go-box"><button type="button" class="primary" id="pgr-go" disabled title="-">{{ _("Make the replica") }}</button></span>
       <button type="button" id="pgr-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="pg-to-dialog" aria-labelledby="pgt-title">
+  <form method="dialog" id="pgt-form">
+    <h2 id="pgt-title" style="margin-bottom: 4px"></h2>
+    <p class="muted pga-note" id="pgt-lead"></p>
+    <p class="muted" id="pgt-reading">{{ _("Reading the servers…") }}</p>
+    <fieldset id="pgt-targets" hidden>
+      <legend>{{ _("On which server") }}</legend>
+      <div id="pgt-list"></div>
+    </fieldset>
+    <p id="pgt-none" hidden></p>
+    <div id="pgt-plan" hidden>
+      <p style="margin: 10px 0 2px; font-weight: 600">{{ _("What happens") }}</p>
+      <ol class="pgt-steps" id="pgt-steps"></ol>
+    </div>
+    <p class="error" id="pgt-error" role="alert"></p>
+    <div class="actions">
+      <span id="pgt-go-box"><button type="button" class="primary" id="pgt-go" disabled title="-">{{ _("Create") }}</button></span>
+      <button type="button" id="pgt-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
     </div>
   </form>
 </dialog>
@@ -651,6 +690,38 @@
       againAskDedicated: {{ _('Make the replica of {instance} ({link}) again? This stopped copy ({size}) is deleted, then the whole database of {instance} is copied here again: {total}, in about {time}, and kept up to date. Here {free} are free once it is deleted, and at least {reserve} stay free.') | tojson }},
       dropStoppedAskDedicated: {{ _('Drop the stopped copy of {instance} of {link} ({size})? Its data, of the moment the database went back to {link}, is deleted. A new replica copies its whole database again.') | tojson }},
       dropStoppedAsk: {{ _("Drop the stopped copy of {link} ({size})? Its data, of the moment {link} came back, is deleted. A new replica copies the whole cluster again.") | tojson }},
+    },
+    // Replica on another server… (Carlo, 23/11/2026): asked on the row of the database, the server chosen in the dialog
+    to: {
+      button: {{ _("Replica on another server…") | tojson }},
+      buttonTitle: {{ _("Makes a read-only copy of this database on another server, kept up to date at each change, which can take its place (Promote…). The dialog asks on which server and says what each one has; nothing starts until Create.") | tojson }},
+      buttonTitleCluster: {{ _("Makes a read-only copy of the whole machine's cluster, with every instance on it, on another server, kept up to date at each change, which can take its place (Promote…). The dialog asks on which server and says what each one has; nothing starts until Create.") | tojson }},
+      has: {{ _("It has a read replica already, on {machine}: one per database. Drop it first, in its row.") | tojson }},
+      titleDedicated: {{ _("Replica of {name} on another server") | tojson }},
+      titleCluster: {{ _("Replica of the machine's cluster of {machine} on another server") | tojson }},
+      lead: {{ _("A second database on another server: a read-only copy of this one, kept up to date at each change, which can take its place (Promote…). Choose on which server; nothing starts until Create.") | tojson }},
+      line: {{ _("{free} free for {need} · PostgreSQL {major} on {arch}, as {source} · {trip}") | tojson }},
+      tripMs: {{ _("{source} answers in {ms} ms") | tojson }},
+      tripNone: {{ _("the port of {source} does not answer from there") | tojson }},
+      thisPanel: {{ _("{machine} (this panel)") | tojson }},
+      linkNamed: {{ _("{machine} (link {link})") | tojson }},
+      alone: {{ _("{machine} has no link to another server. The second database is chosen from the panel that links your servers (the central one): open {machine} there, Database, Replica on another server…. Or add here, in Links, a link to the other server, and there one to this.") | tojson }},
+      noneOther: {{ _("This panel knows no other server that can host it: add a link to it in Links.") | tojson }},
+      linksPage: {{ _("Links ›") | tojson }},
+      linksTitle: {{ _("Opens the Links page of this panel, where another server is linked") | tojson }},
+      copyDedicated: {{ _("Copied to {target}: the database of {name} (workspace {ws}, one customer only), {size}, over TLS, in about {time}.") | tojson }},
+      copyCluster: {{ _("Copied to {target}: the whole machine's cluster of {machine}, {size}, with the data of all its customers ({n} instances), over TLS, in about {time}.") | tojson }},
+      source: {{ _("On {machine}: a role for the replication, a line of access for {address} only, the firewall open to that address, and a place that holds its changes for the copy (at most {cap}), so that the copy catches up after a pause.") | tojson }},
+      capDedicated: {{ _("{gb}, a tenth of the workspace's disk") | tojson }},
+      port: {{ _("Port {port} of {machine} listens over TLS already: nothing restarts.") | tojson }},
+      restartDedicated: {{ _("The PostgreSQL of {name} is made again to publish a port over TLS, in about {s} s: {name} does not answer for that time, and whoever is saving gets an error.") | tojson }},
+      restartCluster: {{ _("The machine's cluster of {machine} is made again to publish its port over TLS, in about a second: its {n} instances ({list}) lose their connections.") | tojson }},
+      after: {{ _("On {target} the copy follows each change, read only: its row in the Database tab of {target} says how far behind it is, with Promote… and Drop the replica…. Create opens the job, on {target}.") | tojson }},
+      go: {{ _("Create") | tojson }},
+      goRestartDedicated: {{ _("Create and restart the PostgreSQL of {name}") | tojson }},
+      goRestartCluster: {{ _("Create and restart the cluster of {machine}") | tojson }},
+      goTitle: {{ _("Asks {target}, through the link, to make the copy: {target} asks {machine} through its own link to let it in, copies the database and starts it as a replica. It is a job of {target}.") | tojson }},
+      choose: {{ _("Choose a server that can host it.") | tojson }},
     },
   };
   const panel = document.querySelector('[data-panel="database"]');
@@ -1418,6 +1489,112 @@
       {goTitle: fill(T.rp.restartGoTitle, {link: f.link})})) rpSubmit();
   });
 
+  // --- Replica on another server… (Carlo, 23/11/2026): the panel the person is on (ROOT: the central one when this
+  // page came through its link VIA, else this machine) lists the servers it knows and makes the copy on the one chosen
+  const VIA_MATCH = /^(.*)\/links\/([^/]+)$/.exec(PREFIX);
+  const ROOT = VIA_MATCH ? VIA_MATCH[1] : PREFIX, VIA = VIA_MATCH ? decodeURIComponent(VIA_MATCH[2]) : "";
+  // the key of the PostgreSQL a row is ("" for none): the machine's cluster, or the dedicated database of a production
+  const toKey = (row) => (row.error || (row.state || {}).code === "replaced" ? ""
+    : row.where === "machine" ? row.major || "" : row.where === "dedicated" && row.kind === "production" ? row.pg || "" : "");
+  const toDialog = document.getElementById("pg-to-dialog"), toGo = document.getElementById("pgt-go");
+  const toError = document.getElementById("pgt-error"), toOf = (id) => document.getElementById(id);
+  let toRow = null, toData = null, toAsked = 0;
+  const toChosen = () => {
+    const picked = toDialog.querySelector('input[name="pgt-target"]:checked');
+    return picked && toData ? toData.targets[Number(picked.value)] : null;
+  };
+  const toName = (t) => (!t.target ? fill(T.to.thisPanel, {machine: t.machine})
+    : t.machine && t.machine !== t.target ? fill(T.to.linkNamed, {machine: t.machine, link: t.target}) : t.target);
+  function toPlan() {
+    const t = toChosen(), src = (toData || {}).source || {};
+    toOf("pgt-plan").hidden = !t;
+    toGo.disabled = !t;
+    toOf("pgt-go-box").title = t ? "" : T.to.choose;
+    toGo.textContent = T.to.go;
+    if (!t) return;
+    const own = src.kind === "dedicated", name = src.name || "?", machine = src.machine || "?", target = t.machine || t.target;
+    const instances = src.instances || [];
+    const cap = own ? fill(T.to.capDedicated, {gb: dec(t.cap_gb || 0, 1) + " GB"}) : dec(t.cap_gb || 0, 1) + " GB";
+    const steps = [
+      own ? fill(T.to.copyDedicated, {target, name, ws: src.workspace || "?", size: bytes(t.size || src.size || 0), time: minutesText(t.seconds)})
+        : fill(T.to.copyCluster, {target, machine, size: bytes(t.size || src.size || 0), n: instances.length, time: minutesText(t.seconds)}),
+      fill(T.to.source, {machine, address: t.address || "?", cap}),
+      t.restarts ? (own ? fill(T.to.restartDedicated, {name, s: t.restart_s || src.restart_s || 5})
+        : fill(T.to.restartCluster, {machine, n: instances.length, list: instances.join(", ") || "–"}))
+        : fill(T.to.port, {port: src.port || "?", machine}),
+      fill(T.to.after, {target}),
+    ];
+    toOf("pgt-steps").replaceChildren(...steps.map((text, i) => el("li", {textContent: text, className: i === 2 && t.restarts ? "pg-warn" : ""})));
+    if (t.restarts) toGo.textContent = own ? fill(T.to.goRestartDedicated, {name}) : fill(T.to.goRestartCluster, {machine});
+    toGo.title = fill(T.to.goTitle, {target, machine});
+  }
+  function toDraw(answer) {
+    toData = answer;
+    toOf("pgt-reading").hidden = true;
+    toError.textContent = answer.error || "";
+    const src = answer.source || {}, targets = answer.targets || [];
+    if (answer.error) { toPlan(); return; }
+    if (!targets.length) {
+      // a machine alone: where the second database is chosen from, not a dead end
+      const none = toOf("pgt-none");
+      none.replaceChildren(VIA ? T.to.noneOther : fill(T.to.alone, {machine: src.machine || data.here || "?"}), " ",
+        el("a", {href: `${ROOT}/links`, textContent: T.to.linksPage, title: T.to.linksTitle}));
+      none.hidden = false;
+      toPlan();
+      return;
+    }
+    let first = -1;
+    toOf("pgt-list").replaceChildren(...targets.map((t, i) => {
+      if (!t.why && first < 0) first = i;
+      const trip = t.ms === null || t.ms === undefined ? fill(T.to.tripNone, {source: src.machine}) : fill(T.to.tripMs, {source: src.machine, ms: dec(t.ms, 2)});
+      const facts = t.free === null || t.free === undefined ? null : el("span", {className: "pg-sub", textContent: fill(T.to.line, {
+        free: bytes(t.free), need: bytes(t.need), major: t.source_major || src.major || "?", arch: t.arch || "?", source: src.machine, trip})});
+      const input = el("input", {type: "radio", name: "pgt-target", value: String(i), disabled: !!t.why, checked: false});
+      return el("label", {className: "pgt-target" + (t.why ? " off" : "")}, input,
+        el("span", {}, el("strong", {textContent: toName(t)}), facts, t.why ? el("span", {className: "pgt-why", textContent: t.why}) : null));
+    }));
+    if (first >= 0) toDialog.querySelectorAll('input[name="pgt-target"]')[first].checked = true;
+    toOf("pgt-targets").hidden = false;
+    toPlan();
+  }
+  async function openTo(row) {
+    const asked = ++toAsked, key = toKey(row);
+    toRow = row; toData = null;
+    toOf("pgt-title").textContent = row.where === "machine" ? fill(T.to.titleCluster, {machine: data.here || "?"}) : fill(T.to.titleDedicated, {name: row.server});
+    toOf("pgt-lead").textContent = T.to.lead;
+    toOf("pgt-reading").hidden = false;
+    toOf("pgt-targets").hidden = true; toOf("pgt-none").hidden = true; toOf("pgt-plan").hidden = true;
+    toOf("pgt-list").replaceChildren();
+    toError.textContent = "";
+    toGo.disabled = true; toGo.textContent = T.to.go;
+    toDialog.showModal();
+    const answer = await call(`${ROOT}/api/postgres/replica/to?key=${encodeURIComponent(key)}` + (VIA ? `&via=${encodeURIComponent(VIA)}` : ""));
+    if (asked !== toAsked) return;
+    toDraw(answer);
+  }
+  async function toSubmit(t, errors) {
+    toGo.disabled = true;
+    const answer = await post(`${ROOT}/api/postgres/replica/to`, {via: VIA, key: toKey(toRow), target: t.target, restart: !!t.restarts});
+    if (answer.error || !answer.url) { showError(answer.error || T.refused, errors); toGo.disabled = false; return; }
+    location.href = ROOT + answer.url;
+  }
+  toOf("pgt-list").addEventListener("change", toPlan);
+  toOf("pgt-cancel").addEventListener("click", () => { toAsked++; toDialog.close(); });
+  toGo.addEventListener("click", async () => {
+    const t = toChosen(), src = (toData || {}).source || {};
+    if (!t || toGo.disabled) return;
+    if (!t.restarts) { toSubmit(t, toError); return; }
+    // the restart of the PostgreSQL of the database is asked once more, as + Replica of another machine… does
+    toDialog.close();
+    const name = src.name || "?", machine = src.machine || "?", s = t.restart_s || src.restart_s || 5, instances = src.instances || [];
+    const ok = src.kind === "dedicated"
+      ? await window.omniaAsk(fill(T.rp.restartAskDedicated, {link: machine, name, s}), fill(T.to.goRestartDedicated, {name}),
+        {goTitle: fill(T.rp.restartGoTitleDedicated, {name, s})})
+      : await window.omniaAsk(fill(T.rp.restartAsk, {link: machine, n: instances.length, list: instances.join(", ") || "–"}),
+        fill(T.to.goRestartCluster, {machine}), {goTitle: fill(T.rp.restartGoTitle, {link: machine})});
+    if (ok) toSubmit(t, errorBox);
+  });
+
   // «Not here»: one sentence for each place, not for each instance; the instances on the same database's
   // machine are said together, the first two by name
   function notHere(remote) {
@@ -1447,6 +1624,7 @@
       connections: (r.here || {}).connections, max_connections: (r.here || {}).max_connections}));
     const rows = [...data.rows.filter((r) => r.where === "machine"), ...hosted, ...data.rows.filter((r) => r.where !== "machine")];
     body.replaceChildren();
+    const toButtons = [];
     const m = data.memory;
     const memory = document.getElementById("pg-memory");
     if (m && m.total_gb) {
@@ -1470,6 +1648,15 @@
         act.append(el("button", {type: "button", className: "small", textContent: T.propose, title: T.proposeTitle,
           onclick: (e) => { e.stopPropagation(); openProposal(row); }}));
       }
+      // Replica on another server…: the second database of this one, the server chosen in the dialog
+      if (toKey(row)) {
+        const has = row.replica && row.replica.exists ? row.replica.link || "?" : "";
+        const button = el("button", {type: "button", className: "small", textContent: T.to.button, disabled: !!has,
+          title: row.where === "machine" ? T.to.buttonTitleCluster : T.to.buttonTitle,
+          onclick: (e) => { e.stopPropagation(); openTo(row); }});
+        toButtons.push(button);
+        act.append(has ? el("span", {title: fill(T.to.has, {machine: has})}, button) : button);
+      }
       tr.append(act);
       const more = body.insertRow();
       more.className = "pg-detail"; more.hidden = rows.length !== 1;
@@ -1485,10 +1672,15 @@
     const elsewhere = notHere(data.remote);
     remote.replaceChildren(...elsewhere);
     remote.hidden = !elsewhere.length;
-    // + Machine's cluster: the tab's primary while there is none
+    // + Machine's shared PostgreSQL…: there while there is none
     const offer = data.cluster || {}, box = document.getElementById("pg-cluster-box"), make = document.getElementById("pg-cluster");
     box.hidden = !(offer.missing || []).length;
     make.disabled = !!offer.why;
+    // the tab's one primary: the shared PostgreSQL on a machine with no database yet; else the replica of its
+    // only database on another server; else + Replica of another machine… (below)
+    make.classList.toggle("primary", !box.hidden && !rows.length);
+    const toOpen = toButtons.filter((b) => !b.disabled);
+    if (!make.classList.contains("primary") && toOpen.length === 1) toOpen[0].classList.add("primary");
     box.title = offer.why ? fill(T.clusterNot, {why: offer.why}) : "";
     // + Replica of another machine…: there with a link and no replica hosted yet; the tab's primary when
     // nothing else is to be made here; off, with why for each link, when no link can carry it
@@ -1497,7 +1689,7 @@
     // (a machine that hosts the copy of a cluster may still host those of dedicated databases: the dialog says what is left)
     rbox.hidden = !ro.links.length;
     rmake.disabled = !!ro.why || !usable.length;
-    rmake.classList.toggle("primary", box.hidden && !rbox.hidden);
+    rmake.classList.toggle("primary", !make.classList.contains("primary") && toOpen.length !== 1 && !rbox.hidden);
     rbox.title = ro.why ? fill(T.rp.notHere, {why: ro.why}) : usable.length ? "" : fill(T.rp.noLink, {why: ro.links.map((l) => l.why).join(" ")});
     document.getElementById("pg-empty-replica").hidden = rbox.hidden || rmake.disabled;
     filter();

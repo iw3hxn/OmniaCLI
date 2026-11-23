@@ -120,6 +120,9 @@ NOT_SENSITIVE = frozenset({
     # what each machine sees of it; making, dropping, promoting and the reads are actions, logged
     "/api/postgres/machine/{major}/replica/facts", "/api/postgres/machine/{major}/replica/state",
     "/api/links/{name}/postgres/replica", "/api/postgres/replica/sources",
+    # Replica on another server…: the same, asked by the panel the person is on of each machine it knows
+    # (the database's facts, the room, the round trip); Create is an action, logged on both panels
+    "/api/postgres/replica/to", "/api/postgres/replica/from",
     # the return after a promotion (UX-011 §A): what is said before it is prepared (sizes, the names
     # of the instances, to the machine's admins and the link that asks) and what the promoted copy
     # sees of the cluster that comes back; preparing, completing and cancelling are actions, logged

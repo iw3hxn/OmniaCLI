@@ -2712,7 +2712,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         and where the customers log in (the portal, "" for none yet, None
         where it cannot be published: OmniaCLI does not keep nginx)."""
         return {"app": "OmniaCLI", "version": _version(), "caller": str(user), "role": user.role,
-                "portal": portal_url() or ("" if settings.storage_roots else None)}
+                "portal": portal_url() or ("" if settings.storage_roots else None),
+                # which machine it is (Replica on another server… finds its link to it by it); none for a customer
+                "machine": shown_name(user)}
 
     @app.get("/api/servers")
     async def server_list(request: Request):
@@ -17880,6 +17882,15 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                       f"from {name}.")
         if facts.get("why"):
             return no(f"{name}: {facts['why']}")
+        # a physical copy follows only a PostgreSQL this machine runs, on the same architecture
+        their_arch, their_major, here_arch = str(facts.get("arch") or ""), str(facts.get("major") or ""), os.uname().machine
+        base.update(source_arch=their_arch, source_major=their_major, arch=here_arch)
+        if their_major and their_major not in machinedb.IMAGE:
+            return no(f"The PostgreSQL of {name} is {their_major}, this machine runs {', '.join(machinedb.IMAGE)}: a copy "
+                      "cannot follow it.")
+        if their_arch and their_arch != here_arch:
+            return no(f"The PostgreSQL of {name} runs on {their_arch}, this machine on {here_arch}: a copy follows only "
+                      "on the same architecture.")
         ports = [facts["port"]] if isinstance(facts.get("port"), int) else []
         found = await asyncio.to_thread(linkedcluster.measure, host, [*ports, linkedcluster.link_port(link)])
         free = managedreplica.free_here(offer["storage"]) + stopped
@@ -17890,6 +17901,215 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 "warn_ms": linkedcluster.WARN_MS, "trips": linkedcluster.TRIPS_PER_QUERY,
                 "nat": bool(found["address"]) and not linkedcluster.public_address(found["address"])
                 and linkedcluster.public_address(host)}
+
+    # --- Replica on another server… (Carlo, 23/11/2026): asked from the Database tab of the machine that has
+    # the database, on its row; the panel the person is on (the central one, which links every machine, or
+    # the machine itself) lists the machines it knows, asks each one whether it can host the copy (through
+    # its own link to the machine of the database: the same + Replica of another machine… says before the
+    # click), and makes it there through its link. The person never goes to the other machine.
+
+    REPLICA_TO_TIMEOUT = 45.0
+
+    def answer_of(result) -> dict:
+        """A route of this application called as a function: its dict, or {"error", "status"} of its refusal."""
+        if isinstance(result, JSONResponse):
+            try:
+                said = json.loads(bytes(result.body))
+            except ValueError:
+                said = {}
+            return {"error": str(said.get("error") or said.get("detail") or f"HTTP {result.status_code}"),
+                    "status": result.status_code}
+        return result if isinstance(result, dict) else {"error": "an answer that is not an object"}
+
+    async def link_to_machine(machine: str, host: str, me: Principal) -> LinkTarget | None:
+        """This machine's link to the machine named machine, reached at host by the panel that asks: a link
+        to that host first, else one whose OmniaCLI says it is that machine; one over HTTPS or SSH first."""
+        host = str(host or "").lower()
+        links = list(settings.link_targets.values())
+        # a loopback names no machine: each machine has its own
+        loopback = host in ("localhost", "::1") or host.startswith("127.")
+        found = [l for l in links if host and not loopback and linkedcluster.host_of(l) == host]
+        if not found and machine:
+            async def named(link: LinkTarget) -> bool:
+                try:
+                    resp = await link_clients.client(link).get(
+                        "/api/info", timeout=LIST_TIMEOUT, headers=link_headers(link, me.on_behalf or me.name, me.role))
+                    return resp.status_code == 200 and str(resp.json().get("machine") or "") == machine
+                except (httpx.HTTPError, ValueError, AttributeError):
+                    return False
+            said = await asyncio.gather(*(named(l) for l in links))
+            found = [l for l, yes in zip(links, said) if yes]
+        found.sort(key=lambda l: bool(linkedcluster.unprotected(l)))
+        return found[0] if found else None
+
+    @app.get("/api/postgres/replica/from")
+    async def replica_from(request: Request, machine: str = "", host: str = "", which: str = "",
+                           me: Principal = Depends(current_user)):
+        """Whether this machine can host the read replica of the PostgreSQL which of the machine named
+        machine (reached at host by the panel that asks), through this machine's own link to it: what +
+        Replica of another machine… says before the click, with the name of that link."""
+        postgres_admin(me)
+        base = {"here": here_name(), "arch": os.uname().machine}
+        link = await link_to_machine(machine, host, me)
+        if link is None:
+            return {**base, "error": i18n.tr(request_language(request), (
+                f"{here_name()} has no link to {machine or host}: the copy is made by {here_name()} through its "
+                f"link, add one in its Links page (a link token made on {machine or host} for it)"))}
+        found = await link_replica(request, link.name, "", "", which, me)
+        return {**base, **answer_of(found), "via_link": link.name}
+
+    def replica_to_fits(answer: dict) -> str:
+        """Why the machine that answered cannot host the copy ("": it can): what it said, or the room."""
+        if answer.get("error"):
+            return str(answer["error"])
+        fits = managedreplica.room(int(answer.get("size") or 0), int(answer.get("free") or 0),
+                                   float(answer.get("reserve_gb") or managedreplica.RESERVE_GB))
+        if not fits["fits"]:
+            return (f"No room: the copy takes about {fits['need'] >> 20} MB, {fits['free'] / workspaceops.GB:.1f} GB are "
+                    f"free there and {fits['reserve'] / workspaceops.GB:g} GB must stay free.")
+        return ""
+
+    async def replica_to_source(request: Request, via: str, key: str, me: Principal) -> dict:
+        """What the machine of the database says of it (the facts a replica is made on), through the link via, or here."""
+        if not via:
+            return {**answer_of(await replica_facts(key, me)), "host": ""}
+        link = settings.link_targets.get(via)
+        if link is None:
+            return {"error": f"No link {via}", "status": 404}
+        headers = {**link_headers(link, me.on_behalf or me.name, me.role), "Accept": "application/json",
+                   "accept-language": request_language(request)}
+        try:
+            resp = await link_clients.client(link).get(f"/api/postgres/machine/{key}/replica/facts", headers=headers,
+                                                       timeout=LIST_TIMEOUT * 4)
+        except httpx.HTTPError as exc:
+            return {"error": f"{via} does not answer: {describe_error(exc)}"}
+        if resp.status_code != 200:
+            return {"error": replica_refusal(link, resp)}
+        try:
+            facts = resp.json()
+        except ValueError:
+            return {"error": f"{via} gave an answer that cannot be read"}
+        return {**facts, "host": linkedcluster.host_of(link)}
+
+    async def replica_to_target(request: Request, link: LinkTarget, machine: str, host: str, key: str,
+                                me: Principal) -> dict:
+        """What the machine of the link says about hosting the copy (GET /api/postgres/replica/from there)."""
+        headers = {**link_headers(link, me.on_behalf or me.name, me.role), "Accept": "application/json",
+                   "accept-language": request_language(request)}
+        try:
+            resp = await link_clients.client(link).get("/api/postgres/replica/from", headers=headers,
+                                                       params={"machine": machine, "host": host, "which": key},
+                                                       timeout=REPLICA_TO_TIMEOUT)
+        except httpx.HTTPError as exc:
+            return {"error": f"{link.name} does not answer: {describe_error(exc)}"}
+        if resp.status_code != 200:
+            return {"error": replica_refusal(link, resp)}
+        try:
+            data = resp.json()
+        except ValueError:
+            return {"error": f"{link.name} gave an answer that cannot be read"}
+        return data if isinstance(data, dict) else {"error": f"{link.name} gave an answer that cannot be read"}
+
+    @app.get("/api/postgres/replica/to")
+    async def replica_to(request: Request, key: str = "", via: str = "", me: Principal = Depends(current_user)):
+        """Replica on another server…: the database (key, on the machine of the link via, or here) and the
+        machines this panel knows, each with what decides it (its room against the copy, PostgreSQL and the
+        architecture, the round trip to the port, a copy hosted already) and why not; the panel that links
+        both machines asks both ends, through its links."""
+        postgres_admin(me)
+        if via and me.kind != "user":
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Only a user who logs in here may use a link")
+        lang = request_language(request)
+        facts = await replica_to_source(request, via, key, me)
+        machine = str(facts.get("machine") or via or here_name())
+        source = {"key": key, "via": via, "machine": machine, "kind": "dedicated" if managedreplica.is_dedicated(key) else "cluster",
+                  **{k: facts.get(k) for k in ("name", "workspace", "size", "major", "arch", "port", "restarts", "restart_s",
+                                              "instances", "grants", "cap_gb", "disk_total", "disk_free")}}
+        why = facts.get("error") or (f"{machine}: {facts['why']}" if facts.get("why") else "") or (
+            f"It has a read replica already, on {(facts['replica'] or {}).get('link')}: one per database. Drop it first."
+            if facts.get("replica") else "")
+        if why:
+            return {"source": source, "error": i18n.tr(lang, str(why)), "targets": [], "links": len(settings.link_targets)}
+        host = str(facts.get("host") or "")
+        others = [l for name, l in sorted(settings.link_targets.items()) if name != via]
+
+        async def here() -> dict:
+            found = answer_of(await link_replica(request, via, "", "", key, me))
+            return {**found, "target": "", "machine": here_name(), "here": here_name(), "via_link": via}
+
+        async def there(link: LinkTarget) -> dict:
+            found = await replica_to_target(request, link, machine, host, key, me)
+            return {**found, "target": link.name, "machine": str(found.get("here") or link.name)}
+        # this panel itself, when the page came through a link and it can host copies (a storage that is there:
+        # a central panel that hosts nothing has none)
+        offer = replica_offer()
+        hosts = not offer["why"] and os.path.isdir(settings.storage_roots.get(offer["storage"]) or "")
+        asks = ([here()] if via and hosts else []) + [there(l) for l in others]
+        targets = []
+        for found in await asyncio.gather(*asks):
+            reason = replica_to_fits(found)
+            targets.append({k: found.get(k) for k in (
+                "target", "machine", "via_link", "free", "need", "size", "seconds", "ms", "warn_ms", "address", "nat",
+                "restarts", "restart_s", "cap_gb", "reserve_gb", "arch", "source_arch", "source_major", "storage")}
+                | {"why": i18n.tr(lang, reason)})
+        return {"source": source, "error": None, "targets": targets, "links": len(settings.link_targets)}
+
+    @app.post("/api/postgres/replica/to")
+    async def replica_to_make(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """Create (Replica on another server…): the machine chosen makes the copy through its own link to the
+        machine of the database, asked by this panel through its link (or this panel itself, when it is the
+        one chosen); what it said before is asked again first. The answer: the job there and its page here."""
+        postgres_admin(me)
+        payload = payload if isinstance(payload, dict) else {}
+        via, key, target = str(payload.get("via") or ""), str(payload.get("key") or ""), str(payload.get("target") or "")
+        if via and me.kind != "user":
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Only a user who logs in here may use a link")
+        if via and via not in settings.link_targets:
+            return refuse(f"No link {via}", status.HTTP_404_NOT_FOUND)
+        restart = bool(payload.get("restart"))
+        if not target:
+            if not via:
+                return refuse("Choose the server that hosts the copy")
+            found = answer_of(await link_replica(request, via, "", "", key, me))
+            why = replica_to_fits(found)
+            if why:
+                return refuse(why)
+            made = answer_of(await replica_make({"link": via, "major": key, "address": found.get("address"),
+                                                 "cap_gb": found.get("cap_gb"), "reserve_gb": found.get("reserve_gb"),
+                                                 "restart": restart}, me))
+            if made.get("error"):
+                return refuse(made["error"], made.get("status") or status.HTTP_400_BAD_REQUEST)
+            return {"job": made["job"], "url": f"/jobs/{made['job']}", "machine": here_name()}
+        link = settings.link_targets.get(target)
+        if link is None or target == via:
+            return refuse(f"No link {target}", status.HTTP_404_NOT_FOUND)
+        facts = await replica_to_source(request, via, key, me)
+        if facts.get("error"):
+            return refuse(facts["error"], status.HTTP_502_BAD_GATEWAY)
+        machine = str(facts.get("machine") or via or here_name())
+        found = await replica_to_target(request, link, machine, str(facts.get("host") or ""), key, me)
+        why = replica_to_fits(found)
+        if why:
+            return refuse(why)
+        headers = {**link_headers(link, me.on_behalf or me.name, me.role), "Accept": "application/json",
+                   "accept-language": request_language(request)}
+        try:
+            resp = await link_clients.client(link).post("/api/postgres/replica/make", headers=headers, json={
+                "link": found.get("via_link"), "major": key, "address": found.get("address"), "cap_gb": found.get("cap_gb"),
+                "reserve_gb": found.get("reserve_gb"), "restart": restart}, timeout=REPLICA_TO_TIMEOUT)
+        except httpx.HTTPError as exc:
+            return refuse(f"{link.name} does not answer: {describe_error(exc)}", status.HTTP_502_BAD_GATEWAY)
+        if resp.status_code != 200:
+            try:
+                said = resp.json().get("error") or resp.json().get("detail")
+            except (ValueError, AttributeError):
+                said = ""
+            return refuse(f"{link.name}: {said}" if said else replica_refusal(link, resp),
+                          resp.status_code if resp.status_code in (400, 404, 409, 507) else status.HTTP_502_BAD_GATEWAY)
+        remote = str((resp.json() or {}).get("job") or "")
+        if not remote:
+            return refuse(f"{link.name} started no job for the replica", status.HTTP_502_BAD_GATEWAY)
+        return {"job": remote, "url": f"/links/{link.name}/jobs/{remote}", "machine": str(found.get("here") or link.name)}
 
     def dedicated_name(key: str) -> str:
         """workspace-instance of the key of a dedicated database, as its machine names the instance; "" for a cluster's."""

@@ -2905,7 +2905,13 @@ machine they have. It is steps 1 and 2 of the decision on PostgreSQL
 ([AD-001…AD-007](docs/adr/postgresql-della-macchina.md), accepted in its
 mixed form: a cluster of the machine for the new instances, the dedicated
 databases of today kept); the cluster of the machine is the tab's first row,
-with its recovery at a minute (above).
+with its recovery at a minute (above). It is made with **+ Machine's shared
+PostgreSQL…** (*+ PostgreSQL condiviso della macchina…*): one PostgreSQL on
+this machine for several instances, to save memory, not a copy on another
+server (that is **Replica on another server…**, below). The tab's one
+primary is that button on a machine with no database yet, else **Replica on
+another server…** of its only database, else **+ Replica of another
+machine…**.
 
 - **Read** when the tab opens, each database within its own time (one that
   does not answer is a row saying why): a row for each instance's database,
@@ -3291,6 +3297,37 @@ promoted as the cluster's, by the same code; what differs:
   switched off, is switched on again from the instance's Backups tab. The
   customer reads nothing during the return, and one job of its instance at
   its end, which names no machine.
+
+### Replica on another server…
+
+The same read replica (of the machine's cluster or of a production's own
+database) is asked **from the machine that has the database**, on its row of
+the Database tab: **Replica on another server…** (*Replica su un altro
+server…*) asks **on which server** the second database goes. The servers
+listed are those the panel the person is on knows: on a central panel
+(which links every machine) every linked machine; on a machine alone its own
+links; on a machine looked at through another's link, that other panel too
+when it can host copies. Each says what decides it, asked to it through the
+link (`GET /api/postgres/replica/to` of the panel, which asks `GET
+/api/postgres/replica/from` of each machine): the room free there against
+the copy (and what must stay free), PostgreSQL and the architecture against
+the database's, the round trip to that machine's port, and why not (a copy
+hosted already, the database's replica elsewhere, no link back to the
+machine of the database, no answer); the unfit ones are off with the
+reason. Then the plan: what is copied (one customer's database, or the
+whole cluster with its instances), the time expected, what the machine of
+the database does (a role, a line of access for the one address, the
+firewall, the place that holds its changes with its cap, the port already
+published or the restart that publishes it, asked once more), and
+**Create**. The panel asks the server chosen, through its link, to make the
+copy through its own link to the machine of the database (`POST
+/api/postgres/replica/to`, then `POST /api/postgres/replica/make` there),
+and opens that server's job through the link: the person never goes to the
+other machine. The server chosen needs a link to the machine of the
+database (found by the address its panel reaches it at, else by the name
+`GET /api/info` says): the panel does not make links. A machine with no link
+says where the choice is made: from the central panel, or after a link is
+added in Links.
 
 ### Copying an instance's trees and its database to another machine
 
