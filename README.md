@@ -4806,6 +4806,11 @@ controls and motion. A page writes `var(--…)`, never a value of its own.
   (red text and border; filled red only on the go of the confirm of what
   cannot be undone, red under any brand). 36 px high (32 the small ones), 44
   on a touch screen; flat, no shadow.
+- **The header on a phone** (under 768 px): the logo, **Menu**, the bell and
+  the theme; the menu holds the places and, after a line, your account, the
+  language and **Log out** (Esc closes it). From 768 px the places are in the
+  header, from 992 px the names too. The menu of a backup's row is an icon on
+  a phone, so it covers nothing of the row.
 - **Less motion** asked by the system: nothing moves, one rule for every page.
 
 ### Whitelabel

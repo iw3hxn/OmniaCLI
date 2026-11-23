@@ -28,14 +28,18 @@
   width: max-content; min-width: 230px; padding: 8px; background: var(--panel); border: 1px solid var(--border);
   border-radius: var(--r-lg); box-shadow: var(--shadow-lg); }
 .row-menu-items button, .row-menu-items .button { width: 100%; justify-content: flex-start; box-shadow: none; text-align: left; }
+.row-menu-dots { display: none; }
 /* a phone: each backup a card, its instance on top, then when, size, outcome and its menu */
-@media (max-width: 600px) {
+@media (max-width: 575.98px) {
   .bk-rows thead { display: none; }
   .bk-rows, .bk-rows tbody { display: block; }
   .bk-rows tr { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; padding: 10px 4px;
     border-bottom: 1px solid var(--border); position: relative; }
   .bk-rows td { display: block; border: 0; padding: 0; background: none !important; }
-  .bk-rows td:first-child { flex: 1 1 100%; font-size: 15px; padding-right: 48px; }
+  .bk-rows td:first-child { flex: 1 1 100%; font-size: 15px; padding-right: calc(var(--icon-btn) + var(--sp-8)); }
+  .row-menu > summary { width: var(--icon-btn); min-height: var(--icon-btn); padding: 0; justify-content: center;
+    background: transparent; border-color: transparent; }
+  .row-menu-word { display: none; } .row-menu-dots { display: inline; }
   .bk-rows td:not(:first-child) { font-size: 13px; }
   .bk-rows td.num:last-child { position: absolute; top: 8px; right: 4px; }
 }
@@ -307,7 +311,9 @@
       b.addEventListener("click", () => removeBackup(r));
       items.append(b);
     }
-    return el("details", {class: "row-menu"}, el("summary", {class: "button small", title: T.actionsTitle}, `${T.actions} ▾`), items);
+    // a phone: the menu an icon button (its name said, its help in the title), so it covers nothing of the row
+    return el("details", {class: "row-menu"}, el("summary", {class: "button small", title: T.actionsTitle, "aria-label": T.actions},
+      el("span", {class: "row-menu-word"}, `${T.actions} ▾`), el("span", {class: "row-menu-dots", "aria-hidden": "true"}, "⋯")), items);
   }
   function outcomeOf(r) {
     if (r.imported) {

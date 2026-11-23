@@ -130,3 +130,15 @@ def test_four_buttons():
             assert gone not in page.read_text(encoding="utf-8"), (gone, page.name)
     # what destroys stays red under any brand: its own tokens, never the accent
     assert "button.primary.danger, button.primary.danger:hover:not(:disabled) { background: var(--danger);" in base
+
+
+async def test_the_header_on_a_phone_leaves_nothing_out(client):  # noqa: F811
+    """UX-017 §5.11: under 768 px your account, the language and Log out are in the menu, never nowhere."""
+    page = (await client.get("/", headers={"Authorization": AUTH, "Accept": "text/html"})).text
+    menu = page[page.index('<nav class="topnav"'):page.index("</nav>", page.index('<nav class="topnav"'))]
+    more = menu[menu.index('class="topnav-more"'):]
+    assert 'action="/logout"' in more and 'href="/language/it?' in more and 'href="/account"' in more
+    # in the bar too (shown from 768 px); no width hides them any more
+    end = page[page.index('<div class="top-end">'):page.index("</header>")]
+    assert 'action="/logout"' in end and 'href="/language/it?' in end and 'href="/account"' in end
+    assert "@media (max-width: 560px)" not in page and ".top-end .side-account, .top-end .logout { display: flex; }" in page

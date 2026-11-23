@@ -51,52 +51,67 @@ body { margin: 0; background: var(--bg); color: var(--text);
 /* the page: a bar on top with the few places (Server, Instances, Settings:
    docs/ux/REVIEW-2026-11-18.md), the content under it */
 .shell { display: flex; flex-direction: column; min-height: 100vh; }
-.topbar { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 28px; height: 56px; padding: 0 24px;
-  background: var(--side-bg); color: var(--side-text); }
-.brand { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 17px; letter-spacing: -.01em;
-  color: var(--side-current); text-decoration: none; flex: none; }
-.brand img { width: 26px; height: 26px; border-radius: 6px; }
+/* the bar (UX-017 §5.11), mobile first: on a phone the logo, Menu, the bell and the theme, and in the menu the
+   places, your account, the language and Log out; from 768 the places in the bar; from 992 the names too */
+.topbar { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: var(--sp-12); height: 56px;
+  padding: 0 var(--sp-12); background: var(--side-bg); color: var(--side-text); }
+.brand { display: flex; align-items: center; gap: var(--sp-10); font-weight: var(--fw-bold); font-size: var(--fs-18);
+  line-height: var(--lh-28); letter-spacing: -.01em; color: var(--side-current); text-decoration: none; flex: none; }
+.brand img { width: 26px; height: 26px; border-radius: var(--r-sm); }
+.brand-name { display: none; }
 .brand-name span { color: var(--brand-top); }
-.topnav { display: flex; gap: 4px; min-width: 0; overflow-x: auto; }
-.nav-link { padding: 7px 12px; border-radius: var(--r); color: var(--side-text); text-decoration: none; font-size: 14px;
-  font-weight: 500; white-space: nowrap; }
+.menu-toggle { display: inline-flex; background: transparent; color: var(--side-text); border-color: transparent;
+  min-height: var(--control-h-sm); padding: var(--sp-4) var(--sp-10); }
+.menu-toggle:hover, .menu-toggle[aria-expanded="true"] { background: var(--side-hover); color: var(--side-current); border-color: transparent; }
+.topnav { display: none; position: absolute; top: 56px; left: 0; right: 0; flex-direction: column; gap: 0;
+  padding: var(--sp-6) var(--sp-12) var(--sp-10); background: var(--side-bg); box-shadow: var(--shadow-lg); }
+.topnav.open { display: flex; }
+.nav-link { padding: var(--sp-10) var(--sp-12); border-radius: var(--r); color: var(--side-text); text-decoration: none;
+  font-size: var(--fs-14); line-height: var(--lh-20); font-weight: var(--fw-regular); white-space: nowrap; }
 .nav-link:hover { background: var(--side-hover); color: var(--side-current); text-decoration: none; }
-.nav-link[aria-current="page"] { color: var(--side-current); font-weight: 650; box-shadow: inset 0 -2px 0 var(--brand-top); border-radius: 0; }
-.top-end { margin-left: auto; display: flex; align-items: center; gap: 10px; flex: none; }
-.side-account { display: flex; align-items: center; gap: 8px; color: var(--side-text); text-decoration: none; }
+.nav-link[aria-current="page"] { color: var(--side-current); font-weight: var(--fw-semibold); box-shadow: inset 3px 0 0 var(--brand-top); }
+/* in the phone's menu, after the places: your account, the language, Log out */
+.topnav-more { display: flex; flex-direction: column; align-items: stretch; gap: var(--sp-8); margin-top: var(--sp-6);
+  padding-top: var(--sp-10); border-top: var(--bw) solid var(--side-hover); }
+.topnav-more .side-account { padding: var(--sp-6) var(--sp-12); }
+.topnav-more .lang-switch { align-self: flex-start; margin-left: var(--sp-12); }
+.topnav-more .logout button { width: 100%; justify-content: flex-start; background: transparent; color: var(--side-text);
+  border-color: transparent; }
+.topnav-more .logout button:hover { background: var(--side-hover); color: var(--side-current); }
+.top-end { margin-left: auto; display: flex; align-items: center; gap: var(--sp-10); flex: none; }
+.top-end .side-account, .top-end .lang-switch, .top-end .logout { display: none; }
+.side-account { display: flex; align-items: center; gap: var(--sp-8); color: var(--side-text); text-decoration: none; }
 .side-account:hover { color: var(--side-current); text-decoration: none; }
+.top-end .side-account span:not(.avatar) { display: none; }
 .avatar { width: 28px; height: 28px; border-radius: 50%; background: var(--brand-top); color: var(--side-bg); display: grid;
-  place-items: center; font-weight: 700; font-size: 13px; flex: none; text-transform: uppercase; }
-.side-tools { display: flex; gap: 6px; align-items: center; }
+  place-items: center; font-weight: var(--fw-bold); font-size: var(--fs-12); flex: none; text-transform: uppercase; }
+.side-tools { display: flex; gap: var(--sp-6); align-items: center; }
 .side-tools button, .side-tools .button, .side-tools select { background: transparent; color: var(--side-text);
-  border: 1px solid transparent; min-height: var(--control-h-sm); padding: var(--sp-4) var(--sp-10); width: auto; }
+  border: var(--bw) solid transparent; min-height: var(--control-h-sm); padding: var(--sp-4) var(--sp-10); width: auto; }
 .side-tools button:hover, .side-tools .button:hover { background: var(--side-hover); color: var(--side-current);
   border-color: var(--side-hover); }
-.lang-switch { display: inline-flex; border: 1px solid var(--side-hover); border-radius: var(--r); overflow: hidden; }
-.lang-switch a { padding: 4px 9px; font-size: 12px; font-weight: 600; color: var(--side-muted); text-decoration: none; }
+.lang-switch { display: inline-flex; border: var(--bw) solid var(--side-hover); border-radius: var(--r); overflow: hidden; }
+.lang-switch a { display: inline-flex; align-items: center; min-height: var(--control-h-sm); padding: var(--sp-4) var(--sp-10);
+  font-size: var(--fs-12); line-height: var(--lh-18); font-weight: var(--fw-semibold); color: var(--side-muted); text-decoration: none; }
+.lang-switch a:hover { color: var(--side-current); }
 .lang-switch a[aria-current="true"] { background: var(--side-hover); color: var(--side-current); }
 .logout { margin: 0; }
+@media (min-width: 768px) {
+  .topbar { gap: var(--sp-24); padding: 0 var(--sp-24); }
+  .menu-toggle, .topnav-more { display: none; }
+  .topnav { display: flex; position: static; flex-direction: row; gap: var(--sp-4); min-width: 0; overflow-x: auto;
+    padding: 0; background: none; box-shadow: none; }
+  .nav-link { padding: var(--sp-6) var(--sp-12); }
+  .nav-link[aria-current="page"] { box-shadow: inset 0 -2px 0 var(--brand-top); border-radius: 0; }
+  .top-end .side-account, .top-end .logout { display: flex; }
+  .top-end .lang-switch { display: inline-flex; }
+}
+@media (min-width: 992px) {
+  .brand-name, .top-end .side-account span:not(.avatar) { display: inline; }
+}
 .content { min-width: 0; display: flex; flex-direction: column; flex: 1; }
-.link-bar { padding: 8px 24px; background: var(--side-hover); color: var(--side-text); font-size: 13px; }
+.link-bar { padding: var(--sp-8) var(--sp-24); background: var(--side-hover); color: var(--side-text); font-size: var(--fs-14); }
 .link-bar a { color: var(--side-current); text-decoration: underline; }
-@media (max-width: 900px) {
-  .topbar { gap: 12px; padding: 0 12px; }
-  .side-account span:not(.avatar), .brand-name { display: none; }
-}
-@media (max-width: 560px) {
-  .lang-switch, .logout { display: none; }
-}
-/* a phone: the places in a menu button, open under the bar */
-.menu-toggle { display: none; }
-@media (max-width: 600px) {
-  .menu-toggle { display: inline-flex; background: transparent; color: var(--side-text); border-color: var(--side-hover);
-    box-shadow: none; padding: 5px 10px; }
-  .topnav { display: none; position: absolute; top: 56px; left: 0; right: 0; flex-direction: column; gap: 0;
-    padding: 6px 12px 10px; background: var(--side-bg); box-shadow: var(--shadow-lg); }
-  .topnav.open { display: flex; }
-  .topnav .nav-link { padding: 10px 12px; }
-  .nav-link[aria-current="page"] { box-shadow: inset 3px 0 0 var(--brand-top); }
-}
 /* the state of an instance, a dot and a word (a hosting panel's); the kinds of copies */
 .state-dot { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; color: var(--text); font-weight: 600; }
 .state-dot::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
@@ -509,6 +524,21 @@ summary { cursor: pointer; color: var(--muted); }
 <a class="nav-link" href="{{ href }}" {% if current %}aria-current="page"{% endif %}
    title="{{ _('The workspaces of the customers of this machine and of the linked machines: where they run, their instances and who comes in.') }}">{{ _("Workspaces") }}</a>
 {%- endmacro %}
+{# your account, the language and Log out: in the bar from 768 px, in the menu on a phone #}
+{% macro account_link() -%}
+<a class="side-account" href="{{ '' if central_menu is not none else prefix }}/account" title="{{ _('Your account and password') }}">
+      <span class="avatar">{{ (account or central_user)[:1] }}</span><span>{{ account or central_user }}</span></a>
+{%- endmacro %}
+{% macro language_switch() -%}
+{# the language is this browser's: a linked instance's pages follow it (the link passes it) #}
+{% if not prefix or central_menu is not none %}<span class="lang-switch" role="group" aria-label="{{ _('Language') }}">
+        {% for code, name in languages.items() %}<a href="/language/{{ code }}?next={{ ((prefix if central_menu is not none else '') ~ here ~ ('?' ~ request.url.query if request and request.url.query else '')) | urlencode }}" title="{{ name }}"
+          {% if code == lang %}aria-current="true"{% endif %}>{{ code | upper }}</a>{% endfor %}
+      </span>{% endif %}
+{%- endmacro %}
+{% macro logout_form() -%}
+<form method="post" action="/logout" class="logout"><button class="logout-button" title="{{ _('Ends your session in this browser and goes back to the login page. The jobs that are running go on.') }}">{{ _("Log out") }}</button></form>
+{%- endmacro %}
 <div class="shell">
 <header class="topbar">
   {# shown through a link of a newer OmniaCLI: the menu of who looks, its own
@@ -554,6 +584,13 @@ summary { cursor: pointer; color: var(--muted); }
     {% if can_act and not scoped %}<a class="nav-link" href="{{ prefix }}/settings" {% if place.settings %}aria-current="page"{% endif %}
        title="{{ _('Users, git credentials, schedules, links, publications, plugins, options, the jobs and the log') }}">{{ _("Settings") }}</a>{% endif %}
     {% endif %}
+    {# a phone: what the bar has no room for, in the menu (UX-017 §5.11): nothing is nowhere #}
+    {% set viewer = account or (central_user if central else "") %}
+    <div class="topnav-more">
+      {% if viewer %}{{ account_link() }}{% endif %}
+      {{ language_switch() }}
+      {% if viewer %}{{ logout_form() }}{% endif %}
+    </div>
   </nav>
   <div class="top-end">
     {% set viewer = account or (central_user if central else "") %}
@@ -569,16 +606,11 @@ summary { cursor: pointer; color: var(--muted); }
         <p class="bell-foot" id="bell-foot"><a href="/instances?view=map" id="bell-map" title="{{ _('Opens the map: every thing to look at, on the instances it concerns') }}">{{ _("All of them on the map") }}</a></p>
       </div>
     </div>{% endif -%}
-    {% if viewer %}<a class="side-account" href="{{ '' if central else prefix }}/account" title="{{ _('Your account and password') }}">
-      <span class="avatar">{{ viewer[:1] }}</span><span>{{ viewer }}</span></a>{% endif %}
+    {% if viewer %}{{ account_link() }}{% endif %}
     <div class="side-tools">
-      {# the language is this browser's: a linked instance's pages follow it (the link passes it) #}
-      {% if not prefix or central %}<span class="lang-switch" role="group" aria-label="{{ _('Language') }}">
-        {% for code, name in languages.items() %}<a href="/language/{{ code }}?next={{ ((prefix if central else '') ~ here ~ ('?' ~ request.url.query if request and request.url.query else '')) | urlencode }}" title="{{ name }}"
-          {% if code == lang %}aria-current="true"{% endif %}>{{ code | upper }}</a>{% endfor %}
-      </span>{% endif %}
+      {{ language_switch() }}
       <button type="button" class="theme-toggle" id="theme-toggle" title="{{ _('Switches between the light and the dark theme. The choice is kept in this browser.') }}"></button>
-      {% if viewer %}<form method="post" action="/logout" class="logout"><button class="logout-button" title="{{ _('Ends your session in this browser and goes back to the login page. The jobs that are running go on.') }}">{{ _("Log out") }}</button></form>{% endif %}
+      {% if viewer %}{{ logout_form() }}{% endif %}
     </div>
   </div>
 </header>
@@ -877,7 +909,9 @@ window.sizeText = (n) => {
   const show = (open) => { nav.classList.toggle("open", open); toggle.setAttribute("aria-expanded", String(open)); };
   toggle.addEventListener("click", (event) => { event.stopPropagation(); show(!nav.classList.contains("open")); });
   document.addEventListener("click", (event) => { if (!nav.contains(event.target)) show(false); });
-  document.addEventListener("keydown", (event) => { if (event.key === "Escape") show(false); });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && nav.classList.contains("open")) { show(false); toggle.focus(); }
+  });
 })();
 </script>
 <script>
