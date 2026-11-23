@@ -30,12 +30,12 @@
    primary action for its state, the rest in More, the details in tabs */
 .inst-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px 20px; flex-wrap: wrap; margin-bottom: 14px; }
 .inst-top h1 { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 6px; }
-.facts { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: center; color: var(--muted); font-size: 14px; }
+.facts { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: center; color: var(--muted); font-size: var(--fs-14); line-height: var(--lh-20);}
 .facts a { color: inherit; }
-.facts .mono { font-size: 13px; }
+.facts .mono { font-size: var(--fs-14); line-height: var(--lh-20);}
 .head-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .head-actions form, .head-actions > span { margin: 0; }
-.state-dot { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; color: var(--text); font-weight: 600; }
+.state-dot { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; color: var(--text); font-weight: var(--fw-semibold); }
 .state-dot::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
 .state-dot.running::before { background: var(--ok); } .state-dot.stopped::before { background: var(--err); }
 .state-dot.busy::before { background: var(--warn); }
@@ -51,8 +51,8 @@
   background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow-lg); }
 .more-items form, .more-items > span { margin: 0; display: block; }
 .more-items button, .more-items .button { width: 100%; justify-content: flex-start; box-shadow: none; }
-.more-title { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted);
-  padding: 6px 4px 2px; }
+.more-title { font-size: var(--fs-12); font-weight: var(--fw-semibold); letter-spacing: .06em; text-transform: uppercase; color: var(--muted);
+  padding: 6px 4px 2px; line-height: var(--lh-18);}
 .more-title.danger-title { color: var(--err); border-top: 1px solid var(--border); margin-top: 6px; padding-top: 10px; }
 .copies td, .copies th, .last-jobs td, .last-jobs th { vertical-align: middle; }
 .copies .when, .last-jobs .when { white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--muted); }
@@ -61,7 +61,7 @@
 .last-action .status::before { display: none; }
 .row-open { text-align: right; white-space: nowrap; }
 .repo-state .ok-text { color: var(--ok); } .repo-state .warn-text { color: var(--warn); font-weight: 600; }
-.button.small { padding: 3px 10px; font-size: 13px; }
+.button.small { padding: 3px 10px; font-size: var(--fs-14); line-height: var(--lh-20);}
 .section-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 8px; }
 .section-head h2 { margin: 0; }
 @media (max-width: 700px) {
@@ -69,14 +69,14 @@
   .more-menu[open] { flex-basis: 100%; }
   .more-items { position: static; width: 100%; max-width: none; margin-top: 6px; box-shadow: var(--shadow); }
   .tiles { grid-template-columns: 1fr 1fr 1fr; }
-  .tile-value { font-size: 18px; }
+  .tile-value { font-size: var(--fs-18); line-height: var(--lh-28);}
 }
 /* New staging and Rebuild (UX-008 §5.1, §5.2) */
 dialog.sd { --dialog-w: 560px; }
 .sd h2 { margin: 0 0 6px; }
 .sd-field { margin: 12px 0; }
-.sd-label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; }
-.sd-help { font-size: 13px; }
+.sd-label { display: block; font-size: var(--fs-14); font-weight: var(--fw-semibold); margin-bottom: 4px; line-height: var(--lh-20);}
+.sd-help { font-size: var(--fs-14); line-height: var(--lh-20);}
 .sd-server { display: inline-flex; gap: 6px; align-items: center; margin: 0 16px 4px 0; }
 .sd-choice { display: flex; gap: 8px; align-items: flex-start; margin: 0 0 10px; cursor: pointer; }
 .sd-choice input { margin-top: 3px; }
@@ -88,14 +88,14 @@ dialog.sd { --dialog-w: 560px; }
 .addr-list li { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 6px; }
 .addr-list input, .addr-list select { flex: 1 1 180px; min-width: 0; }
 .addr-list input.bad { border-color: var(--err); }
-.addr-state { flex-basis: 100%; font-size: 13px; }
+.addr-state { flex-basis: 100%; font-size: var(--fs-14); line-height: var(--lh-20);}
 .addr-state.bad { color: var(--err); }
 </style>
 {% macro shell_paths_box(paths) %}
   {# where the instance lives and the commands to work on it from a shell of the machine (ssh) #}
   <details class="shell-paths">
     <summary title="{{ _('The folders of the instance on this machine and the commands to work on it from a shell') }}">{{ icon("terminal") }} {{ _("Paths and shell commands") }}</summary>
-    <p class="muted" style="font-size: 13px">{{ _("On this machine, over ssh as root (or a user with sudo).") }}</p>
+    <p class="muted" style="font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("On this machine, over ssh as root (or a user with sudo).") }}</p>
     <dl>
       {% for row in paths %}
       <dt>{{ tr(row.label) }}</dt>
@@ -613,8 +613,8 @@ dialog.sd { --dialog-w: 560px; }
   {# the database as it was at a minute, in a new staging (UX-006: no words of PostgreSQL on the screen) #}
   <div class="pitr" data-api="{{ prefix }}/api/servers/{{ server.name }}/pitr" hidden>
     <h3>{{ _("Recovery at a minute") }}</h3>
-    <p class="muted" style="font-size: 13px; margin: 0 0 8px">{{ _("Brings the database back as it was at a chosen minute, in a new staging: production does not change.") }}</p>
-    <p class="pitr-state" style="font-size: 14px"></p>
+    <p class="muted" style="font-size: var(--fs-14); margin: 0 0 8px; line-height: var(--lh-20);">{{ _("Brings the database back as it was at a chosen minute, in a new staging: production does not change.") }}</p>
+    <p class="pitr-state" style="font-size: var(--fs-14); line-height: var(--lh-20);"></p>
     {% if is_admin_here %}
     <div class="actions pitr-off" hidden><button type="button" id="pitr-enable" {{ off }}
       title="{{ _('Switches recovery at a minute on: the database starts keeping the record of every change and makes the first full copy at once, then one every night. The database restarts once, for a few seconds: in those seconds Odoo does not answer. Admins only.') }}">{{ _("Switch on…") }}</button></div>
@@ -625,29 +625,29 @@ dialog.sd { --dialog-w: 560px; }
         title="{{ _('Makes now the full copy of the database recovery at a minute starts from; it is made by itself every night. After a big change it shortens the recovery. It is a job.') }}">{{ _("Full copy now") }}</button>
     </div>
     {% else %}
-    <p class="muted pitr-noadmin" style="font-size: 13px">{{ _("An admin switches it on or uses it.") }}</p>
+    <p class="muted pitr-noadmin" style="font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("An admin switches it on or uses it.") }}</p>
     {% endif %}
     <details class="pitr-details" hidden><summary title="{{ _('How many full copies are kept and how much room the record of the changes takes') }}">{{ _("Details") }}</summary>
-      <p class="muted pitr-detail" style="font-size: 13px"></p></details>
+      <p class="muted pitr-detail" style="font-size: var(--fs-14); line-height: var(--lh-20);"></p></details>
   </div>
   {% endif %}
 </section>
 <style>
-.ab-line { margin: 0 0 10px; font-size: 14px; }
+.ab-line { margin: 0 0 10px; font-size: var(--fs-14); line-height: var(--lh-20);}
 .ab-line.off { color: var(--text); padding: var(--sp-8) var(--sp-12) var(--sp-8) calc(var(--sp-12) + var(--icon-16) + var(--sp-8)); position: relative;
   border: var(--bw) solid var(--warn); border-radius: var(--r); background: var(--warn-soft); }
 .ab-line.off::before { content: ""; position: absolute; left: var(--sp-12); top: calc(var(--sp-8) + 2px); width: var(--icon-16); height: var(--icon-16);
   background-color: var(--warn); -webkit-mask: var(--m-triangle) center / contain no-repeat; mask: var(--m-triangle) center / contain no-repeat; }
 .backup-auto { border-bottom: 1px solid var(--border); padding-bottom: 12px; margin-bottom: 12px; }
-.backup-auto > summary, .remote-list > summary { font-weight: 600; color: var(--text); }
+.backup-auto > summary, .remote-list > summary { font-weight: var(--fw-semibold); color: var(--text); }
 .backup-auto form { margin-top: 10px; }
 .ab-row { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin-bottom: 8px; }
 .ab-row input[type="number"] { width: 70px; }
-.backup-auto p { margin: 4px 0 0; font-size: 13px; }
+.backup-auto p { margin: 4px 0 0; font-size: var(--fs-14); line-height: var(--lh-20);}
 .remote-list { margin-top: 16px; } .remote-list .rl-body { margin-top: 8px; }
 .pitr { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 12px; }
-.pitr h3 { margin: 0 0 6px; font-size: 15px; }
-.pitr-details { margin-top: 8px; } .pitr-details summary { font-size: 13px; }
+.pitr h3 { margin: 0 0 6px; font-size: var(--fs-16); line-height: var(--lh-24);}
+.pitr-details { margin-top: 8px; } .pitr-details summary { font-size: var(--fs-14); line-height: var(--lh-20);}
 </style>
 {% endif %}
 
@@ -658,7 +658,7 @@ dialog.sd { --dialog-w: 560px; }
     <div class="tile"><div class="tile-label">{{ _("Processes") }}</div><div class="tile-value" data-tile="procs">–</div><div class="tile-sub">{{ _("of the instance, running now") }}</div></div>
   </div>
   <div style="height: 10px"></div>
-  <h3 class="chart-title">{{ _("CPU, % of one core") }} <span class="muted" style="font-weight: 400">· {{ _("this machine has") }} <span class="cores">?</span></span></h3>
+  <h3 class="chart-title">{{ _("CPU, % of one core") }} <span class="muted" style="font-weight: var(--fw-regular)">· {{ _("this machine has") }} <span class="cores">?</span></span></h3>
   <div class="chart-box"><svg class="chart" data-chart="cpu" role="img" aria-label="{{ _('CPU of {key} over the last hour', key=inst.key) }}"></svg><div class="chart-tip" hidden></div></div>
   <h3 class="chart-title">{{ _("Memory, MiB resident") }}</h3>
   <div class="chart-box"><svg class="chart" data-chart="mem" role="img" aria-label="{{ _('Memory of {key} over the last hour', key=inst.key) }}"></svg><div class="chart-tip" hidden></div></div>
@@ -686,25 +686,25 @@ dialog.sd { --dialog-w: 560px; }
         <dt>{{ _("Size") }}</dt><dd data-db="size">–</dd>
         <dt>{{ _("Where") }}</dt><dd data-db="where">–</dd>
       </dl>
-      <p class="muted db-remote" style="font-size: 13px" hidden></p>
+      <p class="muted db-remote" style="font-size: var(--fs-14); line-height: var(--lh-20);" hidden></p>
       <h3>{{ _("The costliest operations") }}</h3><div class="scroll" data-db-table="statements"></div>
       <h3>{{ _("The largest tables") }}</h3><div class="scroll" data-db-table="tables"></div>
-      <h3>{{ _("Indexes never used") }} <span class="muted" style="font-weight: 400; font-size: 13px">{{ _("since the statistics were reset: they slow the writes and take room") }}</span></h3><div class="scroll" data-db-table="unused_indexes"></div>
-      <h3>{{ _("Tables read whole without an index") }} <span class="muted" style="font-weight: 400; font-size: 13px">{{ _("many rows read without an index: an index may be missing") }}</span></h3><div class="scroll" data-db-table="sequential"></div>
+      <h3>{{ _("Indexes never used") }} <span class="muted" style="font-weight: var(--fw-regular); font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("since the statistics were reset: they slow the writes and take room") }}</span></h3><div class="scroll" data-db-table="unused_indexes"></div>
+      <h3>{{ _("Tables read whole without an index") }} <span class="muted" style="font-weight: var(--fw-regular); font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("many rows read without an index: an index may be missing") }}</span></h3><div class="scroll" data-db-table="sequential"></div>
     </details>
   </div>
 </section>
 <style>
-.db-verdict { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; margin: 4px 0 10px; font-size: 16px; }
+.db-verdict { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; margin: 4px 0 10px; font-size: var(--fs-16); line-height: var(--lh-24);}
 .db-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); flex: none; }
 .db-verdict.good .db-dot { background: var(--ok); } .db-verdict.look .db-dot { background: var(--warn); }
-.db-facts { font-size: 14px; }
+.db-facts { font-size: var(--fs-14); line-height: var(--lh-20);}
 .db-causes { margin: 0 0 12px; padding-left: 20px; }
-.tile-sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
-.db-details { margin-top: 14px; } .db-details > summary { font-weight: 600; }
-.db-details h3, .db-slow h3 { margin: 16px 0 6px; font-size: 15px; }
+.tile-sub { color: var(--muted); font-size: var(--fs-12); margin-top: 2px; line-height: var(--lh-18);}
+.db-details { margin-top: 14px; } .db-details > summary { font-weight: var(--fw-semibold); }
+.db-details h3, .db-slow h3 { margin: 16px 0 6px; font-size: var(--fs-16); line-height: var(--lh-24);}
 .db-where { display: grid; grid-template-columns: minmax(120px, max-content) 1fr; gap: 6px 16px; margin: 10px 0 0; }
-.db-where dt { font-weight: 600; } .db-where dd { margin: 0; }
+.db-where dt { font-weight: var(--fw-semibold); } .db-where dd { margin: 0; }
 </style>
 {% endif %}
 {% if can_act %}{% include "_modules_tab.html" %}{% endif %}
@@ -840,12 +840,12 @@ dialog.sd { --dialog-w: 560px; }
       <div class="addons-go"><button type="submit" {{ off }}
         title="{{ _('Downloads the repositories into production and test, each on its branch, adds them to their odoo.conf and restarts them once at the end: their modules are then installed from Modules › + Add modules. A private one: over https with the git credentials of the workspace, over ssh (git@…) with its own deploy key, shown here below.') }}">{{ _("Add") }}</button></div>
     </div>
-    <p class="muted" style="font-size: 12px; margin: 6px 0 0">{{ _("A private repository: over https with a token of the git credentials of the workspace (Settings › Credentials) that reads it, or over ssh (git@…) with its own deploy key, shown below as soon as its address is written.") }}</p>
-    <p class="muted" id="addons-gh-none" hidden style="font-size: 12px; margin: 4px 0 0">{{ _("With a GitHub token in the git credentials of the workspace, the repository and its branch are picked from a list, and its webhook is made by itself:") }}
+    <p class="muted" style="font-size: var(--fs-12); margin: 6px 0 0; line-height: var(--lh-18);">{{ _("A private repository: over https with a token of the git credentials of the workspace (Settings › Credentials) that reads it, or over ssh (git@…) with its own deploy key, shown below as soon as its address is written.") }}</p>
+    <p class="muted" id="addons-gh-none" hidden style="font-size: var(--fs-12); margin: 4px 0 0; line-height: var(--lh-18);">{{ _("With a GitHub token in the git credentials of the workspace, the repository and its branch are picked from a list, and its webhook is made by itself:") }}
       <a href="{{ prefix }}/workspaces/{{ stagings.workspace.name | urlencode }}#git-credentials" title="{{ _('Opens the git credentials of the workspace, where a GitHub token is added') }}">{{ _("Git credentials") }} ›</a></p>
     {# the deploy key of each address over ssh: GitHub takes a key as the deploy key of one repository only #}
     <div id="addons-deploy" hidden>
-      <p class="muted" style="font-size: 13px; margin: 10px 0 4px">{{ _("Over ssh each repository has its own deploy key: GitHub refuses a key that is already the deploy key of another repository («Key is already in use»). Paste each one in its repository, read only, before Add.") }}</p>
+      <p class="muted" style="font-size: var(--fs-14); margin: 10px 0 4px; line-height: var(--lh-20);">{{ _("Over ssh each repository has its own deploy key: GitHub refuses a key that is already the deploy key of another repository («Key is already in use»). Paste each one in its repository, read only, before Add.") }}</p>
       <div id="addons-deploy-list"></div>
     </div>
     <details class="addons-more">
@@ -861,7 +861,7 @@ dialog.sd { --dialog-w: 560px; }
     <p class="error" id="addons-error" role="alert"></p>
     <details class="addons-key">
       <summary title="{{ _('The key of this machine for a GitHub or GitLab account that reads several repositories') }}">{{ _("The key of this machine, for an account") }}</summary>
-      <p class="muted" style="font-size: 13px">{{ _("For an account that reads several repositories (a machine user): add it to the account's SSH keys (GitHub: Settings › SSH and GPG keys), not as a deploy key. It is tried after the repository's own deploy key.") }}</p>
+      <p class="muted" style="font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("For an account that reads several repositories (a machine user): add it to the account's SSH keys (GitHub: Settings › SSH and GPG keys), not as a deploy key. It is tried after the repository's own deploy key.") }}</p>
       <button type="button" class="small" id="addons-key-show"
         title="{{ _('Shows the public key of this machine for the repositories over ssh (made the first time): add it to the SSH keys of an account that reads them.') }}">{{ _("Show the key") }}</button>
       <pre class="console mono copyable" id="addons-key" hidden style="white-space: pre-wrap; overflow-wrap: anywhere"></pre>
@@ -873,25 +873,25 @@ dialog.sd { --dialog-w: 560px; }
 </section>
 <style>
 .addons-add { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
-.addons-add > summary { font-weight: 600; color: var(--text); } .addons-add form { margin-top: 10px; }
-.addons-key, .addons-more { margin-top: 10px; } .addons-key summary, .addons-more summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+.addons-add > summary { font-weight: var(--fw-semibold); color: var(--text); } .addons-add form { margin-top: 10px; }
+.addons-key, .addons-more { margin-top: 10px; } .addons-key summary, .addons-more summary { cursor: pointer; font-size: var(--fs-14); color: var(--muted); line-height: var(--lh-20);}
 .addons-fields { display: grid; grid-template-columns: 1fr 160px auto; gap: 10px; align-items: end; }
-.addons-fields label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+.addons-fields label { display: block; font-size: var(--fs-14); font-weight: var(--fw-semibold); margin-bottom: 4px; line-height: var(--lh-20);}
 .addons-fields input, .addons-fields textarea { width: 100%; }
 .addons-fields textarea { resize: vertical; min-height: 38px; }
-.addons-deploy-one { margin: 6px 0 10px; } .addons-deploy-one .mono { font-size: 13px; }
+.addons-deploy-one { margin: 6px 0 10px; } .addons-deploy-one .mono { font-size: var(--fs-14); line-height: var(--lh-20);}
 .ag-chosen { width: 100%; margin-top: 8px; } .ag-chosen select { width: 100%; }
 .addons-go-line { display: flex; gap: 10px; align-items: center; margin-top: 8px; }
 .ag-list label { display: flex; gap: 10px; align-items: center; width: 100%; padding: 8px 10px; cursor: pointer; }
 .ag-list label:hover { background: var(--panel-2); } .ag-list input { width: auto; }
-#au-fields label { display: block; font-size: 13px; font-weight: 600; margin: 10px 0 4px; }
-.addons-from { display: flex; gap: 16px; margin: 10px 0; font-size: 14px; } .addons-from input { width: auto; }
+#au-fields label { display: block; font-size: var(--fs-14); font-weight: var(--fw-semibold); margin: 10px 0 4px; line-height: var(--lh-20);}
+.addons-from { display: flex; gap: 16px; margin: 10px 0; font-size: var(--fs-14); line-height: var(--lh-20);} .addons-from input { width: auto; }
 #addons-github { margin-top: 8px; } #addons-github .addons-fields label { margin-bottom: 4px; }
 .ag-list { list-style: none; margin: 8px 0 0; padding: 0; max-height: 320px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; }
 .ag-list li + li { border-top: 1px solid var(--border); }
 .ag-list button { display: flex; gap: 10px; align-items: center; width: 100%; text-align: left; background: none; border: 0; border-radius: 0; padding: 8px 10px; }
 .ag-list button:hover, .ag-list button:focus-visible { background: var(--panel-2); }
-.ag-list .ag-branch { margin-left: auto; color: var(--muted); font-size: 12px; }
+.ag-list .ag-branch { margin-left: auto; color: var(--muted); font-size: var(--fs-12); line-height: var(--lh-18);}
 @media (max-width: 700px) { .addons-fields { grid-template-columns: 1fr; } }
 </style>
 {% endif %}
@@ -943,18 +943,18 @@ dialog.sd { --dialog-w: 560px; }
     <label id="dh-label" title="{{ _('On: a push on the branch of one of its repositories downloads it, updates the changed modules (a backup first, when the instance asks it) and restarts; the auto update and the scheduled pulls run. Off: nothing moves its code by itself, the webhook is kept and its pushes are only noted.') }}">
       <input type="checkbox" id="dh-enabled" style="width: auto"> <strong>{{ _("CI: update at every push") }}</strong></label>
     <span class="muted" id="dh-state" style="margin-left: 8px"></span>
-    <p class="muted" id="dh-line" style="font-size: 13px; margin: 4px 0 0"></p>
-    <div id="dh-github" style="font-size: 13px"></div>
+    <p class="muted" id="dh-line" style="font-size: var(--fs-14); margin: 4px 0 0; line-height: var(--lh-20);"></p>
+    <div id="dh-github" style="font-size: var(--fs-14); line-height: var(--lh-20);"></div>
     <div id="dh-details" hidden style="margin-top: 8px">
-      <div class="muted" style="font-size: 13px">{{ _("Address") }}</div><pre class="copyable mono" id="dh-url"></pre>
-      <div id="dh-secret-box" hidden><div class="muted" style="font-size: 13px">{{ _("Secret: copy it now, it is not shown again") }}</div><pre class="copyable mono" id="dh-secret"></pre></div>
+      <div class="muted" style="font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("Address") }}</div><pre class="copyable mono" id="dh-url"></pre>
+      <div id="dh-secret-box" hidden><div class="muted" style="font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("Secret: copy it now, it is not shown again") }}</div><pre class="copyable mono" id="dh-secret"></pre></div>
       <button type="button" class="small" id="dh-new"
         title="{{ _('Makes a new secret and cancels the one of before: the webhook of the repository stops working until the new one is pasted there. The secret is shown once.') }}">{{ _("New secret…") }}</button>
       <button type="button" class="small ghost" id="dh-forget"
         title="{{ _('Takes the webhook away: its address refuses every call from now, and switching the CI on again makes a new secret') }}">{{ _("Take the webhook away…") }}</button>
-      <details style="margin-top: 8px"><summary title="{{ _('Where the address and the secret go, in GitHub and in GitLab') }}" style="font-size: 13px">{{ _("How it is connected to the repository") }}</summary>
-        <p class="muted" style="font-size: 13px; margin: 6px 0 0">{{ _("The address and the secret go in the repository's webhook: GitHub, Settings › Webhooks, content type JSON; GitLab, Settings › Webhooks, Push events. A push on the branch of one of the instance's repositories then pulls it, updates the changed modules (a backup first when the instance asks it) and restarts.") }}</p>
-        <p class="muted" style="font-size: 13px; margin: 6px 0 0">{{ _("With a GitHub token in the git credentials (Webhooks: Read and write), OmniaCLI makes the webhook on GitHub itself when the CI is switched on, and takes it away when it is switched off: nothing to paste.") }}</p></details>
+      <details style="margin-top: 8px"><summary title="{{ _('Where the address and the secret go, in GitHub and in GitLab') }}" style="font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("How it is connected to the repository") }}</summary>
+        <p class="muted" style="font-size: var(--fs-14); margin: 6px 0 0; line-height: var(--lh-20);">{{ _("The address and the secret go in the repository's webhook: GitHub, Settings › Webhooks, content type JSON; GitLab, Settings › Webhooks, Push events. A push on the branch of one of the instance's repositories then pulls it, updates the changed modules (a backup first when the instance asks it) and restarts.") }}</p>
+        <p class="muted" style="font-size: var(--fs-14); margin: 6px 0 0; line-height: var(--lh-20);">{{ _("With a GitHub token in the git credentials (Webhooks: Read and write), OmniaCLI makes the webhook on GitHub itself when the CI is switched on, and takes it away when it is switched off: nothing to paste.") }}</p></details>
     </div>
     <p class="error" id="dh-error"></p>
   </div>
@@ -974,45 +974,45 @@ dialog.sd { --dialog-w: 560px; }
 .oc-table { width: 100%; }
 .oc-table td { vertical-align: top; padding: 8px 10px; border-top: 1px solid var(--border); }
 .oc-table td:first-child { width: 45%; }
-.oc-table .oc-name { font-family: var(--mono, monospace); font-weight: 600; }
-.oc-table .oc-label { font-weight: 600; }
+.oc-table .oc-name { font-family: var(--mono, monospace); font-weight: var(--fw-semibold); }
+.oc-table .oc-label { font-weight: var(--fw-semibold); }
 .oc-table input:invalid { border-color: var(--err); color: var(--err); }
-.oc-table .oc-help { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.oc-table .oc-help { font-size: var(--fs-12); color: var(--muted); margin-top: 2px; line-height: var(--lh-18);}
 .oc-table input, .oc-table select { width: 100%; }
 .oc-table input:disabled, .oc-table select:disabled { background: var(--panel-2); color: var(--muted); }
 .oc-table tr.oc-dirty td { background: var(--warn-soft); }
-.oc-table tr.oc-group td { background: var(--panel-2); font-weight: 600; font-size: 13px; }
+.oc-table tr.oc-group td { background: var(--panel-2); font-weight: var(--fw-semibold); font-size: var(--fs-14); line-height: var(--lh-20);}
 .sum-grid { display: grid; grid-template-columns: minmax(150px, max-content) 1fr; gap: 10px 20px; margin: 0; }
-.sum-grid dt { font-weight: 600; }
+.sum-grid dt { font-weight: var(--fw-semibold); }
 .sum-grid dd { margin: 0; min-width: 0; display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
 .sum-grid .sum-repo { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; width: 100%; }
-.sum-grid .sum-subject { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40ch; }
+.sum-grid .sum-subject { color: var(--muted); font-size: var(--fs-14); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40ch; line-height: var(--lh-20);}
 .sum-grid form { display: inline; margin: 0; }
 @media (max-width: 640px) { .sum-grid { grid-template-columns: 1fr; } }
-.shell-paths summary { cursor: pointer; font-weight: 600; display: inline-flex; gap: 6px; align-items: center; }
+.shell-paths summary { cursor: pointer; font-weight: var(--fw-semibold); display: inline-flex; gap: 6px; align-items: center; }
 .set-grid { display: grid; grid-template-columns: minmax(170px, max-content) 1fr; gap: 8px 20px; margin: 0 0 12px; }
-.set-grid dt { font-weight: 600; } .set-grid dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.set-grid dt { font-weight: var(--fw-semibold); } .set-grid dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 @media (max-width: 640px) { .set-grid { grid-template-columns: 1fr; } }
 .tech-details { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
-.tech-details > summary { font-weight: 600; color: var(--text); } .tech-details > dl { margin-top: 10px; }
+.tech-details > summary { font-weight: var(--fw-semibold); color: var(--text); } .tech-details > dl { margin-top: 10px; }
 .tech-details .shell-paths { margin-top: 12px; }
 .deploy-hook { margin: 4px 0 8px; }
 .zero-downtime { margin: 4px 0 8px; }
 .shell-paths dl { display: grid; grid-template-columns: minmax(140px, max-content) 1fr; gap: 8px 16px; margin: 12px 0 0; }
 .shell-paths dd { margin: 0; min-width: 0; }
-.shell-paths .sp-cmd { margin: 0; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.shell-paths .sp-cmd { margin: 0; font-size: var(--fs-14); white-space: pre-wrap; overflow-wrap: anywhere; line-height: var(--lh-20);}
 @media (max-width: 640px) { .shell-paths dl { grid-template-columns: 1fr; } }
-.oc-all { display: inline-flex; gap: 6px; align-items: center; font-size: 14px; }
+.oc-all { display: inline-flex; gap: 6px; align-items: center; font-size: var(--fs-14); line-height: var(--lh-20);}
 .oc-table tr.op-locked .oc-name, .oc-table tr.op-locked .oc-help { opacity: .6; }
 </style>
 {% if can_act and odoo_params and inst.type != "odoo" %}
 {# a workspace's instance: the Odoo options its template lets change, within the bounds the machine's admins set;
    saved, the helper writes its odoo.conf again from the template with them and the instance restarts #}
 <section class="tab-panel panel" data-panel="settings" data-section="odoo-config" hidden data-ws="{{ prefix }}/api/workspaces/{{ stagings.workspace.name }}">
-  <div class="section-head"><h2>{{ _("Odoo options") }} <span class="muted mono" id="op-version" style="font-size: 13px; font-weight: 400"></span></h2>
+  <div class="section-head"><h2>{{ _("Odoo options") }} <span class="muted mono" id="op-version" style="font-size: var(--fs-14); font-weight: var(--fw-regular); line-height: var(--lh-20);"></span></h2>
     <label class="oc-all" title="{{ _('Shows also the options that are rarely changed; the ones already changed are always shown') }}">
       <input type="checkbox" id="op-all"> {{ _("Show all the options") }} <span id="op-count"></span></label></div>
-  {% if not is_admin_here %}<p class="muted" style="font-size: 13px">{{ _("An admin changes them.") }}</p>{% endif %}
+  {% if not is_admin_here %}<p class="muted" style="font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("An admin changes them.") }}</p>{% endif %}
   <div class="scroll"><table class="oc-table">
     <tr><th>{{ _("Option") }}</th><th>{{ _("Value") }}</th></tr>
     {% set mail_reason = _("The mail of this staging goes to the Mail tab: these values are not used") %}
@@ -1031,7 +1031,7 @@ dialog.sd { --dialog-w: 560px; }
   </table></div>
   {# the other options its Odoo knows: the ones already set always, all of them with the switch #}
   <div id="op-ext" hidden>
-    <p class="muted" style="font-size: 13px; margin-top: 14px" id="op-ext-note">{{ _("The other options its Odoo knows: an empty one keeps Odoo's default. The greyed ones are set by the template or the server.") }}</p>
+    <p class="muted" style="font-size: var(--fs-14); margin-top: 14px; line-height: var(--lh-20);" id="op-ext-note">{{ _("The other options its Odoo knows: an empty one keeps Odoo's default. The greyed ones are set by the template or the server.") }}</p>
     <p class="muted" id="op-ext-state"></p>
     <div class="scroll"><table class="oc-table" id="op-ext-table" hidden>
       <tr><th>{{ _("Option") }}</th><th>{{ _("Value") }}</th></tr>
@@ -1050,7 +1050,7 @@ dialog.sd { --dialog-w: 560px; }
 <section class="tab-panel panel" data-panel="settings" data-section="odoo-config" hidden
          data-url="{{ prefix }}/x/odoo/servers/{{ server.name }}/{{ inst.role }}/odoo-config" data-admin="{{ 1 if is_admin else '' }}">
   <div class="section-head">
-    <h2>{{ _("Odoo options") }} <span class="muted mono oc-file" style="font-size: 13px; font-weight: 400"></span></h2>
+    <h2>{{ _("Odoo options") }} <span class="muted mono oc-file" style="font-size: var(--fs-14); font-weight: var(--fw-regular); line-height: var(--lh-20);"></span></h2>
     <label class="oc-all" title="{{ _('Shows also the options that are rarely changed; the ones the file sets are always shown') }}"><input type="checkbox" id="oc-all"> {{ _("Show all the options") }} <span id="oc-count"></span></label>
   </div>
   <p class="muted oc-state">{{ _("Reading the options of its Odoo…") }}</p>
@@ -1082,7 +1082,7 @@ dialog.sd { --dialog-w: 560px; }
      {% else %}{{ _("This instance runs Odoo Community.") }}{% endif %}
      {% if ent.here %}{{ _("The copy of {series} here: {modules} modules, commit {commit}, fetched on", series=ent.series, modules=ent.here.modules, commit=(ent.here.commit or "?")[:10]) }} {{ when(ent.here.fetched) }}.
      {% elif ent.series %}{{ _("This machine has no copy of {series} yet: switching on fetches it first.", series=ent.series) }}{% endif %}</p>
-  <p class="muted" style="font-size: 13px">{% if ent.on %}{{ _("Its database becomes Enterprise when web_enterprise is installed in it; Odoo then asks for the subscription code, which is the customer's. Switching off is refused while a module of Odoo Enterprise is installed: Odoo would not start without its code.") }}
+  <p class="muted" style="font-size: var(--fs-14); line-height: var(--lh-20);">{% if ent.on %}{{ _("Its database becomes Enterprise when web_enterprise is installed in it; Odoo then asks for the subscription code, which is the customer's. Switching off is refused while a module of Odoo Enterprise is installed: Odoo would not start without its code.") }}
      {% else %}{{ _("Switching on mounts the code and restarts Odoo; no module is installed and the database stays Community until web_enterprise is installed in it (its own button, afterwards). The subscription code is the customer's.") }}{% endif %}</p>
   {# Odoo 19 and later: the ai module of Odoo Enterprise needs vector in PostgreSQL, said before the switch and
      added first (README, Odoo Enterprise) #}
@@ -1109,7 +1109,7 @@ dialog.sd { --dialog-w: 560px; }
       title="{{ _('Puts Odoo Enterprise {series} first in the addons path, read only, and restarts Odoo; nothing is installed in its database. A job.', series=ent.series) }}">{{ _("Switch on…") }}</button>
     {% endif %}
   </div>
-  {% elif ent.reason %}<p class="muted" style="font-size: 13px">{{ tr(ent.reason) }}</p>{% endif %}
+  {% elif ent.reason %}<p class="muted" style="font-size: var(--fs-14); line-height: var(--lh-20);">{{ tr(ent.reason) }}</p>{% endif %}
   {% endif %}
 </section>
 {% if ent.pgvector and ent.pgvector.can %}
@@ -1189,7 +1189,7 @@ dialog.sd { --dialog-w: 560px; }
              machine and whether it is connected (as the look of the Database tab saw it last, never PostgreSQL
              asked here); a user of workspaces reads that it reads from a replica, and nothing else #}
           {% set rl = (replica_line or {}).get(inst.key) %}
-          {% if machine_admin and rl and rl.reads and rl.code in ("off", "lost") %}<span class="db-replica-state" style="color: var(--warn); font-weight: 600" title="{{ _('As this machine saw the replica at {when}: Odoo goes back to the replica by itself, 20 minutes after it could not reach it', when=when(rl.read_at)) }}">· {{ _("replica not connected: it reads from its database") if rl.dedicated else _("replica not connected: it reads from the cluster") }}</span>
+          {% if machine_admin and rl and rl.reads and rl.code in ("off", "lost") %}<span class="db-replica-state" style="color: var(--warn); font-weight: var(--fw-semibold)" title="{{ _('As this machine saw the replica at {when}: Odoo goes back to the replica by itself, 20 minutes after it could not reach it', when=when(rl.read_at)) }}">· {{ _("replica not connected: it reads from its database") if rl.dedicated else _("replica not connected: it reads from the cluster") }}</span>
           {% elif machine_admin and rl and rl.reads and rl.dedicated %}<span class="db-replica-state" title="{{ _('Odoo sends the reads of the pages that do not write to the replica, and writes to its own database. As this machine saw the replica at {when}', when=when(rl.read_at)) if rl.read_at else _('Odoo sends the reads of the pages that do not write to the replica, and writes to its own database') }}">· {{ _("reads also from the replica on {machine} ({address})", machine=rl.machine, address=rl.address) }}</span>
           {% elif machine_admin and rl and rl.reads %}<span class="db-replica-state" title="{{ _('Odoo sends the reads of the pages that do not write to the replica, and writes to this machine\'s cluster. As this machine saw the replica at {when}', when=when(rl.read_at)) if rl.read_at else _('Odoo sends the reads of the pages that do not write to the replica, and writes to this machine\'s cluster') }}">· {{ _("reads also from the replica on {machine} ({address})", machine=rl.machine, address=rl.address) }}</span>
           {% elif dbl.reads and not machine_admin %}<span class="db-replica-state" title="{{ _('The pages that do not write may read from a copy of the database kept up to date: a value just saved may show a few seconds late') }}">· {{ _("Reads: also from a replica") }}</span>{% endif %}
@@ -1203,11 +1203,11 @@ dialog.sd { --dialog-w: 560px; }
         {% elif dbl.link and machine_admin %}
           {% if dbl.on_copy %}<span class="db-copy">{{ _("PostgreSQL {major} of {link}, on the promoted copy on {machine} ({address}) · since {when}", major=dbl.major, link=dbl.link, machine=dbl.on_copy.machine or "?", address=dbl.host.rsplit(":", 1)[0], when=when(dbl.on_copy.at)) }}</span>
           {% else %}{{ _("PostgreSQL {major} of {link} ({host}) · tuned there", major=dbl.major, link=dbl.link, host=dbl.host) }}{% endif %}
-          {% if dbl.down and dbl.down.place == "copy" %}<span class="db-moved" style="color: var(--warn); font-weight: 600" title="{{ _('Odoo is pointed to where its database is once the database has not answered for 60 seconds, its machine says where it is and it answers there') }}">· {{ _("not reachable since {when}: {link} moved it to {machine}, Odoo is pointed there by itself", when=when(dbl.down.since), link=dbl.link, machine=dbl.down.machine or "?") }}</span>
-          {% elif dbl.down and dbl.down.place == "cluster" and dbl.on_copy %}<span class="db-moved" style="color: var(--warn); font-weight: 600" title="{{ _('Odoo is pointed to where its database is once the database has not answered for 60 seconds, its machine says where it is and it answers there') }}">· {{ _("not reachable since {when}: {link} has it on its cluster again, Odoo is pointed there by itself", when=when(dbl.down.since), link=dbl.link) }}</span>
-          {% elif dbl.down and dbl.down.error %}<span class="db-moved" style="color: var(--err); font-weight: 600" title="{{ _('Its machine says where the database is: until it answers, Odoo is not pointed anywhere else') }}">· {{ _("not reachable since {when}: {link} does not answer ({reason})", when=when(dbl.down.since), link=dbl.link, reason=tr(dbl.down.error)) }}</span>
-          {% elif dbl.down %}<span class="db-moved" style="color: var(--err); font-weight: 600" title="{{ _('Its machine says the database is where Odoo looks for it: it is not pointed anywhere else') }}">· {{ _("not reachable since {when}", when=when(dbl.down.since)) }}</span>
-          {% elif dbl.still %}<span class="db-moved" style="color: var(--warn); font-weight: 600" title="{{ _('An instance is pointed elsewhere by itself only when its database does not answer: an Odoo that answers is never restarted') }}">· {{ _("{link} says it is on {machine}, but it still answers here: it is not moved by itself", link=dbl.link, machine=dbl.still) }}</span>{% endif %}
+          {% if dbl.down and dbl.down.place == "copy" %}<span class="db-moved" style="color: var(--warn); font-weight: var(--fw-semibold)" title="{{ _('Odoo is pointed to where its database is once the database has not answered for 60 seconds, its machine says where it is and it answers there') }}">· {{ _("not reachable since {when}: {link} moved it to {machine}, Odoo is pointed there by itself", when=when(dbl.down.since), link=dbl.link, machine=dbl.down.machine or "?") }}</span>
+          {% elif dbl.down and dbl.down.place == "cluster" and dbl.on_copy %}<span class="db-moved" style="color: var(--warn); font-weight: var(--fw-semibold)" title="{{ _('Odoo is pointed to where its database is once the database has not answered for 60 seconds, its machine says where it is and it answers there') }}">· {{ _("not reachable since {when}: {link} has it on its cluster again, Odoo is pointed there by itself", when=when(dbl.down.since), link=dbl.link) }}</span>
+          {% elif dbl.down and dbl.down.error %}<span class="db-moved" style="color: var(--err); font-weight: var(--fw-semibold)" title="{{ _('Its machine says where the database is: until it answers, Odoo is not pointed anywhere else') }}">· {{ _("not reachable since {when}: {link} does not answer ({reason})", when=when(dbl.down.since), link=dbl.link, reason=tr(dbl.down.error)) }}</span>
+          {% elif dbl.down %}<span class="db-moved" style="color: var(--err); font-weight: var(--fw-semibold)" title="{{ _('Its machine says the database is where Odoo looks for it: it is not pointed anywhere else') }}">· {{ _("not reachable since {when}", when=when(dbl.down.since)) }}</span>
+          {% elif dbl.still %}<span class="db-moved" style="color: var(--warn); font-weight: var(--fw-semibold)" title="{{ _('An instance is pointed elsewhere by itself only when its database does not answer: an Odoo that answers is never restarted') }}">· {{ _("{link} says it is on {machine}, but it still answers here: it is not moved by itself", link=dbl.link, machine=dbl.still) }}</span>{% endif %}
           {% if not prefix %}<a href="/links/{{ dbl.link | urlencode }}/#database" title="{{ _('Opens the Database tab of that machine, where its cluster is tuned and this database is listed among those used from other machines') }}">{{ _("Database of {link} ›", link=dbl.link) }}</a>{% endif %}
         {# the promoted replica of this machine's cluster: the provider's machine, whose address a user of workspaces does not read #}
         {% elif dbl.provider and not machine_admin %}{% if dbl.down %}<span class="db-moved">{{ _("not reachable since {when}", when=when(dbl.down.since)) }}</span>{% else %}{{ _("on another machine · tuned there") }}{% endif %}
@@ -1236,7 +1236,7 @@ dialog.sd { --dialog-w: 560px; }
           {% if dbl.kept and dbl.promoted %}<button type="button" class="small danger" data-db-purge data-ask="{{ _('Delete the database {server} had on this machine before its replica was promoted? Its data, of the moment of the promotion, is deleted from the workspace\'s disk: the database of {server} is the promoted copy.', server=server.name) }}" title="{{ _('Deletes the database of before the promotion and its archive of the recovery at a minute, freeing their space on the workspace\'s disk. It is a job.') }}">{{ _("Free the space of before…") }}</button>
           {% elif dbl.kept %}<button type="button" class="small danger" data-db-purge data-ask="{{ _('Delete what the move of {server} left: the database of before and its copies? The move can no longer be undone from them.', server=server.name) }}" title="{{ _('Deletes the database of before the move, its archive of the recovery at a minute and the copies made for the move, freeing their space on the workspace\'s disk. The move can then be undone only by moving again. It is a job.') }}">{{ _("Free the space of before…") }}</button>{% endif %}
         </span>
-        {% elif machine_admin and dbl.why %}<span class="muted" style="display: block; font-size: 13px" title="{{ _('Why this database cannot move into the machine\'s cluster') }}">{{ _("It stays dedicated: {why}", why=tr(dbl.why)) }}</span>{% endif %}
+        {% elif machine_admin and dbl.why %}<span class="muted" style="display: block; font-size: var(--fs-14); line-height: var(--lh-20);" title="{{ _('Why this database cannot move into the machine\'s cluster') }}">{{ _("It stays dedicated: {why}", why=tr(dbl.why)) }}</span>{% endif %}
       </dd>
       {# a copy of its database is kept on another machine (UX-011 §D, D11-2): a user of workspaces reads that it
          exists, with no machine, no address and no size; the machine's admins read it in the row above and in the
@@ -1960,7 +1960,7 @@ dialog.sd { --dialog-w: 560px; }
           const td = tr.insertCell(), v = r[c];
           td.textContent = v === null ? "–" : c === "size" ? bytes(v) : c === "last_autovacuum" ? whenText(v) : c === "seconds" ? lasting(v)
             : c === "state" ? DB.states[v] || v : c === "waiting" ? DB.waits[v] || v : typeof v === "number" ? num(v) : String(v);
-          if (c === "query") { td.className = "mono"; td.style.fontSize = "12px"; td.style.whiteSpace = "pre-wrap"; }
+          if (c === "query") { td.className = "mono"; td.style.fontSize = "var(--fs-12)"; td.style.lineHeight = "var(--lh-18)"; td.style.whiteSpace = "pre-wrap"; }
         }
         if (stops) {
           const b = document.createElement("button"); b.type = "button"; b.className = "small danger"; b.textContent = DB.stop; b.title = DB.stopTitle;
@@ -3062,7 +3062,7 @@ dialog.sd { --dialog-w: 560px; }
       const text = document.createElement("div");
       text.textContent = m.subject.length > SUBJECT_MAX ? m.subject.slice(0, SUBJECT_MAX - 1) + "…" : m.subject;
       text.title = m.subject;
-      const from = document.createElement("div"); from.className = "muted"; from.style.fontSize = "13px"; from.textContent = m.from;
+      const from = document.createElement("div"); from.className = "muted"; from.style.fontSize = "var(--fs-14)"; from.textContent = m.from;
       subject.append(text, from);
       tr.append(received, to, subject);
       tr.addEventListener("click", () => openMail(m.id));

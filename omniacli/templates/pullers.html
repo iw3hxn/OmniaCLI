@@ -41,17 +41,17 @@
                        "restart": _("Who operates can restart this instance.")} %}
 <style>
 .pub-table td { vertical-align: top; } .pub-table .actions button, .pub-table td:first-child a { white-space: nowrap; }
-.pub-note { display: block; font-size: 13px; color: var(--muted); white-space: normal; max-width: 52ch; }
+.pub-note { display: block; font-size: var(--fs-14); color: var(--muted); white-space: normal; max-width: 52ch; line-height: var(--lh-20);}
 .pub-note.warn, .pub-warn { color: var(--warn); } .pub-note.error { color: var(--err); }
 .pub-note.error::first-letter { text-transform: uppercase; }
-.pub-dot { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; white-space: nowrap; }
+.pub-dot { display: inline-flex; align-items: center; gap: 6px; font-weight: var(--fw-semibold); white-space: nowrap; }
 .pub-dot::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
 .pub-dot.up::before { background: var(--ok); } .pub-dot.down::before { background: var(--err); }
-.pub-dot.plain { font-weight: 400; }
-.pub-page .mono.small { font-size: 12px; color: var(--muted); }
+.pub-dot.plain { font-weight: var(--fw-regular); }
+.pub-page .mono.small { font-size: var(--fs-12); color: var(--muted); line-height: var(--lh-18);}
 .pub-dialog { --dialog-w: 640px; }
-.pub-dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
-.pub-dialog details { margin-top: 12px; } .pub-dialog summary { font-weight: 600; color: var(--text); }
+.pub-dialog .field-help { display: block; font-size: var(--fs-14); margin-top: 3px; line-height: var(--lh-20);}
+.pub-dialog details { margin-top: 12px; } .pub-dialog summary { font-weight: var(--fw-semibold); color: var(--text); }
 .pub-dialog .form-grid { align-items: start; }
 .pub-choice { display: flex; gap: 10px; align-items: center; min-height: 34px; }
 .pub-choice label { color: var(--text); min-width: 7em; }

@@ -4788,6 +4788,11 @@ written once and used both for the theme chosen with the header's button and
 for the system's, and closed scales of type, space, radii, borders, shadows,
 controls and motion. A page writes `var(--…)`, never a value of its own.
 
+- **Type**: six sizes, each with its line height (12/18 badges, notes and
+  code; 14/20 tables, lists, forms, buttons; 16/24 what is read, under a
+  page's title and a dialog's, and the guide; 18/28 sections and dialogs;
+  20 and 24 the titles of a page), weights 400, 600 and 700. Tables and
+  lists stay at 14.
 - **The focus** is one ring for everything that takes it (buttons, links,
   fields, tabs, folded lines): 2 px, 2 px away, in `--focus` (6.47:1 on the
   panel; in the dark header the header's mark, 6.45:1), never the hover's

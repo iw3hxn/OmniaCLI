@@ -32,28 +32,28 @@
 .ws-disk-line { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .section-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 8px; }
 .section-head h2 { margin: 0; }
-button.small { padding: 3px 10px; font-size: 13px; }
+button.small { padding: 3px 10px; font-size: var(--fs-14); line-height: var(--lh-20);}
 .ws-table td { vertical-align: middle; }
-.ws-table .small-note { display: block; font-size: 13px; color: var(--muted); }
-.ws-side { font-size: 13px; white-space: nowrap; }
+.ws-table .small-note { display: block; font-size: var(--fs-14); color: var(--muted); line-height: var(--lh-20);}
+.ws-side { font-size: var(--fs-14); white-space: nowrap; line-height: var(--lh-20);}
 .ws-names { margin: 8px 0 0; }
 .ws-line { margin: 0; overflow-wrap: anywhere; }
 .ws-services h2 { margin-bottom: 8px; }
-.ws-outcome { font-size: 13px; margin: 8px 0 0; } .ws-outcome:empty { display: none; }
+.ws-outcome { font-size: var(--fs-14); margin: 8px 0 0; line-height: var(--lh-20);} .ws-outcome:empty { display: none; }
 #instance-dialog { --dialog-w: 640px; }
 #item-dialog, #secret-dialog, #notify-dialog { --dialog-w: 520px; }
-dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
+dialog .field-help { display: block; font-size: var(--fs-14); margin-top: 3px; line-height: var(--lh-20);}
 .in-ways { display: flex; flex-wrap: wrap; gap: 6px 20px; margin: 4px 0 14px; }
-.in-ways label { display: inline-flex; gap: 6px; align-items: center; font-weight: 600; }
+.in-ways label { display: inline-flex; gap: 6px; align-items: center; font-weight: var(--fw-semibold); }
 .in-ways input { width: auto; }
 .fa-from { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .fa-from select { width: auto; flex: 1; min-width: 140px; }
 #role-dialog { --dialog-w: 560px; }
 .rd-caps { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 4px 16px; margin: 10px 0; border: 0; padding: 0; }
-.rd-caps label, .id-servers label { display: flex; gap: 6px; align-items: center; font-weight: normal; }
+.rd-caps label, .id-servers label { display: flex; gap: 6px; align-items: center; font-weight: var(--fw-regular); }
 .rd-caps input, .id-servers input { width: auto; }
 .id-servers { display: flex; flex-direction: column; gap: 2px; }
-.ws-caps { font-size: 13px; color: var(--muted); }
+.ws-caps { font-size: var(--fs-14); color: var(--muted); line-height: var(--lh-20);}
 </style>
 <div class="page-head">
   <div>
@@ -329,7 +329,7 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
     {% if denied.people %}<span title="{{ tr(denied.people) }}"><button type="button" class="small" id="new-token" disabled title="{{ tr(denied.people) }}">{{ _("New token") }}</button></span>
     {% else %}<button type="button" class="small" id="new-token" title="{{ _('Makes a token for an AI assistant or a CI: it sees only this workspace and does there what its level allows. You see it once.') }}">{{ _("New token") }}</button>{% endif %}</div>
   <p class="muted ws-line" style="margin-bottom: 10px">{{ _("The tokens an AI assistant (Claude, ChatGPT, Codex, Cursor…) or a script and a CI read the instances of this workspace and act with: a token sees this workspace only.") }}
-    <span class="mono small" style="font-size: 12px">MCP · {{ api_base }}/mcp · REST · <a href="{{ prefix }}/api/v1/docs" title="{{ _('Opens the documentation of the REST API: every route, its fields and its errors') }}">/api/v1</a></span></p>
+    <span class="mono small" style="font-size: var(--fs-12); line-height: var(--lh-18);">MCP · {{ api_base }}/mcp · REST · <a href="{{ prefix }}/api/v1/docs" title="{{ _('Opens the documentation of the REST API: every route, its fields and its errors') }}">/api/v1</a></span></p>
   <div class="scroll">
   <table class="ws-table">
     <tr><th>{{ _("Token") }}</th><th>{{ _("Level") }}</th><th></th></tr>
@@ -388,20 +388,20 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
           </select>
         </div>
         <div id="rd-linked" hidden>
-          <p class="muted" id="rd-linked-state" style="font-size: 13px; margin: 10px 0 4px" role="status"></p>
+          <p class="muted" id="rd-linked-state" style="font-size: var(--fs-14); margin: 10px 0 4px; line-height: var(--lh-20);" role="status"></p>
           <div class="form-grid" id="rd-linked-fields" hidden>
             <label for="rd-major">PostgreSQL</label>
             <select id="rd-major" style="width: auto" title="{{ _('The cluster of that machine the database is made on') }}"></select>
             <label for="rd-address">{{ _("This machine as seen from there") }}</label>
             <input type="text" id="rd-address" class="mono" autocomplete="off" spellcheck="false" style="width: 14em" title="{{ _('The one address that machine lets in to this database (pg_hba.conf and firewall): the one this machine goes out with to reach it. Change it when this machine goes out through another address (NAT): the job checks it before anything is made here.') }}">
           </div>
-          <p class="muted" id="rd-rtt" style="font-size: 13px; margin: 8px 0 0" hidden></p>
-          <p class="error" id="rd-rtt-warn" style="font-size: 13px; margin: 4px 0 0" hidden></p>
-          <p class="muted" id="rd-first" style="font-size: 13px; margin: 4px 0 0" hidden></p>
+          <p class="muted" id="rd-rtt" style="font-size: var(--fs-14); margin: 8px 0 0; line-height: var(--lh-20);" hidden></p>
+          <p class="error" id="rd-rtt-warn" style="font-size: var(--fs-14); margin: 4px 0 0; line-height: var(--lh-20);" hidden></p>
+          <p class="muted" id="rd-first" style="font-size: var(--fs-14); margin: 4px 0 0; line-height: var(--lh-20);" hidden></p>
         </div>
         {% endif %}
         <div id="rd-manual">
-        <p class="muted" style="font-size: 13px; margin: 10px 0 4px">{{ _("The database is on another machine: Odoo reaches it over TLS and checks its certificate against the CA below. OmniaCLI only makes the connection: the database is tuned, backed up as a server and kept by who runs that machine. Machine admins only.") }}</p>
+        <p class="muted" style="font-size: var(--fs-14); margin: 10px 0 4px; line-height: var(--lh-20);">{{ _("The database is on another machine: Odoo reaches it over TLS and checks its certificate against the CA below. OmniaCLI only makes the connection: the database is tuned, backed up as a server and kept by who runs that machine. Machine admins only.") }}</p>
         <div class="form-grid">
           <label for="rd-host">{{ _("Host of the database") }}</label>
           <input type="text" id="rd-host" class="mono" autocomplete="off" spellcheck="false" placeholder="db.example.com" title="{{ _('The name the certificate of that PostgreSQL is made for: it is checked against it') }}">
@@ -421,10 +421,10 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
         </div>
         </div>
       </div>
-      <p class="muted" style="font-size: 13px">{{ _("The new database has the user admin with password admin: change it at the first login.") }}</p>
+      <p class="muted" style="font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("The new database has the user admin with password admin: change it at the first login.") }}</p>
     </div>
     <div id="from-archive" hidden>
-      <p class="muted" style="font-size: 13px">{{ _("A full archive made by an OmniaCLI (Backups tab › More › Full archive), here or on another machine: the instance is made from its template, its repositories at their commits, its Odoo parameters, and its database in production.") }}</p>
+      <p class="muted" style="font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("A full archive made by an OmniaCLI (Backups tab › More › Full archive), here or on another machine: the instance is made from its template, its repositories at their commits, its Odoo parameters, and its database in production.") }}</p>
       <div class="form-grid">
         <label for="fa-archive">{{ _("Archive") }}</label>
         <select id="fa-archive"><option value="">{{ _("Loading…") }}</option></select>
@@ -440,7 +440,7 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
         </span>
         {% endif %}
         <label for="fa-neutralize">{{ _("Neutralize") }}</label>
-        <label style="font-weight: 400"><input type="checkbox" id="fa-neutralize" checked style="width: auto">
+        <label style="font-weight: var(--fw-regular)"><input type="checkbox" id="fa-neutralize" checked style="width: auto">
           {{ _("no scheduled actions, no outgoing mail: off for a move, where this becomes the instance at work") }}</label>
       </div>
     </div>
@@ -461,7 +461,7 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
 <dialog id="sso-dialog" aria-labelledby="sso-title">
   <form id="sso-form">
     <h2 id="sso-title">{{ _("Single sign-on") }}</h2>
-    <p class="muted" style="font-size: 13px">{{ _("At the provider, register OmniaCLI as a web application (OpenID Connect, authorization code) with this redirect URI:") }}<br>
+    <p class="muted" style="font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("At the provider, register OmniaCLI as a web application (OpenID Connect, authorization code) with this redirect URI:") }}<br>
       <span class="mono copyable">{{ sso_redirect }}</span></p>
     <p><label>{{ _("Name on the button") }}<br><input type="text" id="sso-name" maxlength="40" required value="{{ sso.name if sso }}" placeholder="Microsoft"></label></p>
     <p><label>{{ _("Issuer") }}<br><input type="url" id="sso-issuer" required class="mono" value="{{ sso.issuer if sso }}" placeholder="https://login.microsoftonline.com/<tenant>/v2.0"></label></p>
@@ -517,7 +517,7 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
         <datalist id="id-server-names">{% for n in servers %}<option value="{{ n }}"></option>{% endfor %}</datalist>
         <span class="muted field-help">{{ _("The servers it reaches, separated by commas; empty: all of them.") }}</span></div>
     </div>
-    <p class="muted" id="id-elsewhere" style="font-size: 13px" hidden>{{ _("also elsewhere: its password is the machine's administrator's") }}</p>
+    <p class="muted" id="id-elsewhere" style="font-size: var(--fs-14); line-height: var(--lh-20);" hidden>{{ _("also elsewhere: its password is the machine's administrator's") }}</p>
     <p class="error" id="id-error" role="alert"></p>
     <div class="actions">
       <button type="button" id="id-cancel" title="{{ _('Closes without saving') }}">{{ _("Cancel") }}</button>
@@ -561,7 +561,7 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
 </dialog>
 <dialog id="connect-dialog" aria-labelledby="cd-title">
   <h2 id="cd-title"></h2>
-  <p class="muted" style="font-size: 13px">{{ _("The token is not shown again: put yours where <TOKEN> is. Lost: revoke it and make a new one.") }}</p>
+  <p class="muted" style="font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("The token is not shown again: put yours where <TOKEN> is. Lost: revoke it and make a new one.") }}</p>
   {{ connect_fields("cd") }}
   <div class="actions"><button type="button" id="cd-close" title="{{ _('Closes this window') }}">{{ _("Close") }}</button></div>
 {{ dialog_x() }}

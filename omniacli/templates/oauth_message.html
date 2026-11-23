@@ -19,7 +19,7 @@
   <div><h1>{{ titles.get(kind, kind) }}</h1>
     <p>{{ texts.get(kind, "") }}</p></div>
 </div>
-{% if detail %}<section class="panel"><p class="muted mono" style="margin: 0; font-size: 13px">{{ tr(detail) }}</p></section>{% endif %}
+{% if detail %}<section class="panel"><p class="muted mono" style="margin: 0; font-size: var(--fs-14); line-height: var(--lh-20);">{{ tr(detail) }}</p></section>{% endif %}
 {% if href %}
 <div class="actions">
   <a class="button primary" href="{{ href }}" title="{{ _('Opens the page where you decide what the assistant may do') }}">{{ _("Go on") }}</a>

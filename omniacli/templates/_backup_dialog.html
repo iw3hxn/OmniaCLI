@@ -37,11 +37,11 @@
     {% else %}
     <label style="display: block; margin-top: 6px">{{ tr(f.label) }} <input type="{{ 'number' if f.kind == 'number' else 'text' }}" {% if f.kind == "number" %}min="0" step="any" style="width: 7em"{% endif %} name="{{ f.key }}" data-default="{{ f.default if f.default is not none else '' }}" value="{{ f.default if f.default is not none else '' }}" placeholder="{{ tr(f.placeholder) }}"></label>
     {% endif %}
-    {% if f.help %}<p class="muted" style="margin: 2px 0 0 22px; font-size: 13px">{{ tr(f.help) }}</p>{% endif %}
+    {% if f.help %}<p class="muted" style="margin: 2px 0 0 22px; font-size: var(--fs-14); line-height: var(--lh-20);">{{ tr(f.help) }}</p>{% endif %}
     </div>
     {% endfor %}
     <div id="backup-room"></div>
-    <p class="muted" id="backup-remembered" style="font-size: 13px" hidden></p>
+    <p class="muted" id="backup-remembered" style="font-size: var(--fs-14); line-height: var(--lh-20);" hidden></p>
     <div class="actions">
       <button type="submit" id="backup-submit" title="{{ _('Starts the backup with these choices, as a job: the zip goes into the backups of the instance. The choices are remembered for the next backups.') }}">{{ icon("backup") }}{{ _("Back up") }}</button>
       <button type="button" id="backup-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>

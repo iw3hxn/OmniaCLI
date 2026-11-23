@@ -14,23 +14,23 @@
    numbers, its load as bars, its instances with their stagings under them */
 .srv-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px 20px; flex-wrap: wrap; margin-bottom: 14px; }
 .srv-head h1 { margin: 0 0 6px; }
-.back-link { display: inline-block; font-size: 14px; color: var(--muted); margin-bottom: 6px; }
-.facts { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: center; color: var(--muted); font-size: 14px; }
+.back-link { display: inline-block; font-size: var(--fs-14); color: var(--muted); margin-bottom: 6px; line-height: var(--lh-20);}
+.facts { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: center; color: var(--muted); font-size: var(--fs-14); line-height: var(--lh-20);}
 .stat-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 16px; }
 .stat { background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 14px 18px; box-shadow: var(--shadow); }
-.stat small { color: var(--muted); font-size: 13px; } .stat b { display: block; font-size: 28px; font-weight: 700; }
+.stat small { color: var(--muted); font-size: var(--fs-14); line-height: var(--lh-20);} .stat b { display: block; font-size: var(--fs-24); font-weight: var(--fw-bold); line-height: var(--lh-32);}
 .section-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 10px; }
 .last-action { color: var(--muted); margin: 4px 0 0; }
 .last-action .status::before { display: none; }
 @media (max-width: 700px) { .stat-row { grid-template-columns: 1fr; } }
 /* Monitoring: the period (UX-008 §6.3), one choice of four */
 .period { display: inline-flex; flex-wrap: wrap; margin: 0 0 12px; border: 1px solid var(--border); border-radius: var(--r-lg); overflow: hidden; }
-.period button { border: 0; border-radius: 0; box-shadow: none; background: var(--panel); padding: 6px 12px; color: var(--muted); font-weight: 600; }
+.period button { border: 0; border-radius: 0; box-shadow: none; background: var(--panel); padding: 6px 12px; color: var(--muted); font-weight: var(--fw-semibold); }
 .period button + button { border-left: 1px solid var(--border); }
 .period button[aria-pressed="true"] { background: var(--selected); color: var(--on-selected); }
 .tiles.tiles-4 { grid-template-columns: repeat(4, 1fr); }
 @media (max-width: 900px) { .tiles.tiles-4 { grid-template-columns: 1fr 1fr; } }
-.tile-sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.tile-sub { color: var(--muted); font-size: var(--fs-12); margin-top: 2px; line-height: var(--lh-18);}
 </style>
 {% set count = namespace(instances=0, stagings=0) %}
 {% for row in rows %}{% if row.parent %}{% set count.stagings = count.stagings + 1 %}{% else %}{% set count.instances = count.instances + 1 %}{% endif %}{% endfor %}
@@ -182,7 +182,7 @@
     <h3 class="chart-title">{{ _("CPU, % of all") }} <span class="cores">?</span></h3>
     <div class="chart-box"><svg class="chart" data-chart="cpu" role="img" aria-label="{{ _("CPU of this machine over the last hour") }}"></svg><div class="chart-tip" hidden></div></div>
     <div class="chart-legend" data-legend="cpu"></div>
-    <h3 class="chart-title">{{ _("Network, per second") }} <span class="muted" style="font-weight: 400"><span class="key s1"></span>{{ _("received") }}<span class="key s2"></span>{{ _("sent") }}</span></h3>
+    <h3 class="chart-title">{{ _("Network, per second") }} <span class="muted" style="font-weight: var(--fw-regular)"><span class="key s1"></span>{{ _("received") }}<span class="key s2"></span>{{ _("sent") }}</span></h3>
     <div class="chart-box"><svg class="chart" data-chart="net" role="img" aria-label="{{ _("Network traffic of this machine over the last hour") }}"></svg><div class="chart-tip" hidden></div></div>
     <h3 class="chart-title">{{ _("Disks, free space") }}</h3>
     <div class="disk-list"><span class="muted">{{ _("Loading…") }}</span></div>
@@ -195,13 +195,13 @@
       <div class="tile"><div class="tile-label">{{ _("Network") }}</div><div class="tile-value" data-hist="net">–</div><div class="tile-sub" data-hist-sub="net"></div></div>
     </div>
     <p class="muted history-state" style="margin: 6px 0 0"></p>
-    <h3 class="chart-title">{{ _("CPU, % of the whole machine") }} <span class="muted" style="font-weight: 400"><span class="key s1"></span>{{ _("mean") }}<span class="key s2"></span>{{ _("maximum") }}</span></h3>
+    <h3 class="chart-title">{{ _("CPU, % of the whole machine") }} <span class="muted" style="font-weight: var(--fw-regular)"><span class="key s1"></span>{{ _("mean") }}<span class="key s2"></span>{{ _("maximum") }}</span></h3>
     <div class="chart-box"><svg class="chart" data-hist-chart="cpu" role="img" aria-label="{{ _('CPU of this machine over the period, mean and maximum of every 5 minutes') }}"></svg><div class="chart-tip" hidden></div></div>
-    <h3 class="chart-title">{{ _("Memory, GB") }} <span class="muted" style="font-weight: 400"><span class="key s1"></span>{{ _("in use") }}<span class="key s2"></span>{{ _("in all") }}</span></h3>
+    <h3 class="chart-title">{{ _("Memory, GB") }} <span class="muted" style="font-weight: var(--fw-regular)"><span class="key s1"></span>{{ _("in use") }}<span class="key s2"></span>{{ _("in all") }}</span></h3>
     <div class="chart-box"><svg class="chart" data-hist-chart="mem" role="img" aria-label="{{ _('Memory of this machine over the period, in use and in all') }}"></svg><div class="chart-tip" hidden></div></div>
-    <h3 class="chart-title">{{ _("Network, per second") }} <span class="muted" style="font-weight: 400"><span class="key s1"></span>{{ _("received") }}<span class="key s2"></span>{{ _("sent") }}</span></h3>
+    <h3 class="chart-title">{{ _("Network, per second") }} <span class="muted" style="font-weight: var(--fw-regular)"><span class="key s1"></span>{{ _("received") }}<span class="key s2"></span>{{ _("sent") }}</span></h3>
     <div class="chart-box"><svg class="chart" data-hist-chart="net" role="img" aria-label="{{ _('Network traffic of this machine over the period') }}"></svg><div class="chart-tip" hidden></div></div>
-    <h3 class="chart-title">{{ _("Disk, free space, GB") }} <span class="muted mono small hist-mount" style="font-weight: 400"></span></h3>
+    <h3 class="chart-title">{{ _("Disk, free space, GB") }} <span class="muted mono small hist-mount" style="font-weight: var(--fw-regular)"></span></h3>
     <div class="chart-box"><svg class="chart" data-hist-chart="disk" role="img" aria-label="{{ _('Free space of the main disk of this machine, once a day') }}"></svg><div class="chart-tip" hidden></div></div>
     </div>
   </section>
@@ -226,9 +226,9 @@
       <div class="tile"><div class="tile-label">{{ _("Sent") }}</div><div class="tile-value" data-tile="out">–</div></div>
     </div>
     <p class="muted ws-load-state" style="margin: 6px 0 0"></p>
-    <h3 class="chart-title">{{ _("CPU, cores") }} <span class="muted ws-cpu-limit" style="font-weight: 400"></span></h3>
+    <h3 class="chart-title">{{ _("CPU, cores") }} <span class="muted ws-cpu-limit" style="font-weight: var(--fw-regular)"></span></h3>
     <div class="chart-box"><svg class="chart" data-chart="cpu" role="img" aria-label="{{ _("CPU of workspace {name} over the last hour", name=name) }}"></svg><div class="chart-tip" hidden></div></div>
-    <h3 class="chart-title">{{ _("Network, per second") }} <span class="muted" style="font-weight: 400"><span class="key s1"></span>{{ _("received") }}<span class="key s2"></span>{{ _("sent") }}</span></h3>
+    <h3 class="chart-title">{{ _("Network, per second") }} <span class="muted" style="font-weight: var(--fw-regular)"><span class="key s1"></span>{{ _("received") }}<span class="key s2"></span>{{ _("sent") }}</span></h3>
     <div class="chart-box"><svg class="chart" data-chart="net" role="img" aria-label="{{ _("Network traffic of workspace {name} over the last hour", name=name) }}"></svg><div class="chart-tip" hidden></div></div>
     <h3 class="chart-title">{{ _("Disk") }}</h3>
     <div class="ws-disk"><span class="muted">{{ _("Loading…") }}</span></div>

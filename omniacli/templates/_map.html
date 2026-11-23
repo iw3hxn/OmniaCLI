@@ -24,9 +24,9 @@
 #map-view .map-ink, #map-read { color: var(--map-ink); }
 .map-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 18px; margin: 0 0 10px; }
 .map-head p { margin: 0; }
-.map-verdict { font-size: 16px; font-weight: 650; }
+.map-verdict { font-size: var(--fs-16); font-weight: var(--fw-semibold); line-height: var(--lh-24);}
 .map-verdict.ok { color: var(--ok); } .map-verdict.watch { color: var(--warn); }
-.map-count { border: 0; background: none; box-shadow: none; padding: 0 2px; color: var(--text); font-weight: 600;
+.map-count { border: 0; background: none; box-shadow: none; padding: 0 2px; color: var(--text); font-weight: var(--fw-semibold);
   min-height: 0; text-decoration: underline dotted; text-underline-offset: 3px; }
 .map-count:hover { background: none; color: var(--info); }
 .map-count[aria-pressed="true"] { color: var(--text); text-decoration: none; outline: 2px solid var(--info); outline-offset: 2px; }
@@ -34,11 +34,11 @@
 .map-watch { margin: 0 0 12px; padding: 0; list-style: none; }
 .map-watch li { padding: 3px 0; } .map-watch .mark { color: var(--warn); margin-right: 6px; }
 .map-watch .mark.critical { color: var(--err); }
-.map-legend { margin: 0 0 12px; font-size: 13px; color: var(--map-ink); }
+.map-legend { margin: 0 0 12px; font-size: var(--fs-14); color: var(--map-ink); line-height: var(--lh-20);}
 .map-legend ul { display: flex; flex-wrap: wrap; gap: 4px 18px; margin: 0; padding: 0; list-style: none; }
 .map-legend li { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .map-legend svg { width: 34px; height: 12px; flex: none; }
-.map-legend .sign { font-weight: 700; }
+.map-legend .sign { font-weight: var(--fw-bold); }
 @media (min-width: 701px) { .map-legend > summary { display: none; } }
 @media (max-width: 700px) { .map-legend > summary { cursor: pointer; margin-bottom: 6px; } .map-legend ul { gap: 6px 14px; } }
 .map-strip { padding: 12px 16px; margin: 0 0 12px; }
@@ -46,17 +46,18 @@
 .map-job { display: block; color: var(--text); padding: 5px 0; border-bottom: 1px solid var(--border); }
 .map-job:last-of-type { border-bottom: 0; }
 .map-job:hover { text-decoration: none; background: var(--panel-2); }
-.map-job .sign { display: inline-block; width: 1.4em; font-weight: 700; }
-.map-job .who { color: var(--muted); font-size: 13px; margin-left: 6px; }
+.map-job .sign { display: inline-block; width: 1.4em; font-weight: var(--fw-bold); }
+.map-job .who { color: var(--muted); font-size: var(--fs-14); margin-left: 6px; line-height: var(--lh-20);}
 .map-job.running .sign, .map-job.queued .sign { color: var(--info); }
 .map-job.success .sign { color: var(--ok); } .map-job.warned .sign { color: var(--warn); }
 .map-job.failed .sign, .map-job.stopped .sign, .map-job.interrupted .sign { color: var(--err); }
 /* the steps of a job (job.html's component, the same classes), compact */
-.map-strip .steps { display: flex; align-items: center; margin: 4px 0 2px 1.4em; font-size: 12px; }
+.map-strip .steps { display: flex; align-items: center; margin: 4px 0 2px 1.4em; font-size: var(--fs-12); line-height: var(--lh-18);}
 .map-strip .step { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border: 1px solid var(--border);
   border-radius: var(--r); color: var(--muted); min-width: 0; }
 .map-strip .step-mark { width: 12px; height: 12px; flex: none; border-radius: 50%; border: 2px solid currentColor;
-  display: grid; place-items: center; font-size: 8px; line-height: 1; }
+  display: grid; place-items: center; line-height: 1; }
+.map-strip .step-mark .i { width: 8px; height: 8px; stroke-width: 3; }
 .map-strip .step.active { color: var(--warn); border-color: var(--warn); }
 .map-strip .step.active .step-mark { border-right-color: transparent; animation: map-spin .8s linear infinite; }
 .map-strip .step.done { color: var(--ok); }
@@ -75,11 +76,11 @@
   .map-strip .steps { flex-direction: column; align-items: flex-start; }
   .map-strip .step-wire { flex: 0 0 8px; width: 2px; height: 8px; margin-left: 13px; }
 }
-.map-crumbs { margin: 0 0 10px; font-size: 13px; color: var(--map-ink); }
+.map-crumbs { margin: 0 0 10px; font-size: var(--fs-14); color: var(--map-ink); line-height: var(--lh-20);}
 .map-crumbs a, .map-crumbs strong { margin: 0 2px; }
 .map-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin: 0 0 10px; }
 .map-tools .list-search { margin: 0; flex: 1 1 260px; }
-.map-show { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--map-ink); }
+.map-show { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-14); color: var(--map-ink); line-height: var(--lh-20);}
 .map-show button[aria-pressed="true"] { background: var(--selected); border-color: var(--selected); color: var(--on-selected); }
 .map-body { display: flex; align-items: flex-start; gap: 16px; }
 .map-canvas { flex: 1 1 0; min-width: 0; }
@@ -133,7 +134,7 @@
 .map-bar-bg { fill: var(--border); } .map-bar { fill: var(--muted); } .map-bar.high { fill: var(--warn); }
 .map-sign.running { fill: var(--ok); } .map-sign.stopped, .map-sign.down { fill: var(--err); }
 .map-sign.idle, .map-sign.unknown { fill: var(--muted); } .map-sign.busy, .map-sign.queued, .map-sign.older { fill: var(--info); }
-.map-sign { font-weight: 700; }
+.map-sign { font-weight: var(--fw-bold); }
 .map-sign.busy { transform-box: fill-box; transform-origin: center; animation: map-spin 1.6s linear infinite; }
 .map-edge { fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-linejoin: round; }
 .map-edge.down { stroke: var(--warn); stroke-dasharray: 6 4; }
@@ -154,10 +155,10 @@
   max-height: calc(100vh - 88px); overflow-y: auto; }
 .map-panel:focus { outline: none; }
 .map-panel:focus-visible { outline: var(--focus-width) solid var(--focus); outline-offset: calc(-1 * var(--focus-width)); }
-.map-panel h2 { font-size: 16px; overflow-wrap: anywhere; } .map-panel h3 { font-size: 13px; margin: 14px 0 6px; color: var(--muted);
-  text-transform: uppercase; letter-spacing: .04em; }
+.map-panel h2 { font-size: var(--fs-16); overflow-wrap: anywhere; line-height: var(--lh-24);} .map-panel h3 { font-size: var(--fs-14); margin: 14px 0 6px; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .04em; line-height: var(--lh-20);}
 .map-panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
-.map-panel ol, .map-panel ul { margin: 6px 0 0; padding-left: 20px; font-size: 13px; } .map-panel li { margin: 2px 0; overflow-wrap: anywhere; }
+.map-panel ol, .map-panel ul { margin: 6px 0 0; padding-left: 20px; font-size: var(--fs-14); line-height: var(--lh-20);} .map-panel li { margin: 2px 0; overflow-wrap: anywhere; }
 .map-panel-links { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0 0; }
 .map-flow { display: block; max-width: 100%; }
 .map-flow .shape { fill: var(--panel-2); stroke: var(--map-line); }
@@ -692,7 +693,7 @@ window.OmniaMap = (function () {
       if (s.id === "download" && state === "active" && progress.done)
         figures = " · " + (progress.total ? Math.floor(progress.done / progress.total * 100) + " % · " : "") + sizeText(progress.done);
       box.append(el("div", {class: "step" + (state ? " " + state : ""), "data-step": s.id},
-        el("span", {class: "step-mark", "aria-hidden": "true"}, state === "done" ? "✓" : state === "failed" ? "!" : ""),
+        el("span", {class: "step-mark", "aria-hidden": "true"}, state === "done" ? omniaIcon("check", 12) : state === "failed" ? "!" : ""),
         el("span", {class: "step-label"}, s.label + figures), s.where ? el("span", {class: "step-where"}, s.where) : null));
     });
     return box;

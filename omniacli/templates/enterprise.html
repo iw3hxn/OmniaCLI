@@ -7,9 +7,9 @@
 {% block content %}
 <style>
 .ent-form { display: grid; grid-template-columns: minmax(120px, max-content) minmax(0, 1fr); gap: 10px 14px; align-items: center; max-width: 760px; }
-.ent-form .help { grid-column: 2; margin: -4px 0 2px; font-size: 13px; }
+.ent-form .help { grid-column: 2; margin: -4px 0 2px; font-size: var(--fs-14); line-height: var(--lh-20);}
 .ent-key { word-break: break-all; white-space: pre-wrap; }
-.ent-result { font-size: 14px; }
+.ent-result { font-size: var(--fs-14); line-height: var(--lh-20);}
 @media (max-width: 640px) { .ent-form { grid-template-columns: 1fr; } .ent-form .help { grid-column: 1; } }
 </style>
 <div class="page-head">
@@ -37,7 +37,7 @@
     <pre class="copyable mono ent-key" id="ent-key">{{ public_key }}</pre>
     {% else %}<pre class="copyable mono ent-key" id="ent-key" hidden></pre>
     <p class="muted" id="ent-nokey">{{ _("No key yet.") }}</p>{% endif %}
-    <p class="muted" style="font-size: 13px">{{ _("Add its public half to the SSH keys of a GitHub account that can read odoo/enterprise (GitHub › Settings › SSH and GPG keys). The key reads everything that account reads: an account of its own, which only reads, is the safer one.") }}
+    <p class="muted" style="font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("Add its public half to the SSH keys of a GitHub account that can read odoo/enterprise (GitHub › Settings › SSH and GPG keys). The key reads everything that account reads: an account of its own, which only reads, is the safer one.") }}
       {{ _("It is used for Odoo Enterprise only, never for the repositories of the workspaces.") }}</p>
     {% if not public_key %}<button type="button" id="ent-makekey" title="{{ _('Makes the SSH key of this machine for Odoo Enterprise and shows its public half; the private half never leaves this machine') }}">{{ _("Make the key") }}</button>{% endif %}
   </div>
@@ -46,11 +46,11 @@
     <button type="button" id="ent-test" title="{{ _('Reads the repository now (git ls-remote) with what the form says, saved or not, and lists the version branches it has. Nothing is downloaded.') }}">{{ _("Test") }}</button>
     <button type="button" class="primary" id="ent-save" title="{{ _('Saves the address and how it is reached; a token left empty keeps the saved one. Nothing is downloaded until a version is fetched.') }}">{{ _("Save") }}</button>
   </div>
-  <p class="muted" style="font-size: 13px">{{ _("Saved in {file}, readable by OmniaCLI's user only; the token is never shown again.", file=file) }}</p>
+  <p class="muted" style="font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("Saved in {file}, readable by OmniaCLI's user only; the token is never shown again.", file=file) }}</p>
 </section>
 <section class="panel">
   <h2>{{ _("The copies on this machine") }}</h2>
-  <p class="muted" style="font-size: 13px">{{ _("One copy per version, its last commit only, kept by root in {folder}: the Enterprise instances of that version read it, read only, and no workspace can write it. An instance switched on fetches its version the first time.", folder=root) }}</p>
+  <p class="muted" style="font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("One copy per version, its last commit only, kept by root in {folder}: the Enterprise instances of that version read it, read only, and no workspace can write it. An instance switched on fetches its version the first time.", folder=root) }}</p>
   <div class="scroll"><table>
     <tr><th>{{ _("Version") }}</th><th>{{ _("Commit") }}</th><th>{{ _("Fetched") }}</th><th>{{ _("Modules") }}</th><th>{{ _("Used by") }}</th><th></th></tr>
     {% for c in copies %}

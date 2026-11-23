@@ -16,9 +16,9 @@
    a secret (a token, an invitation's link) is shown once in a dialog of its own #}
 <style>
 .users-table td { vertical-align: middle; }
-.users-table .small-note { display: block; font-size: 13px; color: var(--muted); }
+.users-table .small-note { display: block; font-size: var(--fs-14); color: var(--muted); line-height: var(--lh-20);}
 #item-dialog, #secret-dialog, #invite-dialog { --dialog-w: 560px; }
-#item-dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
+#item-dialog .field-help { display: block; font-size: var(--fs-14); margin-top: 3px; line-height: var(--lh-20);}
 #item-dialog .label { color: var(--muted); }
 .id-ways { display: flex; flex-wrap: wrap; gap: 6px 20px; }
 .id-ways label { display: inline-flex; gap: 6px; align-items: center; color: var(--text); }
@@ -110,7 +110,7 @@
 
 <section class="panel tab-panel" data-panel="tokens" hidden>
   <p class="muted" style="margin: 0 0 12px">{{ _("The tokens an AI assistant (Claude, ChatGPT, Codex, Cursor…) or a script and a CI read the instances and act with: one token for both.") }}
-    <span class="mono" style="font-size: 12px">MCP · /mcp · REST · <a href="{{ prefix }}/api/v1/docs" title="{{ _('Opens the documentation of the REST API: every route, its fields and its errors') }}">/api/v1</a></span></p>
+    <span class="mono" style="font-size: var(--fs-12); line-height: var(--lh-18);">MCP · /mcp · REST · <a href="{{ prefix }}/api/v1/docs" title="{{ _('Opens the documentation of the REST API: every route, its fields and its errors') }}">/api/v1</a></span></p>
   <div {{ "hidden" if tokens | length <= 8 }}>{{ list_search("tokens", _("Search token, role…")) }}</div>
   <div class="scroll">
   <table data-list="tokens" class="users-table">
@@ -141,7 +141,7 @@
 {{ grants_script() }}
 <div class="users-foot muted">
   <details><summary title="{{ _('The file of this machine that keeps the users, the tokens and the keys') }}">{{ _("Where it is saved") }}</summary>
-    <p style="font-size: 13px">{{ _("Saved in") }} <span class="mono">{{ users_file }}</span>. {{ _("Entries marked main config are set in the main configuration file and are changed there.") }}</p></details>
+    <p style="font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("Saved in") }} <span class="mono">{{ users_file }}</span>. {{ _("Entries marked main config are set in the main configuration file and are changed there.") }}</p></details>
 </div>
 
 {# one dialog for a new one and for a change, of each of the three lists; a new user is invited or gets a password,
@@ -188,7 +188,7 @@
 {#- a user's sessions (README, Login and security, Sessions): read when the dialog opens, each ended at once #}
 <dialog id="sessions-dialog" aria-labelledby="ssd-title" style="--dialog-w: 760px">
   <h2 id="ssd-title"></h2>
-  <p class="muted" style="font-size: 13px">{{ _("Ending one logs that browser out at once: its next click asks the login again. It goes in the access log.") }}</p>
+  <p class="muted" style="font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("Ending one logs that browser out at once: its next click asks the login again. It goes in the access log.") }}</p>
   <p class="error" id="ssd-error" role="alert"></p>
   <div class="scroll"><table id="ssd-table"></table></div>
   <div class="actions">
@@ -201,14 +201,14 @@
   <h2 id="sd-title"></h2>
   <p>{{ _("It is shown only now: copy it.") }}</p>
   <pre class="console mono copyable" id="secret-value" style="white-space: pre-wrap; word-break: break-all"></pre>
-  <p class="muted mono" id="sd-how" style="font-size: 13px"></p>
+  <p class="muted mono" id="sd-how" style="font-size: var(--fs-14); line-height: var(--lh-20);"></p>
   <div id="sd-connect" hidden>{{ connect_fields("sd") }}</div>
   <div class="actions"><button type="button" class="primary" id="sd-done" title="{{ _('Closes: the token will not be shown again. If you lose it, revoke it and make a new one.') }}">{{ _("I have copied the token") }}</button></div>
 {{ dialog_x() }}
 </dialog>
 <dialog id="connect-dialog" aria-labelledby="cd-title">
   <h2 id="cd-title"></h2>
-  <p class="muted" style="font-size: 13px">{{ _("The token is not shown again: put yours where <TOKEN> is. Lost: revoke it and make a new one.") }}</p>
+  <p class="muted" style="font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("The token is not shown again: put yours where <TOKEN> is. Lost: revoke it and make a new one.") }}</p>
   {{ connect_fields("cd") }}
   <div class="actions"><button type="button" id="cd-close" title="{{ _('Closes this window') }}">{{ _("Close") }}</button></div>
 {{ dialog_x() }}

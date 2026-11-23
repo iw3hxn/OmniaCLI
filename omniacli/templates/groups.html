@@ -41,7 +41,7 @@
   <details><summary title="{{ _('How a name or a pattern of names puts an instance in a group') }}">{{ _("How members are matched") }}</summary>
     <p>{{ _("One member per line: a name of the list (srv), or a pattern of names (acme-*; * all of them; ? one character). An item shows under the first group that has it, itself or in a subgroup, then under the first of its subgroups that has it; the others under Others.") }}</p></details>
   <details><summary title="{{ _('The file of this machine that keeps the groups') }}">{{ _("Where it is saved") }}</summary>
-    <p class="mono" style="font-size: 13px">{{ _("Saved in {path}.", path=groups_file) }}</p></details>
+    <p class="mono" style="font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("Saved in {path}.", path=groups_file) }}</p></details>
 </div>
 <template id="group-template">
   <fieldset class="group-box">

@@ -21,7 +21,7 @@
 </section>
 <section class="panel" id="portal-address-panel">
   <h2 style="margin-bottom: 4px">{{ _("Address of the portal") }}</h2>
-  <p class="muted" style="font-size: 13px; margin-top: 0">{{ _("The name the customers (the users of the workspaces) open in the browser to log in to their own part of this machine. OmniaCLI publishes itself there in https, with a certificate of Let's Encrypt; each user sees only its workspaces.") }}</p>
+  <p class="muted" style="font-size: var(--fs-14); margin-top: 0; line-height: var(--lh-20);">{{ _("The name the customers (the users of the workspaces) open in the browser to log in to their own part of this machine. OmniaCLI publishes itself there in https, with a certificate of Let's Encrypt; each user sees only its workspaces.") }}</p>
   <p id="portal-now" style="margin: 0 0 10px">{% if portal_url %}{{ _("The customers log in at") }} <a class="mono" href="{{ portal_url }}" target="_blank" rel="noopener">{{ portal_url }}</a>{% else %}<strong>{{ _("The portal has no address yet:") }}</strong> {{ _("the customers cannot log in from the internet, and the invitations carry the address you see now. Choose a name, point its DNS record to this machine, then Publish.") }}{% endif %}</p>
   {% if portal_refused %}<p class="banner" style="margin: 0">{{ tr(portal_refused) }}</p>{% else %}
   <div class="form-grid">
@@ -34,7 +34,7 @@
         <button type="button" id="portal-publish" title="{{ _('Publishes the portal at this name: the site of nginx, then the certificate, in a job you follow; the invitations carry this address from then on.') }}">{{ _("Publish") }}</button>
         {% if options.portal_address %}<button type="button" class="danger" id="portal-remove" title="{{ _('Takes the portal away: the site and its certificate are removed, the customers no longer log in from the internet. It asks first.') }}">{{ _("Take away…") }}</button>{% endif %}
       </div>
-      <p id="portal-dns" class="muted" style="font-size: 13px; margin: 6px 0 0" aria-live="polite"></p>
+      <p id="portal-dns" class="muted" style="font-size: var(--fs-14); margin: 6px 0 0; line-height: var(--lh-20);" aria-live="polite"></p>
     </div>
   </div>
   <div id="portal-error" class="banner" hidden style="margin-top: 10px"></div>
@@ -42,7 +42,7 @@
 </section>
 <section class="panel" id="os-updates">
   <h2 style="margin-bottom: 4px">{{ _("Automatic security updates of the system") }}</h2>
-  <p class="muted" style="font-size: 13px; margin-top: 0">{{ _("The security updates of the operating system of this machine, installed by unattended-upgrades every day. The state is read from the machine; a change is written by root at once and goes in the access log.") }}</p>
+  <p class="muted" style="font-size: var(--fs-14); margin-top: 0; line-height: var(--lh-20);">{{ _("The security updates of the operating system of this machine, installed by unattended-upgrades every day. The state is read from the machine; a change is written by root at once and goes in the access log.") }}</p>
   <p id="osu-state" aria-live="polite" style="margin: 0 0 10px">{{ _("Reading the machine…") }}</p>
   <div class="form-grid" id="osu-form" hidden>
     <label for="osu-enabled">{{ _("Updates") }}</label>
@@ -58,10 +58,10 @@
       <input type="time" id="osu-time" value="03:00" data-server-time style="width: auto" title="{{ _('The time of the restart, by your clock (the machine keeps it by its own): the instances do not answer for a few minutes') }}">
     </div>
   </div>
-  <p id="osu-last" class="muted" style="font-size: 13px; margin: 8px 0 0" hidden></p>
+  <p id="osu-last" class="muted" style="font-size: var(--fs-14); margin: 8px 0 0; line-height: var(--lh-20);" hidden></p>
   <details id="osu-lines-box" hidden style="margin-top: 6px"><summary title="{{ _('Shows the last lines unattended-upgrades wrote in its log') }}">{{ _("Its last lines") }}</summary>
-    <pre class="mono" id="osu-lines" style="white-space: pre-wrap; font-size: 12px"></pre></details>
-  <p id="osu-said" class="muted" style="font-size: 13px; margin: 6px 0 0" aria-live="polite"></p>
+    <pre class="mono" id="osu-lines" style="white-space: pre-wrap; font-size: var(--fs-12); line-height: var(--lh-18);"></pre></details>
+  <p id="osu-said" class="muted" style="font-size: var(--fs-14); margin: 6px 0 0; line-height: var(--lh-20);" aria-live="polite"></p>
   <div id="osu-error" class="banner" hidden style="margin-top: 10px"></div>
 </section>
 <div id="error" class="banner" hidden></div>
@@ -91,7 +91,7 @@
   </section>
   <section class="panel">
     <h2 style="margin-bottom: 4px">{{ _("Email of the notifications") }}</h2>
-    <p class="muted" style="font-size: 13px; margin-top: 0">{{ _("The SMTP server the notices of a failed scheduled action are sent through (an automatic backup, a copy). Empty: only the webhooks are used.") }}</p>
+    <p class="muted" style="font-size: var(--fs-14); margin-top: 0; line-height: var(--lh-20);">{{ _("The SMTP server the notices of a failed scheduled action are sent through (an automatic backup, a copy). Empty: only the webhooks are used.") }}</p>
     <div class="form-grid">
       <label for="mail-host">{{ _("SMTP server") }}</label>
       <input type="text" id="mail-host" class="mono" value="{{ options.smtp_host }}" placeholder="smtp.example.com">
@@ -112,7 +112,7 @@
   </section>
   <section class="panel" id="monitoring">
     <h2 style="margin-bottom: 4px">{{ _("Monitoring") }}</h2>
-    <p class="muted" style="font-size: 13px; margin-top: 0">{{ _("Every minute each instance is asked for its login page and the CPU and the memory of the machine are read; every five minutes the disks are measured, each day the certificates read. Told: when an instance goes down (3 checks in a row) and comes back, a threshold below passed or back under, a certificate that ends within 14 days. Each notice says its level, warning or critical, and goes in «things to look at» of the map. Each workspace's admins add their own on its page.") }}</p>
+    <p class="muted" style="font-size: var(--fs-14); margin-top: 0; line-height: var(--lh-20);">{{ _("Every minute each instance is asked for its login page and the CPU and the memory of the machine are read; every five minutes the disks are measured, each day the certificates read. Told: when an instance goes down (3 checks in a row) and comes back, a threshold below passed or back under, a certificate that ends within 14 days. Each notice says its level, warning or critical, and goes in «things to look at» of the map. Each workspace's admins add their own on its page.") }}</p>
     <div class="form-grid">
       <label for="monitor-notify">{{ _("Tell") }}</label>
       <input type="text" id="monitor-notify" class="mono" value="{{ options.monitor_notify | join(', ') }}"
@@ -154,9 +154,9 @@
       <input type="number" id="restart-every" class="mono" required min="{{ every_limits[0] }}" max="{{ every_limits[1] }}" step="1" value="{{ options.restart_every }}"
              title="{{ _('One that still does not answer after its restart is told, not restarted again, until these minutes have gone by') }}">
     </div>
-    <p class="muted" style="font-size: 13px; margin: 6px 0 0">{{ _("Never while another job works on the instance, never one whose service was stopped (on purpose, as a staging stopped).") }}</p>
+    <p class="muted" style="font-size: var(--fs-14); margin: 6px 0 0; line-height: var(--lh-20);">{{ _("Never while another job works on the instance, never one whose service was stopped (on purpose, as a staging stopped).") }}</p>
     <h3 class="opt-sub">{{ _("Webhooks") }}</h3>
-    <p class="muted" style="font-size: 13px; margin-top: 0">{{ _("Each webhook of the list above and of the workspaces' notices. Signed: its body carries X-OmniaCLI-Signature-256, the HMAC-SHA256 of the body with its secret, which the receiver checks. Jobs: it is told also each job that fails or ends with warnings (a workspace's webhook, the jobs of its workspace).") }}</p>
+    <p class="muted" style="font-size: var(--fs-14); margin-top: 0; line-height: var(--lh-20);">{{ _("Each webhook of the list above and of the workspaces' notices. Signed: its body carries X-OmniaCLI-Signature-256, the HMAC-SHA256 of the body with its secret, which the receiver checks. Jobs: it is told also each job that fails or ends with warnings (a workspace's webhook, the jobs of its workspace).") }}</p>
     {% if webhooks %}
     <div class="scroll">
     <table class="opt-hooks" id="webhooks">
@@ -175,18 +175,18 @@
       {% endfor %}
     </table>
     </div>
-    <div id="hook-secret-box" hidden style="margin-top: 8px"><div class="muted" style="font-size: 13px">{{ _("Secret: copy it now, it is not shown again") }}</div><pre class="copyable mono" id="hook-secret"></pre></div>
-    <p class="muted" id="hook-said" aria-live="polite" style="font-size: 13px"></p>
-    {% else %}<p class="muted" style="font-size: 13px">{{ _("No webhook yet: an https:// address in the list above is one.") }}</p>{% endif %}
+    <div id="hook-secret-box" hidden style="margin-top: 8px"><div class="muted" style="font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("Secret: copy it now, it is not shown again") }}</div><pre class="copyable mono" id="hook-secret"></pre></div>
+    <p class="muted" id="hook-said" aria-live="polite" style="font-size: var(--fs-14); line-height: var(--lh-20);"></p>
+    {% else %}<p class="muted" style="font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("No webhook yet: an https:// address in the list above is one.") }}</p>{% endif %}
   </section>
   <style>
-  .opt-sub { font-size: 15px; margin: 16px 0 6px; }
+  .opt-sub { font-size: var(--fs-16); margin: 16px 0 6px; line-height: var(--lh-24);}
   .opt-thresholds input { width: 90px; } .opt-thresholds td, .opt-hooks td { vertical-align: middle; }
   .opt-check { display: inline-flex; gap: 6px; align-items: center; }
   </style>
   <section class="panel" id="audit">
     <h2 style="margin-bottom: 4px">{{ _("Access log (NIS 2)") }}</h2>
-    <p class="muted" style="font-size: 13px; margin-top: 0">{{ _("Every entry of the access log is kept at least this many days: past it, the oldest files go when the log grows, never a younger entry. 0 keeps 10 files of 5 MB, as before. Each entry can also be sent, as it is written, to a SIEM by syslog (RFC 5424): a SIEM that does not answer never stops an action, its failure is written in the log.") }}</p>
+    <p class="muted" style="font-size: var(--fs-14); margin-top: 0; line-height: var(--lh-20);">{{ _("Every entry of the access log is kept at least this many days: past it, the oldest files go when the log grows, never a younger entry. 0 keeps 10 files of 5 MB, as before. Each entry can also be sent, as it is written, to a SIEM by syslog (RFC 5424): a SIEM that does not answer never stops an action, its failure is written in the log.") }}</p>
     <div class="form-grid">
       <label for="audit-retention">{{ _("Keep (days)") }}</label>
       <input type="number" id="audit-retention" class="mono" required min="{{ retention_limits[0] }}" max="{{ retention_limits[1] }}" step="1"
@@ -210,7 +210,7 @@
   </section>
   <section class="panel" id="portal">
     <h2 style="margin-bottom: 4px">{{ _("Customers' portal") }}</h2>
-    <p class="muted" style="font-size: 13px; margin-top: 0">{{ _("The users of the workspaces read their jobs without the names of this machine's users, of the links and of the other machines, and without its folders: who acted for the machine is shown with this name.") }}</p>
+    <p class="muted" style="font-size: var(--fs-14); margin-top: 0; line-height: var(--lh-20);">{{ _("The users of the workspaces read their jobs without the names of this machine's users, of the links and of the other machines, and without its folders: who acted for the machine is shown with this name.") }}</p>
     <div class="form-grid">
       <label for="provider-label">{{ _("Name of the provider") }}</label>
       <input type="text" id="provider-label" maxlength="100" value="{{ options.provider_label }}" placeholder="{{ _('the provider') }}"
@@ -225,11 +225,11 @@
         <option value="{{ value }}" {{ "selected" if options.second_factor == value }}>{{ label }}</option>{% endfor %}
       </select>
     </div>
-    <p class="muted" style="font-size: 13px; margin: 8px 0 0">{{ _("Users at the portal address: whoever logs in there, and the users of the workspaces wherever they log in, once the portal has an address; without one, nobody is asked.") }}</p>
+    <p class="muted" style="font-size: var(--fs-14); margin: 8px 0 0; line-height: var(--lh-20);">{{ _("Users at the portal address: whoever logs in there, and the users of the workspaces wherever they log in, once the portal has an address; without one, nobody is asked.") }}</p>
   </section>
   <section class="panel" id="whitelabel">
     <h2 style="margin-bottom: 4px">{{ _("Whitelabel") }}</h2>
-    <p class="muted" style="font-size: 13px; margin-top: 0">{{ _("The panel under your name: in the header, in the title of the pages and in the emails, on the panel, the customers' portal and the login page. Empty: the look of OmniaCLI.") }}</p>
+    <p class="muted" style="font-size: var(--fs-14); margin-top: 0; line-height: var(--lh-20);">{{ _("The panel under your name: in the header, in the title of the pages and in the emails, on the panel, the customers' portal and the login page. Empty: the look of OmniaCLI.") }}</p>
     <div class="form-grid">
       <label for="brand-name">{{ _("Name of the panel") }}</label>
       <input type="text" id="brand-name" maxlength="40" value="{{ options.brand_name }}" placeholder="OmniaCLI"
@@ -242,7 +242,7 @@
           <input type="text" id="brand-color" class="mono" maxlength="7" value="{{ options.brand_color }}" placeholder="#DC2626" style="width: 120px"
                  autocomplete="off" spellcheck="false" title="{{ _('The colour of the buttons and the links, #RRGGBB; empty: the red of OmniaCLI. White text on it must reach a contrast of 4.5:1 (WCAG AA)') }}">
         </div>
-        <p id="brand-contrast" class="muted" style="font-size: 13px; margin: 6px 0 0" aria-live="polite"></p>
+        <p id="brand-contrast" class="muted" style="font-size: var(--fs-14); margin: 6px 0 0; line-height: var(--lh-20);" aria-live="polite"></p>
       </div>
       <label for="brand-logo">{{ _("Logo") }}</label>
       <div>
@@ -254,7 +254,7 @@
           <button type="button" id="brand-logo-send" title="{{ _('Puts the chosen file as the logo of the panel at once, for every page') }}">{{ _("Use this logo") }}</button>
           <button type="button" id="brand-logo-remove" {% if not brand.logo %}hidden{% endif %} title="{{ _('Takes your logo away: the «O» of OmniaSolutions again') }}">{{ _("Take the logo away") }}</button>
         </div>
-        <p id="brand-logo-said" class="muted" style="font-size: 13px; margin: 6px 0 0" aria-live="polite"></p>
+        <p id="brand-logo-said" class="muted" style="font-size: var(--fs-14); margin: 6px 0 0; line-height: var(--lh-20);" aria-live="polite"></p>
       </div>
     </div>
   </section>

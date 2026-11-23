@@ -12,16 +12,16 @@
 #ou-dialog form { margin: 0; }
 .ou-head { padding: 20px 24px 4px; } .ou-head h2 { margin: 0 0 4px; }
 .ou-body { padding: 8px 24px 4px; max-height: 60vh; overflow-y: auto; }
-.ou-body h3 { font-size: 14px; margin: 14px 0 6px; }
+.ou-body h3 { font-size: var(--fs-14); margin: 14px 0 6px; line-height: var(--lh-20);}
 .ou-body p { margin: 4px 0 8px; }
 .ou-notes details { border: 1px solid var(--border); border-radius: var(--r-lg); padding: 6px 10px; margin: 0 0 6px; }
-.ou-notes summary { cursor: pointer; font-weight: 600; }
-.ou-notes pre { white-space: pre-wrap; font: inherit; font-size: 13px; margin: 6px 0 0; color: var(--muted); }
-.ou-lines { font-family: var(--mono, monospace); font-size: 12px; white-space: pre-wrap; background: var(--panel-2);
-  border-radius: var(--r-lg); padding: 8px 10px; max-height: 28vh; overflow-y: auto; margin: 8px 0; }
+.ou-notes summary { cursor: pointer; font-weight: var(--fw-semibold); }
+.ou-notes pre { white-space: pre-wrap; font: inherit; font-size: var(--fs-14); margin: 6px 0 0; color: var(--muted); line-height: var(--lh-20);}
+.ou-lines { font-family: var(--mono, monospace); font-size: var(--fs-12); white-space: pre-wrap; background: var(--panel-2);
+  border-radius: var(--r-lg); padding: 8px 10px; max-height: 28vh; overflow-y: auto; margin: 8px 0; line-height: var(--lh-18);}
 .ou-foot { display: flex; justify-content: flex-end; align-items: center; gap: 8px; padding: 16px 24px 20px; flex-wrap: wrap; }
-.ou-foot .error { margin: 0 auto 0 0; font-size: 13px; }
-.ou-fact-new { color: var(--warn); font-weight: 600; }
+.ou-foot .error { margin: 0 auto 0 0; font-size: var(--fs-14); line-height: var(--lh-20);}
+.ou-fact-new { color: var(--warn); font-weight: var(--fw-semibold); }
 </style>
 <dialog id="ou-dialog" aria-labelledby="ou-title">
   <form id="ou-form" novalidate>

@@ -204,6 +204,41 @@ def test_icons_not_glyphs():
     assert "https://lucide.dev" in (TEMPLATES / "about.html").read_text(encoding="utf-8")
 
 
+def _css_rules():
+    """(template, selector, declarations) of every <style> block and style="" attribute but the tokens'."""
+    for page in TEMPLATES.glob("*.html"):
+        if page.name in ("_tokens.html", "_sprite.html"):
+            continue
+        text = page.read_text(encoding="utf-8")
+        for block in re.findall(r"<style[^>]*>(.*?)</style>", text, flags=re.S):
+            for selector, body in re.findall(r"([^{}]+)\{([^{}]*)\}", block):
+                yield page.name, " ".join(selector.split()), body
+        for body in re.findall(r'style="([^"]*)"', text):
+            yield page.name, "", body
+
+
+SVG_TEXT = re.compile(r"map-canvas|map-flow|chart-axis|chart-capacity|chart-empty|svg\b|\btext\b|tspan|spark")
+
+
+def test_the_type_scale():
+    """UX-017 §2.5: font sizes only from the scale (the text drawn inside an SVG excepted, §4.7), weights 400, 600,
+    700, line heights only the five of the scale or none (0 and 1 on what holds no text)."""
+    wrong = []
+    for name, selector, body in _css_rules():
+        if SVG_TEXT.search(selector):
+            continue
+        for value in re.findall(r"(?<![\w-])font-size\s*:\s*([^;\"}!]+)", body):
+            if not re.fullmatch(r"var\(--fs-(12|14|16|18|20|24)\)|inherit|100%", value.strip()):
+                wrong.append(f"{name} {selector[-40:]} font-size {value}")
+        for value in re.findall(r"(?<![\w-])font-weight\s*:\s*([^;\"}!]+)", body):
+            if not re.fullmatch(r"var\(--fw-(regular|semibold|bold)\)|inherit", value.strip()):
+                wrong.append(f"{name} {selector[-40:]} font-weight {value}")
+        for value in re.findall(r"(?<![\w-])line-height\s*:\s*([^;\"}!]+)", body):
+            if not re.fullmatch(r"var\(--lh-(18|20|24|28|32)\)|0|1|normal|inherit", value.strip()):
+                wrong.append(f"{name} {selector[-40:]} line-height {value}")
+    assert not wrong, wrong[:20]
+
+
 async def test_the_header_on_a_phone_leaves_nothing_out(client):  # noqa: F811
     """UX-017 §5.11: under 768 px your account, the language and Log out are in the menu, never nowhere."""
     page = (await client.get("/", headers={"Authorization": AUTH, "Accept": "text/html"})).text

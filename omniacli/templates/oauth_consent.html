@@ -24,7 +24,7 @@
   <p class="muted" style="margin: 0">{{ _("The answer goes to:") }} <strong class="mono">{{ redirect_host }}</strong></p>
   {% if loopback %}<div class="banner warn" style="margin: 8px 0 0">{{ _("The answer goes to a program of the computer you are using (localhost): any program there could present itself under this name. Agree only if you started the connection yourself just now.") }}</div>{% endif %}
   {% if custom_scheme %}<div class="banner warn" style="margin: 8px 0 0">{{ _("The answer goes to an application of your computer, not to a website: agree only if you started the connection yourself just now.") }}</div>{% endif %}
-  <p class="muted" style="margin: 8px 0 0; font-size: 13px">{{ _("For:") }} <span class="mono">{{ resource }}</span></p>
+  <p class="muted" style="margin: 8px 0 0; font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("For:") }} <span class="mono">{{ resource }}</span></p>
 </section>
 <form class="panel" method="post" action="/oauth/consent" id="consent-form">
   <input type="hidden" name="request" value="{{ rid }}">
@@ -44,7 +44,7 @@
     {% for level in ["read", "write", "production"] %}
     <label style="display: block; margin: 0 0 8px" data-level="{{ level }}" title="{{ level_texts[level] }}">
       <input type="radio" name="level" value="{{ level }}"> <strong>{{ level_names[level] }}</strong><br>
-      <span class="muted" style="font-size: 13px; margin-left: 24px; display: inline-block">{{ level_texts[level] }}</span>
+      <span class="muted" style="font-size: var(--fs-14); margin-left: 24px; display: inline-block; line-height: var(--lh-20);">{{ level_texts[level] }}</span>
       <span class="badge" style="margin-left: 24px" data-above hidden>{{ _("above your role") }}</span></label>
     {% endfor %}
   </fieldset>
@@ -60,7 +60,7 @@
     <select name="days" id="c-days" title="{{ _('After these days the assistant asks you again. You can revoke it earlier from your Account page.') }}">
       {% for d in days %}<option value="{{ d }}" {{ "selected" if d == default_days }}>{{ _("1 day") if d == 1 else _("{n} days", n=d) }}</option>{% endfor %}
     </select></p>
-  <p class="muted" style="font-size: 13px">{{ _("The assistant gets a key valid {minutes} minutes, renewed by itself while you let it. It is listed on your Account page, with its last use: there you revoke it, and it stops at once.", minutes=access_minutes) }}</p>
+  <p class="muted" style="font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("The assistant gets a key valid {minutes} minutes, renewed by itself while you let it. It is listed on your Account page, with its last use: there you revoke it, and it stops at once.", minutes=access_minutes) }}</p>
   <div class="actions">
     <button type="submit" name="decision" value="deny" formnovalidate title="{{ _('Tells the assistant no: it gets nothing, and OmniaCLI goes back to it') }}">{{ _("Refuse") }}</button>
     <button type="submit" name="decision" value="approve" class="primary" id="c-approve" title="{{ _('Lets the assistant in with the level, the servers and the time chosen, and goes back to it') }}">{{ _("Allow") }}</button>

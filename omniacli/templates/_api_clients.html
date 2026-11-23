@@ -18,9 +18,9 @@
   <label for="{{ id }}-client">{{ _("Client") }}</label>
   <div><select id="{{ id }}-client" title="{{ _('The program that will use the token: its snippet below') }}"></select></div>
 </div>
-<p class="muted" id="{{ id }}-where" style="font-size: 13px; margin: 8px 0 4px"></p>
+<p class="muted" id="{{ id }}-where" style="font-size: var(--fs-14); margin: 8px 0 4px; line-height: var(--lh-20);"></p>
 <pre class="console mono copyable" id="{{ id }}-snippet" style="white-space: pre-wrap; word-break: break-all"></pre>
-<p class="muted" id="{{ id }}-note" style="font-size: 13px"></p>
+<p class="muted" id="{{ id }}-note" style="font-size: var(--fs-14); line-height: var(--lh-20);"></p>
 {% endmacro %}
 {% macro connect_script(base, reach=none) %}
 <script>

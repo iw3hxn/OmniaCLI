@@ -6,14 +6,14 @@
 {% block content %}
 <style>
 .api-route { margin: 0 0 18px; }
-.api-route h3 { margin: 0 0 4px; font-size: 15px; }
-.api-route .method { display: inline-block; min-width: 46px; font-weight: 600; }
-.api-route table { font-size: 13px; }
+.api-route h3 { margin: 0 0 4px; font-size: var(--fs-16); line-height: var(--lh-24);}
+.api-route .method { display: inline-block; min-width: 46px; font-weight: var(--fw-semibold); }
+.api-route table { font-size: var(--fs-14); line-height: var(--lh-20);}
 .api-route td:first-child { white-space: nowrap; }
 </style>
 <div class="page-head">
   <div>
-    <h1>{{ _("REST API") }} <span class="muted" style="font-size: 15px">v{{ doc.info.version }}</span></h1>
+    <h1>{{ _("REST API") }} <span class="muted" style="font-size: var(--fs-16); line-height: var(--lh-24);">v{{ doc.info.version }}</span></h1>
     <p>{{ _("The routes for scripts and CI, with the same token as MCP. The texts below are the API's own, in English.") }}</p>
   </div>
   <div class="actions" style="margin: 0">

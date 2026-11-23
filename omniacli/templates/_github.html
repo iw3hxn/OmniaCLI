@@ -29,10 +29,10 @@
 
 {% macro github_script() -%}
 <style>
-.gh-token { margin-top: 10px; } .gh-token > summary { cursor: pointer; font-weight: 600; }
+.gh-token { margin-top: 10px; } .gh-token > summary { cursor: pointer; font-weight: var(--fw-semibold); }
 .gh-fields { display: grid; grid-template-columns: 1fr 1.4fr 180px; gap: 10px; margin: 8px 0; }
-.gh-fields label { display: block; font-size: 13px; font-weight: 600; } .gh-fields input { width: 100%; margin-top: 4px; }
-.gh-result { font-size: 13px; margin-top: 8px; border-left: 3px solid var(--border); padding: 4px 10px; }
+.gh-fields label { display: block; font-size: var(--fs-14); font-weight: var(--fw-semibold); line-height: var(--lh-20);} .gh-fields input { width: 100%; margin-top: 4px; }
+.gh-result { font-size: var(--fs-14); margin-top: 8px; border-left: 3px solid var(--border); padding: 4px 10px; line-height: var(--lh-20);}
 .gh-result ul { margin: 4px 0; padding-left: 4px; list-style: none; } .gh-result .ok { color: var(--ok, inherit); } .gh-result .missing { color: var(--err); }
 @media (max-width: 700px) { .gh-fields { grid-template-columns: 1fr; } }
 </style>

@@ -77,40 +77,40 @@
 .pg-table tr.pg-row { cursor: pointer; }
 .pg-table tr.pg-row:hover td { background: var(--panel-2); }
 .pg-table td.num { text-align: right; white-space: nowrap; }
-.pg-table .pg-sub { display: block; font-weight: 400; color: var(--muted); font-size: 12px; margin-top: 2px; }
-.pg-state { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+.pg-table .pg-sub { display: block; font-weight: var(--fw-regular); color: var(--muted); font-size: var(--fs-12); margin-top: 2px; line-height: var(--lh-18);}
+.pg-state { display: inline-flex; align-items: center; gap: 6px; font-weight: var(--fw-semibold); }
 .pg-state::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
 .pg-state.amber::before { background: var(--warn); } .pg-state.green::before { background: var(--ok); }
 .pg-state.blue::before { background: var(--info); } .pg-state.red::before { background: var(--err); }
 .pg-state.red { color: var(--err); }
 .pg-detail > td { background: var(--panel-2); padding: 12px 16px; }
 .pg-detail dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0 0 10px; }
-.pg-detail dt { font-weight: 600; } .pg-detail dd { margin: 0; }
+.pg-detail dt { font-weight: var(--fw-semibold); } .pg-detail dd { margin: 0; }
 .pg-params { width: 100%; margin: 6px 0; }
 .pg-params td, .pg-params th { padding: 5px 8px; border-top: 1px solid var(--border); }
-.pg-params tr.pg-group td { font-weight: 600; font-size: 13px; background: var(--panel-2); }
-.pg-params tr.pg-change td { font-weight: 600; }
+.pg-params tr.pg-group td { font-weight: var(--fw-semibold); font-size: var(--fs-14); background: var(--panel-2); line-height: var(--lh-20);}
+.pg-params tr.pg-change td { font-weight: var(--fw-semibold); }
 .pg-params input[type="text"] { width: 9em; }
 .pg-params input.pg-bad { border-color: var(--err); color: var(--err); }
-.pg-same { color: var(--muted); font-weight: 400; font-size: 12px; margin-left: 6px; }
+.pg-same { color: var(--muted); font-weight: var(--fw-regular); font-size: var(--fs-12); margin-left: 6px; line-height: var(--lh-18);}
 .pg-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
 .pg-head-actions { display: inline-flex; gap: 8px; align-items: center; }
 #pg-dialog { --dialog-w: 760px; }
 #pg-dialog .pg-when label { display: block; margin: 4px 0; }
 #pg-dialog .pg-when input[type="time"] { width: 7em; }
-.pg-warn { color: var(--warn); font-weight: 600; }
+.pg-warn { color: var(--warn); font-weight: var(--fw-semibold); }
 .pg-archive-lines > div { margin-bottom: 3px; }
 #pg-archive { --dialog-w: 680px; }
-#pg-archive p.pga-note, #pg-replica-dialog p.pga-note { margin: 0 0 8px; font-size: 13px; }
+#pg-archive p.pga-note, #pg-replica-dialog p.pga-note { margin: 0 0 8px; font-size: var(--fs-14); line-height: var(--lh-20);}
 #pg-replica-dialog, #pg-to-dialog { --dialog-w: 680px; }
 #pg-to-dialog fieldset { border: 1px solid var(--border); border-radius: 6px; margin: 8px 0; padding: 6px 10px; min-width: 0; }
-#pg-to-dialog legend { font-weight: 600; padding: 0 4px; }
+#pg-to-dialog legend { font-weight: var(--fw-semibold); padding: 0 4px; }
 .pgt-target { display: flex; gap: 8px; align-items: flex-start; padding: 6px 0; border-top: 1px solid var(--border); cursor: pointer; }
 .pgt-target:first-child { border-top: none; }
 .pgt-target input { margin-top: 3px; flex: none; }
-.pgt-target .pg-sub { display: block; font-weight: 400; color: var(--muted); font-size: 13px; margin-top: 2px; overflow-wrap: anywhere; }
+.pgt-target .pg-sub { display: block; font-weight: var(--fw-regular); color: var(--muted); font-size: var(--fs-14); margin-top: 2px; overflow-wrap: anywhere; line-height: var(--lh-20);}
 .pgt-target.off { color: var(--muted); cursor: default; }
-.pgt-target .pgt-why { display: block; color: var(--err); font-size: 13px; margin-top: 2px; overflow-wrap: anywhere; }
+.pgt-target .pgt-why { display: block; color: var(--err); font-size: var(--fs-14); margin-top: 2px; overflow-wrap: anywhere; line-height: var(--lh-20);}
 .pgt-steps { margin: 4px 0 0; padding-left: 20px; } .pgt-steps li { margin-bottom: 4px; }
 .pg-state.grey::before { background: var(--muted); }
 </style>
@@ -145,7 +145,7 @@
     <p class="muted" id="pg-limit" hidden></p>
     <div style="overflow-x: auto"><table class="pg-params" id="pg-values"></table></div>
     <div class="pg-when" id="pg-when" hidden>
-      <p style="margin: 10px 0 2px; font-weight: 600">{{ _("When") }}</p>
+      <p style="margin: 10px 0 2px; font-weight: var(--fw-semibold)">{{ _("When") }}</p>
       <label><input type="radio" name="pg-when" value="at" checked> {{ _("At") }} <input type="time" id="pg-time" value="05:00" data-server-time aria-label="{{ _('Time of the restart, by your clock') }}"> <span id="pg-day"></span></label>
       <label><input type="radio" name="pg-when" value="now"> {{ _("Now") }}</label>
       <p class="muted" id="pg-stops" style="margin: 4px 0 0"></p>
@@ -154,11 +154,11 @@
     <details id="pg-advanced" style="margin-top: 10px">
       <summary title="{{ _('The memory for the databases of this machine and the kind of disk, on which the calculation is made') }}">{{ _("Advanced") }}</summary>
       <p style="margin: 8px 0 2px"><label>{{ _("Memory for the databases of this machine:") }} <input type="number" id="pg-memory-gb" min="0.25" step="0.25" style="width: 6em"> GB</label></p>
-      <p class="muted" id="pg-memory-default" style="margin: 0 0 6px; font-size: 13px"></p>
+      <p class="muted" id="pg-memory-default" style="margin: 0 0 6px; font-size: var(--fs-14); line-height: var(--lh-20);"></p>
       <p style="margin: 4px 0">{{ _("Disk:") }}
         <label><input type="radio" name="pg-disk" value="ssd"> SSD</label>
         <label><input type="radio" name="pg-disk" value="hdd"> {{ _("spinning") }}</label></p>
-      <p class="muted" style="margin: 0; font-size: 13px">{{ _("Read from the machine: a virtual disk may say it spins without spinning.") }}</p>
+      <p class="muted" style="margin: 0; font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("Read from the machine: a virtual disk may say it spins without spinning.") }}</p>
     </details>
     <p class="error" id="pg-dialog-error" role="alert"></p>
     <div class="actions">
@@ -223,7 +223,7 @@
     </fieldset>
     <p id="pgt-none" hidden></p>
     <div id="pgt-plan" hidden>
-      <p style="margin: 10px 0 2px; font-weight: 600">{{ _("What happens") }}</p>
+      <p style="margin: 10px 0 2px; font-weight: var(--fw-semibold)">{{ _("What happens") }}</p>
       <ol class="pgt-steps" id="pgt-steps"></ol>
     </div>
     <p class="error" id="pgt-error" role="alert"></p>

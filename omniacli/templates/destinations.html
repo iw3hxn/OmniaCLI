@@ -11,13 +11,13 @@
 <style>
 .dest-table td { vertical-align: top; }
 #dest-dialog { --dialog-w: 640px; }
-#dest-dialog .form-grid textarea { min-height: 90px; font-family: var(--mono, monospace); font-size: 12px; }
-#dest-dialog .help { grid-column: 2; margin: -6px 0 4px; font-size: 12px; }
+#dest-dialog .form-grid textarea { min-height: 90px; font-family: var(--mono, monospace); font-size: var(--fs-12); line-height: var(--lh-18);}
+#dest-dialog .help { grid-column: 2; margin: -6px 0 4px; font-size: var(--fs-12); line-height: var(--lh-18);}
 .key-box { word-break: break-all; }
 </style>
 <div class="page-head">
   <div>
-    <h1>{{ _("Backup destinations") }}{% if workspace %} <span class="muted" style="font-weight: 400">· {{ ws.label or workspace }}</span>{% endif %}</h1>
+    <h1>{{ _("Backup destinations") }}{% if workspace %} <span class="muted" style="font-weight: var(--fw-regular)">· {{ ws.label or workspace }}</span>{% endif %}</h1>
     <p>{{ _("Where the automatic backups are copied, out of this machine: SFTP, FTP, S3 and compatible, Google Drive, Dropbox, OneDrive, WebDAV, Azure, Google Cloud.") }}
        {{ _("Every copy is encrypted here before it leaves, with the destination's own key: the provider cannot read it.") }}
        {% if workspace %}{{ _("These are the workspace's: its admins set them, its instances use them.") }}{% else %}{{ _("These are the machine's, for its admins; a workspace's admins set the workspace's on its page.") }}{% endif %}</p>
@@ -44,13 +44,13 @@
         <button type="button" data-edit title="{{ _('Opens the form of this destination to change its kind, folder or settings. Its name and its key stay as they are; a password left empty keeps the saved one.') }}">{{ _("Edit") }}</button>
         <button type="button" data-key title="{{ _('Shows here above the key the copies of this destination are encrypted with, to keep somewhere else too. It changes nothing; the access log records who asked.') }}">{{ _("Show the key") }}</button>
         <button type="button" class="danger" data-delete {{ "disabled" if d.used_by }} title="{{ _('Deletes this destination from OmniaCLI: the copies already there stay there. It asks before. Not available while the automatic backups of an instance go to it.') }}">{{ _("Delete") }}</button>
-      </div><div class="muted dest-result" style="font-size: 13px"></div>{% endif %}</td>
+      </div><div class="muted dest-result" style="font-size: var(--fs-14); line-height: var(--lh-20);"></div>{% endif %}</td>
     </tr>
     {% else %}
     <tr><td colspan="6" class="muted">{{ _("No destinations yet: the backups stay on this machine.") }}</td></tr>
     {% endfor %}
   </table></div>
-  <p class="muted" style="font-size: 13px">{{ _("Choose a destination in the automatic backups of an instance (its Backups tab): every backup is copied there and kept by the same rotation.") }}
+  <p class="muted" style="font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("Choose a destination in the automatic backups of an instance (its Backups tab): every backup is copied there and kept by the same rotation.") }}
     {% if file %}{{ _("Saved in {file}, readable by its owner only.", file=file) }}{% endif %}</p>
 </section>
 <dialog id="dest-dialog" aria-labelledby="dest-title">
@@ -67,7 +67,7 @@
     </div>
     <div class="form-grid" id="d-settings"></div>
     <details id="d-key-row" style="margin-top: 8px"><summary title="{{ _('For a folder that already holds copies made by another OmniaCLI: type its key here to read them again') }}">{{ _("A key of before") }}</summary>
-      <p class="muted" style="font-size: 13px">{{ _("To read again the copies another OmniaCLI made there, give its key; empty: a new one.") }}</p>
+      <p class="muted" style="font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("To read again the copies another OmniaCLI made there, give its key; empty: a new one.") }}</p>
       <input type="text" id="d-key" class="mono" placeholder="opk1-…"></details>
     <p class="error" id="d-error"></p>
     <div class="actions" style="justify-content: flex-end">

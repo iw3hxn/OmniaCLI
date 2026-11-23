@@ -13,12 +13,12 @@
    file (its dialog, whose button is the primary), deletes. #}
 <style>
 .bk-counts { color: var(--muted); }
-.bk-counts a[aria-pressed="true"] { font-weight: 650; }
+.bk-counts a[aria-pressed="true"] { font-weight: var(--fw-semibold); }
 .bk-search { margin-bottom: 12px; } .bk-search input { width: min(420px, 100%); }
 .bk-rows td { vertical-align: middle; }
 .bk-rows .badge { margin-left: 6px; }
 .bk-rows .num { text-align: right; white-space: nowrap; }
-.bk-rows .kind { color: var(--muted); font-size: 13px; }
+.bk-rows .kind { color: var(--muted); font-size: var(--fs-14); line-height: var(--lh-20);}
 .bk-ok { color: var(--ok); } .bk-bad, .bk-bad a { color: var(--err); }
 .bk-machine td { color: var(--muted); } .bk-machine.down td { color: var(--err); }
 .bk-pager { display: flex; gap: 8px; align-items: center; justify-content: flex-end; margin-top: 12px; }
@@ -37,29 +37,29 @@
   .bk-rows tr { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; padding: 10px 4px;
     border-bottom: 1px solid var(--border); position: relative; }
   .bk-rows td { display: block; border: 0; padding: 0; background: none !important; }
-  .bk-rows td:first-child { flex: 1 1 100%; font-size: 15px; padding-right: calc(var(--icon-btn) + var(--sp-8)); }
+  .bk-rows td:first-child { flex: 1 1 100%; font-size: var(--fs-16); padding-right: calc(var(--icon-btn) + var(--sp-8)); line-height: var(--lh-24);}
   .row-menu > summary { width: var(--icon-btn); min-height: var(--icon-btn); padding: 0; justify-content: center;
     background: transparent; border-color: transparent; }
   .row-menu-word { display: none; } .row-menu-dots { display: inline; }
-  .bk-rows td:not(:first-child) { font-size: 13px; }
+  .bk-rows td:not(:first-child) { font-size: var(--fs-14); line-height: var(--lh-20);}
   .bk-rows td.num:last-child { position: absolute; top: 8px; right: 4px; }
 }
 #fb-dialog, #up-dialog { --dialog-w: 600px; }
 #fb-dialog .actions, #up-dialog .actions { justify-content: flex-end; }
 .fb-ways { margin: 10px 0 6px; }
-.fb-way { display: block; margin: 6px 0 2px; font-weight: 600; }
-.fb-way.off { color: var(--muted); font-weight: 400; cursor: not-allowed; }
-.fb-off { margin: 0 0 6px 24px; font-size: 13px; color: var(--warn); }
+.fb-way { display: block; margin: 6px 0 2px; font-weight: var(--fw-semibold); }
+.fb-way.off { color: var(--muted); font-weight: var(--fw-regular); cursor: not-allowed; }
+.fb-off { margin: 0 0 6px 24px; font-size: var(--fs-14); color: var(--warn); line-height: var(--lh-20);}
 .fb-part { margin: 8px 0 0 24px; }
 .fb-part .form-grid { margin-bottom: 8px; }
-.fb-help { font-size: 13px; margin: 2px 0 8px 24px; }
+.fb-help { font-size: var(--fs-14); margin: 2px 0 8px 24px; line-height: var(--lh-20);}
 .fb-check { display: block; margin-top: 6px; }
 .fb-plan { margin: 10px 0 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-lg);
-  background: var(--panel-2); font-size: 14px; }
+  background: var(--panel-2); font-size: var(--fs-14); line-height: var(--lh-20);}
 .fb-plan p { margin: 0 0 6px; } .fb-plan p:last-child { margin-bottom: 0; }
-.fb-plan .mono { font-size: 12px; word-break: break-word; }
+.fb-plan .mono { font-size: var(--fs-12); word-break: break-word; line-height: var(--lh-18);}
 .fb-plan .warn { color: var(--warn); }
-.fb-name-help { display: block; font-size: 12px; margin-top: 3px; }
+.fb-name-help { display: block; font-size: var(--fs-12); margin-top: 3px; line-height: var(--lh-18);}
 .up-progress { display: flex; gap: 10px; align-items: center; margin-top: 12px; }
 .up-progress progress { flex: 1; }
 .up-done { margin-top: 12px; }

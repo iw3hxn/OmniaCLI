@@ -62,9 +62,9 @@
 /* done, but something did not come (a certificate): amber, with the warnings said */
 .job-state[data-status="warned"] .job-warned { display: flex; }
 .job-warned { color: var(--warn); border-color: var(--warn) !important; background: var(--warn-soft) !important; align-items: flex-start !important; }
-.job-warned ul { margin: 4px 0 0; padding-left: 18px; font-weight: 500; color: var(--text); }
+.job-warned ul { margin: 4px 0 0; padding-left: 18px; font-weight: var(--fw-regular); color: var(--text); }
 .job-warned .danger-sign { fill: var(--warn); stroke: var(--warn); }
-.job-back { margin: -4px 0 10px; font-size: 13px; }
+.job-back { margin: -4px 0 10px; font-size: var(--fs-14); line-height: var(--lh-20);}
 </style>
 <div class="job-state" id="job-state" data-status="{{ job.outcome }}" role="status" aria-live="polite">
   <div class="job-running">
@@ -100,10 +100,10 @@
 .steps { display: flex; align-items: stretch; margin: 0 0 14px; }
 .step { flex: 1 1 0; min-width: 0; padding: 10px 14px; border: 1px solid var(--border); border-radius: var(--r);
   background: var(--panel); color: var(--muted); transition: border-color .3s, color .3s; }
-.step-head { display: flex; align-items: center; gap: 8px; font-weight: 600; }
-.step-where { font-size: 12px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.step-head { display: flex; align-items: center; gap: 8px; font-weight: var(--fw-semibold); }
+.step-where { font-size: var(--fs-12); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: var(--lh-18);}
 .step-mark { width: 18px; height: 18px; flex: none; border-radius: 50%; border: 2px solid currentColor;
-  display: grid; place-items: center; font-size: 11px; line-height: 1; }
+  display: grid; place-items: center; font-size: var(--fs-12); line-height: var(--lh-18); }
 .step.active { color: var(--warn); border-color: var(--warn); }
 .step.active .step-mark { border-right-color: transparent; animation: step-spin .8s linear infinite; }
 .step.done { color: var(--ok); }
@@ -123,7 +123,7 @@
 .step-bar.unknown > div { width: 30% !important; animation: step-sweep 1.4s ease-in-out infinite; transition: none; }
 .step.done .step-bar > div { background: var(--ok); width: 100% !important; animation: none; }
 .step.failed .step-bar > div { background: var(--err); animation: none; }
-.step-figures { font-size: 12px; margin-top: 6px; font-family: var(--mono); color: var(--text); min-height: 1.2em; }
+.step-figures { font-size: var(--fs-12); margin-top: 6px; font-family: var(--mono); color: var(--text); min-height: 1.2em; line-height: var(--lh-18);}
 @keyframes step-spin { to { transform: rotate(360deg); } }
 @keyframes step-pop { 0% { transform: scale(.3); } 70% { transform: scale(1.25); } 100% { transform: none; } }
 @keyframes step-flow { from { background-position: 0 0; } to { background-position: 12px 0; } }

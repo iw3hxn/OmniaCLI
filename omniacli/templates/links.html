@@ -10,18 +10,18 @@
 {% include "_list.html" %}
 {# the links (docs/ux/UX-007): one row a link, read, with whether it answers; its fields in a dialog #}
 <style>
-.link-how .mono { font-size: 13px; color: var(--muted); }
+.link-how .mono { font-size: var(--fs-14); color: var(--muted); line-height: var(--lh-20);}
 .link-state { white-space: nowrap; }
-.link-dot { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+.link-dot { display: inline-flex; align-items: center; gap: 6px; font-weight: var(--fw-semibold); }
 .link-dot::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
 .link-dot.up::before { background: var(--ok); } .link-dot.down::before { background: var(--err); }
 .link-dot.starting::before { background: var(--warn); }
-.link-detail { display: block; font-size: 13px; color: var(--muted); white-space: normal; max-width: 46ch; }
+.link-detail { display: block; font-size: var(--fs-14); color: var(--muted); white-space: normal; max-width: 46ch; line-height: var(--lh-20);}
 .link-detail.error { color: var(--err); }
 #link-dialog { --dialog-w: 680px; }
-#link-dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
-#link-dialog details { margin-top: 12px; } #link-dialog summary { font-weight: 600; color: var(--text); }
-#link-dialog .ld-switch { display: flex; gap: 8px; align-items: center; margin: 14px 0 8px; font-weight: 600; }
+#link-dialog .field-help { display: block; font-size: var(--fs-14); margin-top: 3px; line-height: var(--lh-20);}
+#link-dialog details { margin-top: 12px; } #link-dialog summary { font-weight: var(--fw-semibold); color: var(--text); }
+#link-dialog .ld-switch { display: flex; gap: 8px; align-items: center; margin: 14px 0 8px; font-weight: var(--fw-semibold); }
 .links-foot { margin-top: 12px; } .links-foot details { margin-bottom: 6px; }
 </style>
 <div class="page-head">
@@ -76,7 +76,7 @@
   </details>
   <details>
     <summary title="{{ _('The file of this machine that keeps the links and their tokens') }}">{{ _("Where it is saved") }}</summary>
-    <p class="mono" style="font-size: 13px">{{ _("Saved in {file}, readable by its owner only: it holds the tokens.", file=links_file) }}</p>
+    <p class="mono" style="font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("Saved in {file}, readable by its owner only: it holds the tokens.", file=links_file) }}</p>
   </details>
 </div>
 

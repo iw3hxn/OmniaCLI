@@ -190,13 +190,13 @@
    changes anything but New workspace, which opens the form of the machine chosen. #}
 <style>
 .ws-counts { color: var(--muted); margin: 0 0 12px; }
-.ws-counts a[aria-pressed="true"] { font-weight: 650; }
+.ws-counts a[aria-pressed="true"] { font-weight: var(--fw-semibold); }
 .ws-rows td { vertical-align: middle; }
 .ws-rows tbody.ws-item > tr.ws-row { cursor: pointer; height: 56px; }
 .ws-rows tbody.ws-item > tr.ws-row:hover > td { background: var(--panel-2); }
 .ws-rows .ws-toggle { min-width: 32px; padding: 2px 8px; margin-right: 6px; }
 .ws-rows .ws-toggle[aria-expanded="true"] .ws-caret { display: inline-block; transform: rotate(90deg); }
-.ws-rows .ws-name { font-weight: 650; max-width: 22ch; display: inline-block; overflow: hidden; text-overflow: ellipsis;
+.ws-rows .ws-name { font-weight: var(--fw-semibold); max-width: 22ch; display: inline-block; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; vertical-align: bottom; }
 .ws-rows .ws-domain { display: block; margin: 2px 0 0 44px; }
 .ws-rows .ws-phone { display: none; margin: 2px 0 0 44px; }
@@ -212,7 +212,7 @@
   /* machines, instances, users: the instances' rows carry a state, a name, pills and a button */
   .ws-blocks[style*="--ws-cols: 3"] { grid-template-columns: minmax(0, .8fr) minmax(0, 1.7fr) minmax(0, 1fr); } }
 .ws-block { background: var(--panel); border: 1px solid var(--border); border-radius: var(--r); padding: 10px 12px; min-width: 0; }
-.ws-block h3 { margin: 0 0 6px; font-size: 14px; }
+.ws-block h3 { margin: 0 0 6px; font-size: var(--fs-14); line-height: var(--lh-20);}
 .ws-block ul { list-style: none; margin: 0; padding: 0; }
 .ws-block li { padding: 4px 0; border-top: 1px solid var(--border); display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
 .ws-block li:first-child { border-top: 0; }
@@ -221,7 +221,7 @@
 .ws-users td { padding: 4px 6px; } .ws-users td:first-child { white-space: nowrap; }
 .ws-use, .ws-open-ws { margin: 10px 0 0; }
 .ws-foot { margin-top: 16px; } .ws-foot > details { margin-bottom: 8px; }
-.ws-foot > details > summary { font-weight: 600; }
+.ws-foot > details > summary { font-weight: var(--fw-semibold); }
 .ws-foot .ws-fold { margin-top: 8px; }
 .ws-where label { display: flex; gap: 8px; align-items: baseline; padding: 6px 0; }
 @media (max-width: 700px) {

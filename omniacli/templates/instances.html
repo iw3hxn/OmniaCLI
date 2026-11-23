@@ -16,12 +16,12 @@
    with the List. #}
 <style>
 .inst-counts { color: var(--muted); }
-.inst-counts a[aria-pressed="true"] { font-weight: 650; }
+.inst-counts a[aria-pressed="true"] { font-weight: var(--fw-semibold); }
 .inst-search { margin-bottom: 12px; } .inst-search input { width: min(420px, 100%); }
 .inst-rows td { vertical-align: middle; }
 .inst-rows .staging-mark { color: var(--muted); margin-right: 4px; }
 .inst-rows .badge { margin-left: 6px; }
-.inst-rows .row-name { margin-left: 6px; font-size: 13px; }
+.inst-rows .row-name { margin-left: 6px; font-size: var(--fs-14); line-height: var(--lh-20);}
 .inst-backup.warn, .inst-backup.warn a { color: var(--warn); }
 .inst-backup.error, .inst-backup.error a { color: var(--err); }
 .inst-machine td { color: var(--muted); }
@@ -36,8 +36,8 @@
   .inst-rows tr { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; padding: 10px 4px;
     border-bottom: 1px solid var(--border); }
   .inst-rows td { display: block; border: 0; padding: 0; background: none !important; }
-  .inst-rows td:first-child { flex: 1 1 100%; font-size: 15px; }
-  .inst-rows td:not(:first-child) { font-size: 13px; }
+  .inst-rows td:first-child { flex: 1 1 100%; font-size: var(--fs-16); line-height: var(--lh-24);}
+  .inst-rows td:not(:first-child) { font-size: var(--fs-14); line-height: var(--lh-20);}
 }
 </style>
 <div class="page-head">

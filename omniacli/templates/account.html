@@ -78,7 +78,7 @@ document.getElementById("password-form").onsubmit = async (event) => {
     <h2 id="ts-title">{{ _("Switch on two-step verification") }}</h2>
     <p>{{ _("Scan the QR code with an authenticator app (Google Authenticator, Microsoft Authenticator, FreeOTP, Aegis…), then type the code it shows.") }}</p>
     <div id="ts-qr" style="display: flex; justify-content: center"></div>
-    <p class="muted" style="font-size: 13px">{{ _("Or type this secret in the app:") }}<br><code class="mono copyable" id="ts-secret" style="word-break: break-all"></code></p>
+    <p class="muted" style="font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("Or type this secret in the app:") }}<br><code class="mono copyable" id="ts-secret" style="word-break: break-all"></code></p>
     <p><label>{{ _("Code shown by the app") }}<br><input type="text" id="ts-code" inputmode="numeric" autocomplete="one-time-code" maxlength="10" required></label></p>
     <p class="error" id="ts-dialog-error" role="alert"></p>
     <div class="actions">

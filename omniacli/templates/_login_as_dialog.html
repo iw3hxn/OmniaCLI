@@ -24,9 +24,9 @@
     <p id="login-as-error" class="error"></p>
     <div id="login-as-nginx" class="actions" hidden style="justify-content: flex-start">
       <button type="button" class="primary" id="login-as-nginx-add" title="{{ _('Adds one line to the nginx site of the name of this instance, so that Log in as reaches OmniaCLI, then checks nginx and reloads it: a job. It asks before, and the file of before is kept.') }}">{{ _("Let nginx pass it") }}</button>
-      <span class="muted" style="font-size: 13px">{{ _("One line in the site of that name (the file before kept), nginx -t, a reload; undone with workspace-helper login-path remove.") }}</span>
+      <span class="muted" style="font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("One line in the site of that name (the file before kept), nginx -t, a reload; undone with workspace-helper login-path remove.") }}</span>
     </div>
-    <p id="login-as-keep" class="muted" hidden style="font-size: 13px">{{ _("On a machine whose sites another program writes (a hosting panel): as root there, once, so that the line is kept in every site, also the new ones, every minute:") }}
+    <p id="login-as-keep" class="muted" hidden style="font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("On a machine whose sites another program writes (a hosting panel): as root there, once, so that the line is kept in every site, also the new ones, every minute:") }}
       <code class="mono" id="login-as-keep-command"></code></p>
     <div class="actions">
       <button type="button" id="login-as-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Close") }}</button>
