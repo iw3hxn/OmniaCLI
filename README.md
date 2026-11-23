@@ -4785,6 +4785,7 @@ with its fit addon (MIT, shipped in `omniacli/static`).
 ## License
 
 Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C.
+Copyright (C) 2026 Carlo Vettore.
 
 OmniaCLI is free software: you can redistribute it and/or modify it under
 the terms of the GNU Affero General Public License as published by the Free
@@ -4795,4 +4796,6 @@ FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License
 in [LICENSE](LICENSE) for more details.
 
 Whoever runs a modified OmniaCLI for users over a network must offer those
-users the source code of that version (section 13 of the license).
+users the source code of that version (section 13 of the license). The
+panel's **About** page (the footer's link, also before the login) says the
+copyright, the license and where the source code of the running version is.

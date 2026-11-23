@@ -410,7 +410,8 @@ svg.spark { width: 160px; height: 28px; display: block; }
 @media (prefers-reduced-motion: reduce) {
   .runner *, .job-done, .thumb, .danger-sign, .toast { animation: none !important; }
 }
-.site-foot { max-width: 1440px; width: 100%; margin: auto auto 0; padding: 12px 32px 24px; font-size: 12px; }
+.site-foot { max-width: 1440px; width: 100%; margin: auto auto 0; padding: 12px 32px 20px; font-size: 11px; opacity: .75; }
+.site-foot a { color: inherit; text-decoration: underline; }
 .help { max-width: 900px; line-height: 1.6; }
 .help h2 { font-size: 19px; margin: 28px 0 8px; padding-top: 8px; border-top: 1px solid var(--border); }
 .help h3 { font-size: 15px; margin: 20px 0 6px; }
@@ -1020,8 +1021,7 @@ window.sizeText = (n) => {
 {% if page_crumbs | trim %}{{ page_crumbs }}{% elif central_menu is not none %}{% from "_crumbs.html" import crumbs with context %}{{ crumbs([]) }}{% endif %}
 {% block content %}{% endblock %}
 </main>
-<footer class="site-foot muted">OmniaCLI {{ version }} · © 2026 OmniaSolutions S.n.c di Boscolo Matteo &amp; C · {{ _("free software under the") }}
-  <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">GNU AGPL v3</a></footer>
+<footer class="site-foot muted">OmniaCLI {{ version }} · <a href="{{ prefix }}/about" title="{{ _('Who made OmniaCLI, its license (GNU AGPL v3) and where its source code is') }}">{{ _("About") }}</a></footer>
 </div>
 </div>
 <script>

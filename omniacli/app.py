@@ -2157,6 +2157,15 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     app.add_route("/language/{code}", choose_language, methods=["GET"])
 
+    async def about(request: Request):
+        """Who made OmniaCLI, its license and its source (the AGPL's notices): from every footer, also before
+        the login."""
+        with contextlib.suppress(HTTPException):
+            request.state.user = identify(request)
+        return _TEMPLATES.TemplateResponse(request, "about.html", {})
+
+    app.add_route("/about", about, methods=["GET"])
+
     @app.middleware("http")
     async def translate_errors(request: Request, call_next):
         """The error of a JSON answer (refused, 4xx, 5xx: {"error"} or

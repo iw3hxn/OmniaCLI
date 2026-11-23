@@ -2,12 +2,24 @@
 {# Log in as: drawn once on a page (the server page, the Instances list, the Workspaces list), it opens for the
    buttons data-login-as (users, url, key, label), also those its scripts draw later. It lists the instance's users; a click
    makes that user's session and opens Odoo with it in a new tab (loginas.py). -#}
+<style>
+#login-as-kinds { display: grid; grid-template-columns: 1fr 1fr; }
+#login-as-kinds button { border-radius: 0; margin: 0; }
+#login-as-kinds button:first-child { border-radius: var(--r, 8px) 0 0 var(--r, 8px); }
+#login-as-kinds button:last-child { border-radius: 0 var(--r, 8px) var(--r, 8px) 0; border-left: 0; }
+#login-as-kinds button[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent, #fff); }
+</style>
 <dialog id="login-as-dialog">
   <form method="dialog">
     <h2 id="login-as-title" style="margin-bottom: 4px"></h2>
     <p class="muted" style="margin-top: 0">{{ _("Odoo opens in a new tab as the user you choose: their password is not read nor changed. Who asks and as whom is in the access log.") }}</p>
     <input type="search" id="login-as-filter" placeholder="{{ _('Filter by name or login') }}" style="width: 100%">
-    <div id="login-as-users" class="scroll" style="max-height: 45vh; margin: 8px 0"></div>
+    {# internal and portal users apart: an instance with 70 customers on its portal lists its 19 people first #}
+    <div id="login-as-kinds" class="segmented" role="tablist" hidden style="margin-top: 8px">
+      <button type="button" role="tab" data-kind="internal" aria-selected="true" title="{{ _('The users who work in Odoo (not of the portal): the people of the company') }}"></button>
+      <button type="button" role="tab" data-kind="portal" aria-selected="false" title="{{ _('The users of the portal: customers and suppliers who see their documents') }}"></button>
+    </div>
+    <div id="login-as-users" class="scroll" style="max-height: 45vh; overflow-y: auto; margin: 8px 0"></div>
     <p id="login-as-error" class="error"></p>
     <div id="login-as-nginx" class="actions" hidden style="justify-content: flex-start">
       <button type="button" class="primary" id="login-as-nginx-add" title="{{ _('Adds one line to the nginx site of the name of this instance, so that Log in as reaches OmniaCLI, then checks nginx and reloads it: a job. It asks before, and the file of before is kept.') }}">{{ _("Let nginx pass it") }}</button>
@@ -27,7 +39,10 @@
   const filter = document.getElementById("login-as-filter");
   const errorBox = document.getElementById("login-as-error");
   const nginxBox = document.getElementById("login-as-nginx"), nginxAdd = document.getElementById("login-as-nginx-add");
-  let target = null, users = [];
+  const kinds = document.getElementById("login-as-kinds");
+  let target = null, users = [], kind = "internal";
+  // a long list is drawn up to SHOWN rows: the filter finds the others
+  const SHOWN = 200;
   const T = {
     portal: {{ _("portal") | tojson }}, admin: {{ _("administrator") | tojson }},
     noSession: {{ _("No session made") | tojson }}, title: {{ _("Log in as a user of {key}") | tojson }},
@@ -35,14 +50,27 @@
     reading: {{ _("Reading the users…") | tojson }},
     nginxQ: {{ _("Add to the nginx site of {host} the line that passes Log in as to OmniaCLI?") | tojson }}, unreadable: {{ _("The users cannot be read") | tojson }},
     rowTitle: {{ _("Opens Odoo in a new tab as this user: their password is not read nor changed. The access log records who asked and as whom.") | tojson }},
+    internal: {{ _("Internal users ({n})") | tojson }}, portalUsers: {{ _("Portal users ({n})") | tojson }},
+    more: {{ _("{n} more: write in the filter to find them") | tojson }}, none: {{ _("No user matches the filter") | tojson }},
   };
+  for (const tab of kinds.querySelectorAll("[data-kind]")) tab.addEventListener("click", () => {
+    kind = tab.dataset.kind;
+    for (const t of kinds.querySelectorAll("[data-kind]")) t.setAttribute("aria-selected", String(t === tab));
+    draw();
+  });
 
   function draw() {
     const words = filter.value.toLowerCase().split(/\s+/).filter(Boolean);
+    const matches = (u) => words.every((w) => `${u.name} ${u.login}`.toLowerCase().includes(w));
+    const internal = users.filter((u) => u.internal), portal = users.filter((u) => !u.internal);
+    // the tabs only when there are both; their counts follow the filter
+    kinds.hidden = !internal.length || !portal.length;
+    kinds.querySelector('[data-kind="internal"]').textContent = T.internal.replace("{n}", internal.filter(matches).length);
+    kinds.querySelector('[data-kind="portal"]').textContent = T.portalUsers.replace("{n}", portal.filter(matches).length);
+    const shown = (kinds.hidden ? users : (kind === "portal" ? portal : internal)).filter(matches);
     list.replaceChildren();
-    for (const u of users) {
-      const text = `${u.name} ${u.login}`.toLowerCase();
-      if (!words.every((w) => text.includes(w))) continue;
+    if (!shown.length && users.length) list.append(Object.assign(document.createElement("p"), {className: "muted", textContent: T.none}));
+    for (const u of shown.slice(0, SHOWN)) {
       const row = document.createElement("button");
       row.type = "button"; row.title = T.rowTitle;
       row.style.cssText = "display: block; width: 100%; text-align: left; margin: 2px 0";
@@ -54,6 +82,7 @@
       row.addEventListener("click", () => open(u));
       list.appendChild(row);
     }
+    if (shown.length > SHOWN) list.append(Object.assign(document.createElement("p"), {className: "muted", textContent: T.more.replace("{n}", shown.length - SHOWN)}));
   }
 
   async function open(user) {
@@ -84,7 +113,8 @@
       target = JSON.parse(button.dataset.loginAs);
       document.getElementById("login-as-title").textContent = target.label
         ? T.titleIn.replace("{name}", target.label) : T.title.replace("{key}", target.key);
-      errorBox.textContent = ""; filter.value = ""; users = [];
+      errorBox.textContent = ""; filter.value = ""; users = []; kind = "internal"; kinds.hidden = true;
+      for (const t of kinds.querySelectorAll("[data-kind]")) t.setAttribute("aria-selected", String(t.dataset.kind === "internal"));
       list.replaceChildren(document.createTextNode(T.reading));
       dialog.showModal();
       const resp = await fetch(target.users, {headers: {Accept: "application/json"}}).catch(() => null);

@@ -63,7 +63,7 @@ AUDITED_BY_ROUTE = frozenset({
 # shells' pages (the shell itself is logged when it opens and closes), the
 # lists of servers and jobs, the settings, the load
 NOT_SENSITIVE = frozenset({
-    "/favicon.ico", "/icon-180.png", "/login-background.jpg", "/login", "/.omniacli/login", "/language/{code}",
+    "/favicon.ico", "/icon-180.png", "/login-background.jpg", "/login", "/.omniacli/login", "/language/{code}", "/about",
     # the second step of a login (its outcome is logged by the route)
     "/login/code", "/login/setup",
     # the single sign-on of a workspace (sso.py): the way to its provider and back; the outcome
