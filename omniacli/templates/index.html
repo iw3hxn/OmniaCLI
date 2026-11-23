@@ -53,6 +53,10 @@
     {% if linked_name and is_admin %}<button type="button" id="link-rename" data-name="{{ linked_name }}"
       title="{{ _('The name this server has here: in its address, in the list of servers, in the copies made from it') }}">{{ _("Rename") }}</button>{% endif %}
     {% if machine %}<a class="button" href="{{ prefix }}/disks" title="{{ _('The disks of this machine, their free space and when they fill up') }}">{{ _("Disks") }}</a>{% endif %}
+    {# through a link the menu stays the viewer's own: its Settings are of the panel that looks, so the machine's
+       own (Git credentials, Users, Options…) are reached from here (Carlo, 23/11/2026: «dove inserisco la chiave») #}
+    {% if prefix and linked_name and is_admin %}<a class="button" href="{{ prefix }}/settings" id="link-settings"
+      title="{{ _('The settings of this machine itself: its Git credentials, users, workspaces, options, schedules and links') }}">{{ _("Settings of {name}", name=linked_name) }}</a>{% endif %}
   </div>
 </div>
 {% if audit and (audit.room.low or audit.clock.synced is false or audit.siem.failing) %}
