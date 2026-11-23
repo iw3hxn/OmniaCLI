@@ -1,4 +1,5 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{% from "_icons.html" import dialog_x with context %}
 {% extends "base.html" %}
 {% block title %}{{ ws.name }} · {{ brand.name }}{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
@@ -39,15 +40,15 @@ button.small { padding: 3px 10px; font-size: 13px; }
 .ws-line { margin: 0; overflow-wrap: anywhere; }
 .ws-services h2 { margin-bottom: 8px; }
 .ws-outcome { font-size: 13px; margin: 8px 0 0; } .ws-outcome:empty { display: none; }
-#instance-dialog { width: min(640px, calc(100vw - 32px)); }
-#item-dialog, #secret-dialog, #notify-dialog { width: min(520px, calc(100vw - 32px)); }
+#instance-dialog { --dialog-w: 640px; }
+#item-dialog, #secret-dialog, #notify-dialog { --dialog-w: 520px; }
 dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
 .in-ways { display: flex; flex-wrap: wrap; gap: 6px 20px; margin: 4px 0 14px; }
 .in-ways label { display: inline-flex; gap: 6px; align-items: center; font-weight: 600; }
 .in-ways input { width: auto; }
 .fa-from { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .fa-from select { width: auto; flex: 1; min-width: 140px; }
-#role-dialog { width: min(560px, calc(100vw - 32px)); }
+#role-dialog { --dialog-w: 560px; }
 .rd-caps { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 4px 16px; margin: 10px 0; border: 0; padding: 0; }
 .rd-caps label, .id-servers label { display: flex; gap: 6px; align-items: center; font-weight: normal; }
 .rd-caps input, .id-servers input { width: auto; }
@@ -452,6 +453,7 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
         <button type="button" class="primary" id="fa-create" disabled>{{ _("Create from the archive") }}</button></span></span>
     </div>
   </form>
+{{ dialog_x() }}
 </dialog>
 {% endif %}
 
@@ -477,6 +479,7 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
       <button type="submit" class="primary" title="{{ _('Reads the discovery document of the provider to check the issuer, then saves. It goes in the access log.') }}">{{ _("Save") }}</button>
     </div>
   </form>
+{{ dialog_x() }}
 </dialog>
 {# one dialog for a new one and for a change: a user of the workspace, a key of an assistant #}
 <dialog id="item-dialog" aria-labelledby="id-title">
@@ -521,6 +524,7 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
       <span title="{{ _('Disabled until something is changed.') }}"><button type="submit" class="primary" id="id-save" disabled></button></span>
     </div>
   </form>
+{{ dialog_x() }}
 </dialog>
 <dialog id="role-dialog" aria-labelledby="rd-title">
   <form method="dialog" id="rd-form">
@@ -545,6 +549,7 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
       <span title="{{ _('Disabled until the name is written and something is changed.') }}"><button type="submit" class="primary" id="rd-save" disabled title="{{ _('Saves the role: who has it gets these capabilities at once. It goes in the access log.') }}">{{ _("Save") }}</button></span>
     </div>
   </form>
+{{ dialog_x() }}
 </dialog>
 <dialog id="secret-dialog" aria-labelledby="sd-title">
   <h2 id="sd-title"></h2>
@@ -552,12 +557,14 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
   <pre class="console mono copyable" id="secret-value" style="white-space: pre-wrap; word-break: break-all"></pre>
   {{ connect_fields("sd") }}
   <div class="actions"><button type="button" class="primary" id="sd-done" title="{{ _('Closes: the token will not be shown again. If you lose it, revoke it and make a new one.') }}">{{ _("I have copied the token") }}</button></div>
+{{ dialog_x() }}
 </dialog>
 <dialog id="connect-dialog" aria-labelledby="cd-title">
   <h2 id="cd-title"></h2>
   <p class="muted" style="font-size: 13px">{{ _("The token is not shown again: put yours where <TOKEN> is. Lost: revoke it and make a new one.") }}</p>
   {{ connect_fields("cd") }}
   <div class="actions"><button type="button" id="cd-close" title="{{ _('Closes this window') }}">{{ _("Close") }}</button></div>
+{{ dialog_x() }}
 </dialog>
 {{ connect_script(api_base, oauth_reach) }}
 <dialog id="notify-dialog" aria-labelledby="nd-title">
@@ -572,6 +579,7 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
       <span title="{{ _('Saves whom to tell. Disabled until the list is changed.') }}"><button type="submit" class="primary" id="notify-save" disabled>{{ _("Save") }}</button></span>
     </div>
   </form>
+{{ dialog_x() }}
 </dialog>
 {# the template fields' labels (template.json), in the page's language #}
 {% set field_labels = {} %}

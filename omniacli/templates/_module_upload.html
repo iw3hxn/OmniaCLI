@@ -1,4 +1,5 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{% from "_icons.html" import dialog_x with context %}
 {# Modules uploaded as a .zip (README, Modules uploaded as a .zip), in the
    Code section of the Modules tab of a workspace's instance, for its
    admins (server.html includes it where Add a repository is): the modules
@@ -31,7 +32,7 @@
   </table></div>
   <input type="file" id="mu-file" accept=".zip,application/zip" hidden>
 </div>
-<dialog id="mu-dialog" aria-labelledby="mu-title" style="width: min(720px, calc(100vw - 32px))">
+<dialog id="mu-dialog" aria-labelledby="mu-title" style="--dialog-w: 720px">
   <form method="dialog" id="mu-form">
     <h2 id="mu-title">{{ _("Upload a module") }}</h2>
     <p id="mu-sending"></p>
@@ -55,8 +56,9 @@
       <button type="button" id="mu-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
     </div>
   </form>
+{{ dialog_x() }}
 </dialog>
-<dialog id="mu-gh-dialog" aria-labelledby="mu-gh-title" style="width: min(640px, calc(100vw - 32px))">
+<dialog id="mu-gh-dialog" aria-labelledby="mu-gh-title" style="--dialog-w: 640px">
   <form method="dialog" id="mu-gh-form">
     <h2 id="mu-gh-title">{{ _("Make a repository on GitHub") }}</h2>
     <p id="mu-gh-intro"></p>
@@ -80,6 +82,7 @@
       <button type="button" id="mu-gh-cancel" title="{{ _('Closes without making anything') }}">{{ _("Cancel") }}</button>
     </div>
   </form>
+{{ dialog_x() }}
 </dialog>
 <style>
 .mu-box { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }

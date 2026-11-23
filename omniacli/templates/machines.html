@@ -1,4 +1,5 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{% from "_icons.html" import dialog_x with context %}
 {# Machines: the servers prepared from here as cards or as a list (their state
    through the link, their load and disk read through it), the ones being
    prepared with their steps, and Add a server in a dialog of two steps
@@ -115,7 +116,7 @@
 .m-empty p { color: var(--muted); max-width: 520px; margin: 0 auto 20px; }
 .m-features { display: flex; justify-content: center; gap: 10px 22px; flex-wrap: wrap; margin-top: 26px; font-size: 13px; color: var(--muted); }
 .m-features span::before { content: "✓"; color: var(--ok); font-weight: 700; margin-right: 6px; }
-#add-dialog { width: min(660px, calc(100vw - 32px)); padding: 0; }
+#add-dialog { --dialog-w: 660px; padding: 0; }
 #add-dialog form { margin: 0; }
 .w-head { padding: 20px 24px 0; }
 .w-head h2 { margin: 0 0 14px; }
@@ -254,15 +255,16 @@
       </details>
     </div>
 
-    <div class="w-foot">
+    <div class="w-foot form-actions">
       <button type="button" id="w-back" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
       <p id="machine-error" class="error" role="alert"></p>
       <button type="submit" class="primary" id="w-next" title="{{ _('Goes to the second step: the address of the server. Nothing is done on the server yet.') }}">{{ _("Next") }} →</button>
     </div>
   </form>
+{{ dialog_x() }}
 </dialog>
 
-<dialog id="ua-dialog" aria-labelledby="ua-title" style="width: min(600px, calc(100vw - 32px))">
+<dialog id="ua-dialog" aria-labelledby="ua-title" style="--dialog-w: 600px">
   <form id="ua-form" novalidate>
     <h2 id="ua-title">{{ _("Update OmniaCLI on the machines that are older") }}</h2>
     <p class="muted">{{ _("One after the other, as the dialog of each machine does it: only OmniaCLI restarts there, Odoo does not. The first that fails stops the others.") }}</p>
@@ -273,8 +275,9 @@
       <button type="submit" class="primary" id="ua-go"></button>
     </div>
   </form>
+{{ dialog_x() }}
 </dialog>
-<dialog id="remove-dialog" aria-labelledby="remove-title" style="width: min(480px, calc(100vw - 32px))">
+<dialog id="remove-dialog" aria-labelledby="remove-title" style="--dialog-w: 480px">
   <form method="dialog">
     <h2 id="remove-title"></h2>
     <p class="muted">{{ _("Only its link here is removed: the server, its OmniaCLI and its instances stay as they are, and it can be added again.") }}</p>
@@ -283,6 +286,7 @@
       <button value="remove" class="danger" title="{{ _('Takes this server out of the list here. Nothing is touched on the server.') }}">{{ _("Remove") }}</button>
     </div>
   </form>
+{{ dialog_x() }}
 </dialog>
 
 <script>

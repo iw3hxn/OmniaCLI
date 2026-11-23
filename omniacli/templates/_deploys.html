@@ -1,4 +1,5 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{% from "_icons.html" import dialog_x with context %}
 {# The deploys of an instance (deploys.py, README Deploys), in its Modules tab: each job that changed its code,
    its commits before and after, who started it, its outcome and the backup made before it; «Back to this
    deploy…» on a past one, in a dialog that says what changes; the automatic deploys paused or on. No primary
@@ -46,6 +47,7 @@
       <button type="button" id="dp-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
     </div>
   </form>
+{{ dialog_x() }}
 </dialog>
 <style>
 .dp-table td { vertical-align: top; }

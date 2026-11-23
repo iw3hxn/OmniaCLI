@@ -1,4 +1,5 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{% from "_icons.html" import dialog_x with context %}
 {# Log in as: drawn once on a page (the server page, the Instances list, the Workspaces list), it opens for the
    buttons data-login-as (users, url, key, label), also those its scripts draw later. It lists the instance's users; a click
    makes that user's session and opens Odoo with it in a new tab (loginas.py). -#}
@@ -9,7 +10,7 @@
 #login-as-kinds button:last-child { border-radius: 0 var(--r, 8px) var(--r, 8px) 0; border-left: 0; }
 #login-as-kinds button[aria-selected="true"] { background: var(--selected); border-color: var(--selected); color: var(--on-selected); }
 </style>
-<dialog id="login-as-dialog">
+<dialog id="login-as-dialog" aria-labelledby="login-as-title">
   <form method="dialog">
     <h2 id="login-as-title" style="margin-bottom: 4px"></h2>
     <p class="muted" style="margin-top: 0">{{ _("Odoo opens in a new tab as the user you choose: their password is not read nor changed. Who asks and as whom is in the access log.") }}</p>
@@ -31,6 +32,7 @@
       <button type="button" id="login-as-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Close") }}</button>
     </div>
   </form>
+{{ dialog_x() }}
 </dialog>
 <script>
 (function () {

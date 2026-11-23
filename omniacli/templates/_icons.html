@@ -15,6 +15,12 @@
 {%- endif %}
 {%- endmacro %}
 
+{# dialog_x(): the X of a dialog (UX-017 §5.5), its last child: base.html makes it do what Esc does (the
+   dialog's cancel event; a dialog that refuses Esc while it works refuses the X too); posts nothing #}
+{% macro dialog_x() -%}
+<button type="button" class="icon-btn dialog-x" aria-label="{{ _('Close') }}" title="{{ _('Closes without changing anything') }}"><svg class="i i-20" aria-hidden="true" focusable="false"><use href="#i-x"/></svg></button>
+{%- endmacro %}
+
 {# runner(extra): the man who runs while a job runs; extra "mini" makes it
    the size of a line of text #}
 {% macro runner(extra="") -%}

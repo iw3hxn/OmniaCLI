@@ -1,4 +1,5 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{% from "_icons.html" import dialog_x with context %}
 {# The head of the Modules tab of an instance (docs/ux/UX-008 §7.3): the catalogs for its version of Odoo
    (the OCA's, and the sources the machine's admins add: README, Modules from the catalogs), their dates,
    and the tab's primary + Add modules, for a workspace's instance; the Code and Updates sections of
@@ -90,11 +91,12 @@
       </div>
     </div>
   </form>
+{{ dialog_x() }}
 </dialog>
 <style>
 .mods-head { display: flex; justify-content: space-between; align-items: center; gap: 10px 16px; flex-wrap: wrap; margin: 0 0 14px; }
 .mods-head .mods-line { margin: 0; }
-dialog.mods-dialog { width: min(960px, calc(100vw - 32px)); }
+dialog.mods-dialog { --dialog-w: 960px; }
 .mods-dialog h2 { margin: 0 0 8px; }
 .mods-meta { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; margin-bottom: 10px; }
 #mods-query { width: 100%; }

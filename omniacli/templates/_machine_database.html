@@ -1,4 +1,5 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{% from "_icons.html" import dialog_x with context %}
 {# The machine's Database tab (UX-008 §6.2; docs/adr/postgresql-della-macchina.md,
    steps 1 and 2): the databases of this machine's instances, read when the
    tab opens (GET /api/postgres, each database on its own time), one row
@@ -94,14 +95,14 @@
 .pg-same { color: var(--muted); font-weight: 400; font-size: 12px; margin-left: 6px; }
 .pg-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
 .pg-head-actions { display: inline-flex; gap: 8px; align-items: center; }
-#pg-dialog { width: min(760px, 96vw); }
+#pg-dialog { --dialog-w: 760px; }
 #pg-dialog .pg-when label { display: block; margin: 4px 0; }
 #pg-dialog .pg-when input[type="time"] { width: 7em; }
 .pg-warn { color: var(--warn); font-weight: 600; }
 .pg-archive-lines > div { margin-bottom: 3px; }
-#pg-archive { width: min(680px, 96vw); }
+#pg-archive { --dialog-w: 680px; }
 #pg-archive p.pga-note, #pg-replica-dialog p.pga-note { margin: 0 0 8px; font-size: 13px; }
-#pg-replica-dialog, #pg-to-dialog { width: min(680px, 96vw); }
+#pg-replica-dialog, #pg-to-dialog { --dialog-w: 680px; }
 #pg-to-dialog fieldset { border: 1px solid var(--border); border-radius: 6px; margin: 8px 0; padding: 6px 10px; min-width: 0; }
 #pg-to-dialog legend { font-weight: 600; padding: 0 4px; }
 .pgt-target { display: flex; gap: 8px; align-items: flex-start; padding: 6px 0; border-top: 1px solid var(--border); cursor: pointer; }
@@ -137,7 +138,7 @@
     <p class="error" id="pg-error" role="alert"></p>
   </div>
 </section>
-<dialog id="pg-dialog">
+<dialog id="pg-dialog" aria-labelledby="pg-title">
   <form method="dialog" id="pg-form">
     <h2 id="pg-title" style="margin-bottom: 4px"></h2>
     <p class="muted" id="pg-basis" style="margin-top: 0"></p>
@@ -165,10 +166,11 @@
       <button type="button" id="pg-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
     </div>
   </form>
+{{ dialog_x() }}
 </dialog>
-<dialog id="pg-archive">
+<dialog id="pg-archive" aria-labelledby="pga-title">
   <form method="dialog" id="pga-form">
-    <h2 style="margin-bottom: 4px">{{ _("Recovery at a minute of the machine's cluster") }}</h2>
+    <h2 id="pga-title" style="margin-bottom: 4px">{{ _("Recovery at a minute of the machine's cluster") }}</h2>
     <p class="muted" id="pga-what" style="margin-top: 0"></p>
     <p style="margin: 8px 0 2px"><label>{{ _("Full copies kept:") }} <input type="number" id="pga-keep" min="1" max="60" step="1" style="width: 5em" title="{{ _('How many full copies of the cluster are kept: one is made every night') }}"></label></p>
     <p class="muted pga-note">{{ _("One is made every night. The oldest minute that can be reached is that of the oldest full copy kept.") }}</p>
@@ -183,10 +185,11 @@
       <button type="button" id="pga-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
     </div>
   </form>
+{{ dialog_x() }}
 </dialog>
-<dialog id="pg-replica-dialog">
+<dialog id="pg-replica-dialog" aria-labelledby="pgr-title">
   <form method="dialog" id="pgr-form">
-    <h2 style="margin-bottom: 4px">{{ _("Read replica of another machine") }}</h2>
+    <h2 id="pgr-title" style="margin-bottom: 4px">{{ _("Read replica of another machine") }}</h2>
     <p style="margin: 8px 0 2px" id="pgr-which"><label>{{ _("Of which machine:") }} <select id="pgr-link" title="{{ _('The linked machines whose PostgreSQL can be copied here: those reached over HTTPS or SSH') }}"></select></label><strong id="pgr-link-one" hidden></strong></p>
     <p style="margin: 8px 0 2px" id="pgr-source" hidden><label>{{ _("Which PostgreSQL:") }} <select id="pgr-pg" title="{{ _('What of that machine is copied here: its cluster, with every instance on it, or the PostgreSQL of one production that has a database of its own') }}"></select></label></p>
     <p class="muted" id="pgr-reading" hidden>{{ _("Reading that machine…") }}</p>
@@ -207,6 +210,7 @@
       <button type="button" id="pgr-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
     </div>
   </form>
+{{ dialog_x() }}
 </dialog>
 <dialog id="pg-to-dialog" aria-labelledby="pgt-title">
   <form method="dialog" id="pgt-form">
@@ -228,13 +232,15 @@
       <button type="button" id="pgt-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
     </div>
   </form>
+{{ dialog_x() }}
 </dialog>
-<dialog id="pg-confirm">
+<dialog id="pg-confirm" aria-labelledby="pg-confirm-text">
   <p id="pg-confirm-text" style="max-width: 520px"></p>
   <div class="actions">
     <button type="button" class="primary" id="pg-confirm-go" title="{{ _('Restarts the database now: for a few seconds the instance does not answer') }}">{{ _("Restart now") }}</button>
     <button type="button" id="pg-confirm-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
   </div>
+{{ dialog_x() }}
 </dialog>
 <script>
 (function () {

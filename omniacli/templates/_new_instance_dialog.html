@@ -1,11 +1,12 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{% from "_icons.html" import dialog_x with context %}
 {# New instance: the Odoo version, its domain
    (the DNS A record it needs), language and country, the admin's password
    made here and shown once, to be saved before Create; the name is optional
    (POST /api/instances/new: a workspace of its own, its production from the
    template odoo-<major>, the password and country set by compose-helper setup). -#}
 <style>
-#new-instance { width: min(620px, calc(100vw - 32px)); padding: 0; }
+#new-instance { --dialog-w: 620px; padding: 0; }
 #new-instance form { margin: 0; }
 .ni-head { padding: 20px 24px 4px; }
 .ni-head h2 { margin: 0 0 4px; }
@@ -104,12 +105,13 @@
       </details>
       <label class="ni-saved"><input type="checkbox" id="ni-saved"> {{ _("I have saved the admin's password") }}</label>
     </div>
-    <div class="ni-foot">
+    <div class="ni-foot form-actions">
       <p id="ni-error" class="error" role="alert"></p>
       <button type="button" id="ni-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
       <button type="submit" class="primary" id="ni-create" title="{{ _('Makes the instance as a job: a workspace of its own with its disk, its database and its containers. What is there already is not touched. Not available until you tick that the password is saved.') }}">{{ _("Create the instance") }}</button>
     </div>
   </form>
+{{ dialog_x() }}
 </dialog>
 <script>
 (function () {

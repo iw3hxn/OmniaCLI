@@ -1,4 +1,5 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{% from "_icons.html" import dialog_x with context %}
 {# The buttons of a plugin's actions (app.action_buttons): a form that posts
    at once, a button that opens the plugin's own dialog, or a button that
    opens the core's dialog of the action's params. Its texts come from the
@@ -13,9 +14,9 @@
 {% elif a.params %}
 <button type="button" onclick="document.getElementById('{{ b.dom_id }}').showModal()" {% if cls %}class="{{ cls }}"{% endif %}
         {% if a.tooltip %}title="{{ tr(a.tooltip) }}"{% endif %} {{ off }}>{% if a.icon %}{{ icon(a.icon) }}{% endif %}{{ tr(a.label) }}</button>
-<dialog id="{{ b.dom_id }}">
+<dialog id="{{ b.dom_id }}" aria-labelledby="{{ b.dom_id }}-title">
   <form method="post" action="{{ b.url }}" {% if b.confirm %}data-confirm="{{ tr(b.confirm) }}"{% endif %}>
-    <h2 style="margin-bottom: 4px">{{ tr(a.label) }}</h2>
+    <h2 id="{{ b.dom_id }}-title" style="margin-bottom: 4px">{{ tr(a.label) }}</h2>
     <p class="muted" style="margin-top: 0">{{ b.key }}</p>
     <div class="form-grid">
     {% for f in a.params %}
@@ -38,6 +39,7 @@
       <button type="button" onclick="this.closest('dialog').close()" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
     </div>
   </form>
+{{ dialog_x() }}
 </dialog>
 {% else %}
 <form method="post" action="{{ b.url }}" {% if b.confirm %}data-confirm="{{ tr(b.confirm) }}"{% endif %}>

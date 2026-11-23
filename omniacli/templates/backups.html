@@ -1,4 +1,5 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{% from "_icons.html" import dialog_x with context %}
 {% extends "base.html" %}
 {% block title %}{{ _("Backups") }} · {{ brand.name }}{% endblock %}
 {% block content %}
@@ -43,7 +44,7 @@
   .bk-rows td:not(:first-child) { font-size: 13px; }
   .bk-rows td.num:last-child { position: absolute; top: 8px; right: 4px; }
 }
-#fb-dialog, #up-dialog { width: min(600px, calc(100vw - 32px)); }
+#fb-dialog, #up-dialog { --dialog-w: 600px; }
 #fb-dialog .actions, #up-dialog .actions { justify-content: flex-end; }
 .fb-ways { margin: 10px 0 6px; }
 .fb-way { display: block; margin: 6px 0 2px; font-weight: 600; }
@@ -130,6 +131,7 @@
         title="{{ _('Makes a new staging beside the production, from the same template, and restores this file into it neutralized. It is a job.') }}">{{ _("Create the staging from this backup") }}</button></span>
     </div>
   </form>
+{{ dialog_x() }}
 </dialog>
 
 {# Upload a backup: the machine (this one, or a link's through it: GET <base>/api/imports/places), the workspace,
@@ -158,6 +160,7 @@
       <button type="button" class="primary" id="up-next" hidden title="{{ _('Opens the uploaded file\'s Restore into a new instance: a staging of a production of the workspace, or a new instance') }}">{{ _("Make a staging or an instance…") }}</button>
     </div>
   </form>
+{{ dialog_x() }}
 </dialog>
 <script>
 (function () {

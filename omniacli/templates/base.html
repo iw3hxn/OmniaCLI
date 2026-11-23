@@ -254,10 +254,35 @@ legend { padding: 0 6px; }
 .banner.info { border-color: var(--info); color: var(--info); background: var(--info-soft); }
 .banner.ok { border-color: var(--ok); color: var(--ok); background: var(--ok-soft); }
 .banner.warn { border-color: var(--warn); color: var(--warn); background: var(--warn-soft); }
-dialog { border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--panel);
-  color: var(--text); width: min(640px, calc(100vw - 32px)); padding: 22px 24px; box-shadow: var(--shadow-lg); }
-dialog::backdrop { background: rgba(15, 23, 42, .55); backdrop-filter: blur(2px); }
-dialog h2 { font-size: 18px; margin-bottom: 8px; }
+/* the dialogs (UX-017 §5.5), mobile first: a sheet from the bottom on a phone, as wide as the screen, its content
+   scrolling; from 576 px centred, as wide as its --dialog-w (640 by default). An X in the top right corner */
+dialog { position: fixed; inset: auto 0 0 0; margin: 0; width: 100%; max-width: 100%; max-height: 90dvh; overflow: auto;
+  border: var(--bw) solid var(--border); border-radius: var(--r-lg) var(--r-lg) 0 0; background: var(--panel);
+  color: var(--text); padding: var(--dialog-pad); box-shadow: var(--shadow-lg); }
+dialog[open] { animation: sheet-in var(--dur-300) var(--ease-out); }
+@keyframes sheet-in { from { transform: translateY(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes dialog-in { from { opacity: 0; } to { opacity: 1; } }
+@media (min-width: 576px) {
+  dialog { inset: 0; margin: auto; width: min(var(--dialog-w, 640px), calc(100vw - 32px)); max-height: calc(100dvh - 32px);
+    border-radius: var(--r-lg); }
+  dialog[open] { animation: dialog-in var(--dur-200) var(--ease-out); }
+}
+dialog::backdrop { background: var(--backdrop); backdrop-filter: blur(2px); }
+dialog h2 { font-size: var(--fs-18); line-height: var(--lh-28); margin-bottom: var(--sp-8); padding-right: var(--sp-40); }
+dialog h2 + p:not(.muted) { font-size: var(--fs-16); line-height: var(--lh-24); }
+/* the icons (_sprite.html, Lucide): three sizes, the colour of the text around them */
+.i { width: var(--icon-16); height: var(--icon-16); stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round;
+  stroke-linejoin: round; flex: none; vertical-align: -3px; }
+.i-12 { width: var(--icon-12); height: var(--icon-12); vertical-align: -1px; } .i-20 { width: var(--icon-20); height: var(--icon-20); vertical-align: -5px; }
+dialog > .dialog-x { position: absolute; top: var(--sp-12); right: var(--sp-12); color: var(--muted); }
+dialog > .dialog-x:hover { color: var(--text); }
+/* the row of a dialog's buttons: in a row from 576 px, one under the other as wide as the sheet on a phone */
+dialog .form-actions, dialog .actions { display: flex; flex-direction: column; align-items: stretch; gap: var(--sp-8); }
+dialog .form-actions > button, dialog .actions > button, dialog .form-actions > .button, dialog .actions > .button,
+dialog .form-actions > span > button, dialog .actions > span > button { justify-content: center; width: auto; }
+@media (min-width: 576px) {
+  dialog .form-actions, dialog .actions { flex-direction: row; flex-wrap: wrap; align-items: center; }
+}
 .addon-list { max-height: 45vh; overflow: auto; border: 1px solid var(--border);
   border-radius: var(--r); padding: 6px 10px; margin-bottom: 10px; }
 .addon-group { font-weight: 600; color: var(--muted); margin: 8px 0 4px; font-size: 12px;
@@ -508,6 +533,8 @@ summary { cursor: pointer; color: var(--muted); }
 {% if brand.css %}<style id="brand-style">{{ brand.css | safe }}</style>{% endif -%}
 </head>
 <body>
+{% include "_sprite.html" %}
+{% from "_icons.html" import dialog_x with context %}
 {% set here = request.url.path if request else "" %}
 {% macro nav(path, label, title="") -%}
 <a class="nav-link"{% if here == prefix ~ path or (path != "/" and here.startswith(prefix ~ path ~ "/")) %} aria-current="page"{% endif %}{% if title %} title="{{ title }}"{% endif %} href="{{ prefix }}{{ path }}">{{ label }}</a>
@@ -829,10 +856,12 @@ window.sizeText = (n) => {
 (function () {
   const dialog = document.createElement("dialog");
   dialog.className = "omnia-ask";
-  dialog.innerHTML = '<form method="dialog"><p class="omnia-ask-text" style="max-width: 520px; white-space: pre-line"></p>'
+  dialog.setAttribute("aria-labelledby", "omnia-ask-text");
+  dialog.innerHTML = '<form method="dialog"><p class="omnia-ask-text" id="omnia-ask-text" style="max-width: 520px; white-space: pre-line"></p>'
     + '<p class="omnia-ask-name" hidden><input type="text" autocomplete="off" spellcheck="false" style="width: 100%"></p>'
     + '<div class="form-actions"><button type="button" class="omnia-ask-go" title="-"></button>'
-    + '<button type="button" class="omnia-ask-cancel" title="-"></button></div></form>';
+    + '<button type="button" class="omnia-ask-cancel" title="-"></button></div></form>'
+    + {{ dialog_x() | tojson }};
   const text = dialog.querySelector(".omnia-ask-text"), nameBox = dialog.querySelector(".omnia-ask-name");
   const input = nameBox.querySelector("input"), go = dialog.querySelector(".omnia-ask-go");
   const cancel = dialog.querySelector(".omnia-ask-cancel");
@@ -888,6 +917,14 @@ window.sizeText = (n) => {
   // button pressed (data-confirm-go: another verb), red when that button is
   // or with data-confirm-danger; on yes the form is sent again by the same
   // button, so its name and value go too, and the form's own listeners run then
+  // the X of every dialog does what Esc does: its cancel event, and the close unless the dialog refuses it
+  document.addEventListener("click", (event) => {
+    const x = event.target instanceof Element ? event.target.closest(".dialog-x") : null;
+    const dialog = x ? x.closest("dialog") : null;
+    if (!dialog || !dialog.open) return;
+    event.preventDefault();
+    if (dialog.dispatchEvent(new Event("cancel", {cancelable: true}))) dialog.close();
+  });
   document.addEventListener("submit", async (event) => {
     const form = event.target;
     if (!(form instanceof HTMLFormElement) || !("confirm" in form.dataset)) return;

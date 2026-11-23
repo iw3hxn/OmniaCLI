@@ -1,4 +1,5 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{% from "_icons.html" import dialog_x with context %}
 {% extends "base.html" %}
 {% block title %}{{ _("Publications") }} · {{ brand.name }}{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
@@ -48,7 +49,7 @@
 .pub-dot.up::before { background: var(--ok); } .pub-dot.down::before { background: var(--err); }
 .pub-dot.plain { font-weight: 400; }
 .pub-page .mono.small { font-size: 12px; color: var(--muted); }
-.pub-dialog { width: min(640px, calc(100vw - 32px)); }
+.pub-dialog { --dialog-w: 640px; }
 .pub-dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
 .pub-dialog details { margin-top: 12px; } .pub-dialog summary { font-weight: 600; color: var(--text); }
 .pub-dialog .form-grid { align-items: start; }
@@ -243,6 +244,7 @@
     </div>
     <p class="error" id="pd-error" role="alert"></p>
   </form>
+{{ dialog_x() }}
 </dialog>
 
 {# a box: who publishes from a menu, who operates ticked, its limits folded #}
@@ -280,6 +282,7 @@
     </div>
     <p class="error" id="bd-error" role="alert"></p>
   </form>
+{{ dialog_x() }}
 </dialog>
 
 {# an instance operated from here: its key is pasted, or taken out at the save #}
@@ -314,6 +317,7 @@
     </div>
     <p class="error" id="od-error" role="alert"></p>
   </form>
+{{ dialog_x() }}
 </dialog>
 
 {# the new key of a publication: once, after its save #}
@@ -323,6 +327,7 @@
     {{ _("It is shown only now.") }}</p>
   <pre class="console mono copyable" id="secret-value" style="white-space: pre-wrap; word-break: break-all"></pre>
   <div class="actions"><button type="button" class="primary" id="sd-done" title="{{ _('Closes: the key will not be shown again. If you lose it, Replace the key and give it again to who operates.') }}">{{ _("I have copied the key") }}</button></div>
+{{ dialog_x() }}
 </dialog>
 <script>
 (function () {

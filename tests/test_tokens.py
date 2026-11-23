@@ -132,6 +132,34 @@ def test_four_buttons():
     assert "button.primary.danger, button.primary.danger:hover:not(:disabled) { background: var(--danger);" in base
 
 
+def test_every_dialog_has_its_x_and_its_title():
+    """UX-017 §5.5: the X as the last child of every dialog of the templates (named and helped), the dialog named by
+    its title; the recovery codes of the login excepted, a dialog that only closes by saying the codes are kept."""
+    missing, unnamed, total = [], [], 0
+    for page in TEMPLATES.glob("*.html"):
+        text = page.read_text(encoding="utf-8")
+        for found in re.finditer(r"<dialog\b([^>]*)>(.*?)</dialog>", text, flags=re.S):
+            total += 1
+            if 'id="recovery-dialog"' in found.group(1):
+                continue
+            if not found.group(2).rstrip().endswith("{{ dialog_x() }}"):
+                missing.append(f"{page.name}: {found.group(1)[:40]}")
+            labelled = re.search(r'aria-labelledby="([^"]+)"', found.group(1))
+            if not labelled or f'id="{labelled.group(1)}"' not in found.group(2):
+                unnamed.append(f"{page.name}: {found.group(1)[:40]}")
+    assert total >= 53 and not missing and not unnamed, (missing, unnamed)
+    icons = (TEMPLATES / "_icons.html").read_text(encoding="utf-8")
+    x = icons[icons.index("{% macro dialog_x() -%}"):icons.index("{%- endmacro %}", icons.index("{% macro dialog_x() -%}"))]
+    assert "aria-label=\"{{ _('Close') }}\"" in x and "title=\"{{ _('Closes without changing anything') }}\"" in x
+    assert 'type="button"' in x and 'href="#i-x"' in x
+    base = (TEMPLATES / "base.html").read_text(encoding="utf-8")
+    # the X does what Esc does: the cancel event first, a dialog that refuses it stays open; omniaAsk's too
+    assert 'dialog.dispatchEvent(new Event("cancel", {cancelable: true}))) dialog.close()' in base
+    assert "{{ dialog_x() | tojson }}" in base and 'dialog.setAttribute("aria-labelledby", "omnia-ask-text")' in base
+    # a sheet from the bottom on a phone, centred from 576 px
+    assert "dialog { position: fixed; inset: auto 0 0 0; margin: 0; width: 100%;" in base
+
+
 async def test_the_header_on_a_phone_leaves_nothing_out(client):  # noqa: F811
     """UX-017 §5.11: under 768 px your account, the language and Log out are in the menu, never nowhere."""
     page = (await client.get("/", headers={"Authorization": AUTH, "Accept": "text/html"})).text

@@ -1,4 +1,5 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{% from "_icons.html" import dialog_x with context %}
 {# Update OmniaCLI (README, Update OmniaCLI; selfupdate.py), on a machine's page, for its admins: the head
    says the version published next to the installed one, «Update OmniaCLI…» opens the dialog (also from
    the lists of the central: #omniacli-update in the address). The dialog says from which version to
@@ -7,7 +8,7 @@
    OmniaCLI restarts: its pages do not answer for a while, then the page comes back.
    Through a link everything goes to the machine itself (the prefix). -#}
 <style>
-#ou-dialog { width: min(640px, calc(100vw - 32px)); padding: 0; }
+#ou-dialog { --dialog-w: 640px; padding: 0; }
 #ou-dialog form { margin: 0; }
 .ou-head { padding: 20px 24px 4px; } .ou-head h2 { margin: 0 0 4px; }
 .ou-body { padding: 8px 24px 4px; max-height: 60vh; overflow-y: auto; }
@@ -48,7 +49,7 @@
         <div class="ou-lines" id="ou-lines"></div>
       </div>
     </div>
-    <div class="ou-foot">
+    <div class="ou-foot form-actions">
       <p class="error" id="ou-error"></p>
       <a class="button" id="ou-job" hidden title="{{ _('Opens the job of the update: every line, the facts before and after') }}">{{ _("Open the job") }}</a>
       <button type="button" id="ou-cancel" title="{{ _('Closes without changing anything; an update that runs goes on') }}">{{ _("Close") }}</button>
@@ -56,6 +57,7 @@
       <button type="button" class="primary" id="ou-reload" hidden title="{{ _('Loads this page again, from the OmniaCLI now installed') }}">{{ _("Reload the page") }}</button>
     </div>
   </form>
+{{ dialog_x() }}
 </dialog>
 <script>
 (function () {

@@ -1,11 +1,12 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{% from "_icons.html" import dialog_x with context %}
 {# Restore: drawn once on the server page, it opens for the buttons
    data-restore-file (url, upload, backups, sql, database, backup_first). A
    zip from this computer (or, with sql, a plain SQL dump: any name, told by
    its head) goes first into the instance's backups, then a job restores it.
    Without upload (an admin of a workspace) one of its backups only, and with
    backup_first the job backs the instance up before. -#}
-<dialog id="restore-dialog">
+<dialog id="restore-dialog" aria-labelledby="restore-title">
   <form method="dialog" id="restore-form">
     <h2 id="restore-title" style="margin-bottom: 4px"></h2>
     <p class="muted" style="margin-top: 0" id="restore-what"></p>
@@ -33,6 +34,7 @@
       <button type="button" id="restore-cancel" title="{{ _('Closes without restoring anything. An upload that is going is interrupted and leaves no file.') }}">{{ _("Cancel") }}</button>
     </div>
   </form>
+{{ dialog_x() }}
 </dialog>
 {% include "_upload.html" %}
 <script>

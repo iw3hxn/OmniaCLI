@@ -1,6 +1,7 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{% from "_icons.html" import dialog_x with context %}
 {# Shows a check report: OmniaChecks.show(title, checks, summary) #}
-<dialog id="checks-dialog">
+<dialog id="checks-dialog" aria-labelledby="checks-title">
   <h2 id="checks-title" style="margin-bottom: 4px"></h2>
   <div class="scroll"><table id="checks-table"></table></div>
   {# the outcome stays in sight beside the button, however long the list is #}
@@ -8,6 +9,7 @@
     <p id="checks-summary" style="flex: 1 1 200px; margin: 0"></p>
     <button type="button" onclick="document.getElementById('checks-dialog').close()" title="{{ _('Closes the report of the checks') }}">{{ _("Close") }}</button>
   </div>
+{{ dialog_x() }}
 </dialog>
 <script>
 const OmniaChecks = {

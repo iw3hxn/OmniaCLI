@@ -1,4 +1,5 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{% from "_icons.html" import dialog_x with context %}
 {% extends "base.html" %}
 {% block title %}{{ _("Links") }} · {{ brand.name }}{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
@@ -17,7 +18,7 @@
 .link-dot.starting::before { background: var(--warn); }
 .link-detail { display: block; font-size: 13px; color: var(--muted); white-space: normal; max-width: 46ch; }
 .link-detail.error { color: var(--err); }
-#link-dialog { width: min(680px, calc(100vw - 32px)); }
+#link-dialog { --dialog-w: 680px; }
 #link-dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
 #link-dialog details { margin-top: 12px; } #link-dialog summary { font-weight: 600; color: var(--text); }
 #link-dialog .ld-switch { display: flex; gap: 8px; align-items: center; margin: 14px 0 8px; font-weight: 600; }
@@ -143,6 +144,7 @@
         <button type="submit" class="primary" id="ld-save" disabled>{{ _("Save") }}</button></span>
     </div>
   </form>
+{{ dialog_x() }}
 </dialog>
 <script>
 (function () {

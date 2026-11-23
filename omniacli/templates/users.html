@@ -1,4 +1,5 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{% from "_icons.html" import dialog_x with context %}
 {% extends "base.html" %}
 {% block title %}{{ _("Users") }} · {{ brand.name }}{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
@@ -16,7 +17,7 @@
 <style>
 .users-table td { vertical-align: middle; }
 .users-table .small-note { display: block; font-size: 13px; color: var(--muted); }
-#item-dialog, #secret-dialog, #invite-dialog { width: min(560px, calc(100vw - 32px)); }
+#item-dialog, #secret-dialog, #invite-dialog { --dialog-w: 560px; }
 #item-dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
 #item-dialog .label { color: var(--muted); }
 .id-ways { display: flex; flex-wrap: wrap; gap: 6px 20px; }
@@ -182,9 +183,10 @@
       <span id="id-save-wrap"><button type="submit" class="primary" id="id-save" disabled></button></span>
     </div>
   </form>
+{{ dialog_x() }}
 </dialog>
 {#- a user's sessions (README, Login and security, Sessions): read when the dialog opens, each ended at once #}
-<dialog id="sessions-dialog" aria-labelledby="ssd-title" style="max-width: min(760px, calc(100vw - 32px))">
+<dialog id="sessions-dialog" aria-labelledby="ssd-title" style="--dialog-w: 760px">
   <h2 id="ssd-title"></h2>
   <p class="muted" style="font-size: 13px">{{ _("Ending one logs that browser out at once: its next click asks the login again. It goes in the access log.") }}</p>
   <p class="error" id="ssd-error" role="alert"></p>
@@ -193,6 +195,7 @@
     <button type="button" id="ssd-close" title="{{ _('Closes the list: nothing is ended') }}">{{ _("Close") }}</button>
     <button type="button" class="danger" id="ssd-all" title="{{ _('Logs this user out of every browser at once') }}">{{ _("End them all…") }}</button>
   </div>
+{{ dialog_x() }}
 </dialog>
 <dialog id="secret-dialog" aria-labelledby="sd-title">
   <h2 id="sd-title"></h2>
@@ -201,12 +204,14 @@
   <p class="muted mono" id="sd-how" style="font-size: 13px"></p>
   <div id="sd-connect" hidden>{{ connect_fields("sd") }}</div>
   <div class="actions"><button type="button" class="primary" id="sd-done" title="{{ _('Closes: the token will not be shown again. If you lose it, revoke it and make a new one.') }}">{{ _("I have copied the token") }}</button></div>
+{{ dialog_x() }}
 </dialog>
 <dialog id="connect-dialog" aria-labelledby="cd-title">
   <h2 id="cd-title"></h2>
   <p class="muted" style="font-size: 13px">{{ _("The token is not shown again: put yours where <TOKEN> is. Lost: revoke it and make a new one.") }}</p>
   {{ connect_fields("cd") }}
   <div class="actions"><button type="button" id="cd-close" title="{{ _('Closes this window') }}">{{ _("Close") }}</button></div>
+{{ dialog_x() }}
 </dialog>
 {{ connect_script(api_base, oauth_reach) }}
 {% include "_invite_dialog.html" %}

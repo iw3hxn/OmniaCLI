@@ -1,4 +1,5 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{% from "_icons.html" import dialog_x with context %}
 {# Git pull: drawn once on the server page, it opens for the buttons
    data-pull (url, title, key, rows of {name, label}, preview, note) and
    lists the instance's repositories (and its package) with the commits not
@@ -7,7 +8,7 @@
    every repository and the package, as before the dialog. -#}
 {% from "_icons.html" import icon %}
 {% include "_checklist.html" %}
-<dialog id="pull-dialog">
+<dialog id="pull-dialog" aria-labelledby="pull-title">
   <form method="post" id="pull-form">
     <h2 id="pull-title" style="margin-bottom: 4px"></h2>
     <p class="muted" id="pull-sub" style="margin-top: 0">{{ _("Ticked: the repositories with new commits.") }}</p>
@@ -20,6 +21,7 @@
       <button type="button" id="pull-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
     </div>
   </form>
+{{ dialog_x() }}
 </dialog>
 <script>
 (function () {

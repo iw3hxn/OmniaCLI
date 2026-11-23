@@ -4811,6 +4811,13 @@ controls and motion. A page writes `var(--…)`, never a value of its own.
   language and **Log out** (Esc closes it). From 768 px the places are in the
   header, from 992 px the names too. The menu of a backup's row is an icon on
   a phone, so it covers nothing of the row.
+- **Dialogs**: every one has an **X** in its top right corner that does what
+  Esc and Cancel do (nothing is sent; a dialog that refuses Esc while it
+  works refuses the X too), and is named by its title for a screen reader.
+  On a phone (under 576 px) a dialog is a sheet from the bottom, as wide as
+  the screen, its buttons one under the other; from 576 px it is centred.
+  The recovery codes shown once after two-step verification is switched on
+  have no X: that dialog closes only by saying the codes are kept.
 - **Less motion** asked by the system: nothing moves, one rule for every page.
 
 ### Whitelabel

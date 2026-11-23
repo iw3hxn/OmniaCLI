@@ -1,4 +1,5 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{% from "_icons.html" import dialog_x with context %}
 {% extends "base.html" %}
 {% block title %}{{ server.name }} · {{ brand.name }}{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
@@ -76,7 +77,7 @@
   .tile-value { font-size: 18px; }
 }
 /* New staging and Rebuild (UX-008 §5.1, §5.2) */
-dialog.sd { width: min(560px, calc(100vw - 32px)); }
+dialog.sd { --dialog-w: 560px; }
 .sd h2 { margin: 0 0 6px; }
 .sd-field { margin: 12px 0; }
 .sd-label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; }
@@ -125,12 +126,13 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     </div>
     <p class="sd-help">{{ _("The data of now of the staging are lost. The address stays the same.") }}</p>
     <p id="rb-error" class="error" role="alert"></p>
-    <div class="sd-foot">
+    <div class="sd-foot form-actions">
       <button type="button" id="rb-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
       <button type="submit" class="primary danger" id="rb-go"
               title="{{ _('Rebuilds the staging as chosen above, from a backup of production made now. It is a job, and it cannot be undone.') }}">{{ _("Rebuild") }}</button>
     </div>
   </form>
+{{ dialog_x() }}
 </dialog>
 {% endmacro %}
 {% set inst = instances[0] %}
@@ -410,13 +412,14 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
           <select id="sd-workspace"></select></div>
       </details>
       <p id="sd-error" class="error" role="alert"></p>
-      <div class="sd-foot">
+      <div class="sd-foot form-actions">
         <button type="button" id="sd-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
         <button type="submit" class="primary" id="sd-create" disabled
                 title="{{ _('Makes a backup of production, creates the staging from the same template and loads the backup into it, neutralized. It is a job.') }}">{{ _("Create the staging") }}</button>
       </div>
     </form>
-  </dialog>
+  {{ dialog_x() }}
+</dialog>
   {% endif %}
   {% if addresses and addresses.values() | selectattr("can") | list %}
   {# Addresses… of an environment (UX-008 §6.1): read when opened (GET …/addresses), nothing posted before Save #}
@@ -444,13 +447,14 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
         <p class="sd-help" id="addr-relay-tunnel" role="status"></p>
         <ul class="addr-list sd-help" id="addr-relay-dns"></ul></div>
       <p id="addr-error" class="error" role="alert"></p>
-      <div class="sd-foot">
+      <div class="sd-foot form-actions">
         <button type="button" id="addr-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
         <button type="submit" class="primary" id="addr-save" disabled
                 title="{{ _('Saves the names, writes again the nginx site of the workspace and asks for the certificate for the new names too. Odoo does not restart. It is a job. A name without a DNS record stays out of the certificate. Disabled until something is changed.') }}">{{ _("Save and publish") }}</button>
       </div>
     </form>
-  </dialog>
+  {{ dialog_x() }}
+</dialog>
   {% endif %}
   {% set paths = shell_paths.get(inst.key) %}
   {% if paths and not can_act %}<div class="panel">{{ shell_paths_box(paths) }}</div>{% endif %}
@@ -501,7 +505,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     <tr><th>{{ _("Received on") }}</th><th>{{ _("Mail to") }}</th><th>{{ _("Subject") }}</th></tr>
   </table></div>
   <p class="mail-more" hidden><button type="button" class="small" id="mail-all" title="{{ _('Shows the rows left out of this list') }}"></button></p>
-  <dialog id="mail-message" aria-labelledby="mm-subject" style="width: min(900px, calc(100vw - 32px))">
+  <dialog id="mail-message" aria-labelledby="mm-subject" style="--dialog-w: 900px">
     <h2 id="mm-subject"></h2>
     <dl class="sum-grid">
       <dt>{{ _("Mail from") }}</dt><dd id="mm-from"></dd>
@@ -519,7 +523,8 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
       <button type="button" id="mm-close" title="{{ _('Closes the message: it is not sent, nothing changes') }}">{{ _("Close") }}</button>
       {% if mail_inbox and is_developer_here %}<button type="button" id="mm-reply" title="{{ _('Opens Write as… with the answer of the recipient of this message: from that address to its Reply-To, with Re: and the message quoted, tied to it by its Message-ID so that Odoo puts it on its record') }}">{{ _("Reply") }}</button>{% endif %}
     </div>
-  </dialog>
+  {{ dialog_x() }}
+</dialog>
 </section>
 {% if mail_inbox and is_developer_here %}
 {# Write as… (UX-008 §5.4): a message of an outside sender, built by the helper, never sent outside #}
@@ -542,11 +547,12 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     <p class="sd-help" id="mw-reply-note" hidden>{{ _("An answer to the message opened: Odoo puts it on the record that message came from.") }}</p>
     <p class="sd-help">{{ _("Nothing leaves: the message is kept in this tab and goes to the mailbox of its address in this staging. Odoo reads it with Read now, or by itself within 5 minutes when reception is on.") }}</p>
     <p id="mw-error" class="error" role="alert"></p>
-    <div class="sd-foot">
+    <div class="sd-foot form-actions">
       <button type="button" id="mw-cancel" title="{{ _('Closes without sending anything') }}">{{ _("Cancel") }}</button>
       <button type="submit" class="primary" id="mw-send" title="{{ _('Sends the message as the sender above to the mail service of this staging: it shows in this tab, and to an address of the staging it goes to the mailbox Odoo reads. Nothing leaves this staging.') }}">{{ _("Send") }}</button>
     </div>
   </form>
+{{ dialog_x() }}
 </dialog>
 {% endif %}
 {% endif %}
@@ -776,7 +782,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
   })();
   </script>
   {% endif %}
-  <dialog id="addons-update" aria-labelledby="au-title" style="width: min(560px, calc(100vw - 32px))">
+  <dialog id="addons-update" aria-labelledby="au-title" style="--dialog-w: 560px">
     <form method="dialog">
       <h2 id="au-title"></h2>
       <p class="muted" id="au-reading">{{ _("Reading the branches…") }}</p>
@@ -796,7 +802,8 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
         <button type="button" class="primary" id="au-go" disabled title="{{ _('Brings the repository to the last commit of the chosen branch, installs its Python packages, updates the changed modules when the instance says so and restarts Odoo: a job, started at once. A backup is made first when the instance is set so. Not available while the branch and the commit are the ones it has.') }}">{{ _("Update module") }}</button>
       </div>
     </form>
-  </dialog>
+  {{ dialog_x() }}
+</dialog>
   {% if is_admin_here %}
   <details class="addons-add" {{ "open" if not inst.repositories }}>
   <summary title="{{ _('The address and the branch of a repository of addons to add to this instance, and the key for the private ones over ssh') }}">+ {{ _("Add a repository") }}</summary>
