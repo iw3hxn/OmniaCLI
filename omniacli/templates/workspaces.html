@@ -215,7 +215,7 @@
 .ws-block li:first-child { border-top: 0; }
 .ws-block li.ws-staging { padding-left: 18px; }
 .ws-block .ws-acts { margin-left: auto; display: inline-flex; gap: 6px; }
-.ws-users td { padding: 4px 6px; }
+.ws-users td { padding: 4px 6px; } .ws-users td:first-child { white-space: nowrap; }
 .ws-use, .ws-open-ws { margin: 10px 0 0; }
 .ws-foot { margin-top: 16px; } .ws-foot > details { margin-bottom: 8px; }
 .ws-foot > details > summary { font-weight: 600; }
@@ -224,7 +224,7 @@
 @media (max-width: 700px) {
   .ws-rows thead { display: none; }
   .ws-rows, .ws-rows tbody { display: block; }
-  .ws-rows tr.ws-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 8px 4px; height: auto;
+  .ws-rows tbody.ws-item > tr.ws-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 8px 4px; height: auto;
     border-bottom: 1px solid var(--border); }
   .ws-rows tr.ws-row > td { display: block; border: 0; padding: 0; }
   .ws-rows tr.ws-row > td:first-child { flex: 1 1 60%; }
