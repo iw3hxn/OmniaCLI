@@ -94,6 +94,8 @@ async def test_an_upload_in_parts_then_a_new_instance(people, client, env, resto
     assert plan["new_instance"]["template"] == "odooplm-20" and plan["new_instance"]["server"] == "acme-acme-prod"
     assert plan["missing_modules"]["in_oca"][0]["repository"] == "web"
     assert [w["name"] for w in plan["workspaces"]] == ["acme", "beta"] and "next" not in plan
+    # a file made elsewhere: its users and passwords come with it, and the plan says so
+    assert "passwords are the ones of the file" in plan["passwords"]
     assert restoring["made"] == []
     bad = (await client.get(PLAN.format(ws="acme") + "?file=acme.zip&name=Bad%20Name", headers=ADMIN)).json()
     assert "lower case" in bad["name_problem"] and bad["instance"] == "acme-prod"

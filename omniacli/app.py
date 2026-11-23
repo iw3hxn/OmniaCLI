@@ -15379,6 +15379,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if plan.get("pgvector"):
             # the dump makes vector: what the staging or the instance gets, or why it cannot hold it
             plan["pgvector"] = {k: i18n.tr(lang, v) if v else v for k, v in plan["pgvector"].items()}
+        if file and not backup_of:
+            # a database made elsewhere keeps its users and their passwords: neutralizing does not touch them, and
+            # the copy answers on the internet (odoo19-21 on ber, 23/11/2026: a POC's test passwords let anyone in)
+            plan["passwords"] = i18n.tr(lang, "Its users and their passwords are the ones of the file: whoever knows "
+                                              "them logs in from outside. Change them after the restore, or log in "
+                                              "with Log in as… only.")
         made = plan["new_instance"]["server"]
         return {**plan, "instance": "" if staging_of else made[len(ws.name) + 1:],
                 "name_problem": i18n.tr(lang, problem) if problem else "",

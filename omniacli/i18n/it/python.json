@@ -344,6 +344,7 @@
  "Its recovery at a minute, when it was on before the database moved, is switched on again from the Backups tab": "Il suo ripristino a un minuto, se era acceso prima dello spostamento del database, si riaccende dalla scheda Backup",
  "Its stagings stay on this machine and do not change": "Le sue staging restano su questa macchina e non cambiano",
  "Its template {template} names no version of Odoo": "Il suo template {template} non dice nessuna versione di Odoo",
+ "Its users and their passwords are the ones of the file: whoever knows them logs in from outside. Change them after the restore, or log in with Log in as… only.": "Gli utenti e le loro password sono quelli del file: chi le conosce entra da fuori. Cambiale dopo il ripristino, oppure entra solo con «Entra come…».",
  "Jobs are running ({jobs}): restart when they end": "Ci sono job in esecuzione ({jobs}): riavvia quando finiscono",
  "Language loaded at the creation": "Lingua caricata alla creazione",
  "Last changes": "Ultime modifiche",

@@ -53,6 +53,7 @@
   background: var(--panel-2); font-size: 14px; }
 .fb-plan p { margin: 0 0 6px; } .fb-plan p:last-child { margin-bottom: 0; }
 .fb-plan .mono { font-size: 12px; word-break: break-word; }
+.fb-plan .warn { color: var(--warn); }
 .fb-name-help { display: block; font-size: 12px; margin-top: 3px; }
 .up-progress { display: flex; gap: 10px; align-items: center; margin-top: 12px; }
 .up-progress progress { flex: 1; }
@@ -528,6 +529,8 @@
                                                 : fill(T.planStaging, {server: ni.staging_of, template: ni.template})));
     // its dump makes vector (Odoo Enterprise's ai module): the staging or the instance gets pgvector, or why not
     if (p.pgvector) lines.push(el("p", {class: p.pgvector.problem ? "error" : "bk-ok"}, p.pgvector.text));
+    // a file made elsewhere: its passwords come with it
+    if (p.passwords) lines.push(el("p", {class: "warn"}, p.passwords));
     const room = p.room || {};
     lines.push(el("p", {class: room.problem ? "error" : "muted"}, room.problem ||
       (room.free_gb === null || room.free_gb === undefined ? fill(T.roomUnknown, {need: number.format(room.needed_gb)})
