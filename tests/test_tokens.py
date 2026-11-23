@@ -160,6 +160,19 @@ def test_every_dialog_has_its_x_and_its_title():
     assert "dialog { position: fixed; inset: auto 0 0 0; margin: 0; width: 100%;" in base
 
 
+def test_one_look_and_one_keyboard_for_the_tabs():
+    """UX-017 §5.3: the tabs' style once (base.html), the active one bold on a neutral line; one script for every
+    tablist: arrows, Home, End, a roving tabindex, the panels named by their tab; chosen by Enter or Space only."""
+    base = (TEMPLATES / "base.html").read_text(encoding="utf-8")
+    for page in TEMPLATES.glob("*.html"):
+        if page.name != "base.html":
+            assert ".tabs button[aria-selected" not in page.read_text(encoding="utf-8"), page.name
+    assert '.tabs button[aria-selected="true"] { color: var(--text); font-weight: var(--fw-bold); border-bottom-color: var(--selected); }' in base
+    for needed in ("ArrowRight:", "ArrowLeft:", "Home:", "End:", "t.tabIndex = t === chosen ? 0 : -1",
+                   'panel.setAttribute("role", "tabpanel")', 'panel.setAttribute("aria-labelledby", t.id)'):
+        assert needed in base, needed
+
+
 async def test_the_header_on_a_phone_leaves_nothing_out(client):  # noqa: F811
     """UX-017 §5.11: under 768 px your account, the language and Log out are in the menu, never nowhere."""
     page = (await client.get("/", headers={"Authorization": AUTH, "Accept": "text/html"})).text

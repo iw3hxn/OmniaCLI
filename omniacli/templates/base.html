@@ -293,10 +293,16 @@ dialog .form-actions > span > button, dialog .actions > span > button { justify-
 /* a button of a row or beside a heading */
 button.small, .button.small { min-height: var(--control-h-sm); padding: var(--sp-4) var(--sp-10); }
 /* the tabs of a page (an instance, the Dashboard, Users, a workspace) */
-.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin: 6px 0 16px; overflow-x: auto; }
-.tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; box-shadow: none;
-  padding: 10px 14px; color: var(--muted); font-weight: 600; white-space: nowrap; }
-.tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--selected); }
+/* the tabs (UX-017 §5.3): the active one bold with a neutral line under it; a bar wider than its box fades on the
+   side that has more (the script below says which) */
+.tabs { display: flex; gap: var(--sp-2); border-bottom: var(--bw) solid var(--border); margin: var(--sp-6) 0 var(--sp-16); overflow-x: auto; }
+.tabs button { border: 0; border-bottom: var(--bw-2) solid transparent; border-radius: 0; background: none;
+  padding: var(--sp-8) var(--sp-12); color: var(--muted); font-weight: var(--fw-semibold); white-space: nowrap; flex: none; }
+.tabs button:hover { color: var(--text); background: none; }
+.tabs button[aria-selected="true"] { color: var(--text); font-weight: var(--fw-bold); border-bottom-color: var(--selected); }
+.tabs.more-after { mask-image: linear-gradient(to right, black calc(100% - 24px), transparent); }
+.tabs.more-before { mask-image: linear-gradient(to left, black calc(100% - 24px), transparent); }
+.tabs.more-before.more-after { mask-image: linear-gradient(to right, transparent, black 24px, black calc(100% - 24px), transparent); }
 .tab-panel[hidden] { display: none; }
 .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
 .tile { border: 1px solid var(--border); border-radius: var(--r-lg); padding: 12px 14px; background: var(--panel-2); }
@@ -937,6 +943,69 @@ window.sizeText = (n) => {
     form.dataset.asked = "1";
     try { form.requestSubmit(button); } finally { delete form.dataset.asked; }
   }, true);
+})();
+</script>
+<script>
+(function () {
+  // the tabs (UX-017 §5.3), every [role=tablist] of the page: the arrows move the focus (round), Home and End to the
+  // first and the last; one tab in the order of Tab (the chosen one); Enter or Space chooses (the page's own click:
+  // a tab that reads from the server reads only when chosen). Each panel named by its tab
+  const tabsOf = (list) => [...list.querySelectorAll('[role="tab"]')].filter((t) => t.closest('[role="tablist"]') === list);
+  const usable = (list) => tabsOf(list).filter((t) => !t.hidden && !t.disabled && t.getClientRects().length);
+  function rove(list) {
+    const tabs = tabsOf(list);
+    for (const t of tabs) if (!t.hasAttribute("aria-selected")) t.setAttribute("aria-selected", "false");
+    const chosen = tabs.find((t) => t.getAttribute("aria-selected") === "true" && !t.hidden) || tabs.find((t) => !t.hidden);
+    for (const t of tabs) t.tabIndex = t === chosen ? 0 : -1;
+  }
+  function edges(list) {
+    list.classList.toggle("more-before", list.scrollLeft > 1);
+    list.classList.toggle("more-after", list.scrollLeft + list.clientWidth < list.scrollWidth - 1);
+  }
+  function wire(list) {
+    if (list.dataset.roving) return;
+    list.dataset.roving = "1";
+    for (const t of tabsOf(list)) {
+      const key = t.dataset.tab;
+      const panel = key && document.querySelector(`.tab-panel[data-panel="${CSS.escape(key)}"]`);
+      if (!panel) continue;
+      if (!t.id) t.id = "tab-" + key;
+      if (!panel.id) panel.id = "panel-" + key;
+      t.setAttribute("aria-controls", panel.id);
+      panel.setAttribute("role", "tabpanel");
+      panel.setAttribute("aria-labelledby", t.id);
+      if (!panel.hasAttribute("tabindex")) panel.tabIndex = 0;
+    }
+    rove(list);
+    new MutationObserver(() => rove(list)).observe(list, {subtree: true, attributes: true, attributeFilter: ["aria-selected", "hidden"]});
+    list.addEventListener("focusout", (event) => { if (!list.contains(event.relatedTarget)) rove(list); });
+    if (list.classList.contains("tabs")) {
+      list.addEventListener("scroll", () => edges(list), {passive: true});
+      new ResizeObserver(() => edges(list)).observe(list);
+    }
+  }
+  document.addEventListener("keydown", (event) => {
+    const tab = event.target instanceof Element ? event.target.closest('[role="tab"]') : null;
+    const list = tab && tab.closest('[role="tablist"]');
+    if (!list || event.altKey || event.ctrlKey || event.metaKey) return;
+    const tabs = usable(list), at = tabs.indexOf(tab);
+    const next = {ArrowRight: tabs[(at + 1) % tabs.length], ArrowLeft: tabs[(at - 1 + tabs.length) % tabs.length],
+                  Home: tabs[0], End: tabs[tabs.length - 1]}[event.key];
+    if (!next) return;
+    event.preventDefault();
+    for (const t of tabsOf(list)) t.tabIndex = t === next ? 0 : -1;
+    next.focus();
+    next.scrollIntoView({block: "nearest", inline: "nearest"});
+  });
+  const scan = (root) => { for (const list of root.querySelectorAll('[role="tablist"]')) wire(list); };
+  document.addEventListener("DOMContentLoaded", () => {
+    scan(document);
+    new MutationObserver((changes) => {
+      for (const change of changes) for (const node of change.addedNodes) if (node.nodeType === 1) {
+        if (node.matches('[role="tablist"]')) wire(node); else scan(node);
+      }
+    }).observe(document.body, {childList: true, subtree: true});
+  });
 })();
 </script>
 <script>

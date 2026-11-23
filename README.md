@@ -4818,6 +4818,11 @@ controls and motion. A page writes `var(--…)`, never a value of its own.
   the screen, its buttons one under the other; from 576 px it is centred.
   The recovery codes shown once after two-step verification is switched on
   have no X: that dialog closes only by saying the codes are kept.
+- **Tabs**: the active one bold with a neutral line under it; the arrows
+  move between the tabs, Home and End to the first and the last, Enter or
+  Space opens the one in focus (a tab that reads from the server reads only
+  when it is opened), and Tab goes from the tabs to the open panel. A bar of
+  tabs wider than the screen fades on the side that has more.
 - **Less motion** asked by the system: nothing moves, one rule for every page.
 
 ### Whitelabel
