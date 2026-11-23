@@ -285,9 +285,9 @@ async def test_the_enterprise_switch_says_it_and_offers_pgvector_first(ent, clie
     section = page.split('data-section="enterprise"', 1)[1].split("</section>", 1)[0]
     assert 'id="ent-pgvector"' in section and "the PostgreSQL of acme-main/production, acme-main/test does not have it" \
         in " ".join(section.split())
-    # the action before the switch, the one primary of the section
+    # the action before the switch, in its warning; a secondary: the tab's primary is Save and restart (UX-017 A4)
     assert section.index('id="ent-pgvector-add"') < section.index('id="ent-switch"')
-    assert section.count('class="primary"') == 1 and 'data-production="1"' in section
+    assert section.count('class="primary"') == 0 and 'data-production="1"' in section
     assert "Add pgvector to PostgreSQL…</button>" in section
     url = "/api/servers/acme-main/database/pgvector"
     # a production: its name typed

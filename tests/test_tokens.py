@@ -294,7 +294,7 @@ def test_a_field_says_what_it_wants_and_what_is_wrong():
     for needed in ('field.setAttribute("aria-invalid", "true")', "describe(field, note)", 'document.addEventListener("invalid"',
                    "window.omniaFieldError = ", "first === field", 'field.removeAttribute("aria-invalid")'):
         assert needed in base, needed
-    assert re.search(r"input\[type=checkbox\], input\[type=radio\] \{ width: var\(--checkbox\); height: var\(--checkbox\);[^}]*accent-color: var\(--selected\)", base)
+    assert re.search(r"input\[type=checkbox\], input\[type=radio\] \{ width: var\(--checkbox\) !important; height: var\(--checkbox\) !important;[^}]*accent-color: var\(--selected\)", base)
     assert "--checkbox: 18px" in TOKENS
 
 

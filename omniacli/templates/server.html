@@ -1092,7 +1092,7 @@ dialog.sd { --dialog-w: 560px; }
     {% else %}{{ _("Add it first.") }}{% endif %}</p>
   {% if pv.can %}
   <div class="actions" style="justify-content: flex-end">
-    <button type="button" class="primary" id="ent-pgvector-add" data-url="{{ pv.url }}" data-production="{{ 1 if pv.production else 0 }}" {{ off }}
+    <button type="button" id="ent-pgvector-add" data-url="{{ pv.url }}" data-production="{{ 1 if pv.production else 0 }}" {{ off }}
       title="{{ _('Runs its database on the image of PostgreSQL with pgvector, the same PostgreSQL with the extension vector; then makes vector in its databases and in the template Odoo creates them from. The image is downloaded first; then only the database\'s container is made again: Odoo does not reach it for about a second, and does not restart. It is a job.') }}">{{ _("Add pgvector to PostgreSQL…") }}</button>
   </div>
   {% endif %}

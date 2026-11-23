@@ -269,9 +269,12 @@ select, textarea { font: inherit; padding: 6px 10px; width: 100%;
   border: 1px solid var(--border-input); border-radius: var(--r); background: var(--panel); color: var(--text);
   transition: border-color var(--dur-200) var(--ease-out); }
 input:hover:not(:disabled), select:hover:not(:disabled), textarea:hover:not(:disabled) { border-color: var(--muted); }
+/* a time or a date: its focus is on its parts, the ring on the field */
+input:is([type=time], [type=date], [type=datetime-local]):focus-within { outline: var(--focus-width) solid var(--focus); outline-offset: var(--focus-offset); }
+input[type=file] { min-height: var(--control-h); padding-block: var(--sp-6); }
 input:disabled, select:disabled, textarea:disabled { background: var(--panel-2); color: var(--fg-disabled); }
 /* a box to tick, a choice: 18 px in the neutral colour of what is chosen; its whole label is the target (24 px high) */
-input[type=checkbox], input[type=radio] { width: var(--checkbox); height: var(--checkbox); margin: 1px 0 0; accent-color: var(--selected);
+input[type=checkbox], input[type=radio] { width: var(--checkbox) !important; height: var(--checkbox) !important; margin: 1px 0 0; accent-color: var(--selected);
   flex: none; vertical-align: -4px; }
 label:has(> input[type=checkbox]), label:has(> input[type=radio]) { display: inline-flex; align-items: flex-start; gap: var(--sp-8);
   min-height: 24px; padding-block: 2px; }
