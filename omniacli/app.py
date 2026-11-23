@@ -14377,6 +14377,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         try:
             return await workspaceops.ask("os-updates")
         except JobFailed as exc:
+            if workspaceops.helpers_refused(str(exc).removeprefix("workspace-helper: ").strip()) or "sudo" in str(exc):
+                # an OmniaCLI whose root helper sudo does not allow (one run from a checkout, not prepared): nothing
+                # is broken, the switch is not of this OmniaCLI — said in the section, not an error of the page
+                return {"unavailable": os_updates_refusal(str(exc))}
             return refuse(os_updates_refusal(str(exc)), status.HTTP_502_BAD_GATEWAY)
 
     @app.post("/api/machine/os-updates")

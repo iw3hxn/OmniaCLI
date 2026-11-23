@@ -515,6 +515,11 @@ document.getElementById("form").addEventListener("submit", async (ev) => {
   async function load() {
     const resp = await fetch("{{ prefix }}/api/machine/os-updates", {headers: {Accept: "application/json"}}).catch(() => null);
     const data = resp ? await resp.json().catch(() => ({})) : {};
+    if (resp && resp.ok && data.unavailable) {
+      // no root helper here: the switch is not of this OmniaCLI, said once, its controls off
+      state.textContent = ""; failed(data.unavailable);
+      enabled.disabled = reboot.disabled = time.disabled = true; return;
+    }
     if (resp && resp.ok) { failed(""); show(data); return; }
     state.textContent = "";
     failed(data.error || data.detail || O.unreachable);

@@ -230,8 +230,11 @@ async def test_who_may(panel, monkeypatch):
     async def refused(*args, **kw):
         raise JobFailed("sudo: a password is required")
     monkeypatch.setattr(workspaceops, "ask", refused)
+    # reading: the section says why (not an HTTP 502 the browser counts); saving: refused with the same reason
     resp = await client.get("/api/machine/os-updates", headers=ADMIN)
-    assert resp.status_code == 502 and "OMNIACLI_WORKSPACES=1" in resp.json()["error"]
+    assert resp.status_code == 200 and "OMNIACLI_WORKSPACES=1" in resp.json()["unavailable"]
+    resp = await client.post("/api/machine/os-updates", headers=ADMIN, json={"enabled": False, "reboot": "never"})
+    assert resp.status_code == 400 and "OMNIACLI_WORKSPACES=1" in resp.json()["error"]
 
 
 async def test_the_options_page(panel):
@@ -244,3 +247,4 @@ async def test_the_options_page(panel):
     page = (await client.get("/options", headers={**PERSON, "Accept": "text/html"})).text
     assert '"/links/lab3/api/machine/os-updates"' in page
     assert os.path.exists(client.machine["folder"] / "20auto-upgrades")
+
