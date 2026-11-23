@@ -46,6 +46,7 @@ case "$1" in
             /var/lib/omniacli/stagings.json /var/lib/omniacli/stagings.json.tmp \
             /var/lib/omniacli/postgres_tuning.json /var/lib/omniacli/postgres_tuning.json.part \
             /var/lib/omniacli/sessions.json /var/lib/omniacli/sessions.json.tmp \
+            /var/lib/omniacli/oauth.json /var/lib/omniacli/oauth.json.tmp \
             /var/lib/omniacli/monitor.json /var/lib/omniacli/monitor.json.tmp \
             /var/lib/omniacli/login-hosts.json /var/lib/omniacli/login-hosts.json.tmp \
             /var/lib/omniacli/pitr.json /var/lib/omniacli/pitr.json.tmp \

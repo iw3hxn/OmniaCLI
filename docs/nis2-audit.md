@@ -36,6 +36,7 @@ le altre voci.
 | `shell`, `tunnel`, `download`, `login-as` | apertura e chiusura di shell, psql, Claude, terminali; tunnel; download di backup; «Accedi come» |
 | `invitation` | un invito creato, inviato di nuovo o revocato (da chi), e usato dalla persona invitata, che sceglie la sua password (poi il suo `login`); una password mandata con un link scaduto, usato o revocato è un `failed` |
 | `second-factor` | verifica in due passaggi attivata o disattivata (da Account o al login, dove è obbligatoria), codice di recupero usato (con quanti ne restano), azzerata da un amministratore (chi), regola «obbligatoria per» cambiata; un codice sbagliato è un `failed` («second step: wrong code») e il `login` dice come è passato («login form, second step: code» o «recovery code») |
+| `oauth` | OAuth degli assistenti (claude.ai, ChatGPT…): un client registrato, un consenso dato (livello, giorni, server) o rifiutato dalla persona, un token emesso, rinnovato, revocato (da chi, o perché un refresh token o un codice è stato usato due volte); una richiesta rifiutata (codice, verifier, refresh token o client sbagliati) è un `failed` |
 | `job` | la fine di ogni job, con il suo esito (`success`, `failed`, `stopped`, `interrupted`) e l'errore |
 | `siem` | un invio al SIEM che fallisce, e quando riprende |
 

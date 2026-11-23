@@ -3556,11 +3556,117 @@ workspace's page) shows, for each token, how to connect each client (its
 **How to connect…** button): Claude Code, Claude Desktop (through
 `mcp-remote`), Codex, OpenCode, Cursor, VS Code, any MCP client over
 streamable HTTP, and the REST API. claude.ai and ChatGPT connect with OAuth,
-which OmniaCLI does not offer yet.
+with no token (below): their rows there say how, with the MCP URL.
 
 A token also opens the pages for reading, which is how a client downloads a
 backup (`GET <base URL>/backups/...` with the same header); it can never
 POST to them.
+
+### OAuth: claude.ai, ChatGPT, Claude Desktop's connectors
+
+claude.ai (and the connectors of Claude Desktop and of the mobile app, which
+are claude.ai's) and ChatGPT cannot send a static header: they connect with
+**OAuth 2.1**, and OmniaCLI is its own authorization server (no external
+identity provider). Claude Code, Codex, VS Code and the other clients may use
+it too, instead of a token: `claude mcp add --transport http omniacli <MCP URL>`
+without `--header`, then `/mcp` in Claude Code.
+
+What the person sees: the assistant opens OmniaCLI's **login** (the password,
+and the two-step verification where the user has it or must have it, as on
+any login), then a **consent page** in their language: which assistant asks
+(its name; *not verified* for one that registered itself, the host that
+publishes its identity for a client ID metadata document), where the answer
+goes (a warning when it is a program of this computer, `localhost`, or an
+app's own scheme), and what it may do:
+
+- a **level**, never above the person's role: *Read*; *Act on the tests and
+  stagings*; *Also the productions* (each call on a production still needs
+  `confirm` = the server's name). A user of workspaces chooses one of its
+  workspaces, with its role there;
+- optionally **some servers only**;
+- **for how long**: 1, 7, 30 (the default) or 90 days.
+
+**Allow** gives the assistant, for every rule above, a token like those of
+the token page: its level (`read` = user, `write` = developer, `production` =
+admin), never a CI's, its workspace and its servers. It lives **1 hour** and
+renews itself with a **refresh token** (30 days at most, never beyond the
+days given) that is **rotated** at every use: a refresh token used twice (a
+stolen copy) ends the grant, both copies. Its level follows the person: a
+lower role lowers it, and a deleted user, a user out of that workspace, a
+new password or another user made with the same name end it (as they end
+the sessions). The grant is listed on the person's **Account** page
+(*Connected assistants*), on the token page of the machine (**Users › API
+and AI assistants › Connected with OAuth**, every person's) and on a
+workspace's page (its own), with its last use: **Revoke…** there ends it at
+once, its refresh token too. An OAuth token is bound to the MCP URL
+(RFC 8707): it works at `/mcp` and on the downloads and uploads its tools
+give, never on the pages nor on the REST API.
+
+The production rule does not change: a production is updated by hand only,
+and an OAuth grant acts on one only with the *Also the productions* level
+(an admin's) and the server's name in `confirm` at each call.
+
+Endpoints, as the MCP authorization specification (2025-11-25) and the docs
+of claude.ai and ChatGPT ask (read on 23/11/2026):
+
+| Path | What |
+|---|---|
+| `/mcp` without a token | `401` with `WWW-Authenticate: Bearer resource_metadata="<base>/.well-known/oauth-protected-resource/mcp", scope="read write production"` (and `error="invalid_token"` for a token unknown, expired, revoked or of another address) |
+| `/.well-known/oauth-protected-resource` (and `/mcp` after it) | RFC 9728: `resource` = the MCP URL, `authorization_servers` = this OmniaCLI |
+| `/.well-known/oauth-authorization-server` | RFC 8414: S256 only, `none`, `client_secret_post`, `client_secret_basic`, `client_id_metadata_document_supported`, `authorization_response_iss_parameter_supported` (RFC 9207: `iss` in every answer); no OpenID Connect (no ID tokens) |
+| `POST /oauth/register` | RFC 7591 dynamic registration (30 a minute per address) |
+| `GET /oauth/authorize` | `code` + PKCE `S256` + `resource` (RFC 8707); a client ID metadata document's URL as `client_id` is fetched here |
+| `/oauth/consent` | the person's page, after the login |
+| `POST /oauth/token` | `authorization_code` and `refresh_token`, form-encoded (300 a minute per address) |
+| `POST /oauth/revoke` | RFC 7009: the client ends its grant |
+
+The address is the one the clients reach: the customers' portal when it has
+one (Options), else the address of the request. The issuer and the MCP URL
+are that address exactly.
+
+**Redirect URIs**: only those a client registered (its registration, or its
+metadata document), compared exactly; a loopback one (`http://localhost`,
+`http://127.0.0.1`) with any port, as Claude Code, Codex and VS Code use a
+port of the moment (RFC 8252). No list of known clients: it would refuse
+every client that comes next, while the exact match already keeps a code
+from going anywhere the client did not say, and the consent page shows the
+host it goes to. `https://claude.ai/api/mcp/auth_callback`,
+`https://chatgpt.com/connector_platform_oauth_redirect` and
+`https://chatgpt.com/connector/oauth/{callback_id}` are such registered URIs.
+
+**Client ID metadata documents** (ChatGPT's `https://chatgpt.com/oauth/client.json`,
+claude.ai's and Claude Code's): fetching one is a request of this machine to
+the internet, so it is guarded: `https` only, a URL with a path and neither
+credentials, query nor fragment, every address its name resolves to of the
+internet (never this machine, a private, link-local, shared or reserved
+network), the request sent to the address checked (no second resolution),
+no redirect, no proxy, 5 seconds and 64 KB at most; its `client_id` must be
+its own URL and its redirect URIs valid ones. It is kept an hour. Such a
+client is public (`none`): `private_key_jwt` is not offered.
+
+**What claude.ai and ChatGPT need from OmniaCLI**: they reach it from the
+internet, so the MCP URL must answer there over **https with a certificate of
+a known authority**. The customers' portal (Options) is such an address
+(its Let's Encrypt certificate); on it, the machine's own users log in only
+if Options lets them in there. The token page says whether the address
+OmniaCLI has is one of a private network, plain http or a name that does not
+resolve: then the connector cannot reach it, and a client on the person's
+computer with a token (Claude Code, Codex, …) is the way.
+
+To connect: on **claude.ai**, *Customize › Connectors › Add › Add custom
+connector* (on Team and Enterprise an Owner, in *Organization settings ›
+Connectors*), a name and the MCP URL, then **Connect**; Claude Desktop and
+the mobile app show the same connector. On **ChatGPT** (web), *Plugins › + ›
+Add custom MCP server*, a name, the MCP URL under *Connection*, *OAuth* as
+authentication, *Create as a plugin*, then install it.
+
+Everything goes in the access log (`oauth` events): a client registered, a
+consent given (level, days, servers) or refused, a token issued, refreshed,
+revoked (by whom, or because a refresh token or a code was used twice);
+a refused request (a wrong code, verifier, refresh token or client) is a
+`failed`. The grants are kept in `oauth.json` next to the jobs (600: the
+SHA-256 of the tokens, never a token); the requests waiting for the person
+and the codes live in memory only.
 
 ## REST API
 

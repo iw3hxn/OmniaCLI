@@ -1,0 +1,97 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{# The consent of OAuth (oauth.py): which assistant asks, where the answer goes, and what the person
+   lets it do: a level never above the person's role (a workspace's user: in one of its workspaces),
+   optionally some servers only, for some days. Never through a link: the address is this OmniaCLI's. -#}
+{% extends "base.html" %}
+{% set level_names = {"read": _("Read"), "write": _("Act on the tests and stagings"), "production": _("Also the productions")} %}
+{% set level_texts = {"read": _("The state of the instances, their logs, the jobs and the backups (and download them). Nothing changes."),
+                      "write": _("Also updates, restarts, backs up the tests and the stagings, and makes stagings. Never a production."),
+                      "production": _("Also acts on a production, and only with the server's name given as confirmation in that very call: the assistant asks you first.")} %}
+{% block title %}{{ _("Connect an assistant") }} · OmniaCLI{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>{{ _("{client} asks to use OmniaCLI", client=client_name) }}</h1>
+    <p>{{ _("It will act as you, {person}, with what you choose here and never more than your role.", person=person) }}</p>
+  </div>
+</div>
+<div class="stack" style="max-width: 640px">
+<section class="panel">
+  <h2>{{ _("Who asks") }}</h2>
+  <p style="margin: 0 0 6px"><strong>{{ client_name }}</strong>
+    {% if client.kind == "metadata" %}<span class="badge ok" title="{{ _('Its name and its return addresses are published at an https address of {host}: OmniaCLI read them there', host=client_host) }}">{{ _("identity published by {host}", host=client_host) }}</span>
+    {% else %}<span class="badge warn" title="{{ _('It registered itself with this name: anybody can choose any name. Check where the answer goes.') }}">{{ _("not verified") }}</span>{% endif %}</p>
+  <p class="muted" style="margin: 0">{{ _("The answer goes to:") }} <strong class="mono">{{ redirect_host }}</strong></p>
+  {% if loopback %}<div class="banner warn" style="margin: 8px 0 0">{{ _("The answer goes to a program of the computer you are using (localhost): any program there could present itself under this name. Agree only if you started the connection yourself just now.") }}</div>{% endif %}
+  {% if custom_scheme %}<div class="banner warn" style="margin: 8px 0 0">{{ _("The answer goes to an application of your computer, not to a website: agree only if you started the connection yourself just now.") }}</div>{% endif %}
+  <p class="muted" style="margin: 8px 0 0; font-size: 13px">{{ _("For:") }} <span class="mono">{{ resource }}</span></p>
+</section>
+<form class="panel" method="post" action="/oauth/consent" id="consent-form">
+  <input type="hidden" name="request" value="{{ rid }}">
+  <h2>{{ _("What it may do") }}</h2>
+  {% if workspace_user %}
+  {% if choices | length > 1 %}
+  <p><label for="c-workspace">{{ _("Workspace") }}</label><br>
+    <select name="workspace" id="c-workspace" title="{{ _('The assistant sees only the instances of this workspace, with your role there') }}">
+      {% for ws in choices %}<option value="{{ ws }}">{{ ws }}</option>{% endfor %}</select></p>
+  {% else %}
+  {% for ws in choices %}<input type="hidden" name="workspace" id="c-workspace" value="{{ ws }}">
+  <p class="muted">{{ _("Only the instances of workspace {name}.", name=ws) }}</p>{% endfor %}
+  {% endif %}
+  {% else %}<input type="hidden" name="workspace" id="c-workspace" value="">{% endif %}
+  <fieldset style="border: 0; padding: 0; margin: 0 0 12px" id="c-levels">
+    <legend class="label" style="margin-bottom: 6px">{{ _("Level") }}</legend>
+    {% for level in ["read", "write", "production"] %}
+    <label style="display: block; margin: 0 0 8px" data-level="{{ level }}" title="{{ level_texts[level] }}">
+      <input type="radio" name="level" value="{{ level }}"> <strong>{{ level_names[level] }}</strong><br>
+      <span class="muted" style="font-size: 13px; margin-left: 24px; display: inline-block">{{ level_texts[level] }}</span>
+      <span class="badge" style="margin-left: 24px" data-above hidden>{{ _("above your role") }}</span></label>
+    {% endfor %}
+  </fieldset>
+  <details id="c-servers-box">
+    <summary title="{{ _('Leaves the assistant only the servers you tick; none ticked: every server you reach') }}">{{ _("Only some servers (optional)") }}</summary>
+    <div style="max-height: 220px; overflow: auto; margin-top: 8px" id="c-servers">
+      {% for ws, c in choices.items() %}{% for srv in c.servers %}
+      <label style="display: block" data-ws="{{ ws }}"><input type="checkbox" name="servers" value="{{ srv }}"> <span class="mono">{{ srv }}</span></label>
+      {% endfor %}{% endfor %}
+    </div>
+  </details>
+  <p style="margin-top: 12px"><label for="c-days">{{ _("For how long") }}</label><br>
+    <select name="days" id="c-days" title="{{ _('After these days the assistant asks you again. You can revoke it earlier from your Account page.') }}">
+      {% for d in days %}<option value="{{ d }}" {{ "selected" if d == default_days }}>{{ _("1 day") if d == 1 else _("{n} days", n=d) }}</option>{% endfor %}
+    </select></p>
+  <p class="muted" style="font-size: 13px">{{ _("The assistant gets a key valid {minutes} minutes, renewed by itself while you let it. It is listed on your Account page, with its last use: there you revoke it, and it stops at once.", minutes=access_minutes) }}</p>
+  <div class="actions">
+    <button type="submit" name="decision" value="deny" formnovalidate title="{{ _('Tells the assistant no: it gets nothing, and OmniaCLI goes back to it') }}">{{ _("Refuse") }}</button>
+    <button type="submit" name="decision" value="approve" class="primary" id="c-approve" title="{{ _('Lets the assistant in with the level, the servers and the time chosen, and goes back to it') }}">{{ _("Allow") }}</button>
+  </div>
+</form>
+</div>
+<script>
+(function () {
+  const CHOICES = {{ choices | tojson }}, ASKED = {{ asked | tojson }};
+  const ws = document.getElementById("c-workspace"), approve = document.getElementById("c-approve");
+  const pick = (levels) => ASKED && ASKED !== "production" && levels.includes(ASKED) ? ASKED
+    : (levels.includes("write") ? "write" : levels[levels.length - 1]);
+  function show() {
+    const c = CHOICES[ws.value] || {levels: [], servers: []};
+    for (const label of document.querySelectorAll("[data-level]")) {
+      const input = label.querySelector("input"), on = c.levels.includes(label.dataset.level);
+      input.disabled = !on; label.style.opacity = on ? "" : ".55";
+      label.querySelector("[data-above]").hidden = on;
+      if (!on) input.checked = false;
+    }
+    const chosen = document.querySelector('[name="level"]:checked');
+    if (!chosen && c.levels.length) document.querySelector(`[name="level"][value="${pick(c.levels)}"]`).checked = true;
+    for (const label of document.querySelectorAll("[data-ws]")) {
+      const mine = label.dataset.ws === ws.value;
+      label.hidden = !mine;
+      if (!mine) label.querySelector("input").checked = false;
+    }
+    approve.disabled = !c.levels.length;
+  }
+  if (ws.tagName === "SELECT") ws.addEventListener("change", show);
+  show();
+})();
+</script>
+{% endblock %}

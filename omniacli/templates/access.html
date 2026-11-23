@@ -12,11 +12,11 @@
                  "shell": _("Shell"), "tunnel": _("Tunnel"), "action": _("Action"), "read": _("Read"),
                  "download": _("Download"), "login-as": _("Log in as"), "job": _("Job ended"), "invitation": _("Invitation"),
                  "delete backup": _("Backup deleted"), "show destination key": _("Destination key shown"),
-                 "siem": _("SIEM"), "second-factor": _("Two-step verification")} %}
+                 "siem": _("SIEM"), "second-factor": _("Two-step verification"), "oauth": _("OAuth")} %}
 {% set kinds = {"user": _("login page"), "link": _("link"), "token": _("MCP token (API)"), "mcp": _("MCP"),
                 "burst": _("many attempts"), "job": _("job"), "hook": _("deploy hook"), "system": _("OmniaCLI")} %}
 {% set badges = {"failed": "error", "login": "ok", "logout": "", "action": "info", "login-as": "warn", "read": "warn",
-                 "siem": "error", "second-factor": "warn"} %}
+                 "siem": "error", "second-factor": "warn", "oauth": "warn"} %}
 {% set here = prefix ~ ("/workspaces/" ~ ws.name ~ "/audit" if ws else "/access") %}
 {% set export = prefix ~ ("/api/workspaces/" ~ ws.name ~ "/audit/export" if ws else "/api/access/export") %}
 {% set query = {"since": since, "until": until, "who": who, "event": event, "q": q} | dictsort | selectattr(1) | list %}

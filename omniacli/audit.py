@@ -63,6 +63,10 @@ NOT_SENSITIVE = frozenset({
     "/favicon.ico", "/icon-180.png", "/login-background.jpg", "/login", "/.omniacli/login", "/language/{code}",
     # the second step of a login (its outcome is logged by the route)
     "/login/code", "/login/setup",
+    # OAuth (oauth.py): the public metadata of the discovery, the authorization request and the consent
+    # page; what they give (consent given or refused, token issued, refreshed, revoked) the routes log
+    "/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp",
+    "/.well-known/oauth-authorization-server", "/oauth/authorize", "/oauth/consent",
     "/", "/dashboard/servers", "/servers/{server}", "/api/info", "/api/portal", "/api/servers", "/api/metrics",
     "/api/metrics/history", "/api/disks", "/api/disks/history", "/disks",
     "/api/servers/{server}/{role}/uptime", "/api/servers/{server}/{role}/summary",

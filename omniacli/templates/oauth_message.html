@@ -1,0 +1,28 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{# A page of the OAuth flow (oauth.py) that is not the consent: the step that moves on to it by itself
+   (continue: the session cookie is SameSite strict, so a navigation this site starts carries it, the
+   one from the assistant's site does not), and what went wrong, with what the person can do. -#}
+{% extends "base.html" %}
+{% set titles = {"continue": _("Connecting an assistant"), "client": _("The assistant cannot connect"),
+                 "redirect": _("The assistant cannot connect"), "ended": _("This request has ended"),
+                 "nothing": _("No access to give"), "invalid": _("The answer is not valid")} %}
+{% set texts = {"continue": _("You are taken to OmniaCLI's page where you decide what the assistant may do."),
+                "client": _("OmniaCLI does not know this assistant, or cannot read its identity: it is not let in."),
+                "redirect": _("Its return address is not one it registered: nothing is sent to it."),
+                "ended": _("It waited too long, or it was answered already. Start again from the assistant: connect it again."),
+                "nothing": _("Your user reaches no instance: there is nothing to give."),
+                "invalid": _("Choose a level your role allows, the servers among those listed and a duration, then agree again.")} %}
+{% block title %}{{ titles.get(kind, kind) }} · OmniaCLI{% endblock %}
+{% block content %}
+{% if kind == "continue" %}<meta http-equiv="refresh" content="0;url={{ href }}">{% endif %}
+<div class="page-head">
+  <div><h1>{{ titles.get(kind, kind) }}</h1>
+    <p>{{ texts.get(kind, "") }}</p></div>
+</div>
+{% if detail %}<section class="panel"><p class="muted mono" style="margin: 0; font-size: 13px">{{ tr(detail) }}</p></section>{% endif %}
+{% if href %}
+<div class="actions">
+  <a class="button primary" href="{{ href }}" title="{{ _('Opens the page where you decide what the assistant may do') }}">{{ _("Go on") }}</a>
+</div>
+{% endif %}
+{% endblock %}

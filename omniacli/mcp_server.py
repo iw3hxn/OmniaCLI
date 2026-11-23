@@ -4,8 +4,9 @@
 describe an instance so that a client can rebuild its development setup.
 
 Served at /mcp (streamable HTTP, stateless, JSON responses) for clients with
-a bearer token from auth.tokens. Needs the mcp SDK, which needs Python 3.10:
-without it OmniaCLI runs without /mcp.
+a bearer token from auth.tokens, or one an OAuth client got (oauth.py).
+Needs the mcp SDK, which needs Python 3.10: without it OmniaCLI runs without
+/mcp.
 """
 
 from __future__ import annotations
@@ -212,6 +213,9 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
     server = MCPServer(name="OmniaCLI", instructions=_instructions())
     api = api or {}
     guard = api.get("guard")
+    # OAuth (oauth.py): challenge(scope, error) is the WWW-Authenticate of a 401, audience(scope, name)
+    # whether a token's name may be used at this MCP URL (an OAuth token is bound to it, RFC 8707)
+    oauth = api.get("oauth")
     by_hand = api.get("by_hand") or (lambda inst: inst.role == "production")
 
     def caller(ctx: Context) -> str:
@@ -1044,10 +1048,16 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
                 on_behalf = headers.get(b"x-omniacli-user", b"").decode(errors="replace")
                 who = f"link {link}" + (f" ({on_behalf})" if _ON_BEHALF.fullmatch(on_behalf) else "")
                 name, workspace, kind = who, "", "link"
-            if name is None:
-                access_log.record("failed", "mcp", "", ip, f"{scope.get('method', '')} /mcp")
-                response = JSONResponse({"error": "A bearer token from auth.tokens is required"},
-                                        status_code=401, headers={"WWW-Authenticate": "Bearer"})
+            wrong_resource = name is not None and oauth is not None and not oauth["audience"](scope, name)
+            if name is None or wrong_resource:
+                given = scheme.lower() == "bearer" and bool(token.strip())
+                access_log.record("failed", "mcp", "", ip, f"{scope.get('method', '')} /mcp"
+                                  + (": an OAuth token of another resource" if wrong_resource else ""))
+                # where an OAuth client learns how to get a token (RFC 9728, MCP authorization)
+                challenge = oauth["challenge"](scope, "invalid_token" if given else "") if oauth else "Bearer"
+                response = JSONResponse({"error": "A bearer token is required: a token of the token page, "
+                                                  "or one of OAuth (see the WWW-Authenticate header)"},
+                                        status_code=401, headers={"WWW-Authenticate": challenge})
                 await response(scope, receive, send)
                 return
             # read the body to log its method, then hand it on unchanged

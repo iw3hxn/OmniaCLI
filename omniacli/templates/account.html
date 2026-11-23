@@ -1,5 +1,6 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
 {% extends "base.html" %}
+{% from "_oauth_grants.html" import grants_table, grants_script with context %}
 {% block title %}{{ _("Account") }} · OmniaCLI{% endblock %}
 {% block content %}
 {% set role_names = {"user": _("user"), "developer": _("developer"), "admin": _("admin"), "workspace": _("workspace")} %}
@@ -127,5 +128,14 @@ document.getElementById("password-form").onsubmit = async (event) => {
   });
 })();
 </script>
+</div>
+{#- the assistants let in with OAuth (oauth.py): wider than the forms above, a table #}
+<div style="max-width: 820px; margin-top: 16px">
+<section class="panel" id="assistants">
+  <h2>{{ _("Connected assistants") }}</h2>
+  <p class="muted" style="margin: 0 0 10px">{{ _("The AI assistants (claude.ai, ChatGPT, Claude Desktop…) you let in with OAuth: each acts as you, with the level you chose. They connect to") }} <span class="mono">{{ mcp_url }}</span>.</p>
+  {{ grants_table(grants, people=false) }}
+</section>
+{{ grants_script() }}
 </div>
 {% endblock %}

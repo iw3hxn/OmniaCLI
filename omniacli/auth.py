@@ -108,6 +108,8 @@ class Authenticator:
         self._key = secrets.token_bytes(32)
         self._verified: dict[str, bytes] = {}
         self._dummy = hash_password(secrets.token_hex(8))
+        # the access tokens of the OAuth grants (oauth.OAuthStore, set by the app): name_of(token)
+        self.oauth = None
 
     def update(self, users: dict[str, str], tokens: dict[str, str], links: dict[str, str]) -> None:
         """New credentials: the passwords verified so far are checked again,
@@ -134,8 +136,12 @@ class Authenticator:
         return False
 
     def token_name(self, token: str) -> str | None:
-        """The name of a configured MCP token, None when it is not one."""
-        return _match(token, self.tokens)
+        """The name of a configured MCP token or of a valid OAuth access
+        token (oauth:…), None when it is neither."""
+        found = _match(token, self.tokens)
+        if found is None and self.oauth is not None and token:
+            found = self.oauth.name_of(token)
+        return found
 
     def link_name(self, token: str) -> str | None:
         """The name of a configured link token, None when it is not one."""

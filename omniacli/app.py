@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import configparser
 import contextlib
 import csv
@@ -31,7 +32,7 @@ import zipfile
 from dataclasses import asdict
 from pathlib import Path
 from typing import List, Optional
-from urllib.parse import parse_qs, quote, urlsplit
+from urllib.parse import parse_qs, quote, unquote_plus, urlsplit
 
 import httpx
 import jinja2
@@ -60,6 +61,7 @@ from . import github
 from . import moduleupload, sshkeys
 from . import dumpinfo
 from . import totp
+from . import oauth
 from . import uploads as uploads_mod
 from .uploads import Uploads
 from .diskhistory import DiskHistory, DiskRecorder
@@ -302,7 +304,7 @@ _LINK_RESPONSE_HEADERS = ("content-type", "content-disposition", "content-length
 # (a shell of this machine), the copy from a link, the tunnels, the
 # machine's pages and the configuration.
 WORKSPACE_ROUTES = frozenset({
-    "/logout", "/account", "/api/account/password", "/static/{name}", "/x/{plugin}/static/{path:path}",
+    "/logout", "/account", "/api/account/password", "/api/oauth/grants/revoke", "/static/{name}", "/x/{plugin}/static/{path:path}",
     # its two-step verification, and its workspace's admins' reset of a member's
     "/api/account/second-factor/start", "/api/account/second-factor/confirm",
     "/api/account/second-factor/disable", "/api/workspaces/{workspace}/members/second-factor/reset",
@@ -532,6 +534,26 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return {name: link.token for name, link in settings.links.items()}
 
     authenticator = Authenticator(settings.users, settings.tokens, link_hashes())
+    # OAuth for the MCP clients that cannot send a static header (oauth.py): its grants' tokens are
+    # tokens for every rule of the token page's (Settings.token_role and the others, Authenticator.token_name)
+    oauth_store = oauth.OAuthStore(settings.jobs_dir.parent / oauth.FILE)
+    settings.oauth = authenticator.oauth = oauth_store
+
+    def oauth_person(grant: dict) -> str | None:
+        """The most a grant may do now: its person's role on the machine, or in
+        its workspace; None when the person is gone (or is another user of the
+        same name, or changed its password), is no longer of that workspace,
+        or became a user of workspaces after a grant of the machine."""
+        user = grant.get("user", "")
+        if user not in settings.users or grant.get("person", "") != oauth.digest(settings.users[user]):
+            # gone, made again with the same name, or a new password: as for its sessions
+            return None
+        role = settings.user_role(user)
+        if grant.get("workspace"):
+            return dict(settings.memberships(user)).get(grant["workspace"]) if role == WORKSPACE_ROLE else None
+        return None if role == WORKSPACE_ROLE else role
+
+    oauth_store.person = oauth_person
     jobs = JobManager(settings.jobs_dir)
 
     def instance_of_key(key: str):
@@ -716,6 +738,28 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         has an address, else the address of this request."""
         return portal_url() or str(request.base_url).rstrip("/")
 
+    # --- OAuth's addresses (oauth.py): the authorization server is this OmniaCLI, at the address its
+    # clients reach (public_base), and the resource is its MCP URL there, exactly as the person enters it
+
+    def oauth_issuer(request: HTTPConnection) -> str:
+        return public_base(request)
+
+    def mcp_resource(request: HTTPConnection) -> str:
+        return public_base(request) + "/mcp"
+
+    def oauth_challenge(scope, error: str = "") -> str:
+        """The WWW-Authenticate of /mcp's 401: where its protected resource metadata is (RFC 9728)."""
+        base = public_base(Request(scope))
+        said = f'Bearer resource_metadata="{base}/.well-known/oauth-protected-resource/mcp", scope="{" ".join(oauth.SCOPES)}"'
+        if error:
+            said += f', error="{error}", error_description="The token is unknown, expired, revoked or of another resource"'
+        return said
+
+    def oauth_audience(scope, name: str) -> bool:
+        """Whether a token's name may be used here: an OAuth token only at the MCP URL it was given for."""
+        grant = settings.oauth_grant(name)
+        return grant is None or grant.get("resource") == mcp_resource(Request(scope))
+
     def identify(request: HTTPConnection) -> Principal:
         # a WebSocket has no method: it is checked as a post (no token, same origin)
         method = request.scope.get("method", "WEBSOCKET")
@@ -730,6 +774,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 # upload URL its upload_backup got (one time, for it only)
                 template = getattr(request.scope.get("route"), "path", "")
                 upload = method == "PUT" and template == UPLOAD_ROUTE
+                if settings.oauth_grant(name) is not None and not upload and not (
+                        method in ("GET", "HEAD") and template == "/backups/{server}/{role}/{name}"):
+                    # an OAuth token is bound to the MCP URL (RFC 8707): there, and the downloads and
+                    # uploads its tools give, never the pages nor the REST API
+                    raise HTTPException(status.HTTP_403_FORBIDDEN,
+                                        "An OAuth token is for /mcp only (and the downloads its tools give)")
                 # the REST API (README, REST API): there its role says what it may do, the API's own rules
                 # (apiguard.py) the rest; everywhere else it only reads, as before
                 v1 = request.url.path.startswith(apiv1.PREFIX + "/")
@@ -869,7 +919,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                             links=frozenset(set(settings.links) - own - members),
                             machines=frozenset(machines_ - own - members - {"localhost", "127.0.0.1"}),
                             members=frozenset(members),
-                            tokens=frozenset(n for n in settings.tokens if settings.token_workspace(n) in mine))
+                            tokens=frozenset([*(n for n in settings.tokens if settings.token_workspace(n) in mine),
+                                              *(g["name"] for g in oauth_store.listed() if g["workspace"] in mine)]))
 
     def shown_jobs(request: HTTPConnection, found: list, lines: bool = False) -> list:
         """The jobs as the caller reads them (customer_view); a list's
@@ -955,6 +1006,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                             # what MCP shares with the REST API (README, REST API): the same rules
                                             # and the same code of the pages, defined further down
                                             {"guard": guard, "by_hand": lambda inst: manual_only(inst),
+                                             "oauth": {"challenge": oauth_challenge, "audience": oauth_audience},
                                              "staging": lambda *a, **k: api_hooks["staging"](*a, **k),
                                              "deploys": lambda *a, **k: mcp_deploys(*a, **k),
                                              "deploy_back": lambda *a, **k: api_hooks["deploy_back"](*a, **k)})
@@ -1281,6 +1333,372 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     app.add_route("/login/code", login_step, methods=["GET", "POST"])
     app.add_route("/login/setup", login_step, methods=["GET", "POST"])
 
+    # --- OAuth 2.1 for the MCP clients (oauth.py; README, MCP interface, OAuth): the discovery, the
+    # registration, the person's login and consent (pages of OmniaCLI), the tokens and their revocation.
+    # Starlette routes: the app's login dependency does not apply to them, each one checks what it needs
+
+    # the registrations and the token requests of an address (claude.ai's and ChatGPT's come from few)
+    oauth_limits = apiguard.RateLimiter(reads=oauth.TOKEN_PER_MINUTE, writes=oauth.REGISTER_PER_MINUTE)
+
+    def oauth_json(body: dict, code: int = 200, headers: dict | None = None) -> JSONResponse:
+        # every client reads these from wherever it runs (a browser's MCP inspector too): no cookie is used
+        return JSONResponse(body, status_code=code, headers={"Cache-Control": "no-store", "Pragma": "no-cache",
+                                                              "Access-Control-Allow-Origin": "*", **(headers or {})})
+
+    def oauth_refused(exc: oauth.OAuthError, request: Request, what: str, name: str = "") -> JSONResponse:
+        ip = request.client.host if request.client else ""
+        access_log.record("failed", "token", name, ip, f"OAuth {what}: {exc.error}: {exc.description}"[:300])
+        headers = {"WWW-Authenticate": "Basic"} if exc.status == 401 and request.headers.get("authorization") else {}
+        return oauth_json(exc.body(), exc.status, headers)
+
+    async def oauth_preflight(request: Request):
+        return Response(status_code=204, headers={
+            "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Authorization, Content-Type, MCP-Protocol-Version",
+            "Access-Control-Max-Age": "3600"})
+
+    async def oauth_protected_resource(request: Request):
+        """RFC 9728: the MCP URL, and this OmniaCLI as its authorization server."""
+        if request.method == "OPTIONS":
+            return await oauth_preflight(request)
+        return oauth_json({"resource": mcp_resource(request), "authorization_servers": [oauth_issuer(request)],
+                           "scopes_supported": list(oauth.SCOPES), "bearer_methods_supported": ["header"],
+                           "resource_name": "OmniaCLI"})
+
+    async def oauth_server_metadata(request: Request):
+        """RFC 8414. No OpenID Connect discovery: OmniaCLI gives no ID tokens."""
+        if request.method == "OPTIONS":
+            return await oauth_preflight(request)
+        base = oauth_issuer(request)
+        return oauth_json({
+            "issuer": base, "authorization_endpoint": f"{base}/oauth/authorize", "token_endpoint": f"{base}/oauth/token",
+            "registration_endpoint": f"{base}/oauth/register", "revocation_endpoint": f"{base}/oauth/revoke",
+            "response_types_supported": ["code"], "response_modes_supported": ["query"],
+            "grant_types_supported": ["authorization_code", "refresh_token"],
+            "code_challenge_methods_supported": ["S256"],
+            "token_endpoint_auth_methods_supported": list(oauth.AUTH_METHODS),
+            "revocation_endpoint_auth_methods_supported": list(oauth.AUTH_METHODS),
+            "scopes_supported": [*oauth.SCOPES, oauth.OFFLINE],
+            "client_id_metadata_document_supported": True,
+            "authorization_response_iss_parameter_supported": True,
+            "service_documentation": f"{base}/help"})
+
+    async def oauth_register(request: Request):
+        """RFC 7591: a client registers itself (claude.ai, Claude Code, ChatGPT without a metadata document)."""
+        if request.method == "OPTIONS":
+            return await oauth_preflight(request)
+        ip = request.client.host if request.client else ""
+        wait = oauth_limits.hit(f"register {ip}", True)
+        if wait:
+            return oauth_json({"error": "temporarily_unavailable",
+                               "error_description": f"too many registrations: try again in {wait} s"}, 429,
+                              {"Retry-After": str(wait)})
+        try:
+            meta = json.loads(await request.body() or b"null")
+        except ValueError:
+            meta = None
+        try:
+            answer = oauth_store.register(meta)
+        except oauth.OAuthError as exc:
+            return oauth_refused(exc, request, "registration")
+        access_log.record("oauth", "token", "", ip, f"client registered: {answer.get('client_name') or '(no name)'} "
+                          f"({answer['client_id']}), redirects to "
+                          f"{', '.join(oauth.redirect_host(u) for u in answer['redirect_uris'])}"[:300])
+        return oauth_json(answer, 201)
+
+    async def oauth_client_of(client_id: str) -> dict:
+        """The client of client_id: one registered here, or the one its metadata document describes
+        (fetched again past oauth.METADATA_TTL)."""
+        client = oauth_store.client(client_id)
+        if client is not None and client.get("kind") == "dynamic":
+            return client
+        if not client_id.startswith("https://"):
+            raise oauth.OAuthError("invalid_client", "unknown client_id: register first, or give a metadata URL")
+        fresh = oauth_store.metadata_fresh(client_id)
+        if fresh is not None:
+            return fresh
+        data = await oauth.fetch_metadata(client_id)
+        return oauth_store.keep_metadata_client(oauth.check_metadata(client_id, data))
+
+    def oauth_page(request: Request, kind: str, detail: str = "", code: int = 400, href: str = ""):
+        """A page of the OAuth flow that is not the consent (oauth_message.html says each kind)."""
+        return _TEMPLATES.TemplateResponse(request, "oauth_message.html", {"kind": kind, "detail": detail, "href": href},
+                                           status_code=code, headers={"Cache-Control": "no-store"})
+
+    def oauth_answer(request: Request, req: dict, **params) -> RedirectResponse:
+        """The answer to the client, at its redirect URI, with the issuer (RFC 9207) and its state."""
+        params.update(state=req.get("state"), iss=req["iss"])
+        return RedirectResponse(oauth.with_query(req["redirect_uri"], params), status.HTTP_303_SEE_OTHER,
+                                headers={"Cache-Control": "no-store"})
+
+    async def oauth_authorize(request: Request):
+        """The client sends the person here: the request is checked and kept, then the person goes on to
+        the consent page of OmniaCLI (after the login). An unknown client or a redirect URI it did not
+        register is said here, never sent anywhere."""
+        q = request.query_params
+        client_id, redirect_uri = q.get("client_id", ""), q.get("redirect_uri", "")
+        try:
+            client = await oauth_client_of(client_id)
+        except oauth.OAuthError as exc:
+            ip = request.client.host if request.client else ""
+            access_log.record("failed", "token", "", ip, f"OAuth authorize: {exc.error}: {exc.description}"[:300])
+            return oauth_page(request, "client", exc.description)
+        if not redirect_uri and len(client["redirect_uris"]) == 1:
+            redirect_uri = client["redirect_uris"][0]
+        if not oauth.redirect_matches(client["redirect_uris"], redirect_uri):
+            access_log.record("failed", "token", "", request.client.host if request.client else "",
+                              f"OAuth authorize: {client.get('name') or client_id}: redirect_uri not registered"[:300])
+            return oauth_page(request, "redirect")
+        req = {"client_id": client["id"], "redirect_uri": redirect_uri, "state": q.get("state", ""),
+               "iss": oauth_issuer(request), "resource": mcp_resource(request)}
+        if q.get("response_type") != "code":
+            return oauth_answer(request, req, error="unsupported_response_type",
+                                error_description="response_type is code")
+        challenge, method = q.get("code_challenge", ""), q.get("code_challenge_method", "")
+        if method != "S256" or not oauth._CHALLENGE.fullmatch(challenge):
+            return oauth_answer(request, req, error="invalid_request",
+                                error_description="PKCE: code_challenge with code_challenge_method S256")
+        resource = q.get("resource", "")
+        if resource and resource.rstrip("/") != req["resource"]:
+            return oauth_answer(request, req, error="invalid_target",
+                                error_description=f"this server is the resource {req['resource']}")
+        asked = [s for s in q.get("scope", "").split() if s in oauth.SCOPES]
+        rid = oauth_store.new_request({**req, "code_challenge": challenge,
+                                       "scope": max(asked, key=oauth.SCOPES.index) if asked else ""})
+        # a page of this site that moves on by itself: the session cookie (SameSite strict) is not sent
+        # with the navigation that came from the client's site, it is with the one this page starts
+        target = f"/oauth/consent?request={quote(rid)}"
+        return oauth_page(request, "continue", "", 200, target)
+
+    def oauth_levels(role: str) -> list[str]:
+        """The levels a person of role may give: never more than its role."""
+        return [lvl for lvl, needed in oauth.LEVEL_ROLES.items() if ACCESS_ROLES.index(needed) <= ACCESS_ROLES.index(role)]
+
+    def oauth_choices(name: str) -> dict:
+        """What name may give: {workspace ("" the machine): (levels, servers)}."""
+        if settings.user_role(name) == WORKSPACE_ROLE:
+            return {ws: (oauth_levels(role), [s for s in settings.workspaces[ws].servers if s in settings.servers])
+                    for ws, role in settings.memberships(name) if ws in settings.workspaces}
+        return {"": (oauth_levels(settings.user_role(name)), sorted(settings.servers))}
+
+    def oauth_who(request: Request) -> str | None:
+        """The person logged in in this browser, None when nobody is (or not here: the portal's rule)."""
+        name = sessions.user(request.cookies.get(COOKIE), settings.users)
+        return name if name is not None and portal_admits(request, name) else None
+
+    def client_said(client: dict) -> str:
+        """The client's name as the pages say it; a metadata document's host when it gives none."""
+        if client.get("kind") == "metadata":
+            return client.get("name") or urlsplit(client["id"]).hostname or client["id"]
+        return client.get("name") or "(no name)"
+
+    async def oauth_consent(request: Request):
+        """GET: what the client asks and what the person may give it; POST: the person's answer."""
+        rid = (request.query_params.get("request") if request.method == "GET" else None) or ""
+        form = {}
+        if request.method == "POST":
+            if not _same_origin(request):
+                return HTMLResponse("Cross-site form refused", status_code=403)
+            form = parse_qs((await request.body()).decode("utf-8", "replace"))
+            rid = (form.get("request") or [""])[0]
+        req = oauth_store.request(rid)
+        name = oauth_who(request)
+        if name is None:
+            if req is None:
+                return oauth_page(request, "ended")
+            return RedirectResponse(f"/login?next={quote('/oauth/consent?request=' + rid)}", status.HTTP_303_SEE_OTHER)
+        with contextlib.suppress(HTTPException):
+            request.state.user = identify(request)
+        if req is None:
+            return oauth_page(request, "ended")
+        client = oauth_store.client(req["client_id"])
+        if client is None:
+            oauth_store.drop_request(rid)
+            return oauth_page(request, "ended")
+        ip = request.client.host if request.client else ""
+        choices = oauth_choices(name)
+        said = client_said(client)
+        if request.method == "GET":
+            if not any(levels for levels, _ in choices.values()):
+                return oauth_page(request, "nothing", code=403)
+            role = settings.user_role(name)
+            return _TEMPLATES.TemplateResponse(request, "oauth_consent.html", {
+                "rid": rid, "client": client, "client_name": said, "client_host": urlsplit(client["id"]).hostname
+                if client.get("kind") == "metadata" else "",
+                "redirect_host": oauth.redirect_host(req["redirect_uri"]), "loopback": oauth.loopback(req["redirect_uri"]),
+                "custom_scheme": urlsplit(req["redirect_uri"]).scheme not in ("http", "https"),
+                "choices": {ws: {"levels": levels, "servers": servers} for ws, (levels, servers) in choices.items()},
+                "workspace_user": role == WORKSPACE_ROLE, "asked": req.get("scope") or "",
+                "days": oauth.DAYS, "default_days": oauth.DEFAULT_DAYS, "person": name,
+                "resource": req["resource"], "access_minutes": oauth.ACCESS_SECONDS // 60},
+                headers={"Cache-Control": "no-store"})
+        decision = (form.get("decision") or [""])[0]
+        if decision != "approve":
+            oauth_store.drop_request(rid)
+            access_log.record("oauth", "user", name, ip, f"consent refused: {said} ({oauth.redirect_host(req['redirect_uri'])})"[:300])
+            return oauth_answer(request, req, error="access_denied", error_description="The person refused")
+        workspace = (form.get("workspace") or [""])[0]
+        level = (form.get("level") or [""])[0]
+        servers = list(dict.fromkeys(form.get("servers") or []))
+        try:
+            days = int((form.get("days") or [""])[0])
+        except ValueError:
+            days = 0
+        levels, reachable = choices.get(workspace, ([], []))
+        if level not in levels or days not in oauth.DAYS or not set(servers) <= set(reachable):
+            return oauth_page(request, "invalid", href=f"/oauth/consent?request={quote(rid)}")
+        code = oauth_store.new_code(req, name, workspace, level, servers, days, oauth.digest(settings.users[name]))
+        oauth_store.drop_request(rid)
+        access_log.record("oauth", "user", name, ip,
+                          f"consent given: {said} ({oauth.redirect_host(req['redirect_uri'])}), level {level}, "
+                          f"{days} days, servers {', '.join(servers) or 'all'}"[:300],
+                          workspace=workspace)
+        return oauth_answer(request, req, code=code)
+
+    def oauth_client_credentials(request: Request, form: dict) -> tuple[str, str | None, str]:
+        """(client_id, secret, method) of a token or revocation request (RFC 6749 §2.3.1)."""
+        scheme, _, value = request.headers.get("authorization", "").partition(" ")
+        if scheme.lower() == "basic":
+            try:
+                pair = base64.b64decode(value.strip()).decode()
+            except ValueError:
+                raise oauth.OAuthError("invalid_client", "Basic credentials are not base64", 401) from None
+            client_id, _, secret = pair.partition(":")
+            return unquote_plus(client_id), unquote_plus(secret), "client_secret_basic"
+        secret = (form.get("client_secret") or [None])[0]
+        return (form.get("client_id") or [""])[0], secret, "client_secret_post" if secret else "none"
+
+    async def oauth_form(request: Request) -> dict:
+        if "application/x-www-form-urlencoded" not in request.headers.get("content-type", ""):
+            raise oauth.OAuthError("invalid_request", "the body is application/x-www-form-urlencoded")
+        body = await request.body()
+        if len(body) > 16 * 1024:
+            raise oauth.OAuthError("invalid_request", "the body is too large")
+        return parse_qs(body.decode("utf-8", "replace"))
+
+    async def oauth_token(request: Request):
+        """The authorization code, or a refresh token, for an access token and a new refresh token."""
+        if request.method == "OPTIONS":
+            return await oauth_preflight(request)
+        ip = request.client.host if request.client else ""
+        wait = oauth_limits.hit(f"token {ip}", False)
+        if wait:
+            return oauth_json({"error": "temporarily_unavailable",
+                               "error_description": f"too many token requests: try again in {wait} s"}, 429,
+                              {"Retry-After": str(wait)})
+        grant_name = ""
+        try:
+            form = await oauth_form(request)
+            field = lambda key: (form.get(key) or [""])[0]  # noqa: E731
+            client_id, secret, method = oauth_client_credentials(request, form)
+            if field("client_id") and field("client_id") != client_id:
+                raise oauth.OAuthError("invalid_request", "two different client_id")
+            client = oauth_store.client(client_id)
+            if client is None:
+                raise oauth.OAuthError("invalid_client", "unknown client", 401)
+            oauth_store.authenticate(client, secret, method)
+            kind = field("grant_type")
+            if kind == "authorization_code":
+                grant, answer = oauth_store.exchange(field("code"), client, field("redirect_uri"),
+                                                     field("code_verifier"), field("resource").rstrip("/"))
+                what = "token issued"
+            elif kind == "refresh_token":
+                found = oauth_store.grant_of_refresh(field("refresh_token"))
+                grant_name = found["name"] if found else ""
+                grant, answer = oauth_store.refresh(field("refresh_token"), client, field("resource").rstrip("/"),
+                                                    field("scope"))
+                what = "token refreshed (the refresh token rotated)"
+            else:
+                raise oauth.OAuthError("unsupported_grant_type", "grant_type: authorization_code or refresh_token")
+        except oauth.OAuthError as exc:
+            if exc.revoked:
+                access_log.record("oauth", "token", exc.revoked, ip, f"revoked: {exc.description}"[:300])
+            return oauth_refused(exc, request, "token", grant_name)
+        access_log.record("oauth", "token", grant["name"], ip,
+                          f"{what}: {grant['client_name'] or grant['client_id']} for {grant['user']}, level {grant['level']}"[:300],
+                          workspace=grant.get("workspace") or "")
+        return oauth_json(answer)
+
+    async def oauth_revoke(request: Request):
+        """RFC 7009: the client ends its grant (any of its tokens). The answer is 200 whatever the token."""
+        if request.method == "OPTIONS":
+            return await oauth_preflight(request)
+        ip = request.client.host if request.client else ""
+        try:
+            form = await oauth_form(request)
+            client_id, secret, method = oauth_client_credentials(request, form)
+            client = oauth_store.client(client_id)
+            if client is None:
+                raise oauth.OAuthError("invalid_client", "unknown client", 401)
+            oauth_store.authenticate(client, secret, method)
+        except oauth.OAuthError as exc:
+            return oauth_refused(exc, request, "revocation")
+        grant = oauth_store.revoke_token((form.get("token") or [""])[0], client)
+        if grant is not None:
+            access_log.record("oauth", "token", grant["name"], ip, f"revoked by its client {grant['client_name']}"[:300],
+                              workspace=grant.get("workspace") or "")
+        return oauth_json({})
+
+    for path in ("/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"):
+        app.add_route(path, oauth_protected_resource, methods=["GET", "OPTIONS"])
+    app.add_route("/.well-known/oauth-authorization-server", oauth_server_metadata, methods=["GET", "OPTIONS"])
+    app.add_route("/oauth/register", oauth_register, methods=["POST", "OPTIONS"])
+    app.add_route("/oauth/authorize", oauth_authorize, methods=["GET"])
+    app.add_route("/oauth/consent", oauth_consent, methods=["GET", "POST"])
+    app.add_route("/oauth/token", oauth_token, methods=["POST", "OPTIONS"])
+    app.add_route("/oauth/revoke", oauth_revoke, methods=["POST", "OPTIONS"])
+
+    def oauth_rows(found: list[dict]) -> list[dict]:
+        """The grants as the token pages list them."""
+        return [{"id": g["id"], "name": g["name"], "user": g["user"], "workspace": g.get("workspace") or "",
+                 "client": g.get("client_name") or "", "verified": g.get("client_kind") == "metadata",
+                 "client_host": urlsplit(g["client_id"]).hostname if g.get("client_kind") == "metadata" else "",
+                 "redirect_host": g.get("redirect_host", ""), "level": g["level"], "servers": g.get("servers") or [],
+                 "created": moment(g["created"]), "ends": moment(g["ends"]),
+                 "used": moment(g["used"]) if g.get("used") else ""} for g in found]
+
+    reach_seen: dict[str, tuple[float, str]] = {}
+
+    async def oauth_reach(request: Request) -> dict:
+        """Where claude.ai and ChatGPT connect (the MCP URL) and whether they can: they reach it from the
+        internet, over https. why: "" (they can, as far as this machine tells), "link" (seen through a
+        link: the address is the other panel's), "http", "private" (its name is of a private network
+        here), "unresolved"."""
+        if prefix_of(request) and not portal_url():
+            return {"url": "https://<address of this OmniaCLI>/mcp", "why": "link"}
+        url = mcp_resource(request)
+        parts = urlsplit(url)
+        host = parts.hostname or ""
+        if parts.scheme != "https":
+            return {"url": url, "why": "http"}
+        now = time.monotonic()
+        seen = reach_seen.get(host)
+        if seen is None or now - seen[0] > 600:
+            try:
+                found = await asyncio.wait_for(asyncio.get_running_loop().getaddrinfo(host, 443), 3)
+                addresses = {item[4][0] for item in found}
+                why = "" if addresses and all(oauth.public_address(a) for a in addresses) else "private"
+            except (OSError, asyncio.TimeoutError):
+                why = "unresolved"
+            reach_seen[host] = seen = (now, why)
+        return {"url": url, "why": seen[1]}
+
+    @app.post("/api/oauth/grants/revoke")
+    async def oauth_grant_revoke(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """Revoke an OAuth grant: its person, an admin of its workspace, an admin of the machine. Its
+        access token stops at once, its refresh token too (the chain ends)."""
+        grant = oauth_store.grants.get(str(payload.get("id") or ""))
+        mine = grant is not None and me.kind == "user" and grant["user"] == me.name
+        theirs = grant is not None and (machine_admin(me) or (
+            bool(grant.get("workspace")) and me.workspace_role(grant["workspace"]) == "admin"))
+        if not (mine or theirs):
+            return refuse("No such grant of OAuth", status.HTTP_404_NOT_FOUND)
+        oauth_store.revoke(grant["id"], f"revoked by {me}")
+        access_log.record("oauth", me.kind, me.name, request.client.host if request.client else "",
+                          f"revoked {grant['name']}: {grant.get('client_name') or grant['client_id']} of {grant['user']}"[:300],
+                          workspace=grant.get("workspace") or "")
+        return {"ok": True}
+
     async def login_as_landing(request: Request):
         """/.omniacli/login?t=<token>, opened on the instance's own host (its
         nginx passes the path here): Odoo's session cookie set on that host,
@@ -1322,6 +1740,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         {"detail"}) in the caller's language; the code says it in English."""
         response = await call_next(request)
         lang = request_language(request)
+        if request.url.path.startswith(("/oauth/", "/.well-known/")):
+            # OAuth's errors are codes of RFC 6749 a program reads (oauth.py): as they are
+            return response
         if (lang == i18n.DEFAULT or response.status_code < 400
                 or "application/json" not in response.headers.get("content-type", "")):
             return response
@@ -4252,6 +4673,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                          "servers": list(settings.token_servers(n))} for n in sorted(settings.tokens)
                         if settings.token_workspace(n) == ws.name],
              "mcp_url": public_base(request) + "/mcp", "api_base": api_base(request),
+             "grants": oauth_rows(oauth_store.listed(workspace=ws.name)), "oauth_reach": await oauth_reach(request),
              # the links an archive may be copied through: the machine's admins'
              "links": sorted(settings.link_targets) if me.kind == "user" and not me.workspaces and me.can("admin")
              else [],
@@ -7397,6 +7819,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                            for n in sorted(settings.tokens)],
                 # how a client is connected with a token (README, REST API; _api_clients.html)
                 "api_base": api_base(request), "server_names": sorted(settings.servers),
+                # the assistants connected with OAuth (oauth.py), every person's, and where they connect
+                "grants": oauth_rows(oauth_store.listed()), "oauth_reach": await oauth_reach(request),
                 "users_file": settings.users_file,
                 "roles": ACCESS_ROLES,
                 "user_roles": USER_ROLES,
@@ -12114,7 +12538,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return _TEMPLATES.TemplateResponse(
             request, "account.html",
             {"name": me.name, "role": WORKSPACE_ROLE if me.scoped else me.role, "workspaces": me.workspaces,
-             "fixed": me.name in settings.fixed.users, "two_step": two_step_state(request, me.name)},
+             "fixed": me.name in settings.fixed.users, "two_step": two_step_state(request, me.name),
+             # the assistants this person let in with OAuth (oauth.py), revocable here
+             "grants": oauth_rows(oauth_store.listed(user=me.name)), "mcp_url": mcp_resource(request)},
         )
 
     # --- its two-step verification (totp.py): on with a code of the app, the
@@ -16783,6 +17209,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     app.include_router(api_router)
     app.state.api_guard, app.state.api_hooks = guard, api_hooks
+    # OAuth (oauth.py): the grants and the limit on registrations and token requests (the tests' way in)
+    app.state.oauth_store, app.state.oauth_limits = oauth_store, oauth_limits
 
     def api_base(request: Request) -> str:
         """Where a client reaches this OmniaCLI (through a link: the address of the panel, which is not this

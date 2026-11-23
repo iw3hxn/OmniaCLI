@@ -7,6 +7,7 @@
 {% block content %}
 {% from "_list.html" import list_search, item with context %}
 {% from "_api_clients.html" import connect_fields, connect_script with context %}
+{% from "_oauth_grants.html" import grants_table, grants_script with context %}
 {% include "_list.html" %}
 {% set role_names = {"user": _("user"), "developer": _("developer"), "admin": _("admin"), "workspace": _("a customer's user")} %}
 {% set levels = {"user": _("read"), "developer": _("write: tests and stagings"), "admin": _("write and productions, with confirm")} %}
@@ -130,7 +131,11 @@
     {% endfor %}
   </table>
   </div>
+  <h3 style="margin: 18px 0 6px" id="oauth">{{ _("Connected with OAuth") }} ({{ grants | length }})</h3>
+  <p class="muted" style="margin: 0 0 10px">{{ _("claude.ai, ChatGPT and the other assistants that log in with OAuth need no token: the person logs in and chooses what each may do. They are listed here, every person's.") }}</p>
+  {{ grants_table(grants) }}
 </section>
+{{ grants_script() }}
 <div class="users-foot muted">
   <details><summary title="{{ _('The file of this machine that keeps the users, the tokens and the keys') }}">{{ _("Where it is saved") }}</summary>
     <p style="font-size: 13px">{{ _("Saved in") }} <span class="mono">{{ users_file }}</span>. {{ _("Entries marked main config are set in the main configuration file and are changed there.") }}</p></details>
@@ -190,7 +195,7 @@
   {{ connect_fields("cd") }}
   <div class="actions"><button type="button" id="cd-close" title="{{ _('Closes this window') }}">{{ _("Close") }}</button></div>
 </dialog>
-{{ connect_script(api_base) }}
+{{ connect_script(api_base, oauth_reach) }}
 {% include "_invite_dialog.html" %}
 <script>
 (function () {

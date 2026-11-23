@@ -6,6 +6,7 @@
 {% endblock %}
 {% block content %}
 {% from "_api_clients.html" import connect_fields, connect_script with context %}
+{% from "_oauth_grants.html" import grants_table, grants_script with context %}
 {# the page of a workspace (docs/ux/UX-007 §4.4): its disk in the head, four tabs (instances, names on the web, users,
    external services), every list read; a new instance, a user, a key and the notices in a dialog. The repositories,
    the Odoo options and the deletion of an instance are on the instance's page (UX-006 › Settings). #}
@@ -286,7 +287,11 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
     {% endfor %}
   </table>
   </div>
+  <h3 style="margin: 18px 0 6px">{{ _("Connected with OAuth") }} ({{ grants | length }})</h3>
+  <p class="muted ws-line" style="margin: 0 0 10px">{{ _("claude.ai, ChatGPT and the other assistants that log in with OAuth: each user of the workspace lets in its own, with its role here at most.") }}</p>
+  {{ grants_table(grants) }}
 </section>
+{{ grants_script() }}
 </div>
 
 {% if new_instance %}
@@ -437,7 +442,7 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
   {{ connect_fields("cd") }}
   <div class="actions"><button type="button" id="cd-close" title="{{ _('Closes this window') }}">{{ _("Close") }}</button></div>
 </dialog>
-{{ connect_script(api_base) }}
+{{ connect_script(api_base, oauth_reach) }}
 <dialog id="notify-dialog" aria-labelledby="nd-title">
   <form method="dialog" id="nd-form">
     <h2 id="nd-title">{{ _("Notices") }}</h2>

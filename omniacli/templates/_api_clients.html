@@ -9,9 +9,10 @@
    - OpenCode: https://opencode.ai/docs/mcp-servers/ (V2: mcp.servers, type remote, oauth false, {env:NAME})
    - Cursor: https://cursor.com/docs/context/mcp (~/.cursor/mcp.json, url and headers, ${env:NAME})
    - VS Code: https://code.visualstudio.com/docs/agents/reference/mcp-configuration (.vscode/mcp.json, type http, ${input:id})
-   - claude.ai: https://claude.com/docs/connectors/building/authentication.md and ChatGPT:
-     https://developers.openai.com/plugins/build/auth.md: OAuth (a static header is a beta of some organisations on
-     claude.ai, none on ChatGPT), which OmniaCLI does not offer yet #}
+   - claude.ai: https://claude.com/docs/connectors/building/authentication.md and custom/add-unlisted.md, ChatGPT:
+     https://developers.openai.com/plugins/build/auth.md and api/docs/guides/developer-mode.md (read on 23/11/2026):
+     OAuth (oauth.py), the MCP URL alone, from the internet over https; Claude Desktop's Connectors are claude.ai's
+   reach (oauth_reach in app.py): whether that URL answers from the internet, as far as this machine tells #}
 {% macro connect_fields(id) %}
 <div class="form-grid" style="margin-top: 10px">
   <label for="{{ id }}-client">{{ _("Client") }}</label>
@@ -21,10 +22,11 @@
 <pre class="console mono copyable" id="{{ id }}-snippet" style="white-space: pre-wrap; word-break: break-all"></pre>
 <p class="muted" id="{{ id }}-note" style="font-size: 13px"></p>
 {% endmacro %}
-{% macro connect_script(base) %}
+{% macro connect_script(base, reach=none) %}
 <script>
 (function () {
-  const BASE = {{ base | tojson }}, MCP = BASE + "/mcp", API = BASE + "/api/v1";
+  const BASE = {{ base | tojson }}, MCP = BASE + "/mcp", API = BASE + "/api/v1", REACH = {{ (reach or {}) | tojson }};
+  const WEB_MCP = REACH.url || MCP, WEB_NOTE = () => (T.reach[REACH.why || ""] || "") + (REACH.why ? "" : " " + T.portalNote);
   const T = {code: {{ _("In a terminal:") | tojson }}, desktop: {{ _("In claude_desktop_config.json (Settings › Developer › Edit Config), then restart Claude Desktop:") | tojson }},
              codex: {{ _("In ~/.codex/config.toml, with the token in the environment variable:") | tojson }},
              opencode: {{ _("In opencode.json, with the token in the environment variable:") | tojson }},
@@ -32,14 +34,21 @@
              vscode: {{ _("In .vscode/mcp.json: VS Code asks the token the first time and keeps it:") | tojson }},
              any: {{ _("Any MCP client over streamable HTTP:") | tojson }},
              rest: {{ _("The REST API, for scripts and CI (its documentation at /api/v1/docs):") | tojson }},
-             web: {{ _("claude.ai and ChatGPT") | tojson }},
-             webText: {{ _("claude.ai and ChatGPT connect with OAuth: not yet available.") | tojson }},
-             desktopNote: {{ _("Claude Desktop reaches a remote server through the bridge mcp-remote (it needs Node.js); its Connectors ask OAuth, not yet available.") | tojson }},
+             claudeai: {{ _("No token: on claude.ai, Customize › Connectors › Add › Add custom connector (on Team and Enterprise an Owner adds it in Organization settings › Connectors), a name and this URL, then Connect: you log in to OmniaCLI and choose what it may do. Claude Desktop and the mobile app show the same connectors.") | tojson }},
+             chatgpt: {{ _("No token: in ChatGPT on the web, Plugins › + › Add custom MCP server: a name, this URL under Connection, OAuth as authentication, Create as a plugin, then install it: at the sign-in you log in to OmniaCLI and choose what it may do.") | tojson }},
+             codeNote: {{ _("Without --header, Claude Code connects with OAuth: /mcp in Claude Code opens the login of OmniaCLI, and no token is needed.") | tojson }},
+             desktopNote: {{ _("Claude Desktop reaches a remote server through the bridge mcp-remote (it needs Node.js). Without a token: Settings › Connectors › Add custom connector, as on claude.ai (see that row): it logs in with OAuth.") | tojson }},
+             reach: {"": {{ _("claude.ai and ChatGPT reach this URL from the internet: it must answer there over https, with a certificate of a known authority. Check it once from outside (curl it from a phone's network).") | tojson }},
+                     private: {{ _("This address is of a private network here: claude.ai and ChatGPT, on the internet, cannot reach it. Publish OmniaCLI at a public name over https (Options › Customers' portal, or your reverse proxy), or use a token with a client on your computer (Claude Code, Codex…).") | tojson }},
+                     http: {{ _("This OmniaCLI is reached over http: claude.ai and ChatGPT need it at a public address over https. Publish it there (Options › Customers' portal, or your reverse proxy), or use a token with a client on your computer (Claude Code, Codex…).") | tojson }},
+                     unresolved: {{ _("This name does not resolve from this machine: claude.ai and ChatGPT reach it only if it is a public name of the internet, over https.") | tojson }},
+                     link: {{ _("Seen through a link: the URL is that machine's own address, over https from the internet.") | tojson }}},
+             portalNote: {{ _("On the customers' portal the machine's users log in only if Options lets them in there.") | tojson }},
              envNote: {{ _("The token stays out of the file: set the variable where the client starts.") | tojson }}};
   const env = (token) => "export OMNIACLI_TOKEN=" + token;
   const json = (value) => JSON.stringify(value, null, 2);
   const CLIENTS = [
-    ["code", "Claude Code", T.code, (t) => 'claude mcp add --transport http omniacli ' + MCP + ' --header "Authorization: Bearer ' + t + '"', ""],
+    ["code", "Claude Code", T.code, (t) => 'claude mcp add --transport http omniacli ' + MCP + ' --header "Authorization: Bearer ' + t + '"', T.codeNote],
     ["desktop", "Claude Desktop", T.desktop, (t) => json({mcpServers: {omniacli: {command: "npx",
       args: ["mcp-remote", MCP, "--header", "Authorization:${AUTH_HEADER}"], env: {AUTH_HEADER: "Bearer " + t}}}}), T.desktopNote],
     ["codex", "Codex", T.codex, (t) => env(t) + "\n\n[mcp_servers.omniacli]\nurl = \"" + MCP + "\"\nbearer_token_env_var = \"OMNIACLI_TOKEN\"", T.envNote],
@@ -51,7 +60,8 @@
       servers: {omniacli: {type: "http", url: MCP, headers: {Authorization: "Bearer ${input:omniacli-token}"}}}}), ""],
     ["any", "MCP (streamable HTTP)", T.any, (t) => "URL: " + MCP + "\nAuthorization: Bearer " + t, ""],
     ["rest", "REST API · curl", T.rest, (t) => 'curl -H "Authorization: Bearer ' + t + '" ' + API + "/instances\n" + API + "/docs", ""],
-    ["web", T.web, T.webText, null, ""],
+    ["claudeai", "claude.ai · Claude Desktop (Connectors)", T.claudeai, () => WEB_MCP, WEB_NOTE()],
+    ["chatgpt", "ChatGPT", T.chatgpt, () => WEB_MCP, WEB_NOTE()],
   ];
   // the fields of connect_fields(id), for the token (in clear only where it is shown once; else <TOKEN>)
   window.OmniaConnect = function (id, token) {

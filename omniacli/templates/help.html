@@ -116,6 +116,8 @@ openssl x509 -in /etc/omniacli/192.0.2.10.pem -noout -subject -ext subjectAltNam
   <li>{{ _("<code>--scope user</code> makes it available in every project; without it, it is registered for the folder the command runs in only.") | safe }}</li>
   <li>{{ _("To replace it: <code>claude mcp remove omniacli</code> (in the same scope), then add it again.") | safe }}</li>
   <li>{{ _("Check with <code>claude mcp list</code>, or <code>/mcp</code> inside a session.") | safe }}</li>
+  <li>{{ _("Without --header, Claude Code connects with OAuth: /mcp in Claude Code opens the login of OmniaCLI, and no token is needed.") }}</li>
+  <li>{{ _("claude.ai, ChatGPT and the connectors of Claude Desktop connect with OAuth to this same URL, from the internet over https: the Users page says how, under How to connect… of a token.") }}</li>
   <li>{{ _("Over HTTPS with a self-signed certificate, the client must trust that certificate as well (step 2 of the links); how depends on the client.") | safe }}</li>
 </ul>
 

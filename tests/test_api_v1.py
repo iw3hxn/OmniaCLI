@@ -352,7 +352,10 @@ async def test_the_token_page_says_how_to_connect(client, env):
     for snippet in ("claude mcp add --transport http omniacli", "mcp-remote", "bearer_token_env_var",
                     "opencode.ai/config.json", "${input:omniacli-token}", "/api/v1"):
         assert snippet in page, snippet
-    assert "claude.ai e ChatGPT si collegano con OAuth: non ancora disponibile." in page
+    # claude.ai and ChatGPT: the MCP URL alone, with OAuth (oauth.py), and whether they reach it from the internet
+    assert "Add custom connector" in page and "Add custom MCP server" in page and "non ancora disponibile" not in page
+    assert '"url": "http://omniacli.test/mcp", "why": "http"' in page
+    assert "Questo OmniaCLI si raggiunge in http: claude.ai e ChatGPT lo vogliono a un indirizzo pubblico in https." in page
     assert TOKEN not in page
     # the CI mark and the servers saved and read back
     resp = await access(client, "tokens/save", {"name": "ci-bot", "role": "developer", "new": True, "ci": True,

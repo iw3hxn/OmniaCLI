@@ -390,6 +390,8 @@ class Settings:
     token_server_lists: dict[str, tuple] = field(default_factory=dict)
     fixed: Access = field(default_factory=Access)
     web: Access = field(default_factory=Access)
+    # the grants of the OAuth clients (oauth.OAuthStore, set by the app): their tokens are named oauth:…
+    oauth: object = None
 
     def storage_problem(self, ws: Workspace) -> str | None:
         """Why ws cannot use its storage, None when it can (or has none yet)."""
@@ -420,19 +422,34 @@ class Settings:
     def user_role(self, name: str) -> str:
         return self.user_roles.get(name, "admin")
 
+    def oauth_grant(self, name: str) -> dict | None:
+        """The OAuth grant a token's name is of (oauth.py), None for a token of the token page."""
+        if self.oauth is None or not name.startswith("oauth:"):
+            return None
+        return self.oauth.by_name(name)
+
     def token_role(self, name: str) -> str:
+        if self.oauth_grant(name) is not None:
+            # its level, never more than its person's role now
+            return self.oauth.role_of(name)
         return self.token_roles.get(name, TOKEN_DEFAULT_ROLE)
 
     def token_workspace(self, name: str) -> str:
         """The workspace an MCP token is bound to; empty: the machine's token."""
+        grant = self.oauth_grant(name)
+        if grant is not None:
+            return grant.get("workspace") or ""
         return self.token_workspaces.get(name, "")
 
     def token_ci(self, name: str) -> bool:
-        """A token of a CI: it never acts on a production, whatever its role."""
-        return bool(self.token_cis.get(name))
+        """A token of a CI: it never acts on a production, whatever its role (an OAuth grant's never is one)."""
+        return bool(self.token_cis.get(name)) and self.oauth_grant(name) is None
 
     def token_servers(self, name: str) -> tuple:
         """The servers a token is limited to; empty: every server its workspace (or the machine) has."""
+        grant = self.oauth_grant(name)
+        if grant is not None:
+            return tuple(grant.get("servers") or ())
         return tuple(self.token_server_lists.get(name) or ())
 
     @property

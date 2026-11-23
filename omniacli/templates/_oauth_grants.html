@@ -1,0 +1,46 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{# The assistants let in with OAuth (oauth.py): on Account a person's own, on the token page of the
+   machine every person's, on a workspace's page that workspace's; each one revocable there. -#}
+{% macro grants_table(grants, people=true) %}
+{% set level_names = {"read": _("read"), "write": _("tests and stagings"), "production": _("also productions")} %}
+<div class="scroll">
+<table class="users-table" data-oauth-grants>
+  <tr><th>{{ _("Assistant") }}</th>{% if people %}<th>{{ _("Person") }}</th>{% endif %}<th>{{ _("Level") }}</th><th>{{ _("Last use") }}</th><th></th></tr>
+  {% for g in grants %}
+  <tr data-grant="{{ g.id }}" data-client="{{ g.client or g.client_host }}">
+    <td><strong>{{ g.client or g.client_host or _("(no name)") }}</strong>
+      {% if g.verified %}<span class="badge ok" title="{{ _('Its identity is published at an https address of {host}', host=g.client_host) }}">{{ g.client_host }}</span>
+      {% else %}<span class="badge warn" title="{{ _('It registered itself with this name: the name is not verified') }}">{{ _("not verified") }}</span>{% endif %}
+      <span class="small-note">{{ _("returns to {host}", host=g.redirect_host) }}</span>
+      {% if g.workspace %} <span class="badge info" title="{{ _('It sees only this workspace') }}">{{ _("workspace {name}", name=g.workspace) }}</span>{% endif %}
+      {% if g.servers %}<span class="small-note">{{ _("only {names}", names=g.servers | join(", ")) }}</span>{% endif %}
+      <br><span class="small-note mono">{{ g.name }}</span></td>
+    {% if people %}<td>{{ g.user }}</td>{% endif %}
+    <td>{{ level_names.get(g.level, g.level) }}<br><span class="small-note">{{ _("until {date}", date=g.ends) }}</span></td>
+    <td>{{ g.used or _("never") }}</td>
+    <td><div class="actions" style="margin: 0; justify-content: flex-end">
+      <button type="button" class="small danger" data-revoke-grant title="{{ _('Ends this access: its key and the key that renews it stop at once. To use it again the assistant asks the person again.') }}">{{ _("Revoke…") }}</button></div></td>
+  </tr>
+  {% else %}
+  <tr><td colspan="{{ 5 if people else 4 }}" class="muted">{{ _("No assistant is connected with OAuth.") }}</td></tr>
+  {% endfor %}
+</table>
+</div>
+{% endmacro %}
+{% macro grants_script() %}
+<script>
+(function () {
+  for (const button of document.querySelectorAll("[data-revoke-grant]")) {
+    button.onclick = async () => {
+      const row = button.closest("tr");
+      if (!await omniaAsk({{ _("Revoke the access of {name}? It stops at once.") | tojson }}.replace("{name}", row.dataset.client), button, {danger: true})) return;
+      const resp = await fetch("{{ prefix }}/api/oauth/grants/revoke", {method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({id: row.dataset.grant})}).catch(() => null);
+      if (resp && resp.ok) { location.reload(); return; }
+      const data = resp ? await resp.json().catch(() => ({})) : {};
+      omniaSay(data.error || data.detail || {{ _("OmniaCLI cannot be reached") | tojson }});
+    };
+  }
+})();
+</script>
+{% endmacro %}
