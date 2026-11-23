@@ -242,8 +242,12 @@ async def test_a_push_reaches_the_stagings_not_the_production(staged, client, en
     assert (available["name"], available["branch"], available["sha"], available["subject"]) == (
         "addons", "main", sha[:10], "fix the invoice")
     assert data["deploys"][0]["kind"] == "available" and data["deploys"][0]["outcome"] == "available"
+    # the card «Available, not deployed» of the production's row (UX-015 §6), the first; no note above the tabs
+    strip = (await client.get("/api/servers/srv/production/environments", headers={"Authorization": AUTH})).json()
+    card = strip["environments"][0]["cards"][0]
+    assert (card["kind"], card["repo"], card["sha"], card["message"]) == ("available", "addons", sha, "fix the invoice")
     page = (await client.get("/servers/srv", headers={"Authorization": AUTH})).text
-    assert f"New commit available on addons/main: {sha[:10]} fix the invoice" in page
+    assert 'class="note-box" data-available' not in page
     # Update by hand: the line goes
     monkeypatch.setattr(ops, "pull_restart", real_pull_restart)
     sh("git", "remote", "set-url", addons.remote, str(env["remotes"]["addons"]), cwd=addons.path)

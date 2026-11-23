@@ -145,11 +145,14 @@ class DeployRepository(BaseModel):
     before: Optional[str] = Field(None, description="The commit before the deploy")
     after: Optional[str] = Field(None, description="The commit after it")
     subject: Optional[str] = Field(None, description="The subject of the commit after it")
+    author: Optional[str] = Field(None, description="Who wrote the commit after it (none for a deploy recorded "
+                                                    "before OmniaCLI kept it)")
 
 
 class DeployRow(BaseModel):
     id: Optional[str] = Field(None, description="The deploy's id: give it to deploys/{id}/back")
-    kind: str = Field(description="deploy, or available (a commit a push told of a production, not deployed)")
+    kind: str = Field(description="deploy; available (a commit a push told of a production, not deployed); failed "
+                                  "(a job of the code that failed or was stopped before moving any commit)")
     started: Optional[str] = Field(None, description="When its job started")
     finished: Optional[str] = Field(None, description="When it ended")
     by: str = Field(description="Who or what started it")

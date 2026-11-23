@@ -6,6 +6,7 @@ machine and of its links (one that does not answer, an older one), what
 each person reads, and the row-by-row decision of Log in as."""
 
 import json
+import re
 import socket
 
 import httpx
@@ -235,10 +236,12 @@ async def test_log_in_as_row_by_row(workspaces, client, env, monkeypatch):  # no
     envs = (await client.get("/api/servers", headers={"Authorization": AUTH})).json()[0]["instances"]
     assert envs["production"]["state"] == "stopped" and "is stopped" in envs["production"]["login_as"]["disabled"]
     monkeypatch.undo()
-    # the rows of Environments: Log in as… between Open and Addresses…, the dialog drawn once
+    # the rows of Environments and deploys: Log in as… first in the menu of each card of now (UX-015 §7), the
+    # dialog drawn once
     page = (await client.get("/servers/srv", headers={"Authorization": AUTH})).text
-    table = page.split('<table class="copies">', 1)[1].split("</table>", 1)[0]
-    assert table.count("data-login-as=") == 2 and page.count('id="login-as-dialog"') == 1
+    section = page.split('id="envs"', 1)[1].split("<style>", 1)[0]
+    assert section.count("data-login-as=") == 2 and page.count('id="login-as-dialog"') == 1
+    assert re.findall(r'data-menu="(\w+)"', section)[:2] == ["login_as", "logs"]
     # the Instances list: the cell of the two actions, hidden on a phone, the dialog there
     page = (await client.get("/instances", headers={"Authorization": AUTH})).text
     assert 'id="login-as-dialog"' in page and "function actionsCell" in page and 'class="hide-sm"></th>' in page

@@ -190,6 +190,8 @@ ROUTES = {
         # the update without stopping changes how an update runs: switched by who switches the CI
         ("GET", "/api/servers/{server}/{role}/zero-downtime"), ("POST", "/api/servers/{server}/{role}/zero-downtime"),
         ("GET", "/api/servers/{server}/{role}/deploys"), ("GET", "/api/servers/{server}/{role}/deploys/{deploy_id}/back"),
+        # the cards of «Environments and deploys» (UX-015 §11): the deploys of each environment, as the list's
+        ("GET", "/api/servers/{server}/{role}/environments"),
         ("POST", "/api/servers/{server}/{role}/deploys/{deploy_id}/back"),
         ("POST", "/api/workspaces/{workspace}/repositories/branches"),
         ("POST", "/api/workspaces/{workspace}/repositories/update"),

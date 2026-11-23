@@ -712,6 +712,28 @@ window.serverZone = {{ server_zone | tojson }};
     const at = window.momentOf(text, zone);
     return at === null ? `${m[3]}/${m[2]}/${m[1]} ${m[4]}:${m[5]}` : local(new Date(at));
   };
+  // how long ago a moment was (the cards of the deploys, UX-015 D6: ages are compared there, not dates), from now
+  // by this browser's clock; the moment as whenText reads it (zone: the same), its exact date in the title
+  // where it is shown. "" when it is not a moment
+  const AGO = {seconds: {{ _("a few seconds ago") | tojson }}, minute: {{ _("1 min ago") | tojson }},
+               minutes: {{ _("{n} min ago") | tojson }}, hour: {{ _("1 hour ago") | tojson }},
+               hours: {{ _("{n} hours ago") | tojson }}, day: {{ _("1 day ago") | tojson }},
+               days: {{ _("{n} days ago") | tojson }}, month: {{ _("1 month ago") | tojson }},
+               months: {{ _("{n} months ago") | tojson }}, year: {{ _("1 year ago") | tojson }},
+               years: {{ _("{n} years ago") | tojson }}};
+  window.agoText = (iso, zone) => {
+    // a zone not known: the moment as this browser's own clock would write it
+    const at = iso instanceof Date ? iso.getTime() : (window.momentOf(iso, zone) ?? Date.parse(String(iso ?? "")));
+    if (at === null || isNaN(at)) return "";
+    const seconds = Math.max(0, (Date.now() - at) / 1000);
+    const say = (one, many, n) => (n === 1 ? AGO[one] : AGO[many].replace("{n}", String(n)));
+    if (seconds < 60) return AGO.seconds;
+    if (seconds < 3600) return say("minute", "minutes", Math.floor(seconds / 60));
+    if (seconds < 86400) return say("hour", "hours", Math.floor(seconds / 3600));
+    if (seconds < 30 * 86400) return say("day", "days", Math.floor(seconds / 86400));
+    if (seconds < 365 * 86400) return say("month", "months", Math.floor(seconds / (30 * 86400)));
+    return say("year", "years", Math.floor(seconds / (365 * 86400)));
+  };
   // a Date as zone's clock shows it (undefined: this page's machine), 2026-11-20T10:40: what a field typed
   // in this browser's time sends to the server, which reads its own clock
   window.serverWall = (date, zone) => {

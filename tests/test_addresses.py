@@ -391,8 +391,9 @@ async def test_the_environments_rows(dialog, client, env):
     settings = env["settings"]
     settings.workspaces["acme"].aliases = {"main": {"production": ["www.customer.com"]}}
     page = (await client.get("/servers/acme-main", headers=basic("mario"))).text
-    buttons = re.findall(r'<button type="button" class="small addr-open"[^>]*>', page)
-    assert [re.search(r'data-env="([^"]+)"', b).group(1) for b in buttons] == ["acme-main/production", "acme-main/test"]
+    # each row's ⚙ is in the menu of its card of now (UX-015 §7)
+    buttons = re.findall(r'<button type="button" class="addr-open"[^>]*>', page)
+    assert [re.search(r'data-addr-env="([^"]+)"', b).group(1) for b in buttons] == ["acme-main/production", "acme-main/test"]
     assert all('title="' in b for b in buttons) and "www.customer.com" in page
     dialog_html = page.split('<dialog id="addr-dialog"')[1].split("</dialog>")[0]
     assert 'id="addr-save" disabled' in dialog_html and dialog_html.count('class="primary"') == 1
@@ -401,13 +402,13 @@ async def test_the_environments_rows(dialog, client, env):
         assert 'title="' in button, button
     # a user there reads the other names, without the ⚙
     page = (await client.get("/servers/acme-main", headers=basic("luca"))).text
-    assert "www.customer.com" in page and "class=\"small addr-open\"" not in page and 'id="addr-dialog"' not in page
+    assert "www.customer.com" in page and "class=\"addr-open\"" not in page and 'id="addr-dialog"' not in page
 
 
 async def test_no_dialog_where_omniacli_does_not_write_the_site(dialog, client, env):
     """srv, adopted from a server: its admin sees the ⚙ off, with the reason."""
     page = (await client.get("/servers/srv", headers={"Authorization": POST["Authorization"],
                                                       "Accept-Language": "it"})).text
-    assert "class=\"small addr-open\"" not in page and 'id="addr-dialog"' not in page
-    off = re.findall(r'<span title="([^"]+)"><button type="button" class="small" disabled[^>]*>⚙', page)
+    assert "class=\"addr-open\"" not in page and 'id="addr-dialog"' not in page
+    off = re.findall(r'<span title="([^"]+)"><button type="button" disabled data-menu="addresses"[^>]*>⚙', page)
     assert off and off[0] == "Il sito lo gestisce chi amministra la macchina: OmniaCLI non tocca nginx qui"

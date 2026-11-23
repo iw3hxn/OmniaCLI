@@ -268,14 +268,15 @@ prepared before Test & activate. The job's log opens in a new tab.
   test over the last 15 minutes. The server's name opens its page, for the
   maintenance. **Open Odoo** opens the instance itself in a new tab, at its
   **Domain name** (server form) or at `http://localhost:<its port>`; the same
-  link is next to each environment in Environments.
+  link is in the card of now of each environment in Environments and deploys.
 - **The instance's page**: a head with its address, its state, its type,
   server and database, and the actions of every day (Open Odoo, Log in as…,
   **Update**: a git pull and restart, Start when it is stopped; More for the
   rest: Restart, Stop, Update modules, the backups, the consoles, the
   database replaced or the instance deleted), then five tabs:
-  **Environments** (production, its test and its stagings, also those on
-  another machine, with **+ New staging**), **Backups** (the list, the
+  **Overview**, whose **Environments and deploys** lists production, its
+  test and its stagings (also those on another machine, with **+ New
+  staging**) with their last deploys as cards (below), **Backups** (the list, the
   automatic backups, the copies out, the recovery at a minute), **Log**,
   **Monitoring** (CPU and memory of the last hour, the database's health),
   **Modules** (the repositories, the updates of the code, the catalog of the
@@ -1752,7 +1753,7 @@ The certificate, one for all the names of the workspace:
   renewing it is the customer's.
 
 **Other names and redirects of an environment** (UX-008 §6.1): the ⚙
-**Addresses…** of each row of Environments on the instance's page (the
+**Addresses…** of each row of Environments and deploys on the instance's page, in the menu of its card of now (the
 workspace's admins) adds names outside the workspace's rule. An **other
 address** (`www.customer.com`) is one more name of the environment's server
 block; a **redirect** (`customer.com`, to one of the environment's
@@ -2075,7 +2076,9 @@ summer (`omniacli/clock.py`).
   needs a restart of OmniaCLI.
 - **A page** converts with `window.whenText(iso[, zone])`: a naive moment of
   `zone` (none: the page's machine; `""`: as it is written), one with `Z`
-  or an offset as it says, or a `Date`. What the server writes into a page
+  or an offset as it says, or a `Date`; `window.agoText(iso[, zone])` says
+  the same moment as an age (*2 days ago*, the cards of the deploys only),
+  the exact date beside it in a title. What the server writes into a page
   or into a text (a job's line, a refusal, the filter `moment` of the
   templates) uses the reader's zone the browser keeps in the cookie
   `omnia_zone`; a link passes it on in `X-OmniaCLI-Viewer-Zone`. The times of
@@ -2353,9 +2356,10 @@ refuses the auto update and one set before does not run (its state says
 why); a scheduled action's Git pull on it is skipped with a warning. A
 production that had deploy on push keeps its webhook: a push of the branch
 it follows does not touch it, is recorded in its deploys as *available, not
-deployed*, and its page (Overview, and Deploys) says *New commit available
-on <repo>/<branch>: <sha> <message>* until Update (Git pull and restart, by
-hand) brings it; the same push deploys each staging of it on this machine
+deployed*, and its page says it until Update (Git pull and restart, by
+hand) brings it: the card *Available, not deployed* of its row in Overview ›
+Environments and deploys, and *New commit available on <repo>/<branch>:
+<sha> <message>* in Modules › Deploys; the same push deploys each staging of it on this machine
 that follows that branch and has its CI on. A push to a staging's (or a
 test's) own webhook deploys it and is listed on its production the same
 way. After the upgrade, a job of the system *Productions updated by hand
@@ -2380,6 +2384,62 @@ the servers file (folder 700, files 600), the last 100 of each instance, so
 the history outlives the list of the jobs (500 of the whole machine); taken
 away with its instance. A user of workspaces reads those of its instances,
 who started them in its words (customerview.py), no path of the machine.
+
+A **job of the code that failed or was stopped before moving any commit**
+(a Git pull refused, a push with a conflict, the auto update or a scheduled
+pull that could not fetch, a Back to this deploy refused; `ops.mark_code`)
+is kept too, of kind `failed`, without commits: the history says what
+happened, not only how the code is (UX-015 D4; the REST API's and MCP's
+lists carry it with its kind). Each repository of a deploy keeps the
+**author** of its commit (`git log --format=%an`; *by* is who or what
+started the job): a deploy recorded before has none, and the pages say who
+started it instead. A commit a push told a production of keeps the author
+the webhook names.
+
+**Environments and deploys** (docs/ux/UX-015; the Overview of an instance's
+page, as the builds of Odoo.sh): a row per environment, in a fixed order
+(production, test, the stagings of this machine from the newest, those on
+the linked machines), no new tab. On the left its state, name and type,
+its branch (*3 repositories* when they follow different ones, each in the
+title), its CI (*by hand only* on a production, *CI on* / *CI off*: a link
+to Modules › Updates of the code, never a switch), **Repository ↗** (the
+branch of its first repository on GitHub or GitLab), the date of a
+staging's copy and its **Rebuild…** (the admins; off with why for a
+staging of another machine). On the right its deploys as cards, the
+newest on the left: the commit's message (a link to the commit on GitHub
+or GitLab; with several repositories the one that brought the most
+commits, *+ 1 repository* with each one's count in the title), its
+author (else who started it; both in the title), how long ago (the exact
+date in the title: the only relative date of the panel, D6) and how long
+the job took, its outcome with a sign and a word (*✓ succeeded*, *⚠ with
+warnings*, *✕ failed* with the first line of the error and **Open the
+job ›**, *halted*, *interrupted*), and one action: **Back here…** on a
+past deploy that succeeded (the dialog of Back to this deploy, shared with
+Modules › Deploys; on a production the instance's name written first,
+D2: the page's route refuses without it, as the REST API does). The card
+of **now** (the deploy the code is at, or *The code of now* read from the
+repositories when no deploy recorded is it) has the split **Open ↗ ▾**:
+Open opens Odoo, its menu has Log in as…, Log, Back up now…, Shell and
+Addresses…, each there, off with why (a custom role without it) or absent
+(a role below it), as the server decided it. Three cards from 1280 px, two
+from 900, one on a phone, then **N more ›** to Modules › Deploys (D3: the
+whole history, 100 per environment, with the backup before each); a job
+in progress and a commit available on a production (*Available, not
+deployed*, with **Update…**: the head's Update; it replaced the note above
+the tabs) are cards beside them, never behind *more*. The rows come with
+the page; the cards after it, in one request for the section (`GET
+/api/servers/{server}/{role}/environments`, the capability *Update the
+code*: a user's row has no cards), a skeleton while they come; those of a
+staging on a linked machine through its link (`GET
+/api/servers/{server}/stagings/elsewhere/environments?link=…&staging=…`,
+5 s, its moments moved onto this machine's clock), and a machine that
+does not answer says *Deploys not read: <why>* on the rows it had (kept
+in memory since it last answered). The cards are read again at the end
+of a job of their environment and every 60 s while the browser's tab is
+in sight, never while it is hidden (the page's watch of the jobs waits
+too). A test's or a staging's page shows its own row only. No expiry of
+the stagings (D5): a staging stays until it is deleted, and its row says
+the date of its copy.
 
 **Back to this deploy…** (a past deploy's row): a dialog says which commit
 each repository goes to, the commits after it taken away (their messages),
@@ -3975,9 +4035,10 @@ later, native (click-odoo in its venv) or in Docker Compose (the helper's
    in a URL), sets the cookie `session_id` (HttpOnly, Secure) and sends the
    browser to Odoo (`/odoo`, `/web` before Odoo 18).
 
-**Log in as…** is also on the rows (docs/ux/UX-013 §B): of Environments
-(production, test, every staging, those on another machine through their
-link), of the Instances list and of a workspace opened in the Workspaces
+**Log in as…** is also on the rows (docs/ux/UX-013 §B): of Environments and
+deploys (production, test, every staging, those on another machine through
+their link; in the menu «▾» of the row's card of now since UX-015, one click
+more), of the Instances list and of a workspace opened in the Workspaces
 list, hidden on a phone (the instance's page has it in its head). Each row's
 button is decided by the machine of its instance, as the route would
 decide: none below the role it needs or for a token; off, with the reason,

@@ -280,12 +280,25 @@ async def update_submodules(job: Job, repo: Repository, check: bool = True) -> N
 PACKAGE_CHOICE = ":package"
 
 
+# a job's notes: the instances whose code it works on (deploys.py keeps such a job that failed before moving a
+# commit: the strip of the environment says it, UX-015 D4)
+CODE_NOTE = "code"
+
+
+def mark_code(job: Job, instance: Instance) -> None:
+    """The job works on the code of instance: a pull, an update, a deploy gone back to."""
+    marked = job.notes.setdefault(CODE_NOTE, [])
+    if instance.key not in marked:
+        marked.append(instance.key)
+
+
 async def pull(job: Job, instance: Instance, only: set[str] | None = None) -> bool:
     """Fast-forward every repository of the instance and its submodules,
     then install its package if a new one is published (packages.py).
     only: the names of the repositories to pull (PACKAGE_CHOICE among them:
     the package too); None: all of them and the package.
     Return True if any repository moved or the package was installed."""
+    mark_code(job, instance)
     changed = False
     if only is not None:
         skipped = [r.name for r in instance.repositories if r.name not in only]
@@ -842,6 +855,7 @@ async def pull_restart(job: Job, instance: Instance, only_if_changed: bool = Fal
     only when the pull brings something (none: no backup). An instance
     switched to the update without stopping (zerodowntime.py), running:
     that one, or the normal one with why not."""
+    mark_code(job, instance)
     found = zerodowntime.choice(instance)
     if found is not None and not await _stopped(instance):
         await zerodowntime.pull_restart(

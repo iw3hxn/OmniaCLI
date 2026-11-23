@@ -1,5 +1,10 @@
 {
+ "1 day ago": "1 giorno fa",
+ "1 hour ago": "1 ora fa",
+ "1 min ago": "1 min fa",
+ "1 month ago": "1 mese fa",
  "1 staging": "1 staging",
+ "1 year ago": "1 anno fa",
  "= {time} on the server": "= {time} sul server",
  "A copy of production as it is now, neutralized (no outgoing mail, no scheduled actions), at an address of its own. Production stays on. Not available while a job works on production.": "Una copia della produzione com'è adesso, neutralizzata (niente posta in uscita, niente azioni pianificate), a un suo indirizzo. La produzione resta accesa. Non disponibile mentre un job lavora sulla produzione.",
  "A new Odoo instance from its version only: OmniaCLI makes its database, containers, disk and address": "Una nuova istanza Odoo scegliendo solo la versione: database, contenitori, disco e indirizzo li prepara OmniaCLI",
@@ -88,6 +93,7 @@
  "Your account and password": "Il tuo account e la password",
  "Your login has expired: log in again?\n\nWhat is not saved on this page is lost.": "La sessione è scaduta: vuoi accedere di nuovo?\n\nQuello che non è salvato in questa pagina va perso.",
  "Your workspaces": "I tuoi workspace",
+ "a few seconds ago": "pochi secondi fa",
  "all the actions": "tutte le azioni",
  "back to your OmniaCLI": "torna al tuo OmniaCLI",
  "database {name}": "database {name}",
@@ -95,5 +101,10 @@
  "its pages, acting with its link": "le sue pagine, usando il suo collegamento",
  "neutralized: no outgoing mail, no scheduled actions.": "neutralizzata: niente posta in uscita né azioni pianificate.",
  "server {name}": "server {name}",
- "{count} stagings": "{count} staging"
+ "{count} stagings": "{count} staging",
+ "{n} days ago": "{n} giorni fa",
+ "{n} hours ago": "{n} ore fa",
+ "{n} min ago": "{n} min fa",
+ "{n} months ago": "{n} mesi fa",
+ "{n} years ago": "{n} anni fa"
 }

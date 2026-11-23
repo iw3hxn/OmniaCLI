@@ -16,7 +16,6 @@
 {% block content %}
 {% from "_icons.html" import icon %}
 {% from "_actions.html" import action_button with context %}
-{% from "_instance_link.html" import instance_link %}
 {% from "_console.html" import console_script with context %}
 {% from "_odoo_log.html" import odoolog, odoolog_script with context %}
 {# an ISO time as the page shows it: 17/11/2026 22:48 #}
@@ -110,23 +109,30 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     </dl>
   </details>
 {% endmacro %}
-{# the other names of a row of Environments, and its ⚙ (UX-008 §6.1): the dialog where OmniaCLI writes the
-   site (an instance of a workspace); elsewhere, for its admins, the ⚙ off with the reason; no ⚙ for the others #}
-{% macro other_names(key) %}{% set a = (addresses or {}).get(key) %}{% if a and a.names %}<div class="mono small muted addr-names">{{ a.names | join(" · ") }}</div>{% endif %}{% endmacro %}
-{% macro addresses_button(key, label) %}{% set a = (addresses or {}).get(key) %}
-{%- if a and a.can %} <button type="button" class="small addr-open" data-env="{{ key }}" data-label="{{ label }}"
-  title="{{ _('The names this environment answers on and the redirects to it') }}">⚙ {{ _("Addresses…") }}</button>
-{%- elif a and is_admin_here and a.reason %} <span title="{{ tr(a.reason) }}"><button type="button" class="small" disabled title="{{ tr(a.reason) }}">⚙ {{ _("Addresses…") }}</button></span>
-{%- endif %}{% endmacro %}
-{# Log in as… on a row of Environments (UX-013 §B2), as the server decided it for that row (login_as_offer): off
-   with the reason on its span, or the button of the dialog; none where the role does not reach it #}
-{% macro row_login_as_button(key) %}{% set o = (row_login_as or {}).get(key) %}
-{%- if o and o.disabled %} <span title="{{ o.disabled }}"><button type="button" class="small" disabled data-login-as="" title="{{ o.disabled }}">{{ _("Log in as…") }}</button></span>
-{%- elif o %} <button type="button" class="small" data-login-as='{{ o | tojson }}' title="{{ o.title }}">{{ _("Log in as…") }}</button>
-{%- endif %}{% endmacro %}
 {# a button the person's custom role does not include (capabilities.py): there, disabled, saying why #}
 {% set denied = denied or {} %}
 {% macro refused(cap, label, cls="") %}<span title="{{ tr(denied[cap]) }}"><button type="button"{% if cls %} class="{{ cls }}"{% endif %} disabled title="{{ tr(denied[cap]) }}">{{ label }}</button></span>{% endmacro %}
+{# Rebuild (UX-008 §5.2): one dialog, the staging's page's and its production's (the rows of its stagings, UX-015) #}
+{% macro rebuild_dialog() %}
+<dialog id="rebuild-dialog" class="sd" aria-labelledby="rb-title">
+  <form id="rb-form" novalidate>
+    <h2 id="rb-title" data-title="{{ _('Rebuild {name}') }}">{{ _("Rebuild {name}", name=server.name) }}</h2>
+    <div class="sd-field" role="radiogroup" aria-labelledby="rb-title">
+      <label class="sd-choice"><input type="radio" name="rb-what" value="data" checked>
+        <span><strong>{{ _("Data only") }}</strong><br><span class="muted">{{ _("The code of the staging stays: to try the new code on the data of today.") }}</span></span></label>
+      <label class="sd-choice"><input type="radio" name="rb-what" value="code">
+        <span><strong>{{ _("Data and code") }}</strong><br><span class="muted">{{ _("The staging becomes equal to production: the repositories go back to the commits of production, and what you were trying here is lost.") }}</span></span></label>
+    </div>
+    <p class="sd-help">{{ _("The data of now of the staging are lost. The address stays the same.") }}</p>
+    <p id="rb-error" class="error" role="alert"></p>
+    <div class="sd-foot">
+      <button type="button" id="rb-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
+      <button type="submit" class="primary danger" id="rb-go"
+              title="{{ _('Rebuilds the staging as chosen above, from a backup of production made now. It is a job, and it cannot be undone.') }}">{{ _("Rebuild") }}</button>
+    </div>
+  </form>
+</dialog>
+{% endmacro %}
 {% set inst = instances[0] %}
 {# its state: running, stopped or unknown #}
 {% if inst.restart.type == "process" %}
@@ -195,11 +201,11 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     {% elif can_act and st != "stopped" %}
     {% if pull_choices[inst.key] %}
     <button type="button" {{ off }} data-pull='{{ dict(pull_choices[inst.key], url=base ~ "/pull-restart", title=_("Pull, deploy and restart {key}", key=inst.key), note=package_note) | tojson }}'
-            title="{{ update_help }}">{{ icon("github") }}{{ _("Update") }}</button>
+            data-head-update title="{{ update_help }}">{{ icon("github") }}{{ _("Update") }}</button>
     {% else %}
     <form method="post" action="{{ base }}/pull-restart"
           data-confirm="{{ _("Pull, deploy and restart {key}?", key=inst.key) ~ ("\n\n" ~ package_note if package_note else "") }}">
-      <button {{ off }} title="{{ update_help }}">{{ icon("github") }}{{ _("Update") }}</button></form>
+      <button {{ off }} data-head-update title="{{ update_help }}">{{ icon("github") }}{{ _("Update") }}</button></form>
     {% endif %}
     {% endif %}
     {% if not can_act and st != "stopped" and (rt != "process" or pid) %}
@@ -324,14 +330,10 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
 {% if is_busy %}{% set running_job = busy_job[inst.key] %}
 <div class="job-band" role="status">{{ _("Job running:") }} {% if running_job %}<a href="{{ prefix }}/jobs/{{ running_job.id }}">{{ tr(running_job.title) }}</a>{% endif %} — {{ _("the buttons come back when it ends.") }}</div>
 {% endif %}
-{# a push of the branch a production follows: listed, not deployed (a production is updated by hand, README Deploys) #}
-{% for row in (available or {}).get(inst.key, []) %}
-<div class="note-box" data-available="{{ row.name }}" role="status">{{ _("New commit available on {repo}/{branch}: {sha} {subject}", repo=row.name, branch=row.branch, sha=row.sha or "?", subject=row.subject) }}
-  <span class="muted">· {{ _("pushed {when}", when=when(row.time)) }} · {{ _("a production is updated by hand: Update brings it.") }}</span></div>
-{% endfor %}
+{# a push of the branch a production follows (listed, not deployed: README Deploys) is the card «Available, not
+   deployed» of the production's row of «Environments and deploys» (UX-015 §9), and Modules › Deploys #}
 <p id="page-error" class="error" role="alert"></p>
 
-{% set show_envs = view == "production" and not is_staging and (server.test or (stagings and (stagings.rows or stagings.can))) %}
 {% if is_staging %}
 {% set copy_of = stagings.parent.parent %}
 {# its production on another machine (made there through a link, UX-008 §5.1): named, not linked #}
@@ -347,26 +349,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
   {% elif is_admin_here %}<button type="button" class="small danger" id="staging-rebuild" {{ off }}
     title="{{ _('Makes this staging again from production as it is now: a new backup, loaded here and neutralized; if you choose, also the code, at the commits of production. Its address stays. Not available while a job works on the staging or on production. Admins only.') }}">{{ icon("restart") }}{{ _("Rebuild…") }}</button>{% endif %}
 </div>
-{% if is_admin_here and not copy_elsewhere %}
-<dialog id="rebuild-dialog" class="sd" aria-labelledby="rb-title">
-  <form id="rb-form" novalidate>
-    <h2 id="rb-title">{{ _("Rebuild {name}", name=server.name) }}</h2>
-    <div class="sd-field" role="radiogroup" aria-labelledby="rb-title">
-      <label class="sd-choice"><input type="radio" name="rb-what" value="data" checked>
-        <span><strong>{{ _("Data only") }}</strong><br><span class="muted">{{ _("The code of the staging stays: to try the new code on the data of today.") }}</span></span></label>
-      <label class="sd-choice"><input type="radio" name="rb-what" value="code">
-        <span><strong>{{ _("Data and code") }}</strong><br><span class="muted">{{ _("The staging becomes equal to production: the repositories go back to the commits of production, and what you were trying here is lost.") }}</span></span></label>
-    </div>
-    <p class="sd-help">{{ _("The data of now of the staging are lost. The address stays the same.") }}</p>
-    <p id="rb-error" class="error" role="alert"></p>
-    <div class="sd-foot">
-      <button type="button" id="rb-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
-      <button type="submit" class="primary danger" id="rb-go"
-              title="{{ _('Rebuilds the staging as chosen above, from a backup of production made now. It is a job, and it cannot be undone.') }}">{{ _("Rebuild") }}</button>
-    </div>
-  </form>
-</dialog>
-{% endif %}
+{% if is_admin_here and not copy_elsewhere %}{{ rebuild_dialog() }}{% endif %}
 {% else %}
 <div class="note-box">{{ _("Staging of") }} {{ copy_link() }}{% if stagings.parent.created %} {{ _("of {date}", date=when(stagings.parent.created)) }}{% endif %}, {{ _("made outside OmniaCLI: OmniaCLI does not know whether it is neutralized, check its outgoing mail and scheduled actions.") }}</div>
 {% endif %}
@@ -405,76 +388,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     </dl>
   </div>
   {% endif %}
-  {% if show_envs %}
-  <div class="panel">
-    <div class="section-head">
-      <h2>{{ _("Environments") }}</h2>
-      {% if stagings and stagings.can %}<button type="button" class="primary" id="staging-new" {{ off }}
-        title="{{ _('Opens the form of a copy of production as it is now, neutralized, at an address of its own: on this machine or on another one with the same version of Odoo. Production stays on. Not available while a job works on production.') }}">+ {{ _("New staging") }}</button>{% endif %}
-    </div>
-    <div class="scroll"><table class="copies">
-      <tr><th>{{ _("Address") }}</th><th>{{ _("Type") }}</th><th class="hide-sm">{{ _("Copied on") }}</th><th>{{ _("State") }}</th><th class="hide-sm"></th></tr>
-      <tr><td><strong>{{ title }}</strong>{{ other_names(server.name ~ "/production") }}</td><td><span class="badge ok">{{ _("Production") }}</span></td><td class="when hide-sm">—</td>
-          <td>{{ state_word("busy" if is_busy else st) }}</td>
-          <td class="row-open hide-sm">{% if opens %}{% call instance_link(inst.web_url, st, "button small", tr(inst.plugin.label) ~ " " ~ title) %}{{ _("Open") }} ↗{% endcall %}{% endif %}{{ row_login_as_button(inst.key) }}{{ addresses_button(server.name ~ "/production", title) }}</td></tr>
-      {% if server.test %}
-      <tr><td>↳ <a href="{{ prefix }}/servers/{{ server.name }}?view=test"><strong>{{ host_of(server.test.web_url, "Test") }}</strong></a>{{ other_names(server.name ~ "/test") }}</td>
-          <td><span class="badge test-badge">Test</span></td><td class="when hide-sm">—</td>
-          <td>{{ state_word("busy" if busy[server.test.key] else test_state) }}</td>
-          <td class="row-open hide-sm">{% if host_of(server.test.web_url, "") %}{% call instance_link(server.test.web_url, test_state, "button small", tr(inst.plugin.label) ~ " " ~ host_of(server.test.web_url, "Test")) %}{{ _("Open") }} ↗{% endcall %}{% endif %}{{ row_login_as_button(server.test.key) }}{{ addresses_button(server.name ~ "/test", host_of(server.test.web_url, "Test")) }}</td></tr>
-      {% endif %}
-      {% for s in stagings.rows if stagings %}
-      <tr><td>↳ <a href="{{ prefix }}/servers/{{ s.server }}" title="{{ _('Opens its page: its environments, backups, log') }}"><strong>{{ host_of(s.url, s.server) }}</strong></a>{{ other_names(s.server ~ "/production") }}</td>
-          <td><span class="badge info">{{ _("Staging") }}</span></td><td class="when hide-sm">{{ when(s.created) }}</td>
-          <td>{{ state_word("busy" if s.busy else s.state) }}</td>
-          <td class="row-open hide-sm">{% if host_of(s.url, "") %}<a class="button small" href="{{ s.url }}" target="_blank" rel="noopener" title="{{ _('Opens {url} in a new tab', url=s.url) }}">{{ _("Open") }} ↗</a>{% endif %}{{ row_login_as_button(s.server ~ "/production") }}{{ addresses_button(s.server ~ "/production", host_of(s.url, s.server)) }}</td></tr>
-      {% endfor %}
-      {% if stagings and stagings.elsewhere %}<tbody id="stagings-elsewhere"></tbody>{% endif %}
-    </table></div>
-    {# the path of this instance on the map (docs/ux/UX-009 §3): a link, the map changes nothing #}
-    <p class="small" style="margin: 8px 0 0"><a href="{{ prefix }}/instances?view=map{% if map_workspace %}&amp;workspace={{ map_workspace | urlencode }}{% else %}&amp;machine=~{% endif %}&amp;focus={{ server.name | urlencode }}"
-      title="{{ _('Opens the map of its workspace with the path of this instance: its names, the web server, Odoo, its database. It changes nothing.') }}">{{ _("On the map") }} ›</a></p>
-    {% if stagings and stagings.can and not stagings.rows %}<p class="muted" id="stagings-none" style="margin: 8px 0 0">{{ _("No staging: a staging is a dated copy of production, to try an update without touching it.") }}</p>{% endif %}
-    {% if stagings and stagings.elsewhere %}
-    <script>
-    // the stagings of this production made on the linked machines (UX-008 §5.1),
-    // asked by this machine to its links (GET …/stagings/elsewhere)
-    (async () => {
-      const box = document.getElementById("stagings-elsewhere");
-      const W = {staging: {{ _("Staging") | tojson }}, on: {{ _("on {machine}") | tojson }},
-                 open: {{ _("Opens its page on {machine}") | tojson }},
-                 there: {{ _("Open it from the page of {machine}") | tojson }},
-                 running: {{ _("Running") | tojson }}, stopped: {{ _("Stopped") | tojson }}, unknown: {{ _("State unknown") | tojson }},
-                 loginAs: {{ _("Log in as…") | tojson }}};
-      const el = (tag, attrs, ...kids) => { const e = Object.assign(document.createElement(tag), attrs || {}); e.append(...kids); return e; };
-      // its Log in as… as its machine decided it (UX-013 §B2): an older machine sends none
-      const loginAs = (o) => {
-        if (!o) return [];
-        const button = el("button", {type: "button", className: "small", textContent: W.loginAs, title: o.disabled || o.title});
-        if (o.disabled) { button.disabled = true; button.dataset.loginAs = ""; return [el("span", {title: o.disabled}, button)]; }
-        button.dataset.loginAs = JSON.stringify(o);
-        return [button];
-      };
-      const resp = await fetch({{ (prefix ~ "/api/servers/" ~ server.name ~ "/stagings/elsewhere") | tojson }},
-                               {headers: {Accept: "application/json"}}).catch(() => null);
-      const data = resp && resp.ok ? await resp.json().catch(() => null) : null;
-      for (const s of (data && data.stagings) || []) {
-        const name = s.url ? el("a", {href: `{{ prefix }}${s.url}`, title: W.open.replace("{machine}", s.link)}, el("strong", {}, s.server))
-                           : el("strong", {title: W.there.replace("{machine}", s.link)}, s.server);
-        box.append(el("tr", {},
-          el("td", {}, "↳ ", name, " ", el("span", {className: "small muted"}, W.on.replace("{machine}", s.link))),
-          el("td", {}, el("span", {className: "badge info"}, W.staging)),
-          el("td", {className: "when hide-sm"}, whenText(s.created)),
-          el("td", {}, ({running: W.running, stopped: W.stopped})[s.state] || W.unknown),
-          el("td", {className: "row-open hide-sm"}, ...loginAs(s.login_as))));
-        const none = document.getElementById("stagings-none");
-        if (none) none.hidden = true;
-      }
-    })();
-    </script>
-    {% endif %}
-  </div>
-  {% endif %}
+  {% if environments %}{% include "_environments.html" %}{% endif %}
   {% if stagings and stagings.can %}
   {# New staging (UX-008 §5.1): asked before it is made (GET …/stagings/new); the machine only for its admin #}
   <dialog id="staging-dialog" class="sd" aria-labelledby="sd-title">
@@ -1413,7 +1327,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
   // the tabs: the one in the address (#log) or Overview
   const tabs = [...document.querySelectorAll(".tabs [data-tab]")];
   // the tabs of before UX-006, for an address kept somewhere (#database, #addons, #updates, #odoo-config)
-  const MOVED = {database: "monitor", addons: "modules", updates: "modules", "odoo-config": "settings"};
+  const MOVED = {database: "monitor", addons: "modules", updates: "modules", deploys: "modules", "odoo-config": "settings"};
   let loadMeasured = false;
   function show(name) {
     const section = MOVED[name] ? name : null;
@@ -2872,7 +2786,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
       refresh();
     }
     async function open(button) {
-      env = button.dataset.env; data = null; checked = {}; error.textContent = "";
+      env = button.dataset.addrEnv || button.dataset.env; data = null; checked = {}; error.textContent = "";
       aliases.replaceChildren(); redirects.replaceChildren(); save.disabled = true;
       document.getElementById("addr-env").textContent = "· " + button.dataset.label;
       dialog.showModal();
@@ -2917,19 +2831,26 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
   {% endif %}
   // Rebuild (UX-008 §5.2): the dialog is the confirmation; Cancel posts nothing
   const rebuild = document.getElementById("rebuild-dialog");
-  document.getElementById("staging-rebuild")?.addEventListener("click", () => {
+  function openRebuild(target, label) {
     if (!rebuild) return;
+    rebuild.dataset.server = target;
+    const title = document.getElementById("rb-title");
+    title.textContent = title.dataset.title.replace("{name}", label || target);
     rebuild.querySelector('input[value="data"]').checked = true;
     document.getElementById("rb-error").textContent = "";
+    document.getElementById("rb-go").disabled = false;
     rebuild.showModal();
-  });
+  }
+  document.getElementById("staging-rebuild")?.addEventListener("click", () => openRebuild({{ server.name | tojson }}, {{ server.name | tojson }}));
+  document.querySelectorAll("[data-rebuild]").forEach((b) => b.addEventListener("click", () => openRebuild(b.dataset.rebuild, b.dataset.rebuild)));
   document.getElementById("rb-cancel")?.addEventListener("click", () => rebuild.close());
   document.getElementById("rb-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const go = document.getElementById("rb-go"), error = document.getElementById("rb-error");
     const code = (rebuild.querySelector('input[name="rb-what"]:checked') || {}).value === "code";
     go.disabled = true; error.textContent = "";
-    const resp = await fetch({{ (prefix ~ "/api/servers/" ~ server.name ~ "/stagings/refresh") | tojson }}, {method: "POST",
+    const target = rebuild.dataset.server || {{ server.name | tojson }};
+    const resp = await fetch(`{{ prefix }}/api/servers/${encodeURIComponent(target)}/stagings/refresh`, {method: "POST",
       headers: {Accept: "application/json", "Content-Type": "application/json"}, body: JSON.stringify({code})}).catch(() => null);
     const data = resp ? await resp.json().catch(() => ({})) : {};
     if (!resp || !resp.ok || !data.job) { error.textContent = data.error || data.detail || T.refused; go.disabled = false; return; }
@@ -3191,10 +3112,15 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
   // a job of this server started or ended: the page again, with its buttons and state of now
   let busyBefore = null;
   async function watchJobs() {
+    // nothing is asked while the browser's tab is hidden (UX-015 §14): the next round in sight asks
+    if (document.hidden) { setTimeout(watchJobs, 5000); return; }
     try {
       const resp = await fetch("{{ prefix }}/api/jobs?limit=1");
       if (resp.ok) {
-        const busy = (await resp.json()).busy.filter((key) => key.startsWith({{ (server.name ~ "/") | tojson }})).join(" ");
+        const all = (await resp.json()).busy;
+        // the instances of the page's other environments (its stagings): their strips read again (UX-015)
+        document.dispatchEvent(new CustomEvent("omnia-busy", {detail: all}));
+        const busy = all.filter((key) => key.startsWith({{ (server.name ~ "/") | tojson }})).join(" ");
         if (busyBefore !== null && busy !== busyBefore) { location.reload(); return; }
         busyBefore = busy;
       }

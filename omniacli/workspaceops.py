@@ -464,6 +464,30 @@ def compare_url(url: str, old: str, new: str) -> str | None:
     return None
 
 
+def commit_url(web: str | None, sha: str) -> str | None:
+    """The page of a commit, on GitHub and GitLab; web: a repository's page (web_url)."""
+    host = web.split("/")[2] if web and web.count("/") >= 3 else ""
+    if not sha or not host:
+        return None
+    if host == "github.com":
+        return f"{web}/commit/{sha}"
+    if "gitlab" in host:
+        return f"{web}/-/commit/{sha}"
+    return None
+
+
+def branch_url(web: str | None, branch: str) -> str | None:
+    """The page of a branch, on GitHub and GitLab; web: a repository's page (web_url)."""
+    host = web.split("/")[2] if web and web.count("/") >= 3 else ""
+    if not branch or not host:
+        return None
+    if host == "github.com":
+        return f"{web}/tree/{branch}"
+    if "gitlab" in host:
+        return f"{web}/-/tree/{branch}"
+    return None
+
+
 async def repository_branches(repo: config.Repository, timeout: float = 60) -> dict:
     """What the Update dialog of a repository shows: the commit checked out,
     and every branch of its remote with its last commit (git ls-remote, with

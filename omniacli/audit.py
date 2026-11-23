@@ -100,6 +100,8 @@ NOT_SENSITIVE = frozenset({
     "/api/connections/{name}/metrics", "/api/connections/{name}/jobs/{job_id}", "/settings", "/options",
     "/schedules", "/api/schedules/next", "/api/servers/{server}/{role}/backup-schedule",
     "/api/servers/{server}/{role}/deploy-hook", "/api/servers/{server}/{role}/deploys",
+    # the cards of «Environments and deploys» (UX-015): the deploys of the environments, on this machine and on a link
+    "/api/servers/{server}/{role}/environments", "/api/servers/{server}/stagings/elsewhere/environments",
     "/api/servers/{server}/{role}/zero-downtime",
     "/api/servers/{server}/{role}/deploys/{deploy_id}/back", "/destinations", "/workspaces/{workspace}/destinations",
     "/instances", "/api/instances", "/backups", "/account", "/api/postgres",

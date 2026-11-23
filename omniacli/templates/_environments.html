@@ -1,0 +1,462 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{# «Environments and deploys» (docs/ux/UX-015), the Overview's view of the builds as in Odoo.sh: a row per
+   environment of the production (it, its test, its stagings here and on the linked machines; on a test's or a
+   staging's page, itself), its state, branch, CI and copy on the left, its last deploys as cards on the right.
+   The rows come with the page (app.environment_rows); the cards after it, in one request for the section
+   (GET …/environments), for who may update the code (the capability code): for the others the row has no strip.
+   The card of now holds the environment's split «Open ↗ ▾»: its menu is drawn here by the server (moved into the
+   card, never copied: the dialogs' buttons keep their handlers). Nothing here changes anything by itself: every
+   action opens the dialog of before (Back to this deploy, Update, Rebuild, Back up now, Addresses, Log in as). -#}
+{% set strip_any = environments | selectattr("code") | list %}
+{# the production's page lists its copies and makes new ones; a test's or a staging's shows its own row only #}
+{% set main_view = view == "production" and not is_staging %}
+{% set rebuild_here = environments | selectattr("rebuild") | list %}
+{% macro env_badge(kind) %}{% if kind == "production" %}<span class="badge ok" title="{{ _('The instance its users work on') }}">{{ _("Production") }}</span>{% elif kind == "test" %}<span class="badge test-badge" title="{{ _('The test copy of this instance: try the code here, then bring it to production') }}">Test</span>{% else %}<span class="badge info" title="{{ _('A dated, neutralized copy of a production') }}">{{ _("Staging") }}</span>{% endif %}{% endmacro %}
+{% macro env_state(st) %}<span class="state-dot {{ st }}{% if st == 'stopped' %} quiet{% endif %}" title="{{ {'running': _('Odoo answers'), 'stopped': _('Odoo is stopped: Start brings it back'), 'busy': _('A job is working on it')}.get(st, _('OmniaCLI cannot read the state of its service')) }}">{{ {"running": _("Running"), "stopped": _("Stopped"), "busy": _("Job running")}.get(st, _("State unknown")) }}</span>{% endmacro %}
+{# the split «Open ↗ ▾» of an environment (UX-015 §7): Open, and the menu its role reaches, each entry there,
+   off with why, or absent, as the server decided it #}
+{% macro now_actions(e) %}
+<div class="env-actions" data-now-actions="{{ e.key }}">
+  {%- if e.open and e.stopped %}<span title="{{ _('{name} is stopped: start it from its page.', name=e.label) }}"><a class="button small env-open" aria-disabled="true" tabindex="-1" title="{{ _('{name} is stopped: start it from its page.', name=e.label) }}">{{ _("Open") }} ↗</a></span>
+  {%- elif e.open %}<a class="button small env-open" href="{{ e.open }}" target="_blank" rel="noopener" title="{{ _('Opens Odoo of {name} in a new tab', name=e.label) }}">{{ _("Open") }} ↗</a>{% endif %}
+  {%- if e.code and e.menu %}
+  <details class="more-menu env-menu">
+    <summary class="button small" title="{{ _('The other things to do on {name}: log in as a user, the log, a backup, the shell, the addresses', name=e.label) }}">{% if e.open %}▾{% else %}{{ _("Actions") }} ▾{% endif %}</summary>
+    <div class="more-items">
+      {% for m in e.menu %}
+      {% if m.kind == "login_as" and m.offer.disabled %}<span title="{{ m.offer.disabled }}"><button type="button" disabled data-login-as="" data-menu="login_as" title="{{ m.offer.disabled }}">{{ _("Log in as…") }}</button></span>
+      {% elif m.kind == "login_as" %}<button type="button" data-login-as='{{ m.offer | tojson }}' data-menu="login_as" title="{{ m.offer.title }}">{{ _("Log in as…") }}</button>
+      {% elif m.kind == "logs" and m.disabled %}<span title="{{ m.disabled }}"><button type="button" disabled data-menu="logs" title="{{ m.disabled }}">{{ _("Log") }}</button></span>
+      {% elif m.kind == "logs" %}<a class="button" href="{{ m.url }}" data-menu="logs" title="{{ _('Opens the Log tab of {name}: the log of its Odoo, followed live', name=e.label) }}">{{ _("Log") }}</a>
+      {% elif m.kind == "backup" and m.disabled %}<span title="{{ m.disabled }}"><button type="button" disabled data-menu="backup" title="{{ m.disabled }}">{{ _("Back up now…") }}</button></span>
+      {% elif m.kind == "backup" %}<button type="button" data-backup="{{ m.url }}" data-download="0" data-key="{{ m.key }}" data-menu="backup" {{ 'disabled' if e.state == 'busy' }}
+        title="{{ _('Opens the backup dialog of {name}: database and filestore in a zip on this machine, with the choices', name=e.label) }}">{{ _("Back up now…") }}</button>
+      {% elif m.kind == "shell" %}<a class="button" href="{{ m.url }}" target="_blank" rel="noopener" data-menu="shell" title="{{ _('A shell in the Odoo container of {name}, in a new tab', name=e.label) if m.container else _('A shell of the user running OmniaCLI, in a new tab') }}">Shell</a>
+      {% elif m.kind == "addresses" and m.disabled %}<span title="{{ m.disabled }}"><button type="button" disabled data-menu="addresses" title="{{ m.disabled }}">⚙ {{ _("Addresses…") }}</button></span>
+      {% elif m.kind == "addresses" %}<button type="button" class="addr-open" data-addr-env="{{ m.env }}" data-label="{{ e.label }}" data-menu="addresses" title="{{ _('The names this environment answers on and the redirects to it') }}">⚙ {{ _("Addresses…") }}</button>
+      {% endif %}
+      {% endfor %}
+    </div>
+  </details>
+  {%- endif %}
+</div>
+{% endmacro %}
+<div class="panel envs" id="envs" data-own="{{ inst.key }}"
+     {% if strip_any %}data-api="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}/environments"{% endif %}
+     {% if main_view and stagings and stagings.elsewhere %}data-elsewhere="{{ prefix }}/api/servers/{{ server.name }}/stagings/elsewhere"{% endif %}>
+  <div class="section-head">
+    <h2>{{ _("Environments and deploys") }}</h2>
+    {# the primary of the tab while nothing works on production; a job running: off, and not the primary (UX-015 §17.5) #}
+    {% if main_view and stagings and stagings.can %}<button type="button" class="{{ 'primary' if not is_busy }}" id="staging-new" {{ off }}
+      title="{{ _('Opens the form of a copy of production as it is now, neutralized, at an address of its own: on this machine or on another one with the same version of Odoo. Production stays on. Not available while a job works on production.') }}">+ {{ _("New staging") }}</button>{% endif %}
+  </div>
+  <div class="env-filter" hidden><input type="search" id="env-filter" placeholder="{{ _('Filter the environments…') }}" aria-label="{{ _('Filter the environments…') }}"
+    title="{{ _('Shows only the environments whose name, type or branch has every word written here') }}"></div>
+  <div class="env-rows">
+    {% for e in environments %}
+    <div class="env-row" data-env="{{ e.key }}" data-env-kind="{{ e.kind }}" data-text="{{ (e.label ~ ' ' ~ e.kind ~ ' ' ~ e.branch) | lower }}">
+      <div class="env-left">
+        <div class="env-state">{{ env_state(e.state) }}</div>
+        <div class="env-name">{% if e.page %}<a href="{{ e.page }}" title="{{ _('Opens its page: its environments, backups, log') }}"><strong>{{ e.label }}</strong></a>{% else %}<strong>{{ e.label }}</strong>{% endif %} {{ env_badge(e.kind) }}</div>
+        {% set a = (addresses or {}).get(e.server ~ "/" ~ e.role) %}{% if a and a.names %}<div class="mono small muted addr-names">{{ a.names | join(" · ") }}</div>{% endif %}
+        {% if e.code and e.repositories %}
+        <div class="small mono env-branch">{% if e.branch %}<span title="{{ e.branches }}">{{ e.branch }}</span>{% else %}<span title="{{ e.branches }}">{{ _("{n} repositories", n=e.repositories) }}</span>{% endif %}</div>
+        {% endif %}
+        <div class="small env-signs">
+          {%- set signs = [] %}
+          {%- if e.code and e.ci == "manual" %}<a class="env-ci muted" href="{{ e.ci_url }}" data-ci="manual" title="{{ _('A production is updated by hand only: Update brings the new code. The CI runs on the test and on the stagings.') }}">{{ _("by hand only") }}</a>{% set _x = signs.append(1) %}
+          {%- elif e.code and e.ci == "on" %}<a class="env-ci ok-text" href="{{ e.ci_url }}" data-ci="on" title="{{ _('The CI of {name} is on: a push of the branch it follows updates it; it is switched in Modules › Updates of the code', name=e.label) }}">{{ _("CI on") }}</a>{% set _x = signs.append(1) %}
+          {%- elif e.code and e.ci == "off" %}<a class="env-ci muted" href="{{ e.ci_url }}" data-ci="off" title="{{ _('The CI of {name} is off: nothing moves its code by itself; it is switched in Modules › Updates of the code', name=e.label) }}">{{ _("CI off") }}</a>{% set _x = signs.append(1) %}{% endif %}
+          {%- if e.repo %}{% if signs %} · {% endif %}<a href="{{ e.repo.url }}" target="_blank" rel="noopener" title="{{ _('Opens the branch {branch} of {repo} in a new tab', branch=e.repo.branch, repo=e.repo.name) }}{% if e.repo.others %} · {{ _('the other {n} are in Modules › Code', n=e.repo.others) }}{% endif %}">{{ _("Repository") }} ↗</a>{% set _x = signs.append(1) %}{% endif %}
+          {%- if e.kind == "staging" and e.copied %}{% if signs %} · {% endif %}<span class="muted">{{ _("copy of") }} <time data-when="{{ e.copied }}" data-when-format="{date}">{{ when(e.copied) }}</time></span>{% endif %}
+        </div>
+        {% if e.rebuild and e.rebuild.disabled %}<span title="{{ e.rebuild.disabled }}"><button type="button" class="small danger env-rebuild" disabled title="{{ e.rebuild.disabled }}">{{ _("Rebuild…") }}</button></span>
+        {% elif e.rebuild %}<button type="button" class="small danger env-rebuild" data-rebuild="{{ e.rebuild.server }}" data-label="{{ e.label }}" {{ 'disabled' if e.state == 'busy' or is_busy }}
+          title="{{ _('Makes this staging again from production as it is now: a new backup, loaded here and neutralized; if you choose, also the code, at the commits of production. Its address stays. Not available while a job works on the staging or on production. Admins only.') }}">{{ _("Rebuild…") }}</button>{% endif %}
+        <div class="env-actions-home">{{ now_actions(e) }}</div>
+      </div>
+      {% if e.code %}
+      <div class="env-strip" data-strip="{{ e.key }}" aria-busy="true">
+        {% for _i in range(3) %}<div class="deploy-card skeleton" aria-hidden="true"><span></span><span></span><span></span></div>{% endfor %}
+      </div>
+      {% endif %}
+    </div>
+    {% endfor %}
+    {% if main_view and stagings and stagings.elsewhere %}<div id="envs-elsewhere"></div>{% endif %}
+  </div>
+  {% if main_view %}
+  {# the path of this instance on the map (docs/ux/UX-009 §3): a link, the map changes nothing #}
+  <p class="small" style="margin: 8px 0 0"><a href="{{ prefix }}/instances?view=map{% if map_workspace %}&amp;workspace={{ map_workspace | urlencode }}{% else %}&amp;machine=~{% endif %}&amp;focus={{ server.name | urlencode }}"
+    title="{{ _('Opens the map of its workspace with the path of this instance: its names, the web server, Odoo, its database. It changes nothing.') }}">{{ _("On the map") }} ›</a></p>
+  {% if stagings and stagings.can and not stagings.rows %}<p class="muted" id="stagings-none" style="margin: 8px 0 0">{{ _("No staging: a staging is a dated copy of production, to try an update without touching it.") }}</p>{% endif %}
+  {% endif %}
+  <p class="error" id="envs-error" role="alert"></p>
+</div>
+{% if rebuild_here and not is_staging %}{{ rebuild_dialog() }}{% endif %}
+<style>
+/* «Environments and deploys» (UX-015): the left column ~280 px, the strip of cards ~240 px each */
+.env-rows { display: flex; flex-direction: column; }
+.env-row { display: flex; gap: 14px; padding: 12px 0; border-top: 1px solid var(--border); min-height: 128px; align-items: stretch; }
+.env-row:first-child { border-top: 0; }
+/* a row without cards (a user's: UX-015 §12) keeps no room for them */
+.env-row:not(:has(.env-strip)) { min-height: 0; }
+.env-row[hidden] { display: none; }
+.env-left { flex: 0 0 280px; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.env-name { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.env-name strong { overflow-wrap: anywhere; }
+.env-signs a { color: inherit; } .env-signs .ok-text { color: var(--ok); }
+.env-left .env-rebuild { align-self: flex-start; margin-top: 4px; }
+.env-actions { display: inline-flex; gap: 0; align-items: stretch; margin-top: 4px; }
+.env-actions > .env-open, .env-actions > span > .env-open { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.env-actions .env-menu > summary { border-top-left-radius: 0; border-bottom-left-radius: 0; margin-left: -1px; }
+.env-actions > details:only-child > summary, .env-actions > :only-child { border-radius: var(--r); }
+.env-actions .more-items { left: 0; right: auto; }
+.env-actions a[aria-disabled="true"] { opacity: .55; pointer-events: none; }
+.state-dot.quiet::before { background: var(--muted); }
+.env-strip { flex: 1 1 auto; min-width: 0; display: flex; gap: 10px; align-items: stretch; flex-wrap: wrap; align-content: flex-start; }
+.env-note { align-self: center; font-size: 13px; max-width: 320px; }
+.env-more { align-self: center; white-space: nowrap; font-size: 13px; }
+.deploy-card { flex: 0 0 240px; width: 240px; min-width: 0; box-sizing: border-box; display: flex; flex-direction: column; gap: 4px;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--panel); }
+.deploy-card.dc-current { border-color: var(--ok); }
+.deploy-card.dc-failed { border-color: var(--err); }
+.deploy-card.dc-available { border-style: dashed; border-color: var(--info); }
+.deploy-card .dc-msg { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+.deploy-card a.dc-msg:hover { text-decoration: underline; }
+.deploy-card .dc-line { font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.deploy-card .dc-label { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+.deploy-card .dc-badges { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.deploy-card .dc-error { font-size: 13px; color: var(--err); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.deploy-card .dc-action { margin-top: auto; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.deploy-card .dc-action .env-actions { margin-top: 0; }
+.badge.neutral { color: var(--muted); background: var(--panel-2); }
+.badge.err { color: var(--err); background: var(--err-soft); }
+.deploy-card.skeleton span { display: block; height: 12px; border-radius: 6px; background: var(--panel-2); }
+.deploy-card.skeleton span:first-child { width: 80%; } .deploy-card.skeleton span:nth-child(2) { width: 55%; }
+.deploy-card.skeleton span:nth-child(3) { width: 35%; margin-top: auto; }
+.env-filter { margin: 0 0 8px; } .env-filter input { width: min(360px, 100%); }
+@media (max-width: 1279px) { .deploy-card { flex-basis: 220px; width: 220px; } }
+@media (max-width: 700px) {
+  .env-row { flex-direction: column; gap: 8px; min-height: 0; }
+  .env-left { flex-basis: auto; }
+  .env-strip { flex-direction: column; }
+  .deploy-card { width: 100%; flex-basis: auto; }
+  .env-actions .button, .env-actions summary, .env-left .env-rebuild, .env-actions .more-items .button,
+  .env-actions .more-items button { min-height: 44px; }
+  .env-actions .env-menu[open] { flex-basis: auto; }
+  .env-actions .more-items { position: absolute; width: max-content; max-width: calc(100vw - 48px); }
+}
+</style>
+<script>
+(function () {
+  const box = document.getElementById("envs");
+  if (!box) return;
+  const prefix = {{ prefix | tojson }};
+  const T = {
+    running: {{ _("Running") | tojson }}, stopped: {{ _("Stopped") | tojson }}, unknown: {{ _("State unknown") | tojson }},
+    busy: {{ _("Job running") | tojson }}, staging: {{ _("Staging") | tojson }}, on: {{ _("on {machine}") | tojson }},
+    open: {{ _("Opens its page on {machine}") | tojson }}, there: {{ _("Open it from the page of {machine}") | tojson }},
+    loginAs: {{ _("Log in as…") | tojson }}, actions: {{ _("Actions") | tojson }},
+    menuTitle: {{ _("The other things to do on {name}: log in as a user, the log, a backup, the shell, the addresses") | tojson }},
+    rebuild: {{ _("Rebuild…") | tojson }},
+    rebuildThere: {{ _("{name} is on {machine}: a staging of another machine is not rebuilt from here; make a new one with + New staging.") | tojson }},
+    copyOf: {{ _("copy of") | tojson }},
+    inProgress: {{ _("in progress:") | tojson }}, jobTitle: {{ _("Opens the job working on {name} now") | tojson }},
+    available: {{ _("Available, not deployed") | tojson }},
+    availableTitle: {{ _("A push of the branch this production follows: a production is updated by hand only, Update brings it") | tojson }},
+    pushed: {{ _("came with the push of {ago}") | tojson }},
+    nowCode: {{ _("The code of now") | tojson }}, notDeploy: {{ _("not brought by a recorded deploy") | tojson }},
+    nowCodeTitle: {{ _("The commit each repository has checked out now, read from its copy: no recorded deploy brought it (a new instance, or code changed outside OmniaCLI)") | tojson }},
+    now: {{ _("now") | tojson }}, nowTitle: {{ _("Every repository of the environment is at the commits of this deploy") | tojson }},
+    success: {{ _("✓ succeeded") | tojson }}, warned: {{ _("⚠ with warnings") | tojson }}, failed: {{ _("✕ failed") | tojson }},
+    stoppedJob: {{ _("halted") | tojson }}, interrupted: {{ _("interrupted") | tojson }},
+    added: {{ _("added {name}") | tojson }}, removed: {{ _("taken away {name}") | tojson }},
+    moreRepos: {{ _("+ {n} repositories") | tojson }}, moreRepo: {{ _("+ 1 repository") | tojson }},
+    commits: {{ _("{n} commits") | tojson }}, commit: {{ _("1 commit") | tojson }},
+    commitLink: {{ _("Opens the commit {sha} of {repo} in a new tab") | tojson }},
+    who: {{ _("Commit by {author} · brought by {by}") | tojson }}, whoBy: {{ _("Brought by {by}") | tojson }},
+    unserved: {{ _("{n} s without service") | tojson }},
+    back: {{ _("Back here…") | tojson }},
+    backTitle: {{ _("Says which commits change and what happens to the database, then starts a job that puts each repository at the commit of this deploy, updates the changed modules and restarts.") | tojson }},
+    backProd: {{ _("It asks the name of the instance written.") | tojson }},
+    update: {{ _("Update…") | tojson }}, updateOff: {{ _("Update is in the head of the page while Odoo runs and no job works on it") | tojson }},
+    openJob: {{ _("Open the job") | tojson }}, openJobTitle: {{ _("Opens the job of this deploy: each step, with the error") | tojson }},
+    jobGone: {{ _("job no longer in the list") | tojson }},
+    more: {{ _("{n} more") | tojson }}, morePhone: {{ _("{n} more deploys") | tojson }},
+    moreTitle: {{ _("Opens every deploy of {name} in Modules › Deploys, with the backup made before each one") | tojson }},
+    noneProd: {{ _("No deploy yet: the first is an Update made by hand. A production does not update itself.") | tojson }},
+    noneOther: {{ _("No deploy yet: the first is an Update, a push with the CI on or a Back to a deploy.") | tojson }},
+    template: {{ _("Code from the template: no repository, so no deploy. A repository is added from Modules › Code.") | tojson }},
+    templateTitle: {{ _("Opens Modules › Code of {name}") | tojson }},
+    unread: {{ _("Deploys not read: {reason}") | tojson }},
+    older: {{ _("{machine} has an older OmniaCLI: update it to see its deploys here") | tojson }},
+    error: {{ _("Error {status}") | tojson }}, unreachable: {{ _("OmniaCLI cannot be reached") | tojson }},
+  };
+  const fill = (text, values) => text.replace(/\{(\w+)\}/g, (m, k) => (k in values ? values[k] : m));
+  const el = (tag, attrs = {}, ...children) => {
+    const node = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) if (v !== null && v !== undefined && v !== false) node.setAttribute(k, v === true ? "" : v);
+    node.append(...children.filter((c) => c !== null && c !== undefined && c !== ""));
+    return node;
+  };
+  const short = (sha) => String(sha || "").slice(0, 10);
+  const two = (n) => String(n).padStart(2, "0");
+  const duration = (s) => (s === null || s === undefined ? "" : s >= 3600
+    ? `${Math.floor(s / 3600)}:${two(Math.floor(s / 60) % 60)}:${two(s % 60)}` : `${Math.floor(s / 60)}:${two(s % 60)}`);
+  // how many cards of deploys a strip shows: 3 from 1280 px, 2 from 900, 1 below (UX-015 §6)
+  const phone = () => window.matchMedia("(max-width: 700px)").matches;
+  const limit = () => (window.innerWidth >= 1280 ? 3 : window.innerWidth >= 900 ? 2 : 1);
+  const PRIORITY = {busy: 0, available: 1, now: 2};
+  let strips = {}, loadedAt = 0, busyKeys = null;
+
+  // the split «Open ↗ ▾» of a row: moved into its card of now, back into the row before the strip is drawn again
+  const homes = {};
+  for (const node of box.querySelectorAll("[data-now-actions]")) homes[node.dataset.nowActions] = node.parentElement;
+  function actionsOf(key) {
+    const node = box.querySelector(`[data-now-actions="${CSS.escape(key)}"]`);
+    if (node && homes[key] && node.parentElement !== homes[key]) homes[key].append(node);
+    return node;
+  }
+
+  function message(c) {
+    const text = c.change === "added" ? fill(T.added, {name: c.repo}) : c.change === "removed" ? fill(T.removed, {name: c.repo})
+      : (c.message || c.title || "—");
+    if (c.url) return el("a", {class: "dc-msg", href: c.url, target: "_blank", rel: "noopener",
+                                 title: fill(T.commitLink, {sha: short(c.sha), repo: c.repo}) + " · " + text}, text + " ↗");
+    return el("span", {class: "dc-msg", title: text}, text);
+  }
+  function others(c) {
+    if (!c.others || !c.others.length) return null;
+    const title = [c, ...c.others].map((r) => `${r.repo || r.name}: ${r.brought ? (r.brought === 1 ? T.commit : fill(T.commits, {n: r.brought})) : "—"}`).join(" · ");
+    return el("div", {class: "dc-line", title}, c.others.length === 1 ? T.moreRepo : fill(T.moreRepos, {n: c.others.length}));
+  }
+  function who(c) {
+    if (!c.author && !c.by) return null;
+    const title = c.author && c.by ? fill(T.who, {author: c.author, by: c.by}) : c.author ? c.author : fill(T.whoBy, {by: c.by});
+    return el("div", {class: "dc-line", title}, c.author || c.by);
+  }
+  function age(c, zone) {
+    if (!c.finished) return null;
+    const parts = [window.agoText(c.finished, zone)];
+    if (c.kind !== "available" && c.seconds !== null && c.seconds !== undefined) parts.push(duration(c.seconds));
+    if (c.unserved) parts.push(fill(T.unserved, {n: c.unserved}));
+    return el("div", {class: "dc-line dc-age", title: window.whenText(c.finished, zone)}, parts.join(" · "));
+  }
+  function outcome(c) {
+    const kind = {success: "ok", warned: "warn", failed: "err"}[c.outcome] || "neutral";
+    const word = {success: T.success, warned: T.warned, failed: T.failed, stopped: T.stoppedJob, interrupted: T.interrupted}[c.outcome] || c.outcome || "";
+    return word ? el("span", {class: `badge ${kind}`, "data-outcome": c.outcome, title: word}, word) : null;
+  }
+  // the head's Update (its dialog, or its form's question): what «Update…» of a commit available opens
+  const headUpdate = () => document.querySelector(".head-actions [data-head-update]");
+  function card(c, env, zone) {
+    const classes = ["deploy-card", "dc-" + c.kind];
+    if (c.current) classes.push("dc-current");
+    if (c.outcome === "failed") classes.push("dc-failed");
+    const node = el("div", {class: classes.join(" "), "data-kind": c.kind, "data-finished": c.finished || "",
+                            "data-sha": c.sha || "", "data-deploy": c.id || ""});
+    if (c.kind === "busy") {
+      node.title = c.title;
+      node.append(el("div", {class: "dc-msg"}, "⟳ ", T.inProgress),
+                  el("a", {class: "dc-line", href: prefix + c.job, title: fill(T.jobTitle, {name: env.label})}, c.title));
+      return node;
+    }
+    if (c.kind === "now") node.append(el("div", {class: "dc-line dc-label"}, T.nowCode));
+    node.append(...[message(c), others(c), who(c)].filter(Boolean));
+    if (c.kind === "available") {
+      node.append(el("div", {class: "dc-line", title: window.whenText(c.finished, zone)}, fill(T.pushed, {ago: window.agoText(c.finished, zone)})),
+                  el("div", {class: "dc-badges"}, el("span", {class: "badge info", title: T.availableTitle}, T.available)));
+      const head = headUpdate();
+      const button = el("button", {type: "button", class: "small", title: head ? (head.title || head.closest("[title]")?.title || T.update) : T.updateOff}, T.update);
+      if (head && !head.disabled) button.addEventListener("click", () => head.click());
+      else button.disabled = true;
+      node.append(el("div", {class: "dc-action"}, head && !head.disabled ? button : el("span", {title: T.updateOff}, button)));
+      return node;
+    }
+    if (c.kind === "now") {
+      node.title = T.nowCodeTitle;
+      node.append(el("div", {class: "dc-line"}, T.notDeploy),
+                  el("div", {class: "dc-badges"}, el("span", {class: "badge ok", title: T.nowTitle}, T.now)));
+      node.append(el("div", {class: "dc-action", "data-action-slot": ""}));
+      return node;
+    }
+    if (c.finished) node.append(age(c, zone));
+    node.append(el("div", {class: "dc-badges"}, outcome(c),
+                   c.current ? el("span", {class: "badge ok", "data-now": "", title: T.nowTitle}, T.now) : null));
+    if (c.error && c.outcome !== "success") {
+      const first = String(c.error).split("\n")[0];
+      node.append(el("div", {class: "dc-error", title: c.error}, first));
+    }
+    const action = el("div", {class: "dc-action"});
+    if (c.current) action.dataset.actionSlot = "";
+    else if (["failed", "stopped", "interrupted"].includes(c.outcome)) {
+      action.append(c.job ? el("a", {href: prefix + c.job, title: T.openJobTitle}, T.openJob + " ›")
+                          : el("span", {class: "muted small"}, T.jobGone));
+    } else if (c.back && env.api && window.omniaDeployBack) {
+      const button = el("button", {type: "button", class: "small", "data-back": c.id,
+                                   title: T.backTitle + (env.confirm ? " " + T.backProd : "")}, T.back);
+      button.addEventListener("click", () => window.omniaDeployBack(
+        {api: env.api, id: c.id, finished: c.finished, confirm: env.confirm, own: env.key === box.dataset.own, zone}, button));
+      action.append(button);
+    }
+    node.append(action);
+    return node;
+  }
+  // the cards a strip shows: the one of now and the ones before it up to the limit (3, 2, 1), the special ones
+  // (a job in progress, a commit available) besides them, never behind «more»; on a phone the one most important
+  // only (in progress › available › now)
+  function visible(cards) {
+    if (phone()) {
+      const best = [...cards].sort((a, b) => (PRIORITY[a.kind] ?? (a.current ? 2 : 3)) - (PRIORITY[b.kind] ?? (b.current ? 2 : 3)));
+      return best.slice(0, 1);
+    }
+    const extra = (c) => c.kind === "busy" || c.kind === "available";
+    const n = limit(), deploys = cards.filter((c) => !extra(c)), shown = new Set(deploys.filter((c) => c.current));
+    for (const c of deploys) { if (shown.size >= n) break; shown.add(c); }
+    return cards.filter((c) => extra(c) || shown.has(c));
+  }
+  function draw(env, holder, zone) {
+    const label = env.label || env.key;
+    const actions = actionsOf(env.key);
+    holder.removeAttribute("aria-busy");
+    if (!env.repositories) {
+      holder.replaceChildren(el("p", {class: "muted env-note"}, T.template, " ",
+        el("a", {href: env.more.replace("#deploys", "#addons"), title: fill(T.templateTitle, {name: label})}, "›")));
+      return;
+    }
+    const shown = visible(env.cards || []);
+    const nodes = shown.map((c) => card(c, {...env, label}, zone));
+    holder.replaceChildren(...nodes);
+    // the split of the row: in its card of now, else in the first card (a phone shows one)
+    const slot = holder.querySelector("[data-action-slot]") || (phone() ? holder.querySelector(".dc-action") || nodes[0] : null);
+    if (actions && slot) slot.append(actions);
+    if (!env.cards.some((c) => c.kind !== "now" && c.kind !== "busy" && c.kind !== "available")) {
+      holder.append(el("p", {class: "muted env-note"}, env.ci === "manual" ? T.noneProd : T.noneOther));
+    }
+    const represented = shown.reduce((sum, c) => sum + (c.ids ? c.ids.length : 0), 0);
+    const hidden = Math.max(0, (env.total || 0) - represented);
+    if (hidden) holder.append(el("a", {class: "env-more", href: env.more, title: fill(T.moreTitle, {name: label})},
+                                     fill(phone() ? T.morePhone : T.more, {n: hidden}) + " ›"));
+  }
+  function redraw() {
+    for (const [key, {env, zone}] of Object.entries(strips)) {
+      const holder = box.querySelector(`[data-strip="${CSS.escape(key)}"]`);
+      if (holder) draw(env, holder, zone);
+    }
+  }
+  function labelOf(key) {
+    const row = box.querySelector(`.env-row[data-env="${CSS.escape(key)}"] .env-name strong`);
+    return row ? row.textContent : key;
+  }
+  function failAll(message) {
+    for (const holder of box.querySelectorAll(".env-strip[aria-busy]")) {
+      holder.removeAttribute("aria-busy");
+      holder.replaceChildren(el("p", {class: "error env-note"}, message));
+    }
+  }
+  async function load() {
+    if (!box.dataset.api) return;
+    loadedAt = Date.now();
+    let resp = null;
+    try { resp = await fetch(box.dataset.api, {headers: {Accept: "application/json"}}); } catch (e) { resp = null; }
+    const data = resp ? await resp.json().catch(() => null) : null;
+    if (!resp || !resp.ok || !data) { failAll(resp ? (data && (data.error || data.detail)) || fill(T.error, {status: resp.status}) : T.unreachable); return; }
+    for (const env of data.environments || []) {
+      env.label = labelOf(env.key);
+      strips[env.key] = {env, zone: undefined};
+    }
+    redraw();
+  }
+  // a job of an environment of the section started or ended (the page's watch of the jobs tells it): read again
+  document.addEventListener("omnia-busy", (event) => {
+    const keys = Object.keys(strips), now = (event.detail || []).filter((k) => keys.includes(k)).sort().join(" ");
+    if (busyKeys !== null && now !== busyKeys) load();
+    busyKeys = now;
+  });
+  // every 60 s while the browser's tab is in sight, never while it is hidden
+  setInterval(() => { if (!document.hidden && Date.now() - loadedAt >= 60000) load(); }, 5000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden && Date.now() - loadedAt >= 60000) load(); });
+  let resizing = null;
+  window.addEventListener("resize", () => { clearTimeout(resizing); resizing = setTimeout(redraw, 150); });
+  load();
+
+  // the filter of the environments: from more than 8 rows (UX-015 §4.2)
+  const filter = document.getElementById("env-filter");
+  function filterShown() {
+    const rows = box.querySelectorAll(".env-row");
+    filter.closest(".env-filter").hidden = rows.length <= 8;
+    const words = filter.value.toLowerCase().split(/\s+/).filter(Boolean);
+    for (const row of rows) row.hidden = !words.every((w) => (row.dataset.text || "").includes(w));
+  }
+  filter.addEventListener("input", filterShown);
+  filterShown();
+
+  // the stagings of this production on the linked machines (UX-008 §5.1), asked by this machine to its links:
+  // their rows, then the cards of each link's in one request through it (a machine that does not answer: why)
+  const elsewhere = document.getElementById("envs-elsewhere");
+  async function json(url) {
+    const resp = await fetch(url, {headers: {Accept: "application/json"}}).catch(() => null);
+    const data = resp ? await resp.json().catch(() => null) : null;
+    return resp && resp.ok && data ? data : null;
+  }
+  async function loadElsewhere() {
+    const data = await json(box.dataset.elsewhere);
+    const rows = (data && data.stagings) || [];
+    const byLink = {};
+    elsewhere.replaceChildren(...rows.map((s) => {
+      const key = `${s.link}:${s.server}/production`;
+      const name = s.url ? el("a", {href: prefix + s.url, title: fill(T.open, {machine: s.link})}, el("strong", {}, s.server))
+                         : el("strong", {title: fill(T.there, {machine: s.link})}, s.server);
+      const st = s.unread ? "unknown" : (s.state || "unknown");
+      const why = fill(T.rebuildThere, {name: s.server, machine: s.link});
+      const actions = el("div", {class: "env-actions", "data-now-actions": key});
+      if (s.login_as) {
+        const items = el("div", {class: "more-items"});
+        const button = el("button", {type: "button", title: s.login_as.disabled || s.login_as.title, "data-menu": "login_as"}, T.loginAs);
+        if (s.login_as.disabled) { button.disabled = true; button.dataset.loginAs = ""; items.append(el("span", {title: s.login_as.disabled}, button)); }
+        else { button.dataset.loginAs = JSON.stringify(s.login_as); items.append(button); }
+        actions.append(el("details", {class: "more-menu env-menu"},
+          el("summary", {class: "button small", title: fill(T.menuTitle, {name: s.server})}, T.actions + " ▾"), items));
+      }
+      const left = el("div", {class: "env-left"},
+        el("div", {class: "env-state"}, el("span", {class: `state-dot ${st}${st === "stopped" ? " quiet" : ""}`}, T[st] || T.unknown)),
+        el("div", {class: "env-name"}, name, " ", el("span", {class: "badge info", title: T.staging}, T.staging)),
+        el("div", {class: "small env-signs"}, el("span", {class: "muted"}, fill(T.on, {machine: s.link})),
+           s.created ? el("span", {class: "muted"}, " · ", T.copyOf, " ", window.whenText(s.created).slice(0, 10)) : null),
+        {% if is_admin_here %}el("span", {title: why}, el("button", {type: "button", class: "small danger env-rebuild", disabled: true, title: why}, T.rebuild)),{% endif %}
+        el("div", {class: "env-actions-home"}, actions));
+      const strip = el("div", {class: "env-strip", "data-strip": key, "aria-busy": "true"},
+        ...[0, 1, 2].map(() => el("div", {class: "deploy-card skeleton", "aria-hidden": "true"}, el("span"), el("span"), el("span"))));
+      homes[key] = left.lastElementChild;
+      if (s.unread) {
+        strip.removeAttribute("aria-busy");
+        strip.replaceChildren(el("p", {class: "error env-note"}, fill(T.unread, {reason: s.unread})));
+      } else (byLink[s.link] = byLink[s.link] || []).push(s.server);
+      return el("div", {class: "env-row", "data-env": key, "data-env-kind": "staging-elsewhere",
+                        "data-text": `${s.server} staging ${s.link}`.toLowerCase()}, left, strip);
+    }));
+    const none = document.getElementById("stagings-none");
+    if (none && rows.length) none.hidden = true;
+    filterShown();
+    await Promise.all(Object.entries(byLink).map(async ([link, names]) => {
+      const url = `${box.dataset.elsewhere}/environments?link=${encodeURIComponent(link)}&` + names.map((n) => "staging=" + encodeURIComponent(n)).join("&");
+      const found = await json(url);
+      for (const name of names) {
+        const key = `${link}:${name}/production`;
+        const holder = elsewhere.querySelector(`[data-strip="${CSS.escape(key)}"]`);
+        const one = found && (found.stagings || []).find((x) => x.server === name);
+        if (!one || !one.environment) {
+          holder.removeAttribute("aria-busy");
+          holder.replaceChildren(el("p", {class: "error env-note"}, one && one.older ? fill(T.older, {machine: link})
+            : fill(T.unread, {reason: (one && one.unread) || T.unreachable})));
+          continue;
+        }
+        const env = {...one.environment, key, label: name};
+        strips[key] = {env, zone: undefined};
+        draw(env, holder, undefined);
+      }
+    }));
+  }
+  if (elsewhere && box.dataset.elsewhere) loadElsewhere();
+})();
+</script>

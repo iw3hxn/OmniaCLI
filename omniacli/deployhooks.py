@@ -101,6 +101,32 @@ def pushed(body: bytes) -> tuple[str | None, set[str]]:
     return branch, urls
 
 
+def head_author(body: bytes) -> str:
+    """The author's name of the commit at the head of a push (GitHub's
+    head_commit, GitLab's last commit, Bitbucket's target); "" when the
+    body does not say."""
+    try:
+        data = json.loads(body or b"{}")
+    except ValueError:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    head = data.get("head_commit") if isinstance(data.get("head_commit"), dict) else None
+    commits = [c for c in data.get("commits") or [] if isinstance(c, dict)]
+    if head is None and commits:
+        sha = str(data.get("after") or data.get("checkout_sha") or "")
+        head = next((c for c in commits if c.get("id") == sha), commits[-1])
+    found = (head or {}).get("author")
+    push = data.get("push") if isinstance(data.get("push"), dict) else {}
+    for change in push.get("changes") or []:
+        target = ((change or {}).get("new") or {}).get("target") or {}
+        if isinstance(target, dict) and isinstance(target.get("author"), dict):
+            user = target["author"].get("user") if isinstance(target["author"].get("user"), dict) else {}
+            found = {"name": user.get("display_name") or str(target["author"].get("raw") or "").split(" <")[0]}
+    name = found.get("name") if isinstance(found, dict) else ""
+    return str(name or "").strip().split("\n", 1)[0][:120]
+
+
 def head_commit(body: bytes) -> tuple[str, str]:
     """(sha, first line of its message) of the commit a push brought to the
     head of its branch (GitHub's after and head_commit, GitLab's

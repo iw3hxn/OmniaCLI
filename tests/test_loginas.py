@@ -134,14 +134,15 @@ async def test_a_production_is_an_admins(here):
     assert urlsplit(resp.json()["url"]).netloc == PRODUCTION
     # the button: for whom may use it; in the head of the page, and on the rows of Environments (UX-013 §B2)
     page = (await here.get("/servers/srv", headers=as_user("dev"))).text
-    head = page.split('<table class="copies">', 1)[0]
+    head = page.split('id="envs"', 1)[0]
     assert "data-login-as=" not in head and page.count("data-login-as=") == 1 and '"key": "srv/test"' in page
+    # the test's page: the head's, and its row of «Environments and deploys» (UX-015), in the menu of its card
     page = (await here.get("/servers/srv?view=test", headers=as_user("dev"))).text
-    assert page.count("data-login-as=") == 1 and "login-as-dialog" in page
+    assert page.count("data-login-as=") == 2 and "login-as-dialog" in page
     page = (await here.get("/servers/srv?view=production", headers=as_user("admin"))).text
     assert page.count("data-login-as=") == 3  # the head's, the production's and the test's rows
     page = (await here.get("/servers/srv?view=test", headers=as_user("admin"))).text
-    assert page.count("data-login-as=") == 1
+    assert page.count("data-login-as=") == 2
     page = (await here.get("/servers/srv", headers=as_user("viewer"))).text
     assert "data-login-as=" not in page
 

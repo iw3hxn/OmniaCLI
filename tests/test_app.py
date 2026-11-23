@@ -847,10 +847,10 @@ async def test_link_of_a_stopped_instance_is_not_clickable(client, env, monkeypa
     page = (await client.get("/", headers={"Authorization": AUTH})).text
     assert 'class="state-dot stopped"' in page
     assert 'href="https://test.example.com"' not in page
-    # the Open of the test in the Environments of the server page
+    # the Open of the test in Environments and deploys of the server page (UX-015 §7): off, saying why
     page = (await client.get("/servers/srv", headers={"Authorization": AUTH})).text
     assert 'href="https://test.example.com"' not in page
-    assert 'class="button small link-off" aria-disabled="true"' in page
+    assert 'class="button small env-open" aria-disabled="true"' in page
 
 async def test_help_for_developers_and_admins(client):
     for user in ("admin", "dev"):

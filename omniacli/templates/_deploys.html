@@ -2,10 +2,13 @@
 {# The deploys of an instance (deploys.py, README Deploys), in its Modules tab: each job that changed its code,
    its commits before and after, who started it, its outcome and the backup made before it; «Back to this
    deploy…» on a past one, in a dialog that says what changes; the automatic deploys paused or on. No primary
-   button here: the tab's work is its code, a deploy gone back to is the exception. -#}
+   button here: the tab's work is its code, a deploy gone back to is the exception. The dialog is the page's one
+   (window.omniaDeployBack): the cards of «Environments and deploys» open it too, for any environment of the
+   section (UX-015 §8), and on a production it asks the name of the instance written (D2). -#}
 {% set restore_target = restore_file.get(inst.key) if restore_file and not (restore_file.get(inst.key) or {}).get("disabled") else none %}
 <section class="tab-panel panel" data-panel="modules" data-section="deploys" hidden id="deploys"
          data-api="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}/deploys" data-key="{{ inst.key }}"
+         data-confirm="{{ inst.server if manual_only[inst.key] else '' }}"
          data-restore='{{ restore_target | tojson if restore_target else "" }}'>
   <div class="section-head"><h2>{{ _("Deploys") }}</h2></div>
   <p class="muted dp-intro">{{ _("Each job that changed the code of this instance: a Git pull, a deploy on push, the auto update, a repository added or changed, a deploy gone back to. The last {n} are kept, also when their job is no longer in the list of the jobs.", n=keep_deploys) }}</p>
@@ -25,6 +28,10 @@
     <p class="muted" id="dp-kept" hidden></p>
     <p class="muted" id="dp-gone" hidden></p>
     <div class="banner" id="dp-refused" hidden></div>
+    <div class="sd-field" id="dp-confirm-line" hidden>
+      <label class="sd-label" for="dp-confirm" id="dp-confirm-label" data-text="{{ _('A production: write the name of the instance, {name}, to go back') }}"></label>
+      <input id="dp-confirm" autocomplete="off" spellcheck="false">
+    </div>
     <p class="note-box" id="dp-db">{{ _("The database is not taken back: the changed modules are updated to the code of that deploy, but a module whose data changed after it (new fields or tables, data moved) may not work with its data of now. A backup of the instance as it is now is made first.") }}</p>
     <p id="dp-next"></p>
     <label class="sd-choice" id="dp-pause-line" title="{{ _('Switches the CI of this instance off before going back, so that no push, auto update or scheduled pull brings the head of the branch again; it is switched on again in Updates of the code.') }}">
@@ -63,6 +70,8 @@
     success: {{ _("succeeded") | tojson }}, failed: {{ _("failed") | tojson }}, warned: {{ _("with warnings") | tojson }},
     stopped: {{ _("stopped") | tojson }}, interrupted: {{ _("interrupted") | tojson }},
     available: {{ _("available, not deployed") | tojson }},
+    unmoved: {{ _("no commit moved") | tojson }},
+    unmovedTitle: {{ _("A job of the code that failed or was stopped before moving any commit: the code stayed as it was") | tojson }},
     availableTitle: {{ _("A push of the branch this production follows: a production is updated by hand only, Update brings it") | tojson }},
     newCommit: {{ _("New commit available on {repo}/{branch}: {sha} {subject}") | tojson }},
     pushedOn: {{ _("pushed {when}") | tojson }},
@@ -113,6 +122,7 @@
   }
   function codeCell(d) {
     const cell = el("td");
+    if (d.kind === "failed" && !d.repositories.length) cell.append(el("div", {class: "dp-subject", title: T.unmovedTitle}, T.unmoved));
     for (const r of d.repositories) {
       let line;
       if (d.kind === "available") line = `→ ${short(r.after)}`;
@@ -145,9 +155,10 @@
         : el("span", {class: "mono" + (d.backup.kept ? "" : " muted")}, d.backup.kept ? d.backup.name : fill(T.deleted, {name: d.backup.name}));
       let action = null;
       if (d.current) action = el("span", {class: "dp-current", title: T.currentTitle}, T.current);
-      else if (data.can_back && d.kind !== "available") {
+      else if (data.can_back && d.has_state) {
         action = el("button", {type: "button", class: "small", title: T.backTitle, "data-deploy": d.id}, T.back);
-        action.addEventListener("click", () => open(d, action));
+        action.addEventListener("click", () => open({api: box.dataset.api, id: d.id, finished: d.finished,
+                                                     confirm: box.dataset.confirm || "", own: true}, action));
       }
       return el("tr", {"data-deploy": d.id, "data-kind": d.kind},
                 el("td", {class: "when"}, whenText(d.finished)), codeCell(d), el("td", {}, d.by),
@@ -164,18 +175,24 @@
   // the CI switched on or off in Updates of the code: the dialog's choice follows
   document.addEventListener("omnia-ci", load);
 
-  // --- the dialog of «Back to this deploy…»
+  // --- the dialog of «Back to this deploy…»: d is {api (the environment's deploys), id, finished, the name to
+  // write on a production to go back (D2), own (the instance of the page: its Restore may follow), zone}
   const dialog = document.getElementById("dp-dialog"), list = document.getElementById("dp-repos");
+  const confirmLine = document.getElementById("dp-confirm-line"), confirmInput = document.getElementById("dp-confirm");
   const refusedBox = document.getElementById("dp-refused"), dialogError = document.getElementById("dp-dialog-error");
   const pauseNow = document.getElementById("dp-pause-now"), go = document.getElementById("dp-go");
   document.getElementById("dp-cancel").addEventListener("click", () => dialog.close());
+  function goAllowed() {
+    return !!plan && !plan.refused.length && plan.changes > 0 && (!chosen.confirm || confirmInput.value.trim() === chosen.confirm);
+  }
+  confirmInput.addEventListener("input", () => { go.disabled = !goAllowed(); });
   async function open(d, button) {
     chosen = d; plan = null;
     button.disabled = true;
-    try { plan = await ask(`${box.dataset.api}/${encodeURIComponent(d.id)}/back`); }
-    catch (e) { errorBox.textContent = e.message; return; }
+    try { plan = await ask(`${d.api}/${encodeURIComponent(d.id)}/back`); }
+    catch (e) { (document.getElementById("envs-error") && !d.own ? document.getElementById("envs-error") : errorBox).textContent = e.message; return; }
     finally { button.disabled = false; }
-    document.getElementById("dp-title").textContent = fill(T.title, {when: whenText(d.finished)});
+    document.getElementById("dp-title").textContent = fill(T.title, {when: whenText(d.finished, d.zone)});
     list.replaceChildren(...plan.repositories.map((r) => {
       if (!r.change) return el("li", {}, fill(T.same, {name: r.name, sha: short(r.to)}));
       const item = el("li", {}, fill(r.missing ? T.missing : T.move, {name: r.name, now: short(r.now), to: short(r.to)}),
@@ -205,15 +222,20 @@
     const second = plan.restore_backup;
     restore.hidden = !second;
     if (second) {
-      const values = {when: whenText(second.before), name: second.name || ""};
+      const values = {when: whenText(second.before, d.zone), name: second.name || ""};
       restoreText.textContent = !second.name ? fill(T.restoreNone, values) : !second.kept ? fill(T.restoreGone, values)
         : fill(T.restore, values) + (restoreTarget ? "" : " " + T.restoreAdmin);
-      document.getElementById("dp-restore-go").hidden = !(second.name && second.kept && restoreTarget && window.omniaRestoreOpen);
+      document.getElementById("dp-restore-go").hidden = !(second.name && second.kept && restoreTarget && d.own && window.omniaRestoreOpen);
     }
+    // a production: its name written first (UX-015 D2)
+    confirmLine.hidden = !d.confirm;
+    confirmInput.value = "";
+    document.getElementById("dp-confirm-label").textContent = fill(document.getElementById("dp-confirm-label").dataset.text, {name: d.confirm || ""});
     dialogError.textContent = "";
-    go.disabled = !!plan.refused.length || !plan.changes;
+    go.disabled = !goAllowed();
     dialog.showModal();
   }
+  window.omniaDeployBack = open;
   document.getElementById("dp-restore-go").addEventListener("click", () => {
     dialog.close();
     window.omniaRestoreOpen(restoreTarget, box.dataset.key, plan.restore_backup.name);
@@ -221,9 +243,11 @@
   document.getElementById("dp-form").addEventListener("submit", async (ev) => {
     ev.preventDefault();
     if (!chosen || !plan) return;
+    if (!goAllowed()) return;
     go.disabled = true; dialogError.textContent = "";
     try {
-      const done = await ask(`${box.dataset.api}/${encodeURIComponent(chosen.id)}/back`, {pause: pauseNow.checked && !pauseLine().hidden});
+      const done = await ask(`${chosen.api}/${encodeURIComponent(chosen.id)}/back`,
+                             {pause: pauseNow.checked && !pauseLine().hidden, confirm: confirmInput.value.trim()});
       location.href = "{{ prefix }}/jobs/" + done.job;
     } catch (e) { dialogError.textContent = e.message; go.disabled = false; }
   });

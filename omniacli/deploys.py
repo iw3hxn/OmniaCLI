@@ -17,7 +17,11 @@ a scheduled pull: README, Deploys).
 How a deploy is seen: the jobs' watcher (Recorder) reads the commit each
 repository has checked out when a job on the instance starts and when it
 ends (the files of .git, git rev-parse when they cannot be read); when one
-moved, the job is a deploy. No action has to tell it.
+moved, the job is a deploy. No action has to tell it. A job of the code (a
+Git pull, a push, the auto update, a scheduled pull, a deploy gone back to:
+ops.mark_code) that failed or was stopped before moving any commit is kept too,
+of kind "failed", without commits (UX-015 D4: the strip of an environment
+says what happened, not only how its code is).
 
 Going back (go_back): each repository the deploy knew set to its commit on
 its branch (git reset --hard; the branch stays the one it follows, so the
@@ -43,6 +47,10 @@ KEEP = 100
 LISTED = 10
 _SHA = re.compile(r"[0-9a-f]{40}([0-9a-f]{24})?")
 _KEY = re.compile(r"[A-Za-z0-9_.-]{1,100}/[a-z]{1,20}")
+# the notes of a job of the code: the instances whose code it works on (ops.mark_code)
+CODE_NOTE = ops.CODE_NOTE
+# a job of the code that failed or was stopped before moving a commit
+FAILED_KIND = "failed"
 
 
 def folder_of(settings) -> Path:
@@ -202,6 +210,14 @@ async def subject(path: Path, sha: str | None) -> str:
     return found[0][:200] if found else ""
 
 
+async def author(path: Path, sha: str | None) -> str:
+    """Who wrote the commit sha (its author's name, %an): not who brought it."""
+    if not sha:
+        return ""
+    found = await _lines(path, "log", "-1", "--format=%an", sha)
+    return found[0][:120] if found else ""
+
+
 async def count(path: Path, span: str) -> int | None:
     found = await _lines(path, "rev-list", "--count", span)
     return int(found[0]) if found and found[0].isdigit() else None
@@ -216,6 +232,20 @@ async def commits(path: Path, span: str) -> list[dict]:
     return rows
 
 
+async def code_now(instance) -> list[dict]:
+    """The commit each repository of instance has checked out, with its
+    message and author, read from its .git (no fetch): what the strip shows
+    when no deploy recorded is the code of now."""
+    rows = []
+    for repo in getattr(instance, "repositories", None) or []:
+        sha = await head(repo)
+        if sha is None:
+            continue
+        rows.append({"name": repo.name, "branch": repo.branch, "after": sha,
+                     "subject": await subject(repo.path, sha), "author": await author(repo.path, sha)})
+    return rows
+
+
 async def changes(paths: dict, before: dict, after: dict) -> list[dict]:
     """Each repository whose commit moved from before to after (snapshots):
     its commits, their subjects, how many came and how many went; paths:
@@ -227,7 +257,7 @@ async def changes(paths: dict, before: dict, after: dict) -> list[dict]:
             continue
         path = paths.get(name) or Path("/nonexistent")
         row = {"name": name, "branch": (after.get(name) or before.get(name) or {}).get("branch", ""),
-               "before": was, "after": now, "subject": await subject(path, now),
+               "before": was, "after": now, "subject": await subject(path, now), "author": await author(path, now),
                "before_subject": await subject(path, was), "brought": None, "taken": None, "commits": []}
         if was and now:
             row["brought"], row["taken"] = await count(path, f"{was}..{now}"), await count(path, f"{now}..{was}")
@@ -266,13 +296,19 @@ class Recorder:
                     remove(self.folder, key)
                 continue
             now = await snapshot(instance)
-            if (was or {}) == now:
-                continue
-            paths = {r.name: r.path for r in instance.repositories}
-            rows = await changes(paths, was or {}, now)
-            if not rows:
-                continue
             notes = job.notes if isinstance(job.notes, dict) else {}
+            rows = [] if (was or {}) == now else await changes({r.name: r.path for r in instance.repositories},
+                                                               was or {}, now)
+            if not rows:
+                # a job of the code that failed or was stopped before moving any commit (UX-015 D4)
+                if key in (notes.get(CODE_NOTE) or []) and job.outcome in ("failed", "stopped"):
+                    record(self.folder, key, {
+                        "id": job.id, "job": job.id, "kind": FAILED_KIND, "title": job.title, "by": job.source,
+                        "started": job.started, "finished": job.finished, "outcome": job.outcome,
+                        "error": (job.error or "")[:500] or None, "repositories": [], "state": None,
+                        "backup": (notes.get("backups") or {}).get(key), "back_to": notes.get("back_to"),
+                        "unserved": None})
+                continue
             entry = {"id": job.id, "job": job.id, "title": job.title, "by": job.source,
                      "started": job.started, "finished": job.finished, "outcome": job.outcome,
                      "error": (job.error or "")[:500] or None, "repositories": rows, "state": now,
@@ -330,6 +366,7 @@ async def back_plan(instance, entry: dict) -> dict:
 async def go_back(job: Job, instance, entry: dict, backup_folder: Path | None) -> None:
     """The job of «Back to this deploy»: a backup first (always), each
     repository at the deploy's commit, what follows a pull, a restart."""
+    ops.mark_code(job, instance)
     plan = await back_plan(instance, entry)
     if plan["refused"]:
         raise JobFailed("; ".join(plan["refused"]))

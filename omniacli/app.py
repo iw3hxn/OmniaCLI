@@ -420,6 +420,8 @@ WORKSPACE_ROUTES = frozenset({
     "/api/servers/{server}/{role}/deploy-hook", "/api/servers/{server}/{role}/deploys",
     "/api/servers/{server}/{role}/zero-downtime",
     "/api/servers/{server}/{role}/deploys/{deploy_id}/back",
+    # the cards of «Environments and deploys» (UX-015): its developers, as the deploys
+    "/api/servers/{server}/{role}/environments",
     "/api/servers/{server}/pitr", "/api/servers/{server}/pitr/enable",
     "/api/servers/{server}/pitr/base", "/api/servers/{server}/pitr/restore",
     "/workspaces/{workspace}/destinations", "/api/workspaces/{workspace}/destinations/save",
@@ -2588,7 +2590,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     "key": i.key, "rows": rows,
                     "preview": f"{prefix_of(request)}/api/servers/{srv.name}/{i.role}/pull-preview"}
         # Log in as… on each row of Environments (UX-013 §B2): its production, its test, its stagings here
-        staging_now = await staging_states(staging_rows(srv.name))
+        # (those a person limited to some instances may see)
+        limited = visible_servers(me)
+        staging_now = await staging_states([r for r in staging_rows(srv.name) if limited is None
+                                            or r["server"] in limited])
         row_login_as = {}
         for i in srv.instances.values():
             label = inframap.public_host(i.domain or i.site) or srv.name
@@ -2598,10 +2603,17 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             prod = settings.servers[row["server"]].production
             row_login_as[prod.key] = login_as_offer(request, me, prod, row["state"],
                                                     inframap.public_host(prod.domain or prod.site) or row["server"])
+        env_addresses = address_rows(request.state.user, [
+            (srv.name, r) for r in ROLES if getattr(srv, r) is not None] + [(r["server"], "production") for r in staging_now])
+        environments = await environment_rows(
+            request, me, srv, view, staging_of, run_state_of(shown[0], service_states[shown[0].key]), staging_now,
+            row_login_as, env_addresses)
         return _TEMPLATES.TemplateResponse(
             request,
             "server.html",
             {
+                # the rows of «Environments and deploys» (UX-015)
+                "environments": environments,
                 "denied": denied,
                 "from_link": from_link,
                 # the workspace it is in: «On the map» opens its schema, where the node of this instance is
@@ -2627,9 +2639,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                              },
                 "is_admin_here": request.state.user.can("admin"),
                 # the other names of each row of Environments, and its ⚙ Addresses… (UX-008 §6.1)
-                "addresses": address_rows(request.state.user, [
-                    (srv.name, r) for r in ROLES if getattr(srv, r) is not None]
-                    + [(r["server"], "production") for r in staging_rows(srv.name)]),
+                "addresses": env_addresses,
                 # a staging whose mail is caught: its Mail tab (UX-008 §5.3)
                 "mail_capture": bool(staging_of) and await asyncio.to_thread(staging_mail, srv.name) is not None,
                 # and its mailboxes Odoo reads, written to as an outside sender (UX-008 §5.4)
@@ -6143,6 +6153,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     out["machines"].append({"name": name, **data})
         return out
 
+    # the stagings of a production seen on its links, by production and link: what a link that does not answer
+    # now had (its rows are kept, said unread), in this process only
+    elsewhere_seen: dict[tuple[str, str], list] = {}
+
     @app.get("/api/servers/{server}/stagings/elsewhere", dependencies=[Depends(admin)])
     async def stagings_elsewhere(request: Request, server: str, me: Principal = Depends(current_user)):
         """The stagings of server's production made on the linked machines
@@ -6163,22 +6177,31 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             try:
                 resp = await link_clients.client(link).get("/api/instances", headers=headers, timeout=LIST_TIMEOUT)
                 data = clock.answered_here(resp, resp.json()) if resp.status_code == 200 else None
-            except (httpx.HTTPError, ValueError):
-                data = None
+                why = "" if isinstance(data, dict) else f"answered HTTP {resp.status_code}"
+            except (httpx.HTTPError, ValueError) as exc:
+                data, why = None, describe_error(exc)
             if not isinstance(data, dict):
-                return name, None
-            return name, [{"link": name, "server": str(srv.get("name") or ""), "created": srv.get("created") or "",
-                           "state": ((srv.get("instances") or {}).get("production") or {}).get("state") or "",
-                           # its page: through this machine's link, for who logs in here
-                           "url": f"/links/{name}/servers/{srv.get('name')}" if me.kind == "user" else None,
-                           # its Log in as… there, under the link's prefix (an older OmniaCLI sends none: no button)
-                           "login_as": ((srv.get("instances") or {}).get("production") or {}).get("login_as")
-                           if me.kind == "user" else None}
-                          for srv in data.get("servers") or [] if isinstance(srv, dict)
-                          and srv.get("parent") == server and srv.get("parent_machine") == here]
+                # the rows it had the last time it answered, said unread (UX-015 §11: «Deploys not read»)
+                return name, None, [{**r, "unread": why} for r in elsewhere_seen.get((server, name), [])]
+            rows = [{"link": name, "server": str(srv.get("name") or ""), "created": srv.get("created") or "",
+                     "state": ((srv.get("instances") or {}).get("production") or {}).get("state") or "",
+                     # its page: through this machine's link, for who logs in here
+                     "url": f"/links/{name}/servers/{srv.get('name')}" if me.kind == "user" else None,
+                     # its Log in as… there, under the link's prefix (an older OmniaCLI sends none: no button)
+                     "login_as": ((srv.get("instances") or {}).get("production") or {}).get("login_as")
+                     if me.kind == "user" else None}
+                    for srv in data.get("servers") or [] if isinstance(srv, dict)
+                    and srv.get("parent") == server and srv.get("parent_machine") == here]
+            elsewhere_seen[(server, name)] = rows
+            return name, rows, []
         answers = await asyncio.gather(*(ask(n) for n in sorted(settings.link_targets)))
-        return {"stagings": [r for _, rows in answers if rows for r in rows],
-                "unread": [n for n, rows in answers if rows is None]}
+        lang = request_language(request)
+        found, unread = [], []
+        for name, rows, kept in answers:
+            found += [*(rows or []), *({**r, "unread": i18n.tr(lang, r["unread"])} for r in kept)]
+            if rows is None:
+                unread.append(name)
+        return {"stagings": found, "unread": unread}
 
     async def staging_host_there(name: str, me: Principal, template: str, instance: str, workspace: str,
                                  size: int | None) -> tuple[dict | None, str]:
@@ -12203,7 +12226,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return job
 
     async def note_available(instance: Instance, followed: list[str], branch: str | None, sha: str,
-                             message: str) -> bool:
+                             message: str, author: str = "") -> bool:
         """The commit a push brought, listed in the deploys of a production as
         available, not deployed (its page says so until it is pulled by hand)."""
         rows = []
@@ -12219,7 +12242,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if sha and (repo.name, sha) in listed:
                 continue
             rows.append({"name": repo.name, "branch": repo.branch, "before": now, "after": sha or None,
-                         "subject": message, "before_subject": "", "brought": None, "taken": None, "commits": []})
+                         "subject": message, "author": author, "before_subject": "", "brought": None, "taken": None,
+                         "commits": []})
         if not rows:
             return False
         stamp = datetime.datetime.now().isoformat(timespec="seconds")
@@ -12265,12 +12289,13 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return JSONResponse({"ok": True, "pong": True})
         branch, urls = deployhooks.pushed(body)
         sha, message = deployhooks.head_commit(body)
+        author = deployhooks.head_author(body)
         record = {"time": datetime.datetime.now().isoformat(timespec="seconds"), "branch": branch}
         started = []
         if manual_only(instance):
             followed = await followed_by(instance, urls, branch)
             if followed:
-                await note_available(instance, followed, branch, sha, message)
+                await note_available(instance, followed, branch, sha, message, author)
                 record["result"] = (f"not deployed: {instance.key} is a production, updated by hand only; "
                                     f"the new commit of {', '.join(followed)} is listed on its page")
             else:
@@ -12301,7 +12326,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if prod is not None and prod.key != instance.key and manual_only(prod):
                 theirs = await followed_by(prod, urls, branch)
                 if theirs:
-                    await note_available(prod, theirs, branch, sha, message)
+                    await note_available(prod, theirs, branch, sha, message, author)
         access_log.record("action", "hook", "push", ip, f"deploy {instance.key}: {record['result']}")
         data = deployhooks.load(deploy_hooks_file)
         if instance.key in data:
@@ -12656,7 +12681,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if not followed:
                 continue
             if manual_only(inst):
-                await note_available(inst, followed, branch, sha, message)
+                await note_available(inst, followed, branch, sha, message, deployhooks.head_author(body))
                 result = (f"not deployed: {inst.key} is a production, updated by hand only; the new commit of "
                           f"{', '.join(followed)} is listed on its page")
             elif not ci_on(inst):
@@ -12737,6 +12762,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return {"ci": ci_on(instance),
                 "deploys": deploy_rows_for(view, "en", instance, data["deploys"], await deploys.snapshot(instance))}
 
+    def deploy_seconds(entry: dict) -> int | None:
+        try:
+            began = datetime.datetime.fromisoformat(str(entry.get("started")))
+            ended = datetime.datetime.fromisoformat(str(entry.get("finished")))
+        except (TypeError, ValueError):
+            return None
+        return max(0, int((ended - began).total_seconds()))
+
     def deploy_rows_for(view, lang: str, instance: Instance, entries: list, now: dict) -> list:
         folder = backup_folder(instance)
         kept = {p.name for p in folder.glob("*.zip")} if folder.is_dir() else set()
@@ -12757,9 +12790,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 "title": i18n.tr(lang, title), "by": i18n.tr(lang, by), "outcome": entry.get("outcome"),
                 "error": i18n.tr(lang, error) if error else None,
                 "job": f"/jobs/{entry['job']}" if entry.get("job") and jobs.get(entry["job"]) else None,
-                "repositories": [{k: r.get(k) for k in ("name", "branch", "before", "after", "subject",
+                "repositories": [{k: r.get(k) for k in ("name", "branch", "before", "after", "subject", "author",
                                                         "before_subject", "brought", "taken", "commits")}
                                  for r in entry.get("repositories") or [] if isinstance(r, dict)],
+                # how long its job took, in seconds (UX-015: the card's 0:33)
+                "seconds": deploy_seconds(entry),
+                # a deploy whose commits are known: one it may go back to (not a commit available, not a job of the
+                # code that failed before moving one)
+                "has_state": bool(state) and (entry.get("kind") or "deploy") == "deploy",
                 "backup": {"name": backup, "kept": backup in kept} if backup else None,
                 "back_to": entry.get("back_to"), "current": current, "kind": entry.get("kind") or "deploy",
                 # the time its users were not served, measured by an update of an instance switched to the update
@@ -12787,7 +12825,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                         ["git", "merge-base", "--is-ancestor", sha, head], cwd=repos[name].path, timeout=20))[0] == 0):
                     continue
                 found.append({"name": name, "branch": row.get("branch") or repos[name].branch, "sha": sha[:10],
-                              "subject": row.get("subject") or "", "time": entry.get("finished")})
+                              "subject": row.get("subject") or "", "time": entry.get("finished"),
+                              "author": row.get("author") or "", "by": str(entry.get("by") or ""),
+                              "id": entry.get("id"), "after": sha})
         return found
 
     def deploys_pause_view(request: Request, instance: Instance, me: Principal) -> dict:
@@ -12827,7 +12867,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         lang = request_language(request)
         # the second way: the database as it was with this deploy's code is the backup made before the
         # first deploy that came after it (the oldest of those going back takes away)
-        entries = [d for d in deploys.load(deploys_folder, instance.key)["deploys"] if d.get("kind") != "available"]
+        entries = [d for d in deploys.load(deploys_folder, instance.key)["deploys"]
+                   if (d.get("kind") or "deploy") == "deploy"]
         at = next((i for i, d in enumerate(entries) if d.get("id") == deploy_id), len(entries))
         after = entries[at + 1] if at + 1 < len(entries) else None
         second = None
@@ -12844,9 +12885,13 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         """«Back to this deploy»: a job that backs the instance up, checks
         out in each repository the commit of that deploy, updates the
         changed modules and restarts; with pause, the automatic deploys
-        paused first (a push would deploy the branch head again)."""
-        found = await start_deploy_back(get_instance(server, role), deploy_id, me, bool(payload.get("pause")),
-                                        f"manual: {me}")
+        paused first (a push would deploy the branch head again). On a
+        production, the name of its server written to confirm (UX-015 D2), as
+        the REST API asks it."""
+        instance = get_instance(server, role)
+        if manual_only(instance) and str(payload.get("confirm") or "") != instance.server:
+            return refuse(f"Write the name of the instance, {instance.server}, to go back on a production")
+        found = await start_deploy_back(instance, deploy_id, me, bool(payload.get("pause")), f"manual: {me}")
         return found if isinstance(found, JSONResponse) else {"job": found.id}
 
     async def start_deploy_back(instance: Instance, deploy_id: str, me: Principal, pause: bool, source: str):
@@ -12854,6 +12899,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         entry = deploys.find(deploys_folder, instance.key, deploy_id)
         if entry is None:
             return refuse(f"No deploy {deploy_id} of {instance.key}", status.HTTP_404_NOT_FOUND)
+        if (entry.get("kind") or "deploy") != "deploy" or not entry.get("state"):
+            return refuse(f"{deploy_id} moved no commit of {instance.key}: there is nothing to go back to")
         pause = pause and ci_on(instance)
         if pause and not me.can(backup_role(instance)):
             return refuse(f"The {backup_role(instance)} role switches the CI of {instance.key} off",
@@ -12875,6 +12922,267 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         ws = workspace_of(instance.server)
         return jobs.submit(f"Back to the deploy of {deploy_when(entry)} on {instance.key}", [instance.key],
                            source, action, workspace=ws[0].name if ws else "")
+
+
+    # --- the environments and their deploys (UX-015), the Overview's «Environments and deploys» -------------------
+    # A row per environment of a production (it, its test, its stagings here, those on the linked machines): its
+    # state, its branch, its CI, and its last deploys as cards, as the builds of Odoo.sh. The rows come with the
+    # page (environment_rows); the cards after it, in one request for the section (GET …/environments), for who
+    # may update the code: the strip of each environment, its newest deploys, which one its code is at now, the
+    # job working on it, the commit a push brought to a production and not deployed.
+
+    # the cards of deploys a strip shows at most (1280 px and over); the page shows fewer on a narrower screen
+    STRIP_DEPLOYS = 3
+
+    async def repository_webs(instance: Instance) -> dict:
+        """{repository: its page on GitHub or GitLab, or None}, from its remote's address."""
+        async def one(repo):
+            if not repo.path.is_dir():
+                return repo.name, None
+            code, out = await ops.capture(repo.git("remote", "get-url", repo.remote), cwd=repo.path, timeout=10)
+            url = out.strip() if code == 0 else ""
+            return repo.name, workspaceops.web_url(url) if url else None
+        return dict(await asyncio.gather(*(one(r) for r in instance.repositories)))
+
+    def strip_message(repos: list, order: list, deploy: bool = True) -> dict:
+        """What a card says of its commits: the message of the repository that brought the most of them (a tie:
+        the first in the instance's order), its author, and the others with how many each brought."""
+        if not repos:
+            return {"repo": "", "message": "", "sha": "", "author": "", "change": None, "others": []}
+        rank = {name: i for i, name in enumerate(order)}
+        main = min(repos, key=lambda r: (-(r.get("brought") or (1 if r.get("after") else 0)),
+                                         rank.get(r.get("name"), len(rank))))
+        change = None
+        if deploy and not main.get("before"):
+            change = "added"
+        elif deploy and not main.get("after"):
+            change = "removed"
+        return {"repo": main.get("name") or "", "message": main.get("subject") or "", "sha": main.get("after") or "",
+                "author": main.get("author") or "", "change": change,
+                "others": [{"name": r.get("name") or "", "brought": r.get("brought")} for r in repos if r is not main]}
+
+    def strip_link(found: dict, webs: dict) -> str | None:
+        web = webs.get(found.get("repo"))
+        return workspaceops.commit_url(web, found["sha"]) if web and found.get("sha") else None
+
+    async def environment_strip(request: Request, me: Principal, instance: Instance) -> dict:
+        """The strip of one environment: its cards, the special ones first (a job working on it, the commit a
+        push brought to a production, the code of now when no deploy recorded is it), then its newest deploys
+        and the one its code is at; how many deploys it has in all (Modules › Deploys lists them)."""
+        view, lang, prefix = customer_view(request), request_language(request), prefix_of(request)
+        data = await asyncio.to_thread(deploys.load, deploys_folder, instance.key)
+        entries = data["deploys"]
+        rows = deploy_rows_for(view, lang, instance, entries, await deploys.snapshot(instance))
+        webs = await repository_webs(instance)
+        order = [r.name for r in instance.repositories]
+        can_back = me.can("developer") and bool(instance.repositories)
+        cards = []
+        busy = jobs.running_on(instance.key)
+        if busy is not None:
+            cards.append({"kind": "busy", "job": f"/jobs/{busy.id}",
+                          "title": i18n.tr(lang, view.text(busy.title) if view else busy.title)})
+        if manual_only(instance):
+            found = await available_now(instance, entries)
+            if found:
+                said = strip_message([{"name": a["name"], "subject": a["subject"], "after": a["after"],
+                                       "author": a["author"], "brought": 1} for a in found], order, deploy=False)
+                cards.append({"kind": "available", "ids": [a["id"] for a in found if a.get("id")], **said,
+                              "url": strip_link(said, webs), "finished": max(str(a.get("time") or "") for a in found),
+                              "by": i18n.tr(lang, view.source(found[0]["by"]) if view else found[0]["by"]),
+                              "outcome": "available"})
+        listed = [r for r in rows if r["kind"] != "available"]
+        current = next((r for r in listed if r["current"]), None)
+        if current is None and instance.repositories:
+            code = await deploys.code_now(instance)
+            if code:
+                said = strip_message(code, order, deploy=False)
+                cards.append({"kind": "now", "ids": [], **said, "url": strip_link(said, webs), "current": True})
+        shown = listed[:STRIP_DEPLOYS]
+        if current is not None and current not in shown:
+            shown.append(current)
+        by_id = {r["id"]: r for r in listed}
+        for row in shown:
+            # a deploy gone back to another: it says that one's commits (the code it brought back)
+            target = by_id.get(row.get("back_to")) if row.get("back_to") else None
+            said = strip_message((target or row)["repositories"], order)
+            if not row["repositories"]:
+                # a job of the code that failed before moving a commit (UX-015 D4): its title says what it was
+                said["message"] = row["title"]
+            cards.append({"kind": row["kind"], "id": row["id"], "ids": [row["id"]], **said, "url": strip_link(said, webs),
+                          "outcome": row["outcome"], "current": row["current"], "by": row["by"],
+                          "started": row["started"], "finished": row["finished"], "seconds": row["seconds"],
+                          "unserved": (row["unserved"] or {}).get("seconds"), "error": row["error"], "job": row["job"],
+                          "back": can_back and row["has_state"] and not row["current"]
+                          and row["outcome"] in ("success", "warned")})
+        page = environment_page(prefix, instance)
+        return {"key": instance.key, "server": instance.server, "role": instance.role, "total": len(entries),
+                "cards": cards, "repositories": len(instance.repositories),
+                "ci": "manual" if manual_only(instance) else ("on" if ci_on(instance) else "off"),
+                "api": f"{prefix}/api/servers/{instance.server}/{instance.role}/deploys",
+                # going back on a production: its server's name written first (D2)
+                "confirm": instance.server if manual_only(instance) else "",
+                "more": page + "#deploys", "open": instance.web_url or None}
+
+    async def environment_rows(request: Request, me: Principal, srv, view: str, staging_of: dict | None,
+                               state: str, staging_now: list, login_offers: dict, addresses: dict) -> list:
+        """The rows of «Environments and deploys» (UX-015 §5, §7), as the page draws them before the cards: on a
+        production's page, it, its test and its stagings here (those of the linked machines come from the
+        browser); on a test's or a staging's page, itself. Each with its state, its branch, its CI, its
+        Repository ↗, its copy's date (a staging), its Rebuild… and the menu of its card of now (Log in as…,
+        Log, Back up now…, Shell, Addresses…), decided here for me: absent, off with why, or there."""
+        prefix, lang = prefix_of(request), request_language(request)
+        if staging_of or view == "test":
+            envs = [(srv.instances[view], "staging" if staging_of else "test", None, state)]
+        else:
+            envs = [(srv.production, "production", None, state)]
+            if srv.test is not None:
+                envs.append((srv.test, "test", None, await run_state(srv.test)))
+            envs += [(settings.servers[r["server"]].production, "staging", r, r["state"]) for r in staging_now]
+        rows = []
+        for inst, kind, staging, st in envs:
+            role = role_on(me, inst.server)
+            code = reaches(role, "developer") and not refusal(me, "code", None, [inst.server])
+            page = environment_page(prefix, inst)
+            label = host_label(inst) if kind != "test" else (host_label(inst, "") or "Test")
+            branches = list(dict.fromkeys(r.branch for r in inst.repositories))
+            repo = None
+            if code and inst.repositories:
+                first = inst.repositories[0]
+                web = (await repository_webs(inst)).get(first.name)
+                url = workspaceops.branch_url(web, first.branch)
+                if url:
+                    repo = {"url": url, "name": first.name, "branch": first.branch,
+                            "others": len(inst.repositories) - 1}
+            menu = []
+            offer = login_offers.get(inst.key)
+            if offer:
+                menu.append({"kind": "login_as", "offer": offer})
+            why = refusal(me, "logs", None, [inst.server])
+            menu.append({"kind": "logs", "url": page + "#log", "disabled": i18n.tr(lang, why) if why else ""})
+            if reaches(role, "developer") and inst.plugin.has_backup:
+                why = refusal(me, "backup", None, [inst.server])
+                menu.append({"kind": "backup", "url": f"{prefix}/servers/{inst.server}/{inst.role}/backup",
+                             "key": inst.key, "disabled": i18n.tr(lang, why) if why else ""})
+            if reaches(role, "developer") and not me.scoped:
+                if getattr(inst.plugin, "container_shell", None) is not None:
+                    menu.append({"kind": "shell", "url": f"{prefix}/servers/{inst.server}/{inst.role}/terminal",
+                                 "container": True})
+                elif settings.machine == MACHINE_DEVELOPMENT:
+                    menu.append({"kind": "shell", "url": f"{prefix}/servers/{inst.server}/{inst.role}/shell",
+                                 "container": False})
+            address = addresses.get(f"{inst.server}/{inst.role}")
+            if address and address.get("can"):
+                menu.append({"kind": "addresses", "env": f"{inst.server}/{inst.role}"})
+            elif address and address.get("reason") and me.can("admin"):
+                menu.append({"kind": "addresses", "env": f"{inst.server}/{inst.role}",
+                             "disabled": i18n.tr(lang, address["reason"])})
+            rebuild = None
+            if kind == "staging" and staging is not None and me.can("admin"):
+                why = refusal(me, "stagings", None, [inst.server]) or (
+                    REBUILD_NOT_YOURS if refusal(me, None, None, [srv.name]) else None)
+                rebuild = {"server": inst.server, "disabled": i18n.tr(lang, why) if why else ""}
+            parts = urlsplit(inst.web_url or "")
+            rows.append({
+                "key": inst.key, "server": inst.server, "role": inst.role, "kind": kind, "label": label,
+                # its page, a link (none for the page in view)
+                "page": None if inst.key == srv.instances[view].key else page,
+                "state": "busy" if jobs.is_busy(inst.key) else st, "stopped": st == "stopped",
+                # Open ↗: an address the browser opens (its name, or localhost when the browser is on this machine)
+                "open": inst.web_url if inst.web_url and (parts.scheme == "https" or (
+                    parts.hostname in ("localhost", "127.0.0.1") and not prefix_of(request))) else None,
+                "code": code, "repositories": len(inst.repositories),
+                "branch": branches[0] if len(branches) == 1 else "",
+                "branches": " · ".join(f"{r.name}: {r.branch}" for r in inst.repositories),
+                "repo": repo,
+                "ci": None if not inst.repositories else (
+                    "manual" if manual_only(inst) else ("on" if ci_on(inst) else "off")),
+                "ci_url": page + "#updates", "deploys_url": page + "#deploys",
+                "copied": (staging or {}).get("created") or "",
+                "rebuild": rebuild, "menu": menu})
+        return rows
+
+    def host_label(inst: Instance, fallback: str | None = None) -> str:
+        """An environment's name as the rows say it: its address without the scheme, or its server's name."""
+        url = inst.web_url or ""
+        if url and "://localhost" not in url and "://127.0.0.1" not in url:
+            return url.split("://", 1)[-1]
+        return inst.server if fallback is None else fallback
+
+    def environment_page(prefix: str, instance: Instance) -> str:
+        """The page of an environment: a test is its production's page at ?view=test."""
+        return f"{prefix}/servers/{instance.server}" + ("?view=test" if instance.role == "test" else "")
+
+    def strip_environments(me: Principal, instance: Instance) -> list[Instance]:
+        """The environments of the section on the page of instance: a production's page lists it, its test and
+        its stagings of this machine (those me sees, with the capability to update the code); a test's or a
+        staging's page itself only."""
+        found = [instance]
+        if instance.role == "production" and manual_only(instance):
+            srv = settings.servers[instance.server]
+            if srv.test is not None:
+                found.append(srv.test)
+            shown = visible_servers(me)
+            for row in staging_rows(instance.server):
+                if (shown is None or row["server"] in shown) and reaches(role_on(me, row["server"]), "developer") \
+                        and not refusal(me, "code", None, [row["server"]]):
+                    found.append(settings.servers[row["server"]].production)
+        return found
+
+    @app.get("/api/servers/{server}/{role}/environments", dependencies=[Depends(developer)])
+    async def environments_strips(request: Request, server: str, role: str, me: Principal = Depends(current_user)):
+        """The cards of the section «Environments and deploys» (UX-015): on a production's page, of it, its test
+        and its stagings here; on a test's or a staging's page, of itself. One request for the section."""
+        instance = get_instance(server, role)
+        found = await asyncio.gather(*(environment_strip(request, me, i) for i in strip_environments(me, instance)))
+        return {"environments": list(found), "shown": STRIP_DEPLOYS}
+
+    @app.get("/api/servers/{server}/stagings/elsewhere/environments", dependencies=[Depends(admin)])
+    async def stagings_elsewhere_strips(request: Request, server: str, link: str = "", staging: list[str] = Query([]),
+                                        me: Principal = Depends(current_user)):
+        """The cards of the stagings of server on the linked machine link (UX-015 §11): each one's
+        environments there (GET /api/servers/<staging>/production/environments, through the link, LIST_TIMEOUT),
+        its moments moved onto this machine's clock, its addresses under the link's prefix; a machine that does
+        not answer, or an older OmniaCLI, says why for each of its rows."""
+        target = settings.link_targets.get(link)
+        if not chooses_machine(me) or target is None or server not in settings.servers:
+            return refuse("No such link", status.HTTP_404_NOT_FOUND)
+        names = [n for n in dict.fromkeys(staging) if _STAGING_PARENT.fullmatch(n)][:20]
+        headers = {**link_headers(target, me.name, me.role), "Accept": "application/json",
+                   "Accept-Language": request_language(request)}
+        under = f"{prefix_of(request)}/links/{link}"
+
+        async def ask(name: str) -> dict:
+            try:
+                resp = await asyncio.wait_for(link_clients.client(target).get(
+                    f"/api/servers/{name}/production/environments", headers=headers, timeout=LIST_TIMEOUT), LIST_TIMEOUT)
+            except (httpx.HTTPError, asyncio.TimeoutError) as exc:
+                return {"server": name, "unread": describe_error(exc)}
+            if resp.status_code == 404:
+                return {"server": name, "older": True}
+            try:
+                data = clock.answered_here(resp, resp.json()) if resp.status_code == 200 else None
+            except ValueError:
+                data = None
+            if not isinstance(data, dict) or not isinstance(data.get("environments"), list):
+                return {"server": name, "unread": f"answered HTTP {resp.status_code}"}
+            env = next((e for e in data["environments"] if isinstance(e, dict)), None)
+            if env is None:
+                return {"server": name, "unread": "no environment in the answer"}
+            # its addresses are of the machine there: through this machine's link
+            for field in ("api", "more"):
+                if isinstance(env.get(field), str) and env[field].startswith("/"):
+                    env[field] = under + env[field]
+            for card in env.get("cards") or []:
+                if isinstance(card, dict) and isinstance(card.get("job"), str) and card["job"].startswith("/"):
+                    card["job"] = f"/links/{link}" + card["job"]
+            env["link"] = link
+            return {"server": name, "environment": env}
+        found = await asyncio.gather(*(ask(n) for n in names))
+        lang = request_language(request)
+        for row in found:
+            if row.get("unread"):
+                row["unread"] = i18n.tr(lang, row["unread"])
+        return {"link": link, "stagings": list(found)}
 
 
     app.add_route("/hooks/deploy/{server}/{role}", deploy_hook_call, methods=["POST"])
@@ -20016,7 +20324,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return {"ci": ci_on(inst), "deploys": [
             {"id": r["id"], "kind": r["kind"], "started": r["started"], "finished": r["finished"], "by": r["by"],
              "outcome": r["outcome"], "current": r["current"],
-             "repositories": [{k: x.get(k) for k in ("name", "branch", "before", "after", "subject")}
+             "repositories": [{k: x.get(k) for k in ("name", "branch", "before", "after", "subject", "author")}
                               for x in r["repositories"]]} for r in rows]}
 
     @api_router.post(P + "/instances/{server}/{role}/deploys/{deploy_id}/back", status_code=202,
