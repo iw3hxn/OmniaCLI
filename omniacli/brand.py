@@ -136,7 +136,7 @@ def css(color: str) -> str:
             ".nav-link[aria-current=\"page\"] { box-shadow: inset 0 -2px 0 var(--brand-top); }\n"
             "@media (max-width: 600px) { .nav-link[aria-current=\"page\"] { box-shadow: inset 3px 0 0 var(--brand-top); } }\n"
             ".avatar { background: var(--brand-top); color: #111827; }\n"
-            "button.primary, .button.primary, button.primary:hover, .button.primary:hover, .link-bar, .link-bar a,"
+            "button.primary:not(.danger), .button.primary, button.primary:not(.danger):hover, .button.primary:hover,"
             " main.card button:not(.other), main.card a.button { color: var(--brand-on-accent); }\n")
 
 

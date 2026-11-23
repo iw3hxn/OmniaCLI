@@ -92,3 +92,24 @@ async def test_the_pages_carry_the_tokens_once(client):  # noqa: F811
         assert text.count(":focus-visible { outline: var(--focus-width) solid var(--focus)") == 1
         # no ring taken away without another one
         assert "outline: none" not in text.replace(".map-canvas a:focus, .map-canvas a:focus-visible { outline: none; }", "")
+
+
+def test_red_is_the_primarys_and_the_dangers_only():
+    """UX-017 §5.2: the accent (and its hover) only in the rules of the primary button; on the login and
+    the invitation also their own primary and the brand's mark; never a link, a tab, a chosen state."""
+    wrong = []
+    for page in TEMPLATES.glob("*.html"):
+        if page.name == "_tokens.html":
+            continue
+        text = page.read_text(encoding="utf-8")
+        for selector, body in re.findall(r"([^{}]+)\{([^{}]*)\}", text):
+            if re.search(r"var\(--accent(?:-hover|-soft)?\)", body):
+                selector = " ".join(selector.split())[-120:]
+                if "primary" in selector or page.name in ("login.html", "invite.html") and (
+                        selector.endswith(("button", "button:hover", "a.button", "h1 span"))):
+                    continue
+                wrong.append(f"{page.name}: {selector}")
+    assert not wrong, wrong
+    assert "--prod" not in (TEMPLATES / "_tokens.html").read_text(encoding="utf-8")
+    # the links: the colour of the text
+    assert "--link: var(--text);" in TOKENS

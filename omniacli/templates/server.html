@@ -44,7 +44,7 @@
 .more-menu { position: relative; }
 .more-menu > summary { list-style: none; color: var(--text); }
 .more-menu > summary::-webkit-details-marker { display: none; }
-.more-menu[open] > summary { border-color: var(--accent); }
+.more-menu[open] > summary { border-color: var(--border-input); }
 .more-items { position: absolute; right: 0; top: calc(100% + 6px); z-index: 15; display: flex; flex-direction: column;
   gap: 4px; width: max-content; min-width: 250px; max-width: min(360px, calc(100vw - 32px)); padding: 8px;
   background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow-lg); }
@@ -56,7 +56,7 @@
 .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin: 6px 0 16px; overflow-x: auto; }
 .tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; box-shadow: none;
   padding: 10px 14px; color: var(--muted); font-weight: 600; white-space: nowrap; }
-.tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+.tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--selected); }
 .tab-panel[hidden] { display: none; }
 .copies td, .copies th, .last-jobs td, .last-jobs th { vertical-align: middle; }
 .copies .when, .last-jobs .when { white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--muted); }
@@ -878,14 +878,14 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
 .ag-chosen { width: 100%; margin-top: 8px; } .ag-chosen select { width: 100%; }
 .addons-go-line { display: flex; gap: 10px; align-items: center; margin-top: 8px; }
 .ag-list label { display: flex; gap: 10px; align-items: center; width: 100%; padding: 8px 10px; cursor: pointer; }
-.ag-list label:hover { background: var(--accent-soft); } .ag-list input { width: auto; }
+.ag-list label:hover { background: var(--panel-2); } .ag-list input { width: auto; }
 #au-fields label { display: block; font-size: 13px; font-weight: 600; margin: 10px 0 4px; }
 .addons-from { display: flex; gap: 16px; margin: 10px 0; font-size: 14px; } .addons-from input { width: auto; }
 #addons-github { margin-top: 8px; } #addons-github .addons-fields label { margin-bottom: 4px; }
 .ag-list { list-style: none; margin: 8px 0 0; padding: 0; max-height: 320px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; }
 .ag-list li + li { border-top: 1px solid var(--border); }
 .ag-list button { display: flex; gap: 10px; align-items: center; width: 100%; text-align: left; background: none; border: 0; border-radius: 0; padding: 8px 10px; }
-.ag-list button:hover, .ag-list button:focus-visible { background: var(--accent-soft); }
+.ag-list button:hover, .ag-list button:focus-visible { background: var(--panel-2); }
 .ag-list .ag-branch { margin-left: auto; color: var(--muted); font-size: 12px; }
 @media (max-width: 700px) { .addons-fields { grid-template-columns: 1fr; } }
 </style>
@@ -975,7 +975,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
 .oc-table .oc-help { font-size: 12px; color: var(--muted); margin-top: 2px; }
 .oc-table input, .oc-table select { width: 100%; }
 .oc-table input:disabled, .oc-table select:disabled { background: var(--panel-2); color: var(--muted); }
-.oc-table tr.oc-dirty td { background: var(--accent-soft); }
+.oc-table tr.oc-dirty td { background: var(--warn-soft); }
 .oc-table tr.oc-group td { background: var(--panel-2); font-weight: 600; font-size: 13px; }
 .sum-grid { display: grid; grid-template-columns: minmax(150px, max-content) 1fr; gap: 10px 20px; margin: 0; }
 .sum-grid dt { font-weight: 600; }

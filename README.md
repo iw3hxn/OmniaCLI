@@ -4793,6 +4793,13 @@ controls and motion. A page writes `var(--…)`, never a value of its own.
   panel; in the dark header the header's mark, 6.45:1), never the hover's
   look. A field's border is 3.3:1 on the panel (`--border-input`), the
   secondary text 5.34:1 on the page's grey (`--muted`).
+- **Red is the primary's and the danger's only**: the one button that creates
+  in a tab or a list, what stops, deletes or replaces, the focus ring, the
+  marks of the header and the states of error (with their word). The links
+  and the names in a row are in the colour of the text: underlined in a
+  sentence, on hover and focus in a row. A state chosen (the active tab, a
+  segment pressed, a card or a box chosen) is neutral, and a production is
+  told by its word, not by red.
 - **Less motion** asked by the system: nothing moves, one rule for every page.
 
 ### Whitelabel
@@ -4807,8 +4814,9 @@ test): no style is added, the name is OmniaCLI, the logo the «O».
   in the emails (the subject and the text of the notices and of the
   invitations; the JSON of a webhook keeps OmniaCLI's, a program reads it).
   The footer keeps OmniaCLI's version and its licence (AGPL).
-- **Primary colour** (`#RRGGBB`): the primary buttons, the focus ring, the
-  links, the marks of the header. It is used as the light theme uses its red,
+- **Primary colour** (`#RRGGBB`): the primary buttons, the focus ring and
+  the marks of the header; the links stay in the colour of the text and what
+  stops or deletes stays red. It is used as the light theme uses its red,
   under white text, so
   it is **refused when white text on it is below WCAG AA (4.5:1)**: the page
   says the ratio while it is chosen, and Save refuses it with the ratio. The

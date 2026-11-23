@@ -13,7 +13,7 @@
   --warn: var(--amber-400); --warn-soft: var(--amber-950); --info: var(--blue-400); --info-soft: var(--blue-950);
   --code-bg: var(--ink-950); --code-text: var(--ink-150);
   --side-bg: var(--ink-950); --side-text: var(--slate-250); --side-hover: var(--ink-850);
-  --series-1: #7AA2FF; --series-2: #F59E5B; --prod: var(--red-400);
+  --series-1: #7AA2FF; --series-2: #F59E5B;
   --start: var(--ok); --stop: var(--err); --restart: var(--blue-400); --light-green: #86efac; --purple: #c084fc;
   --cat-2: #d95926; --cat-3: #199e70; --cat-4: #c98500; --cat-5: #d55181;
   --cat-6: #008300; --cat-7: #9085e9; --cat-8: #e66767;
@@ -46,7 +46,8 @@
   --accent-hover: color-mix(in srgb, var(--accent) 88%, var(--black));
   /* the focus ring (whitelabel too); in the dark top bar, the bar's mark */
   --accent-strong: var(--red-700); --focus: var(--accent-strong);
-  --link: var(--accent-strong);
+  /* the links: in the colour of the text, told by their underline (Carlo, 23/11/2026) */
+  --link: var(--text);
   /* what destroys: fixed, never from the whitelabel */
   --danger: var(--red-750); --danger-hover: var(--red-800); --on-danger: var(--white);
   --err: var(--red-750); --err-soft: var(--red-75); --ok: var(--green-700); --ok-soft: var(--green-50);
@@ -61,7 +62,6 @@
   --side-bg: var(--slate-900); --side-text: var(--slate-300); --side-muted: var(--slate-400); --side-hover: var(--slate-800);
   --side-current: var(--white); --brand-top: var(--red-400);
   --head-bg: var(--panel);
-  --prod: var(--red-600);
   --start: var(--green-700); --stop: var(--red-600); --restart: var(--blue-700); --light-green: #16A34A; --purple: #7E22CE;
   /* the data of the charts (validated with the dataviz validator on #FFFFFF): not part of UX-017 */
   --series-1: #111827; --series-2: #DC2626;
