@@ -34,6 +34,10 @@
     (machine-db-return takes <workspace>.<storage>.<instance> too: the database of that instance comes back)
     omniacli workspace-helper machine-db-moved <workspace> <storage> <instance>   (where it is now, JSON, on the input)
     omniacli workspace-helper space
+    omniacli workspace-helper tree-list | tree-read | tree-write | tree-prune <workspace> <storage> <instance> <role>
+    omniacli workspace-helper machine-db-arrive <workspace>.<storage>.<instance> prepare|copy|start|state|wait|promote|cancel
+    omniacli workspace-helper machine-db-replica-stop <workspace>.<storage>.<instance> stop|resume
+    omniacli workspace-helper db-dump | db-restore <workspace> <storage> <instance>   (the dump on the output, on the input)
     omniacli workspace-helper ssh-keys | ssh-key-add <account> | ssh-key-remove <account> <SHA256:...>
     omniacli workspace-helper os-updates | os-updates-set on|off never|<HH:MM>
     omniacli workspace-helper storage-setup | storage-check <storage> | storage-reset <storage>
@@ -252,6 +256,23 @@ its return), over TLS with that place's CA, and started again; a copy
 hosted on this very machine is reached at this machine's own address, and
 the firewalls let that one project's network through.
 
+The copy of an instance to another machine (treesync.py, managedreplica.py;
+docs/adr/AD-008-consegna-e-spostamento.md AD-010). tree-list | tree-read |
+tree-write | tree-prune: Odoo's filestore of the role's database, which only
+root reads, listed (a JSON line per file on the output), read (the paths on
+the input, a tar on the output: regular files under it, no link followed),
+written (a tar on the input: every name checked, a file of the filestore
+checked against its name, the SHA-1 of its content, given to the
+filestore's owner) and pruned (the paths to keep on the input); the last two
+refused while that Odoo runs. machine-db-arrive: the dedicated database of
+an instance of another machine arrives in a new instance here, never
+started, as a return does (a project of its own in its .replica folder,
+followed read only), then takes the writes as the instance's own database;
+machine-db-replica-stop: the source's instance stopped clean for that
+switch, with the position of its last record, or started again. db-dump |
+db-restore | db-counts: the production's database as pg_dump -Fc on the
+output, restored from the input into a new instance's, and what it holds.
+
 template-install <template>: a template downloaded from the download
 server, checked with the key of the main configuration, into
 /var/lib/omniacli-templates/<template> (templatestore.py); of it and the
@@ -302,7 +323,7 @@ from pathlib import Path
 import yaml
 
 from . import (clusterpitr, composehelper, config, enterprise, machinedb, managedreplica, pitrhelper, relay,
-               stacktemplates, templatestore, workspaceweb)
+               stacktemplates, templatestore, treesync, workspaceweb)
 from .composehelper import ENV, HelperError, caller
 from .config import (CERTIFICATES, DOMAIN_NAME, OMNIACLI_COMMAND, SUBDOMAIN, TEST_LABEL, WORKSPACE_NAME,
                      ConfigError, parse_storage_roots, web_names)
@@ -4867,7 +4888,272 @@ def relay_tunnel(name: str, mode: str) -> dict:
     return {"workspace": name, "unit": unit.name, "changed": changed, "host": host, "ssh_port": ssh_port}
 
 
+# --- the trees of an instance only root reads, copied to another machine (treesync.py; AD-010) ---------
+
+# a database's name, as instance.json keeps it: its folder of the filestore
+FILESTORE_DB = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,62}")
+
+
+def _filestore(name: str, storage: str, instance: str, role: str) -> tuple[Path, Path, list[str], tuple[int, int]]:
+    """(project, its data folder, the parts of Odoo's filestore of its
+    database below it, the owner of the filestore): data is root's, what is
+    below it is the Odoo container's, and is walked without following a link."""
+    project = _project(name, storage, instance, role)
+    database = str(_meta(project.parent).get("database") or "")
+    if not FILESTORE_DB.fullmatch(database):
+        raise HelperError(f"{instance} has no database name in its {INSTANCE_FILE}")
+    data = project / "data"
+    try:
+        found = os.stat(data / "filestore", follow_symlinks=False)
+    except OSError:
+        raise HelperError(f"{instance}/{role} has no filestore folder") from None
+    if not stat.S_ISDIR(found.st_mode) or data.is_symlink():
+        raise HelperError(f"the filestore folder of {instance}/{role} is not a folder")
+    return project, data, ["filestore", "filestore", database], (found.st_uid, found.st_gid)
+
+
+def _odoo_runs(project: Path) -> bool:
+    try:
+        service = template_named(str(_meta(project.parent).get("template") or "")).odoo_service
+    except HelperError:
+        service = "odoo"
+    done = _dc(project, "ps", "--status", "running", "--services", check=False, timeout=60)
+    return service in (done.stdout or "").split()
+
+
+def tree_list(name: str, storage: str, instance: str, role: str) -> None:
+    """tree-list <workspace> <storage> <instance> <role>: the manifest of the
+    filestore of the role's database on the output, one JSON line per file
+    (treesync.list_tree); none when it has no filestore yet."""
+    _project_, data, parts, _owner = _filestore(name, storage, instance, role)
+    try:
+        fd = treesync.open_tree(data, parts)
+    except treesync.TreeError:
+        return None
+    try:
+        treesync.list_tree(fd, sys.stdout)
+    finally:
+        os.close(fd)
+    sys.stdout.flush()
+    return None
+
+
+def tree_read(name: str, storage: str, instance: str, role: str) -> None:
+    """tree-read <workspace> <storage> <instance> <role>: the files of the
+    filestore its input names (a path a line) as a tar on the output: regular
+    files under the filestore only, never through a link."""
+    _project_, data, parts, _owner = _filestore(name, storage, instance, role)
+    fd = treesync.open_tree(data, parts)
+    try:
+        treesync.read_tree(fd, (line.rstrip("\n") for line in sys.stdin if line.strip()), sys.stdout.buffer)
+    finally:
+        os.close(fd)
+    sys.stdout.buffer.flush()
+    return None
+
+
+def tree_write(name: str, storage: str, instance: str, role: str) -> dict:
+    """tree-write <workspace> <storage> <instance> <role>: a tar on the input
+    written into the filestore of the role's database, every name checked,
+    every file of the filestore checked against its name (its SHA-1), given
+    to the filestore's owner; refused while the role's Odoo runs."""
+    project, data, parts, (uid, gid) = _filestore(name, storage, instance, role)
+    if _odoo_runs(project):
+        raise HelperError(f"the Odoo of {instance}/{role} runs: its filestore is written only while it is stopped")
+    fd = treesync.open_tree(data, parts, create=True, uid=uid, gid=gid)
+    try:
+        return treesync.write_tree(fd, sys.stdin.buffer, uid, gid)
+    finally:
+        os.close(fd)
+
+
+def tree_prune(name: str, storage: str, instance: str, role: str) -> dict:
+    """tree-prune <workspace> <storage> <instance> <role>: the files of the
+    filestore its input does not name (sorted paths, a line each) deleted;
+    refused while the role's Odoo runs. The last round of a copy only."""
+    project, data, parts, _owner = _filestore(name, storage, instance, role)
+    if _odoo_runs(project):
+        raise HelperError(f"the Odoo of {instance}/{role} runs: its filestore is written only while it is stopped")
+    try:
+        fd = treesync.open_tree(data, parts)
+    except treesync.TreeError:
+        return {"removed": 0, "bytes": 0}
+    try:
+        return treesync.prune_tree(fd, (line.rstrip("\n") for line in sys.stdin if line.strip()))
+    finally:
+        os.close(fd)
+
+
+# --- a database that arrives from another machine (managedreplica.ArrivePlace; AD-010) -----------------
+
+def machine_db_arrive(key: str, step: str) -> dict:
+    """machine-db-arrive <workspace>.<storage>.<instance> prepare | copy |
+    start | state | wait | promote | cancel: the dedicated database of an
+    instance of another machine arrives in that instance of this one (made
+    for it, never started), followed read only until it takes the writes.
+    prepare takes its values as JSON on the input (the password of the
+    replication's role among them), wait the position the source stopped at.
+    The firewall follows: while it arrives its network goes out to the
+    source's port, and nowhere else."""
+    if not machinedb.DEDICATED_KEY.fullmatch(key):
+        raise HelperError("machine-db-arrive <workspace>.<storage>.<instance> <step>")
+    if step == "prepare":
+        try:
+            return _cluster(managedreplica.arrive_prepare, key, _input_json("an arrival"))
+        finally:
+            db_firewall()
+    if step == "copy":
+        return _cluster(managedreplica.arrive_copy, key)
+    if step == "start":
+        return _cluster(managedreplica.arrive_start, key)
+    if step == "state":
+        return _cluster(managedreplica.arrive_state, key)
+    if step == "wait":
+        return _cluster(managedreplica.arrive_wait, key, str(_input_json("an arrival").get("checkpoint") or ""))
+    if step in ("promote", "cancel"):
+        try:
+            return _cluster(managedreplica.arrive_promote if step == "promote" else managedreplica.arrive_cancel, key)
+        finally:
+            db_firewall()
+    raise HelperError("machine-db-arrive <key> prepare, copy, start, state, wait, promote or cancel")
+
+
+def machine_db_replica_stop(key: str, mode: str) -> dict:
+    """machine-db-replica-stop <workspace>.<storage>.<instance> stop | resume:
+    the instance whose dedicated database a copy on another machine follows
+    stopped clean for the switch, with the position of its last record;
+    resume: started again (the switch did not complete)."""
+    if not machinedb.DEDICATED_KEY.fullmatch(key) or mode not in ("stop", "resume"):
+        raise HelperError("machine-db-replica-stop <workspace>.<storage>.<instance> stop or resume")
+    return _cluster(managedreplica.replica_stop if mode == "stop" else managedreplica.replica_resume, key)
+
+
+# --- the database of an instance as a dump: where a copy cannot follow it (AD-010) ---------------------
+
+def _database_place(name: str, storage: str, instance: str) -> tuple[Path, str, dict | None]:
+    """(project, database, the cluster's environment or None) of the production of an instance."""
+    project = _project(name, storage, instance, "production")
+    if composehelper.on_remote(project) is not None:
+        raise HelperError(f"the database of {instance} is on another machine: it is copied there, not from here")
+    env = composehelper.on_cluster(project)
+    if env is not None:
+        return project, env["role"], env
+    database = str(_meta(project.parent).get("database") or "")
+    if not FILESTORE_DB.fullmatch(database):
+        raise HelperError(f"{instance} has no database name in its {INSTANCE_FILE}")
+    return project, database, None
+
+
+def db_dump(name: str, storage: str, instance: str) -> None:
+    """db-dump <workspace> <storage> <instance>: the database of the
+    production (its own, or its database on the machine's cluster) as
+    pg_dump -Fc on the output; whoever asked stopped its Odoo first (a
+    database of its own is started alone when the whole instance was
+    stopped: Odoo is not)."""
+    project, database, env = _database_place(name, storage, instance)
+    sys.stdout.flush()
+    if env is None:
+        _dc(project, "up", "-d", "--no-deps", "db", timeout=600)
+        _dedicated_ready(project)
+    if env is not None:
+        machinedb._run(machinedb.project_of(env["major"]), "exec", "-T", machinedb.SERVICE, "pg_dump", "-Fc", "-U",
+                       "postgres", "-d", database, stdout=sys.stdout.buffer, timeout=6 * 3600)
+    else:
+        _dc(project, "exec", "-T", "--user", "postgres", "db", "pg_dump", "-Fc", "-U", "postgres", "-d", database,
+            stdout=sys.stdout.buffer, timeout=6 * 3600)
+    sys.stdout.buffer.flush()
+    return None
+
+
+def db_counts(name: str, storage: str, instance: str) -> dict:
+    """db-counts <workspace> <storage> <instance>: installed modules|users|partners of the production's database."""
+    project, database, env = _database_place(name, storage, instance)
+    if env is not None:
+        line = _counts_line(machinedb.sql(machinedb.project_of(env["major"]), database, machinedb.COUNTS))
+    else:
+        line = _counts_line(_dedicated_sql(project, database, machinedb.COUNTS))
+    return {"database": database, "counts": line}
+
+
+def db_restore(name: str, storage: str, instance: str) -> dict:
+    """db-restore <workspace> <storage> <instance>: a dump of pg_dump -Fc on
+    the input restored into the production's database, empty and never
+    started: on the machine's cluster (pg_restore -j), or its own database
+    service, started for it (the database made, owned by Odoo's role). Its
+    Odoo is not started; installed modules|users|partners said after."""
+    project, database, env = _database_place(name, storage, instance)
+    if _odoo_runs(project):
+        raise HelperError(f"{instance} runs: a database is restored only into an instance that does not")
+    uid, gid = machinedb.pg_user() if env is not None else (0, 0)
+    moves = machinedb._folder(project / MOVES, 0o700, uid, gid)
+    dump = moves / "arrive.dump"
+    started = time.monotonic()
+    try:
+        with open(os.open(dump, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb") as fh:
+            shutil.copyfileobj(sys.stdin.buffer, fh, 1 << 20)
+        os.chown(dump, uid, gid)
+        size = dump.stat().st_size
+        if env is not None:
+            cluster = machinedb.project_of(env["major"])
+            if machinedb.sql(cluster, database, "SELECT count(*) FROM pg_class WHERE relnamespace = 'public'::regnamespace;\n"
+                             ).strip() not in ("0", ""):
+                raise HelperError(f"the database of {instance} is not empty: a dump is restored only into an empty one")
+            listing = machinedb._run(cluster, "exec", "-T", machinedb.SERVICE, "pg_restore", "-l", str(dump)).stdout
+            extensions, kept_list = machinedb.restore_list(listing)
+            list_file = moves / "arrive.list"
+            machinedb.write(list_file, kept_list, mode=0o600, uid=uid, gid=gid)
+            machinedb.make_extensions(lambda db, q: machinedb.sql(cluster, db, q), database, extensions)
+            jobs = str(max(1, min(os.cpu_count() or 1, 8)))
+            done = machinedb._run(cluster, "exec", "-T", machinedb.SERVICE, "pg_restore", "-j", jobs, "--no-owner",
+                                  "--no-acl", f"--role={database}", "-U", "postgres", "-d", database, "-L",
+                                  str(list_file), str(dump), check=False, timeout=6 * 3600)
+            if done.returncode:
+                raise HelperError(f"pg_restore into the machine's cluster failed: {(done.stderr or '').strip()[-600:]}")
+            machinedb.close(cluster, database, database)
+            after = _counts_line(machinedb.sql(cluster, database, machinedb.COUNTS))
+        else:
+            _dc(project, "up", "-d", "--no-deps", "db", timeout=600)
+            _dedicated_ready(project)
+            there = _dedicated_sql(project, "postgres", f"SELECT count(*) FROM pg_database WHERE datname = '{database}';\n")
+            if there.strip() != "0":
+                raise HelperError(f"the database of {instance} is there already: a dump is restored only into a new one")
+            with open(dump, "rb") as fh:
+                listing = subprocess.run(composehelper.compose(project, "exec", "-T", "--user", "postgres", "db",
+                                                               "pg_restore", "-l"), env=ENV, cwd=project, stdin=fh,
+                                         capture_output=True, text=True, timeout=3600)
+            if listing.returncode:
+                raise HelperError(f"the dump is not one pg_restore reads: {listing.stderr.strip()[-400:]}")
+            extensions, kept_list = machinedb.restore_list(listing.stdout)
+            _dedicated_sql(project, "postgres", f"CREATE DATABASE {machinedb.ident(database)} OWNER odoo TEMPLATE "
+                                                "template0 ENCODING 'UTF8' LC_COLLATE 'C';\n")
+            machinedb.make_extensions(lambda db, q: _dedicated_sql(project, db, q), database, extensions)
+            _dc(project, "exec", "-T", "--user", "postgres", "db", "sh", "-c", "cat > /tmp/omniacli-restore.list",
+                input=kept_list)
+            with open(dump, "rb") as fh:
+                done = subprocess.run(composehelper.compose(project, "exec", "-T", "--user", "postgres", "db",
+                                                            "pg_restore", "--no-owner", "--no-acl", "--role=odoo",
+                                                            "-U", "postgres", "-d", database, "-L",
+                                                            "/tmp/omniacli-restore.list"),
+                                      env=ENV, cwd=project, stdin=fh, capture_output=True, text=True, timeout=6 * 3600)
+            if done.returncode:
+                raise HelperError(f"pg_restore into the dedicated database failed: {done.stderr.strip()[-600:]}")
+            after = _counts_line(_dedicated_sql(project, database, machinedb.COUNTS))
+    finally:
+        dump.unlink(missing_ok=True)
+        (moves / "arrive.list").unlink(missing_ok=True)
+    return {"database": database, "size": size, "counts": after, "seconds": round(time.monotonic() - started, 1),
+            "cluster": env["major"] if env is not None else None}
+
+
+# what writes its own output (a manifest, a tar, a dump): main prints nothing after it
+STREAMS = frozenset({"tree-list", "tree-read", "db-dump"})
+
+
 ACTIONS = {"disk": (disk, 3), "drop": (drop, 2), "limits": (limits, 3), "create": (create, 5), "remove": (remove, 3),
+           "tree-list": (tree_list, 4), "tree-read": (tree_read, 4), "tree-write": (tree_write, 4),
+           "tree-prune": (tree_prune, 4), "machine-db-arrive": (machine_db_arrive, 2),
+           "machine-db-replica-stop": (machine_db_replica_stop, 2), "db-dump": (db_dump, 3), "db-restore": (db_restore, 3),
+           "db-counts": (db_counts, 3),
            "web": (web, 3), "web-names": (web_taken, 1), "upstream": (upstream, 6), "owncert": (owncert, 2), "firewall": (firewall, 1), "template-install": (template_install, 1),
            "conf": (conf, 5), "space": (space, 0),
            "storage-setup": (storage_setup, 0), "storage-check": (storage_check, 1), "storage-reset": (storage_reset, 1),
@@ -4937,8 +5223,10 @@ ACTIONS.update({"os-updates": (os_updates, 0), "os-updates-set": (os_updates_set
 
 def main(argv: list[str]) -> int:
     try:
-        print(json.dumps(run(argv)))
-    except (HelperError, machinedb.ClusterError) as exc:
+        done = run(argv)
+        if not (argv and argv[0] in STREAMS):
+            print(json.dumps(done))
+    except (HelperError, machinedb.ClusterError, treesync.TreeError) as exc:
         print(f"workspace-helper: {exc}", file=sys.stderr)
         return 2
     return 0

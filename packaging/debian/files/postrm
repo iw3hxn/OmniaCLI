@@ -43,6 +43,8 @@ case "$1" in
         if command -v nginx >/dev/null 2>&1 && nginx -t >/dev/null 2>&1; then
             systemctl reload nginx 2>/dev/null || true
         fi
+        # the databases that were arriving here from another machine (managedreplica.ArrivePlace): the firewall's list
+        rm -f /etc/omniacli/db-arrivals.json
         rm -f /etc/omniacli/omniacli.yaml /etc/omniacli/initial-admin-password
         rm -f /etc/systemd/system/omniacli.service.d/omniacli-user.conf
         rmdir /etc/systemd/system/omniacli.service.d 2>/dev/null || true
@@ -56,6 +58,9 @@ case "$1" in
             /var/lib/omniacli/packages /var/lib/omniacli/plugins /var/lib/omniacli/templates /var/lib/omniacli/catalog \
             /var/lib/omniacli/deploys /var/lib/omniacli/module-uploads /var/lib/omniacli/enterprise \
             /var/lib/omniacli/credentials /var/lib/omniacli/ssh /var/lib/omniacli/brand
+        # the copy engine of the handover and of the move (treesync.py): the state of its copies, their listings
+        # and plans, the hashes of the files it read, a dump it brought here and had not restored yet
+        rm -rf /var/lib/omniacli/treesync
         # the copies of Odoo Enterprise root kept for the instances (enterprise.py)
         rm -rf /var/lib/omniacli-enterprise
         # the templates installed from the download server (the instances

@@ -50,6 +50,9 @@ SENSITIVE_READS = {
     "/api/access/users/sessions": "sessions of a user (addresses, browsers)",
     # the list of the workspaces (UX-013 §A13): their members, each with its two-step verification
     "/api/workspaces/list": "workspaces' members and their two-step verification",
+    # a file of an instance's backups (a dump among them) read by another machine through its link, from a byte
+    # (AD-010): each range of it is a read
+    "/api/treesync/v1/file": "a file of an instance's backups, copied by another machine",
 }
 
 # reads the route logs itself, with more than a read would say
@@ -138,6 +141,8 @@ NOT_SENSITIVE = frozenset({
     # a database uploaded from the Backups page: where it may go (workspaces, sizes) and how much of an upload
     # is here to resume it; the parts sent, the file kept or refused and its deletion are actions, logged
     "/api/imports/places", "/api/workspaces/{workspace}/imports/upload",
+    # how much of a file being copied here from another machine has arrived (AD-010): a size, asked by that machine
+    "/api/treesync/v1/part",
 })
 
 

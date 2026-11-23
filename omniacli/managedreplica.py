@@ -97,6 +97,7 @@ comes on the input and is written once in secret/."""
 
 from __future__ import annotations
 
+import contextlib
 import datetime
 import ipaddress
 import json
@@ -108,7 +109,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from . import enterprise, machinedb
+from . import enterprise, linkedcluster, machinedb
 from .machinedb import ENV, SERVICE, ClusterError
 
 # the role of the replication and its slot on the primary: internal names (a dot: no environment has one)
@@ -741,7 +742,8 @@ def facts(major: str) -> dict:
     if src.kind == "dedicated" and src.refusal():
         raise ClusterError(src.refusal())
     rec = record(src.folder)
-    answer = {"major": src.major, "key": src.key, "kind": src.kind, "running": False, "size": 0, "version": "",
+    answer = {"major": src.major, "key": src.key, "kind": src.kind, "arch": os.uname().machine, "running": False,
+              "size": 0, "version": "",
               "port": (src.listening() or {}).get("port"), "instances": src.instances(),
               "grants": sorted(src.grants()), "why": "", "roots": src.roots(),
               "replica": {"link": rec.get("link"), "state": rec.get("state")} if rec else None}
@@ -749,7 +751,8 @@ def facts(major: str) -> dict:
     if src.kind == "dedicated":
         total, free = src.disk()
         answer.update(workspace=src.workspace, name=src.name, disk_total=total, disk_free=free,
-                      cap_gb=src.cap_limit(), restart_s=DEDICATED_RESTART_S)
+                      cap_gb=src.cap_limit(), restart_s=DEDICATED_RESTART_S, database=_database_of(src.project),
+                      template=_template_of(src.project))
     try:
         size, version = src.sql(SIZE_SQL).strip().split("|")
         answer.update(size=int(size or 0), version=version, running=True, why=unfit(src))
@@ -817,7 +820,8 @@ def allow(major: str, spec: dict) -> dict:
         # reserved at once: the changes from now are kept, the copy and what follows it miss none
         src.sql(f"SELECT pg_create_physical_replication_slot('{SLOT}', true);\n")
         src.sql(f"ALTER SYSTEM SET max_slot_wal_keep_size = '{int(cap * 1024)}MB';\nSELECT pg_reload_conf();\n")
-        rec = {"link": link, "by": by, "address": origin, "at": _now(), "cap_gb": cap, "state": "copying"}
+        rec = {"link": link, "by": by, "address": origin, "at": _now(), "cap_gb": cap, "state": "copying",
+               **({"arrives": True} if spec.get("arrives") else {})}
         _save_record(src.folder, rec)
         recorded = True
         src.write_hba()
@@ -971,7 +975,8 @@ def state(major: str, now: float | None = None) -> dict:
         return {"exists": False, "major": major}
     envs = src.environments()
     answer = {"exists": True, "major": major, "kind": src.kind, **{k: rec.get(k) for k in (
-        "link", "by", "address", "at", "cap_gb", "state", "host", "port", "ready_at", "replaced_at", "seconds", "size")},
+        "link", "by", "address", "at", "cap_gb", "state", "host", "port", "ready_at", "replaced_at", "seconds", "size",
+        "arrives", "stopped_at", "checkpoint")},
         "connected": False, "lag": None, "since": None, "held": 0, "wal_status": "", "progress": None, "rate": None,
         "cap": int(float(rec.get("cap_gb") or CAP_GB) * GB), "free": shutil.disk_usage(src.project).free,
         # what the machine that hosts it follows: the instances the PostgreSQL has now, and where their tablespaces are
@@ -980,13 +985,15 @@ def state(major: str, now: float | None = None) -> dict:
     if src.kind == "dedicated":
         # the most it may keep, on its workspace's disk (D11-1): what Change the cap… is refused above
         answer["cap_max"] = src.cap_limit()
-    if rec.get("state") == "replaced":
+    if rec.get("state") in ("replaced", "stopped"):
         return answer
     try:
         found = json.loads(src.sql(STATE_SQL).strip() or "{}")
     except (ClusterError, ValueError):
         return {**answer, "unread": True}
-    answer = _seen(project, found, rec.get("state") == "ready", rec.get("ready_at") or rec.get("at"), answer, now)
+    # a copy that arrives in an instance of another machine (AD-010) is measured once it follows: it never says ready
+    measured = rec.get("state") == "ready" or (rec.get("state") == "copying" and bool(rec.get("arrives")))
+    answer = _seen(project, found, measured, rec.get("ready_at") or rec.get("at"), answer, now)
     answer.pop("following", None)
     return answer
 
@@ -1024,6 +1031,8 @@ def drop(major: str) -> dict:
         raise ClusterError(f"{src.what} has no read replica")
     if rec.get("state") == "replaced":
         raise ClusterError("the replica took this cluster's place: it is not dropped from here")
+    if rec.get("state") == "stopped":
+        raise ClusterError(f"{src.what} is stopped for the switch to its copy: start it again first")
     held = 0
     try:
         held = int(float(src.sql("SELECT coalesce((SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), "
@@ -1825,7 +1834,7 @@ def firewall_state(subnet_of=None) -> dict:
                         if net:
                             local.append(net)
             found[bridge_name(major)] = {"from": sorted(set(coming)), "to": out, **({"local": sorted(set(local))} if local else {})}
-    return {**found, **published_state(), **returning_state()}
+    return {**found, **published_state(), **returning_state(), **arriving_state()}
 
 
 def published_state() -> dict:
@@ -2117,10 +2126,35 @@ def _data_folders(project: Path) -> list[Path]:
             *sorted({Path(str(e.get("mount"))) / machinedb.WS_FOLDER / "ts" for e in envs.values() if e.get("mount")})]
 
 
-class ClusterBack:
+class _Return:
+    """What the steps of a return (_copy_into, _start_following, _wait_for,
+    _take_writes) ask of the place the PostgreSQL comes back to: where it
+    follows from, its record, what it says."""
+    slot, application = BACK_SLOT, BACK_APPLICATION
+
+    def record(self) -> dict | None:
+        return machinedb.returning(self.folder)
+
+    def save(self, back: dict | None) -> None:
+        _save_back(self.folder, back)
+
+    def promoted(self, back: dict) -> None:
+        # the record of the replica that had replaced it goes: it has none any more
+        _save_record(self.folder, None)
+        self.took_writes()
+
+
+class ClusterBack(_Return):
     """Where the machine's cluster of a major comes back: its own project,
     its data in its own folder and in its tablespaces on the workspaces' disks."""
     kind = "cluster"
+    texts = {"no_step": "no return is at this step", "none": "no return is under way",
+             "not_empty": "the cluster's folder is not empty: cancel the return and prepare it again",
+             "copy_failed": "the copy of the promoted cluster failed", "no_copy": "the cluster holds no copy yet",
+             "not_receiving": "the cluster started on the copy but does not receive from the promoted copy: ",
+             "not_a_position": "where the promoted copy stopped is not a position of its record of the changes",
+             "not_promoted": "PostgreSQL did not let the cluster take the writes",
+             "still_follows": "the cluster still follows the promoted copy after it was told to take the writes"}
 
     def __init__(self, major: str):
         self.key = str(major)
@@ -2206,7 +2240,12 @@ def back_project_name(name: str) -> str:
     return f"omniacli-return-{name}"
 
 
-def back_compose_text(major: str, uid: int, gid: int, name: str, slice_name: str, number: int) -> str:
+def arrive_project_name(name: str) -> str:
+    return f"omniacli-arrive-{name}"
+
+
+def back_compose_text(major: str, uid: int, gid: int, name: str, slice_name: str, number: int,
+                      arrives: bool = False) -> str:
     """The project the database of an instance comes back in, while the
     instance works on its promoted copy: PostgreSQL of that major on the
     instance's own data folder, a hot standby that follows the promoted
@@ -2216,12 +2255,19 @@ def back_compose_text(major: str, uid: int, gid: int, name: str, slice_name: str
     what the instance's recovery at a minute keeps is the instance's own."""
     if not re.fullmatch(r"[a-z0-9-]{1,81}", name) or not re.fullmatch(r"[A-Za-z0-9_.@-]{1,120}", slice_name):
         raise ClusterError(f"{name!r} is not the name of an instance of a workspace")
-    return f"""# written by omniacli workspace-helper machine-db-return: the database of {name} comes back from its
-# promoted copy on another machine (docs/adr/postgresql-della-macchina.md, AD-004; UX-011 A). A copy of
-# that copy, kept up to date read only on the data folder of the instance, until Complete the return…
-# makes it the instance's own database service again. It listens on no port.
-name: {back_project_name(name)}
-services:
+    if arrives:
+        head = (f"# written by omniacli workspace-helper machine-db-arrive: the database of {name} arrives from\n"
+                "# the dedicated database of an instance of another machine (docs/adr/AD-008-consegna-e-spostamento.md,\n"
+                "# AD-010). A copy of it, kept up to date read only on the data folder of the new instance, until its\n"
+                "# promotion makes it the instance's own database service. It listens on no port.\n"
+                f"name: {arrive_project_name(name)}\n")
+    else:
+        head = (f"# written by omniacli workspace-helper machine-db-return: the database of {name} comes back from its\n"
+                "# promoted copy on another machine (docs/adr/postgresql-della-macchina.md, AD-004; UX-011 A). A copy of\n"
+                "# that copy, kept up to date read only on the data folder of the instance, until Complete the return…\n"
+                "# makes it the instance's own database service again. It listens on no port.\n"
+                f"name: {back_project_name(name)}\n")
+    return head + f"""services:
   {DEDICATED_SERVICE}:
     image: {machinedb.IMAGE[major]}
     restart: unless-stopped
@@ -2266,20 +2312,32 @@ networks:
 """
 
 
-class DedicatedBack:
+class DedicatedBack(_Return):
     """Where the dedicated database of an instance comes back: the data
     folder of the instance's own project, on its workspace's disk, run by a
     project of its own (BACK_FOLDER in the instance's .replica folder)
     until the return is complete."""
     kind = "dedicated"
+    runs_folder = BACK_FOLDER
 
     def __init__(self, key: str):
         src = Dedicated(key)
         self.key, self.src, self.name, self.workspace = src.key, src, src.name, src.workspace
         self.project, self.folder = src.project, src.folder
-        self.runs = self.folder / BACK_FOLDER
+        self.runs = self.folder / self.runs_folder
         self.conf, self.secret = self.runs / "conf", self.runs / "secret"
         self.pgdata = self.project / "data" / "pgdata"
+        name = self.name
+        self.texts = {"no_step": "no return is at this step", "none": "no return is under way",
+                      "not_empty": f"the data folder of {name} is not empty: cancel the return and prepare it again",
+                      "copy_failed": "the copy of the promoted copy failed",
+                      "no_copy": f"the data folder of {name} holds no copy yet",
+                      "not_receiving": f"the database of {name} started on the copy but does not receive from the "
+                                       "promoted copy: ",
+                      "not_a_position": "where the promoted copy stopped is not a position of its record of the changes",
+                      "not_promoted": f"PostgreSQL did not let the database of {name} take the writes",
+                      "still_follows": f"the database of {name} still follows the promoted copy after it was told to "
+                                       "take the writes"}
 
     def replaced(self) -> dict:
         rec = record(self.folder)
@@ -2534,83 +2592,73 @@ def _back(project: Path, *states: str) -> dict:
     return back
 
 
-def back_copy(major: str) -> dict:
-    """The promoted copy copied into the place (pg_basebackup over TLS, its
-    certificate verified), then made a copy that follows it: the settings
+def _at(place, *states: str) -> dict:
+    """The record of what place is doing (a return, an arrival), at one of states."""
+    back = place.record() or {}
+    if back.get("state") not in states:
+        raise ClusterError(place.texts["no_step"] if back else place.texts["none"])
+    return back
+
+
+def _copy_into(place) -> dict:
+    """The PostgreSQL place follows copied into it (pg_basebackup over TLS,
+    its certificate verified), then made a copy that follows it: the settings
     the PostgreSQL had here (its tuning, its recovery at a minute) put back
     in place of the copy's, with where it follows from."""
-    place = back_place(major)
-    back = _back(place.folder, "copying")
+    back = _at(place, "copying")
     pgdata = place.data_folders()[0]
     if any(pgdata.iterdir()):
-        raise ClusterError("the cluster's folder is not empty: cancel the return and prepare it again"
-                           if place.kind == "cluster" else
-                           f"the data folder of {place.name} is not empty: cancel the return and prepare it again")
+        raise ClusterError(place.texts["not_empty"])
     started = time.monotonic()
     done = place.run("run", "--rm", "--no-deps", "-T",
                      "-e", f"PGPASSFILE={machinedb.SECRETS_IN_DB}/{PGPASS}", "-e", "PGSSLMODE=verify-full",
-                     "-e", f"PGSSLROOTCERT={machinedb.CONF_IN_DB}/{PRIMARY_CA}", "-e", f"PGAPPNAME={BACK_APPLICATION}-copy",
+                     "-e", f"PGSSLROOTCERT={machinedb.CONF_IN_DB}/{PRIMARY_CA}", "-e", f"PGAPPNAME={place.application}-copy",
                      SERVICE, "pg_basebackup", "-h", str(back["host"]), "-p", str(back["port"]), "-U", ROLE,
-                     "-D", machinedb.PGDATA_IN_DB, "-Fp", "-X", "stream", "-S", BACK_SLOT, "-c", "fast", "--no-password",
+                     "-D", machinedb.PGDATA_IN_DB, "-Fp", "-X", "stream", "-S", place.slot, "-c", "fast", "--no-password",
                      check=False, timeout=COPY_TIMEOUT)
     if done.returncode:
-        raise ClusterError(f"the copy of the promoted {'cluster' if place.kind == 'cluster' else 'copy'} failed: "
-                           f"{(done.stderr or done.stdout).strip()[-600:]}")
+        raise ClusterError(f"{place.texts['copy_failed']}: {(done.stderr or done.stdout).strip()[-600:]}")
     uid, gid = place.owner()
     auto, kept = pgdata / "postgresql.auto.conf", _aside(pgdata) / "postgresql.auto.conf"
     source = kept if kept.is_file() else auto
     lines = [line for line in source.read_text(encoding="utf-8").splitlines()
              if not re.match(r"\s*primary_(conninfo|slot_name)\s*=", line)]
-    lines += [f"primary_conninfo = '{conninfo(str(back['host']), int(back['port']), BACK_APPLICATION)}'",
-              f"primary_slot_name = '{BACK_SLOT}'"]
+    lines += [f"primary_conninfo = '{conninfo(str(back['host']), int(back['port']), place.application)}'",
+              f"primary_slot_name = '{place.slot}'"]
     machinedb.write(auto, "\n".join(lines) + "\n", mode=0o600, uid=uid, gid=gid)
     machinedb.write(pgdata / "standby.signal", "", mode=0o600, uid=uid, gid=gid)
     seconds = round(time.monotonic() - started, 1)
     size = tree_size(*place.data_folders())
-    _save_back(place.folder, {**back, "copy_seconds": seconds, "size": size})
+    place.save({**back, "copy_seconds": seconds, "size": size})
     return {"seconds": seconds, "size": size}
 
 
-def _following(place) -> bool:
-    try:
-        return place.sql("SELECT status FROM pg_stat_wal_receiver;\n").strip() == "streaming"
-    except ClusterError:
-        return False
-
-
-def back_start(major: str) -> dict:
-    """The PostgreSQL started on the copy, read only, and seen to receive
-    from the promoted copy."""
-    place = back_place(major)
-    back = _back(place.folder, "copying")
+def _start_following(place) -> dict:
+    """The PostgreSQL started on the copy, read only, and seen to receive."""
+    back = _at(place, "copying")
     if not (place.data_folders()[0] / "PG_VERSION").is_file():
-        raise ClusterError("the cluster holds no copy yet" if place.kind == "cluster" else
-                           f"the data folder of {place.name} holds no copy yet")
+        raise ClusterError(place.texts["no_copy"])
     started = time.monotonic()
     place.run("up", "-d", "--remove-orphans", timeout=600)
     place.wait_ready()
     end = time.monotonic() + STREAM_WAIT
     while not _following(place):
         if time.monotonic() > end:
-            raise ClusterError(("the cluster started on the copy but does not receive from the promoted copy: "
-                                if place.kind == "cluster" else
-                                f"the database of {place.name} started on the copy but does not receive from the "
-                                "promoted copy: ") + (_log_tail(place.runs) or "no reason in its log"))
+            raise ClusterError(place.texts["not_receiving"] + (_log_tail(place.runs) or "no reason in its log"))
         time.sleep(1)
-    _save_back(place.folder, {**back, "state": "ready", "ready_at": _now(), "synced": True})
+    place.save({**back, "state": "ready", "ready_at": _now(), "synced": True})
     return {"state": "ready", "seconds": round(time.monotonic() - started, 1)}
 
 
-def back_state(major: str) -> dict:
-    """What this machine sees of its return: its record, what is copied so
-    far, whether its PostgreSQL runs on the copy and receives, and why not."""
-    place = back_place(major)
-    back = machinedb.returning(place.folder)
+def _state_of(place, major: str) -> dict:
+    """What this machine sees of what place is doing: its record, what is
+    copied so far, whether its PostgreSQL runs on the copy and receives, and why not."""
+    back = place.record()
     if not back:
         return {"exists": False, "major": major}
     answer = {"exists": True, "major": major, **{k: back.get(k) for k in (
         "link", "by", "host", "port", "state", "at", "ready_at", "returned_at", "expected", "size", "aside", "synced",
-        "machine", "copy_seconds", "told", "instances")},
+        "machine", "copy_seconds", "told", "instances", "promoted_at")},
         "running": False, "receiving": False, "reason_code": "", "copied": None, "free": shutil.disk_usage(place.project).free}
     if back["state"] == "copying":
         answer["copied"] = tree_size(*place.data_folders())
@@ -2623,24 +2671,25 @@ def back_state(major: str) -> dict:
         return answer
     answer["receiving"] = _following(place)
     try:
-        # False: it took the writes already (a completion that did not end): the promoted copy is never started again
+        # False: it took the writes already (a completion that did not end): the source is never started again
         answer["in_recovery"] = place.sql("SELECT pg_is_in_recovery();\n").strip() == "t"
     except ClusterError:
         answer["in_recovery"] = None
+    if answer["in_recovery"]:
+        with contextlib.suppress(ClusterError, ValueError):
+            answer["replayed"] = place.sql("SELECT pg_last_wal_replay_lsn();\n").strip()
     if not answer["receiving"]:
         answer["reason_code"] = reason(place.runs)
     return answer
 
 
-def back_wait(major: str, checkpoint: str, timeout: float = BACK_WAIT) -> dict:
-    """Whether the PostgreSQL applied the last record the promoted copy
-    wrote before it stopped (checkpoint: where that record starts), waited
-    for up to timeout seconds: only then nothing is lost when it takes the
-    writes."""
-    place = back_place(major)
-    _back(place.folder, "ready")
+def _wait_for(place, checkpoint: str, timeout: float) -> dict:
+    """Whether the PostgreSQL applied the last record its source wrote before
+    it stopped (checkpoint: where that record starts), waited for up to
+    timeout seconds: only then nothing is lost when it takes the writes."""
+    _at(place, "ready")
     if not LSN.fullmatch(str(checkpoint or "")):
-        raise ClusterError("where the promoted copy stopped is not a position of its record of the changes")
+        raise ClusterError(place.texts["not_a_position"])
     started = time.monotonic()
     while True:
         try:
@@ -2652,29 +2701,20 @@ def back_wait(major: str, checkpoint: str, timeout: float = BACK_WAIT) -> dict:
         time.sleep(0.5)
 
 
-def back_promote(major: str) -> dict:
-    """The PostgreSQL takes the writes again: it is this machine's cluster
-    as before the promotion, with no replica; or the database of its
-    instance again, which workspace-helper machine-db-replica-back then
-    makes the instance's own service. What the return needed goes (where it
+def _take_writes(place) -> dict:
+    """The PostgreSQL takes the writes: what following needed goes (where it
     followed from, the role of the replication, the password, the CA), and
-    the record of the replica that had replaced it."""
-    place = back_place(major)
-    back = _back(place.folder, "ready")
+    what the place does then (place.promoted)."""
+    back = _at(place, "ready")
     started = time.monotonic()
     # asked again after it took them (the job did not end): nothing to tell PostgreSQL twice
     if (place.sql("SELECT pg_is_in_recovery();\n").strip() == "t"
             and place.sql(f"SELECT pg_promote(true, {PROMOTE_WAIT});\n").strip() != "t"):
-        raise ClusterError("PostgreSQL did not let the cluster take the writes" if place.kind == "cluster" else
-                           f"PostgreSQL did not let the database of {place.name} take the writes")
+        raise ClusterError(place.texts["not_promoted"])
     if place.sql("SELECT pg_is_in_recovery();\n").strip() != "f":
-        raise ClusterError("the cluster still follows the promoted copy after it was told to take the writes"
-                           if place.kind == "cluster" else
-                           f"the database of {place.name} still follows the promoted copy after it was told to take "
-                           "the writes")
+        raise ClusterError(place.texts["still_follows"])
     at = _now()
-    _save_back(place.folder, {**back, "state": "done", "returned_at": at})
-    _save_record(place.folder, None)
+    place.save({**back, "state": "done", "returned_at": at})
     for statement in ("ALTER SYSTEM RESET primary_conninfo;\n", "ALTER SYSTEM RESET primary_slot_name;\n",
                       "ALTER SYSTEM RESET max_slot_wal_keep_size;\n", "SELECT pg_reload_conf();\n",
                       f"DROP ROLE IF EXISTS {machinedb.ident(ROLE)};\n"):
@@ -2682,10 +2722,45 @@ def back_promote(major: str) -> dict:
             place.sql(statement)
         except ClusterError:
             pass
-    place.took_writes()
+    place.promoted(back)
     (place.secret / PGPASS).unlink(missing_ok=True)
     (place.conf / PRIMARY_CA).unlink(missing_ok=True)
     return {"returned_at": at, "seconds": round(time.monotonic() - started, 1)}
+
+
+def back_copy(major: str) -> dict:
+    """The promoted copy copied into the place of the return, and followed (_copy_into)."""
+    return _copy_into(back_place(major))
+
+
+def _following(place) -> bool:
+    try:
+        return place.sql("SELECT status FROM pg_stat_wal_receiver;\n").strip() == "streaming"
+    except ClusterError:
+        return False
+
+
+def back_start(major: str) -> dict:
+    """The PostgreSQL of the return started on the copy, read only, and seen to receive from the promoted copy."""
+    return _start_following(back_place(major))
+
+
+def back_state(major: str) -> dict:
+    """What this machine sees of its return (_state_of)."""
+    return _state_of(back_place(major), major)
+
+
+def back_wait(major: str, checkpoint: str, timeout: float = BACK_WAIT) -> dict:
+    """Whether the PostgreSQL of the return applied the last record the promoted copy wrote before it stopped."""
+    return _wait_for(back_place(major), checkpoint, timeout)
+
+
+def back_promote(major: str) -> dict:
+    """The PostgreSQL takes the writes again: it is this machine's cluster
+    as before the promotion, with no replica; or the database of its
+    instance again, which workspace-helper machine-db-replica-back then
+    makes the instance's own service (_take_writes)."""
+    return _take_writes(back_place(major))
 
 
 def back_release(key: str) -> dict:
@@ -2766,6 +2841,364 @@ def back_forget(major: str) -> dict:
     _back(place.folder, "done")
     _save_back(place.folder, None)
     return {"forgotten": True}
+
+
+# --- a dedicated database that arrives in a new instance of this machine (AD-010) -------------------------
+#
+# The dedicated database of an instance of another machine (P) copied into the data folder of an instance
+# of this one (R) made for it and never started, and followed there read only by a project of its own in
+# the new instance's .replica folder (arrive, as the return's: no port, its network goes out to P's port
+# only), until the switch: P's instance stopped clean (replica_stop, its last record said), R waits for
+# that record, the copy takes the writes and is given the new instance's own database name and password,
+# the project that followed is taken away and the instance's own database service starts on the data.
+# P lets R in with its allow of today ("arrives": measured as a copy that follows from the start).
+
+ARRIVE_FOLDER = "arrive"
+ARRIVE_FILE = "arrive.json"
+# {key: {"project"}} of the instances whose database arrives here: the firewall reads it at the boot,
+# before the workspaces' disks are mounted (root's, as machinedb.DEDICATED_SOURCES)
+ARRIVALS = Path(os.environ.get("OMNIACLI_DB_ARRIVALS", "/etc/omniacli/db-arrivals.json"))
+# the requester of an arrival: a link of this machine, or a handover (part A)
+ARRIVE_FROM = re.compile(rf"{machinedb.LINK_NAME.pattern}|handover:[0-9a-f]{{16}}")
+DATABASE_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,62}")
+
+
+def arrivals() -> dict:
+    try:
+        data = json.loads(ARRIVALS.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return ({k: v for k, v in data.items() if machinedb.DEDICATED_KEY.fullmatch(k) and isinstance(v, dict)}
+            if isinstance(data, dict) else {})
+
+
+def _save_arrivals(data: dict) -> None:
+    if not data:
+        ARRIVALS.unlink(missing_ok=True)
+        return
+    ARRIVALS.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    machinedb.write(ARRIVALS, json.dumps(data, indent=1, sort_keys=True) + "\n", mode=0o644)
+
+
+def _arrival_record(folder: Path) -> dict | None:
+    try:
+        data = json.loads((folder / ARRIVE_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) and data.get("state") else None
+
+
+class ArrivePlace(DedicatedBack):
+    """Where the dedicated database of an instance of another machine
+    arrives: the data folder of a new instance of this machine, never
+    started, run by a project of its own (ARRIVE_FOLDER in its .replica
+    folder) until it takes the writes. DedicatedBack without its premise
+    (a database a promotion replaced): an instance made for the copy."""
+    slot, application = SLOT, APPLICATION
+    runs_folder = ARRIVE_FOLDER
+
+    def __init__(self, key: str):
+        super().__init__(key)
+        name = self.name
+        self.texts = {"no_step": "no arrival is at this step", "none": "no arrival is under way",
+                      "not_empty": f"the data folder of {name} is not empty: cancel the arrival and prepare it again",
+                      "copy_failed": f"the copy of the database that arrives in {name} failed",
+                      "no_copy": f"the data folder of {name} holds no copy yet",
+                      "not_receiving": f"the database of {name} started on the copy but does not receive from its "
+                                       "source: ",
+                      "not_a_position": "where the source stopped is not a position of its record of the changes",
+                      "not_promoted": f"PostgreSQL did not let the database of {name} take the writes",
+                      "still_follows": f"the database of {name} still follows its source after it was told to take "
+                                       "the writes"}
+
+    def record(self) -> dict | None:
+        return _arrival_record(self.folder)
+
+    def save(self, back: dict | None) -> None:
+        path = self.folder / ARRIVE_FILE
+        if back is None:
+            path.unlink(missing_ok=True)
+            return
+        machinedb._folder(self.folder, 0o755)
+        machinedb.write(path, json.dumps(back, indent=1, sort_keys=True) + "\n", mode=0o644)
+
+    def instance_runs(self) -> bool:
+        """A service of the new instance's own project runs."""
+        done = machinedb._run(self.project, "ps", "--status", "running", "--services", check=False, timeout=60)
+        return bool((done.stdout or "").split())
+
+    def refusal(self) -> str:
+        if not self.src.has_database():
+            return (f"{self.name} has no database of its own: a dedicated database arrives only in an instance with a "
+                    "database of its own")
+        if self.instance_runs():
+            return f"{self.name} runs: a database arrives only in an instance that was never started"
+        if self.pgdata.is_dir() and any(self.pgdata.iterdir()):
+            return f"the data folder of {self.name} is not empty: a database arrives only in an instance that was never started"
+        if self.running():
+            return f"the database that arrives in {self.name} runs already: cancel that arrival first"
+        return ""
+
+    def _taken(self) -> set[int]:
+        found = super()._taken()
+        for key, entry in arrivals().items():
+            if key != self.key:
+                found.add(int((_arrival_record(Path(str(entry.get("project") or "")) / machinedb.DEDICATED_FOLDER)
+                               or {}).get("net") or 0))
+        return found
+
+    def made_ready(self, uid: int, gid: int, extra: dict) -> None:
+        machinedb._folder(self.folder, 0o755)
+        machinedb._folder(self.runs, 0o755)
+        machinedb._folder(self.conf, 0o750, 0, gid)
+        machinedb._folder(self.secret, 0o750, 0, gid)
+        machinedb.write(self.runs / "compose.yaml", back_compose_text(extra["major"], uid, gid, self.name, extra["slice"],
+                                                                      extra["net"], arrives=True))
+        # among the databases the firewall reads: its network goes out to the source's port only
+        kept = arrivals()
+        kept[self.key] = {"project": str(self.project), "workspace": self.workspace}
+        _save_arrivals(kept)
+
+    def cancelled(self) -> None:
+        shutil.rmtree(self.runs, ignore_errors=True)
+        kept = arrivals()
+        if kept.pop(self.key, None) is not None:
+            _save_arrivals(kept)
+
+    def promoted(self, back: dict) -> None:
+        """The database is the new instance's: its name (the instance's own,
+        when the source's was another) and the password of its role (the
+        instance's, from its .env: a verifier, never the password itself, in SQL)."""
+        own = str(back.get("database") or "")
+        theirs = str(back.get("source_database") or "")
+        if own and theirs and own != theirs:
+            there = self.sql(f"SELECT count(*) FROM pg_database WHERE datname = '{theirs}';\n").strip()
+            if there == "1":
+                self.sql(f"ALTER DATABASE {machinedb.ident(theirs)} RENAME TO {machinedb.ident(own)};\n")
+        password = self.src._env().get("DB_PASSWORD", "").strip()
+        if password:
+            self.sql(f"ALTER ROLE {machinedb.ident(DEDICATED_ROLE)} PASSWORD '{linkedcluster.scram_verifier(password)}';\n")
+
+
+def arrive_place(key: str) -> ArrivePlace:
+    if not is_dedicated(key):
+        raise ClusterError(f"{key!r} is not <workspace>.<storage>.<instance> of an instance of this machine")
+    return ArrivePlace(key)
+
+
+def _instance_meta(project: Path) -> dict:
+    try:
+        meta = json.loads((project.parent / "instance.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return meta if isinstance(meta, dict) else {}
+
+
+def _database_of(project: Path) -> str:
+    """The name of the database of an instance's project, as its instance.json keeps it ("" unknown)."""
+    found = str(_instance_meta(project).get("database") or "")
+    return found if DATABASE_NAME.fullmatch(found) else ""
+
+
+def _template_of(project: Path) -> str:
+    """The template an instance's project was made from ("" unknown)."""
+    found = str(_instance_meta(project).get("template") or "")
+    return found if re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,63}", found) else ""
+
+
+def arrive_prepare(key: str, spec: dict) -> dict:
+    """The new instance made ready to take the copy: spec {"link" (this
+    machine's link to the source's, or handover:<id>), "by", "host", "port",
+    "ca" (how the source is reached and verified), "password" (of the
+    replication's role, made here), "size", "major", "database" (the source's
+    name of its database), "reserve_gb"}. The room checked on the
+    workspace's disk, its empty data folder, the project that follows, the
+    password and the CA where its container reads them, the record."""
+    place = arrive_place(key)
+    if (place.record() or {}).get("state") in ("copying", "ready"):
+        raise ClusterError("an arrival is under way already: cancel it first")
+    link = str(spec.get("link") or "")
+    if not ARRIVE_FROM.fullmatch(link):
+        raise ClusterError("a database arrives through a link of this machine to the source's, or a handover")
+    host = machinedb.reached_as([spec.get("host")])[0]
+    port = int(spec.get("port") or 0)
+    if not 1024 <= port <= 65535:
+        raise ClusterError(f"{port} is not the port of the source's database")
+    ca = certificate(spec.get("ca"))
+    password = str(spec.get("password") or "")
+    if not PASSWORD.fullmatch(password):
+        raise ClusterError("the password of the replication's role is not of its form")
+    theirs = str(spec.get("database") or "")
+    if theirs and not DATABASE_NAME.fullmatch(theirs):
+        raise ClusterError(f"{theirs[:80]!r} is not the name of a database")
+    size = int(spec.get("size") or 0)
+    reserve = reserve_gb(spec.get("reserve_gb", RESERVE_GB))
+    why = place.refusal()
+    if why:
+        raise ClusterError(why)
+    free = shutil.disk_usage(place.project).free
+    fits = room(size, free, reserve)
+    if not fits["fits"]:
+        raise ClusterError(f"no room on the disk of the workspace {place.workspace}: the copy takes about "
+                           f"{fits['need'] // MB} MB, {free / GB:.1f} GB are free there and {reserve:g} GB must stay free")
+    extra = place.checked(spec)
+    uid, gid = place.owner()
+    made = not place.pgdata.exists()
+    try:
+        if made:
+            machinedb._folder(place.pgdata.parent, 0o755)
+        machinedb._folder(place.pgdata, 0o700, uid, gid)
+        place.made_ready(uid, gid, extra)
+        machinedb.write(place.secret / PGPASS, f"*:*:*:{ROLE}:{password}\n", mode=0o600, uid=uid, gid=gid)
+        machinedb.write(place.conf / PRIMARY_CA, ca, mode=0o644, uid=0, gid=gid)
+        place.save({"link": link, "by": str(spec.get("by") or ""), "host": host, "port": port,
+                    "address": _primary_address(host), "state": "copying", "at": _now(), "expected": size,
+                    "reserve_gb": reserve, "database": _database_of(place.project), "source_database": theirs,
+                    **extra})
+    except BaseException:
+        place.cancelled()
+        place.save(None)
+        raise
+    return {"key": key, "name": place.name, "room": fits, "net": extra["net"]}
+
+
+def arrive_copy(key: str) -> dict:
+    return _copy_into(arrive_place(key))
+
+
+def arrive_start(key: str) -> dict:
+    return _start_following(arrive_place(key))
+
+
+def arrive_state(key: str) -> dict:
+    return _state_of(arrive_place(key), key)
+
+
+def arrive_wait(key: str, checkpoint: str, timeout: float = BACK_WAIT) -> dict:
+    return _wait_for(arrive_place(key), checkpoint, timeout)
+
+
+def arrive_promote(key: str) -> dict:
+    """The copy takes the writes and is the new instance's database (its
+    name, its role's password); the project that followed it is stopped
+    clean and taken away, and the instance's own database service starts on
+    the data: Odoo stays stopped, for whoever asked to start it. Asked again
+    after it took the writes, what is left is done."""
+    place = arrive_place(key)
+    back = place.record() or {}
+    started = time.monotonic()
+    if back.get("state") == "done":
+        if place.running():
+            place.promoted(back)
+        answer = {"returned_at": back.get("returned_at"), "seconds": 0.0, "already": True}
+    else:
+        answer = _take_writes(place)
+    took = round(time.monotonic() - started, 1)
+    if place.running():
+        with contextlib.suppress(ClusterError):
+            place.sql("CHECKPOINT;\n")
+        place.stop()
+        if place.running():
+            raise ClusterError(f"the database that arrived in {place.name} did not stop: the instance's own service is "
+                               "not started on it while it runs")
+    place.cancelled()
+    up = time.monotonic()
+    machinedb._run(place.project, "up", "-d", "--no-deps", DEDICATED_SERVICE, timeout=600)
+    place.src._ready()
+    return {**answer, "promote_s": took, "own_service_s": round(time.monotonic() - up, 1),
+            "seconds": round(time.monotonic() - started, 1), "name": place.name}
+
+
+def arrive_cancel(key: str) -> dict:
+    """The arrival cancelled here: its PostgreSQL stopped, the copy deleted
+    (the instance's data folder empty again, as it was made), the project
+    that followed it taken away. Refused once it took the writes: then it is
+    the instance's database."""
+    place = arrive_place(key)
+    back = place.record() or {}
+    if back.get("state") == "done":
+        raise ClusterError(f"the database that arrived took the writes: it is the database of {place.name} now")
+    place.stop()
+    if place.running():
+        raise ClusterError(f"the database that arrives in {place.name} did not stop: the copy is not deleted under a "
+                           "PostgreSQL that runs")
+    freed = 0
+    if place.pgdata.is_dir() and not place.pgdata.is_symlink():
+        for child in list(place.pgdata.iterdir()):
+            freed += tree_size(child) if child.is_dir() and not child.is_symlink() else child.lstat().st_size
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child, ignore_errors=True)
+            else:
+                child.unlink(missing_ok=True)
+    place.cancelled()
+    place.save(None)
+    return {"cancelled": True, "freed": freed, "link": back.get("link")}
+
+
+def arriving_state() -> dict:
+    """{bridge: {"from": [], "to": [[address, port]]}} of the databases that
+    arrive here: the network each follows its source from goes out to that
+    source's port and nowhere else, and nothing reaches it."""
+    found = {}
+    for _key, entry in sorted(arrivals().items()):
+        back = _arrival_record(Path(str(entry.get("project") or "")) / machinedb.DEDICATED_FOLDER) or {}
+        if back.get("state") not in ("copying", "ready"):
+            continue
+        try:
+            found[back_bridge(int(back.get("net") or 0))] = {
+                "from": [], "to": [[machinedb.address(back.get("address")), int(back.get("port") or 0)]]}
+        except (ClusterError, ValueError):
+            continue
+    return found
+
+
+# --- on the source's machine (P): its instance stopped clean for the switch ----------------------------
+
+def replica_stop(key: str) -> dict:
+    """The first step of the switch of a database that arrives on another
+    machine: the instance stopped (Odoo first, then its PostgreSQL with
+    PostgreSQL's fast stop: the copy that follows gets everything first), and
+    where its last record is: the copy takes the writes only once it applied
+    it. One that did not stop clean runs again, and nothing changes. Asked
+    again, the same answer."""
+    src = Dedicated(key)
+    rec = record(src.folder)
+    if not rec:
+        raise ClusterError(f"{src.what} has no copy that follows it")
+    if rec.get("state") == "stopped":
+        return {"stopped": True, "already": True, "checkpoint": rec.get("checkpoint"), "stopped_at": rec.get("stopped_at")}
+    if rec.get("state") not in ("copying", "ready"):
+        raise ClusterError(f"the copy of {src.what} took its place already: it is not stopped again")
+    with contextlib.suppress(ClusterError):
+        src.sql("CHECKPOINT;\n")
+    started = time.monotonic()
+    machinedb._run(src.project, "stop", "-t", "120", timeout=300)
+    done = machinedb._run(src.project, "ps", "--status", "running", "--services", check=False, timeout=60)
+    control = {} if (done.stdout or "").split() else _control(src.project)
+    checkpoint = control.get("Latest checkpoint location", "")
+    if control.get("Database cluster state") != "shut down" or not LSN.fullmatch(checkpoint):
+        machinedb._run(src.project, "up", "-d", check=False, timeout=600)
+        raise ClusterError(f"{src.what} did not stop clean: it runs again and nothing changed")
+    at = _now()
+    _save_record(src.folder, {**rec, "state": "stopped", "before": rec.get("state"), "stopped_at": at,
+                              "checkpoint": checkpoint})
+    return {"stopped": True, "already": False, "checkpoint": checkpoint, "stopped_at": at,
+            "seconds": round(time.monotonic() - started, 1)}
+
+
+def replica_resume(key: str) -> dict:
+    """The instance stopped by replica_stop runs again (the switch did not
+    complete: the copy did not take the writes), its copy following again."""
+    src = Dedicated(key)
+    rec = record(src.folder)
+    if not rec or rec.get("state") != "stopped":
+        return {"resumed": False, "state": (rec or {}).get("state")}
+    started = time.monotonic()
+    machinedb._run(src.project, "up", "-d", timeout=600)
+    src._ready()
+    _save_record(src.folder, {k: v for k, v in rec.items() if k not in ("stopped_at", "checkpoint", "before")}
+                 | {"state": rec.get("before") or "copying"})
+    return {"resumed": True, "seconds": round(time.monotonic() - started, 1)}
 
 
 def returning_state() -> dict:

@@ -48,7 +48,8 @@ from starlette.background import BackgroundTask
 from starlette.requests import ClientDisconnect, HTTPConnection, cookie_parser
 
 from . import (backupcheck, backupchoices, checks, deployhooks, destinations, enterprise, instancearchive, private, restoreroom, consumer, disks, gitcredentials, linkcopy, listgroups, ops, packages, plugins, pluginstore, puller, publisher,
-               schedules, selflog, sqldump, sshlinks, shell, stacktemplates, templatestore, tunnel, workspacehelper, workspaceops)
+               schedules, selflog, sqldump, sshlinks, shell, stacktemplates, templatestore, treesync, tunnel, workspacehelper,
+               workspaceops)
 from .accesslog import REQUEST as AUDIT_REQUEST, AccessLog
 from . import audit, siem
 from . import apiguard, apiv1
@@ -17027,7 +17028,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if not machinedb.VERIFIER.fullmatch(verifier):
             return refuse("A replica needs the SCRAM verifier of the password of its role")
         spec = {"address": source, "verifier": verifier, "reached_as": reached, "link": me.name,
-                "by": me.on_behalf or me.name, "cap_gb": cap, "restart": bool(payload.get("restart"))}
+                "by": me.on_behalf or me.name, "cap_gb": cap, "restart": bool(payload.get("restart")),
+                # a copy that arrives in an instance of that machine (AD-010): measured as one that follows from the start
+                **({"arrives": True} if target is not None and payload.get("arrives") else {})}
         if target is not None:
             return {"job": replica_allow_dedicated(major, target, spec, me).id}
 
@@ -17090,9 +17093,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 "grants", "version", "cap_gb", "address", "kind", "major", "workspace", "name")}}
             # no machine, no address, no size: the workspace's users read it
             note = customer_note(inst, ws, f"Copy of the database of {inst.server} on another machine of the provider", [
-                "A copy of the database of this instance is kept on another machine of the provider, read only and "
-                "up to date at each change, over an encrypted connection: it is there to take its place if this "
-                "machine fails",
+                ("A copy of the database of this instance is made on another machine of the provider, read only and "
+                 "up to date at each change, over an encrypted connection: the instance is about to move there"
+                 if spec.get("arrives") else
+                 "A copy of the database of this instance is kept on another machine of the provider, read only and "
+                 "up to date at each change, over an encrypted connection: it is there to take its place if this "
+                 "machine fails"),
                 *([f"The PostgreSQL of this instance was restarted once to open that connection "
                    f"({made.get('restarted_s')} s): Odoo lost its connections for those seconds"]
                   if made.get("restarted_s") is not None else []),
@@ -19407,6 +19413,576 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             task.cancel()
         await asyncio.gather(*replica_tasks, return_exceptions=True)
         replica_tasks.clear()
+
+    # --- the copy engine of the handover and of the move (treesync.py; docs/adr/AD-008-consegna-e-spostamento.md,
+    # AD-010): the routes another machine asks through its link (a tree listed, read in batches, written, a
+    # file from where its part ends), the hidden copy of one tree between two machines (§9 step 1), and the
+    # arrival of a dedicated database on a new instance here (§9 step 2), or its dump where a copy cannot
+    # follow it. No page yet: the handover and the move are built on them (§9 steps 4 and 7)
+
+    def treesync_dir() -> Path:
+        return settings.jobs_dir.parent / "treesync"
+
+    def treesync_peer(me: Principal) -> None:
+        if not (a_machine(me) and machine_admin(me)):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "A tree is copied by another machine, through its link "
+                                                           "with the admin role")
+
+    def treesync_end(spec: dict):
+        """This machine's end of a copy: the tree of spec ({server, role, tree})."""
+        server, role, tree = (str(spec.get(k) or "") for k in ("server", "role", "tree"))
+        try:
+            kind = treesync.tree_kind(tree)
+        except treesync.TreeError as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from None
+        if role not in ("production", "test"):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"{role!r} is not a role")
+        inst = settings.instance(server, role)
+        found = workspace_of(server)
+        if inst is None or found is None or inst.restart.type != "compose":
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"No instance {server}/{role} of a workspace here")
+        if kind == "files":
+            return treesync.LocalFiles(backup_folder(inst), treesync_dir() / "hashes" / f"{server}.{role}.{tree}.json")
+        ws, instance = found
+        return treesync.LocalTree(workspaceops.helper, ws.name, ws.storage, instance, role)
+
+    def treesync_temp(name: str) -> Path:
+        folder = treesync_dir() / "tmp"
+        folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+        return folder / f"{name}-{secrets.token_hex(8)}.ndjson"
+
+    async def file_chunks(path: Path, start: int = 0, delete: bool = False):
+        try:
+            with open(path, "rb") as fh:
+                fh.seek(start)
+                while True:
+                    chunk = await asyncio.to_thread(fh.read, treesync.CHUNK)
+                    if not chunk:
+                        return
+                    yield chunk
+        finally:
+            if delete:
+                path.unlink(missing_ok=True)
+
+    @app.post("/api/treesync/v1/list")
+    async def treesync_list(payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """The manifest of a tree of an instance here, one JSON line per file (treesync.py)."""
+        treesync_peer(me)
+        end = treesync_end(payload if isinstance(payload, dict) else {})
+        into = treesync_temp("list")
+        try:
+            counts = await end.listing(into)
+        except treesync.TreeError as exc:
+            into.unlink(missing_ok=True)
+            return refuse(str(exc), status.HTTP_409_CONFLICT)
+        return StreamingResponse(file_chunks(into, delete=True), media_type="application/x-ndjson",
+                                 headers={"X-Treesync-Files": str(counts["files"]), "X-Treesync-Bytes": str(counts["bytes"])})
+
+    @app.post("/api/treesync/v1/read")
+    async def treesync_read(payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """A batch of the files of a root tree here as a tar, read by root's tree-read."""
+        treesync_peer(me)
+        payload = payload if isinstance(payload, dict) else {}
+        end = treesync_end(payload)
+        paths = payload.get("paths")
+        if not isinstance(paths, list) or not 0 < len(paths) <= treesync.BATCH_FILES or end.kind != "root":
+            return refuse("A batch is a list of the paths of a root tree")
+        try:
+            paths = [treesync.safe_rel(p) for p in paths]
+        except treesync.TreeError as exc:
+            return refuse(str(exc))
+        reading = end.read(paths)
+        stream = await reading.__aenter__()
+
+        async def body():
+            try:
+                async for chunk in stream:
+                    yield chunk
+            finally:
+                await reading.__aexit__(None, None, None)
+        return StreamingResponse(body(), media_type="application/x-tar")
+
+    def treesync_files(server: str, role: str, tree: str) -> treesync.LocalFiles:
+        end = treesync_end({"server": server, "role": role, "tree": tree})
+        if end.kind != "files":
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"{tree} is not a tree of files OmniaCLI reads")
+        return end
+
+    @app.get("/api/treesync/v1/file")
+    async def treesync_file(server: str, role: str, tree: str, path: str,
+                            range_: str = Header("", alias="range"), me: Principal = Depends(current_user)):
+        """A file of a tree OmniaCLI reads here (an instance's backups), from
+        the byte its Range says (bytes=<n>-): a copy that broke goes on."""
+        treesync_peer(me)
+        end = treesync_files(server, role, tree)
+        found = re.fullmatch(r"bytes=(\d+)-", range_.strip()) if range_ else None
+        if range_ and not found:
+            return refuse("Only a range from a byte to the end (bytes=<n>-) is served", status.HTTP_416_RANGE_NOT_SATISFIABLE)
+        try:
+            fh, st = await asyncio.to_thread(treesync.open_file, end.root, path)
+        except treesync.TreeError as exc:
+            return refuse(str(exc), status.HTTP_404_NOT_FOUND)
+        start = int(found.group(1)) if found else 0
+        fh.close()
+        if start > st.st_size:
+            return refuse(f"{path} has {st.st_size} bytes", status.HTTP_416_RANGE_NOT_SATISFIABLE)
+        headers = {"Content-Length": str(st.st_size - start), "Accept-Ranges": "bytes"}
+        if found:
+            headers["Content-Range"] = f"bytes {start}-{max(start, st.st_size - 1)}/{st.st_size}"
+        return StreamingResponse(file_chunks(end.root / path, start), status_code=206 if found else 200,
+                                 media_type="application/octet-stream", headers=headers)
+
+    @app.get("/api/treesync/v1/part")
+    async def treesync_part(server: str, role: str, tree: str, path: str, me: Principal = Depends(current_user)):
+        """How much of a file of a tree here has arrived (its part): where its copy goes on from."""
+        treesync_peer(me)
+        end = treesync_files(server, role, tree)
+        try:
+            return {"size": await end.have(path)}
+        except treesync.TreeError as exc:
+            return refuse(str(exc))
+
+    @app.post("/api/treesync/v1/write")
+    async def treesync_write(request: Request, server: str, role: str, tree: str, me: Principal = Depends(current_user)):
+        """A batch of a root tree here written from the tar of the body, by root's tree-write (the push of a move)."""
+        treesync_peer(me)
+        end = treesync_end({"server": server, "role": role, "tree": tree})
+        if end.kind != "root":
+            return refuse(f"{tree} is not a tree root writes")
+        try:
+            return await end.write(request.stream())
+        except (treesync.TreeError, ClientDisconnect) as exc:
+            return refuse(str(exc) or "the batch did not arrive whole", status.HTTP_409_CONFLICT)
+
+    @app.post("/api/treesync/v1/put")
+    async def treesync_put(request: Request, server: str, role: str, tree: str, path: str, offset: int, size: int,
+                           hash: str, mtime: int = 0, me: Principal = Depends(current_user)):
+        """The bytes of a file of a tree here from offset, appended to its part; whole, it is checked and takes its place."""
+        treesync_peer(me)
+        end = treesync_files(server, role, tree)
+        try:
+            item = treesync.checked_entry({"p": path, "s": size, "h": hash, "m": mtime})
+            return await end.put(item, offset, request.stream())
+        except (treesync.TreeError, ClientDisconnect) as exc:
+            return refuse(str(exc) or "the file did not arrive whole", status.HTTP_409_CONFLICT)
+
+    @app.post("/api/treesync/v1/prune")
+    async def treesync_prune(request: Request, server: str, role: str, tree: str, me: Principal = Depends(current_user)):
+        """The files of a tree here that the body (sorted paths, one a line) does not name, deleted: the last round."""
+        treesync_peer(me)
+        end = treesync_end({"server": server, "role": role, "tree": tree})
+        keep = treesync_temp("keep")
+        try:
+            last = ""
+            with open(os.open(keep, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as fh:
+                tail = b""
+                async for chunk in request.stream():
+                    tail += chunk
+                    *whole, tail = tail.split(b"\n")
+                    for raw in [*whole]:
+                        rel = treesync.safe_rel(raw.decode())
+                        if last and rel <= last:
+                            raise treesync.TreeError("the paths to keep are not in order")
+                        fh.write(treesync.line_of(treesync.entry(rel, 0, "sha256:" + "0" * 64, 0)))
+                        last = rel
+                if tail.strip():
+                    rel = treesync.safe_rel(tail.decode())
+                    fh.write(treesync.line_of(treesync.entry(rel, 0, "sha256:" + "0" * 64, 0)))
+            return await end.prune(keep)
+        except (treesync.TreeError, UnicodeDecodeError) as exc:
+            return refuse(str(exc), status.HTTP_409_CONFLICT)
+        finally:
+            keep.unlink(missing_ok=True)
+
+    def treesync_refused(link: LinkTarget, exc: Exception) -> str:
+        if isinstance(exc, httpx.HTTPError):
+            return f"{link.name}: {describe_error(exc)}"
+        if isinstance(exc, treesync.Refused) and exc.status_code in (401, 403):
+            return f"{link.name} refused: a tree is copied through a link with the admin role there ({exc})"
+        if isinstance(exc, treesync.Refused) and exc.status_code in (404, 405) and "No instance" not in str(exc):
+            return f"{link.name} does not copy trees: its OmniaCLI is older than this one"
+        return f"{link.name}: {exc}" if isinstance(exc, treesync.Refused) else str(exc)
+
+    def treesync_side(value, what: str) -> tuple[str, str]:
+        value = value if isinstance(value, dict) else {}
+        server, role = str(value.get("server") or ""), str(value.get("role") or "production")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,80}", server) or role not in ("production", "test"):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"The {what} is a server and its role")
+        return server, role
+
+    @app.post("/api/treesync/copy")
+    async def treesync_copy(payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """One tree of an instance copied between this machine and the
+        machine of a link (AD-008 §9 step 1, no page): pull, from there to an
+        instance here; push, from an instance here to there. Asked again, the
+        round under way goes on from its next batch, or a new round copies
+        what changed; prune (the last round) deletes what the source no
+        longer has. The machine's admins only."""
+        if not machine_admin(me) or a_machine(me):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "An admin of the machine is required")
+        payload = payload if isinstance(payload, dict) else {}
+        link = settings.link_targets.get(str(payload.get("link") or ""))
+        if link is None:
+            return refuse(f"No link {payload.get('link')!r}", status.HTTP_404_NOT_FOUND)
+        direction, tree = str(payload.get("direction") or "pull"), str(payload.get("tree") or "")
+        if direction not in ("pull", "push"):
+            return refuse("A copy is pull (from the machine of the link) or push (to it)")
+        source, target = treesync_side(payload.get("source"), "source"), treesync_side(payload.get("target"), "target")
+        here_side, there_side = (target, source) if direction == "pull" else (source, target)
+        here = treesync_end({"server": here_side[0], "role": here_side[1], "tree": tree})
+        flows = max(1, min(int(payload.get("flows") or 2), treesync.FLOWS))
+        prune = bool(payload.get("prune"))
+        who, role = me.on_behalf or me.name, me.role
+        there = treesync.RemoteTree(link_clients.client(link), {**link_headers(link, who, role), "Accept": "*/*"},
+                                    there_side[0], there_side[1], tree)
+        key = hashlib.sha256(json.dumps([link.name, direction, tree, source, target]).encode()).hexdigest()[:16]
+        work = treesync_dir() / "copies" / key
+        src, dst = (there, here) if direction == "pull" else (here, there)
+        machine_from, machine_to = (link.name, here_name()) if direction == "pull" else (here_name(), link.name)
+
+        async def action(job):
+            job.log(f"--- the {tree} of {source[0]}/{source[1]} on {machine_from} copied to {target[0]}/{target[1]} on "
+                    f"{machine_to} ({direction}, {flows} at a time"
+                    + (", the last round: what the source no longer has is deleted" if prune else "") + ")")
+            try:
+                done = await treesync.Copy(work).run(src, dst, job.log, prune=prune, flows=flows)
+            except (treesync.TreeError, httpx.HTTPError) as exc:
+                raise JobFailed(treesync_refused(link, exc)) from None
+            job.result = {**job.result, "treesync": {k: done.get(k) for k in (
+                "round", "phase", "batches", "done", "files", "bytes", "copied_files", "copied_bytes", "seconds",
+                "rate_mbs", "extra", "refused", "pruned", "source_files", "source_bytes", "finished_at")}, "work": key}
+            if done.get("refused"):
+                job.warn(f"{len(done['refused'])} files were refused by the receiver: they are named in the log")
+        job = jobs.submit(f"Copy of the {tree} of {source[0]}/{source[1]} ({direction}, {link.name})",
+                          [f"{MACHINE_KEY}/treesync-{key}"], f"manual: {me}", action)
+        return {"job": job.id, "work": key}
+
+    # --- a dedicated database that arrives here from the machine of a link (§9 step 2), and its dump
+    ARRIVE_LAG = 60
+    ARRIVE_SYNC_WAIT = 300
+
+    def arrive_target(payload: dict) -> tuple[Workspace, str, str]:
+        ws = settings.workspaces.get(str(payload.get("workspace") or ""))
+        instance = str(payload.get("instance") or "")
+        if ws is None or not ws.storage or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,39}", instance):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "The instance a database arrives in is a workspace of "
+                                                             "this machine and the name of an instance")
+        return ws, instance, managedreplica.dedicated_key(ws.name, ws.storage, instance)
+
+    async def link_post(job: Job, link: LinkTarget, headers: dict, path: str, body: dict, what: str) -> dict:
+        """A job of the machine of the link started by a POST and followed to its end: its result."""
+        client = link_clients.client(link)
+        try:
+            resp = await client.post(path, headers=headers, json=body)
+        except httpx.HTTPError as exc:
+            raise JobFailed(f"{link.name}: {describe_error(exc)}") from None
+        if resp.status_code != 200:
+            raise JobFailed(replica_refusal(link, resp))
+        remote_id = str((resp.json() or {}).get("job") or "")
+        if not remote_id:
+            raise JobFailed(f"{link.name} started no job for {what}")
+        return (await linkcopy.follow(job, client, link, headers, remote_id, what)).get("result") or {}
+
+    async def made_here(job: Job, ws: Workspace, instance: str, template: str) -> bool:
+        """The instance a database arrives in, made from template and never started, when it is not here yet."""
+        folder = workspaceops.storage_path(ws) / ws.name / instance
+        if await asyncio.to_thread((folder / "production" / "compose.yaml").is_file):
+            return False
+        job.log(f"--- {ws.name}-{instance} made from the template {template}, not started: its database arrives")
+        if not await asyncio.to_thread(os.path.ismount, workspaceops.storage_path(ws) / ws.name):
+            # the disk and the slice of a workspace that has none yet (they are there with its first instance)
+            await workspaceops._helper(job, "disk", ws.name, ws.storage, str(int(ws.limits.get("disk_gb") or 0)))
+            await workspaceops.apply_limits(job, ws)
+        await workspaceops._helper(job, "create", ws.name, ws.storage, instance, template,
+                                   json.dumps({"_roles": ["production"]}))
+        return True
+
+    @app.post("/api/postgres/arrive")
+    async def arrive_database(payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """The dedicated database of a production of the machine of a link
+        arrives in an instance of this machine (AD-008 §9 step 2, no page):
+        follow (the instance made from the same template if it is not here,
+        never started; that machine lets this one in; the copy and the copy
+        that follows it), switch (that instance stopped clean, its last
+        record waited for, the copy takes the writes and is the instance's
+        database, the instance started), cancel; dump, the fallback where a
+        copy cannot follow it (the machine's cluster, another PostgreSQL or
+        architecture, a port that is not reached): that instance stopped, its
+        database dumped there, the dump copied here from where it broke and
+        restored. The machine's admins only."""
+        if not machine_admin(me) or a_machine(me):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "An admin of the machine is required")
+        payload = payload if isinstance(payload, dict) else {}
+        link = settings.link_targets.get(str(payload.get("link") or ""))
+        if link is None:
+            return refuse(f"No link {payload.get('link')!r}", status.HTTP_404_NOT_FOUND)
+        step = str(payload.get("step") or "")
+        if step not in ("follow", "switch", "cancel", "dump"):
+            return refuse("The step of an arrival is follow, switch, cancel or dump")
+        ws, instance, key = arrive_target(payload)
+        source_key = str(payload.get("source") or "")
+        if step != "dump" and not managedreplica.is_dedicated(source_key):
+            return refuse("The source is <workspace>.<storage>.<instance> of a production with a database of its own there")
+        source_server = str(payload.get("server") or "")
+        if step == "dump" and not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,80}", source_server):
+            return refuse("The dump is of a server of that machine")
+        address = ""
+        if step == "follow":
+            try:
+                address = machinedb.address(payload.get("address"))
+            except machinedb.ClusterError as exc:
+                return refuse(f"The address this machine is seen with there is asked: {exc}")
+        who, role = me.on_behalf or me.name, me.role
+        headers = {**link_headers(link, who, role), "Accept": "application/json"}
+        client = link_clients.client(link)
+        name = f"{ws.name}-{instance}"
+        project = workspaceops.storage_path(ws) / ws.name / instance / "production"
+
+        async def facts_there() -> dict:
+            try:
+                resp = await client.get(f"/api/postgres/machine/{source_key}/replica/facts", headers=headers,
+                                        timeout=LIST_TIMEOUT * 4)
+            except httpx.HTTPError as exc:
+                raise JobFailed(f"{link.name}: {describe_error(exc)}") from None
+            if resp.status_code != 200:
+                raise JobFailed(replica_refusal(link, resp))
+            return resp.json()
+
+        async def follow(job):
+            facts = await facts_there()
+            if facts.get("why"):
+                raise JobFailed(f"{link.name}: {facts['why']}")
+            if facts.get("replica"):
+                raise JobFailed(f"The database of {facts.get('name')} on {link.name} has a copy already, on "
+                                f"{(facts['replica'] or {}).get('link')}: one per database. It goes by a dump")
+            here_arch = os.uname().machine
+            if (str(facts.get("major") or "") not in machinedb.IMAGE or str(facts.get("arch") or "") != here_arch):
+                raise JobFailed(f"The database of {facts.get('name')} is PostgreSQL {facts.get('major')} on "
+                                f"{facts.get('arch')}, this machine {', '.join(machinedb.IMAGE)} on {here_arch}: a copy "
+                                "cannot follow it. It goes by a dump")
+            made = await made_here(job, ws, instance, str(payload.get("template") or facts.get("template") or ""))
+            password = stacktemplates.new_password()
+            host = machinedb.reached_as([linkedcluster.host_of(link)])[0]
+            job.log(f"--- the database of {facts.get('name')} of {link.name} ({int(facts.get('size') or 0) >> 20} MB) "
+                    f"arrives in {name}: {link.name} lets {address} in, over TLS")
+            allowed = (await link_post(job, link, headers, f"/api/postgres/machine/{source_key}/replica", {
+                "host": address, "reached_as": host, "verifier": linkedcluster.scram_verifier(password),
+                "restart": True, "arrives": True}, "the copy that arrives")).get("replica") or {}
+            prepared = False
+            try:
+                spec = {"link": link.name, "by": who, "host": host, "port": allowed.get("port"), "ca": allowed.get("ca"),
+                        "password": password, "size": allowed.get("size") or facts.get("size") or 0,
+                        "major": str(allowed.get("major") or facts.get("major") or ""),
+                        "database": str(facts.get("database") or ""), "reserve_gb": payload.get("reserve_gb", 0)}
+                await workspaceops._helper(job, "machine-db-arrive", key, "prepare", timeout=MACHINE_TIMEOUT,
+                                           input=json.dumps(spec).encode())
+                prepared = True
+                copied = await workspaceops._helper(job, "machine-db-arrive", key, "copy",
+                                                    timeout=managedreplica.COPY_TIMEOUT + 60)
+                size = int(copied.get("size") or 0)
+                rate = size / float(copied.get("seconds") or 1) / (1 << 20)
+                job.log(f"Copied: {size >> 20} MB in {copied.get('seconds')} s ({rate:.1f} MB/s), over TLS with the "
+                        f"certificate of {link.name} verified against its CA and its name")
+                up = await workspaceops._helper(job, "machine-db-arrive", key, "start", timeout=MACHINE_TIMEOUT)
+                job.log(f"The copy follows {link.name}, read only (started in {up.get('seconds')} s)")
+            except (JobFailed, asyncio.CancelledError) as exc:
+                if prepared:
+                    with contextlib.suppress(JobFailed):
+                        await asyncio.shield(workspaceops._helper(job, "machine-db-arrive", key, "cancel",
+                                                                  timeout=MACHINE_TIMEOUT))
+                await asyncio.shield(replica_release(job, link.name, source_key, who, role))
+                if made:
+                    with contextlib.suppress(JobFailed):
+                        await asyncio.shield(workspaceops._helper(job, "remove", ws.name, ws.storage, instance))
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
+                raise JobFailed(f"{exc}. If the port of {link.name} is not reached from here, the database goes by a "
+                                "dump") from None
+            end = time.monotonic() + ARRIVE_SYNC_WAIT
+            while True:
+                state = await replica_ask(link, source_key, who, role, LIST_TIMEOUT * 4)
+                if state.get("connected") and state.get("lag") is not None and int(state["lag"]) <= ARRIVE_LAG:
+                    job.log(f"In step: {state.get('lag')} s behind {link.name}, {int(state.get('held') or 0) >> 20} MB "
+                            "held there for it")
+                    break
+                if time.monotonic() > end:
+                    job.warn(f"Not in step yet after {ARRIVE_SYNC_WAIT} s: {state.get('error') or state.get('lag')}")
+                    break
+                await asyncio.sleep(3)
+            job.result = {**job.result, "arrive": {"key": key, "copy_seconds": copied.get("seconds"), "size": size,
+                                                   "rate_mbs": round(rate, 1), "lag": state.get("lag")}}
+
+        async def switch(job):
+            started = time.monotonic()
+            job.log(f"--- the switch of {name}: {link.name} stops its instance clean and says its last record")
+            stopped = (await link_post(job, link, headers, f"/api/postgres/machine/{source_key}/replica/stop",
+                                       {"mode": "stop"}, "the stop of the source")).get("stopped") or {}
+            checkpoint = str(stopped.get("checkpoint") or "")
+            waited = await workspaceops._helper(job, "machine-db-arrive", key, "wait", timeout=MACHINE_TIMEOUT,
+                                                input=json.dumps({"checkpoint": checkpoint}).encode())
+            if not waited.get("arrived"):
+                job.log(f"--- the last record of {link.name} did not arrive within {managedreplica.BACK_WAIT} s: its "
+                        "instance runs again there, and nothing changed")
+                await link_post(job, link, headers, f"/api/postgres/machine/{source_key}/replica/stop",
+                                {"mode": "resume"}, "the start of the source again")
+                raise JobFailed(f"The copy did not apply the last record of {link.name} in time: the instance stays "
+                                "there")
+            job.log(f"Its last record ({checkpoint}) applied here in {waited.get('seconds')} s")
+            done = await workspaceops._helper(job, "machine-db-arrive", key, "promote", timeout=MACHINE_TIMEOUT)
+            down = round(time.monotonic() - started, 1)
+            job.log(f"The copy took the writes in {done.get('promote_s')} s and is the database of {name}, its own "
+                    f"service started in {done.get('own_service_s')} s: {down} s without a database that takes writes")
+            await ops.run(job, workspaceops.compose(str(project), "start"), timeout=workspaceops.HELPER_TIMEOUT)
+            odoo = round(time.monotonic() - started, 1)
+            job.log(f"{name} started: {odoo} s from the stop there. On {link.name} the instance stays stopped")
+            job.result = {**job.result, "switch": {"stop_s": stopped.get("seconds"), "wait_s": waited.get("seconds"),
+                                                   "promote_s": done.get("promote_s"), "own_service_s": done.get("own_service_s"),
+                                                   "without_database_s": down, "until_started_s": odoo,
+                                                   "checkpoint": checkpoint}}
+
+        async def cancel(job):
+            try:
+                await workspaceops._helper(job, "machine-db-arrive", key, "cancel", timeout=MACHINE_TIMEOUT)
+            except JobFailed as exc:
+                job.log(f"Here nothing was cancelled: {exc}")
+            try:
+                await link_post(job, link, headers, f"/api/postgres/machine/{source_key}/replica/stop",
+                                {"mode": "resume"}, "the start of the source again")
+            except JobFailed as exc:
+                job.log(f"{link.name} did not start its instance again: {exc}")
+            await replica_release(job, link.name, source_key, who, role)
+
+        async def dump(job):
+            started = time.monotonic()
+            job.log(f"--- the database of {source_server} on {link.name} arrives in {name} by a dump: there its "
+                    "instance is stopped")
+            made = (await link_post(job, link, headers, "/api/treesync/v1/dump", {"server": source_server, "stop": True},
+                                    "the dump")).get("dump") or {}
+            item = treesync.checked_entry({"p": made.get("file"), "s": made.get("size"), "h": made.get("hash"), "m": 0})
+            dumped = round(time.monotonic() - started, 1)
+            created = await made_here(job, ws, instance, str(payload.get("template") or made.get("template") or ""))
+            there = treesync.RemoteTree(client, {**headers, "Accept": "*/*"}, source_server, "production", "backups")
+            local = treesync.LocalFiles(treesync_dir() / "dumps" / key)
+            moving = time.monotonic()
+            try:
+                while True:
+                    try:
+                        await treesync._copy_file(there, local, item)
+                        break
+                    except (treesync.TreeError, httpx.HTTPError) as exc:
+                        if isinstance(exc, treesync.Refused) or "arrived cut" not in str(exc) and not isinstance(
+                                exc, httpx.TransportError):
+                            raise JobFailed(treesync_refused(link, exc)) from None
+                        job.log(f"The copy of the dump broke ({treesync_refused(link, exc)}): it goes on from "
+                                f"{treesync.part_size(local.root, item['p']) >> 20} MB")
+                moved = round(time.monotonic() - moving, 1)
+                job.log(f"The dump ({item['s'] >> 20} MB) copied in {moved} s "
+                        f"({item['s'] / max(moved, 0.1) / (1 << 20):.1f} MB/s), its SHA-256 checked")
+                with open(local.root / item["p"], "rb") as fh:
+                    restored = await workspaceops._helper(job, "db-restore", ws.name, ws.storage, instance,
+                                                          timeout=6 * 3600, input=fh.read())
+            except BaseException:
+                if created:
+                    with contextlib.suppress(JobFailed):
+                        await asyncio.shield(workspaceops._helper(job, "remove", ws.name, ws.storage, instance))
+                raise
+            finally:
+                (local.root / item["p"]).unlink(missing_ok=True)
+            if restored.get("counts") != made.get("counts"):
+                raise JobFailed(f"The copy does not hold what the database holds (installed modules|users|partners: "
+                                f"{made.get('counts')} there, {restored.get('counts')} here)")
+            await ops.run(job, workspaceops.compose(str(project), "start"), timeout=workspaceops.HELPER_TIMEOUT)
+            down = round(time.monotonic() - started, 1)
+            job.log(f"Restored in {restored.get('seconds')} s ({restored.get('counts')} installed modules|users|partners, "
+                    f"as there) and {name} started: {down} s from the stop there")
+            job.result = {**job.result, "dump": {"dump_s": dumped, "dump_there_s": made.get("seconds"), "copy_s": moved,
+                                                 "size": item["s"], "restore_s": restored.get("seconds"),
+                                                 "until_started_s": down, "counts": restored.get("counts")}}
+
+        action = {"follow": follow, "switch": switch, "cancel": cancel, "dump": dump}[step]
+        job = jobs.submit(f"Database of {source_key or source_server} of {link.name} into {name} ({step})",
+                          [f"{MACHINE_KEY}/arrive-{key}"], f"manual: {me}", action)
+        return {"job": job.id, "key": key}
+
+    @app.post("/api/postgres/machine/{major}/replica/stop")
+    async def replica_stop_source(major: str, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """The machine where its copy arrives (AD-010) stops the instance whose
+        database it follows, clean, and reads its last record (mode stop); or
+        starts it again (resume: the switch did not complete). A job of the
+        instance, asked by that machine through its link."""
+        postgres_admin(me)
+        rec = replica_of_link(major, me)
+        if isinstance(rec, JSONResponse):
+            return rec
+        target = dedicated_instance(major)
+        mode = str((payload or {}).get("mode") or "") if isinstance(payload, dict) else ""
+        if target is None or mode not in ("stop", "resume"):
+            return refuse("The source of a copy that arrives is stopped (stop) or started again (resume)")
+        _ws, _instance, inst = target
+
+        async def action(job):
+            done = await workspaceops._helper(job, "machine-db-replica-stop", major, mode, timeout=MACHINE_TIMEOUT)
+            if mode == "stop":
+                job.log(f"{inst.server} stopped clean in {done.get('seconds')} s, its last record at "
+                        f"{done.get('checkpoint')}: it stays stopped")
+            else:
+                job.log(f"{inst.server} runs again ({done.get('seconds')} s)" if done.get("resumed") else
+                        f"{inst.server} was not stopped for a switch: nothing to start again")
+            job.result = {**job.result, "stopped": done}
+        job = jobs.submit(f"{'Stop' if mode == 'stop' else 'Start again'} {inst.server} for its copy on {me.name}",
+                          [inst.key], f"manual: {me}", action)
+        return {"job": job.id}
+
+    @app.post("/api/treesync/v1/dump")
+    async def treesync_dump(payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """The database of a production here as a dump (pg_dump -Fc) in its
+        backups' folder, for the machine of a link that copies it (AD-010:
+        the machine's cluster, another PostgreSQL or architecture, a port not
+        reached); stop: its Odoo stopped first, and it stays stopped."""
+        treesync_peer(me)
+        payload = payload if isinstance(payload, dict) else {}
+        server = str(payload.get("server") or "")
+        inst = settings.instance(server, "production")
+        found = workspace_of(server)
+        if inst is None or found is None or inst.restart.type != "compose" or on_remote_db(inst):
+            return refuse(f"No production {server} of a workspace here with its database on this machine",
+                          status.HTTP_404_NOT_FOUND)
+        ws, instance = found
+        folder = private.backup_folder(backup_folder(inst))
+        name = f"arrive-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}.dump"
+
+        async def action(job):
+            started = time.monotonic()
+            if payload.get("stop"):
+                job.log(f"--- {server} stopped: its database is dumped for {me.name}")
+                await ops.run(job, workspaceops.compose(inst.restart.service, "stop"),
+                              timeout=workspaceops.HELPER_TIMEOUT)
+            stopped = round(time.monotonic() - started, 1)
+            path = folder / name
+            digest = hashlib.sha256()
+            proc = await treesync.Process(workspaceops.helper("db-dump", ws.name, ws.storage, instance)).start(stdin=False)
+            try:
+                with private.new_file(path) as fh:
+                    async for chunk in proc.output():
+                        digest.update(chunk)
+                        await asyncio.to_thread(fh.write, chunk)
+            except BaseException:
+                await proc.kill()
+                path.unlink(missing_ok=True)
+                raise
+            why = await proc.finish()
+            if why:
+                path.unlink(missing_ok=True)
+                raise JobFailed(f"the dump of {server} failed: {why}")
+            counts = await workspaceops._helper(job, "db-counts", ws.name, ws.storage, instance)
+            size = path.stat().st_size
+            seconds = round(time.monotonic() - started - stopped, 1)
+            job.log(f"The database of {server} dumped: {size >> 20} MB in {seconds} s, in its backups' folder as {name}")
+            job.result = {**job.result, "dump": {"file": name, "size": size, "hash": "sha256:" + digest.hexdigest(),
+                                                 "counts": counts.get("counts"), "seconds": seconds, "stop_s": stopped,
+                                                 "template": str(instance_meta(inst).get("template") or "")}}
+        job = jobs.submit(f"Dump of {server} for {me.name}", [inst.key], f"manual: {me}", action)
+        return {"job": job.id}
 
     def linked_refusal(link: LinkTarget, resp: httpx.Response, major: str) -> str:
         """Why the linked machine did not take a request about its cluster."""

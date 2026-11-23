@@ -3234,6 +3234,80 @@ promoted as the cluster's, by the same code; what differs:
   customer reads nothing during the return, and one job of its instance at
   its end, which names no machine.
 
+### Copying an instance's trees and its database to another machine
+
+The two engines the handover of a workspace to a customer and the move of an
+instance between machines stand on (`docs/adr/AD-008-consegna-e-spostamento.md`,
+AD-010, steps 1 and 2 of its §9). **No page yet**: the handover and the move
+are built on them. What there is now, for the machine's admins only, through
+a link with the admin role on the other side:
+
+- **`treesync`** (`omniacli/treesync.py`): a tree of an instance copied in
+  rounds. `POST /api/treesync/copy` with `{link, direction: pull|push, tree:
+  filestore|backups, source: {server, role}, target: {server, role}, flows,
+  prune}` starts a job; asked again, the round under way goes on from its next
+  batch, or a new round copies only what changed. The trees:
+  - **filestore**, Odoo's filestore of the role's database
+    (`<project>/data/filestore/filestore/<database>`), which only root reads:
+    listed, read and written by the root helper (`workspace-helper tree-list |
+    tree-read | tree-write | tree-prune <workspace> <storage> <instance>
+    <role>`) in tar batches of 256 MiB at most. Every folder is opened without
+    following a link; a name that is not a path under the tree, a link or a
+    special file, and a file whose content is not its name (the SHA-1 of the
+    filestore) are refused and said in the job; the files take the owner of
+    the receiver's own filestore; `tree-write` and `tree-prune` refuse while
+    that role's Odoo runs. A batch cut halfway leaves no half file.
+  - **backups**, the instance's backups (`<backup_dir>/<server>/<role>`), which
+    OmniaCLI reads itself: one file at a time, from where the receiver's
+    `.omniacli-part` ends (an HTTP `Range`), its SHA-256 checked when whole
+    (the source's hashes kept in `hashes.json`: a backup is hashed once), 600
+    in folders 700 as every backup.
+
+  The receiver's listing is compared with the source's in order (never a
+  whole manifest in memory); what the receiver has more stays until the
+  round asked with `prune`. The state of each copy (its round, its plan, the
+  batches done) is in `/var/lib/omniacli/treesync/copies/<key>/`, written
+  after every batch: a job stopped or killed goes on from there.
+- **A dedicated database that arrives** (`ArrivePlace` in
+  `omniacli/managedreplica.py`, the return of a dedicated database without its
+  premise): `POST /api/postgres/arrive` with `{link, step, source:
+  <workspace>.<storage>.<instance> there, workspace, instance, address}`.
+  - `follow`: the instance here is made from the source's template when it is
+    not here yet, never started; the other machine lets this one in with the
+    allow of a read replica of today (one address, over TLS, a slot and its
+    cap, the firewall); `pg_basebackup` verified against its CA and name into
+    the new instance's data folder, followed read only by a project of its own
+    in its `.replica/arrive` (no port, its network goes out to that port only;
+    `/etc/omniacli/db-arrivals.json` keeps it for the firewall of the boot);
+    the job ends once it is 60 s behind at most. A database of another major
+    or architecture is refused at once: it goes by a dump.
+  - `switch`: the instance there stopped clean (`workspace-helper
+    machine-db-replica-stop <key> stop`, its last record said); here that
+    record waited for, 60 s at most, else the instance there runs again
+    (`… resume`) and nothing changed; then the copy takes the writes, gets the
+    new instance's own database name and the password of its role (a SCRAM
+    verifier, never the password, in SQL), the project that followed is taken
+    away and the instance's own `db` service starts, then its Odoo. The
+    instance there stays stopped.
+  - `cancel`: the copy deleted here, the instance there started again, what it
+    kept for the copy dropped.
+  - `dump`, for the machine's cluster, another PostgreSQL or architecture, or
+    a port not reached: the instance there stopped, `pg_dump -Fc` into its
+    backups' folder (`workspace-helper db-dump`, on its output), the dump
+    copied here from where it broke, `workspace-helper db-restore` into the new
+    instance (its own database service, or the machine's cluster with
+    `pg_restore -j`), installed modules, users and partners compared.
+
+Measured on the lab pair (lab3 → lab4, 23/11/2026, a link through SSH): a
+filestore of 334 MB in 2 batches at 115-150 MB/s, stopped after its first
+batch and finished by a second job with the rest only (81 MB); a delta of
+48 MB in 0.5 s; a backup of 377 MB stopped at 137 MB and finished from
+there; a dedicated database of 378 MB copied in 2.1 s and in step at 0 s,
+the switch 5.1 s without a database that takes writes and 10.5 s until its
+Odoo started, the row written 0.3 s before the stop there; a database of
+340 MB on the cluster by its dump (143 MB) in 18.6 s from the stop to its
+Odoo started.
+
 ### Modules from the catalogs
 
 The **Modules** tab of an instance of a workspace (developers and admins)
