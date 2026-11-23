@@ -14,8 +14,7 @@
 .ssh-table td.mono { overflow-wrap: anywhere; }
 .ssh-others { margin-top: 12px; }
 .ssh-others details { margin: 6px 0; }
-.ssh-others ul { margin: 6px 0 0; padding-left: 20px; }
-.ssh-others li { overflow-wrap: anywhere; }
+.ssh-others table { margin-top: 6px; }
 #ssh-dialog { width: min(640px, calc(100vw - 32px)); }
 #ssh-dialog textarea { width: 100%; min-height: 6em; }
 #ssh-dialog label { display: block; margin: 10px 0 4px; font-weight: 600; }
@@ -75,6 +74,10 @@
     noOthers: {{ _("{account}: no other key") | tojson }},
     options: {{ _("with options") | tojson }},
     noComment: {{ _("no comment") | tojson }},
+    colType: {{ _("Type") | tojson }},
+    colFingerprint: {{ _("Fingerprint") | tojson }},
+    colComment: {{ _("Comment") | tojson }},
+    colOptions: {{ _("Options") | tojson }},
     rootKey: {{ _("The SSH server lets root log in with a key.") | tojson }},
     rootNo: {{ _("The SSH server does not let root log in (PermitRootLogin no): a key added to root opens nothing until it does.") | tojson }},
     rootCommands: {{ _("The SSH server lets root run forced commands only (PermitRootLogin forced-commands-only): a key added to root does not open a shell.") | tojson }},
@@ -149,14 +152,35 @@
       const summary = document.createElement("summary");
       summary.textContent = fill(n === 1 ? T.otherOne : T.others, {account: account.account, n});
       summary.title = T.othersTitle;
-      const list = document.createElement("ul");
-      for (const other of account.others) {
-        const li = document.createElement("li");
-        li.className = "mono small";
-        li.textContent = [other.type, other.fingerprint, other.comment || T.noComment, other.options ? T.options : ""].filter(Boolean).join(" · ");
-        list.append(li);
+      // a table as the keys above (Carlo, 23/11/2026: «le chiavi sotto mettile in tabella»)
+      const wrap = document.createElement("div");
+      wrap.style.overflowX = "auto";
+      const table = document.createElement("table");
+      table.className = "ssh-table";
+      const head = document.createElement("tr");
+      for (const [text, narrow] of [[T.colType, true], [T.colFingerprint, false], [T.colComment, false], [T.colOptions, true]]) {
+        const th = document.createElement("th");
+        th.textContent = text;
+        if (narrow) th.className = "hide-sm";
+        head.append(th);
       }
-      details.append(summary, list);
+      const thead = document.createElement("thead"), tbody = document.createElement("tbody");
+      thead.append(head);
+      for (const other of account.others) {
+        const tr = document.createElement("tr");
+        for (const [text, cls] of [[other.type, "mono small hide-sm"], [other.fingerprint, "mono small"],
+                                   [other.comment || T.noComment, other.comment ? "mono small" : "muted small"],
+                                   [other.options ? T.options : "", "small hide-sm"]]) {
+          const td = document.createElement("td");
+          td.className = cls;
+          td.textContent = text;
+          tr.append(td);
+        }
+        tbody.append(tr);
+      }
+      table.append(thead, tbody);
+      wrap.append(table);
+      details.append(summary, wrap);
       others.append(details);
     }
     const sshd = $("ssh-sshd");

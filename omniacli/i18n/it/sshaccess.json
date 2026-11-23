@@ -6,6 +6,7 @@
  "Added": "Aggiunta",
  "Added by": "Aggiunta da",
  "An RSA key of {bits} bits is too short: at least {min} (or ssh-keygen -t ed25519)": "Una chiave RSA di {bits} bit è troppo corta: almeno {min} (o ssh-keygen -t ed25519)",
+ "Comment": "Commento",
  "Fingerprint": "Impronta",
  "Give the key a name: whose it is, or which computer": "Dai un nome alla chiave: di chi è, o di quale computer",
  "It opens the account": "Apre l'account",
