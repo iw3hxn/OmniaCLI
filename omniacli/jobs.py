@@ -148,6 +148,9 @@ class JobManager:
         # awaited when a job starts (its locks held) and when it ends, before
         # its locks are released: begin(job), end(job) (deploys.Recorder)
         self.watchers: list = []
+        # why nothing may act on an instance (its key) now, "" when it may: an instance moved to another
+        # machine keeps its stopped copy here (placement.py), where only the move's own jobs run
+        self.frozen: Callable[[str], str] = lambda key: ""
         self._load()
 
     def _load(self) -> None:
@@ -199,7 +202,9 @@ class JobManager:
         source: str,
         action: Callable[[Job], Awaitable[None]],
         workspace: str = "",
+        frozen_ok: bool = False,
     ) -> Job:
+        """frozen_ok: a job of a move, which acts on an instance frozen for it (frozen)."""
         job = Job(
             id=datetime.datetime.now().strftime("%Y%m%d-%H%M%S-")
             + uuid.uuid4().hex[:6],
@@ -208,6 +213,8 @@ class JobManager:
             source=source,
             workspace=workspace,
         )
+        if frozen_ok:
+            job.notes["frozen_ok"] = True
         self.jobs[job.id] = job
         while len(self.jobs) > self.keep:
             old_id, _ = self.jobs.popitem(last=False)
@@ -271,6 +278,10 @@ class JobManager:
                 held.append(lock)
             job.status, job.started = RUNNING, (job.started if resumed and job.started else _now())
             self._save(job)
+            frozen = "" if job.notes.get("frozen_ok") else next(
+                (why for why in (self.frozen(key) for key in job.instances) if why), "")
+            if frozen:
+                raise JobFailed(frozen)
             await self._watch("begin", job)
             await action(job)
             final = SUCCESS

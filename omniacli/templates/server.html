@@ -168,7 +168,8 @@ dialog.sd { --dialog-w: 560px; }
       {% set database = inst.plugin.describe(inst).database %}{% if database %}<span>{{ _("database {name}", name=database) }}</span>{% endif %}
     </div>
     {# its own name is not in DNS for this machine: said where the name is read, with the record that makes it work #}
-    {% set np = (name_problems or {}).get(inst.key) %}
+    {% set frozen = move and move.state and move.state.state in ("completing", "placed") %}
+    {% set np = (name_problems or {}).get(inst.key) if not frozen else none %}
     {% if np %}
     <p class="error name-problem" role="alert" title="{{ _('Read from the DNS now. When the record is there, publish the names again (Settings, Addresses): OmniaCLI asks for the certificate and opens the instance at that name.') }}">
       {% if np.dns == "none" %}{{ _("{name} is not recognized: it has no DNS record.", name=np.name) }}{% elif np.dns == "here" %}{{ _("{name} has no certificate yet: it does not open over HTTPS.", name=np.name) }}{% else %}{{ _("{name} is not recognized: its DNS record leads to another machine.", name=np.name) }}{% endif %}
@@ -178,7 +179,7 @@ dialog.sd { --dialog-w: 560px; }
     {% endif %}
   </div>
 
-  {% if can_restart %}
+  {% if can_restart and not frozen %}
   <div class="head-actions">
     {# the head is neutral (UX-006 rule 1 as of 21/11): the primary of the page is the creating action of the tab in view #}
     {# seen through a link, an address on the machine's own localhost is not this browser's: Odoo is opened through a tunnel of the OmniaCLI in front #}
@@ -279,6 +280,11 @@ dialog.sd { --dialog-w: 560px; }
         {% endif %}
         {% for b in buttons[inst.key].backup %}{{ action_button(b, off) }}{% endfor %}
         {% endif %}
+        {% if move and move.can %}
+        <div class="more-title">{{ _("Machine") }}</div>
+        <button type="button" id="move-open" {{ off }}
+                title="{{ _('Copies this production on another machine while it runs, then passes it there when you complete. Its stagings stay where they are. Admins of the machine only.') }}">{{ icon("server") }}{{ _("Move to another machine…") }}</button>
+        {% endif %}
         {% if shells %}
         <div class="more-title">{{ _("Consoles") }}</div>
         {% if own_user_shells %}
@@ -319,7 +325,7 @@ dialog.sd { --dialog-w: 560px; }
       </div>
     </details>
   </div>
-  {% elif login_as[inst.key] %}
+  {% elif login_as[inst.key] and not frozen %}
   <div class="head-actions">{% if login_as[inst.key].disabled %}{{ refused("login_as", _("Log in as…")) }}{% else %}<button type="button" data-login-as='{{ login_as[inst.key] | tojson }}' title="{{ _('Opens Odoo in a new tab as one of its users, without their password.') }}">{{ _("Log in as…") }}</button>{% endif %}</div>
   {% endif %}
 </div>
@@ -327,6 +333,8 @@ dialog.sd { --dialog-w: 560px; }
 {% if is_busy %}{% set running_job = busy_job[inst.key] %}
 <div class="job-band" role="status">{{ _("Job running:") }} {% if running_job %}<a href="{{ prefix }}/jobs/{{ running_job.id }}">{{ tr(running_job.title) }}</a>{% endif %} — {{ _("the buttons come back when it ends.") }}</div>
 {% endif %}
+{# the move of this instance to another machine (UX-014 part B): its banner and its dialog, the machine's admins only #}
+{% if move %}{% include "_move.html" %}{% endif %}
 {# a push of the branch a production follows (listed, not deployed: README Deploys) is the card «Available, not
    deployed» of the production's row of «Environments and deploys» (UX-015 §9), and Modules › Deploys #}
 <p id="page-error" class="error" role="alert"></p>

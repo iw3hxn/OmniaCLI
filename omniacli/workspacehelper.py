@@ -324,6 +324,9 @@ owncert: the customer's certificate and key, {certificate, key} as JSON on
 the standard input (a key is no argument: ps shows those), checked with
 openssl (the key is the certificate's, not expired), kept in
 /etc/omniacli/certs/<workspace>/, root's only.
+owncert-read <workspace> <storage>: that certificate and its key as JSON
+{certificate, key} on the output, for OmniaCLI to pass them to the machine an
+instance of the workspace moves to (AD-015): never an argument, never a log.
 """
 
 from __future__ import annotations
@@ -2897,6 +2900,19 @@ def _openssl(*args: str) -> str:
     return done.stdout
 
 
+def owncert_read(name: str, storage: str) -> dict:
+    """owncert-read: the customer's certificate and key of the workspace, for
+    the machine an instance of it moves to (AD-015); printed to OmniaCLI only."""
+    workspace(name, storage)
+    folder = OWN_CERTS / name
+    try:
+        chain = (folder / "fullchain.pem").read_text(encoding="utf-8")
+        key = (folder / "privkey.pem").read_text(encoding="utf-8")
+    except OSError:
+        raise HelperError(f"workspace {name} has no certificate of its own here") from None
+    return {"certificate": chain, "key": key}
+
+
 def owncert(name: str, storage: str, given: str | None = None) -> dict:
     workspace(name, storage)
     text = sys.stdin.read(MAX_PEM + 1) if given is None else given
@@ -5172,6 +5188,26 @@ def relay_tunnel(name: str, mode: str) -> dict:
 FILESTORE_DB = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,62}")
 
 
+# the addons of a role (its repositories at their commits, .git included, and the modules uploaded as a .zip):
+# the role's argument of tree-* is <role>+addons (the move of an instance, AD-015)
+ADDONS_TREE = "+addons"
+
+
+def _copy_tree(name: str, storage: str, instance: str, role: str) -> tuple[Path, Path, list[str], tuple[int, int]]:
+    """As _filestore, for the tree role names: <role> its filestore,
+    <role>+addons its addons folder (OmniaCLI's user's, as git writes it)."""
+    if not role.endswith(ADDONS_TREE):
+        return _filestore(name, storage, instance, role)
+    project = _project(name, storage, instance, role[:-len(ADDONS_TREE)])
+    try:
+        found = os.stat(project / "addons", follow_symlinks=False)
+    except OSError:
+        raise HelperError(f"{instance}/{role[:-len(ADDONS_TREE)]} has no addons folder") from None
+    if not stat.S_ISDIR(found.st_mode):
+        raise HelperError(f"the addons folder of {instance} is not a folder")
+    return project, project, ["addons"], (found.st_uid, found.st_gid)
+
+
 def _filestore(name: str, storage: str, instance: str, role: str) -> tuple[Path, Path, list[str], tuple[int, int]]:
     """(project, its data folder, the parts of Odoo's filestore of its
     database below it, the owner of the filestore): data is root's, what is
@@ -5201,9 +5237,9 @@ def _odoo_runs(project: Path) -> bool:
 
 def tree_list(name: str, storage: str, instance: str, role: str) -> None:
     """tree-list <workspace> <storage> <instance> <role>: the manifest of the
-    filestore of the role's database on the output, one JSON line per file
+    filestore of the role's database (<role>+addons: of its addons) on the output, one JSON line per file
     (treesync.list_tree); none when it has no filestore yet."""
-    _project_, data, parts, _owner = _filestore(name, storage, instance, role)
+    _project_, data, parts, _owner = _copy_tree(name, storage, instance, role)
     try:
         fd = treesync.open_tree(data, parts)
     except treesync.TreeError:
@@ -5220,7 +5256,7 @@ def tree_read(name: str, storage: str, instance: str, role: str) -> None:
     """tree-read <workspace> <storage> <instance> <role>: the files of the
     filestore its input names (a path a line) as a tar on the output: regular
     files under the filestore only, never through a link."""
-    _project_, data, parts, _owner = _filestore(name, storage, instance, role)
+    _project_, data, parts, _owner = _copy_tree(name, storage, instance, role)
     fd = treesync.open_tree(data, parts)
     try:
         treesync.read_tree(fd, (line.rstrip("\n") for line in sys.stdin if line.strip()), sys.stdout.buffer)
@@ -5235,7 +5271,7 @@ def tree_write(name: str, storage: str, instance: str, role: str) -> dict:
     written into the filestore of the role's database, every name checked,
     every file of the filestore checked against its name (its SHA-1), given
     to the filestore's owner; refused while the role's Odoo runs."""
-    project, data, parts, (uid, gid) = _filestore(name, storage, instance, role)
+    project, data, parts, (uid, gid) = _copy_tree(name, storage, instance, role)
     if _odoo_runs(project):
         raise HelperError(f"the Odoo of {instance}/{role} runs: its filestore is written only while it is stopped")
     fd = treesync.open_tree(data, parts, create=True, uid=uid, gid=gid)
@@ -5249,7 +5285,7 @@ def tree_prune(name: str, storage: str, instance: str, role: str) -> dict:
     """tree-prune <workspace> <storage> <instance> <role>: the files of the
     filestore its input does not name (sorted paths, a line each) deleted;
     refused while the role's Odoo runs. The last round of a copy only."""
-    project, data, parts, _owner = _filestore(name, storage, instance, role)
+    project, data, parts, _owner = _copy_tree(name, storage, instance, role)
     if _odoo_runs(project):
         raise HelperError(f"the Odoo of {instance}/{role} runs: its filestore is written only while it is stopped")
     try:
@@ -5432,7 +5468,7 @@ ACTIONS = {"disk": (disk, 3), "drop": (drop, 2), "limits": (limits, 3), "create"
            "tree-prune": (tree_prune, 4), "machine-db-arrive": (machine_db_arrive, 2),
            "machine-db-replica-stop": (machine_db_replica_stop, 2), "db-dump": (db_dump, 3), "db-restore": (db_restore, 3),
            "db-counts": (db_counts, 3),
-           "web": (web, 3), "web-names": (web_taken, 1), "upstream": (upstream, 6), "maintenance": (maintenance, 5), "forward": (forward, 3), "owncert": (owncert, 2), "firewall": (firewall, 1), "template-install": (template_install, 1),
+           "web": (web, 3), "web-names": (web_taken, 1), "upstream": (upstream, 6), "maintenance": (maintenance, 5), "forward": (forward, 3), "owncert": (owncert, 2), "owncert-read": (owncert_read, 2), "firewall": (firewall, 1), "template-install": (template_install, 1),
            "conf": (conf, 5), "space": (space, 0),
            "storage-setup": (storage_setup, 0), "storage-check": (storage_check, 1), "storage-reset": (storage_reset, 1),
            "pitr-enable": (pitr_enable, 4), "pitr-base": (pitr_base, 4), "pitr-state": (pitr_state, 4),

@@ -1,0 +1,242 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{# The move of an instance to another machine (UX-014 part B, AD-015; step 4 of §9 of AD-008): the banner of a move
+   under way or done, with the action of its state, and the dialog «Move to another machine…» with the machines and
+   the plan. For the admins of the machine only (server_page's move). #}
+{% from "_icons.html" import icon, dialog_x with context %}
+<style>
+.move-band { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0 0 16px; padding: 10px 12px;
+  border-radius: var(--r); border: 1px solid var(--border); background: var(--info-soft); color: var(--text); }
+.move-band.failed { background: var(--err-soft, var(--warn-soft)); }
+.move-band .move-text { flex: 1 1 320px; min-width: 0; overflow-wrap: anywhere; }
+.move-band .move-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+#move-dialog { --dialog-w: 680px; }
+#move-dialog fieldset { border: 1px solid var(--border); border-radius: var(--r); margin: 8px 0; padding: 6px 10px; min-width: 0; }
+#move-dialog legend { font-weight: var(--fw-semibold); padding: 0 4px; }
+.mv-target { display: flex; gap: 8px; align-items: flex-start; padding: 6px 0; border-top: 1px solid var(--border); cursor: pointer; }
+.mv-target:first-child { border-top: none; }
+.mv-target input { margin-top: 4px; flex: none; }
+.mv-target .mv-sub { display: block; font-weight: var(--fw-regular); color: var(--muted); font-size: var(--fs-14); line-height: var(--lh-20); margin-top: 2px; overflow-wrap: anywhere; }
+.mv-target.off { color: var(--muted); cursor: default; }
+.mv-target .mv-why { display: block; color: var(--err); font-size: var(--fs-14); line-height: var(--lh-20); margin-top: 2px; overflow-wrap: anywhere; }
+.mv-steps { margin: 4px 0 0; padding-left: 20px; } .mv-steps li { margin-bottom: 4px; overflow-wrap: anywhere; }
+.mv-plan-title { margin: 10px 0 2px; font-weight: var(--fw-semibold); }
+@media (max-width: 767.98px) { .move-band .move-actions { width: 100%; } .move-band .move-actions button, #move-dialog .actions button { min-height: 44px; } }
+</style>
+{% if move.state %}{% set ms = move.state %}
+<div class="move-band{{ ' failed' if ms.state == 'failed' }}" role="status" id="move-band" data-state="{{ ms.state }}">
+  <span class="move-text">
+  {% if ms.state == "preparing" %}{{ icon("hourglass") }} {{ _("Moving to {machine}: the copy is under way, here everything runs.", machine=ms.link) }}
+  {% elif ms.state == "ready" %}{{ icon("server") }} {{ _("Ready on {machine} since {when}: the database there is {lag} s behind.", machine=ms.link, when=ms.ready_at | moment, lag=ms.lag if ms.lag is not none else "—") if ms.kind == "dedicated" else _("Ready on {machine} since {when}: the database goes there at the completion.", machine=ms.link, when=ms.ready_at | moment) }}
+  {% elif ms.state == "completing" %}{{ icon("hourglass") }} {{ _("The move to {machine} is completing: the instance is stopped here.", machine=ms.link) }}
+  {% elif ms.state == "placed" %}{{ icon("server") }} {{ _("On {machine} since {when}: the stopped copy stays here until {until}.", machine=ms.link, when=ms.placed_at | moment, until=ms.copy_until | moment) }}{% if ms.unserved %} {{ _("Without service for {n} s at the move.", n=ms.unserved.seconds) }}{% endif %}
+  {% else %}{{ icon("triangle-alert") }} {{ _("The move to {machine} was not prepared: {why}", machine=ms.link, why=tr(ms.error or "")) }}{% endif %}
+  {% if ms.job and ms.state in ("preparing", "completing") %}<a href="{{ prefix }}/jobs/{{ ms.job }}" title="{{ _('Opens the job of the move, with its steps') }}">{{ _("See the job") }}</a>{% endif %}
+  </span>
+  <span class="move-actions">
+  {% if ms.state == "ready" %}
+    <button type="button" class="primary" id="move-complete" data-machine="{{ ms.link }}" {% if move.busy %}disabled{% endif %}
+            title="{{ _('Stops the instance here with the maintenance page, starts it on the new machine and passes its names there. A stop of about {n} seconds. It asks the name of the instance.', n=move.stop_seconds) }}">{{ _("Complete the move…") }}</button>
+  {% endif %}
+  {% if ms.state in ("ready", "failed") %}
+    <button type="button" class="small danger" id="move-cancel" data-machine="{{ ms.link }}" {% if move.busy %}disabled{% endif %}
+            title="{{ _('Deletes the copy on the chosen machine. The instance stays here as it is.') }}">{{ _("Cancel the move…") }}</button>
+  {% endif %}
+  {% if ms.state == "placed" %}
+    <button type="button" class="small danger" id="move-delete-copy" data-machine="{{ ms.link }}" {% if move.busy %}disabled{% endif %}
+            title="{{ _('Deletes at once the stopped copy here and its backups here, instead of on {until}. The instance on the other machine does not change. It cannot be undone.', until=ms.copy_until | moment) }}">{{ _("Delete the copy…") }}</button>
+  {% endif %}
+  </span>
+</div>
+{% endif %}
+{% if move.can %}
+<dialog id="move-dialog" aria-labelledby="mv-title">
+  <form method="dialog" id="mv-form">
+    <h2 id="mv-title" style="margin-bottom: 4px">{{ _("Move {name} to another machine", name=server.name) }}</h2>
+    <p class="muted" id="mv-why"></p>
+    <p class="muted" id="mv-reading">{{ _("Reading the machines…") }}</p>
+    <p class="error" id="mv-refused" hidden></p>
+    <fieldset id="mv-targets" hidden>
+      <legend>{{ _("On which machine") }}</legend>
+      <div id="mv-list"></div>
+    </fieldset>
+    <p id="mv-none" hidden></p>
+    <div id="mv-plan" hidden>
+      <p class="mv-plan-title">{{ _("The plan") }}</p>
+      <ul class="mv-steps" id="mv-steps"></ul>
+    </div>
+    <p class="error" id="mv-error" role="alert"></p>
+    <div class="actions">
+      <span id="mv-go-box"><button type="button" class="primary" id="mv-go" disabled
+              title="{{ _('Copies the instance on the chosen machine and keeps it in step. Here nothing stops. It is a job.') }}">{{ _("Prepare the move") }}</button></span>
+      <button type="button" id="mv-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
+    </div>
+  </form>
+{{ dialog_x() }}
+</dialog>
+{% endif %}
+<script>
+(() => {
+  const PREFIX = {{ prefix | tojson }}, SERVER = {{ server.name | tojson }}, HERE = {{ (move.here or "") | tojson }};
+  const API = `${PREFIX}/api/servers/${encodeURIComponent(SERVER)}/move`;
+  const T = {
+    why: {{ _("{here} in the last {days} days: CPU {cpu} % and memory {ram} % at the 95th percentile. {name} uses now {cores} cores and {memory}.") | tojson }},
+    whyNoNow: {{ _("{here} in the last {days} days: CPU {cpu} % and memory {ram} % at the 95th percentile.") | tojson }},
+    row: {{ _("{machine} — CPU {cpu} % · memory {ram} % (95th percentile, 14 days) · {free} free") | tojson }},
+    sub: {{ _("Template {template}{ok} · PostgreSQL {major} · round trip {ms} ms · reached through {via}") | tojson }},
+    rowTitle: {{ _("Moves the instance to {machine}: its load and room as it says them") | tojson }},
+    none: {{ _("This machine has no link to another machine: add one in Settings › Links, with the admin role there.") | tojson }},
+    copy: {{ _("{total} are copied (database {db} · files {files} · code {code} · backups {backups}): about {time} at {rate} MB/s{guess}. Here everything runs.") | tojson }},
+    guess: {{ _(", an estimate") | tojson }},
+    stopDedicated: {{ _("At the completion: a stop of about {time} (a database of its own: its copy there follows it, its last changes and the start of Odoo).") | tojson }},
+    stopCluster: {{ _("At the completion: a stop of about {time} (a database on the machine's cluster: dumped, copied and restored, {db}).") | tojson }},
+    restart: {{ _("The PostgreSQL of {name} may restart once to open its port to {machine} over TLS: a few seconds.") | tojson }},
+    wsThere: {{ _("The workspace {ws} on {machine}: it is there, the instance goes beside its others.") | tojson }},
+    wsNew: {{ _("The workspace {ws} is made on {machine}, with the limits of the one of {here}.") | tojson }},
+    stagings: {{ _("The {n} stagings stay on {here}: a Rebuild makes them again from the production on {machine}.") | tojson }},
+    staging: {{ _("Its staging stays on {here}: a Rebuild makes it again from the production on {machine}.") | tojson }},
+    names: {{ _("Its names ({n}) lead to {here}. After the completion {here} passes them to {machine} until the DNS leads there, at most until the copy is deleted: the traffic of whoever has the old DNS passes through {here} decrypted and encrypted again.") | tojson }},
+    copyStays: {{ _("After the completion the stopped copy stays on {here} for {days} days, then Delete the copy… frees it.") | tojson }},
+    choose: {{ _("Choose a machine first") | tojson }}, there: {{ _(" there") | tojson }},
+    seconds: {{ _("{n} seconds") | tojson }}, minutes: {{ _("{n} minutes") | tojson }}, minute: {{ _("1 minute") | tojson }},
+    refused: {{ _("The move was refused.") | tojson }},
+    completeAsk: {{ _("{name} stops for about {n} seconds, with the maintenance page, then starts again on {machine}. Here it stays stopped until {until}. Write its name to complete.") | tojson }},
+    completeGo: {{ _("Complete the move") | tojson }},
+    completeGoTitle: {{ _("Stops the instance here and starts it on the other machine") | tojson }},
+    cancelAsk: {{ _("The copy on {machine} is deleted and the database here is no longer followed. {name} stays here as it is.") | tojson }},
+    cancelGo: {{ _("Cancel the move") | tojson }},
+    deleteAsk: {{ _("The stopped copy of {name} here and its backups here are deleted now. The instance on {machine} does not change. It cannot be undone.") | tojson }},
+    deleteGo: {{ _("Delete the copy") | tojson }},
+  };
+  const lang = document.documentElement.lang || "en";
+  const num = (n, d = 1) => (n === null || n === undefined) ? "—" : Number(n).toLocaleString(lang, {maximumFractionDigits: d, minimumFractionDigits: 0});
+  const gb = (b) => (b === null || b === undefined) ? "—" : `${num(b / 1073741824, b >= 10 * 1073741824 ? 0 : 1)} GB`;
+  const mb = (b) => b >= 1073741824 ? gb(b) : `${num(b / 1048576, 0)} MB`;
+  const fill = (text, values) => text.replace(/\{(\w+)\}/g, (_m, k) => (values[k] === undefined ? `{${k}}` : String(values[k])));
+  const span = (s) => s < 90 ? fill(T.seconds, {n: Math.max(1, Math.round(s))}) : Math.round(s / 60) === 1 ? T.minute : fill(T.minutes, {n: Math.round(s / 60)});
+  const el = (tag, props = {}, ...children) => { const n = Object.assign(document.createElement(tag), props); n.append(...children.filter((c) => c !== null && c !== undefined)); return n; };
+  async function post(url, body) {
+    const resp = await fetch(url, {method: "POST", headers: {Accept: "application/json", "Content-Type": "application/json"},
+      body: JSON.stringify(body || {})}).catch(() => null);
+    const got = resp ? await resp.json().catch(() => ({})) : {};
+    return resp && resp.ok ? got : {error: got.error || got.detail || T.refused};
+  }
+  const toJob = (got) => { if (got.job) location.href = `${PREFIX}/jobs/${got.job}`; };
+
+  // the banner's actions
+  const band = document.getElementById("move-band");
+  const say = (text) => window.omniaSay ? window.omniaSay(text) : null;
+  document.getElementById("move-complete")?.addEventListener("click", async (event) => {
+    const b = event.currentTarget;
+    const typed = await window.omniaTypeName(fill(T.completeAsk, {name: SERVER, n: {{ (move.stop_seconds or 40) | tojson }},
+      machine: b.dataset.machine, until: {{ (move.until or "") | tojson }}}), SERVER, T.completeGo, T.completeGoTitle);
+    if (!typed) return;
+    b.disabled = true;
+    const got = await post(`${API}/complete`, {confirm: SERVER});
+    if (got.error) { b.disabled = false; say(got.error); return; }
+    toJob(got);
+  });
+  document.getElementById("move-cancel")?.addEventListener("click", async (event) => {
+    const b = event.currentTarget;
+    if (!await window.omniaAsk(fill(T.cancelAsk, {machine: b.dataset.machine, name: SERVER}), T.cancelGo, {danger: true, goTitle: b.title})) return;
+    b.disabled = true;
+    const got = await post(`${API}/cancel`, {});
+    if (got.error) { b.disabled = false; say(got.error); return; }
+    toJob(got);
+  });
+  document.getElementById("move-delete-copy")?.addEventListener("click", async (event) => {
+    const b = event.currentTarget;
+    if (!await window.omniaAsk(fill(T.deleteAsk, {machine: b.dataset.machine, name: SERVER}), T.deleteGo, {danger: true, goTitle: b.title})) return;
+    b.disabled = true;
+    const got = await post(`${API}/delete-copy`, {});
+    if (got.error) { b.disabled = false; say(got.error); return; }
+    toJob(got);
+  });
+
+  // the dialog
+  const dialog = document.getElementById("move-dialog");
+  if (!dialog) return;
+  const of = (id) => document.getElementById(id), go = of("mv-go");
+  let data = null, asked = 0;
+  const chosen = () => {
+    const picked = dialog.querySelector('input[name="mv-target"]:checked');
+    return picked && data ? data.targets[Number(picked.value)] : null;
+  };
+  function plan() {
+    const t = chosen();
+    of("mv-plan").hidden = !t;
+    go.disabled = !t || !!(data.refusals || []).length;
+    of("mv-go-box").title = t ? "" : T.choose;
+    if (!t) return;
+    const s = data.sizes || {}, total = (s.database || 0) + (s.filestore || 0) + (s.addons || 0) + (s.backups || 0);
+    const rate = 50, seconds = total / (rate * 1048576);
+    const lines = [fill(T.copy, {total: gb(total), db: mb(s.database || 0), files: mb(s.filestore || 0), code: mb(s.addons || 0),
+      backups: mb(s.backups || 0), time: span(seconds), rate, guess: T.guess})];
+    if (data.kind === "dedicated") {
+      lines.push(fill(T.stopDedicated, {time: span(40)}));
+      lines.push(fill(T.restart, {name: SERVER, machine: t.machine}));
+    } else {
+      lines.push(fill(T.stopCluster, {time: span(30 + 3 * (s.database || 0) / (rate * 1048576)), db: mb(s.database || 0)}));
+    }
+    lines.push(fill(t.workspace === "there" ? T.wsThere : T.wsNew, {ws: data.workspace, machine: t.machine, here: data.here.machine}));
+    if (data.stagings) lines.push(fill(data.stagings === 1 ? T.staging : T.stagings, {n: data.stagings, here: data.here.machine, machine: t.machine}));
+    if ((data.names || []).length) lines.push(fill(T.names, {n: data.names.length, here: data.here.machine, machine: t.machine}));
+    lines.push(fill(T.copyStays, {here: data.here.machine, days: data.copy_days}));
+    of("mv-steps").replaceChildren(...lines.map((text) => el("li", {textContent: text})));
+  }
+  function draw(answer) {
+    data = answer;
+    of("mv-reading").hidden = true;
+    if (answer.error) { of("mv-error").textContent = answer.error; return; }
+    const load = (answer.here || {}).load || {}, now = answer.now || {};
+    of("mv-why").textContent = (now.cpu !== null && now.cpu !== undefined && now.ram)
+      ? fill(T.why, {here: answer.here.machine, days: Math.min(14, Math.max(2, Math.ceil(load.days || 14))), cpu: num(load.cpu_p95, 0), ram: num(load.ram_p95, 0),
+          name: SERVER, cores: num((now.cpu || 0) / 100, 1), memory: mb((now.ram || 0) * 1048576)})
+      : fill(T.whyNoNow, {here: answer.here.machine, days: Math.min(14, Math.max(2, Math.ceil(load.days || 14))), cpu: num(load.cpu_p95, 0), ram: num(load.ram_p95, 0)});
+    const refused = answer.refusals || [];
+    of("mv-refused").hidden = !refused.length;
+    of("mv-refused").textContent = refused.join(" ");
+    const targets = answer.targets || [];
+    if (!targets.length) { of("mv-none").textContent = T.none; of("mv-none").hidden = false; plan(); return; }
+    let first = -1, best = null;
+    targets.forEach((t, i) => { if (!t.why && (best === null || (t.load || {}).cpu_p95 < best)) { first = i; best = (t.load || {}).cpu_p95 ?? 1e9; } });
+    of("mv-list").replaceChildren(...targets.map((t, i) => {
+      const load = t.load || {};
+      const input = el("input", {type: "radio", name: "mv-target", value: String(i), disabled: !!t.why, title: fill(T.rowTitle, {machine: t.machine})});
+      return el("label", {className: "mv-target" + (t.why ? " off" : ""), title: fill(T.rowTitle, {machine: t.machine})}, input,
+        el("span", {},
+          el("strong", {textContent: fill(T.row, {machine: t.machine, cpu: num(load.cpu_p95, 0), ram: num(load.ram_p95, 0), free: gb(t.free)})}),
+          el("span", {className: "mv-sub", textContent: fill(T.sub, {template: answer.template || "", ok: t.why ? "" : T.there,
+            major: answer.kind === "dedicated" ? (t.majors || []).join(", ") || "—" : answer.major || "—", ms: num(t.ms, 1), via: t.via})}),
+          t.why ? el("span", {className: "mv-why", title: t.why, textContent: t.why}) : null));
+    }));
+    if (first >= 0) dialog.querySelectorAll('input[name="mv-target"]')[first].checked = true;
+    of("mv-targets").hidden = false;
+    plan();
+  }
+  async function open() {
+    const mine = ++asked;
+    data = null;
+    of("mv-reading").hidden = false; of("mv-targets").hidden = true; of("mv-plan").hidden = true; of("mv-none").hidden = true;
+    of("mv-refused").hidden = true; of("mv-error").textContent = ""; of("mv-why").textContent = "";
+    of("mv-list").replaceChildren();
+    go.disabled = true;
+    dialog.showModal();
+    const resp = await fetch(API, {headers: {Accept: "application/json"}}).catch(() => null);
+    const got = resp ? await resp.json().catch(() => ({})) : {};
+    if (mine !== asked) return;
+    draw(resp && resp.ok ? got : {error: got.error || got.detail || T.refused});
+  }
+  document.getElementById("move-open")?.addEventListener("click", open);
+  of("mv-list").addEventListener("change", plan);
+  of("mv-cancel").addEventListener("click", () => { asked++; dialog.close(); });
+  dialog.addEventListener("cancel", () => { asked++; });
+  go.addEventListener("click", async () => {
+    const t = chosen();
+    if (!t || go.disabled) return;
+    go.disabled = true;
+    const got = await post(API, {link: t.link});
+    if (got.error) { of("mv-error").textContent = got.error; go.disabled = false; return; }
+    toJob(got);
+  });
+})();
+</script>

@@ -18,7 +18,9 @@ resume.
   round finished 10 minutes ago at most (in_step).
 - **Two kinds of tree.**
   - "root": what only root reads, the filestore of Odoo
-    (<project>/data/filestore/filestore/<database>). Listed by the root
+    (<project>/data/filestore/filestore/<database>), and the addons of a
+    role (<project>/addons: its repositories with their history, the modules
+    uploaded as a .zip; the move of an instance, AD-015; hashed with SHA-256). Listed by the root
     helper's tree-list, read in tar batches of at most 256 MiB by tree-read
     (paths on its input, a tar on its output: regular files under the tree
     only, never a link) and written by the receiver's tree-write (every name
@@ -63,7 +65,9 @@ from typing import AsyncIterator, BinaryIO, Iterable, Iterator
 import httpx
 
 # the trees the engine knows: what each is, and who reads it
-TREES = {"filestore": "root", "backups": "files"}
+TREES = {"filestore": "root", "backups": "files", "addons": "root"}
+# the role argument of the helper's tree-* for each root tree: <role><suffix>
+ROOT_SUFFIX = {"filestore": "", "addons": "+addons"}
 ROLES = ("production", "test")
 CHUNK = 1 << 20
 BATCH_BYTES = 256 << 20
@@ -671,8 +675,8 @@ class LocalTree(Source, Sink):
     (workspace-helper tree-*): helper(*args) is its command."""
     kind = "root"
 
-    def __init__(self, helper, workspace: str, storage: str, instance: str, role: str):
-        self.helper, self.args = helper, (workspace, storage, instance, role)
+    def __init__(self, helper, workspace: str, storage: str, instance: str, role: str, tree: str = "filestore"):
+        self.helper, self.args = helper, (workspace, storage, instance, role + ROOT_SUFFIX[tree])
 
     async def _run_into(self, action: str, into: Path) -> dict:
         proc = await Process(self.helper(action, *self.args)).start(stdin=False)

@@ -279,6 +279,7 @@ PG_REPORT = """SELECT json_build_object(
      SELECT relname AS name, seq_scan, seq_tup_read AS rows_read, idx_scan, n_live_tup AS rows
      FROM pg_stat_user_tables WHERE seq_scan > 0 AND n_live_tup > 10000
      ORDER BY seq_tup_read DESC LIMIT 10) t),
+ 'vector', EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector'),
  'statements_on', EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements'))::jsonb"""
 PG_STATEMENTS = """SELECT coalesce(json_agg(s), '[]')::jsonb FROM (
  SELECT calls, round(total_exec_time::numeric, 1) AS total_ms, round(mean_exec_time::numeric, 1) AS mean_ms,
@@ -356,7 +357,12 @@ WITH_ARGUMENTS = ("logs", "version", "port", "dump", "load", "update", "psql", "
                   "pg-report", "pg-terminate", "neutralize", "pip-requirements", "terminal",
                   "mail-list", "mail-get", "mail-clear", "pg-settings", "pg-set", "pg-reset", "db-restart",
                   "modules", "modules-info", "mail-send", "mail-inbox", "update-list",
-                  "next-update", "next-start", "next-stop", "next-state", "stop-service")
+                  "next-update", "next-start", "next-stop", "next-state", "stop-service", "crons")
+# the crons of a database that moves (AD-011): those on switched off, their ids said; on again by id
+CRONS_OFF = ("WITH off AS (UPDATE ir_cron SET active = false WHERE active RETURNING id) "
+             "SELECT coalesce(string_agg(id::text, ',' ORDER BY id), '') FROM off")
+CRONS_ON = "WITH back AS (UPDATE ir_cron SET active = true WHERE id IN ({ids}) RETURNING id) SELECT count(*) FROM back"
+CRON_IDS = re.compile(r"[0-9]{1,10}(?:,[0-9]{1,10}){0,9999}")
 # the tuning's actions that read their values on the input (pg_tune())
 TUNE_ACTIONS = ("pg-set", "pg-reset", "db-restart")
 # a staging's caught mail (stacktemplates.MAIL_SERVICE, templates' compose.yaml):
@@ -936,6 +942,20 @@ def commands(project: Path, action: str, args: list[str], major: int | None = No
             raise HelperError("usage: pip-requirements <service> <repository>")
         return [["run", "--rm", "--no-deps", "-T", "--entrypoint", "sh", service(project, args[0]), "-c",
                  SCRIPTS["pip-requirements"], "sh", args[1]]]
+    if action == "crons":
+        # crons <database service> <database> off | on <ids>: the move of an instance to another machine (AD-011):
+        # its crons switched off before its Odoo starts there (the ids of those that were on, on the output), on
+        # again by their ids once its names lead to it. On the machine's cluster from a container of its Odoo
+        # service of its own: that Odoo is not started yet
+        if (len(args) not in (3, 4) or args[2] not in ("off", "on") or (args[2] == "on") != (len(args) == 4)
+                or (len(args) == 4 and not CRON_IDS.fullmatch(args[3]))):
+            raise HelperError("usage: crons <service> <database> off | on <ids>")
+        query = CRONS_OFF if args[2] == "off" else CRONS_ON.format(ids=args[3])
+        name, prefix, options = db_target(project, args[0])
+        if prefix:
+            return [["run", "--rm", "--no-deps", "-T", "--entrypoint", "sh", name, "-c", SCRIPTS[prefix + "pg-modules"],
+                     "sh", _database(args[1]), query]]
+        return [_script(name, "pg-modules", _database(args[1]), query, options=options)]
     if action == "stop-service":
         # stop-service <service>: that one stopped, the others kept running (the database of an update)
         if len(args) != 1:

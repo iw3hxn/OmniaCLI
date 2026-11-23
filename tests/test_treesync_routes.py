@@ -59,7 +59,7 @@ class Helpers:
 @pytest.fixture
 async def pair(tmp_path, monkeypatch):
     trees = {"src": InProcess(tmp_path / "lab2-trees" / "src"), "dst": InProcess(tmp_path / "lab1-trees" / "dst")}
-    monkeypatch.setattr(treesync, "LocalTree", lambda helper, ws, storage, instance, role: trees[instance])
+    monkeypatch.setattr(treesync, "LocalTree", lambda helper, ws, storage, instance, role, tree="filestore": trees[instance])
     monkeypatch.setattr(treesync, "BATCH_BYTES", 100_000)
     monkeypatch.setattr(linkcopy, "POLL_EVERY", 0.01)
     helpers = Helpers()

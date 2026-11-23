@@ -3481,6 +3481,95 @@ SHA-256), and deleting the workspace left no site, record or certificate.
 HTTP-01 with a real name was not provable on private addresses: only the
 challenge's passage was.
 
+### Moving an instance to another machine
+
+An instance of a workspace changes machine and stays the same instance: the
+same name, workspace, names on the web, deploys and backups
+(`docs/adr/AD-008-consegna-e-spostamento.md`, AD-014 and AD-015, step 4 of
+its §9; the screens are `docs/ux/UX-014-consegna-e-spostamento.md` part B).
+The machine of its workspace (its *home*) drives the move through one of its
+links with the admin role there (over SSH or HTTPS; a link in plain HTTP is
+refused: the customer's data would pass in clear); the other machine (the
+*host*) answers its routes `/api/placements/…` to that link only, and has no
+token towards the home. For the machine's admins (a person, here or through
+a central panel's link), never for the users of a workspace.
+
+- **Move to another machine…** (the instance's page, *More*, under
+  *Machine*): a dialog with this machine's load at the 95th percentile of its
+  last 14 days, what the instance uses now, one radio per link (its CPU and
+  memory at the 95th percentile, the room, the template, PostgreSQL, the
+  round trip; a machine that cannot is there, disabled, with why), and the
+  plan: what is copied (the database, the filestore, the code, **all its
+  backups**, Carlo 23/11/2026), the time at 50 MB/s (an estimate), the stop
+  at the completion, the workspace there (there, or made with the limits of
+  this one's), the stagings, the names and the copy kept here.
+- **Prepare the move** (a job: Checks · Instance on <machine> · Copy · In
+  step), nothing stops here: the host makes the workspace when it has none
+  (`hosted-workspaces.json` names the home), the instance from the same
+  template, never started, and publishes its names **held** (the challenges
+  of Let's Encrypt and the page «The service is moving», 503), with the
+  customer's own certificate when the workspace has one (`workspace-helper
+  owncert-read`, in the body only). Then `treesync` pushes the trees: the
+  **addons** (`<project>/addons`: the repositories with their history and the
+  modules uploaded as a .zip, a root tree of `tree-* … <role>+addons`), the
+  filestore and the backups; the host records the repositories, the git
+  credentials of their hosts and the deploys. A database of its own is
+  followed there (`ArrivePlace`: this machine lets the host's address in, its
+  PostgreSQL restarted once to open its port, a fraction of a second); one on
+  the machine's cluster goes at the completion by its dump. Last, the names'
+  challenges of Let's Encrypt are passed there (`forward acme`, AD-012).
+- **Complete the move…** (the banner, the instance's name written; a job:
+  Maintenance on <here> · Last changes · Start on <machine> · Names · Stop on
+  <here>): the maintenance page here and Odoo stopped; a database of its own
+  stopped clean and its last record waited for there, then it takes the
+  writes there; one on the cluster dumped, copied with the last round of the
+  backups and restored there (installed modules, users and partners
+  compared); the last round of the trees, which deletes there what the
+  instance no longer has; its crons switched off (`compose-helper crons`),
+  its Odoo started there and asked `/web/login` (300 s at most); then its
+  names pass there (`forward full`), the host's names stop being held and
+  its crons are on again. Its name is asked every 100 ms through this
+  machine's nginx meanwhile: the time without a 200 is the job's last line
+  («Without service for N s») and a line of its deploys, here and there. If
+  anything fails before the names pass, the host takes away what it made and
+  the instance runs here again on the database it had (nobody wrote there).
+- **Cancel the move…** (before the completion): what Prepare made there is
+  taken away, the database here is no longer followed, the names here again.
+- After the completion the copy here is **stopped and frozen** for 7 days
+  (`placements.json`): no job but the move's own runs on it (backups,
+  updates, schedules, Start: refused with the reason), its page says where it
+  is and until when. **Delete the copy…** takes it away earlier, with its
+  backups here; the names that pointed here stop being passed with it.
+- A staging here of a production moved elsewhere is **rebuilt** from a
+  backup made there, brought through the link (its code stays as it is).
+
+The names of a workspace pass to one machine at a time: its forward is one
+record (`/etc/omniacli/forward/<workspace>.json`), full for the instances
+placed there, else the challenges for those prepared. Until step 5 of §9
+(the people of a workspace reaching an instance on another machine through
+this one), only an instance of a **workspace without members** and **without
+a test** moves; a staging is not moved (it is made again there); a database
+on the cluster with the extension vector moves only to a cluster with
+pgvector. The page of the instance on its home disappears with Delete the
+copy (it lives on the host, reached through the link), Back to <here> is step
+6 and REST and MCP step 10.
+
+Measured on the lab pair (lab3 → lab4 through SSH links, a central panel of
+the proof linked to both, 23/11/2026; names asked every 100 ms through
+lab3's nginx with a test CA): an instance with a database of its own (22 MB,
+a filestore of 60 MB, a repository) prepared in 14.0 s and completed with
+**13.0 s without a 200** (1.0 s for its last record to be applied and the
+copy to take the writes, its Odoo answering 4.0 s after its start), a second
+one through the page with 13.4 s; one on the machine's cluster (its dump of
+1.2 MB) with 6.7 s; **0 answers 502** in all, only 200 and the maintenance
+page (503), a partner written just before the stop was there after it. An
+instance made not to start there (its image changed there by hand): the move
+went back, 14.4 s (a database of its own) and 8.7 s (the cluster) of
+maintenance, then 200 here again, nothing left there. The crons switched on
+again ran on their own, 54 and 55 s later (Odoo's cron thread looks every
+minute), with no restart. A staging rebuilt from the moved production held a
+row written there after the move.
+
 ### Modules from the catalogs
 
 The **Modules** tab of an instance of a workspace (developers and admins)
@@ -3907,6 +3996,7 @@ as its arguments, never in a script's text:
 | `update <odoo service> <db> --install a,b`, `init <odoo service> <db> <modules> [<language>]` | `odoo -i a,b --stop-after-init --no-http` without demo data, in a container of its own (Add modules: the service running or stopped; a new database: not started yet); the flag is the one of the image's Odoo, asked first in a container of its own (`odoo --version`): `--without-demo=all` before 19, `--without-demo` from 19 (a boolean there: Odoo 19 and 20 warn of `=all`, *invalid boolean value*). From 19 a module installed into an existing database takes the demo data that database has: Odoo has no flag against it |
 | `pip-requirements <odoo service> <repository>` | `pip install --user -r` of the repository's `requirements.txt`, in a container of its own of the service (`run --rm --no-deps`: the service may be stopped), into the volume of its data, which its Odoo reads |
 | `stop-service <service>` | that service stopped, the others kept running: an update stops Odoo before its code moves, its database stays up for the update of the modules |
+| `crons <database service> <database> off \| on <ids>` | the move of an instance to another machine: its crons switched off before its Odoo starts there (the ids of those that were on, on the output), on again by id once its names lead there; on the machine's cluster from a container of its own of the Odoo service |
 | `psql <database service> <db>` | `psql` on the caller's terminal (the web shell), as the image's `postgres`, else the container's own user: never root, its `\!` runs commands; a service that only has root is refused |
 
 The zip goes through the helper's input and output: the helper never opens a

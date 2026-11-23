@@ -146,6 +146,10 @@ NOT_SENSITIVE = frozenset({
     "/api/imports/places", "/api/workspaces/{workspace}/imports/upload",
     # how much of a file being copied here from another machine has arrived (AD-010): a size, asked by that machine
     "/api/treesync/v1/part",
+    # the move of an instance to another machine (AD-015): what the dialog says before anything is made (the
+    # machines' load and room, the instance's sizes, its names) and what a machine says of itself to the one that
+    # would move an instance there; Prepare, Complete, Cancel and Delete the copy are actions, logged
+    "/api/servers/{server}/move", "/api/placements/host",
 })
 
 

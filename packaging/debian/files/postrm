@@ -79,6 +79,11 @@ case "$1" in
         # the copy engine of the handover and of the move (treesync.py): the state of its copies, their listings
         # and plans, the hashes of the files it read, a dump it brought here and had not restored yet
         rm -rf /var/lib/omniacli/treesync
+        # the moves of instances to other machines (placement.py, AD-015): their states, the instances placed
+        # elsewhere, the workspaces hosted here for their home
+        rm -rf /var/lib/omniacli/move
+        rm -f /var/lib/omniacli/placements.json /var/lib/omniacli/placements.json.tmp \
+            /var/lib/omniacli/hosted-workspaces.json /var/lib/omniacli/hosted-workspaces.json.tmp
         # the copies of Odoo Enterprise root kept for the instances (enterprise.py)
         rm -rf /var/lib/omniacli-enterprise
         # the templates installed from the download server (the instances
