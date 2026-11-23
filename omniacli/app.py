@@ -4950,7 +4950,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if before is not None:
                 # the names are the workspace's admins' (its page)
                 data.update(main=before.main, subdomains=before.subdomains, certificate=before.certificate,
-                            aliases=before.to_dict().get("aliases"), redirects=before.to_dict().get("redirects"))
+                            aliases=before.to_dict().get("aliases"), redirects=before.to_dict().get("redirects"),
+                            # its notices too (its page, Notices): the form here has no field of them
+                            notify=before.to_dict().get("notify"))
                 # and so are its custom roles and its members' limits: kept for the members still there with
                 # the role they had (one given another role here loses its custom role)
                 posted = data.get("members") if isinstance(data.get("members"), dict) else {}

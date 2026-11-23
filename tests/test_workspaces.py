@@ -278,6 +278,13 @@ async def test_workspaces_page_and_api(workspaces, client, env):
                                    "limits": {"disk_gb": "50"}})
     assert resp.status_code == 200, resp.text
     assert load_workspaces(settings.workspaces_file)["gamma"].limits == {"disk_gb": 50}
+    # its Notices, which its own admins set on its page, stay when the machine's admin saves it here
+    import dataclasses
+    settings.workspaces["gamma"] = dataclasses.replace(settings.workspaces["gamma"], notify=["ops@example.com"])
+    resp = await client.post("/api/workspaces/save", headers=POST,
+                             json={"name": "gamma", "members": {"zoe": "developer"}, "label": "Gamma"})
+    assert resp.status_code == 200, resp.text
+    assert settings.workspaces["gamma"].notify == ["ops@example.com"]
     resp = await client.post("/api/workspaces/save", headers=POST, json={"name": "gamma", "new": True})
     assert resp.status_code == 400 and "already exists" in resp.json()["error"]
     assert (await client.post("/api/workspaces/delete", headers=POST, json={"name": "gamma"})).json() == {"ok": True}
