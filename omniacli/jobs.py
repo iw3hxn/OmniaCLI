@@ -84,7 +84,8 @@ class Job:
     @property
     def outcome(self) -> str:
         """The status as the pages show it: success with warnings is "warned"."""
-        return "warned" if self.status == SUCCESS and self.warnings else self.status
+        status = self.notes.get("status", self.status)  # while the watchers of its end run (JobManager._run)
+        return "warned" if status == SUCCESS and self.warnings else status
 
     @property
     def servers(self) -> list[str]:
@@ -248,6 +249,7 @@ class JobManager:
         if any(lock.locked() for lock in locks):
             job.log("Waiting for another job on the same instance to finish")
         held = []
+        final = None
         try:
             for lock in locks:
                 await lock.acquire()
@@ -256,26 +258,32 @@ class JobManager:
             self._save(job)
             await self._watch("begin", job)
             await action(job)
-            job.status = SUCCESS
+            final = SUCCESS
         except asyncio.CancelledError:
             by = self._stop_by.pop(job.id, None)
             if by is None:
                 # OmniaCLI is stopping: the job is interrupted (see _load)
                 raise
-            job.status, job.error = STOPPED, f"stopped by {by}"
+            final, job.error = STOPPED, f"stopped by {by}"
             job.log(f"STOPPED by {by}: what the job did before stays done")
         except JobFailed as exc:
-            job.status, job.error = FAILED, str(exc)
+            final, job.error = FAILED, str(exc)
             job.log(f"FAILED: {exc}")
         except Exception as exc:  # noqa: BLE001 - every error must reach the job log
-            job.status, job.error = FAILED, f"{type(exc).__name__}: {exc}"
+            final, job.error = FAILED, f"{type(exc).__name__}: {exc}"
             job.log(traceback.format_exc())
             _logger.exception("Job %s crashed", job.id)
         finally:
             job.finished = _now()
-            self._save(job)
-            if job.finished_flag and job.started:
+            if final is not None and job.started:
+                # the watchers of its end write what it did (deploys.py: its deploy) before the job reads finished:
+                # a client that waits for the job and then reads the deploys finds it (GitHub's runner read two
+                # deploys of three, 23/11/2026). They read its outcome in its notes (Job.outcome)
+                job.notes["status"] = final
                 await self._watch("end", job)
+            if final is not None:
+                job.status = final
+            self._save(job)
             for lock in reversed(held):
                 lock.release()
             if job.finished_flag:
