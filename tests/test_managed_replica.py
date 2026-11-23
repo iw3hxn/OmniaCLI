@@ -1343,7 +1343,7 @@ async def test_on_the_machine_itself(machines):
 
 async def test_the_tab_has_the_button_in_its_words(machines):
     tab = (await machines.there.get("/", headers={**ADMIN, "Accept-Language": "it"})).text
-    assert "Replica su un altro server…" in tab and "+ PostgreSQL condiviso della macchina…" in tab
+    assert "Replica su un altro server…" in tab and ">PostgreSQL condiviso della macchina…" in tab
     assert "+ Cluster della macchina" not in tab
     for part in ('id="pg-to-dialog"', "`${ROOT}/api/postgres/replica/to?key=", "location.href = ROOT + answer.url",
                  'make.classList.toggle("primary", !box.hidden && !rows.length)'):

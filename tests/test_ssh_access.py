@@ -318,7 +318,7 @@ async def test_a_customer_sees_nothing_of_it(panel):
 async def test_the_tab(panel, monkeypatch):
     client = panel
     page = (await client.get("/", headers={**ADMIN, "Accept-Language": "it"})).text
-    assert ">Accesso SSH<" in page and "+ Aggiungi una chiave…" in page
+    assert ">Accesso SSH<" in page and ">Aggiungi una chiave…" in page
     panel_html = page.split('data-panel="ssh"', 1)[1].split("</section>", 1)[0]
     assert panel_html.count('class="primary') == 1
     dialog = page.split('<dialog id="ssh-dialog"', 1)[1].split("</dialog>", 1)[0]

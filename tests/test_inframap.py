@@ -377,7 +377,8 @@ async def test_the_map_view_of_the_instances_page(workspaces, client, mine):  # 
     script = page.split("window.OmniaMap = ", 1)[1].split("</script>", 1)[0]
     assert not re.search(r"""(?:fill|stroke)["']?\s*[:=]\s*["'](?:#|rgb)""", script)
     style = page.split('<div id="map-view" hidden>', 1)[0].rsplit("<style>", 1)[1]
-    assert not re.search(r"(?:fill|stroke):\s*(?:#|rgb)", style) and "prefers-reduced-motion" in style
+    # its motion stops under the panel's one rule for less motion (UX-017 §2.8, _tokens.html)
+    assert not re.search(r"(?:fill|stroke):\s*(?:#|rgb)", style) and "@media (prefers-reduced-motion: reduce)" in page
     # none of what the map must never ask
     for never in ("/production/mail", "/mail/inbox", "/database", "/api/postgres", "/api/backups", "/pitr",
                   "/remote-backups", "/addresses/check", "/api/access/verify", "/test"):
