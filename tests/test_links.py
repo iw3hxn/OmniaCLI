@@ -275,6 +275,8 @@ async def test_the_menu_stays_the_viewers_inside_a_linked_machine(mine):
     page = (await mine.get("/links/cliente/servers/srv", headers=as_user("admin"))).text
     start = page.index('<nav class="topnav"')
     nav = page[start:page.index("</nav>", start)]
+    # the places (the language of the phone's menu comes back to this page, the link's: UX-017 §5.11)
+    nav = nav.split('class="topnav-more"')[0]
     for place in ("/machines", "/instances", "/backups", "/settings"):
         assert f'href="{place}"' in nav
     assert "/links/cliente" not in nav

@@ -80,7 +80,7 @@ async def wait(client, job_id):
 async def test_a_new_backup_there_restored_here(here, env):
     page = (await here.get("/servers/srv", headers=as_user("admin"))).text
     page += (await here.get("/servers/srv?view=test", headers=as_user("admin"))).text
-    assert page.count("data-from-link=") == 2 and '<dialog id="from-link-dialog">' in page
+    assert page.count("data-from-link=") == 2 and '<dialog id="from-link-dialog" ' in page
     assert "Neutralize (Odoo 16 and later)" in page
 
     resp = await here.post(URL, headers=as_user("dev", post=True), json={"neutralize": True})
