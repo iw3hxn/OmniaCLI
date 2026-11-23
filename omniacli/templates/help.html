@@ -59,7 +59,7 @@ openssl x509 -in /etc/omniacli/192.0.2.10.pem -noout -subject -ext subjectAltNam
 <h3>{{ _("Step 3 — on your instance: add the link <em>(admin)</em>") | safe }}</h3>
 <p>{{ _("Open the <strong>Links</strong> page and fill in the last row:") | safe }}</p>
 <table class="help-table">
-  <tr><th>{{ _("Field") | safe }}</th><th>{{ _("Value") | safe }}</th></tr>
+  <tr><th scope="col">{{ _("Field") | safe }}</th><th scope="col">{{ _("Value") | safe }}</th></tr>
   <tr><td>{{ _("Link") | safe }}</td><td>{{ _("a name: letters, digits, <code>. _ -</code>. It becomes part of the URLs (<code>/links/&lt;name&gt;/</code>), so the customer's name is a good choice.") | safe }}</td></tr>
   <tr><td>URL</td><td>{{ _("the remote's address, <code>https://host[:port][/path]</code>, for example <code>https://192.0.2.10:8443</code>. An <code>http://</code> URL is accepted but the token travels in clear: use it only through a VPN or an SSH tunnel.") | safe }}</td></tr>
   <tr><td>Token</td><td>{{ _("the token of step 1.") | safe }}</td></tr>
@@ -69,7 +69,7 @@ openssl x509 -in /etc/omniacli/192.0.2.10.pem -noout -subject -ext subjectAltNam
 
 <h3>{{ _("When it does not work") | safe }}</h3>
 <table class="help-table">
-  <tr><th>{{ _("What you see") | safe }}</th><th>{{ _("Why") | safe }}</th></tr>
+  <tr><th scope="col">{{ _("What you see") | safe }}</th><th scope="col">{{ _("Why") | safe }}</th></tr>
   <tr><td>the other instance refused the token</td><td>{{ _("wrong or revoked token: create a new one on the remote and paste it in the Token field (an empty Token field keeps the saved one).") | safe }}</td></tr>
   <tr><td>cannot connect (… certificate verify failed …)</td><td>{{ _("the certificate is not trusted (step 2), or it does not name the host of the URL.") | safe }}</td></tr>
   <tr><td>cannot connect / no answer in time</td><td>{{ _("address, port, firewall, or the remote is down.") | safe }}</td></tr>
@@ -90,7 +90,7 @@ openssl x509 -in /etc/omniacli/192.0.2.10.pem -noout -subject -ext subjectAltNam
 
 <h3>{{ _("Token roles") | safe }}</h3>
 <table class="help-table">
-  <tr><th>{{ _("Role") | safe }}</th><th>{{ _("The client may") | safe }}</th></tr>
+  <tr><th scope="col">{{ _("Role") | safe }}</th><th scope="col">{{ _("The client may") | safe }}</th></tr>
   <tr><td>{{ _("user") | safe }}</td><td>{{ _("read: <code>list_servers</code>, <code>server_status</code>, <code>read_log</code>, <code>list_jobs</code>, <code>get_job</code>, <code>pending_updates</code>, <code>dev_setup</code>") | safe }}</td></tr>
   <tr><td>{{ _("developer") | safe }}</td><td>{{ _("also <code>update_test</code> (git pull, update of the changed modules and restart of a <strong>test</strong> instance) and <code>backup_test</code>, and download backups") | safe }}</td></tr>
   <tr><td>{{ _("admin") | safe }}</td><td>{{ _("also <code>backup</code> and <code>list_backups</code> of any instance (production too), <code>read_server</code> (a server's whole configuration) and <code>add_draft_server</code> (a new server, always a draft). With an admin token, <code>dev_setup</code>, <code>backup</code> and <code>list_backups</code> also reach the draft servers.") | safe }}</td></tr>
@@ -129,7 +129,7 @@ openssl x509 -in /etc/omniacli/192.0.2.10.pem -noout -subject -ext subjectAltNam
 
 <h3>{{ _("When it does not work") | safe }}</h3>
 <table class="help-table">
-  <tr><th>{{ _("What you see") | safe }}</th><th>{{ _("Why") | safe }}</th></tr>
+  <tr><th scope="col">{{ _("What you see") | safe }}</th><th scope="col">{{ _("Why") | safe }}</th></tr>
   <tr><td>{{ _('HTTP 401, "Server rejected the configured Authorization header"') | safe }}</td><td>{{ _("the client sends a wrong token: the hash instead of the token, a part of it, or a revoked one. The Access log shows these calls as <em>Failed login</em> through MCP.") | safe }}</td></tr>
   <tr><td>{{ _('"… needs an MCP token with role …"') | safe }}</td><td>{{ _("the token's role is too low for that tool: change it on the Users page.") | safe }}</td></tr>
   <tr><td>{{ _('"… is a draft: not live until Test &amp; activate …"') | safe }}</td><td>{{ _("the tool works on active servers only; with an admin token, <code>dev_setup</code>, <code>backup</code> and <code>list_backups</code> reach drafts too.") | safe }}</td></tr>
@@ -152,14 +152,14 @@ openssl x509 -in /etc/omniacli/192.0.2.10.pem -noout -subject -ext subjectAltNam
 
 <h3>{{ _("The server") | safe }}</h3>
 <table class="help-table">
-  <tr><th>{{ _("Field") | safe }}</th><th>{{ _("Meaning") | safe }}</th></tr>
+  <tr><th scope="col">{{ _("Field") | safe }}</th><th scope="col">{{ _("Meaning") | safe }}</th></tr>
   <tr><td>{{ _("Name") | safe }}</td><td>{{ _("letters, digits, <code>. _ -</code>, starting with a letter or a digit. It is part of the URLs and of the backup folders, for example <code>CUSTOMER_V18</code>.") | safe }}</td></tr>
 </table>
 
 <h3>{{ _("Each instance") | safe }}</h3>
 <p>{{ _("Fill in <strong>Odoo config file</strong> first and press <strong>Reload</strong>: OmniaCLI reads the database (<code>db_name</code>, or an exact <code>^name$</code> <code>dbfilter</code>), the log file (<code>logfile</code>) and the git repositories that hold the <code>addons_path</code> folders, with their branch and remote. What it cannot find is listed under the fields.") | safe }}</p>
 <table class="help-table">
-  <tr><th>{{ _("Field") | safe }}</th><th>{{ _("Meaning") | safe }}</th></tr>
+  <tr><th scope="col">{{ _("Field") | safe }}</th><th scope="col">{{ _("Meaning") | safe }}</th></tr>
   <tr><td>Database</td><td>{{ _("the Odoo database of the instance: modules are updated and backups taken on it.") | safe }}</td></tr>
   <tr><td>{{ _("Odoo config file") | safe }}</td><td>{{ _("the <code>odoo.conf</code> the instance runs with, for example <code>/etc/odoo/customer-test.conf</code>.") | safe }}</td></tr>
   <tr><td>{{ _("Log file") | safe }}</td><td>{{ _("the Odoo log shown on the Log page and read by <code>read_log</code>. With restart type <em>process</em> it is set by OmniaCLI (Odoo's output, in its logs folder). With Docker Compose there is none: the log is the output of the type's service, see below.") | safe }}</td></tr>
@@ -180,7 +180,7 @@ openssl x509 -in /etc/omniacli/192.0.2.10.pem -noout -subject -ext subjectAltNam
 
 <h3>{{ _("Repositories") | safe }}</h3>
 <table class="help-table">
-  <tr><th>{{ _("Column") | safe }}</th><th>{{ _("Meaning") | safe }}</th></tr>
+  <tr><th scope="col">{{ _("Column") | safe }}</th><th scope="col">{{ _("Meaning") | safe }}</th></tr>
   <tr><td>{{ _("Name") | safe }}</td><td>{{ _("unique in the instance. A test repository needs a production repository of the same name: <strong>Merge test to production</strong> pairs them by name.") | safe }}</td></tr>
   <tr><td>{{ _("Path") | safe }}</td><td>{{ _("the git working copy on this machine.") | safe }}</td></tr>
   <tr><td>Remote</td><td>{{ _("the git remote to pull from (default <code>origin</code>).") | safe }}</td></tr>
@@ -191,7 +191,7 @@ openssl x509 -in /etc/omniacli/192.0.2.10.pem -noout -subject -ext subjectAltNam
 
 <h3>{{ _("The four restart configurations") | safe }}</h3>
 <table class="help-table">
-  <tr><th>{{ _("Restart with") | safe }}</th><th>{{ _("What OmniaCLI does") | safe }}</th><th>{{ _("Needs") | safe }}</th></tr>
+  <tr><th scope="col">{{ _("Restart with") | safe }}</th><th scope="col">{{ _("What OmniaCLI does") | safe }}</th><th scope="col">{{ _("Needs") | safe }}</th></tr>
   <tr><td>systemd</td><td>{{ _("<code>systemctl --no-ask-password restart|start|stop &lt;service&gt;</code>; the pages show the unit's state, with Start and Stop.") | safe }}</td><td>{{ _("with sudo, a sudoers line per command and service.") | safe }}</td></tr>
   <tr><td>init.d</td><td>{{ _("<code>/etc/init.d/&lt;service&gt; restart</code>; Restart only, the state is unknown.") | safe }}</td><td>{{ _("with sudo, a sudoers line.") | safe }}</td></tr>
   <tr><td>process</td><td>{{ _("OmniaCLI starts <code>odoo-bin -c &lt;config&gt;</code> itself, in the instance's venv, and stops it with a signal; Odoo outlives a restart of OmniaCLI. It refuses to start when another process already runs with the same config. No service name, no Run as.") | safe }}</td><td>{{ _("nothing: it runs as OmniaCLI's user.") | safe }}</td></tr>
@@ -219,7 +219,7 @@ chmod -R go-w /srv/odooplm-19</pre>
 <h3>{{ _("Docker Compose: what the helper does") | safe }}</h3>
 <p>{{ _("<code>omniacli compose-helper &lt;folder&gt; &lt;action&gt;</code> takes these actions and nothing else (a service must be one of the project's, a database name <code>[A-Za-z0-9_.-]</code>, a module <code>[a-z0-9_]</code>):") | safe }}</p>
 <table class="help-table">
-  <tr><th>{{ _("Action") | safe }}</th><th>{{ _("Runs") | safe }}</th></tr>
+  <tr><th scope="col">{{ _("Action") | safe }}</th><th scope="col">{{ _("Runs") | safe }}</th></tr>
   <tr><td>start, stop, restart, state</td><td>{{ _("<code>up -d</code>; <code>stop</code>; <code>up -d</code> then <code>restart</code>; <code>ps -a</code>") | safe }}</td></tr>
   <tr><td>pull</td><td>{{ _("<code>pull</code>, then <code>up -d</code>") | safe }}</td></tr>
   <tr><td>logs</td><td>{{ _("the service's output, the last lines or those since a time") | safe }}</td></tr>

@@ -5,7 +5,7 @@
 {% set level_names = {"read": _("read"), "write": _("tests and stagings"), "production": _("also productions")} %}
 <div class="scroll">
 <table class="users-table" data-oauth-grants>
-  <tr><th>{{ _("Assistant") }}</th>{% if people %}<th>{{ _("Person") }}</th>{% endif %}<th>{{ _("Level") }}</th><th>{{ _("Last use") }}</th><th></th></tr>
+  <tr><th scope="col">{{ _("Assistant") }}</th>{% if people %}<th scope="col">{{ _("Person") }}</th>{% endif %}<th scope="col">{{ _("Level") }}</th><th scope="col">{{ _("Last use") }}</th><th scope="col"></th></tr>
   {% for g in grants %}
   <tr data-grant="{{ g.id }}" data-client="{{ g.client or g.client_host }}">
     <td><strong>{{ g.client or g.client_host or _("(no name)") }}</strong>

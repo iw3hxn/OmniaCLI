@@ -147,7 +147,7 @@ document.getElementById("password-form").onsubmit = async (event) => {
   <div id="pk-error" class="banner" hidden></div>
   {% if passkeys %}
   <div class="scroll"><table>
-    <tr><th>{{ _("Passkey") }}</th><th>{{ _("Address") }}</th><th>{{ _("Made") }}</th><th>{{ _("Last used") }}</th><th></th></tr>
+    <tr><th scope="col">{{ _("Passkey") }}</th><th scope="col">{{ _("Address") }}</th><th scope="col">{{ _("Made") }}</th><th scope="col">{{ _("Last used") }}</th><th scope="col"></th></tr>
     {% for k in passkeys %}
     <tr data-passkey="{{ k.id }}" data-name="{{ k.name }}"><td><strong>{{ k.name }}</strong>{% if k.synced %} <span class="badge" title="{{ _('The device copies it to the other devices of its account (a password manager, iCloud, Google)') }}">{{ _("synced") }}</span>{% endif %}</td>
       <td class="mono">{{ k.rp }}{% if k.here %} <span class="badge ok" title="{{ _('The address of this page: this passkey works here') }}">{{ _("here") }}</span>{% endif %}</td>
@@ -217,7 +217,7 @@ document.getElementById("password-form").onsubmit = async (event) => {
   <p class="muted" style="margin: 4px 0 10px">{{ _("The browsers where you are logged in now. One you do not know: end it, then change your password.") }}</p>
   <div id="ss-error" class="banner" hidden></div>
   <div class="scroll"><table>
-    <tr><th>{{ _("Device") }}</th><th>{{ _("Address") }}</th><th>{{ _("Began") }}</th><th>{{ _("Last activity") }}</th><th>{{ _("How") }}</th><th></th></tr>
+    <tr><th scope="col">{{ _("Device") }}</th><th scope="col">{{ _("Address") }}</th><th scope="col">{{ _("Began") }}</th><th scope="col">{{ _("Last activity") }}</th><th scope="col">{{ _("How") }}</th><th scope="col"></th></tr>
     {% for s in sessions %}
     <tr data-session="{{ s.id }}" data-device="{{ s.device }}"><td title="{{ s.ua }}"><strong>{{ s.device }}</strong></td><td class="mono">{{ s.ip or "—" }}</td>
       <td>{{ s.since or "—" }}</td><td>{{ s.seen or "—" }}</td><td>{{ s.how_said }}</td>

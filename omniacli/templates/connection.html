@@ -50,13 +50,13 @@
     <h2>{{ _("Disks") }}</h2>
     <div id="disks" style="margin-top: 10px"><span class="muted">{{ _("Waiting for the first report…") }}</span></div>
     <h3 class="chart-title" style="margin-top: 16px">{{ _("Commands sent from here") }}</h3>
-    <div class="scroll"><table id="sent"><tr><th>{{ _("When") }}</th><th>{{ _("Command") }}</th><th>{{ _("By") }}</th><th>{{ _("Answer") }}</th></tr></table></div>
+    <div class="scroll"><table id="sent"><tr><th scope="col">{{ _("When") }}</th><th scope="col">{{ _("Command") }}</th><th scope="col">{{ _("By") }}</th><th scope="col">{{ _("Answer") }}</th></tr></table></div>
   </section>
 </div>
 
 <section class="panel">
   <h2>{{ _("Jobs there") }}</h2>
-  <div class="scroll" style="margin-top: 10px"><table id="jobs"><tr><th>{{ _("Job") }}</th><th>{{ _("Status") }}</th><th>{{ _("Started by") }}</th><th>{{ _("Started") }}</th><th></th></tr></table></div>
+  <div class="scroll" style="margin-top: 10px"><table id="jobs"><tr><th scope="col">{{ _("Job") }}</th><th scope="col">{{ _("Status") }}</th><th scope="col">{{ _("Started by") }}</th><th scope="col">{{ _("Started") }}</th><th scope="col"></th></tr></table></div>
   <div id="job-box" hidden style="margin-top: 12px">
     <h3 class="chart-title" id="job-title"></h3>
     <pre class="console mono" id="job-log" style="max-height: 50vh; overflow: auto; white-space: pre-wrap"></pre>

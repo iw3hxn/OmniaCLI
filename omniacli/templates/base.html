@@ -171,8 +171,10 @@ dt { color: var(--muted); } dd { margin: 0; overflow-wrap: anywhere; }
 table { border-collapse: collapse; width: 100%; }
 th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border);
   vertical-align: top; }
-th { color: var(--muted); font-weight: var(--fw-semibold); font-size: var(--fs-12); text-transform: uppercase; letter-spacing: .04em;
-  background: var(--panel-2); line-height: var(--lh-18);}
+/* the tables (UX-017 §5.4): the headers in sentence case, 14/20 semibold, muted on the light grey; a number on the right */
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+th { color: var(--muted); font-weight: var(--fw-semibold); font-size: var(--fs-14); text-transform: none;
+  background: var(--panel-2); line-height: var(--lh-20);}
 tbody tr:hover td, table tr:hover > td { background: color-mix(in srgb, var(--panel-2) 70%, transparent); }
 code, .mono { font-family: var(--mono); font-size: var(--fs-12); line-height: var(--lh-18);}
 .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
@@ -867,6 +869,44 @@ window.sizeText = (n) => {
   if (n >= MB) return dec(n / MB, n >= 100 * MB ? 0 : 1) + " MB";
   return dec(n / 1024, 0) + " kB";
 };
+// every table named and every header cell scoped (UX-017 §5.4), also those the scripts draw: a table takes the
+// title of the part of the page it is in (aria-labelledby); its header cells say whether they head a column or a row
+(function () {
+  let count = 0;
+  const TITLE = "h1, h2, h3, legend, summary";
+  function name(table) {
+    if (table.hasAttribute("aria-label") || table.hasAttribute("aria-labelledby") || table.querySelector("caption")) return;
+    let title = null;
+    for (let node = table.parentElement; node && !title; node = node.parentElement) {
+      const heads = [...node.querySelectorAll(TITLE)].filter((h) => !h.contains(table) && h.textContent.trim()
+        && (h.compareDocumentPosition(table) & Node.DOCUMENT_POSITION_FOLLOWING));
+      title = heads.pop() || null;
+      if (node.matches("section, dialog, details, fieldset, .panel, .tab-panel, main")) break;
+    }
+    title = title || document.querySelector("main h1");
+    if (!title) return;
+    if (!title.id) title.id = "table-title-" + (++count);
+    table.setAttribute("aria-labelledby", title.id);
+  }
+  function scope(th) {
+    if (th.hasAttribute("scope")) return;
+    const row = th.parentElement;
+    th.setAttribute("scope", th.closest("thead") || !row || !row.querySelector("td") ? "col" : "row");
+  }
+  function scan(root) {
+    if (!root.querySelectorAll) return;
+    if (root.matches && root.matches("table")) name(root);
+    if (root.matches && root.matches("th")) scope(root);
+    root.querySelectorAll("table").forEach(name);
+    root.querySelectorAll("th").forEach(scope);
+  }
+  document.addEventListener("DOMContentLoaded", () => {
+    scan(document);
+    new MutationObserver((changes) => {
+      for (const change of changes) for (const node of change.addedNodes) if (node.nodeType === 1) scan(node.closest && node.closest("table") || node);
+    }).observe(document.body, {childList: true, subtree: true});
+  });
+})();
 // an icon of the sprite (_sprite.html, Lucide) for the pages' scripts: the same node as _icons.html's icon(); decorative
 // unless label names it (the only bearer of the meaning)
 // a moving thing stops after 5 s (UX-017 §2.8, WCAG 2.2.2): when the state it shows changes, it moves again

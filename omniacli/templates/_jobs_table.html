@@ -8,7 +8,7 @@
    script reads it from the cell to see a job change #}
 <div class="scroll">
 <table>
-  <tr><th>{{ _("Job") }}</th><th>{{ _("Server") }}</th><th>{{ _("Status") }}</th><th>{{ _("Started by") }}</th><th>{{ _("Created") }}</th><th>{{ _("Finished") }}</th><th>{{ _("Duration") }}</th><th>{{ _("Error") }}</th></tr>
+  <tr><th scope="col">{{ _("Job") }}</th><th scope="col">{{ _("Server") }}</th><th scope="col">{{ _("Status") }}</th><th scope="col">{{ _("Started by") }}</th><th scope="col">{{ _("Created") }}</th><th scope="col">{{ _("Finished") }}</th><th scope="col">{{ _("Duration") }}</th><th scope="col">{{ _("Error") }}</th></tr>
   {% for job in jobs %}
   <tr data-job="{{ job.id }}" data-servers="{{ job.servers | join(' ') }}">
     <td><a href="{{ prefix }}/jobs/{{ job.id }}">{{ tr(job.title) }}</a></td>

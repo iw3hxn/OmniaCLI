@@ -49,7 +49,7 @@
   <div {{ "hidden" if users | length <= 8 }}>{{ list_search("users", _("Search user, role…"), request.query_params.get("q", "")) }}</div>
   <div class="scroll">
   <table data-list="users" class="users-table">
-    <tr><th>{{ _("User") }}</th><th>{{ _("Role") }}</th><th></th></tr>
+    <tr><th scope="col">{{ _("User") }}</th><th scope="col">{{ _("Role") }}</th><th scope="col"></th></tr>
     {% for u in users %}
     <tr data-user="{{ u.name }}" {{ item(u.name ~ " " ~ u.role) }} data-role="{{ u.role }}">
       <td><strong>{{ u.name }}</strong>{% if u.name == account %} <span class="muted">({{ _("you") }})</span>{% endif %}
@@ -91,7 +91,7 @@
   <div {{ "hidden" if links | length <= 8 }}>{{ list_search("incoming", _("Search link, role…")) }}</div>
   <div class="scroll">
   <table data-list="incoming" class="users-table">
-    <tr><th>{{ _("Instance") }}</th><th>{{ _("Highest role") }}</th><th></th></tr>
+    <tr><th scope="col">{{ _("Instance") }}</th><th scope="col">{{ _("Highest role") }}</th><th scope="col"></th></tr>
     {% for l in links %}
     <tr data-link="{{ l.name }}" {{ item(l.name ~ " " ~ l.role) }} data-role="{{ l.role }}">
       <td><strong>{{ l.name }}</strong>{% if l.fixed %} <span class="badge" title="{{ _('It is changed in the main configuration file of the machine, not from here') }}">{{ _("main config") }}</span>{% endif %}</td>
@@ -114,7 +114,7 @@
   <div {{ "hidden" if tokens | length <= 8 }}>{{ list_search("tokens", _("Search token, role…")) }}</div>
   <div class="scroll">
   <table data-list="tokens" class="users-table">
-    <tr><th>{{ _("Token") }}</th><th>{{ _("Level") }}</th><th></th></tr>
+    <tr><th scope="col">{{ _("Token") }}</th><th scope="col">{{ _("Level") }}</th><th scope="col"></th></tr>
     {% for t in tokens %}
     <tr data-token="{{ t.name }}" {{ item(t.name ~ " " ~ t.role) }} data-role="{{ t.role }}" data-ci="{{ '1' if t.ci }}" data-servers="{{ t.servers | join(', ') }}">
       <td><strong>{{ t.name }}</strong>{% if t.fixed %} <span class="badge" title="{{ _('It is changed in the main configuration file of the machine, not from here') }}">{{ _("main config") }}</span>{% endif %}

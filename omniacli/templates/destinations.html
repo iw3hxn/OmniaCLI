@@ -33,7 +33,7 @@
 </div>
 <section class="panel">
   <div class="scroll"><table class="dest-table">
-    <tr><th>{{ _("Name") }}</th><th>{{ _("Kind") }}</th><th>{{ _("Folder") }}</th>{% if not workspace %}<th>{{ _("Of") }}</th>{% endif %}<th>{{ _("Used by") }}</th><th></th></tr>
+    <tr><th scope="col">{{ _("Name") }}</th><th scope="col">{{ _("Kind") }}</th><th scope="col">{{ _("Folder") }}</th>{% if not workspace %}<th scope="col">{{ _("Of") }}</th>{% endif %}<th scope="col">{{ _("Used by") }}</th><th scope="col"></th></tr>
     {% for d in rows %}
     <tr data-name="{{ d.name }}">
       <td><strong>{{ d.name }}</strong></td><td>{{ tr(d.label) }}</td><td class="mono">{{ d.path }}</td>

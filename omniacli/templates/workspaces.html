@@ -255,12 +255,12 @@
   <div class="scroll">
   <table class="ws-rows" id="ws-list" data-list="workspaces">
     <thead><tr>
-      <th title="{{ _('The name of the workspace opens its page; a click elsewhere on the row shows what is inside it') }}">{{ _("Workspace") }}</th>
-      <th title="{{ _('What is to look at on its instances: the same things as the bell and the map') }}">{{ _("State") }}</th>
-      {% if machine_column %}<th class="hide-sm" title="{{ _('The machine the workspace lives on, and the others holding its stagings') }}">{{ _("Machine") }}</th>{% endif %}
-      <th class="hide-sm" title="{{ _('Its productions and its stagings; the test of a production is not counted apart') }}">{{ _("Instances") }}</th>
-      <th class="hide-sm" title="{{ _('The people who come into the workspace, with a role there') }}">{{ _("Users") }}</th>
-      <th class="hide-sm" title="{{ _('Its disk used, of its limit, as the daily record of the disks found it') }}">{{ _("Disk") }}</th>
+      <th scope="col" title="{{ _('The name of the workspace opens its page; a click elsewhere on the row shows what is inside it') }}">{{ _("Workspace") }}</th>
+      <th scope="col" title="{{ _('What is to look at on its instances: the same things as the bell and the map') }}">{{ _("State") }}</th>
+      {% if machine_column %}<th scope="col" class="hide-sm" title="{{ _('The machine the workspace lives on, and the others holding its stagings') }}">{{ _("Machine") }}</th>{% endif %}
+      <th scope="col" class="hide-sm" title="{{ _('Its productions and its stagings; the test of a production is not counted apart') }}">{{ _("Instances") }}</th>
+      <th scope="col" class="hide-sm" title="{{ _('The people who come into the workspace, with a role there') }}">{{ _("Users") }}</th>
+      <th scope="col" class="hide-sm" title="{{ _('Its disk used, of its limit, as the daily record of the disks found it') }}">{{ _("Disk") }}</th>
     </tr></thead>
     <tbody id="ws-machines"></tbody>
     <tbody id="ws-skeleton" aria-hidden="true">
@@ -298,7 +298,7 @@
     {{ _("The published templates come from {index}, signed and checked with plugins.public_key of the main configuration. Of the two, the higher version is used; the instances made before keep their files.", index=templates_index) }}</p>
   <div class="scroll" style="margin-top: 10px">
   <table id="templates">
-    <tr><th>{{ _("Template") }}</th><th>{{ _("Package") }}</th><th>{{ _("Downloaded") }}</th><th>{{ _("Used") }}</th><th>{{ _("Published") }}</th><th></th></tr>
+    <tr><th scope="col">{{ _("Template") }}</th><th scope="col">{{ _("Package") }}</th><th scope="col">{{ _("Downloaded") }}</th><th scope="col">{{ _("Used") }}</th><th scope="col">{{ _("Published") }}</th><th scope="col"></th></tr>
     {% for t in templates %}
     <tr data-template="{{ t.name }}"><td><strong>{{ t.name }}</strong><br><span class="muted">{{ tr(t.label) }}</span></td>
       <td class="mono">{{ t.package or "" }}</td><td class="mono">{{ t.downloaded or "" }}</td>

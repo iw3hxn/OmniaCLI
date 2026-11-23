@@ -29,7 +29,7 @@
   {{ list_search("plugins", _("Search type, name, source…")) }}
   <div class="scroll">
   <table data-list="plugins">
-    <tr><th>{{ _("Type") }}</th><th>{{ _("Name") }}</th><th>{{ _("State") }}</th><th>{{ _("From") }}</th><th>{{ _("Servers") }}</th></tr>
+    <tr><th scope="col">{{ _("Type") }}</th><th scope="col">{{ _("Name") }}</th><th scope="col">{{ _("State") }}</th><th scope="col">{{ _("From") }}</th><th scope="col">{{ _("Servers") }}</th></tr>
     {% for info in found %}
     <tr {{ item(info.name ~ " " ~ (info.plugin.label if info.plugin else "") ~ " " ~ info.source ~ " " ~ ("loaded" if info.plugin else "disabled")) }}>
       <td class="mono">{{ info.name }}</td>
@@ -49,7 +49,7 @@
   <h2 style="margin-bottom: 12px">{{ _("Servers without their plugin") }}</h2>
   <div class="scroll">
   <table>
-    <tr><th>{{ _("Server") }}</th><th>{{ _("Type") }}</th><th>{{ _("Why") }}</th></tr>
+    <tr><th scope="col">{{ _("Server") }}</th><th scope="col">{{ _("Type") }}</th><th scope="col">{{ _("Why") }}</th></tr>
     {% for srv in missing %}
     <tr><td><strong>{{ srv.name }}</strong></td><td class="mono">{{ srv.type }}</td><td class="error">{{ tr(srv.error) }}</td></tr>
     {% endfor %}
@@ -68,7 +68,7 @@
   </details>
   <div class="scroll">
   <table id="store">
-    <tr><th>{{ _("Type") }}</th><th>{{ _("Name") }}</th><th>{{ _("Published") }}</th><th>{{ _("Here") }}</th><th></th></tr>
+    <tr><th scope="col">{{ _("Type") }}</th><th scope="col">{{ _("Name") }}</th><th scope="col">{{ _("Published") }}</th><th scope="col">{{ _("Here") }}</th><th scope="col"></th></tr>
     <tr><td colspan="5" class="muted">{{ _("Reading the index…") }}</td></tr>
   </table>
   </div>

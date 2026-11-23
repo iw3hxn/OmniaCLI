@@ -30,13 +30,13 @@
   <p>{{ r.description }}</p>
   {% if r.parameters or r.body %}
   <div class="scroll"><table>
-    <tr><th>{{ _("Field") }}</th><th>{{ _("Where") }}</th><th>{{ _("Type") }}</th><th></th></tr>
+    <tr><th scope="col">{{ _("Field") }}</th><th scope="col">{{ _("Where") }}</th><th scope="col">{{ _("Type") }}</th><th scope="col"></th></tr>
     {% for p in r.parameters %}<tr><td class="mono">{{ p.name }}{% if p.required %} *{% endif %}</td><td>{{ p.in }}</td><td class="mono">{{ p.type }}</td><td>{{ p.description }}</td></tr>{% endfor %}
     {% for f in r.body %}<tr><td class="mono">{{ f.name }}{% if f.required %} *{% endif %}</td><td>body</td><td class="mono">{{ f.type }}</td><td>{{ f.description }}</td></tr>{% endfor %}
   </table></div>
   {% endif %}
   <div class="scroll"><table>
-    <tr><th>{{ _("Answer") }}</th><th>{{ _("Type") }}</th><th></th></tr>
+    <tr><th scope="col">{{ _("Answer") }}</th><th scope="col">{{ _("Type") }}</th><th scope="col"></th></tr>
     {% for a in r.responses %}<tr><td class="mono">{{ a.code }}</td><td class="mono">{{ a.type }}</td><td>{{ a.description }}
       {% if a.fields %}<br>{% for f in a.fields %}<span class="mono">{{ f.name }}</span>: {{ f.description }}{% if not loop.last %} · {% endif %}{% endfor %}{% endif %}</td></tr>{% endfor %}
   </table></div>

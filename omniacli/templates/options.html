@@ -126,7 +126,7 @@
     <h3 class="opt-sub">{{ _("Thresholds of the machine") }}</h3>
     <div class="scroll">
     <table class="opt-thresholds">
-      <tr><th></th><th>{{ _("Warning at (% in use)") }}</th><th>{{ _("Critical at (% in use)") }}</th></tr>
+      <tr><th scope="col"></th><th scope="col">{{ _("Warning at (% in use)") }}</th><th scope="col">{{ _("Critical at (% in use)") }}</th></tr>
       {% for metric in metrics %}{% set levels = options.monitor_thresholds[metric] %}
       <tr><td>{{ {"cpu": _("CPU"), "ram": _("Memory"), "disk": _("Disks of the backups and of the workspaces")}[metric] }}</td>
         <td><input type="number" class="mono" min="1" max="99" step="1" required data-threshold="{{ metric }}" data-level="warning" value="{{ levels[0] }}"
@@ -160,7 +160,7 @@
     {% if webhooks %}
     <div class="scroll">
     <table class="opt-hooks" id="webhooks">
-      <tr><th>{{ _("Webhook") }}</th><th>{{ _("Of") }}</th><th>{{ _("Signed") }}</th><th>{{ _("Jobs that fail or warn") }}</th><th></th></tr>
+      <tr><th scope="col">{{ _("Webhook") }}</th><th scope="col">{{ _("Of") }}</th><th scope="col">{{ _("Signed") }}</th><th scope="col">{{ _("Jobs that fail or warn") }}</th><th scope="col"></th></tr>
       {% for hook in webhooks %}
       <tr data-url="{{ hook.url }}">
         <td class="mono" title="{{ hook.url.split('?')[0] }}">{{ hook.shown }}</td>

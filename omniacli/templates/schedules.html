@@ -26,7 +26,7 @@
 {{ list_search("schedules", _("Search schedule, instance, step, user…"), request.query_params.get("q", "")) }}
 <div class="scroll">
 <table data-list="schedules">
-  <thead><tr><th>{{ _("Name") }}</th><th>{{ _("Instance") }}</th><th>{{ _("When") }}</th><th>{{ _("Steps") }}</th><th>{{ _("As") }}</th><th>{{ _("Last run") }}</th><th></th></tr></thead>
+  <thead><tr><th scope="col">{{ _("Name") }}</th><th scope="col">{{ _("Instance") }}</th><th scope="col">{{ _("When") }}</th><th scope="col">{{ _("Steps") }}</th><th scope="col">{{ _("As") }}</th><th scope="col">{{ _("Last run") }}</th><th scope="col"></th></tr></thead>
   {% for s in schedules %}
   {% set last = s.runs[0] if s.runs else None %}
   {# the schedule and its history: one item of the list widget #}
@@ -50,7 +50,7 @@
   <tr><td colspan="7" style="padding-top: 0">
     <details><summary class="muted" title="{{ _('Shows the last runs of this schedule: when, started by what, how each ended and its job') }}">{{ _("History: the last {count} of {total}", count=s.runs | length, total=s.data.history) }}</summary>
     <table>
-      <tr><th>{{ _("Time") }}</th><th>{{ _("Trigger") }}</th><th>{{ _("Status") }}</th><th>{{ _("Job") }}</th><th>{{ _("Message") }}</th></tr>
+      <tr><th scope="col">{{ _("Time") }}</th><th scope="col">{{ _("Trigger") }}</th><th scope="col">{{ _("Status") }}</th><th scope="col">{{ _("Job") }}</th><th scope="col">{{ _("Message") }}</th></tr>
       {% for r in s.runs %}
       <tr><td class="mono">{{ r.time | moment }}</td><td>{{ tr(r.trigger) }}</td><td class="status {{ r.status }}">{{ tr(r.status) }}</td>
         <td>{% if r.job %}<a href="{{ prefix }}/jobs/{{ r.job }}">{{ r.job }}</a>{% endif %}</td><td class="error">{{ tr(r.message) }}</td></tr>

@@ -18,7 +18,7 @@
   {{ list_search("config-servers", _("Search server, database, repository, branch…"), request.query_params.get("q", "")) }}
   <div class="scroll">
   <table data-list="config-servers">
-    <thead><tr><th>{{ _("Server") }}</th><th>{{ _("Status") }}</th><th>{{ _("Instances") }}</th><th>{{ _("Repositories") }}</th></tr></thead>
+    <thead><tr><th scope="col">{{ _("Server") }}</th><th scope="col">{{ _("Status") }}</th><th scope="col">{{ _("Instances") }}</th><th scope="col">{{ _("Repositories") }}</th></tr></thead>
     {% for server in servers %}
     {% set search %}{{ server.name }} {{ server.type }} {{ server.status }}{% for inst in server.instances.values() %} {{ inst.plugin.search_text(inst) | join(" ") }}{% for repo in inst.repositories %} {{ repo.name }} {{ repo.branch }}{% endfor %}{% endfor %}{% endset %}
     {# the server and its actions: one item of the list widget #}

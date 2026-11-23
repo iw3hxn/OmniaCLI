@@ -75,8 +75,8 @@
   <p class="muted" style="margin: 0 0 10px">{% if total == 1 %}{{ _("1 entry") }}{% else %}{{ _("{count} entries", count=total) }}{% endif %}{% if total > entries | length %}, {{ _("the last {count} shown", count=entries | length) }}{% endif %}.</p>
   <div class="scroll">
   <table>
-    <tr><th>{{ _("Date and time") }}</th><th>{{ _("Event") }}</th><th>{{ _("Who") }}</th><th>{{ _("Through") }}</th><th>{{ _("Role") }}</th>
-      <th>{{ _("Workspace") }}</th><th>{{ _("Address") }}</th><th>{{ _("Outcome") }}</th><th>{{ _("Detail") }}</th></tr>
+    <tr><th scope="col">{{ _("Date and time") }}</th><th scope="col">{{ _("Event") }}</th><th scope="col">{{ _("Who") }}</th><th scope="col">{{ _("Through") }}</th><th scope="col">{{ _("Role") }}</th>
+      <th scope="col">{{ _("Workspace") }}</th><th scope="col">{{ _("Address") }}</th><th scope="col">{{ _("Outcome") }}</th><th scope="col">{{ _("Detail") }}</th></tr>
     {% for e in entries %}
     <tr>
       <td class="mono muted" style="white-space: nowrap" data-when="{{ e.time }}" title="{{ e.time }}{% if e.utc %} · UTC {{ e.utc }}{% endif %}">{{ e.time | replace("T", " ") }}</td>

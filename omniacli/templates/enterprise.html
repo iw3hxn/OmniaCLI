@@ -52,7 +52,7 @@
   <h2>{{ _("The copies on this machine") }}</h2>
   <p class="muted" style="font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("One copy per version, its last commit only, kept by root in {folder}: the Enterprise instances of that version read it, read only, and no workspace can write it. An instance switched on fetches its version the first time.", folder=root) }}</p>
   <div class="scroll"><table>
-    <tr><th>{{ _("Version") }}</th><th>{{ _("Commit") }}</th><th>{{ _("Fetched") }}</th><th>{{ _("Modules") }}</th><th>{{ _("Used by") }}</th><th></th></tr>
+    <tr><th scope="col">{{ _("Version") }}</th><th scope="col">{{ _("Commit") }}</th><th scope="col">{{ _("Fetched") }}</th><th scope="col">{{ _("Modules") }}</th><th scope="col">{{ _("Used by") }}</th><th scope="col"></th></tr>
     {% for c in copies %}
     <tr data-series="{{ c.series }}">
       <td><strong>{{ c.series }}</strong></td><td class="mono">{{ (c.commit or "—")[:10] }}</td>

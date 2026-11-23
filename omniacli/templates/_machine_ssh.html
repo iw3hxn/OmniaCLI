@@ -32,8 +32,8 @@
     <p class="muted" id="ssh-loading">{{ _("Reading the keys…") }}</p>
     <p id="ssh-sshd" hidden></p>
     <div style="overflow-x: auto"><table class="ssh-table" id="ssh-table" hidden>
-      <thead><tr><th>{{ _("Name") }}</th><th>{{ _("Account") }}</th><th class="hide-sm">{{ _("Type") }}</th><th>{{ _("Fingerprint") }}</th>
-        <th class="hide-sm">{{ _("Added by") }}</th><th>{{ _("Added") }}</th><th></th></tr></thead>
+      <thead><tr><th scope="col">{{ _("Name") }}</th><th scope="col">{{ _("Account") }}</th><th scope="col" class="hide-sm">{{ _("Type") }}</th><th scope="col">{{ _("Fingerprint") }}</th>
+        <th scope="col" class="hide-sm">{{ _("Added by") }}</th><th scope="col">{{ _("Added") }}</th><th scope="col"></th></tr></thead>
       <tbody id="ssh-rows"></tbody>
     </table></div>
     <p class="muted" id="ssh-empty" hidden>{{ _("OmniaCLI has added no key to this machine yet.") }}</p>

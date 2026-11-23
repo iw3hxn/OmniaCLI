@@ -35,7 +35,7 @@
   <div {{ "hidden" if links | length <= 8 }}>{{ list_search("links", _("Search link, address, SSH host…"), request.query_params.get("q", "")) }}</div>
   <div class="scroll">
   <table data-list="links">
-    <thead><tr><th>{{ _("Link") }}</th><th>{{ _("How it is reached") }}</th><th>{{ _("State") }}</th><th></th></tr></thead>
+    <thead><tr><th scope="col">{{ _("Link") }}</th><th scope="col">{{ _("How it is reached") }}</th><th scope="col">{{ _("State") }}</th><th scope="col"></th></tr></thead>
     {% for link in links %}
     {% set s = ssh.get(link.name) %}
     {% set tunnel = s.status.state if s and s.status else "" %}

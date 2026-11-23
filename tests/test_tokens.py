@@ -273,6 +273,20 @@ def test_the_closed_scales():
     assert TOKENS.count("@media (prefers-reduced-motion: reduce)") == 1
 
 
+def test_the_tables_say_what_they_hold():
+    """UX-017 §5.4: every header cell of the templates scoped; the headers in sentence case at 14; the tables named
+    by the title of their part of the page, also those the scripts draw (base.html's script)."""
+    unscoped = []
+    for page in TEMPLATES.glob("*.html"):
+        unscoped += [f"{page.name}: {m.group(0)[:50]}" for m in re.finditer(r"<th(?=[\s>])[^>]*>", page.read_text(encoding="utf-8"))
+                     if "scope=" not in m.group(0)]
+    assert not unscoped, unscoped[:10]
+    base = (TEMPLATES / "base.html").read_text(encoding="utf-8")
+    header = re.search(r"\nth \{([^}]*)\}", base).group(1)
+    assert "text-transform: none" in header and "var(--fs-14)" in header and "uppercase" not in header
+    assert 'table.setAttribute("aria-labelledby", title.id)' in base and 'th.setAttribute("scope"' in base
+
+
 async def test_the_header_on_a_phone_leaves_nothing_out(client):  # noqa: F811
     """UX-017 §5.11: under 768 px your account, the language and Log out are in the menu, never nowhere."""
     page = (await client.get("/", headers={"Authorization": AUTH, "Accept": "text/html"})).text

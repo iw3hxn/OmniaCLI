@@ -497,7 +497,7 @@ dialog.sd { --dialog-w: 560px; }
     </select></p>
   <p class="muted mail-empty" hidden>{{ _("No message. What Odoo of this staging sends (invoices, invitations, notices) arrives here and does not leave.") }}</p>
   <div class="scroll"><table class="mail-table" hidden>
-    <tr><th>{{ _("Received on") }}</th><th>{{ _("Mail to") }}</th><th>{{ _("Subject") }}</th></tr>
+    <tr><th scope="col">{{ _("Received on") }}</th><th scope="col">{{ _("Mail to") }}</th><th scope="col">{{ _("Subject") }}</th></tr>
   </table></div>
   <p class="mail-more" hidden><button type="button" class="small" id="mail-all" title="{{ _('Shows the rows left out of this list') }}"></button></p>
   <dialog id="mail-message" aria-labelledby="mm-subject" style="--dialog-w: 900px">
@@ -715,8 +715,8 @@ dialog.sd { --dialog-w: 560px; }
   <div class="section-head"><h2>{{ _("Code") }}</h2></div>
   <div class="scroll">
   <table class="addons-table">
-    <tr><th>{{ _("Type") }}</th><th>{{ _("Repository") }}</th><th>{{ _("Branch") }}</th><th class="hide-sm">{{ _("Last commit") }}</th>
-      <th title="{{ _('Whether the branch has commits not brought here yet, asked of its remote when this tab opens: it only informs, a production is still updated by hand') }}">{{ _("State") }}</th><th></th></tr>
+    <tr><th scope="col">{{ _("Type") }}</th><th scope="col">{{ _("Repository") }}</th><th scope="col">{{ _("Branch") }}</th><th scope="col" class="hide-sm">{{ _("Last commit") }}</th>
+      <th scope="col" title="{{ _('Whether the branch has commits not brought here yet, asked of its remote when this tab opens: it only informs, a production is still updated by hand') }}">{{ _("State") }}</th><th scope="col"></th></tr>
     {% for repo in inst.repositories %}
     {% set rs = repo_status[inst.key][loop.index0] %}
     <tr data-repo="{{ repo.name }}">
@@ -821,7 +821,7 @@ dialog.sd { --dialog-w: 560px; }
     {# several repositories chosen at once: one job, one restart (ber, 23/11/2026: nine restarts in two minutes) #}
     <div id="ag-chosen" hidden>
       <div class="scroll"><table class="ag-chosen">
-        <tr><th>{{ _("Repository") }}</th><th>{{ _("Branch") }}</th><th></th></tr>
+        <tr><th scope="col">{{ _("Repository") }}</th><th scope="col">{{ _("Branch") }}</th><th scope="col"></th></tr>
         <tbody id="ag-rows"></tbody>
       </table></div>
       <div class="addons-go-line"><button type="button" id="ag-add" disabled {{ off }}
@@ -918,7 +918,7 @@ dialog.sd { --dialog-w: 560px; }
   {% if not (can_act and stagings and stagings.workspace) %}
   <div class="scroll">
   <table>
-    <tr><th>{{ _("Repository") }}</th><th>{{ _("Branch") }}</th><th>{{ _("Last commit") }}</th></tr>
+    <tr><th scope="col">{{ _("Repository") }}</th><th scope="col">{{ _("Branch") }}</th><th scope="col">{{ _("Last commit") }}</th></tr>
     {% for repo in inst.repositories %}
     {% set rs = repo_status[inst.key][loop.index0] %}
     <tr>
@@ -1014,7 +1014,7 @@ dialog.sd { --dialog-w: 560px; }
       <input type="checkbox" id="op-all"> {{ _("Show all the options") }} <span id="op-count"></span></label></div>
   {% if not is_admin_here %}<p class="muted" style="font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("An admin changes them.") }}</p>{% endif %}
   <div class="scroll"><table class="oc-table">
-    <tr><th>{{ _("Option") }}</th><th>{{ _("Value") }}</th></tr>
+    <tr><th scope="col">{{ _("Option") }}</th><th scope="col">{{ _("Value") }}</th></tr>
     {% set mail_reason = _("The mail of this staging goes to the Mail tab: these values are not used") %}
     {% for p in odoo_params.parameters %}
     {% set off = not is_admin_here or p.mail %}
@@ -1034,7 +1034,7 @@ dialog.sd { --dialog-w: 560px; }
     <p class="muted" style="font-size: var(--fs-14); margin-top: 16px; line-height: var(--lh-20);" id="op-ext-note">{{ _("The other options its Odoo knows: an empty one keeps Odoo's default. The greyed ones are set by the template or the server.") }}</p>
     <p class="muted" id="op-ext-state"></p>
     <div class="scroll"><table class="oc-table" id="op-ext-table" hidden>
-      <tr><th>{{ _("Option") }}</th><th>{{ _("Value") }}</th></tr>
+      <tr><th scope="col">{{ _("Option") }}</th><th scope="col">{{ _("Value") }}</th></tr>
     </table></div>
   </div>
   {% if is_admin_here %}<div class="actions" style="justify-content: flex-end; margin-top: 12px">
@@ -1056,7 +1056,7 @@ dialog.sd { --dialog-w: 560px; }
   <p class="muted oc-state">{{ _("Reading the options of its Odoo…") }}</p>
   <p class="note-box oc-readonly" hidden>{{ _("The config file cannot be written by the user Odoo runs as (a hosting panel's, for one): the values are shown, change them there.") }}</p>
   <div class="scroll"><table class="oc-table" hidden>
-    <tr><th>{{ _("Name") }}</th><th>{{ _("Value") }}</th></tr>
+    <tr><th scope="col">{{ _("Name") }}</th><th scope="col">{{ _("Value") }}</th></tr>
   </table></div>
   {% if is_admin %}<div class="actions oc-actions" hidden style="justify-content: flex-end; margin-top: 12px">
     <span class="muted oc-changed"></span>

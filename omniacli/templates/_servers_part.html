@@ -14,7 +14,7 @@
 <div data-list-box>
   <div class="scroll">
   <table class="server-rows">
-    <tr><th>{{ _("Address") }}</th><th>{{ _("State") }}</th><th class="hide-sm">{{ _("Copied on") }}</th></tr>
+    <tr><th scope="col">{{ _("Address") }}</th><th scope="col">{{ _("State") }}</th><th scope="col" class="hide-sm">{{ _("Copied on") }}</th></tr>
     {% for row in rows %}
     {% set page = row.base ~ "/servers/" ~ row.name %}
     {% if "production" in row.roles %}

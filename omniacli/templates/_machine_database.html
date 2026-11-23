@@ -129,8 +129,8 @@
     <input type="search" id="pg-search" hidden placeholder="{{ _('Search database…') }}" aria-label="{{ _('Search database…') }}" title="{{ _('Shows the rows whose instance or kind holds these words') }}">
     <p class="muted" id="pg-loading">{{ _("Reading the databases…") }}</p>
     <div style="overflow-x: auto"><table class="pg-table" id="pg-table" hidden>
-      <thead><tr><th>{{ _("Database") }}</th><th class="hide-sm">{{ _("Version") }}</th><th class="num">{{ _("Size") }}</th>
-        <th class="hide-sm">{{ _("Connections") }}</th><th>{{ _("Tuning") }}</th><th>{{ _("Recovery at a minute") }}</th><th></th></tr></thead>
+      <thead><tr><th scope="col">{{ _("Database") }}</th><th scope="col" class="hide-sm">{{ _("Version") }}</th><th scope="col" class="num">{{ _("Size") }}</th>
+        <th scope="col" class="hide-sm">{{ _("Connections") }}</th><th scope="col">{{ _("Tuning") }}</th><th scope="col">{{ _("Recovery at a minute") }}</th><th scope="col"></th></tr></thead>
       <tbody id="pg-rows"></tbody>
     </table></div>
     <p class="muted" id="pg-empty" hidden>{{ _("No database on this machine. The first one is born with + New instance, in Overview.") }} <span id="pg-empty-replica" hidden>{{ _("A copy of the PostgreSQL of another machine is made with + Replica of another machine….") }}</span></p>
