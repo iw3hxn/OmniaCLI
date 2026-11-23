@@ -1,7 +1,7 @@
 {
   "name": "odoo-17",
   "label": "Odoo 17 Community (official image + PostgreSQL 17)",
-  "version": "2026.1.1",
+  "version": "2026.1.2",
   "type": "docker",
   "postgres": "17",
   "odoo_service": "odoo",

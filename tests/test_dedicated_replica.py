@@ -366,7 +366,7 @@ def test_the_copy_of_a_dedicated_database_is_a_project_of_its_own():
     assert data["networks"]["db"]["driver_opts"]["com.docker.network.bridge.name"] == "omnirp100"
     db = data["services"]["db"]
     # the same hardened standby as a cluster's copy, of the PostgreSQL the instance has
-    assert db["image"] == "postgres:17" and db["read_only"] is True and db["cap_drop"] == ["ALL"]
+    assert db["image"] == "pgvector/pgvector:pg17-trixie" and db["read_only"] is True and db["cap_drop"] == ["ALL"]
     assert db["ports"] == ["0.0.0.0:15433:5432"] and "hot_standby=on" in db["command"]
     assert any("host=172.30.0.14 port=15440" in part and "sslmode=verify-full" in part for part in db["command"])
     # a cluster's copy is named as before

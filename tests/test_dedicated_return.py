@@ -94,7 +94,7 @@ def test_the_database_of_an_instance_comes_back_beside_it_and_is_its_own_again(p
     assert made["aside"] == facts["aside"]
     # a project of its own, in the instance's .replica folder: the instance's own project is not touched
     compose = yaml.safe_load((runs / "compose.yaml").read_text())
-    assert compose["name"] == "omniacli-return-acme-odoo" and compose["services"]["db"]["image"] == "postgres:17"
+    assert compose["name"] == "omniacli-return-acme-odoo" and compose["services"]["db"]["image"] == "pgvector/pgvector:pg17-trixie"
     assert compose["services"]["db"]["cgroup_parent"] == "omniacli_acme.slice"
     assert (project / "compose.yaml").read_text() == twin and not (project / "compose.override.yaml").exists()
     assert "a-password-made-here" in (runs / "secret" / "replication.pgpass").read_text()

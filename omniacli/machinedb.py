@@ -76,7 +76,19 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 MAJORS = ("17",)
-IMAGE = {"17": "postgres:17"}
+# PostgreSQL with pgvector, the extension vector the ai module of Odoo Enterprise 19 needs (its
+# pre_init_hook makes it, and fails the whole install without it): the image of the machine's
+# cluster and of the templates' database service. pgvector's own build of the official image, on the
+# same Debian as postgres:17 (trixie: glibc 2.41, so the collations of an existing data folder are
+# the same) and the same PostgreSQL release: it opens a data folder made by postgres:17 as it is
+IMAGE = {"17": "pgvector/pgvector:pg17-trixie"}
+# the image of before, which a cluster or an instance made earlier runs until Add pgvector to PostgreSQL…
+PLAIN_IMAGE = {"17": "postgres:17"}
+VECTOR = "vector"
+# the template database of an instance with a database of its own on the pgvector image (its
+# odoo.conf's db_template): the extension vector made in it by the superuser, so what Odoo creates
+# (a restore, a staging) has it; Odoo's role is no superuser and may not make it (it is not trusted)
+VECTOR_TEMPLATE = "omniacli_template"
 STORAGE_BASE = "/var/lib/omniacli-storage"
 REGISTRY = Path(os.environ.get("OMNIACLI_MACHINE_DB", "/etc/omniacli/machine-db.json"))
 FOLDER = ".machine-db"
@@ -457,12 +469,30 @@ def dedicated_sources() -> dict:
             if isinstance(data, dict) else {})
 
 
-def compose_text(major: str, uid: int, gid: int, roots: list[str], port: int | None = None) -> str:
+def has_vector(image: str) -> bool:
+    """image is PostgreSQL with pgvector (IMAGE, or another tag of pgvector's)."""
+    image = str(image or "").strip()
+    return image in IMAGE.values() or image.startswith("pgvector/pgvector:")
+
+
+def image_of(text: str) -> str:
+    """The image a cluster's compose.yaml names, "" when none."""
+    found = re.search(r"(?m)^    image: (\S+)$", text or "")
+    return found.group(1) if found else ""
+
+
+def compose_text(major: str, uid: int, gid: int, roots: list[str], port: int | None = None,
+                 image: str = "") -> str:
     """The cluster's project: no port, no network, its socket in run/, the
     storages of the workspaces mounted where they are (rslave: a disk
     mounted later is seen), read only but its data, the slice of its own.
     port (AD-003, a database asked for another machine): that port of this
-    machine reaches it, over TLS only, on a network of its own."""
+    machine reaches it, over TLS only, on a network of its own. image: the
+    one it runs already (a port opened or closed does not change it), IMAGE
+    for a new one."""
+    image = image or IMAGE[major]
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._/-]*:[A-Za-z0-9._-]+", image):
+        raise ClusterError(f"{image!r} is not an image of PostgreSQL")
     mounts = "".join(
         f"      - type: bind\n        source: {root}\n        target: {root}\n        bind:\n"
         f"          propagation: rslave\n" for root in roots)
@@ -486,7 +516,7 @@ def compose_text(major: str, uid: int, gid: int, roots: list[str], port: int | N
 name: omniacli-machine-db-{major}
 services:
   {SERVICE}:
-    image: {IMAGE[major]}
+    image: {image}
     restart: unless-stopped
     user: "{uid}:{gid}"
 {network}    read_only: true
@@ -787,6 +817,9 @@ def env_add(major: str, workspace: str, mount: Path, instance: str, password: st
                                  f"LC_COLLATE 'C' TABLESPACE {ident(group)};\n")
         sql(project, "postgres", f"ALTER DATABASE {ident(tpl)} IS_TEMPLATE true ALLOW_CONNECTIONS false;\n"
                                  f"REVOKE ALL ON DATABASE {ident(tpl)} FROM PUBLIC;\n")
+    if vector_available(project):
+        # what Odoo creates from the template (its database, a restore, a staging) has vector: its role may not make it
+        vector_in_template(project, tpl)
     if _exists(project, f"SELECT 1 FROM pg_roles WHERE rolname = '{role}';\n"):
         sql(project, "postgres", f"ALTER ROLE {ident(role)} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION "
                                  f"CONNECTION LIMIT {ROLE_LIMIT} PASSWORD {literal(password, PASSWORD)};\n")
@@ -838,6 +871,69 @@ def sync_statements(project: Path, databases: list[str] | None = None) -> None:
     for database in databases if databases is not None else sorted(environments(project)):
         if _exists(project, f"SELECT 1 FROM pg_database WHERE datname = '{_env(database)}';\n"):
             sql(project, database, STATEMENTS)
+
+
+VECTOR_SQL = f"CREATE EXTENSION IF NOT EXISTS {VECTOR};\n"
+
+
+def vector_available(project: Path) -> bool:
+    """The cluster's image has pgvector (the extension may be made)."""
+    return sql(project, "postgres", f"SELECT 1 FROM pg_available_extensions WHERE name = '{VECTOR}';\n").strip() == "1"
+
+
+def vector_in_template(project: Path, template: str) -> None:
+    """vector made in a workspace's template database, which takes no
+    connection but for the moment of it."""
+    sql(project, "postgres", f"ALTER DATABASE {ident(template)} ALLOW_CONNECTIONS true;\n")
+    try:
+        sql(project, template, VECTOR_SQL)
+    finally:
+        sql(project, "postgres", f"ALTER DATABASE {ident(template)} ALLOW_CONNECTIONS false;\n")
+
+
+def sync_vector(project: Path) -> dict:
+    """vector made by the superuser (only it may: the extension is not
+    trusted) in the workspaces' templates and in the databases of the
+    environments and of the other machines: what Odoo Enterprise's ai module
+    finds there instead of making it. Nothing when the image has no pgvector."""
+    if not vector_available(project):
+        return {"available": False, "databases": []}
+    done = []
+    for tpl in sql(project, "postgres", "SELECT datname FROM pg_database WHERE datname LIKE 'omniacli.tpl.%' "
+                                        "ORDER BY 1;\n").split():
+        vector_in_template(project, tpl)
+        done.append(tpl)
+    for database in sorted({*environments(project), *grants(project)}):
+        if _exists(project, f"SELECT 1 FROM pg_database WHERE datname = '{_env(database)}';\n"):
+            sql(project, database, VECTOR_SQL)
+            done.append(database)
+    return {"available": True, "databases": done}
+
+
+def add_vector(major: str) -> dict:
+    """Add pgvector to PostgreSQL… of the cluster: its image switched to
+    IMAGE (pulled first, while it runs), its container made again (a
+    checkpoint first: the seconds its instances do not reach it), then
+    vector made in its templates and databases. Already on pgvector: the
+    extension only, nothing restarts."""
+    project = project_of(major)
+    before = (project / "compose.yaml").read_text(encoding="utf-8")
+    followed = replica(project) or {}
+    if followed.get("state") == "replaced":
+        raise ClusterError(f"the cluster was replaced by its replica on {followed.get('link')} and is stopped: "
+                           "its image is not changed")
+    image, was = IMAGE[major], image_of(before)
+    seconds = None
+    if not has_vector(was):
+        pulled = subprocess.run([_docker(), "pull", "-q", image], env=ENV, capture_output=True, text=True, timeout=1800)
+        if pulled.returncode:
+            raise ClusterError(f"docker pull {image} failed, nothing was changed: {pulled.stderr.strip()[-300:]}")
+        uid, gid = pg_user()
+        port = (listening(project) or {}).get("port")
+        seconds = _recreate(project, compose_text(major, uid, gid, _roots_of(before), port, image), before,
+                            f"on {image}")
+    return {"image": image, "was": was, "restarted_s": seconds, "replica": followed.get("link") or "",
+            **sync_vector(project)}
 
 
 def env_remove(major: str, role: str, keep_database: bool = False) -> dict:
@@ -1118,7 +1214,8 @@ def listen_on(major: str, names: list[str]) -> dict:
     taken = {int((listening(Path(str(v.get("project")))) or {}).get("port") or 0) for v in registry().values()}
     port = pick_port(taken)
     found = {"port": port, "bridge": bridge_name(major)}
-    seconds = _recreate(project, compose_text(major, uid, gid, _roots_of(before), port), before, "listening")
+    seconds = _recreate(project, compose_text(major, uid, gid, _roots_of(before), port, image_of(before)), before,
+                        "listening")
     write(project / LISTEN_FILE, json.dumps(found, indent=1, sort_keys=True) + "\n")
     return {**found, "restarted_s": seconds}
 
@@ -1145,7 +1242,8 @@ def listen_off(major: str) -> dict:
                            "its port is not touched")
     uid, gid = pg_user()
     before = (project / "compose.yaml").read_text(encoding="utf-8")
-    seconds = _recreate(project, compose_text(major, uid, gid, _roots_of(before)), before, "without its port")
+    seconds = _recreate(project, compose_text(major, uid, gid, _roots_of(before), image=image_of(before)), before,
+                        "without its port")
     (project / LISTEN_FILE).unlink(missing_ok=True)
     # the network it listened on, which no container has any more
     subprocess.run([_docker(), "network", "rm", f"omniacli-machine-db-{major}_db"], env=ENV, capture_output=True)

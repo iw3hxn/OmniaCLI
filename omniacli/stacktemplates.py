@@ -543,8 +543,10 @@ def check_compose(template: Template) -> list[str]:
             found.append(f"odoo.conf.in: {REMOTE_CONF} is required for a database of another machine")
     elif template.odoo_service not in data["services"] or template.db_service not in data["services"]:
         found.append(f"services {template.odoo_service} and {template.db_service} are required")
-    elif template.postgres and (data["services"][template.db_service] or {}).get("image") != f"postgres:{template.postgres}":
-        found.append(f"services.{template.db_service}.image: postgres:{template.postgres}, the PostgreSQL its "
+    elif template.postgres and (data["services"][template.db_service] or {}).get("image") not in postgres_images(
+            template.postgres):
+        found.append(f"services.{template.db_service}.image: {' or '.join(postgres_images(template.postgres))}, "
+                     "the PostgreSQL its "
                      "template.json names")
     for name in (template.odoo_service, *((template.db_service,) if template.own_database else ())):
         if isinstance(data["services"].get(name), dict) and data["services"][name].get("profiles"):
@@ -553,6 +555,13 @@ def check_compose(template: Template) -> list[str]:
         if name not in CONF_PLACEHOLDERS:
             found.append(f"odoo.conf.in: {{{{{name}}}}} is not one of {', '.join(CONF_PLACEHOLDERS)}")
     return found
+
+
+def postgres_images(major: str) -> tuple[str, ...]:
+    """The images of PostgreSQL major a template's database service may run:
+    the one with pgvector (machinedb.IMAGE, the templates' own) and the
+    official one (a template of before, a downloaded one)."""
+    return tuple(dict.fromkeys(i for i in (machinedb.IMAGE.get(major), f"postgres:{major}") if i))
 
 
 def env_text(values: dict[str, str]) -> str:
@@ -583,6 +592,11 @@ def conf_text(template: Template, database: str, admin_password: str, customer_r
     values = {"ADDONS_PATH": ",".join(addons), "DB_NAME": database, "ADMIN_PASSWD": admin_password,
               "DB_TEMPLATE": db_template or "template0"}
     text = PLACEHOLDER.sub(lambda m: values[m.group(1)], template.conf)
+    if db_template and "{{DB_TEMPLATE}}" not in template.conf:
+        # a database of its own with pgvector (machinedb.VECTOR_TEMPLATE): what Odoo creates comes from the
+        # template with vector, which its role may not make
+        text = text.rstrip("\n") + "\n; what Odoo creates (a restore, a staging) comes from this template, with vector\n" \
+            f"db_template = {db_template}\n"
     lines = []
     for name, value in (parameters or {}).items():
         param = template.parameter(name)

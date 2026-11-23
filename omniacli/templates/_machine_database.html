@@ -372,6 +372,9 @@
     drop: {{ _("Drop…") | tojson }},
     dropTitle: {{ _("Deletes this database and its role from the cluster, as the removal of an instance does. The instance of the other machine has no database any more. It cannot be undone. It is a job.") | tojson }},
     dropAsk: {{ _("Drop the database {name} of {link}? Its data is deleted and cannot be brought back; the instance {instance} there no longer works. Write its name to confirm.") | tojson }},
+    pgvector: {{ _("Add pgvector to PostgreSQL…") | tojson }},
+    pgvectorTitle: {{ _("Runs the cluster on the image of PostgreSQL with pgvector, the same PostgreSQL with the extension vector, which the ai module of Odoo Enterprise 19 needs; then makes vector in the databases of its instances and in the templates Odoo creates them from. The image is downloaded first; then the container is made again: its instances do not reach their database for a few seconds. It is a job.") | tojson }},
+    pgvectorAsk: {{ _("Add pgvector to the machine's PostgreSQL {major}? It runs {image} in place of {was}: the same PostgreSQL, with the extension vector. The image is downloaded first, while everything runs; then its container is made again: the {n} instances on it ({list}) do not reach their database for a few seconds, and each may answer an error to its first request or two, then goes on. Odoo does not restart. Write the name of this machine to confirm.") | tojson }},
     closePort: {{ _("Close the port…") | tojson }},
     closePortTitle: {{ _("Makes the cluster reached by its socket only again, as before the first database of another machine. Its container is made again, in about a second: the instances on it lose their connections, and each may answer an error to its first request or two after that. Possible when no other machine is let in. It is a job.") | tojson }},
     closePortAsk: {{ _("Close port {port} of the machine's cluster? Its container is made again: the {n} instances on it ({list}) lose their connections, and each may answer an error to its first request or two after that.") | tojson }},
@@ -905,6 +908,8 @@
       actions.append(el("button", {type: "button", className: "small danger", textContent: T.reset, title: T.resetTitle, onclick: () => openReset(row)}));
     }
     if (row.where === "machine") {
+      if (row.pgvector && !row.pgvector.has && (!row.state || row.state.code !== "replaced")) actions.append(el("button", {type: "button",
+        className: "small", textContent: T.pgvector, title: T.pgvectorTitle, onclick: (e) => addPgvector(row, e.currentTarget)}));
       if (row.port && !(row.grants || []).some((g) => !g.revoked)) actions.append(el("button", {type: "button", className: "small",
         textContent: T.closePort, title: T.closePortTitle, onclick: (e) => closePort(row, e.currentTarget)}));
       if (!row.serves.length && !(row.grants || []).length) actions.append(el("button", {type: "button", className: "small danger", textContent: T.removeCluster,
@@ -1530,6 +1535,15 @@
   async function grantAction(row, g, what) {
     // of the cluster, or of the promoted copy this machine hosts
     const answer = await post(`${row.where === "replica" ? hostedApi(row) : `${API}/machine/${encodeURIComponent(row.major)}`}/grants/${encodeURIComponent(g.name)}/${what}`);
+    if (answer.error || !answer.job) { showError(answer.error || T.refused); return; }
+    location.href = `${PREFIX}/jobs/${answer.job}`;
+  }
+  // Add pgvector to PostgreSQL… (README, Odoo Enterprise): the name of this machine typed, it serves productions
+  async function addPgvector(row, button) {
+    const go = button.textContent.replace("…", "");
+    if (!await window.omniaTypeName(fill(T.pgvectorAsk, {major: row.major, image: row.pgvector.to || "?",
+      was: row.pgvector.image || "?", n: row.serves.length, list: servedList(row)}), data.here || "", go, T.pgvectorTitle)) return;
+    const answer = await post(`${API}/machine/${encodeURIComponent(row.major)}/pgvector`, {confirm: data.here || ""});
     if (answer.error || !answer.job) { showError(answer.error || T.refused); return; }
     location.href = `${PREFIX}/jobs/${answer.job}`;
   }

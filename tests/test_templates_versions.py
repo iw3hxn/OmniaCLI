@@ -32,7 +32,8 @@ REFERENCE = stacktemplates.load_template(REPO_TEMPLATES / "odoo-19")
 @pytest.mark.parametrize("suffix", ["", "-machine", "-remote"])
 def test_each_new_template_runs_its_image_and_postgresql(major, suffix):
     template = stacktemplates.load_template(REPO_TEMPLATES / f"odoo-{major}{suffix}")
-    assert template.name == f"odoo-{major}{suffix}" and template.version == "2026.1.1"
+    # 2026.1.2: its own database on PostgreSQL with pgvector (23/11/2026)
+    assert template.name == f"odoo-{major}{suffix}" and template.version == ("2026.1.2" if suffix == "" else "2026.1.1")
     assert template.label.startswith(f"Odoo {major} Community (official image")
     image = next(f for f in template.fields if f.name == "IMAGE")
     assert image.default == f"odoo:{major}.0" and image.choices == [f"odoo:{major}.0", f"odoo:{major}"]
@@ -40,7 +41,7 @@ def test_each_new_template_runs_its_image_and_postgresql(major, suffix):
     assert services["odoo"]["image"] == "${IMAGE}"
     if suffix == "":
         # its own PostgreSQL 17, named in template.json and in compose.yaml alike
-        assert template.own_database and template.postgres == "17" and services["db"]["image"] == "postgres:17"
+        assert template.own_database and template.postgres == "17" and services["db"]["image"] == "pgvector/pgvector:pg17-trixie"
     elif suffix == "-machine":
         assert template.on_machine and template.postgres == "17" and template.dedicated == f"odoo-{major}"
         assert "db" not in services
@@ -149,7 +150,7 @@ async def test_a_version_on_another_postgresql_is_not_offered_on_the_cluster(wor
     shutil.copytree(REPO_TEMPLATES / "odoo-16", folder)
     meta = json.loads((folder / "template.json").read_text())
     (folder / "template.json").write_text(json.dumps({**meta, "name": "odoo-14", "postgres": "16"}))
-    (folder / "compose.yaml").write_text((folder / "compose.yaml").read_text().replace("postgres:17", "postgres:16"))
+    (folder / "compose.yaml").write_text((folder / "compose.yaml").read_text().replace("pgvector/pgvector:pg17-trixie", "postgres:16"))
     old = stacktemplates.load_template(folder)
     monkeypatch.setattr(workspaceops, "templates", lambda: _found("odoo-16", "odoo-16-machine", extra={"odoo-14": old}))
     monkeypatch.setattr(machinedb, "registry", lambda: {"17": {"storage": "main", "project": "/x"}})

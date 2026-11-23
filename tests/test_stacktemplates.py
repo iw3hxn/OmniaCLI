@@ -291,8 +291,13 @@ def test_create_and_remove(root, monkeypatch):
     assert passwords["DB_SUPER_PASSWORD"] != passwords["DB_PASSWORD"]
     # the customer's repositories: a folder per role; what the instance was made from
     assert (project / "addons").is_dir() and (storage / "acme" / "main" / "test" / "addons").is_dir()
+    # its PostgreSQL has pgvector: dbinit/ makes the template with vector at the first start, odoo.conf names it
     assert json.loads((storage / "acme" / "main" / "instance.json").read_text()) == {
-        "template": "odooplm-20", "version": made["version"], "database": "main"}
+        "template": "odooplm-20", "version": made["version"], "database": "main", "pgvector": ["production", "test"]}
+    assert "\ndb_template = omniacli_template\n" in (project / "config" / "odoo.conf").read_text()
+    dbinit = (project / "dbinit" / "odoo-role.sh").read_text()
+    assert "pg_available_extensions WHERE name = 'vector'" in dbinit and "\\c omniacli_template\n" in dbinit
+    assert "CREATE EXTENSION IF NOT EXISTS vector;\n" in dbinit
     # every container in the workspace's slice
     assert "SLICE=omniacli_acme.slice\n" in env
     # each role its network of the pool, the firewall on before

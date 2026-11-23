@@ -1236,6 +1236,86 @@ show an **Enterprise** badge.
 Tried with a stand-in repository on the lab machines, not with the real
 `odoo/enterprise`.
 
+#### PostgreSQL with pgvector (Odoo Enterprise 19 and later)
+
+The **ai** module of Odoo Enterprise 19 makes the PostgreSQL extension
+**vector** in its `pre_init_hook` (`ai/__init__.py`, `pgvector_is_available`):
+without it Odoo raises `PostgreSQL extension 'vector' is required to enable RAG
+for AI agents` and the whole `odoo -i` stops. `ai` itself is not auto-install:
+in Odoo 19 Enterprise (19.0 of 23/11/2026) every module that brings it in by
+auto-install has `ai` (or a module of it) among its own triggers, and
+`ai_auto_install` installs it only when `vector` can be made; a module of
+another author does not depend on it. So the `ai` an unrelated install loads
+was already marked *to install* in the database when the install began (Odoo
+loads every module in that state); what marked it on ber is not in its job
+logs. The install then fails on every database without the extension. Two facts of Odoo's loading make the next try pass:
+Odoo commits module by module, so the modules it loaded before `ai` stay
+installed (on ber, 23/11/2026, `web_grid` at 189/238, then `ai` at 190/238),
+and on the failure it resets every module still *to install*
+(`Transient module states were reset`): `ai` goes back to *uninstalled*, and the
+same install tried again passes without it. Reproduced on this computer with
+the `odoo:19` image, Odoo Enterprise 19 and `postgres:17`: the same lines, `ai`
+uninstalled after, the retry a success.
+
+Odoo's role is no superuser, and `vector` is not a trusted extension (its
+`vector.control` says nothing of it): even with pgvector in the image Odoo's
+own `CREATE EXTENSION vector` is refused (`permission denied to create
+extension "vector"`, which the install job reads as the same cause). OmniaCLI
+makes it as the superuser:
+
+- **The image**: the templates' database service and the machine's cluster run
+  **`pgvector/pgvector:pg17-trixie`**, pgvector's own build of the official
+  image: the same Debian as `postgres:17` (trixie, glibc 2.41, so the
+  collations of an existing data folder do not change) and the same PostgreSQL
+  (17.12 on 23/11/2026), with `vector` (0.8.7). Its tag follows PostgreSQL 17
+  and pgvector as `postgres:17` follows PostgreSQL 17. For every Odoo version:
+  the extension is only there to be made, a template that moves an instance to
+  a newer Odoo already has it, and one image serves the machine.
+- **New instances**: `dbinit/` (the superuser, at the first start) also makes
+  the template database **`omniacli_template`** (from `template0`, UTF8,
+  collation C, as Odoo makes its own) with `vector` in it, and `odoo.conf` says
+  `db_template = omniacli_template`: what Odoo creates (its database, a
+  restore, a staging, a copy) has `vector`. Without it a restore of a database
+  with `ai` installed, by Odoo's role, loses its tables of vectors and still
+  says it succeeded (measured: `odoo db load` of such a dump, 0 columns of
+  vector from `template0`, all of them from the template). On the machine's
+  cluster the workspace's template takes `vector` when it is made.
+- **Add pgvector to PostgreSQL…** for what exists, a job, by an admin of the
+  machine as a person, never by itself: in **Settings › Odoo Enterprise** of
+  an Odoo 19 or later whose database lacks it, before the switch (the section
+  says why, the button is its one primary; a production asks its name typed);
+  on the machine's cluster in the **Database** tab of the machine (the
+  machine's name typed: the cluster serves productions). The root helper's
+  `db-pgvector <workspace> <storage> <instance> <role>` (or
+  `machine-db-pgvector <major>`) pulls the image while everything runs, makes a
+  `CHECKPOINT`, writes the database service's image in `compose.yaml` and makes
+  **only the database's container** again (`up -d --no-deps --timeout 120
+  db`); a database that does not answer within 3 minutes is put back on its
+  image of before. Then the superuser makes the template and `vector` in each
+  of Odoo's databases, `instance.json` keeps `"pgvector": [roles]` and
+  `odoo.conf` names the template. Odoo does not restart: it loses its
+  connections and opens new ones. Measured on this computer, a database of
+  Odoo 19 with 31 modules: PostgreSQL answered again **0.6 s** after the
+  recreate began, one request of Odoo in that time answered an error
+  (redirect), and the data was the same before and after (the modules, the
+  fields, the users compared). A busy production takes longer to stop, a few
+  seconds: the checkpoint before keeps it short. A cluster's read replica on
+  another machine keeps its image (the job says it).
+- **The install job**: when Odoo stops on `ai` for `vector`, the job's last
+  line says it in the reader's language (the module ai of Odoo Enterprise came
+  in with the module, the database has no `vector`, the remedy and where it
+  is) instead of the first line of the traceback. An install that passes on an
+  Odoo Enterprise 19 or later whose PostgreSQL has no `vector` ends **with a
+  warning**, not as a plain success: the next install that brings `ai` in fails,
+  and its retry would pass without it.
+
+Proved on this computer only (Docker, no lab machine): a database made on
+`postgres:17` opened by `pgvector/pgvector:pg17-trixie` on the same folder,
+`vector` made, the data intact; Odoo 19 with Odoo Enterprise 19 (a checkout of
+the real `odoo/enterprise`, read only) installing `ai` fails on `postgres:17`
+and succeeds after the same steps as the action; a new instance's database
+made by Odoo from `omniacli_template` has `vector`, `pg_trgm` and collation C.
+
 
 
 ### Workspaces

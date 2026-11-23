@@ -4916,6 +4916,16 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             row["reason"] = "Say first where its code comes from: Settings › Odoo Enterprise"
         else:
             row["can"] = True
+        # an Odoo 19 or later whose PostgreSQL has no vector (Odoo Enterprise's ai module needs it): said, and
+        # Add pgvector to PostgreSQL… first, before the switch
+        missing = vector_missing(srv)
+        if missing:
+            where = "machine" if any(state["where"] == "machine" for _i, state in missing) else "dedicated"
+            row["pgvector"] = {"where": where, "keys": [i.key for i, _s in missing],
+                               "url": f"{prefix_of(request)}/api/servers/{srv.name}/database/pgvector",
+                               "machine": f"{prefix_of(request)}/#database",
+                               "production": any(i.role == "production" for i, _s in missing) and not is_staging(srv.name),
+                               "can": enterprise_admin(me) and where == "dedicated"}
         return row
 
     async def enterprise_installed(inst, series: str) -> list[str]:
@@ -5017,9 +5027,19 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return refuse(f"The copy of Odoo Enterprise {on['series']} on this machine has no {enterprise.SIGN}")
 
         async def action(job):
-            await inst.plugin.install_modules(job, inst, [enterprise.SIGN])
+            first = len(job.lines)
+            try:
+                await inst.plugin.install_modules(job, inst, [enterprise.SIGN])
+            except JobFailed:
+                found = vector_failure(enterprise.SIGN, inst, job.lines[first:])
+                if found:
+                    raise JobFailed(found) from None
+                raise
             job.log(f"{enterprise.SIGN} is installed in {inst.options.database}: Odoo asks for the subscription "
                     "code of the customer at the next login of an administrator")
+            warning = vector_warning(inst, None)
+            if warning:
+                job.warn(warning)
 
         job = jobs.submit(f"Install {enterprise.SIGN} on {inst.key}", [inst.key], f"manual: {me}", action,
                           workspace=workspace_of(server)[0].name)
@@ -8530,20 +8550,27 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             try:
                 await inst.plugin.install_modules(job, inst, [module])
             except JobFailed:
-                raise JobFailed(f"The module {module} was not installed: {odoo_error(job.lines[first:])}. "
-                                "The full log is in the job.") from None
+                raise JobFailed(vector_failure(module, inst, job.lines[first:])
+                                or f"The module {module} was not installed: {odoo_error(job.lines[first:])}. "
+                                   "The full log is in the job.") from None
             finally:
                 known_memo.pop(inst.key, None)
             await ops.restart(job, inst)
             now_known, why_not = await known_modules(inst, fresh=True)
             if now_known is not None and now_known.get(module) not in modulecatalog.INSTALLED:
-                raise JobFailed(f"The module {module} was not installed: {odoo_error(job.lines[first:])}. "
-                                "The full log is in the job.")
+                raise JobFailed(vector_failure(module, inst, job.lines[first:])
+                                or f"The module {module} was not installed: {odoo_error(job.lines[first:])}. "
+                                   "The full log is in the job.")
             if now_known is None:
                 job.log(f"WARNING: whether {module} is installed is not known: {why_not}")
             else:
                 job.log(f"{module} is installed in {inst.key}")
-            job.result = {"server": server, "role": role, "module": module, "repositories": made["repositories"]}
+            # passed, maybe on a second try after a first stopped on ai: said, not a plain success
+            job.result = {**job.result, "server": server, "role": role, "module": module,
+                          "repositories": made["repositories"]}
+            warning = vector_warning(inst, now_known)
+            if warning:
+                job.warn(warning)
 
         keys = [f"{server}/{r}" for r in roles] if made["repositories"] else [f"{server}/{role}"]
         job = jobs.submit(f"Install {module} in {server}/{role}", keys, f"manual: {me}", action, workspace=ws.name)
@@ -16055,6 +16082,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         async def one(row: dict) -> dict:
             inst = row.pop("instance")
             names = row.pop("names", {})
+            if row["where"] == "machine":
+                # its image has pgvector or not (Add pgvector to PostgreSQL…): its compose.yaml says it
+                try:
+                    image = machinedb.image_of((Path(inst.project) / "compose.yaml").read_text(encoding="utf-8"))
+                except (OSError, AttributeError):
+                    image = ""
+                row["pgvector"] = {"has": machinedb.has_vector(image), "image": image,
+                                   "to": machinedb.IMAGE.get(str(row.get("major") or ""), "")}
             record = records.get(row["key"]) or {}
             followed = backed = None
             if row.pop("followed", False):
@@ -20002,6 +20037,183 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             job.log("Deleted: " + (", ".join(made.get("removed") or []) or "nothing"))
         job = jobs.submit(f"Free the space of before of {server}", [f"{server}/production"], f"manual: {me}", action,
                           workspace=ws.name)
+        return {"job": job.id}
+
+    # --- Add pgvector to PostgreSQL… (README, Odoo Enterprise): the extension vector, which the ai module of Odoo
+    # Enterprise 19 makes in its pre_init_hook and without which every install that brings ai in fails
+
+    # Odoo's version from which Odoo Enterprise has the ai module and needs vector
+    VECTOR_FROM = 19
+    VECTOR_ERRORS = ("PostgreSQL extension 'vector' is required", 'permission denied to create extension "vector"')
+
+    def vector_series(inst) -> int | None:
+        """The major of the instance's Odoo, by its template's name; None when it says none."""
+        series = enterprise.series_of_template(str(instance_meta(inst).get("template") or ""))
+        return int(series.split(".")[0]) if series else None
+
+    def vector_state(inst) -> dict | None:
+        """Whether the PostgreSQL of the instance's role has pgvector, read from
+        its files (PostgreSQL is not asked): {"where": dedicated|machine,
+        "has", "image", "major"}. A dedicated one has it with the image and the
+        template database with vector that its odoo.conf names; the machine's
+        cluster with the image (its templates take vector with it). None: a
+        database OmniaCLI does not run (another machine's, the system's), an
+        instance not of a workspace, files that cannot be read."""
+        if inst is None or inst.restart.type != "compose" or workspace_of(inst.server) is None or on_remote_db(inst):
+            return None
+        project = Path(inst.restart.service)
+        try:
+            if on_machine_db(inst):
+                # one cluster per machine (its .env, which says the major, is root's only)
+                major = next(iter(machinedb.registry()), "")
+                cluster = Path(str((machinedb.registry().get(major) or {}).get("project") or ""))
+                if not major or not cluster.is_absolute():
+                    return None
+                image = machinedb.image_of((cluster / "compose.yaml").read_text(encoding="utf-8"))
+                return {"where": "machine", "has": machinedb.has_vector(image), "image": image, "major": major}
+            image = workspacehelper._db_image((project / "compose.yaml").read_text(encoding="utf-8"),
+                                              inst.options.db_service or "db")
+        except (OSError, machinedb.ClusterError):
+            return None
+        roles = instance_meta(inst).get(workspacehelper.VECTOR_META) or []
+        return {"where": "dedicated", "has": machinedb.has_vector(image) and inst.role in roles, "image": image,
+                "major": next((m for m, i in machinedb.PLAIN_IMAGE.items() if i == image), "")}
+
+    def vector_missing(srv) -> list:
+        """The roles of srv, an Odoo 19 or later of a workspace, whose PostgreSQL has no pgvector (Instance, state)."""
+        found = []
+        for inst in (srv.production, srv.test):
+            if inst is None or (vector_series(inst) or 0) < VECTOR_FROM:
+                continue
+            state = vector_state(inst)
+            if state is not None and not state["has"]:
+                found.append((inst, state))
+        return found
+
+    def vector_remedy(server: str, state: dict) -> str:
+        """Where the one who reads adds pgvector to that PostgreSQL."""
+        return ("Add pgvector to PostgreSQL… in the Database tab of the machine" if state["where"] == "machine"
+                else f"Add pgvector to PostgreSQL… in Settings › Odoo Enterprise of {server}")
+
+    def vector_failed(lines: list[str]) -> bool:
+        """Odoo stopped on the ai module of Odoo Enterprise: its PostgreSQL has no vector, or its role may not make it."""
+        return any(error in line for line in lines for error in VECTOR_ERRORS)
+
+    def vector_failure(module: str, inst, lines: list[str]) -> str | None:
+        """The last line of an install that Odoo stopped on the ai module for vector: what happened and the remedy,
+        in place of the traceback; None for another failure."""
+        if not vector_failed(lines):
+            return None
+        state = vector_state(inst) or {"where": "dedicated"}
+        return (f"The module {module} was not installed: the module ai of Odoo Enterprise came in with it, and it needs "
+                f"the extension vector of PostgreSQL, which the database of {inst.key} does not have. Odoo installed "
+                "the modules it loads before ai and left the others as they were; tried again, the install may pass "
+                f"without ai, which hides this. Add it with {vector_remedy(inst.server, state)}, then install {module} "
+                "again. The full log is in the job.")
+
+    def vector_warning(inst, known: dict | None) -> str | None:
+        """An install that passed on an Odoo Enterprise 19 or later whose PostgreSQL has no vector: what the next
+        install that brings the ai module in meets (it fails; tried again it passes without ai)."""
+        meta = instance_meta(inst)
+        if not enterprise.of_meta(meta) or (vector_series(inst) or 0) < VECTOR_FROM:
+            return None
+        state = vector_state(inst)
+        if state is None or state["has"] or (known or {}).get("ai") in modulecatalog.INSTALLED:
+            return None
+        return (f"The module ai of Odoo Enterprise cannot be installed in the database of {inst.key}: its PostgreSQL "
+                "has no extension vector. An install that brings ai in fails, and tried again it passes without ai: "
+                f"add it with {vector_remedy(inst.server, state)}")
+
+    @app.post("/api/servers/{server}/database/pgvector")
+    async def database_pgvector(server: str, payload: Optional[dict] = Body(None), me: Principal = Depends(current_user)):
+        """Add pgvector to PostgreSQL… of an Odoo 19 or later of a workspace with
+        databases of their own: each role without it gets the image with
+        pgvector (only the database's container made again, Odoo keeps running)
+        and vector in its databases and in the template Odoo creates them from.
+        A person asks it, a production with its name typed: never a machine by
+        itself, never a schedule (production changes by hand only)."""
+        if not machine_admin(me) or a_machine(me):
+            return refuse("An admin of the machine adds pgvector, as a person", status.HTTP_403_FORBIDDEN)
+        srv = settings.servers.get(server)
+        found = workspace_of(server)
+        if srv is None or found is None:
+            return refuse(f"{server} is not an instance of a workspace", status.HTTP_404_NOT_FOUND)
+        missing = vector_missing(srv)
+        if not missing:
+            return refuse(f"The PostgreSQL of {server} has pgvector already, or is not one OmniaCLI runs for an Odoo "
+                          f"{VECTOR_FROM} or later")
+        if any(state["where"] == "machine" for _inst, state in missing):
+            return refuse(f"{server} is on the machine's cluster: Add pgvector to PostgreSQL… in the Database tab of "
+                          "the machine")
+        production = any(inst.role == "production" for inst, _state in missing) and not is_staging(server)
+        if production and str((payload or {}).get("confirm") or "") != server:
+            return refuse(f"Type {server} to add pgvector to the PostgreSQL of its production")
+        if server_busy(server):
+            return refuse(f"{server} is busy: wait for its job")
+        ws, instance = found
+
+        async def action(job):
+            for inst, state in missing:
+                job.log(f"--- {inst.key}: its PostgreSQL on {machinedb.IMAGE.get(state['major'], state['image'])}, "
+                        "with the extension vector; only its database's container is made again, Odoo keeps running")
+                done = await workspaceops._helper(job, "db-pgvector", ws.name, ws.storage, instance, inst.role,
+                                                  timeout=MACHINE_TIMEOUT * 2)
+                if done.get("restarted_s") is not None:
+                    job.log(f"The database of {inst.key} runs on {done.get('image')} (it was {done.get('was')}): its "
+                            f"container was made again in {done.get('restarted_s')} s, Odoo did not reach it for that "
+                            "time and a page loaded then may have answered an error")
+                job.log(f"vector is in {', '.join(done.get('databases') or []) or 'no database yet'} and in the "
+                        f"template {done.get('template')}, which odoo.conf names: what Odoo creates (a restore, a "
+                        "staging) has it")
+            job.log(f"The module ai of Odoo Enterprise can be installed in {server}: an install that brings it in "
+                    "installs it")
+            job.result = {**job.result, "server": server, "roles": [inst.role for inst, _ in missing]}
+        job = jobs.submit(f"Add pgvector to the PostgreSQL of {server}", [inst.key for inst, _ in missing],
+                          f"manual: {me}", action, workspace=ws.name)
+        access_log.record("action", me.kind, me.name, "", f"pgvector added to the PostgreSQL of {server}",
+                          server=server, workspace=ws.name)
+        return {"job": job.id}
+
+    @app.post("/api/postgres/machine/{major}/pgvector")
+    async def postgres_machine_pgvector(major: str, payload: Optional[dict] = Body(None),
+                                        me: Principal = Depends(current_user)):
+        """Add pgvector to PostgreSQL… of the machine's cluster: its image with
+        pgvector (pulled first), its container made again (its instances do not
+        reach it for a few seconds), vector in its templates and databases. The
+        machine's name typed: it serves productions; a person only."""
+        postgres_admin(me)
+        if a_machine(me):
+            return refuse("An admin of the machine adds pgvector, as a person", status.HTTP_403_FORBIDDEN)
+        target = known_cluster(major)
+        if target is None:
+            return refuse(f"No cluster of PostgreSQL {major} on this machine", status.HTTP_404_NOT_FOUND)
+        try:
+            image = machinedb.image_of((Path(target.project) / "compose.yaml").read_text(encoding="utf-8"))
+        except OSError:
+            image = ""
+        if machinedb.has_vector(image):
+            return refuse(f"The machine's PostgreSQL {major} has pgvector already")
+        name = here_name()
+        if str((payload or {}).get("confirm") or "") != name:
+            return refuse(f"Type {name} to add pgvector to the machine's PostgreSQL {major}")
+
+        async def action(job):
+            job.log(f"--- the machine's PostgreSQL {major} on {machinedb.IMAGE[major]}, with the extension vector: "
+                    "the image is downloaded first, then its container is made again")
+            done = await workspaceops._helper(job, "machine-db-pgvector", major, timeout=MACHINE_TIMEOUT * 2)
+            if done.get("restarted_s") is not None:
+                job.log(f"The machine's PostgreSQL {major} runs on {done.get('image')} (it was {done.get('was')}): its "
+                        f"container was made again in {done.get('restarted_s')} s. Its instances lost their "
+                        "connections: each may answer an error to its first request or two, then goes on")
+            job.log(f"vector is in {', '.join(done.get('databases') or []) or 'no database yet'}: what Odoo creates "
+                    "from the templates of the workspaces has it")
+            if done.get("replica"):
+                job.warn(f"The read replica on {done.get('replica')} keeps its image: a read of a column of vector "
+                         "sent there fails until it is made again")
+            job.result = {**job.result, "major": major, "restarted_s": done.get("restarted_s")}
+        job = jobs.submit(f"Add pgvector to the machine's PostgreSQL {major}", [f"{MACHINE_KEY}/{major}"],
+                          f"manual: {me}", action)
+        access_log.record("action", me.kind, me.name, "", f"pgvector added to the machine's PostgreSQL {major}")
         return {"job": job.id}
 
     # --- the REST API (README, REST API): /api/v1 for scripts and CI ---------

@@ -58,7 +58,11 @@ services:
         max-size: "50m"
         max-file: "5"
   db:
-    image: postgres:17
+    # PostgreSQL 17 with pgvector (the extension vector, which the ai module of Odoo
+    # Enterprise 19 needs): postgres:17 of the same Debian with the extension, a drop-in on
+    # its data folder; harmless where nothing uses it. dbinit/ makes the template database
+    # with vector that odoo.conf names (db_template): Odoo's role may not make it
+    image: pgvector/pgvector:pg17-trixie
     restart: unless-stopped
     read_only: true
     tmpfs:

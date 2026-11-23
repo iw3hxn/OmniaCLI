@@ -315,12 +315,33 @@ from . import osupdates, sshkeys
 TEMPLATES = Path(os.environ.get("OMNIACLI_TEMPLATES", "/usr/share/omniacli/templates"))
 SYSTEMD = Path("/etc/systemd/system")
 ROLES = ("production", "test")
+# the template database of a database service with pgvector (machinedb.VECTOR_TEMPLATE), made again
+# as it should be whatever is there: what Odoo makes from template0 (UTF8, collation C), no connection
+# to it but for the moment vector is made in it, which only the superuser may
+VECTOR_TEMPLATE_SQL = rf"""SELECT 'CREATE DATABASE {machinedb.VECTOR_TEMPLATE} TEMPLATE template0 ENCODING ''UTF8'' LC_COLLATE ''C'''
+ WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = '{machinedb.VECTOR_TEMPLATE}') \gexec
+ALTER DATABASE {machinedb.VECTOR_TEMPLATE} IS_TEMPLATE true ALLOW_CONNECTIONS true;
+REVOKE ALL ON DATABASE {machinedb.VECTOR_TEMPLATE} FROM PUBLIC;
+\c {machinedb.VECTOR_TEMPLATE}
+CREATE EXTENSION IF NOT EXISTS {machinedb.VECTOR};
+\c postgres
+ALTER DATABASE {machinedb.VECTOR_TEMPLATE} ALLOW_CONNECTIONS false;
+"""
+# the roles of an instance whose PostgreSQL has pgvector and the template above (instance.json)
+VECTOR_META = "pgvector"
 # Odoo's role in a new database cluster: no superuser, its password from the
 # environment of the database's service, never in this file
 DB_ROLE_SCRIPT = """# written by omniacli workspace-helper
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname postgres -v password="$ODOO_DB_PASSWORD" <<'SQL'
 CREATE ROLE odoo LOGIN CREATEDB PASSWORD :'password';
 SQL
+# with pgvector in the image: the template database odoo.conf names (db_template), vector made in it
+# by the superuser (Odoo's role may not), so what Odoo creates from it has it
+if psql -X -At --username "$POSTGRES_USER" --dbname postgres \\
+    -c "SELECT 1 FROM pg_available_extensions WHERE name = 'vector'" | grep -q 1; then
+psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname postgres <<'SQL'
+""" + VECTOR_TEMPLATE_SQL + """SQL
+fi
 """
 # what an instance was made from, root's: conf writes its odoo.conf again from it
 INSTANCE_FILE = "instance.json"
@@ -1693,6 +1714,10 @@ def create(name: str, storage: str, instance: str, template_name: str, values_js
             **({"database_link": remote["link"], "database_major": remote["major"]}
                if remote and remote.get("link") else {}),
             **({enterprise.META: odoo_enterprise} if odoo_enterprise else {})}
+    if template.own_database and machinedb.has_vector(_db_image(template.compose, template.db_service)):
+        # its PostgreSQL has pgvector: dbinit/ makes the template database with vector at the first start,
+        # which odoo.conf names (Odoo creates its database, a restore, a staging from it)
+        meta[VECTOR_META] = roles
     if odoo_enterprise:
         made["enterprise"] = odoo_enterprise["series"]
     folder.mkdir(mode=0o755)
@@ -1731,7 +1756,8 @@ def create(name: str, storage: str, instance: str, template_name: str, values_js
             _write(project / "config" / "odoo.conf",
                    stacktemplates.conf_text(template, database, stacktemplates.new_password(), [],
                                             mail_capture=caught,
-                                            db_template=machinedb.template_name(name) if machine else "",
+                                            db_template=machinedb.template_name(name) if machine else
+                                            (machinedb.VECTOR_TEMPLATE if role in meta.get(VECTOR_META, []) else ""),
                                             replica=remote.get("replica") if remote else None,
                                             odoo_enterprise=bool(odoo_enterprise)),
                    mode=0o644)
@@ -1868,7 +1894,7 @@ def conf(name: str, storage: str, instance: str, role: str, spec_json: str) -> d
     text = stacktemplates.conf_text(template, str(meta.get("database") or ""),
                                     password or stacktemplates.new_password(), repos, values, debug, extra,
                                     mail_capture=caught,
-                                    db_template=machinedb.template_name(name) if template.on_machine else "",
+                                    db_template=_db_template(template, name, meta, role),
                                     replica=_replica_of(meta), replica_verified=bool(meta.get(REPLICA_META)),
                                     odoo_enterprise=enterprise.of_meta(meta) is not None)
     _write(conf_file, text, mode=0o644)
@@ -2975,6 +3001,13 @@ def machine_db_port(major: str, mode: str) -> dict:
     return done
 
 
+def machine_db_pgvector(major: str) -> dict:
+    """machine-db-pgvector <major>: Add pgvector to PostgreSQL… of the
+    machine's cluster (machinedb.add_vector): its image, its container made
+    again, vector in its templates and databases."""
+    return _cluster(machinedb.add_vector, major)
+
+
 # --- recovery at a minute of the machine's cluster (clusterpitr.py, AD-006)
 
 def machine_db_archive_state(major: str) -> dict:
@@ -3731,6 +3764,92 @@ def _dedicated_sql(project: Path, database: str, sql: str) -> str:
     if done.returncode:
         raise HelperError(f"the dedicated database refused: {(done.stderr or done.stdout).strip()[-400:]}")
     return done.stdout
+
+
+def _db_image(compose_text: str, service: str = "db") -> str:
+    """The image of the database service of a compose.yaml's text, "" when none."""
+    try:
+        data = yaml.safe_load(compose_text) or {}
+    except yaml.YAMLError:
+        return ""
+    svc = (data.get("services") or {}).get(service) if isinstance(data, dict) else None
+    return str(svc.get("image") or "") if isinstance(svc, dict) else ""
+
+
+def _db_template(template, name: str, meta: dict, role: str) -> str:
+    """odoo.conf's db_template: the workspace's template on the machine's
+    cluster; the template with vector of a database of its own that has it
+    (Add pgvector to PostgreSQL…, or made with pgvector); else Odoo's own."""
+    if template.on_machine:
+        return machinedb.template_name(name)
+    return machinedb.VECTOR_TEMPLATE if role in (meta.get(VECTOR_META) or []) else ""
+
+
+def db_pgvector(name: str, storage: str, instance: str, role: str) -> dict:
+    """db-pgvector <workspace> <storage> <instance> <role>: Add pgvector to
+    PostgreSQL… of a role with a database of its own: its database service's
+    image postgres:<major> switched to machinedb.IMAGE (pulled first, while
+    it runs; a checkpoint, then only that container made again: Odoo keeps
+    running and reconnects), then the template database with vector that
+    odoo.conf names and vector in Odoo's databases, made by the superuser.
+    On pgvector already: the template and the extension only."""
+    image, mount = workspace(name, storage)
+    _name("instance", instance)
+    if role not in ROLES:
+        raise HelperError(f"the role is {' or '.join(ROLES)}")
+    if not mounted(image, mount):
+        raise HelperError(f"the disk of workspace {name} is not mounted")
+    folder = mount / instance
+    project = folder / role
+    compose_file = project / "compose.yaml"
+    if project.is_symlink() or compose_file.is_symlink() or not compose_file.is_file():
+        raise HelperError(f"no project {instance}/{role} in workspace {name}")
+    if composehelper.on_cluster(project) is not None or composehelper.on_remote(project) is not None:
+        raise HelperError(f"{instance}/{role} has no database of its own: its PostgreSQL is the machine's cluster or "
+                          "another machine's")
+    meta = _meta(folder)
+    before = compose_file.read_text(encoding="utf-8")
+    was = _db_image(before)
+    major = next((m for m, plain in machinedb.PLAIN_IMAGE.items() if was == plain), None)
+    seconds = None
+    if machinedb.has_vector(was):
+        new = was
+    elif major is None:
+        raise HelperError(f"the database service of {instance}/{role} runs {was or 'no image'}, not "
+                          f"{' or '.join(machinedb.PLAIN_IMAGE.values())}: its image was changed by hand, OmniaCLI "
+                          "does not change it")
+    elif before.count(f"image: {was}\n") != 1:
+        raise HelperError(f"the compose.yaml of {instance}/{role} names {was} more than once: changed by hand")
+    else:
+        new = machinedb.IMAGE[major]
+        pulled = subprocess.run(["docker", "pull", "-q", new], env=ENV, capture_output=True, text=True, timeout=1800)
+        if pulled.returncode:
+            raise HelperError(f"docker pull {new} failed, nothing was changed: {pulled.stderr.strip()[-300:]}")
+        # what PostgreSQL writes when it stops, written now: its stop is short
+        _dedicated_sql(project, "postgres", "CHECKPOINT;\n")
+        _write(compose_file, before.replace(f"image: {was}\n", f"image: {new}\n"))
+        started = time.monotonic()
+        try:
+            _dc(project, "up", "-d", "--no-deps", "--timeout", "120", "db", timeout=600)
+            _dedicated_ready(project)
+        except (HelperError, subprocess.TimeoutExpired) as exc:
+            _write(compose_file, before)
+            _dc(project, "up", "-d", "--no-deps", "db", check=False, timeout=600)
+            raise HelperError(f"the database of {instance}/{role} did not start on {new} ({exc}): it runs on {was} "
+                              "again") from None
+        seconds = round(time.monotonic() - started, 1)
+    _dedicated_sql(project, "postgres", VECTOR_TEMPLATE_SQL)
+    databases = _dedicated_sql(project, "postgres", "SELECT datname FROM pg_database WHERE datallowconn AND NOT "
+                                                    "datistemplate AND pg_get_userbyid(datdba) = 'odoo' ORDER BY 1;\n"
+                               ).split()
+    for database in databases:
+        _dedicated_sql(project, database, machinedb.VECTOR_SQL)
+    meta[VECTOR_META] = [r for r in ROLES if r in {*(meta.get(VECTOR_META) or []), role}]
+    _write(folder / INSTANCE_FILE, json.dumps(meta) + "\n")
+    # odoo.conf names the template (its other values as saved): read by what Odoo creates next, no restart
+    conf(name, storage, instance, role, "{}")
+    return {"workspace": name, "instance": instance, "role": role, "image": new, "was": was,
+            "restarted_s": seconds, "databases": databases, "template": machinedb.VECTOR_TEMPLATE}
 
 
 def _dedicated_ready(project: Path, timeout: float = 180) -> None:
@@ -4759,7 +4878,8 @@ ACTIONS = {"disk": (disk, 3), "drop": (drop, 2), "limits": (limits, 3), "create"
            "machine-db-state": (machine_db_state, 0), "machine-db-mounts": (machine_db_mounts, 0),
            "machine-db-move": (machine_db_move, 4), "machine-db-purge": (machine_db_purge, 3),
            "machine-db-grant": (machine_db_grant, 1), "machine-db-ungrant": (machine_db_ungrant, 3),
-           "machine-db-port": (machine_db_port, 2),
+           "machine-db-port": (machine_db_port, 2), "machine-db-pgvector": (machine_db_pgvector, 1),
+           "db-pgvector": (db_pgvector, 4),
            "machine-db-archive-state": (machine_db_archive_state, 1), "machine-db-archive-on": (machine_db_archive_on, 5),
            "machine-db-archive-off": (machine_db_archive_off, 1), "machine-db-archive-base": (machine_db_archive_base, 1),
            "machine-db-recover": (machine_db_recover, 5), "machine-db-recover-sweep": (machine_db_recover_sweep, 0),

@@ -1066,6 +1066,19 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
      {% elif ent.series %}{{ _("This machine has no copy of {series} yet: switching on fetches it first.", series=ent.series) }}{% endif %}</p>
   <p class="muted" style="font-size: 13px">{% if ent.on %}{{ _("Its database becomes Enterprise when web_enterprise is installed in it; Odoo then asks for the subscription code, which is the customer's. Switching off is refused while a module of Odoo Enterprise is installed: Odoo would not start without its code.") }}
      {% else %}{{ _("Switching on mounts the code and restarts Odoo; no module is installed and the database stays Community until web_enterprise is installed in it (its own button, afterwards). The subscription code is the customer's.") }}{% endif %}</p>
+  {# Odoo 19 and later: the ai module of Odoo Enterprise needs vector in PostgreSQL, said before the switch and
+     added first (README, Odoo Enterprise) #}
+  {% if ent.pgvector %}{% set pv = ent.pgvector %}
+  <p id="ent-pgvector" style="color: var(--warn)">{{ _("Odoo Enterprise {series} has the module ai, which needs the extension vector of PostgreSQL: the PostgreSQL of {keys} does not have it, and an install that brings ai in fails (tried again, it passes without ai).", series=ent.series, keys=pv["keys"] | join(", ")) }}
+    {% if pv.where == "machine" %}{{ _("It is added to the machine's PostgreSQL, for all its instances.") }} <a href="{{ pv.machine }}" title="{{ _('Opens the Database tab of the machine, where pgvector is added to its PostgreSQL') }}">{{ _("Database of the machine ›") }}</a>
+    {% else %}{{ _("Add it first.") }}{% endif %}</p>
+  {% if pv.can %}
+  <div class="actions" style="justify-content: flex-end">
+    <button type="button" class="primary" id="ent-pgvector-add" data-url="{{ pv.url }}" data-production="{{ 1 if pv.production else 0 }}" {{ off }}
+      title="{{ _('Runs its database on the image of PostgreSQL with pgvector, the same PostgreSQL with the extension vector; then makes vector in its databases and in the template Odoo creates them from. The image is downloaded first; then only the database\'s container is made again: Odoo does not reach it for about a second, and does not restart. It is a job.') }}">{{ _("Add pgvector to PostgreSQL…") }}</button>
+  </div>
+  {% endif %}
+  {% endif %}
   {% if ent.can %}
   <div class="actions" style="justify-content: flex-end">
     {% if ent.on %}
@@ -1081,6 +1094,28 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
   {% elif ent.reason %}<p class="muted" style="font-size: 13px">{{ tr(ent.reason) }}</p>{% endif %}
   {% endif %}
 </section>
+{% if ent.pgvector and ent.pgvector.can %}
+<script>
+// Add pgvector to PostgreSQL… (README, Odoo Enterprise): asked in the page's dialog, a production's name typed; a job
+(function () {
+  const button = document.getElementById("ent-pgvector-add");
+  if (!button) return;
+  const ask = {{ _("Add pgvector to the PostgreSQL of {name}? Its database runs the image of PostgreSQL with pgvector: the same PostgreSQL 17, with the extension vector. The image is downloaded first, while everything runs; then only the database's container is made again: for about a second Odoo does not reach it (a few seconds on a busy database), a page loaded then answers an error, and Odoo goes on by itself without restarting. Then vector is made in its databases and in the template Odoo creates them from.", name=server.name) | tojson }};
+  const typed = {{ _("Write its name to confirm: it is a production.") | tojson }};
+  button.addEventListener("click", async () => {
+    const go = button.textContent.replace("…", "").trim(), production = button.dataset.production === "1";
+    const yes = production ? await omniaTypeName(`${ask}\n\n${typed}`, {{ server.name | tojson }}, go, button.title)
+      : await omniaAsk(ask, button);
+    if (!yes) return;
+    const resp = await fetch(button.dataset.url, {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
+                                                body: JSON.stringify(production ? {confirm: {{ server.name | tojson }}} : {})}).catch(() => null);
+    const data = resp ? await resp.json().catch(() => ({})) : {};
+    if (!resp || !resp.ok || !data.job) { omniaSay(data.error || data.detail || {{ _("Refused") | tojson }}); return; }
+    location.href = `{{ prefix }}/jobs/${data.job}`;
+  });
+})();
+</script>
+{% endif %}
 {% if ent.can %}
 <script>
 (function () {
