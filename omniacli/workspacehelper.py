@@ -8,6 +8,7 @@
     omniacli workspace-helper drop <workspace> <storage>
     omniacli workspace-helper limits <workspace> <cpus> <memory in GB>
     omniacli workspace-helper upstream <workspace> <storage> <instance> <role> <http port>|- <websocket port>|-
+    omniacli workspace-helper maintenance <workspace> <storage> <instance> <role> on|off
     omniacli workspace-helper login-path check | add | remove | sync <host or all>
     omniacli workspace-helper login-path keep on | off
     omniacli workspace-helper portal <host or -> | portal-names
@@ -115,6 +116,12 @@ of 127.0.0.1 (the container of an update without stopping, zerodowntime.py),
 or back to its own (-); a port where nothing answers is refused; nginx -t,
 or the site before is back; a reload, the requests under way end where they
 are. The ports are kept in <project>/upstream.json, root's, which web reads.
+
+maintenance <workspace> <storage> <instance> <role> on|off: the environment's
+server block answering its Odoo's 502 and 504 with a page of its own (503,
+Retry-After, the reader's language: a normal update has its Odoo stopped),
+or not; nginx -t, or the site before is back; kept in
+<project>/maintenance.json, root's, which web reads.
 
 portal <host or ->: the customers' portal, OmniaCLI's own panel on host
 (docs/portale-clienti.md), /etc/nginx/conf.d/omniacli-_portal.conf: port 80
@@ -2042,6 +2049,9 @@ def _sites(mount: Path, spec: dict, instances: list[str]) -> list[dict]:
             raise HelperError(f"{project}/.env has no HTTP_PORT or WEBSOCKET_PORT")
         site["http_port"] = int(env["HTTP_PORT"])
         site["websocket_port"] = int(env["WEBSOCKET_PORT"]) if workspaceweb.workers(conf) else None
+        # a normal update's page while its Odoo is stopped: kept
+        record = project / workspaceweb.MAINTENANCE_FILE
+        site["maintenance"] = record.is_file() and not record.is_symlink()
         # an update without stopping serves the environment from another container for its time: kept
         switched = _upstream_of(project)
         if switched:
@@ -2091,7 +2101,8 @@ def upstream(name: str, storage: str, instance: str, role: str, http_port: str, 
         return _upstream(name, storage, instance, role, http_port, websocket_port)
 
 
-def _upstream(name: str, storage: str, instance: str, role: str, http_port: str, websocket_port: str) -> dict:
+def _environment_site(name: str, storage: str, instance: str, role: str) -> tuple[Path, Path]:
+    """(project, site) of an environment of the workspace whose names are published."""
     image, mount = workspace(name, storage)
     _name("instance", instance)
     if role not in ROLES:
@@ -2104,6 +2115,11 @@ def _upstream(name: str, storage: str, instance: str, role: str, http_port: str,
     path = NGINX_SITES / f"omniacli-{name}.conf"
     if path.is_symlink() or not path.is_file():
         raise HelperError(f"workspace {name} has no site: its names are not published")
+    return project, path
+
+
+def _upstream(name: str, storage: str, instance: str, role: str, http_port: str, websocket_port: str) -> dict:
+    project, path = _environment_site(name, storage, instance, role)
     env = _env(project)
     if not (env.get("HTTP_PORT", "").isdigit() and env.get("WEBSOCKET_PORT", "").isdigit()):
         raise HelperError(f"{project}/.env has no HTTP_PORT or WEBSOCKET_PORT")
@@ -2150,6 +2166,39 @@ def _upstream(name: str, storage: str, instance: str, role: str, http_port: str,
         raise
     return {"workspace": name, "instance": instance, "role": role, "site": str(path), **then,
             "from": now, "own": then == own, "nginx": said}
+
+
+def maintenance(name: str, storage: str, instance: str, role: str, mode: str) -> dict:
+    """The environment's server block of the workspace's site answering its
+    Odoo's 502 and 504 with the maintenance page (on: a normal update has
+    stopped its Odoo), or not (off): nginx -t and a reload; kept in
+    <project>/maintenance.json, so the site written again keeps it."""
+    if mode not in ("on", "off"):
+        raise HelperError("usage: maintenance <workspace> <storage> <instance> <role> on|off")
+    with _site_lock(name):
+        project, path = _environment_site(name, storage, instance, role)
+        before = path.read_text(encoding="utf-8")
+        try:
+            text = workspaceweb.switch_maintenance(before, instance, role, mode == "on")
+        except ValueError as exc:
+            raise HelperError(f"{path}: {exc}") from None
+        record = project / workspaceweb.MAINTENANCE_FILE
+        if record.is_symlink():
+            raise HelperError(f"{record} is a symbolic link")
+        kept = record.read_text(encoding="utf-8") if record.is_file() else None
+        if mode == "on":
+            _write(record, json.dumps({"since": int(time.time())}) + "\n")
+        else:
+            record.unlink(missing_ok=True)
+        try:
+            said = _put_site(path, text)
+        except BaseException:
+            if kept is None:
+                record.unlink(missing_ok=True)
+            else:
+                _write(record, kept)
+            raise
+    return {"workspace": name, "instance": instance, "role": role, "maintenance": mode == "on", "nginx": said}
 
 
 def _tls(name: str, certificate: str) -> tuple[str, str] | None:
@@ -4214,7 +4263,7 @@ def enterprise_switch(name: str, storage: str, instance: str, mode: str) -> dict
 
 
 ACTIONS = {"disk": (disk, 3), "drop": (drop, 2), "limits": (limits, 3), "create": (create, 5), "remove": (remove, 3),
-           "web": (web, 3), "web-names": (web_taken, 1), "upstream": (upstream, 6), "owncert": (owncert, 2), "firewall": (firewall, 1), "template-install": (template_install, 1),
+           "web": (web, 3), "web-names": (web_taken, 1), "upstream": (upstream, 6), "maintenance": (maintenance, 5), "owncert": (owncert, 2), "firewall": (firewall, 1), "template-install": (template_install, 1),
            "conf": (conf, 5), "space": (space, 0),
            "storage-setup": (storage_setup, 0), "storage-check": (storage_check, 1), "storage-reset": (storage_reset, 1),
            "pitr-enable": (pitr_enable, 4), "pitr-base": (pitr_base, 4), "pitr-state": (pitr_state, 4),

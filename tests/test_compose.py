@@ -562,12 +562,24 @@ def test_setup_takes_its_values_on_its_input(tmp_path, monkeypatch):
 def test_the_requirements_of_a_repository(tmp_path, monkeypatch):
     monkeypatch.setattr(composehelper, "services", lambda project: ["odoo", "db"])
     [cmd] = composehelper.commands(tmp_path, "pip-requirements", ["odoo", "web"])
-    # the repository reaches the shell as $1, never in the script's text
-    assert cmd[:5] == ["exec", "-T", "odoo", "sh", "-c"] and cmd[-2:] == ["sh", "web"]
-    assert "pip install --user" in cmd[5] and "/mnt/customer-addons/$1/requirements.txt" in cmd[5]
+    # in a container of its own: an update stops the service before its code moves (stop-service); the
+    # repository reaches the shell as $1, never in the script's text
+    assert cmd[:9] == ["run", "--rm", "--no-deps", "-T", "--entrypoint", "sh", "odoo", "-c",
+                       composehelper.SCRIPTS["pip-requirements"]] and cmd[-2:] == ["sh", "web"]
+    assert "pip install --user" in cmd[8] and "/mnt/customer-addons/$1/requirements.txt" in cmd[8]
     for bad in (["odoo", "../etc"], ["odoo", "a;b"], ["odoo"], ["web", "x"]):
         with pytest.raises(composehelper.HelperError):
             composehelper.commands(tmp_path, "pip-requirements", bad)
+
+
+def test_stop_service_stops_that_service_only(tmp_path, monkeypatch):
+    """An update stops the Odoo service before its code moves, its database kept for the update of the modules."""
+    monkeypatch.setattr(composehelper, "services", lambda project: ["odoo", "db"])
+    assert composehelper.commands(tmp_path, "stop-service", ["odoo"]) == [["stop", "odoo"]]
+    assert "stop-service" in composehelper.WITH_ARGUMENTS
+    for bad in ([], ["odoo", "db"], ["web"]):
+        with pytest.raises(composehelper.HelperError):
+            composehelper.commands(tmp_path, "stop-service", bad)
 
 
 

@@ -13,6 +13,8 @@ import re
 import socket
 import subprocess
 
+from . import i18n
+
 # the challenges of Let's Encrypt (certbot --webroot), root's
 ACME_ROOT = "/var/lib/omniacli-acme"
 # an upload to Odoo (an attachment, a database restore is not done here)
@@ -87,6 +89,7 @@ def conf_text(workspace: str, sites: list[dict], tls: tuple[str, str] | None, ip
                 f"    ssl_certificate {tls[0]};", f"    ssl_certificate_key {tls[1]};",
                 f"    client_max_body_size {MAX_BODY};",
                 f"    proxy_read_timeout {TIMEOUT};", f"    proxy_send_timeout {TIMEOUT};",
+                *(maintenance_lines() if site.get("maintenance") else []),
                 "    location /websocket {",
                 f"        proxy_pass http://127.0.0.1:{ws_port};",
                 "        proxy_http_version 1.1;",
@@ -329,6 +332,68 @@ def switch_upstream(text: str, instance: str, role: str, ports: dict[int, int]) 
         raise ValueError(f"the server block of {instance} {role} proxies to none of the ports "
                          f"{', '.join(str(p) for p in sorted(ports))}")
     return "\n".join(lines)
+
+
+# The environment's page while a normal update has its Odoo stopped (the docker plugin's stop_serving): nginx
+# answers what would be its 502 with a 503, Retry-After and a page in the reader's language, until Odoo answers
+# again; a file of root's in the role's project says it, which a site written again keeps
+MAINTENANCE_FILE = "maintenance.json"
+MAINTENANCE_TEXT = "Update in progress, come back shortly"
+MAINTENANCE_RETRY = 30
+_MAINTENANCE_BEGIN = "    # omniacli: maintenance, its Odoo stopped for an update"
+_MAINTENANCE_END = "    # omniacli: maintenance end"
+_NGINX_STRING_SAFE = re.compile(r"[^\"$\\\n]*")
+
+
+def maintenance_page(language: str) -> str:
+    """The page, one line for nginx's return: its title the text in language
+    (i18n's catalog), reloaded by itself."""
+    text = i18n.gettext(language, MAINTENANCE_TEXT)
+    page = (f"<!doctype html><html lang='{language}'><meta charset='utf-8'>"
+            f"<meta name='viewport' content='width=device-width'><meta http-equiv='refresh' content='15'>"
+            f"<title>{text}</title><body style='font-family:sans-serif;text-align:center;padding-top:20vh'>"
+            f"<h1>{text}</h1></body></html>")
+    if not _NGINX_STRING_SAFE.fullmatch(page):
+        raise ValueError(f"the maintenance page of {language} has a character nginx's string does not take")
+    return page
+
+
+def maintenance_lines() -> list[str]:
+    """The lines of a server block that answer its Odoo's 502 and 504 (Odoo
+    stopped, starting) with the maintenance page: 503, Retry-After, in the
+    first language of the reader's Accept-Language that the catalog has,
+    else in English. Odoo's own answers pass as they are."""
+    lines = [_MAINTENANCE_BEGIN, "    error_page 502 504 = @omniacli_maintenance;",
+             "    location @omniacli_maintenance {", "        default_type text/html;", "        charset utf-8;",
+             f"        add_header Retry-After {MAINTENANCE_RETRY} always;",
+             '        add_header Cache-Control "no-store" always;']
+    for language in i18n.LANGUAGES:
+        if language != i18n.DEFAULT and i18n.catalog(language).get(MAINTENANCE_TEXT):
+            lines += [f'        if ($http_accept_language ~* "^{language}") {{',
+                      f'            return 503 "{maintenance_page(language)}";', "        }"]
+    return lines + [f'        return 503 "{maintenance_page(i18n.DEFAULT)}";', "    }", _MAINTENANCE_END]
+
+
+def switch_maintenance(text: str, instance: str, role: str, on: bool) -> str:
+    """The site's text with the server block of instance's role answering
+    with the maintenance page when its Odoo does not (on), or not (off)."""
+    lines = text.split("\n")
+    mark = f"# {instance} {role}"
+    try:
+        start = lines.index(mark)
+    except ValueError:
+        raise ValueError(f"the site has no server block of {instance} {role}") from None
+    if start + 1 >= len(lines) or lines[start + 1] != "server {":
+        raise ValueError(f"the site has no server block of {instance} {role}")
+    end = lines.index("}", start + 2)
+    block = lines[start + 2:end]
+    if _MAINTENANCE_BEGIN in block:
+        first, last = block.index(_MAINTENANCE_BEGIN), block.index(_MAINTENANCE_END)
+        block = block[:first] + block[last + 1:]
+    if on:
+        at = next((i for i, line in enumerate(block) if line.startswith("    location ")), len(block))
+        block = block[:at] + maintenance_lines() + block[at:]
+    return "\n".join(lines[:start + 2] + block + lines[end:])
 
 
 def workers(conf: str) -> int:

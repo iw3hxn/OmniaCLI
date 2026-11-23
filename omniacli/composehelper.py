@@ -129,11 +129,18 @@ command of the caller's, and runs docker with an environment of its own:
                                          on the input, the helper's own file):
                                          the options its Odoo knows
     pip-requirements <odoo service> <repository>
-                                         in the running service, as its
-                                         user: pip install --user of the
+                                         in a container of the service of
+                                         its own (the service may be
+                                         stopped: an update stops it before
+                                         its code moves), as its user: pip
+                                         install --user of the
                                          requirements.txt of that repository
                                          of addons (none: said), on the
-                                         volume of its data
+                                         volume of its data, which its Odoo
+                                         reads
+    stop-service <service>               that service stopped, the others
+                                         kept running (the database an
+                                         update of the modules needs)
     setup <odoo service> <db>            in the running service, odoo shell
                                          runs odoo/setup_database.py on a new
                                          database: the admin's password and
@@ -334,7 +341,7 @@ WITH_ARGUMENTS = ("logs", "version", "port", "dump", "load", "update", "psql", "
                   "pg-report", "pg-terminate", "neutralize", "pip-requirements", "terminal",
                   "mail-list", "mail-get", "mail-clear", "pg-settings", "pg-set", "pg-reset", "db-restart",
                   "modules", "mail-send", "mail-inbox", "update-list",
-                  "next-update", "next-start", "next-stop", "next-state")
+                  "next-update", "next-start", "next-stop", "next-state", "stop-service")
 # the tuning's actions that read their values on the input (pg_tune())
 TUNE_ACTIONS = ("pg-set", "pg-reset", "db-restart")
 # a staging's caught mail (stacktemplates.MAIL_SERVICE, templates' compose.yaml):
@@ -904,10 +911,17 @@ def commands(project: Path, action: str, args: list[str], major: int | None = No
             raise HelperError("usage: options <service>")
         return [_script(service(project, args[0]), "options")]
     if action == "pip-requirements":
-        # pip-requirements <odoo service> <repository>: in the running service
+        # pip-requirements <odoo service> <repository>: in a container of its own, the service maybe stopped (an
+        # update stops it before its code moves); the packages go to the volume of its data, which it reads
         if len(args) != 2 or not REPOSITORY.fullmatch(args[1]) or ".." in args[1]:
             raise HelperError("usage: pip-requirements <service> <repository>")
-        return [_script(service(project, args[0]), "pip-requirements", args[1])]
+        return [["run", "--rm", "--no-deps", "-T", "--entrypoint", "sh", service(project, args[0]), "-c",
+                 SCRIPTS["pip-requirements"], "sh", args[1]]]
+    if action == "stop-service":
+        # stop-service <service>: that one stopped, the others kept running (the database of an update)
+        if len(args) != 1:
+            raise HelperError("usage: stop-service <service>")
+        return [["stop", service(project, args[0])]]
     if action == "setup":
         # setup <odoo service> <database>: the values on the helper's input
         if len(args) != 2:

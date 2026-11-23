@@ -415,6 +415,62 @@ def test_the_helper_switches_the_site(web_root, monkeypatch):
     assert not site.exists() and not (web_root["tmp"] / "nginx" / ".omniacli-acme.lock").exists()
 
 
+def test_the_maintenance_page_on_and_off():
+    """The server block of an environment answers its Odoo's 502 and 504
+    with a page of its own: 503, Retry-After, the reader's language (the
+    catalog's), English else; off, the site is the one of before."""
+    sites = [{"instance": "main", "role": "production", "names": ["acme.it"], "http_port": 20000, "websocket_port": None},
+             {"instance": "main", "role": "test", "names": ["test.acme.it"], "http_port": 20002, "websocket_port": 20003}]
+    text = workspaceweb.conf_text("acme", sites, ("/c/f.pem", "/c/k.pem"), ipv6=False, omniacli="127.0.0.1:8090")
+    on = workspaceweb.switch_maintenance(text, "main", "production", True)
+    production, test = on.split("# main test")
+    assert "error_page 502 504 = @omniacli_maintenance;" in production and test == text.split("# main test")[1]
+    assert f"add_header Retry-After {workspaceweb.MAINTENANCE_RETRY} always;" in production
+    assert 'if ($http_accept_language ~* "^it") {' in production and "Aggiornamento in corso, torna tra poco" in production
+    assert "Update in progress, come back shortly" in production and production.count("return 503 ") == 2
+    # before the locations, so it applies to all of them; the proxying is the same
+    assert production.index("error_page") < production.index("location /websocket")
+    assert workspaceweb.switch_maintenance(on, "main", "production", True) == on
+    assert workspaceweb.switch_maintenance(on, "main", "production", False) == text
+    assert workspaceweb.switch_maintenance(text, "main", "production", False) == text
+    # a site written while it is on keeps it
+    kept = workspaceweb.conf_text("acme", [{**sites[0], "maintenance": True}, sites[1]], ("/c/f.pem", "/c/k.pem"),
+                                  ipv6=False, omniacli="127.0.0.1:8090")
+    assert kept == on
+    with pytest.raises(ValueError):
+        workspaceweb.switch_maintenance(text, "other", "production", True)
+    # nginx's string: no quote, no variable
+    for language in ("en", "it"):
+        page = workspaceweb.maintenance_page(language)
+        assert '"' not in page and "$" not in page and f"lang='{language}'" in page
+
+
+def test_the_helper_puts_the_maintenance_page(web_root):
+    storage, site = str(web_root["storage"]), web_root["site"]
+    workspacehelper.web("acme", storage, spec())
+    project = web_root["storage"] / "acme" / "main" / "production"
+    made = workspacehelper.maintenance("acme", storage, "main", "production", "on")
+    assert made["maintenance"] and (project / workspaceweb.MAINTENANCE_FILE).is_file()
+    assert "@omniacli_maintenance" in site.read_text().split("# main test")[0]
+    # the site written again keeps it while it lasts
+    workspacehelper.web("acme", storage, spec())
+    assert "@omniacli_maintenance" in site.read_text()
+    # nginx -t refuses: the site and the record of before are back
+    web_root["web"]["nginx_t"] = 1
+    with pytest.raises(HelperError, match="nginx -t refused"):
+        workspacehelper.maintenance("acme", storage, "main", "production", "off")
+    assert (project / workspaceweb.MAINTENANCE_FILE).is_file() and "@omniacli_maintenance" in site.read_text()
+    web_root["web"]["nginx_t"] = 0
+    off = workspacehelper.maintenance("acme", storage, "main", "production", "off")
+    assert not off["maintenance"] and not (project / workspaceweb.MAINTENANCE_FILE).exists()
+    assert "@omniacli_maintenance" not in site.read_text()
+    assert workspacehelper.maintenance("acme", storage, "main", "production", "off")["nginx"] == "the site is unchanged"
+    for args, message in ((("main", "production", "maybe"), "usage"), (("nope", "production", "on"), "no environment"),
+                          (("main", "staging", "on"), "not production or test")):
+        with pytest.raises(HelperError, match=message):
+            workspacehelper.maintenance("acme", storage, *args)
+
+
 # --- the compose helper's commands -----------------------------------------------
 
 @pytest.fixture
@@ -494,3 +550,5 @@ async def test_the_switch_of_an_instance_that_cannot(client, env):
     assert (await client.post(api, headers=POST, json={"enabled": False})).json()["enabled"] is False
     # an update of it is the normal one: the app's lookup says off
     assert zerodowntime.choice(env["settings"].servers["srv"].test) is None
+    # nor has it the maintenance page of a normal update: its nginx is not OmniaCLI's
+    assert zerodowntime.site(env["settings"].servers["srv"].test) is None

@@ -71,6 +71,7 @@ from ..plugin_api import (
     start,
     stop,
 )
+from .. import zerodowntime
 
 # the first Odoo with odoo db dump/load (--force, --neutralize) and odoo neutralize in its image's
 # command line: cli/db.py and cli/neutralize.py, read in odoo:16.0 of 2025-09-09 and odoo:17.0 of
@@ -436,10 +437,48 @@ class DockerPlugin(ServicePlugin):
         await self.pip_requirements(job, instance)
         await self._update_changed(job, instance)
 
+    async def stop_serving(self, job: Job, instance: Instance) -> bool:
+        """The Odoo service stopped before an update moves the repositories
+        its container mounts (./addons), the database kept for the update of
+        the modules: a running Odoo would serve the old Python with the new
+        views, templates and static files, and import new code, until its
+        restart."""
+        if instance.restart.type != "compose":
+            return False
+        service = instance.options.odoo_service
+        # an instance of a workspace: its users get the maintenance page meanwhile, not nginx's 502
+        target = zerodowntime.site(instance)
+        if target is not None:
+            await zerodowntime.maintenance(job, target, True)
+        job.log(f"--- {service} stopped while its code moves and its modules are updated: its users wait until it "
+                "starts again (the update without stopping keeps it serving)")
+        try:
+            await _helper(job, instance, "stop-service", service, timeout=HELPER_TIMEOUT)
+        except BaseException:
+            if target is not None:
+                await zerodowntime.maintenance(job, target, False)
+            raise
+        return True
+
+    async def start_serving(self, job: Job, instance: Instance, wait: bool = True) -> None:
+        """The maintenance page taken away once the Odoo service answers
+        /web/login (at most zerodowntime.HEALTH_TIMEOUT), or at once: until
+        then nginx gives it for Odoo's 502 while it starts."""
+        target = zerodowntime.site(instance)
+        if target is None:
+            return
+        port = instance.options.http_port
+        if wait and port and not await zerodowntime.answers(port):
+            job.warn(f"{instance.options.odoo_service} did not answer /web/login within "
+                     f"{zerodowntime.HEALTH_TIMEOUT} s: the maintenance page is taken away all the same")
+        await zerodowntime.maintenance(job, target, False)
+
     async def pip_requirements(self, job: Job, instance: Instance, only: str | None = None) -> None:
         """The requirements.txt of each repository of addons (or of the one
-        named), installed in the running Odoo service (compose-helper
-        pip-requirements): before its modules are updated or installed."""
+        named), installed for the Odoo service in a container of its own
+        (compose-helper pip-requirements: the service may be stopped for
+        the update), on the volume its Odoo reads: before its modules are
+        updated or installed."""
         for repo in instance.repositories:
             if only is None or repo.name == only:
                 job.log(f"--- Python packages of {repo.name}")

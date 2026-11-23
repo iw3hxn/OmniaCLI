@@ -101,11 +101,20 @@ class Target:
 
 # the app's: instance -> Target (switched on, and it can), a text (switched on, and why it cannot), None (off)
 _lookup: Callable[[object], "Target | str | None"] | None = None
+# the app's too: instance -> its Target when its workspace's nginx serves it with https, switched on or not (the
+# maintenance page of a normal update), None otherwise
+_site: Callable[[object], "Target | None"] | None = None
 
 
-def configure(lookup: Callable[[object], "Target | str | None"] | None) -> None:
-    global _lookup
-    _lookup = lookup
+def configure(lookup: Callable[[object], "Target | str | None"] | None,
+              site: Callable[[object], "Target | None"] | None = None) -> None:
+    global _lookup, _site
+    _lookup, _site = lookup, site
+
+
+def site(instance) -> Target | None:
+    """Where the instance's users reach it through the nginx OmniaCLI writes (None: not such an instance)."""
+    return _site(instance) if _site is not None else None
 
 
 def choice(instance) -> Target | str | None:
@@ -347,6 +356,35 @@ def said(job: Job, found: dict, how: str, url: str) -> None:
         job.notes["unserved"] = found
     job.log(f"Users not served: {found['seconds']:.1f} s ({how}; {found['failed']} of {found['asked']} asks of "
             f"{url}/web/login through nginx failed, one every {int(found['every'] * 1000)} ms)")
+
+
+# --- the page of a normal update -------------------------------------------------
+
+async def maintenance(job: Job, target: Target, on: bool) -> bool:
+    """nginx of the environment answering its Odoo's 502 and 504 with the
+    maintenance page (503, Retry-After, the reader's language), or not; a
+    failure is said, never fatal: the update goes on, its users get nginx's
+    502 instead."""
+    code, out = await ops.capture(workspace_helper("maintenance", target.workspace, target.storage, target.instance,
+                                                   target.role, "on" if on else "off"), timeout=HELPER_TIMEOUT)
+    lines = [line for line in out.splitlines() if line.strip()]
+    if code:
+        job.warn(f"nginx of {target.url}: the maintenance page was not {'put' if on else 'taken away'}: "
+                 f"{lines[-1] if lines else code}")
+        return False
+    job.log(f"--- nginx of {target.url}: " + ("the maintenance page while Odoo is stopped (503, Retry-After)" if on
+                                             else "the maintenance page taken away"))
+    return True
+
+
+async def answers(port: int, most: float = HEALTH_TIMEOUT) -> bool:
+    """/web/login 200 on port within most seconds."""
+    began = time.monotonic()
+    while time.monotonic() - began < most:
+        if await _status(f"http://127.0.0.1:{port}/web/login") == 200:
+            return True
+        await asyncio.sleep(0.5)
+    return False
 
 
 # --- the second Odoo ----------------------------------------------------------

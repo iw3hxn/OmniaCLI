@@ -7324,21 +7324,25 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         async def action(job):
             previous = repo.branch
             await ops.backup_before_update(job, inst, backup_folder(inst))
-            await workspaceops.update_repository(job, repo, branch)
-            current = inst
-            if branch != previous:
-                try:
-                    done = await set_repositories(name, {inst.role: [
-                        {**row, "branch": branch} if row["name"] == repo.name else row
-                        for row in repository_rows(inst.repositories)]})
-                except BaseException:
-                    # the servers file still names the old branch: the copy goes back to it
-                    await ops.run(job, repo.git("checkout", previous), cwd=repo.path, check=False)
-                    raise
-                current = getattr(done, inst.role)
-                job.log(f"{repo.name} follows {branch} now")
-            await current.plugin.after_pull(job, current)
-            await ops.restart(job, current)
+
+            async def move():
+                await workspaceops.update_repository(job, repo, branch)
+                current = inst
+                if branch != previous:
+                    try:
+                        done = await set_repositories(name, {inst.role: [
+                            {**row, "branch": branch} if row["name"] == repo.name else row
+                            for row in repository_rows(inst.repositories)]})
+                    except BaseException:
+                        # the servers file still names the old branch: the copy goes back to it
+                        await ops.run(job, repo.git("checkout", previous), cwd=repo.path, check=False)
+                        raise
+                    current = getattr(done, inst.role)
+                    job.log(f"{repo.name} follows {branch} now")
+                await current.plugin.after_pull(job, current)
+
+            # its Odoo stopped before the code moves (stop_serving), started after
+            await ops.while_stopped(job, inst, move)
             job.result = {"server": name, "repository": repo.name, "branch": branch}
 
         what = f"Update {repo.name} of {inst.key}" + (f" to {branch}" if branch != repo.branch else "")
@@ -10979,7 +10983,20 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return zerodowntime.Target(workspace=ws.name, storage=ws.storage, instance=name, role=instance.role,
                                    url=instance.site.rstrip("/"), project=Path(instance.restart.service))
 
-    zerodowntime.configure(zero_downtime_of)
+    def site_of(instance) -> "zerodowntime.Target | None":
+        """The instance's site when its workspace's nginx serves it with https (the maintenance page of a normal
+        update, zerodowntime.site), switched to the update without stopping or not."""
+        if not isinstance(instance, Instance) or instance.restart.type != "compose" or instance.type != "docker":
+            return None
+        found = workspace_of(instance.server)
+        if found is None or not found[0].storage or not found[0].domain \
+                or not (instance.site or "").startswith("https://"):
+            return None
+        ws, name = found
+        return zerodowntime.Target(workspace=ws.name, storage=ws.storage, instance=name, role=instance.role,
+                                   url=instance.site.rstrip("/"), project=Path(instance.restart.service))
+
+    zerodowntime.configure(zero_downtime_of, site_of)
 
     def zero_downtime_view(request: Request, instance: Instance, me: Principal) -> dict:
         lang, view = request_language(request), customer_view(request)
