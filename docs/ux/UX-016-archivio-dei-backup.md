@@ -326,3 +326,7 @@ Fonti nel codice:
 - `/home/carlo/Projects/OmniaCLI/omniacli/app.py`: `destination_rows` e `destination_save` (12949-12968), `IMPORT_KEEP_DAYS` e `imports_sweep` (14868-14948), `upload_ticket` (14314), `restore_new` (14492);
 - `/home/carlo/Projects/OmniaCLI/omniacli/bell.py`: le voci da guardare;
 - `/home/carlo/Projects/OmniaCLI/README.md`: «Backup destinations» (1943), «Instances and Backups of every machine» (1981), «Is a backup good» (3197), tabella delle azioni (Backup before an update, 251).
+
+## Risposte di Carlo, seconda volta (23/11/2026)
+
+D-N1 senza destinazione il backup si fa e avvisa; D-N3 staging e test senza copia fuori sede; D-N5 il centrale tiene una copia sigillata delle destinazioni di ogni macchina, chiavi comprese (per ber e ridix si richiede prima). D-N2 e D-N4 con la raccomandata.
