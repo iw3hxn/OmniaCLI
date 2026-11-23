@@ -83,9 +83,12 @@ def _program(cmd: list) -> str:
         return "sudo"
     name = Path(args[0]).name
     if name == "omniacli":
-        # a root helper: its action too ("omniacli compose-helper next-start"), not only "omniacli"
-        words = [a for a in args[1:] if not a.startswith("-")][:2]
-        return " ".join([name, *words])
+        # a root helper: its action too ("omniacli compose-helper next-start"), not only "omniacli"; the compose
+        # helper's comes after the project (Restart.command: compose-helper <project> <action> ...)
+        words = [a for a in args[1:] if not a.startswith("-")]
+        if words[:1] == ["compose-helper"]:
+            words = words[:1] + words[2:]
+        return " ".join([name, *words[:2]])
     return name
 
 

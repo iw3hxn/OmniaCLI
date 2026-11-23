@@ -5,6 +5,7 @@
     omniacli workspace-helper disk <workspace> <storage> <size in GB>
     omniacli workspace-helper create <workspace> <storage> <instance> <template> <values as JSON>
     omniacli workspace-helper remove <workspace> <storage> <instance>
+    omniacli workspace-helper drop <workspace> <storage>
     omniacli workspace-helper limits <workspace> <cpus> <memory in GB>
     omniacli workspace-helper upstream <workspace> <storage> <instance> <role> <http port>|- <websocket port>|-
     omniacli workspace-helper login-path check | add | remove | sync <host or all>
@@ -850,8 +851,15 @@ def disk(name: str, storage: str, size_gb: str) -> dict:
 def drop(name: str, storage: str) -> dict:
     """A workspace's disk taken away, when nothing is on it (lost+found
     only): a New instance that failed, a workspace deleted before any
-    instance. Its mount unit, docker's drop-in and its slice go too; a disk
-    with an instance's folder is refused (its instance is removed first)."""
+    instance or after its last one. Its mount unit, docker's drop-in and its
+    slice go too (the slice stopped first: with its file gone, a slice that
+    held containers stays loaded until it is), and the rest of the
+    workspace's machine state: the customer's certificate
+    (/etc/omniacli/certs/<workspace>, which a workspace made again with the
+    name would find and serve), and its site, its lock and its Let's
+    Encrypt certificate when the publication after its last instance did not
+    take them away. A disk with an instance's folder is refused (its
+    instance is removed first)."""
     image, mount = workspace(name, storage)
     if image.is_symlink():
         raise HelperError(f"{image} is a symbolic link")
@@ -859,13 +867,29 @@ def drop(name: str, storage: str) -> dict:
         left = sorted(p.name for p in mount.iterdir() if p.name != "lost+found")
         if left:
             raise HelperError(f"the disk of {name} holds {', '.join(left)}: remove its instances first")
-    unit = unit_name(mount)
+    made = {"workspace": name}
+    # the site first: it names the certificate taken away below, and nginx refuses a site whose file is missing
+    site = NGINX_SITES / f"omniacli-{name}.conf"
+    if site.is_file():
+        made["nginx"] = _put_site(site, None)
+    (NGINX_SITES / f".omniacli-{name}.lock").unlink(missing_ok=True)
+    if (LETSENCRYPT / f"omniacli-{name}").exists():
+        _run("certbot", "delete", "--cert-name", f"omniacli-{name}", "--non-interactive", check=False)
+    own = OWN_CERTS / name
+    made["certificate"] = own.exists() or own.is_symlink()
+    if own.is_symlink() or own.is_file():
+        own.unlink()
+    elif own.is_dir():
+        shutil.rmtree(own)
+    unit, slice_unit = unit_name(mount), slice_name(name)
     _run("systemctl", "disable", "--now", unit, check=False)
     if os.path.ismount(mount):
         _run("umount", str(mount))
-    for path in (SYSTEMD / unit, SYSTEMD / "docker.service.d" / f"omniacli-{name}.conf", SYSTEMD / slice_name(name)):
+    _run("systemctl", "stop", slice_unit, check=False)
+    for path in (SYSTEMD / unit, SYSTEMD / "docker.service.d" / f"omniacli-{name}.conf", SYSTEMD / slice_unit):
         path.unlink(missing_ok=True)
     _run("systemctl", "daemon-reload")
+    _run("systemctl", "reset-failed", slice_unit, check=False)
     if mount.is_dir() and not os.path.ismount(mount):
         _run("chattr", "-i", str(mount), check=False)
         if not any(mount.iterdir()):
@@ -874,7 +898,7 @@ def drop(name: str, storage: str) -> dict:
     image.unlink(missing_ok=True)
     if _mail_guard_file():
         mail_guard_apply()
-    return {"workspace": name, "dropped": str(image), "size_gb": freed}
+    return {**made, "dropped": str(image), "size_gb": freed, "slice": slice_unit}
 
 
 def _used(image: Path) -> int:

@@ -8,6 +8,7 @@ instance; what installing one takes; the install as a job, in test for a
 developer, in production for an admin with a confirmation and a backup."""
 import json
 import re
+import subprocess
 
 import pytest
 
@@ -464,9 +465,11 @@ def test_the_helper_installs_into_the_running_service_and_lists_the_modules(tmp_
     monkeypatch.setattr(composehelper, "services", lambda project: ["odoo", "db"])
     monkeypatch.setattr(composehelper, "psql_options", lambda project, name: ("--user", "postgres"))
     [cmd] = composehelper.commands(tmp_path, "update", ["odoo", "DB_test", "--install", "date_range,report_xlsx"])
-    assert cmd[:5] == ["exec", "-T", "odoo", "sh", "-c"] and cmd[-2:] == ["DB_test", "date_range,report_xlsx"]
+    assert cmd[:5] == ["exec", "-T", "odoo", "sh", "-c"] and cmd[-3:] == ["DB_test", "date_range,report_xlsx",
+                                                                          "--without-demo=all"]
     script = composehelper.SCRIPTS["install-modules"]
-    assert ' -i "$2" --stop-after-init' in script and "DB_test" not in cmd[5]
+    assert ' -i "$2" --stop-after-init --no-http "$3"' in script and "DB_test" not in cmd[5]
+    assert "without-demo" not in script
     assert script.index("database.is_neutralized") < script.index("--stop-after-init") and script.endswith("exit $code")
     for bad in ("web;x", "Base", "a,../b"):
         with pytest.raises(composehelper.HelperError, match="not a list of module names"):
@@ -475,6 +478,45 @@ def test_the_helper_installs_into_the_running_service_and_lists_the_modules(tmp_
     assert cmd[:4] == ["exec", "-T", "--user", "postgres"] and cmd[-2:] == ["DB_test", composehelper.MODULES_QUERY]
     with pytest.raises(composehelper.HelperError, match="usage"):
         composehelper.commands(tmp_path, "modules", ["db"])
+
+
+@pytest.mark.parametrize("version, flag", [
+    ("Odoo Server 16.0-20250909", "--without-demo=all"), ("Odoo Server 17.0-20260908", "--without-demo=all"),
+    ("Odoo Server 18.0-20261104", "--without-demo=all"), ("Odoo Server saas~18.3-20250701", "--without-demo=all"),
+    # 19 and 20: a boolean (odoo/tools/config.py, nargs '?'); =all is warned about, "since 19.0, invalid boolean value"
+    ("Odoo Server 19.0-20261112", "--without-demo"), ("Odoo Server 20.0-20261112", "--without-demo"),
+    # not known: the older flag, which 19 and 20 still read
+    ("", "--without-demo=all")])
+def test_the_flag_without_demo_is_the_one_of_the_image_odoo(tmp_path, monkeypatch, version, flag):
+    """update --install and init ask the image's Odoo its version (odoo --version: in the running service, in a
+    container of its own for a new database) and pass the flag it reads."""
+    from omniacli import composehelper
+
+    monkeypatch.setattr(composehelper, "services", lambda project: ["odoo", "db"])
+    monkeypatch.setattr(composehelper, "caller", lambda: ("omniacli", 0, [0]))
+    monkeypatch.setattr(composehelper, "problems", lambda project, uid, groups: [])
+    monkeypatch.setattr(composehelper, "on_cluster", lambda project: None)
+    ran = []
+
+    def fake_run(cmd, **kwargs):
+        ran.append(cmd)
+        out = version if "--version" in cmd else ""
+        return subprocess.CompletedProcess(cmd, 0 if out or "--version" not in cmd else 1, stdout=out, stderr="")
+    monkeypatch.setattr(composehelper.subprocess, "run", fake_run)
+    assert composehelper.run([str(tmp_path), "update", "odoo", "DB_test", "--install", "date_range"]) == 0
+    asked, done = ran
+    assert asked[-5:] == ["exec", "-T", "odoo", "odoo", "--version"]
+    assert done[-1] == flag and done[-3:-1] == ["DB_test", "date_range"]
+    ran.clear()
+    assert composehelper.run([str(tmp_path), "init", "odoo", "DB_test", "base"]) == 0
+    asked, done = ran
+    assert asked[-8:] == ["run", "--rm", "--no-deps", "-T", "--entrypoint", "odoo", "odoo", "--version"]
+    assert done[done.index("--stop-after-init") + 1] == flag
+    assert [part for part in done if "without-demo" in part] == [flag]
+    # the other updates ask nothing
+    ran.clear()
+    assert composehelper.run([str(tmp_path), "update", "odoo", "DB_test", "--modules", "date_range"]) == 0
+    assert len(ran) == 1 and not any("without-demo" in part for part in ran[0])
 
 
 async def test_the_plugin_reads_what_the_database_knows(monkeypatch):

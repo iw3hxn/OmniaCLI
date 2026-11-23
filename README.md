@@ -1417,6 +1417,14 @@ The job, and that of **Delete the instance…** (the instance's own page, More; 
 the Jobs page and its own page also when the creation failed (the server
 then leaves the workspace) or after the removal.
 
+A workspace deleted with no instance of its own left (Settings ›
+Workspaces) takes its machine state with it (`workspace-helper drop`): its
+disk, its mount unit and docker's drop-in, its slice (stopped first: with
+its file gone, a slice that held containers stayed loaded), the customer's
+certificate in `/etc/omniacli/certs/<workspace>`, and its nginx site, lock
+and Let's Encrypt certificate if a publication after its last instance left
+them. A workspace made again with the name starts without a certificate.
+
 **The customer's modules**: on the instance's page, **Modules › Code › Add a
 repository** takes an `https://` address (no user or token in it: those are
 the workspace's git credentials, on the workspace's page under External
@@ -3022,6 +3030,7 @@ as its arguments, never in a script's text:
 | `load <odoo service> <db> [--neutralize]` | in a container of its own of the service (`run --rm`, which starts the database it depends on: the service may be stopped), the zip read from the input into a file, `odoo db load --force` |
 | `update <odoo service> <db>` | `click-odoo-update`: in a container of its own of the service (`run --rm --no-deps`), OmniaCLI's tools mounted read only; on a neutralized database the crons that were off are off again afterwards |
 | `update <odoo service> <db> --modules a,b` | `odoo -u a,b --stop-after-init --no-http` in the service's container, with the same care for the crons |
+| `update <odoo service> <db> --install a,b`, `init <odoo service> <db> <modules> [<language>]` | `odoo -i a,b --stop-after-init --no-http` without demo data, in the running service (the catalog of modules) or, a new database, in a container of its own; the flag is the one of the image's Odoo, asked first (`odoo --version`): `--without-demo=all` before 19, `--without-demo` from 19 (a boolean there: Odoo 19 and 20 warn of `=all`, *invalid boolean value*). From 19 a module installed into an existing database takes the demo data that database has: Odoo has no flag against it |
 | `psql <database service> <db>` | `psql` on the caller's terminal (the web shell), as the image's `postgres`, else the container's own user: never root, its `\!` runs commands; a service that only has root is refused |
 
 The zip goes through the helper's input and output: the helper never opens a

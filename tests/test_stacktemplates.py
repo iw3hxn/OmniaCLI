@@ -93,6 +93,11 @@ def test_compose_helper_init(monkeypatch, tmp_path):
         ["run", "--rm", "-T", "odoo", "odoo", "-d", "acme", "-i", "plm,base", "--stop-after-init",
          "--without-demo=all", "--no-http", "--load-language", "it_IT"]]
     assert composehelper.commands(tmp_path, "init", ["odoo", "acme", "base"])[0][-1] == "--no-http"
+    # the flag of the image's Odoo: a boolean from 19 (=all warned about there), the modules before
+    for major, flag in ((16, "--without-demo=all"), (17, "--without-demo=all"), (18, "--without-demo=all"),
+                        (19, "--without-demo"), (20, "--without-demo")):
+        cmd = composehelper.commands(tmp_path, "init", ["odoo", "acme", "base"], major)[0]
+        assert cmd[cmd.index("--stop-after-init") + 1] == flag
     for args in (["odoo", "acme"], ["odoo", "acme", "plm;x"], ["odoo", "acme", "base", "italian"],
                  ["nope", "acme", "base"], ["odoo", "a b", "base"]):
         with pytest.raises(HelperError):
@@ -320,6 +325,50 @@ def test_limits(root):
                           (("acme", "1", "inf"), "memory is 0")):
         with pytest.raises(HelperError, match=message):
             workspacehelper.limits(*args)
+
+
+def test_drop_takes_the_whole_machine_state_of_the_workspace(root, monkeypatch, tmp_path):
+    """A workspace deleted after its last instance: its disk, and its slice
+    stopped (with its file gone, a slice that held containers stayed loaded),
+    the customer's certificate, a site, lock or Let's Encrypt certificate a
+    publication left. Made again with the name, it finds no certificate."""
+    for name, path in (("NGINX_SITES", "nginx"), ("LETSENCRYPT", "letsencrypt"), ("OWN_CERTS", "certs")):
+        (tmp_path / path).mkdir()
+        monkeypatch.setattr(workspacehelper, name, tmp_path / path)
+    tested = []
+    monkeypatch.setattr(workspacehelper.subprocess, "run",
+                        lambda cmd, **kw: tested.append(cmd) or workspacehelper.subprocess.CompletedProcess(cmd, 0, "", ""))
+    monkeypatch.setattr(workspacehelper, "_tool", lambda name: name)
+    storage = str(root["storage"])
+    workspacehelper.disk("acme", storage, "1")
+    workspacehelper.limits("acme", "1", "1")
+    own = tmp_path / "certs" / "acme"
+    own.mkdir()
+    for part in ("fullchain.pem", "privkey.pem"):
+        (own / part).write_text("pem")
+    assert workspacehelper._tls("acme", "own") is not None
+    site = tmp_path / "nginx" / "omniacli-acme.conf"
+    site.write_text("server {}\n")
+    (tmp_path / "nginx" / ".omniacli-acme.lock").write_text("")
+    (tmp_path / "letsencrypt" / "omniacli-acme").mkdir()
+    other = tmp_path / "certs" / "beta"
+    other.mkdir()
+    root["calls"].clear()
+    made = workspacehelper.drop("acme", storage)
+    assert made["certificate"] is True and made["slice"] == "omniacli_acme.slice" and "nginx" in made
+    assert not own.exists() and other.is_dir()
+    assert not site.exists() and not (tmp_path / "nginx" / ".omniacli-acme.lock").exists()
+    assert ["nginx", "-t"] in tested
+    assert ["certbot", "delete", "--cert-name", "omniacli-acme", "--non-interactive"] in root["calls"]
+    assert not (root["systemd"] / "omniacli_acme.slice").exists()
+    calls = root["calls"]
+    stop, reload = calls.index(["systemctl", "stop", "omniacli_acme.slice"]), calls.index(["systemctl", "daemon-reload"])
+    assert stop < reload < calls.index(["systemctl", "reset-failed", "omniacli_acme.slice"])
+    # made again with the same name: no certificate of the customer's until one is uploaded
+    workspacehelper.disk("acme", storage, "1")
+    assert workspacehelper._tls("acme", "own") is None
+    # nothing left: said, nothing refused
+    assert workspacehelper.drop("acme", storage)["certificate"] is False
 
 
 def test_run_needs_root(monkeypatch):

@@ -53,7 +53,9 @@ command of the caller's, and runs docker with an environment of its own:
     update <odoo service> <db> --install a,b
                                          odoo -i a,b --stop-after-init, in
                                          the running service, an existing
-                                         database (the catalog of modules)
+                                         database (the catalog of modules),
+                                         without demo data (the flag of the
+                                         image's Odoo: without_demo())
     next-update <odoo service> <db>      an update without stopping: the
                                          changed modules (click-odoo-update) of
                                          the new code, OmniaCLI's copy in
@@ -79,8 +81,9 @@ command of the caller's, and runs docker with an environment of its own:
                                          runs commands)
     init <odoo service> <db> <modules> [<language>]
                                          odoo -d <db> -i <modules>
-                                         --stop-after-init, without demo data,
-                                         in a container of its own: a new
+                                         --stop-after-init, without demo data
+                                         (the flag of the image's Odoo), in a
+                                         container of its own: a new
                                          database (a workspace's instance)
     link-filestore <odoo service> <db> <source project> <source db>
                                          the filestore of db made of hard
@@ -429,9 +432,10 @@ SCRIPTS = {
     # no outgoing mail, no scheduled actions (Odoo 16 and later)
     "neutralize": ODOO_DB + 'exec odoo neutralize -d "$1"',
     "update-modules": ODOO_DB + CRONS_BEFORE + 'odoo -d "$1" -u "$2" --stop-after-init --no-http; ' + CRONS_AFTER,
-    # modules of the catalog installed into an existing database (UX-008 §7.2), without demo data
-    "install-modules": ODOO_DB + CRONS_BEFORE + 'odoo -d "$1" -i "$2" --stop-after-init --no-http '
-                                                '--without-demo=all; ' + CRONS_AFTER,
+    # modules of the catalog installed into an existing database (UX-008 §7.2), without demo data: $3 is
+    # without_demo() of the image's Odoo
+    "install-modules": ODOO_DB + CRONS_BEFORE + 'odoo -d "$1" -i "$2" --stop-after-init --no-http "$3"; '
+                       + CRONS_AFTER,
     # Apps › Update the module list, as Odoo's button does: a fixed line, the database as $1
     "update-list": ODOO_DB + "echo 'print(\"omniacli: modules updated, added:\", "
                              "env[\"ir.module.module\"].update_list()); env.cr.commit()' | "
@@ -746,8 +750,45 @@ def db_target(project: Path, name: str, terminal: bool = False) -> tuple[str, st
 RESTART_KEEPS = ("db",)
 
 
-def commands(project: Path, action: str, args: list[str]) -> list[list[str]]:
-    """The docker compose commands of an action, its arguments checked."""
+_ODOO_VERSION = re.compile(r"Odoo Server (?:saas~)?(\d+)")
+# the major version from which --without-demo is a boolean of new databases (odoo/tools/config.py of 19.0 and
+# 20.0: "--without-demo", nargs '?'; another value is warned about, "since 19.0, invalid boolean value")
+DEMO_BOOLEAN_FROM = 19
+
+
+def without_demo(major: int | None) -> str:
+    """The flag that installs modules without their demo data in the Odoo of
+    that major version: before 19 --without-demo takes the modules (all, the
+    database's new ones too); from 19 it is a boolean (a module installed in
+    an existing database takes the demo data the database has). Unknown:
+    the older one, which 19 and 20 still read (with a warning)."""
+    return "--without-demo" if major is not None and major >= DEMO_BOOLEAN_FROM else "--without-demo=all"
+
+
+def installs_modules(action: str, args: list[str]) -> bool:
+    """The actions that install modules without their demo data: the flag of the image's Odoo (without_demo())."""
+    return action == "init" or (action == "update" and args[2:3] == ["--install"])
+
+
+def odoo_major(project: Path, service_name: str, running: bool) -> int | None:
+    """The major version of the Odoo of the service's image (odoo --version):
+    in its running container, or in a container of its own (a new database:
+    the service is not started yet). None when it does not say."""
+    cmd = (["exec", "-T", service_name, "odoo", "--version"] if running
+           else ["run", "--rm", "--no-deps", "-T", "--entrypoint", "odoo", service_name, "--version"])
+    try:
+        done = subprocess.run(compose(project, *cmd), env=ENV, cwd=project, capture_output=True, text=True,
+                              stdin=subprocess.DEVNULL, timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    found = _ODOO_VERSION.search(done.stdout or "")
+    return int(found.group(1)) if done.returncode == 0 and found else None
+
+
+def commands(project: Path, action: str, args: list[str], major: int | None = None) -> list[list[str]]:
+    """The docker compose commands of an action, its arguments checked;
+    major: the Odoo of the image (odoo_major()), for the flag of an action
+    that installs modules (installs_modules())."""
     if action in ACTIONS:
         if args:
             raise HelperError(f"{action} takes no arguments")
@@ -798,8 +839,10 @@ def commands(project: Path, action: str, args: list[str]) -> list[list[str]]:
             modules = args[3].split(",")
             if not all(MODULE.fullmatch(m) for m in modules):
                 raise HelperError(f"{args[3]!r} is not a list of module names")
-            script = "update-modules" if args[2] == "--modules" else "install-modules"
-            return [_script(service(project, args[0]), script, _database(args[1]), ",".join(modules))]
+            if args[2] == "--modules":
+                return [_script(service(project, args[0]), "update-modules", _database(args[1]), ",".join(modules))]
+            return [_script(service(project, args[0]), "install-modules", _database(args[1]), ",".join(modules),
+                            without_demo(major))]
         raise HelperError("usage: update <service> <database> [--modules a,b | --install a,b]")
     if action == "next-update":
         # next-update <odoo service> <database>: click-odoo-update with the addons path of the new code
@@ -833,7 +876,7 @@ def commands(project: Path, action: str, args: list[str]) -> list[list[str]]:
         if args[3:] and not LANGUAGE.fullmatch(args[3]):
             raise HelperError(f"{args[3]!r} is not a language, as it_IT")
         return [["run", "--rm", "-T", service(project, args[0]), "odoo", "-d", _database(args[1]),
-                 "-i", ",".join(modules), "--stop-after-init", "--without-demo=all", "--no-http",
+                 "-i", ",".join(modules), "--stop-after-init", without_demo(major), "--no-http",
                  *(["--load-language", args[3]] if args[3:] else [])]]
     if action == "login":
         # login <odoo service> <database> users|<user id>: in the running
@@ -1591,6 +1634,9 @@ def run(argv: list[str]) -> int:
         if cut:
             return logs_cut(project, [*LOGS, *options, name], cut)
     cmds = commands(project, action, args)
+    if installs_modules(action, args):
+        # its arguments checked first: the flag without demo data is the image's Odoo's
+        cmds = commands(project, action, args, odoo_major(project, args[0], running=action != "init"))
     env = on_cluster(project) if action in (*CREATES_DATABASE, "init") else None
     if env is None:
         return _each(project, cmds, extra)

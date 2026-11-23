@@ -182,10 +182,13 @@ async def drop_disk(job: Job | None, ws: Workspace) -> str:
     if code:
         return f"its disk stays: {out.splitlines()[-1] if out else code}"
     try:
-        freed = json.loads(out.splitlines()[-1]).get("size_gb", 0)
+        made = json.loads(out.splitlines()[-1])
     except (ValueError, IndexError):
-        freed = 0
-    return f"its disk ({freed} GB) taken away"
+        made = {}
+    made = made if isinstance(made, dict) else {}
+    # its slice goes with it, and the customer's certificate: a workspace made again with the name has none
+    return f"its disk ({made.get('size_gb', 0)} GB) taken away" + (
+        ", the customer's certificate with it" if made.get("certificate") else "")
 
 
 async def remove_instance(job: Job, ws: Workspace, instance: str, linked: bool = False) -> None:

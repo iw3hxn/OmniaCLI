@@ -287,8 +287,13 @@ async def test_failure_names_the_program_past_sudo(fake_sudo):
     assert ops._program(["sudo", "-n", "systemctl", "restart", "x"]) == "systemctl"
     assert ops._program(["/v/bin/python", "-m", "pip"]) == "python"
     # a root helper: its action, which said «omniacli exited with code 2» alone
-    assert ops._program(["sudo", "-n", "/usr/bin/omniacli", "compose-helper", "next-start", "/srv/x"]) \
-        == "omniacli compose-helper next-start"
+    # the compose helper's action comes after its project, as Restart.command writes it (the project named
+    # instead of the action before)
+    from omniacli.config import Restart
+    cmd = Restart(type="compose", service="/srv/x").command("next-start", "odoo")
+    assert ops._program(cmd) == "omniacli compose-helper next-start"
+    assert ops._program(["sudo", "-n", "/usr/bin/omniacli", "workspace-helper", "upstream", "acme", "default"]) \
+        == "omniacli workspace-helper upstream"
     with pytest.raises(JobFailed, match="^false exited with code 1$"):
         await ops.run(job(), ops.as_user("odoo", ["false"]))
 
