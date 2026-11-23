@@ -349,8 +349,10 @@ async def test_the_settings_page_and_the_test(ent, client, monkeypatch):
     body = {"url": "https://github.com/odoo/enterprise.git", "username": "bot", "token": "s3cret-token"}
     resp = await client.post("/api/enterprise/test", headers=POST, json=body)
     assert resp.json() == {"ok": True, "versions": ["18.0", "19.0"], "branches": 3}
-    assert seen[0][-3:] == ["--heads", "--", "https://github.com/odoo/enterprise.git"]
-    assert not any("s3cret-token" in part for part in seen[0])
+    # the app's background tasks may ask capture too (a service's state, «ControlGroup…»): the test's own call
+    [remote] = [c for c in seen if "ls-remote" in c]
+    assert remote[-3:] == ["--heads", "--", "https://github.com/odoo/enterprise.git"]
+    assert not any("s3cret-token" in part for c in seen for part in c)
     resp = await client.post("/api/enterprise/save", headers=POST, json=body)
     assert resp.json()["source"] == {"url": body["url"], "kind": "https", "username": "bot", "token_set": True}
     # saved again with the token empty: the one saved stays
