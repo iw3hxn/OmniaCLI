@@ -263,6 +263,8 @@
     event.preventDefault();
     const picked = versions.querySelector("input:checked");
     if (!picked || !saved.checked) return;
+    // the form is checked here (novalidate): a domain that is no DNS name says so under its field (base.html)
+    if (!document.getElementById("ni-domain").checkValidity()) return;
     if (password.value.length < 8) { window.omniaFieldError(password, T.short); return; }
     error.textContent = ""; create.disabled = true; create.textContent = T.creating;
     const resp = await fetch(`${base}/api/instances/new`, {
