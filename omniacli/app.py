@@ -140,7 +140,8 @@ from .config import (
     server_to_dict,
 )
 from .jobs import FINISHED, INTERRUPTED, STARTED as JOBS_STARTED, SUCCESS, Job, JobFailed, JobManager, filter_jobs
-from .plugin_api import ENTRY_POINT_GROUP, PLUGIN_API, ActionRefused, Host, ServicePlugin, restore_fetched
+from .plugin_api import (ENTRY_POINT_GROUP, PLUGIN_API, ActionRefused, Host, ServicePlugin, needs_vector, restore_fetched,
+                         vector_refusal)
 from .pullcrypto import new_key
 from .links import LIST_TIMEOUT, LinkClients, describe_error, link_headers, proxy_websocket
 from .monitor import FILE as MONITOR_FILE, Monitor
@@ -5783,6 +5784,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         production = done.production
         job.log(f"--- the database of the archive into {production.key}" + (" (neutralized)" if neutralize else ""))
         with instancearchive.backup_of(archive) as inner:
+            await vector_for_restore(job, production, inner)
             await restore_fetched(job, production, inner, {"neutralize": neutralize})
         for role in roles:
             if role != "production":
@@ -6340,6 +6342,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
         async def backup_and_restore(job, prod, target) -> dict:
             backup_zip = await ops.backup_into(job, prod, backup_folder(prod), {"no_filestore": False})
+            await vector_for_restore(job, target, backup_zip)
             await target.plugin.restore(job, target, backup_zip, {"neutralize": True})
             return {"backup": backup_zip.name}
 
@@ -6504,6 +6507,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
         async def fill(job, target) -> dict:
             job.log(f"--- the backup {file} of {parent} on {machine} into {target.key}, neutralized")
+            await vector_for_restore(job, target, dest)
             await target.plugin.restore(job, target, dest, {"neutralize": True})
             return {"backup": file}
 
@@ -6556,6 +6560,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             prod, target = settings.servers[parent].production, settings.servers[server].production
             job.log(f"--- a new backup of {prod.key}")
             backup_zip = await ops.backup_into(job, prod, backup_folder(prod), {"no_filestore": False})
+            await vector_for_restore(job, target, backup_zip)
             await target.plugin.restore(job, target, backup_zip, {"neutralize": True})
             data = stagings.load(stagings_file)
             data[server] = {**data.get(server, {}), "parent": parent, "backup": backup_zip.name,
@@ -14550,8 +14555,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             job.log(f"--- the backup {name} of {prod.key} into {target.key}, neutralized")
             if archive:
                 with instancearchive.backup_of(path) as inner:
+                    await vector_for_restore(job, target, inner)
                     await restore_fetched(job, target, inner, {"neutralize": True})
             else:
+                await vector_for_restore(job, target, path)
                 await target.plugin.restore(job, target, path, {"neutralize": True})
             return {"backup": name, "from_backup": True}
 
@@ -14936,6 +14943,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 "catalog_read": catalog.meta().get("read"),
             },
         }
+        vector = vector_plan(info, template, bool(parent))
+        if vector:
+            # the dump makes vector: the staging or the instance gets pgvector before the restore (vector_for_restore)
+            report["pgvector"] = vector
         if info["modules"] is None:
             report["missing_modules"]["note"] = ("The dump has no table of modules that can be read (not a COPY of "
                                                  "ir_module_module): nothing was compared")
@@ -14961,6 +14972,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                              "without them (Odoo logs errors and their data stays unreachable)")
             if not oca and not not_found and not unchecked:
                 parts.append("every installed module is available")
+            if vector:
+                parts.append(vector["text"])
             report["dry_run"] = True
             report["message"] = ". ".join(parts) + "."
             report["next"] = ("Nothing was started. Ask the user to confirm, then call restore_new_instance again with "
@@ -14969,6 +14982,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return report
         if "problem" in report["room"]:
             raise ActionRefused(report["room"]["problem"])
+        if vector and vector["problem"]:
+            raise ActionRefused(vector["problem"])
         if blocking or oca_blocking:
             names = [*blocking, *(m for r in oca_blocking for m in r["modules"])]
             raise ActionRefused(
@@ -15011,6 +15026,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if still:
                 job.log(f"WARNING: restored without the code of {len(still)} modules: {', '.join(still)}. Odoo logs "
                         "errors for them and their data stays unreachable until their code is added")
+            # its dump makes vector: its own PostgreSQL gets pgvector first, else the tables of vectors are lost
+            await vector_for_restore(job, target, path)
             wrapped = None
             try:
                 if info["kind"] == "sql":
@@ -15179,6 +15196,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             plan.pop(key, None)
         if "problem" in plan["room"]:
             plan["room"]["problem"] = i18n.tr(lang, plan["room"]["problem"])
+        if plan.get("pgvector"):
+            # the dump makes vector: what the staging or the instance gets, or why it cannot hold it
+            plan["pgvector"] = {k: i18n.tr(lang, v) if v else v for k, v in plan["pgvector"].items()}
         made = plan["new_instance"]["server"]
         return {**plan, "instance": "" if staging_of else made[len(ws.name) + 1:],
                 "name_problem": i18n.tr(lang, problem) if problem else "",
@@ -20774,8 +20794,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                               inst.options.db_service or "db")
         except (OSError, machinedb.ClusterError):
             return None
-        roles = instance_meta(inst).get(workspacehelper.VECTOR_META) or []
-        return {"where": "dedicated", "has": machinedb.has_vector(image) and inst.role in roles, "image": image,
+        has = machinedb.vector_ready(project, inst.role, inst.options.db_service or "db")
+        return {"where": "dedicated", "has": bool(has), "image": image,
                 "major": next((m for m, i in machinedb.PLAIN_IMAGE.items() if i == image), "")}
 
     def vector_missing(srv) -> list:
@@ -20793,6 +20813,48 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         """Where the one who reads adds pgvector to that PostgreSQL."""
         return ("Add pgvector to PostgreSQL… in the Database tab of the machine" if state["where"] == "machine"
                 else f"Add pgvector to PostgreSQL… in Settings › Odoo Enterprise of {server}")
+
+    async def vector_for_restore(job, target, backup: Path) -> None:
+        """A staging or a new instance about to take backup, whose dump makes
+        vector (the ai module of Odoo Enterprise installed in it), on a
+        PostgreSQL of its own without it: pgvector added to that one first
+        (db-pgvector: its image, the template with vector, the extension), so
+        the restore keeps the tables of vectors; its production is not
+        touched. On the machine's cluster, which serves productions, refused
+        with the remedy; a database whose files do not say, left as it is."""
+        if target.restart.type != "compose" or not await asyncio.to_thread(needs_vector, backup):
+            return
+        ready = machinedb.vector_ready(Path(target.restart.service), target.role, target.options.db_service or "")
+        found = workspace_of(target.server)
+        if ready is not False:
+            return
+        if on_machine_db(target) or found is None:
+            raise JobFailed(vector_refusal(target, backup) or f"{target.key} has no extension vector")
+        ws, instance = found
+        job.log(f"--- {backup.name} uses the extension vector of PostgreSQL (the ai module of Odoo Enterprise): "
+                f"{target.key} gets PostgreSQL with pgvector before the restore; its production is not touched")
+        done = await workspaceops._helper(job, "db-pgvector", ws.name, ws.storage, instance, target.role,
+                                          timeout=MACHINE_TIMEOUT * 2)
+        job.log(f"The database of {target.key} runs on {done.get('image')}, with the template {done.get('template')} "
+                "that its odoo.conf names: the restore creates the database from it, with vector")
+
+    def vector_plan(info: dict, template, staging: bool) -> dict | None:
+        """What the plan of a restore into a new instance or a staging says of
+        vector: {"text", "problem"} when the dump makes it, None otherwise."""
+        if dumpinfo.VECTOR not in (info.get("extensions") or []):
+            return None
+        if getattr(template, "on_machine", False) and not machinedb.cluster_has_vector():
+            problem = ("The backup uses the extension vector of PostgreSQL, which the machine's cluster does not "
+                       "have: restored there, its tables of vectors would be lost. Add pgvector to PostgreSQL… in the "
+                       "Database tab of the machine first")
+            return {"text": problem, "problem": problem}
+        if getattr(template, "on_remote", False):
+            return {"text": "The backup uses the extension vector of PostgreSQL: the database of another machine the "
+                            "new instance uses must have it, or its tables of vectors are lost", "problem": None}
+        return {"text": ("The backup uses the extension vector of PostgreSQL (the ai module of Odoo Enterprise): the "
+                         "staging will have PostgreSQL with pgvector; its production is not touched") if staging
+                else ("The backup uses the extension vector of PostgreSQL (the ai module of Odoo Enterprise): the "
+                      "new instance will have PostgreSQL with pgvector"), "problem": None}
 
     def vector_failed(lines: list[str]) -> bool:
         """Odoo stopped on the ai module of Odoo Enterprise: its PostgreSQL has no vector, or its role may not make it."""

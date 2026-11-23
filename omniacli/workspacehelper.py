@@ -349,7 +349,7 @@ CREATE EXTENSION IF NOT EXISTS {machinedb.VECTOR};
 ALTER DATABASE {machinedb.VECTOR_TEMPLATE} ALLOW_CONNECTIONS false;
 """
 # the roles of an instance whose PostgreSQL has pgvector and the template above (instance.json)
-VECTOR_META = "pgvector"
+VECTOR_META = machinedb.VECTOR_META
 # Odoo's role in a new database cluster: no superuser, its password from the
 # environment of the database's service, never in this file
 DB_ROLE_SCRIPT = """# written by omniacli workspace-helper
@@ -3787,14 +3787,7 @@ def _dedicated_sql(project: Path, database: str, sql: str) -> str:
     return done.stdout
 
 
-def _db_image(compose_text: str, service: str = "db") -> str:
-    """The image of the database service of a compose.yaml's text, "" when none."""
-    try:
-        data = yaml.safe_load(compose_text) or {}
-    except yaml.YAMLError:
-        return ""
-    svc = (data.get("services") or {}).get(service) if isinstance(data, dict) else None
-    return str(svc.get("image") or "") if isinstance(svc, dict) else ""
+_db_image = machinedb.service_image
 
 
 def _db_template(template, name: str, meta: dict, role: str) -> str:

@@ -70,6 +70,7 @@ import subprocess
 import time
 from pathlib import Path
 
+import yaml
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -89,6 +90,8 @@ VECTOR = "vector"
 # odoo.conf's db_template): the extension vector made in it by the superuser, so what Odoo creates
 # (a restore, a staging) has it; Odoo's role is no superuser and may not make it (it is not trusted)
 VECTOR_TEMPLATE = "omniacli_template"
+# instance.json: the roles whose database of its own has the image with pgvector and that template
+VECTOR_META = "pgvector"
 STORAGE_BASE = "/var/lib/omniacli-storage"
 REGISTRY = Path(os.environ.get("OMNIACLI_MACHINE_DB", "/etc/omniacli/machine-db.json"))
 FOLDER = ".machine-db"
@@ -479,6 +482,53 @@ def image_of(text: str) -> str:
     """The image a cluster's compose.yaml names, "" when none."""
     found = re.search(r"(?m)^    image: (\S+)$", text or "")
     return found.group(1) if found else ""
+
+
+def service_image(text: str, service: str = "db") -> str:
+    """The image of service in the text of a compose.yaml, "" when none."""
+    try:
+        data = yaml.safe_load(text or "") or {}
+    except yaml.YAMLError:
+        return ""
+    svc = (data.get("services") or {}).get(service) if isinstance(data, dict) else None
+    return str(svc.get("image") or "") if isinstance(svc, dict) else ""
+
+
+def cluster_has_vector() -> bool | None:
+    """The machine's cluster runs the image with pgvector (its compose.yaml says it); None: no cluster here."""
+    found = next(iter(registry().values()), None)
+    project = Path(str((found or {}).get("project") or ""))
+    if not found or not project.is_absolute():
+        return None
+    try:
+        return has_vector(image_of((project / "compose.yaml").read_text(encoding="utf-8")))
+    except OSError:
+        return None
+
+
+def vector_ready(project: Path, role: str, db_service: str) -> bool | None:
+    """Whether a database of an instance OmniaCLI made gives Odoo the
+    extension vector, from its files (PostgreSQL is not asked): on the
+    machine's cluster, the cluster's image; with a database of its own, the
+    image with pgvector and the template with vector its odoo.conf names
+    (instance.json's VECTOR_META). None: not one OmniaCLI made (no
+    instance.json), a database of another machine, files that do not say."""
+    project = Path(project)
+    try:
+        meta = json.loads((project.parent / "instance.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(meta, dict) or db_service == "remote":
+        return None
+    if db_service == DB_SERVICE:
+        return cluster_has_vector()
+    try:
+        image = service_image((project / "compose.yaml").read_text(encoding="utf-8"), db_service or SERVICE)
+    except OSError:
+        return None
+    if not image:
+        return None
+    return has_vector(image) and role in (meta.get(VECTOR_META) or [])
 
 
 def compose_text(major: str, uid: int, gid: int, roots: list[str], port: int | None = None,

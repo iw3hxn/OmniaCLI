@@ -42,6 +42,8 @@ from pathlib import Path
 from typing import Any, Callable, Union
 
 from . import ops as _ops
+from . import dumpinfo as _dumpinfo
+from . import machinedb as _machinedb
 from . import sqldump as _sqldump
 from .composehelper import TOOLS as COMPOSE_TOOLS
 from .config import ROLES, SERVER_NAME, USER_NAME, ConfigError, Instance, Repository, Server
@@ -635,6 +637,34 @@ def catches_mail(instance: Instance) -> bool:
     except (OSError, ValueError):
         return False
     return isinstance(meta, dict) and meta.get(MAIL_CAPTURE) is True
+
+
+def needs_vector(backup: Path) -> bool:
+    """The dump makes the PostgreSQL extension vector (the ai module of Odoo Enterprise 19 installed in it)."""
+    try:
+        return _dumpinfo.VECTOR in _dumpinfo.extensions(Path(backup))
+    except _dumpinfo.DumpError:
+        return False
+
+
+def vector_refusal(instance: Instance, backup: Path) -> str | None:
+    """Why backup may not be restored into instance: its dump makes vector
+    and the instance's PostgreSQL, one OmniaCLI made, has none. Odoo's restore
+    goes past psql's errors: the tables of the ai module would be lost and
+    the restore said a success. None: it may (no vector, or a database whose
+    files do not say, which is not guessed)."""
+    if instance.restart.type != "compose" or not needs_vector(backup):
+        return None
+    ready = _machinedb.vector_ready(Path(instance.restart.service), instance.role,
+                                    str(getattr(instance.options, "db_service", "") or ""))
+    if ready is not False:
+        return None
+    where = ("the Database tab of the machine" if getattr(instance.options, "db_service", "") == _machinedb.DB_SERVICE
+             else f"Settings › Odoo Enterprise of {instance.server}")
+    return (f"{Path(backup).name} uses the extension vector of PostgreSQL (the ai module of Odoo Enterprise), which "
+            f"the PostgreSQL of {instance.key} does not have: restored, its tables of vectors would be lost. Nothing "
+            f"restored, {instance.key} not touched: add it with Add pgvector to PostgreSQL… in {where}, then restore "
+            "again")
 
 
 # the methods a plugin must write as async def

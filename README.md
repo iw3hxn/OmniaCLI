@@ -1368,6 +1368,28 @@ makes it as the superuser:
   fields, the users compared). A busy production takes longer to stop, a few
   seconds: the checkpoint before keeps it short. A cluster's read replica on
   another machine keeps its image (the job says it).
+- **A backup whose dump makes `vector`** (`CREATE EXTENSION … vector` before
+  its first table, read by `dumpinfo.extensions`: the ai modules installed in
+  it). A staging and a new instance are made from the template of this
+  machine (its compose.yaml, its `dbinit/`), never from their production's
+  files: with today's templates their PostgreSQL has pgvector and the template
+  with `vector` already, whatever the production runs. Made from a template of
+  before on `postgres:17`, or a staging Rebuilt, its own PostgreSQL gets
+  pgvector first (`db-pgvector`, the job says it), then the restore; its
+  production is not touched. The plan of **Restore into a new instance / as a
+  staging** says it (*the staging will have PostgreSQL with pgvector; its
+  production is not touched*); on the machine's cluster without pgvector it is
+  refused there with the remedy. Every other restore into an instance OmniaCLI
+  made (Restore, Copy production to test, from a link, a schedule) is refused
+  before anything is stopped when its PostgreSQL has no `vector`: *restored,
+  its tables of vectors would be lost*, with Add pgvector to PostgreSQL… as the
+  remedy. Proved locally: a production on `postgres:17`, a backup made by
+  `odoo db dump` of a database with `ai_embedding (embedding vector(1536))`
+  and 3 rows; its restore into the production refused; a staging from today's
+  template and one from a template of before after `db-pgvector` both have the
+  column and the 3 rows (the same md5), while the second, loaded before
+  `db-pgvector`, had lost the table with `odoo db load` answering 0; the
+  production still on `postgres:17` without `vector`.
 - **The install job**: when Odoo stops on `ai` for `vector`, the job's last
   line says it in the reader's language (the module ai of Odoo Enterprise came
   in with the module, the database has no `vector`, the remedy and where it

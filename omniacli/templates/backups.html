@@ -526,6 +526,8 @@
                   p.kind === "zip" ? " · " + (p.filestore ? T.withFiles : T.withoutFiles) : ""));
     lines.push(el("p", {}, way() === "instance" ? fill(T.planBecomes, {server: ni.server, template: ni.template})
                                                 : fill(T.planStaging, {server: ni.staging_of, template: ni.template})));
+    // its dump makes vector (Odoo Enterprise's ai module): the staging or the instance gets pgvector, or why not
+    if (p.pgvector) lines.push(el("p", {class: p.pgvector.problem ? "error" : "bk-ok"}, p.pgvector.text));
     const room = p.room || {};
     lines.push(el("p", {class: room.problem ? "error" : "muted"}, room.problem ||
       (room.free_gb === null || room.free_gb === undefined ? fill(T.roomUnknown, {need: number.format(room.needed_gb)})
@@ -575,6 +577,7 @@
       if (instance && plan.name_problem) off = fill(T.blockedName, {why: plan.name_problem});
       else if (instance && ws && ws.why) off = fill(T.blockedWs, {name: ws.label, why: ws.why});
       else if ((plan.room || {}).problem) off = fill(T.blockedRoom, {why: plan.room.problem});
+      else if ((plan.pgvector || {}).problem) off = plan.pgvector.problem;
       else if (uncovered && !(allowMissing && allowMissing.checked)) off = T.blockedMissing;
     }
     create.disabled = !!off;

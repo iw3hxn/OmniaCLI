@@ -73,6 +73,43 @@ def modules_of(lines) -> tuple[dict[str, tuple[str, str | None]] | None, int]:
     return None, count
 
 
+VECTOR = "vector"
+_EXTENSION = re.compile(r'^CREATE EXTENSION (?:IF NOT EXISTS )?"?([a-z][a-z0-9_]{0,62})"?')
+# pg_dump writes the extensions before the first table: no further is read
+_EXTENSIONS_END = ("CREATE TABLE ", "COPY ")
+_EXTENSIONS_LINES = 20000
+
+
+def extensions_of(lines) -> set[str]:
+    """The PostgreSQL extensions a dump makes (CREATE EXTENSION), read up to
+    its first table."""
+    found = set()
+    for number, line in enumerate(lines):
+        if line.startswith(_EXTENSIONS_END) or number >= _EXTENSIONS_LINES:
+            break
+        match = _EXTENSION.match(line)
+        if match:
+            found.add(match.group(1))
+    return found
+
+
+def extensions(path: Path) -> set[str]:
+    """extensions_of the dump.sql of a backup zip or of a plain SQL dump;
+    DumpError when it is neither. vector: Odoo Enterprise's ai module, whose
+    tables a PostgreSQL without pgvector cannot hold."""
+    try:
+        if zipfile.is_zipfile(path):
+            with zipfile.ZipFile(path) as zf:
+                if "dump.sql" not in zf.namelist():
+                    raise DumpError(f"{path.name} is not an Odoo backup: it has no dump.sql")
+                with zf.open("dump.sql") as raw:
+                    return extensions_of(io.TextIOWrapper(raw, encoding="utf-8", errors="replace"))
+        with open(path, encoding="utf-8", errors="replace") as text:
+            return extensions_of(text)
+    except (OSError, zipfile.BadZipFile) as exc:
+        raise DumpError(f"{path.name} cannot be read: {exc}") from exc
+
+
 def _major(text) -> int | None:
     found = _MAJOR.match(str(text or ""))
     return int(found.group(1)) if found else None
@@ -118,7 +155,7 @@ def read(path: Path) -> dict:
         modules = sorted(str(m) for m in manifest["modules"])
     return {"kind": kind, "database": str(manifest.get("db_name") or "") or None, "major": major,
             "version": base_version or manifest.get("version"), "modules": modules, "size": size,
-            "filestore": filestore}
+            "filestore": filestore, "extensions": sorted(extensions(path))}
 
 
 def wrap_sql(sql: Path, dest: Path, major: int | None, database: str | None = None) -> Path:

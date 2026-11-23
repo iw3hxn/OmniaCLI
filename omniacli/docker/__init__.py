@@ -70,6 +70,7 @@ from ..plugin_api import (
     run,
     start,
     stop,
+    vector_refusal,
 )
 
 # the first Odoo with odoo db dump/load (--force, --neutralize) and odoo neutralize in its image's
@@ -574,6 +575,11 @@ class DockerPlugin(ServicePlugin):
         elif major is not None and found != major:
             raise JobFailed(f"{backup_zip.name} is a database of Odoo {found}, {instance.key} runs Odoo "
                             f"{major}: a database is not loaded into another version")
+        # a dump with the tables of Odoo Enterprise's ai module into a PostgreSQL without vector: refused before
+        # anything is touched (Odoo's restore would lose them and say it succeeded)
+        refused = vector_refusal(instance, backup_zip)
+        if refused:
+            raise JobFailed(refused)
         if catches_mail(instance) and not neutralize:
             # its mail is read in the Mail tab: a production's database would send it, or try to
             neutralize = True
