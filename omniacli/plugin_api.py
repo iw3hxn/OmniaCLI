@@ -414,6 +414,21 @@ class ServicePlugin(ABC):
         """Called before every start and restart of the instance: raise
         JobFailed when it has nothing to run on (Odoo: no database yet)."""
 
+    async def stop_serving(self, job: Job, instance: Instance) -> bool:
+        """Called, the instance running, before an update moves its code and
+        does what follows a pull: stop what serves its users when it would
+        otherwise read the new code half moved (Odoo in a container that
+        mounts the repositories: the old Python with the new views and
+        files), keeping what the update needs (its database). True when it
+        stopped it: the update starts the instance after, or again when it
+        fails. Default: nothing stopped, the update restarts it after."""
+        return False
+
+    async def start_serving(self, job: Job, instance: Instance, wait: bool = True) -> None:
+        """Called after an instance stop_serving stopped is started again
+        (also when the update failed): what stop_serving put in front of its
+        users taken away, once it answers (wait) or at once."""
+
     def process_command(self, instance: Instance) -> tuple[list[str], Path]:
         """(command, working directory) of the process OmniaCLI starts itself
         (restart type process). Its output goes to the instance's log."""
@@ -679,7 +694,7 @@ async def restore_fetched(job: Job, instance: Instance, backup_zip: Path, option
 
 
 ASYNC_METHODS = ("checks", "after_pull", "backup", "backup_choices", "backup_estimate", "restore_room", "restore",
-                 "before_start", "dev_setup", "discover", "login_session")
+                 "before_start", "stop_serving", "start_serving", "dev_setup", "discover", "login_session")
 _ID = re.compile(r"[a-z][a-z0-9_-]{0,31}")
 
 

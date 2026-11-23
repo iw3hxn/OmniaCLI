@@ -3,11 +3,12 @@
 """The Odoo in Docker Compose plugin: every action through the compose helper."""
 import json
 import zipfile
+from pathlib import Path
 
 import httpx
 import pytest
 
-from omniacli import composehelper
+from omniacli import composehelper, zerodowntime
 from omniacli import docker as plugin_module
 from omniacli.config import OMNIACLI_COMMAND, ConfigError, parse_servers, server_to_dict
 from omniacli.jobs import Job, JobFailed
@@ -142,6 +143,173 @@ async def test_after_pull_updates_the_changed_modules(helper):
     j = job()
     await inst.plugin.after_pull(j, inst)
     assert len(calls) == 1 and "disabled" in j.lines[-1]
+
+
+@pytest.fixture
+def pulled(monkeypatch, tmp_path):
+    """A compose instance with a repository of addons whose remote has a new
+    commit; the helper's commands recorded with the commit its working copy
+    has when each one runs (git runs for real)."""
+    from omniacli import ops
+
+    from .conftest import clone, commit, make_remote, sh
+
+    remote = make_remote(tmp_path, "addons")
+    path = clone(remote, tmp_path / "addons", "main")
+    old = sh("git", "rev-parse", "HEAD", cwd=path)
+    work = clone(remote, tmp_path / "dev", "main")
+    new = commit(work, "view.xml", "<odoo/>\n", "a new view")
+    sh("git", "push", "-q", "origin", "HEAD:main", cwd=work)
+    data = {"type": "docker", "production": {"restart": {"type": "compose", "service": PROJECT}, "database": "DB",
+                                             "repositories": [{"name": "addons", "path": str(path),
+                                                               "branch": "main"}]}}
+    inst = parse_servers({"s": data})["s"].production
+    calls, answers = [], {"state": (0, '{"Service":"odoo","State":"running"}')}
+    real_run, real_capture = ops.run, ops.capture
+
+    def seen(cmd):
+        action = cmd[len(HELPER)]
+        calls.append((action, sh("git", "rev-parse", "HEAD", cwd=path)[:7]))
+        return answers.get(action, (0, ""))
+
+    async def run(job, cmd, **kwargs):
+        if cmd[:len(HELPER)] != HELPER:
+            return await real_run(job, cmd, **kwargs)
+        code, out = seen(cmd)
+        if code:
+            raise JobFailed(out)
+        return 0
+
+    sites = ["sudo", "-n", str(OMNIACLI_COMMAND), "workspace-helper"]
+
+    async def capture(cmd, **kwargs):
+        if cmd[:len(sites)] == sites:
+            # the workspace's nginx: the maintenance page on or off
+            calls.append((f"{cmd[len(sites)]} {cmd[-1]}", sh("git", "rev-parse", "HEAD", cwd=path)[:7]))
+            return answers.get("site", (0, "{}"))
+        if cmd[:len(HELPER)] != HELPER:
+            return await real_capture(cmd, **kwargs)
+        return seen(cmd)
+    for module in (ops, plugin_module):
+        monkeypatch.setattr(module, "run", run)
+        monkeypatch.setattr(module, "capture", capture)
+    # not an instance of a workspace unless a test says so (zerodowntime.site)
+    monkeypatch.setattr(zerodowntime, "_site", None)
+    return {"instance": inst, "calls": calls, "answers": answers, "old": old[:7], "new": new[:7], "path": path,
+            "work": tmp_path / "dev"}
+
+
+def push(pulled, name):
+    from .conftest import commit, sh
+
+    commit(pulled["work"], name, "<odoo/>\n", f"the view {name}")
+    sh("git", "push", "-q", "origin", "HEAD:main", cwd=pulled["work"])
+
+
+async def test_its_users_get_the_maintenance_page_while_odoo_is_stopped(pulled, monkeypatch):
+    """An instance of a workspace: nginx answers its Odoo's 502 with the
+    maintenance page from before the stop until Odoo answers again, then
+    takes it away; also when the update fails, and at once when Odoo does
+    not start again."""
+    from omniacli import ops
+
+    inst, calls, answers = pulled["instance"], pulled["calls"], pulled["answers"]
+    target = zerodowntime.Target(workspace="acme", storage="default", instance="main", role="production",
+                                 url="https://acme.it", project=Path(PROJECT))
+    monkeypatch.setattr(zerodowntime, "_site", lambda instance: target)
+    asked = []
+
+    async def answering(port, most=0):
+        asked.append(port)
+        return True
+    monkeypatch.setattr(zerodowntime, "answers", answering)
+    inst.options.http_port = 20000
+    j = job()
+    await ops.pull_restart(j, inst)
+    order = [action for action, _ in calls if action != "state"]
+    assert order == ["maintenance on", "stop-service", "pip-requirements", "update", "start", "maintenance off"]
+    assert asked == [20000]
+    assert any("the maintenance page while Odoo is stopped" in line for line in j.lines)
+    # the update fails: started again, the page taken away once it answers
+    calls.clear()
+    push(pulled, "other.xml")
+    answers["update"] = (1, "a module raised")
+    with pytest.raises(JobFailed):
+        await ops.pull_restart(job(), inst)
+    assert [a for a, _ in calls if a != "state"][-2:] == ["start", "maintenance off"] and asked == [20000, 20000]
+    # Odoo does not start again: the page goes at once, nothing waited for
+    calls.clear()
+    push(pulled, "third.xml")
+    answers["start"] = (1, "the container did not start")
+    with pytest.raises(JobFailed):
+        await ops.pull_restart(job(), inst)
+    assert [a for a, _ in calls if a != "state"][-2:] == ["start", "maintenance off"] and asked == [20000, 20000]
+    # the page not put (no site yet): said, the update goes on with nginx's 502
+    calls.clear()
+    answers.pop("update"), answers.pop("start")
+    answers["site"] = (1, "workspace-helper: workspace acme has no site")
+    push(pulled, "fourth.xml")
+    j = job()
+    await ops.pull_restart(j, inst)
+    assert [a for a, _ in calls if a != "state"][-2:] == ["start", "maintenance off"]
+    assert any("the maintenance page was not put" in line for line in j.lines)
+
+
+async def test_the_normal_update_stops_odoo_before_its_code_moves(pulled):
+    """The repositories the container mounts (./addons) move only once its
+    Odoo is stopped: a running one would serve the old Python with the new
+    views, templates and files until its restart. The database stays up for
+    the update of the modules; Odoo starts after it."""
+    from omniacli import ops
+
+    inst, calls, old, new = pulled["instance"], pulled["calls"], pulled["old"], pulled["new"]
+    j = job()
+    await ops.pull_restart(j, inst, only_if_changed=True)
+    actions = [action for action, _ in calls if action != "state"]
+    assert actions == ["stop-service", "pip-requirements", "update", "start"], calls
+    at = dict((action, sha) for action, sha in calls if action != "state")
+    assert at["stop-service"] == old and at["update"] == new
+    assert any("odoo stopped while its code moves" in line for line in j.lines)
+    # nothing new: Odoo is not stopped, the auto update does nothing
+    calls.clear()
+    await ops.pull_restart(job(), inst, only_if_changed=True)
+    assert not [action for action, _ in calls if action not in ("state",)]
+    # a Git pull and restart with nothing new: restarted, never stopped first
+    calls.clear()
+    await ops.pull_restart(job(), inst)
+    assert [action for action, _ in calls if action != "state"] == ["pip-requirements", "update", "restart"]
+
+
+async def test_a_failed_update_starts_odoo_again(pulled):
+    """The update of the modules fails: Odoo, stopped for it, is started again
+    on the code it has now, not left stopped for its users; the job fails."""
+    from omniacli import ops
+
+    inst, calls = pulled["instance"], pulled["calls"]
+    pulled["answers"]["update"] = (1, "a module raised at install")
+    j = job()
+    with pytest.raises(JobFailed, match="raised at install"):
+        await ops.pull_restart(j, inst)
+    assert [action for action, _ in calls if action != "state"] == ["stop-service", "pip-requirements", "update",
+                                                                    "start"]
+    assert any("is started again, on the code it has now" in line for line in j.lines)
+
+
+async def test_going_back_stops_odoo_before_its_code_moves(pulled):
+    """Back to a deploy (git reset --hard): the same order as a pull."""
+    from omniacli import ops
+
+    inst, calls, path = pulled["instance"], pulled["calls"], pulled["path"]
+    await ops.pull_restart(job(), inst)
+    calls.clear()
+
+    async def move():
+        await ops.run(job(), ["git", "reset", "-q", "--hard", pulled["old"]], cwd=path)
+        await inst.plugin.after_pull(job(), inst)
+    await ops.while_stopped(job(), inst, move)
+    assert [action for action, _ in calls if action != "state"] == ["stop-service", "pip-requirements", "update",
+                                                                    "start"]
+    assert dict(calls)["stop-service"] == pulled["new"] and dict(calls)["update"] == pulled["old"]
 
 
 async def test_backup(helper, tmp_path):

@@ -17,6 +17,7 @@ import shlex
 import signal
 import subprocess
 from pathlib import Path
+from typing import Awaitable, Callable
 
 from . import backupcheck, backupchoices, packages, private, zerodowntime
 from .config import Instance, Repository, Server
@@ -908,20 +909,77 @@ async def pull_restart(job: Job, instance: Instance, only_if_changed: bool = Fal
 
 async def _pull_restart(job: Job, instance: Instance, only_if_changed: bool, only: set[str] | None,
                         backup_folder: Path | None) -> None:
-    if backup_folder is not None and instance.backup_before_update and instance.plugin.has_backup:
+    backup_first = backup_folder is not None and instance.backup_before_update and instance.plugin.has_backup
+    # a compose project's Odoo is stopped before its code moves (stop_serving): only when the fetch, while it
+    # serves, says something moves
+    moving = None
+    if backup_first or instance.restart.type == "compose":
         rows = await pull_preview(instance)
-        if any((row["pending"] or 0) > 0 for row in rows if only is None or row["name"] in only):
+        moving = any((row["pending"] or 0) > 0 for row in rows if only is None or row["name"] in only)
+        if backup_first and moving:
             await backup_before_update(job, instance, backup_folder)
-    changed = await pull(job, instance, only)
-    if only_if_changed and not changed:
-        job.log("Nothing new to deploy")
-        return
-    await instance.plugin.after_pull(job, instance)
-    if only_if_changed and await _stopped(instance):
+        if only_if_changed and not moving and not any(row.get("error") for row in rows):
+            # the auto update: the fetch said it, no second one
+            job.log("Nothing new to deploy")
+            return
+    was_stopped = await _stopped(instance)
+    stopped = moving is not False and not was_stopped and await instance.plugin.stop_serving(job, instance)
+    try:
+        changed = await pull(job, instance, only)
+        if only_if_changed and not changed:
+            job.log("Nothing new to deploy")
+            if stopped:
+                await serve_again(job, instance)
+            return
+        if changed and not stopped and not was_stopped and moving is False:
+            # a commit pushed between the fetch and the pull: stopped now, before its modules are updated
+            stopped = await instance.plugin.stop_serving(job, instance)
+        await instance.plugin.after_pull(job, instance)
+    except BaseException:
+        if stopped:
+            await start_again(job, instance)
+        raise
+    if only_if_changed and was_stopped:
         # the auto update: a service someone stopped stays stopped
         job.log(f"{_label(instance)} is stopped: not started again")
         return
-    await restart(job, instance)
+    await (serve_again if stopped else restart)(job, instance)
+
+
+async def serve_again(job: Job, instance: Instance) -> None:
+    """An instance an update stopped (stop_serving) started, then its users
+    given back to it (start_serving: the maintenance page taken away once it
+    answers)."""
+    await start(job, instance)
+    await instance.plugin.start_serving(job, instance)
+
+
+async def start_again(job: Job, instance: Instance) -> None:
+    """An instance an update stopped (stop_serving) started again after the
+    update failed, on the code it has now: not left stopped for its users."""
+    job.log(f"--- the update failed: {_label(instance)} is started again, on the code it has now")
+    try:
+        await start(job, instance)
+    except JobFailed as exc:
+        job.log(f"{_label(instance)} did not start again: {exc}")
+        # it will not answer: what said it is stopped for an update goes now
+        await instance.plugin.start_serving(job, instance, wait=False)
+        return
+    await instance.plugin.start_serving(job, instance)
+
+
+async def while_stopped(job: Job, instance: Instance, change: Callable[[], Awaitable[None]]) -> None:
+    """change() (the code moved, what follows a pull) with what serves the
+    instance stopped first when its plugin says so (stop_serving), then
+    started; otherwise change() and a restart. A failure starts it again."""
+    stopped = not await _stopped(instance) and await instance.plugin.stop_serving(job, instance)
+    try:
+        await change()
+    except BaseException:
+        if stopped:
+            await start_again(job, instance)
+        raise
+    await (serve_again if stopped else restart)(job, instance)
 
 
 async def _stopped(instance: Instance) -> bool:

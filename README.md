@@ -2734,7 +2734,10 @@ without a 200 to the next with one), and the deploy keeps it (Deploys: *users
 not served*). On lab4 (Odoo 19, 2026-11-23, asked every 100 ms through nginx
 from the machine) a normal update left the users without an answer for 0.8 to
 1.6 s (nginx's 502 while Odoo restarts), an update without stopping for 0 in
-each of eleven runs. An open page's bus (its websocket) is cut when the old Odoo
+each of eleven runs. The normal update now stops Odoo before the code moves
+(*What users see during a normal update*, under Odoo in Docker Compose): 4.1
+to 7.5 s on the same machine, the whole update, a maintenance page (503) meanwhile, where before Odoo served the
+old Python with the new files for 3 to 6 s. An open page's bus (its websocket) is cut when the old Odoo
 stops and reconnects by itself, with Odoo's own wait (about 9 s on lab4):
 no request fails, its notifications come after. Not covered: Update modules,
 Pull image, a restore (they restart as before); the crons do not run in the
@@ -3829,6 +3832,8 @@ as its arguments, never in a script's text:
 | `update <odoo service> <db>` | `click-odoo-update`: in a container of its own of the service (`run --rm --no-deps`), OmniaCLI's tools mounted read only; on a neutralized database the crons that were off are off again afterwards |
 | `update <odoo service> <db> --modules a,b` | `odoo -u a,b --stop-after-init --no-http` in the service's container, with the same care for the crons |
 | `update <odoo service> <db> --install a,b`, `init <odoo service> <db> <modules> [<language>]` | `odoo -i a,b --stop-after-init --no-http` without demo data, in a container of its own (Add modules: the service running or stopped; a new database: not started yet); the flag is the one of the image's Odoo, asked first in a container of its own (`odoo --version`): `--without-demo=all` before 19, `--without-demo` from 19 (a boolean there: Odoo 19 and 20 warn of `=all`, *invalid boolean value*). From 19 a module installed into an existing database takes the demo data that database has: Odoo has no flag against it |
+| `pip-requirements <odoo service> <repository>` | `pip install --user -r` of the repository's `requirements.txt`, in a container of its own of the service (`run --rm --no-deps`: the service may be stopped), into the volume of its data, which its Odoo reads |
+| `stop-service <service>` | that service stopped, the others kept running: an update stops Odoo before its code moves, its database stays up for the update of the modules |
 | `psql <database service> <db>` | `psql` on the caller's terminal (the web shell), as the image's `postgres`, else the container's own user: never root, its `\!` runs commands; a service that only has root is refused |
 
 The zip goes through the helper's input and output: the helper never opens a
@@ -4021,7 +4026,7 @@ servers:
 | What | How |
 |---|---|
 | Checks | Odoo 16 or later (`odoo --version`), the HTTP port docker publishes, OmniaCLI's tools, the two services; the core's checks of the project and of the sudoers line |
-| Git pull + restart | pull, `click-odoo-update` of the changed modules (the tools mounted into a container of its own; an image whose Python is older than 3.10 finds click 8.1.8 first, in `omniacli-tools/py39`), restart |
+| Git pull + restart | the repositories fetched while Odoo serves; when something moves, the Odoo service stopped (`stop-service`, the database kept), pull, the Python packages, `click-odoo-update` of the changed modules (the tools mounted into a container of its own; an image whose Python is older than 3.10 finds click 8.1.8 first, in `omniacli-tools/py39`), start; an instance of a workspace shows its users a maintenance page meanwhile (503, `Retry-After`, *What users see during a normal update*). Nothing new: pull, update, restart, as before. A failure starts Odoo again on the code it has then. Back to this deploy and a repository's branch changed (a workspace's instance) do the same |
 | Update without stopping | an instance of a workspace only, switched on: a second Odoo on the new code, nginx switched to it, the instance's restarted behind it (*Update without stopping*, under Stagings, deploy on push, monitoring); the others restart as before |
 | Update modules | the changed modules, or those named (`odoo -u … --stop-after-init`), and a restart if asked |
 | Pull image | `docker compose pull`, then `up -d`: a newer image (a new DockerOdooPLM build) |
@@ -4034,6 +4039,41 @@ servers:
 The repositories are the addons folders the project mounts into the
 container (`./addons-extra` of DockerOdooPLM): OmniaCLI pulls them on the
 machine, and the container sees the new code.
+
+**What users see during a normal update.** The container reads the
+repositories where they are, so an Odoo left running while they move serves
+a mix: the Python it imported stays old, while the views, templates and
+static files it reads from the disk, and any module it imports for the first
+time, are new, until its restart. A normal update therefore stops the Odoo
+service before the code moves (only when the fetch says something moves)
+and starts it after the update of the modules: for the whole update (the
+pull, the Python packages, the modules updated, Odoo's start) its users wait,
+never served the old and the new code together. An instance of a workspace
+(its names published with https) shows them a page meanwhile: before the
+stop, `workspace-helper maintenance … on` adds to its server block an
+`error_page 502 504` that answers **503** with `Retry-After: 30`, no cache,
+and a page that reloads by itself, *Aggiornamento in corso, torna tra poco*
+for a browser whose first language is Italian (the catalog's text), *Update
+in progress, come back shortly* otherwise; its other names keep being served.
+Odoo's own answers pass as soon as it answers, and once `/web/login` answers
+200 (at most 300 s) the page is taken away (`off`); also when the update
+failed, and at once when Odoo did not start again. The state is kept in the
+project's `maintenance.json`, so a publication meanwhile keeps the page; a
+page that cannot be put is a warning of the job, which goes on (nginx's 502
+then). Another compose project gets nginx's or its proxy's 502.
+Measured on lab4 (Odoo 19, an almost empty database, a module whose
+controller, data and static file each say the commit; asked from the
+machine through nginx every 100 ms, 2026-11-23): before, 0.8 s without an
+answer and then, for 3.1 to 5.7 s, the old controller with the new static
+file (33 to 58 answers of mixed code) in each of three runs; with Odoo
+stopped and nginx's 502, 4.1 to 4.3 s without an answer in three runs, 7.3 s
+in a fourth whose update took 5 s (the first after an install: every module
+with a new checksum); with the page, 4.4, 4.7 and 7.5 s of 503 (no 502) in
+three runs and 3.9 s in one whose module raised, the Italian and the English
+page each with `Retry-After: 30`, and no mixed answer in any. The time grows
+with the modules to update: on a large database it is the update's own time. An
+instance of a workspace switched to the *Update without stopping* keeps
+serving instead (*Stagings, deploy on push, monitoring*).
 
 `link-filestore` (compose helper): the source project is checked as the
 project is (safe from the caller), Odoo's data folder (`/var/lib/odoo`) of
@@ -5253,6 +5293,16 @@ A plugin may also give:
   head (`plugin_api.is_sql_dump` and `sql_dump_problem`, `sqldump.py`).
 - **`before_start()`**: called before every start and restart; raise
   `JobFailed` when the instance has nothing to run on (Odoo: no database yet).
+- **`stop_serving()`**: called, the instance running, before an update
+  moves its code and does what follows a pull; it stops what serves the
+  users when they would otherwise get the new code half moved, and says so
+  (`True`): the update starts the instance after, or again when it fails.
+  Default: nothing stopped, a restart after (Odoo in Docker Compose: its
+  Odoo service stopped, the database kept, its maintenance page put).
+- **`start_serving()`**: called after the instance `stop_serving()` stopped
+  is started again (also when the update failed): what it put in front of
+  the users taken away, once the instance answers or at once (Odoo in Docker
+  Compose: the maintenance page, once `/web/login` answers 200).
 - **`script_runner()`** and **`script_env()`**: how a scheduled action runs a
   Python script on an instance (the python, the system user, the
   environment) and the `OMNIACLI_*` variables it adds (Odoo: the venv's

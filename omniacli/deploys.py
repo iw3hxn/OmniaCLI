@@ -389,8 +389,7 @@ async def go_back(job: Job, instance, entry: dict, backup_folder: Path | None) -
     for name in plan["gone"]:
         job.log(f"[{name}] was in that deploy and is no longer a repository of the instance: not added back")
 
-    async def normal() -> None:
-        await ops.backup_before_update(job, instance, backup_folder, always=True)
+    async def move() -> None:
         for row in moving:
             repo = repos[row["name"]]
             job.log(f"--- [{repo.name}] {(row['now'] or '?')[:10]} → {row['to'][:10]} on {repo.branch}"
@@ -398,7 +397,11 @@ async def go_back(job: Job, instance, entry: dict, backup_folder: Path | None) -
             await ops.run(job, repo.git("reset", "--hard", row["to"]), cwd=repo.path)
             await ops.update_submodules(job, repo)
         await instance.plugin.after_pull(job, instance)
-        await ops.restart(job, instance)
+
+    async def normal() -> None:
+        await ops.backup_before_update(job, instance, backup_folder, always=True)
+        # Odoo in a container stopped before its code moves (stop_serving), started after
+        await ops.while_stopped(job, instance, move)
 
     # the update without stopping, when the instance is switched to it (zerodowntime.py)
     found = zerodowntime.choice(instance)
