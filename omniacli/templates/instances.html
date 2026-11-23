@@ -1,5 +1,6 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
 {% block title %}{{ _("Instances") }} · {{ brand.name }}{% endblock %}
 {% block content %}
 {# The instances of every machine (docs/ux/UX-008 §4.1): this machine's and
@@ -7,7 +8,7 @@
    that does not answer is a row of its own and holds no other back. Each
    production at its address, its stagings right under it; its test is no row.
    The Backup column says whether each production backs up by itself; the
-   count of those that do not is a filter. In the rows only the two actions that open Odoo, Open ↗ and
+   count of those that do not is a filter. In the rows only the two actions that open Odoo, Open and
    Log in as… (UX-013 §B2, D5: OPEN_IN_INSTANCE_ROWS), hidden on a phone; nothing that changes something.
    The view is a choice, List or Map (docs/ux/UX-009 §3): the same instances as
    a table or as a diagram (_map.html); the choice is in the address (?view=map)
@@ -44,7 +45,7 @@
     <p class="inst-counts" id="inst-counts" role="status">{{ _("Loading…") }}</p></div>
   <div class="actions" id="inst-actions">
     {% if quick_instance %}<button type="button" class="primary" data-new-instance
-      title="{{ _('Makes a new Odoo instance on the server you choose, from its version only: a workspace of its own, a production and a test; with a domain, the production answers there and the test on test.<domain>. It is a job.') }}">+ {{ _("New instance") }}</button>{% endif %}
+      title="{{ _('Makes a new Odoo instance on the server you choose, from its version only: a workspace of its own, a production and a test; with a domain, the production answers there and the test on test.<domain>. It is a job.') }}">{{ icon("plus") }}{{ _("New instance") }}</button>{% endif %}
   </div>
 </div>
 <nav class="tabs" role="tablist" id="inst-views" aria-label="{{ _('How the instances are shown') }}">
@@ -93,9 +94,9 @@
     stagingOf: {{ _("Staging of {name}") | tojson }}, stagingWord: {{ _("Staging") | tojson }},
     running: {{ _("Running") | tojson }}, stopped: {{ _("Stopped") | tojson }}, unknown: {{ _("State unknown") | tojson }},
     busy: {{ _("Job running") | tojson }},
-    last: {{ _("last {when}") | tojson }}, lastFailed: {{ _("✗ last one did not succeed {when}") | tojson }},
+    last: {{ _("last {when}") | tojson }}, lastFailed: {{ _("last one did not succeed {when}") | tojson }},
     lastFailedTitle: {{ _("Opens the job of the last automatic backup: {why}") | tojson }},
-    none: {{ _("⚠ No scheduled backup") | tojson }},
+    none: {{ _("No scheduled backup") | tojson }},
     noneTitle: {{ _("Opens the Backups tab of the instance, where the automatic backups are switched on") | tojson }},
     noneYet: {{ _("scheduled, none made yet") | tojson }},
     stagingNone: {{ _("The stagings are copies: they have no scheduled backups") | tojson }},
@@ -155,13 +156,13 @@
     if (!bs) { td.append(el("span", {class: "muted", title: T.notRead}, "—")); return td; }
     if (!bs.scheduled) {
       td.classList.add("warn");
-      td.append(el("a", {href: `${row.base}/servers/${encodeURIComponent(row.server.name)}#backups`, title: T.noneTitle}, T.none));
+      td.append(el("a", {href: `${row.base}/servers/${encodeURIComponent(row.server.name)}#backups`, title: T.noneTitle}, omniaIcon("triangle-alert"), " ", T.none));
     } else if (bs.last && !bs.last.ok) {
       td.classList.add("error");
       const text = T.lastFailed.replace("{when}", whenText(bs.last.time));
       const why = T.lastFailedTitle.replace("{why}", bs.last.message || bs.last.status);
-      td.append(bs.last.job ? el("a", {href: `${row.base}/jobs/${encodeURIComponent(bs.last.job)}`, title: why}, text)
-                            : el("span", {title: bs.last.message || bs.last.status}, text));
+      td.append(bs.last.job ? el("a", {href: `${row.base}/jobs/${encodeURIComponent(bs.last.job)}`, title: why}, omniaIcon("circle-x"), " ", text)
+                            : el("span", {title: bs.last.message || bs.last.status}, omniaIcon("circle-x"), " ", text));
     } else if (bs.last) {
       td.append(T.last.replace("{when}", whenText(bs.last.time)));
     } else {
@@ -169,12 +170,12 @@
     }
     return td;
   }
-  // Open ↗ and Log in as… (UX-013 §B2): Log in as as the row's machine decided it (an older one sends none)
+  // Open and Log in as… (UX-013 §B2): Log in as as the row's machine decided it (an older one sends none)
   function actionsCell(row) {
     const td = el("td", {class: "hide-sm row-open"});
     const url = /^https?:\/\//.test(String(row.inst.url || "")) ? row.inst.url : (row.inst.url ? "https://" + row.inst.url : "");
     if (OPEN_IN_ROWS && url && host(url, "")) td.append(el("a", {class: "button small", href: url, target: "_blank", rel: "noopener",
-                                                          title: T.openOdooTitle.replace("{url}", url)}, T.openOdoo + " ↗"), " ");
+                                                          title: T.openOdooTitle.replace("{url}", url)}, T.openOdoo, omniaIcon("external-link")), " ");
     const o = row.inst.login_as;
     if (o && o.disabled) {
       td.append(el("span", {title: o.disabled}, el("button", {type: "button", class: "small", disabled: "disabled", "data-login-as": "", title: o.disabled}, T.loginAs)));

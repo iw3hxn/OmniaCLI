@@ -184,8 +184,8 @@ dialog.sd { --dialog-w: 560px; }
     {# seen through a link, an address on the machine's own localhost is not this browser's: Odoo is opened through a tunnel of the OmniaCLI in front #}
     {% set by_tunnel = prefix.startswith("/links/") and (inst.web_url or "").startswith(("http://localhost", "http://127.0.0.1")) %}
     {% if opens and st != "stopped" and by_tunnel %}<button type="button" id="open-by-tunnel" data-link="{{ prefix.split('/')[2] }}" data-server="{{ server.name }}" data-role="{{ inst.role }}"
-        title="{{ _('Opens Odoo in a new tab through a tunnel from this OmniaCLI to {link}: the instance has no name that opens from outside.', link=prefix.split('/')[2]) }}">{{ _("Open Odoo") }} ↗</button>
-    {% elif opens and st != "stopped" %}<a class="button" href="{{ inst.web_url }}" target="_blank" rel="noopener" title="{{ _('Opens {url} in a new tab', url=inst.web_url) }}">{{ _("Open Odoo") }} ↗</a>{% endif %}
+        title="{{ _('Opens Odoo in a new tab through a tunnel from this OmniaCLI to {link}: the instance has no name that opens from outside.', link=prefix.split('/')[2]) }}">{{ _("Open Odoo") }}{{ icon("external-link") }}</button>
+    {% elif opens and st != "stopped" %}<a class="button" href="{{ inst.web_url }}" target="_blank" rel="noopener" title="{{ _('Opens {url} in a new tab', url=inst.web_url) }}">{{ _("Open Odoo") }}{{ icon("external-link") }}</a>{% endif %}
     {% if login_as[inst.key] and login_as[inst.key].disabled %}{{ refused("login_as", _("Log in as…")) }}
     {% elif login_as[inst.key] %}<button type="button" data-login-as='{{ login_as[inst.key] | tojson }}' title="{{ _('Opens Odoo in a new tab as one of its users, without their password.') }}">{{ _("Log in as…") }}</button>{% endif %}
     {% if st == "stopped" %}
@@ -226,7 +226,7 @@ dialog.sd { --dialog-w: 560px; }
     {% set server_wide = server_buttons.values() | select | list and view == "test" and not is_staging %}
     {% set delete_staging = is_staging and is_admin_here and stagings.workspace %}
     <details class="more-menu">
-      <summary class="button" title="{{ _('The other actions: stop, code, backups, consoles, replacing the database') }}">{{ _("More") }} ▾</summary>
+      <summary class="button" title="{{ _('The other actions: stop, code, backups, consoles, replacing the database') }}">{{ _("More") }}{{ icon("chevron-down") }}</summary>
       <div class="more-items">
         {% if can_act and st != "stopped" and (rt != "process" or pid) %}
         <form method="post" action="{{ base }}/restart" data-confirm="{{ _("Restart Odoo of {name}?", name=who) }}">
@@ -428,11 +428,11 @@ dialog.sd { --dialog-w: 560px; }
         <p class="muted sd-help" id="addr-empty" hidden>{{ _("Only the main address. Another name (www.customer.com) or a redirect is added here below.") }}</p>
         <ul class="addr-list" id="addr-aliases"></ul>
         <button type="button" class="small" id="addr-add-alias"
-                title="{{ _('Another name that opens this environment: the DNS of the name must point to this machine. It takes effect with Save and publish.') }}">+ {{ _("Add an address") }}</button></div>
+                title="{{ _('Another name that opens this environment: the DNS of the name must point to this machine. It takes effect with Save and publish.') }}">{{ icon("plus") }}{{ _("Add an address") }}</button></div>
       <div class="sd-field"><div class="sd-label">{{ _("Redirects") }}</div>
         <ul class="addr-list" id="addr-redirects"></ul>
         <button type="button" class="small" id="addr-add-redirect"
-                title="{{ _('A name that takes the visitors to another address of this environment, with the same path. It takes effect with Save and publish.') }}">+ {{ _("Add a redirect") }}</button></div>
+                title="{{ _('A name that takes the visitors to another address of this environment, with the same path. It takes effect with Save and publish.') }}">{{ icon("plus") }}{{ _("Add a redirect") }}</button></div>
       <p class="sd-help">{{ _("Always on HTTPS: whoever opens http:// is taken to https://.") }}</p>
       {# published by this machine, or through another one of the provider's (relay.py): read when opened (GET …/relay) #}
       <div class="sd-field" id="addr-relay-field" hidden><div class="sd-label"><label for="addr-relay">{{ _("Published by") }}</label></div>
@@ -634,7 +634,10 @@ dialog.sd { --dialog-w: 560px; }
 </section>
 <style>
 .ab-line { margin: 0 0 10px; font-size: 14px; }
-.ab-line.off { color: var(--warn); font-weight: 600; }
+.ab-line.off { color: var(--text); padding: var(--sp-8) var(--sp-12) var(--sp-8) calc(var(--sp-12) + var(--icon-16) + var(--sp-8)); position: relative;
+  border: var(--bw) solid var(--warn); border-radius: var(--r); background: var(--warn-soft); }
+.ab-line.off::before { content: ""; position: absolute; left: var(--sp-12); top: calc(var(--sp-8) + 2px); width: var(--icon-16); height: var(--icon-16);
+  background-color: var(--warn); -webkit-mask: var(--m-triangle) center / contain no-repeat; mask: var(--m-triangle) center / contain no-repeat; }
 .backup-auto { border-bottom: 1px solid var(--border); padding-bottom: 12px; margin-bottom: 12px; }
 .backup-auto > summary, .remote-list > summary { font-weight: 600; color: var(--text); }
 .backup-auto form { margin-top: 10px; }
@@ -719,7 +722,7 @@ dialog.sd { --dialog-w: 560px; }
     <tr data-repo="{{ repo.name }}">
       <td>Git</td>
       <td><span class="mono">{{ repo_urls.get(repo.name) or repo.name }}</span>
-        {% if repo_urls.get(repo.name, "").startswith("https://") %}<a href="{{ repo_urls[repo.name] }}" target="_blank" rel="noopener" title="{{ _('Opens the repository in a new tab') }}">↗</a>{% endif %}</td>
+        {% if repo_urls.get(repo.name, "").startswith("https://") %}<a href="{{ repo_urls[repo.name] }}" target="_blank" rel="noopener" title="{{ _('Opens the repository in a new tab') }}" aria-label="{{ _('Opens the repository in a new tab') }}">{{ icon("external-link") }}</a>{% endif %}</td>
       {% set off_branch = not rs.error and rs.branch and rs.branch != repo.branch %}
       <td class="mono {{ 'error' if off_branch }}" {% if off_branch %}title="{{ _('expected {branch}', branch=repo.branch) }}"{% endif %}>{{ rs.branch if off_branch else repo.branch }}</td>
       <td class="hide-sm">{% if rs.error %}<span class="error">{{ tr(rs.error) }}</span>{% else %}<span class="mono">{{ rs.sha }}</span> <span class="muted">{{ rs.date }}</span>{% if rs.subject %}<br><span title="{{ rs.subject }}">{{ rs.subject | truncate(80, true, "…") }}</span>{% endif %}{% endif %}</td>
@@ -764,9 +767,9 @@ dialog.sd { --dialog-w: 560px; }
         if (!row || row.error || row.pending === null || row.pending === undefined) {
           said.className = "muted"; said.textContent = "? " + R.notRead; said.title = (row && row.error) || why;
         } else if (row.pending === 0) {
-          said.className = "ok-text"; said.textContent = "✓ " + R.upToDate;
+          said.className = "ok-text"; said.replaceChildren(omniaIcon("check"), " ", R.upToDate);
         } else {
-          said.className = "warn-text"; said.textContent = "↓ " + (row.pending === 1 ? R.one : R.many.replace("{n}", row.pending));
+          said.className = "warn-text"; said.replaceChildren(omniaIcon("arrow-down"), " ", row.pending === 1 ? R.one : R.many.replace("{n}", row.pending));
           if (row.first) said.title = R.first.replace("{subject}", row.first);
         }
         when.className = "small muted"; when.style.display = "block";
@@ -789,7 +792,7 @@ dialog.sd { --dialog-w: 560px; }
         <label for="au-new">{{ _("New commit") }}</label>
         <input type="text" id="au-new" class="mono" readonly style="width: 100%">
         <p class="muted" id="au-same" hidden>{{ _("Already on this commit: nothing new to download.") }}</p>
-        <p><a id="au-compare" target="_blank" rel="noopener" hidden>{{ _("Show the differences") }} ↗</a></p>
+        <p><a id="au-compare" target="_blank" rel="noopener" hidden>{{ _("Show the differences") }} {{ icon("external-link") }}</a></p>
       </div>
       <p class="error" id="au-error" role="alert"></p>
       <div class="actions">
@@ -801,7 +804,7 @@ dialog.sd { --dialog-w: 560px; }
 </dialog>
   {% if is_admin_here %}
   <details class="addons-add" {{ "open" if not inst.repositories }}>
-  <summary title="{{ _('The address and the branch of a repository of addons to add to this instance, and the key for the private ones over ssh') }}">+ {{ _("Add a repository") }}</summary>
+  <summary title="{{ _('The address and the branch of a repository of addons to add to this instance, and the key for the private ones over ssh') }}">{{ icon("plus") }}{{ _("Add a repository") }}</summary>
   {# with a GitHub token in the git credentials (README, GitHub): the repository and its branch picked from GitHub's
      list; the typed address stays the other way #}
   <div class="addons-from" id="addons-from" role="radiogroup" hidden>
@@ -1084,7 +1087,7 @@ dialog.sd { --dialog-w: 560px; }
   {# Odoo 19 and later: the ai module of Odoo Enterprise needs vector in PostgreSQL, said before the switch and
      added first (README, Odoo Enterprise) #}
   {% if ent.pgvector %}{% set pv = ent.pgvector %}
-  <p id="ent-pgvector" style="color: var(--warn)">{{ _("Odoo Enterprise {series} has the module ai, which needs the extension vector of PostgreSQL: the PostgreSQL of {keys} does not have it, and an install that brings ai in fails (tried again, it passes without ai).", series=ent.series, keys=pv["keys"] | join(", ")) }}
+  <p id="ent-pgvector" class="banner warn">{{ _("Odoo Enterprise {series} has the module ai, which needs the extension vector of PostgreSQL: the PostgreSQL of {keys} does not have it, and an install that brings ai in fails (tried again, it passes without ai).", series=ent.series, keys=pv["keys"] | join(", ")) }}
     {% if pv.where == "machine" %}{{ _("It is added to the machine's PostgreSQL, for all its instances.") }} <a href="{{ pv.machine }}" title="{{ _('Opens the Database tab of the machine, where pgvector is added to its PostgreSQL') }}">{{ _("Database of the machine ›") }}</a>
     {% else %}{{ _("Add it first.") }}{% endif %}</p>
   {% if pv.can %}
@@ -1554,7 +1557,8 @@ dialog.sd { --dialog-w: 560px; }
         pre.textContent = data.public_key; pre.hidden = false; show.hidden = true;
         where.textContent = KEYS.where + " ";
         if (data.page) {
-          const link = Object.assign(document.createElement("a"), {href: data.page, target: "_blank", rel: "noopener", textContent: KEYS.open + " ↗", title: data.page});
+          const link = Object.assign(document.createElement("a"), {href: data.page, target: "_blank", rel: "noopener", title: data.page});
+          link.append(KEYS.open, " ", omniaIcon("external-link"));
           where.append(link);
         }
         where.hidden = false;
@@ -1644,7 +1648,8 @@ dialog.sd { --dialog-w: 560px; }
       select.setAttribute("aria-label", repo.full_name);
       const name = Object.assign(document.createElement("td"), {className: "mono", textContent: repo.full_name});
       const where = document.createElement("td"); where.append(Object.assign(document.createElement("span"), {className: "muted small", textContent: GH.reading}));
-      const out = Object.assign(document.createElement("button"), {type: "button", className: "small ghost", textContent: "×", title: GH.remove});
+      const out = Object.assign(document.createElement("button"), {type: "button", className: "icon-btn", title: GH.remove, ariaLabel: GH.remove});
+      out.append(omniaIcon("x"));
       out.addEventListener("click", () => unpick(repo.full_name));
       const last = document.createElement("td"); last.append(out);
       row.append(name, where, last);
@@ -2451,10 +2456,10 @@ dialog.sd { --dialog-w: 560px; }
         const check = tr.insertCell(), v = f.verified;
         if (v && v.ok) {
           check.className = "status success";
-          check.textContent = "✓ " + whenText(v.time);
+          check.replaceChildren(omniaIcon("circle-check"), " ", whenText(v.time));
           check.title = T.checkFound.replace("{modules}", v.modules).replace("{users}", v.users).replace("{last}", v.last ? whenText(v.last) : "?");
         } else if (v) {
-          check.className = "error"; check.textContent = "✗ " + whenText(v.time); check.title = v.detail || "";
+          check.className = "error"; check.replaceChildren(omniaIcon("circle-x"), " ", whenText(v.time)); check.title = v.detail || "";
         } else { check.className = "muted"; check.textContent = "—"; check.title = T.neverTried; }
         const cell = tr.insertCell();
         cell.style.textAlign = "right"; cell.style.whiteSpace = "nowrap";
@@ -2726,9 +2731,9 @@ dialog.sd { --dialog-w: 560px; }
     const A = {name: {{ _("Name") | tojson }}, to: {{ _("goes to") | tojson }},
                remove: {{ _("Takes this name away: it takes effect with Save and publish") | tojson }},
                pick: {{ _("The address the visitors of this name are taken to") | tojson }},
-               here: {{ _("✓ points here") | tojson }},
-               elsewhere: {{ _("✗ points to {found}: make an A record towards {here}. It stays out of the certificate until the DNS points here.") | tojson }},
-               elsewhereNoHere: {{ _("✗ points to {found}, not here. It stays out of the certificate until the DNS points here.") | tojson }},
+               here: {{ _("points here") | tojson }},
+               elsewhere: {{ _("points to {found}: make an A record towards {here}. It stays out of the certificate until the DNS points here.") | tojson }},
+               elsewhereNoHere: {{ _("points to {found}, not here. It stays out of the certificate until the DNS points here.") | tojson }},
                none: {{ _("No DNS record: make an A record towards {here}. It stays out of the certificate until the DNS points here.") | tojson }},
                noneNoHere: {{ _("No DNS record yet: it stays out of the certificate until the DNS points here.") | tojson }},
                unknown: {{ _("points to {found}: the public address of this machine is not known here, the job checks it.") | tojson }},
@@ -2755,10 +2760,10 @@ dialog.sd { --dialog-w: 560px; }
                own: {{ _("Published by this machine's nginx.") | tojson }},
                privateAt: {{ _("private address {address}") | tojson }},
                whole: {{ _("Every environment of the workspace is published through {machine}: it is changed in Names on the web.") | tojson }},
-               connected: {{ _("✓ Tunnel connected since {since}.") | tojson }}, connecting: {{ _("Tunnel connecting…") | tojson }},
-               down: {{ _("✗ Tunnel not connected: the names do not open. Its unit tries again every few seconds.") | tojson }},
-               none: {{ _("✗ Tunnel not started: Save and publish again.") | tojson }},
-               downSince: {{ _("✗ Tunnel not connected since {when}: the names do not open. Its unit tries again every few seconds.") | tojson }},
+               connected: {{ _("Tunnel connected since {since}.") | tojson }}, connecting: {{ _("Tunnel connecting…") | tojson }},
+               down: {{ _("Tunnel not connected: the names do not open. Its unit tries again every few seconds.") | tojson }},
+               none: {{ _("Tunnel not started: Save and publish again.") | tojson }},
+               downSince: {{ _("Tunnel not connected since {when}: the names do not open. Its unit tries again every few seconds.") | tojson }},
                drop: {{ _("Last drop: {when}.") | tojson }}, restarts: {{ _("Started again by itself since the publication: {n} times.") | tojson }},
                unseen: {{ _("The relay does not see the tunnel now.") | tojson }},
                dnsMake: {{ _("Make an A record {name} → {address}") | tojson }},
@@ -2787,14 +2792,16 @@ dialog.sd { --dialog-w: 560px; }
         if (t.last_drop) parts.push(fillIn(R.drop, {when: when(t.last_drop)}));
         if (t.restarts) parts.push(fillIn(R.restarts, {n: t.restarts}));
         if (relayed.listening === false) parts.push(R.unseen);
-        tunnel.textContent = parts.join(" ");
+        const up = t.state === "connected" && !relayed.down_since;
+        tunnel.replaceChildren(...(t.state === "connecting" && !relayed.down_since ? [] : [omniaIcon(up ? "circle-check" : "circle-x"), " "]), parts.join(" "));
         tunnel.classList.toggle("bad", t.state !== "connected" || Boolean(relayed.down_since));
         if (!relayed.can_choose) { dns.append(Object.assign(document.createElement("li"), {textContent: R.provider})); return; }
         for (const row of relayed.dns || []) {
           const found = (row.addresses || []).join(", ");
-          const text = row.state === "here" ? `✓ ${row.name} → ${relayed.address}`
+          const text = row.state === "here" ? `${row.name} → ${relayed.address}`
             : found ? fillIn(R.dnsNow, {name: row.name, address: relayed.address, found}) : fillIn(R.dnsMake, {name: row.name, address: relayed.address});
-          const li = Object.assign(document.createElement("li"), {className: row.state === "here" ? "" : "bad", textContent: text});
+          const li = Object.assign(document.createElement("li"), {className: row.state === "here" ? "" : "bad"});
+          li.append(...(row.state === "here" ? [omniaIcon("circle-check"), " "] : []), text);
           dns.append(li);
         }
       } else if (choice && choice.address) {
@@ -2825,7 +2832,8 @@ dialog.sd { --dialog-w: 560px; }
     }
     relaySelect.addEventListener("change", () => { drawRelay(); refresh(); });
     function removeButton(li) {
-      const b = Object.assign(document.createElement("button"), {type: "button", className: "small", textContent: "✕", title: A.remove});
+      const b = Object.assign(document.createElement("button"), {type: "button", className: "icon-btn", title: A.remove, ariaLabel: A.remove});
+      b.append(omniaIcon("x"));
       b.setAttribute("aria-label", A.remove);
       b.addEventListener("click", () => { li.remove(); refresh(); });
       return b;
@@ -2888,7 +2896,8 @@ dialog.sd { --dialog-w: 560px; }
         }
         input.classList.toggle("bad", wrong);
         out.classList.toggle("bad", wrong);
-        out.textContent = text;
+        const mark = text === A.here ? "circle-check" : row && row.dns === "elsewhere" && !wrong ? "circle-x" : "";
+        out.replaceChildren(...(mark ? [omniaIcon(mark), " "] : []), text);
         bad = bad || wrong || (name && !row);
       }
       return bad;
@@ -2921,7 +2930,7 @@ dialog.sd { --dialog-w: 560px; }
       if (!resp || !resp.ok) { error.textContent = got.error || got.detail || A.unread; return; }
       data = got;
       const main = document.getElementById("addr-main");
-      main.textContent = data.main + " ↗"; main.href = `https://${data.main}/`;
+      main.replaceChildren(data.main, " ", omniaIcon("external-link")); main.href = `https://${data.main}/`;
       main.title = {{ _("Opens {url} in a new tab") | tojson }}.replace("{url}", `https://${data.main}/`);
       document.getElementById("addr-ws").href = `{{ prefix }}/workspaces/${encodeURIComponent(data.workspace)}#names`;
       (data.aliases || []).forEach((n) => aliasRow(n));

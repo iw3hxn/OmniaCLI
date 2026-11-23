@@ -122,7 +122,7 @@
 {% set searched = "servers linked" if machine and machine_links else "servers" %}
 <div class="panel" id="instances">
   <div class="section-head"><h2>{{ _("Odoo instances") }}</h2>
-    {% if quick_instance %}<button type="button" class="primary" data-new-instance title="{{ _('A new Odoo instance from its version only: OmniaCLI makes its database, containers, disk and address') }}">+ {{ _("New instance") }}</button>{% endif %}
+    {% if quick_instance %}<button type="button" class="primary" data-new-instance title="{{ _('A new Odoo instance from its version only: OmniaCLI makes its database, containers, disk and address') }}">{{ icon("plus") }}{{ _("New instance") }}</button>{% endif %}
   </div>
   {% if total + (machine_links | length if machine else 0) > 8 or q %}{{ list_search(searched, _("Search instance, address, database, branch…"), q, wide=true) }}{% endif %}
   <div id="server-sections" data-list="servers">
@@ -138,7 +138,7 @@
 {% if machine and machine_links %}
 <section class="fold" data-fold="linked">
 <div class="fold-head">
-  <h2><button type="button" class="fold-toggle" aria-expanded="true" title="{{ _('Folds or shows the list of the linked servers') }}"><span class="fold-icon" aria-hidden="true">▾</span>{{ _("Linked") }}</button></h2>
+  <h2><button type="button" class="fold-toggle" aria-expanded="true" title="{{ _('Folds or shows the list of the linked servers') }}"><span class="fold-icon">{{ icon("chevron-down") }}</span>{{ _("Linked") }}</button></h2>
   {% if is_admin and not prefix %}<a class="button" href="/groups#links" title="{{ _('Opens the page where the linked servers are put in groups') }}">{{ _("Edit groups") }}</a>{% endif %}
 </div>
 <div class="fold-body"><div class="fold-inner">
@@ -211,7 +211,7 @@
 {% if load_workspaces %}
 <section class="fold" data-fold="my-workspaces">
 <div class="fold-head">
-  <h2><button type="button" class="fold-toggle" aria-expanded="true" title="{{ _('Folds or shows the load of your workspaces') }}"><span class="fold-icon" aria-hidden="true">▾</span>{{ _("Your workspace") if load_workspaces | length == 1 else _("Your workspaces") }}</button></h2>
+  <h2><button type="button" class="fold-toggle" aria-expanded="true" title="{{ _('Folds or shows the load of your workspaces') }}"><span class="fold-icon">{{ icon("chevron-down") }}</span>{{ _("Your workspace") if load_workspaces | length == 1 else _("Your workspaces") }}</button></h2>
 </div>
 <div class="fold-body"><div class="fold-inner">
 <p class="muted" style="margin-top: 0">{{ _("What the workspace's containers use, last hour, against its limits. Network: the traffic of its projects' networks, not the traffic inside one project.") }}</p>
@@ -458,7 +458,8 @@ const dashFill = (text, values) => text.replace(/\{(\w+)\}/g, (all, k) => (k in 
     const title = text("a", "toast-title", (link ? link + " › " : "") + job.title);
     title.href = base + "/jobs/" + job.id;
     body.append(title, text("div", "toast-text", ok ? DASH_T.finishedOk : (DASH_T.status[job.status] || job.status) + (job.error ? ": " + job.error : "")));
-    const close = text("button", "toast-close", "×");
+    const close = text("button", "toast-close icon-btn", "");
+    close.append(omniaIcon("x", 20));
     close.type = "button"; close.setAttribute("aria-label", DASH_T.close); close.title = DASH_T.closeTitle;
     close.onclick = () => box.remove();
     box.append(body, close);

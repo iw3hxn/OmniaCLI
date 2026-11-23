@@ -1,5 +1,6 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
 {% block title %}{{ _("Groups") }} · {{ brand.name }}{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
 {{ crumbs([(_("Settings"), "/settings"), (_("Groups"), None)]) }}
@@ -22,7 +23,7 @@
   <h2 style="margin-top: 0">{{ title }}</h2>
   <p class="muted groups-empty" hidden>{{ _("No group: the Dashboard shows the instances in one list. A group gathers them under a heading, for example Customers with acme-*.") }}</p>
   <div class="groups"></div>
-  <div class="actions"><button type="button" class="add-top" title="{{ _('Adds a group at the end of this list: give it a name and its members, one a line') }}">+ {{ _("Add group") }}</button></div>
+  <div class="actions"><button type="button" class="add-top" title="{{ _('Adds a group at the end of this list: give it a name and its members, one a line') }}">{{ icon("plus") }}{{ _("Add group") }}</button></div>
   <p class="muted" style="margin-bottom: 4px">{{ _("Known now (a click adds it to the last group you edited):") }}</p>
   <div class="actions known">
     {% for key in known[list] %}<button type="button" class="mono small" data-member="{{ key }}" title="{{ _('Adds {name} to the last group you edited (none: to the last of the list)', name=key) }}">{{ key }}</button>
@@ -47,9 +48,9 @@
     <legend><input type="text" class="name" placeholder="{{ _("group name") }}" aria-label="{{ _("Group name") }}"></legend>
     <textarea class="members mono" rows="3" placeholder="{{ _("one member per line") }}" aria-label="{{ _("Members") }}"></textarea>
     <div class="actions" style="margin: 8px 0 0">
-      <button type="button" class="small up" title="{{ _("Move up") }}" aria-label="{{ _("Move up") }}">↑</button>
-      <button type="button" class="small down" title="{{ _("Move down") }}" aria-label="{{ _("Move down") }}">↓</button>
-      <button type="button" class="small add-sub" title="{{ _('Adds a group inside this one (up to 4 levels): an instance goes in the first subgroup that names it') }}">+ {{ _("Subgroup") }}</button>
+      <button type="button" class="small up" title="{{ _("Move up") }}" aria-label="{{ _("Move up") }}">{{ icon("arrow-up") }}</button>
+      <button type="button" class="small down" title="{{ _("Move down") }}" aria-label="{{ _("Move down") }}">{{ icon("arrow-down") }}</button>
+      <button type="button" class="small add-sub" title="{{ _('Adds a group inside this one (up to 4 levels): an instance goes in the first subgroup that names it') }}">{{ icon("plus") }}{{ _("Subgroup") }}</button>
       <button type="button" class="small danger remove" title="{{ _('Takes the group and its subgroups out of the list; its instances go back under Others. It holds at the save.') }}">{{ _("Remove") }}</button>
     </div>
     <div class="subgroups" style="margin-left: 18px"></div>

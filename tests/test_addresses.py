@@ -330,7 +330,7 @@ async def test_the_dialog_saves_and_publishes(dialog, client, env):
     assert dialog["published"][-1] == (acme.aliases, acme.redirects)
     # Names on the web of the workspace lists them, read only (UX-008 D5)
     page = (await client.get("/workspaces/acme", headers=basic("mario"))).text
-    assert "www.customer.com ↗" in page and "customer.com → www.customer.com" in page
+    assert 'www.customer.com <svg class="i i-16" aria-hidden="true" focusable="false"><use href="#i-external-link"/></svg>' in page and "customer.com → www.customer.com" in page
     # the same again: nothing to publish
     resp = await client.post(f"{API}/save", headers=post_as("mario"), json=body)
     assert resp.json() == {"ok": True}

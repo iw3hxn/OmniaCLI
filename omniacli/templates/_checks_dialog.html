@@ -26,11 +26,14 @@ const OmniaChecks = {
     }
     for (const c of checks) {
       const tr = document.createElement("tr");
-      const mark = c.ok ? "✓" : (c.level === "warning" ? "!" : "✗");
+      const mark = c.ok ? "circle-check" : (c.level === "warning" ? "triangle-alert" : "circle-x");
       const cls = c.ok ? "status success" : (c.level === "warning" ? "status running" : "status failed");
       for (const [text, klass] of [[mark, cls], [c.target, "muted"], [c.name, ""], [c.detail, c.ok ? "" : (c.level === "warning" ? "" : "error")]]) {
         const td = document.createElement("td");
-        td.textContent = text; if (klass) td.className = klass;
+        if (text === mark) td.append(omniaIcon(mark, 16, {"circle-check": {{ _("succeeded") | tojson }}, "triangle-alert": {{ _("warning") | tojson }},
+                                                          "circle-x": {{ _("failed") | tojson }}}[mark]));
+        else td.textContent = text;
+        if (klass) td.className = klass;
         tr.appendChild(td);
       }
       table.appendChild(tr);

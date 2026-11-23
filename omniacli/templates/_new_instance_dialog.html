@@ -1,5 +1,5 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
-{% from "_icons.html" import dialog_x with context %}
+{% from "_icons.html" import dialog_x, icon with context %}
 {# New instance: the Odoo version, its domain
    (the DNS A record it needs), language and country, the admin's password
    made here and shown once, to be saved before Create; the name is optional
@@ -79,7 +79,7 @@
         <div class="wide"><label for="ni-password">{{ _("Password of the user admin") }}</label>
           <div class="ni-password">
             <input type="text" id="ni-password" autocomplete="off" spellcheck="false" minlength="8" maxlength="128">
-            <button type="button" id="ni-regenerate" title="{{ _('Makes another random password') }}" aria-label="{{ _('Another password') }}">↻</button>
+            <button type="button" id="ni-regenerate" title="{{ _('Makes another random password') }}" aria-label="{{ _('Another password') }}">{{ icon("rotate-cw") }}</button>
             <button type="button" id="ni-copy" title="{{ _('Copies the password') }}">{{ _("Copy") }}</button>
           </div>
           <div class="ni-help ni-once">{{ _("It is shown only now: store it somewhere safe.") }}</div></div>

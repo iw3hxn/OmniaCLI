@@ -1,5 +1,5 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
-{% from "_icons.html" import dialog_x with context %}
+{% from "_icons.html" import dialog_x, icon with context %}
 {# The machine's SSH access tab (README, SSH access): the keys OmniaCLI added
    to the accounts of this machine (GET /api/machine/ssh-keys, read when the
    tab opens), each with its name, account, type, fingerprint, who added it
@@ -25,7 +25,7 @@
   <div class="panel">
     <div class="section-head"><h2>{{ _("SSH access") }}</h2>
       <span class="pg-head-actions">
-        <button type="button" class="primary small" id="ssh-add-open" title="{{ _('Lets a person log in to this machine over SSH with their key: paste the public half, choose the account') }}">{{ _("+ Add a key…") }}</button>
+        <button type="button" class="primary small" id="ssh-add-open" title="{{ _('Lets a person log in to this machine over SSH with their key: paste the public half, choose the account') }}">{{ icon("plus") }}{{ _("Add a key…") }}</button>
         <button type="button" class="small" id="ssh-reload" title="{{ _('Reads the keys of the accounts of this machine again now. It changes nothing.') }}">{{ _("Read again") }}</button>
       </span></div>
     <p class="muted">{{ _("The keys OmniaCLI added to the accounts of this machine: whoever has the private half of one logs in over SSH as that account. Only these are added and removed here.") }}</p>

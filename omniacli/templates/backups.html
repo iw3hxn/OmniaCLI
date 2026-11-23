@@ -184,8 +184,8 @@
     kinds: {scheduled: {{ _("automatic") | tojson }}, "pre-update": {{ _("before an update") | tojson }}, manual: {{ _("by hand") | tojson }},
             uploaded: {{ _("uploaded") | tojson }}},
     archive: {{ _("full archive") | tojson }},
-    ready: {{ _("Ready") | tojson }}, tried: {{ _("✓ restore tried {date}") | tojson }},
-    triedBad: {{ _("✗ the restore did not succeed") | tojson }}, neverTried: {{ _("Never restored for a try") | tojson }},
+    ready: {{ _("Ready") | tojson }}, tried: {{ _("restore tried {date}") | tojson }},
+    triedBad: {{ _("the restore did not succeed") | tojson }}, neverTried: {{ _("Never restored for a try") | tojson }},
     facts: {{ _("Odoo {odoo} · database {database}") | tojson }}, withFiles: {{ _("with attachments") | tojson }},
     withoutFiles: {{ _("without attachments") | tojson }}, factsUnknown: {{ _("not checked yet") | tojson }},
     notDone: {{ _("Did not succeed: {why}") | tojson }}, openJob: {{ _("Opens the job of this automatic backup") | tojson }},
@@ -225,7 +225,7 @@
     planStaging: {{ _("It becomes a staging of {server}, dated today, its mail caught, from the template {template}.") | tojson }},
     room: {{ _("Room: about {need} GB needed, {free} GB free in the workspace.") | tojson }},
     roomUnknown: {{ _("Room: about {need} GB needed; the free room of the workspace cannot be read now.") | tojson }},
-    allThere: {{ _("✓ Every installed module has its code.") | tojson }},
+    allThere: {{ _("Every installed module has its code.") | tojson }},
     inOca: {{ _("{n} modules are in the OCA repositories {repos} (branch {branch}):") | tojson }},
     inOcaOne: {{ _("1 module is in the OCA repository {repos} (branch {branch}):") | tojson }},
     addRepos: {{ _("Add those repositories to the new instance") | tojson }},
@@ -316,7 +316,7 @@
     }
     // a phone: the menu an icon button (its name said, its help in the title), so it covers nothing of the row
     return el("details", {class: "row-menu"}, el("summary", {class: "button small", title: T.actionsTitle, "aria-label": T.actions},
-      el("span", {class: "row-menu-word"}, `${T.actions} ▾`), el("span", {class: "row-menu-dots", "aria-hidden": "true"}, "⋯")), items);
+      el("span", {class: "row-menu-word"}, T.actions, omniaIcon("chevron-down")), el("span", {class: "row-menu-dots"}, omniaIcon("ellipsis"))), items);
   }
   function outcomeOf(r) {
     if (r.imported) {
@@ -325,8 +325,8 @@
         fill(T.facts, {odoo: r.odoo, database: r.database || "?"}) + " · " + (r.filestore ? T.withFiles : T.withoutFiles));
     }
     const v = r.verified;
-    return v && v.ok ? el("span", {class: "bk-ok", title: v.detail || ""}, T.tried.replace("{date}", dateOnly(v.time)))
-      : v ? el("span", {class: "bk-bad", title: v.detail || ""}, T.triedBad)
+    return v && v.ok ? el("span", {class: "bk-ok", title: v.detail || ""}, omniaIcon("circle-check"), " ", T.tried.replace("{date}", dateOnly(v.time)))
+      : v ? el("span", {class: "bk-bad", title: v.detail || ""}, omniaIcon("circle-x"), " ", T.triedBad)
       : el("span", {title: T.neverTried}, T.ready);
   }
   function backupRow(r) {
@@ -549,7 +549,7 @@
     const keepAdd = addRepos ? addRepos.checked : true, keepAllow = allowMissing ? allowMissing.checked : false;
     addRepos = allowMissing = null;
     if (p.installed_modules === null || p.installed_modules === undefined) lines.push(el("p", {class: "muted"}, T.noTable));
-    else if (!oca.length && !notFound.length && !unchecked.length) lines.push(el("p", {class: "bk-ok"}, T.allThere));
+    else if (!oca.length && !notFound.length && !unchecked.length) lines.push(el("p", {class: "bk-ok"}, omniaIcon("circle-check"), " ", T.allThere));
     if (oca.length) {
       const all = oca.flatMap((r) => r.modules);
       lines.push(el("p", {}, fill(all.length === 1 ? T.inOcaOne : T.inOca,

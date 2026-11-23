@@ -70,7 +70,7 @@ const OmniaLoad = (function () {
     const rx = opts.rx || "rx", tx = opts.tx || "tx";
     OmniaCharts.draw(el.querySelector("svg"), points, rx, {spark: true, also: tx, minMax: 1024});
     const last = lastWith(points, rx), value = el.querySelector(".load-value");
-    value.textContent = last ? "↓" + rate(last[rx]) + " ↑" + rate(last[tx]) : "–";
+    value.replaceChildren(...(last ? [omniaIcon("arrow-down", 12), rate(last[rx]), " ", omniaIcon("arrow-up", 12), rate(last[tx])] : ["–"]));
     el.title = last ? fill(T.traffic, {rx: rate(last[rx]), tx: rate(last[tx])}) : (opts.none || T.none);
   }
   function disks(el, list) {

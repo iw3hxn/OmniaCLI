@@ -4823,6 +4823,15 @@ controls and motion. A page writes `var(--…)`, never a value of its own.
   Space opens the one in focus (a tab that reads from the server reads only
   when it is opened), and Tab goes from the tabs to the open panel. A bar of
   tabs wider than the screen fades on the side that has more.
+- **Icons**: one set, [Lucide](https://lucide.dev)'s (ISC), the symbols the
+  pages use copied into `omniacli/templates/_sprite.html` (nothing fetched
+  at run time), at 12 px (in a badge), 16 (beside a text) or 20 (the header,
+  the X, a banner); `icon()` in the templates, `omniaIcon()` in the scripts.
+  No character or emoji stands for an icon any more (› and → stay in the
+  sentences and in the paths of the menus; the map keeps its signs). A state
+  is said by a word, an icon and a colour, never by the colour alone: the
+  badges of a good, a warned and a failed state and every banner carry their
+  icon, and a production is told by its rocket.
 - **Less motion** asked by the system: nothing moves, one rule for every page.
 
 ### Whitelabel
@@ -5300,7 +5309,9 @@ OmniaCLI also builds on [Odoo](https://www.odoo.com), and on FastAPI,
 Starlette, Uvicorn, websockets, Jinja, HTTPX, PyYAML, croniter, cryptography,
 segno (the QR codes of two-step verification), py_webauthn (the passkeys) and the MCP Python SDK.
 The terminal of the shell page is [xterm.js](https://github.com/xtermjs/xterm.js)
-with its fit addon (MIT, shipped in `omniacli/static`).
+with its fit addon (MIT, shipped in `omniacli/static`). The icons are
+[Lucide](https://lucide.dev)'s (ISC licence; the parts from Feather, MIT),
+copied into `omniacli/templates/_sprite.html` with their licence.
 
 ## License
 

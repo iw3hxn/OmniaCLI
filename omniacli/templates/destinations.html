@@ -1,6 +1,7 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
 {% from "_icons.html" import dialog_x with context %}
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
 {% block title %}{{ _("Backup destinations") }} · {{ brand.name }}{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
 {% if workspace %}{{ crumbs([(_("Workspaces"), "/workspaces" if workspaces_menu else None), (ws.label or workspace, "/workspaces/" ~ workspace), (_("Backup destinations"), None)]) }}
@@ -21,7 +22,7 @@
        {{ _("Every copy is encrypted here before it leaves, with the destination's own key: the provider cannot read it.") }}
        {% if workspace %}{{ _("These are the workspace's: its admins set them, its instances use them.") }}{% else %}{{ _("These are the machine's, for its admins; a workspace's admins set the workspace's on its page.") }}{% endif %}</p>
   </div>
-  <div class="actions"><button type="button" class="primary" id="dest-new" {{ "disabled" if not rclone }} title="{{ _('Opens the form of a new destination: nothing is created until you save there. Not available when rclone is not installed on this machine.') }}">+ {{ _("New destination") }}</button></div>
+  <div class="actions"><button type="button" class="primary" id="dest-new" {{ "disabled" if not rclone }} title="{{ _('Opens the form of a new destination: nothing is created until you save there. Not available when rclone is not installed on this machine.') }}">{{ icon("plus") }}{{ _("New destination") }}</button></div>
 </div>
 {% if not rclone %}<div class="banner">{{ _("rclone is not installed on this machine: install it (apt install rclone) to copy the backups out.") }}</div>{% endif %}
 <div id="error" class="banner" hidden></div>
@@ -165,7 +166,7 @@
       event.target.disabled = true; result.textContent = T.trying; result.className = "muted dest-result";
       const {ok, data} = await post("check", {name});
       event.target.disabled = false;
-      result.textContent = ok ? "✓ " + data.message : (data.error || data.detail || T.refused);
+      result.replaceChildren(...(ok ? [omniaIcon("circle-check"), " ", data.message] : [data.error || data.detail || T.refused]));
       result.className = (ok ? "status success" : "error") + " dest-result";
     });
     tr.querySelector("[data-delete]")?.addEventListener("click", async () => {

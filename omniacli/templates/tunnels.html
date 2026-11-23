@@ -1,5 +1,6 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
 {% block title %}{{ _("Tunnels") }} · {{ brand.name }}{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
 {{ crumbs([(_("Settings"), "/settings"), (_("Tunnels"), None)]) }}
@@ -43,7 +44,7 @@
     <tr><th>{{ _("Instance") }}</th><th>{{ _("Address") }}</th><th>{{ _("Opened by") }}</th><th>{{ _("Last traffic") }}</th><th>{{ _("Connections") }}</th><th></th></tr>
     {% for t in tunnels %}
     <tr>
-      <td>{{ t.link }} › {{ t.server }} <span class="role {{ t.role }}">{{ roles.get(t.role, t.role) }}</span></td>
+      <td>{{ t.link }} › {{ t.server }} <span class="role {{ t.role }}">{{ icon("rocket" if t.role == "production" else "flask-conical") }} {{ roles.get(t.role, t.role) }}</span></td>
       <td><a class="mono" href="{{ t.url }}" target="_blank" rel="noopener">{{ t.url }}</a></td>
       <td>{{ t.owner }}</td>
       <td class="mono muted" data-time="{{ t.last_active }}"></td>

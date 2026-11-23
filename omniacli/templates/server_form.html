@@ -264,7 +264,7 @@ for (const role of ROLES) {
   const box = document.getElementById("role-template").content.firstElementChild.cloneNode(true);
   const data = MODEL.server[role];
   const values = data || DEFAULTS;
-  box.querySelector(".role").textContent = tx(role);
+  box.querySelector(".role").replaceChildren(omniaIcon(role === "production" ? "rocket" : "flask-conical"), " ", tx(role));
   box.querySelector(".role").classList.add(role);
   const enabled = box.querySelector(".enabled"), body = box.querySelector(".body");
   enabled.checked = !!data || (!MODEL.original && Object.keys(MODEL.server).length === 0);

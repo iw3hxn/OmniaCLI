@@ -1,7 +1,7 @@
 {
- "+ Add a key…": "+ Aggiungi una chiave…",
  "A public key starts with its kind, as ssh-ed25519 or ssh-rsa: paste the line of the .pub file, without options before it": "Una chiave pubblica comincia con il suo tipo, come ssh-ed25519 o ssh-rsa: incolla la riga del file .pub, senza opzioni davanti",
  "Add a key": "Aggiungi una chiave",
+ "Add a key…": "Aggiungi una chiave…",
  "Add the key": "Aggiungi la chiave",
  "Added": "Aggiunta",
  "Added by": "Aggiunta da",

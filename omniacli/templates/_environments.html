@@ -1,10 +1,11 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{% from "_icons.html" import icon %}
 {# «Environments and deploys» (docs/ux/UX-015), the Overview's view of the builds as in Odoo.sh: a row per
    environment of the production (it, its test, its stagings here and on the linked machines; on a test's or a
    staging's page, itself), its state, branch, CI and copy on the left, its last deploys as cards on the right.
    The rows come with the page (app.environment_rows); the cards after it, in one request for the section
    (GET …/environments), for who may update the code (the capability code): for the others the row has no strip.
-   The card of now holds the environment's split «Open ↗ ▾»: its menu is drawn here by the server (moved into the
+   The card of now holds the environment's split «Open | menu»: its menu is drawn here by the server (moved into the
    card, never copied: the dialogs' buttons keep their handlers). Nothing here changes anything by itself: every
    action opens the dialog of before (Back to this deploy, Update, Rebuild, Back up now, Addresses, Log in as). -#}
 {% set strip_any = environments | selectattr("code") | list %}
@@ -13,15 +14,15 @@
 {% set rebuild_here = environments | selectattr("rebuild") | list %}
 {% macro env_badge(kind) %}{% if kind == "production" %}<span class="badge ok" title="{{ _('The instance its users work on') }}">{{ _("Production") }}</span>{% elif kind == "test" %}<span class="badge test-badge" title="{{ _('The test copy of this instance: try the code here, then bring it to production') }}">Test</span>{% else %}<span class="badge info" title="{{ _('A dated, neutralized copy of a production') }}">{{ _("Staging") }}</span>{% endif %}{% endmacro %}
 {% macro env_state(st) %}<span class="state-dot {{ st }}{% if st == 'stopped' %} quiet{% endif %}" title="{{ {'running': _('Odoo answers'), 'stopped': _('Odoo is stopped: Start brings it back'), 'busy': _('A job is working on it')}.get(st, _('OmniaCLI cannot read the state of its service')) }}">{{ {"running": _("Running"), "stopped": _("Stopped"), "busy": _("Job running")}.get(st, _("State unknown")) }}</span>{% endmacro %}
-{# the split «Open ↗ ▾» of an environment (UX-015 §7): Open, and the menu its role reaches, each entry there,
+{# the split «Open | menu» of an environment (UX-015 §7): Open, and the menu its role reaches, each entry there,
    off with why, or absent, as the server decided it #}
 {% macro now_actions(e) %}
 <div class="env-actions" data-now-actions="{{ e.key }}">
-  {%- if e.open and e.stopped %}<span title="{{ _('{name} is stopped: start it from its page.', name=e.label) }}"><a class="button small env-open" aria-disabled="true" tabindex="-1" title="{{ _('{name} is stopped: start it from its page.', name=e.label) }}">{{ _("Open") }} ↗</a></span>
-  {%- elif e.open %}<a class="button small env-open" href="{{ e.open }}" target="_blank" rel="noopener" title="{{ _('Opens Odoo of {name} in a new tab', name=e.label) }}">{{ _("Open") }} ↗</a>{% endif %}
+  {%- if e.open and e.stopped %}<span title="{{ _('{name} is stopped: start it from its page.', name=e.label) }}"><a class="button small env-open" aria-disabled="true" tabindex="-1" title="{{ _('{name} is stopped: start it from its page.', name=e.label) }}">{{ _("Open") }}{{ icon("external-link") }}</a></span>
+  {%- elif e.open %}<a class="button small env-open" href="{{ e.open }}" target="_blank" rel="noopener" title="{{ _('Opens Odoo of {name} in a new tab', name=e.label) }}">{{ _("Open") }}{{ icon("external-link") }}</a>{% endif %}
   {%- if e.code and e.menu %}
   <details class="more-menu env-menu">
-    <summary class="button small" title="{{ _('The other things to do on {name}: log in as a user, the log, a backup, the shell, the addresses', name=e.label) }}">{% if e.open %}▾{% else %}{{ _("Actions") }} ▾{% endif %}</summary>
+    <summary class="button small" title="{{ _('The other things to do on {name}: log in as a user, the log, a backup, the shell, the addresses', name=e.label) }}">{% if e.open %}{{ icon("chevron-down", label=_("Actions")) }}{% else %}{{ _("Actions") }}{{ icon("chevron-down") }}{% endif %}</summary>
     <div class="more-items">
       {% for m in e.menu %}
       {% if m.kind == "login_as" and m.offer.disabled %}<span title="{{ m.offer.disabled }}"><button type="button" disabled data-login-as="" data-menu="login_as" title="{{ m.offer.disabled }}">{{ _("Log in as…") }}</button></span>
@@ -48,7 +49,7 @@
     <h2>{{ _("Environments and deploys") }}</h2>
     {# the primary of the tab while nothing works on production; a job running: off, and not the primary (UX-015 §17.5) #}
     {% if main_view and stagings and stagings.can %}<button type="button" class="{{ 'primary' if not is_busy }}" id="staging-new" {{ off }}
-      title="{{ _('Opens the form of a copy of production as it is now, neutralized, at an address of its own: on this machine or on another one with the same version of Odoo. Production stays on. Not available while a job works on production.') }}">+ {{ _("New staging") }}</button>{% endif %}
+      title="{{ _('Opens the form of a copy of production as it is now, neutralized, at an address of its own: on this machine or on another one with the same version of Odoo. Production stays on. Not available while a job works on production.') }}">{{ icon("plus") }}{{ _("New staging") }}</button>{% endif %}
   </div>
   <div class="env-filter" hidden><input type="search" id="env-filter" placeholder="{{ _('Filter the environments…') }}" aria-label="{{ _('Filter the environments…') }}"
     title="{{ _('Shows only the environments whose name, type or branch has every word written here') }}"></div>
@@ -67,7 +68,7 @@
           {%- if e.code and e.ci == "manual" %}<a class="env-ci muted" href="{{ e.ci_url }}" data-ci="manual" title="{{ _('A production is updated by hand only: Update brings the new code. The CI runs on the test and on the stagings.') }}">{{ _("by hand only") }}</a>{% set _x = signs.append(1) %}
           {%- elif e.code and e.ci == "on" %}<a class="env-ci ok-text" href="{{ e.ci_url }}" data-ci="on" title="{{ _('The CI of {name} is on: a push of the branch it follows updates it; it is switched in Modules › Updates of the code', name=e.label) }}">{{ _("CI on") }}</a>{% set _x = signs.append(1) %}
           {%- elif e.code and e.ci == "off" %}<a class="env-ci muted" href="{{ e.ci_url }}" data-ci="off" title="{{ _('The CI of {name} is off: nothing moves its code by itself; it is switched in Modules › Updates of the code', name=e.label) }}">{{ _("CI off") }}</a>{% set _x = signs.append(1) %}{% endif %}
-          {%- if e.repo %}{% if signs %} · {% endif %}<a href="{{ e.repo.url }}" target="_blank" rel="noopener" title="{{ _('Opens the branch {branch} of {repo} in a new tab', branch=e.repo.branch, repo=e.repo.name) }}{% if e.repo.others %} · {{ _('the other {n} are in Modules › Code', n=e.repo.others) }}{% endif %}">{{ _("Repository") }} ↗</a>{% set _x = signs.append(1) %}{% endif %}
+          {%- if e.repo %}{% if signs %} · {% endif %}<a href="{{ e.repo.url }}" target="_blank" rel="noopener" title="{{ _('Opens the branch {branch} of {repo} in a new tab', branch=e.repo.branch, repo=e.repo.name) }}{% if e.repo.others %} · {{ _('the other {n} are in Modules › Code', n=e.repo.others) }}{% endif %}">{{ _("Repository") }} {{ icon("external-link") }}</a>{% set _x = signs.append(1) %}{% endif %}
           {%- if e.kind == "staging" and e.copied %}{% if signs %} · {% endif %}<span class="muted">{{ _("copy of") }} <time data-when="{{ e.copied }}" data-when-format="{date}">{{ when(e.copied) }}</time></span>{% endif %}
         </div>
         {% if e.rebuild and e.rebuild.disabled %}<span title="{{ e.rebuild.disabled }}"><button type="button" class="small danger env-rebuild" disabled title="{{ e.rebuild.disabled }}">{{ _("Rebuild…") }}</button></span>
@@ -168,7 +169,7 @@
     nowCode: {{ _("The code of now") | tojson }}, notDeploy: {{ _("not brought by a recorded deploy") | tojson }},
     nowCodeTitle: {{ _("The commit each repository has checked out now, read from its copy: no recorded deploy brought it (a new instance, or code changed outside OmniaCLI)") | tojson }},
     now: {{ _("now") | tojson }}, nowTitle: {{ _("Every repository of the environment is at the commits of this deploy") | tojson }},
-    success: {{ _("✓ succeeded") | tojson }}, warned: {{ _("⚠ with warnings") | tojson }}, failed: {{ _("✕ failed") | tojson }},
+    success: {{ _("succeeded") | tojson }}, warned: {{ _("with warnings") | tojson }}, failed: {{ _("failed") | tojson }},
     stoppedJob: {{ _("halted") | tojson }}, interrupted: {{ _("interrupted") | tojson }},
     added: {{ _("added {name}") | tojson }}, removed: {{ _("taken away {name}") | tojson }},
     moreRepos: {{ _("+ {n} repositories") | tojson }}, moreRepo: {{ _("+ 1 repository") | tojson }},
@@ -209,7 +210,7 @@
   const PRIORITY = {busy: 0, available: 1, now: 2};
   let strips = {}, loadedAt = 0, busyKeys = null;
 
-  // the split «Open ↗ ▾» of a row: moved into its card of now, back into the row before the strip is drawn again
+  // the split «Open | menu» of a row: moved into its card of now, back into the row before the strip is drawn again
   const homes = {};
   for (const node of box.querySelectorAll("[data-now-actions]")) homes[node.dataset.nowActions] = node.parentElement;
   function actionsOf(key) {
@@ -222,7 +223,7 @@
     const text = c.change === "added" ? fill(T.added, {name: c.repo}) : c.change === "removed" ? fill(T.removed, {name: c.repo})
       : (c.message || c.title || "—");
     if (c.url) return el("a", {class: "dc-msg", href: c.url, target: "_blank", rel: "noopener",
-                                 title: fill(T.commitLink, {sha: short(c.sha), repo: c.repo}) + " · " + text}, text + " ↗");
+                                 title: fill(T.commitLink, {sha: short(c.sha), repo: c.repo}) + " · " + text}, text, " ", omniaIcon("external-link"));
     return el("span", {class: "dc-msg", title: text}, text);
   }
   function others(c) {
@@ -257,7 +258,7 @@
                             "data-sha": c.sha || "", "data-deploy": c.id || ""});
     if (c.kind === "busy") {
       node.title = c.title;
-      node.append(el("div", {class: "dc-msg"}, "⟳ ", T.inProgress),
+      node.append(el("div", {class: "dc-msg"}, el("span", {class: "spin"}, omniaIcon("loader-circle")), " ", T.inProgress),
                   el("a", {class: "dc-line", href: prefix + c.job, title: fill(T.jobTitle, {name: env.label})}, c.title));
       return node;
     }
@@ -416,7 +417,7 @@
         if (s.login_as.disabled) { button.disabled = true; button.dataset.loginAs = ""; items.append(el("span", {title: s.login_as.disabled}, button)); }
         else { button.dataset.loginAs = JSON.stringify(s.login_as); items.append(button); }
         actions.append(el("details", {class: "more-menu env-menu"},
-          el("summary", {class: "button small", title: fill(T.menuTitle, {name: s.server})}, T.actions + " ▾"), items));
+          el("summary", {class: "button small", title: fill(T.menuTitle, {name: s.server})}, T.actions, omniaIcon("chevron-down")), items));
       }
       const left = el("div", {class: "env-left"},
         el("div", {class: "env-state"}, el("span", {class: `state-dot ${st}${st === "stopped" ? " quiet" : ""}`}, T[st] || T.unknown)),

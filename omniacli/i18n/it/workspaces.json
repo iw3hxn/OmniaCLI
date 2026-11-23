@@ -29,6 +29,7 @@
  "Addresses": "Indirizzi",
  "Adds a name {name} that opens the instance you choose. It holds with Save and publish.": "Aggiunge un nome {name} che apre l'istanza che scegli. Vale con Salva e pubblica.",
  "Add…": "Aggiungi…",
+ "All workspaces": "Tutti i workspace",
  "An AI assistant (Claude, Cursor…) reaches the workspace's instances at {url} with a token: it sees this workspace only, and does what its role lets do here.": "Un assistente AI (Claude, Cursor…) raggiunge le istanze del workspace su {url} con un token: vede solo questo workspace e fa quello che il suo ruolo permette qui.",
  "An instance not published yet and a link to the relay are needed": "Servono un'istanza non ancora pubblicata e un collegamento al relay",
  "Answer": "Risposta",
@@ -430,6 +431,5 @@
  "{name}, last seen": "{name}, visto l'ultima volta",
  "{storage} (not in workspaces.storage: pick another)": "{storage} (non è in workspaces.storage: scegline un altro)",
  "{storage} is not there yet (the package makes it when the workspaces are allowed)": "{storage} non c'è ancora (lo crea il pacchetto quando i workspace sono abilitati)",
- "{used} used of {total}": "{used} usati su {total}",
- "← All workspaces": "← Tutti i workspace"
+ "{used} used of {total}": "{used} usati su {total}"
 }

@@ -250,7 +250,7 @@
     cards.forEach((card, i) => {
       const state = i < current ? "done" : i > current ? "" : ended ? "failed" : "active";
       card.className = "step" + (state ? " " + state : "");
-      card.querySelector(".step-mark").textContent = state === "done" ? "✓" : state === "failed" ? "!" : "";
+      card.querySelector(".step-mark").replaceChildren(...(state === "done" ? [omniaIcon("check", 12)] : state === "failed" ? ["!"] : []));
       const bar = card.querySelector(".step-bar"), fill = bar.firstElementChild;
       const figures = card.querySelector(".step-figures");
       if (state === "active" && !stepSince[card.dataset.id]) stepSince[card.dataset.id] = now;

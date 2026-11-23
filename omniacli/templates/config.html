@@ -1,5 +1,6 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
 {% block title %}{{ _("Servers") }} · {{ brand.name }}{% endblock %}
 {% block content %}
 {% from "_list.html" import list_search, item with context %}
@@ -25,7 +26,7 @@
     <tr class="config-main">
       <td><strong>{{ server.name }}</strong></td>
       <td>{% if server.missing_plugin %}<span class="badge draft">{{ _("No plugin") }}</span>{% else %}<span class="badge {{ server.status }}">{{ _("Active") if server.active else _("Draft") }}</span>{% endif %}</td>
-      <td>{% for role, inst in server.instances.items() %}<span class="role {{ role }}">{{ tr(role) }}</span> <span class="mono">{{ inst.plugin.search_text(inst) | join(" ") }}</span><br>{% endfor %}
+      <td>{% for role, inst in server.instances.items() %}<span class="role {{ role }}">{{ icon("rocket" if role == "production" else "flask-conical") }} {{ tr(role) }}</span> <span class="mono">{{ inst.plugin.search_text(inst) | join(" ") }}</span><br>{% endfor %}
         {% if server.missing_plugin %}<span class="error">{{ _("Type {type}: {error}", type=server.type, error=tr(server.error)) }}</span>
         {% elif server.error %}<span class="error">{{ _("Incomplete: {error}", error=tr(server.error)) }}</span>{% endif %}</td>
       <td>{% for role, inst in server.instances.items() %}{{ inst.repositories | map(attribute="name") | join(", ") }}<br>{% endfor %}</td>

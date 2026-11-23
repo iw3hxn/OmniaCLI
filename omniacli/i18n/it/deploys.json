@@ -150,6 +150,7 @@
  "by hand only": "a mano",
  "came with the push of {ago}": "arrivato con il push di {ago}",
  "copy of": "copia del",
+ "failed": "fallito",
  "halted": "fermato",
  "in progress:": "in corso:",
  "it has no name served with https yet (the names of its workspace, published)": "non ha ancora un nome servito in https (i nomi del suo workspace, pubblicati)",
@@ -222,8 +223,5 @@
  "{what} did not answer /web/login with 200 within {n} s (last: {status})": "{what} non ha risposto 200 a /web/login entro {n} s (ultima: {status})",
  "{what} runs Odoo {found}, the instance's runs {version}": "{what} esegue Odoo {found}, quello dell'istanza {version}",
  "{what} stopped before answering /web/login": "{what} si è fermato prima di rispondere a /web/login",
- "{what}: {n} connections still open after {seconds} s (the websockets of the pages open, which reconnect, or requests longer than that): it stops now": "{what}: {n} connessioni ancora aperte dopo {seconds} s (i websocket delle pagine aperte, che si ricollegano, o richieste più lunghe): si ferma adesso",
- "⚠ with warnings": "⚠ con avvisi",
- "✓ succeeded": "✓ riuscito",
- "✕ failed": "✕ fallito"
+ "{what}: {n} connections still open after {seconds} s (the websockets of the pages open, which reconnect, or requests longer than that): it stops now": "{what}: {n} connessioni ancora aperte dopo {seconds} s (i websocket delle pagine aperte, che si ricollegano, o richieste più lunghe): si ferma adesso"
 }

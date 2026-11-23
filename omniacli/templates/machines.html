@@ -1,5 +1,5 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
-{% from "_icons.html" import dialog_x with context %}
+{% from "_icons.html" import dialog_x, icon with context %}
 {# Machines: the servers prepared from here as cards or as a list (their state
    through the link, their load and disk read through it), the ones being
    prepared with their steps, and Add a server in a dialog of two steps
@@ -115,7 +115,8 @@
 .m-empty h2 { font-size: 20px; margin: 0 0 6px; }
 .m-empty p { color: var(--muted); max-width: 520px; margin: 0 auto 20px; }
 .m-features { display: flex; justify-content: center; gap: 10px 22px; flex-wrap: wrap; margin-top: 26px; font-size: 13px; color: var(--muted); }
-.m-features span::before { content: "✓"; color: var(--ok); font-weight: 700; margin-right: 6px; }
+.m-features span::before { content: ""; display: inline-block; width: var(--icon-16); height: var(--icon-16); vertical-align: -3px;
+  margin-right: var(--sp-6); background-color: var(--ok); -webkit-mask: var(--m-check) center / contain no-repeat; mask: var(--m-check) center / contain no-repeat; }
 #add-dialog { --dialog-w: 660px; padding: 0; }
 #add-dialog form { margin: 0; }
 .w-head { padding: 20px 24px 0; }
@@ -173,7 +174,7 @@
             title="{{ _('Updates OmniaCLI on every machine here where a newer version is published, one after the other; the first that fails stops the others') }}">{{ _("Update all…") }}</button>
     <span title="{{ _('Links a clean Ubuntu or Debian server: OmniaCLI installs everything there over ssh and shows it here, in about 15 minutes') }}">
     <button type="button" class="primary" data-add-machine {{ "disabled" if not provision_key }}
-            title="{{ _('Links a clean Ubuntu or Debian server: OmniaCLI installs everything there over ssh and shows it here, in about 15 minutes') }}">+ {{ _("Add a server") }}</button></span></div>
+            title="{{ _('Links a clean Ubuntu or Debian server: OmniaCLI installs everything there over ssh and shows it here, in about 15 minutes') }}">{{ icon("plus") }}{{ _("Add a server") }}</button></span></div>
 </div>
 {% if not provision_key %}<div class="banner">{{ _("OmniaCLI's key cannot be made: see its log.") }}</div>{% endif %}
 
@@ -189,7 +190,7 @@
   <div class="m-empty-icon"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01M11 7.5h6M11 16.5h6"/></svg></div>
   <h2>{{ _("No servers yet") }}</h2>
   <p>{{ _("Add a clean Ubuntu or Debian server: OmniaCLI installs everything there and links it here, in about 15 minutes.") }}</p>
-  <button type="button" data-add-machine {{ "disabled" if not provision_key }} title="{{ _('Links a clean Ubuntu or Debian server: OmniaCLI installs everything there over ssh and shows it here, in about 15 minutes') }}">+ {{ _("Add your first server") }}</button>
+  <button type="button" data-add-machine {{ "disabled" if not provision_key }} title="{{ _('Links a clean Ubuntu or Debian server: OmniaCLI installs everything there over ssh and shows it here, in about 15 minutes') }}">{{ icon("plus") }}{{ _("Add your first server") }}</button>
   <div class="m-features">
     <span>{{ _("Docker and nginx") }}</span><span>{{ _("Automatic HTTPS") }}</span>
     <span>{{ _("Firewall and security updates") }}</span><span>{{ _("Linked through SSH") }}</span>
@@ -471,7 +472,7 @@
   }
 
   // the actions of a machine, the same on its card and its row: the log and Try again of a preparation, Open,
-  // and the "⋯" menu of a linked one
+  // and the menu (…) of a linked one
   function actions(card, state) {
     const out = [];
     if (card.job && state !== "up") out.push(el("a", {class: "button", href: `${PREFIX}/jobs/${card.job.id}`, text: T.log, title: T.logTitle}));
@@ -486,7 +487,7 @@
     const items = el("div", {class: "m-more-items"},
       el("button", {type: "button", text: T.test, title: T.testTitle, onclick: (e) => testLink(card, e.target)}),
       el("button", {type: "button", class: "danger", text: T.remove + "…", title: T.removeHelp, onclick: () => askRemove(card)}));
-    return el("details", {class: "m-more"}, el("summary", {"aria-label": T.moreTitle, title: T.moreTitle, text: "⋯"}), items);
+    return el("details", {class: "m-more"}, el("summary", {"aria-label": T.moreTitle, title: T.moreTitle}, omniaIcon("ellipsis")), items);
   }
   function foot(card, state) {
     return el("div", {class: "mcard-foot"}, ...actions(card, state), el("span", {class: "grow"}), more(card));
@@ -665,7 +666,7 @@
       sections = [{key: "", items: items.slice(0, 1), groups: []}, ...placed];
       if (rest.length) sections.push({key: "Others", label: T.others, items: rest, groups: [], count: rest.length});
     }
-    // a menu "⋯" open stays open across the redraw of every 15 s
+    // a menu (…) open stays open across the redraw of every 15 s
     const open = list.querySelector(".m-more[open]");
     const keep = open ? open.closest("[data-machine]").dataset.machine : null;
     list.replaceChildren(...sections.flatMap((sec) => section(sec, "", 1)));
@@ -712,7 +713,7 @@
     draw();
   }
   for (const button of viewButtons) button.addEventListener("click", () => showView(button.dataset.view, true));
-  // a row's menu "⋯" opens over the table's own scrolling, below its button or above it when there is no room
+  // a row's menu (…) opens over the table's own scrolling, below its button or above it when there is no room
   list.addEventListener("toggle", (event) => {
     const menu = event.target;
     if (!menu.matches || !menu.matches(".m-rows .m-more") || !menu.open) return;
@@ -807,7 +808,7 @@
   }
   async function testLink(card, button) {
     const {data} = await post(`${PREFIX}/api/links/${encodeURIComponent(card.name)}/test`);
-    button.textContent = data.ok ? `✓ ${T.linkOk}` : `✗ ${data.error || T.unreachable}`;
+    button.replaceChildren(omniaIcon(data.ok ? "circle-check" : "circle-x"), data.ok ? T.linkOk : data.error || T.unreachable);
   }
   const removeDialog = document.getElementById("remove-dialog");
   let removing = null;
@@ -904,10 +905,10 @@
     form.querySelectorAll("[data-step-tab]").forEach((t) => {
       const i = Number(t.dataset.stepTab);
       t.className = i === n ? "on" : i < n ? "done" : "";
-      t.querySelector("b").textContent = i < n ? "✓" : String(i);
+      t.querySelector("b").replaceChildren(i < n ? omniaIcon("check", 12, String(i)) : String(i));
     });
     next.textContent = n === 1 ? `${T.next} →` : T.add;
-    back.textContent = n === 1 ? T.cancel : `← ${T.back}`;
+    back.replaceChildren(...(n === 1 ? [T.cancel] : [omniaIcon("arrow-left"), T.back]));
     next.title = n === 1 ? T.nextTitle : T.addTitle; back.title = n === 1 ? T.cancelTitle : T.backTitle;
     error.textContent = "";
     if (n === 2) field("m-host").focus();

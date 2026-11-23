@@ -1,5 +1,5 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
-{% from "_icons.html" import dialog_x with context %}
+{% from "_icons.html" import dialog_x, icon with context %}
 {% extends "base.html" %}
 {% block title %}{{ ws.name }} · {{ brand.name }}{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
@@ -96,7 +96,7 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
       <td><a href="{{ prefix }}/servers/{{ name }}"><strong>{{ name }}</strong></a></td>
       <td>{% for site in sites if instance and site.instance == instance %}
         <div><span class="muted">{{ tr(site.role) }}</span>
-          <a class="mono" href="https://{{ site.names[0] }}/" target="_blank" rel="noopener">{{ site.names[0] }} ↗</a>
+          <a class="mono" href="https://{{ site.names[0] }}/" target="_blank" rel="noopener">{{ site.names[0] }} {{ icon("external-link") }}</a>
           {% if site.names[1:] %}<a class="ws-side" href="#names" title="{{ _('Its other names, on the tab Names on the web') }}">+{{ site.names[1:] | length }}</a>{% endif %}</div>
         {% else %}<span class="muted">{{ _("no name on the web yet") }}</span>{% endfor %}</td>
       <td style="text-align: right"><a class="ws-side" href="{{ prefix }}/servers/{{ name }}#modules"
@@ -122,7 +122,7 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
     <tr><th>{{ _("Instance") }}</th><th>{{ _("Copy") }}</th><th>{{ _("Addresses") }}</th></tr>
     {% for site in sites %}
     <tr><td>{{ site.instance }}</td><td>{{ tr(site.role) }}</td>
-      <td class="mono">{% for n in site.names + site.aliases %}<a href="https://{{ n }}/" target="_blank" rel="noopener">{{ n }} ↗</a>{% if not loop.last %}<br>{% endif %}{% endfor %}
+      <td class="mono">{% for n in site.names + site.aliases %}<a href="https://{{ n }}/" target="_blank" rel="noopener">{{ n }} {{ icon("external-link") }}</a>{% if not loop.last %}<br>{% endif %}{% endfor %}
         {% for r in site.redirects %}<br><span class="muted">{{ r }}</span>{% endfor %}</td></tr>
     {% endfor %}
   </table>
@@ -161,7 +161,7 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
   </div>
   </div>
   <div class="actions">
-    {% if instances %}<button type="button" class="small" id="add-sub" title="{{ _('Adds a name {name} that opens the instance you choose. It holds with Save and publish.', name='<sub>.' ~ ws.domain) }}">+ {{ _("Subdomain") }}</button>{% endif %}
+    {% if instances %}<button type="button" class="small" id="add-sub" title="{{ _('Adds a name {name} that opens the instance you choose. It holds with Save and publish.', name='<sub>.' ~ ws.domain) }}">{{ icon("plus") }}{{ _("Subdomain") }}</button>{% endif %}
     <span title="{{ _('Saves the main instance, the subdomains and where the certificate comes from, then writes again the nginx site of the workspace and asks for the certificate. It is a job. A name without a DNS record stays out of the certificate. Disabled until something is changed.') }}">
       <button type="button" id="save-names" disabled>{{ _("Save and publish") }}</button></span>
     {% if instances %}<button type="button" id="publish-names" title="{{ _('Writes again the nginx site of the workspace and asks for the certificate again, without changing the names: after the DNS records were made, or when a certificate did not arrive. It is a job.') }}">{{ _("Publish again") }}</button>{% endif %}
@@ -848,7 +848,7 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
         let data = {};
         try { data = JSON.parse(xhr.responseText); } catch (e) { /* not JSON */ }
         if (xhr.status !== 200) { where.textContent = data.error || data.detail || T.error.replace("{status}", xhr.status); progress.textContent = ""; return; }
-        progress.textContent = "✓"; loadArchives(data.id);
+        progress.replaceChildren(omniaIcon("check")); loadArchives(data.id);
       };
       xhr.onerror = () => { where.textContent = T.error.replace("{status}", "–"); progress.textContent = ""; };
       xhr.send(file);

@@ -4,6 +4,7 @@
 every page, the login and the invitation; the dark theme written once; the
 contrasts of §3 computed from the file itself, light and dark."""
 
+import json
 import re
 from pathlib import Path
 
@@ -171,6 +172,36 @@ def test_one_look_and_one_keyboard_for_the_tabs():
     for needed in ("ArrowRight:", "ArrowLeft:", "Home:", "End:", "t.tabIndex = t === chosen ? 0 : -1",
                    'panel.setAttribute("role", "tabpanel")', 'panel.setAttribute("aria-labelledby", t.id)'):
         assert needed in base, needed
+
+
+GLYPHS = re.compile(r"[✓✔✗✘✕⚠⛔↗▾🔔☰☾☀⟳↻⏳⋯←↑↓■○●]")
+
+
+def test_icons_not_glyphs():
+    """UX-017 §5.9: Lucide's symbols in one sprite, its licence with it; every icon used is in it; no character or
+    emoji stands for an icon in the templates nor in the Italian texts (the map keeps its signs: D2)."""
+    sprite = (TEMPLATES / "_sprite.html").read_text(encoding="utf-8")
+    assert "Lucide License (ISC)" in sprite and "Feather (MIT License)" in sprite and "http" not in sprite.split("-#}")[-1].replace(
+        'xmlns="http://www.w3.org/2000/svg"', "")
+    symbols = set(re.findall(r'<symbol id="i-([\w-]+)"', sprite))
+    used = set()
+    for page in TEMPLATES.glob("*.html"):
+        text = page.read_text(encoding="utf-8")
+        used |= set(re.findall(r'href="#i-([\w-]+)"', text)) | set(re.findall(r'omniaIcon\(\s*"([\w-]+)"', text))
+        used |= {m for m in re.findall(r'\bicon\("([\w-]+)"', text) if m not in ("github", "python")}
+        if page.name in ("_map.html", "_sprite.html"):
+            continue
+        assert not GLYPHS.search(text), (page.name, GLYPHS.search(text).group(0))
+    aliases = {"start": "play", "stop": "square", "restart": "rotate-cw", "backup": "database", "production": "rocket", "test": "flask-conical"}
+    missing = {aliases.get(name, name) for name in used} - symbols
+    assert not missing, missing
+    for catalog in (TEMPLATES.parent / "i18n" / "it").glob("*.json"):
+        if catalog.name in ("map.json", "python.json"):
+            continue
+        for key, value in json.loads(catalog.read_text(encoding="utf-8")).items():
+            assert not GLYPHS.search(key) and not GLYPHS.search(value), (catalog.name, key)
+    # the about page names it among the third parties
+    assert "https://lucide.dev" in (TEMPLATES / "about.html").read_text(encoding="utf-8")
 
 
 async def test_the_header_on_a_phone_leaves_nothing_out(client):  # noqa: F811

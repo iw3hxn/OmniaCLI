@@ -1,5 +1,5 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
-{% from "_icons.html" import dialog_x with context %}
+{% from "_icons.html" import dialog_x, icon with context %}
 {# The head of the Modules tab of an instance (docs/ux/UX-008 §7.3): the catalogs for its version of Odoo
    (the OCA's, and the sources the machine's admins add: README, Modules from the catalogs), their dates,
    and the tab's primary + Add modules, for a workspace's instance; the Code and Updates sections of
@@ -20,7 +20,7 @@
   <p class="muted mods-line" id="mods-line">{{ _("Reading the catalog of the OCA…") }}</p>
   <span {% if is_busy %}title="{{ _('A job is working on {name}: try again when it ends.', name=server.name) }}"{% endif %}>
   <button type="button" class="primary" id="mods-open" {{ off }}
-    title="{{ _('Looks for a module of this instance (Odoo, Odoo Enterprise when it is on, its repositories) or of the catalogs for this version of Odoo (the OCA and the sources added) and installs it, with the modules and the repositories it depends on') }}">+ {{ _("Add modules") }}</button></span>
+    title="{{ _('Looks for a module of this instance (Odoo, Odoo Enterprise when it is on, its repositories) or of the catalogs for this version of Odoo (the OCA and the sources added) and installs it, with the modules and the repositories it depends on') }}">{{ icon("plus") }}{{ _("Add modules") }}</button></span>
 </div>
 <dialog id="mods-dialog" class="mods-dialog" aria-labelledby="mods-title">
   <form method="dialog" id="mods-form">

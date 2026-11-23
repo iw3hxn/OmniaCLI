@@ -831,6 +831,7 @@
  "dead rows": "righe morte",
  "default: {value}": "predefinito: {value}",
  "differences": "differenze",
+ "does not fit:": "non ci sta:",
  "e.g. base": "es. base",
  "emails or webhook URLs, separated by commas": "email o URL di webhook, separati da virgole",
  "empty: the last part of the address": "vuoto: l'ultima parte dell'indirizzo",
@@ -899,6 +900,9 @@
  "pg_stat_statements is not installed in this database: CREATE EXTENSION pg_stat_statements, with shared_preload_libraries = pg_stat_statements in PostgreSQL's configuration.": "pg_stat_statements non è installato in questo database: CREATE EXTENSION pg_stat_statements, con shared_preload_libraries = pg_stat_statements nella configurazione di PostgreSQL.",
  "pip click-odoo": "pip click-odoo",
  "pip requirements": "pip requirements",
+ "points here": "punta qui",
+ "points to {found}, not here. It stays out of the certificate until the DNS points here.": "punta a {found}, non qui. Resta fuori dal certificato finché il DNS non punta qui.",
+ "points to {found}: make an A record towards {here}. It stays out of the certificate until the DNS points here.": "punta a {found}: crea un record A verso {here}. Resta fuori dal certificato finché il DNS non punta qui.",
  "points to {found}: the public address of this machine is not known here, the job checks it.": "punta a {found}: l'indirizzo pubblico di questa macchina qui non si conosce, lo controlla il job.",
  "portal": "portale",
  "production": "produzione",
@@ -1011,9 +1015,5 @@
  "{where} · {n} new commits": "{where} · {n} nuovi commit",
  "{who} wrote:": "{who} ha scritto:",
  "· none holds data": "· nessuna contiene dati",
- "· reading the database…": "· lettura del database…",
- "✓ points here": "✓ punta qui",
- "✗ does not fit:": "✗ non ci sta:",
- "✗ points to {found}, not here. It stays out of the certificate until the DNS points here.": "✗ punta a {found}, non qui. Resta fuori dal certificato finché il DNS non punta qui.",
- "✗ points to {found}: make an A record towards {here}. It stays out of the certificate until the DNS points here.": "✗ punta a {found}: crea un record A verso {here}. Resta fuori dal certificato finché il DNS non punta qui."
+ "· reading the database…": "· lettura del database…"
 }

@@ -1,4 +1,5 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{% from "_icons.html" import icon %}
 {# The GitHub token of one scope (a server or a workspace: README, GitHub): a
    git credential of kind «GitHub token», with its name; GitHub is asked who it
    is when it is saved. «Test» says who it is, how many repositories it reads
@@ -8,7 +9,7 @@
    button [data-gh-test] (data-gh-url, data-gh-extra, data-gh-host): its test. -#}
 {% macro github_form(url, extra, label) -%}
 <details class="gh-token">
-  <summary title="{{ _('A fine-grained personal access token of GitHub: the repositories are then picked from a list, their webhook is made by itself and the state of a deploy is written on its commit') }}">+ {{ _("GitHub token") }}</summary>
+  <summary title="{{ _('A fine-grained personal access token of GitHub: the repositories are then picked from a list, their webhook is made by itself and the state of a deploy is written on its commit') }}">{{ icon("plus") }}{{ _("GitHub token") }}</summary>
   <div class="gh-form" data-url="{{ url }}" data-extra='{{ extra | tojson }}'>
     <p class="muted small">{{ _("Make it on github.com: Settings › Developer settings › Personal access tokens › Fine-grained tokens. Resource owner: the account or the organisation of the repositories; Repository access: those OmniaCLI may read; Repository permissions: Contents read-only, Metadata read-only, Webhooks read and write, Commit statuses read and write. It is never shown again.") }}</p>
     <div class="gh-fields">
@@ -68,7 +69,7 @@
       for (const p of data.permissions) {
         const li = document.createElement("li");
         li.className = p.ok ? "ok" : "missing";
-        li.textContent = (p.ok ? "✓ " : "✗ ") + fill(p.ok ? G.has : G.lacks, {permission: p.permission, access: p.access, purpose: p["for"]});
+        li.append(omniaIcon(p.ok ? "circle-check" : "circle-x"), " ", fill(p.ok ? G.has : G.lacks, {permission: p.permission, access: p.access, purpose: p["for"]}));
         ul.append(li);
       }
       box.append(ul);

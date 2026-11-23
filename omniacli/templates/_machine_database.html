@@ -1,5 +1,5 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
-{% from "_icons.html" import dialog_x with context %}
+{% from "_icons.html" import dialog_x, icon with context %}
 {# The machine's Database tab (UX-008 §6.2; docs/adr/postgresql-della-macchina.md,
    steps 1 and 2): the databases of this machine's instances, read when the
    tab opens (GET /api/postgres, each database on its own time), one row
@@ -122,9 +122,9 @@
       {# the tab's primary until the machine's cluster exists (UX-008 §6.2.1, step 3) #}
       {# one PostgreSQL on this machine for several instances, to save memory: not a copy on another server
          (that is Replica on another server…, on a database's row) #}
-      <span id="pg-cluster-box" hidden><button type="button" class="small" id="pg-cluster" title="{{ _('One PostgreSQL on this machine for several instances, to save memory: a container of OmniaCLI with its data on the storage of the workspaces, no port, reached by its socket only. The new instances are made on it, each with its own role and its data on its workspace\'s disk; the instances of now keep their database. It is not a copy on another server: that is Replica on another server…, on the row of a database. It is a job; nothing that runs now stops.') }}">{{ _("+ Machine's shared PostgreSQL…") }}</button></span>
+      <span id="pg-cluster-box" hidden><button type="button" class="small" id="pg-cluster" title="{{ _('One PostgreSQL on this machine for several instances, to save memory: a container of OmniaCLI with its data on the storage of the workspaces, no port, reached by its socket only. The new instances are made on it, each with its own role and its data on its workspace\'s disk; the instances of now keep their database. It is not a copy on another server: that is Replica on another server…, on the row of a database. It is a job; nothing that runs now stops.') }}">{{ icon("plus") }}{{ _("Machine's shared PostgreSQL…") }}</button></span>
       {# on the machine that hosts it (UX-010 §5.1): the tab's primary when nothing else is to be made here #}
-      <span id="pg-replica-box" hidden><button type="button" class="small" id="pg-replica" title="{{ _('Makes on this machine a read-only copy of the PostgreSQL of a linked machine, kept up to date at each change, which its instances can read from. The copy holds every database of that cluster. Nothing starts until Make the replica.') }}">{{ _("+ Replica of another machine…") }}</button></span>
+      <span id="pg-replica-box" hidden><button type="button" class="small" id="pg-replica" title="{{ _('Makes on this machine a read-only copy of the PostgreSQL of a linked machine, kept up to date at each change, which its instances can read from. The copy holds every database of that cluster. Nothing starts until Make the replica.') }}">{{ icon("plus") }}{{ _("Replica of another machine…") }}</button></span>
       <button type="button" class="small" id="pg-reload" title="{{ _('Reads the databases of this machine again now. It changes nothing.') }}">{{ _("Read again") }}</button></span></div>
     <input type="search" id="pg-search" hidden placeholder="{{ _('Search database…') }}" aria-label="{{ _('Search database…') }}" title="{{ _('Shows the rows whose instance or kind holds these words') }}">
     <p class="muted" id="pg-loading">{{ _("Reading the databases…") }}</p>
@@ -591,7 +591,7 @@
       restartAskDedicated: {{ _("Restart the PostgreSQL of {name} now? {name} does not answer for about {s} s; whoever is saving at that moment gets an error and tries again. No other instance of {link} restarts.") | tojson }},
       restartGoTitleDedicated: {{ _("Makes the PostgreSQL of {name} again to open a port over TLS, then makes the replica: for about {s} s {name} does not answer") | tojson }},
       noRoomDedicated: {{ _("No room: the copy of the database of {name} of {link} takes about {need}, here {free} are free and {reserve} must stay free.") | tojson }},
-      button: {{ _("+ Replica of another machine…") | tojson }},
+      button: {{ _("Replica of another machine…") | tojson }},
       notHere: {{ _("No replica here: {why}") | tojson }},
       noLink: {{ _("No link can carry a replica: {why}") | tojson }},
       what: {{ _("The copy is the whole cluster of {link}: {size}, with the data of all its customers ({n} instances{lent}). Here {free} are free, and at least {reserve} stay free.") | tojson }},

@@ -42,7 +42,11 @@
  "This machine, or another machine of yours with a public address for every environment, reached by a tunnel this machine opens itself (no port is opened here). One environment only: its Addresses. It takes effect with Save and publish.": "Questa macchina, o per ogni ambiente un'altra tua macchina con un indirizzo pubblico, raggiunta da un tunnel che apre questa macchina (qui non si apre nessuna porta). Un ambiente solo: i suoi Indirizzi. Vale con Salva e pubblica.",
  "Through {machine}: its nginx holds the certificate and passes the request into the tunnel": "Attraverso {machine}: il suo nginx tiene il certificato e passa la richiesta nel tunnel",
  "Through {machine}: the tunnel is not connected, the request stops there": "Attraverso {machine}: il tunnel non è connesso, la richiesta si ferma lì",
+ "Tunnel connected since {since}.": "Tunnel connesso dal {since}.",
  "Tunnel connecting…": "Tunnel in connessione…",
+ "Tunnel not connected since {when}: the names do not open. Its unit tries again every few seconds.": "Tunnel non connesso dal {when}: i nomi non si aprono. La sua unit riprova ogni pochi secondi.",
+ "Tunnel not connected: the names do not open. Its unit tries again every few seconds.": "Tunnel non connesso: i nomi non si aprono. La sua unit riprova ogni pochi secondi.",
+ "Tunnel not started: Save and publish again.": "Tunnel non avviato: Salva e pubblica di nuovo.",
  "a machine of the provider": "una macchina del fornitore",
  "it answered {code}": "ha risposto {code}",
  "it does not answer: {why}": "non risponde: {why}",
@@ -79,9 +83,5 @@
  "{machine}, every environment": "{machine}, ogni ambiente",
  "{name} is a name of this machine's workspaces: it is not published for another one": "{name} è un nome dei workspace di questa macchina: non si pubblica per un'altra",
  "{name}: make an A record {name} → {host}": "{name}: fai un record A {name} → {host}",
- "{name}: make an A record {name} → {host} (it leads to {found} now)": "{name}: fai un record A {name} → {host} (ora porta a {found})",
- "✓ Tunnel connected since {since}.": "✓ Tunnel connesso dal {since}.",
- "✗ Tunnel not connected since {when}: the names do not open. Its unit tries again every few seconds.": "✗ Tunnel non connesso dal {when}: i nomi non si aprono. La sua unit riprova ogni pochi secondi.",
- "✗ Tunnel not connected: the names do not open. Its unit tries again every few seconds.": "✗ Tunnel non connesso: i nomi non si aprono. La sua unit riprova ogni pochi secondi.",
- "✗ Tunnel not started: Save and publish again.": "✗ Tunnel non avviato: Salva e pubblica di nuovo."
+ "{name}: make an A record {name} → {host} (it leads to {found} now)": "{name}: fai un record A {name} → {host} (ora porta a {found})"
 }

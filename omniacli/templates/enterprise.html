@@ -120,7 +120,7 @@
     button.disabled = false;
     if (!ok) { result.className = "ent-result error"; result.textContent = data.error || data.detail || T.refused; return; }
     result.className = "ent-result status success";
-    result.textContent = "✓ " + T.found.replace("{count}", data.branches).replace("{versions}", data.versions.join(", ") || T.none);
+    result.replaceChildren(omniaIcon("circle-check"), " ", T.found.replace("{count}", data.branches).replace("{versions}", data.versions.join(", ") || T.none));
     const select = document.getElementById("ent-series");
     select.replaceChildren(...data.versions.map((v) => new Option(v, v)));
     select.disabled = !data.versions.length;

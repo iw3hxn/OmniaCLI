@@ -36,7 +36,7 @@ window.omniaRoom = window.omniaRoom || function (holder) {
     "dump": _(", its dump ≈ {dump}"), "files": _(", filestore {files}"), "noFiles": _(", no filestore"),
     "estimate": _(". An estimate on the high side: the zip is smaller."),
     "roomReading": _("Room for {what}: reading the disks…"), "roomError": _("Room for {what}: {error}"),
-    "room": _("Room for {what}:"), "noFit": _("✗ does not fit:"),
+    "room": _("Room for {what}:"), "noFit": _("does not fit:"),
     "disk": _("{mount} ({roles}): needs ≈ {needs}, free {free}"), "freed": _(" + {freed} the restore drops first"),
     "unknown": _("{what}: its disk is not known, not checked"),
   } | tojson }};
@@ -49,9 +49,10 @@ window.omniaRoom = window.omniaRoom || function (holder) {
   box.style.cssText = "margin-top: 8px; font-size: 13px";
   holder.append(box);
 
-  function line(text, className = "muted") {
+  function line(text, className = "muted", mark = "") {
     const p = document.createElement("div");
-    p.className = className; p.textContent = text;
+    p.className = className;
+    p.append(...(mark ? [omniaIcon(mark), " "] : []), text);
     box.append(p);
     return p;
   }
@@ -80,10 +81,10 @@ window.omniaRoom = window.omniaRoom || function (holder) {
       if (!needs) continue;
       const freed = disk.roles.reduce((s, r) => s + ((rm.freed || {})[r] || 0), 0);
       const fits = needs <= disk.free + freed;
-      line(`${fits ? "✓" : T.noFit} `
+      line((fits ? "" : T.noFit + " ")
         + fill(T.disk, {mount: disk.mount, roles: disk.roles.map((r) => ROLE[r] || r).join(", "),
                         needs: sizeText(needs), free: sizeText(disk.free)})
-        + (freed ? fill(T.freed, {freed: sizeText(freed)}) : ""), fits ? "" : "error");
+        + (freed ? fill(T.freed, {freed: sizeText(freed)}) : ""), fits ? "" : "error", fits ? "check" : "circle-x");
     }
     for (const role of rm.unknown || []) {
       if (need[role]) line(fill(T.unknown, {what: ROLE[role] || role}));

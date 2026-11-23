@@ -1,5 +1,5 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
-{% from "_icons.html" import dialog_x with context %}
+{% from "_icons.html" import dialog_x, icon with context %}
 {% extends "base.html" %}
 {% block title %}{{ _("Workspaces") }} · {{ brand.name }}{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
@@ -19,7 +19,7 @@
 <div id="error" class="banner" hidden></div>
 {% if storage_error %}<div class="banner">{{ _("No workspace can be used: {error}, in {file} (root's); then, as root, {command}.", error=tr(storage_error), file=system_config, command="dpkg-reconfigure omniacli") }}</div>{% endif %}
 <div id="edit-view">
-  <p><a href="{{ prefix }}/workspaces" title="{{ _('Back to the list of the workspaces: what was changed here and not saved is lost') }}">{{ _("← All workspaces") }}</a></p>
+  <p><a href="{{ prefix }}/workspaces" title="{{ _('Back to the list of the workspaces: what was changed here and not saved is lost') }}">{{ icon("arrow-left") }} {{ _("All workspaces") }}</a></p>
   <div id="workspaces"></div>
 </div>
 {% set limit_labels = {"disk_gb": _("Disk, GB"), "cpus": _("CPUs"), "memory_gb": _("Memory, GB"), "instances": _("Instances")} %}
@@ -337,9 +337,9 @@
   const T = {
     one: {{ _("{n} workspace") | tojson }}, many: {{ _("{n} workspaces") | tojson }},
     onMachines: {{ _("{list} on {m} machines") | tojson }},
-    watchFilter: {{ _("⚠ {n} with something to look at") | tojson }},
+    watchFilter: {{ _("{n} with something to look at") | tojson }},
     watchFilterTitle: {{ _("Shows only the workspaces with something to look at: the same things as the bell and the map") | tojson }},
-    allFine: {{ _("✓ all fine") | tojson }}, showAll: {{ _("Show every workspace") | tojson }},
+    allFine: {{ _("all fine") | tojson }}, showAll: {{ _("Show every workspace") | tojson }},
     showAllTitle: {{ _("Shows every workspace again") | tojson }},
     readAt: {{ _("Read at {when}") | tojson }},
     staleSince: {{ _("Not updated since {when}: {why}") | tojson }},
@@ -354,13 +354,13 @@
     expand: {{ _("Shows inside the workspace its machines, instances and users. It changes nothing.") | tojson }},
     open: {{ _("Opens the workspace {name}: instances, names on the web, users and external services") | tojson }},
     noOpen: {{ _("The link {link} gives you the role {role}: the page of the workspace is the administrators'.") | tojson }},
-    fine: {{ _("✓ fine") | tojson }}, toLook: {{ _("{n} to look at") | tojson }},
+    fine: {{ _("fine") | tojson }}, toLook: {{ _("{n} to look at") | tojson }},
     plusMachine: {{ _("+ {machine}") | tojson }}, stagingsOn: {{ _("{n} stagings on {machine}") | tojson }},
     productions1: {{ _("{n} production") | tojson }}, productions: {{ _("{n} productions") | tojson }},
     stagings1: {{ _("{n} staging") | tojson }}, stagings: {{ _("{n} stagings") | tojson }},
     noInstance: {{ _("no instance") | tojson }}, allowed: {{ _("{n} of {limit} allowed") | tojson }},
-    twoStep1: {{ _("⚠ {n} administrator without two-step verification") | tojson }},
-    twoStep: {{ _("⚠ {n} administrators without two-step verification") | tojson }},
+    twoStep1: {{ _("{n} administrator without two-step verification") | tojson }},
+    twoStep: {{ _("{n} administrators without two-step verification") | tojson }},
     diskOf: {{ _("{used} of {size}") | tojson }}, diskDay: {{ _("as the daily record of the disks found it on {day}") | tojson }},
     almostFull: {{ _("almost full") | tojson }}, noDisk: {{ _("no disk yet") | tojson }},
     unusable: {{ _("unusable") | tojson }},
@@ -392,7 +392,7 @@
     usersN1: {{ _("{n} user") | tojson }}, usersN: {{ _("{n} users") | tojson }},
     roles: {admin: {{ _("Administrator") | tojson }}, developer: {{ _("Developer") | tojson }}, user: {{ _("User") | tojson }}},
     limitedTo: {{ _("on {n} instances") | tojson }},
-    twoStepOn: {{ _("✓ verification on") | tojson }}, twoStepOff: {{ _("— verification off") | tojson }},
+    twoStepOn: {{ _("verification on") | tojson }}, twoStepOff: {{ _("— verification off") | tojson }},
     twoStepHead: {{ _("Two-step verification") | tojson }},
     moreUsers: {{ _("+{n} more in the page of the workspace") | tojson }},
     moreUsersTitle: {{ _("Opens the Users tab of the workspace") | tojson }},
@@ -400,7 +400,7 @@
     use: {{ _("Use now") | tojson }}, useReading: {{ _("reading…") | tojson }},
     cpu: {{ _("CPU {n} of {cores} cores") | tojson }}, cpuFree: {{ _("CPU {n} cores") | tojson }},
     mem: {{ _("memory {n} of {limit}") | tojson }}, memFree: {{ _("memory {n}") | tojson }},
-    net: {{ _("network ↓ {rx}/s ↑ {tx}/s") | tojson }}, real: {{ _("real disk: {free} free") | tojson }},
+    net: {{ _("network in {rx}/s, out {tx}/s") | tojson }}, real: {{ _("real disk: {free} free") | tojson }},
     notRead: {{ _("— not read: {why}") | tojson }}, noPoints: {{ _("no measure yet (one every 5 seconds)") | tojson }},
     openWs: {{ _("Open the workspace {name}") | tojson }},
     newTitleMore: {{ _("First it asks on which machine.") | tojson }},
@@ -470,13 +470,13 @@
 
   function stateWord(env, kind) {
     if (!env) return el("span", {class: "state-dot"}, T.unknown);
-    if (env.busy) return el("span", {class: "state-dot busy"}, "⟳ " + T.busyPlain);
-    if (env.queued) return el("span", {class: "state-dot busy"}, "⏳ " + T.queued);
+    if (env.busy) return el("span", {class: "state-dot busy"}, T.busyPlain);
+    if (env.queued) return el("span", {class: "state-dot busy"}, T.queued);
     if (env.state === "running") return el("span", {class: "state-dot running"}, T.running);
     if (env.state === "stopped") {
       // a staging or a test stopped is a choice, not an alarm
-      return kind === "production" ? el("span", {class: "state-dot stopped"}, "■ " + T.stopped)
-                                   : el("span", {class: "state-dot muted"}, "○ " + T.stopped);
+      return kind === "production" ? el("span", {class: "state-dot stopped"}, T.stopped)
+                                   : el("span", {class: "state-dot muted"}, T.stopped);
     }
     return el("span", {class: "state-dot"}, "? " + T.unknown);
   }
@@ -491,7 +491,7 @@
   }
   function openButton(url) {
     if (!OPEN_IN_ROWS || !url) return null;
-    return el("a", {class: "button small", href: url, target: "_blank", rel: "noopener", title: fill(T.openOdooTitle, {url})}, T.openOdoo + " ↗");
+    return el("a", {class: "button small", href: url, target: "_blank", rel: "noopener", title: fill(T.openOdooTitle, {url})}, T.openOdoo, omniaIcon("external-link"));
   }
 
   function instanceLine(m, i, kind, where) {
@@ -572,7 +572,7 @@
     const rows = shown.map((u) => el("tr", {"data-user": u.name},
       el("td", {}, u.name),
       el("td", {}, u.custom || T.roles[u.role] || u.role, u.limited ? el("span", {class: "small muted"}, " " + fill(T.limitedTo, {n: u.limited})) : null),
-      el("td", {class: u.two_step ? "" : (u.role === "admin" ? "ws-warn" : "muted")}, u.two_step ? T.twoStepOn : T.twoStepOff)));
+      el("td", {class: u.two_step ? "" : (u.role === "admin" ? "ws-warn" : "muted")}, u.two_step ? omniaMarked("check", T.twoStepOn) : T.twoStepOff)));
     box.append(el("table", {class: "ws-users"}, el("tbody", {}, ...rows)));
     if (list.length > shown.length) box.append(el("p", {class: "small"}, el("a", {href: href(m, ws.page) + "#users", title: T.moreUsersTitle}, fill(T.moreUsers, {n: list.length - shown.length}) + " ›")));
     return box;
@@ -619,7 +619,7 @@
       for (const w of watch.slice(0, WATCH_SHOWN)) {
         const node = (ws.instances || []).find((i) => i.id === w.node);
         const page = w.page ? href(m, w.page) : node && node.page ? href(m, node.page) : null;
-        ul.append(el("li", {}, el("span", {class: w.level === "critical" ? "ws-err" : "ws-warn"}, w.level === "critical" ? "✕ " : "⚠ "), w.text,
+        ul.append(el("li", {}, el("span", {class: w.level === "critical" ? "ws-err" : "ws-warn"}, omniaIcon(w.level === "critical" ? "circle-x" : "triangle-alert")), " ", w.text,
           w.since ? el("span", {class: "small muted"}, " · " + fill(T.since, {when: whenText(w.since)})) : null,
           page ? el("span", {}, " · ", el("a", {href: page, title: T.openItTitle}, T.openIt + " ›")) : null));
       }
@@ -666,11 +666,11 @@
       diskTitle = ws.disk.day ? fill(T.diskDay, {day: dayText(ws.disk.day)}) : "";
     }
     const stateTitle = (ws.watch || []).slice(0, 3).map((w) => w.text).join(" · ");
-    const state = level ? el("span", {class: level === 2 ? "ws-err" : "ws-warn", title: stateTitle}, (level === 2 ? "✕ " : "⚠ ") + fill(T.toLook, {n: ws.watch.length}))
-                        : el("span", {class: "ws-ok"}, T.fine);
+    const state = level ? el("span", {class: level === 2 ? "ws-err" : "ws-warn", title: stateTitle}, omniaIcon(level === 2 ? "circle-x" : "triangle-alert"), " ", fill(T.toLook, {n: ws.watch.length}))
+                        : el("span", {class: "ws-ok"}, omniaIcon("check"), " ", T.fine);
     const phone = [MACHINE_COLUMN ? m.name : null, instancesText, users !== "—" ? plural(Number(users), T.usersN1, T.usersN) : null, diskText].filter(Boolean).join(" · ");
     const first = el("td", {}, toggle, name, ws.label && ws.label !== ws.name ? el("span", {class: "muted"}, " " + ws.label) : null,
-      ws.storage_problem ? el("span", {class: "badge error", title: ws.storage_problem}, "⚠ " + T.unusable) : null,
+      ws.storage_problem ? el("span", {class: "badge error", title: ws.storage_problem}, T.unusable) : null,
       ws.domain ? el("span", {class: "small mono muted ws-domain"}, ws.domain) : null,
       el("span", {class: "small ws-phone"}, phone));
     const cells = [first, el("td", {}, state)];
@@ -710,7 +710,7 @@
   function machineRow(m, data) {
     const cols = MACHINE_COLUMN ? 6 : 5;
     const older = !!data.older;
-    const td = el("td", {colspan: cols}, older ? "↑ " : "✕ ", fill(older ? T.older : T.down, {name: m.name, why: data.error}));
+    const td = el("td", {colspan: cols}, omniaIcon(older ? "arrow-up" : "circle-x"), " ", fill(older ? T.older : T.down, {name: m.name, why: data.error}));
     if (!older && {{ can_create | tojson }}) td.append(" ", el("a", {href: "/links", title: T.checkLinkTitle}, T.checkLink + " ›"));
     return el("tbody", {class: "ws-machine-row" + (older ? " older" : ""), "data-machine-error": m.name}, el("tr", {}, td));
   }
@@ -740,7 +740,7 @@
     // nothing that is wrong: they only cannot say their workspaces yet)
     if (olderOnes.length) {
       const names = olderOnes.map((m) => m.name);
-      const td = el("td", {colspan: MACHINE_COLUMN ? 6 : 5}, "↑ ", fill(T.olderMany, {names: names.join(", ")}));
+      const td = el("td", {colspan: MACHINE_COLUMN ? 6 : 5}, omniaIcon("arrow-up"), " ", fill(T.olderMany, {names: names.join(", ")}));
       // where it is done: the page of each machine, whose dialog says what the new version brings (README, Update OmniaCLI)
       if (latest) td.append(" ", fill(T.available, {version: latest}));
       for (const m of olderOnes) {
