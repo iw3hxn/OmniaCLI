@@ -161,6 +161,8 @@ ROUTES = {
         ("GET", "/workspaces"), ("GET", "/api/workspaces/list"),
         # the bell: the map's things to look at of what the person sees, and its own marks
         ("GET", "/api/bell"), ("POST", "/api/bell/read"),
+        # where it may upload a database: the workspaces it may, checked in the route
+        ("GET", "/api/imports/places"),
         ("GET", "/api/servers/{server}/production/mail"), ("GET", "/api/servers/{server}/production/mail/{mail_id}"),
         ("GET", "/api/servers/{server}/production/mail/inbox"),
         ("GET", "/workspaces/{workspace}"),
@@ -207,7 +209,10 @@ ROUTES = {
         ("GET", "/backups/{server}/{role}/{name}"), ("GET", "/api/v1/instances/{server}/{role}/backups/{file}"))},
     **{(m, p): "restore" for m, p in (
         ("POST", "/servers/{server}/{role}/restore"),
-        ("POST", "/api/servers/{server}/pitr/restore"), ("PUT", "/api/uploads/{ticket}"))},
+        ("POST", "/api/servers/{server}/pitr/restore"), ("PUT", "/api/uploads/{ticket}"),
+        # a database uploaded from the Backups page into the workspace's import area, as upload_backup's
+        ("GET", "/api/workspaces/{workspace}/imports/upload"), ("POST", "/api/workspaces/{workspace}/imports/upload"),
+        ("POST", "/api/workspaces/{workspace}/imports/delete"))},
     **{(m, p): "stagings" for m, p in (
         ("GET", "/api/servers/{server}/stagings"), ("GET", "/api/servers/{server}/stagings/new"),
         ("GET", "/api/servers/{server}/stagings/elsewhere"), ("POST", "/api/servers/{server}/stagings"),
@@ -243,7 +248,10 @@ ROUTES = {
         ("POST", "/api/workspaces/{workspace}/instances/create"),
         ("GET", "/api/workspaces/{workspace}/archives"), ("POST", "/api/workspaces/{workspace}/archives/upload"),
         ("GET", "/api/workspaces/{workspace}/archives/remote"), ("POST", "/api/workspaces/{workspace}/archives/fetch"),
-        ("POST", "/api/workspaces/{workspace}/instances/from-archive"))},
+        ("POST", "/api/workspaces/{workspace}/instances/from-archive"),
+        # a new instance from a backup (the Backups page): its plan and its job
+        ("GET", "/api/workspaces/{workspace}/instances/from-backup"),
+        ("POST", "/api/workspaces/{workspace}/instances/from-backup"))},
     **{(m, p): "people" for m, p in (
         ("POST", "/api/workspaces/{workspace}/members/save"), ("POST", "/api/workspaces/{workspace}/members/delete"),
         ("POST", "/api/workspaces/{workspace}/members/invitation/resend"),

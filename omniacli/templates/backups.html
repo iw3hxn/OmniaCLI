@@ -5,8 +5,11 @@
 {# The backups of every machine (docs/ux/UX-008 §4.2): this machine's and
    each link's, asked all at once (GET /api/backups, ?link=<name>), the newest
    first, 50 a page. An automatic run that did not succeed is a row of its own
-   with its job. The page only reads: no primary; each row's menu downloads,
-   makes a staging of the production from the file (its dialog), deletes. #}
+   with its job. The databases uploaded to a workspace (Upload a backup…, or
+   MCP's upload_backup) are rows too, «uploaded», kept 7 days. The page only
+   reads: no primary; Upload a backup… is secondary; each row's menu
+   downloads, makes a staging of the production or a new instance from the
+   file (its dialog, whose button is the primary), deletes. #}
 <style>
 .bk-counts { color: var(--muted); }
 .bk-counts a[aria-pressed="true"] { font-weight: 650; }
@@ -36,12 +39,31 @@
   .bk-rows td:not(:first-child) { font-size: 13px; }
   .bk-rows td.num:last-child { position: absolute; top: 8px; right: 4px; }
 }
-#fb-dialog { width: min(560px, calc(100vw - 32px)); }
-#fb-dialog .actions { justify-content: flex-end; }
+#fb-dialog, #up-dialog { width: min(600px, calc(100vw - 32px)); }
+#fb-dialog .actions, #up-dialog .actions { justify-content: flex-end; }
+.fb-ways { margin: 10px 0 6px; }
+.fb-way { display: block; margin: 6px 0 2px; font-weight: 600; }
+.fb-way.off { color: var(--muted); font-weight: 400; cursor: not-allowed; }
+.fb-off { margin: 0 0 6px 24px; font-size: 13px; color: var(--warn); }
+.fb-part { margin: 8px 0 0 24px; }
+.fb-part .form-grid { margin-bottom: 8px; }
+.fb-help { font-size: 13px; margin: 2px 0 8px 24px; }
+.fb-check { display: block; margin-top: 6px; }
+.fb-plan { margin: 10px 0 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-lg);
+  background: var(--panel-2); font-size: 14px; }
+.fb-plan p { margin: 0 0 6px; } .fb-plan p:last-child { margin-bottom: 0; }
+.fb-plan .mono { font-size: 12px; word-break: break-word; }
+.fb-name-help { display: block; font-size: 12px; margin-top: 3px; }
+.up-progress { display: flex; gap: 10px; align-items: center; margin-top: 12px; }
+.up-progress progress { flex: 1; }
+.up-done { margin-top: 12px; }
 </style>
 <div class="page-head">
   <div><h1>{{ _("Backups") }}</h1>
     <p class="bk-counts" id="bk-counts" role="status">{{ _("Loading…") }}</p></div>
+  {% if upload_here or upload_links %}
+  <div><button type="button" id="bk-upload" title="{{ _('Sends an Odoo backup or a plain SQL dump from this computer to the import area of a workspace (POST …/imports/upload, in parts that resume). It shows in this list as uploaded for 7 days: from its row you make a staging or a new instance.') }}">{{ _("Upload a backup…") }}</button></div>
+  {% endif %}
 </div>
 <section class="panel">
   <div class="bk-search" id="bk-search-box" hidden>
@@ -62,11 +84,40 @@
   </div>
 </section>
 
+{# Restore into a new instance: a staging of the production (POST /api/servers/<s>/stagings/from-backup), or a new
+   instance of a workspace (POST /api/workspaces/<ws>/instances/from-backup), whose plan is read first (GET of the
+   same route: restore_new_instance's dry run). A file uploaded to a workspace: a staging of one of its productions
+   through that route too. Through a link, the row's machine does it. #}
 <dialog id="fb-dialog" aria-labelledby="fb-title">
   <form method="dialog" id="fb-form">
     <h2 id="fb-title">{{ _("Restore into a new instance") }}</h2>
     <p id="fb-what"></p>
-    <p class="muted" id="fb-says"></p>
+    <div class="fb-ways" role="radiogroup" aria-label="{{ _('What the backup becomes') }}">
+      <label class="fb-way" id="fb-way-staging-label"><input type="radio" name="fb-way" value="staging" id="fb-way-staging"> <span id="fb-staging-text"></span></label>
+      <p class="fb-off" id="fb-staging-off" hidden></p>
+      <div class="fb-part" id="fb-staging" hidden>
+        <div class="form-grid" id="fb-prod-row" hidden>
+          <label for="fb-prod">{{ _("Production") }}</label>
+          <select id="fb-prod" title="{{ _('The production of the workspace the staging is made beside, from its template and with its repositories (GET …/instances/from-backup?staging_of=… reads the plan again)') }}"></select>
+        </div>
+        <p class="muted" id="fb-says"></p>
+      </div>
+      <label class="fb-way" id="fb-way-instance-label"><input type="radio" name="fb-way" value="instance" id="fb-way-instance"> {{ _("A new instance") }}</label>
+      <p class="fb-off" id="fb-instance-off" hidden></p>
+      <div class="fb-part" id="fb-instance" hidden>
+        <div class="form-grid">
+          <label for="fb-name">{{ _("Name") }}</label>
+          <div><input type="text" id="fb-name" class="mono" maxlength="32" autocomplete="off" spellcheck="false"
+              title="{{ _('a-z 0-9 -: the server is <workspace>-<name>. Empty: the name of the backup\'s database. Checked while you write it (GET …/instances/from-backup?name=…)') }}">
+            <span class="fb-name-help muted" id="fb-name-help"></span></div>
+          <label for="fb-ws">{{ _("Workspace") }}</label>
+          <select id="fb-ws" title="{{ _('The workspace the instance is made in, with its disk; the backup\'s own by default. The machine\'s admins may choose another one of this machine (GET …/instances/from-backup of that workspace)') }}"></select>
+        </div>
+        <label class="fb-check" title="{{ _('Restores it with Odoo\'s neutralize: outgoing mail servers and scheduled actions off, as in a staging (POST …/instances/from-backup with neutralize)') }}"><input type="checkbox" id="fb-neutralize" checked> {{ _("Neutralized") }}</label>
+        <p class="muted fb-help">{{ _("Outgoing mail and scheduled actions off: nobody gets a mail from this copy and nothing runs by itself. Off: it works as the production it comes from, mail included.") }}</p>
+      </div>
+    </div>
+    <div class="fb-plan" id="fb-plan" role="status" hidden></div>
     <p class="error" id="fb-error" role="alert"></p>
     <div class="actions">
       <button type="button" id="fb-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
@@ -75,10 +126,39 @@
     </div>
   </form>
 </dialog>
+
+{# Upload a backup: the machine (this one, or a link's through it: GET <base>/api/imports/places), the workspace,
+   the file sent in parts (POST <base>/api/workspaces/<ws>/imports/upload?offset=…, resumed from where it stopped),
+   then what its check found. #}
+<dialog id="up-dialog" aria-labelledby="up-title">
+  <form method="dialog" id="up-form">
+    <h2 id="up-title">{{ _("Upload a backup") }}</h2>
+    <p class="muted" id="up-says"></p>
+    <div class="form-grid">
+      <label for="up-machine" id="up-machine-label">{{ _("Server") }}</label>
+      <select id="up-machine" title="{{ _('The machine the file goes to: this one, or a linked one through its link (each is asked where it may go: GET /api/imports/places)') }}"></select>
+      <label for="up-ws">{{ _("Workspace") }}</label>
+      <select id="up-ws" title="{{ _('The workspace whose import area keeps the file: its stagings and new instances are made from it') }}"></select>
+      <label for="up-file">{{ _("File") }}</label>
+      <input type="file" id="up-file" accept=".zip,.sql" title="{{ _('An Odoo backup .zip (dump.sql, filestore, manifest.json, as Odoo\'s database manager makes it) or a plain SQL dump of pg_dump (.sql)') }}">
+    </div>
+    <div class="up-progress" id="up-progress" hidden><progress id="up-bar" max="100" value="0"></progress> <span class="muted" id="up-said"></span></div>
+    <div class="up-done" id="up-done" role="status" hidden></div>
+    <p class="error" id="up-error" role="alert"></p>
+    <div class="actions">
+      <button type="button" id="up-cancel" title="{{ _('Closes this window; an upload going on stops, and what was sent waits two days to be resumed') }}">{{ _("Close") }}</button>
+      <button type="button" id="up-stop" hidden title="{{ _('Stops sending: what was sent waits two days on the machine, and choosing the same file again goes on from there') }}">{{ _("Stop the upload") }}</button>
+      <button type="submit" class="primary" id="up-send" disabled title="{{ _('Sends the file in parts to the import area of the workspace chosen (POST …/imports/upload); then it is checked: Odoo version, database, attachments. Not available until a file is chosen.') }}">{{ _("Upload") }}</button>
+      <button type="button" class="primary" id="up-next" hidden title="{{ _('Opens the uploaded file\'s Restore into a new instance: a staging of a production of the workspace, or a new instance') }}">{{ _("Make a staging or an instance…") }}</button>
+    </div>
+  </form>
+</dialog>
 <script>
 (function () {
   const PAGE = 50, SEARCH_FROM = 8, SERVER_COLUMN = {{ (links | length > 0) | tojson }}, LANG = {{ lang | tojson }};
   const MACHINES = [{name: {{ here_name | tojson }}, link: ""}, ...{{ links | tojson }}.map((name) => ({name, link: name}))];
+  const UPLOAD_HERE = {{ upload_here | tojson }}, UPLOAD_LINKS = {{ upload_links | tojson }};
+  const NAME = /^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$/;
   const T = {
     backup: {{ _("{n} backup") | tojson }}, backups: {{ _("{n} backups") | tojson }},
     tonight: {{ _("tonight: {ok} succeeded") | tojson }},
@@ -90,27 +170,83 @@
     down: {{ _("{name} does not answer: {why}. Its backups are not here.") | tojson }},
     older: {{ _("{name} answers, but its OmniaCLI is older and has no such list yet: its backups show here once it is updated.") | tojson }},
     tab: {{ _("Opens the Backups tab of the instance") | tojson }}, test: {{ _("Test") | tojson }},
-    stagingWord: {{ _("Staging") | tojson }},
-    kinds: {scheduled: {{ _("automatic") | tojson }}, "pre-update": {{ _("before an update") | tojson }}, manual: {{ _("by hand") | tojson }}},
+    stagingWord: {{ _("Staging") | tojson }}, uploadedWord: {{ _("Uploaded") | tojson }},
+    uploadedTitle: {{ _("Uploaded to the workspace {ws}: deleted by itself on {date}") | tojson }},
+    kinds: {scheduled: {{ _("automatic") | tojson }}, "pre-update": {{ _("before an update") | tojson }}, manual: {{ _("by hand") | tojson }},
+            uploaded: {{ _("uploaded") | tojson }}},
     archive: {{ _("full archive") | tojson }},
     ready: {{ _("Ready") | tojson }}, tried: {{ _("✓ restore tried {date}") | tojson }},
     triedBad: {{ _("✗ the restore did not succeed") | tojson }}, neverTried: {{ _("Never restored for a try") | tojson }},
+    facts: {{ _("Odoo {odoo} · database {database}") | tojson }}, withFiles: {{ _("with attachments") | tojson }},
+    withoutFiles: {{ _("without attachments") | tojson }}, factsUnknown: {{ _("not checked yet") | tojson }},
     notDone: {{ _("Did not succeed: {why}") | tojson }}, openJob: {{ _("Opens the job of this automatic backup") | tojson }},
     actions: {{ _("Actions") | tojson }},
     actionsTitle: {{ _("Download, restore into a new instance, delete") | tojson }},
     download: {{ _("Download") | tojson }},
     downloadTitle: {{ _("Downloads the zip file of the backup (database and attachments) to this computer. It changes nothing.") | tojson }},
     stage: {{ _("Restore into a new instance…") | tojson }},
-    stageTitle: {{ _("Makes a new staging of the production with the database of this backup, neutralized. The production and the backup do not change. It is a job.") | tojson }},
+    stageTitle: {{ _("Makes a staging of a production or a new instance with the database of this backup (POST …/stagings/from-backup or …/instances/from-backup). The production and the backup do not change. It is a job.") | tojson }},
     remove: {{ _("Delete…") | tojson }},
     removeTitle: {{ _("Deletes this backup file from this machine. It cannot be undone. For production an admin is needed.") | tojson }},
+    removeUploadedTitle: {{ _("Deletes the uploaded file from the import area of its workspace (POST …/imports/delete). It cannot be undone.") | tojson }},
     removeQ: {{ _("Delete the backup of {name} of {when}? It cannot be undone.") | tojson }},
+    removeUploadedQ: {{ _("Delete the uploaded file {file}? It cannot be undone.") | tojson }},
     what: {{ _("Backup of {name} of {when} · {size}") | tojson }},
+    whatUploaded: {{ _("{file}, uploaded to {name} on {when} · {size}") | tojson }},
+    stagingOf: {{ _("A staging of {name}") | tojson }}, stagingOfOne: {{ _("A staging of a production of {name}") | tojson }},
+    stagingWayTitle: {{ _("A new staging beside the production, dated, neutralized, its mail caught (POST …/stagings/from-backup)") | tojson }},
+    stagingUploadedTitle: {{ _("A new staging beside the production chosen, dated, neutralized, its mail caught (POST …/instances/from-backup with staging_of)") | tojson }},
+    instanceWayTitle: {{ _("A new instance of a workspace from the template of the backup's Odoo version, restored into it (POST …/instances/from-backup)") | tojson }},
     says: {{ _("It becomes a staging of {name}, neutralized: no outgoing mail, no scheduled actions. The production does not change.") | tojson }},
     createTitle: {{ _("Makes a new staging beside the production, from the same template, and restores this file into it neutralized. It is a job.") | tojson }},
+    createStaging: {{ _("Create the staging from this backup") | tojson }},
+    createInstance: {{ _("Create the instance") | tojson }},
+    createInstanceTitle: {{ _("Starts the job: the instance made from the template above, the repositories ticked added, this file restored into it as chosen. The backup does not change.") | tojson }},
+    createUploadedStagingTitle: {{ _("Starts the job: a staging of the production chosen, from its template and its repositories, this file restored into it neutralized") | tojson }},
     badBackup: {{ _("This backup did not restore when it was tried on {date}: choose another one") | tojson }},
+    olderInstance: {{ _("The OmniaCLI of {name} is older: update it to make a new instance from its backups") | tojson }},
+    stagingOff: {{ _("A staging is made from a backup of a production made in a workspace") | tojson }},
     refused: {{ _("Refused") | tojson }},
     page: {{ _("{from}–{to} of {all}") | tojson }},
+    // the plan (restore_new_instance's dry run)
+    reading: {{ _("Reading the backup: its Odoo version and its modules…") | tojson }},
+    planHead: {{ _("Odoo {odoo} · {n} modules installed") | tojson }}, planHeadUnknown: {{ _("Odoo {odoo}") | tojson }},
+    planDatabase: {{ _("database {name}") | tojson }},
+    planBecomes: {{ _("It becomes {server}, from the template {template}.") | tojson }},
+    planStaging: {{ _("It becomes a staging of {server}, dated today, its mail caught, from the template {template}.") | tojson }},
+    room: {{ _("Room: about {need} GB needed, {free} GB free in the workspace.") | tojson }},
+    roomUnknown: {{ _("Room: about {need} GB needed; the free room of the workspace cannot be read now.") | tojson }},
+    allThere: {{ _("✓ Every installed module has its code.") | tojson }},
+    inOca: {{ _("{n} modules are in the OCA repositories {repos} (branch {branch}):") | tojson }},
+    inOcaOne: {{ _("1 module is in the OCA repository {repos} (branch {branch}):") | tojson }},
+    addRepos: {{ _("Add those repositories to the new instance") | tojson }},
+    addReposTitle: {{ _("Clones those OCA repositories into the instance before the restore (add_repositories)") | tojson }},
+    notFound: {{ _("{n} modules are nowhere on this machine: their code must be added (the customer's private repository, Odoo Enterprise):") | tojson }},
+    notFoundOne: {{ _("1 module is nowhere on this machine: its code must be added (the customer's private repository, Odoo Enterprise):") | tojson }},
+    notChecked: {{ _("{n} modules not checked yet: no instance made from {template} answers on this machine, so Odoo's own modules are not known. The job checks them on the new instance before the restore:") | tojson }},
+    notCheckedOne: {{ _("1 module not checked yet: no instance made from {template} answers on this machine, so Odoo's own modules are not known. The job checks it on the new instance before the restore:") | tojson }},
+    noTable: {{ _("The dump has no table of modules that can be read: nothing was compared.") | tojson }},
+    allowMissing: {{ _("Restore even without their code") | tojson }},
+    allowMissingTitle: {{ _("Odoo logs errors at each start and the data of those modules stays unreachable until their code is added (allow_missing)") | tojson }},
+    blockedMissing: {{ _("Some installed modules have no code here: tick «Restore even without their code», or add it first") | tojson }},
+    blockedName: {{ _("The name: {why}") | tojson }}, blockedRoom: {{ _("Not enough room: {why}") | tojson }},
+    blockedPlan: {{ _("The plan is not read yet") | tojson }}, blockedWs: {{ _("Workspace {name} cannot hold an instance: {why}") | tojson }},
+    badName: {{ _("1-32 lower case letters, digits and -, not at the ends") | tojson }},
+    serverIs: {{ _("the server: {server}") | tojson }}, nameDefault: {{ _("empty: {name}") | tojson }},
+    // the upload
+    upSays: {{ _("An Odoo backup .zip (as Odoo's database manager makes it: dump.sql, filestore, manifest.json) or a plain SQL dump of pg_dump (.sql), up to {max} GB. It is kept {days} days in the workspace, then deleted by itself: from its row you make a staging or a new instance. A pg_dump of the custom format (.dump) is not taken: make a plain one.") | tojson }},
+    upHere: {{ _("This machine") | tojson }}, upAsking: {{ _("asking…") | tojson }},
+    upOlder: {{ _("an older OmniaCLI: update it to upload there from here") | tojson }},
+    upNotAdmin: {{ _("you may not upload there") | tojson }}, upDown: {{ _("does not answer") | tojson }},
+    upNone: {{ _("No machine takes an upload from you now: see why beside each") | tojson }},
+    upCannotHold: {{ _("{name} · cannot hold an instance: {why}") | tojson }},
+    upProgress: {{ _("{sent} of {size} · {pct}%") | tojson }}, upChecking: {{ _("Sent: checking the file…") | tojson }},
+    upResumed: {{ _("Resumed from {sent}") | tojson }},
+    upTooBig: {{ _("The file is {size}: at most {max} GB") | tojson }},
+    upNoRoom: {{ _("The file is {size}, {free} free there") | tojson }},
+    upDone: {{ _("Uploaded: {file} · Odoo {odoo} · database {database} · {files} · {size}. Kept {days} days.") | tojson }},
+    upStopped: {{ _("Stopped: choose the same file again to go on from where it stopped.") | tojson }},
+    upFailed: {{ _("The upload stopped: {why}. Choose the same file again to go on from where it stopped.") | tojson }},
   };
   const body = document.getElementById("bk-rows"), counts = document.getElementById("bk-counts");
   const search = document.getElementById("bk-search");
@@ -122,6 +258,7 @@
     node.append(...children.filter((c) => c !== null && c !== undefined));
     return node;
   };
+  const fill = (text, values) => Object.entries(values).reduce((t, [k, v]) => t.split(`{${k}}`).join(String(v)), text);
   const number = new Intl.NumberFormat(LANG, {maximumFractionDigits: 1});
   function sizeText(bytes) {
     const units = ["B", "KB", "MB", "GB", "TB"];
@@ -135,9 +272,14 @@
     const base = machine.link ? `/links/${encodeURIComponent(machine.link)}` : "";
     // the address without its scheme, as Instances writes it (a site there is https://...)
     return (data.rows || []).map((r) => ({...r, machine, base, label: String(r.label || "").replace(/^[a-z]+:\/\//, "").replace(/\/$/, ""),
-      text: [r.label, r.server, machine.name, r.file || "", r.version || ""].join(" ").toLowerCase()}));
+      text: [r.label, r.server, r.workspace || "", machine.name, r.file || "", r.version || "", r.database || ""].join(" ").toLowerCase()}));
   }
   function instanceCell(r) {
+    if (r.imported) {
+      return el("td", {}, el("strong", {title: fill(T.uploadedTitle, {ws: r.workspace, date: dateOnly(r.expires)})}, r.label),
+        el("span", {class: "badge info"}, T.uploadedWord),
+        !SERVER_COLUMN && r.version ? el("span", {class: "badge"}, r.version) : null);
+    }
     const tab = `${r.base}/servers/${encodeURIComponent(r.server)}${r.role === "test" ? "?view=test" : ""}#backups`;
     return el("td", {}, el("a", {href: tab, title: T.tab}, el("strong", {}, r.label)),
       r.role === "test" ? el("span", {class: "badge test-badge"}, T.test) : null,
@@ -146,20 +288,33 @@
   }
   function menu(r) {
     const items = el("div", {class: "row-menu-items"});
-    // a custom role without Download backups: the button off, saying why (capabilities.py)
-    items.append(r.download ? el("a", {class: "button small", href: r.base + r.download, download: r.file, title: T.downloadTitle}, T.download)
-      : el("span", {title: r.download_refused}, el("button", {type: "button", class: "small", disabled: "", title: r.download_refused}, T.download)));
-    if (r.can_stage) {
+    // a custom role without Download backups: the button off, saying why (capabilities.py); an uploaded file is the person's own
+    if (!r.imported) {
+      items.append(r.download ? el("a", {class: "button small", href: r.base + r.download, download: r.file, title: T.downloadTitle}, T.download)
+        : el("span", {title: r.download_refused}, el("button", {type: "button", class: "small", disabled: "", title: r.download_refused}, T.download)));
+    }
+    if (r.can_stage || r.can_instance) {
       const b = el("button", {type: "button", class: "small", title: T.stageTitle}, T.stage);
       b.addEventListener("click", () => openStaging(r));
       items.append(b);
     }
     if (r.can_delete) {
-      const b = el("button", {type: "button", class: "small danger", title: T.removeTitle}, T.remove);
+      const b = el("button", {type: "button", class: "small danger", title: r.imported ? T.removeUploadedTitle : T.removeTitle}, T.remove);
       b.addEventListener("click", () => removeBackup(r));
       items.append(b);
     }
     return el("details", {class: "row-menu"}, el("summary", {class: "button small", title: T.actionsTitle}, `${T.actions} ▾`), items);
+  }
+  function outcomeOf(r) {
+    if (r.imported) {
+      if (!r.odoo) return el("span", {class: "muted"}, T.factsUnknown);
+      return el("span", {title: fill(T.uploadedTitle, {ws: r.workspace, date: dateOnly(r.expires)})},
+        fill(T.facts, {odoo: r.odoo, database: r.database || "?"}) + " · " + (r.filestore ? T.withFiles : T.withoutFiles));
+    }
+    const v = r.verified;
+    return v && v.ok ? el("span", {class: "bk-ok", title: v.detail || ""}, T.tried.replace("{date}", dateOnly(v.time)))
+      : v ? el("span", {class: "bk-bad", title: v.detail || ""}, T.triedBad)
+      : el("span", {title: T.neverTried}, T.ready);
   }
   function backupRow(r) {
     const cells = [instanceCell(r)];
@@ -173,12 +328,8 @@
       return el("tr", {"data-failed": "1"}, ...cells);
     }
     const kind = (T.kinds[r.kind] || "") + (r.archive ? " · " + T.archive : "");
-    const v = r.verified;
-    const outcome = v && v.ok ? el("span", {class: "bk-ok", title: v.detail || ""}, T.tried.replace("{date}", dateOnly(v.time)))
-      : v ? el("span", {class: "bk-bad", title: v.detail || ""}, T.triedBad)
-      : el("span", {title: T.neverTried}, T.ready);
     cells.push(el("td", {title: r.file}, whenText(r.time), " ", el("span", {class: "kind"}, "· " + kind)),
-               el("td", {class: "num"}, sizeText(r.size)), el("td", {}, outcome), el("td", {class: "num"}, menu(r)));
+               el("td", {class: "num"}, sizeText(r.size)), el("td", {}, outcomeOf(r)), el("td", {class: "num"}, menu(r)));
     return el("tr", {"data-file": r.file}, ...cells);
   }
   function machineRow(machine, text, down) {
@@ -252,38 +403,345 @@
   });
 
   async function removeBackup(r) {
-    if (!await omniaAsk(T.removeQ.replace("{name}", r.label).replace("{when}", whenText(r.time)), {{ _("Delete") | tojson }}, {danger: true})) return;
-    const resp = await fetch(`${r.base}/api/servers/${encodeURIComponent(r.server)}/${r.role}/backups/delete`, {method: "POST",
+    const question = r.imported ? T.removeUploadedQ.replace("{file}", r.file)
+      : T.removeQ.replace("{name}", r.label).replace("{when}", whenText(r.time));
+    if (!await omniaAsk(question, {{ _("Delete") | tojson }}, {danger: true})) return;
+    const url = r.imported ? `${r.base}/api/workspaces/${encodeURIComponent(r.workspace)}/imports/delete`
+      : `${r.base}/api/servers/${encodeURIComponent(r.server)}/${r.role}/backups/delete`;
+    const resp = await fetch(url, {method: "POST",
       headers: {"Content-Type": "application/json", Accept: "application/json"}, body: JSON.stringify({file: r.file})}).catch(() => null);
     const data = resp ? await resp.json().catch(() => ({})) : {};
     if (!resp || !resp.ok) { counts.textContent = data.error || data.detail || T.refused; return; }
     load(r.machine);
   }
 
-  // Restore into a new instance (D6): a staging of the production, from the file
+  // Restore into a new instance (D6): a staging of the production, or a new instance of a workspace
   const dialog = document.getElementById("fb-dialog"), create = document.getElementById("fb-create");
   const why = document.getElementById("fb-why"), fbError = document.getElementById("fb-error");
-  function openStaging(r) {
-    chosen = r;
-    document.getElementById("fb-what").textContent = T.what.replace("{name}", r.label).replace("{when}", whenText(r.time)).replace("{size}", sizeText(r.size));
-    document.getElementById("fb-says").textContent = T.says.replace("{name}", r.label);
-    const bad = r.verified && !r.verified.ok;
-    create.disabled = !!bad;
-    why.title = bad ? T.badBackup.replace("{date}", dateOnly(r.verified.time)) : T.createTitle;
+  const wayStaging = document.getElementById("fb-way-staging"), wayInstance = document.getElementById("fb-way-instance");
+  const nameField = document.getElementById("fb-name"), nameHelp = document.getElementById("fb-name-help");
+  const wsSelect = document.getElementById("fb-ws"), prodSelect = document.getElementById("fb-prod");
+  const neutralize = document.getElementById("fb-neutralize"), planBox = document.getElementById("fb-plan");
+  let plan = null, asking = 0, nameTimer = 0, addRepos = null, allowMissing = null;
+  const $ = (id) => document.getElementById(id);
+  const way = () => (wayInstance.checked ? "instance" : "staging");
+  // the plan is read for a new instance, and for a staging of an uploaded file (its production chosen here)
+  const planned = () => way() === "instance" || !!(chosen && chosen.imported);
+  function setWay(name, enabled, off) {
+    const input = name === "staging" ? wayStaging : wayInstance;
+    input.disabled = !enabled;
+    $(`fb-way-${name}-label`).classList.toggle("off", !enabled);
+    $(`fb-${name}-off`).hidden = enabled || !off;
+    $(`fb-${name}-off`).textContent = off || "";
+  }
+  async function openStaging(r) {
+    chosen = r; plan = null; addRepos = allowMissing = null;
+    $("fb-what").textContent = r.imported
+      ? fill(T.whatUploaded, {file: r.file, name: r.workspace, when: whenText(r.time), size: sizeText(r.size)})
+      : fill(T.what, {name: r.label, when: whenText(r.time), size: sizeText(r.size)});
+    $("fb-staging-text").textContent = r.imported ? fill(T.stagingOfOne, {name: r.workspace}) : fill(T.stagingOf, {name: r.label});
+    $("fb-way-staging-label").title = r.imported ? T.stagingUploadedTitle : T.stagingWayTitle;
+    $("fb-way-instance-label").title = T.instanceWayTitle;
+    $("fb-says").textContent = r.imported ? "" : T.says.replace("{name}", r.label);
+    const bad = r.verified && !r.verified.ok ? T.badBackup.replace("{date}", dateOnly(r.verified.time)) : "";
+    // an OmniaCLI before the page's New instance from a backup says nothing of it in its rows
+    const older = !("can_instance" in r);
+    setWay("staging", !!r.can_stage && !bad, bad || r.stage_refused || T.stagingOff);
+    setWay("instance", !!r.can_instance && !bad,
+      bad || (older ? T.olderInstance.replace("{name}", r.machine.name || T.theServer) : r.instance_refused));
+    prodSelect.replaceChildren(...(r.productions || []).map((p) => el("option", {value: p.server}, `${p.label} (${p.server})`)));
+    $("fb-prod-row").hidden = !r.imported;
+    nameField.value = ""; nameField.placeholder = ""; nameHelp.textContent = ""; neutralize.checked = true;
+    wsSelect.replaceChildren();
+    if (r.workspace) wsSelect.append(el("option", {value: r.workspace}, r.workspace));
+    (r.can_stage && !bad ? wayStaging : wayInstance).checked = true;
+    if (!r.can_stage && !r.can_instance) wayStaging.checked = wayInstance.checked = false;
     fbError.textContent = "";
     dialog.showModal();
+    if (!r.workspace && r.can_instance) {
+      // a server made outside the workspaces: its first workspace the person may make an instance in
+      const resp = await fetch(`${r.base}/api/imports/places`, {headers: {Accept: "application/json"}}).catch(() => null);
+      const data = resp && resp.ok ? await resp.json().catch(() => ({})) : {};
+      for (const w of data.workspaces || []) wsSelect.append(el("option", {value: w.name}, w.label));
+    }
+    shown();
   }
+  // the parts of the way chosen, its button, and its plan asked again
+  function shown() {
+    const instance = way() === "instance";
+    $("fb-staging").hidden = instance || wayStaging.disabled;
+    $("fb-instance").hidden = !instance;
+    create.textContent = instance ? T.createInstance : T.createStaging;
+    planBox.hidden = !planned();
+    if (planned()) askPlan(); else ready();
+  }
+  function planUrl() {
+    const r = chosen, ws = way() === "instance" ? wsSelect.value : r.workspace;
+    const query = new URLSearchParams({server: r.server || "", role: r.role || "production", file: r.file});
+    if (way() === "instance") query.set("name", nameField.value.trim());
+    else query.set("staging_of", prodSelect.value);
+    return `${r.base}/api/workspaces/${encodeURIComponent(ws || "")}/instances/from-backup?${query}`;
+  }
+  async function askPlan() {
+    const mine = ++asking;
+    plan = null; ready();
+    if (way() === "instance" && (wayInstance.disabled || !wsSelect.value)) return;
+    if (way() === "staging" && (wayStaging.disabled || !prodSelect.value)) return;
+    planBox.replaceChildren(el("p", {class: "muted"}, T.reading));
+    planBox.hidden = false;
+    const resp = await fetch(planUrl(), {headers: {Accept: "application/json"}}).catch(() => null);
+    const data = resp ? await resp.json().catch(() => ({})) : {};
+    if (mine !== asking) return;
+    if (!resp || !resp.ok) {
+      planBox.hidden = true;
+      fbError.textContent = data.error || data.detail || T.refused;
+      ready(); return;
+    }
+    fbError.textContent = "";
+    plan = data;
+    drawPlan();
+  }
+  function moduleList(names) {
+    return el("p", {class: "mono"}, names.slice(0, 30).join(", ") + (names.length > 30 ? "…" : ""));
+  }
+  function drawPlan() {
+    const p = plan, missing = p.missing_modules || {}, ni = p.new_instance || {};
+    // the workspaces offered: the one asked chosen, the others with why they cannot hold one
+    if (way() === "instance") {
+      const current = wsSelect.value;
+      wsSelect.replaceChildren(...(p.workspaces || []).map((w) =>
+        el("option", {value: w.name, title: w.why || null}, w.why ? fill(T.upCannotHold, {name: w.label, why: w.why}) : w.label)));
+      wsSelect.value = current;
+      nameField.placeholder = p.instance || "";
+      nameHelp.className = "fb-name-help " + (p.name_problem ? "error" : "muted");
+      nameHelp.textContent = p.name_problem || fill(T.serverIs, {server: ni.server});
+    }
+    const lines = [];
+    const head = (p.installed_modules === null || p.installed_modules === undefined)
+      ? fill(T.planHeadUnknown, {odoo: p.odoo}) : fill(T.planHead, {odoo: p.odoo, n: p.installed_modules});
+    lines.push(el("p", {}, el("strong", {}, head), p.database ? " · " + fill(T.planDatabase, {name: p.database}) : "",
+                  p.kind === "zip" ? " · " + (p.filestore ? T.withFiles : T.withoutFiles) : ""));
+    lines.push(el("p", {}, way() === "instance" ? fill(T.planBecomes, {server: ni.server, template: ni.template})
+                                                : fill(T.planStaging, {server: ni.staging_of, template: ni.template})));
+    const room = p.room || {};
+    lines.push(el("p", {class: room.problem ? "error" : "muted"}, room.problem ||
+      (room.free_gb === null || room.free_gb === undefined ? fill(T.roomUnknown, {need: number.format(room.needed_gb)})
+        : fill(T.room, {need: number.format(room.needed_gb), free: number.format(room.free_gb)}))));
+    const oca = missing.in_oca || [], notFound = missing.not_found || [], unchecked = missing.not_checked || [];
+    // what was ticked stays ticked when the plan is read again (a name written, another workspace)
+    const keepAdd = addRepos ? addRepos.checked : true, keepAllow = allowMissing ? allowMissing.checked : false;
+    addRepos = allowMissing = null;
+    if (p.installed_modules === null || p.installed_modules === undefined) lines.push(el("p", {class: "muted"}, T.noTable));
+    else if (!oca.length && !notFound.length && !unchecked.length) lines.push(el("p", {class: "bk-ok"}, T.allThere));
+    if (oca.length) {
+      const all = oca.flatMap((r) => r.modules);
+      lines.push(el("p", {}, fill(all.length === 1 ? T.inOcaOne : T.inOca,
+        {n: all.length, repos: oca.map((r) => r.repository).join(", "), branch: oca[0].branch})), moduleList(all));
+      addRepos = el("input", {type: "checkbox"});
+      addRepos.checked = keepAdd;
+      addRepos.addEventListener("change", ready);
+      lines.push(el("label", {class: "fb-check", title: T.addReposTitle}, addRepos, " " + T.addRepos));
+    }
+    if (notFound.length) lines.push(el("p", {}, fill(notFound.length === 1 ? T.notFoundOne : T.notFound, {n: notFound.length})),
+                                    moduleList(notFound));
+    if (unchecked.length) lines.push(el("p", {}, fill(unchecked.length === 1 ? T.notCheckedOne : T.notChecked,
+                                                      {n: unchecked.length, template: ni.template})), moduleList(unchecked));
+    if (oca.length || notFound.length || unchecked.length) {
+      allowMissing = el("input", {type: "checkbox"});
+      allowMissing.checked = keepAllow;
+      allowMissing.addEventListener("change", ready);
+      lines.push(el("label", {class: "fb-check", title: T.allowMissingTitle}, allowMissing, " " + T.allowMissing));
+    }
+    planBox.replaceChildren(...lines);
+    planBox.hidden = false;
+    ready();
+  }
+  // the dialog's button: on when what is asked can start, else off with why in its title
+  function ready() {
+    let off = "";
+    const instance = way() === "instance";
+    if (!wayStaging.checked && !wayInstance.checked) off = T.refused;
+    else if ((instance ? wayInstance : wayStaging).disabled) off = $(`fb-${way()}-off`).textContent;
+    else if (instance && nameField.value.trim() && !NAME.test(nameField.value.trim())) off = fill(T.blockedName, {why: T.badName});
+    else if (planned() && !plan) off = T.blockedPlan;
+    else if (planned()) {
+      const missing = plan.missing_modules || {};
+      const uncovered = (missing.not_found || []).length + (missing.not_checked || []).length
+        + ((missing.in_oca || []).length && addRepos && !addRepos.checked ? 1 : 0);
+      const ws = (plan.workspaces || []).find((w) => w.name === wsSelect.value);
+      if (instance && plan.name_problem) off = fill(T.blockedName, {why: plan.name_problem});
+      else if (instance && ws && ws.why) off = fill(T.blockedWs, {name: ws.label, why: ws.why});
+      else if ((plan.room || {}).problem) off = fill(T.blockedRoom, {why: plan.room.problem});
+      else if (uncovered && !(allowMissing && allowMissing.checked)) off = T.blockedMissing;
+    }
+    create.disabled = !!off;
+    const title = instance ? T.createInstanceTitle : chosen && chosen.imported ? T.createUploadedStagingTitle : T.createTitle;
+    create.title = title;
+    why.title = off || title;
+  }
+  wayStaging.addEventListener("change", shown);
+  wayInstance.addEventListener("change", shown);
+  wsSelect.addEventListener("change", askPlan);
+  prodSelect.addEventListener("change", askPlan);
+  // the name: its form at once, whether it is free once the typing stops
+  nameField.addEventListener("input", () => {
+    const name = nameField.value.trim(), good = !name || NAME.test(name);
+    nameHelp.className = "fb-name-help " + (good ? "muted" : "error");
+    if (!good) nameHelp.textContent = T.badName;
+    clearTimeout(nameTimer);
+    ready();
+    if (good) nameTimer = setTimeout(askPlan, 450);
+  });
   document.getElementById("fb-cancel").addEventListener("click", () => dialog.close());
   document.getElementById("fb-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     if (!chosen || create.disabled) return;
     create.disabled = true; fbError.textContent = "";
-    const resp = await fetch(`${chosen.base}/api/servers/${encodeURIComponent(chosen.server)}/stagings/from-backup`, {method: "POST",
-      headers: {"Content-Type": "application/json", Accept: "application/json"}, body: JSON.stringify({file: chosen.file})}).catch(() => null);
+    const r = chosen;
+    let url, body;
+    if (way() === "staging" && !r.imported) {
+      url = `${r.base}/api/servers/${encodeURIComponent(r.server)}/stagings/from-backup`;
+      body = {file: r.file};
+    } else {
+      const ws = way() === "instance" ? wsSelect.value : r.workspace;
+      url = `${r.base}/api/workspaces/${encodeURIComponent(ws)}/instances/from-backup`;
+      body = {server: r.server || "", role: r.role || "production", file: r.file,
+              add_repositories: !!(addRepos && addRepos.checked), allow_missing: !!(allowMissing && allowMissing.checked),
+              ...(way() === "instance" ? {name: nameField.value.trim(), neutralize: neutralize.checked}
+                                       : {staging_of: prodSelect.value})};
+    }
+    const resp = await fetch(url, {method: "POST",
+      headers: {"Content-Type": "application/json", Accept: "application/json"}, body: JSON.stringify(body)}).catch(() => null);
     const data = resp ? await resp.json().catch(() => ({})) : {};
-    create.disabled = false;
-    if (!resp || !resp.ok || !data.job) { fbError.textContent = data.error || data.detail || T.refused; return; }
-    location.href = `${chosen.base}/jobs/${encodeURIComponent(data.job)}`;
+    if (!resp || !resp.ok || !data.job) { fbError.textContent = data.error || data.detail || T.refused; ready(); return; }
+    location.href = `${r.base}/jobs/${encodeURIComponent(data.job)}`;
+  });
+
+  // Upload a backup: the file in parts to the import area of a workspace, here or on a linked machine
+  const upDialog = document.getElementById("up-dialog"), upOpen = document.getElementById("bk-upload");
+  if (!upDialog || !upOpen) return;
+  const upMachine = $("up-machine"), upWs = $("up-ws"), upFile = $("up-file"), upSend = $("up-send");
+  const upStop = $("up-stop"), upNext = $("up-next"), upError = $("up-error"), upDone = $("up-done");
+  const upTargets = [...(UPLOAD_HERE ? [{name: "", link: "", label: T.upHere, base: ""}] : []),
+    ...UPLOAD_LINKS.map((name) => ({name, link: name, label: name, base: `/links/${encodeURIComponent(name)}`}))];
+  let upAsked = null, upAbort = null, upResult = null;
+  async function askPlaces(t) {
+    const resp = await fetch(`${t.base}/api/imports/places`, {headers: {Accept: "application/json"}}).catch(() => null);
+    const data = resp && resp.ok ? await resp.json().catch(() => null) : null;
+    t.places = data;
+    t.why = data ? "" : !resp ? T.upDown : resp.status === 404 ? T.upOlder : resp.status === 403 ? T.upNotAdmin : T.upDown;
+  }
+  function upTarget() { return upTargets[Number(upMachine.value)] || null; }
+  function drawWorkspaces() {
+    const t = upTarget(), places = (t && t.places) || {};
+    upWs.replaceChildren(...(places.workspaces || []).map((w) =>
+      el("option", {value: w.name, title: w.why || null}, w.why ? fill(T.upCannotHold, {name: w.label, why: w.why}) : w.label)));
+    $("up-says").textContent = fill(T.upSays, {max: Math.round((places.max_size || 0) / 2 ** 30) || 50, days: places.keep_days || 7});
+    upReady();
+  }
+  function upReady() {
+    const t = upTarget(), file = upFile.files[0];
+    let off = !t || !t.places || !upWs.value || !file || !!upAbort;
+    if (file && t && t.places) {
+      if (file.size > t.places.max_size) { upError.textContent = fill(T.upTooBig, {size: sizeText(file.size), max: Math.round(t.places.max_size / 2 ** 30)}); off = true; }
+      else if (t.places.free !== null && file.size > t.places.free) { upError.textContent = fill(T.upNoRoom, {size: sizeText(file.size), free: sizeText(t.places.free)}); off = true; }
+      else if (!upAbort) upError.textContent = "";
+    }
+    upSend.disabled = off;
+  }
+  upOpen.addEventListener("click", async () => {
+    upDone.hidden = true; upNext.hidden = true; upSend.hidden = false; upError.textContent = "";
+    upDialog.showModal();
+    if (!upAsked) {
+      upMachine.replaceChildren(...upTargets.map((t, i) => el("option", {value: String(i), disabled: ""}, `${t.label} · ${T.upAsking}`)));
+      upAsked = Promise.all(upTargets.map(askPlaces));
+      await upAsked;
+      upMachine.replaceChildren(...upTargets.map((t, i) => el("option", {value: String(i), disabled: t.why ? "" : null},
+        t.why ? `${t.label} · ${t.why}` : t.label)));
+      const first = upTargets.findIndex((t) => !t.why);
+      if (first < 0) { upError.textContent = T.upNone; return; }
+      upMachine.value = String(first);
+    }
+    $("up-machine-label").hidden = upMachine.hidden = upTargets.length < 2;
+    drawWorkspaces();
+  });
+  upMachine.addEventListener("change", drawWorkspaces);
+  upWs.addEventListener("change", upReady);
+  upFile.addEventListener("change", () => { upDone.hidden = upNext.hidden = true; upSend.hidden = false; upReady(); });
+  function progress(sent, size) {
+    $("up-bar").value = size ? 100 * sent / size : 0;
+    $("up-said").textContent = fill(T.upProgress, {sent: sizeText(sent), size: sizeText(size), pct: Math.floor(size ? 100 * sent / size : 0)});
+  }
+  // the parts one after the other; the machine says where it is when an offset is not its own (409), and a part
+  // that fails is sent again after asking where the file is, three times
+  async function sendFile(t, ws, file, signal) {
+    const part = t.places.part || 16 * 2 ** 20;
+    const url = `${t.base}/api/workspaces/${encodeURIComponent(ws)}/imports/upload`;
+    const query = `name=${encodeURIComponent(file.name)}&size=${file.size}`;
+    const where = async () => {
+      const resp = await fetch(`${url}?${query}`, {headers: {Accept: "application/json"}, signal});
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.error || data.detail || T.refused);
+      return data.received || 0;
+    };
+    let offset = await where(), tries = 0;
+    if (offset) $("up-said").textContent = fill(T.upResumed, {sent: sizeText(offset)});
+    for (;;) {
+      progress(offset, file.size);
+      if (offset >= file.size) $("up-said").textContent = T.upChecking;
+      let resp, data;
+      try {
+        resp = await fetch(`${url}?${query}&offset=${offset}`, {method: "POST", signal,
+          headers: {"Content-Type": "application/octet-stream", Accept: "application/json"},
+          body: file.slice(offset, Math.min(offset + part, file.size))});
+        data = await resp.json().catch(() => ({}));
+      } catch (e) {
+        if (signal.aborted || ++tries > 3) throw e;
+        offset = await where();
+        continue;
+      }
+      if (resp.status === 409 && typeof data.received === "number") { offset = data.received; continue; }
+      if (!resp.ok) throw new Error(data.error || data.detail || T.refused);
+      tries = 0;
+      if (data.file) return data;
+      offset = data.received;
+      if (offset >= file.size) $("up-said").textContent = T.upChecking;
+    }
+  }
+  $("up-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const t = upTarget(), file = upFile.files[0], ws = upWs.value;
+    if (!t || !file || !ws || upSend.disabled) return;
+    upError.textContent = ""; upDone.hidden = true;
+    upAbort = new AbortController();
+    upSend.hidden = true; upStop.hidden = false; $("up-progress").hidden = false;
+    upMachine.disabled = upWs.disabled = upFile.disabled = true;
+    try {
+      upResult = {...await sendFile(t, ws, file, upAbort.signal), target: t};
+      upDone.textContent = fill(T.upDone, {file: upResult.file, odoo: upResult.odoo, database: upResult.database || "?",
+        files: upResult.filestore ? T.withFiles : T.withoutFiles, size: sizeText(upResult.size), days: upResult.keep_days});
+      upDone.hidden = false; upNext.hidden = false;
+      progress(file.size, file.size);
+      load(MACHINES.find((m) => m.link === t.link));
+    } catch (e) {
+      upError.textContent = upAbort.signal.aborted ? T.upStopped : fill(T.upFailed, {why: e.message || e});
+      upSend.hidden = false;
+    } finally {
+      upAbort = null; upStop.hidden = true;
+      upMachine.disabled = upWs.disabled = upFile.disabled = false;
+      upReady();
+    }
+  });
+  upStop.addEventListener("click", () => { if (upAbort) upAbort.abort(); });
+  $("up-cancel").addEventListener("click", () => { if (upAbort) upAbort.abort(); upDialog.close(); });
+  // the uploaded file's row, as the list now has it: its dialog
+  upNext.addEventListener("click", async () => {
+    const t = upResult.target, m = MACHINES.find((x) => x.link === t.link);
+    await load(m);
+    const row = rowsOf(m, found[m.name] || {}).find((r) => r.imported && r.file === upResult.file && r.workspace === upResult.workspace);
+    if (!row) { upError.textContent = T.refused; return; }
+    upDialog.close();
+    openStaging(row);
   });
 })();
 </script>

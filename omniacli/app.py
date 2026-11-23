@@ -405,6 +405,11 @@ WORKSPACE_ROUTES = frozenset({
     "/api/servers/{server}/{role}/backups/verify", "/api/servers/{server}/{role}/archive",
     "/api/workspaces/{workspace}/archives", "/api/workspaces/{workspace}/archives/upload",
     "/api/workspaces/{workspace}/instances/from-archive",
+    # a new instance from a backup of the Backups page: its plan and its job, by its admins (its own backups)
+    "/api/workspaces/{workspace}/instances/from-backup",
+    # a database uploaded from the Backups page into a workspace's import area (where MCP's upload_backup puts
+    # one): where (its workspaces only), the parts of the file, and deleting one
+    "/api/imports/places", "/api/workspaces/{workspace}/imports/upload", "/api/workspaces/{workspace}/imports/delete",
     "/api/workspaces/{workspace}/archives/remote", "/api/workspaces/{workspace}/archives/fetch",
     "/api/workspaces/{workspace}/tokens/save", "/api/workspaces/{workspace}/tokens/delete",
     # its custom roles (README, Custom roles of a workspace): its admins
@@ -1152,6 +1157,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         pitr_tasks.append(asyncio.get_running_loop().create_task(names_that_open()))
         pitr_tasks.append(asyncio.get_running_loop().create_task(interrupted_names_freed()))
         pitr_tasks.append(asyncio.get_running_loop().create_task(productions_by_hand()))
+        # the databases uploaded to the workspaces, kept IMPORT_KEEP_DAYS (defined further down)
+        pitr_tasks.append(asyncio.get_running_loop().create_task(imports_sweep()))
         postgres_tasks.append(asyncio.get_running_loop().create_task(postgres_loop()))
         # defined further down, with the Database tab's code
         replica_tasks.append(asyncio.get_running_loop().create_task(replica_loop()))
@@ -13210,33 +13217,47 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         known = stagings.load(stagings_file)
         since = (datetime.datetime.now() - TONIGHT).isoformat(timespec="seconds")
         rows, tonight = [], {"ok": 0, "failed": 0}
+        # a new instance from the file (restore_new_instance): in a workspace that can hold one
+        usable = any(not w["why"] for w in offered_workspaces(me))
         for srv in settings.active_servers():
             mine = role_on(me, srv.name)
             if not reaches(mine, "developer"):
                 continue
+            found = workspace_of(srv.name)
             for role, inst in srv.instances.items():
                 if not inst.plugin.has_backup:
                     continue
                 folder = backup_folder(inst)
                 common = {"server": srv.name, "role": role, "label": inst.domain or inst.site or srv.name,
-                          "version": odoo_version(srv.name), "staging": srv.name in known}
-                # a staging of the production with the database of the file (D6)
-                stage = (reaches(mine, "admin") and role == "production" and srv.name not in known
-                         and workspace_of(srv.name) is not None and inst.plugin.has_restore)
+                          "version": odoo_version(srv.name), "staging": srv.name in known,
+                          "workspace": found[0].name if found else ""}
+                # a staging of the production with the database of the file (D6), or why not
+                not_staged = ("" if role == "production" and srv.name not in known and found is not None
+                              and inst.plugin.has_restore else
+                              "A staging is made from a backup of a production made in a workspace")
+                if not not_staged and not reaches(mine, "admin"):
+                    not_staged = "An admin makes stagings"
+                stage = not not_staged
+                not_made = instance_from_backup_refused(me, inst, usable)
                 no_download = refusal(me, "download", None, [srv.name])
                 for p in (sorted(folder.glob("*.zip")) if folder.is_dir() else []):
                     stat = p.stat()
+                    archived = archive_named(p.name)
+                    why_not = not_made or (ARCHIVE_NOT_HERE if archived else "")
                     rows.append({**common, "file": p.name, "size": stat.st_size,
                                  "time": datetime.datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
                                  "kind": ("scheduled" if p.name.startswith(schedules.SCHEDULED_PREFIX)
                                           else "pre-update" if p.name.startswith(ops.PRE_UPDATE_PREFIX) else "manual"),
-                                 "archive": p.name.startswith(instancearchive.PREFIX)
-                                 or p.name.startswith(schedules.SCHEDULED_PREFIX + instancearchive.PREFIX),
+                                 "archive": archived,
                                  "download": "" if no_download else f"/backups/{srv.name}/{role}/{p.name}",
                                  **({"download_refused": i18n.tr(request_language(request), no_download)}
                                     if no_download else {}),
                                  "verified": backupcheck.state(folder, p.name).get("verified"),
-                                 "can_delete": reaches(mine, backup_role(inst)), "can_stage": stage})
+                                 "can_delete": reaches(mine, backup_role(inst)), "can_stage": stage,
+                                 **({"stage_refused": i18n.tr(lang, not_staged)} if not_staged else {}),
+                                 # its absence tells an OmniaCLI older than the page's New instance from a backup
+                                 "can_instance": not why_not,
+                                 **({"instance_refused": i18n.tr(lang, why_not)} if why_not else {})})
                 sch = scheduler.schedules.get(backup_schedule_name(inst))
                 for run in scheduler.history.runs(sch.name, jobs) if sch is not None else []:
                     done = run.get("status")
@@ -13247,6 +13268,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                         rows.append({**common, "failed": True, "time": run.get("time"), "status": done,
                                      "tonight": str(run.get("time") or "") >= since,
                                      "job": run.get("job"), "message": i18n.tr(lang, run.get("message") or "")})
+        rows.extend(import_rows(request, me))
         rows.sort(key=lambda r: str(r.get("time") or ""), reverse=True)
         return {"rows": rows, "tonight": tonight}
 
@@ -13255,7 +13277,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         """The backups of every machine: this one's and each link's."""
         if not sees_backups(me):
             raise HTTPException(status.HTTP_403_FORBIDDEN, "The developer role is required")
-        return _TEMPLATES.TemplateResponse(request, "backups.html", {"here_name": shown_name(me), "links": listed_links(me)})
+        links = listed_links(me)
+        return _TEMPLATES.TemplateResponse(request, "backups.html", {
+            "here_name": shown_name(me), "links": links,
+            # Upload a backup…: to a workspace of this machine, or of a link (the machine's admins), each asked
+            "upload_here": bool(import_workspaces(me)),
+            "upload_links": links if not me.scoped and me.can("admin") else []})
 
     @app.get("/api/backups")
     async def backups_list(request: Request, link: str = "", me: Principal = Depends(current_user)):
@@ -14148,6 +14175,17 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         await asyncio.to_thread(bell_reads.mark, person, [k for k in keys if k in current], current, inframap.now_text())
         return bell.answer(watch, bell_reads.of(person), set(listed_links(me)))
 
+    def tried_badly(folder: Path, name: str) -> str | None:
+        """Why the backup name of folder is not offered for a restore: its restore failed when tried."""
+        tried = backupcheck.state(folder, name).get("verified")
+        if not tried or tried.get("ok"):
+            return None
+        try:
+            when = datetime.datetime.fromisoformat(str(tried.get("time"))).strftime("%d/%m/%Y")
+        except ValueError:
+            when = str(tried.get("time") or "")
+        return f"This backup did not restore when it was tried on {when}: choose another one"
+
     @app.post("/api/servers/{server}/stagings/from-backup", dependencies=[Depends(admin)])
     async def staging_from_backup(server: str, payload: dict = Body(...), me: Principal = Depends(current_user)):
         """A new staging of server's production with the database of one of
@@ -14162,13 +14200,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         path = (folder / name).resolve()
         if not _BACKUP_NAME.fullmatch(name) or path.parent != folder or not path.is_file():
             return refuse("No such backup", status.HTTP_404_NOT_FOUND)
-        tried = backupcheck.state(folder, name).get("verified")
-        if tried and not tried.get("ok"):
-            try:
-                when = datetime.datetime.fromisoformat(str(tried.get("time"))).strftime("%d/%m/%Y")
-            except ValueError:
-                when = str(tried.get("time") or "")
-            return refuse(f"This backup did not restore when it was tried on {when}: choose another one")
+        badly = tried_badly(folder, name)
+        if badly:
+            return refuse(badly)
         archive = instancearchive.read_manifest(path) is not None
         problem = None if archive else source.plugin.backup_problem(path)
         if problem:
@@ -14441,12 +14475,31 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         """The source of a job an MCP call starts: a token by its name, as its workspace's users read it."""
         return f"mcp: {who}" if who.startswith("link ") or who == "unknown" else f"mcp: token {who}"
 
+    # what a dump holds (dumpinfo.read reads its text as far as its table of modules), by file, time and size: the
+    # Backups page asks the plan again while a name is written
+    dump_memo: dict[tuple, dict] = {}
+
+    async def dump_info(path: Path) -> dict:
+        stat = path.stat()
+        key = (str(path), stat.st_mtime_ns, stat.st_size)
+        if key not in dump_memo:
+            found = await asyncio.to_thread(dumpinfo.read, path)
+            while len(dump_memo) >= 16:
+                dump_memo.pop(next(iter(dump_memo)))
+            dump_memo[key] = found
+        return dump_memo[key]
+
     async def restore_new(who: str, role: str, scope: str, workspace: str = "", file: str = "",
                           backup_of: str = "", name: str = "", neutralize: bool = True, staging_of: str = "",
-                          dry_run: bool = True, add_repositories_: bool = False, allow_missing: bool = False) -> dict:
+                          dry_run: bool = True, add_repositories_: bool = False, allow_missing: bool = False,
+                          source: str = "", backup_any: bool = False) -> dict:
         """restore_new_instance: the plan (dry_run), or the job of a new
-        instance of workspace loaded with file (ActionRefused: why not)."""
+        instance of workspace loaded with file (ActionRefused: why not).
+        The Backups page's New instance (from_backup_plan) calls it too:
+        source, its job's (a person's, not a token's); backup_any, a backup of
+        a server of another workspace (a machine's admin, checked there)."""
         me = Principal(who, role, "token")
+        job_source = source or mcp_source(who)
         workspace = str(workspace or "").strip() or scope
         if scope and workspace != scope:
             raise ActionRefused(f"This token is of workspace {scope}: it restores there only")
@@ -14460,7 +14513,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             raise ActionRefused("file: the name upload_backup answered, or a backup of list_backups with backup_of")
         if backup_of:
             server, _, from_role = backup_of.partition("/")
-            if server not in ws.servers or server not in settings.servers or (from_role or "production") not in ROLES:
+            if (server not in ws.servers and not backup_any) or server not in settings.servers \
+                    or (from_role or "production") not in ROLES:
                 raise ActionRefused(f"backup_of: a server of workspace {ws.name} (and /test for its test)")
             folder = settings.backup_dir / server / (from_role or "production")
         else:
@@ -14470,7 +14524,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             raise ActionRefused(f"No file {file} in " + (f"the backups of {backup_of}" if backup_of
                                                          else f"the import area of workspace {ws.name}: upload it with upload_backup"))
         try:
-            info = await asyncio.to_thread(dumpinfo.read, path)
+            info = await dump_info(path)
         except dumpinfo.DumpError as exc:
             raise ActionRefused(str(exc)) from None
         major = info["major"]
@@ -14635,7 +14689,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
         if parent:
             made = await new_staging(staging_of, me, load=lambda job, prod, target: load(job, target),
-                                     title=f"Staging of {staging_of} from {file}", source=mcp_source(who))
+                                     title=f"Staging of {staging_of} from {file}", source=job_source)
             refused = refusal_text(made)
             if refused:
                 raise ActionRefused(refused)
@@ -14665,8 +14719,427 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             job.log(f"{server} is made from {file}" + (", neutralized" if neutralize else ""))
 
         job = jobs.submit(f"Create {server} from {file}", [f"{server}/production", f"{server}/test"],
-                          mcp_source(who), action, workspace=ws.name)
+                          job_source, action, workspace=ws.name)
         return {**report, "dry_run": False, "job": job.id, "server": server}
+
+    # --- a new instance from a backup of the Backups page (README, Instances and
+    # Backups of every machine): the plan and the job of restore_new_instance
+    # (restore_new), asked by a person; through a link, the row's machine does it
+
+    def offered_workspaces(me: Principal) -> list[dict]:
+        """The workspaces of this machine me may make an instance in from a
+        backup, each with why it cannot hold one now ("" when it can): the
+        machine's admins all of them, a person of workspaces those it is an
+        admin of with Create and delete instances on all their instances."""
+        found = []
+        for ws in settings.workspaces.values():
+            if me.scoped:
+                if me.workspace_role(ws.name) != "admin" or refusal(me, "instances", ws.name, whole=True):
+                    continue
+            elif not me.can("admin"):
+                continue
+            mine = [n for n in ws.servers if n in settings.servers]
+            why = (settings.storage_problem(ws)
+                   or ("" if ws.storage and ws.limits.get("disk_gb")
+                       else "it has no storage or no disk limit: the machine's admins set them")
+                   or (f"it has its {int(ws.limits['instances'])} instances already"
+                       if ws.limits.get("instances") and len(mine) >= ws.limits["instances"] else ""))
+            found.append({"name": ws.name, "label": ws.label or ws.name, "why": why})
+        return found
+
+    def instance_from_backup_refused(me: Principal, inst: Instance, usable: bool) -> str:
+        """Why me may not make a new instance from a backup of inst here ("" when it may); usable: a
+        workspace of offered_workspaces(me) can hold one."""
+        if not inst.plugin.has_restore:
+            return "This kind of instance has no restore"
+        if me.scoped:
+            found = workspace_of(inst.server)
+            if found is None or me.workspace_role(found[0].name) != "admin":
+                return "An admin of the workspace makes instances from its backups"
+            why = refusal(me, "instances", found[0].name, whole=True)
+            if why:
+                return why
+        elif not me.can("admin"):
+            return "An admin makes instances from a backup"
+        if workspaceops.docker_missing():
+            return workspaceops.docker_missing()
+        if not usable:
+            return "No workspace of this machine can hold a new instance now"
+        return ""
+
+    def archive_named(name: str) -> bool:
+        """A full archive, as the backup lists tell one: by its name."""
+        return name.startswith(instancearchive.PREFIX) or name.startswith(schedules.SCHEDULED_PREFIX + instancearchive.PREFIX)
+
+    ARCHIVE_NOT_HERE = ("A full archive: the workspace's New instance › From a full archive makes the instance "
+                        "from it, with its code and its parameters")
+
+    def from_backup_source(me: Principal, ws: Workspace, server: str, role: str, file: str, staging_of: str = ""):
+        """(backup_of, a backup of another workspace's server) for restore_new, or a refusal: the backup
+        is of a server of this machine me reaches; a person of workspaces, of ws's own servers. server
+        "": a file uploaded to ws's import area (the page's Upload a backup, MCP's upload_backup).
+        staging_of: a staging of that production of ws is asked, not a new instance."""
+        if staging_of:
+            if staging_of not in ws.servers or staging_of not in settings.servers \
+                    or refusal(me, None, ws.name, [staging_of]):
+                return refuse(f"No production {staging_of} in workspace {ws.name}", status.HTTP_404_NOT_FOUND)
+            why = refusal(me, "stagings", ws.name, [staging_of])
+            if why:
+                return refuse(why, status.HTTP_403_FORBIDDEN)
+        if not server:
+            path = imports_folder(ws.name) / file
+            if not uploads_mod.NAME.fullmatch(file) or not path.is_file():
+                return refuse("No such backup", status.HTTP_404_NOT_FOUND)
+            why = "" if staging_of else imported_refused(me, ws)
+            return refuse(why) if why else ("", False)
+        srv = settings.servers.get(server)
+        inst = getattr(srv, role, None) if srv is not None and role in ROLES else None
+        found = workspace_of(server)
+        if inst is None or (me.scoped and (found is None or found[0].name != ws.name)) \
+                or refusal(me, None, None, [server]):
+            return refuse("No such backup", status.HTTP_404_NOT_FOUND)
+        folder = backup_folder(inst).resolve()
+        path = (folder / file).resolve()
+        if not _BACKUP_NAME.fullmatch(file) or path.parent != folder or not path.is_file():
+            return refuse("No such backup", status.HTTP_404_NOT_FOUND)
+        why = ("" if staging_of else instance_from_backup_refused(me, inst, True)) or tried_badly(folder, file)
+        if not why and (archive_named(file) or instancearchive.read_manifest(path) is not None):
+            why = ARCHIVE_NOT_HERE
+        if why:
+            return refuse(why)
+        return (server if role == "production" else f"{server}/{role}"), server not in ws.servers
+
+    @app.get("/api/workspaces/{workspace}/instances/from-backup", dependencies=[Depends(admin)])
+    async def from_backup_plan(request: Request, workspace: str, server: str = "", role: str = "production",
+                               file: str = "", name: str = "", staging_of: str = "",
+                               me: Principal = Depends(current_user)):
+        """What a new instance of workspace made from that backup would be,
+        starting nothing (restore_new_instance's dry run): the template of
+        its Odoo version, the modules its database has that the template
+        lacks and the OCA repositories that have them, the room; the name
+        asked checked (name_problem), and the workspaces me may choose;
+        staging_of, a staging of that production (a file uploaded to the
+        workspace: its rows offer a staging of any of its productions)."""
+        ws = a_workspace(workspace)
+        source = from_backup_source(me, ws, server, role, file, staging_of)
+        if isinstance(source, JSONResponse):
+            return source
+        backup_of, other = source
+        name, problem = ("" if staging_of else name.strip()), None
+        if name:
+            try:
+                new_instance_name(ws, name, {}, Path(file))
+            except ActionRefused as exc:
+                problem = str(exc)
+        try:
+            plan = await restore_new(me.name, me.role, "", workspace=ws.name, file=file, backup_of=backup_of,
+                                     name="" if problem else name, staging_of=staging_of, backup_any=other)
+        except ActionRefused as exc:
+            return refuse(str(exc))
+        lang = request_language(request)
+        for key in ("message", "next", "dry_run"):
+            plan.pop(key, None)
+        if "problem" in plan["room"]:
+            plan["room"]["problem"] = i18n.tr(lang, plan["room"]["problem"])
+        made = plan["new_instance"]["server"]
+        return {**plan, "instance": "" if staging_of else made[len(ws.name) + 1:],
+                "name_problem": i18n.tr(lang, problem) if problem else "",
+                "workspaces": [{**w, "why": i18n.tr(lang, w["why"])} for w in offered_workspaces(me)],
+                "productions": stageable(me, ws)}
+
+    def stageable(me: Principal, ws: Workspace) -> list[dict]:
+        """The productions of ws a staging may be made of from a file uploaded there, by me."""
+        known = stagings.load(stagings_file)
+        return [{"server": n, "label": settings.servers[n].production.domain or settings.servers[n].production.site or n}
+                for n in ws.servers if n in settings.servers and n not in known
+                and settings.servers[n].production is not None and settings.servers[n].production.plugin.has_restore
+                and not refusal(me, "stagings", ws.name, [n]) and isinstance(staging_source(n), tuple)]
+
+    def imported_refused(me: Principal, ws: Workspace) -> str:
+        """Why me may not make a new instance of ws from a file uploaded there ("" when it may)."""
+        if me.scoped and (me.workspace_role(ws.name) != "admin" or refusal(me, "instances", ws.name, whole=True)):
+            return refusal(me, "instances", ws.name, whole=True) or "An admin of the workspace makes its instances"
+        if not me.scoped and not me.can("admin"):
+            return "An admin makes instances from a backup"
+        if workspaceops.docker_missing():
+            return workspaceops.docker_missing()
+        return next((w["why"] for w in offered_workspaces(me) if w["name"] == ws.name and w["why"]), "")
+
+    # the databases uploaded from the page: kept this long, then deleted (imports_sweep); the file is sent in
+    # parts of at most IMPORT_PART, each one a POST of its own, so a link's page (which passes a body on whole)
+    # and a proxy in front hold one part at a time, and an upload that stops resumes where it stopped
+    IMPORT_KEEP_DAYS = 7
+    IMPORT_PART = 16 << 20
+    IMPORT_PART_KEEP = 2 * 86400  # seconds an upload not finished waits to be resumed
+    IMPORT_FACTS = ".facts"  # what the check of an uploaded file found, beside it (.<file>.facts)
+
+    def import_workspaces(me: Principal) -> list[Workspace]:
+        """The workspaces of this machine me may upload a database to: the machine's admins all of them,
+        a person of workspaces those it is an admin of with Restore a backup on all their instances."""
+        if me.kind == "token":
+            return []
+        if me.scoped:
+            return [ws for ws in settings.workspaces.values() if me.workspace_role(ws.name) == "admin"
+                    and not refusal(me, "restore", ws.name, whole=True)]
+        return list(settings.workspaces.values()) if me.can("admin") else []
+
+    def imported_files(ws: Workspace) -> list[Path]:
+        folder = imports_folder(ws.name)
+        return sorted(p for p in folder.iterdir() if p.is_file() and not p.name.startswith(".")
+                      and uploads_mod.NAME.fullmatch(p.name)) if folder.is_dir() else []
+
+    def import_facts(path: Path) -> dict:
+        """What the check of an uploaded file found (Odoo version, database, attachments), {} unknown."""
+        try:
+            return json.loads((path.parent / f".{path.name}{IMPORT_FACTS}").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    def import_rows(request: Request, me: Principal) -> list[dict]:
+        """The files of the import areas me may use, as rows of the Backups page."""
+        lang, rows = request_language(request), []
+        for ws in import_workspaces(me):
+            made = imported_refused(me, ws)
+            productions = stageable(me, ws)
+            for path in imported_files(ws):
+                stat = path.stat()
+                facts = import_facts(path)
+                rows.append({
+                    "imported": True, "workspace": ws.name, "server": "", "role": "", "label": ws.label or ws.name,
+                    "file": path.name, "size": stat.st_size, "kind": "uploaded",
+                    "time": datetime.datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
+                    "expires": datetime.datetime.fromtimestamp(stat.st_mtime + IMPORT_KEEP_DAYS * 86400)
+                    .isoformat(timespec="seconds"),
+                    "odoo": facts.get("odoo"), "database": facts.get("database"), "filestore": facts.get("filestore"),
+                    "version": f"{facts['odoo']}" if facts.get("odoo") else "", "download": "", "verified": None,
+                    "staging": False, "can_delete": True, "can_stage": bool(productions), "productions": productions,
+                    **({} if productions else {"stage_refused": i18n.tr(
+                        lang, f"Workspace {ws.name} has no production a staging may be made of")}),
+                    "can_instance": not made, **({"instance_refused": i18n.tr(lang, made)} if made else {})})
+        return rows
+
+    def imports_swept() -> list[str]:
+        """The uploaded databases older than IMPORT_KEEP_DAYS deleted, and the uploads not finished for
+        IMPORT_PART_KEEP; each deletion in the access log. What was deleted, <workspace>/<file>."""
+        now, gone = time.time(), []
+        for ws in list(settings.workspaces.values()):
+            folder = imports_folder(ws.name)
+            if not folder.is_dir():
+                continue
+            for path in list(folder.iterdir()):
+                try:
+                    age = now - path.stat().st_mtime
+                except OSError:
+                    continue
+                part = path.name.endswith(".part")
+                if not ((part and age > IMPORT_PART_KEEP)
+                        or (uploads_mod.NAME.fullmatch(path.name) and age > IMPORT_KEEP_DAYS * 86400)):
+                    continue
+                path.unlink(missing_ok=True)
+                (folder / f".{path.name}{IMPORT_FACTS}").unlink(missing_ok=True)
+                gone.append(f"{ws.name}/{path.name}")
+                what = "an upload not finished" if part else "uploaded database"
+                access_log.record("action", "system", "", "", f"{what} {path.name} of workspace {ws.name}: deleted "
+                                  f"after {IMPORT_PART_KEEP // 86400 if part else IMPORT_KEEP_DAYS} days", context=False)
+        return gone
+
+    app.state.imports_swept = imports_swept
+
+    async def imports_sweep() -> None:
+        """imports_swept when OmniaCLI starts and each hour."""
+        while True:
+            try:
+                await asyncio.to_thread(imports_swept)
+            except OSError as exc:
+                _logger.warning("the uploaded databases could not be swept: %s", exc)
+            await asyncio.sleep(3600)
+
+    @app.get("/api/imports/places")
+    async def import_places(request: Request, me: Principal = Depends(current_user)):
+        """Where me may upload a database on this machine: the workspaces, each with why not when it
+        cannot hold an instance; the largest file, the part size, the days a file is kept, the room."""
+        places = import_workspaces(me)
+        if not places:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "An admin uploads a database")
+        offered = {w["name"]: w["why"] for w in offered_workspaces(me)}
+        lang = request_language(request)
+        try:
+            free = shutil.disk_usage(private.backup_folder(settings.backup_dir / ".imports")).free
+        except OSError:
+            free = None
+        return {"workspaces": [{"name": ws.name, "label": ws.label or ws.name,
+                                "why": i18n.tr(lang, offered.get(ws.name, ""))} for ws in places],
+                "max_size": uploads_mod.MAX_SIZE, "part": IMPORT_PART, "keep_days": IMPORT_KEEP_DAYS,
+                "free": None if free is None else max(0, free - puller.MIN_FREE)}
+
+    def import_part(ws: Workspace, name: str, size: int, me: Principal) -> Path:
+        """The .part file an upload of name (size bytes) by me grows in: the same one when it resumes."""
+        who = hashlib.sha256(f"{me.name}|{me.on_behalf}|{name}|{size}".encode()).hexdigest()[:16]
+        return private.backup_folder(imports_folder(ws.name)) / f".{name}.{who}.part"
+
+    def import_name(name: str) -> tuple[str, str | None]:
+        """(the name the file is kept under, why it cannot be): a zip, or a plain SQL dump kept as .sql."""
+        name = re.sub(r"[^A-Za-z0-9._-]", "_", Path(str(name or "")).name).lstrip(".")
+        if re.search(r"\.(dump|backup|custom|tar)$", name, re.I):
+            return name, (f"{name}: a pg_dump of the custom or tar format is not restored: make a plain one "
+                          "(pg_dump --format=plain, or pg_restore -f <name>.sql of this file) or an Odoo backup .zip")
+        kept = name if name.endswith(".zip") else sqldump.stored_name(name)
+        if not uploads_mod.NAME.fullmatch(kept):
+            return kept, ("The file is an Odoo backup .zip (dump.sql, filestore, manifest.json) or a plain SQL dump "
+                          "of pg_dump, named with letters, digits, . _ -")
+        return kept, None
+
+    def upload_args(me: Principal, workspace: str, name: str, size: int):
+        """(ws, the name kept, the .part) of an upload, or a refusal."""
+        if not acts_for_a_person(me):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Only a person who logs in uploads a database")
+        ws = a_workspace(workspace)
+        if ws not in import_workspaces(me):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "An admin of the workspace uploads its databases")
+        kept, why = import_name(name)
+        if why:
+            return refuse(why)
+        if not 0 < size <= uploads_mod.MAX_SIZE:
+            return refuse(f"size: the file's size in bytes, at most {uploads_mod.MAX_SIZE >> 30} GiB")
+        return ws, kept, import_part(ws, kept, size, me)
+
+    @app.get("/api/workspaces/{workspace}/imports/upload", dependencies=[Depends(admin)])
+    async def import_resume(workspace: str, name: str = "", size: int = 0, me: Principal = Depends(current_user)):
+        """How much of an upload of name (size bytes) by me is here: where it resumes."""
+        found = upload_args(me, workspace, name, size)
+        if isinstance(found, JSONResponse):
+            return found
+        part = found[2]
+        return {"received": part.stat().st_size if part.is_file() else 0, "part": IMPORT_PART}
+
+    @app.post("/api/workspaces/{workspace}/imports/upload", dependencies=[Depends(admin)])
+    async def import_upload(request: Request, workspace: str, name: str = "", size: int = 0, offset: int = 0,
+                            me: Principal = Depends(current_user)):
+        """A part of a database sent by the page (the raw body, at most
+        IMPORT_PART), at offset of a file of size bytes: added to its .part
+        file. The first part is checked (a zip, or the head of a plain SQL
+        dump), the last one the whole file (dumpinfo: its Odoo version, a
+        template of it here, its database, its attachments): then it is in
+        the import area of workspace (600) and answered with what it holds;
+        a file refused is not kept. An offset that is not where the .part
+        is: 409 with received, where to go on from."""
+        found = upload_args(me, workspace, name, size)
+        if isinstance(found, JSONResponse):
+            return found
+        ws, kept, part = found
+        have = part.stat().st_size if part.is_file() else 0
+        if offset != have:
+            return JSONResponse({"error": f"{kept}: {have} bytes are here, not {offset}: go on from there",
+                                 "received": have}, status_code=status.HTTP_409_CONFLICT)
+        if offset == 0:
+            free = shutil.disk_usage(part.parent).free
+            if free - size < puller.MIN_FREE:
+                return refuse(f"There is no room on {here_name()} for {size >> 20} MiB: {free >> 20} MiB free",
+                              status.HTTP_507_INSUFFICIENT_STORAGE)
+        count = 0
+        try:
+            with open(part, "ab") as out:
+                os.chmod(part, 0o600)
+                async for chunk in request.stream():
+                    count += len(chunk)
+                    if count > IMPORT_PART or offset + count > size:
+                        out.truncate(offset)
+                        return refuse(f"{kept}: a part is at most {IMPORT_PART >> 20} MiB, and the file "
+                                      f"{size} bytes")
+                    out.write(chunk)
+        except ClientDisconnect:
+            with open(part, "ab") as out:
+                out.truncate(offset)
+            return refuse(f"{kept}: the part was interrupted: send it again")
+        received = offset + count
+        if offset == 0:
+            why = await asyncio.to_thread(import_head_problem, part, kept, name)
+            if why:
+                part.unlink(missing_ok=True)
+                return refuse(why)
+        if received < size:
+            return {"received": received}
+        return await import_finished(ws, kept, part, name)
+
+    def import_head_problem(part: Path, kept: str, given: str) -> str | None:
+        """Why the first part of an upload is not of a database to restore."""
+        if kept.endswith(".zip"):
+            with open(part, "rb") as head:
+                return None if head.read(4) == b"PK\x03\x04" else f"{given} is not a zip file"
+        return sqldump.problem(part, given)
+
+    async def import_finished(ws: Workspace, kept: str, part: Path, given: str):
+        """The whole file checked and kept, or deleted with why."""
+        problem = await asyncio.to_thread(database_problem, part, kept)
+        info = None
+        if not problem:
+            try:
+                info = await asyncio.to_thread(dumpinfo.read, part)
+            except dumpinfo.DumpError as exc:
+                problem = str(exc).replace(part.name, given)
+        if info is not None and info["major"] is None:
+            problem = f"{given} says no Odoo version (no manifest.json, no version of the module base)"
+        elif info is not None and await asyncio.to_thread(template_of_major, info["major"]) is None:
+            problem = (f"{given} is a database of Odoo {info['major']}: this machine has no template of Odoo "
+                       f"{info['major']} (Templates), it cannot become an instance here: nothing kept")
+        if problem:
+            part.unlink(missing_ok=True)
+            return refuse(problem)
+        dest = free_name(part.parent, kept)
+        os.replace(part, dest)
+        os.chmod(dest, 0o600)
+        facts = {"odoo": f"{info['major']}.0", "version": info["version"], "database": info["database"],
+                 "filestore": bool(info["filestore"]), "kind": info["kind"],
+                 "modules": len(info["modules"]) if info["modules"] is not None else None}
+        facts_file = dest.parent / f".{dest.name}{IMPORT_FACTS}"
+        facts_file.write_text(json.dumps(facts), encoding="utf-8")
+        os.chmod(facts_file, 0o600)
+        return {"file": dest.name, "workspace": ws.name, "size": dest.stat().st_size, **facts,
+                "keep_days": IMPORT_KEEP_DAYS}
+
+    @app.post("/api/workspaces/{workspace}/imports/delete", dependencies=[Depends(admin)])
+    async def import_delete(workspace: str, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """A database uploaded to workspace deleted (with what its check found)."""
+        if me.kind == "token":
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "A token may only read")
+        ws = a_workspace(workspace)
+        if ws not in import_workspaces(me):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "An admin of the workspace deletes its databases")
+        file = str(payload.get("file") or "")
+        path = imports_folder(ws.name) / file
+        if not uploads_mod.NAME.fullmatch(file) or not path.is_file():
+            return refuse("No such backup", status.HTTP_404_NOT_FOUND)
+        path.unlink()
+        (path.parent / f".{file}{IMPORT_FACTS}").unlink(missing_ok=True)
+        return {"deleted": file}
+
+    @app.post("/api/workspaces/{workspace}/instances/from-backup", dependencies=[Depends(admin)])
+    async def from_backup_create(workspace: str, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """A new instance of workspace from a backup of the Backups page: the
+        job restore_new_instance starts (the template of its Odoo version,
+        the OCA repositories asked, the file restored, neutralized unless
+        asked). Refused as it would be there: a name taken, modules without
+        code unless allowed, no room."""
+        if me.kind == "token":
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "A token may only read")
+        ws = a_workspace(workspace)
+        file = str(payload.get("file") or "")
+        staging_of = str(payload.get("staging_of") or "")
+        source = from_backup_source(me, ws, str(payload.get("server") or ""),
+                                    str(payload.get("role") or "production"), file, staging_of)
+        if isinstance(source, JSONResponse):
+            return source
+        backup_of, other = source
+        try:
+            made = await restore_new(me.name, me.role, "", workspace=ws.name, file=file, backup_of=backup_of,
+                                     name=str(payload.get("name") or "").strip(),
+                                     neutralize=bool(payload.get("neutralize", True)), dry_run=False,
+                                     add_repositories_=bool(payload.get("add_repositories")),
+                                     allow_missing=bool(payload.get("allow_missing")), staging_of=staging_of,
+                                     source=f"manual: {me}", backup_any=other)
+        except ActionRefused as exc:
+            return refuse(str(exc))
+        return {"job": made["job"], "server": made["server"]}
 
     # --- the caller's own password --------------------------------------
 

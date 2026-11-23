@@ -33,6 +33,7 @@ SENSITIVE_READS = {
     "/api/backups": "backups list (every machine)",
     "/api/v1/instances/{server}/{role}/backups": "backups list (REST API)",
     "/api/workspaces/{workspace}/archives": "archives list",
+    "/api/workspaces/{workspace}/instances/from-backup": "plan of a new instance from a backup (its database's name and modules)",
     "/api/workspaces/{workspace}/archives/remote": "archives list (destination)",
     "/api/pullers/{name}/reports": "relayed reports",
     # security data
@@ -132,6 +133,9 @@ NOT_SENSITIVE = frozenset({
     # (Whitelabel), public as the icons; whether the system updates itself and its last run (no package
     # list of the machine, no log of anybody's), the switch is an action, logged
     "/api/bell", "/brand/logo", "/api/machine/os-updates",
+    # a database uploaded from the Backups page: where it may go (workspaces, sizes) and how much of an upload
+    # is here to resume it; the parts sent, the file kept or refused and its deletion are actions, logged
+    "/api/imports/places", "/api/workspaces/{workspace}/imports/upload",
 })
 
 

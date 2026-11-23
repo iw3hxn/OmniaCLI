@@ -1995,11 +1995,60 @@ backups of every machine, newest first, 50 a page, each with its kind
 (automatic, before an update, by hand), size and outcome (its restore tried
 or not), and the automatic runs that did not succeed as rows of their own,
 with their job; in the head, tonight's count. The menu of a row: **Download**,
-**Restore into a new instance…** (a new staging of its production with the
-database of that backup, neutralized, `POST
-/api/servers/<server>/stagings/from-backup`; refused for a backup whose
-restore failed when tried) and **Delete…**. An OmniaCLI too old to list its
-backups is named, not counted.
+**Restore into a new instance…** and **Delete…**. An OmniaCLI too old to list
+its backups is named, not counted.
+
+**Restore into a new instance…** asks what the backup becomes (refused for a
+backup whose restore failed when tried):
+
+- **A staging of <its production>** (first, as before): a new staging of the
+  production with the database of that backup, neutralized, `POST
+  /api/servers/<server>/stagings/from-backup`.
+- **A new instance**: its name (checked while it is written: free in the
+  workspace, its addresses too; empty, the name of the backup's database),
+  its workspace (the backup's own; a machine's admins may choose another one
+  of that machine) and whether it is **neutralized** (on by default: outgoing
+  mail servers and scheduled actions off). Before the button, the **plan**:
+  the same dry run as MCP's `restore_new_instance`, read by `GET
+  /api/workspaces/<ws>/instances/from-backup?server=&role=&file=&name=` —
+  the template of the dump's Odoo version, the modules its database has that
+  the template lacks, the OCA repositories that have them (ticked: added to
+  the instance), those found nowhere (their code is to be added, or *Restore
+  even without their code*), the room on the workspace's disk. **Create the
+  instance** starts the same job (`POST` of the same route, with `name`,
+  `neutralize`, `add_repositories`, `allow_missing`) and opens it. A person of
+  workspaces does it in a workspace it is an admin of, from the backups of
+  its own instances, with *Create and delete instances* (the `instances`
+  capability) on all of them. A full archive is not offered here: the
+  workspace's *New instance › From a full archive* makes the instance from
+  it, with its code and its parameters. The instance's own Backups tab does
+  not repeat it: a new instance is an act on the workspace, not on that
+  instance, and the tab keeps its two row actions (UX-006 §4.2).
+
+Through a link, the row's machine does all of it (the page asks
+`/links/<name>/…`), with that machine's workspaces; a machine whose
+OmniaCLI is older than this says so on the choice, which stays off.
+
+**Upload a backup…** (the head of the page, secondary; a workspace's admins,
+the machine's admins also to a link's machine): a database from this
+computer — an Odoo backup `.zip` as Odoo's database manager makes it
+(`dump.sql`, `filestore/`, `manifest.json`) or a plain SQL dump of
+`pg_dump` (`.sql`; a dump of the custom or tar format is refused with how to
+make a plain one) — into the import area of a workspace of the machine
+chosen, where MCP's `upload_backup` puts one. The browser sends it in parts
+of 16 MiB (`POST /api/workspaces/<ws>/imports/upload?name=&size=&offset=`,
+so a link's page and a proxy hold one part at a time), at most 50 GiB; an
+upload that stops is resumed by choosing the same file again (`GET` of the
+same route says how much is there; a part at another offset is answered 409
+with where to go on from). The first part is checked (a zip, or the head of
+a SQL dump), the whole file at the end (its Odoo version and a template of
+it on that machine, its database, its attachments): a file refused is not
+kept, and the reason says why. The file is then a row of the list,
+*uploaded*, with its Odoo version and database, and the same **Restore into
+a new instance…**: a new instance, or a staging of one of the workspace's
+productions (`staging_of`). Uploaded files are kept **7 days**, then deleted
+by themselves (each hour, in the access log; an upload not finished, after 2
+days); **Delete…** removes one before (`POST …/imports/delete`).
 
 ### Dates and times
 
@@ -4053,7 +4102,7 @@ provides: OmniaCLI installed by hand on Python 3.9 runs without it.
 | `read_server` | (admin token) a server's whole configuration, active or draft |
 | `add_draft_server` | (admin token) a new server, always a **draft**: it goes live only with Test & activate on the web |
 | `dev_setup` | what a client needs to rebuild an instance locally: remote URLs (without credentials), branches, commits, `addons_path` as repository folders, Odoo and Python versions, the Odoo config options without secrets nor server paths, and the backups to download |
-| `upload_backup` | (admin token) a one-time URL (30 minutes, this token only, the size told, the SHA-256 checked when given) to `PUT` a database from outside: an Odoo backup zip or a plain SQL dump, into a workspace's import area; with `link` this OmniaCLI sends it on to that linked machine and keeps no copy |
+| `upload_backup` | (admin token) a one-time URL (30 minutes, this token only, the size told, the SHA-256 checked when given) to `PUT` a database from outside: an Odoo backup zip or a plain SQL dump, into a workspace's import area (kept 7 days, as an upload of the Backups page); with `link` this OmniaCLI sends it on to that linked machine and keeps no copy |
 | `restore_new_instance` | (admin token) a new instance of a workspace from that file (or `backup_of` a server's backup): the template of its Odoo version (from the dump's module `base`, or its manifest), restored neutralized; first `dry_run` (the default) tells, starting nothing, the modules installed in the database without code in the new instance, grouped by OCA repository of the catalog (`add_repositories` adds them) or not found (a private repository, Odoo Enterprise); refused while modules are missing unless `allow_missing`; `staging_of` makes it a staging of a production (its mail caught). On a linked machine through `call_linked` |
 
 With an admin token `dev_setup`, `backup` and `list_backups` also reach the
