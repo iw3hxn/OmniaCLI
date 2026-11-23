@@ -286,6 +286,9 @@ async def test_failure_names_the_program_past_sudo(fake_sudo):
         == "click-odoo-update"
     assert ops._program(["sudo", "-n", "systemctl", "restart", "x"]) == "systemctl"
     assert ops._program(["/v/bin/python", "-m", "pip"]) == "python"
+    # a root helper: its action, which said «omniacli exited with code 2» alone
+    assert ops._program(["sudo", "-n", "/usr/bin/omniacli", "compose-helper", "next-start", "/srv/x"]) \
+        == "omniacli compose-helper next-start"
     with pytest.raises(JobFailed, match="^false exited with code 1$"):
         await ops.run(job(), ops.as_user("odoo", ["false"]))
 

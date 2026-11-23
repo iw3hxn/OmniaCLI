@@ -79,7 +79,14 @@ def _program(cmd: list) -> str:
         args = args[1:]
         while args and (args[0].startswith("-") or "=" in args[0]):
             args = args[2:] if args[0] == "-u" else args[1:]
-    return Path(args[0]).name if args else "sudo"
+    if not args:
+        return "sudo"
+    name = Path(args[0]).name
+    if name == "omniacli":
+        # a root helper: its action too ("omniacli compose-helper next-start"), not only "omniacli"
+        words = [a for a in args[1:] if not a.startswith("-")][:2]
+        return " ".join([name, *words])
+    return name
 
 
 def _signal_group(proc: asyncio.subprocess.Process, sig: int) -> None:

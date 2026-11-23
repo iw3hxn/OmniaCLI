@@ -181,6 +181,8 @@ ROUTES = {
         ("POST", "/servers/{server}/{role}/pull"), ("POST", "/servers/{server}/{role}/pull-restart"),
         ("GET", "/api/servers/{server}/{role}/pull-preview"), ("POST", "/servers/{server}/merge"),
         ("GET", "/api/servers/{server}/{role}/deploy-hook"), ("POST", "/api/servers/{server}/{role}/deploy-hook"),
+        # the update without stopping changes how an update runs: switched by who switches the CI
+        ("GET", "/api/servers/{server}/{role}/zero-downtime"), ("POST", "/api/servers/{server}/{role}/zero-downtime"),
         ("GET", "/api/servers/{server}/{role}/deploys"), ("GET", "/api/servers/{server}/{role}/deploys/{deploy_id}/back"),
         ("POST", "/api/servers/{server}/{role}/deploys/{deploy_id}/back"),
         ("POST", "/api/workspaces/{workspace}/repositories/branches"),
