@@ -9,7 +9,7 @@
 {# the groups (docs/ux/UX-007 §4.3): the page is the form; one Save, in a bar that stays in sight, once something changed #}
 <style>
 .groups-bar { position: sticky; bottom: 0; z-index: 5; display: flex; gap: 12px; align-items: center; justify-content: flex-end;
-  padding: 10px 14px; margin-top: 8px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-lg);
+  padding: 10px 12px; margin-top: 8px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-lg);
   box-shadow: var(--shadow); }
 .groups-foot details { margin: 10px 0 0; }
 </style>
@@ -53,7 +53,7 @@
       <button type="button" class="small add-sub" title="{{ _('Adds a group inside this one (up to 4 levels): an instance goes in the first subgroup that names it') }}">{{ icon("plus") }}{{ _("Subgroup") }}</button>
       <button type="button" class="small danger remove" title="{{ _('Takes the group and its subgroups out of the list; its instances go back under Others. It holds at the save.') }}">{{ _("Remove") }}</button>
     </div>
-    <div class="subgroups" style="margin-left: 18px"></div>
+    <div class="subgroups" style="margin-left: 20px"></div>
   </fieldset>
 </template>
 <script>

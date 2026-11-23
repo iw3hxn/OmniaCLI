@@ -32,7 +32,7 @@
 .ws-disk-line { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .section-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 8px; }
 .section-head h2 { margin: 0; }
-button.small { padding: 3px 10px; font-size: var(--fs-14); line-height: var(--lh-20);}
+button.small { padding: 4px 10px; font-size: var(--fs-14); line-height: var(--lh-20);}
 .ws-table td { vertical-align: middle; }
 .ws-table .small-note { display: block; font-size: var(--fs-14); color: var(--muted); line-height: var(--lh-20);}
 .ws-side { font-size: var(--fs-14); white-space: nowrap; line-height: var(--lh-20);}
@@ -42,8 +42,8 @@ button.small { padding: 3px 10px; font-size: var(--fs-14); line-height: var(--lh
 .ws-outcome { font-size: var(--fs-14); margin: 8px 0 0; line-height: var(--lh-20);} .ws-outcome:empty { display: none; }
 #instance-dialog { --dialog-w: 640px; }
 #item-dialog, #secret-dialog, #notify-dialog { --dialog-w: 520px; }
-dialog .field-help { display: block; font-size: var(--fs-14); margin-top: 3px; line-height: var(--lh-20);}
-.in-ways { display: flex; flex-wrap: wrap; gap: 6px 20px; margin: 4px 0 14px; }
+dialog .field-help { display: block; font-size: var(--fs-14); margin-top: 4px; line-height: var(--lh-20);}
+.in-ways { display: flex; flex-wrap: wrap; gap: 6px 20px; margin: 4px 0 16px; }
 .in-ways label { display: inline-flex; gap: 6px; align-items: center; font-weight: var(--fw-semibold); }
 .in-ways input { width: auto; }
 .fa-from { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
@@ -180,7 +180,7 @@ dialog .field-help { display: block; font-size: var(--fs-14); margin-top: 3px; l
   <p class="ok ws-outcome" id="cert-state" role="status"></p>
   <p class="error ws-outcome" id="cert-error" role="alert"></p>
   {% endif %}
-  <details style="margin-top: 14px">
+  <details style="margin-top: 16px">
     <summary title="{{ _('Which names the main instance, the other instances and a subdomain answer on, and what each name needs') }}">{{ _("How names are formed") }}</summary>
     <dl class="ws-names">
       <dt>{{ _("Main instance") }}</dt><dd class="mono">{{ ws.domain }}, test.{{ ws.domain }}</dd>
@@ -227,7 +227,7 @@ dialog .field-help { display: block; font-size: var(--fs-14); margin-top: 3px; l
   </div>
   {#- the roles (README, Custom roles of a workspace): the three of every workspace, and those made here from them
       with capabilities ticked off or on, never beyond the role of who makes them #}
-  <div id="ws-roles" style="margin-top: 18px; border-top: 1px solid var(--border); padding-top: 14px">
+  <div id="ws-roles" style="margin-top: 20px; border-top: 1px solid var(--border); padding-top: 12px">
     <div class="section-head"><h3 style="margin: 0">{{ _("Roles") }}</h3>
       {% if denied.people %}<span title="{{ tr(denied.people) }}"><button type="button" class="small" id="new-role" disabled title="{{ tr(denied.people) }}">{{ _("New role") }}</button></span>
       {% else %}<button type="button" class="small" id="new-role" title="{{ _('Makes a role of this workspace from user, developer or admin, with the capabilities you tick off or on: never more than your own role has') }}">{{ _("New role") }}</button>{% endif %}</div>
@@ -255,7 +255,7 @@ dialog .field-help { display: block; font-size: var(--fs-14); margin-top: 3px; l
     </div>
   </div>
   {#- the workspace's single sign-on (README, Single sign-on): its people log in with their company's account #}
-  <div id="sso" style="margin-top: 18px; border-top: 1px solid var(--border); padding-top: 14px">
+  <div id="sso" style="margin-top: 20px; border-top: 1px solid var(--border); padding-top: 12px">
     <div class="section-head"><h3 style="margin: 0">{{ _("Single sign-on") }}</h3>
       <div class="actions" style="margin: 0">
         {% if sso %}<button type="button" class="small danger" id="sso-remove" title="{{ _('Takes the provider away: its people log in no more with it, only with a password an admin gives them. It goes in the access log.') }}">{{ _("Remove…") }}</button>{% endif %}
@@ -349,7 +349,7 @@ dialog .field-help { display: block; font-size: var(--fs-14); margin-top: 3px; l
     {% endfor %}
   </table>
   </div>
-  <h3 style="margin: 18px 0 6px">{{ _("Connected with OAuth") }} ({{ grants | length }})</h3>
+  <h3 style="margin: 20px 0 6px">{{ _("Connected with OAuth") }} ({{ grants | length }})</h3>
   <p class="muted ws-line" style="margin: 0 0 10px">{{ _("claude.ai, ChatGPT and the other assistants that log in with OAuth: each user of the workspace lets in its own, with its role here at most.") }}</p>
   {{ grants_table(grants) }}
 </section>

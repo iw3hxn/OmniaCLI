@@ -61,6 +61,8 @@
   --side-bg: var(--slate-900); --side-text: var(--slate-300); --side-muted: var(--slate-400); --side-hover: var(--slate-800);
   --side-current: var(--white); --brand-top: var(--red-400);
   --head-bg: var(--panel);
+  /* a document shown as it is printed or mailed (a mail caught by a staging) */
+  --paper: var(--white);
   /* the data of the charts (validated with the dataviz validator on #FFFFFF): not part of UX-017 */
   --series-1: #111827; --series-2: #DC2626;
   --cat-2: #eb6834; --cat-3: #1baf7a; --cat-4: #eda100; --cat-5: #e87ba4;
@@ -109,7 +111,7 @@
 .topbar { --focus: var(--brand-top); }
 /* less motion asked: nothing moves (the progress of a job is a datum: job.html keeps its width) */
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important;
+  *:not(.step-bar > div), *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important;
     transition-duration: .01ms !important; scroll-behavior: auto !important; }
 }
 </style>

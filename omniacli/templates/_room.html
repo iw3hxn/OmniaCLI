@@ -46,7 +46,7 @@ window.omniaRoom = window.omniaRoom || function (holder) {
   let est = null, rm = null, title = T.restore, last = {files: true, ticked: 0, zip: true};
   holder.replaceChildren();
   const box = document.createElement("div");
-  box.style.cssText = "margin-top: 8px; font-size: 13px";
+  box.style.cssText = "margin-top: 8px; font-size: var(--fs-14); line-height: var(--lh-20)";
   holder.append(box);
 
   function line(text, className = "muted", mark = "") {

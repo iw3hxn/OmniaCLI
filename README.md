@@ -4837,7 +4837,15 @@ controls and motion. A page writes `var(--…)`, never a value of its own.
   is said by a word, an icon and a colour, never by the colour alone: the
   badges of a good, a warned and a failed state and every banner carry their
   icon, and a production is told by its rocket.
-- **Less motion** asked by the system: nothing moves, one rule for every page.
+- **Space, radii, motion**: spaces on a scale of 2 to 64 px, radii 4, 8,
+  12 and the pill, four durations (100 ms an icon that turns, 200 a hover, 300
+  a menu or a fold, 400 a dialog or a toast) and two curves; the pages are
+  laid out on four widths (576, 768, 992, 1200 px). Nothing loops for more
+  than 5 s: a spinner, a pulse, the shine of a list being read and the man
+  who runs beside a job stop in their pose and move again when the state
+  changes (a new step of the job).
+- **Less motion** asked by the system: nothing moves, one rule for every page
+  (the bar of a job's progress, a datum, still follows the job).
 
 ### Whitelabel
 

@@ -62,7 +62,7 @@
 /* done, but something did not come (a certificate): amber, with the warnings said */
 .job-state[data-status="warned"] .job-warned { display: flex; }
 .job-warned { color: var(--warn); border-color: var(--warn) !important; background: var(--warn-soft) !important; align-items: flex-start !important; }
-.job-warned ul { margin: 4px 0 0; padding-left: 18px; font-weight: var(--fw-regular); color: var(--text); }
+.job-warned ul { margin: 4px 0 0; padding-left: 16px; font-weight: var(--fw-regular); color: var(--text); }
 .job-warned .danger-sign { fill: var(--warn); stroke: var(--warn); }
 .job-back { margin: -4px 0 10px; font-size: var(--fs-14); line-height: var(--lh-20);}
 </style>
@@ -97,30 +97,30 @@
    a puller),
    with the bytes of a transfer #}
 <style>
-.steps { display: flex; align-items: stretch; margin: 0 0 14px; }
-.step { flex: 1 1 0; min-width: 0; padding: 10px 14px; border: 1px solid var(--border); border-radius: var(--r);
-  background: var(--panel); color: var(--muted); transition: border-color .3s, color .3s; }
+.steps { display: flex; align-items: stretch; margin: 0 0 16px; }
+.step { flex: 1 1 0; min-width: 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r);
+  background: var(--panel); color: var(--muted); transition: border-color var(--dur-300) var(--ease-out), color var(--dur-300) var(--ease-out); }
 .step-head { display: flex; align-items: center; gap: 8px; font-weight: var(--fw-semibold); }
 .step-where { font-size: var(--fs-12); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: var(--lh-18);}
 .step-mark { width: 18px; height: 18px; flex: none; border-radius: 50%; border: 2px solid currentColor;
   display: grid; place-items: center; font-size: var(--fs-12); line-height: var(--lh-18); }
 .step.active { color: var(--warn); border-color: var(--warn); }
-.step.active .step-mark { border-right-color: transparent; animation: step-spin .8s linear infinite; }
+.step.active .step-mark { border-right-color: transparent; animation: step-spin .8s linear 6; }
 .step.done { color: var(--ok); }
-.step.done .step-mark { background: var(--ok); border-color: var(--ok); color: var(--panel); animation: step-pop .35s ease; }
+.step.done .step-mark { background: var(--ok); border-color: var(--ok); color: var(--panel); animation: step-pop var(--dur-300) var(--ease-out); }
 .step.failed { color: var(--err); border-color: var(--err); }
 .step.failed .step-mark { background: var(--err); border-color: var(--err); color: var(--panel); }
 .step-wire { flex: 0 0 56px; position: relative; align-self: center; height: 2px; background: var(--border); overflow: hidden; }
 /* data moving from the other instance to here while the transfer runs */
 .step-wire.flowing { background: repeating-linear-gradient(90deg, var(--warn) 0 6px, transparent 6px 12px);
-  background-size: 24px 2px; animation: step-flow .5s linear infinite; }
+  background-size: 24px 2px; animation: step-flow .5s linear 10; }
 .step-wire.done { background: var(--ok); }
-.step-bar { height: 8px; margin-top: 10px; border-radius: 4px; background: var(--border); overflow: hidden; }
+.step-bar { height: 8px; margin-top: 10px; border-radius: var(--r-sm); background: var(--border); overflow: hidden; }
 .step-bar > div { height: 100%; width: 0; background: var(--warn); transition: width 1.4s linear; }
 .step-bar.moving > div { background-image: repeating-linear-gradient(45deg, rgba(255,255,255,.35) 0 6px, transparent 6px 12px);
-  background-size: 17px 17px; animation: step-stripes .6s linear infinite; }
+  background-size: 17px 17px; animation: step-stripes .6s linear 8; }
 /* no size known: a stretch that sweeps across */
-.step-bar.unknown > div { width: 30% !important; animation: step-sweep 1.4s ease-in-out infinite; transition: none; }
+.step-bar.unknown > div { width: 30% !important; animation: step-sweep 1.4s ease-in-out 3; transition: none; }
 .step.done .step-bar > div { background: var(--ok); width: 100% !important; animation: none; }
 .step.failed .step-bar > div { background: var(--err); animation: none; }
 .step-figures { font-size: var(--fs-12); margin-top: 6px; font-family: var(--mono); color: var(--text); min-height: 1.2em; line-height: var(--lh-18);}
@@ -129,13 +129,9 @@
 @keyframes step-flow { from { background-position: 0 0; } to { background-position: 12px 0; } }
 @keyframes step-stripes { from { background-position: 0 0; } to { background-position: 17px 0; } }
 @keyframes step-sweep { 0% { transform: translateX(-100%); } 100% { transform: translateX(340%); } }
-@media (prefers-reduced-motion: reduce) {
-  .step.active .step-mark, .step-wire.flowing, .step-bar.moving > div, .step-bar.unknown > div, .step.done .step-mark { animation: none; }
-  .step-bar > div { transition: none; }
-}
-@media (max-width: 640px) {
+@media (max-width: 767.98px) {
   .steps { flex-direction: column; }
-  .step-wire { flex: 0 0 18px; width: 2px; height: auto; align-self: flex-start; margin-left: 22px; }
+  .step-wire { flex: 0 0 18px; width: 2px; height: auto; align-self: flex-start; margin-left: 24px; }
   .step-wire.flowing { background: repeating-linear-gradient(180deg, var(--warn) 0 6px, transparent 6px 12px);
     background-size: 2px 24px; animation-name: step-flow-down; }
   @keyframes step-flow-down { from { background-position: 0 0; } to { background-position: 0 12px; } }
@@ -246,6 +242,11 @@
     const ended = ["success", "failed", "interrupted", "stopped"].includes(status);
     const current = status === "success" ? ids.length : Math.max(0, ids.indexOf(progress.step));
     const cards = [...box.querySelectorAll(".step")], wires = [...box.querySelectorAll(".step-wire")];
+    // a new step: the runner and the step's marks move again for 5 s (D3: the motion says that something changed)
+    if (box.dataset.step !== String(current)) {
+      box.dataset.step = String(current);
+      requestAnimationFrame(() => { window.omniaReplay(box); window.omniaReplay(document.getElementById("job-state")); });
+    }
     const now = Date.now();
     cards.forEach((card, i) => {
       const state = i < current ? "done" : i > current ? "" : ended ? "failed" : "active";

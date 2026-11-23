@@ -14,9 +14,9 @@
     <p class="muted" id="from-link-sub" style="margin-top: 0"></p>
     <label><input type="radio" name="backup" value="" checked> {{ _("A new backup there, now") }}</label>
     {% for f in backup_fields if f.kind == "checkbox" %}
-    <label style="display: block; margin-left: 22px" title="{{ tr(f.help) }}"><input type="checkbox" data-backup-option="{{ f.key }}" {{ "checked" if f.default }}> {{ tr(f.label) | lower }}</label>
+    <label style="display: block; margin-left: 24px" title="{{ tr(f.help) }}"><input type="checkbox" data-backup-option="{{ f.key }}" {{ "checked" if f.default }}> {{ tr(f.label) | lower }}</label>
     {% endfor %}
-    <div id="from-link-room" style="margin-left: 22px"></div>
+    <div id="from-link-room" style="margin-left: 24px"></div>
     <div id="from-link-backups" class="scroll" style="max-height: 35vh; margin: 6px 0"></div>
     <div id="from-link-options">
       {% for f in restore_fields %}

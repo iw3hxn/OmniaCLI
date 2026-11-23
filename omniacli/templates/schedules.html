@@ -143,7 +143,7 @@
 {% for t in targets.values() %}{% for f in (t.backup_fields or []) + (t.restore_fields or []) %}
 {% for text in [f.label, f.help, f.placeholder] if text %}{% if field_texts.d.update({text: tr(text)}) %}{% endif %}{% endfor %}
 {% endfor %}{% endfor %}
-<style>#form .field-help { font-size: var(--fs-14); margin-top: 3px; line-height: var(--lh-20);} #form h3 { font-size: var(--fs-14); margin: 18px 0 6px; line-height: var(--lh-20);}</style>
+<style>#form .field-help { font-size: var(--fs-14); margin-top: 4px; line-height: var(--lh-20);} #form h3 { font-size: var(--fs-14); margin: 20px 0 6px; line-height: var(--lh-20);}</style>
 <script>
 (function () {
   const SCHEDULES = {{ schedules | map(attribute="data") | list | tojson }};

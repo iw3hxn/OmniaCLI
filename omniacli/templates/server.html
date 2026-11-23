@@ -28,9 +28,9 @@
 <style>
 /* an instance's page (docs/ux/UX-001, UX-003/004): one copy at a time, one
    primary action for its state, the rest in More, the details in tabs */
-.inst-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px 20px; flex-wrap: wrap; margin-bottom: 14px; }
+.inst-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px 20px; flex-wrap: wrap; margin-bottom: 16px; }
 .inst-top h1 { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 6px; }
-.facts { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: center; color: var(--muted); font-size: var(--fs-14); line-height: var(--lh-20);}
+.facts { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; color: var(--muted); font-size: var(--fs-14); line-height: var(--lh-20);}
 .facts a { color: inherit; }
 .facts .mono { font-size: var(--fs-14); line-height: var(--lh-20);}
 .head-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
@@ -40,7 +40,7 @@
 .state-dot.running::before { background: var(--ok); } .state-dot.stopped::before { background: var(--err); }
 .state-dot.busy::before { background: var(--warn); }
 .badge.test-badge { color: var(--test); background: var(--panel-2); }
-.job-band { display: flex; align-items: center; gap: 10px; margin: 0 0 14px; padding: 10px 14px; border-radius: var(--r);
+.job-band { display: flex; align-items: center; gap: 10px; margin: 0 0 16px; padding: 10px 12px; border-radius: var(--r);
   border: 1px solid var(--border); background: var(--warn-soft); color: var(--text); }
 .more-menu { position: relative; }
 .more-menu > summary { list-style: none; color: var(--text); }
@@ -56,15 +56,15 @@
 .more-title.danger-title { color: var(--err); border-top: 1px solid var(--border); margin-top: 6px; padding-top: 10px; }
 .copies td, .copies th, .last-jobs td, .last-jobs th { vertical-align: middle; }
 .copies .when, .last-jobs .when { white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--muted); }
-.note-box { border-left: 3px solid var(--info); background: var(--info-soft); padding: 10px 14px; border-radius: var(--r); margin: 0 0 14px; }
+.note-box { border-left: var(--bw-4) solid var(--info); background: var(--info-soft); padding: 10px 12px; border-radius: var(--r); margin: 0 0 16px; }
 .last-action { color: var(--muted); margin: 4px 0 0; }
 .last-action .status::before { display: none; }
 .row-open { text-align: right; white-space: nowrap; }
-.repo-state .ok-text { color: var(--ok); } .repo-state .warn-text { color: var(--warn); font-weight: 600; }
-.button.small { padding: 3px 10px; font-size: var(--fs-14); line-height: var(--lh-20);}
+.repo-state .ok-text { color: var(--ok); } .repo-state .warn-text { color: var(--warn); font-weight: var(--fw-semibold); }
+.button.small { padding: 4px 10px; font-size: var(--fs-14); line-height: var(--lh-20);}
 .section-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 8px; }
 .section-head h2 { margin: 0; }
-@media (max-width: 700px) {
+@media (max-width: 767.98px) {
   .hide-sm { display: none; }
   .more-menu[open] { flex-basis: 100%; }
   .more-items { position: static; width: 100%; max-width: none; margin-top: 6px; box-shadow: var(--shadow); }
@@ -79,7 +79,7 @@ dialog.sd { --dialog-w: 560px; }
 .sd-help { font-size: var(--fs-14); line-height: var(--lh-20);}
 .sd-server { display: inline-flex; gap: 6px; align-items: center; margin: 0 16px 4px 0; }
 .sd-choice { display: flex; gap: 8px; align-items: flex-start; margin: 0 0 10px; cursor: pointer; }
-.sd-choice input { margin-top: 3px; }
+.sd-choice input { margin-top: 4px; }
 .sd select { width: 100%; }
 .sd-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 /* Addresses… of an environment (UX-008 §6.1) */
@@ -511,7 +511,7 @@ dialog.sd { --dialog-w: 560px; }
     <p class="muted" id="mm-reading">{{ _("Reading…") }}</p>
     {# the message as it was, without its scripts: no allow-scripts, no allow-same-origin #}
     <iframe id="mm-body" sandbox="" referrerpolicy="no-referrer" title="{{ _('The message as it was') }}"
-            style="width: 100%; height: 55vh; border: 1px solid var(--border); border-radius: var(--r); background: #fff"></iframe>
+            style="width: 100%; height: 55vh; border: 1px solid var(--border); border-radius: var(--r); background: var(--paper)"></iframe>
     <p id="mm-files" hidden><strong>{{ _("Attachments:") }}</strong> <span></span></p>
     <p class="error" id="mm-error" role="alert"></p>
     <div class="actions">
@@ -645,7 +645,7 @@ dialog.sd { --dialog-w: 560px; }
 .ab-row input[type="number"] { width: 70px; }
 .backup-auto p { margin: 4px 0 0; font-size: var(--fs-14); line-height: var(--lh-20);}
 .remote-list { margin-top: 16px; } .remote-list .rl-body { margin-top: 8px; }
-.pitr { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 12px; }
+.pitr { margin-top: 20px; border-top: 1px solid var(--border); padding-top: 12px; }
 .pitr h3 { margin: 0 0 6px; font-size: var(--fs-16); line-height: var(--lh-24);}
 .pitr-details { margin-top: 8px; } .pitr-details summary { font-size: var(--fs-14); line-height: var(--lh-20);}
 </style>
@@ -701,7 +701,7 @@ dialog.sd { --dialog-w: 560px; }
 .db-facts { font-size: var(--fs-14); line-height: var(--lh-20);}
 .db-causes { margin: 0 0 12px; padding-left: 20px; }
 .tile-sub { color: var(--muted); font-size: var(--fs-12); margin-top: 2px; line-height: var(--lh-18);}
-.db-details { margin-top: 14px; } .db-details > summary { font-weight: var(--fw-semibold); }
+.db-details { margin-top: 16px; } .db-details > summary { font-weight: var(--fw-semibold); }
 .db-details h3, .db-slow h3 { margin: 16px 0 6px; font-size: var(--fs-16); line-height: var(--lh-24);}
 .db-where { display: grid; grid-template-columns: minmax(120px, max-content) 1fr; gap: 6px 16px; margin: 10px 0 0; }
 .db-where dt { font-weight: var(--fw-semibold); } .db-where dd { margin: 0; }
@@ -887,12 +887,12 @@ dialog.sd { --dialog-w: 560px; }
 #au-fields label { display: block; font-size: var(--fs-14); font-weight: var(--fw-semibold); margin: 10px 0 4px; line-height: var(--lh-20);}
 .addons-from { display: flex; gap: 16px; margin: 10px 0; font-size: var(--fs-14); line-height: var(--lh-20);} .addons-from input { width: auto; }
 #addons-github { margin-top: 8px; } #addons-github .addons-fields label { margin-bottom: 4px; }
-.ag-list { list-style: none; margin: 8px 0 0; padding: 0; max-height: 320px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; }
+.ag-list { list-style: none; margin: 8px 0 0; padding: 0; max-height: 320px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--r); }
 .ag-list li + li { border-top: 1px solid var(--border); }
 .ag-list button { display: flex; gap: 10px; align-items: center; width: 100%; text-align: left; background: none; border: 0; border-radius: 0; padding: 8px 10px; }
 .ag-list button:hover, .ag-list button:focus-visible { background: var(--panel-2); }
 .ag-list .ag-branch { margin-left: auto; color: var(--muted); font-size: var(--fs-12); line-height: var(--lh-18);}
-@media (max-width: 700px) { .addons-fields { grid-template-columns: 1fr; } }
+@media (max-width: 767.98px) { .addons-fields { grid-template-columns: 1fr; } }
 </style>
 {% endif %}
 <section class="tab-panel panel" data-panel="modules" data-section="updates" hidden>
@@ -988,11 +988,11 @@ dialog.sd { --dialog-w: 560px; }
 .sum-grid .sum-repo { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; width: 100%; }
 .sum-grid .sum-subject { color: var(--muted); font-size: var(--fs-14); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40ch; line-height: var(--lh-20);}
 .sum-grid form { display: inline; margin: 0; }
-@media (max-width: 640px) { .sum-grid { grid-template-columns: 1fr; } }
+@media (max-width: 767.98px) { .sum-grid { grid-template-columns: 1fr; } }
 .shell-paths summary { cursor: pointer; font-weight: var(--fw-semibold); display: inline-flex; gap: 6px; align-items: center; }
 .set-grid { display: grid; grid-template-columns: minmax(170px, max-content) 1fr; gap: 8px 20px; margin: 0 0 12px; }
 .set-grid dt { font-weight: var(--fw-semibold); } .set-grid dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
-@media (max-width: 640px) { .set-grid { grid-template-columns: 1fr; } }
+@media (max-width: 767.98px) { .set-grid { grid-template-columns: 1fr; } }
 .tech-details { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
 .tech-details > summary { font-weight: var(--fw-semibold); color: var(--text); } .tech-details > dl { margin-top: 10px; }
 .tech-details .shell-paths { margin-top: 12px; }
@@ -1001,7 +1001,7 @@ dialog.sd { --dialog-w: 560px; }
 .shell-paths dl { display: grid; grid-template-columns: minmax(140px, max-content) 1fr; gap: 8px 16px; margin: 12px 0 0; }
 .shell-paths dd { margin: 0; min-width: 0; }
 .shell-paths .sp-cmd { margin: 0; font-size: var(--fs-14); white-space: pre-wrap; overflow-wrap: anywhere; line-height: var(--lh-20);}
-@media (max-width: 640px) { .shell-paths dl { grid-template-columns: 1fr; } }
+@media (max-width: 767.98px) { .shell-paths dl { grid-template-columns: 1fr; } }
 .oc-all { display: inline-flex; gap: 6px; align-items: center; font-size: var(--fs-14); line-height: var(--lh-20);}
 .oc-table tr.op-locked .oc-name, .oc-table tr.op-locked .oc-help { opacity: .6; }
 </style>
@@ -1031,7 +1031,7 @@ dialog.sd { --dialog-w: 560px; }
   </table></div>
   {# the other options its Odoo knows: the ones already set always, all of them with the switch #}
   <div id="op-ext" hidden>
-    <p class="muted" style="font-size: var(--fs-14); margin-top: 14px; line-height: var(--lh-20);" id="op-ext-note">{{ _("The other options its Odoo knows: an empty one keeps Odoo's default. The greyed ones are set by the template or the server.") }}</p>
+    <p class="muted" style="font-size: var(--fs-14); margin-top: 16px; line-height: var(--lh-20);" id="op-ext-note">{{ _("The other options its Odoo knows: an empty one keeps Odoo's default. The greyed ones are set by the template or the server.") }}</p>
     <p class="muted" id="op-ext-state"></p>
     <div class="scroll"><table class="oc-table" id="op-ext-table" hidden>
       <tr><th>{{ _("Option") }}</th><th>{{ _("Value") }}</th></tr>
@@ -3213,7 +3213,7 @@ dialog.sd { --dialog-w: 560px; }
     $("#mm-date").textContent = whenText(m.date);
     // the HTML as it was, in a frame without scripts; a text alone as text
     const pre = document.createElement("pre");
-    pre.style.cssText = "white-space: pre-wrap; font: 13px/1.5 ui-monospace, monospace; margin: 12px";
+    pre.style.cssText = "white-space: pre-wrap; font: var(--fs-14)/var(--lh-20) var(--mono); margin: 12px";
     pre.textContent = m.text || M.noText;
     $("#mm-body").srcdoc = m.html || pre.outerHTML;
     const files = m.attachments || [];

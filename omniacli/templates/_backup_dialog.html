@@ -26,7 +26,7 @@
     <p class="muted" id="backup-sub" style="margin-top: 0"></p>
     <input type="hidden" name="remember" value="1">
     {% for f in backup_fields %}
-    <div {% if f.shown_with %}data-shown-with="{{ f.shown_with }}" style="margin-left: 22px"{% endif %}>
+    <div {% if f.shown_with %}data-shown-with="{{ f.shown_with }}" style="margin-left: 24px"{% endif %}>
     {% if f.kind == "checkbox" %}
     <label style="display: block; margin-top: 6px"><input type="checkbox" name="{{ f.key }}" data-default="{{ 1 if f.default else 0 }}" {{ "checked" if f.default }}> {{ tr(f.label) }}</label>
     {% elif f.kind == "checklist" %}
@@ -37,7 +37,7 @@
     {% else %}
     <label style="display: block; margin-top: 6px">{{ tr(f.label) }} <input type="{{ 'number' if f.kind == 'number' else 'text' }}" {% if f.kind == "number" %}min="0" step="any" style="width: 7em"{% endif %} name="{{ f.key }}" data-default="{{ f.default if f.default is not none else '' }}" value="{{ f.default if f.default is not none else '' }}" placeholder="{{ tr(f.placeholder) }}"></label>
     {% endif %}
-    {% if f.help %}<p class="muted" style="margin: 2px 0 0 22px; font-size: var(--fs-14); line-height: var(--lh-20);">{{ tr(f.help) }}</p>{% endif %}
+    {% if f.help %}<p class="muted" style="margin: 2px 0 0 24px; font-size: var(--fs-14); line-height: var(--lh-20);">{{ tr(f.help) }}</p>{% endif %}
     </div>
     {% endfor %}
     <div id="backup-room"></div>

@@ -87,7 +87,7 @@
 .pg-detail dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0 0 10px; }
 .pg-detail dt { font-weight: var(--fw-semibold); } .pg-detail dd { margin: 0; }
 .pg-params { width: 100%; margin: 6px 0; }
-.pg-params td, .pg-params th { padding: 5px 8px; border-top: 1px solid var(--border); }
+.pg-params td, .pg-params th { padding: 4px 8px; border-top: 1px solid var(--border); }
 .pg-params tr.pg-group td { font-weight: var(--fw-semibold); font-size: var(--fs-14); background: var(--panel-2); line-height: var(--lh-20);}
 .pg-params tr.pg-change td { font-weight: var(--fw-semibold); }
 .pg-params input[type="text"] { width: 9em; }
@@ -99,15 +99,15 @@
 #pg-dialog .pg-when label { display: block; margin: 4px 0; }
 #pg-dialog .pg-when input[type="time"] { width: 7em; }
 .pg-warn { color: var(--warn); font-weight: var(--fw-semibold); }
-.pg-archive-lines > div { margin-bottom: 3px; }
+.pg-archive-lines > div { margin-bottom: 4px; }
 #pg-archive { --dialog-w: 680px; }
 #pg-archive p.pga-note, #pg-replica-dialog p.pga-note { margin: 0 0 8px; font-size: var(--fs-14); line-height: var(--lh-20);}
 #pg-replica-dialog, #pg-to-dialog { --dialog-w: 680px; }
-#pg-to-dialog fieldset { border: 1px solid var(--border); border-radius: 6px; margin: 8px 0; padding: 6px 10px; min-width: 0; }
+#pg-to-dialog fieldset { border: 1px solid var(--border); border-radius: var(--r); margin: 8px 0; padding: 6px 10px; min-width: 0; }
 #pg-to-dialog legend { font-weight: var(--fw-semibold); padding: 0 4px; }
 .pgt-target { display: flex; gap: 8px; align-items: flex-start; padding: 6px 0; border-top: 1px solid var(--border); cursor: pointer; }
 .pgt-target:first-child { border-top: none; }
-.pgt-target input { margin-top: 3px; flex: none; }
+.pgt-target input { margin-top: 4px; flex: none; }
 .pgt-target .pg-sub { display: block; font-weight: var(--fw-regular); color: var(--muted); font-size: var(--fs-14); margin-top: 2px; overflow-wrap: anywhere; line-height: var(--lh-20);}
 .pgt-target.off { color: var(--muted); cursor: default; }
 .pgt-target .pgt-why { display: block; color: var(--err); font-size: var(--fs-14); margin-top: 2px; overflow-wrap: anywhere; line-height: var(--lh-20);}

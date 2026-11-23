@@ -248,7 +248,7 @@
       <div>
         <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center">
           <img id="brand-logo-now" alt="{{ _('The logo now') }}" src="{{ prefix ~ brand.logo if brand.logo else '/icon-180.png' }}"
-               style="width: 34px; height: 34px; object-fit: contain; border-radius: 6px; background: var(--side-bg)">
+               style="width: 34px; height: 34px; object-fit: contain; border-radius: var(--r); background: var(--side-bg)">
           <input type="file" id="brand-logo" accept="image/png,image/svg+xml,.png,.svg" style="width: auto; max-width: 100%"
                  title="{{ _('A PNG or an SVG of at most 256 kB, square looks best; an SVG without scripts or outside references') }}">
           <button type="button" id="brand-logo-send" title="{{ _('Puts the chosen file as the logo of the panel at once, for every page') }}">{{ _("Use this logo") }}</button>

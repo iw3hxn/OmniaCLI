@@ -6,11 +6,11 @@
 {% endblock %}
 {% block content %}
 <style>
-.ent-form { display: grid; grid-template-columns: minmax(120px, max-content) minmax(0, 1fr); gap: 10px 14px; align-items: center; max-width: 760px; }
+.ent-form { display: grid; grid-template-columns: minmax(120px, max-content) minmax(0, 1fr); gap: 10px 12px; align-items: center; max-width: 760px; }
 .ent-form .help { grid-column: 2; margin: -4px 0 2px; font-size: var(--fs-14); line-height: var(--lh-20);}
 .ent-key { word-break: break-all; white-space: pre-wrap; }
 .ent-result { font-size: var(--fs-14); line-height: var(--lh-20);}
-@media (max-width: 640px) { .ent-form { grid-template-columns: 1fr; } .ent-form .help { grid-column: 1; } }
+@media (max-width: 767.98px) { .ent-form { grid-template-columns: 1fr; } .ent-form .help { grid-column: 1; } }
 </style>
 <div class="page-head">
   <div><h1>{{ _("Odoo Enterprise") }}</h1>
@@ -31,7 +31,7 @@
     <label for="ent-token" data-https>{{ _("Token") }}</label>
     <input type="password" id="ent-token" class="mono" data-https placeholder="{{ _('set: empty keeps it') if source and source.token_set else '' }}">
   </form>
-  <div id="ent-ssh" style="margin-top: 14px">
+  <div id="ent-ssh" style="margin-top: 16px">
     <h3 style="margin: 0 0 6px">{{ _("The SSH key of this machine for Odoo Enterprise") }}</h3>
     {% if public_key %}
     <pre class="copyable mono ent-key" id="ent-key">{{ public_key }}</pre>

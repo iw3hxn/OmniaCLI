@@ -97,7 +97,7 @@
 <style>
 /* «Environments and deploys» (UX-015): the left column ~280 px, the strip of cards ~240 px each */
 .env-rows { display: flex; flex-direction: column; }
-.env-row { display: flex; gap: 14px; padding: 12px 0; border-top: 1px solid var(--border); min-height: 128px; align-items: stretch; }
+.env-row { display: flex; gap: 12px; padding: 12px 0; border-top: 1px solid var(--border); min-height: 128px; align-items: stretch; }
 .env-row:first-child { border-top: 0; }
 /* a row without cards (a user's: UX-015 §12) keeps no room for them */
 .env-row:not(:has(.env-strip)) { min-height: 0; }
@@ -132,12 +132,12 @@
 .deploy-card .dc-action .env-actions { margin-top: 0; }
 .badge.neutral { color: var(--muted); background: var(--panel-2); }
 .badge.err { color: var(--err); background: var(--err-soft); }
-.deploy-card.skeleton span { display: block; height: 12px; border-radius: 6px; background: var(--panel-2); }
+.deploy-card.skeleton span { display: block; height: 12px; border-radius: var(--r); background: var(--panel-2); }
 .deploy-card.skeleton span:first-child { width: 80%; } .deploy-card.skeleton span:nth-child(2) { width: 55%; }
 .deploy-card.skeleton span:nth-child(3) { width: 35%; margin-top: auto; }
 .env-filter { margin: 0 0 8px; } .env-filter input { width: min(360px, 100%); }
-@media (max-width: 1279px) { .deploy-card { flex-basis: 220px; width: 220px; } }
-@media (max-width: 700px) {
+@media (max-width: 1199.98px) { .deploy-card { flex-basis: 220px; width: 220px; } }
+@media (max-width: 767.98px) {
   .env-row { flex-direction: column; gap: 8px; min-height: 0; }
   .env-left { flex-basis: auto; }
   .env-strip { flex-direction: column; }

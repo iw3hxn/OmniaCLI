@@ -203,12 +203,12 @@
 .ws-rows .ws-warn { color: var(--warn); } .ws-rows .ws-err { color: var(--err); } .ws-rows .ws-ok { color: var(--ok); }
 .ws-rows .ws-dim > td { opacity: .6; }
 .ws-machine-row td { color: var(--warn); } .ws-machine-row.older td { color: var(--info); }
-.ws-skel td div { height: 14px; border-radius: 4px; background: var(--panel-2); }
+.ws-skel td div { height: 14px; border-radius: var(--r-sm); background: var(--panel-2); }
 .ws-more > td { background: var(--panel-2); padding: 12px 16px 16px; }
 .ws-watch { list-style: none; margin: 0 0 12px; padding: 0; }
-.ws-watch li { padding: 3px 0; }
+.ws-watch li { padding: 4px 0; }
 .ws-blocks { display: grid; grid-template-columns: 1fr; gap: 12px; }
-@media (min-width: 1100px) { .ws-blocks { grid-template-columns: repeat(var(--ws-cols, 3), minmax(0, 1fr)); }
+@media (min-width: 1200px) { .ws-blocks { grid-template-columns: repeat(var(--ws-cols, 3), minmax(0, 1fr)); }
   /* machines, instances, users: the instances' rows carry a state, a name, pills and a button */
   .ws-blocks[style*="--ws-cols: 3"] { grid-template-columns: minmax(0, .8fr) minmax(0, 1.7fr) minmax(0, 1fr); } }
 .ws-block { background: var(--panel); border: 1px solid var(--border); border-radius: var(--r); padding: 10px 12px; min-width: 0; }
@@ -216,7 +216,7 @@
 .ws-block ul { list-style: none; margin: 0; padding: 0; }
 .ws-block li { padding: 4px 0; border-top: 1px solid var(--border); display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
 .ws-block li:first-child { border-top: 0; }
-.ws-block li.ws-staging { padding-left: 18px; }
+.ws-block li.ws-staging { padding-left: 16px; }
 .ws-block .ws-acts { margin-left: auto; display: inline-flex; gap: 6px; }
 .ws-users td { padding: 4px 6px; } .ws-users td:first-child { white-space: nowrap; }
 .ws-use, .ws-open-ws { margin: 10px 0 0; }
@@ -224,7 +224,7 @@
 .ws-foot > details > summary { font-weight: var(--fw-semibold); }
 .ws-foot .ws-fold { margin-top: 8px; }
 .ws-where label { display: flex; gap: 8px; align-items: baseline; padding: 6px 0; }
-@media (max-width: 700px) {
+@media (max-width: 767.98px) {
   .ws-rows thead { display: none; }
   .ws-rows, .ws-rows tbody { display: block; }
   .ws-rows tbody.ws-item > tr.ws-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 8px 4px; height: auto;

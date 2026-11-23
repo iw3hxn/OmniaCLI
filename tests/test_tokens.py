@@ -217,7 +217,7 @@ def _css_rules():
             yield page.name, "", body
 
 
-SVG_TEXT = re.compile(r"map-canvas|map-flow|chart-axis|chart-capacity|chart-empty|svg\b|\btext\b|tspan|spark")
+SVG_TEXT = re.compile(r"map-canvas|map-flow|chart-axis|chart-capacity|chart-empty|svg\b|(?:^|[\s>+~,])(?:text|tspan)(?![\w-])|svg\.spark")
 
 
 def test_the_type_scale():
@@ -237,6 +237,40 @@ def test_the_type_scale():
             if not re.fullmatch(r"var\(--lh-(18|20|24|28|32)\)|0|1|normal|inherit", value.strip()):
                 wrong.append(f"{name} {selector[-40:]} line-height {value}")
     assert not wrong, wrong[:20]
+
+
+def test_the_closed_scales():
+    """UX-017 §2.6-2.9 and A9: no colour written in a template but in the tokens (and the marks of github and python);
+    spaces on the scale (no 3, 5, 7, 9, 11, 13, 14, 18, 22, 26, 28, 30 px), radii only the tokens, 0 and 50%; the
+    durations of a transition the tokens' (the job's progress, a datum, excepted); no loop without end (5 s at
+    most, then still); the media queries on the four breakpoints; one rule for less motion."""
+    wrong = []
+    off_scale = {"3", "5", "7", "9", "11", "13", "14", "18", "22", "26", "28", "30"}
+    breakpoints = {"576px", "768px", "992px", "1200px", "575.98px", "767.98px", "991.98px", "1199.98px"}
+    for name, selector, body in _css_rules():
+        if re.search(r"(?<![&\w])#[0-9A-Fa-f]{3,8}\b", body) and not (name == "_icons.html"):
+            wrong.append(f"{name} {selector[-40:]}: a colour")
+        for prop, value in re.findall(r"(?<![\w-])((?:padding|margin|gap|row-gap|column-gap|inset)(?:-[a-z-]+)?)\s*:\s*([^;\"}]+)", body):
+            if set(re.findall(r"(?<![\w.-])(\d+)px", value)) & off_scale:
+                wrong.append(f"{name} {selector[-40:]}: {prop} {value}")
+        for value in re.findall(r"(?<![\w-])border(?:-[a-z]+)*-radius\s*:\s*([^;\"}]+)", body):
+            if not all(re.fullmatch(r"var\(--r(?:-sm|-lg|-pill)?\)|0|50%|inherit", p) for p in value.split()):
+                wrong.append(f"{name} {selector[-40:]}: radius {value}")
+        for value in re.findall(r"(?<![\w-])transition(?:-duration)?\s*:\s*([^;\"}]+)", body):
+            if re.search(r"(?<![\w-])[\d.]+m?s\b", value) and "1.4s linear" not in value:
+                wrong.append(f"{name} {selector[-40:]}: transition {value}")
+        if re.search(r"(?<![\w-])animation(?:-iteration-count)?\s*:[^;\"}]*\binfinite\b", body):
+            wrong.append(f"{name} {selector[-40:]}: a loop without end")
+    for page in TEMPLATES.glob("*.html"):
+        text = page.read_text(encoding="utf-8")
+        for query in re.findall(r"@media\s*([^{]+)\{", text):
+            for width in re.findall(r"(?:min|max)-width\s*:\s*([\d.]+px)", query):
+                if width not in breakpoints:
+                    wrong.append(f"{page.name}: @media {query.strip()}")
+        if page.name != "_tokens.html":
+            assert "@media (prefers-reduced-motion" not in text, page.name
+    assert not wrong, wrong[:20]
+    assert TOKENS.count("@media (prefers-reduced-motion: reduce)") == 1
 
 
 async def test_the_header_on_a_phone_leaves_nothing_out(client):  # noqa: F811

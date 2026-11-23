@@ -18,7 +18,7 @@
 .users-table td { vertical-align: middle; }
 .users-table .small-note { display: block; font-size: var(--fs-14); color: var(--muted); line-height: var(--lh-20);}
 #item-dialog, #secret-dialog, #invite-dialog { --dialog-w: 560px; }
-#item-dialog .field-help { display: block; font-size: var(--fs-14); margin-top: 3px; line-height: var(--lh-20);}
+#item-dialog .field-help { display: block; font-size: var(--fs-14); margin-top: 4px; line-height: var(--lh-20);}
 #item-dialog .label { color: var(--muted); }
 .id-ways { display: flex; flex-wrap: wrap; gap: 6px 20px; }
 .id-ways label { display: inline-flex; gap: 6px; align-items: center; color: var(--text); }
@@ -134,7 +134,7 @@
     {% endfor %}
   </table>
   </div>
-  <h3 style="margin: 18px 0 6px" id="oauth">{{ _("Connected with OAuth") }} ({{ grants | length }})</h3>
+  <h3 style="margin: 20px 0 6px" id="oauth">{{ _("Connected with OAuth") }} ({{ grants | length }})</h3>
   <p class="muted" style="margin: 0 0 10px">{{ _("claude.ai, ChatGPT and the other assistants that log in with OAuth need no token: the person logs in and chooses what each may do. They are listed here, every person's.") }}</p>
   {{ grants_table(grants) }}
 </section>

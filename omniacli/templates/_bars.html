@@ -14,9 +14,9 @@
 {%- endmacro %}
 {% if _ is defined %}
 <style>
-.load-bars { display: grid; grid-template-columns: max-content 1fr max-content; gap: 8px 14px; align-items: center; font-size: var(--fs-14); line-height: var(--lh-20);}
-.load-bars .bar { height: 10px; border-radius: 99px; background: var(--panel-2); overflow: hidden; border: 1px solid var(--border); }
-.load-bars .bar i { display: block; height: 100%; width: 0; background: var(--ok); border-radius: 99px; transition: width .4s; }
+.load-bars { display: grid; grid-template-columns: max-content 1fr max-content; gap: 8px 12px; align-items: center; font-size: var(--fs-14); line-height: var(--lh-20);}
+.load-bars .bar { height: 10px; border-radius: var(--r-pill); background: var(--panel-2); overflow: hidden; border: 1px solid var(--border); }
+.load-bars .bar i { display: block; height: 100%; width: 0; background: var(--ok); border-radius: var(--r-pill); transition: width var(--dur-400) var(--ease-out); }
 .load-bars .bar i.warn { background: var(--warn); } .load-bars .bar i.error { background: var(--err); }
 .load-bars .bar-value { font-variant-numeric: tabular-nums; white-space: nowrap; }
 </style>
