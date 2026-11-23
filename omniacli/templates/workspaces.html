@@ -415,10 +415,8 @@
   // a request that did not reach the panel (the browser says it in its own language): said in the page's
   const whyOf = (e) => e instanceof TypeError ? T.noAnswer.replace(/\.$/, "") : String(e && e.message || e);
   const GB = 1073741824;
-  const two = (n) => String(n).padStart(2, "0");
-  // this browser's now as whenText reads it; a day (2026-11-23) as people write it
-  const nowIso = () => { const d = new Date(); return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}T${two(d.getHours())}:${two(d.getMinutes())}`; };
-  const dayText = (day) => /^\d{4}-\d{2}-\d{2}/.test(String(day || "")) ? `${day.slice(8, 10)}/${day.slice(5, 7)}/${day.slice(0, 4)}` : String(day || "");
+  // a day (2026-11-23, the daily record of the disks: no time, no zone) as people write it
+  const dayText = (day) => { const d = /^(\d{4})-(\d{2})-(\d{2})(?![T ]\d)/.exec(String(day || "")); return d ? `${d[3]}/${d[2]}/${d[1]}` : String(day || ""); };
   const roleOf = (m) => (found[m.key] || {}).viewer_role;
 
   const params = new URLSearchParams(location.search);
@@ -487,7 +485,7 @@
     const test = (i.envs || {}).test;
     const page = href(where ? where : m, i.page);
     let label = i.name;
-    if (kind === "staging" && !i.page && i.created) label = fill(T.stagingOf, {date: whenText(i.created).slice(0, 5)});
+    if (kind === "staging" && !i.page && i.created) label = fill(T.stagingOf, {date: whenText(i.created)});
     const li = el("li", {class: kind === "staging" ? "ws-staging" : null, "data-kind": kind, "data-server": i.server || null},
       kind === "staging" ? el("span", {"aria-hidden": "true", class: "muted"}, "↳") : null,
       stateWord(prod, kind),
@@ -829,12 +827,13 @@
   function readAll() {
     return Promise.all(machines.map((m) => ask(m).then(draw)));
   }
-  readAll().then(() => { lastGood = nowIso(); });
+  // when the list was last read whole: a moment of this browser (whenText takes a Date as it is)
+  readAll().then(() => { lastGood = new Date(); });
   setInterval(() => {
     if (document.visibilityState !== "visible") return;
     const stale = document.getElementById("ws-stale");
-    readAll().then(() => { lastGood = nowIso(); stale.hidden = true; table.classList.remove("ws-dim"); })
-      .catch((e) => { stale.textContent = fill(T.staleSince, {when: whenText(lastGood).slice(11), why: whyOf(e)});
+    readAll().then(() => { lastGood = new Date(); stale.hidden = true; table.classList.remove("ws-dim"); })
+      .catch((e) => { stale.textContent = fill(T.staleSince, {when: whenText(lastGood), why: whyOf(e)});
                       stale.hidden = false; table.classList.add("ws-dim"); });
   }, 60000);
 })();
