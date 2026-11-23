@@ -7,7 +7,7 @@
 {% set level_texts = {"read": _("The state of the instances, their logs, the jobs and the backups (and download them). Nothing changes."),
                       "write": _("Also updates, restarts, backs up the tests and the stagings, and makes stagings. Never a production."),
                       "production": _("Also acts on a production, and only with the server's name given as confirmation in that very call: the assistant asks you first.")} %}
-{% block title %}{{ _("Connect an assistant") }} · OmniaCLI{% endblock %}
+{% block title %}{{ _("Connect an assistant") }} · {{ brand.name }}{% endblock %}
 {% block content %}
 <div class="page-head">
   <div>

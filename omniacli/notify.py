@@ -86,6 +86,13 @@ def said(language: str, text: str) -> str:
     return "\n".join(i18n.tr(language, line) for line in text.split("\n"))
 
 
+def branded(options: Options, text: str) -> str:
+    """An email's subject or text with the panel's name (Options › Whitelabel) for OmniaCLI's; the
+    JSON of a webhook keeps OmniaCLI's (a machine reads it)."""
+    name = getattr(options, "brand_name", "")
+    return text.replace("OmniaCLI", name) if name else text
+
+
 def payload(subject: str, text: str, event: dict | None) -> dict:
     """The JSON a webhook gets (English)."""
     event = dict(event or {})
@@ -115,7 +122,8 @@ async def send(options: Options, recipients: list[str], subject: str, text: str,
         else:
             language = language or getattr(options, "notice_language", "en") or "en"
             try:
-                await asyncio.to_thread(_send_mail, options, emails, said(language, subject), said(language, text))
+                await asyncio.to_thread(_send_mail, options, emails, branded(options, said(language, subject)),
+                                        branded(options, said(language, text)))
             except (OSError, smtplib.SMTPException) as exc:
                 problems.append(f"email to {', '.join(emails)}: {exc}")
     hooks = [r for r in recipients if not is_email(r)]

@@ -1914,6 +1914,42 @@ backups and no numbers of the monitor; the box of a workspace opens its
 page for its admins only. The firewall of the workspaces is not on the map
 yet: it cannot be read without being written.
 
+### The bell
+
+A bell in the header of every page of this machine (🔔, for a person logged
+in here, a user of workspaces too) counts the things to look at that are
+**new for that person**: the same list as the map's verdict (above), with
+the same levels (⛔ critical, ⚠ to look at). A click opens the latest eight,
+the new first, each with when it began and a link to the page where it is
+fixed (the job, the instance, Options › Monitoring, the Links page); **Mark
+as read** marks the things the dropdown was given as read for that person
+(one that came after stays new), and with nothing new it says **You are all
+caught up**, with how many things already read are still open. **All of
+them on the map** opens the map.
+
+- **Same thing, same mark.** A thing is the same while its kind, its
+  instance and its job or moment are (`bell.py`, `key_of`); its text is not
+  part of it, so reading the page in another language does not make it new.
+  A production stopped again later, another failed job, is new again; a
+  certificate checked again is the same.
+- **Each person's marks** are in `bell.json` next to the servers file (mode
+  600), only the keys still to look at (a thing fixed is forgotten); a
+  package purge takes the file away.
+- **Who reads what**: the map's route decides, so a user of workspaces sees
+  its workspaces' things only, without the names of the machine, of the
+  links and of the integrator's people; who sees the whole machine also has
+  each link's things, as the link answers its own map.
+- **Cheap**: the page is drawn without the list; the bell asks `GET
+  /api/bell` after, and again every minute while the tab is in sight. The
+  list is the map's part *now* (what the panel holds in memory: no question
+  to a machine), kept 30 seconds for each reader and, once older, answered
+  at once and put together again in the background; the run states of the
+  instances are read again in the background at most once a minute while
+  someone reads the bell. Through a linked machine's pages there is no bell:
+  those pages are the other machine's.
+- `POST /api/bell/read` `{"keys": [...]}` marks; both routes are open to the
+  users of workspaces (their own things only).
+
 ### Stagings, deploy on push, monitoring
 
 **New staging** (Environments of a production, the admins of the machine or
@@ -3372,7 +3408,9 @@ minutes.
 3. A job then prepares it: `omniacli/provision.sh` runs there as
    root, its text and its values on bash's input (never on a command line):
    - the system checked (supported, amd64 or arm64, no site of apache), its updates,
-     and the security updates every day (unattended-upgrades);
+     and the security updates every day (unattended-upgrades; once they are
+     switched on Options, **Automatic security updates of the system**, a
+     provisioning run again leaves the switch as it is);
    - nginx, certbot, Docker and its compose plugin (Debian 12 has none of
      its own: there it says so);
    - OmniaCLI from its package (by default the latest release's
@@ -3439,6 +3477,40 @@ Every add and remove is in the access log: who (and for whom, through a
 link), the key's fingerprint and type, its name, the account; the list is a
 read of security data, logged too. It needs the helpers' sudo line
 (`OMNIACLI_WORKSPACES=1`, Workspaces); without it the tab says so.
+
+### Automatic security updates of the system
+
+**Options › Automatic security updates of the system**, for the machine's
+admins (a person through a linked machine's pages too; never a machine by
+itself, never a user of workspaces): whether unattended-upgrades installs
+the security updates of the operating system every day, and when it may
+restart the machine after an update that asks it (the kernel, the C
+library): **never** (you restart it when you choose; the page says when a
+restart is waiting, and for which packages) or **by itself, at a time** of
+the machine's clock. The preparation of a machine (Machines) switches it on;
+here it is switched off and on again.
+
+- **What is read** is the machine itself, through the root helper
+  (`workspace-helper os-updates`, `osupdates.py`): every file of
+  `/etc/apt/apt.conf.d` in the order APT reads them (a later one wins;
+  comments, and files APT skips such as `.dpkg-old`, are not read), whether
+  unattended-upgrades is installed, which file decides and whether OmniaCLI
+  wrote it, `/var/run/reboot-required`, and the last run in
+  `/var/log/unattended-upgrades/unattended-upgrades.log` (when, the packages
+  it updated, nothing to update, or its error, with its last lines).
+- **What is written**, at once, by root (`workspace-helper os-updates-set
+  on|off never|HH:MM`): `20auto-upgrades` (the package lists every day, the
+  updates every day or never) with a first line saying OmniaCLI wrote it,
+  so that provisioning the machine again leaves it as it is, and
+  `52omniacli-unattended-upgrades` (the restart), after the package's
+  `50unattended-upgrades`; each through a temporary file renamed over it,
+  mode 644, never through a link. The state is read again after: a later
+  file of APT that decides otherwise (`99something` setting
+  `Unattended-Upgrade "0"`) is named and the change refused; switching it
+  on where unattended-upgrades is not installed says to install it first.
+- Every change is in the access log, with the values of before and after
+  and, through a link, for whom. It needs the helpers' sudo line
+  (`OMNIACLI_WORKSPACES=1`); without it the section says so.
 
 ### A server that already has Odoo
 
@@ -3911,6 +3983,35 @@ curl -s -X POST -H "$H" -H "Content-Type: application/json" -d '{"confirm": "acm
 ```bash
 omniacli serve -c omniacli.yaml --host 127.0.0.1 --port 8090
 ```
+
+### Whitelabel
+
+**Options › Whitelabel**, for the machine's admins: the panel under your
+name, on the panel, the customers' portal and the login and invitation
+pages. With nothing set the pages are today's exactly, byte for byte (a
+test): no style is added, the name is OmniaCLI, the logo the «O».
+
+- **Name of the panel** (at most 40 characters, one line): in the header
+  instead of Omnia**CLI**, in the title of every page, on the login page, and
+  in the emails (the subject and the text of the notices and of the
+  invitations; the JSON of a webhook keeps OmniaCLI's, a program reads it).
+  The footer keeps OmniaCLI's version and its licence (AGPL).
+- **Primary colour** (`#RRGGBB`): the buttons, the links, the marks of the
+  header. It is used as the light theme uses its red, under white text, so
+  it is **refused when white text on it is below WCAG AA (4.5:1)**: the page
+  says the ratio while it is chosen, and Save refuses it with the ratio. The
+  dark theme takes a lighter tint of it, the least that reaches 4.5:1 on
+  each of its dark backgrounds and on the header, with dark text on its
+  primary buttons (the page says which tint).
+- **Logo**: a PNG or an SVG of at most 256 kB (a PNG at most 4096 pixels on
+  each side; an SVG without scripts, event handlers, embedded documents,
+  outside references or a DOCTYPE), put at once by **Use this logo** and
+  taken away by **Take the logo away**. It is kept in `brand/` next to the
+  options (folder 700, file 600; a package purge takes it away) and served
+  at `/brand/logo` without login (the login page shows it), with a policy
+  that runs nothing of it and no type guessed.
+- Each change is in the access log. A linked machine's pages, seen through
+  its link, carry that machine's look.
 
 ### Login and security
 

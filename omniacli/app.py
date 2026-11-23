@@ -59,6 +59,7 @@ from . import stagingmail
 from . import deploys, zerodowntime
 from . import github
 from . import moduleupload, sshkeys
+from . import bell, brand, osupdates
 from . import dumpinfo
 from . import totp
 from . import capabilities
@@ -225,7 +226,20 @@ def _page_context(request: Request) -> dict:
         "version": _version(),
         # the instances operated through a relay (consumer.py), in the menu
         "puller_connections": sorted(settings.connections) if settings else [],
+        # the panel under another name (brand.py, README Whitelabel); nothing set: today's look
+        "brand": _brand_of(settings),
     }
+
+
+def _brand_of(settings) -> dict:
+    """name (OmniaCLI when none), custom (a name of its own), logo (the address of the logo, "" for the «O»),
+    css (the style for the colour, "" for none)."""
+    options = settings.options if settings else None
+    name = options.brand_name if options else ""
+    version = brand.logo_version(settings.options_file) if settings else ""
+    return {"name": name or brand.DEFAULT_NAME, "custom": bool(name),
+            "logo": f"{brand.LOGO_ROUTE}?v={version}" if version else "",
+            "css": brand.css(options.brand_color) if options else ""}
 
 
 class _TemplateLoader(jinja2.BaseLoader):
@@ -311,6 +325,8 @@ _LINK_RESPONSE_HEADERS = ("content-type", "content-disposition", "content-length
 # machine's pages and the configuration.
 WORKSPACE_ROUTES = frozenset({
     "/logout", "/account", "/api/account/password", "/api/oauth/grants/revoke", "/static/{name}", "/x/{plugin}/static/{path:path}",
+    # the bell (README, The bell): its workspaces' things to look at, as its map
+    "/api/bell", "/api/bell/read",
     # its two-step verification, and its workspace's admins' reset of a member's
     "/api/account/second-factor/start", "/api/account/second-factor/confirm",
     "/api/account/second-factor/disable", "/api/workspaces/{workspace}/members/second-factor/reset",
@@ -1668,9 +1684,20 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                             secure=request.url.scheme == "https", path="/login")
         return response
 
+    async def brand_logo(request: Request):
+        """The panel's logo (Whitelabel), without login: the login page shows it. Nothing of it runs: a
+        policy that allows no script and no fetch, its type not guessed (an SVG opened by itself too)."""
+        path = brand.logo_path(settings.options_file)
+        if path is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "No logo")
+        return FileResponse(path, media_type=brand.LOGO_TYPES[path.suffix[1:]], headers={
+            "Cache-Control": "public, max-age=300", "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox; frame-ancestors 'none'"})
+
     # Starlette routes: the app's login dependency does not apply to them
     for path in _PUBLIC_FILES:
         app.add_route(path, public_file, methods=["GET"])
+    app.add_route(brand.LOGO_ROUTE, brand_logo, methods=["GET"])
     app.add_route("/login", login, methods=["GET", "POST"])
     app.add_route("/login/code", login_step, methods=["GET", "POST"])
     app.add_route("/login/setup", login_step, methods=["GET", "POST"])
@@ -8691,7 +8718,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             web = web_copy()
             del web.users[name]
             web.roles.pop(name, None)
-            return await store_access(web) or await drop_invitations(name) or {"ok": True}
+            refused = await store_access(web) or await drop_invitations(name)
+            if refused:
+                return refused
+            # the bell's marks of who is gone (bell.py)
+            await asyncio.to_thread(bell_reads.forget, name)
+            return {"ok": True}
 
     # --- invitations: a user made without a password gets a one-time link,
     # valid INVITATION_HOURS, where the person sets its own and is logged in;
@@ -10423,6 +10455,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         payload = {**payload, "portal": {**portal, "address": current.portal_address,
                                          "staff": portal.get("staff", current.portal_staff),
                                          "second_factor": portal.get("second_factor", current.second_factor)}}
+        if not isinstance(payload.get("brand"), dict):
+            # the panel's name and colour (Whitelabel): not posted keeps the saved ones
+            payload = {**payload, "brand": {"name": current.brand_name, "color": current.brand_color}}
         try:
             options = parse_options(payload)
         except ConfigError as exc:
@@ -10437,6 +10472,41 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if options.second_factor != current.second_factor:
             access_log.record("second-factor", me.kind, me.name, request.client.host if request.client else "",
                               f"required for: {current.second_factor} -> {options.second_factor} (Options)")
+        if (options.brand_name, options.brand_color) != (current.brand_name, current.brand_color):
+            access_log.record("action", me.kind, me.name, request.client.host if request.client else "",
+                              f"whitelabel: name {current.brand_name or brand.DEFAULT_NAME!r} -> "
+                              f"{options.brand_name or brand.DEFAULT_NAME!r}, colour {current.brand_color or 'default'} -> "
+                              f"{options.brand_color or 'default'} (Options)")
+        return {"ok": True, "brand": brand.facts(options.brand_color)}
+
+    @app.post("/api/options/brand/logo", dependencies=[Depends(admin)])
+    async def brand_logo_save(request: Request, me: Principal = Depends(current_user)):
+        """The panel's logo (Whitelabel): a PNG or an SVG as the request's body, at most brand.LOGO_MAX bytes."""
+        if not machine_admin(me):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "An admin of the machine is required")
+        data = bytearray()
+        async for chunk in request.stream():
+            data += chunk
+            if len(data) > brand.LOGO_MAX:
+                return refuse(f"The logo is bigger than {brand.LOGO_MAX // 1024} kB")
+        try:
+            kind = await asyncio.to_thread(brand.save_logo, settings.options_file, bytes(data))
+        except brand.BrandRefused as exc:
+            return refuse(str(exc))
+        except OSError as exc:
+            return refuse(f"Cannot write the logo: {exc}", 500)
+        access_log.record("action", me.kind, me.name, request.client.host if request.client else "",
+                          f"whitelabel: logo set ({kind.upper()}, {len(data)} bytes) (Options)")
+        return {"ok": True, "kind": kind, "url": f"{brand.LOGO_ROUTE}?v={brand.logo_version(settings.options_file)}"}
+
+    @app.post("/api/options/brand/logo/delete", dependencies=[Depends(admin)])
+    async def brand_logo_delete(request: Request, me: Principal = Depends(current_user)):
+        """The panel's logo taken away: the OmniaSolutions «O» again."""
+        if not machine_admin(me):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "An admin of the machine is required")
+        if await asyncio.to_thread(brand.remove_logo, settings.options_file):
+            access_log.record("action", me.kind, me.name, request.client.host if request.client else "",
+                              "whitelabel: logo taken away (Options)")
         return {"ok": True}
 
     # --- the webhooks of the notices: signed, told the jobs that fail (notify.py) ---
@@ -12115,6 +12185,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     map_elsewhere: dict = {"at": None, "links": {}}
     # {link: (when it did not answer the whole map, why)}: not asked the layer of now meanwhile
     map_unanswered: dict[str, tuple[float, str]] = {}
+    # when the run states of every instance were read last (monotonic): the bell reads them again in the background
+    map_states_read: dict = {"at": None}
 
     async def map_ask(link: LinkTarget, who: str, role: str, params: dict, lang: str = ""):
         """(what link answered to GET /api/map, "") or (None, why not), within
@@ -12687,6 +12759,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     current = {inst.key for srv in settings.active_servers() for inst in srv.instances.values()}
                     for key in set(map_states) - current:
                         del map_states[key]
+                    if shown is None and only is None:
+                        map_states_read["at"] = time.monotonic()
                     mail_counts.forget(stagings.load(stagings_file))
                 data = map_here(request, me, part, only, focus_server if focus_machine == inframap.HERE else "")
                 if me.scoped and part == "all":
@@ -12750,6 +12824,90 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             used = {e["to"] for e in data["edges"]} | {e["from"] for e in data["edges"]}
             data["databases"] = [d for d in data["databases"] if d["id"] in used]
         return data
+
+    # --- the bell (bell.py; README, The bell): the things to look at of the map that are new for
+    # the person, from what the panel holds in memory (the map's part "now"), kept bell.EVERY seconds
+    bell_reads = bell.Reads(settings.servers_file.parent / bell.READ_FILE)
+    bell_cache = bell.Cache()
+    app.state.bell_cache = bell_cache
+    bell_lock = asyncio.Lock()
+    # the run states are read again in the background at most this often, while someone reads the bell
+    BELL_STATES_EVERY = 60
+
+    def bell_person(me: Principal) -> str:
+        """Whose marks: a person who logs in here by name; a person through a link, a token by kind too."""
+        if me.kind == "user":
+            return me.name
+        return f"{me.kind}:{me.name}" + (f":{me.on_behalf}" if me.on_behalf else "")
+
+    async def bell_states() -> None:
+        """The run states of every instance, as the whole map reads them: in memory for part "now"."""
+        map_states_read["at"] = time.monotonic()
+        try:
+            map_states.update(await run_states(list(settings.active_servers())))
+        except Exception:  # noqa: BLE001 - the bell keeps the states of before
+            _logger.exception("the bell did not read the run states")
+
+    async def bell_watch(request: Request, me: Principal) -> list[dict]:
+        """The map's things to look at for me (its verdict, part "now"): this
+        machine's, and for who sees the whole machine each link's as it
+        answers its own part "now" (one that did not answer the whole map is
+        not waited for)."""
+        if map_states_read["at"] is None:
+            # the first read since the start: the states once, so that a production stopped is said
+            await bell_states()
+        elif time.monotonic() - map_states_read["at"] >= BELL_STATES_EVERY:
+            map_states_read["at"] = time.monotonic()
+            map_task(bell_states())
+        data = await infrastructure_map(request, part="now", machine="", workspace="", focus="", stagings_of="", me=me)
+        return data["verdict"]["watch"]
+
+    async def bell_list(request: Request, me: Principal) -> list[dict]:
+        """The list of me, kept bell.EVERY seconds; an older one is answered at
+        once and put together again in the background."""
+        who = (me.kind, me.name, me.on_behalf, me.role, request_language(request))
+        found, fresh = bell_cache.get(who)
+        if found is not None and fresh:
+            return found
+        if found is not None:
+            bell_cache.put(who, found)  # one refresh at a time: the others read this one meanwhile
+
+            async def again():
+                async with bell_lock:
+                    bell_cache.put(who, await bell_watch(request, me))
+            map_task(again())
+            return found
+        async with bell_lock:
+            found, fresh = bell_cache.get(who)
+            if found is None:
+                found = await bell_watch(request, me)
+                bell_cache.put(who, found)
+        return found
+
+    @app.get("/api/bell")
+    async def bell_now(request: Request, me: Principal = Depends(current_user)):
+        """The bell: how many things to look at are new for me, the latest
+        with the page where each is fixed, the keys of all of them (for
+        Mark as read). A user of workspaces: its workspaces' only, as its map."""
+        watch = await bell_list(request, me)
+        found = bell.answer(watch, bell_reads.of(bell_person(me)), set(listed_links(me)))
+        found["map"] = "/instances?view=map"
+        return found
+
+    @app.post("/api/bell/read")
+    async def bell_mark(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """The keys the person saw marked as read (those the dropdown was
+        given: a thing that came after stays new); of the person's marks only
+        the keys still to look at are kept."""
+        keys = payload.get("keys")
+        if not isinstance(keys, list) or len(keys) > bell.MARK_MAX \
+                or not all(isinstance(k, str) and 0 < len(k) <= bell.KEY_MAX for k in keys):
+            return refuse(f"keys: a list of at most {bell.MARK_MAX} keys of the bell")
+        watch = await bell_list(request, me)
+        current = {bell.key_of(w) for w in watch}
+        person = bell_person(me)
+        await asyncio.to_thread(bell_reads.mark, person, [k for k in keys if k in current], current, inframap.now_text())
+        return bell.answer(watch, bell_reads.of(person), set(listed_links(me)))
 
     @app.post("/api/servers/{server}/stagings/from-backup", dependencies=[Depends(admin)])
     async def staging_from_backup(server: str, payload: dict = Body(...), me: Principal = Depends(current_user)):
@@ -13713,6 +13871,52 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         access_log.record("action", me.kind, me.name, request.client.host if request.client else "",
                           f"SSH key {found} ({done.get('type')}, {done.get('name')}) removed: it no longer opens "
                           f"{account} on this machine" + (f", for {me.on_behalf}" if me.on_behalf else ""))
+        return done
+
+    # --- the automatic security updates of the system (README; osupdates.py): unattended-upgrades on or
+    # off and its restart, written by the root helper; the machine's admins, a person through any panel too
+    def os_updates_admin(me: Principal) -> None:
+        if not machine_admin(me) or a_machine(me):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "The updates of the system are for the machine's admins")
+
+    def os_updates_refusal(text: str) -> str:
+        text = text.removeprefix("workspace-helper: ").strip()
+        if "sudo" in text and ("password" in text or "not allowed" in text):
+            return ("sudo does not let OmniaCLI run its root helper here: the updates of the system are switched "
+                    "by root (OMNIACLI_WORKSPACES=1, README, Automatic security updates of the system)")
+        return text
+
+    @app.get("/api/machine/os-updates")
+    async def os_updates_read(me: Principal = Depends(current_user)):
+        """unattended-upgrades as the machine runs it: installed, on, the restart, the last run."""
+        os_updates_admin(me)
+        try:
+            return await workspaceops.ask("os-updates")
+        except JobFailed as exc:
+            return refuse(os_updates_refusal(str(exc)), status.HTTP_502_BAD_GATEWAY)
+
+    @app.post("/api/machine/os-updates")
+    async def os_updates_save(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """{enabled, reboot: never|HH:MM}: written by the root helper; in the access log with the values of before."""
+        os_updates_admin(me)
+        enabled = payload.get("enabled")
+        if not isinstance(enabled, bool):
+            return refuse("enabled: true or false")
+        try:
+            policy = osupdates.check_policy(payload.get("reboot"))
+        except osupdates.UpdatesRefused as exc:
+            return refuse(str(exc))
+        try:
+            before = await workspaceops.ask("os-updates")
+            done = await workspaceops.ask("os-updates-set", "on" if enabled else "off", policy)
+        except JobFailed as exc:
+            return refuse(os_updates_refusal(str(exc)))
+
+        def said(found: dict) -> str:
+            return f"{'on' if found.get('enabled') else 'off'}, restart {found.get('reboot')}"
+        access_log.record("action", me.kind, me.name, request.client.host if request.client else "",
+                          f"automatic security updates of the system: {said(before)} -> {said(done)}"
+                          + (f", for {me.on_behalf}" if me.on_behalf else ""))
         return done
 
     def postgres_machine() -> dict:

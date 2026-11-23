@@ -4,7 +4,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{ _("Login") }} · OmniaCLI</title>
+<title>{{ _("Login") }} · {{ brand.name }}</title>
 <link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48 64x64">
 <link rel="apple-touch-icon" href="/icon-180.png">
 <script>
@@ -97,11 +97,20 @@ button.other:hover, a.other:hover { background: var(--panel-2); }
     flex-direction: column; justify-content: flex-start; padding: calc(min(70vw, 42vh) + 24px) 16px 24px; }
 }
 </style>
+{% if brand.css or brand.logo or brand.custom %}<style id="brand-style">{{ brand.css | safe }}
+h1 { display: flex; align-items: center; gap: 10px; min-width: 0; overflow-wrap: anywhere; }
+h1 img { width: 34px; height: 34px; border-radius: 8px; object-fit: contain; flex: none; }
+{%- if brand.custom %}
+/* the panel under another name: not OmniaCLI's picture beside the form */
+body { background-image: none; justify-content: center; }
+@media (max-width: 760px) { body { padding: 24px 16px; justify-content: flex-start; } }
+{%- endif %}</style>{% endif -%}
 </head>
 <body>
 <main class="card">
   <div class="card-top">
-    <h1>Omnia<span>CLI</span></h1>
+    {% if brand.logo or brand.custom %}<h1>{% if brand.logo %}<img src="{{ brand.logo }}" alt="">{% endif %}{% if brand.custom %}{{ brand.name }}{% else %}<span class="brand-word">Omnia<span>CLI</span></span>{% endif %}</h1>
+    {%- else %}<h1>Omnia<span>CLI</span></h1>{% endif %}
     <span class="lang-switch" role="group" aria-label="{{ _('Language') }}">
       {% set here = "/login/" ~ step if step in ("code", "setup") else "/login?next=" ~ (next | urlencode) %}
       {% for code, name in languages.items() %}<a href="/language/{{ code }}?next={{ here | urlencode }}" title="{{ name }}"

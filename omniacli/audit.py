@@ -124,6 +124,10 @@ NOT_SENSITIVE = frozenset({
     # the REST API (README, REST API): its document, and the lists of instances, jobs and deploys, as the pages'
     "/api/v1/openapi.json", "/api/v1/docs", "/api/v1/instances", "/api/v1/instances/{server}/{role}", "/api/v1/jobs",
     "/api/v1/jobs/{job_id}", "/api/v1/jobs/{job_id}/log", "/api/v1/instances/{server}/{role}/deploys",
+    # the bell (README, The bell): the map's things to look at, as /api/map says them; the panel's logo
+    # (Whitelabel), public as the icons; whether the system updates itself and its last run (no package
+    # list of the machine, no log of anybody's), the switch is an action, logged
+    "/api/bell", "/brand/logo", "/api/machine/os-updates",
 })
 
 

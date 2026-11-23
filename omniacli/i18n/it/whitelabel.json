@@ -1,0 +1,23 @@
+{
+ "A PNG or an SVG of at most 256 kB, square looks best; an SVG without scripts or outside references": "Un PNG o un SVG di al massimo 256 kB, meglio quadrato; un SVG senza script né riferimenti esterni",
+ "A colour is written #RRGGBB.": "Un colore si scrive #RRGGBB.",
+ "Choose a PNG or an SVG first.": "Scegli prima un PNG o un SVG.",
+ "Chooses the colour; the code beside it is what is saved": "Sceglie il colore; si salva il codice accanto",
+ "Logo": "Logo",
+ "Name of the panel": "Nome del pannello",
+ "Primary colour": "Colore principale",
+ "Puts the chosen file as the logo of the panel at once, for every page": "Mette subito il file scelto come logo del pannello, in ogni pagina",
+ "Take the logo away": "Togli il logo",
+ "Takes your logo away: the «O» of OmniaSolutions again": "Toglie il tuo logo: torna la «O» di OmniaSolutions",
+ "The colour of the buttons and the links, #RRGGBB; empty: the red of OmniaCLI. White text on it must reach a contrast of 4.5:1 (WCAG AA)": "Il colore dei pulsanti e dei link, #RRGGBB; vuoto: il rosso di OmniaCLI. Il testo bianco sopra deve arrivare a un contrasto di 4,5:1 (WCAG AA)",
+ "The logo is in use on every page.": "Il logo è in uso in ogni pagina.",
+ "The logo now": "Il logo di adesso",
+ "The logo of OmniaCLI is back.": "È tornato il logo di OmniaCLI.",
+ "The name shown instead of OmniaCLI, for example your company name; empty: OmniaCLI": "Il nome mostrato al posto di OmniaCLI, per esempio il nome della tua azienda; vuoto: OmniaCLI",
+ "The panel under your name: in the header, in the title of the pages and in the emails, on the panel, the customers' portal and the login page. Empty: the look of OmniaCLI.": "Il pannello con il tuo nome: nella barra in alto, nel titolo delle pagine e nelle email, sul pannello, sul portale dei clienti e nella pagina di accesso. Vuoto: l'aspetto di OmniaCLI.",
+ "The red of OmniaCLI.": "Il rosso di OmniaCLI.",
+ "Use this logo": "Usa questo logo",
+ "White text on it: {ratio}:1, below WCAG AA (4.5:1): it is refused. Choose a darker one.": "Testo bianco sopra: {ratio}:1, sotto WCAG AA (4,5:1): viene rifiutato. Scegline uno più scuro.",
+ "White text on it: {ratio}:1, enough (WCAG AA 4.5:1). In the dark theme: {dark}.": "Testo bianco sopra: {ratio}:1, sufficiente (WCAG AA 4,5:1). Nel tema scuro: {dark}.",
+ "Whitelabel": "Whitelabel"
+}

@@ -35,6 +35,7 @@
     omniacli workspace-helper machine-db-moved <workspace> <storage> <instance>   (where it is now, JSON, on the input)
     omniacli workspace-helper space
     omniacli workspace-helper ssh-keys | ssh-key-add <account> | ssh-key-remove <account> <SHA256:...>
+    omniacli workspace-helper os-updates | os-updates-set on|off never|<HH:MM>
     omniacli workspace-helper storage-setup | storage-check <storage> | storage-reset <storage>
     omniacli workspace-helper enterprise-sync <version>
     omniacli workspace-helper enterprise <workspace> <storage> <instance> on|off
@@ -135,6 +136,12 @@ shell from uid 1000, never the one OmniaCLI runs as; only the lines of
 comment) are added or taken out, the others kept as they are, in their
 place; the key checked with ssh-keygen -l first, the file written 600 for
 its account through a temporary file renamed over it, no link followed.
+
+os-updates | os-updates-set on|off never|<HH:MM>: the automatic security
+updates of the system (README; osupdates.py): unattended-upgrades as APT's
+configuration says, the restart and the last run of its log (it reads
+only); set: 20auto-upgrades and 52omniacli-unattended-upgrades written in
+/etc/apt/apt.conf.d, refused when a later file decides otherwise.
 
 firewall on|apply|off: the workspaces' containers reach the internet only.
 Their networks are /24s of one pool (workspaces.network of the main
@@ -297,7 +304,7 @@ from .composehelper import ENV, HelperError, caller
 from .config import (CERTIFICATES, DOMAIN_NAME, OMNIACLI_COMMAND, SUBDOMAIN, TEST_LABEL, WORKSPACE_NAME,
                      ConfigError, parse_storage_roots, web_names)
 from .pluginstore import SYSTEM_CONFIG
-from . import sshkeys
+from . import osupdates, sshkeys
 
 # the templates root runs: the package's (build_deb.sh), root's. sudo does
 # not pass the environment on (OMNIACLI_TEMPLATES is for the tests, as
@@ -4257,6 +4264,25 @@ def run(argv: list[str]) -> dict:
 
 # the SSH keys of the people who log in to the machine (README, SSH access; sshkeys.py)
 ACTIONS.update({"ssh-keys": (ssh_keys, 0), "ssh-key-add": (ssh_key_add, 1), "ssh-key-remove": (ssh_key_remove, 2)})
+
+
+def os_updates() -> dict:
+    """os-updates: unattended-upgrades on or off, the restart, the last run; it reads only."""
+    return osupdates.state()
+
+
+def os_updates_set(mode: str, policy: str) -> dict:
+    """os-updates-set on|off never|<HH:MM>: the switch and the restart written, the state read again."""
+    if mode not in ("on", "off"):
+        raise HelperError("os-updates-set on|off never|<HH:MM>")
+    try:
+        return osupdates.apply(mode == "on", policy)
+    except (osupdates.UpdatesRefused, OSError) as exc:
+        raise HelperError(str(exc)) from None
+
+
+# the automatic security updates of the system (README; osupdates.py)
+ACTIONS.update({"os-updates": (os_updates, 0), "os-updates-set": (os_updates_set, 2)})
 
 
 def main(argv: list[str]) -> int:

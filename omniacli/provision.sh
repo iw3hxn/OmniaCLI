@@ -81,9 +81,12 @@ main() {
         apt-get upgrade "${APT_OPTIONS[@]}"
         # rclone: the backups' remote destinations (SFTP, FTP, S3, Drive...)
         apt-get install "${APT_OPTIONS[@]}" ca-certificates curl ufw unattended-upgrades rclone
-        # the security updates by themselves, every day
-        printf 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n' \
-            > /etc/apt/apt.conf.d/20auto-upgrades
+        # the security updates by themselves, every day; once switched on Options (osupdates.py: its
+        # first line says so), the switch decides and a provisioning run again leaves it as it is
+        if ! head -n 1 /etc/apt/apt.conf.d/20auto-upgrades 2>/dev/null | grep -q '^// written by OmniaCLI'; then
+            printf 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n' \
+                > /etc/apt/apt.conf.d/20auto-upgrades
+        fi
 
         step "nginx, certbot and Docker"
         apt-get install "${APT_OPTIONS[@]}" nginx certbot

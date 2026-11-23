@@ -12,7 +12,7 @@
                 "ended": _("It waited too long, or it was answered already. Start again from the assistant: connect it again."),
                 "nothing": _("Your user reaches no instance: there is nothing to give."),
                 "invalid": _("Choose a level your role allows, the servers among those listed and a duration, then agree again.")} %}
-{% block title %}{{ titles.get(kind, kind) }} · OmniaCLI{% endblock %}
+{% block title %}{{ titles.get(kind, kind) }} · {{ brand.name }}{% endblock %}
 {% block content %}
 {% if kind == "continue" %}<meta http-equiv="refresh" content="0;url={{ href }}">{% endif %}
 <div class="page-head">

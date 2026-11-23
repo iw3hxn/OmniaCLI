@@ -3,7 +3,7 @@
    site's layout and language, with what can be done and the way back; an API
    request keeps its JSON (app.py, to_login). -#}
 {% extends "base.html" %}
-{% block title %}{{ _("No access to this page") if code == 403 else _("Page not found") }} · OmniaCLI{% endblock %}
+{% block title %}{{ _("No access to this page") if code == 403 else _("Page not found") }} · {{ brand.name }}{% endblock %}
 {% block content %}
 <div class="page-head">
   <div><h1>{{ _("No access to this page") if code == 403 else _("Page not found") }}</h1>

@@ -1,6 +1,6 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
 {% extends "base.html" %}
-{% block title %}{{ _("Instances") }} · OmniaCLI{% endblock %}
+{% block title %}{{ _("Instances") }} · {{ brand.name }}{% endblock %}
 {% block content %}
 {# The instances of every machine (docs/ux/UX-008 §4.1): this machine's and
    each link's, asked all at once (GET /api/instances, ?link=<name>): a machine

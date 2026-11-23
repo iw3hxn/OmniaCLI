@@ -1,6 +1,6 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
 {% extends "base.html" %}
-{% block title %}{{ _("Options") }} · OmniaCLI{% endblock %}
+{% block title %}{{ _("Options") }} · {{ brand.name }}{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
 {{ crumbs([(_("Settings"), "/settings"), (_("Options"), None)]) }}
 {% endblock %}
@@ -39,6 +39,30 @@
   </div>
   <div id="portal-error" class="banner" hidden style="margin-top: 10px"></div>
   {% endif %}
+</section>
+<section class="panel" id="os-updates">
+  <h2 style="margin-bottom: 4px">{{ _("Automatic security updates of the system") }}</h2>
+  <p class="muted" style="font-size: 13px; margin-top: 0">{{ _("The security updates of the operating system of this machine, installed by unattended-upgrades every day. The state is read from the machine; a change is written by root at once and goes in the access log.") }}</p>
+  <p id="osu-state" aria-live="polite" style="margin: 0 0 10px">{{ _("Reading the machine…") }}</p>
+  <div class="form-grid" id="osu-form" hidden>
+    <label for="osu-enabled">{{ _("Updates") }}</label>
+    <label style="display: inline-flex; gap: 6px; align-items: center"><input type="checkbox" id="osu-enabled" role="switch" style="width: auto"
+           title="{{ _('On: the security updates are installed every day by themselves. Off: nobody installs them until you do it by hand (apt-get upgrade).') }}">
+      {{ _("Automatic security updates of the system") }}</label>
+    <label for="osu-reboot">{{ _("Restart when an update asks it") }}</label>
+    <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center">
+      <select id="osu-reboot" title="{{ _('Some updates (the kernel, the C library) work only after a restart of the machine: never (you restart it when you choose), or by itself at a time of the night') }}">
+        <option value="never">{{ _("never: I restart it myself") }}</option>
+        <option value="at">{{ _("by itself, at a time") }}</option>
+      </select>
+      <input type="time" id="osu-time" value="03:00" style="width: auto" title="{{ _('The time of the restart, by the clock of the machine: the instances do not answer for a few minutes') }}">
+    </div>
+  </div>
+  <p id="osu-last" class="muted" style="font-size: 13px; margin: 8px 0 0" hidden></p>
+  <details id="osu-lines-box" hidden style="margin-top: 6px"><summary title="{{ _('Shows the last lines unattended-upgrades wrote in its log') }}">{{ _("Its last lines") }}</summary>
+    <pre class="mono" id="osu-lines" style="white-space: pre-wrap; font-size: 12px"></pre></details>
+  <p id="osu-said" class="muted" style="font-size: 13px; margin: 6px 0 0" aria-live="polite"></p>
+  <div id="osu-error" class="banner" hidden style="margin-top: 10px"></div>
 </section>
 <div id="error" class="banner" hidden></div>
 <form id="form" autocomplete="off">
@@ -203,10 +227,41 @@
     </div>
     <p class="muted" style="font-size: 13px; margin: 8px 0 0">{{ _("Users at the portal address: whoever logs in there, and the users of the workspaces wherever they log in, once the portal has an address; without one, nobody is asked.") }}</p>
   </section>
+  <section class="panel" id="whitelabel">
+    <h2 style="margin-bottom: 4px">{{ _("Whitelabel") }}</h2>
+    <p class="muted" style="font-size: 13px; margin-top: 0">{{ _("The panel under your name: in the header, in the title of the pages and in the emails, on the panel, the customers' portal and the login page. Empty: the look of OmniaCLI.") }}</p>
+    <div class="form-grid">
+      <label for="brand-name">{{ _("Name of the panel") }}</label>
+      <input type="text" id="brand-name" maxlength="40" value="{{ options.brand_name }}" placeholder="OmniaCLI"
+             title="{{ _('The name shown instead of OmniaCLI, for example your company name; empty: OmniaCLI') }}">
+      <label for="brand-color">{{ _("Primary colour") }}</label>
+      <div>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center">
+          <input type="color" id="brand-picker" value="{{ options.brand_color or '#DC2626' }}" style="width: 44px; height: 34px; padding: 2px"
+                 title="{{ _('Chooses the colour; the code beside it is what is saved') }}">
+          <input type="text" id="brand-color" class="mono" maxlength="7" value="{{ options.brand_color }}" placeholder="#DC2626" style="width: 120px"
+                 autocomplete="off" spellcheck="false" title="{{ _('The colour of the buttons and the links, #RRGGBB; empty: the red of OmniaCLI. White text on it must reach a contrast of 4.5:1 (WCAG AA)') }}">
+        </div>
+        <p id="brand-contrast" class="muted" style="font-size: 13px; margin: 6px 0 0" aria-live="polite"></p>
+      </div>
+      <label for="brand-logo">{{ _("Logo") }}</label>
+      <div>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center">
+          <img id="brand-logo-now" alt="{{ _('The logo now') }}" src="{{ prefix ~ brand.logo if brand.logo else '/icon-180.png' }}"
+               style="width: 34px; height: 34px; object-fit: contain; border-radius: 6px; background: var(--side-bg)">
+          <input type="file" id="brand-logo" accept="image/png,image/svg+xml,.png,.svg" style="width: auto; max-width: 100%"
+                 title="{{ _('A PNG or an SVG of at most 256 kB, square looks best; an SVG without scripts or outside references') }}">
+          <button type="button" id="brand-logo-send" title="{{ _('Puts the chosen file as the logo of the panel at once, for every page') }}">{{ _("Use this logo") }}</button>
+          <button type="button" id="brand-logo-remove" {% if not brand.logo %}hidden{% endif %} title="{{ _('Takes your logo away: the «O» of OmniaSolutions again') }}">{{ _("Take the logo away") }}</button>
+        </div>
+        <p id="brand-logo-said" class="muted" style="font-size: 13px; margin: 6px 0 0" aria-live="polite"></p>
+      </div>
+    </div>
+  </section>
   <div class="actions">
     <button type="submit" class="primary" title="{{ _('Saves the options of this page for every user of this OmniaCLI: they hold from now. A password left empty keeps the saved one. The page stays open.') }}">{{ _("Save") }}</button>
     <a class="button" href="{{ prefix }}/settings" title="{{ _('Goes back to Settings: what was changed here and not saved is lost.') }}">{{ _("Cancel") }}</a>
-    <span id="saved" class="status success" hidden>{{ _("Saved.") }}</span>
+    <span id="saved" class="status success" {% if not (request and request.query_params.get("saved")) %}hidden{% endif %}>{{ _("Saved.") }}</span>
   </div>
 </form>
 </div>
@@ -294,9 +349,13 @@ document.getElementById("form").addEventListener("submit", async (ev) => {
       portal: {provider: document.getElementById("provider-label").value.trim(),
                staff: document.getElementById("portal-staff").checked,
                second_factor: document.getElementById("second-factor").value},
+      brand: {name: document.getElementById("brand-name").value.trim(),
+              color: document.getElementById("brand-color").value.trim()},
     }),
   }).catch(() => null);
   const data = resp ? await resp.json().catch(() => ({})) : {};
+  // the name and the colour hold on the next page: this one is drawn again with them
+  if (resp && resp.ok && window.brandChanged && window.brandChanged()) { location.replace(location.pathname + "?saved=1#whitelabel"); return; }
   if (resp && resp.ok) { saved.hidden = false; return; }
   box.textContent = data.error || (resp ? {{ _("Error") | tojson }} + " " + resp.status : {{ _("OmniaCLI cannot be reached") | tojson }});
   box.hidden = false;
@@ -350,6 +409,132 @@ document.getElementById("form").addEventListener("submit", async (ev) => {
     if (!await omniaAsk(fill(T.remove, {name: {{ options.portal_address | tojson }}}), T.removeGo, {danger: true})) return;
     await publish("");
   });
+})();
+(function () {
+  // Whitelabel: the colour's contrast said while it is chosen (brand.py checks it again on Save), the logo sent at once
+  const W = {white: {{ _("White text on it: {ratio}:1, enough (WCAG AA 4.5:1). In the dark theme: {dark}.") | tojson }},
+             low: {{ _("White text on it: {ratio}:1, below WCAG AA (4.5:1): it is refused. Choose a darker one.") | tojson }},
+             none: {{ _("The red of OmniaCLI.") | tojson }}, bad: {{ _("A colour is written #RRGGBB.") | tojson }},
+             choose: {{ _("Choose a PNG or an SVG first.") | tojson }}, sent: {{ _("The logo is in use on every page.") | tojson }},
+             gone: {{ _("The logo of OmniaCLI is back.") | tojson }}, unreachable: {{ _("OmniaCLI cannot be reached") | tojson }}};
+  const DARK = ["#161B22", "#1C222B", "#0E1117", "#0F172A", "#111827"];
+  const fill = (text, values) => text.replace(/\{(\w+)\}/g, (m, k) => (k in values ? values[k] : m));
+  const lum = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+    .map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4)).reduce((s, c, i) => s + c * [0.2126, 0.7152, 0.0722][i], 0);
+  const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+  const mix = (hex, share) => "#" + [1, 3, 5].map((i) => Math.round(parseInt(hex.slice(i, i + 2), 16) * (1 - share) + 255 * share)
+    .toString(16).padStart(2, "0")).join("").toUpperCase();
+  const tint = (hex) => { for (let s = 0; s <= 100; s++) { const t = mix(hex, s / 100); if (DARK.every((g) => ratio(t, g) >= 4.5)) return t; } return "#FFFFFF"; };
+  const text = document.getElementById("brand-color"), picker = document.getElementById("brand-picker");
+  const said = document.getElementById("brand-contrast"), name = document.getElementById("brand-name");
+  const first = {name: name.value.trim(), color: text.value.trim().toUpperCase()};
+  window.brandChanged = () => name.value.trim() !== first.name || text.value.trim().toUpperCase() !== first.color;
+  function judge() {
+    const value = text.value.trim();
+    if (!value) { said.textContent = W.none; return; }
+    if (!/^#[0-9A-Fa-f]{6}$/.test(value)) { said.textContent = W.bad; return; }
+    const r = ratio(value, "#FFFFFF");
+    said.textContent = fill(r >= 4.5 ? W.white : W.low, {ratio: r.toFixed(2), dark: tint(value.toUpperCase())});
+    picker.value = value.toLowerCase();
+  }
+  text.addEventListener("input", judge);
+  picker.addEventListener("input", () => { text.value = picker.value.toUpperCase(); judge(); });
+  judge();
+  const file = document.getElementById("brand-logo"), logoSaid = document.getElementById("brand-logo-said");
+  const now = document.getElementById("brand-logo-now"), removeLogo = document.getElementById("brand-logo-remove");
+  async function post(path, body, type) {
+    const resp = await fetch("{{ prefix }}/api/options/brand/" + path, {method: "POST", headers: {"Content-Type": type, Accept: "application/json"}, body})
+      .catch(() => null);
+    const data = resp ? await resp.json().catch(() => ({})) : {};
+    if (!resp || !resp.ok) throw new Error(data.error || data.detail || W.unreachable);
+    return data;
+  }
+  document.getElementById("brand-logo-send").addEventListener("click", async () => {
+    const chosen = file.files && file.files[0];
+    if (!chosen) { logoSaid.textContent = W.choose; return; }
+    try {
+      const data = await post("logo", chosen, chosen.type || "application/octet-stream");
+      now.src = "{{ prefix }}" + data.url;
+      document.querySelectorAll(".brand img").forEach((img) => { img.src = "{{ prefix }}" + data.url; });
+      removeLogo.hidden = false; logoSaid.textContent = W.sent; file.value = "";
+    } catch (e) { logoSaid.textContent = e.message; }
+  });
+  removeLogo.addEventListener("click", async () => {
+    try {
+      await post("logo/delete", "{}", "application/json");
+      now.src = "/icon-180.png";
+      document.querySelectorAll(".brand img").forEach((img) => { img.src = "/icon-180.png"; });
+      removeLogo.hidden = true; logoSaid.textContent = W.gone;
+    } catch (e) { logoSaid.textContent = e.message; }
+  });
+})();
+(function () {
+  // the automatic security updates of the system: read from the machine, each change written at once by root
+  const O = {off: {{ _("Off: the security updates are not installed by themselves.") | tojson }},
+             on: {{ _("On: the security updates are installed every day by themselves.") | tojson }},
+             missing: {{ _("unattended-upgrades is not installed on this machine: apt-get install unattended-upgrades, then switch it on here.") | tojson }},
+             other: {{ _("The file that decides is {file}, not written by OmniaCLI.") | tojson }},
+             waiting: {{ _("A restart is waiting for: {packages}.") | tojson }},
+             waitingAny: {{ _("A restart is waiting.") | tojson }},
+             never: {{ _("It has never run on this machine.") | tojson }},
+             upgraded: {{ _("Last run {when}: {n} packages updated ({packages}).") | tojson }},
+             nothing: {{ _("Last run {when}: nothing to update.") | tojson }},
+             error: {{ _("Last run {when}: it failed: {error}") | tojson }},
+             running: {{ _("Last run {when}: started, not ended yet.") | tojson }},
+             now: {{ _("by itself, right after the update (set by hand)") | tojson }},
+             saved: {{ _("Saved on the machine.") | tojson }}, unreachable: {{ _("OmniaCLI cannot be reached") | tojson }}};
+  const fill = (text, values) => text.replace(/\{(\w+)\}/g, (m, k) => (k in values ? values[k] : m));
+  const state = document.getElementById("osu-state"), form = document.getElementById("osu-form");
+  const enabled = document.getElementById("osu-enabled"), reboot = document.getElementById("osu-reboot");
+  const time = document.getElementById("osu-time"), last = document.getElementById("osu-last");
+  const box = document.getElementById("osu-error"), said = document.getElementById("osu-said");
+  const linesBox = document.getElementById("osu-lines-box"), lines = document.getElementById("osu-lines");
+  function show(data) {
+    const parts = [data.installed ? (data.enabled ? O.on : O.off) : O.missing];
+    if (data.source && !data.managed) parts.push(fill(O.other, {file: data.source}));
+    if (data.reboot_required) parts.push(data.reboot_packages && data.reboot_packages.length
+      ? fill(O.waiting, {packages: data.reboot_packages.join(", ")}) : O.waitingAny);
+    state.textContent = parts.join(" ");
+    form.hidden = false;
+    enabled.checked = !!data.enabled;
+    enabled.disabled = !data.installed && !data.enabled;
+    if (data.reboot === "never") reboot.value = "never";
+    else { reboot.value = "at"; if (/^\d\d:\d\d$/.test(data.reboot)) time.value = data.reboot; }
+    if (data.reboot === "now") said.textContent = O.now;
+    time.hidden = reboot.value !== "at";
+    const run = data.last;
+    last.hidden = false;
+    if (!run) last.textContent = O.never;
+    else last.textContent = fill(O[run.outcome] || O.running, {when: whenText(run.at), n: run.packages.length,
+                                                             packages: run.packages.slice(0, 6).join(", ") + (run.packages.length > 6 ? ", …" : ""),
+                                                             error: run.error});
+    linesBox.hidden = !(run && run.lines && run.lines.length);
+    lines.textContent = run ? (run.lines || []).join("\n") : "";
+  }
+  function failed(message) { box.textContent = message; box.hidden = !message; }
+  async function load() {
+    const resp = await fetch("{{ prefix }}/api/machine/os-updates", {headers: {Accept: "application/json"}}).catch(() => null);
+    const data = resp ? await resp.json().catch(() => ({})) : {};
+    if (resp && resp.ok) { failed(""); show(data); return; }
+    state.textContent = "";
+    failed(data.error || data.detail || O.unreachable);
+  }
+  async function save() {
+    failed(""); said.textContent = "";
+    enabled.disabled = reboot.disabled = time.disabled = true;
+    const body = {enabled: enabled.checked, reboot: reboot.value === "never" ? "never" : (time.value || "03:00")};
+    const resp = await fetch("{{ prefix }}/api/machine/os-updates", {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
+                                                                     body: JSON.stringify(body)}).catch(() => null);
+    const data = resp ? await resp.json().catch(() => ({})) : {};
+    enabled.disabled = reboot.disabled = time.disabled = false;
+    if (resp && resp.ok) { show(data); said.textContent = O.saved; return; }
+    failed(data.error || data.detail || O.unreachable);
+    load();
+  }
+  enabled.addEventListener("change", save);
+  reboot.addEventListener("change", () => { time.hidden = reboot.value !== "at"; save(); });
+  time.addEventListener("change", save);
+  load();
 })();
 </script>
 {% endblock %}

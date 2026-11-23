@@ -1,6 +1,6 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
 {% extends "base.html" %}
-{% block title %}{{ _("Log {key}", key=instance.key) }} · OmniaCLI{% endblock %}
+{% block title %}{{ _("Log {key}", key=instance.key) }} · {{ brand.name }}{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
 {{ crumbs([(_("Instances"), "/"), (instance.server, "/servers/" ~ instance.server),
            (_("Production") if instance.role == "production" else instance.role | capitalize,

@@ -2,7 +2,7 @@
 {#- The access log (NIS 2, docs/nis2-audit.md): the machine's, for its admins
     (ws none), or a workspace's, for its admins (ws: its entries only). -#}
 {% extends "base.html" %}
-{% block title %}{{ _("Access log") }} · OmniaCLI{% endblock %}
+{% block title %}{{ _("Access log") }} · {{ brand.name }}{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
 {% if ws %}{{ crumbs([(_("Settings"), "/settings"), (_("Workspace {name}", name=ws.name), "/workspaces/" ~ ws.name), (_("Access log"), None)]) }}
 {% else %}{{ crumbs([(_("Settings"), "/settings"), (_("Users"), "/users"), (_("Access log"), None)]) }}{% endif %}

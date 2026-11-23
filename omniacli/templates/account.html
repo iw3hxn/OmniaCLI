@@ -1,7 +1,7 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
 {% extends "base.html" %}
 {% from "_oauth_grants.html" import grants_table, grants_script with context %}
-{% block title %}{{ _("Account") }} · OmniaCLI{% endblock %}
+{% block title %}{{ _("Account") }} · {{ brand.name }}{% endblock %}
 {% block content %}
 <style>
 .section-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }

@@ -4,7 +4,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{% block title %}OmniaCLI{% endblock %}</title>
+<title>{% block title %}{{ brand.name }}{% endblock %}</title>
 <link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48 64x64">
 <link rel="apple-touch-icon" href="/icon-180.png">
 <script>
@@ -523,7 +523,34 @@ summary { cursor: pointer; color: var(--muted); }
   .instance { border-right: 0; border-bottom: 1px solid var(--border); }
   .scroll { overflow-x: auto; }
 }
+/* the bell (README, The bell): the things to look at of the map new for this person */
+.bell { position: relative; }
+.bell-button { position: relative; background: transparent; color: var(--side-text); border: 1px solid var(--side-hover);
+  box-shadow: none; padding: 4px 9px; font-size: 15px; line-height: 1.2; width: auto; }
+.bell-button:hover, .bell-button[aria-expanded="true"] { background: var(--side-hover); color: var(--side-current); border-color: var(--side-hover); }
+.bell-count { position: absolute; top: -7px; right: -8px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
+  background: #B54708; color: #fff; font-size: 11px; font-weight: 700; line-height: 18px; text-align: center; }
+.bell-count.critical { background: #B42318; }
+.bell-panel { position: absolute; right: 0; top: calc(100% + 10px); width: min(400px, calc(100vw - 24px)); z-index: 30;
+  background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg); padding: 12px 14px; }
+.bell-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.bell-head strong { font-size: 15px; }
+.bell-list { list-style: none; margin: 8px 0 0; padding: 0; max-height: 60vh; overflow-y: auto; }
+.bell-list li { display: flex; gap: 8px; align-items: flex-start; padding: 7px 0; border-top: 1px solid var(--border); font-size: 13px; }
+.bell-list li.new { font-weight: 600; }
+.bell-list .mark { color: var(--warn); flex: none; } .bell-list .mark.critical { color: var(--err); }
+.bell-list a { color: var(--text); } .bell-list a:hover { color: var(--accent); }
+.bell-list .bell-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--info); flex: none; margin-top: 6px; }
+.bell-list .bell-dot.read { background: transparent; }
+.bell-when { display: block; color: var(--muted); font-weight: 400; font-size: 12px; }
+.bell-even { margin: 8px 0 0; color: var(--ok); font-weight: 650; }
+.bell-foot { margin: 8px 0 0; font-size: 13px; color: var(--muted); }
+@media (max-width: 600px) {
+  .bell-panel { position: fixed; top: 62px; left: 12px; right: 12px; width: auto; }
+}
 </style>
+{% if brand.css %}<style id="brand-style">{{ brand.css | safe }}</style>{% endif -%}
 </head>
 <body>
 {% set here = request.url.path if request else "" %}
@@ -539,7 +566,8 @@ summary { cursor: pointer; color: var(--muted); }
   {# shown through a link of a newer OmniaCLI: the menu of who looks, its own
      places (central_menu, prefix-less), the same in every page #}
   {% set central = central_menu is not none %}
-  <a class="brand" href="{{ '' if central else prefix }}/"><img src="/icon-180.png" alt=""><span class="brand-name">Omnia<span>CLI</span></span></a>
+  <a class="brand" href="{{ '' if central else prefix }}/"><img src="{{ prefix ~ brand.logo if brand.logo else '/icon-180.png' }}" alt="">
+    {%- if brand.custom %}<span class="brand-name">{{ brand.name }}</span>{% else %}<span class="brand-name">Omnia<span>CLI</span></span>{% endif %}</a>
   <button type="button" class="menu-toggle" id="menu-toggle" aria-expanded="false" aria-controls="topnav"
           title="{{ _('Opens and closes the menu: the places of OmniaCLI') }}">☰ {{ _("Menu") }}</button>
   <nav class="topnav" id="topnav" aria-label="{{ _('Menu') }}">
@@ -576,6 +604,18 @@ summary { cursor: pointer; color: var(--muted); }
   </nav>
   <div class="top-end">
     {% set viewer = account or (central_user if central else "") %}
+    {#- the bell: this machine's pages only (through a link, the pages are another machine's) #}
+    {% if account and not prefix and not central %}<div class="bell" id="bell">
+      <button type="button" class="bell-button" id="bell-button" aria-expanded="false" aria-controls="bell-panel" aria-haspopup="true"
+              title="{{ _('The things to look at that are new for you: the same as the map, each with the page where it is fixed') }}"><span aria-hidden="true">🔔</span><span class="bell-count" id="bell-count" hidden></span></button>
+      <div class="bell-panel" id="bell-panel" role="region" aria-label="{{ _('Things to look at') }}" hidden>
+        <div class="bell-head"><strong>{{ _("Things to look at") }}</strong>
+          <button type="button" class="small" id="bell-read" hidden title="{{ _('Marks the things listed here as read for you: the bell counts only what comes after. They stay on the map until they are fixed.') }}">{{ _("Mark as read") }}</button></div>
+        <p class="bell-even" id="bell-even" hidden>✓ {{ _("You are all caught up") }}</p>
+        <ul class="bell-list" id="bell-list"></ul>
+        <p class="bell-foot" id="bell-foot"><a href="/instances?view=map" id="bell-map" title="{{ _('Opens the map: every thing to look at, on the instances it concerns') }}">{{ _("All of them on the map") }}</a></p>
+      </div>
+    </div>{% endif -%}
     {% if viewer %}<a class="side-account" href="{{ '' if central else prefix }}/account" title="{{ _('Your account and password') }}">
       <span class="avatar">{{ viewer[:1] }}</span><span>{{ viewer }}</span></a>{% endif %}
     <div class="side-tools">
@@ -718,6 +758,82 @@ window.sizeText = (n) => {
   });
 })();
 </script>
+{% if account and not prefix and not central %}<script>
+(function () {
+  // the bell (README, The bell): asked after the page is drawn, again every minute while it is in sight
+  const button = document.getElementById("bell-button"), panel = document.getElementById("bell-panel");
+  const count = document.getElementById("bell-count"), list = document.getElementById("bell-list");
+  const even = document.getElementById("bell-even"), read = document.getElementById("bell-read");
+  const foot = document.getElementById("bell-foot"), map = document.getElementById("bell-map");
+  const B = {newOne: {{ _("1 new thing to look at") | tojson }}, newMany: {{ _("{n} new things to look at") | tojson }},
+             since: {{ _("since {when}") | tojson }}, more: {{ _("and {n} more on the map") | tojson }},
+             stillOne: {{ _("1 thing already read is still to look at") | tojson }},
+             stillMany: {{ _("{n} things already read are still to look at") | tojson }},
+             critical: {{ _("critical") | tojson }}, warning: {{ _("to look at") | tojson }},
+             open: {{ _("Opens the page where this is fixed") | tojson }}, unread: {{ _("The bell cannot be read now") | tojson }}};
+  const fill = (text, values) => text.replace(/\{(\w+)\}/g, (m, k) => (k in values ? values[k] : m));
+  let data = null;
+  function draw() {
+    const items = data.items || [], fresh = items.filter((i) => i.new);
+    count.hidden = !data.count;
+    count.textContent = data.count > 99 ? "99+" : String(data.count);
+    count.classList.toggle("critical", fresh.some((i) => i.level === "critical"));
+    button.setAttribute("aria-label", data.count ? (data.count === 1 ? B.newOne : fill(B.newMany, {n: data.count})) : button.title);
+    even.hidden = data.count > 0;
+    read.hidden = !data.count;
+    list.replaceChildren(...items.map((i) => {
+      const li = document.createElement("li");
+      li.className = i.new ? "new" : "read";
+      li.dataset.level = i.level;
+      const dot = document.createElement("span");
+      dot.className = "bell-dot" + (i.new ? "" : " read");
+      const mark = document.createElement("span");
+      mark.className = "mark " + i.level;
+      mark.title = i.level === "critical" ? B.critical : B.warning;
+      mark.textContent = i.level === "critical" ? "⛔" : "⚠";
+      const body = document.createElement(i.page ? "a" : "span");
+      if (i.page) { body.href = i.page; body.title = B.open; }
+      body.textContent = i.text;
+      if (i.since) {
+        const when = document.createElement("span");
+        when.className = "bell-when";
+        when.textContent = fill(B.since, {when: whenText(i.since)});
+        body.append(when);
+      }
+      li.append(dot, mark, body);
+      return li;
+    }));
+    const old = data.total - data.count;
+    const lines = [];
+    // with something new: how many more the map has; caught up: how many read are still open
+    if (data.count && data.more) lines.push(fill(B.more, {n: data.more}));
+    if (!data.count && old) lines.push(old === 1 ? B.stillOne : fill(B.stillMany, {n: old}));
+    foot.replaceChildren(...(lines.length ? [lines.join(" · ") + " · "] : []), map);
+  }
+  async function load() {
+    try {
+      const resp = await fetch("/api/bell", {headers: {Accept: "application/json"}});
+      if (!resp.ok) return;
+      data = await resp.json();
+      draw();
+    } catch (e) { /* the next minute asks again */ }
+  }
+  const show = (open) => { panel.hidden = !open; button.setAttribute("aria-expanded", String(open)); };
+  button.addEventListener("click", (event) => { event.stopPropagation(); show(panel.hidden); if (!panel.hidden && !data) load(); });
+  panel.addEventListener("click", (event) => event.stopPropagation());
+  document.addEventListener("click", () => show(false));
+  document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !panel.hidden) { show(false); button.focus(); } });
+  read.addEventListener("click", async () => {
+    if (!data) return;
+    const resp = await fetch("/api/bell/read", {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
+                                                body: JSON.stringify({keys: data.keys || []})}).catch(() => null);
+    if (resp && resp.ok) { data = {...data, ...(await resp.json())}; draw(); }
+    else { foot.replaceChildren(B.unread + " · ", map); }
+  });
+  load();
+  setInterval(() => { if (!document.hidden) load(); }, 60000);
+})();
+</script>{% endif %}
 <main>
 {% if false %}{% block crumbs %}{% endblock %}{% endif %}
 {% set page_crumbs = self.crumbs() %}

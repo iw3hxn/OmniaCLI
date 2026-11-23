@@ -1,6 +1,6 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
 {% extends "base.html" %}
-{% block title %}{{ ws.name }} · OmniaCLI{% endblock %}
+{% block title %}{{ ws.name }} · {{ brand.name }}{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
 {{ crumbs([(_("Settings"), "/settings"), (_("Workspace {name}", name=ws.name), None)]) }}
 {% endblock %}

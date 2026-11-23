@@ -22,7 +22,7 @@ import yaml
 
 from .auth import ROLES as ACCESS_ROLES
 from .auth import WORKSPACE_ROLE
-from . import capabilities, listgroups
+from . import brand, capabilities, listgroups
 
 ROLES = ("production", "test")
 # the roles a user may have on the machine: the access roles, or none but
@@ -1866,6 +1866,10 @@ class Options:
     # anywhere once the machine has one (else they would skip it by the
     # machine's own address); everybody
     second_factor: str = "portal"
+    # the panel under another name (brand.py, README Whitelabel): its name and
+    # primary colour; empty: OmniaCLI's own (the logo is a file, brand.logo_path)
+    brand_name: str = ""
+    brand_color: str = ""
 
 
 SMTP_SECURITY = ("starttls", "ssl", "none")
@@ -2046,7 +2050,14 @@ def parse_options(data) -> Options:
         automatic = ""
     if automatic and not DOMAIN_NAME.fullmatch(automatic):
         raise ConfigError(f"names.automatic: {automatic!r} is not a domain (as sslip.io), or off")
-    return Options(shell_font_size=size, tunnel_idle_hours=idle, tunnel_bind=bind, tunnel_ports=ports,
+    look = data.get("brand") or {}
+    if not isinstance(look, dict):
+        raise ConfigError("brand must be a mapping")
+    try:
+        brand_name, brand_color = brand.check_name(look.get("name")), brand.check_color(look.get("color"))
+    except brand.BrandRefused as exc:
+        raise ConfigError(str(exc)) from None
+    return Options(brand_name=brand_name, brand_color=brand_color,shell_font_size=size, tunnel_idle_hours=idle, tunnel_bind=bind, tunnel_ports=ports,
                    automatic_names=automatic,
                    smtp_host=texts["host"], smtp_port=port, smtp_security=security, smtp_user=texts["user"],
                    smtp_password=texts["password"], mail_from=texts["from"],
@@ -2093,6 +2104,9 @@ def save_options(path: Path, options: Options) -> None:
         portal["second_factor"] = options.second_factor
     if portal:
         data["portal"] = portal
+    look = {key: value for key, value in (("name", options.brand_name), ("color", options.brand_color)) if value}
+    if look:
+        data["brand"] = look
     text = yaml.safe_dump(data, sort_keys=False)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")

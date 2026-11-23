@@ -1,6 +1,6 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
 {% extends "base.html" %}
-{% block title %}{{ server.name }} · OmniaCLI{% endblock %}
+{% block title %}{{ server.name }} · {{ brand.name }}{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
 {% set parent = stagings.parent.parent if stagings and stagings.parent else "" %}
 {% set parent_url = (stagings.parent.url or "") if parent else "" %}

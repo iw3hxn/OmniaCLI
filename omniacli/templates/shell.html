@@ -1,7 +1,7 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
 {% extends "base.html" %}
 {% set name = {"claude": "Claude", "psql": "psql", "terminal": _("Terminal")}.get(kind, "Shell") %}
-{% block title %}{{ name }} {{ instance.key }} · OmniaCLI{% endblock %}
+{% block title %}{{ name }} {{ instance.key }} · {{ brand.name }}{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
 {{ crumbs([(_("Instances"), "/"), (instance.server, "/servers/" ~ instance.server),
            ({"production": _("production"), "test": _("test")}.get(instance.role, instance.role) | capitalize, "/servers/" ~ instance.server ~ "?view=" ~ instance.role),
