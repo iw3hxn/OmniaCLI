@@ -16,7 +16,6 @@
  "Modules uploaded as a .zip": "Moduli caricati come .zip",
  "No module uploaded as a .zip.": "Nessun modulo caricato come .zip.",
  "Only put them in the instance": "Mettili solo nell'istanza",
- "Pushing the module to a repository on GitHub is not done here: add the repository with + Add a repository when it is there.": "Qui non si manda il modulo in un repository su GitHub: quando è lì, aggiungi il repository con + Aggiungi un repository.",
  "Put them in": "Mettili dentro",
  "Put them in and install": "Mettili dentro e installa",
  "Puts the modules in production and test, restarts them, updates the list of the modules of their databases, and installs them where chosen. It is a job.": "Mette i moduli in produzione e in test, li riavvia, aggiorna l'elenco dei moduli dei loro database e li installa dove scelto. È un job.",

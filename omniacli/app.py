@@ -400,6 +400,8 @@ WORKSPACE_ROUTES = frozenset({
     # modules uploaded as a .zip (README, Modules uploaded as a .zip): its admins, as a repository
     "/api/servers/{server}/modules/upload", "/api/servers/{server}/modules/upload/{ident}/apply",
     "/api/servers/{server}/modules/uploaded",
+    # and made a repository on GitHub with the workspace's token (README, Modules uploaded as a .zip)
+    "/api/servers/{server}/modules/github/check", "/api/servers/{server}/modules/github/create",
     # the PUT of an upload_backup URL (a workspace's token, for its workspace)
     UPLOAD_ROUTE,
     # what the backup and restore dialogs show (sizes only), with the role
@@ -7846,31 +7848,63 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     # the hours (this machine's) the catalog of each series is read again, once a day
     CATALOG_NIGHT = range(2, 5)
 
-    def catalog_for(series: str) -> modulecatalog.Catalog:
-        path = modulecatalog.path_of(catalog_dir, series)
+    def catalog_for(series: str, ident: str = modulecatalog.OCA, label: str = "OCA") -> modulecatalog.Catalog:
+        """The catalog of a source (the OCA's by default) for a series, as on disk."""
+        path = modulecatalog.source_path(catalog_dir, ident, series)
         try:
             mtime = path.stat().st_mtime
         except OSError:
-            return modulecatalog.Catalog(series)
+            return modulecatalog.Catalog(series, ident=ident, label=label)
         kept = catalog_memo.get(path)
         if kept is None or kept[0] != mtime:
-            kept = (mtime, modulecatalog.catalog_of(modulecatalog.load(path), series))
+            kept = (mtime, modulecatalog.catalog_of(modulecatalog.load(path), series, ident, label))
             catalog_memo[path] = kept
         return kept[1]
+
+    def catalog_sources() -> list[dict]:
+        return modulecatalog.load_sources(catalog_dir)
+
+    def catalogs_for(series: str) -> list[modulecatalog.Catalog]:
+        """The catalogs of a series: the OCA's, then the sources' by name."""
+        return [catalog_for(series), *(catalog_for(series, s["id"], s["owner"]) for s in catalog_sources())]
+
+    def catalog_chosen(series: str, first: str) -> modulecatalog.Catalog:
+        """The catalogs of a series as one an install resolves through: the one
+        chosen first, then the OCA's, then the others ("": the OCA's first)."""
+        found = catalogs_for(series)
+        found.sort(key=lambda c: (c.ident != first, c.ident != modulecatalog.OCA))
+        return modulecatalog.merged(found, series)
+
+    def source_of(ident: str, series: str):
+        """The reader of a source's catalog: the OCA's, or a GitHub owner's with
+        the GitHub token of the instance it was added from (when it is still
+        there; anonymous otherwise)."""
+        if ident == modulecatalog.OCA:
+            return modulecatalog.GitSource()
+        found = next((s for s in catalog_sources() if s["id"] == ident), None)
+        if found is None:
+            raise ValueError(f"No source {ident} in the catalogs of modules")
+        token = None
+        if found.get("token_server") in settings.servers:
+            cred = gitcredentials.github_tokens(settings, found["token_server"]).get(found["host"])
+            token = cred.token if cred is not None else None
+        return modulecatalog.GitHubSource(found["host"], found["owner"], found.get("repositories") or (), token)
 
     def catalog_series() -> list[str]:
         """The series of the templates this machine makes instances from."""
         return sorted({s for t in workspaceops.templates().values()
                        if (s := modulecatalog.series_of(t.name, t.label))}, key=lambda s: int(s.split(".")[0]))
 
-    def submit_catalog_refresh(series: str, source: str):
-        key = f"catalog/{series}"
+    def submit_catalog_refresh(series: str, source: str, ident: str = modulecatalog.OCA):
+        key = f"catalog/{series}" if ident == modulecatalog.OCA else f"catalog/{ident}/{series}"
         running = jobs.running_on(key)
         if running is not None:
             return running
-        path = modulecatalog.path_of(catalog_dir, series)
-        return jobs.submit(f"Read the catalog of the OCA for Odoo {series}", [key], source,
-                           lambda job: modulecatalog.refresh(job, path, series, modulecatalog.GitSource()))
+        path = modulecatalog.source_path(catalog_dir, ident, series)
+        reader = source_of(ident, series)
+        title = (f"Read the catalog of the OCA for Odoo {series}" if ident == modulecatalog.OCA
+                 else f"Read the catalog of {reader.label} for Odoo {series}")
+        return jobs.submit(title, [key], source, lambda job: modulecatalog.refresh(job, path, series, reader, ident))
 
     async def catalog_loop() -> None:
         """Each night, the catalog of each series of the templates read again."""
@@ -7881,8 +7915,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     continue
                 today = datetime.date.today().isoformat()
                 for series in await asyncio.to_thread(catalog_series):
-                    if str(catalog_for(series).tried or "")[:10] != today:
-                        submit_catalog_refresh(series, "nightly catalog")
+                    for catalog in catalogs_for(series):
+                        if str(catalog.tried or "")[:10] != today:
+                            submit_catalog_refresh(series, "nightly catalog", catalog.ident)
             except Exception:  # noqa: BLE001 - the loop must survive
                 _logger.exception("the nightly reading of the catalog of modules failed")
 
@@ -7972,10 +8007,47 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         code = await asyncio.to_thread(code_modules, srv)
         return known, why, code, repository_names(srv)
 
+    async def room_for(ws: Workspace, srv, made: dict, role: str) -> tuple[int | None, str | None]:
+        """(the bytes free in the workspace's disk, why the repositories to add
+        do not fit in it): each is cloned into every role at least as large as
+        GitHub says it is (its history, every branch); a disk filled stops the
+        instances that write to it. Unknown sizes or room: no refusal."""
+        if not made["sizes"]:
+            return None, None
+        try:
+            free = workspace_free(await workspaceops.space(), ws)
+        except workspaceops.SpaceError:
+            free = None
+        roles = [r for r in ROLES if getattr(srv, r) is not None] if made["repositories"] else [role]
+        need = sum(made["sizes"].values()) * len(roles)
+        if free is None or need <= free:
+            return free, None
+        names = ", ".join(made["sizes"])
+        return free, (f"{names}: about {need / workspaceops.GB:.1f} GB once cloned into {', '.join(roles)} (GitHub's "
+                      f"size: its history, every branch), and workspace {ws.name} has {free / workspaceops.GB:.1f} GB "
+                      "free: give it more room (Settings › Workspaces) or choose a module of a smaller repository")
+
     def module_row(entry: dict, state: str, blocked: str | None) -> dict:
         return {**{key: entry.get(key) for key in ("module", "name", "summary", "repository", "license", "version",
-                                                   "development_status", "depends", "python")},
-                "state": state, "blocked": blocked}
+                                                   "development_status", "depends", "python", "price", "currency",
+                                                   "origin", "source", "source_label")},
+                "state": state, "blocked": blocked, "not_free": modulecatalog.not_free(entry)}
+
+    def source_rows(series: str, me: Principal, say) -> list[dict]:
+        """The catalogs of the series, each with its date, size and error; for
+        the machine's admins also what reads it (the token of which instance)."""
+        added = {s["id"]: s for s in catalog_sources()}
+        rows = []
+        for catalog in catalogs_for(series):
+            meta = catalog.meta()
+            row = {**meta, "error": say(meta["error"]) if meta["error"] else None}
+            source = added.get(catalog.ident)
+            if source is not None:
+                row.update(owner=source["owner"], host=source["host"], named=source.get("repositories") or [])
+                if machine_admin(me):
+                    row["token_server"] = source.get("token_server")
+            rows.append(row)
+        return rows
 
     @app.get("/api/catalog", dependencies=[Depends(developer)])
     async def catalog_search(series: str = "", q: str = ""):
@@ -7989,13 +8061,75 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     @app.post("/api/catalog/refresh", dependencies=[Depends(admin)])
     async def catalog_refresh(payload: dict = Body(...), me: Principal = Depends(current_user)):
-        """The catalog of a series read again from the OCA's repositories, a job."""
+        """The catalog of a series read again from the OCA's repositories (or
+        from those of a source), a job."""
         series = str(payload.get("series") or "")
+        ident = str(payload.get("source") or modulecatalog.OCA)
         if not modulecatalog.SERIES.fullmatch(series):
             return refuse(f"{series!r} is not a series of Odoo, as 19.0")
         if not machine_admin(me):
             raise HTTPException(status.HTTP_403_FORBIDDEN, "The admins of the machine read the catalog again")
-        return {"job": submit_catalog_refresh(series, f"manual: {me}").id}
+        try:
+            return {"job": submit_catalog_refresh(series, f"manual: {me}", ident).id}
+        except ValueError as exc:
+            return refuse(str(exc), status.HTTP_404_NOT_FOUND)
+
+    @app.post("/api/catalog/sources/add", dependencies=[Depends(admin)])
+    async def catalog_source_add(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """A source of modules for every instance of the machine (its admins):
+        the public repositories of a GitHub user or organisation, all of them
+        or those named; read at once for the series asked (a job), then each
+        night with the OCA's. server: the instance whose GitHub token reads
+        its list (5,000 requests an hour instead of 60), when token is true."""
+        if not machine_admin(me):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "The admins of the machine add the sources of modules")
+        try:
+            host, owner = modulecatalog.parse_source(str(payload.get("source") or ""))
+        except ValueError as exc:
+            return refuse(str(exc))
+        series = str(payload.get("series") or "")
+        if not modulecatalog.SERIES.fullmatch(series):
+            return refuse(f"{series!r} is not a series of Odoo, as 19.0")
+        named = [n for n in re.split(r"[\s,;]+", str(payload.get("repositories") or "")) if n]
+        bad = [n for n in named if not modulecatalog.REPOSITORY.fullmatch(n)]
+        if bad:
+            return refuse(f"{bad[0]!r} is not the name of a repository")
+        token_server = None
+        if payload.get("token"):
+            token_server = str(payload.get("server") or "")
+            if token_server not in settings.servers or host not in gitcredentials.github_tokens(settings, token_server):
+                return refuse(f"{token_server or 'This instance'} has no GitHub token for {host}")
+        ident = modulecatalog.source_id(host, owner)
+        sources = [s for s in catalog_sources() if s["id"] != ident]
+        if any(s["owner"].lower() == owner.lower() for s in sources):
+            return refuse(f"{owner} is a source already, of another host")
+        sources.append({"id": ident, "host": host, "owner": owner, "repositories": sorted(set(named)),
+                        "token_server": token_server, "by": str(me),
+                        "added": datetime.datetime.now().isoformat(timespec="seconds")})
+        await asyncio.to_thread(modulecatalog.save_sources, catalog_dir, sources)
+        access_log.record("action", me.kind, me.name, request.client.host if request.client else "",
+                          f"source of modules {host}/{owner} added" + (f" ({', '.join(named)})" if named else "")
+                          + (f", read with the GitHub token of {token_server}" if token_server else ", read without a token"))
+        return {"id": ident, "job": submit_catalog_refresh(series, f"manual: {me}", ident).id}
+
+    @app.post("/api/catalog/sources/remove", dependencies=[Depends(admin)])
+    async def catalog_source_remove(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """A source taken away with its catalogs; the repositories the
+        instances took from it stay (Delete… in each one's Code)."""
+        if not machine_admin(me):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "The admins of the machine add the sources of modules")
+        ident = str(payload.get("id") or "")
+        sources = catalog_sources()
+        found = next((s for s in sources if s["id"] == ident), None)
+        if found is None:
+            return refuse(f"No source {ident} in the catalogs of modules", status.HTTP_404_NOT_FOUND)
+        await asyncio.to_thread(modulecatalog.save_sources, catalog_dir, [s for s in sources if s["id"] != ident])
+        for path in (catalog_dir / modulecatalog.FOLDER).glob(f"src-{ident}-*.json"):
+            if re.fullmatch(rf"src-{re.escape(ident)}-\d{{1,2}}\.0\.json", path.name):
+                path.unlink(missing_ok=True)
+        access_log.record("action", me.kind, me.name, request.client.host if request.client else "",
+                          f"source of modules {found['host']}/{found['owner']} taken away")
+        return {"ok": True}
 
     @app.get("/api/servers/{server}/modules", dependencies=[Depends(developer)])
     async def modules_summary(request: Request, server: str, me: Principal = Depends(current_user)):
@@ -8010,7 +8144,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         known, why, _, _ = await modules_view(srv)
         say = functools.partial(i18n.tr, request_language(request))
         meta = catalog_for(series).meta()
+        tokens = sorted(gitcredentials.github_tokens(settings, server)) if machine_admin(me) else []
         return {**meta, "error": say(meta["error"]) if meta["error"] else None, "server": server, "staging": staging,
+                "sources": source_rows(series, me, say), "tokens": tokens,
                 "roles": [{"role": role, "refused": say(refused) if refused else None,
                            "unread": say(why[role]) if why.get(role) else None}
                           for role, refused in roles.items()],
@@ -8020,41 +8156,55 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                               for role, k in known.items()}}
 
     @app.get("/api/servers/{server}/modules/catalog", dependencies=[Depends(developer)])
-    async def modules_catalog(request: Request, server: str, q: str = "", role: str = ""):
-        """The modules of the catalog matching q (at most 50), each with its
+    async def modules_catalog(request: Request, server: str, q: str = "", role: str = "", source: str = ""):
+        """The modules of the catalogs matching q (at most 50): of one source,
+        or of all of them ("": a module in two, the OCA's), each with its
         state in the instance and why it cannot be installed in role."""
         found = modules_instance(server)
         if not isinstance(found, tuple):
             return found
         _, _, srv, series = found
-        catalog = catalog_for(series)
+        catalogs = catalogs_for(series)
+        chosen = next((c for c in catalogs if c.ident == source), None)
+        if source and chosen is None:
+            return refuse(f"No source {source} in the catalogs of modules", status.HTTP_404_NOT_FOUND)
+        catalog = chosen or catalog_chosen(series, "")
         rows, total = modulecatalog.search(catalog, q)
         known, _, code, repos = await modules_view(srv)
         role = role if role in known else ("test" if "test" in known else "production")
         result = []
+        through: dict[str, modulecatalog.Catalog] = {}
         for entry in rows:
             state = modulecatalog.state_of(entry["module"], known, code)
-            blocked = modulecatalog.plan(catalog, entry["module"], role, known, code, repos)["blocked"]
+            each = through.get(entry["source"]) or through.setdefault(entry["source"],
+                                                                       catalog_chosen(series, entry["source"]))
+            blocked = modulecatalog.plan(each, entry["module"], role, known, code, repos)["blocked"]
             result.append(module_row(entry, state, i18n.tr(request_language(request), blocked) if blocked else None))
-        return {**catalog.meta(), "total": total, "query": q, "modules": result}
+        meta = catalog_for(series).meta() if chosen is None else chosen.meta()
+        return {**meta, "source": source, "total": total, "query": q, "modules": result}
 
     @app.get("/api/servers/{server}/modules/plan", dependencies=[Depends(developer)])
-    async def modules_plan(request: Request, server: str, module: str = "", role: str = "test"):
+    async def modules_plan(request: Request, server: str, module: str = "", role: str = "test", source: str = ""):
         """What installing module in role takes (Install…): the repositories
-        to add, the modules, the Python packages; nothing is done."""
+        to add (from the source chosen first), the modules, the Python
+        packages, the modules that are not free; nothing is done."""
         found = modules_instance(server)
         if not isinstance(found, tuple):
             return found
         _, _, srv, series = found
         if role not in ROLES or getattr(srv, role) is None:
             return refuse(f"{server} has no {role}", status.HTTP_404_NOT_FOUND)
-        catalog = catalog_for(series)
+        catalog = catalog_chosen(series, source)
         known, why, code, repos = await modules_view(srv)
         made = modulecatalog.plan(catalog, module, role, known, code, repos)
         entry = catalog.modules.get(module) or {}
+        free, tight = await room_for(found[0], srv, made, role)
+        made["blocked"] = made["blocked"] or tight
+        made["free"] = free
         say = functools.partial(i18n.tr, request_language(request))
         return {**made, "blocked": say(made["blocked"]) if made["blocked"] else None,
-                "name": entry.get("name") or module, "series": series,
+                "licenses": [{**row, "why": say(row["why"])} for row in made["licenses"]],
+                "name": entry.get("name") or module, "series": series, "source": entry.get("source_label") or "",
                 "restarts": [r for r in ROLES if getattr(srv, r) is not None] if made["repositories"] else [role],
                 "unread": say(why[role]) if why.get(role) else None}
 
@@ -8068,7 +8218,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return {"modules": sorted(m for m, s in known.items() if s in modulecatalog.INSTALLED)}
 
     @app.post("/api/servers/{server}/{role}/modules/install", dependencies=[Depends(developer)])
-    async def modules_install(server: str, role: str, payload: dict = Body(...),
+    async def modules_install(request: Request, server: str, role: str, payload: dict = Body(...),
                               me: Principal = Depends(current_user)):
         """A job: the repositories the module needs added to production and
         test (both restarted), a backup of production when it goes there,
@@ -8095,22 +8245,27 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                           "a backup first, and production restarts")
         if server_busy(server):
             return refuse(f"A job is running on {server}: try again when it ends")
-        catalog = catalog_for(series)
+        catalog = catalog_chosen(series, str(payload.get("source") or ""))
         known, why, code, repos = await modules_view(srv)
         made = modulecatalog.plan(catalog, module, role, known, code, repos)
+        made["blocked"] = made["blocked"] or (await room_for(ws, srv, made, role))[1]
         if made["blocked"]:
             return refuse(made["blocked"])
         if not made["modules"]:
             return refuse(f"{module} is installed in {server}/{role} already")
+        licensed = [f"{row['module']} ({row['why']})" for row in made["licenses"]]
+        if licensed and payload.get("licensed") is not True:
+            return refuse(f"{', '.join(licensed)}: not free. Tick that you have the licence to install them")
         roles = [r for r in ROLES if getattr(srv, r) is not None]
-        source = modulecatalog.GitSource()
 
         async def action(job):
+            if licensed:
+                job.log(f"--- not free, the licence declared by {me}: {', '.join(licensed)}")
             if made["repositories"]:
-                job.log(f"--- the repositories {', '.join(made['repositories'])} of the OCA, branch {series}, "
+                job.log(f"--- the repositories {', '.join(made['repositories'])} of the catalogs, branch {series}, "
                         f"added to {', '.join(roles)}")
                 await add_repositories(job, ws, server, instance,
-                                       [(repo, source.url(repo), {r: series for r in roles})
+                                       [(repo, made["urls"][repo], {r: series for r in roles})
                                         for repo in made["repositories"]])
             inst = getattr(settings.servers[server], role)
             if production:
@@ -8138,6 +8293,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
         keys = [f"{server}/{r}" for r in roles] if made["repositories"] else [f"{server}/{role}"]
         job = jobs.submit(f"Install {module} in {server}/{role}", keys, f"manual: {me}", action, workspace=ws.name)
+        if licensed:
+            access_log.record("action", me.kind, me.name, request.client.host if request.client else "",
+                              f"modules not free installed in {server}/{role}, the licence declared: "
+                              f"{', '.join(licensed)}", server=server, workspace=ws.name)
         return {"job": job.id}
 
     def odoo_error(lines: list[str]) -> str:
@@ -8408,6 +8567,174 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         ws, instance, srv, _ = found
         rows = await asyncio.to_thread(uploaded_modules, ws, instance, srv)
         return {"roles": {role: [{"module": m, **r} for m, r in kept.items()] for role, kept in rows.items()}}
+
+    # --- a module uploaded as a .zip made a repository on GitHub (README,
+    # Modules uploaded as a .zip): the owner the token's account or one of its
+    # organisations, private by default, the branch the series; the module's
+    # files its first commit, pushed with git over https through the store
+    # file of the instance's credentials (0600, never a command line); then,
+    # when asked, the instance follows the repository instead of the copy
+
+    REPO_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,63}")
+
+    def github_target(server: str, payload: dict):
+        """(host, its GitHub token, the owner, whether it is an organisation)
+        of a request, or a refusal; the owner: the token's account by default."""
+        tokens = gitcredentials.github_tokens(settings, server)
+        if not tokens:
+            return refuse(f"No GitHub token reaches {server}: add one in its workspace's Git credentials "
+                          "(+ GitHub token)")
+        host = str(payload.get("host") or "").strip().lower() or sorted(tokens)[0]
+        cred = tokens.get(host)
+        if cred is None:
+            return refuse(f"No GitHub token for {host} in the git credentials of {server}")
+        owner = str(payload.get("owner") or "").strip() or cred.account
+        if owner != cred.account and owner not in cred.orgs:
+            return refuse(f"{owner} is neither the token's account ({cred.account or '?'}) nor one of its "
+                          "organisations: save the token again if it changed")
+        return host, cred, owner, owner != cred.account
+
+    def uploaded_source(ws: Workspace, instance: str, srv, module: str) -> Path | None:
+        """The folder of an uploaded module: production's copy, else test's."""
+        for role in ROLES:
+            if getattr(srv, role) is not None:
+                folder = uploads_folder(ws, instance, role) / module
+                if module in moduleupload.record(folder.parent) and folder.is_dir():
+                    return folder
+        return None
+
+    @app.post("/api/servers/{server}/modules/github/check", dependencies=[Depends(admin)])
+    async def module_github_check(request: Request, server: str, payload: dict = Body(...),
+                                  me: Principal = Depends(current_user)):
+        """What «Make a repository on GitHub…» offers for an uploaded module:
+        the GitHub tokens that reach the instance, the owners (the account,
+        its organisations), and whether the token may make a repository of
+        the owner chosen, measured (github.Client.may_make: nothing made)."""
+        found = upload_instance(server, me)
+        if not isinstance(found, tuple):
+            return found
+        ws, instance, srv, series = found
+        module = str(payload.get("module") or "")
+        if not moduleupload.MODULE.fullmatch(module) or await asyncio.to_thread(
+                uploaded_source, ws, instance, srv, module) is None:
+            return refuse(f"{module!r} is not a module uploaded into {server}", status.HTTP_404_NOT_FOUND)
+        tokens = gitcredentials.github_tokens(settings, server)
+        answer = {"module": module, "series": series, "name": module, "branch": series,
+                  "tokens": [{"host": h, "account": c.account, "orgs": list(c.orgs), "label": c.label}
+                             for h, c in sorted(tokens.items())],
+                  "taken": sorted(repository_names(srv) | {moduleupload.FOLDER})}
+        if not tokens:
+            return {**answer, "may": None, "missing": None}
+        target = github_target(server, payload)
+        if not isinstance(target, tuple):
+            return target
+        host, cred, owner, organisation = target
+        say = functools.partial(i18n.tr, request_language(request))
+        try:
+            async with github.Client(host, cred.token) as gh:
+                may = await gh.may_make(owner, organisation)
+        except github.GitHubError as exc:
+            return {**answer, "host": host, "owner": owner, "may": None, "missing": None, "error": say(str(exc))}
+        return {**answer, "host": host, "owner": owner, "organisation": organisation, "may": may,
+                "missing": None if may else say(f"The token may not make a repository of {owner}: on github.com it "
+                                                "needs «Administration: Read and write» (and «Contents: Read and "
+                                                "write», on All repositories, to push the module)")}
+
+    @app.post("/api/servers/{server}/modules/github/create", dependencies=[Depends(admin)])
+    async def module_github_create(request: Request, server: str, payload: dict = Body(...),
+                                   me: Principal = Depends(current_user)):
+        """A job: the repository made on GitHub, the module's files pushed as
+        its first commit on the branch of the series; with follow, the module
+        taken out of the uploaded ones and the repository added to the
+        instance (production and test restarted, its webhook made when the
+        CI is on), the module put back if that fails."""
+        found = upload_instance(server, me)
+        if not isinstance(found, tuple):
+            return found
+        ws, instance, srv, series = found
+        module = str(payload.get("module") or "")
+        source = await asyncio.to_thread(uploaded_source, ws, instance, srv, module) \
+            if moduleupload.MODULE.fullmatch(module) else None
+        if source is None:
+            return refuse(f"{module!r} is not a module uploaded into {server}", status.HTTP_404_NOT_FOUND)
+        target = github_target(server, payload)
+        if not isinstance(target, tuple):
+            return target
+        host, cred, owner, organisation = target
+        name = str(payload.get("name") or "").strip()
+        if not REPO_NAME.fullmatch(name) or name.endswith(".git") or ".." in name:
+            return refuse(f"{name!r} is not a name of a repository (letters, digits, . _ -, at most 64)")
+        follow = payload.get("follow") is True
+        if follow and (name == moduleupload.FOLDER or name in repository_names(srv)):
+            return refuse(f"{server} has a repository {name} already: give the new one another name")
+        private_repo = payload.get("private") is not False
+        if server_busy(server):
+            return refuse(f"A job is running on {server}: try again when it ends")
+        roles = [r for r in ROLES if getattr(srv, r) is not None]
+        work = private.backup_folder(upload_dir / "github") / secrets.token_hex(8)
+
+        async def action(job):
+            try:
+                async with github.Client(host, cred.token) as gh:
+                    made = await gh.make_repository(owner, organisation, name, private_repo,
+                                                    f"Odoo module {module}, made by OmniaCLI from an upload")
+            except github.GitHubError as exc:
+                raise JobFailed(str(exc)) from None
+            full, url = made["full_name"], made["clone_url"] or f"https://{host}/{owner}/{name}.git"
+            job.log(f"--- the repository {full} made on {host}" + (", private" if made["private"] else ", public"))
+            job.result = {"server": server, "module": module, "repository": full, "url": made["html_url"]}
+            options = gitcredentials.options_for(settings, server)
+            git = ["git", "-c", "user.name=OmniaCLI", "-c", "user.email=omniacli@localhost",
+                   "-c", "init.defaultBranch=" + series, "-c", "commit.gpgsign=false"]
+            try:
+                tree = await asyncio.to_thread(moduleupload.first_commit_tree, source, work)
+                for step in (["init", "-q"], ["add", "-A"],
+                             ["commit", "-q", "-m", f"{module}: the module uploaded as a .zip into {server}"]):
+                    code, out = await ops.capture([*git, *step], cwd=tree, timeout=120)
+                    if code:
+                        raise JobFailed(f"git {step[0]}: {out.strip().splitlines()[-1] if out.strip() else code}")
+                code, out = await ops.capture([*git, *options, "push", "-q", url, f"HEAD:refs/heads/{series}"],
+                                              cwd=tree, timeout=300)
+                if code:
+                    last = out.strip().splitlines()[-1] if out.strip() else str(code)
+                    raise JobFailed(f"The repository {full} was made, but the module was not pushed to it ({last}): "
+                                    "the token needs «Contents: Read and write» on it (a token on All repositories). "
+                                    "Delete the empty repository on GitHub, or push the module to it by hand")
+            finally:
+                await asyncio.to_thread(shutil.rmtree, work, True)
+            job.log(f"--- {module} pushed to {full}, branch {series}: its first commit")
+            if not follow:
+                job.log(f"The instance keeps the uploaded copy of {module}: add {full} with + Add a repository to "
+                        "follow it")
+                return
+            stamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+            aside: dict[str, tuple] = {}
+            for role in roles:
+                aside[role] = await asyncio.to_thread(moduleupload.take_out, uploads_folder(ws, instance, role),
+                                                      module, stamp)
+            try:
+                await add_repositories(job, ws, server, instance, [(name, url, {r: series for r in roles})])
+            except BaseException:
+                for role, (path, entry) in aside.items():
+                    await asyncio.to_thread(moduleupload.put_back, uploads_folder(ws, instance, role), module,
+                                            path, entry)
+                job.log(f"WARNING: {server} keeps the uploaded copy of {module}")
+                raise
+            for path, _ in aside.values():
+                if path is not None:
+                    await asyncio.to_thread(shutil.rmtree, path, True)
+            for role in roles:
+                known_memo.pop(getattr(settings.servers[server], role).key, None)
+            job.log(f"{server} follows {full} (branch {series}) instead of the uploaded copy of {module}")
+            await github_sync(job, {url})
+
+        job = jobs.submit(f"Make a repository of {module} on GitHub", [f"{server}/{r}" for r in roles],
+                          f"manual: {me}", action, workspace=ws.name)
+        access_log.record("action", me.kind, me.name, request.client.host if request.client else "",
+                          f"module {module} of {server} made the repository {owner}/{name} on {host}"
+                          + (" (private)" if private_repo else " (public)")
+                          + (", followed by the instance" if follow else ""), server=server, workspace=ws.name)
+        return {"job": job.id}
 
     def copy_uploads(job, parent: str, staging: str) -> None:
         """The modules uploaded into parent's production into the staging's

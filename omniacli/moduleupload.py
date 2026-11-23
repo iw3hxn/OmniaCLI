@@ -211,6 +211,57 @@ def put(folder: Path, staged: Path, modules: list[dict], by: str, file: str, sta
     return replaced
 
 
+# --- a module uploaded made a repository on GitHub (README, Modules uploaded
+# as a .zip, Make a repository on GitHub…): its files the first commit of the
+# series' branch, then the instance follows the repository instead of the copy
+
+IGNORED = shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", ".*.replaced-*", "*.part")
+
+
+def first_commit_tree(source: Path, work: Path) -> Path:
+    """A folder (made in work, 700) with the module's folder in it, its
+    caches left out: what the first commit holds."""
+    work.mkdir(mode=0o700, parents=True, exist_ok=True)
+    tree = work / "tree"
+    if tree.exists():
+        shutil.rmtree(tree)
+    tree.mkdir(mode=0o700)
+    shutil.copytree(source, tree / source.name, symlinks=False, ignore=IGNORED)
+    return tree
+
+
+def take_out(folder: Path, module: str, stamp: str) -> tuple[Path | None, dict | None]:
+    """An uploaded module set aside beside the folder of the uploads (in the
+    role's addons/, which is not in the addons path: only its folders are)
+    and taken out of the record: (where it is, its record), to put back if
+    what follows fails."""
+    kept = record(folder)
+    entry = kept.pop(module, None)
+    source, aside = folder / module, folder.parent / f".omniacli-followed-{module}-{stamp}"
+    if not source.is_dir() or source.is_symlink():
+        return None, entry
+    source.rename(aside)
+    _write_record(folder, kept)
+    return aside, entry
+
+
+def put_back(folder: Path, module: str, aside: Path | None, entry: dict | None) -> None:
+    """A module taken out put back where it was, with its record."""
+    if aside is None or not aside.is_dir():
+        return
+    if not (folder / module).exists():
+        aside.rename(folder / module)
+    kept = record(folder)
+    kept[module] = entry or {"name": module}
+    _write_record(folder, kept)
+
+
+def _write_record(folder: Path, kept: dict) -> None:
+    text = json.dumps(kept, indent=1, sort_keys=True) + "\n"
+    (folder / (RECORD + ".part")).write_text(text, encoding="utf-8")
+    os.replace(folder / (RECORD + ".part"), folder / RECORD)
+
+
 def copy_folder(source: Path, target: Path) -> list[str]:
     """A production's uploaded modules into a staging's (made beside it):
     the target's folder made again from the source's. The modules copied."""

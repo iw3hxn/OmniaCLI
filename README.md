@@ -175,8 +175,9 @@ DNS of each name points.
 
 ![The Addresses dialog](docs/images/addresses.png)
 
-**Modules**: the repositories of the instance and the catalog of the OCA for
-its version of Odoo, searched by name or by what a module does.
+**Modules**: the repositories of the instance and the catalogs of modules for
+its version of Odoo (the OCA's, and the GitHub users or organisations the
+machine's admins add), searched by name or by what a module does.
 
 ![The Modules tab of an instance](docs/images/modules-tab.png)
 
@@ -1077,7 +1078,9 @@ The token GitHub needs:
   *Metadata* read-only (mandatory: the list and the branches), *Webhooks*
   read and write (the CI: the webhook made by itself), *Commit statuses*
   read and write (the state of a deploy on its commit). Nothing of the
-  account's permissions.
+  account's permissions. To make a repository of a module uploaded as a
+  .zip (below, Modules uploaded as a .zip) also *Administration* read and
+  write and *Contents* read and write, on *All repositories*.
 
 **Save the token** asks GitHub who it is (`GET /user`, `/user/orgs`): the
 account and the organisations are kept with it and shown in the row, with
@@ -2845,14 +2848,15 @@ promoted as the cluster's, by the same code; what differs:
   customer reads nothing during the return, and one job of its instance at
   its end, which names no machine.
 
-### Modules from the OCA catalog
+### Modules from the catalogs
 
 The **Modules** tab of an instance of a workspace (developers and admins)
 holds its repositories (**Code**: each with its branch and last commit,
 **Update…**, **Delete…**, **+ Add a repository**), the **Updates of the
-code** (the auto update, deploy on push) and **+ Add modules**: the catalog
-of the [OCA](https://odoo-community.org/)'s modules for the instance's
-version of Odoo.
+code** (the auto update, deploy on push) and **+ Add modules**: the catalogs
+of modules for the instance's version of Odoo — the
+[OCA](https://odoo-community.org/)'s, and the **sources** the machine's
+admins add (below).
 
 - **The catalog** is read with git from github.com, no API and no paid
   service: the repositories from `OCA/repo-maintainer-conf`, a
@@ -2875,6 +2879,51 @@ version of Odoo.
   off), a restart, the module's state checked. In test by a developer, in
   production by an admin, after a confirmation; a staging's own copy by a
   developer.
+
+- **Sources** (**Sources…** in the dialog, the machine's admins): a GitHub
+  user or organisation typed by its name (`CybroOdoo`, `odoomates`), by
+  its address, or `host/owner` for a GitHub Enterprise, with **only these
+  repositories** when not all of them are wanted. Its public repositories
+  are listed through GitHub's API (`GET /users/<owner>/repos`, forks,
+  archived and private ones left out; none when the repositories are
+  named), then read as the OCA's, with git (the branch of the version of
+  Odoo, `ls-remote`, the manifests of the changed ones): one or two
+  requests of the API a source. Without a token GitHub gives the machine's
+  address **60 requests an hour**; *Read its list with the GitHub token of
+  this instance* uses the instance's (or its workspace's) GitHub token for
+  that host instead (5,000 an hour), and the dialog says which reads it and
+  how many requests were left. Kept in `<state>/catalog/sources.json`, each
+  catalog in `src-<id>-<version>.json` beside the OCA's, read again every
+  night with it and with **Read again**; **Take away** (a second click
+  confirms) deletes the source and its catalogs, not the repositories the
+  instances took from it. Every addition and removal is in the access log.
+- **Look in**: all the sources (a module two of them have: the OCA's) or
+  one. A row says its source's repository (`CybroOdoo/CybroAddons`), its
+  licence, its price when its manifest has one (`price`, `currency`, as
+  Odoo Apps' vendors write them), *not free* when it is.
+- **A repository of a source** takes in the instance the name
+  `<owner>-<repository>` (`CybroOdoo-CybroAddons`): never one of the OCA's.
+  The plan resolves the dependencies through every catalog, the module's
+  own source first, then the OCA, then the others: a module of Cybrosys
+  that needs `date_range` brings the OCA's `server-ux` when its own source
+  does not have it.
+- **Not free** — a licence `OPL-1`, `Other proprietary`, `OEEL-1`, or a
+  price above 0 — of the module or of one it brings: the plan lists them and
+  **Install** waits for the tick **I have the licence of these modules**;
+  the request is refused without it, the job says who declared the licence,
+  and the access log keeps it. OmniaCLI does not check the licence: a
+  vendor's paid modules are usually not on GitHub at all, they come as a
+  .zip (below).
+- **The Odoo Apps store** (apps.odoo.com) is not a source, by choice: it
+  has no documented machine-readable listing (its `robots.txt` disallows
+  the searches and pages of its listing to robots; the only JSON endpoint,
+  `/loempia/listdatamodules`, is the one Odoo's own client calls for the
+  *industries* of Odoo Enterprise, undocumented), and a paid app is
+  downloaded only by its buyer, with the Odoo account that bought it (Odoo
+  Apps' FAQ). Reading its HTML pages would be scraping against its
+  `robots.txt`. A free app there that has a public repository is added by
+  its author's GitHub as a source; a bought one by **Upload a module
+  (.zip)…**.
 
 An instance outside a workspace has the table of its repositories only.
 
@@ -2924,9 +2973,35 @@ their version, where they are, who uploaded them and when.
   its addons path is in its own `odoo.conf`, which OmniaCLI does not write;
   the upload is refused with that reason, and the module goes in one of
   its repositories.
-- **Not built**: pushing the module to a new repository on GitHub, and
-  deleting an uploaded module from the page (by hand: its folder in
-  `addons/omniacli-uploads` of both roles, after uninstalling it in Apps).
+- **Make a repository on GitHub…** (each uploaded module's row, the same
+  admins) when a GitHub token reaches the instance (its workspace's or its
+  server's, README, GitHub): the owner — the token's account or one of its
+  organisations, as GitHub said them when the token was saved — whether the
+  token may make a repository there **measured** as the token's Test
+  measures a write (`POST /user/repos` or `/orgs/<org>/repos` with no name:
+  422 when it may, 403/404 when it may not, nothing made; the missing
+  *Administration: Read and write* said), the name (the module's by
+  default), **private** by default, and **Then <instance> follows the
+  repository instead of the uploaded copy**. The job makes the repository
+  (empty, no wiki), puts the module's files (without `__pycache__` and
+  compiled files) in a folder of its own, private to OmniaCLI, makes one
+  commit on the branch named as the version of Odoo (`19.0`) and pushes it
+  over https with the token through the credentials' store file (0600,
+  `credential.helper=store`), never on a command line. Following: the
+  uploaded copy set aside in each role (beside the uploads' folder, outside
+  the addons path), the repository added to production and test as
+  **+ Add a repository** does (cloned on that branch, odoo.conf, restart),
+  its webhook made when the CI is on (a push then deploys a test or a
+  staging), the copy deleted; when the addition fails the copy goes back
+  where it was. A push GitHub refuses fails the job with the permission
+  missing (*Contents: Read and write*) and the empty repository named, to
+  delete on GitHub or fill by hand. The token needs **All repositories**
+  access (a token on selected repositories does not reach a repository made
+  after it), *Administration* and *Contents* read and write. One module, one
+  repository: the modules of a zip of several go one at a time.
+- **Not built**: deleting an uploaded module from the page (by hand: its
+  folder in `addons/omniacli-uploads` of both roles, after uninstalling it
+  in Apps).
 
 The zip goes as the raw body of the request (`_upload.html`), so it goes
 through a link too (`/links/<name>/…`: the proxy passes the body). It is

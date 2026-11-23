@@ -9,8 +9,13 @@
    modules it replaces (their names typed), and what then (only put in, or
    installed in test or production, with the install's rules); Put it in
    starts the job (POST …/modules/upload/<id>/apply) and its page opens.
-   Pushing the module to GitHub is not done here. Its script is an IIFE of
-   its own. -#}
+   Each uploaded module has Make a repository on GitHub…: the token that
+   reaches the instance, the owner (its account or one of its
+   organisations, the permission to make a repository measured: POST
+   …/modules/github/check), the name, private by default, whether the
+   instance then follows the repository instead of the copy; Make the
+   repository starts the job (POST …/modules/github/create) and its page
+   opens. Its script is an IIFE of its own. -#}
 {% include "_upload.html" %}
 <div class="mu-box" id="mu-box" data-api="{{ prefix }}/api/servers/{{ server.name }}" data-jobs="{{ prefix }}/jobs/">
   <div class="mu-head">
@@ -21,7 +26,7 @@
   </div>
   <p class="muted" id="mu-none">{{ _("No module uploaded as a .zip.") }}</p>
   <div class="scroll"><table class="addons-table" id="mu-table" hidden>
-    <thead><tr><th>{{ _("Module") }}</th><th>{{ _("Version") }}</th><th class="hide-sm">{{ _("Where") }}</th><th class="hide-sm">{{ _("Uploaded by") }}</th><th>{{ _("Uploaded") }}</th></tr></thead>
+    <thead><tr><th>{{ _("Module") }}</th><th>{{ _("Version") }}</th><th class="hide-sm">{{ _("Where") }}</th><th class="hide-sm">{{ _("Uploaded by") }}</th><th>{{ _("Uploaded") }}</th><th></th></tr></thead>
     <tbody id="mu-rows"></tbody>
   </table></div>
   <input type="file" id="mu-file" accept=".zip,application/zip" hidden>
@@ -42,12 +47,37 @@
       <label for="mu-then" class="mu-label">{{ _("Then") }}</label>
       <select id="mu-then" title="{{ _('After the modules are in the instance: only that (they are installed later from Odoo’s Apps), or installed now in one database') }}"></select>
       <p class="muted" id="mu-note"></p>
-      <p class="muted small">{{ _("Pushing the module to a repository on GitHub is not done here: add the repository with + Add a repository when it is there.") }}</p>
+      <p class="muted small">{{ _("Once it is in, Make a repository on GitHub… on its row makes it a repository of its own, which the instance can follow.") }}</p>
     </div>
     <p class="error" id="mu-error" role="alert"></p>
     <div class="actions">
       <span id="mu-go-wrap"><button type="button" class="primary" id="mu-go" disabled title="{{ _('Puts the modules in production and test, restarts them, updates the list of the modules of their databases, and installs them where chosen. It is a job.') }}">{{ _("Put them in") }}</button></span>
       <button type="button" id="mu-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="mu-gh-dialog" aria-labelledby="mu-gh-title" style="width: min(640px, calc(100vw - 32px))">
+  <form method="dialog" id="mu-gh-form">
+    <h2 id="mu-gh-title">{{ _("Make a repository on GitHub") }}</h2>
+    <p id="mu-gh-intro"></p>
+    <p class="muted" id="mu-gh-none" hidden>{{ _("No GitHub token reaches this instance: add one in the workspace's page, Git credentials › + GitHub token. It needs «Administration: Read and write» and «Contents: Read and write», on All repositories.") }}</p>
+    <div id="mu-gh-fields" hidden>
+      <div id="mu-gh-host-box" hidden>
+        <label for="mu-gh-host" class="mu-label">{{ _("GitHub") }}</label>
+        <select id="mu-gh-host" title="{{ _('The GitHub of the token: github.com, or a GitHub Enterprise') }}"></select>
+      </div>
+      <label for="mu-gh-owner" class="mu-label">{{ _("Owner") }}</label>
+      <select id="mu-gh-owner" title="{{ _('Whose the repository is: the token’s account, or one of its organisations') }}"></select>
+      <p class="muted small" id="mu-gh-may"></p>
+      <label for="mu-gh-name" class="mu-label">{{ _("Name of the repository") }}</label>
+      <input type="text" id="mu-gh-name" class="mono" autocomplete="off" spellcheck="false" maxlength="64" style="width: 100%">
+      <label class="mu-check"><input type="checkbox" id="mu-gh-private" checked> {{ _("Private: only who the owner lets in sees it") }}</label>
+      <label class="mu-check"><input type="checkbox" id="mu-gh-follow" checked> <span id="mu-gh-follow-text"></span></label>
+    </div>
+    <p class="error" id="mu-gh-error" role="alert"></p>
+    <div class="actions">
+      <span id="mu-gh-go-wrap"><button type="button" class="primary" id="mu-gh-go" disabled title="{{ _('Makes the repository on GitHub and pushes the module as its first commit; then, if chosen, the instance follows it. It is a job, whose page opens.') }}">{{ _("Make the repository") }}</button></span>
+      <button type="button" id="mu-gh-cancel" title="{{ _('Closes without making anything') }}">{{ _("Cancel") }}</button>
     </div>
   </form>
 </dialog>
@@ -59,6 +89,7 @@
 .mu-modules li { margin: 4px 0; }
 .mu-label { display: block; font-size: 13px; font-weight: 600; margin: 12px 0 4px; }
 #mu-replace label { display: block; font-size: 13px; margin: 6px 0 4px; }
+.mu-check { display: flex; gap: 8px; align-items: flex-start; margin: 10px 0 0; }
 </style>
 <script>
 (function () {
@@ -85,6 +116,14 @@
     busy: {{ _("A job is working on {name}: try again when it ends.") | tojson }},
     refused: {{ _("Refused") | tojson }},
     both: {{ _("production and test") | tojson }},
+    toGitHub: {{ _("Make a repository on GitHub…") | tojson }},
+    toGitHubTitle: {{ _("Makes a new repository on GitHub with this module as its first commit, and the instance may follow it instead of the uploaded copy") | tojson }},
+    ghIntro: {{ _("{module}: its files become the first commit of a new repository, on the branch {branch}.") | tojson }},
+    ghMay: {{ _("The token may make repositories of {owner}.") | tojson }},
+    ghChecking: {{ _("Asking GitHub what the token may do…") | tojson }},
+    ghFollow: {{ _("Then {server} follows the repository instead of the uploaded copy (it restarts; with the CI on, a push deploys)") | tojson }},
+    ghTaken: {{ _("{server} has a repository {name} already: give the new one another name") | tojson }},
+    ghOrg: {{ _("{name} (organisation)") | tojson }},
   };
   const fill = (text, values) => text.replace(/\{(\w+)\}/g, (all, k) => (k in values ? values[k] : all));
   const $ = (id) => document.getElementById(id);
@@ -112,6 +151,11 @@
                                  [row.where.join(", "), "hide-sm"], [row.by || "–", "hide-sm"], [window.whenText(row.uploaded), ""]]) {
         const td = document.createElement("td"); td.textContent = text; if (cls) td.className = cls; tr.append(td);
       }
+      const td = document.createElement("td");
+      const button = document.createElement("button");
+      button.type = "button"; button.className = "small"; button.textContent = U.toGitHub; button.title = U.toGitHubTitle;
+      button.addEventListener("click", () => ghOpen(row.module));
+      td.append(button); tr.append(td);
       return tr;
     }));
     $("mu-table").hidden = !body.children.length;
@@ -203,6 +247,89 @@
     if (!ok) { $("mu-error").textContent = data.error || data.detail || U.refused; allowGo(); return; }
     location.href = box.dataset.jobs + data.job;
   }
+  // --- Make a repository on GitHub…
+  const ghDialog = $("mu-gh-dialog");
+  let gh = null;
+  async function ghAsk(body) {
+    const resp = await fetch(`${api}/modules/github/check`, {method: "POST",
+      headers: {"Content-Type": "application/json", Accept: "application/json"}, body: JSON.stringify(body)});
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.error || data.detail || U.refused);
+    return data;
+  }
+  function ghOwners() {
+    const token = gh.tokens.find((t) => t.host === $("mu-gh-host").value) || gh.tokens[0];
+    const owners = [[token.account, token.account], ...token.orgs.map((o) => [o, fill(U.ghOrg, {name: o})])];
+    $("mu-gh-owner").replaceChildren(...owners.map(([value, text]) => {
+      const option = document.createElement("option"); option.value = value; option.textContent = text; return option;
+    }));
+  }
+  function ghAllow() {
+    const name = $("mu-gh-name").value.trim();
+    const taken = $("mu-gh-follow").checked && gh.taken.includes(name);
+    $("mu-gh-error").textContent = taken ? fill(U.ghTaken, {server: "{{ server.name }}", name}) : "";
+    $("mu-gh-go").disabled = !gh.may || !name || taken;
+  }
+  async function ghCheck() {
+    $("mu-gh-go").disabled = true;
+    $("mu-gh-may").textContent = U.ghChecking;
+    $("mu-gh-may").className = "muted small";
+    let data;
+    try {
+      data = await ghAsk({module: gh.module, host: $("mu-gh-host").value, owner: $("mu-gh-owner").value});
+    } catch (e) { $("mu-gh-may").textContent = ""; $("mu-gh-error").textContent = e.message; return; }
+    gh.may = !!data.may;
+    $("mu-gh-may").textContent = data.may ? fill(U.ghMay, {owner: data.owner}) : (data.missing || data.error || U.refused);
+    $("mu-gh-may").className = data.may ? "muted small" : "error small";
+    ghAllow();
+  }
+  async function ghOpen(module) {
+    $("mu-gh-error").textContent = ""; $("mu-gh-intro").textContent = ""; $("mu-gh-may").textContent = "";
+    $("mu-gh-fields").hidden = true; $("mu-gh-none").hidden = true; $("mu-gh-go").disabled = true;
+    ghDialog.showModal();
+    let data;
+    try { data = await ghAsk({module}); } catch (e) { $("mu-gh-error").textContent = e.message; return; }
+    gh = {...data, may: !!data.may};
+    $("mu-gh-intro").textContent = fill(U.ghIntro, {module, branch: data.branch});
+    if (!data.tokens.length) { $("mu-gh-none").hidden = false; return; }
+    $("mu-gh-host").replaceChildren(...data.tokens.map((t) => {
+      const option = document.createElement("option"); option.value = t.host; option.textContent = t.label ? `${t.host} · ${t.label}` : t.host; return option;
+    }));
+    $("mu-gh-host").value = data.host || data.tokens[0].host;
+    $("mu-gh-host-box").hidden = data.tokens.length < 2;
+    ghOwners();
+    $("mu-gh-owner").value = data.owner || $("mu-gh-owner").value;
+    $("mu-gh-name").value = data.name;
+    $("mu-gh-private").checked = true; $("mu-gh-follow").checked = true;
+    $("mu-gh-follow-text").textContent = fill(U.ghFollow, {server: "{{ server.name }}"});
+    $("mu-gh-fields").hidden = false;
+    $("mu-gh-may").textContent = data.may ? fill(U.ghMay, {owner: data.owner}) : (data.missing || data.error || "");
+    $("mu-gh-may").className = data.may ? "muted small" : "error small";
+    ghAllow();
+  }
+  async function ghGo() {
+    $("mu-gh-go").disabled = true;
+    $("mu-gh-error").textContent = "";
+    const body = {module: gh.module, host: $("mu-gh-host").value, owner: $("mu-gh-owner").value,
+                  name: $("mu-gh-name").value.trim(), private: $("mu-gh-private").checked, follow: $("mu-gh-follow").checked};
+    let data = {}, ok = false;
+    try {
+      const resp = await fetch(`${api}/modules/github/create`, {method: "POST",
+        headers: {"Content-Type": "application/json", Accept: "application/json"}, body: JSON.stringify(body)});
+      data = await resp.json().catch(() => ({}));
+      ok = resp.ok && data.job;
+    } catch (e) { data = {error: e.message}; }
+    if (!ok) { $("mu-gh-error").textContent = data.error || data.detail || U.refused; ghAllow(); return; }
+    location.href = box.dataset.jobs + data.job;
+  }
+  $("mu-gh-host").addEventListener("change", () => { ghOwners(); ghCheck(); });
+  $("mu-gh-owner").addEventListener("change", ghCheck);
+  $("mu-gh-name").addEventListener("input", ghAllow);
+  $("mu-gh-follow").addEventListener("change", ghAllow);
+  $("mu-gh-go").addEventListener("click", ghGo);
+  $("mu-gh-cancel").addEventListener("click", () => ghDialog.close());
+  $("mu-gh-form").addEventListener("submit", (event) => event.preventDefault());
+
   $("mu-open").addEventListener("click", () => { $("mu-file").value = ""; $("mu-file").click(); });
   $("mu-file").addEventListener("change", () => { const file = $("mu-file").files[0]; if (file) send(file); });
   $("mu-then").addEventListener("change", note);

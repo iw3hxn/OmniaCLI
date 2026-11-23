@@ -1,10 +1,13 @@
 # Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""The catalog of the free modules an instance may add (docs/ux/UX-008 §7):
-the OCA's repositories for a series of Odoo, read with git from github.com
-(no account, no paid service, no API limit), kept on disk with its date,
-read again on demand or at night, used from the disk when github.com does
-not answer.
+"""The catalogs of the modules an instance may add (docs/ux/UX-008 §7;
+README, Modules from the catalogs): the OCA's repositories for a series of
+Odoo, read with git from github.com (no account, no paid service, no API
+limit), and the sources the machine's admins add (SOURCES_FILE): the public
+repositories of a GitHub user or organisation (CybroOdoo, odoomates),
+listed through GitHub's API (GitHubSource) and read with git as the OCA's.
+Each kept on disk with its date, read again on demand or at night, used
+from the disk when GitHub does not answer.
 
 - the repositories: OCA/repo-maintainer-conf, conf/repo/*.yml, those whose
   branches name the series (a shallow, sparse clone of that folder only);
@@ -16,10 +19,14 @@ not answer.
 - the manifests read with ast.literal_eval, never run; the ones not
   installable are left out.
 
-The file, <state folder>/catalog/oca-<series>.json:
+The file, <state folder>/catalog/oca-<series>.json (a source's:
+src-<its id>-<series>.json):
 {"series", "source", "read": when it was last read whole, "tried": when a
 reading was last tried, "error": why that one failed (absent when it did
-not), "repositories": {name: {"commit", "label", "modules": {module: {...}}}}}"""
+not), "repositories": {name: {"commit", "label", "url", "modules": {module:
+{...}}}}}; a source's also "id", "label", "prefix" (of the name its
+repositories take in an instance: <owner>-) and "rate" (GitHub's requests
+left, and whether it was read with a token)."""
 
 from __future__ import annotations
 
@@ -36,7 +43,7 @@ from pathlib import Path
 
 import yaml
 
-from . import ops
+from . import github, ops
 
 SOURCE = "https://github.com/OCA"
 CONF_URL = f"{SOURCE}/repo-maintainer-conf.git"
@@ -52,7 +59,18 @@ PARALLEL = 8
 # what a search shows at most (UX-008 §7.3)
 LIMIT = 50
 # the fields a manifest gives the catalog
-FIELDS = ("name", "summary", "version", "license", "author", "category", "development_status")
+FIELDS = ("name", "summary", "version", "license", "author", "category", "development_status", "price", "currency")
+# the sources the machine's admins add, in the catalog's folder: [{id, host, owner, repositories, token_server,
+# added, by}]
+SOURCES_FILE = "sources.json"
+OCA = "oca"
+# a GitHub user or organisation (GitHub's own rule: letters, digits, single hyphens, at most 39)
+OWNER = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}")
+HOST = re.compile(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?(?::\d{1,5})?")
+# a source's repositories: at most this many read (the rest said)
+SOURCE_REPOSITORIES = 200
+# the licences a module needs to be bought or granted for (Odoo's manifest values): «ho la licenza» asked
+NOT_FREE = ("OPL-1", "OEEL-1", "Other proprietary")
 _GIT_ENV = {**ops._ENV, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "/bin/true"}
 # words of an Italian search and the English ones the manifests use
 SYNONYMS = {
@@ -87,6 +105,71 @@ def path_of(state_dir: Path, series: str) -> Path:
     if not SERIES.fullmatch(series):
         raise ValueError(f"{series!r} is not a series of Odoo, as 19.0")
     return Path(state_dir) / FOLDER / f"oca-{series}.json"
+
+
+def source_id(host: str, owner: str) -> str:
+    """The id of a source: the owner's name in lower case (cybroodoo), its
+    host's in front when it is not github.com."""
+    owner = owner.lower()
+    return owner if host == "github.com" else re.sub(r"[^a-z0-9]+", "-", f"{host}-{owner}").strip("-")
+
+
+def source_path(state_dir: Path, ident: str, series: str) -> Path:
+    if ident == OCA:
+        return path_of(state_dir, series)
+    if not SERIES.fullmatch(series) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,120}", ident):
+        raise ValueError(f"{ident!r} {series!r} is not a source and a series of Odoo")
+    return Path(state_dir) / FOLDER / f"src-{ident}-{series}.json"
+
+
+def parse_source(text: str) -> tuple[str, str]:
+    """(host, owner) of what the person typed: an owner (CybroOdoo), host/owner,
+    or the address of its page (https://github.com/CybroOdoo)."""
+    text = re.sub(r"^https?://", "", (text or "").strip().rstrip("/"))
+    host, _, owner = text.rpartition("/")
+    host = (host or "github.com").lower()
+    if host == "www.github.com":
+        host = "github.com"
+    if not OWNER.fullmatch(owner) or not HOST.fullmatch(host):
+        raise ValueError(f"{text!r} is not a GitHub user or organisation: its name, as CybroOdoo, or its address")
+    if host == "github.com" and owner.lower() == OCA:
+        raise ValueError("The OCA is a source of the catalog already")
+    return host, owner
+
+
+def load_sources(state_dir: Path) -> list[dict]:
+    """The sources added, by their id."""
+    try:
+        data = json.loads((Path(state_dir) / FOLDER / SOURCES_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    rows = [s for s in data if isinstance(s, dict) and isinstance(s.get("id"), str)] if isinstance(data, list) else []
+    return sorted(rows, key=lambda s: s["id"])
+
+
+def save_sources(state_dir: Path, sources: list[dict]) -> None:
+    folder = Path(state_dir) / FOLDER
+    folder.mkdir(parents=True, exist_ok=True)
+    partial = folder / (SOURCES_FILE + ".part")
+    partial.write_text(json.dumps(sorted(sources, key=lambda s: s["id"]), ensure_ascii=False, indent=1,
+                                  sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(partial, folder / SOURCES_FILE)
+
+
+def not_free(entry: dict) -> str | None:
+    """Why a module of a catalog is not free: its licence (OPL-1, Other
+    proprietary, OEEL-1), or the price its manifest says; None when it is
+    free (no licence said: Odoo's default, LGPL-3)."""
+    license_ = str(entry.get("license") or "").strip()
+    try:
+        price = float(str(entry.get("price") or "0").replace(",", "."))
+    except ValueError:
+        price = 0.0
+    if price > 0:
+        return f"{license_ or 'no licence said'}, {entry.get('price')} {entry.get('currency') or 'EUR'}"
+    if license_ in NOT_FREE:
+        return license_
+    return None
 
 
 def series_of(*names: str) -> str | None:
@@ -169,6 +252,9 @@ def _last_line(out: str) -> str:
 class GitSource:
     """The OCA's repositories on github.com, read with git (no API)."""
 
+    label = "the OCA"
+    host = "github.com"
+
     def __init__(self, base: str = SOURCE):
         self.base = base.rstrip("/")
 
@@ -218,28 +304,73 @@ class GitSource:
             return found
 
 
-async def refresh(job, path: Path, series: str, source=None) -> dict:
+class GitHubSource(GitSource):
+    """The public repositories of a GitHub user or organisation: listed
+    through GitHub's API (with a token when there is one: 5,000 requests an
+    hour; anonymous otherwise: 60, the machine's address's), or the ones the
+    source names; each read with git as the OCA's (no API, no limit). Forks
+    and archived ones are left out: their modules are another's, or old."""
+
+    def __init__(self, host: str, owner: str, repositories=(), token: str | None = None):
+        super().__init__(f"https://{host}/{owner}")
+        self.host, self.owner, self.named, self.token = host, owner, list(repositories or ()), token
+        self.label = owner
+        self.rate: dict | None = None
+        # KB of each repository on GitHub (its history, every branch): what a clone takes, at least
+        self.sizes: dict[str, int] = {}
+
+    async def repositories(self, series: str) -> dict[str, str]:
+        if self.named:
+            return {name: name for name in self.named}
+        try:
+            async with github.Client(self.host, self.token) as gh:
+                found, _ = await gh.owner_repositories(self.owner)
+                self.rate = {"remaining": gh.remaining, "limit": gh.limit, "token": bool(self.token)}
+        except github.GitHubError as exc:
+            raise SourceError(str(exc)) from None
+        names = [r["name"] for r in found if not (r["fork"] or r["archived"] or r["private"])
+                 and REPOSITORY.fullmatch(r["name"])]
+        self.sizes = {r["name"]: r["size"] for r in found if r.get("size")}
+        return {name: name for name in names[:SOURCE_REPOSITORIES]}
+
+
+async def refresh(job, path: Path, series: str, source=None, ident: str = OCA) -> dict:
     """The catalog of the series read again: the repositories of the
     source, each one downloaded only when its commit changed. What cannot be
     read stays as it was read before; the error is kept with the date."""
     source = source or GitSource()
+    label = getattr(source, "label", "the OCA")
+    host = getattr(source, "host", "github.com")
     old = load(path) or {}
     before = old.get("repositories") or {}
-    data = {"series": series, "source": SOURCE, "read": old.get("read"), "tried": now(),
+    data = {"series": series, "source": getattr(source, "base", SOURCE), "read": old.get("read"), "tried": now(),
             "repositories": dict(before)}
+    if ident != OCA:
+        data.update(id=ident, label=label, prefix=f"{source.owner}-")
     try:
         listed = await source.repositories(series)
     except SourceError as exc:
-        data["error"] = f"the repositories of the OCA cannot be read from github.com: {exc}"
+        data["error"] = f"the repositories of {label} cannot be read from {host}: {exc}"
         job.log(f"WARNING: {data['error']}")
         save(path, data)
         return data
-    job.log(f"--- {len(listed)} repositories of the OCA have a branch {series}")
+    if getattr(source, "rate", None):
+        data["rate"] = source.rate
+    if ident == OCA:
+        job.log(f"--- {len(listed)} repositories of the OCA have a branch {series}")
+    else:
+        job.log(f"--- {len(listed)} repositories of {label}: those with a branch {series} are read")
     semaphore = asyncio.Semaphore(PARALLEL)
     failures: list[str] = []
+    sizes = getattr(source, "sizes", None) or {}
+
+    def size_of(name: str, kept: dict) -> dict:
+        size = sizes.get(name) or kept.get("size_kb")
+        return {"size_kb": int(size)} if size else {}
+
     changed = 0
 
-    async def one(name: str, label: str):
+    async def one(name: str, each: str):
         nonlocal changed
         async with semaphore:
             try:
@@ -248,7 +379,7 @@ async def refresh(job, path: Path, series: str, source=None) -> dict:
                     return name, None
                 kept = before.get(name)
                 if kept and kept.get("commit") == commit:
-                    return name, {**kept, "label": label}
+                    return name, {**kept, "label": each, "url": source.url(name), **size_of(name, kept)}
                 texts = await source.manifests(name, series)
             except SourceError as exc:
                 failures.append(f"{name}: {exc}")
@@ -261,9 +392,10 @@ async def refresh(job, path: Path, series: str, source=None) -> dict:
                 modules[module] = parsed
         changed += 1
         job.log(f"[{name}] {commit[:10]}: {len(modules)} modules")
-        return name, {"commit": commit, "label": label, "modules": modules}
+        return name, {"commit": commit, "label": each, "url": source.url(name), "modules": modules,
+                      **size_of(name, before.get(name) or {})}
 
-    results = await asyncio.gather(*(one(name, label) for name, label in sorted(listed.items())))
+    results = await asyncio.gather(*(one(name, each) for name, each in sorted(listed.items())))
     repositories = {}
     for name, value in results:
         if value:
@@ -271,7 +403,7 @@ async def refresh(job, path: Path, series: str, source=None) -> dict:
     data["repositories"] = repositories
     count = sum(len(r.get("modules") or {}) for r in repositories.values())
     if failures:
-        data["error"] = (f"{len(failures)} repositories of the OCA cannot be read from github.com "
+        data["error"] = (f"{len(failures)} repositories of {label} cannot be read from {host} "
                          f"(the first: {failures[0]})")
         job.log(f"WARNING: {data['error']}")
     else:
@@ -279,8 +411,12 @@ async def refresh(job, path: Path, series: str, source=None) -> dict:
     if failures and not data["read"]:
         # never read whole: the date of this reading, the error said beside it
         data["read"] = data["tried"]
-    job.log(f"Catalog of the OCA for Odoo {series}: {count} modules in {len(repositories)} repositories, "
+    job.log(f"Catalog of {label} for Odoo {series}: {count} modules in {len(repositories)} repositories, "
             f"{changed} read again")
+    rate = data.get("rate") or {}
+    if rate.get("remaining") is not None:
+        job.log(f"GitHub's requests left this hour: {rate['remaining']} of {rate.get('limit') or '?'}"
+                + ("" if rate.get("token") else " (read without a token: GitHub allows 60 an hour)"))
     save(path, data)
     return data
 
@@ -295,7 +431,14 @@ class Catalog:
     tried: str | None = None
     error: str | None = None
     modules: dict[str, dict] = field(default_factory=dict)
+    # the name each repository takes in an instance (web; CybroOdoo-CybroAddons): its label, its address
     repositories: dict[str, str] = field(default_factory=dict)
+    urls: dict[str, str] = field(default_factory=dict)
+    # KB on GitHub of the repositories whose size the source said (a source's, through the API)
+    sizes: dict[str, int] = field(default_factory=dict)
+    ident: str = OCA
+    label: str = "OCA"
+    rate: dict | None = None
 
     @property
     def count(self) -> int:
@@ -303,23 +446,51 @@ class Catalog:
 
     def meta(self) -> dict:
         return {"series": self.series, "read": self.read, "tried": self.tried, "error": self.error,
-                "count": self.count, "repositories": len(self.repositories)}
+                "count": self.count, "repositories": len(self.repositories), "source": self.ident,
+                "label": self.label, "rate": self.rate}
 
 
-def catalog_of(data: dict | None, series: str) -> Catalog:
+def catalog_of(data: dict | None, series: str, ident: str = OCA, label: str = "OCA") -> Catalog:
     """The modules of a catalog file, each with its repository (a module in
-    two repositories: the first by name)."""
-    found = Catalog(series)
+    two repositories: the first by name), the name that repository takes in
+    an instance (a source's: <owner>-<name>, never one of the OCA's) and its
+    source."""
+    found = Catalog(series, ident=ident, label=label)
     if not data:
         return found
     found.read, found.tried, found.error = data.get("read"), data.get("tried"), data.get("error")
+    found.rate = data.get("rate") if isinstance(data.get("rate"), dict) else None
+    prefix = str(data.get("prefix") or "") if ident != OCA else ""
+    base = str(data.get("source") or SOURCE).rstrip("/")
     for repo, info in sorted((data.get("repositories") or {}).items()):
-        if not isinstance(info, dict):
+        if not isinstance(info, dict) or not REPOSITORY.fullmatch(f"{prefix}{repo}"):
             continue
-        found.repositories[repo] = str(info.get("label") or repo)
+        name = f"{prefix}{repo}"
+        found.repositories[name] = str(info.get("label") or repo)
+        found.urls[name] = str(info.get("url") or f"{base}/{repo}.git")
+        if isinstance(info.get("size_kb"), int) and info["size_kb"] > 0:
+            found.sizes[name] = info["size_kb"]
+        origin = f"{base.rsplit('/', 1)[-1]}/{repo}"
         for module, entry in sorted((info.get("modules") or {}).items()):
             if module not in found.modules and isinstance(entry, dict):
-                found.modules[module] = {**entry, "module": module, "repository": repo}
+                found.modules[module] = {**entry, "module": module, "repository": name, "origin": origin,
+                                         "source": ident, "source_label": label}
+    return found
+
+
+def merged(catalogs: list[Catalog], series: str) -> Catalog:
+    """The catalogs as one, a module of two taken from the first that has it
+    (the order: the one chosen, then the OCA, then the others): what an
+    install resolves its dependencies through."""
+    found = Catalog(series, ident="", label="")
+    for catalog in catalogs:
+        for module, entry in catalog.modules.items():
+            found.modules.setdefault(module, entry)
+        for name, label in catalog.repositories.items():
+            found.repositories.setdefault(name, label)
+            found.urls.setdefault(name, catalog.urls.get(name, ""))
+            if name in catalog.sizes:
+                found.sizes.setdefault(name, catalog.sizes[name])
     return found
 
 
@@ -383,6 +554,7 @@ def plan(catalog: Catalog, module: str, role: str, known: dict[str, dict[str, st
     modules: list[str] = []
     python: list[str] = []
     missing: list[str] = []
+    licences: list[dict] = []
     seen: set[str] = set()
 
     def visit(name: str) -> None:
@@ -411,6 +583,10 @@ def plan(catalog: Catalog, module: str, role: str, known: dict[str, dict[str, st
         if entry["repository"] not in repositories and entry["repository"] not in repos:
             repos.append(entry["repository"])
         modules.append(name)
+        why = not_free(entry)
+        if why:
+            licences.append({"module": name, "license": entry.get("license") or "", "price": entry.get("price") or "",
+                             "currency": entry.get("currency") or "", "why": why, "source": entry.get("source_label")})
         for package in entry.get("python") or []:
             if package not in python:
                 python.append(package)
@@ -420,9 +596,12 @@ def plan(catalog: Catalog, module: str, role: str, known: dict[str, dict[str, st
     visit(module)
     blocked = None
     if module not in catalog.modules and module not in code:
-        blocked = f"{module} is not in the catalog of the OCA for Odoo {catalog.series}"
+        blocked = f"{module} is not in the catalogs of modules for Odoo {catalog.series}"
     elif missing:
-        blocked = (f"Requires {', '.join(missing)}, which this instance does not have and the catalog of the OCA "
-                   "does not know (Odoo Enterprise, or another author's)")
+        blocked = (f"Requires {', '.join(missing)}, which this instance does not have and the catalogs of modules "
+                   "do not know (Odoo Enterprise, or another author's)")
     return {"module": module, "role": role, "repositories": repos, "modules": modules, "python": python,
-            "missing": missing, "blocked": blocked, "checked": target is not None}
+            "missing": missing, "blocked": blocked, "checked": target is not None, "licenses": licences,
+            "urls": {name: catalog.urls.get(name, "") for name in repos},
+            "sizes": {name: catalog.sizes[name] * 1024 for name in repos if name in catalog.sizes},
+            "sources": {name: catalog.repositories.get(name, name) for name in repos}}

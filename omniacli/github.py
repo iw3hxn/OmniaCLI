@@ -139,9 +139,10 @@ def _reset_time(value: str | None) -> str:
 
 
 class Client:
-    """GitHub's API with one token; use as `async with Client(host, token) as gh`."""
+    """GitHub's API with one token (None: anonymous, GitHub's 60 requests an
+    hour of the machine's address); use as `async with Client(host, token) as gh`."""
 
-    def __init__(self, host: str, token: str, transport=None):
+    def __init__(self, host: str, token: str | None, transport=None):
         self.host = (host or "github.com").lower()
         self.base = api_base(self.host)
         self._token = token
@@ -171,6 +172,12 @@ class Client:
         except (KeyError, ValueError):
             pass
 
+    def _used_up(self, reset: str | None) -> str:
+        if not self._token:
+            return (f"GitHub's rate limit for who has no token (60 requests an hour) is used up until "
+                    f"{_reset_time(reset)}: try again then, or read it with a GitHub token")
+        return f"GitHub's rate limit of this token is used up until {_reset_time(reset)}: try again then"
+
     def used_up(self) -> bool:
         return self.remaining is not None and self.remaining <= 0
 
@@ -180,12 +187,11 @@ class Client:
         (an English sentence with {status} and values) or the reason all
         refusals share (the token refused, the rate limit)."""
         if self.used_up():
-            raise GitHubError(f"GitHub's rate limit of this token is used up until {_reset_time(self.reset)}: "
-                              "try again then", 403)
+            raise GitHubError(self._used_up(self.reset), 403)
         assert self._http is not None, "use the client as an async context manager"
+        headers = {"Authorization": f"Bearer {self._token}"} if self._token else {}
         try:
-            resp = await self._http.request(method, path, params=params, json=json,
-                                            headers={"Authorization": f"Bearer {self._token}"})
+            resp = await self._http.request(method, path, params=params, json=json, headers=headers)
         except httpx.HTTPError as exc:
             raise GitHubError(f"GitHub cannot be reached at {self.base}: {type(exc).__name__}") from None
         self._rate(resp)
@@ -195,8 +201,7 @@ class Client:
         if status == 401:
             raise GitHubError("GitHub refused the token (401): it is wrong, expired or revoked", status)
         if status in (403, 429) and resp.headers.get("x-ratelimit-remaining") == "0":
-            raise GitHubError(f"GitHub's rate limit of this token is used up until "
-                              f"{_reset_time(resp.headers.get('x-ratelimit-reset'))}: try again then", status)
+            raise GitHubError(self._used_up(resp.headers.get("x-ratelimit-reset")), status)
         if status in (403, 429) and resp.headers.get("retry-after"):
             raise GitHubError(f"GitHub asks to wait {resp.headers['retry-after']} s before the next request "
                               "(its secondary rate limit)", status)
@@ -316,6 +321,55 @@ class Client:
         await self.call("POST", f"/repos/{full}/statuses/{sha}",
                         "GitHub refused: the token cannot write the state of the commit on {repo} ({status}): it "
                         "needs «Commit statuses: Read and write» on it", json=body, ok=(201,), repo=full)
+
+    async def owner_repositories(self, owner: str) -> tuple[list[dict], bool]:
+        """The public repositories of a user or an organisation (a catalog of
+        modules, modulecatalog.GitHubSource): name, fork, archived, default
+        branch; True when the list is cut."""
+        found, cut = await self.pages(f"/users/{owner}/repos", "GitHub refused the repositories of {owner} ({status}): "
+                                      "no user or organisation of that name", params={"type": "owner",
+                                                                                      "sort": "full_name"},
+                                      owner=owner)
+        rows = []
+        for repo in found:
+            if not isinstance(repo, dict) or not FULL_NAME.fullmatch(str(repo.get("full_name") or "")):
+                continue
+            rows.append({"name": str(repo.get("name") or ""), "full_name": repo["full_name"],
+                         "private": bool(repo.get("private")), "fork": bool(repo.get("fork")),
+                         "archived": bool(repo.get("archived")),
+                         "default_branch": str(repo.get("default_branch") or ""),
+                         "size": int(repo.get("size") or 0) if str(repo.get("size") or "0").isdigit() else 0})
+        return rows, cut
+
+    def _make_path(self, owner: str, organisation: bool) -> str:
+        return f"/orgs/{owner}/repos" if organisation else "/user/repos"
+
+    async def may_make(self, owner: str, organisation: bool) -> bool:
+        """Whether the token may make a repository of owner («Administration:
+        Read and write»), measured as permissions() measures a write: a
+        repository without a name, which GitHub refuses as invalid (422) when
+        the token may make one and as forbidden (403, 404) when it may not;
+        nothing is made."""
+        return await self._may("POST", self._make_path(owner, organisation), json={"name": ""}, ok=(422, 400))
+
+    async def make_repository(self, owner: str, organisation: bool, name: str, private: bool,
+                              description: str = "") -> dict:
+        """A new, empty repository of owner (the token's account, or one of
+        its organisations): {full_name, clone_url, html_url, private}."""
+        body = {"name": name, "private": bool(private), "auto_init": False, "description": description[:300],
+                "has_wiki": False}
+        try:
+            data = (await self.call("POST", self._make_path(owner, organisation),
+                                    "GitHub refused to make the repository {repo} ({status}): the token needs "
+                                    "«Administration: Read and write» on {owner}", json=body, ok=(201,),
+                                    repo=f"{owner}/{name}", owner=owner)).json()
+        except GitHubError as exc:
+            if exc.status == 422:
+                raise GitHubError(f"GitHub refused the name {owner}/{name} (422): a repository of that name is there "
+                                  "already, or the name is not valid", 422) from None
+            raise
+        return {"full_name": str(data.get("full_name") or f"{owner}/{name}"), "clone_url": str(data.get("clone_url") or ""),
+                "html_url": str(data.get("html_url") or ""), "private": bool(data.get("private"))}
 
     async def permissions(self, full: str) -> list[dict]:
         """What the token may do on full, measured by asking GitHub (a

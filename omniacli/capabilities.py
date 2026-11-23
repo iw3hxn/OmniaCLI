@@ -221,7 +221,8 @@ ROUTES = {
         ("GET", "/api/servers/{server}/modules"), ("GET", "/api/servers/{server}/modules/catalog"),
         ("GET", "/api/servers/{server}/modules/plan"), ("GET", "/api/servers/{server}/{role}/modules"),
         ("POST", "/api/servers/{server}/{role}/modules/install"), ("POST", "/api/servers/{server}/modules/upload"),
-        ("POST", "/api/servers/{server}/modules/upload/{ident}/apply"), ("GET", "/api/servers/{server}/modules/uploaded"))},
+        ("POST", "/api/servers/{server}/modules/upload/{ident}/apply"), ("GET", "/api/servers/{server}/modules/uploaded"),
+        ("POST", "/api/servers/{server}/modules/github/check"), ("POST", "/api/servers/{server}/modules/github/create"))},
     **{(m, p): "settings" for m, p in (
         ("POST", "/api/workspaces/{workspace}/notify"), ("POST", "/api/workspaces/{workspace}/parameters/options"),
         ("POST", "/api/workspaces/{workspace}/parameters/save"),

@@ -1,14 +1,18 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
-{# The head of the Modules tab of an instance (docs/ux/UX-008 §7.3): the catalog of the OCA for its version of
-   Odoo, its date, and the tab's primary + Add modules, for a workspace's instance; the Code and Updates
-   sections of server.html follow it in the same tab.
+{# The head of the Modules tab of an instance (docs/ux/UX-008 §7.3): the catalogs for its version of Odoo
+   (the OCA's, and the sources the machine's admins add: README, Modules from the catalogs), their dates,
+   and the tab's primary + Add modules, for a workspace's instance; the Code and Updates sections of
+   server.html follow it in the same tab.
 
-   The dialog Add modules: the search (GET /api/servers/<s>/modules/catalog?q=, at most 50 rows, none
-   without a search), then Install… shows in the same dialog what it takes (GET …/modules/plan) and where
-   (test by default; production for an admin, with a backup first, said in the plan above its
-   Install in production: that button is the one confirmation), then
-   POST /api/servers/<s>/<role>/modules/install starts the job and its page opens. Its script is an
-   IIFE of its own, its names its own (tests/test_script_scopes.py). -#}
+   The dialog Add modules: the source (all of them, the OCA, each one added) and the search
+   (GET /api/servers/<s>/modules/catalog?q=&source=, at most 50 rows, none without a search), then
+   Install… shows in the same dialog what it takes (GET …/modules/plan) and where (test by default;
+   production for an admin, with a backup first, said in the plan above its Install in production: that
+   button is the one confirmation; a module that is not free asks the tick «I have the licence» before
+   it), then POST /api/servers/<s>/<role>/modules/install starts the job and its page opens. Sources…
+   (the machine's admins) lists the sources, reads one again, takes one away (a second click confirms)
+   and adds one (POST /api/catalog/sources/add: its reading is a job, whose page opens). Its script is
+   an IIFE of its own, its names its own (tests/test_script_scopes.py). -#}
 {% if stagings and stagings.workspace %}
 <div class="tab-panel mods-head" data-panel="modules" hidden
   data-api="{{ prefix }}/api/servers/{{ server.name }}" data-jobs="{{ prefix }}/jobs/">
@@ -23,9 +27,16 @@
     {# step 1: the search #}
     <div id="mods-search-step">
       <div class="mods-meta">
+        <label class="mods-source" for="mods-source">{{ _("Look in") }}
+          <select id="mods-source" title="{{ _('Where the modules are looked for: every catalog, or one of them') }}">
+            <option value="">{{ _("All the sources") }}</option>
+            <option value="oca">OCA</option>
+          </select></label>
         <span class="muted" id="mods-meta"></span>
         <button type="button" class="small" id="mods-refresh" hidden
           title="{{ _('Reads again from the repositories of the OCA the modules of this version of Odoo. It installs nothing. It is a job.') }}">{{ _("Read the catalog again") }}</button>
+        <button type="button" class="small" id="mods-sources-open" hidden
+          title="{{ _('The catalogs this machine reads besides the OCA: the public repositories of a GitHub user or organisation (CybroOdoo, odoomates). Adds, reads again and takes away a source') }}">{{ _("Sources…") }}</button>
       </div>
       <p class="error" id="mods-source-error" hidden></p>
       <input type="search" id="mods-query" autocomplete="off" spellcheck="false" aria-label="{{ _('Search the catalog') }}"
@@ -38,11 +49,34 @@
         <button type="button" id="mods-close" title="{{ _('Closes without changing anything') }}">{{ _("Close") }}</button>
       </div>
     </div>
+    {# the sources of the catalogs (the machine's admins) #}
+    <div id="mods-sources-step" hidden>
+      <h3 class="mods-h3">{{ _("Sources of the modules") }}</h3>
+      <div class="mods-list" id="mods-sources-list" role="list"></div>
+      <h3 class="mods-h3">{{ _("Add a source") }}</h3>
+      <label class="mods-label" for="mods-src-owner">{{ _("GitHub user or organisation") }}</label>
+      <input type="text" id="mods-src-owner" autocomplete="off" spellcheck="false" placeholder="{{ _('CybroOdoo, or its address: https://github.com/odoomates') }}">
+      <label class="mods-label" for="mods-src-repos">{{ _("Only these repositories (optional)") }}</label>
+      <input type="text" id="mods-src-repos" autocomplete="off" spellcheck="false" placeholder="{{ _('odooapps, CybroAddons — empty: all its public repositories') }}">
+      <label class="mods-check" id="mods-src-token-label" hidden><input type="checkbox" id="mods-src-token"> {{ _("Read its list with the GitHub token of this instance (5,000 requests an hour instead of 60)") }}</label>
+      <p class="muted small">{{ _("Without a token GitHub gives this machine's address 60 requests an hour: a source takes one or two. The modules are then read with git, which has no limit. Only the branch of this version of Odoo is read; forks and archived repositories are left out.") }}</p>
+      <p class="error" id="mods-src-error" role="alert"></p>
+      <div class="sd-foot">
+        <button type="button" id="mods-sources-back" title="{{ _('Back to the search, without adding anything') }}">‹ {{ _("Back") }}</button>
+        <button type="button" class="primary" id="mods-src-add"
+          title="{{ _('Saves the source for every instance of this machine and reads its modules for this version of Odoo. It is a job, whose page opens.') }}">{{ _("Add and read") }}</button>
+      </div>
+    </div>
     {# step 2: what it takes and where #}
     <div id="mods-plan-step" hidden>
       <p id="mods-plan-text"></p>
       <p class="muted" id="mods-plan-unread" hidden></p>
       <p class="error" id="mods-plan-blocked" hidden></p>
+      <div class="mods-licence" id="mods-licence" hidden>
+        <p id="mods-licence-text"></p>
+        <ul id="mods-licence-list"></ul>
+        <label class="mods-check"><input type="checkbox" id="mods-licensed"> {{ _("I have the licence of these modules") }}</label>
+      </div>
       <fieldset class="mods-where" id="mods-where">
         <legend>{{ _("Where") }}</legend>
       </fieldset>
@@ -72,6 +106,14 @@ dialog.mods-dialog { width: min(960px, calc(100vw - 32px)); }
 .mods-state { font-size: 13px; color: var(--muted); }
 .mods-state.on { color: var(--ok); font-weight: 600; }
 .mods-alpha { font-size: 12px; color: var(--warn); }
+.mods-source { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; white-space: nowrap; }
+.mods-h3 { font-size: 15px; margin: 6px 0 6px; }
+.mods-label { display: block; font-size: 13px; font-weight: 600; margin: 10px 0 4px; }
+#mods-src-owner, #mods-src-repos { width: 100%; }
+.mods-check { display: flex; gap: 8px; align-items: flex-start; margin: 10px 0 4px; }
+.mods-licence { border-left: 3px solid var(--warn); padding: 2px 0 2px 12px; margin: 10px 0; }
+.mods-licence ul { margin: 4px 0 6px; padding-left: 20px; }
+#mods-sources-list { max-height: min(30vh, 280px); }
 .mods-where { border: 0; padding: 0; margin: 10px 0; display: flex; gap: 6px 20px; flex-wrap: wrap; }
 .mods-where legend { font-size: 13px; font-weight: 600; margin-bottom: 4px; padding: 0; }
 .mods-where label { display: inline-flex; gap: 6px; align-items: center; }
@@ -85,6 +127,24 @@ dialog.mods-dialog { width: min(960px, calc(100vw - 32px)); }
   const api = head.dataset.api;
   const M = {
     line: {{ _("Catalog of the OCA for Odoo {series}, read on {when} · {count} modules.") | tojson }},
+    lines: {{ _("Catalogs for Odoo {series}: {list}.") | tojson }},
+    lineOne: {{ _("{label} {count} modules, read on {when}") | tojson }},
+    lineNever: {{ _("{label} not read yet") | tojson }},
+    srcRow: {{ _("{count} modules for Odoo {series}, read on {when}") | tojson }},
+    srcNever: {{ _("not read yet for Odoo {series}") | tojson }},
+    srcToken: {{ _("its list read with the GitHub token of {server}") | tojson }},
+    srcAnon: {{ _("its list read without a token (60 requests an hour)") | tojson }},
+    srcLeft: {{ _("{left} requests of GitHub left that hour") | tojson }},
+    srcNamed: {{ _("only {names}") | tojson }},
+    srcError: {{ _("not read: {error}") | tojson }},
+    readAgain: {{ _("Read again") | tojson }}, readAgainTitle: {{ _("Reads again the modules of this source for this version of Odoo; it installs nothing. It is a job.") | tojson }},
+    remove: {{ _("Take away") | tojson }}, removeTitle: {{ _("Takes the source away from this machine, with its catalogs; the repositories the instances took from it stay") | tojson }},
+    removeSure: {{ _("Click again: take away {label}") | tojson }},
+    ocaFixed: {{ _("the OCA's repositories, read every night") | tojson }},
+    noneAll: {{ _("No module of the catalogs for Odoo {series} with \"{text}\". A module of another repository is added with + Add a repository.") | tojson }},
+    notFree: {{ _("not free") | tojson }},
+    sizes: {{ _("on GitHub (its history, every branch; a clone takes at least as much in each environment): {list}") | tojson }},
+    licenceHead: {{ _("Not free: install them only with their licence (bought from their author, or granted).") | tojson }},
     never: {{ _("The catalog of the OCA for Odoo {series} has not been read yet.") | tojson }},
     unreadable: {{ _("The catalog cannot be read: {error}") | tojson }},
     sourceError: {{ _("The catalog cannot be read from github.com ({error}): the one of {when} stays.") | tojson }},
@@ -119,7 +179,7 @@ dialog.mods-dialog { width: min(960px, calc(100vw - 32px)); }
   };
   const fill = (text, values) => text.replace(/\{(\w+)\}/g, (all, k) => (k in values ? values[k] : all));
   const $ = (id) => document.getElementById(id);
-  let modsInfo = null, modsTimer = null, modsAbort = null, modsPlan = null, modsRole = "test";
+  let modsInfo = null, modsTimer = null, modsAbort = null, modsPlan = null, modsRole = "test", modsSource = "";
 
   async function modsGet(url, signal) {
     const resp = await fetch(url, {headers: {Accept: "application/json"}, signal});
@@ -127,10 +187,27 @@ dialog.mods-dialog { width: min(960px, calc(100vw - 32px)); }
     if (!resp.ok) throw new Error(data.error || data.detail || resp.status);
     return data;
   }
+  const modsCount = (n) => Number(n).toLocaleString(document.documentElement.lang || undefined);
   function modsMetaText(info) {
+    const sources = info.sources || [];
+    if (sources.length > 1) {
+      return fill(M.lines, {series: info.series, list: sources.map((s) => s.read
+        ? fill(M.lineOne, {label: s.label, count: modsCount(s.count), when: window.whenText(s.read)})
+        : fill(M.lineNever, {label: s.label})).join(" · ")});
+    }
     if (!info.read) return fill(M.never, {series: info.series});
-    return fill(M.line, {series: info.series, when: window.whenText(info.read),
-                         count: Number(info.count).toLocaleString(document.documentElement.lang || undefined)});
+    return fill(M.line, {series: info.series, when: window.whenText(info.read), count: modsCount(info.count)});
+  }
+  function modsSourceOptions(info) {
+    const select = $("mods-source");
+    const keep = select.value;
+    select.querySelectorAll("option").forEach((o, i) => { if (i > 1) o.remove(); });
+    for (const s of (info.sources || []).filter((s) => s.source !== "oca")) {
+      const option = document.createElement("option"); option.value = s.source; option.textContent = s.label;
+      select.append(option);
+    }
+    select.value = [...select.options].some((o) => o.value === keep) ? keep : "";
+    modsSource = select.value;
   }
   async function modsLoad() {
     try {
@@ -145,6 +222,7 @@ dialog.mods-dialog { width: min(960px, calc(100vw - 32px)); }
   function modsStep(name) {
     $("mods-search-step").hidden = name !== "search";
     $("mods-plan-step").hidden = name !== "plan";
+    $("mods-sources-step").hidden = name !== "sources";
   }
   async function modsOpen() {
     modsStep("search");
@@ -154,8 +232,10 @@ dialog.mods-dialog { width: min(960px, calc(100vw - 32px)); }
     const info = modsInfo || await modsLoad();
     if (!info) return;
     modsRole = info.default;
+    modsSourceOptions(info);
     $("mods-meta").textContent = modsMetaText(info);
-    $("mods-refresh").hidden = !info.can_refresh;
+    $("mods-refresh").hidden = !info.can_refresh || modsSource !== "oca";
+    $("mods-sources-open").hidden = !info.can_refresh;
     const bad = $("mods-source-error");
     bad.hidden = !info.error;
     if (info.error) bad.textContent = info.read ? fill(M.sourceError, {error: info.error, when: window.whenText(info.read)})
@@ -168,9 +248,13 @@ dialog.mods-dialog { width: min(960px, calc(100vw - 32px)); }
     const name = document.createElement("strong"); name.textContent = row.name || row.module;
     what.append(name, " ", row.summary || "");
     const tech = document.createElement("div"); tech.className = "small mono mods-tech";
-    tech.textContent = [row.module, row.repository, row.license].filter(Boolean).join(" · ");
+    tech.textContent = [row.module, row.origin || row.repository, row.license,
+                        row.price && Number(row.price) > 0 ? `${row.price} ${row.currency || "EUR"}` : ""].filter(Boolean).join(" · ");
     what.append(tech);
     const side = document.createElement("div"); side.className = "mods-side";
+    if (row.not_free) {
+      const paid = document.createElement("span"); paid.className = "mods-alpha"; paid.textContent = M.notFree; paid.title = row.not_free; side.append(paid);
+    }
     if (row.development_status === "Alpha") {
       const alpha = document.createElement("span"); alpha.className = "mods-alpha"; alpha.textContent = M.alpha; side.append(alpha);
     }
@@ -199,14 +283,14 @@ dialog.mods-dialog { width: min(960px, calc(100vw - 32px)); }
     modsAbort = new AbortController();
     let data;
     try {
-      data = await modsGet(`${api}/modules/catalog?q=${encodeURIComponent(text)}&role=${encodeURIComponent(modsRole)}`, modsAbort.signal);
+      data = await modsGet(`${api}/modules/catalog?q=${encodeURIComponent(text)}&role=${encodeURIComponent(modsRole)}&source=${encodeURIComponent(modsSource)}`, modsAbort.signal);
     } catch (e) {
       if (e.name === "AbortError") return;
       $("mods-none").hidden = false; $("mods-none").textContent = fill(M.unreadable, {error: e.message});
       list.replaceChildren(); return;
     }
     list.replaceChildren(...data.modules.map(modsRow));
-    if (!data.modules.length) { $("mods-none").hidden = false; $("mods-none").textContent = fill(M.none, {series: data.series, text}); }
+    if (!data.modules.length) { $("mods-none").hidden = false; $("mods-none").textContent = fill(modsSource === "oca" ? M.none : M.noneAll, {series: data.series, text}); }
     if (data.total > data.modules.length) {
       $("mods-more").hidden = false; $("mods-more").textContent = fill(M.more, {shown: data.modules.length, total: data.total});
     }
@@ -220,6 +304,8 @@ dialog.mods-dialog { width: min(960px, calc(100vw - 32px)); }
     else parts.push(fill(both ? M.repos : modsInfo.staging ? M.reposStaging : M.reposOne, {count: n, names}));
     parts.push(plan.modules.length === 1 ? M.module : fill(M.modules, {count: plan.modules.length}));
     if (plan.python.length) parts.push(fill(plan.python.length === 1 ? M.pythonOne : M.python, {names: plan.python.join(", ")}));
+    const sizes = Object.entries(plan.sizes || {});
+    if (sizes.length) parts.push(fill(M.sizes, {list: sizes.map(([name, bytes]) => `${name} ${window.sizeText(bytes)}`).join(", ")}));
     return parts.join("; ") + ".";
   }
   function modsRoleChoices() {
@@ -250,7 +336,7 @@ dialog.mods-dialog { width: min(960px, calc(100vw - 32px)); }
     modsRoleChoices();
     let plan;
     try {
-      plan = await modsGet(`${api}/modules/plan?module=${encodeURIComponent(row.module)}&role=${encodeURIComponent(modsRole)}`);
+      plan = await modsGet(`${api}/modules/plan?module=${encodeURIComponent(row.module)}&role=${encodeURIComponent(modsRole)}&source=${encodeURIComponent(row.source || "")}`);
     } catch (e) { $("mods-plan-text").textContent = ""; $("mods-error").textContent = e.message; return; }
     modsPlan = {row, plan};
     const textBox = $("mods-plan-text");
@@ -266,12 +352,27 @@ dialog.mods-dialog { width: min(960px, calc(100vw - 32px)); }
     go.textContent = modsInfo.staging ? M.goStaging : M.go[modsRole];
     const wrap = $("mods-go-wrap");
     if (modsInfo.busy) wrap.title = fill(M.busy, {name: modsInfo.server}); else wrap.removeAttribute("title");
-    go.disabled = !mine || !!plan.blocked || !plan.modules.length || modsInfo.busy;
+    const licences = plan.licenses || [];
+    $("mods-licence").hidden = !licences.length;
+    $("mods-licensed").checked = false;
+    $("mods-licence-text").textContent = M.licenceHead;
+    $("mods-licence-list").replaceChildren(...licences.map((l) => {
+      const li = document.createElement("li"); li.textContent = `${l.module} · ${l.why}${l.source ? " · " + l.source : ""}`; return li;
+    }));
+    modsAllowGo();
+  }
+  function modsAllowGo() {
+    const plan = modsPlan && modsPlan.plan;
+    if (!plan) return;
+    const mine = modsInfo.roles.find((r) => r.role === modsRole && !r.refused);
+    const licensed = !(plan.licenses || []).length || $("mods-licensed").checked;
+    $("mods-go").disabled = !mine || !!plan.blocked || !plan.modules.length || modsInfo.busy || !licensed;
   }
   async function modsInstall(confirmed) {
     const {row} = modsPlan;
-    const body = {module: row.module};
+    const body = {module: row.module, source: row.source || ""};
     if (confirmed) body.confirm = true;
+    if ((modsPlan.plan.licenses || []).length && $("mods-licensed").checked) body.licensed = true;
     const resp = await fetch(`${api}/${modsRole}/modules/install`, {method: "POST",
       headers: {"Content-Type": "application/json", Accept: "application/json"}, body: JSON.stringify(body)});
     const data = await resp.json().catch(() => ({}));
@@ -293,12 +394,92 @@ dialog.mods-dialog { width: min(960px, calc(100vw - 32px)); }
     $("mods-go").disabled = true;
     modsInstall(modsRole === "production" && !modsInfo.staging);
   });
-  $("mods-refresh").addEventListener("click", async () => {
-    const resp = await fetch(`{{ prefix }}/api/catalog/refresh`, {method: "POST",
-      headers: {"Content-Type": "application/json", Accept: "application/json"}, body: JSON.stringify({series: modsInfo.series})});
+  async function modsPost(url, body) {
+    const resp = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
+                                   body: JSON.stringify(body)});
     const data = await resp.json().catch(() => ({}));
-    if (!resp.ok || !data.job) { $("mods-source-error").hidden = false; $("mods-source-error").textContent = data.error || data.detail || M.refused; return; }
-    location.href = head.dataset.jobs + data.job;
+    if (!resp.ok) throw new Error(data.error || data.detail || M.refused);
+    return data;
+  }
+  async function modsRefresh(source, errorBox) {
+    try {
+      const data = await modsPost(`{{ prefix }}/api/catalog/refresh`, {series: modsInfo.series, source});
+      location.href = head.dataset.jobs + data.job;
+    } catch (e) { errorBox.hidden = false; errorBox.textContent = e.message; }
+  }
+  $("mods-refresh").addEventListener("click", () => modsRefresh("oca", $("mods-source-error")));
+  $("mods-source").addEventListener("change", () => {
+    modsSource = $("mods-source").value;
+    $("mods-refresh").hidden = !modsInfo || !modsInfo.can_refresh || modsSource !== "oca";
+    modsSearch();
+  });
+  $("mods-licensed").addEventListener("change", modsAllowGo);
+  function modsSourceRow(s) {
+    const div = document.createElement("div");
+    div.className = "mods-row"; div.setAttribute("role", "listitem");
+    const what = document.createElement("div"); what.className = "mods-what";
+    const name = document.createElement("strong"); name.textContent = s.source === "oca" ? "OCA" : `${s.host === "github.com" ? "" : s.host + "/"}${s.owner}`;
+    const facts = [s.read ? fill(M.srcRow, {count: modsCount(s.count), series: modsInfo.series, when: window.whenText(s.read)})
+                          : fill(M.srcNever, {series: modsInfo.series})];
+    if (s.source === "oca") facts.push(M.ocaFixed);
+    else {
+      if ((s.named || []).length) facts.push(fill(M.srcNamed, {names: s.named.join(", ")}));
+      else facts.push(s.token_server ? fill(M.srcToken, {server: s.token_server}) : M.srcAnon);
+      if (s.rate && s.rate.remaining != null) facts.push(fill(M.srcLeft, {left: s.rate.remaining}));
+    }
+    what.append(name, " ", facts.join(" · "));
+    if (s.error) { const bad = document.createElement("div"); bad.className = "error small"; bad.textContent = fill(M.srcError, {error: s.error}); what.append(bad); }
+    const side = document.createElement("div"); side.className = "mods-side";
+    const again = document.createElement("button");
+    again.type = "button"; again.className = "small"; again.textContent = M.readAgain; again.title = M.readAgainTitle;
+    again.addEventListener("click", () => modsRefresh(s.source, $("mods-src-error")));
+    side.append(again);
+    if (s.source !== "oca") {
+      const remove = document.createElement("button");
+      remove.type = "button"; remove.className = "small"; remove.textContent = M.remove; remove.title = M.removeTitle;
+      remove.addEventListener("click", async () => {
+        if (!remove.dataset.sure) { remove.dataset.sure = "1"; remove.textContent = fill(M.removeSure, {label: s.label}); return; }
+        remove.disabled = true;
+        try {
+          await modsPost(`{{ prefix }}/api/catalog/sources/remove`, {id: s.source});
+          modsInfo = null;
+          await modsLoad();
+          modsSourceOptions(modsInfo);
+          modsShowSources();
+        } catch (e) { remove.disabled = false; $("mods-src-error").textContent = e.message; }
+      });
+      side.append(remove);
+    }
+    div.append(what, side);
+    return div;
+  }
+  function modsShowSources() {
+    modsStep("sources");
+    $("mods-src-error").textContent = "";
+    $("mods-sources-list").replaceChildren(...(modsInfo.sources || []).map(modsSourceRow));
+    modsTokenChoice();
+    $("mods-src-owner").focus();
+  }
+  // the token of the instance is offered for the host of the source typed only (github.com by default)
+  function modsTokenChoice() {
+    const text = $("mods-src-owner").value.trim().replace(/^https?:\/\//, "").replace(/\/+$/, "");
+    let host = text.includes("/") ? text.slice(0, text.lastIndexOf("/")).toLowerCase() : "github.com";
+    if (host === "www.github.com") host = "github.com";
+    $("mods-src-token-label").hidden = !(modsInfo.tokens || []).includes(host);
+  }
+  $("mods-sources-open").addEventListener("click", () => { if (modsInfo) modsShowSources(); });
+  $("mods-src-owner").addEventListener("input", modsTokenChoice);
+  $("mods-sources-back").addEventListener("click", () => { modsStep("search"); $("mods-query").focus(); });
+  $("mods-src-add").addEventListener("click", async () => {
+    const add = $("mods-src-add");
+    add.disabled = true;
+    $("mods-src-error").textContent = "";
+    try {
+      const data = await modsPost(`{{ prefix }}/api/catalog/sources/add`, {
+        source: $("mods-src-owner").value, repositories: $("mods-src-repos").value, series: modsInfo.series,
+        token: $("mods-src-token").checked && !$("mods-src-token-label").hidden, server: modsInfo.server});
+      location.href = head.dataset.jobs + data.job;
+    } catch (e) { add.disabled = false; $("mods-src-error").textContent = e.message; }
   });
   // the head's line when the tab opens (and when the page opens on it)
   document.querySelector('.tabs [data-tab="modules"]')?.addEventListener("click", () => { if (!modsInfo) modsLoad(); });
