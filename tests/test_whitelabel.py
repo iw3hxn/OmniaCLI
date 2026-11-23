@@ -46,6 +46,8 @@ def test_the_contrast_of_the_colour():
         assert all(brand.contrast(tint, ground) >= brand.AA for ground in brand.DARK_GROUNDS), (color, tint)
     assert brand.facts("#0B5FFF")["white"] >= 4.5 and brand.facts("#0B5FFF")["dark_ratio"] >= 4.5
     assert brand.css("") == "" and "--accent: #0B5FFF" in brand.css("#0B5FFF")
+    # its focus ring, not its links (UX-017: the links in the colour of the text, the danger always red)
+    assert "--accent-strong: #0B5FFF" in brand.css("#0B5FFF") and "--link" not in brand.css("#0B5FFF")
 
 
 def test_the_name():

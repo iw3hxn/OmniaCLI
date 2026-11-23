@@ -19,7 +19,7 @@
 .ni-version span { font-size: 12px; color: var(--muted); }
 .ni-version:has(input:checked) { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); background: var(--panel); }
 .ni-version:has(input:checked) b { color: var(--accent); }
-.ni-version:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ni-version:has(input:focus-visible) { outline: var(--focus-width) solid var(--focus); outline-offset: var(--focus-offset); }
 .ni-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .ni-fields label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; }
 .ni-fields input, .ni-fields select { width: 100%; }

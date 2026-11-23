@@ -1,0 +1,117 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{#- The design tokens (docs/ux/UX-017-token-e-scale.md §2): the one set of the panel, the login and the
+    invitation, written once. Primitives (fixed values: a component never uses them, a whitelabel never
+    overrides them), the semantic names the templates use, the dark values written once and said twice
+    (the chosen theme and the system's), and the closed scales of type, space, radii, borders, shadows,
+    controls, icons and motion. A colour, a size, a space, a radius or a duration is written here and
+    nowhere else; brand.css (whitelabel) comes after this style and may override only the accent's. -#}
+{%- set dark -%}
+  --bg: var(--ink-900); --panel: var(--ink-850); --panel-2: var(--ink-800); --text: var(--ink-100); --muted: var(--ink-300);
+  --fg-disabled: var(--ink-500); --border: var(--ink-700); --border-strong: var(--ink-650); --border-input: var(--ink-500);
+  --accent: #F87171; --accent-soft: var(--red-950); --on-accent: var(--gray-900); --accent-strong: var(--red-400);
+  --err: var(--red-400); --err-soft: var(--red-950); --ok: var(--green-400); --ok-soft: var(--green-950);
+  --warn: var(--amber-400); --warn-soft: var(--amber-950); --info: var(--blue-400); --info-soft: var(--blue-950);
+  --code-bg: var(--ink-950); --code-text: var(--ink-150);
+  --side-bg: var(--ink-950); --side-text: var(--slate-250); --side-hover: var(--ink-850);
+  --series-1: #7AA2FF; --series-2: #F59E5B; --prod: var(--red-400);
+  --start: var(--ok); --stop: var(--err); --restart: var(--blue-400); --light-green: #86efac; --purple: #c084fc;
+  --cat-2: #d95926; --cat-3: #199e70; --cat-4: #c98500; --cat-5: #d55181;
+  --cat-6: #008300; --cat-7: #9085e9; --cat-8: #e66767;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, .4); --shadow-md: 0 4px 12px rgba(0, 0, 0, .5); --shadow-lg: 0 12px 32px rgba(0, 0, 0, .5);
+  color-scheme: dark;
+{%- endset -%}
+<style>
+:root {
+  /* primitives: neutrals light and dark, the top bar, red, green, amber, blue, the console */
+  --gray-0: #FFFFFF; --gray-25: #F9FAFB; --gray-50: #F5F6F8; --gray-100: #E4E7EC; --gray-200: #D0D5DD;
+  --gray-400: #868E9C; --gray-500: #5F6673; --gray-900: #111827;
+  --ink-950: #0A0D12; --ink-900: #0E1117; --ink-850: #161B22; --ink-800: #1C222B; --ink-700: #2A313C;
+  --ink-650: #3A4350; --ink-500: #667085; --ink-300: #98A2B3; --ink-150: #D6DBE4; --ink-100: #E6EAF0;
+  --slate-900: #0F172A; --slate-800: #1E293B; --slate-300: #CBD5E1; --slate-250: #C3CAD5; --slate-400: #8794A6;
+  --red-50: #FEF2F2; --red-75: #FEF3F2; --red-400: #F87171; --red-600: #DC2626; --red-700: #B91C1C;
+  --red-750: #B42318; --red-800: #912018; --red-950: #2A1517;
+  --green-50: #ECFDF3; --green-700: #15803D; --green-400: #4ADE80; --green-950: #0F2A1A;
+  --amber-50: #FFFAEB; --amber-700: #B54708; --amber-400: #FBBF24; --amber-950: #2A2110;
+  --blue-50: #EFF6FF; --blue-700: #1D4ED8; --blue-400: #7AA2FF; --blue-950: #141E33;
+  --black: #000000; --white: #FFFFFF;
+
+  /* semantic, light (the dark ones below); the names the templates and brand.py use */
+  --bg: var(--gray-50); --panel: var(--gray-0); --panel-2: var(--gray-25); --text: var(--gray-900); --muted: var(--gray-500);
+  /* the disabled only: exempt from contrast (WCAG), never for active text */
+  --fg-disabled: var(--ink-300);
+  /* decorative dividers; the border of the secondary buttons; the border of a field (3:1 on its ground) */
+  --border: var(--gray-100); --border-strong: var(--gray-200); --border-input: var(--gray-400);
+  /* the primary only (whitelabel: brand.css); its hover follows it by itself */
+  --accent: #DC2626; --accent-soft: var(--red-50); --on-accent: var(--white);
+  --accent-hover: color-mix(in srgb, var(--accent) 88%, var(--black));
+  /* the focus ring (whitelabel too); in the dark top bar, the bar's mark */
+  --accent-strong: var(--red-700); --focus: var(--accent-strong);
+  --link: var(--accent-strong);
+  /* what destroys: fixed, never from the whitelabel */
+  --danger: var(--red-750); --danger-hover: var(--red-800); --on-danger: var(--white);
+  --err: var(--red-750); --err-soft: var(--red-75); --ok: var(--green-700); --ok-soft: var(--green-50);
+  --warn: var(--amber-700); --warn-soft: var(--amber-50); --info: var(--blue-700); --info-soft: var(--blue-50);
+  --test: var(--info);
+  /* a state chosen (a box ticked, a segment pressed, a card chosen, the active tab): neutral, not red */
+  --selected: var(--text); --on-selected: var(--panel);
+  /* the count of the bell: white on it in both themes (5.43:1) */
+  --count-bg: var(--amber-700); --count-critical: var(--danger); --on-count: var(--white);
+  --code-bg: #0B0F17; --code-text: #E5E7EB; --console-err: #FF7B7B; --console-warn: #F0C060;
+  /* the top bar, dark in both themes; its marks (whitelabel: the brand's tint) */
+  --side-bg: var(--slate-900); --side-text: var(--slate-300); --side-muted: var(--slate-400); --side-hover: var(--slate-800);
+  --side-current: var(--white); --brand-top: var(--red-400);
+  --head-bg: var(--panel);
+  --prod: var(--red-600);
+  --start: var(--green-700); --stop: var(--red-600); --restart: var(--blue-700); --light-green: #16A34A; --purple: #7E22CE;
+  /* the data of the charts (validated with the dataviz validator on #FFFFFF): not part of UX-017 */
+  --series-1: #111827; --series-2: #DC2626;
+  --cat-2: #eb6834; --cat-3: #1baf7a; --cat-4: #eda100; --cat-5: #e87ba4;
+  --cat-6: #008300; --cat-7: #6250d6; --cat-8: #e34948;
+
+  /* type: six sizes, five line heights, three weights (§2.5) */
+  --font: Inter, "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, "Liberation Sans", sans-serif;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+  --fs-12: 12px; --fs-14: 14px; --fs-16: 16px; --fs-18: 18px; --fs-20: 20px; --fs-24: 24px;
+  --lh-18: 18px; --lh-20: 20px; --lh-24: 24px; --lh-28: 28px; --lh-32: 32px;
+  --fw-regular: 400; --fw-semibold: 600; --fw-bold: 700;
+  /* space, radii, borders, shadows (§2.6) */
+  --sp-2: 2px; --sp-4: 4px; --sp-6: 6px; --sp-8: 8px; --sp-10: 10px; --sp-12: 12px; --sp-16: 16px;
+  --sp-20: 20px; --sp-24: 24px; --sp-32: 32px; --sp-40: 40px; --sp-48: 48px; --sp-64: 64px;
+  --card-pad: var(--sp-16); --dialog-pad: var(--sp-16);
+  --r-sm: 4px; --r: 8px; --r-lg: 12px; --r-pill: 999px;
+  --bw: 1px; --bw-2: 2px; --bw-4: 4px;
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .08);
+  --shadow-md: 0 4px 12px rgba(16, 24, 40, .12);
+  --shadow-lg: 0 12px 32px rgba(16, 24, 40, .16);
+  --shadow: var(--shadow-sm);
+  --backdrop: rgba(15, 23, 42, .55);
+  /* controls and icons (§2.7): 44 at the touch */
+  --control-h: 36px; --control-h-sm: 32px; --icon-btn: 32px; --checkbox: 18px;
+  --icon-12: 12px; --icon-16: 16px; --icon-20: 20px;
+  --focus-width: 2px; --focus-offset: 2px;
+  /* motion (§2.8) */
+  --dur-100: 100ms; --dur-200: 200ms; --dur-300: 300ms; --dur-400: 400ms;
+  --ease-out: cubic-bezier(.23, 1, .32, 1); --ease-in-out: cubic-bezier(.77, 0, .175, 1);
+  /* breakpoints, mobile first (documentation: a media query does not read a variable): 576, 768, 992, 1200 */
+  --bp-sm: 576px; --bp-md: 768px; --bp-lg: 992px; --bp-xl: 1200px;
+  color-scheme: light;
+}
+@media (min-width: 576px) { :root { --dialog-pad: var(--sp-24); } }
+:root[data-theme="dark"] {
+{{ dark }}
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+{{ dark }}
+  }
+}
+@media (pointer: coarse) { :root { --control-h: 44px; --control-h-sm: 44px; --icon-btn: 44px; } }
+/* one ring for everything that takes the focus, other than the hover */
+:focus-visible { outline: var(--focus-width) solid var(--focus); outline-offset: var(--focus-offset); }
+.topbar { --focus: var(--brand-top); }
+/* less motion asked: nothing moves (the progress of a job is a datum: job.html keeps its width) */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important; scroll-behavior: auto !important; }
+}
+</style>

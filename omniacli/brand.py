@@ -6,9 +6,11 @@ primary colour, on the panel, the customers' portal and the login pages.
 Nothing set is today's look exactly: no style is added, the name is
 OmniaCLI, the logo the OmniaSolutions «O».
 
-The colour is used as the light theme uses its red: under white text (the
-primary buttons, the avatar) and as the text of a link on white. It is
-refused when white text on it is below WCAG AA (4.5:1). The dark theme
+The colour is used as the light theme uses its red (docs/ux/UX-017): under
+white text (the primary buttons) and as the focus ring (--accent-strong);
+the links stay in the colour of the text and what destroys stays red. It is
+refused when white text on it is below WCAG AA (4.5:1), so as a ring it is
+at least 4.5:1 on the panel and 4.1:1 on the page's grey (3:1 is needed). The dark theme
 takes a lighter tint of it (mixed with white until it reaches AA against
 the dark backgrounds of the dark theme and of the top bar, and under dark
 text, which its primary buttons then carry), as it takes #F87171 for #DC2626.
@@ -123,10 +125,11 @@ def css(color: str) -> str:
     tint = dark_tint(color)
     soft = mix(color, WHITE, 0.92)
     dark_soft = mix(tint, "#161B22", 0.85)
-    dark = f"--accent: {tint}; --accent-soft: {dark_soft}; --brand-on-accent: #111827; --on-accent: #111827; --link: {tint};"
+    dark = (f"--accent: {tint}; --accent-soft: {dark_soft}; --brand-on-accent: #111827; --on-accent: #111827; "
+            f"--accent-strong: {tint};")
     # the top bar is dark in both themes: its marks take the tint, the avatar's letter is dark on it
     return (f":root {{ --accent: {color}; --accent-soft: {soft}; --brand-top: {tint}; --brand-on-accent: #fff; "
-            f"--on-accent: #fff; --link: {color}; }}\n"
+            f"--on-accent: #fff; --accent-strong: {color}; }}\n"
             f":root[data-theme=\"dark\"] {{ {dark} }}\n"
             f"@media (prefers-color-scheme: dark) {{ :root:not([data-theme=\"light\"]) {{ {dark} }} }}\n"
             ".brand-name span { color: var(--brand-top); }\n"

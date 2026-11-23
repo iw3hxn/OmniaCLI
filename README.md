@@ -4778,6 +4778,23 @@ curl -s -X POST -H "$H" -H "Content-Type: application/json" -d '{"confirm": "acm
 omniacli serve -c omniacli.yaml --host 127.0.0.1 --port 8090
 ```
 
+### The look
+
+One set of design tokens for every page, the login and the invitation
+(`omniacli/templates/_tokens.html`, `docs/ux/UX-017-token-e-scale.md`): the
+colours as fixed primitives and the semantic names the pages use (`--bg`,
+`--panel`, `--text`, `--muted`, `--accent`…), the dark theme's values
+written once and used both for the theme chosen with the header's button and
+for the system's, and closed scales of type, space, radii, borders, shadows,
+controls and motion. A page writes `var(--…)`, never a value of its own.
+
+- **The focus** is one ring for everything that takes it (buttons, links,
+  fields, tabs, folded lines): 2 px, 2 px away, in `--focus` (6.47:1 on the
+  panel; in the dark header the header's mark, 6.45:1), never the hover's
+  look. A field's border is 3.3:1 on the panel (`--border-input`), the
+  secondary text 5.34:1 on the page's grey (`--muted`).
+- **Less motion** asked by the system: nothing moves, one rule for every page.
+
 ### Whitelabel
 
 **Options › Whitelabel**, for the machine's admins: the panel under your
@@ -4790,8 +4807,9 @@ test): no style is added, the name is OmniaCLI, the logo the «O».
   in the emails (the subject and the text of the notices and of the
   invitations; the JSON of a webhook keeps OmniaCLI's, a program reads it).
   The footer keeps OmniaCLI's version and its licence (AGPL).
-- **Primary colour** (`#RRGGBB`): the buttons, the links, the marks of the
-  header. It is used as the light theme uses its red, under white text, so
+- **Primary colour** (`#RRGGBB`): the primary buttons, the focus ring, the
+  links, the marks of the header. It is used as the light theme uses its red,
+  under white text, so
   it is **refused when white text on it is below WCAG AA (4.5:1)**: the page
   says the ratio while it is chosen, and Save refuses it with the ratio. The
   dark theme takes a lighter tint of it, the least that reaches 4.5:1 on
