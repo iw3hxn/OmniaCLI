@@ -1089,7 +1089,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     <tr data-name="{{ p.name }}"{% if p.mail %} class="op-locked" title="{{ mail_reason }}"{% endif %}>
       <td><div class="oc-label">{{ tr(p.label) }}</div><div class="oc-help"><span class="mono">{{ p.name }}</span>{% if p.min is not none and p.max is not none %} · {{ _("from {min} to {max}", min=p.min, max=p.max) }}{% endif %}</div></td>
       <td>{% if p.type == "bool" %}<input type="checkbox" data-param="{{ p.name }}" {{ "checked" if p.value }} {{ "disabled" if off }}{% if p.mail %} data-mail="1" title="{{ mail_reason }}"{% endif %} style="width: auto" aria-label="{{ tr(p.label) }}">
-        {% elif p.type == "password" %}<input type="password" data-param="{{ p.name }}" autocomplete="off" {{ "disabled" if off }}{% if p.mail %} data-mail="1" title="{{ mail_reason }}"{% endif %} placeholder="{{ _('set: empty keeps it') if p.set else '' }}" aria-label="{{ tr(p.label) }}">
+        {% elif p.type == "password" %}<input type="password" data-param="{{ p.name }}" autocomplete="new-password" {{ "disabled" if off }}{% if p.mail %} data-mail="1" title="{{ mail_reason }}"{% endif %} placeholder="{{ _('set: empty keeps it') if p.set else '' }}" aria-label="{{ tr(p.label) }}">
         {% elif p.type in ("int", "mb") %}<input type="number" data-param="{{ p.name }}" value="{{ p.value }}" {% if p.min is not none %}min="{{ p.min }}"{% endif %} {% if p.max is not none %}max="{{ p.max }}"{% endif %} {{ "disabled" if off }}{% if p.mail %} data-mail="1" title="{{ mail_reason }}"{% endif %} class="mono" aria-label="{{ tr(p.label) }}">
         {% else %}<input type="text" data-param="{{ p.name }}" value="{{ p.value }}" {{ "disabled" if off }}{% if p.mail %} data-mail="1" title="{{ mail_reason }}"{% endif %} class="mono" aria-label="{{ tr(p.label) }}">{% endif %}</td>
     </tr>
@@ -1497,7 +1497,9 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
       } else {
         input = document.createElement("input");
         input.type = secret ? "password" : (o.kind === "int" || o.kind === "float" ? "text" : "text");
-        input.autocomplete = "off"; input.spellcheck = false; input.className = "mono";
+        // a password field the browser would fill with the panel's own saved password (Chrome ignores "off"
+        // there): "new-password" keeps it empty, and the page does not think an option was changed
+        input.autocomplete = secret ? "new-password" : "off"; input.spellcheck = false; input.className = "mono";
       }
       const value = inFile ? data.values[o.name] : "";
       input.value = secret ? "" : value;
@@ -2164,11 +2166,17 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
   const opBasic = new Set({{ odoo_params.parameters | map(attribute="name") | list | tojson }});
   let opExt = null;
   const opBox = () => document.querySelector('[data-section="odoo-config"]');
+  function autofilled(input) {
+    try { return input.matches(":autofill") || input.matches(":-webkit-autofill"); } catch (e) { return false; }
+  }
   // what was changed since the page was read: Save waits for it, and says how many
   function opChanges() {
     let count = 0;
     for (const input of opBox().querySelectorAll("[data-param], [data-extra], #op-debug")) {
       if (input.disabled) continue;
+      // what the browser filled by itself (a saved password) is not a change of the person (Carlo, 23/11/2026:
+      // «Vuoi uscire dal sito?» at every Git pull of an instance whose options he had not touched)
+      if (autofilled(input)) continue;
       const now = input.type === "checkbox" ? String(input.checked) : input.value;
       const changed = now !== input.dataset.orig;
       input.closest("tr").classList.toggle("oc-dirty", changed);
@@ -2240,7 +2248,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
         for (const [v, t] of [["", "—"], ["True", "True"], ["False", "False"]]) input.append(new Option(t, v));
       } else {
         input = document.createElement("input");
-        input.type = secret ? "password" : "text"; input.autocomplete = "off"; input.spellcheck = false;
+        input.type = secret ? "password" : "text"; input.autocomplete = secret ? "new-password" : "off"; input.spellcheck = false;
         input.className = "mono";
       }
       input.dataset.extra = o.name; input.setAttribute("aria-label", o.name);
