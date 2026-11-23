@@ -123,9 +123,10 @@ def css(color: str) -> str:
     tint = dark_tint(color)
     soft = mix(color, WHITE, 0.92)
     dark_soft = mix(tint, "#161B22", 0.85)
-    dark = f"--accent: {tint}; --accent-soft: {dark_soft}; --brand-on-accent: #111827;"
+    dark = f"--accent: {tint}; --accent-soft: {dark_soft}; --brand-on-accent: #111827; --on-accent: #111827; --link: {tint};"
     # the top bar is dark in both themes: its marks take the tint, the avatar's letter is dark on it
-    return (f":root {{ --accent: {color}; --accent-soft: {soft}; --brand-top: {tint}; --brand-on-accent: #fff; }}\n"
+    return (f":root {{ --accent: {color}; --accent-soft: {soft}; --brand-top: {tint}; --brand-on-accent: #fff; "
+            f"--on-accent: #fff; --link: {color}; }}\n"
             f":root[data-theme=\"dark\"] {{ {dark} }}\n"
             f"@media (prefers-color-scheme: dark) {{ :root:not([data-theme=\"light\"]) {{ {dark} }} }}\n"
             ".brand-name span { color: var(--brand-top); }\n"

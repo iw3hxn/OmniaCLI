@@ -31,7 +31,7 @@
         <input type="text" id="portal-address" class="mono" style="flex: 1; min-width: 220px" value="{{ options.portal_address }}" placeholder="portale.esempio.it"
                autocomplete="off" spellcheck="false" title="{{ _('A host name of yours whose DNS record points to this machine, for example portale.esempio.it; not a name of a workspace') }}">
         <button type="button" id="portal-check" title="{{ _('Checks the name: that it is free on this machine and where its DNS record points. It changes nothing.') }}">{{ _("Check the name") }}</button>
-        <button type="button" class="primary" id="portal-publish" title="{{ _('Publishes the portal at this name: the site of nginx, then the certificate, in a job you follow; the invitations carry this address from then on.') }}">{{ _("Publish") }}</button>
+        <button type="button" id="portal-publish" title="{{ _('Publishes the portal at this name: the site of nginx, then the certificate, in a job you follow; the invitations carry this address from then on.') }}">{{ _("Publish") }}</button>
         {% if options.portal_address %}<button type="button" class="danger" id="portal-remove" title="{{ _('Takes the portal away: the site and its certificate are removed, the customers no longer log in from the internet. It asks first.') }}">{{ _("Take away…") }}</button>{% endif %}
       </div>
       <p id="portal-dns" class="muted" style="font-size: 13px; margin: 6px 0 0" aria-live="polite"></p>
