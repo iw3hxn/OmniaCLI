@@ -455,7 +455,7 @@ curl -s -b /tmp/cookies-admin localhost:8090/api/workspaces/space > /tmp/space.j
 room = json.load(open("/tmp/space.json"))["roots"][sys.argv[1]][""]
 assert room["free"] > 0 and room["physical"] == room["free"] and room["promised"] == 0, room' default \
     || { cat /tmp/space.json; fail "the room of $WS_DEFAULT"; }
-curl -s -b /tmp/cookies-admin localhost:8090/workspaces | has "<option value=\"mine\">mine ($WS_USER)</option>" \
+curl -s -b /tmp/cookies-admin "localhost:8090/workspaces?new=1" | has "<option value=\"mine\">mine ($WS_USER)</option>" \
     || fail "the storage mine ($WS_USER) not offered"
 # a workspace's disk on the user's disk, through the root path; after the storage's check.
 # A container's /dev is made at its start: loop devices the kernel adds later
