@@ -10,7 +10,8 @@
 {# the page of a workspace (docs/ux/UX-007 §4.4): its disk in the head, four tabs (instances, names on the web, users,
    external services), every list read; a new instance, a user, a key and the notices in a dialog. The repositories,
    the Odoo options and the deletion of an instance are on the instance's page (UX-006 › Settings). #}
-{% set new_instance = not storage_problem and not docker_missing and can_create and not (instances_left is not none and instances_left <= 0) and templates %}
+{% set denied = denied or {} %}
+{% set new_instance = not storage_problem and not docker_missing and can_create and not (instances_left is not none and instances_left <= 0) and templates and not denied.instances %}
 {# an administrator of the machine (not of this workspace only): the form of its limits is theirs (/workspaces?edit=) #}
 {% set machine_admin = not scoped %}
 {% set limits_url = prefix ~ "/workspaces?edit=" ~ (ws.name | urlencode) %}
@@ -18,7 +19,8 @@
 {% set role_names = {"user": _("user"), "developer": _("developer"), "admin": _("admin")} %}
 {# why no instance can be made now: on the Instances tab, and in the title of the disabled primary #}
 {% set why_not | trim %}
-{% if storage_problem %}{{ _("This workspace cannot be used: {problem}.", problem=tr(storage_problem)) }}
+{% if denied.instances %}{{ tr(denied.instances) }}
+{% elif storage_problem %}{{ _("This workspace cannot be used: {problem}.", problem=tr(storage_problem)) }}
 {% elif docker_missing %}{{ _("Docker is not installed on this machine: the instances of a workspace are Docker Compose projects. Install it (the Checks page says how), then new instances can be made here.") }}
 {% elif not can_create %}{{ _("New instances need a storage and a disk limit for the workspace: the machine's administrators set them.") }}
 {% elif instances_left is not none and instances_left <= 0 %}{{ _("The workspace has all the instances its limit allows.") }}
@@ -45,6 +47,12 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
 .in-ways input { width: auto; }
 .fa-from { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .fa-from select { width: auto; flex: 1; min-width: 140px; }
+#role-dialog { width: min(560px, calc(100vw - 32px)); }
+.rd-caps { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 4px 16px; margin: 10px 0; border: 0; padding: 0; }
+.rd-caps label, .id-servers label { display: flex; gap: 6px; align-items: center; font-weight: normal; }
+.rd-caps input, .id-servers input { width: auto; }
+.id-servers { display: flex; flex-direction: column; gap: 2px; }
+.ws-caps { font-size: 13px; color: var(--muted); }
 </style>
 <div class="page-head">
   <div>
@@ -177,23 +185,28 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
 {# C. the users: a row read each; a new one and a change in the dialog #}
 <section class="panel tab-panel" data-panel="users" hidden>
   <div class="section-head"><p class="muted ws-line">{{ _("A user created here sees this workspace's servers only.") }}</p>
-    <button type="button" id="new-member" title="{{ _('Makes a user who sees only the instances of this workspace, with the role you choose here') }}">{{ _("New user") }}</button></div>
+    {% if denied.people %}<span title="{{ tr(denied.people) }}"><button type="button" id="new-member" disabled title="{{ tr(denied.people) }}">{{ _("New user") }}</button></span>
+    {% else %}<button type="button" id="new-member" title="{{ _('Makes a user who sees only the instances of this workspace, with the role you choose here') }}">{{ _("New user") }}</button>{% endif %}</div>
   <div class="scroll" style="margin-top: 10px">
   <table class="ws-table">
     <tr><th>{{ _("User") }}</th><th>{{ _("Role") }}</th><th></th></tr>
     {% for m in members %}
-    <tr data-user="{{ m.name }}" data-role="{{ m.role }}" data-only-here="{{ 1 if m.only_here else '' }}">
+    <tr data-user="{{ m.name }}" data-role="{{ m.custom or m.role }}" data-only-here="{{ 1 if m.only_here else '' }}" data-servers="{{ (m.servers or []) | join(',') }}" data-limited="{{ '1' if m.servers is not none }}">
       <td><strong>{{ m.name }}</strong>{% if m.name == me %} <span class="muted">{{ _("(you)") }}</span>{% endif %}
         {% if not m.only_here %}<span class="small-note">{{ _("also elsewhere: its password is the machine's administrator's") }}</span>{% endif %}
         {% if m.two_step %} <span class="badge ok" title="{{ _('After the password, the login asks a code of an authenticator app') }}">{{ _("two-step on") }}</span>{% endif %}
         {% if m.invitation and m.invitation.state == "pending" %} <span class="badge warn" title="{{ _('The person has not set a password yet: until then it cannot log in. Invited by {by}.', by=m.invitation.by) }}">{{ _("invitation waiting, until {date}", date=m.invitation.expires) }}</span>
         {% elif m.invitation %} <span class="badge error" title="{{ _('The link was not used in time: the person cannot log in. Send it again or revoke it.') }}">{{ _("invitation expired on {date}", date=m.invitation.expires) }}</span>{% endif %}</td>
-      <td>{{ role_names.get(m.role, m.role) }}</td>
+      <td>{{ m.custom or role_names.get(m.role, m.role) }}
+        {% if m.servers is not none %}<span class="small-note">{{ _("only {names}", names=m.servers | join(", ")) if m.servers else _("no instance") }}</span>{% endif %}</td>
       <td><div class="actions" style="margin: 0; justify-content: flex-end">
         {% if m.can_reset %}<button type="button" class="small" data-reset-two-step title="{{ _('Switches the two-step verification of this user off, for a lost phone: it sets it up again, at its next login where it is required. It goes in the access log.') }}">{{ _("Reset two-step…") }}</button>{% endif %}
         {% if m.invitation %}<button type="button" class="small" data-resend title="{{ _('Makes a new link for {hours} hours and shows it: the link of before works no more.', hours=invitation_hours) }}">{{ _("Send again") }}</button>{% endif %}
-        <button type="button" class="small" data-edit="members" title="{{ _('Changes the role in the workspace and, for a user of this workspace only, the password. You cannot change your own role.') }}">{{ _("Edit…") }}</button>
+        {% set why_off = tr(denied.people) if denied.people else (_("This user may do more than your role: an administrator with more rights changes it") if m.above else "") %}
+        {% if why_off %}<span title="{{ why_off }}"><button type="button" class="small" disabled title="{{ why_off }}">{{ _("Edit…") }}</button></span>
+        {% else %}<button type="button" class="small" data-edit="members" title="{{ _('Changes the role in the workspace and, for a user of this workspace only, the password. You cannot change your own role.') }}">{{ _("Edit…") }}</button>{% endif %}
         {% if m.invitation %}<button type="button" class="small danger" data-revoke title="{{ _('The link works no more and the user, who never got in, is deleted.') }}">{{ _("Revoke…") }}</button>
+        {% elif m.name != me and why_off %}<span title="{{ why_off }}"><button type="button" class="small danger" disabled title="{{ why_off }}">{{ _("Take out…") }}</button></span>
         {% elif m.name != me %}<button type="button" class="small danger" data-delete="members" title="{{ _('Takes the user out of the workspace. A user of this workspace only is deleted; one who gets in elsewhere too only loses this workspace. You cannot take out yourself.') }}">{{ _("Take out…") }}</button>{% endif %}
       </div></td>
     </tr>
@@ -202,14 +215,35 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
     {% endfor %}
   </table>
   </div>
-  <details style="margin-top: 12px">
-    <summary title="{{ _('What a user, a developer and an admin may do in this workspace') }}">{{ _("The roles") }}</summary>
-    <dl>
-      <dt>{{ _("user") }}</dt><dd>{{ _("watches and restarts, starts and stops") }}</dd>
-      <dt>{{ _("developer") }}</dt><dd>{{ _("also pulls, updates and backs up") }}</dd>
-      <dt>{{ _("admin") }}</dt><dd>{{ _("also manages these users") }}</dd>
-    </dl>
-  </details>
+  {#- the roles (README, Custom roles of a workspace): the three of every workspace, and those made here from them
+      with capabilities ticked off or on, never beyond the role of who makes them #}
+  <div id="ws-roles" style="margin-top: 18px; border-top: 1px solid var(--border); padding-top: 14px">
+    <div class="section-head"><h3 style="margin: 0">{{ _("Roles") }}</h3>
+      {% if denied.people %}<span title="{{ tr(denied.people) }}"><button type="button" class="small" id="new-role" disabled title="{{ tr(denied.people) }}">{{ _("New role") }}</button></span>
+      {% else %}<button type="button" class="small" id="new-role" title="{{ _('Makes a role of this workspace from user, developer or admin, with the capabilities you tick off or on: never more than your own role has') }}">{{ _("New role") }}</button>{% endif %}</div>
+    <div class="scroll">
+    <table class="ws-table">
+      <tr><th>{{ _("Role") }}</th><th>{{ _("May") }}</th><th></th></tr>
+      {% for r in roles %}
+      <tr><td><strong>{{ role_names.get(r, r) }}</strong></td>
+        <td class="ws-caps">{% for c in presets[r] %}{{ tr(capabilities[c]) }}{{ " · " if not loop.last }}{% endfor %}</td><td></td></tr>
+      {% endfor %}
+      {% for r in custom_roles %}
+      <tr data-role-name="{{ r.name }}" data-caps="{{ r.caps | join(',') }}"><td><strong>{{ r.name }}</strong>
+        {% if r.people %}<span class="small-note">{{ _("given to {names}", names=r.people | join(", ")) }}</span>{% endif %}</td>
+        <td class="ws-caps">{% for c in r.caps %}{{ tr(capabilities[c]) }}{{ " · " if not loop.last }}{% else %}{{ _("nothing: it only sees the instances") }}{% endfor %}</td>
+        <td><div class="actions" style="margin: 0; justify-content: flex-end">
+          {% set role_off = tr(denied.people) if denied.people else (_("This role may do more than yours: an administrator with more rights changes it") if r.above else (_("It is your own role: another administrator changes it") if r.mine else "")) %}
+          {% if role_off %}<span title="{{ role_off }}"><button type="button" class="small" disabled title="{{ role_off }}">{{ _("Edit…") }}</button></span>
+          {% else %}<button type="button" class="small" data-role-edit title="{{ _('Changes the capabilities of this role: who has it gets them at once') }}">{{ _("Edit…") }}</button>{% endif %}
+          {% if r.people %}<span title="{{ _('Given to someone: give them another role first') }}"><button type="button" class="small danger" disabled title="{{ _('Given to someone: give them another role first') }}">{{ _("Delete…") }}</button></span>
+          {% elif role_off %}<span title="{{ role_off }}"><button type="button" class="small danger" disabled title="{{ role_off }}">{{ _("Delete…") }}</button></span>
+          {% else %}<button type="button" class="small danger" data-role-delete title="{{ _('Deletes this role of the workspace; nobody has it') }}">{{ _("Delete…") }}</button>{% endif %}
+        </div></td></tr>
+      {% endfor %}
+    </table>
+    </div>
+  </div>
   {#- the workspace's single sign-on (README, Single sign-on): its people log in with their company's account #}
   <div id="sso" style="margin-top: 18px; border-top: 1px solid var(--border); padding-top: 14px">
     <div class="section-head"><h3 style="margin: 0">{{ _("Single sign-on") }}</h3>
@@ -282,14 +316,16 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
 
 <section class="panel" id="mcp-tokens">
   <div class="section-head"><h2>{{ _("API and AI assistants") }}</h2>
-    <button type="button" class="small" id="new-token" title="{{ _('Makes a token for an AI assistant or a CI: it sees only this workspace and does there what its level allows. You see it once.') }}">{{ _("New token") }}</button></div>
+    {% if denied.people %}<span title="{{ tr(denied.people) }}"><button type="button" class="small" id="new-token" disabled title="{{ tr(denied.people) }}">{{ _("New token") }}</button></span>
+    {% else %}<button type="button" class="small" id="new-token" title="{{ _('Makes a token for an AI assistant or a CI: it sees only this workspace and does there what its level allows. You see it once.') }}">{{ _("New token") }}</button>{% endif %}</div>
   <p class="muted ws-line" style="margin-bottom: 10px">{{ _("The tokens an AI assistant (Claude, ChatGPT, Codex, Cursor…) or a script and a CI read the instances of this workspace and act with: a token sees this workspace only.") }}
     <span class="mono small" style="font-size: 12px">MCP · {{ api_base }}/mcp · REST · <a href="{{ prefix }}/api/v1/docs" title="{{ _('Opens the documentation of the REST API: every route, its fields and its errors') }}">/api/v1</a></span></p>
   <div class="scroll">
   <table class="ws-table">
     <tr><th>{{ _("Token") }}</th><th>{{ _("Level") }}</th><th></th></tr>
     {% for t in tokens %}
-    <tr data-token="{{ t.name }}" data-role="{{ t.role }}" data-ci="{{ '1' if t.ci }}" data-servers="{{ t.servers | join(', ') }}"><td><strong>{{ t.name }}</strong>
+    <tr data-token="{{ t.name }}" data-role="{{ t.role }}" data-ci="{{ '1' if t.ci }}" data-servers="{{ t.servers | join(', ') }}" data-person="{{ t.person }}"><td><strong>{{ t.name }}</strong>
+        {% if t.person %}<br><span class="muted small" title="{{ _('It gets no more than this person: a role of the person made smaller makes it smaller too') }}">{{ _("for {name}", name=t.person) }}{% if t.gone %} · {{ _("no longer in the workspace: it can do nothing") }}{% endif %}</span>{% endif %}
         {% if t.ci %} <span class="badge warn" title="{{ _('A token of a CI: it never acts on a production, which is updated by hand only') }}">CI</span>{% endif %}
         {% if t.servers %}<br><span class="muted small">{{ _("only {names}", names=t.servers | join(", ")) }}</span>{% endif %}</td>
       <td>{{ levels.get(t.role, t.role) }}</td>
@@ -455,6 +491,15 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
         <span class="muted field-help" id="id-password-help"></span></div>
       <span class="label muted" data-for-token>CI</span>
       <div data-for-token class="in-ways" style="margin: 0"><label title="{{ _('A production is updated by hand only: a CI token never starts, stops, updates nor backs one up, whatever its level') }}"><input type="checkbox" id="id-ci"> {{ _("A token of a CI: never on a production") }}</label></div>
+      <span class="label muted" data-for-member>{{ _("Instances") }}</span>
+      <div data-for-member class="id-servers">
+        <label title="{{ _('The user sees every instance of the workspace, also those made later') }}"><input type="checkbox" id="id-all" checked> {{ _("All the instances") }}</label>
+        {% for n in servers %}<label title="{{ _('The user sees and acts on {name}', name=n) }}"><input type="checkbox" data-member-server value="{{ n }}"> {{ n }}</label>{% endfor %}
+        <span class="muted field-help">{{ _("Limited to some: the others are not listed, and what acts on the whole workspace (its users, its names, new instances) is not allowed.") }}</span></div>
+      <label for="id-person" data-for-token>{{ _("For") }}</label>
+      <div data-for-token><select id="id-person"><option value="">{{ _("nobody: its level only") }}</option>
+        {% for m in members %}<option value="{{ m.name }}">{{ m.name }}</option>{% endfor %}</select>
+        <span class="muted field-help">{{ _("The token of a person gets no more than that person, now and later: a smaller role of the person makes the token smaller.") }}</span></div>
       <label for="id-servers" data-for-token>{{ _("Servers") }}</label>
       <div data-for-token><input type="text" id="id-servers" autocomplete="off" list="id-server-names" placeholder="{{ _('all') }}">
         <datalist id="id-server-names">{% for n in servers %}<option value="{{ n }}"></option>{% endfor %}</datalist>
@@ -465,6 +510,30 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
     <div class="actions">
       <button type="button" id="id-cancel" title="{{ _('Closes without saving') }}">{{ _("Cancel") }}</button>
       <span title="{{ _('Disabled until something is changed.') }}"><button type="submit" class="primary" id="id-save" disabled></button></span>
+    </div>
+  </form>
+</dialog>
+<dialog id="role-dialog" aria-labelledby="rd-title">
+  <form method="dialog" id="rd-form">
+    <h2 id="rd-title"></h2>
+    <div class="form-grid">
+      <label for="rd-name">{{ _("Name") }}</label>
+      <div><input type="text" id="rd-name" maxlength="40" autocomplete="off" placeholder="{{ _('Backups without restore') }}"></div>
+      <label for="rd-from">{{ _("Start from") }}</label>
+      <div><select id="rd-from"><option value="">—</option>{% for r in roles %}<option value="{{ r }}">{{ role_names.get(r, r) }}</option>{% endfor %}</select>
+        <span class="muted field-help">{{ _("Ticks what that role may; then tick off or on.") }}</span></div>
+    </div>
+    <fieldset class="rd-caps" aria-label="{{ _('What the role may do') }}">
+      {% for key, label in capabilities.items() %}
+      {% set beyond = my_caps is not none and key not in my_caps %}
+      <label title="{{ _('Your role does not include it: you cannot give it') if beyond else tr(label) }}"><input type="checkbox" data-cap value="{{ key }}" {{ 'disabled' if beyond }}> {{ tr(label) }}</label>
+      {% endfor %}
+    </fieldset>
+    <p class="muted field-help">{{ _("Whoever has the role keeps seeing the instances; what is not ticked is shown disabled, with the reason, and refused by the API and MCP too.") }}</p>
+    <p class="error" id="rd-error" role="alert"></p>
+    <div class="actions">
+      <button type="button" id="rd-cancel" title="{{ _('Closes without saving') }}">{{ _("Cancel") }}</button>
+      <span title="{{ _('Disabled until the name is written and something is changed.') }}"><button type="submit" class="primary" id="rd-save" disabled title="{{ _('Saves the role: who has it gets these capabilities at once. It goes in the access log.') }}">{{ _("Save") }}</button></span>
     </div>
   </form>
 </dialog>
@@ -504,6 +573,10 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
 (function () {
   const $ = (id) => document.getElementById(id);
   const ROLES = {{ role_names | tojson }}, ROLE_LIST = {{ roles | list | tojson }}, ME = {{ me | tojson }}, MIN = {{ min_password | tojson }};
+  // the custom roles and what each preset may (capabilities.py); MY_CAPS: what the caller may give, null: all
+  const CUSTOM = {{ custom_roles | tojson }}, PRESETS = {{ presets | tojson }}, MY_CAPS = {{ my_caps | tojson }};
+  const capsOf = (role) => PRESETS[role] || ((CUSTOM.find((r) => r.name === role) || {}).caps) || [];
+  const mayGive = (role) => MY_CAPS === null || capsOf(role).every((c) => MY_CAPS.includes(c));
   const T = {
     error: {{ _("Error {status}") | tojson }}, save: {{ _("Save") | tojson }},
     ownRole: {{ _("You cannot change your own role") | tojson }},
@@ -856,13 +929,17 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
   const way = () => (dialog.querySelector('input[name="id-way"]:checked') || {}).value;
   const isNewMember = () => kind === "members" && !editing;
   const usesPassword = () => passwordHere && (!isNewMember() || way() === "password");
+  const memberServers = () => $("id-all").checked ? [] : [...dialog.querySelectorAll("[data-member-server]:checked")].map((b) => b.value);
   const values = () => JSON.stringify([$("id-name").value.trim(), $("id-role").value, $("id-password").value, way(),
-                                       $("id-ci").checked, $("id-servers").value]);
+                                       $("id-ci").checked, $("id-servers").value, memberServers(), $("id-person").value]);
   function layout() {
     for (const el of dialog.querySelectorAll("[data-for-password]")) el.hidden = !usesPassword();
     for (const el of dialog.querySelectorAll("[data-for-new]")) el.hidden = !isNewMember();
     for (const el of dialog.querySelectorAll("[data-for-mail]")) el.hidden = !isNewMember() || way() !== "invite";
     for (const el of dialog.querySelectorAll("[data-for-token]")) el.hidden = kind !== "tokens";
+    for (const el of dialog.querySelectorAll("[data-for-member]")) el.hidden = kind !== "members";
+    $("id-all").disabled = $("id-role").disabled;
+    for (const box of dialog.querySelectorAll("[data-member-server]")) box.disabled = $("id-all").checked || $("id-role").disabled;
   }
   function changed() {
     layout();
@@ -879,8 +956,14 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
     $("id-title").textContent = row ? K.editTitle.replace("{name}", editing) : K.newTitle;
     $("id-name").value = editing || ""; $("id-name").readOnly = !!row; $("id-name").placeholder = K.namePlaceholder;
     const role = $("id-role");
-    role.replaceChildren(...ROLE_LIST.map((r) => new Option(ROLES[r] || r, r)));
+    // a member: the presets and the workspace's own roles, those beyond the caller's off
+    const list = kind === "members" ? [...ROLE_LIST, ...CUSTOM.map((r) => r.name)] : ROLE_LIST;
+    role.replaceChildren(...list.map((r) => { const o = new Option(ROLES[r] || r, r); o.disabled = kind === "members" && !mayGive(r); return o; }));
     role.value = row ? row.dataset.role : K.first;
+    const limited = kind === "members" && row && row.dataset.limited ? row.dataset.servers.split(",").filter(Boolean) : null;
+    $("id-all").checked = !limited;
+    for (const box of dialog.querySelectorAll("[data-member-server]")) box.checked = !!limited && limited.includes(box.value);
+    $("id-person").value = kind === "tokens" && row ? (row.dataset.person || "") : "";
     const own = kind === "members" && editing === ME;
     role.disabled = own;
     $("id-role-help").textContent = own ? T.ownRole : (K.roleHelp || "");
@@ -901,8 +984,8 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
     (row ? (own ? $("id-password") : role) : $("id-name")).focus();
   }
   for (const kindOf of ["input", "change"]) $("id-form").addEventListener(kindOf, changed);
-  $("new-member").onclick = () => openDialog("members", null);
-  $("new-token").onclick = () => openDialog("tokens", null);
+  if (!$("new-member").disabled) $("new-member").onclick = () => openDialog("members", null);
+  if (!$("new-token").disabled) $("new-token").onclick = () => openDialog("tokens", null);
   $("id-cancel").onclick = () => dialog.close();
   for (const button of document.querySelectorAll("[data-edit]")) button.onclick = () => openDialog(button.dataset.edit, button.closest("tr"));
   $("id-form").addEventListener("submit", async (event) => {
@@ -910,7 +993,8 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
     const K = KINDS[kind], name = $("id-name").value.trim();
     const body = {name, role: $("id-role").value};
     if (K.password) body.password = usesPassword() ? $("id-password").value : "";
-    if (kind === "tokens") Object.assign(body, {ci: $("id-ci").checked, servers: $("id-servers").value});
+    if (kind === "tokens") Object.assign(body, {ci: $("id-ci").checked, servers: $("id-servers").value, person: $("id-person").value});
+    if (kind === "members") body.servers = memberServers();
     const invite = isNewMember() && way() === "invite", email = invite && $("id-email") ? $("id-email").value.trim() : "";
     if (!editing) Object.assign(body, {new: true}, kind === "members" ? {invite, email} : {});
     const data = await post(kind + "/save", body, $("id-error"));
@@ -928,6 +1012,45 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
     location.reload();
   });
   $("sd-done").onclick = () => location.reload();
+  // a custom role: made from a preset with capabilities ticked off or on, never beyond the caller's own
+  const roleDialog = $("role-dialog");
+  let roleEditing = null, roleBefore = "";
+  const capBoxes = () => [...roleDialog.querySelectorAll("[data-cap]")];
+  const roleValues = () => JSON.stringify([$("rd-name").value.trim(), capBoxes().filter((b) => b.checked).map((b) => b.value)]);
+  const roleChanged = () => { $("rd-save").disabled = !$("rd-name").value.trim() || roleValues() === roleBefore; };
+  function openRole(row) {
+    roleEditing = row ? row.dataset.roleName : null;
+    $("rd-title").textContent = row ? {{ _("Role {name}") | tojson }}.replace("{name}", roleEditing) : {{ _("New role") | tojson }};
+    $("rd-name").value = roleEditing || ""; $("rd-name").readOnly = !!row; $("rd-from").value = "";
+    const caps = row ? row.dataset.caps.split(",").filter(Boolean) : [];
+    for (const b of capBoxes()) b.checked = caps.includes(b.value);
+    $("rd-error").textContent = "";
+    roleBefore = row ? roleValues() : JSON.stringify(["", []]); roleChanged();
+    roleDialog.showModal();
+    (row ? $("rd-from") : $("rd-name")).focus();
+  }
+  $("rd-from").addEventListener("change", () => {
+    const caps = PRESETS[$("rd-from").value];
+    if (caps) for (const b of capBoxes()) b.checked = caps.includes(b.value) && !b.disabled;
+    roleChanged();
+  });
+  for (const kindOf of ["input", "change"]) $("rd-form").addEventListener(kindOf, roleChanged);
+  if (!$("new-role").disabled) $("new-role").onclick = () => openRole(null);
+  $("rd-cancel").onclick = () => roleDialog.close();
+  for (const button of document.querySelectorAll("[data-role-edit]")) button.onclick = () => openRole(button.closest("tr"));
+  $("rd-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const body = {name: $("rd-name").value.trim(), capabilities: capBoxes().filter((b) => b.checked).map((b) => b.value)};
+    if (!roleEditing) body.new = true;
+    if (await post("roles/save", body, $("rd-error"))) location.reload();
+  });
+  for (const button of document.querySelectorAll("[data-role-delete]")) {
+    button.onclick = async () => {
+      const name = button.closest("tr").dataset.roleName;
+      if (!await omniaAsk({{ _("Delete the role {name} of the workspace? Nobody has it.") | tojson }}.replace("{name}", name), button, {danger: true})) return;
+      if (await post("roles/delete", {name})) location.reload();
+    };
+  }
   // how to connect a client with a token: its snippets, with <TOKEN> (it is never shown again)
   const connect = $("connect-dialog");
   for (const button of document.querySelectorAll("[data-connect]")) {

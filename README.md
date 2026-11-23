@@ -726,7 +726,7 @@ Every user has a role:
 | `user` | watch: servers, load, logs, jobs, the backup list; and restart, start and stop Odoo |
 | `developer` | also act on the servers: pull, update, backup and the download of a backup, pip, the shell, Claude |
 | `admin` | everything: also the configuration pages (servers, users, links, schedules) and the merge of test into production |
-| `workspace` | none of the above on the machine: the servers of its workspaces only, with its role in each (see Workspaces) |
+| `workspace` | none of the above on the machine: the servers of its workspaces only, with its role in each, or a custom role of the workspace and some of its instances only (see Workspaces, Custom roles of a workspace) |
 
 ```yaml
 auth:
@@ -1312,6 +1312,81 @@ containers together, one systemd slice `omniacli_<workspace>.slice` written
 by the root helper's `limits` when an instance is created and when the
 limits change (a job; the containers running take them). A domain may not be under another workspace's
 (`shop.acme.it` under `acme.it`): their names would meet.
+
+#### Custom roles of a workspace
+
+The three roles are presets of a short list of **capabilities**
+(`omniacli/capabilities.py`), the same for the pages, the REST API and MCP:
+
+| Capability | user | developer | admin |
+|---|---|---|---|
+| View the logs and the database statistics | ✓ | ✓ | ✓ |
+| Start, stop and restart | ✓ | ✓ | ✓ |
+| Log in as an Odoo user | | ✓ | ✓ |
+| Update the code (pull, deploys, the CI's webhook, Bring to production) | | ✓ | ✓ |
+| Make backups (and their schedule, their check, recovery at a minute) | | ✓ | ✓ |
+| Download backups | | ✓ | ✓ |
+| Manage repositories and modules (and the git credentials) | | ✓ | ✓ |
+| Change the settings of the instances (Odoo options, notices, destinations, a staging's mail) | | ✓ | ✓ |
+| Make and delete stagings | | ✓ | ✓ |
+| Restore a backup | | | ✓ |
+| Manage names and certificates | | | ✓ |
+| Create and delete instances | | | ✓ |
+| Manage the people and the tokens of the workspace (roles, single sign-on, access log) | | | ✓ |
+
+A preset lists a capability when the role reaches at least one action of it
+somewhere: a developer's token makes stagings over MCP and the REST API, the
+pages' **New staging** is an admin's; the role's own checks stay as they
+were (deleting a production's backups and setting their schedule are an admin's, a developer
+restarts over MCP). Nothing changes for anyone with a preset role on every
+instance: a test calls every route a user of workspaces reaches as a person
+with each role and as one with a custom role equal to it, and as their tokens,
+and compares the answers.
+
+Its admins make a **custom role** on the workspace's page (**Users ›
+Roles › New role**): a name (`Backup senza ripristino`), a preset to start
+from, the capabilities ticked off or on. Never beyond their own: who has a
+custom role gives no capability it lacks (they are off in the dialog), gives
+no preset above it, and cannot change a person, a role or a token that may do
+more than it, nor its own role. A person with a custom role keeps, on the
+workspace, the lowest preset that holds all its capabilities (a role with
+Restore is an admin's, one with Make backups a developer's), so every other
+check works as before; what the role does not tick is refused (403, «Your
+role «…» does not include: Restore a backup»), and the pages show its buttons
+disabled with the same reason in their title. A role given to someone cannot
+be deleted; changed, it changes everyone who has it, at once.
+
+**Some instances only**: the person's dialog has **Instances**, all of
+them by default, or some. The others are not listed (Dashboard, Instances,
+Backups, the map, the jobs) and are refused as another workspace's are; what
+acts on the whole workspace (its page, its users, its names, new instances,
+its load) is refused; the routes that name their instance in the body (a
+repository, the Odoo options, the deletion of an instance) take the person's
+instances only. A staging is deleted with Make and delete stagings, another
+instance with Create and delete instances. **Rebuild…** of a staging whose
+production is not one of the person's instances is refused (it backs that
+production up), and is off on the page with the reason. A staging made by a
+person limited to some instances is not added to them by itself.
+
+**Tokens**: a token of the workspace can be made **for** a person (the
+token's dialog, **For**; one made by a person with a custom role or some
+instances only is its own). Such a token, and every OAuth grant (always a
+person's), gets no more than its level and than the person *now*: a smaller
+role of the person makes the token smaller at its next call, a person taken out
+of the workspace leaves its tokens nothing. A token for nobody does what its
+level allows, as before.
+
+Every change is in the access log as a **Permissions** entry (NIS 2): a role
+made, changed or deleted with its capabilities before and after, a person's
+role and instances before and after, a token given to a person. They are
+kept in `workspaces.yaml` with the workspace (`roles`, `member_roles`,
+`member_servers`, `token_people`); no file of their own.
+
+The machine's users (`user`, `developer`, `admin`) have no custom roles: their
+roles reach the configuration of the machine, its consoles, links and
+machines, most of its routes with no capability of the list, and the people of
+the machine are the integrator's own; a customer who needs finer rights is a
+workspace's.
 
 #### Instances created from templates
 

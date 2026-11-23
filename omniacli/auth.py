@@ -76,6 +76,9 @@ class Principal:
     # a linked instance: the request is one a person's browser makes through that instance's pages (its
     # proxy says which menu it shows them under), not one the machine makes by itself (a job, a look)
     person: bool = False
+    # a user of workspaces, or a workspace's token of a person, in the workspaces where a custom role or
+    # a limit to some servers applies: ((workspace, capabilities.Grant), ...); elsewhere its role is all
+    grants: tuple = ()
 
     def can(self, role: str) -> bool:
         return ROLES.index(self.role) >= ROLES.index(role)
@@ -83,6 +86,10 @@ class Principal:
     def workspace_role(self, workspace: str) -> str | None:
         """Its role in workspace, None when it is not a member."""
         return dict(self.workspaces).get(workspace)
+
+    def grant(self, workspace: str | None):
+        """Its capabilities.Grant in workspace, None when its role there is all (no custom role, every server)."""
+        return dict(self.grants).get(workspace) if workspace else None
 
     def __str__(self) -> str:
         """The name the jobs record as who started them."""

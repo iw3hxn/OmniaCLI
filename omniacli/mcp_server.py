@@ -23,7 +23,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from . import apiguard, backupcheck, instancearchive, ops, pgreport, plugins
+from . import apiguard, backupcheck, capabilities, instancearchive, ops, pgreport, plugins
 from .auth import Principal
 from .accesslog import AccessLog
 from .auth import ROLES as ACCESS_ROLES
@@ -96,6 +96,8 @@ MACHINE_TOOLS = {"read_server", "add_draft_server", "list_links", "linked_tools"
 # and the workspace it is bound to (empty: the machine's)
 _ROLE = contextvars.ContextVar("omniacli_mcp_role", default="user")
 _SCOPE = contextvars.ContextVar("omniacli_mcp_scope", default="")
+# what a token of a person may do (capabilities.Grant, Settings.token_grant), for the list of tools
+_GRANT = contextvars.ContextVar("omniacli_mcp_grant", default=None)
 # who calls through a link: "link <name> (<user there>)"
 _WHO = contextvars.ContextVar("omniacli_mcp_who", default="")
 # the headers a link sends with who acts through it and the most it may do
@@ -240,17 +242,28 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
     def allowed(tool: str, role: str) -> bool:
         return ACCESS_ROLES.index(role) >= ACCESS_ROLES.index(TOOL_ROLES.get(tool, "user"))
 
+    def grant_of(ctx: Context | None):
+        """What the token of a person may do (capabilities.py): no more than the person now; None: its role."""
+        name = token_of(ctx)
+        return settings.token_grant(name) if name else None
+
     def need(ctx: Context, tool: str) -> None:
         role = role_of(ctx)
         if not allowed(tool, role):
             raise ToolError(f"{tool} needs an MCP token with role {TOOL_ROLES[tool]}; this one is {role}")
+        # the same check as the pages' and the REST API's (capabilities.refusal)
+        why = capabilities.refusal(grant_of(ctx), capabilities.TOOLS.get(tool), whole=tool in capabilities.WHOLE_TOOLS)
+        if why is not None:
+            raise ToolError(why)
 
     every_tool = server.list_tools
 
     async def list_tools():
         """Only the tools the caller's token may use."""
-        role, scope = _ROLE.get(), _SCOPE.get()
-        return [t for t in await every_tool() if allowed(t.name, role) and not (scope and t.name in MACHINE_TOOLS)]
+        role, scope, grant = _ROLE.get(), _SCOPE.get(), _GRANT.get()
+        return [t for t in await every_tool() if allowed(t.name, role) and not (scope and t.name in MACHINE_TOOLS)
+                and not (grant is not None and (grant.lacks(capabilities.TOOLS.get(t.name)) or (
+                    grant.servers is not None and t.name in capabilities.WHOLE_TOOLS)))]
     server.list_tools = list_tools
 
     def scope_of(ctx: Context | None) -> str:
@@ -278,6 +291,10 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         limited = settings.token_servers(name) if name else ()
         if limited and server_name not in limited:
             return False
+        grant = grant_of(ctx)
+        if grant is not None and not grant.reaches(server_name):
+            # a person's token: the person's instances only
+            return False
         scope = scope_of(ctx)
         if not scope:
             return True
@@ -292,6 +309,10 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         name = token_of(ctx)
         limited = settings.token_servers(name) if name else ()
         if limited and not (job.servers and set(job.servers) <= set(limited)):
+            return False
+        grant = grant_of(ctx)
+        if grant is not None and grant.servers is not None and not (
+                job.servers and all(grant.reaches(s) for s in job.servers)):
             return False
         scope = scope_of(ctx)
         return not scope or job.workspace == scope or any(sees(ctx, s) for s in job.servers)
@@ -378,6 +399,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
                        errors_only: bool = False) -> dict:
         """The last lines of an instance's Odoo log; errors_only keeps the
         ERROR and CRITICAL records with their tracebacks."""
+        need(ctx, "read_log")
         inst = instance(server_name, role, ctx)
         return await log_lines(inst, lines, errors_only)
 
@@ -865,6 +887,9 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         token_role = role_of(ctx)
         if ACCESS_ROLES.index(token_role) < ACCESS_ROLES.index(found.role):
             raise ToolError(f"{action} needs the role {found.role}; this token is {token_role}")
+        why = capabilities.refusal(grant_of(ctx), capabilities.of_action(found))
+        if why is not None:
+            raise ToolError(why)
         given = dict(params or {})
         values = {}
         for f in found.params:
@@ -1085,6 +1110,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
                               workspace=workspace or (settings.workspace_of(server) if server else "") or "")
             _ROLE.set(role)
             _SCOPE.set(workspace)
+            _GRANT.set(settings.token_grant(name) if kind == "mcp" else None)
             _WHO.set(who)
             sent = False
 

@@ -3,7 +3,7 @@
    its commits before and after, who started it, its outcome and the backup made before it; «Back to this
    deploy…» on a past one, in a dialog that says what changes; the automatic deploys paused or on. No primary
    button here: the tab's work is its code, a deploy gone back to is the exception. -#}
-{% set restore_target = restore_file.get(inst.key) if restore_file else none %}
+{% set restore_target = restore_file.get(inst.key) if restore_file and not (restore_file.get(inst.key) or {}).get("disabled") else none %}
 <section class="tab-panel panel" data-panel="modules" data-section="deploys" hidden id="deploys"
          data-api="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}/deploys" data-key="{{ inst.key }}"
          data-restore='{{ restore_target | tojson if restore_target else "" }}'>

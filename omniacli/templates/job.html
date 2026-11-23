@@ -187,7 +187,7 @@
     // the error as the page drew it (translated) while the job's own text is the same
     const err = document.getElementById("error");
     if ((data.error || "") !== err.dataset.raw) { err.textContent = data.error || ""; err.dataset.raw = data.error || ""; }
-    if ({{ can_act | tojson }} && data.status === "success" && data.result && data.result.download) offerDownload(data.result);
+    if ({{ (can_act and offers_download is not false) | tojson }} && data.status === "success" && data.result && data.result.download) offerDownload(data.result);
     if (data.result && data.result.progress) showSteps(data.result.progress, data.status);
     const done = ["success", "failed", "interrupted", "stopped"].includes(data.status);
     const stop = document.getElementById("stop-form");

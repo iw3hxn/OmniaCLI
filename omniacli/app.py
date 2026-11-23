@@ -61,6 +61,7 @@ from . import github
 from . import moduleupload, sshkeys
 from . import dumpinfo
 from . import totp
+from . import capabilities
 from . import oauth
 from . import passkeys, sso
 from . import uploads as uploads_mod
@@ -211,7 +212,9 @@ def _page_context(request: Request) -> dict:
         # a user of workspaces: none of the machine's menus and consoles
         "scoped": bool(user and user.scoped),
         # the workspaces whose users it manages (admin there)
-        "my_workspaces": [ws for ws, role in user.workspaces if role == "admin"] if user and user.scoped else [],
+        # (a person limited to some instances of one does not open its page: it acts on all of it)
+        "my_workspaces": [ws for ws, role in user.workspaces if role == "admin"
+                          and (user.grant(ws) is None or user.grant(ws).servers is None)] if user and user.scoped else [],
         # the Backups of every machine (UX-008 §4.2): a developer's, or a
         # user of workspaces who is a developer in one of them at least
         "backups_menu": bool(user and (any(r in ("developer", "admin") for _, r in user.workspaces)
@@ -283,6 +286,8 @@ _ACCESS_NAME = re.compile(r"[A-Za-z0-9._@-]{1,64}")
 ADDRESS_TAKEN_ELSEWHERE = frozenset({"it is under the domain of another workspace of this machine",
                                      "another workspace of this machine answers on it",
                                      "another site of this machine answers on it"})
+# a staging rebuilt by a person limited to some instances that do not hold its production
+REBUILD_NOT_YOURS = "Rebuild backs up the production of this staging, which is not one of your instances"
 # a name taken, as a user of workspaces is told: not where, not by whom
 NAME_NOT_AVAILABLE = "This name is not available: choose another one"
 # a user of the machine (not of a workspace) at the customers' portal, while
@@ -343,6 +348,8 @@ WORKSPACE_ROUTES = frozenset({
     "/api/workspaces/{workspace}/instances/from-archive",
     "/api/workspaces/{workspace}/archives/remote", "/api/workspaces/{workspace}/archives/fetch",
     "/api/workspaces/{workspace}/tokens/save", "/api/workspaces/{workspace}/tokens/delete",
+    # its custom roles (README, Custom roles of a workspace): its admins
+    "/api/workspaces/{workspace}/roles/save", "/api/workspaces/{workspace}/roles/delete",
     "/api/servers/{server}/stagings", "/api/servers/{server}/stagings/refresh",
     # the New staging dialog (UX-008 §5.1): here only, no choice of the machine
     "/api/servers/{server}/stagings/new", "/api/servers/{server}/stagings/elsewhere",
@@ -808,8 +815,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     # that workspace only, with its role there, as a user of it does
                     # (in_workspaces): on 21/11/2026 it read the whole machine over
                     # REST, the other customers' backups too, while MCP kept it in
+                    grant = settings.token_grant(name)
                     return Principal(name, "user", "token", workspaces=((workspace, settings.token_role(name)),),
-                                     scoped=True)
+                                     scoped=True, grants=((workspace, grant),) if grant is not None else ())
                 return Principal(name, settings.token_role(name), "token")
             name = authenticator.link_name(token)
             if name is None:
@@ -843,7 +851,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         role = settings.user_role(name)
         if role == WORKSPACE_ROLE:
             # its role is decided for each request (in_workspaces)
-            return Principal(name, "user", workspaces=settings.memberships(name), scoped=True)
+            return Principal(name, "user", workspaces=settings.memberships(name), scoped=True,
+                             grants=settings.grants(name))
         return Principal(name, role)
 
     def in_workspaces(request: HTTPConnection, user: Principal) -> Principal:
@@ -859,15 +868,25 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             path is not None and path.startswith("/x/") and "server" in params and "role" in params)
         if not allowed:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Not open to the users of workspaces")
+        # what the route needs of a person with a custom role or some servers only (capabilities.py)
+        method = request.scope.get("method", "GET")
+        needed = capabilities.of_route(method, path)
+        if needed == capabilities.PLUGIN_ACTION or (user.kind != "token" and (path or "").startswith(apiv1.PREFIX + "/")):
+            # a plugin's action: the action's own, checked where it runs (run_action); the REST API takes
+            # tokens only (api_token), a person's session is refused there as before
+            needed = None
         if "server" in params:
             names = [str(params["server"])]
         elif "job_id" in params:
             job = jobs.get(str(params["job_id"]))
-            if job is not None and job.workspace:
+            limited = job is not None and user.grant(job.workspace) is not None \
+                and user.grant(job.workspace).servers is not None
+            if job is not None and job.workspace and not (job.servers and limited):
                 # an instance created or removed: its server is not the workspace's before or after
                 role = user.workspace_role(job.workspace)
                 if role is None:
                     raise HTTPException(status.HTTP_403_FORBIDDEN, "Not a workspace of yours")
+                permitted(request, user, needed, job.workspace, whole=True)
                 return dataclasses.replace(user, role=role)
             # a job of none of its servers is refused like one that does not exist
             names = job.servers if job is not None and job.servers else [""]
@@ -875,6 +894,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             role = user.workspace_role(str(params["workspace"]))
             if role is None:
                 raise HTTPException(status.HTTP_403_FORBIDDEN, "Not a workspace of yours")
+            permitted(request, user, needed, str(params["workspace"]), whole=capabilities.whole_workspace(path))
             return dataclasses.replace(user, role=role)
         else:
             # a list (Dashboard, jobs, account): it shows only its workspaces' servers
@@ -885,16 +905,40 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             role = user.workspace_role(workspace) if workspace else None
             if role is None:
                 raise HTTPException(status.HTTP_403_FORBIDDEN, "Not a server of your workspaces")
+            permitted(request, user, needed, workspace, [name])
             roles.append(role)
         # a job of several servers: the lowest of its roles there
         return dataclasses.replace(user, role=min(roles, key=ACCESS_ROLES.index))
+
+    def refusal(user: Principal | None, capability: str | None, workspace: str | None = None, servers=(),
+                whole: bool = False) -> str | None:
+        """The one check of a person's capabilities (capabilities.py): why user may not do capability on
+        servers of workspace (whole: on the whole workspace), None when it may. Its role is checked
+        apart, as before: this only takes away what a custom role does not tick, and the servers out of
+        a person's limit. workspace None: the workspace of the first of servers."""
+        if user is None or not user.grants:
+            return None
+        if workspace is None:
+            workspace = next((settings.workspace_of(s) for s in servers if settings.workspace_of(s)), None)
+        return capabilities.refusal(user.grant(workspace), capability, servers, whole)
+
+    def permitted(request: HTTPConnection, user: Principal, capability: str | None, workspace: str | None,
+                  servers=(), whole: bool = False) -> None:
+        """refusal() as a 403 (a server out of the person's limit: as one of another workspace); the
+        attempt is in the access log with who made it (an action refused, NIS 2)."""
+        why = refusal(user, capability, workspace, servers, whole)
+        if why is not None:
+            request.state.user = user
+            raise HTTPException(status.HTTP_403_FORBIDDEN, why)
 
     def visible_servers(user: Principal | None) -> set[str] | None:
         """The servers user may see: None, all of them (a user of the machine)."""
         if user is None or not user.scoped:
             return None
         mine = {ws for ws, _ in user.workspaces}
-        return {srv for ws in settings.workspaces.values() if ws.name in mine for srv in ws.servers}
+        # a person limited to some servers of a workspace sees those only
+        return {srv for ws in settings.workspaces.values() if ws.name in mine for srv in ws.servers
+                if (user.grant(ws.name) is None or user.grant(ws.name).reaches(srv))}
 
     def visible_jobs(user: Principal | None, found: list) -> list:
         """Of found, the jobs user may see: for a user of workspaces, those of
@@ -902,7 +946,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         shown = visible_servers(user)
         if shown is None:
             return found
-        mine = {ws for ws, _ in user.workspaces}
+        # a workspace's own job (an instance made or removed): not for a person limited to some servers
+        mine = {ws for ws, _ in user.workspaces
+                if user.grant(ws) is None or user.grant(ws).servers is None}
         return [j for j in found if (j.workspace and j.workspace in mine) or (j.servers and set(j.servers) <= shown)]
 
     def customer_view(request: HTTPConnection) -> CustomerView | None:
@@ -2276,7 +2322,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             and workspaceops.docker_missing() is None,
             "jobs": shown_jobs(request, visible_jobs(me, jobs.recent(len(jobs.jobs)))[:10]),
             # a user of workspaces: the load of each of its workspaces instead
-            "load_workspaces": sorted((ws, role) for ws, role in me.workspaces if ws in settings.workspaces) if me.scoped else [],
+            "load_workspaces": sorted((ws, role) for ws, role in me.workspaces if ws in settings.workspaces
+                                      and (me.grant(ws) is None or me.grant(ws).servers is None)) if me.scoped else [],
             # the Database tab (UX-008 §6.2): the machine's admins only
             "machine_database": shown is None and machine_admin(me),
             # the SSH access tab (README, SSH access): the machine's admins, a person through a link too
@@ -2381,6 +2428,17 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if i.plugin.has_login and acts_for_a_person(me) and me.can(from_link_role(i)):
                 api = f"{prefix_of(request)}/api/servers/{srv.name}/{i.role}/login-as"
                 login_as_buttons[i.key] = {"users": f"{api}/users", "url": api, "key": i.key}
+        # what the person's custom role takes away here (capabilities.py): its buttons are there, disabled,
+        # each saying why; the routes refuse them too
+        denied = {c: why for c in capabilities.CAPABILITIES if (why := refusal(me, c, None, [srv.name]))}
+        if staging_of and "stagings" not in denied and refusal(me, None, None, [staging_of.get("parent") or ""]):
+            # Rebuild backs up the production: not for a person limited to instances without it
+            denied["rebuild"] = REBUILD_NOT_YOURS
+        for i in shown:
+            if "restore" in denied and i.plugin.has_restore and me.kind == "user":
+                restore_file[i.key] = {"disabled": denied["restore"]}
+            if "login_as" in denied and i.key in login_as_buttons:
+                login_as_buttons[i.key] = {"disabled": denied["login_as"]}
         name_problems = {}
         owner = workspace_of(srv.name)
         if owner is not None and owner[0].domain:
@@ -2402,6 +2460,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             request,
             "server.html",
             {
+                "denied": denied,
                 "from_link": from_link,
                 # the workspace it is in: «On the map» opens its schema, where the node of this instance is
                 "map_workspace": settings.workspace_of(srv.name),
@@ -2907,6 +2966,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         page: a link's copy and the MCP list take zips only)."""
         instance = get_instance(server, role)
         can_delete = me.can(backup_role(instance))
+        # a custom role without Download backups: the files listed, not their links (capabilities.py)
+        no_download = refusal(me, "download", None, [server])
         folder = backup_folder(instance)
         found = [p for p in folder.iterdir() if p.is_file() and (
             p.suffix == ".zip" or (dumps and sqldump.is_dump_name(p.name)))] if folder.is_dir() else []
@@ -2916,7 +2977,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 "file": p.name,
                 "size": p.stat().st_size,
                 "time": int(p.stat().st_mtime),
-                "download": f"{prefix_of(request)}/backups/{server}/{role}/{p.name}",
+                "download": "" if no_download else f"{prefix_of(request)}/backups/{server}/{role}/{p.name}",
+                **({"download_refused": i18n.tr(request_language(request), no_download)} if no_download else {}),
                 # scheduled, before an update, made by hand (or brought from a link)
                 "kind": ("scheduled" if p.name.startswith(schedules.SCHEDULED_PREFIX)
                          else "pre-update" if p.name.startswith(ops.PRE_UPDATE_PREFIX) else "manual"),
@@ -3197,6 +3259,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         for action in plugin.actions():
             if action.scope != scope or not me.can(action.role) or not action.applies_to(target):
                 continue
+            server = getattr(target, "server", None) or getattr(target, "name", "")
+            if refusal(me, capabilities.of_action(action), None, [server]):
+                # not in the person's custom role: not offered (the route refuses it too)
+                continue
             groups.setdefault(action.group or plugin.name, []).append({
                 "action": action, "plugin": plugin.name,
                 "url": f"{base}/x/{plugin.name}/{action.id}",
@@ -3238,6 +3304,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                                            f"for {target_name(target)}")
         if not user.can(action.role):
             raise HTTPException(status.HTTP_403_FORBIDDEN, f"The {action.role} role is required")
+        permitted(request, user, capabilities.of_action(action), None, sorted({k.partition("/")[0] for k in keys}))
         raw, as_json = await posted_params(request)
         try:
             if action.params:
@@ -3427,7 +3494,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             raise HTTPException(status.HTTP_404_NOT_FOUND, "No such job")
         # a draft or deleted server has no page: its crumb goes to its jobs
         live = [srv.name for srv in settings.active_servers()]
-        return _TEMPLATES.TemplateResponse(request, "job.html", {"job": shown_jobs(request, [job], True)[0], "live": live})
+        # a custom role without Download backups: no download offered at the end (the route refuses it)
+        offers = refusal(request.state.user, "download", None, job.servers) is None
+        return _TEMPLATES.TemplateResponse(request, "job.html", {"job": shown_jobs(request, [job], True)[0], "live": live,
+                                                                 "offers_download": offers})
 
     @app.post("/jobs/{job_id}/stop")
     async def job_stop(request: Request, job_id: str, user: Principal = Depends(admin)):
@@ -4016,9 +4086,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         main = (now or "") if gone and ws.main == gone else ws.main
         subdomains = {sub: (now if gone and target == gone else target) for sub, target in ws.subdomains.items()}
         instances = ws.instances()
+        # a person limited to some servers keeps a renamed one; a deleted one goes from its list (a new server
+        # of the same name later is not its), and with none left it reaches none
+        limits = {u: [new if s == old else s for s in names if not (s == old and new is None)]
+                  for u, names in ws.member_servers.items()} if old is not None else dict(ws.member_servers)
         after = dataclasses.replace(
             ws, main=main if main in instances else "",
-            subdomains={s: t for s, t in subdomains.items() if t in instances and s not in instances})
+            subdomains={s: t for s, t in subdomains.items() if t in instances and s not in instances},
+            member_servers=limits)
         return addresses_follow(before, after, gone, now)
 
     # the HTTPS and DNS state of each name as its last publication found it: the map reads it (UX-009)
@@ -4876,6 +4951,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 # the names are the workspace's admins' (its page)
                 data.update(main=before.main, subdomains=before.subdomains, certificate=before.certificate,
                             aliases=before.to_dict().get("aliases"), redirects=before.to_dict().get("redirects"))
+                # and so are its custom roles and its members' limits: kept for the members still there with
+                # the role they had (one given another role here loses its custom role)
+                posted = data.get("members") if isinstance(data.get("members"), dict) else {}
+                posted = {str(u): str(r) for u, r in posted.items()}
+                data.update(roles=before.roles, token_people=before.token_people,
+                            member_roles={u: r for u, r in before.member_roles.items()
+                                          if posted.get(u) == before.members.get(u)},
+                            member_servers={u: s for u, s in before.member_servers.items() if u in posted})
             try:
                 found = parse_workspaces({**{n: ws.to_dict() for n, ws in settings.workspaces.items()}, name: data},
                                          settings.storage_roots)
@@ -4956,12 +5039,28 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     "invitation": invitation_state(n) if only_here(n, ws.name) else None,
                     # its two-step verification: on, and whether its admins here may reset it
                     "two_step": second_factors.on(n) or passkey_store.count(n) > 0, "passkeys": passkey_store.count(n),
-                    "can_reset": (second_factors.on(n) or passkey_store.count(n) > 0) and n != me.name and (machine_admin(me) or only_here(n, ws.name))}
+                    "can_reset": (second_factors.on(n) or passkey_store.count(n) > 0) and n != me.name and (machine_admin(me) or only_here(n, ws.name)),
+                    # its custom role and the instances it is limited to (capabilities.py); whether the caller
+                    # may change it (never one who may do more than the caller)
+                    "custom": ws.member_roles.get(n, ""), "servers": ws.member_servers.get(n),
+                    "above": above_me(me, ws, n) is not None}
                    for n, r in sorted(ws.members.items())]
         found = await asyncio.to_thread(workspaceops.templates)
+        mine, _ = my_caps(me, ws)
+        # what the caller's own custom role takes away on this page: those buttons off, saying why
+        denied = {c: why for c in capabilities.CAPABILITIES if (why := refusal(me, c, ws.name))}
         return _TEMPLATES.TemplateResponse(
             request, "workspace.html",
             {"ws": ws, "members": members, "roles": ACCESS_ROLES, "me": me.name, "min_password": _MIN_PASSWORD,
+             # the custom roles (README, Custom roles of a workspace): the capabilities, the presets, those the
+             # caller may give (None: all), each custom role with who has it
+             "denied": denied, "capabilities": capabilities.CAPABILITIES,
+             "presets": {r: sorted(capabilities.PRESETS[r], key=list(capabilities.CAPABILITIES).index) for r in ACCESS_ROLES},
+             "my_caps": None if mine is None else sorted(mine),
+             "custom_roles": [{"name": n, "caps": list(c), "people": sorted(u for u, r in ws.member_roles.items() if r == n),
+                               "above": mine is not None and not set(c) <= mine,
+                               "mine": me.grant(ws.name) is not None and me.grant(ws.name).role == n}
+                              for n, c in sorted(ws.roles.items())],
              # its single sign-on (sso.py): the provider without its secret, where it sends people back to,
              # the login address to give them
              "sso": sso.shown(sso_store.provider(ws.name)), "sso_redirect": sso_redirect_uri(request, ws.name),
@@ -4981,8 +5080,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                               for n in ws.servers if n in settings.servers},
              "sites": site_names(ws), "certificates": CERTIFICATES,
              "tokens": [{"name": n, "role": settings.token_role(n), "ci": settings.token_ci(n),
-                         "servers": list(settings.token_servers(n))} for n in sorted(settings.tokens)
-                        if settings.token_workspace(n) == ws.name],
+                         "servers": list(settings.token_servers(n)),
+                         # the person it acts for: it gets no more than that person (capabilities.py)
+                         "person": ws.token_people.get(n, ""),
+                         "gone": bool(ws.token_people.get(n)) and ws.token_people[n] not in ws.members}
+                        for n in sorted(settings.tokens) if settings.token_workspace(n) == ws.name],
              "mcp_url": public_base(request) + "/mcp", "api_base": api_base(request),
              "grants": oauth_rows(oauth_store.listed(workspace=ws.name)), "oauth_reach": await oauth_reach(request),
              # the links an archive may be copied through: the machine's admins'
@@ -6123,6 +6225,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         ws = workspace_of(server)
         if code and ws is None:
             return refuse(f"{server} was not made in a workspace: only its data can be loaded again")
+        if refusal(me, None, None, [parent]):
+            # a person limited to some instances: the production is backed up, it must be one of them
+            return refuse(REBUILD_NOT_YOURS, status.HTTP_403_FORBIDDEN)
         if server_busy(server) or server_busy(parent):
             return refuse("A job is running on the staging or its production: wait for it")
 
@@ -6660,8 +6765,13 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         ws = a_workspace(workspace)
         name = str(payload.get("server") or "")
         prefix = f"{ws.name}-"
-        if name not in ws.servers or not name.startswith(prefix) or name not in settings.servers:
+        if (name not in ws.servers or not name.startswith(prefix) or name not in settings.servers
+                or refusal(me, None, ws.name, [name])):
             return refuse(f"No instance {name} in workspace {ws.name}", status.HTTP_404_NOT_FOUND)
+        # a staging is deleted with Make and delete stagings, another instance with Create and delete instances
+        why = refusal(me, "stagings" if name in stagings.load(stagings_file) else "instances", ws.name)
+        if why:
+            return refuse(why, status.HTTP_403_FORBIDDEN)
         if server_busy(name):
             return refuse(f"A job is running on {name}: try again when it ends")
         instance = name[len(prefix):]
@@ -6940,11 +7050,13 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 return f"{instance} would answer on {name}, another name of {environment_label(other, role)}: an instance needs another name"
         return None
 
-    def workspace_instance(ws: Workspace, payload: dict):
-        """(server name, instance) of a request on an instance of ws; a response when refused."""
+    def workspace_instance(ws: Workspace, payload: dict, me: Principal | None = None):
+        """(server name, instance) of a request on an instance of ws; a response when refused. me: a
+        person limited to some servers reaches those only (one out of them: as one that does not exist)."""
         name = str(payload.get("server") or "")
         prefix = f"{ws.name}-"
-        if name not in ws.servers or not name.startswith(prefix) or name not in settings.servers:
+        if (name not in ws.servers or not name.startswith(prefix) or name not in settings.servers
+                or refusal(me, None, ws.name, [name])):
             return refuse(f"No instance {name} in workspace {ws.name}", status.HTTP_404_NOT_FOUND)
         # a production at least: the instances made now have no test
         if settings.servers[name].production is None:
@@ -7016,7 +7128,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         named in their odoo.conf, both restarted: its modules can then be
         installed from Odoo's Apps."""
         ws = a_workspace(workspace)
-        found = workspace_instance(ws, payload)
+        found = workspace_instance(ws, payload, me)
         if not isinstance(found, tuple):
             return found
         name, instance = found
@@ -7130,7 +7242,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         """A customer's repository out of an instance: out of the odoo.conf
         and of the server, both roles restarted, the clones deleted."""
         ws = a_workspace(workspace)
-        found = workspace_instance(ws, payload)
+        found = workspace_instance(ws, payload, me)
         if not isinstance(found, tuple):
             return found
         name, instance = found
@@ -7157,10 +7269,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                           f"manual: {me}", action)
         return {"job": job.id}
 
-    def workspace_repository(ws: Workspace, payload: dict):
+    def workspace_repository(ws: Workspace, payload: dict, me: Principal):
         """(server name, its instance of the role asked, the repository) of
         the Update dialog, or a refusal."""
-        found = workspace_instance(ws, payload)
+        found = workspace_instance(ws, payload, me)
         if not isinstance(found, tuple):
             return found
         name = found[0]
@@ -7174,11 +7286,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return name, inst, repo
 
     @app.post("/api/workspaces/{workspace}/repositories/branches", dependencies=[Depends(developer)])
-    async def repository_branches(workspace: str, payload: dict = Body(...)):
+    async def repository_branches(workspace: str, payload: dict = Body(...), me: Principal = Depends(current_user)):
         """The Update dialog of a repository: the commit checked out, the
         branches of its remote with their last commit, the page of the
         differences for each."""
-        found = workspace_repository(a_workspace(workspace), payload)
+        found = workspace_repository(a_workspace(workspace), payload, me)
         if not isinstance(found, tuple):
             return found
         _, _, repo = found
@@ -7196,7 +7308,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         chosen (its own: a pull; another: checked out and kept in the
         servers file), its Python packages, the changed modules updated
         when the instance says so, restarted."""
-        found = workspace_repository(a_workspace(workspace), payload)
+        found = workspace_repository(a_workspace(workspace), payload, me)
         if not isinstance(found, tuple):
             return found
         name, inst, repo = found
@@ -7855,7 +7967,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return {"parameters": rows, "debug": state["debug"], "extra": state["extra"], "mail_capture": caught}
 
     @app.post("/api/workspaces/{workspace}/parameters/options", dependencies=[Depends(admin)])
-    async def parameters_options(workspace: str, payload: dict = Body(...)):
+    async def parameters_options(workspace: str, payload: dict = Body(...), me: Principal = Depends(current_user)):
         """The Extended view of the Odoo config of a role of an instance:
         every option the Odoo of its container knows (config_options.py,
         in the running service), the other options saved, those it does not
@@ -7863,7 +7975,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         ws = a_workspace(workspace)
         name = str(payload.get("server") or "")
         role = str(payload.get("role") or "production")
-        if name not in ws.servers or not name.startswith(f"{ws.name}-") or name not in settings.servers:
+        if (name not in ws.servers or not name.startswith(f"{ws.name}-") or name not in settings.servers
+                or refusal(me, None, ws.name, [name])):
             return refuse(f"No instance {name} in workspace {ws.name}", status.HTTP_404_NOT_FOUND)
         instance = getattr(settings.servers[name], role, None) if role in ROLES else None
         if instance is None:
@@ -7905,7 +8018,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         helper writes its odoo.conf again, the role is restarted (and the
         workspace's names published again: the websocket follows workers)."""
         ws = a_workspace(workspace)
-        found = workspace_instance(ws, payload)
+        found = workspace_instance(ws, payload, me)
         if not isinstance(found, tuple):
             return found
         name, instance = found
@@ -7975,6 +8088,160 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return (settings.user_role(user) == WORKSPACE_ROLE and user not in settings.fixed.users
                 and [ws for ws, _ in settings.memberships(user)] == [workspace])
 
+    # --- the custom roles of a workspace and its members' limits (capabilities.py) ---
+
+    def role_caps(ws: Workspace, role: str) -> frozenset:
+        """The capabilities of a role of ws: a preset's, or a custom one's."""
+        return capabilities.PRESETS[role] if role in ACCESS_ROLES else frozenset(ws.roles.get(role, ()))
+
+    def member_caps(ws: Workspace, name: str) -> tuple[frozenset, frozenset | None]:
+        """(capabilities, servers or None: all) of a member of ws now."""
+        grant = ws.grant(name)
+        if grant is not None:
+            return grant.caps, grant.servers
+        return capabilities.PRESETS.get(ws.members.get(name, ""), frozenset()), None
+
+    def my_caps(me: Principal, ws: Workspace) -> tuple[frozenset | None, frozenset | None]:
+        """What the caller may give in ws: None, None when everything (a preset admin, the machine's)."""
+        grant = me.grant(ws.name)
+        return (None, None) if grant is None else (grant.caps, grant.servers)
+
+    def beyond_me(me: Principal, ws: Workspace, caps, servers) -> JSONResponse | None:
+        """A refusal when caps or servers (None: all) go beyond what the caller has in ws."""
+        mine, my_servers = my_caps(me, ws)
+        if mine is not None and not set(caps) <= mine:
+            # the first it lacks, said as the pages say it (one capability: its Italian found whole)
+            extra = next(capabilities.CAPABILITIES[c] for c in capabilities.CAPABILITIES if c in set(caps) - mine)
+            return refuse(f"You cannot give what your role does not include: {extra}", status.HTTP_403_FORBIDDEN)
+        if my_servers is not None and (servers is None or not set(servers) <= my_servers):
+            return refuse("You cannot give instances you do not reach", status.HTTP_403_FORBIDDEN)
+        return None
+
+    def above_me(me: Principal, ws: Workspace, name: str) -> JSONResponse | None:
+        """A refusal when the caller would change or take out a member who may do more than it."""
+        if name not in ws.members or me.grant(ws.name) is None:
+            return None
+        caps, servers = member_caps(ws, name)
+        if beyond_me(me, ws, caps, servers) is not None:
+            return refuse(f"{name} may do more than your role: ask an administrator with more rights",
+                          status.HTTP_403_FORBIDDEN)
+        return None
+
+    def member_servers_of(ws: Workspace, payload: dict, name: str):
+        """The servers posted for a member (a list, or text with commas): None, all of them (also an
+        empty list); not posted: what it has now; a JSONResponse when one is not of ws."""
+        if "servers" not in payload:
+            found = ws.member_servers.get(name)
+            return None if found is None else list(found)
+        raw = payload.get("servers")
+        if raw in (None, "", "all"):
+            return None
+        items = raw if isinstance(raw, list) else str(raw).split(",")
+        names = list(dict.fromkeys(str(n).strip() for n in items if str(n).strip()))
+        unknown = [n for n in names if n not in ws.servers]
+        if unknown:
+            return refuse(f"No instance {', '.join(unknown)} in workspace {ws.name}")
+        return names or None
+
+    def with_member(ws: Workspace, name: str, role: str, servers) -> Workspace:
+        """ws with name given role (a preset or a custom one) and servers (None: all)."""
+        custom = role if role not in ACCESS_ROLES else None
+        member_roles = {n: r for n, r in ws.member_roles.items() if n != name}
+        member_servers = {n: r for n, r in ws.member_servers.items() if n != name}
+        if custom is not None:
+            member_roles[name] = custom
+        if servers is not None:
+            member_servers[name] = list(servers)
+        ceiling = capabilities.ceiling(ws.roles[custom]) if custom is not None else role
+        return dataclasses.replace(ws, members={**ws.members, name: ceiling}, member_roles=member_roles,
+                                   member_servers=member_servers)
+
+    def permissions_said(before: Workspace, after: Workspace, name: str, new: bool = False) -> str:
+        """The access log's words for a change of a member's role or servers (NIS 2), empty when none."""
+        def said(ws: Workspace) -> tuple[str, str]:
+            role = ws.member_roles.get(name) or ws.members.get(name, "")
+            caps, servers = member_caps(ws, name)
+            return (f"{role} ({', '.join(c for c in capabilities.CAPABILITIES if c in caps) or 'nothing'})",
+                    "all the instances" if servers is None else ", ".join(sorted(servers)) or "no instance")
+        now = said(after)
+        if new or name not in before.members:
+            return f"{name} in {after.name}: role {now[0]}, {now[1]}"
+        was = said(before)
+        if was == now:
+            return ""
+        return f"{name} in {after.name}: role {was[0]} → {now[0]}, instances {was[1]} → {now[1]}"
+
+    @app.post("/api/workspaces/{workspace}/roles/save", dependencies=[Depends(admin)])
+    async def workspace_role_save(request: Request, workspace: str, payload: dict = Body(...),
+                                  me: Principal = Depends(current_user)):
+        """A custom role of the workspace (new: true) or its capabilities changed: never beyond the
+        caller's own; changed, every member with it changes with it."""
+        name = str(payload.get("name") or "").strip()
+        new = bool(payload.get("new"))
+        raw = payload.get("capabilities")
+        if not isinstance(raw, list) or any(str(c) not in capabilities.CAPABILITIES for c in raw):
+            return refuse(f"The capabilities are a list of {', '.join(capabilities.CAPABILITIES)}")
+        caps = [c for c in capabilities.CAPABILITIES if c in {str(c) for c in raw}]
+        async with workspaces_lock:
+            ws = a_workspace(workspace)
+            if new:
+                problem = capabilities.check_name(name)
+                if problem:
+                    return refuse(problem)
+                if name in ws.roles:
+                    return refuse(f"The workspace has a role {name} already")
+            elif name not in ws.roles:
+                return refuse(f"No role {name} in workspace {ws.name}", status.HTTP_404_NOT_FOUND)
+            else:
+                if me.grant(ws.name) is not None and me.grant(ws.name).role == name:
+                    return refuse("You cannot change the role you have")
+                if beyond_me(me, ws, ws.roles[name], None) is not None:
+                    return refuse(f"The role {name} may do more than yours: ask an administrator with more rights",
+                                  status.HTTP_403_FORBIDDEN)
+            refused = beyond_me(me, ws, caps, None)
+            if refused:
+                return refused
+            before = ws.roles.get(name)
+            ceiling = capabilities.ceiling(caps)
+            members = {**ws.members, **{u: ceiling for u, r in ws.member_roles.items() if r == name}}
+            found = dict(settings.workspaces)
+            found[workspace] = dataclasses.replace(ws, roles={**ws.roles, name: caps}, members=members)
+            refused = await store_workspaces(found)
+            if refused:
+                return refused
+        if before != caps:
+            people = sorted(u for u, r in ws.member_roles.items() if r == name)
+            what = (f"made: {', '.join(caps) or 'nothing'}" if before is None
+                    else f"changed: {', '.join(before) or 'nothing'} → {', '.join(caps) or 'nothing'}")
+            access_log.record("permissions", me.kind, me.name, request.client.host if request.client else "",
+                              f"role «{name}» of {ws.name} {what}" + (f", for {', '.join(people)}" if people else ""),
+                              workspace=workspace)
+        return {"ok": True}
+
+    @app.post("/api/workspaces/{workspace}/roles/delete", dependencies=[Depends(admin)])
+    async def workspace_role_delete(request: Request, workspace: str, payload: dict = Body(...),
+                                    me: Principal = Depends(current_user)):
+        """A custom role out of the workspace: refused while a member has it."""
+        name = str(payload.get("name") or "")
+        async with workspaces_lock:
+            ws = a_workspace(workspace)
+            if name not in ws.roles:
+                return refuse(f"No role {name} in workspace {ws.name}", status.HTTP_404_NOT_FOUND)
+            users = sorted(u for u, r in ws.member_roles.items() if r == name)
+            if users:
+                return refuse(f"{', '.join(users)} still has the role {name}: give them another one first")
+            if beyond_me(me, ws, ws.roles[name], None) is not None:
+                return refuse(f"The role {name} may do more than yours: ask an administrator with more rights",
+                              status.HTTP_403_FORBIDDEN)
+            found = dict(settings.workspaces)
+            found[workspace] = dataclasses.replace(ws, roles={n: c for n, c in ws.roles.items() if n != name})
+            refused = await store_workspaces(found)
+            if refused:
+                return refused
+        access_log.record("permissions", me.kind, me.name, request.client.host if request.client else "",
+                          f"role «{name}» of {ws.name} deleted", workspace=workspace)
+        return {"ok": True}
+
     @app.post("/api/workspaces/{workspace}/members/save", dependencies=[Depends(admin)])
     async def member_save(request: Request, workspace: str, payload: dict = Body(...),
                           me: Principal = Depends(current_user)):
@@ -7987,11 +8254,19 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         invited = new and bool(payload.get("invite"))
         if invited:
             password = ""
-        if role not in ACCESS_ROLES:
-            return refuse(f"The role must be one of {', '.join(ACCESS_ROLES)}")
         answer: dict = {"ok": True}
         async with access_lock, workspaces_lock:
             ws = a_workspace(workspace)
+            if role not in ACCESS_ROLES and role not in ws.roles:
+                return refuse(f"The role must be one of {', '.join([*ACCESS_ROLES, *ws.roles])}")
+            # its custom role and the servers it is limited to (capabilities.py): never beyond the giver's
+            servers = member_servers_of(ws, payload, name)
+            if isinstance(servers, JSONResponse):
+                return servers
+            refused = beyond_me(me, ws, role_caps(ws, role), servers) or (
+                None if new else above_me(me, ws, name))
+            if refused:
+                return refused
             if new:
                 refused = check_new_name(me, "User", name, settings.fixed.users, settings.users, True)
                 if refused:
@@ -8001,7 +8276,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             else:
                 if name not in ws.members:
                     return refuse(f"{name} is not a user of {workspace}", status.HTTP_404_NOT_FOUND)
-                if me.kind == "user" and name == me.name and role != ws.members[name]:
+                if me.kind == "user" and name == me.name and (
+                        role != ws.member_roles.get(name, ws.members[name])
+                        or servers != ws.member_servers.get(name)):
                     return refuse("You cannot change your own role")
                 if password and not only_here(name, workspace):
                     return refuse(f"{name} is also a user of other workspaces or of the machine: "
@@ -8018,10 +8295,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 if refused:
                     return refused
             found = dict(settings.workspaces)
-            found[workspace] = dataclasses.replace(ws, members={**ws.members, name: role})
+            found[workspace] = with_member(ws, name, role, servers)
             refused = await store_workspaces(found)
             if refused:
                 return refused
+            said = permissions_said(ws, found[workspace], name, new)
+            if said:
+                access_log.record("permissions", me.kind, me.name, request.client.host if request.client else "",
+                                  said, workspace=workspace)
             if invited:
                 made = await invite(request, name, me, workspace)
                 if not isinstance(made, dict):
@@ -8043,8 +8324,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if me.kind == "user" and name == me.name:
                 return refuse("You cannot remove yourself")
             delete_user = only_here(name, workspace)
+            refused = above_me(me, ws, name)
+            if refused:
+                return refused
             found = dict(settings.workspaces)
-            found[workspace] = dataclasses.replace(ws, members={n: r for n, r in ws.members.items() if n != name})
+            found[workspace] = dataclasses.replace(
+                ws, members={n: r for n, r in ws.members.items() if n != name},
+                member_roles={n: r for n, r in ws.member_roles.items() if n != name},
+                member_servers={n: r for n, r in ws.member_servers.items() if n != name})
             refused = await store_workspaces(found)
             if refused:
                 return refused
@@ -8800,7 +9087,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return await store_access(web) or {"ok": True}
 
     @app.post("/api/workspaces/{workspace}/tokens/save", dependencies=[Depends(admin)])
-    async def workspace_token_save(workspace: str, payload: dict = Body(...), me: Principal = Depends(current_user)):
+    async def workspace_token_save(request: Request, workspace: str, payload: dict = Body(...),
+                                   me: Principal = Depends(current_user)):
         """An MCP token of the workspace (new: true; it is in the answer, once),
         or its role changed: it sees the workspace's instances only, with its
         role there; never a machine's token."""
@@ -8818,6 +9106,15 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 return refused
             if not new and settings.token_workspace(name) != ws.name:
                 return refuse(f"No token {name} of workspace {ws.name}", status.HTTP_404_NOT_FOUND)
+            # the person it acts for (capabilities.py): it gets no more than that person, ever; one who
+            # uses a custom role or some instances only makes its own, or one of who may do no more than it
+            person = token_person_of(me, ws, payload, name, new)
+            if isinstance(person, JSONResponse):
+                return person
+            refused = (None if new else token_above_me(me, ws, name)) or beyond_me(
+                me, ws, token_reach(ws, role, person)[0], token_reach(ws, role, person)[1])
+            if refused:
+                return refused
             web = web_copy()
             refused = token_limits(payload, web, name, set(ws.servers))
             if refused:
@@ -8827,15 +9124,73 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 web.tokens[name] = hash_token(token)
             web.token_roles[name] = role
             web.token_workspaces[name] = ws.name
-            return await store_access(web) or {"ok": True, "token": token}
+            refused = await store_access(web)
+            if refused:
+                return refused
+            if person != ws.token_people.get(name):
+                people = {t: u for t, u in ws.token_people.items() if t != name}
+                if person:
+                    people[name] = person
+                found = dict(settings.workspaces)
+                found[ws.name] = dataclasses.replace(ws, token_people=people)
+                async with workspaces_lock:
+                    refused = await store_workspaces(found)
+                if refused:
+                    return refused
+                access_log.record("permissions", me.kind, me.name, request.client.host if request.client else "",
+                                  f"token {name} of {ws.name} " + (f"for {person}: no more than {person} may"
+                                                                  if person else "for no person: its level only"),
+                                  workspace=ws.name)
+            return {"ok": True, "token": token}
+
+    def token_person_of(me: Principal, ws: Workspace, payload: dict, name: str, new: bool):
+        """The person a token of ws acts for, as posted ("person"; not posted: as it was, or the caller
+        when it uses a custom role or some instances only); "" none; a JSONResponse when refused."""
+        if "person" in payload:
+            person = str(payload.get("person") or "").strip()
+        else:
+            person = ws.token_people.get(name, "") if not new else ""
+        if not person and me.grant(ws.name) is not None:
+            person = me.name
+        if person and person not in ws.members:
+            return refuse(f"{person} is not a user of {ws.name}")
+        return person
+
+    def token_reach(ws: Workspace, role: str, person: str) -> tuple[frozenset, frozenset | None]:
+        """What a token of level role for person (or none) reaches in ws."""
+        caps = capabilities.PRESETS.get(role, frozenset())
+        if not person:
+            return caps, None
+        mine, servers = member_caps(ws, person)
+        return caps & mine, servers
+
+    def token_above_me(me: Principal, ws: Workspace, name: str) -> JSONResponse | None:
+        if me.grant(ws.name) is None:
+            return None
+        caps, servers = token_reach(ws, settings.token_role(name), ws.token_people.get(name, ""))
+        if beyond_me(me, ws, caps, servers) is not None:
+            return refuse(f"The token {name} may do more than your role: ask an administrator with more rights",
+                          status.HTTP_403_FORBIDDEN)
+        return None
 
     @app.post("/api/workspaces/{workspace}/tokens/delete", dependencies=[Depends(admin)])
-    async def workspace_token_delete(workspace: str, payload: dict = Body(...)):
+    async def workspace_token_delete(workspace: str, payload: dict = Body(...), me: Principal = Depends(current_user)):
         ws = a_workspace(workspace)
         name = str(payload.get("name") or "")
         async with access_lock:
             if name in settings.fixed.tokens or settings.token_workspace(name) != ws.name:
                 return refuse(f"No token {name} of workspace {ws.name}", status.HTTP_404_NOT_FOUND)
+            refused = token_above_me(me, ws, name)
+            if refused:
+                return refused
+            if name in ws.token_people:
+                found = dict(settings.workspaces)
+                found[ws.name] = dataclasses.replace(
+                    ws, token_people={t: u for t, u in ws.token_people.items() if t != name})
+                async with workspaces_lock:
+                    refused = await store_workspaces(found)
+                if refused:
+                    return refused
             web = web_copy()
             web.tokens.pop(name, None)
             web.token_roles.pop(name, None)
@@ -11626,6 +11981,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 # a staging of the production with the database of the file (D6)
                 stage = (reaches(mine, "admin") and role == "production" and srv.name not in known
                          and workspace_of(srv.name) is not None and inst.plugin.has_restore)
+                no_download = refusal(me, "download", None, [srv.name])
                 for p in (sorted(folder.glob("*.zip")) if folder.is_dir() else []):
                     stat = p.stat()
                     rows.append({**common, "file": p.name, "size": stat.st_size,
@@ -11634,7 +11990,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                           else "pre-update" if p.name.startswith(ops.PRE_UPDATE_PREFIX) else "manual"),
                                  "archive": p.name.startswith(instancearchive.PREFIX)
                                  or p.name.startswith(schedules.SCHEDULED_PREFIX + instancearchive.PREFIX),
-                                 "download": f"/backups/{srv.name}/{role}/{p.name}",
+                                 "download": "" if no_download else f"/backups/{srv.name}/{role}/{p.name}",
+                                 **({"download_refused": i18n.tr(request_language(request), no_download)}
+                                    if no_download else {}),
                                  "verified": backupcheck.state(folder, p.name).get("verified"),
                                  "can_delete": reaches(mine, backup_role(inst)), "can_stage": stage})
                 sch = scheduler.schedules.get(backup_schedule_name(inst))

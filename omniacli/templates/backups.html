@@ -146,7 +146,9 @@
   }
   function menu(r) {
     const items = el("div", {class: "row-menu-items"});
-    items.append(el("a", {class: "button small", href: r.base + r.download, download: r.file, title: T.downloadTitle}, T.download));
+    // a custom role without Download backups: the button off, saying why (capabilities.py)
+    items.append(r.download ? el("a", {class: "button small", href: r.base + r.download, download: r.file, title: T.downloadTitle}, T.download)
+      : el("span", {title: r.download_refused}, el("button", {type: "button", class: "small", disabled: "", title: r.download_refused}, T.download)));
     if (r.can_stage) {
       const b = el("button", {type: "button", class: "small", title: T.stageTitle}, T.stage);
       b.addEventListener("click", () => openStaging(r));

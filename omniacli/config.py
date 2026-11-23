@@ -22,7 +22,7 @@ import yaml
 
 from .auth import ROLES as ACCESS_ROLES
 from .auth import WORKSPACE_ROLE
-from . import listgroups
+from . import capabilities, listgroups
 
 ROLES = ("production", "test")
 # the roles a user may have on the machine: the access roles, or none but
@@ -434,7 +434,43 @@ class Settings:
         if self.oauth_grant(name) is not None:
             # its level, never more than its person's role now
             return self.oauth.role_of(name)
-        return self.token_roles.get(name, TOKEN_DEFAULT_ROLE)
+        role = self.token_roles.get(name, TOKEN_DEFAULT_ROLE)
+        person = self.token_person(name)
+        if person is not None:
+            # a token of a person: never more than the person's role there now (none: it reads)
+            ws = self.workspaces.get(self.token_workspace(name))
+            cap = ws.members.get(person, ACCESS_ROLES[0]) if ws is not None else ACCESS_ROLES[0]
+            role = min(role, cap, key=ACCESS_ROLES.index)
+        return role
+
+    def token_person(self, name: str) -> str | None:
+        """The person a token acts for: an OAuth grant's, or the one a workspace's token was made for."""
+        grant = self.oauth_grant(name)
+        if grant is not None:
+            return grant.get("user") or None
+        ws = self.workspaces.get(self.token_workspace(name))
+        return ws.token_people.get(name) if ws is not None else None
+
+    def grants(self, user: str) -> tuple:
+        """((workspace, capabilities.Grant), ...) of user: the workspaces where it uses the feature."""
+        return tuple((ws.name, ws.grant(user)) for ws in sorted(self.workspaces.values(), key=lambda w: w.name)
+                     if ws.grant(user) is not None)
+
+    def token_grant(self, name: str):
+        """What a workspace's token may do there when it is a person's (capabilities.py): no more than
+        its level's preset and than the person now; a person gone from the workspace leaves it nothing.
+        None: a token of the workspace alone, its level is all there is (as before)."""
+        workspace = self.token_workspace(name)
+        person = self.token_person(name)
+        ws = self.workspaces.get(workspace)
+        if not workspace or person is None or ws is None:
+            return None
+        level = capabilities.PRESETS[self.token_role(name)]
+        if person not in ws.members:
+            return capabilities.Grant(person, frozenset(), frozenset())
+        grant = ws.grant(person)
+        # a person with a preset role on every server: its role caps the token's (token_role), as before
+        return None if grant is None else grant.narrowed(caps=level)
 
     def token_workspace(self, name: str) -> str:
         """The workspace an MCP token is bound to; empty: the machine's token."""
@@ -1165,6 +1201,27 @@ class Workspace:
     # visitors to one of its names with a 301, {instance: {role: {name: to}}}
     aliases: dict[str, dict[str, list[str]]] = field(default_factory=dict)
     redirects: dict[str, dict[str, dict[str, str]]] = field(default_factory=dict)
+    # its custom roles (capabilities.py, README, Custom roles of a workspace), set by its admins:
+    # {name: [capability]}; a member with one is in member_roles, and its role in members is the
+    # role's ceiling (the lowest preset holding its capabilities), so every role check works with it
+    roles: dict[str, list[str]] = field(default_factory=dict)
+    member_roles: dict[str, str] = field(default_factory=dict)
+    # the members limited to some of its servers: {user name: [server]}; not there: every server
+    member_servers: dict[str, list[str]] = field(default_factory=dict)
+    # the person a token of the workspace acts for (made for it, or by it): {token name: user name};
+    # such a token gets no more than its person now (Settings.token_grant)
+    token_people: dict[str, str] = field(default_factory=dict)
+
+    def grant(self, user: str):
+        """What user may do here when it uses the feature (a custom role, some
+        servers only): a capabilities.Grant; None: its preset role on every server."""
+        custom = self.member_roles.get(user)
+        limited = self.member_servers.get(user)
+        if user not in self.members or (custom is None and limited is None):
+            return None
+        caps = frozenset(self.roles.get(custom, ())) if custom is not None else capabilities.PRESETS[self.members[user]]
+        return capabilities.Grant(custom or self.members[user], caps,
+                                  None if limited is None else frozenset(s for s in limited if s in self.servers))
 
     def instances(self) -> list[str]:
         """The instances of the workspace: its servers <name>-<instance>."""
@@ -1195,6 +1252,14 @@ class Workspace:
             data["aliases"] = {i: {r: list(n) for r, n in roles.items()} for i, roles in self.aliases.items()}
         if self.redirects:
             data["redirects"] = {i: {r: dict(n) for r, n in roles.items()} for i, roles in self.redirects.items()}
+        if self.roles:
+            data["roles"] = {n: list(c) for n, c in self.roles.items()}
+        if self.member_roles:
+            data["member_roles"] = dict(self.member_roles)
+        if self.member_servers:
+            data["member_servers"] = {u: list(s) for u, s in self.member_servers.items()}
+        if self.token_people:
+            data["token_people"] = dict(self.token_people)
         return data
 
     def extra_names(self) -> list[tuple[str, str, str]]:
@@ -1342,8 +1407,50 @@ def parse_workspace(name: str, data: dict, storage_roots=()) -> Workspace:
             raise ConfigError(f"{where}.parameter_bounds.{key}: a parameter name and min <= max")
         bounds[str(key)] = [low, high]
     aliases, redirects = parse_addresses(where, data.get("aliases"), data.get("redirects"), instances)
-    return replace(ws, main=main, subdomains=subdomains, certificate=certificate, parameter_bounds=bounds,
-                   notify=parse_notify(data.get("notify"), f"{where}.notify"), aliases=aliases, redirects=redirects)
+    roles, member_roles, member_servers, token_people = parse_permissions(where, data, members)
+    # a member with a custom role: its role here is the role's ceiling, whatever was written
+    members = {**members, **{u: capabilities.ceiling(roles[r]) for u, r in member_roles.items()}}
+    return replace(ws, members=members, main=main, subdomains=subdomains, certificate=certificate,
+                   parameter_bounds=bounds, notify=parse_notify(data.get("notify"), f"{where}.notify"),
+                   aliases=aliases, redirects=redirects, roles=roles, member_roles=member_roles,
+                   member_servers=member_servers, token_people=token_people)
+
+
+def parse_permissions(where: str, data: dict, members: dict) -> tuple[dict, dict, dict, dict]:
+    """The custom roles of a workspace, who has one, who is limited to some
+    servers and whom its tokens act for (capabilities.py)."""
+    roles: dict[str, list[str]] = {}
+    for name, caps in (data.get("roles") or {}).items():
+        name = str(name)
+        problem = capabilities.check_name(name)
+        if problem:
+            raise ConfigError(f"{where}.roles: {problem}")
+        if not isinstance(caps, list) or any(str(c) not in capabilities.CAPABILITIES for c in caps):
+            raise ConfigError(f"{where}.roles.{name}: a list of {', '.join(capabilities.CAPABILITIES)}")
+        roles[name] = [c for c in capabilities.CAPABILITIES if c in {str(c) for c in caps}]
+    member_roles = {}
+    for user, role in (data.get("member_roles") or {}).items():
+        user, role = str(user), str(role)
+        if user not in members:
+            raise ConfigError(f"{where}.member_roles: {user} is not a member")
+        if role not in roles:
+            raise ConfigError(f"{where}.member_roles.{user}: {role!r} is not a role of the workspace")
+        member_roles[user] = role
+    member_servers = {}
+    for user, servers in (data.get("member_servers") or {}).items():
+        user = str(user)
+        if user not in members:
+            raise ConfigError(f"{where}.member_servers: {user} is not a member")
+        if not isinstance(servers, list) or any(not SERVER_NAME.fullmatch(str(s)) for s in servers):
+            raise ConfigError(f"{where}.member_servers.{user}: a list of server names")
+        # a server gone from the workspace stays out of reach: no name is ever added by itself
+        member_servers[user] = list(dict.fromkeys(str(s) for s in servers))
+    token_people = {}
+    for token, user in (data.get("token_people") or {}).items():
+        if not MEMBER_NAME.fullmatch(str(user)):
+            raise ConfigError(f"{where}.token_people.{token}: {user!r} is not a user name")
+        token_people[str(token)] = str(user)
+    return roles, member_roles, member_servers, token_people
 
 
 def parse_workspaces(data, storage_roots=()) -> dict[str, Workspace]:

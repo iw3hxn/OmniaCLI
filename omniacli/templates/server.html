@@ -117,6 +117,9 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
   title="{{ _('The names this environment answers on and the redirects to it') }}">⚙ {{ _("Addresses…") }}</button>
 {%- elif a and is_admin_here and a.reason %} <span title="{{ tr(a.reason) }}"><button type="button" class="small" disabled title="{{ tr(a.reason) }}">⚙ {{ _("Addresses…") }}</button></span>
 {%- endif %}{% endmacro %}
+{# a button the person's custom role does not include (capabilities.py): there, disabled, saying why #}
+{% set denied = denied or {} %}
+{% macro refused(cap, label, cls="") %}<span title="{{ tr(denied[cap]) }}"><button type="button"{% if cls %} class="{{ cls }}"{% endif %} disabled title="{{ tr(denied[cap]) }}">{{ label }}</button></span>{% endmacro %}
 {% set inst = instances[0] %}
 {# its state: running, stopped or unknown #}
 {% if inst.restart.type == "process" %}
@@ -173,13 +176,16 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     {% if opens and st != "stopped" and by_tunnel %}<button type="button" id="open-by-tunnel" data-link="{{ prefix.split('/')[2] }}" data-server="{{ server.name }}" data-role="{{ inst.role }}"
         title="{{ _('Opens Odoo in a new tab through a tunnel from this OmniaCLI to {link}: the instance has no name that opens from outside.', link=prefix.split('/')[2]) }}">{{ _("Open Odoo") }} ↗</button>
     {% elif opens and st != "stopped" %}<a class="button" href="{{ inst.web_url }}" target="_blank" rel="noopener" title="{{ _('Opens {url} in a new tab', url=inst.web_url) }}">{{ _("Open Odoo") }} ↗</a>{% endif %}
-    {% if login_as[inst.key] %}<button type="button" data-login-as='{{ login_as[inst.key] | tojson }}' title="{{ _('Opens Odoo in a new tab as one of its users, without their password.') }}">{{ _("Log in as…") }}</button>{% endif %}
+    {% if login_as[inst.key] and login_as[inst.key].disabled %}{{ refused("login_as", _("Log in as…")) }}
+    {% elif login_as[inst.key] %}<button type="button" data-login-as='{{ login_as[inst.key] | tojson }}' title="{{ _('Opens Odoo in a new tab as one of its users, without their password.') }}">{{ _("Log in as…") }}</button>{% endif %}
     {% if st == "stopped" %}
     <form method="post" action="{{ base }}/{{ 'restart' if rt == 'process' else 'start' }}" data-confirm="{{ _("Start Odoo of {name}?", name=who) }}">
       <input type="hidden" name="next" value="{{ here }}">
-      <button {{ off }} title="{{ _('Starts Odoo of {name}.', name=who) }}">{{ icon("start") }}{{ _("Start") }}</button></form>
+      {% if denied.run %}{{ refused("run", icon("start") ~ _("Start")) }}{% else %}
+      <button {{ off }} title="{{ _('Starts Odoo of {name}.', name=who) }}">{{ icon("start") }}{{ _("Start") }}</button>{% endif %}</form>
     {% endif %}
-    {% if can_act and st != "stopped" %}
+    {% if can_act and st != "stopped" and denied.code %}{{ refused("code", icon("github") ~ _("Update")) }}
+    {% elif can_act and st != "stopped" %}
     {% if pull_choices[inst.key] %}
     <button type="button" {{ off }} data-pull='{{ dict(pull_choices[inst.key], url=base ~ "/pull-restart", title=_("Pull, deploy and restart {key}", key=inst.key), note=package_note) | tojson }}'
             title="{{ update_help }}">{{ icon("github") }}{{ _("Update") }}</button>
@@ -192,7 +198,8 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     {% if not can_act and st != "stopped" and (rt != "process" or pid) %}
     <form method="post" action="{{ base }}/restart" data-confirm="{{ _("Restart Odoo of {name}?", name=who) }}">
       <input type="hidden" name="next" value="{{ here }}">
-      <button {{ off }} title="{{ _('Restarts Odoo: whoever is connected loses the connection for a few seconds. It changes neither the code nor the database.') }}">{{ icon("restart") }}{{ _("Restart") }}</button></form>
+      {% if denied.run %}{{ refused("run", icon("restart") ~ _("Restart")) }}{% else %}
+      <button {{ off }} title="{{ _('Restarts Odoo: whoever is connected loses the connection for a few seconds. It changes neither the code nor the database.') }}">{{ icon("restart") }}{{ _("Restart") }}</button>{% endif %}</form>
     {% endif %}
     {% if merge %}
     <form method="post" action="{{ prefix }}/servers/{{ server.name }}/merge"
@@ -214,19 +221,25 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
         {% if can_act and st != "stopped" and (rt != "process" or pid) %}
         <form method="post" action="{{ base }}/restart" data-confirm="{{ _("Restart Odoo of {name}?", name=who) }}">
           <input type="hidden" name="next" value="{{ here }}">
-          <button {{ off }} title="{{ _('Restarts Odoo: whoever is connected loses the connection for a few seconds. It changes neither the code nor the database.') }}">{{ icon("restart") }}{{ _("Restart") }}</button></form>
+          {% if denied.run %}{{ refused("run", icon("restart") ~ _("Restart")) }}{% else %}
+          <button {{ off }} title="{{ _('Restarts Odoo: whoever is connected loses the connection for a few seconds. It changes neither the code nor the database.') }}">{{ icon("restart") }}{{ _("Restart") }}</button>{% endif %}</form>
         {% endif %}
         {% if st == "unknown" and rt in ("process", "systemd", "compose") %}
         <form method="post" action="{{ base }}/{{ 'restart' if rt == 'process' else 'start' }}" data-confirm="{{ _("Start Odoo of {name}?", name=who) }}">
           <input type="hidden" name="next" value="{{ here }}">
-          <button {{ off }} title="{{ _('Starts Odoo of {name}.', name=who) }}">{{ icon("start") }}{{ _("Start") }}</button></form>
+          {% if denied.run %}{{ refused("run", icon("start") ~ _("Start")) }}{% else %}
+          <button {{ off }} title="{{ _('Starts Odoo of {name}.', name=who) }}">{{ icon("start") }}{{ _("Start") }}</button>{% endif %}</form>
         {% endif %}
         {% if st != "stopped" and rt in ("process", "systemd", "compose") %}
         <form method="post" action="{{ base }}/stop" data-confirm="{{ _("Stop Odoo of {name}? It stays stopped, also for the auto update, until Start.", name=who) }}" data-confirm-danger>
           <input type="hidden" name="next" value="{{ here }}">
-          <button {{ off }} title="{{ _('Stops Odoo. It stays stopped, also for the auto update, until you press Start.') }}">{{ icon("stop") }}{{ _("Stop") }}</button></form>
+          {% if denied.run %}{{ refused("run", icon("stop") ~ _("Stop")) }}{% else %}
+          <button {{ off }} title="{{ _('Stops Odoo. It stays stopped, also for the auto update, until you press Start.') }}">{{ icon("stop") }}{{ _("Stop") }}</button>{% endif %}</form>
         {% endif %}
-        {% if can_act %}
+        {% if can_act and denied.code %}
+        <div class="more-title">{{ _("Code") }}</div>
+        {{ refused("code", icon("github") ~ _("Git pull only")) }}
+        {% elif can_act %}
         <div class="more-title">{{ _("Code") }}</div>
         {% for b in buttons[inst.key].git %}{{ action_button(b, off) }}{% endfor %}
         {% if pull_choices[inst.key] %}
@@ -244,10 +257,13 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
         {% endfor %}
         {% if backup_here or buttons[inst.key].backup %}
         <div class="more-title">{{ _("Backups") }}</div>
-        {% if backup_here %}
+        {% if backup_here and denied.backup %}
+        {{ refused("backup", icon("backup") ~ _("Back up now")) }}
+        {% elif backup_here %}
         <button type="button" {{ off }} data-backup="{{ base }}/backup" data-download="0" data-key="{{ inst.key }}"
                 title="{{ _('Saves database and filestore in a zip on this machine; the dialog has the choices, for example without filestore. The file shows in the Backups tab.') }}">{{ icon("backup") }}{{ _("Back up now") }}</button>
-        <button type="button" {{ off }} data-backup="{{ base }}/backup" data-download="1" data-key="{{ inst.key }}" title="{{ _('Makes a backup and downloads the zip as soon as it is ready.') }}">{{ icon("download") }}{{ _("Backup and download") }}</button>
+        {% if denied.download %}{{ refused("download", icon("download") ~ _("Backup and download")) }}{% else %}
+        <button type="button" {{ off }} data-backup="{{ base }}/backup" data-download="1" data-key="{{ inst.key }}" title="{{ _('Makes a backup and downloads the zip as soon as it is ready.') }}">{{ icon("download") }}{{ _("Backup and download") }}</button>{% endif %}
         <button type="button" {{ off }} id="archive-now" data-url="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}/archive"
                 title="{{ _('The backup, the code of every repository at its commit and the configuration (compose.yaml, odoo.conf, the Python packages), in one zip of the Backups tab.') }}">{{ icon("backup") }}{{ _("Full archive") }}</button>
         {% endif %}
@@ -272,16 +288,20 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
         <button type="button" class="danger" {{ off }} data-from-link='{{ from_link[inst.key] | tojson }}' data-key="{{ inst.key }}"
                 title="{{ _('Back up {label}, download it and restore it into {key}', label=from_link[inst.key].label, key=inst.key) }}">{{ icon("download") }}{{ _("Copy from link") }}</button>
         {% endif %}
-        {% if restore_file[inst.key] %}
+        {% if restore_file[inst.key] and restore_file[inst.key].disabled %}
+        {{ refused("restore", icon("backup") ~ _("Restore a backup…"), "danger") }}
+        {% elif restore_file[inst.key] %}
         <button type="button" class="danger" {{ off }} data-restore-file='{{ restore_file[inst.key] | tojson }}' data-key="{{ inst.key }}"
                 title="{{ _('Makes a backup of the instance as it is now, then replaces the database and the files with one of its backups. To confirm, the name of the database is written. Admins only.') if restore_file[inst.key].backup_first else _('Replaces the database with a zip of its backups or one from your computer. To confirm, the name of the database is written. Admins only.') }}">{{ icon("backup") }}{{ _("Restore a backup…") }}</button>
         {% endif %}
-        {% if delete_instance %}
+        {% if delete_instance and denied.instances %}{{ refused("instances", _("Delete the instance…"), "danger") }}
+        {% elif delete_instance %}
         {% if stagings.rows %}<span title="{{ _('Delete its stagings first: they are copies of it') }}"><button type="button" class="danger" disabled>{{ _("Delete the instance…") }}</button></span>
         {% else %}<button type="button" class="danger" id="instance-delete" {{ off }}
                 title="{{ _('Deletes this instance: containers, database, files and folders, then removes it from the list. It cannot be undone.') }}">{{ _("Delete the instance…") }}</button>{% endif %}
         {% endif %}
-        {% if delete_staging %}
+        {% if delete_staging and denied.stagings %}{{ refused("stagings", _("Delete the staging…"), "danger") }}
+        {% elif delete_staging %}
         <button type="button" class="danger" id="staging-delete" {{ off }}
                 title="{{ _('Deletes this staging: containers, database, files and folders, then removes it from the list. The production it was copied from does not change. It cannot be undone.') }}">{{ _("Delete the staging…") }}</button>
         {% endif %}
@@ -290,7 +310,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     </details>
   </div>
   {% elif login_as[inst.key] %}
-  <div class="head-actions"><button type="button" data-login-as='{{ login_as[inst.key] | tojson }}' title="{{ _('Opens Odoo in a new tab as one of its users, without their password.') }}">{{ _("Log in as…") }}</button></div>
+  <div class="head-actions">{% if login_as[inst.key].disabled %}{{ refused("login_as", _("Log in as…")) }}{% else %}<button type="button" data-login-as='{{ login_as[inst.key] | tojson }}' title="{{ _('Opens Odoo in a new tab as one of its users, without their password.') }}">{{ _("Log in as…") }}</button>{% endif %}</div>
   {% endif %}
 </div>
 
@@ -316,6 +336,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
   <span>{{ _("Copy of") }} {{ copy_link() }} {{ _("of {date}", date=when(stagings.parent.refreshed or stagings.parent.created)) }}, {{ _("neutralized: no scheduled actions; the outgoing mail is read in the Mail tab, it does not leave.") if mail_capture else _("neutralized: no outgoing mail, no scheduled actions.") }}</span>
   {# Rebuild (UX-008 §5.2, D9): one button, the choice of data only or data and code in its dialog #}
   {% if is_admin_here and copy_elsewhere %}<span title="{{ _('Its production is on {machine}: a new staging is made from the page of that production, through the link. This staging is not rebuilt from here.', machine=copy_elsewhere) }}"><button type="button" class="small danger" disabled>{{ icon("restart") }}{{ _("Rebuild…") }}</button></span>
+  {% elif is_admin_here and (denied.stagings or denied.rebuild) %}{{ refused("stagings" if denied.stagings else "rebuild", icon("restart") ~ _("Rebuild…"), "small danger") }}
   {% elif is_admin_here %}<button type="button" class="small danger" id="staging-rebuild" {{ off }}
     title="{{ _('Makes this staging again from production as it is now: a new backup, loaded here and neutralized; if you choose, also the code, at the commits of production. Its address stays. Not available while a job works on the staging or on production. Admins only.') }}">{{ icon("restart") }}{{ _("Rebuild…") }}</button>{% endif %}
 </div>
@@ -348,7 +369,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
   <button type="button" role="tab" data-tab="overview" aria-selected="true" title="{{ _('The instance, its test and its stagings, and whether it answers') }}">{{ _("Overview") }}</button>
   {% if mail_capture %}<button type="button" role="tab" data-tab="mail" title="{{ _('What Odoo of this staging sent: caught here, it did not leave') }}">{{ _("Mail") }}</button>{% endif %}
   {% if can_act %}<button type="button" role="tab" data-tab="backups" title="{{ _('The backups of this instance, the automatic ones and the recovery at a minute') }}">{{ _("Backups") }}</button>{% endif %}
-  <button type="button" role="tab" data-tab="log" title="{{ _('The log of its Odoo, followed live') }}">{{ _("Log") }}</button>
+  <button type="button" role="tab" data-tab="log" {% if denied.logs %}disabled title="{{ tr(denied.logs) }}"{% else %}title="{{ _('The log of its Odoo, followed live') }}"{% endif %}>{{ _("Log") }}</button>
   {# Monitoring: the load once it is measured, and the database for who may act (UX-006: five tabs) #}
   <button type="button" role="tab" data-tab="monitor" {{ '' if db_tab else 'hidden' }} title="{{ _('The load of the instance over the last hour and how its database is') }}">{{ _("Monitoring") }}</button>
   {# Modules: its code, its updates and the catalog of the OCA (UX-008 §7.3, D1) #}
@@ -598,8 +619,9 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
          data-api="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}">
   {% if inst.plugin.has_backup %}
   <div class="section-head"><h2>{{ _("Backups") }}</h2>
+    {% if denied.backup %}{{ refused("backup", icon("backup") ~ _("Back up now"), "primary") }}{% else %}
     <button type="button" class="primary" {{ off }} data-backup="{{ base }}/backup" data-download="0" data-key="{{ inst.key }}"
-      title="{{ _('Saves database and filestore in a zip on this machine; the dialog has the choices, for example without filestore. The file shows in the list here below.') }}">{{ icon("backup") }}{{ _("Back up now") }}</button></div>
+      title="{{ _('Saves database and filestore in a zip on this machine; the dialog has the choices, for example without filestore. The file shows in the list here below.') }}">{{ icon("backup") }}{{ _("Back up now") }}</button>{% endif %}</div>
   {# the automatic backups (UX-006): what they do in one line, the form behind it (open while they are off) #}
   <p class="ab-line" id="ab-status" role="status" hidden></p>
   <details class="backup-auto" id="ab-details" hidden>
@@ -2259,8 +2281,11 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
       for (const text of [T.file, T.kind, T.date, T.size, T.checked, ""]) { const th = document.createElement("th"); th.textContent = text; head.appendChild(th); }
       for (const f of files) {
         const tr = table.insertRow();
-        const a = document.createElement("a");
-        a.href = f.download; a.textContent = f.file; a.setAttribute("download", f.file); a.title = T.downloadTitle;
+        // a custom role without Download backups: the name, and why it is not a link
+        const a = document.createElement(f.download ? "a" : "span");
+        if (f.download) { a.href = f.download; a.setAttribute("download", f.file); a.title = T.downloadTitle; }
+        else a.title = f.download_refused || "";
+        a.textContent = f.file;
         tr.insertCell().appendChild(a);
         tr.insertCell().textContent = (T.kinds[f.kind] || "") + (f.archive ? " · " + T.archiveKind : "");
         tr.insertCell().textContent = stamp(f.time * 1000);

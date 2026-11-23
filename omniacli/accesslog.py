@@ -250,7 +250,9 @@ class AccessLog:
         consent given or refused, a token issued, refreshed, revoked),
         passkey (registered, removed: passkeys.py), session (one ended by
         its person or an admin) or sso (a workspace's single sign-on set,
-        changed, removed, a user made by it: sso.py); kind:
+        changed, removed, a user made by it: sso.py) or permissions (a custom
+        role of a workspace made, changed, deleted, a person given a role or
+        some instances only, a token made for a person: capabilities.py); kind:
         user, link, token or mcp.
         extra: the FIELDS this entry knows (they win over the request's);
         context False: none taken from the request being served (a job's end)."""
