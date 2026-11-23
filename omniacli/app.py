@@ -610,17 +610,16 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     # the disks once a day, next to the jobs like the sessions
     disk_history = DiskHistory(settings.jobs_dir.parent / "disk_history.json")
     async def workspace_disks() -> list[dict]:
-        """[{name, used, capacity}] of the workspaces' disks, from the root
-        helper: capacity is disk_gb, or the image's size without one."""
+        """[{name, used, capacity, free}] of the workspaces' disks, from the
+        root helper: the file system inside each (workspaceops.filled)."""
         found = await workspaceops.space()
         result = []
         for ws in settings.workspaces.values():
             if not ws.storage or settings.storage_problem(ws):
                 continue
-            r = workspaceops.room(found, settings.workspaces, ws.storage, ws.name)
-            capacity = workspaceops.limit_bytes(ws) or (r or {}).get("own_size", 0)
-            if r is not None and capacity:
-                result.append({"name": ws.name, "used": r["own_used"], "capacity": capacity})
+            fill = workspaceops.filled(workspaceops.room(found, settings.workspaces, ws.storage, ws.name), ws)
+            if fill is not None:
+                result.append({"name": ws.name, "used": fill["used"], "capacity": fill["size"], "free": fill["free"]})
         return result
 
     disk_recorder = DiskRecorder(settings, disk_history, workspaces=workspace_disks)
@@ -4046,7 +4045,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return {"ok": True, "status": "draft"}
 
     @app.post("/api/servers/delete", dependencies=[Depends(admin)])
-    async def config_delete(payload: dict = Body(...)):
+    async def config_delete(payload: dict = Body(...), me: Principal = Depends(current_user)):
         name = str(payload.get("name") or "")
         async with config_lock:
             if name not in settings.servers:
@@ -4062,6 +4061,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if made_by is not None and payload.get("configuration_only") is not True:
                 return refuse(f"{name} is an instance of workspace {made_by.name}: delete it from its page, which "
                               f"removes its containers and its data too")
+            gh_urls, gh_scopes = await github_urls_of([name]), github_scopes([name])
             servers = {k: v for k, v in settings.servers.items() if k != name}
             error = await store(servers)
             if error:
@@ -4070,7 +4070,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             error = await rename_in_workspaces(name, None)
             if error:
                 return error
-        return {"ok": True}
+        # its CI and the webhooks on GitHub made for it, as when it is switched off (a job, which says what it did)
+        if not gh_urls and not any(str(k).split("/")[0] == name for k in deployhooks.load(deploy_hooks_file)):
+            return {"ok": True}
+        job = jobs.submit(f"CI of {name}: removed with it", [], f"manual: {me}",
+                          lambda job: github_after_removal(job, [name], gh_urls, gh_scopes))
+        return {"ok": True, "job": job.id}
 
     # --- workspaces -------------------------------------------------------
 
@@ -4943,10 +4948,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             except workspaceops.SpaceError:
                 disk_error = "the disk cannot be read now"
             else:
-                r = workspaceops.room(found, settings.workspaces, ws.storage, ws.name)
-                if r is not None:
-                    disk = {"used": r["own_used"], "size": r["own_size"],
-                            "forecast": disk_history.workspace_forecast(ws.name)}
+                fill = workspaceops.filled(workspaceops.room(found, settings.workspaces, ws.storage, ws.name), ws)
+                if fill is not None:
+                    # its file system, as df inside says it (not what its image takes on the real disk)
+                    disk = {**fill, "forecast": disk_history.workspace_forecast(ws.name)}
         return {"interval": 5, "points": sampler.workspace_series(ws.name, since),
                 "limits": {k: ws.limits.get(k) for k in ("cpus", "memory_gb", "disk_gb")},
                 "disk": disk, "disk_error": disk_error}
@@ -5058,6 +5063,13 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         no longer see them; its names published through another machine are
         taken away there too."""
         name = str(payload.get("name") or "")
+        if name not in settings.workspaces:
+            return refuse(f"No workspace {name}", status.HTTP_404_NOT_FOUND)
+        # its servers' webhooks on GitHub and its token, read while it is here: one to take away still (its
+        # instance deleted while GitHub did not answer) is taken away with it, with its token
+        gh_servers, own = list(settings.workspaces[name].servers), f"workspace:{name}"
+        gh_urls = await github_urls_of(gh_servers, [own])
+        gh_scopes = [*(s for s in github_scopes(gh_servers) if s != own), own]
         async with workspaces_lock:
             if name not in settings.workspaces:
                 return refuse(f"No workspace {name}", status.HTTP_404_NOT_FOUND)
@@ -5071,6 +5083,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             async def unrelay(job):
                 await relay_teardown(job, name, rec, f"workspace {name} deleted")
             jobs.submit(f"Names of workspace {name} through {rec.get('link')}: removed", [], f"manual: {me}", unrelay)
+        if gh_urls:
+            # its servers that are gone: their CI forgotten; the webhooks synced, kept for those that stay
+            gone = [s for s in gh_servers if s not in settings.servers]
+            jobs.submit(f"GitHub webhooks of workspace {name}", [], f"manual: {me}",
+                        lambda job: github_after_removal(job, gone, gh_urls, gh_scopes))
         # with no instance of its own left, its disk goes too (an empty one only)
         if ws.storage and not [s for s in ws.servers if s in settings.servers and s.startswith(f"{name}-")]:
             return {"ok": True, "disk": await workspaceops.drop_disk(None, ws)}
@@ -5834,12 +5851,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return next((s["names"][0] for s in sites if s["instance"] == new_instance and s["role"] == "production"), "")
 
     def workspace_free(found: dict | None, ws: Workspace) -> int | None:
-        """The bytes free in ws's disk (its limit less what its image takes),
+        """The bytes free in ws's disk (its file system's, workspaceops.filled),
         None when not known."""
         if not found or not ws.storage or not ws.limits.get("disk_gb"):
             return None
-        room = workspaceops.room(found, settings.workspaces, ws.storage, ws.name)
-        return None if room is None else max(workspaceops.limit_bytes(ws) - room["own_used"], 0)
+        fill = workspaceops.filled(workspaceops.room(found, settings.workspaces, ws.storage, ws.name), ws)
+        return None if fill is None else fill["free"]
 
     async def staging_size(prod) -> int | None:
         """What a backup of prod would hold, database and files (backup_estimate), None: not known."""
@@ -6087,11 +6104,18 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return {"backup": backup_zip.name}
 
         async def fill(job, target) -> dict:
-            # the modules uploaded as a .zip into the production go with it (README, Modules uploaded as a .zip)
-            copy_uploads(job, server, target.server)
-            if uploads_folder(*workspace_of(target.server), "production").is_dir():
-                await workspaceops.write_conf(job, *workspace_of(target.server), "production",
-                                              [r.name for r in target.repositories])
+            if settings.servers[server].production.repositories:
+                # the production's repositories at the commits it has checked out, each on its branch, and its
+                # uploaded modules, before the database that has their modules installed (as Rebuild › Data
+                # and code): made from the template alone, a staging had Odoo's modules only (23/11/2026)
+                await code_like_production(job, target.server, server)
+                target = settings.servers[target.server].production
+            else:
+                # the modules uploaded as a .zip into the production go with it (README, Modules uploaded as a .zip)
+                copy_uploads(job, server, target.server)
+                if uploads_folder(*workspace_of(target.server), "production").is_dir():
+                    await workspaceops.write_conf(job, *workspace_of(target.server), "production",
+                                                  [r.name for r in target.repositories])
             return await (load or backup_and_restore)(job, settings.servers[server].production, target)
 
         on = enterprise_of(settings.servers[server])
@@ -6842,6 +6866,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         provider = production is not None and on_remote_db(production) and bool(instance_meta(production).get("promoted_from"))
 
         async def action(job):
+            # its webhooks on GitHub and the token they were made with, read while it is here
+            gh_urls, gh_scopes = await github_urls_of([name]), github_scopes([name])
             if linked is None and provider:
                 await workspaceops.remove_instance(job, ws, instance, linked=True)
                 job.log("Its database stays on its copy on another machine of the provider, which drops it there")
@@ -6857,6 +6883,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 raise JobFailed(f"the instance is removed, but the servers file was not written: {error.body.decode()}")
             await rename_in_workspaces(name, None)
             job.log(f"Server {name} removed")
+            # its CI goes with it: a webhook made for it is taken away where nothing else here follows it with the
+            # CI on (23/11/2026: a deleted staging's stayed on GitHub, and in github-hooks.json)
+            await github_after_removal(job, [name], gh_urls, gh_scopes)
             # a staging is no longer one; the stagings of a removed parent stay, saying whose copy they were
             known = stagings.load(stagings_file)
             if known.pop(name, None) is not None:
@@ -7907,9 +7936,17 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return jobs.submit(title, [key], source, lambda job: modulecatalog.refresh(job, path, series, reader, ident))
 
     async def catalog_loop() -> None:
-        """Each night, the catalog of each series of the templates read again."""
+        """Each night, the catalog of each series of the templates read again,
+        and the webhooks on GitHub GitHub refused last synced again (github_retry)."""
+        retried = ""
         while True:
             await asyncio.sleep(CATALOG_EVERY)
+            try:
+                if datetime.datetime.now().hour in CATALOG_NIGHT and retried != datetime.date.today().isoformat():
+                    retried = datetime.date.today().isoformat()
+                    await github_retry("nightly GitHub webhooks")
+            except Exception:  # noqa: BLE001 - the loop must survive
+                _logger.exception("the nightly sync of the webhooks on GitHub failed")
             try:
                 if datetime.datetime.now().hour not in CATALOG_NIGHT or not settings.workspaces:
                     continue
@@ -12160,9 +12197,88 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         url = str((hook.get("config") or {}).get("url") or "")
         return bool(rid and url.endswith(github.HOOK_PATH + rid)) or bool(base and url.startswith(base))
 
-    async def github_sync_one(job, key: str, host: str, full: str, record: dict | None) -> dict | None:
+    def github_scopes(servers) -> list[str]:
+        """The scopes of the credentials file whose GitHub tokens servers use
+        (each one's own, then its workspace's), read while they are here: an
+        instance deleted, its webhook is taken away with the token it was made
+        with, which its server, gone, no longer names (github_token_kept)."""
+        found = []
+        for server in servers:
+            ws = settings.workspace_of(server)
+            for scope in (f"server:{server}", *((f"workspace:{ws}",) if ws else ())):
+                if scope not in found:
+                    found.append(scope)
+        return found
+
+    def github_token_kept(host: str, scopes) -> tuple[str, gitcredentials.Credential] | None:
+        """(scope, its GitHub token for host) of the first of scopes that has one in the credentials file."""
+        if settings.credentials_file is None or not scopes:
+            return None
+        try:
+            found = gitcredentials.load(settings.credentials_file)
+        except gitcredentials.CredentialError:
+            return None
+        for scope in scopes:
+            cred = found.get(scope, {}).get(host)
+            if cred is not None and cred.github:
+                return scope, cred
+        return None
+
+    def github_record_url(record: dict) -> str:
+        return f"https://{record.get('host')}/{record.get('repository')}.git"
+
+    async def github_urls_of(servers, scopes=()) -> set[str]:
+        """The repositories of servers whose webhook OmniaCLI made (github-hooks.json): those of their instances,
+        those whose record names one of them (made for its CI, or still to take away), and those still to take
+        away with the token of one of scopes (a workspace deleted)."""
+        servers = set(servers)
+        data = await asyncio.to_thread(deployhooks.load, github_hooks_file)
+        records = {k: r for k, r in data.items() if isinstance(r, dict) and r.get("host") and r.get("repository")}
+        urls = {github_record_url(r) for r in records.values()
+                if r.get("server") in servers or any(str(i).split("/")[0] in servers for i in r.get("instances") or [])
+                or set(r.get("scopes") or ()) & set(scopes)}
+        for server in servers:
+            srv = settings.servers.get(server)
+            for inst in (srv.instances.values() if srv is not None else ()):
+                for repo in inst.repositories:
+                    url = await remote_url(repo)
+                    if github_key(url) in records:
+                        urls.add(url)
+        return urls
+
+    async def github_after_removal(job, gone: list[str], urls: set[str], scopes: list[str]) -> None:
+        """Servers gone from this machine (an instance deleted, a server's line,
+        a workspace): their CI forgotten as Forget does, then the webhooks of
+        urls synced as switching the CI off does: taken away where no instance
+        here with the CI on follows them any more."""
+        data = await asyncio.to_thread(deployhooks.load, deploy_hooks_file)
+        keys = [k for k in data if str(k).split("/")[0] in gone]
+        for key in keys:
+            data.pop(key, None)
+            await asyncio.to_thread(deploys.set_paused, deploys_folder, key, None)
+        if keys:
+            await asyncio.to_thread(deployhooks.save, deploy_hooks_file, data)
+        if urls:
+            await github_sync(job, urls, scopes)
+
+    async def github_retry(source: str):
+        """The webhooks whose last sync GitHub refused or did not answer (made
+        once: an id, with why), synced again in a job; None when there is none.
+        Each night (catalog_loop): an instance deleted while GitHub did not
+        answer has its webhook taken away then."""
+        data = await asyncio.to_thread(deployhooks.load, github_hooks_file)
+        urls = {github_record_url(r) for r in data.values()
+                if isinstance(r, dict) and r.get("id") and r.get("why") and r.get("host") and r.get("repository")}
+        if not urls:
+            return None
+        return jobs.submit("GitHub webhooks synced again", [], source, lambda job: github_sync(job, urls))
+    app.state.github_retry = github_retry
+
+    async def github_sync_one(job, key: str, host: str, full: str, record: dict | None,
+                              scopes=()) -> dict | None:
         """The webhook of one repository as the CI of the instances here wants
-        it: made or updated, or taken away; what github-hooks.json keeps of it."""
+        it: made or updated, or taken away; what github-hooks.json keeps of it.
+        scopes: where the token of servers gone is kept (github_scopes)."""
         stamp = datetime.datetime.now().isoformat(timespec="seconds")
         follow = await github_followers(key)
         wanting = [i for i in follow if not manual_only(i) and ci_on(i)]
@@ -12200,7 +12316,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if not record or not record.get("id"):
             return None
         found = github_token_of(host, [record.get("server") or "", *(i.server for i in follow),
-                                       *sorted(settings.servers)])
+                                       *sorted(settings.servers)]) \
+            or github_token_kept(host, [*(record.get("scopes") or []), *scopes])
         if found is None:
             job.warn(f"The webhook of {full} on GitHub stays: no GitHub token here reaches it any more; take it "
                      "away on GitHub (the repository's Settings › Webhooks)")
@@ -12217,10 +12334,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                         "left as it is")
         return None
 
-    async def github_sync(job, urls) -> None:
+    async def github_sync(job, urls, scopes=()) -> None:
         """The webhooks on GitHub of the repositories at urls, each as the CI of
         the instances here wants it (github_sync_one); a refusal of GitHub is a
-        warning of the job, the rest goes on."""
+        warning of the job, the rest goes on, and its record stays with why
+        (and scopes, the token's of servers gone) for github_retry."""
         keys = {}
         for url in urls:
             found = github.repository_of(url)
@@ -12233,11 +12351,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             for key, (host, full) in sorted(keys.items()):
                 record = data.get(key) if isinstance(data.get(key), dict) else None
                 try:
-                    found = await github_sync_one(job, key, host, full, record)
+                    found = await github_sync_one(job, key, host, full, record, scopes)
                 except github.GitHubError as exc:
-                    job.warn(f"GitHub, the webhook of {full}: {exc}")
+                    job.warn(f"GitHub, the webhook of {full}: {exc}"
+                             + ("; it is tried again each night" if (record or {}).get("id") else ""))
+                    kept = [*((record or {}).get("scopes") or []), *(x for x in scopes
+                                                                      if x not in ((record or {}).get("scopes") or []))]
                     found = {**(record or {}), "host": host, "repository": full, "why": str(exc),
-                             "at": datetime.datetime.now().isoformat(timespec="seconds")}
+                             "at": datetime.datetime.now().isoformat(timespec="seconds"), **({"scopes": kept} if kept else {})}
                 if found is None:
                     data.pop(key, None)
                 else:
@@ -14069,12 +14190,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 raise ActionRefused(f"{file} is a database of Odoo {major}: this machine has no template of Odoo "
                                     f"{major} (Templates)")
         series = f"{major}.0"
-        # what the new instance's code will have: Odoo's own modules (its
-        # stagings are made from the template without repositories either)
+        # what the new instance's code will have: Odoo's own modules, and for
+        # a staging its production's repositories
         core, read_from = await core_modules(template)
         installed = info["modules"] or []
         catalog = catalog_for(series)
-        missing = [m for m in installed if core is None or m not in core]
+        # a staging takes its production's code too (new_staging): its repositories' modules and the uploaded ones
+        theirs = await asyncio.to_thread(code_modules, settings.servers[staging_of]) if parent else set()
+        missing = [m for m in installed if (core is None or m not in core) and m not in theirs]
         groups: dict[str, list[str]] = {}
         not_found = []
         for module in missing:
@@ -14162,11 +14285,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             """The repositories added, the modules checked on the new
             instance's own database, then the file restored into it."""
             found = workspace_of(target.server)
-            if wanted and found is not None:
-                job.log(f"--- the repositories of the OCA {', '.join(w[0] for w in wanted)}, branch {series}")
+            # a staging has its production's repositories already (new_staging): those are not added again
+            have = {r.name for r in target.repositories}
+            wanted_here = [w for w in wanted if w[0] not in have]
+            if wanted_here and found is not None:
+                job.log(f"--- the repositories of the OCA {', '.join(w[0] for w in wanted_here)}, branch {series}")
                 roles = [r for r in ROLES if getattr(settings.servers[target.server], r) is not None]
                 done = await add_repositories(job, settings.workspaces[found[0].name], target.server, found[1],
-                                              [(repo, url, {r: branch for r in roles}) for repo, url, branch in wanted])
+                                              [(repo, url, {r: branch for r in roles}) for repo, url, branch in wanted_here])
                 target = done.production
             known, why = await known_modules(target, fresh=True)
             still: list[str] = []
@@ -14197,7 +14323,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             finally:
                 if wrapped is not None:
                     wrapped.unlink(missing_ok=True)
-            job.result = {**job.result, "missing_modules": still, "modules_added_from": [w[0] for w in wanted]}
+            job.result = {**job.result, "missing_modules": still, "modules_added_from": [w[0] for w in wanted_here]}
             return {"backup": file, "from_backup": True}
 
         if parent:

@@ -202,6 +202,7 @@
  "Its DNS name pointing to this server, ports 80 and 443 open: it answers there with HTTPS. Empty: added later.": "Il suo nome DNS, che punta a questo server, con le porte 80 e 443 aperte: risponde lì in HTTPS. Vuoto: si aggiunge dopo.",
  "Its DNS name: create an A record with the value {address}, ports 80 and 443 open; it answers there with HTTPS. Empty: added later.": "Il suo nome DNS: crea un record A con il valore {address}, con le porte 80 e 443 aperte; risponde lì in HTTPS. Vuoto: si aggiunge dopo.",
  "Its OmniaCLI is older: there is only the last hour.": "Il suo OmniaCLI è più vecchio: c'è solo l'ultima ora.",
+ "Its file system, as df inside it says. Its image takes {size} on the real disk: what is deleted inside goes back to the real disk when it is trimmed (an instance deleted, and the machine's weekly fstrim)": "Il suo file system, come lo dice df al suo interno. La sua immagine occupa {size} sul disco reale: quello che si cancella dentro torna al disco reale quando viene liberato con un trim (all'eliminazione di un'istanza, e con il fstrim settimanale della macchina)",
  "Its own role and its data on its disk, in the PostgreSQL of this machine: one memory for all, no recovery at a minute.": "Un ruolo suo e i dati sul suo disco, nel PostgreSQL di questa macchina: una sola memoria per tutti, senza ripristino a un minuto.",
  "Language": "Lingua",
  "Last hour": "Ultima ora",

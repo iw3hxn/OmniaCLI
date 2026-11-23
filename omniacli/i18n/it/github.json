@@ -32,6 +32,7 @@
  "GitHub would not reach this OmniaCLI ({said}): give the instance a name in Addresses, or the portal an address (Options › Customers' portal)": "GitHub non raggiungerebbe questo OmniaCLI ({said}): dai all'istanza un nome in Indirizzi, o al portale un indirizzo (Opzioni › Portale clienti)",
  "GitHub's rate limit of this token is used up until {time}: try again then": "Il limite di richieste a GitHub di questo token è esaurito fino alle {time}: riprova allora",
  "GitHub, the webhook of {repo}: {error}": "GitHub, il webhook di {repo}: {error}",
+ "GitHub, the webhook of {repo}: {error}; it is tried again each night": "GitHub, il webhook di {repo}: {error}; si riprova ogni notte",
  "GitHub: the state of the deploy is not written on {repo}: {error}": "GitHub: l'esito del deploy non è scritto su {repo}: {error}",
  "GitHub: the webhook of {repo} made: {url} (push events, content type JSON, signed with a secret of its own)": "GitHub: creato il webhook di {repo}: {url} (eventi push, content type JSON, firmato con un suo segreto)",
  "GitHub: the webhook of {repo} taken away: no instance here with the CI on follows it": "GitHub: tolto il webhook di {repo}: nessuna istanza di qui con la CI accesa lo segue",

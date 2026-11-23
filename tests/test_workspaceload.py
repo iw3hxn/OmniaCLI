@@ -125,13 +125,21 @@ async def test_a_member_sees_the_load_of_its_workspace(workspaces, client, monke
     resp = await client.get("/api/workspaces/acme/load", headers=basic("luca"))
     assert resp.status_code == 200
     data = resp.json()
+    # not mounted (no file system read): what its image takes, of its limit
     assert data["disk"]["used"] == 3 * 2**30 and data["disk"]["size"] == 10 * 2**30 and data["disk_error"] == ""
+    assert data["disk"]["free"] == 7 * 2**30
     # the recorder took today's point at the start: the estimate needs a week of them
     assert data["disk"]["forecast"]["reason"] == "a forecast needs 7 days of data"
     assert data["limits"] == {"cpus": 2, "memory_gb": None, "disk_gb": 10}
     # no slice here: the sampler's points measure nothing, and say so
     assert all(p["cpu"] is None and p["mem"] is None for p in data["points"])
-    assert "machine" not in data and "free" not in json.dumps(data)
+    # nothing of the machine: its real disk's free room is not said
+    assert "machine" not in data and str(50 * 2**30) not in json.dumps(data)
+    # mounted: its file system, as df inside it says (23/11/2026: a large clone deleted inside, the image's blocks
+    # still taken said 1.8 GB free, df 19 GB)
+    found["roots"][0]["images"]["acme"]["fs"] = {"size": 9 * 2**30, "used": 2**30, "free": int(7.5 * 2**30)}
+    data = (await client.get("/api/workspaces/acme/load", headers=basic("luca"))).json()
+    assert (data["disk"]["used"], data["disk"]["size"], data["disk"]["free"]) == (2**30, 9 * 2**30, int(7.5 * 2**30))
     # another workspace: refused
     assert (await client.get("/api/workspaces/beta/load", headers=basic("luca"))).status_code == 403
     assert (await client.get("/api/workspaces/acme/load", headers=basic("zoe"))).status_code == 403

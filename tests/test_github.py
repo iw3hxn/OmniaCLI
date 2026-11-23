@@ -353,6 +353,91 @@ async def test_the_webhook_follows_the_ci_and_a_production_never_moves(client, e
     no_token_anywhere(client, commands, caplog, settings.servers_file.parent.joinpath("github-hooks.json").read_text())
 
 
+@pytest.mark.parametrize("answers", [True, False, "workspace"])
+async def test_a_deleted_instance_takes_its_webhook_away(instance, client, env, fake, monkeypatch, tmp_path, answers):
+    """23/11/2026: a staging deleted with its CI on left its webhook on GitHub
+    and its record in github-hooks.json. Its deletion runs the sync of the CI
+    switched off, with the workspace's token its server no longer names; GitHub
+    not answering, a warning, the record kept, and taken away the night after."""
+    settings = env["settings"]
+    settings.options = config.parse_options({"portal": {"address": "omnia.example.com"}})
+    resp = await client.post("/api/workspaces/acme/credentials/github/save", headers=post_as("mario"),
+                             json={"label": "Acme", "token": TOKEN})
+    assert resp.status_code == 200, resp.text
+    repo = tmp_path / "storage" / "acme" / "main" / "test" / "addons" / "addons"
+    repo.mkdir(parents=True)
+    sh("git", "init", "-q", "-b", "main", str(repo))
+    sh("git", "remote", "add", "origin", REMOTE, cwd=repo)
+    settings.servers["acme-main"].test.repositories.append(config.Repository("addons", repo, "main"))
+    data = (await client.post("/api/servers/acme-main/test/deploy-hook", headers=POST, json={"enabled": True})).json()
+    job = await wait_job(client, data["github_job"])
+    assert job["status"] == "success" and len(fake.hooks["acme/addons"]) == 1, job["lines"]
+    # another webhook of the repository, not OmniaCLI's: it stays
+    fake.hooks["acme/addons"][7] = {"id": 7, "config": {"url": "https://ci.example.org/hook"}}
+    removed = []
+
+    async def remove_instance(job, ws, name, linked=False):
+        removed.append(name)
+
+    async def publish(job, ws):
+        return {}
+    monkeypatch.setattr(workspaceops, "remove_instance", remove_instance)
+    monkeypatch.setattr(workspaceops, "publish", publish)
+    hooks_file = settings.servers_file.parent / "github-hooks.json"
+    fake.deny = set() if answers is True else {"hooks"}
+    resp = await client.post("/api/workspaces/acme/instances/delete", headers=POST, json={"server": "acme-main"})
+    job = await wait_job(client, resp.json()["job"])
+    assert job["status"] == "success" and removed == ["main"], job["lines"]
+    assert "acme-main" not in settings.servers
+    # its CI forgotten: an instance made again with its name starts with the CI off
+    assert not any(k.startswith("acme-main/") for k in json.loads(
+        (settings.servers_file.parent / "deploy-hooks.json").read_text() or "{}"))
+    if answers is True:
+        assert list(fake.hooks["acme/addons"]) == [7]
+        assert any("webhook of acme/addons taken away" in line for line in job["lines"]), job["lines"]
+        assert "github.com/acme/addons" not in json.loads(hooks_file.read_text())
+        assert await client.app.state.github_retry("test") is None
+        return
+    # GitHub refused: said, the record kept with the workspace's token's scope, the job a success with a warning
+    assert any("cannot read the webhooks of acme/addons" in w and "; it is tried again each night" in w
+               for w in job["result"]["warnings"]), job
+    record = json.loads(hooks_file.read_text())["github.com/acme/addons"]
+    assert record["why"] and record["scopes"] == ["server:acme-main", "workspace:acme"]
+    assert len(fake.hooks["acme/addons"]) == 2
+    fake.deny = set()
+    if answers is False:
+        # the night after, GitHub answers: taken away
+        retried = await client.app.state.github_retry("test")
+        job = await wait_job(client, retried.id)
+    else:
+        # its workspace deleted first: the same sync, with the workspace's token read before it goes
+        resp = await client.post("/api/workspaces/delete", headers=POST, json={"name": "acme"})
+        assert resp.status_code == 200, resp.text
+        (found,) = [j for j in client.app.state.jobs.jobs.values() if j.title == "GitHub webhooks of workspace acme"]
+        job = await wait_job(client, found.id)
+    assert job["status"] == "success", job["lines"]
+    assert list(fake.hooks["acme/addons"]) == [7]
+    assert "github.com/acme/addons" not in json.loads(hooks_file.read_text())
+
+
+async def test_a_servers_line_deleted_takes_its_webhook_away(client, env, fake):
+    """Configure › Servers › Delete: the server's CI and its webhook go with
+    it, as when it is switched off; a line without either makes no job."""
+    settings = env["settings"]
+    _follow(env)
+    settings.options = config.parse_options({"portal": {"address": "omnia.example.com"}})
+    await client.post("/api/credentials/github/save", headers=POST,
+                      json={"kind": "server", "name": "srv", "label": "Acme", "token": TOKEN})
+    data = (await client.post("/api/servers/srv/test/deploy-hook", headers=POST, json={"enabled": True})).json()
+    await wait_job(client, data["github_job"])
+    assert len(fake.hooks["acme/addons"]) == 1
+    resp = await client.post("/api/servers/delete", headers=POST, json={"name": "srv"})
+    assert resp.status_code == 200, resp.text
+    job = await wait_job(client, resp.json()["job"])
+    assert job["status"] == "success" and fake.hooks["acme/addons"] == {}, job["lines"]
+    assert json.loads((settings.servers_file.parent / "github-hooks.json").read_text()) == {}
+
+
 async def test_a_refusal_of_github_is_said(client, env, fake, monkeypatch):
     settings = env["settings"]
     _follow(env)

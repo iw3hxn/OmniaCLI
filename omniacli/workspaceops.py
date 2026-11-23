@@ -195,6 +195,10 @@ async def remove_instance(job: Job, ws: Workspace, instance: str, linked: bool =
     """linked: its database is on the cluster of a linked OmniaCLI, which the
     application asks to take it back after this (not a third party's, which stays)."""
     removed = await _helper(job, "remove", ws.name, ws.storage, instance)
+    if removed.get("trimmed"):
+        # its free blocks given back to the real disk now (workspacehelper.trim), not at the weekly fstrim
+        job.log(f"--- the disk of {ws.name} trimmed: its image gave {removed['trimmed'] / GB:.1f} GB back to the "
+                "real disk")
     for where in () if linked else removed.get("database_left_on") or []:
         # a database of another machine is not this machine's to drop (AD-003)
         job.log(f"Its database stays on {where}: it is of who runs that machine, to drop there")
@@ -267,8 +271,23 @@ def room(found: dict, workspaces: dict[str, Workspace], storage: str, name: str 
     image = info.get("images", {}).get(name, {}) if name else {}
     return {"total": info["total"], "free": info["free"], "reserved": reserved,
             "promised": sum(d["promised"] for d in disks.values()), "used": sum(d["used"] for d in disks.values()),
-            "own_used": own["used"], "own_size": image.get("size", 0),
+            "own_used": own["used"], "own_size": image.get("size", 0), "own_fs": image.get("fs"),
             "allowed": max(info["free"] + own["used"] - reserved, 0), "physical": info["free"] + own["used"]}
+
+
+def filled(r: dict | None, ws: Workspace) -> dict | None:
+    """{used, size, free} of ws's disk as its users see it (r: room of ws):
+    the file system inside it, as df on its mount, when it is mounted;
+    else what its image takes on the real disk against its limit. The
+    image's blocks stay taken after a deletion inside until they are
+    trimmed: room's own_used, the real disk's concern (README, Workspaces)."""
+    if r is None:
+        return None
+    fs = r.get("own_fs")
+    if isinstance(fs, dict) and fs.get("size"):
+        return {"used": int(fs.get("used") or 0), "size": int(fs["size"]), "free": int(fs.get("free") or 0)}
+    size = limit_bytes(ws) or r.get("own_size", 0)
+    return {"used": r["own_used"], "size": size, "free": max(size - r["own_used"], 0)} if size else None
 
 
 def disk_problem(found: dict | None, workspaces: dict[str, Workspace], ws: Workspace, force: bool) -> str | None:

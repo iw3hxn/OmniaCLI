@@ -24,7 +24,7 @@ from omniacli.config import Workspace, parse_settings  # noqa: E402
 from omniacli.docker import DockerPlugin  # noqa: E402
 from omniacli.workspacehelper import INSTANCE_FILE  # noqa: E402
 
-from .conftest import LINK_TOKEN, USER_HASH, BasicAsSession  # noqa: E402
+from .conftest import LINK_TOKEN, USER_HASH, BasicAsSession, commit, sh  # noqa: E402
 from .test_app import POST, client, wait_job  # noqa: E402,F401
 from .test_from_link import running  # noqa: E402
 from .test_mcp import HEADERS, call, rpc, token_headers  # noqa: E402
@@ -280,6 +280,47 @@ async def test_a_staging_of_a_production(restoring, client, env):
     assert answer["new_instance"]["mail_caught"] and answer["new_instance"]["neutralize"]
     assert answer["job"]["status"] == "success", answer
     assert answer["server"].startswith("acme-main-stg-") and restoring["restore"][-1][2] == {"neutralize": True}
+
+
+async def test_a_staging_has_the_modules_of_its_production(restoring, client, env, tmp_path, monkeypatch):
+    """23/11/2026: a staging takes its production's repositories
+    (new_staging), so a module of theirs is not missing and their OCA
+    repository is not added again."""
+    settings = env["settings"]
+    admin = client.admin = await token_headers(client, "boss", "admin")
+    folder = settings.backup_dir / ".imports" / "acme"
+    folder.mkdir(parents=True)
+    backup_zip(folder / "acme.zip", {"base": "installed", "web": "installed", "web_responsive": "installed"})
+    made = await call(client, "restore_new_instance", headers=admin, file="acme.zip", workspace="acme", name="main",
+                      dry_run=False, add_repositories=True, allow_missing=True, wait_seconds=30)
+    assert made["job"]["status"] == "success", made
+    # the production's clone of web, a git repository with its remote
+    web = settings.servers["acme-main"].production.repositories[0].path
+    remote = tmp_path / "web.git"
+    sh("git", "init", "-q", "--bare", "-b", "20.0", str(remote))
+    sh("git", "init", "-q", "-b", "20.0", str(web))
+    sh("git", "add", "-A", cwd=web)
+    commit(web, "README.md", "web\n", "the production's web, web_responsive in it")
+    sh("git", "remote", "add", "origin", str(remote), cwd=web)
+    sh("git", "push", "-q", "origin", "20.0", cwd=web)
+
+    async def clone(job, ws, instance, role, name, url, branch, git_options=()):
+        target = workspaceops.addons_folder(ws, instance, role) / name
+        sh("git", "clone", "-q", "-b", branch, url, str(target))
+        restoring["cloned"].append((instance, name, url, branch))
+        return target
+    monkeypatch.setattr(workspaceops, "clone", clone)
+    plan = await call(client, "restore_new_instance", headers=admin, file="acme.zip", workspace="acme",
+                      staging_of="acme-main")
+    assert plan["missing_modules"]["in_oca"] == [] and plan["missing_modules"]["count"] == 0, plan
+    restoring["cloned"].clear()
+    answer = await call(client, "restore_new_instance", headers=admin, file="acme.zip", workspace="acme",
+                        staging_of="acme-main", dry_run=False, wait_seconds=30)
+    assert answer["job"]["status"] == "success", answer["job"].get("error")
+    staging = settings.servers[answer["server"]].production
+    assert [r.name for r in staging.repositories] == ["web"]
+    assert restoring["cloned"] == [(answer["server"][len("acme-"):], "web", str(remote), "20.0")]
+    assert answer["job"]["result"]["missing_modules"] == [] and answer["job"]["result"]["modules_added_from"] == []
 
 
 @pytest.fixture

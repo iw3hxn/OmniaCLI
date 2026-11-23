@@ -228,6 +228,39 @@ def test_space(root, monkeypatch):
     image = root["storage"] / ".disks" / "acme.img"
     assert first["images"] == {"acme": {"size": 2 * workspacehelper.GB, "used": image.stat().st_blocks * 512}}
     assert workspacehelper.run.__name__ and "space" in workspacehelper.ACTIONS
+    # mounted: its file system too, as df on its mount says it (23/11/2026: the image's blocks said 1.8 GB free,
+    # df inside 19 GB, after a large clone was deleted)
+    mount = root["storage"] / "acme"
+    mount.mkdir(exist_ok=True)
+    real_ismount, real_statvfs = workspacehelper.os.path.ismount, workspacehelper.os.statvfs
+
+    class Inside:
+        f_frsize, f_blocks, f_bfree, f_bavail = 4096, 500_000, 400_000, 380_000
+    monkeypatch.setattr(workspacehelper.os.path, "ismount", lambda path: str(path) == str(mount) or real_ismount(path))
+    monkeypatch.setattr(workspacehelper.os, "statvfs",
+                        lambda path: Inside if str(path) == str(mount) else real_statvfs(path))
+    fs = workspacehelper.space()["roots"][0]["images"]["acme"]["fs"]
+    assert fs == {"size": 500_000 * 4096, "used": 100_000 * 4096, "free": 380_000 * 4096}
+
+
+def test_trim_says_what_the_image_gave_back(tmp_path, monkeypatch):
+    """An instance deleted, fstrim on its workspace's disk: what the image
+    takes less on the real disk; None when fstrim cannot (no discard)."""
+    used = iter([5 * workspacehelper.GB, 2 * workspacehelper.GB])
+    ran = []
+    refused = False
+
+    def run(*cmd, check=True):
+        ran.append(list(cmd))
+        if refused:
+            raise HelperError("fstrim: the discard operation is not supported")
+        return ""
+    monkeypatch.setattr(workspacehelper, "_used", lambda image: next(used))
+    monkeypatch.setattr(workspacehelper, "_run", run)
+    assert workspacehelper.trim(tmp_path / "acme.img", tmp_path / "acme") == 3 * workspacehelper.GB
+    assert ran == [["fstrim", str(tmp_path / "acme")]]
+    refused, used = True, iter([workspacehelper.GB] * 2)
+    assert workspacehelper.trim(tmp_path / "acme.img", tmp_path / "acme") is None
 
 
 def test_create_and_remove(root, monkeypatch):

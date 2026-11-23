@@ -947,10 +947,44 @@ def space() -> dict:
                     continue
                 st = image.stat()
                 images[image.stem] = {"size": st.st_size, "used": st.st_blocks * 512}
+                fs = _filesystem(folder / image.stem)
+                if fs is not None:
+                    images[image.stem]["fs"] = fs
         roots.append({"root": root, "folder": path, "device": folder.stat().st_dev, "total": vfs.f_blocks * vfs.f_frsize,
                       "free": vfs.f_bavail * vfs.f_frsize, "images": images,
                       "networks": {name: _networks_of(folder / name) for name in images}})
     return {"roots": roots}
+
+
+def _filesystem(mount: Path) -> dict | None:
+    """The file system inside a workspace's disk, as df on its mount says it
+    (size, used, free to its users: what the workspace has left), None when
+    it is not mounted. The image's own used (its blocks on the real disk)
+    stays as high as the most it ever held until its free blocks are
+    discarded (trim): the host's concern, not the workspace's (23/11/2026:
+    1.8 GB said free, 19 GB free inside after a large clone was deleted)."""
+    if mount.is_symlink() or not os.path.ismount(mount):
+        return None
+    try:
+        vfs = os.statvfs(mount)
+    except OSError:
+        return None
+    return {"size": vfs.f_blocks * vfs.f_frsize, "used": (vfs.f_blocks - vfs.f_bfree) * vfs.f_frsize,
+            "free": vfs.f_bavail * vfs.f_frsize}
+
+
+def trim(image: Path, mount: Path) -> int | None:
+    """The free blocks of a mounted workspace's disk given back to the real
+    disk (fstrim: the loop device punches holes in the image): the bytes the
+    image takes less on the real disk after it; None when fstrim could not
+    (a file system or a loop that does not discard). The weekly
+    fstrim.timer of the host does the same for every mount."""
+    before = _used(image)
+    try:
+        _run("fstrim", str(mount))
+    except HelperError:
+        return None
+    return max(before - _used(image), 0)
 
 
 def _networks_of(mount: Path) -> list[str]:
@@ -1916,13 +1950,15 @@ def remove(name: str, storage: str, instance: str) -> dict:
         db_remote_set(folder / role, None)
         db_remote_set(Path(str(folder / role) + REPLICA_SUFFIX), None)
     shutil.rmtree(folder)
+    # what it held goes back to the real disk now, not at the host's next weekly trim
+    trimmed = trim(image, mount)
     # its network is free again: no SMTP rule left on it
     if _mail_guard_file():
         mail_guard_apply()
     if returning:
         # the network its database came back on is gone: the firewall forgets it
         db_firewall()
-    return {"workspace": name, "instance": instance, "removed": str(folder),
+    return {"workspace": name, "instance": instance, "removed": str(folder), "trimmed": trimmed,
             **({"machine": dropped} if dropped else {}), **({"database_left_on": left} if left else {})}
 
 

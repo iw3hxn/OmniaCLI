@@ -37,6 +37,7 @@
     noNetwork: {{ _("its projects' networks are not known yet (looked at once a minute)") | tojson }},
     error: {{ _("Error {status}") | tojson }}, noAnswer: {{ _("No answer.") | tojson }},
     notThere: {{ _("not there") | tojson }}, noStorage: {{ _("no storage") | tojson }}, noDisk: {{ _("no disk yet") | tojson }},
+    imageTakes: {{ _("Its file system, as df inside it says. Its image takes {size} on the real disk: what is deleted inside goes back to the real disk when it is trimmed (an instance deleted, and the machine's weekly fstrim)") | tojson }},
   };
   const fill = OmniaLoad.fill;
   const byName = Object.fromEntries(all.map((w) => [w.name, w]));
@@ -85,10 +86,14 @@
       const cell = row.querySelector(".disk"), free = row.querySelector(".free");
       if (!r) { OmniaDisk.message(cell, data.error ? "?" : (ws.storage ? T.notThere : T.noStorage), !!data.error);
         cell.title = data.error || ""; OmniaDisk.message(free, "—"); continue; }
-      const total = limit ? limit * 1073741824 : r.own_size;
-      if (total) OmniaDisk.render(cell, {label: ws.name, used: r.own_used, total,
-                                         forecast: (data.forecasts || {})[ws.name]}, {compact: true});
-      else OmniaDisk.message(cell, T.noDisk);
+      // its file system, as df inside it says, when mounted; what its image takes on the real disk is the
+      // real disk's (the next column, and the title here)
+      const fs = r.own_fs, total = fs ? fs.size : (limit ? limit * 1073741824 : r.own_size);
+      if (total) {
+        OmniaDisk.render(cell, {label: ws.name, used: fs ? fs.used : r.own_used, total, free: fs ? fs.free : undefined,
+                                forecast: (data.forecasts || {})[ws.name]}, {compact: true});
+        if (fs) cell.title = fill(T.imageTakes, {size: OmniaDisk.size(r.own_used)});
+      } else OmniaDisk.message(cell, T.noDisk);
       OmniaDisk.render(free, OmniaDisk.realDisk(data, ws.storage), {compact: true});
     }
     setTimeout(showDisks, 60000);

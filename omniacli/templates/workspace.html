@@ -1161,8 +1161,9 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
     } catch (e) { OmniaDisk.message(diskBox, T.noAnswer, true); return; }
     // no disk yet, or not readable: the widget says which
     if (!data.disk) { OmniaDisk.workspace(diskBox, wsName, data); return; }
-    const limit = (data.limits || {}).disk_gb, total = limit ? limit * 1073741824 : data.disk.size;
-    OmniaDisk.render(diskBox, {label: wsName, used: data.disk.used, total, forecast: data.disk.forecast}, {compact: true});
+    // its file system, as df inside it says (not what its image takes on the real disk)
+    const total = data.disk.size, free = data.disk.free;
+    OmniaDisk.render(diskBox, {label: wsName, used: data.disk.used, total, free, forecast: data.disk.forecast}, {compact: true});
     diskBox.append(" " + T.usedOf.replace("{used}", OmniaDisk.size(data.disk.used)).replace("{total}", OmniaDisk.size(total)));
   }
   showDisk();

@@ -94,8 +94,9 @@ Every disk is recorded once a day (kept three years, in
 `<data>/disk_history.json`): **Disks** (`/disks`) charts each disk's used
 space and says when it will be full, from the trend of the last 90 days (at
 least 7 days of data). The workspaces' disks are recorded the same way (the
-space their image takes, full at their `disk_gb`), and **Disks** charts them
-too.
+file system inside each, as `df` on its mount says it; the space its image
+takes when it is not mounted, full at its `disk_gb`), and **Disks** charts
+them too.
 
 Every page that shows a disk shows it with one widget
 (`templates/_disk.html`): Workspaces (each workspace's disk, the real
@@ -1136,6 +1137,19 @@ second call within 10 minutes gets the job of the first, and a production
 lists the commit once. The Modules tab says, for each repository of the
 instance on GitHub, whether its webhook is made (its address) or why not.
 
+**An instance deleted** (its page, Configure › Servers › Delete, or a
+workspace deleted) runs the same sync as its CI switched off: its CI is
+forgotten (an instance made again with its name starts with the CI off),
+and the webhook made for it is taken away when no other instance here with
+the CI on follows that repository — with the token it was made with, read
+before the instance goes (the instance's own, or its workspace's, which its
+server, gone, no longer names). GitHub refusing or not answering is a
+warning of the job (*…; it is tried again each night*): the record stays in
+`github-hooks.json` with why and where its token is, and each night (2-5
+o'clock, with the catalogs) a job *GitHub webhooks synced again* takes up
+every webhook whose last sync failed; a token taken away meanwhile: the job
+says to take it away on GitHub.
+
 **The state on the commit**: a deploy on push of a test or a staging writes
 a commit status, context `omniacli/<instance>` (`omniacli/<server>/test` for
 a test): *pending* on the commit pushed when it starts, then *success* on the
@@ -1158,9 +1172,7 @@ listing stops early with 5 requests left, saying the list is cut; a limit
 used up is said with the time it comes back; GitHub's secondary limit with
 its `Retry-After`); a refusal is said for a person (*GitHub refused: the
 token cannot read the webhooks of acme/addons (403): it needs «Webhooks:
-Read and write» on it*). Not built: a repository made from a module `.zip`,
-the webhook taken away when an instance is deleted (its address then answers
-*nothing to do*: take it away on GitHub), GitLab and Bitbucket.
+Read and write» on it*). Not built: GitLab and Bitbucket.
 
 ### Odoo Enterprise
 
@@ -1309,6 +1321,25 @@ it), and never smaller than it is. A storage folder on the same real disk as
 another counts with it. Read by the root helper's `space` (the images are
 root's only): when sudo refuses it, the page says how to allow the helpers
 (`OMNIACLI_WORKSPACES=1`, below).
+
+**Full inside, taken outside.** What a workspace has left is its file
+system's: used, free and size as `df` on its mount says them (the helper's
+`space` reads them with `statvfs`), on its page, on its Dashboard, in the
+Workspaces list and in the room a New staging checks. What its image takes
+on the real disk (its allocated blocks) is the real disk's concern: the
+promised and used of the paragraph above, the Real disk column, and the
+title of the workspace's disk in the Workspaces list. The two part when
+something large is deleted inside: ext4 frees its blocks, the image keeps
+them allocated until they are discarded (23/11/2026, on a lab machine: 1.8 GB said free
+from the image's blocks, 19 GB free in `df` after a large clone was
+deleted). The root helper's `remove` (an instance deleted) runs `fstrim` on
+the disk at once, which the loop device turns into holes in the image, so
+the real disk gets that room back now; anything else deleted inside (a
+repository, a backup) goes back at the machine's weekly `fstrim.timer`
+(util-linux, `--listed-in /etc/fstab:/proc/self/mountinfo`: every mounted
+disk, the workspaces' included). Not the `discard` mount option: it trims at
+every deletion, with a cost on each write that a weekly pass does not
+have.
 
 The domain gives the instances their names on the internet (Domains of a
 workspace, below); the storage and the limits of disk and instances apply to
@@ -1856,8 +1887,9 @@ On its Dashboard, in place of This machine, a user of workspaces sees the
 load of each of its workspaces (`/api/workspaces/<name>/load`, its members
 only): CPU in cores and memory against the workspace's limits, the traffic
 of its projects' networks (received, sent), the last hour sampled every 5 s,
-and its disk, used against `disk_gb`. Not the machine's load, nor the room
-of the real disk under it: those stay the machine's admins'.
+and its disk, used and free in its file system as `df` inside it says. Not the
+machine's load, nor the room of the real disk under it: those stay the
+machine's admins'.
 
 The admins of a workspace manage its users (the workspace's name in the
 menu, `/workspaces/<name>`): a user they create is a user of workspaces only,
@@ -2063,7 +2095,15 @@ linked one with the same template and the room for it, the others named with
 the reason. **Create the staging** makes a backup of the production, an
 instance `<instance>-stg-<yyyymmdd>` (`-2`, `-3` on the same day) from the
 same template in the same workspace, and loads the backup there,
-neutralized; its test stays stopped. On another machine, the backup goes
+neutralized; its test stays stopped. **Its code is its production's**, before
+the data: each repository of the production cloned from the production's
+remote and checked out at the commit the production has (fetched from the
+production's own clone, so a commit its remote no longer has comes too), on
+the production's branch, which it then follows as every staging (CI, Git
+pull); the modules uploaded as a `.zip`, and Odoo Enterprise when the
+production has it. Until 23/11/2026 (since stagings came, 17/11) a staging
+was made from the template alone: its database had the production's modules
+installed and their code only after *Rebuild… › Data and code*. On another machine, the backup goes
 through the link (`POST /api/stagings/receive` there), the staging is made
 there in the workspace of the same name (made when missing) and records
 that its production is here: the production's Environments list it with

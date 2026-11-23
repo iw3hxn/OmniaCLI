@@ -13,11 +13,12 @@ from pathlib import Path
 
 import httpx
 import pytest
+import yaml
 
 from omniacli import ops, stacktemplates, stagings, workspaceops
 from omniacli.app import create_app
 from omniacli.auth import hash_token
-from omniacli.config import LinkTarget, Workspace, parse_settings
+from omniacli.config import LinkTarget, Repository, Workspace, parse_settings
 
 from .conftest import USER_HASH, BasicAsSession, clone, commit, sh
 from .test_app import AUTH, HOST, POST, client, wait_job  # noqa: F401 - the client fixture
@@ -71,13 +72,7 @@ def acme(workspaces, env, monkeypatch, tmp_path):
                 commit(path, "prod.txt", f"{name} of production\n", "only in production's clone")
                 found.append({"name": name, "path": str(path), "branch": "main"})
             return found
-        if stagings.is_staging_name(instance) and not (addons / "addons").exists():
-            # a staging: addons on test with a commit of its own, a repository only it has
-            path = clone(env["remotes"]["addons"], addons / "addons", "test")
-            commit(path, "try.txt", "tried here\n", "only in the staging")
-            extra = clone(env["remotes"]["odoo"], addons / "extra", "main")
-            return [{"name": "addons", "path": str(path), "branch": "test"},
-                    {"name": "extra", "path": str(extra), "branch": "main"}]
+        # the template's instance: no repository (a staging gets its production's, new_staging)
         return []
 
     async def create_instance(job, w, instance, tpl, values, setup=None):
@@ -272,6 +267,42 @@ async def test_no_room_on_the_other_machine(two, acme, monkeypatch):
     assert resp.json()["error"] == "There is no room on far: about 5.0 GB are needed, 0.0 GB are free"
 
 
+async def test_a_new_staging_has_the_code_of_its_production(two, acme, env):
+    """23/11/2026: a staging was made from the template alone, its database
+    with the production's modules installed and none of their code until
+    Rebuild › Data and code. Now its repositories are the production's, at
+    the commits it has checked out (one its remote does not have), each on
+    its branch, before the data."""
+    settings = env["settings"]
+    parent = settings.servers["acme-odoo"].production
+    acme.clear()
+    resp = await two.post("/api/servers/acme-odoo/stagings", headers=POST)
+    job = await wait_job(two, resp.json()["job"])
+    assert job["status"] == "success", job["lines"]
+    name = resp.json()["server"]
+    instance = name[len("acme-"):]
+    steps = [s[0] for s in acme]
+    # cloned and named in its odoo.conf before the backup is restored
+    assert steps[:4] == ["create", "clone", "clone", "conf"] and steps.index("conf") < steps.index("restore")
+    assert ("conf", instance, "production", ["addons", "odoo"]) in acme
+    done = settings.servers[name].production
+    assert [(r.name, r.branch) for r in done.repositories] == [("addons", "main"), ("odoo", "main")]
+    for mine, theirs in zip(done.repositories, parent.repositories):
+        assert mine.path != theirs.path
+        assert sh("git", "rev-parse", "HEAD", cwd=mine.path) == sh("git", "rev-parse", "HEAD", cwd=theirs.path)
+        assert sh("git", "rev-parse", "--abbrev-ref", "HEAD", cwd=mine.path) == "main"
+        # it follows the production's remote, not its clone
+        assert sh("git", "remote", "get-url", "origin", cwd=mine.path) == sh("git", "remote", "get-url", "origin",
+                                                                             cwd=theirs.path)
+    # the servers file says so too
+    assert [r["name"] for r in server_repositories(settings, name)] == ["addons", "odoo"]
+
+
+def server_repositories(settings, name) -> list[dict]:
+    data = yaml.safe_load(settings.servers_file.read_text())["servers"][name]
+    return data["production"]["repositories"]
+
+
 async def test_rebuild_with_data_only_or_with_code(two, acme, env):
     resp = await two.post("/api/servers/acme-odoo/stagings", headers=POST)
     assert resp.status_code == 200 and (await wait_job(two, resp.json()["job"]))["status"] == "success"
@@ -290,6 +321,13 @@ async def test_rebuild_with_data_only_or_with_code(two, acme, env):
     assert "The data of now of the staging are lost. The address stays the same." in dialog
     assert 'class="primary danger" id="rb-go"' in dialog
     staging, parent = settings.servers[name].production, settings.servers["acme-odoo"].production
+    # what is tried in the staging: addons on test with a commit of its own, odoo gone, a repository only it has
+    addons = Path(staging.repositories[0].path)
+    sh("git", "checkout", "-q", "-B", "test", cwd=addons)
+    commit(addons, "try.txt", "tried here\n", "only in the staging")
+    workspaceops.remove_clone(Path(staging.repositories[1].path))
+    extra = clone(env["remotes"]["odoo"], addons.parent / "extra", "main")
+    staging.repositories[:] = [Repository("addons", addons, "test"), Repository("extra", extra, "main")]
     before = {r.name: sh("git", "rev-parse", "HEAD", cwd=r.path) for r in staging.repositories}
     # data only: the code stays
     acme.clear()

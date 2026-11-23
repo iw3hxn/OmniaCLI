@@ -151,9 +151,9 @@ const OmniaDisk = (function () {
   }
   function workspace(box, name, load) {
     if (!load.disk) { message(box, load.disk_error ? reasonText(load.disk_error) : T.noDisk, !!load.disk_error); return; }
-    const limit = (load.limits || {}).disk_gb;
-    render(box, {label: name, used: load.disk.used, forecast: load.disk.forecast,
-                 total: limit ? limit * 1073741824 : load.disk.size});
+    // its file system, as df inside it says (workspaceops.filled)
+    render(box, {label: name, used: load.disk.used, forecast: load.disk.forecast, total: load.disk.size,
+                 free: load.disk.free});
   }
   function realDisk(space, storage) {
     const r = (space.roots || {})[storage][""], under = (space.real_disks || {})[storage];

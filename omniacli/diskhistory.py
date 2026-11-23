@@ -90,9 +90,10 @@ class DiskHistory:
         self._save(day)
 
     def record_workspaces(self, found: list[dict], day: datetime.date) -> None:
-        """The workspaces' disks found ([{name, used, capacity}]) as day's points."""
+        """The workspaces' disks found ([{name, used, capacity, free}]) as day's
+        points; free, when not said, the capacity less what is used."""
         for disk in found:
-            free = max(disk["capacity"] - disk["used"], 0)
+            free = disk["free"] if disk.get("free") is not None else max(disk["capacity"] - disk["used"], 0)
             self._add(self.workspaces, disk["name"], [day.isoformat(), disk["used"], free, disk["capacity"]], day)
         self._save(day)
 
