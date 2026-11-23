@@ -354,8 +354,7 @@
   for (const span of document.querySelectorAll("[data-time]")) {
     const at = parseFloat(span.dataset.time);
     if (!at) continue;
-    const d = new Date(at * 1000);
-    span.textContent = window.whenText(`${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}T${two(d.getHours())}:${two(d.getMinutes())}`);
+    span.textContent = window.whenText(new Date(at * 1000));
   }
 
   // a request to one of the page's routes: the answer, or null with the error shown in `where`

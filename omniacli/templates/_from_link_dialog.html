@@ -120,7 +120,7 @@
       label.append(radio, ` ${f.file} `);
       const info = document.createElement("span");
       info.className = "muted";
-      info.textContent = `${new Date(f.time * 1000).toLocaleString()}, ${sizeText(f.size)}`;
+      info.textContent = `${window.whenText(new Date(f.time * 1000))}, ${sizeText(f.size)}`;
       label.appendChild(info);
       list.appendChild(label);
     }

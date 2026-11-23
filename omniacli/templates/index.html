@@ -127,7 +127,7 @@
 </div>
 {% set outcome = {"success": _("done"), "failed": _("failed"), "running": _("running"), "queued": _("queued"), "interrupted": _("interrupted"), "stopped": _("stopped"), "warned": _("success with warnings")} %}
 <p class="last-action">{% if jobs %}{% set job = jobs[0] %}{{ _("Last action:") }} <a href="{{ prefix }}/jobs/{{ job.id }}">{{ tr(job.title) }}</a>
-  · {% set said = job.outcome or job.status %}<span class="status {{ said }}">{{ outcome.get(said, said) }}</span>{% if job.duration %} · {{ job.duration }}{% endif %} · {{ job.created[8:10] }}/{{ job.created[5:7] }} {{ job.created[11:16] }}
+  · {% set said = job.outcome or job.status %}<span class="status {{ said }}">{{ outcome.get(said, said) }}</span>{% if job.duration %} · {{ job.duration }}{% endif %} · {{ (job.created | moment)[:5] }} {{ (job.created | moment)[11:16] }}
   · {% endif %}<a href="{{ prefix }}/jobs">{{ _("all the actions") }}</a></p>
 <div class="toasts" id="toasts" aria-live="polite"></div>
 <template id="mini-runner">{{ runner("mini") }}</template>

@@ -737,6 +737,7 @@
  "This machine hosts no read replica of a PostgreSQL {major}": "Questa macchina non ospita una replica di lettura di un PostgreSQL {major}",
  "This name is not available: choose another one": "Questo nome non è disponibile: scegline un altro",
  "Ticked from (MB)": "Spuntate da (MB)",
+ "Times are by the clock of {machine} ({zone}).": "Gli orari sono secondo l'orologio di {machine} ({zone}).",
  "To use {name} add a DNS record that leads it to this machine, then publish the names again": "Per usare {name} aggiungi un record DNS che lo porti a questa macchina, poi pubblica di nuovo i nomi",
  "To use {name} add an A record {name} → {address}, then publish the names again": "Per usare {name} aggiungi un record A {name} → {address}, poi pubblica di nuovo i nomi",
  "Token {name} is set in the main configuration: change it there": "Il token {name} è impostato nella configurazione principale: modificalo lì",

@@ -1962,6 +1962,57 @@ database of that backup, neutralized, `POST
 restore failed when tried) and **Delete…**. An OmniaCLI too old to list its
 backups is named, not counted.
 
+### Dates and times
+
+A moment is said in the time zone of **the person who reads** (the browser's),
+everywhere: the pages of this machine, a linked machine's pages through its
+link, the lists that join several machines (Instances, Backups, the map, the
+bell) and a job's page with its log. A customer's server in UTC read in
+Rome: a staging copied at 08:41 there reads *23/11/2026 09:41*, and 10:41 in
+summer (`omniacli/clock.py`).
+
+- **What is stored does not change.** OmniaCLI writes a moment by the clock
+  of its machine, without a zone (`2026-11-23T08:41:00`), as before: no
+  migration, and the code that reads those strings compares them with
+  `datetime.now()` as before.
+- **Each machine says its zone**: every answer carries it in the header
+  `X-OmniaCLI-Zone`, every page in `window.serverZone`. It is the zone's
+  name (`Europe/Rome`, `UTC`: `TZ`, else `/etc/timezone` or the link
+  `/etc/localtime`), checked against the clock Python writes by; a zone
+  with no name says its offset of now (`+01:00`). A moment is converted
+  with the offset it had, summer or winter, not the offset of now. The
+  hour that comes twice when the clocks go back is read as the first; one
+  that does not exist when they go forward, with the offset before the
+  change (as Python's `zoneinfo`, fold 0). A zone changed on the machine
+  needs a restart of OmniaCLI.
+- **A page** converts with `window.whenText(iso[, zone])`: a naive moment of
+  `zone` (none: the page's machine; `""`: as it is written), one with `Z`
+  or an offset as it says, or a `Date`. What the server writes into a page
+  or into a text (a job's line, a refusal, the filter `moment` of the
+  templates) uses the reader's zone the browser keeps in the cookie
+  `omnia_zone`; a link passes it on in `X-OmniaCLI-Viewer-Zone`. The times of
+  a job's log (`14:10:09`) are moved as on the day the job started.
+- **A list of several machines** (Instances, Backups, the map, the bell, the
+  stagings elsewhere, the replicas): what a link answered has its moments
+  moved onto this machine's clock first (`clock.answered_here(resp, data)`),
+  so a page converts all its rows with one zone. A list built from links
+  calls it on each link's answer; a time of every day of a link's machine
+  (the map's *Automatic backup at 02:00*) goes with the machine's `zone`.
+- **What you type** is by your clock: the minute of a recovery (sent as the
+  server's), the time of the automatic backups, of the restart after the
+  system's updates and of PostgreSQL's (with the server's time beside them
+  when it differs: *03:00 = 02:00 on the server*). A time of every day is
+  kept by the server's clock: when one of the two clocks changes for the
+  summer, the same time there is another one here, and the page says the
+  new one. A crontab expression stays by the server's clock (its zone is
+  said), its next runs are shown by yours.
+- **An email** with a time in it ends with the zone of its times (*Times are
+  by the clock of ber (UTC).*); a webhook's JSON has `time` with its offset
+  and `zone`.
+- **An older OmniaCLI on a link** says no zone: in this machine's lists its
+  moments are read as if by this machine's clock, and its own pages show
+  them as it draws them (as before).
+
 ### The map of the infrastructure
 
 **Instances › Map** (`/instances?view=map`; the choice between *List* and

@@ -127,7 +127,7 @@
     <div style="overflow-x: auto"><table class="pg-params" id="pg-values"></table></div>
     <div class="pg-when" id="pg-when" hidden>
       <p style="margin: 10px 0 2px; font-weight: 600">{{ _("When") }}</p>
-      <label><input type="radio" name="pg-when" value="at" checked> {{ _("At") }} <input type="time" id="pg-time" value="05:00" aria-label="{{ _('Time of the restart') }}"> <span id="pg-day"></span></label>
+      <label><input type="radio" name="pg-when" value="at" checked> {{ _("At") }} <input type="time" id="pg-time" value="05:00" data-server-time aria-label="{{ _('Time of the restart, by your clock') }}"> <span id="pg-day"></span></label>
       <label><input type="radio" name="pg-when" value="now"> {{ _("Now") }}</label>
       <p class="muted" id="pg-stops" style="margin: 4px 0 0"></p>
     </div>
@@ -1847,7 +1847,8 @@
     whenBox.hidden = true;
     const preset = row.kind === "production" || row.kind === "machine" ? "at" : "now";
     for (const r of document.querySelectorAll('input[name="pg-when"]')) r.checked = r.value === preset;
-    time.value = "05:00";
+    // typed by the reader's clock, sent by the machine's (base.html: toYourTime, toServerTime)
+    time.value = window.toYourTime("05:00");
     go.disabled = true;
   }
   function openProposal(row) {
@@ -1878,7 +1879,7 @@
   async function submit() {
     const c = current;
     const later = !whenBox.hidden && whenChoice() === "at";
-    const payload = {when: later ? time.value : "now"};
+    const payload = {when: later ? window.toServerTime(time.value) : "now"};
     let url;
     if (c.mode === "reset") url = rowApi(c.row) + "/reset";
     else {

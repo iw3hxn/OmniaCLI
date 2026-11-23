@@ -161,6 +161,7 @@
   const STATES = {{ states | tojson }}, TEXTS = {{ texts | tojson }};
   document.getElementById("created").textContent = whenText({{ job.created | tojson }});
   document.getElementById("finished").textContent = whenText({{ (job.finished or "") | tojson }});
+  const SHIFT = window.clockShift({{ job.created | tojson }});
   const log = OmniaConsole.log(document.querySelector("#log .console-box"), OmniaConsole.jobLines(), 0);
   let next = 0;
   async function poll() {
@@ -171,7 +172,8 @@
       if (!resp.ok) throw new Error(resp.status);
       data = await resp.json();
     } catch (e) { setTimeout(poll, 5000); return; }
-    log.add(data.lines);
+    // each line's time is of this server's clock: said by the reader's, moved as it was the day the job started
+    log.add(data.lines.map((line) => line.replace(/^\d{2}:\d{2}:\d{2}(?= )/, (t) => window.shiftedTime(t, SHIFT))));
     next = data.next;
     const st = document.getElementById("status");
     // success with warnings: amber, the warnings listed (data.outcome)

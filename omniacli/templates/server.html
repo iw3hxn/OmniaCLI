@@ -20,7 +20,7 @@
 {% from "_console.html" import console_script with context %}
 {% from "_odoo_log.html" import odoolog, odoolog_script with context %}
 {# an ISO time as the page shows it: 17/11/2026 22:48 #}
-{% macro when(iso) %}{% if iso %}{{ iso[8:10] }}/{{ iso[5:7] }}/{{ iso[0:4] }} {{ iso[11:16] }}{% else %}—{% endif %}{% endmacro %}
+{% macro when(iso) %}{% if iso %}{{ iso | moment }}{% else %}—{% endif %}{% endmacro %}
 {# an instance's address without its scheme; none (localhost): its server's name #}
 {% macro host_of(url, name) %}{% if url and "://localhost" not in url and "://127.0.0.1" not in url %}{{ url.split("://", 1)[-1] }}{% else %}{{ name }}{% endif %}{% endmacro %}
 {# raw: the state systemd (or compose) gives, said on hover: "service: active" #}
@@ -636,7 +636,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     <form id="ab-form">
     <div class="ab-row">
       <label><input type="checkbox" id="ab-enabled"> {{ _("Every day at") }}</label>
-      <input type="time" id="ab-time" required> <span class="muted" id="ab-zone"></span>
+      <input type="time" id="ab-time" required data-server-time> <span class="muted" id="ab-zone" data-time-label></span>
       {% for f in inst.plugin.backup_fields() if f.kind == "checkbox" %}
       <label title="{{ tr(f.help) if f.help }}"><input type="checkbox" data-ab-option="{{ f.key }}"> {{ tr(f.label) }}</label>
       {% endfor %}
@@ -688,7 +688,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     <div class="actions pitr-off" hidden><button type="button" id="pitr-enable" {{ off }}
       title="{{ _('Switches recovery at a minute on: the database starts keeping the record of every change and makes the first full copy at once, then one every night. The database restarts once, for a few seconds: in those seconds Odoo does not answer. Admins only.') }}">{{ _("Switch on…") }}</button></div>
     <div class="actions pitr-on" hidden>
-      <input type="datetime-local" id="pitr-time" step="60" aria-label="{{ _('The minute to go back to') }}">
+      <input type="datetime-local" id="pitr-time" step="60" aria-label="{{ _('The minute to go back to, by your clock') }}" title="{{ _('The minute to go back to, by your clock') }}">
       <span id="pitr-restore-wrap"><button type="button" id="pitr-restore" {{ off }} title="{{ _('Makes a new staging with the database of this production as it was at the minute chosen above; the production is not touched') }}">{{ _("New staging at this minute") }}</button></span>
       <button type="button" id="pitr-base" {{ off }}
         title="{{ _('Makes now the full copy of the database recovery at a minute starts from; it is made by itself every night. After a big change it shortens the recovery. It is a job.') }}">{{ _("Full copy now") }}</button>
@@ -1156,7 +1156,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
       <dt>{{ _("Database server") }}</dt>
       <dd data-db-line="{{ dbl.where }}" {% if not machine_admin %}title="{{ _('The administrator of the machine tunes it') }}"{% endif %}>
         {% if dbl.where in ("dedicated", "machine") %}{{ _("dedicated") if dbl.where == "dedicated" else _("machine's cluster") }} ·
-          {% if dbl.restart %}{{ _("restart at {time} of {date}", time=dbl.restart[11:16], date=when(dbl.restart)[:10]) }}
+          {% if dbl.restart %}{{ _("restart at {time} of {date}", time=(dbl.restart | moment)[11:16], date=when(dbl.restart)[:10]) }}
           {% elif dbl.tuned %}{{ _("tuned on {when}", when=when(dbl.tuned)) }}
           {% else %}{{ _("base values") }}{% endif %}
           {# its reads from the replica of the machine's cluster (UX-010 §5.4): the machine's admins read on which
@@ -1326,12 +1326,13 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     removeQ: {{ _("Delete the backup {file}? It cannot be undone.") | tojson }},
     abLast: {{ _("last: {time}, {status}") | tojson }},
     abOn: {{ _("Automatic backups: every day at {time} (this server's time, {zone})") | tojson }},
+    abOnYours: {{ _("Automatic backups: every day at {time} by your clock ({server} on the server, {zone})") | tojson }},
     abKeeps: {{ _("keeps {daily} days, {weekly} weeks, {monthly} months") | tojson }},
     abCopy: {{ _("a copy in {name}") | tojson }}, abNoCopy: {{ _("on this machine only") | tojson }},
     abOff: {{ _("Automatic backups off: no backup is made by itself") | tojson }}, abSaved: {{ _("Saved.") | tojson }},
     abNoRight: {{ _("An admin changes them.") | tojson }},
     abUnread: {{ _("The automatic backups cannot be read now: open this tab again in a moment.") | tojson }},
-    abZone: {{ _("this server's time ({zone})") | tojson }},
+    abZone: {{ _("by your clock") | tojson }},
     abMachine: {{ _("this machine's") | tojson }}, loading: {{ _("Loading…") | tojson }},
     checked: {{ _("Restore tried") | tojson }}, verify: {{ _("Try a restore") | tojson }},
     archiveKind: {{ _("full archive") | tojson }},
@@ -1648,7 +1649,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
   (async function () {
     const box = document.querySelector(".pitr");
     if (!box) return;
-    const P = {range: {{ _("You can choose a minute between {first} and {last} (this server's time).") | tojson }},
+    const P = {range: {{ _("You can choose a minute between {first} and {last}, by your clock.") | tojson }},
                recent: {{ _("The last 5 minutes may be missing.") | tojson }},
                quiet: {{ _("Since {last} the database has not changed: a later minute would give the same database.") | tojson }},
                detail: {{ _("{bases} full copies, the record of the changes takes {size} ({segments} files).") | tojson }},
@@ -1723,8 +1724,9 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
       box.querySelector(".pitr-detail").textContent = P.detail.replace("{bases}", data.bases.length).replace("{segments}", data.segments)
         .replace("{size}", bytes(data.archive_size));
       if (input) {
-        if (data.first) input.min = data.first.slice(0, 16);
-        if (data.last) { input.max = data.last.slice(0, 16); input.value = data.last.slice(0, 16); }
+        // the minute is typed by the reader's clock, and sent by this server's (base.html: localWall, serverWall)
+        if (data.first) input.min = window.localWall(data.first);
+        if (data.last) { input.max = window.localWall(data.last); input.value = window.localWall(data.last); }
         // a minute outside the range cannot be asked for: the button says why
         const check = () => {
           const out = !input.value || !data.first || !data.last || input.value < input.min || input.value > input.max;
@@ -1743,7 +1745,9 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     go?.addEventListener("click", async () => {
       const question = !data.machine ? P.restoreQ : (data.whole ? P.machineQWhole.replace("{need}", bytes(data.need)).replace("{free}", bytes(data.free))
         : P.machineQ).replace("{minutes}", minutes(data.seconds));
-      if (input.value && await omniaAsk(question.replace("{time}", whenText(input.value)), go)) post("/restore", {time: input.value});
+      if (input.value && await omniaAsk(question.replace("{time}", whenText(new Date(input.value))), go)) {
+        post("/restore", {time: window.serverWall(new Date(input.value))});
+      }
     });
   })();
   // the database in Monitoring: a verdict in one line, three numbers, the rest behind Details (UX-006)
@@ -2295,9 +2299,8 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
 
   // the Backups tab loads its list when it is opened
   const sizeText = (b) => window.sizeText(b);
-  // a moment of this browser's clock as the page writes it: gg/mm/aaaa hh:mm
-  const stamp = (ms) => { const d = new Date(ms), two = (n) => String(n).padStart(2, "0");
-    return `${two(d.getDate())}/${two(d.getMonth() + 1)}/${d.getFullYear()} ${two(d.getHours())}:${two(d.getMinutes())}`; };
+  // a moment (ms since the epoch) as every moment of the page is written, in the reader's zone (base.html)
+  const stamp = (ms) => window.whenText(new Date(ms));
   const LIST_FIRST = 10;
   // the rows after the first ten behind "Show all (N)"
   function foldRows(table, holder) {
@@ -2391,8 +2394,9 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     const form = document.getElementById("ab-form"), details = document.getElementById("ab-details");
     details.hidden = false;
     document.getElementById("ab-enabled").checked = data.enabled;
-    document.getElementById("ab-time").value = data.time;
-    document.getElementById("ab-zone").textContent = data.zone ? T.abZone.replace("{zone}", data.zone) : "";
+    // typed by the reader's clock, kept by the server's (base.html: toYourTime, toServerTime)
+    document.getElementById("ab-time").value = window.toYourTime(data.time);
+    document.getElementById("ab-zone").textContent = T.abZone;
     for (const k of ["daily", "weekly", "monthly"]) document.getElementById(`ab-${k}`).value = data[k];
     for (const input of form.querySelectorAll("[data-ab-option]")) input.checked = !!data.options[input.dataset.abOption];
     const select = document.getElementById("ab-destination");
@@ -2415,7 +2419,9 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     line.className = "ab-line" + (data.enabled ? "" : " off");
     if (!data.enabled) said.push(T.abOff);
     else {
-      said.push(T.abOn.replace("{time}", data.time).replace("{zone}", data.zone || "?"));
+      const yours = window.yourTime(data.time);
+      said.push((yours ? T.abOnYours.replace("{time}", yours).replace("{server}", data.time) : T.abOn.replace("{time}", data.time))
+        .replace("{zone}", data.zone || window.serverZone));
       said.push(T.abKeeps.replace("{daily}", data.daily).replace("{weekly}", data.weekly).replace("{monthly}", data.monthly));
       const dest = data.destinations.find((d) => d.name === data.destination);
       said.push(dest ? T.abCopy.replace("{name}", `${dest.label} ${dest.name}`) : T.abNoCopy);
@@ -2482,7 +2488,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     event.preventDefault();
     const box = document.querySelector('[data-panel="backups"]'), form = event.target, options = {};
     for (const input of form.querySelectorAll("[data-ab-option]")) options[input.dataset.abOption] = input.checked;
-    const body = {enabled: document.getElementById("ab-enabled").checked, time: document.getElementById("ab-time").value, options,
+    const body = {enabled: document.getElementById("ab-enabled").checked, time: window.toServerTime(document.getElementById("ab-time").value), options,
                   destination: document.getElementById("ab-destination").value,
                   verify: document.getElementById("ab-verify").checked,
                   archive: document.getElementById("ab-archive").checked,
@@ -2651,7 +2657,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
                dnsNow: {{ _("Make an A record {name} → {address} (now it leads to {found})") | tojson }},
                dnsAfter: {{ _("After Save and publish: an A record of each name towards {address}") | tojson }},
                provider: {{ _("The DNS records of these names are given by the provider.") | tojson }}};
-    const when = (stamp) => String(stamp || "").replace("T", " ");
+    const when = (stamp) => window.whenText(stamp);
     const fillIn = (text, values) => Object.entries(values).reduce((t, [k, v]) => t.split(`{${k}}`).join(v), text);
     function drawRelay() {
       const field = document.getElementById("addr-relay-field");

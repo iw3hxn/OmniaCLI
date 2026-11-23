@@ -36,7 +36,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from . import i18n
+from . import clock, i18n
 from .config import Options
 
 _logger = logging.getLogger(__name__)
@@ -100,7 +100,22 @@ def payload(subject: str, text: str, event: dict | None) -> dict:
     level = str(event.pop("level", "") or "warning")
     return {"text": f"{subject}\n{text}", "event": name, "level": level if level in LEVELS else "warning",
             "machine": socket.gethostname(), "time": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+            # the zone of the moments in its text (they are of the machine's clock: README «Dates and times»)
+            "zone": clock.machine_zone(),
             "subject": subject, "detail": text, **event}
+
+
+# a time in a text (14:10, 2026-11-23T08:59): an email with one says by which clock
+_A_TIME = re.compile(r"\b\d\d:\d\d\b")
+ZONE_LINE = "Times are by the clock of {machine} ({zone})."
+
+
+def with_zone(subject: str, text: str) -> str:
+    """An email's text, with the line that says the zone of its times when it has any: an email has no reader's
+    zone to convert them to (README «Dates and times»)."""
+    if not _A_TIME.search(subject + "\n" + text):
+        return text
+    return text + "\n\n" + ZONE_LINE.format(machine=socket.gethostname(), zone=clock.zone_label(clock.machine_zone()))
 
 
 def sign(secret: str, body: bytes) -> str:
@@ -114,8 +129,18 @@ async def send(options: Options, recipients: list[str], subject: str, text: str,
     its own fields} for the webhooks' JSON; language: of the emails (empty:
     Options' notice_language; a text already in its reader's language is
     left as it is)."""
+    # its times by the machine's clock, as its last line says, also when a person's request sends it (clock.py)
+    mark = clock.VIEWER.set("")
+    try:
+        return await _send(options, recipients, subject, text, event, language)
+    finally:
+        clock.VIEWER.reset(mark)
+
+
+async def _send(options: Options, recipients: list[str], subject: str, text: str, event: dict | None,
+                language: str) -> list[str]:
     problems = []
-    emails = [r for r in recipients if is_email(r)]
+    emails =[r for r in recipients if is_email(r)]
     if emails:
         if not options.smtp_host:
             problems.append("no SMTP server on the Options page: the emails are not sent")
@@ -123,7 +148,7 @@ async def send(options: Options, recipients: list[str], subject: str, text: str,
             language = language or getattr(options, "notice_language", "en") or "en"
             try:
                 await asyncio.to_thread(_send_mail, options, emails, branded(options, said(language, subject)),
-                                        branded(options, said(language, text)))
+                                        branded(options, said(language, with_zone(subject, text))))
             except (OSError, smtplib.SMTPException) as exc:
                 problems.append(f"email to {', '.join(emails)}: {exc}")
     hooks = [r for r in recipients if not is_email(r)]

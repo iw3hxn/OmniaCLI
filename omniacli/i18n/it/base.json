@@ -1,5 +1,6 @@
 {
  "1 staging": "1 staging",
+ "= {time} on the server": "= {time} sul server",
  "A copy of production as it is now, neutralized (no outgoing mail, no scheduled actions), at an address of its own. Production stays on. Not available while a job works on production.": "Una copia della produzione com'è adesso, neutralizzata (niente posta in uscita, niente azioni pianificate), a un suo indirizzo. La produzione resta accesa. Non disponibile mentre un job lavora sulla produzione.",
  "A new Odoo instance from its version only: OmniaCLI makes its database, containers, disk and address": "Una nuova istanza Odoo scegliendo solo la versione: database, contenitori, disco e indirizzo li prepara OmniaCLI",
  "Actions run at set times: backups, updates, restarts": "Azioni eseguite a orari fissi: backup, aggiornamenti, riavvii",
@@ -74,6 +75,7 @@
  "Users": "Utenti",
  "Users, git credentials, schedules, links, pullers, plugins, options, the jobs and the log": "Utenti, credenziali git, pianificazioni, collegamenti, puller, plugin, opzioni, i job e il log",
  "What OmniaCLI knows how to run, besides Odoo": "Cosa sa eseguire OmniaCLI, oltre a Odoo",
+ "What you type is by your clock; the server keeps it by its own ({zone}): {server} there, today.": "Quello che scrivi è nella tua ora; il server la tiene secondo il suo orologio ({zone}): oggi lì sono le {server}.",
  "Who logs in, with which role": "Chi accede, con quale ruolo",
  "Widens the log to the whole window; Esc goes back": "Allarga il log a tutta la finestra; Esc torna indietro",
  "Workspaces": "Workspace",

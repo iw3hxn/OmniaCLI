@@ -115,7 +115,7 @@ const OmniaOdooLog = (function () {
   const local = (iso) => {
     const d = iso instanceof Date ? iso : new Date(iso);
     if (isNaN(d)) return "";
-    return window.whenText(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`);
+    return window.whenText(d);
   };
   const dateTime = (iso) => { const [date, time] = local(iso).split(" "); return {date: date || "", time: time || ""}; };
 

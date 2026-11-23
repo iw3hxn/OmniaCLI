@@ -25,7 +25,7 @@
         {% if host(row.web.get("production"), row.label) != row.label %}<span class="muted row-name hide-sm">{{ row.label }}</span>{% endif %}
         <span class="job-busy" data-link="{{ row.link }}" data-busy="{{ row.name }}/production" hidden></span></td>
       <td>{{ state(row.state.get("production"), row.busy.get("production")) }}</td>
-      <td class="muted when hide-sm">{% if row.created %}{{ row.created[8:10] }}/{{ row.created[5:7] }}/{{ row.created[0:4] }} {{ row.created[11:16] }}{% else %}—{% endif %}</td>
+      <td class="muted when hide-sm">{% if row.created %}{{ row.created | moment }}{% else %}—{% endif %}</td>
     </tr>
     {% endif %}
     {% if "test" in row.roles and not row.parent %}

@@ -45,7 +45,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
-from starlette.requests import ClientDisconnect, HTTPConnection
+from starlette.requests import ClientDisconnect, HTTPConnection, cookie_parser
 
 from . import (backupcheck, backupchoices, checks, deployhooks, destinations, enterprise, instancearchive, private, restoreroom, consumer, disks, gitcredentials, linkcopy, listgroups, ops, packages, plugins, pluginstore, puller, publisher,
                schedules, selflog, sqldump, sshlinks, shell, stacktemplates, templatestore, tunnel, workspacehelper, workspaceops)
@@ -63,6 +63,7 @@ from . import bell, brand, osupdates
 from . import dumpinfo
 from . import totp
 from . import capabilities
+from . import clock
 from . import oauth
 from . import passkeys, sso
 from . import uploads as uploads_mod
@@ -192,6 +193,8 @@ def _page_context(request: Request) -> dict:
         # what the code made (an error, a job's line)
         "lang": lang,
         "languages": i18n.LANGUAGES,
+        # the zone of this machine's clock, which writes the moments (clock.py, window.serverZone)
+        "server_zone": clock.here(),
         "_": functools.partial(i18n.gettext, lang),
         "tr": functools.partial(i18n.tr, lang),
         "prefix": getattr(request.state, "prefix", ""),
@@ -262,6 +265,8 @@ _TEMPLATES = Jinja2Templates(
     env=jinja2.Environment(loader=_TemplateLoader(Path(__file__).parent / "templates"),
                            autoescape=jinja2.select_autoescape()),
     context_processors=[_page_context])
+# a moment of this machine's clock as the page writes it, in the reader's zone (clock.py): {{ job.created | moment }}
+_TEMPLATES.env.filters["moment"] = clock.shown
 # The OmniaSolutions "O" (Client2019 Setup/dist/images/omnia.ico, 355x280,
 # centred on a transparent square); served without login, like any favicon.
 _STATIC = Path(__file__).parent / "static"
@@ -317,7 +322,7 @@ TUNNEL_HEADER = "X-OmniaCLI-Tunnel"
 # Log in as asked of a linked OmniaCLI: handled here when its link cannot open there
 _LINK_LOGIN_AS = re.compile(r"api/servers/([^/]+)/(production|test)/login-as")
 _LINK_RESPONSE_HEADERS = ("content-type", "content-disposition", "content-length",
-                          "content-encoding", "location", "cache-control")
+                          "content-encoding", "location", "cache-control", clock.HEADER.lower())
 # the only routes a user of workspaces reaches (in_workspaces): its account,
 # the lists (they show its workspaces' servers only), and what a server of
 # its workspaces offers, with its role in that workspace. Not the consoles
@@ -2121,7 +2126,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if request.url.path.startswith(("/oauth/", "/.well-known/")):
             # OAuth's errors are codes of RFC 6749 a program reads (oauth.py): as they are
             return response
-        if (lang == i18n.DEFAULT or response.status_code < 400
+        # in English too when the reader's clock is another one: a moment in the error is said in it (clock.py)
+        if ((lang == i18n.DEFAULT and clock.viewer() in ("", clock.here())) or response.status_code < 400
                 or "application/json" not in response.headers.get("content-type", "")):
             return response
         body = b"".join([chunk async for chunk in response.body_iterator])
@@ -2136,6 +2142,44 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             body = json.dumps(data).encode()
         headers = {k: v for k, v in response.headers.items() if k.lower() != "content-length"}
         return Response(body, status_code=response.status_code, headers=headers, media_type="application/json")
+
+    zone = clock.machine_zone()
+    app.state.zone = zone
+
+    class ZoneScope:
+        """This machine's time zone said with every answer (clock.HEADER: a link's answer
+        keeps its own), and the reader's zone known while serving (clock.VIEWER: the
+        browser's cookie, or what a link passes on), for the texts with a moment in them.
+        The outermost layer: the others serve within it."""
+
+        def __init__(self, inner):
+            self.inner = inner
+
+        async def __call__(self, scope, receive, send):
+            if scope["type"] not in ("http", "websocket"):
+                return await self.inner(scope, receive, send)
+            headers = dict(scope.get("headers") or [])
+            said = headers.get(clock.VIEWER_HEADER.lower().encode(), b"").decode("latin-1")
+            if not said:
+                # every Cookie header (HTTP/2 may send one per cookie)
+                cookies = "; ".join(v.decode("latin-1") for k, v in scope.get("headers") or [] if k == b"cookie")
+                said = unquote_plus(cookie_parser(cookies).get(clock.COOKIE, ""))
+            marks = (clock.HERE.set(zone), clock.VIEWER.set(said if clock.is_zone(said) else ""))
+            name = clock.HEADER.lower().encode()
+
+            async def sending(message):
+                if message["type"] == "http.response.start":
+                    found = list(message.get("headers") or [])
+                    if not any(key.lower() == name for key, _ in found):
+                        message = {**message, "headers": [*found, (name, zone.encode())]}
+                await send(message)
+            try:
+                await self.inner(scope, receive, sending if scope["type"] == "http" else send)
+            finally:
+                clock.HERE.reset(marks[0])
+                clock.VIEWER.reset(marks[1])
+
+    app.add_middleware(ZoneScope)
 
     @app.post("/logout")
     async def logout(request: Request, me: Principal = Depends(current_user)):
@@ -5454,7 +5498,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         async def backups(server: str, role: str) -> list[dict]:
             try:
                 got = await client.get(f"/api/servers/{server}/{role}/backups", headers=headers, timeout=LIST_TIMEOUT)
-                rows = got.json() if got.status_code == 200 else []
+                rows = clock.answered_here(got, got.json()) if got.status_code == 200 else []
             except (httpx.HTTPError, ValueError):
                 return []
             return [{"server": server, "role": role, "file": r["file"], "size": r.get("size"), "time": r.get("time")}
@@ -5971,7 +6015,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             headers = {**link_headers(link, me.name, me.role), "Accept": "application/json"}
             try:
                 resp = await link_clients.client(link).get("/api/instances", headers=headers, timeout=LIST_TIMEOUT)
-                data = resp.json() if resp.status_code == 200 else None
+                data = clock.answered_here(resp, resp.json()) if resp.status_code == 200 else None
             except (httpx.HTTPError, ValueError):
                 data = None
             if not isinstance(data, dict):
@@ -9562,9 +9606,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         _logger.error("The invitations are not read, none is valid: %s", exc)
         invitations = []
 
-    def moment(ts: float) -> str:
-        """A moment as the pages show it: dd/mm/yyyy hh:mm, the machine's time."""
-        return time.strftime("%d/%m/%Y %H:%M", time.localtime(ts))
+    def moment(ts: float, reader: bool = True) -> str:
+        """A moment as the pages show it: dd/mm/yyyy hh:mm, in the reader's zone (clock.py); reader False:
+        the machine's time (a text kept in the access log)."""
+        return clock.epoch_text(ts, reader)
 
     def invitation_of(name: str) -> Invitation | None:
         """The newest invitation of name not used yet (pending or expired)."""
@@ -9613,7 +9658,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if refused:
             return refused
         access_log.record("invitation", me.kind, me.name, request.client.host if request.client else "",
-                          f"{'sent again' if again else 'made'} for {name}, valid until {moment(made.expires)}",
+                          f"{'sent again' if again else 'made'} for {name}, valid until {moment(made.expires, False)}",
                           workspace=workspace)
         path = f"/invite/{token}"
         base = str(request.base_url)
@@ -12958,7 +13003,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if resp.status_code != 200:
             return None, f"answered HTTP {resp.status_code}"
         try:
-            return resp.json(), ""
+            return clock.answered_here(resp, resp.json()), ""
         except ValueError:
             return None, "it did not answer JSON"
 
@@ -13124,9 +13169,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if resp.status_code != 200:
             return None, f"answered HTTP {resp.status_code}"
         try:
-            return resp.json(), ""
+            found = clock.answered_here(resp, resp.json())
         except ValueError:
             return None, "it did not answer a map"
+        # its moments are on this machine's clock now; its times of every day (the automatic backup at 02:00)
+        # are of its own: its zone goes with its node ("" from an older OmniaCLI, which says none)
+        if isinstance(found, dict) and isinstance(found.get("machine"), dict):
+            found["machine"]["zone"] = resp.headers.get(clock.HEADER, "")
+        return found, ""
 
     def map_task(work) -> None:
         task = asyncio.get_running_loop().create_task(work)
@@ -13497,7 +13547,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             usage = None
         machine = {
             "id": inframap.HERE, "here": True, "name": None, "machine_name": here_name() if whole else None,
-            "answered": True, "error": None, "older": False, "read_at": result["at"], "version": _version(),
+            # the zone of its times of every day (the automatic backup at 02:00): the map converts them by it
+            "zone": clock.here(), "answered": True, "error": None, "older": False, "read_at": result["at"], "version": _version(),
             "load": load, "disk": {"free": usage.free, "total": usage.total} if usage else None,
             # the machine's cluster, when one was made (root's record: not asked whether it runs)
             "cluster": [{"major": major, "running": None,
@@ -16257,7 +16308,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if resp.status_code != 200:
             return {"error": replica_refusal(link, resp), "status": resp.status_code}
         try:
-            data = resp.json()
+            data = clock.answered_here(resp, resp.json())
         except ValueError:
             return {"error": "an answer that is not JSON"}
         return data if isinstance(data, dict) else {"error": "an answer that is not an object"}

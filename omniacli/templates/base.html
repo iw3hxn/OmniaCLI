@@ -636,11 +636,176 @@ summary { cursor: pointer; color: var(--muted); }
 // a page shown again from the browser's cache (Back) is drawn anew: its
 // buttons and states are those of now, not of when it was left
 window.addEventListener("pageshow", (event) => { if (event.persisted) location.reload(); });
-// a moment as people write it, gg/mm/aaaa hh:mm, from 2026-11-20T10:40[:51...] (anything else: as it is)
-window.whenText = (iso) => {
-  const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/.exec(String(iso || ""));
-  return m ? `${m[3]}/${m[2]}/${m[1]} ${m[4]}:${m[5]}` : String(iso || "");
-};
+// Moments (README «Dates and times»). The machine that drew this page writes them by its own clock, naive
+// (2026-11-20T10:40:51), and says its time zone in window.serverZone (an IANA name, or ±hh:mm): the page
+// says them in this browser's zone. A moment with Z or an offset is converted as it says; zone "" (a machine
+// that said none): as it is written.
+window.serverZone = {{ server_zone | tojson }};
+(function () {
+  const OFFSET = /^([+-])(\d{2}):(\d{2})$/;
+  const MOMENT = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?/;
+  const formats = {};
+  const pad = (n) => String(n).padStart(2, "0");
+  // minutes east of UTC of zone at the instant ms; null: a zone this browser does not know
+  function offsetAt(zone, ms) {
+    const fixed = OFFSET.exec(zone);
+    if (fixed) return (fixed[1] === "-" ? -1 : 1) * (Number(fixed[2]) * 60 + Number(fixed[3]));
+    if (zone === "UTC") return 0;
+    if (!(zone in formats)) {
+      try {
+        formats[zone] = new Intl.DateTimeFormat("en-US", {timeZone: zone, hourCycle: "h23", year: "numeric",
+          month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", second: "numeric"});
+      } catch (e) { formats[zone] = null; }
+    }
+    if (!formats[zone]) return null;
+    const p = {};
+    for (const part of formats[zone].formatToParts(new Date(ms))) p[part.type] = part.value;
+    const wall = Date.UTC(Number(p.year), Number(p.month) - 1, Number(p.day), Number(p.hour) % 24, Number(p.minute), Number(p.second));
+    return Math.round((wall - Math.floor(ms / 1000) * 1000) / 60000);
+  }
+  // the instant of a wall clock time of zone (wall: its numbers taken as UTC). An hour that comes twice
+  // (the clocks go back): the first; one that does not exist (they go forward): the offset before the
+  // change. As Python's zoneinfo reads a naive time (fold 0), so the page and the server agree.
+  function instantOf(wall, zone) {
+    const before = offsetAt(zone, wall - 86400000), after = offsetAt(zone, wall + 86400000);
+    if (before === null || after === null) return null;
+    const fits = [before, after].map((o) => wall - o * 60000).filter((t) => offsetAt(zone, t) * 60000 === wall - t);
+    return fits.length ? Math.min(...fits) : wall - before * 60000;
+  }
+  // the instant (ms) of a moment as OmniaCLI writes it: naive of zone's clock (zone undefined: this page's
+  // machine), or with its Z or offset, or a Date; null when it is not one, or its zone is not known
+  window.momentOf = (iso, zone) => {
+    if (iso instanceof Date) return isNaN(iso) ? null : iso.getTime();
+    const m = MOMENT.exec(String(iso ?? ""));
+    if (!m) return null;
+    const wall = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6] || 0));
+    if (m[7]) {
+      if (m[7] === "Z") return wall;
+      const digits = m[7].replace(":", "");
+      return wall - (digits[0] === "-" ? -1 : 1) * (Number(digits.slice(1, 3)) * 60 + Number(digits.slice(3, 5))) * 60000;
+    }
+    if (zone === undefined) zone = window.serverZone;
+    return zone ? instantOf(wall, zone) : null;
+  };
+  const local = (d) => `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  // a moment as people write it, gg/mm/aaaa hh:mm, in this browser's time zone: from 2026-11-20T10:40[:51...]
+  // of zone's clock (undefined: this page's machine; "": as it is written), with Z or an offset, or a Date
+  // (anything else: as it is)
+  window.whenText = (iso, zone) => {
+    if (iso instanceof Date) return isNaN(iso) ? "" : local(iso);
+    const text = String(iso ?? ""), m = MOMENT.exec(text);
+    if (!m) return text;
+    const at = window.momentOf(text, zone);
+    return at === null ? `${m[3]}/${m[2]}/${m[1]} ${m[4]}:${m[5]}` : local(new Date(at));
+  };
+  // a Date as zone's clock shows it (undefined: this page's machine), 2026-11-20T10:40: what a field typed
+  // in this browser's time sends to the server, which reads its own clock
+  window.serverWall = (date, zone) => {
+    if (zone === undefined) zone = window.serverZone;
+    const off = zone ? offsetAt(zone, date.getTime()) : null;
+    const d = new Date(date.getTime() + (off === null ? -date.getTimezoneOffset() : off) * 60000);
+    return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+  };
+  // a moment of the server's clock as a datetime-local field of this browser takes it (2026-11-20T11:40)
+  window.localWall = (iso, zone) => {
+    const at = window.momentOf(iso, zone);
+    if (at === null) return String(iso ?? "").slice(0, 16).replace(" ", "T");
+    const d = new Date(at);
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+  // the minutes this browser's clock is ahead of zone's at the moment iso (of zone's clock; none: now): what
+  // a time of the day the server wrote (a job's line, 14:10:09) moves by to be read here; 0 when not known
+  window.clockShift = (iso, zone) => {
+    if (zone === undefined) zone = window.serverZone;
+    const at = window.momentOf(iso || new Date(), zone);
+    if (at === null || !zone) return 0;
+    const there = offsetAt(zone, at);
+    return there === null ? 0 : -new Date(at).getTimezoneOffset() - there;
+  };
+  // a time of the day (hh:mm or hh:mm:ss) moved by shift minutes
+  window.shiftedTime = (text, shift) => {
+    const m = /^(\d{2}):(\d{2})(:\d{2})?$/.exec(String(text ?? ""));
+    if (!m || !shift) return String(text ?? "");
+    const minutes = ((Number(m[1]) * 60 + Number(m[2]) + shift) % 1440 + 1440) % 1440;
+    return `${pad(Math.floor(minutes / 60))}:${pad(minutes % 60)}${m[3] || ""}`;
+  };
+  // a time of every day by the server's clock (hh:mm) as this browser's clock reads it today; "" when the
+  // two clocks say the same today
+  window.yourTime = (hhmm, zone) => {
+    const m = /^(\d{2}):(\d{2})/.exec(String(hhmm ?? ""));
+    if (zone === undefined) zone = window.serverZone;
+    if (!m || !zone) return "";
+    const today = window.serverWall(new Date(), zone).slice(0, 10);
+    const shift = window.clockShift(`${today}T${m[1]}:${m[2]}`, zone);
+    return shift ? window.shiftedTime(`${m[1]}:${m[2]}`, shift) : "";
+  };
+  // a time of every day by the server's clock (hh:mm) as a field of this browser shows it today, and back:
+  // a field asks the time by the reader's clock and sends it by the server's (the server keeps its own: when
+  // one of the two clocks changes for the summer, the same time there is another one here)
+  window.toYourTime = (hhmm, zone) => window.yourTime(hhmm, zone) || String(hhmm ?? "").slice(0, 5);
+  window.toServerTime = (hhmm, zone) => {
+    const m = /^(\d{2}):(\d{2})/.exec(String(hhmm ?? ""));
+    if (!m) return String(hhmm ?? "");
+    const at = new Date();
+    at.setHours(Number(m[1]), Number(m[2]), 0, 0);
+    return window.serverWall(at, zone).slice(11, 16);
+  };
+  // the browser's zone, for the texts the server writes with a moment in them (a job's line, a refusal)
+  try {
+    const mine = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (mine && !document.cookie.split("; ").includes("omnia_zone=" + encodeURIComponent(mine))) {
+      document.cookie = `omnia_zone=${encodeURIComponent(mine)}; path=/; max-age=31536000; SameSite=Lax`;
+    }
+  } catch (e) { /* no Intl zone: the server's texts stay in its own */ }
+  // what the server drew with a moment in it: <time data-when="2026-11-20T10:40" [data-zone="UTC"]
+  // [data-when-format="restart at {time} of {date}"]>, said here in this browser's zone ({when}: gg/mm/aaaa
+  // hh:mm, {date} and {time} its parts); the lists drawn again by their scripts too
+  const ON_SERVER = {{ _("= {time} on the server") | tojson }};
+  const ON_SERVER_TITLE = {{ _("What you type is by your clock; the server keeps it by its own ({zone}): {server} there, today.") | tojson }};
+  function draw(node) {
+    if (node.dataset.whenDone === node.dataset.when) return;
+    node.dataset.whenDone = node.dataset.when;
+    const zone = "zone" in node.dataset ? node.dataset.zone : undefined;
+    const when = window.whenText(node.dataset.when, zone);
+    node.textContent = (node.dataset.whenFormat || "{when}").replace("{when}", when)
+      .replace("{date}", when.slice(0, 10)).replace("{time}", when.slice(11, 16));
+  }
+  // a field that asks a time of every day by the reader's clock (data-server-time; its script sets it with
+  // toYourTime and sends it with toServerTime): the server's time beside it while the two differ
+  // ("= 02:00 on the server"), the server's zone in its title
+  function hint(input) {
+    // after the field's own label of its clock when it has one (data-time-label: "03:00 your time = 02:00 …")
+    const label = input.nextElementSibling && "timeLabel" in input.nextElementSibling.dataset ? input.nextElementSibling : input;
+    let out = label.nextElementSibling;
+    if (!out || !out.classList.contains("server-time")) {
+      out = Object.assign(document.createElement("span"), {className: "server-time muted"});
+      out.style.marginLeft = ".4em";
+      label.after(out);
+    }
+    const there = input.value ? window.toServerTime(input.value) : "";
+    out.hidden = input.hidden || !there || there === input.value;
+    out.textContent = out.hidden ? "" : ON_SERVER.replace("{time}", there);
+    out.title = ON_SERVER_TITLE.replace("{zone}", window.serverZone).replace("{server}", there);
+  }
+  function scan(root) {
+    if (!root.querySelectorAll) return;
+    if (root.matches && root.matches("[data-when]")) draw(root);
+    for (const node of root.querySelectorAll("[data-when]")) draw(node);
+    for (const input of root.querySelectorAll("input[data-server-time]")) hint(input);
+  }
+  window.drawMoments = scan;
+  document.addEventListener("DOMContentLoaded", () => {
+    scan(document);
+    new MutationObserver((changes) => {
+      for (const change of changes) for (const node of change.addedNodes) if (node.nodeType === 1) scan(node);
+    }).observe(document.body, {childList: true, subtree: true});
+    // a field's value set by a script fires no event: the hints are read again now and then
+    if (document.querySelector("input[data-server-time]")) {
+      document.addEventListener("input", (event) => { if (event.target.matches && event.target.matches("input[data-server-time]")) hint(event.target); });
+      setInterval(() => { for (const input of document.querySelectorAll("input[data-server-time]")) hint(input); }, 1000);
+    }
+  });
+})();
 // a size as people write it, one way in every page that uses it: MB and GB, kB under 1 MB; no
 // decimal from 100 MB, one from 100 GB, two below (297.6 GB, 12.25 GB, 477 MB, 21.4 MB)
 window.sizeText = (n) => {

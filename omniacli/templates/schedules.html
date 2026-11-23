@@ -14,7 +14,7 @@
 </div>
 <details class="muted" style="margin-bottom: 16px">
   <summary title="{{ _('How the times are written, which steps run and in which order, and when a run is skipped') }}">{{ _("More") }}</summary>
-  <p>{{ _("The crontab expression is minute hour day month weekday, in this computer's time.") }}
+  <p>{{ _("The crontab expression is minute hour day month weekday, by the clock of this machine ({zone}); the times of the runs shown here are by yours.", zone=server_zone) }}
     {{ _("The steps: a backup kept by a rotation, a git pull of its repositories, a copy of a linked instance's database (as Copy from link), a Python script of {folder}; each one optional, in this order.", folder=scripts_dir) }}
     {{ _("A run that finds a job on the instance is skipped; runs missed while OmniaCLI is stopped are not made up.") }}
     {{ _("Saved in {file}.", file=schedules_file) }}</p>
@@ -35,11 +35,11 @@
     <td><strong>{{ s.name }}</strong>{% if not s.data.enabled %} <span class="badge draft">{{ _("off") }}</span>{% endif %}</td>
     <td><a href="{{ prefix }}/servers/{{ s.data.instance.split('/')[0] }}?view={{ s.data.instance.split('/')[1] }}">{{ s.data.instance }}</a>
       {% if not s.live %}<span class="badge error" title="{{ _("The server is a draft or no longer exists") }}">{{ _("not live") }}</span>{% endif %}</td>
-    <td><span class="mono">{{ s.data.cron }}</span>{% if s.next %}<br><span class="muted" title="{{ _("Next runs: {times}", times=s.next | join(', ')) }}">{{ _("next {time}", time=s.next[0]) }}</span>{% endif %}</td>
+    <td><span class="mono">{{ s.data.cron }}</span>{% if s.next %}<br><span class="muted" title="{{ _("Next runs: {times}", times=s.next | map("moment") | join(', ')) }}">{{ _("next {time}", time=s.next[0] | moment) }}</span>{% endif %}</td>
     <td>{% for step in s.steps %}{{ tr(step) }}{{ ", " if not loop.last }}{% endfor %}</td>
     <td>{{ tr(s.user) }}</td>
     <td>{% if last %}<span class="status {{ last.status }}">{{ tr(last.status) }}</span>
-      {% if last.job %}<a href="{{ prefix }}/jobs/{{ last.job }}">{{ last.time | replace("T", " ") }}</a>{% else %}{{ last.time | replace("T", " ") }}{% endif %}
+      {% if last.job %}<a href="{{ prefix }}/jobs/{{ last.job }}">{{ last.time | moment }}</a>{% else %}{{ last.time | moment }}{% endif %}
       {% if last.message %}<br><span class="muted">{{ tr(last.message) }}</span>{% endif %}{% else %}<span class="muted">{{ _("never") }}</span>{% endif %}</td>
     <td><span class="run-buttons">
       <button type="button" data-run="{{ s.name }}" title="{{ _("Run the steps now, enabled or not") }}">{{ _("Run now") }}</button>
@@ -52,7 +52,7 @@
     <table>
       <tr><th>{{ _("Time") }}</th><th>{{ _("Trigger") }}</th><th>{{ _("Status") }}</th><th>{{ _("Job") }}</th><th>{{ _("Message") }}</th></tr>
       {% for r in s.runs %}
-      <tr><td class="mono">{{ r.time | replace("T", " ") }}</td><td>{{ tr(r.trigger) }}</td><td class="status {{ r.status }}">{{ tr(r.status) }}</td>
+      <tr><td class="mono">{{ r.time | moment }}</td><td>{{ tr(r.trigger) }}</td><td class="status {{ r.status }}">{{ tr(r.status) }}</td>
         <td>{% if r.job %}<a href="{{ prefix }}/jobs/{{ r.job }}">{{ r.job }}</a>{% endif %}</td><td class="error">{{ tr(r.message) }}</td></tr>
       {% endfor %}
     </table></details>
@@ -74,7 +74,8 @@
     <label for="f-instance">{{ _("Instance") }}</label>
     <select id="f-instance">{% for key, t in targets.items() %}<option value="{{ key }}">{{ key }}{{ "" if t.live else " (" ~ _("draft") ~ ")" }}</option>{% endfor %}</select>
     <label for="f-cron">{{ _("When (crontab)") }}</label>
-    <div><input type="text" id="f-cron" class="mono" placeholder="{{ _("0 2 * * *  (every day at 02:00)") }}">
+    <div><input type="text" id="f-cron" class="mono" placeholder="{{ _("0 2 * * *  (every day at 02:00)") }}"
+        title="{{ _("By the clock of this machine ({zone}): the next runs under it are by yours", zone=server_zone) }}">
       <div class="muted" id="f-next" style="margin-top: 4px"></div></div>
     <label for="f-user">{{ _("Acting as") }}</label>
     <div><input type="text" id="f-user" placeholder="{{ _("empty: {user}", user=default_user) }}">
@@ -240,7 +241,7 @@
     if (!cron) { out.textContent = ""; return; }
     const resp = await fetch(prefix + "/api/schedules/next?cron=" + encodeURIComponent(cron));
     const data = await resp.json().catch(() => ({}));
-    out.textContent = resp.ok ? {{ _("Next: {times}") | tojson }}.replace("{times}", data.next.join(", ")) : (data.error || "");
+    out.textContent = resp.ok ? {{ _("Next: {times}") | tojson }}.replace("{times}", data.next.map((t) => whenText(t)).join(", ")) : (data.error || "");
     out.classList.toggle("error", !resp.ok);
   }
   $("f-cron").addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(preview, 300); });

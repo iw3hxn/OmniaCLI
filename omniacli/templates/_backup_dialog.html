@@ -181,7 +181,7 @@
       if (data.remembered && data.remembered.saved) {
         remembered = data.remembered;
         fill(remembered.values || {});
-        const when = remembered.saved.replace("T", " ");
+        const when = window.whenText(remembered.saved);
         note.textContent = (remembered.user ? T.lastBy.replace("{user}", remembered.user) : T.last).replace("{when}", when);
         note.hidden = false;
       }

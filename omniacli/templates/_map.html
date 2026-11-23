@@ -1676,7 +1676,7 @@ window.OmniaMap = (function () {
     const b = (flow && flow.backup) || i.backup;
     if (b) {
       const last = !b.last ? T.panel.backupNever : fill(b.last.ok ? T.panel.backupLastOk : T.panel.backupLastFailed, {when: whenText(b.last.time)});
-      facts.append(el("li", {"data-fact": "backup"}, b.scheduled ? [fill(T.panel.backup, {time: b.time || "?"}), last,
+      facts.append(el("li", {"data-fact": "backup"}, b.scheduled ? [fill(T.panel.backup, {time: b.time ? window.toYourTime(b.time, found.m.zone) : "?"}), last,
         b.destination ? fill(T.panel.backupTo, {name: b.destination}) : ""].filter(Boolean).join(" · ") : T.panel.backupOff));
     } else if (i.type === "production" && data.viewer.role === "user") facts.append(el("li", {class: "muted"}, T.panel.backupHidden));
     const kids = everyInstance().filter((f) => f.i.parent === id);

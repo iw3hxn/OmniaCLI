@@ -18,7 +18,7 @@
  "Some updates (the kernel, the C library) work only after a restart of the machine: never (you restart it when you choose), or by itself at a time of the night": "Alcuni aggiornamenti (il kernel, la libreria C) valgono solo dopo un riavvio della macchina: mai (la riavvii tu quando vuoi), o da sola a un'ora della notte",
  "The file that decides is {file}, not written by OmniaCLI.": "Il file che decide è {file}, non scritto da OmniaCLI.",
  "The security updates of the operating system of this machine, installed by unattended-upgrades every day. The state is read from the machine; a change is written by root at once and goes in the access log.": "Gli aggiornamenti di sicurezza del sistema operativo di questa macchina, installati ogni giorno da unattended-upgrades. Lo stato si legge dalla macchina; una modifica la scrive subito root e finisce nel registro degli accessi.",
- "The time of the restart, by the clock of the machine: the instances do not answer for a few minutes": "L'ora del riavvio, secondo l'orologio della macchina: le istanze non rispondono per qualche minuto",
+ "The time of the restart, by your clock (the machine keeps it by its own): the instances do not answer for a few minutes": "L'ora del riavvio, nella tua ora (la macchina la tiene secondo il suo orologio): le istanze non rispondono per qualche minuto",
  "by itself, at a time": "da sola, a un'ora",
  "by itself, right after the update (set by hand)": "da sola, subito dopo l'aggiornamento (impostato a mano)",
  "never: I restart it myself": "mai: la riavvio io",

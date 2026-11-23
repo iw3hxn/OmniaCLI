@@ -11,6 +11,7 @@ import ssl
 
 import httpx
 
+from . import clock
 from .config import LinkTarget
 
 # a link answers within these, or it is shown as unreachable
@@ -56,7 +57,7 @@ class LinkClients:
 def link_headers(link: LinkTarget, user: str, role: str) -> dict[str, str]:
     """What the other instance needs: the link token, the path its pages are
     served under here, who acts and the most that user may do here."""
-    return {
+    headers = {
         "Authorization": f"Bearer {link.token}",
         "X-OmniaCLI-Prefix": f"/links/{link.name}",
         "X-OmniaCLI-User": user,
@@ -64,6 +65,10 @@ def link_headers(link: LinkTarget, user: str, role: str) -> dict[str, str]:
         # the address this instance reaches the other by: the other puts it in the links it hands out (an invitation)
         "X-OmniaCLI-Address": link.url,
     }
+    # the zone of the person who reads, for the texts the other machine writes with a moment in them (clock.py)
+    if clock.viewer():
+        headers[clock.VIEWER_HEADER] = clock.viewer()
+    return headers
 
 
 def websocket_url(link: LinkTarget, path: str) -> str:

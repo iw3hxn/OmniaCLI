@@ -548,6 +548,7 @@
  "This version has no template on the machine's cluster": "Questa versione non ha un template sul cluster della macchina",
  "This version runs on PostgreSQL {postgres}, the machine's cluster is PostgreSQL {cluster}: a dedicated database": "Questa versione gira su PostgreSQL {postgres}, il cluster della macchina è PostgreSQL {cluster}: un database dedicato",
  "Time of the restart": "Ora del riavvio",
+ "Time of the restart, by your clock": "Ora del riavvio, nella tua ora",
  "Total": "Totale",
  "Tuned on {when}": "Regolato il {when}",
  "Tuned · date not known": "Regolato · data non nota",

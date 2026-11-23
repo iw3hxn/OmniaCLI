@@ -915,11 +915,11 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
       const data = await post("web/publish", {}, $("names-error"));
       if (data) jobPage(data.job);
     };
-    // a moment as people write it: openssl's (Nov 20 10:40:00 2027 GMT) or ISO
+    // a moment as people write it, in the reader's zone: ISO of this machine's clock, or openssl's (Nov 20 10:40:00 2027 GMT)
     const moment = (text) => {
-      const d = new Date(text), two = (n) => String(n).padStart(2, "0");
-      return isNaN(d) ? window.whenText(text)
-        : `${two(d.getDate())}/${two(d.getMonth() + 1)}/${d.getFullYear()} ${two(d.getHours())}:${two(d.getMinutes())}`;
+      if (/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(String(text || ""))) return window.whenText(text);
+      const d = new Date(text);
+      return isNaN(d) ? window.whenText(text) : window.whenText(d);
     };
     const uploadCert = $("upload-cert");
     if (uploadCert) uploadCert.onclick = async () => {

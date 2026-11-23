@@ -27,6 +27,8 @@ import re
 import string
 from pathlib import Path
 
+from . import clock
+
 LANGUAGES = {"en": "English", "it": "Italiano"}
 DEFAULT = "en"
 COOKIE = "omniacli_lang"
@@ -123,35 +125,41 @@ def tr(language: str, text: object) -> str:
     of several lines on its own."""
     if text is None:
         return ""
-    text = str(text)
+    # a moment in it in the reader's time zone, when the request says it (clock.py)
+    text = clock.for_viewer(str(text))
     if language == DEFAULT or not text:
         return text
     return _tr(language, text)
+
+
+def _inner(language: str, text: str) -> str:
+    """A part of a text tr is translating: its moments are already in the reader's zone."""
+    return _tr(language, text) if text else text
 
 
 # a job's log repeats its lines' shapes: each text is matched once
 @functools.lru_cache(maxsize=20000)
 def _tr(language: str, text: str) -> str:
     if "\n" in text:
-        return "\n".join(tr(language, line) for line in text.split("\n"))
+        return "\n".join(_inner(language, line) for line in text.split("\n"))
     found = catalog(language).get(text)
     if found is not None:
         return found
     # a job's line: its time stays in front ("14:10:09 --- restart")
     stamp = re.match(r"(\d\d:\d\d:\d\d )(.*)\Z", text, re.S)
     if stamp:
-        rest = tr(language, stamp.group(2))
+        rest = _inner(language, stamp.group(2))
         return stamp.group(1) + rest
     # a line another machine's job wrote, told here under its name ("  lab1: 14:10:09 The firewall…"): its own text
     relayed = re.match(r"(\s*[a-z0-9][a-z0-9-]*: \d\d:\d\d:\d\d )(.*)\Z", text, re.S)
     if relayed:
-        return relayed.group(1) + tr(language, relayed.group(2))
+        return relayed.group(1) + _inner(language, relayed.group(2))
     # the line a job fails with ("FAILED: the reason"): its reason is a sentence of its own, which a pattern of
     # a few letters is not applied to
     failed = re.match(r"(FAILED: )(.+)\Z", text, re.S)
     if failed and len(text.split()) > _LABEL_WORDS:
         head = catalog(language).get("FAILED: {error}", "FAILED: {error}").replace("{error}", "")
-        return head + tr(language, failed.group(2))
+        return head + _inner(language, failed.group(2))
     words = len(text.split())
     for pattern, target, fixed, measured in _patterns(language):
         if fixed <= _LABEL_FIXED and words > _LABEL_WORDS:

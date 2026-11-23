@@ -55,7 +55,7 @@
         <option value="never">{{ _("never: I restart it myself") }}</option>
         <option value="at">{{ _("by itself, at a time") }}</option>
       </select>
-      <input type="time" id="osu-time" value="03:00" style="width: auto" title="{{ _('The time of the restart, by the clock of the machine: the instances do not answer for a few minutes') }}">
+      <input type="time" id="osu-time" value="03:00" data-server-time style="width: auto" title="{{ _('The time of the restart, by your clock (the machine keeps it by its own): the instances do not answer for a few minutes') }}">
     </div>
   </div>
   <p id="osu-last" class="muted" style="font-size: 13px; margin: 8px 0 0" hidden></p>
@@ -499,7 +499,8 @@ document.getElementById("form").addEventListener("submit", async (ev) => {
     enabled.checked = !!data.enabled;
     enabled.disabled = !data.installed && !data.enabled;
     if (data.reboot === "never") reboot.value = "never";
-    else { reboot.value = "at"; if (/^\d\d:\d\d$/.test(data.reboot)) time.value = data.reboot; }
+    // typed by the reader's clock, kept by the machine's (base.html: toYourTime, toServerTime)
+    else { reboot.value = "at"; time.value = window.toYourTime(/^\d\d:\d\d$/.test(data.reboot) ? data.reboot : "03:00"); }
     if (data.reboot === "now") said.textContent = O.now;
     time.hidden = reboot.value !== "at";
     const run = data.last;
@@ -527,7 +528,7 @@ document.getElementById("form").addEventListener("submit", async (ev) => {
   async function save() {
     failed(""); said.textContent = "";
     enabled.disabled = reboot.disabled = time.disabled = true;
-    const body = {enabled: enabled.checked, reboot: reboot.value === "never" ? "never" : (time.value || "03:00")};
+    const body = {enabled: enabled.checked, reboot: reboot.value === "never" ? "never" : (time.value ? window.toServerTime(time.value) : "03:00")};
     const resp = await fetch("{{ prefix }}/api/machine/os-updates", {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
                                                                      body: JSON.stringify(body)}).catch(() => null);
     const data = resp ? await resp.json().catch(() => ({})) : {};

@@ -102,13 +102,9 @@
   {% if not ws %}{{ _("Saved in") }} <span class="mono">{{ log_file }}</span>, {{ _("the failed logins in") }} <span class="mono">{{ failed_file }}</span>.{% endif %}</p>
 </details>
 <script>
-  // the times as people write them (gg/mm/aaaa hh:mm); the whole one, with UTC, in the title
-  for (const cell of document.querySelectorAll("[data-when]")) cell.textContent = window.whenText(cell.dataset.when);
-  for (const cell of document.querySelectorAll("[data-when-ns]")) {
-    const at = new Date(Number(cell.dataset.whenNs) / 1e6);
-    const pad = (n) => String(n).padStart(2, "0");
-    cell.textContent = window.whenText(`${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}T${pad(at.getHours())}:${pad(at.getMinutes())}`);
-  }
+  // the times as people write them (gg/mm/aaaa hh:mm) in the reader's zone (base.html draws [data-when]);
+  // the whole one, with UTC, in the title
+  for (const cell of document.querySelectorAll("[data-when-ns]")) cell.textContent = window.whenText(new Date(Number(cell.dataset.whenNs) / 1e6));
   const verify = document.getElementById("verify");
   if (verify) verify.addEventListener("click", async () => {
     const out = document.getElementById("verify-result");

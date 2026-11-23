@@ -144,7 +144,6 @@
     button.addEventListener("click", () => job("update", {series: button.dataset.update},
                                                 T.updateQ.replace("{series}", button.dataset.update)));
   }
-  for (const node of document.querySelectorAll("[data-when]")) node.textContent = window.whenText(node.dataset.when);
 })();
 </script>
 {% endblock %}
