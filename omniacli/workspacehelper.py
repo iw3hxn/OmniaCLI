@@ -9,6 +9,7 @@
     omniacli workspace-helper limits <workspace> <cpus> <memory in GB>
     omniacli workspace-helper upstream <workspace> <storage> <instance> <role> <http port>|- <websocket port>|-
     omniacli workspace-helper maintenance <workspace> <storage> <instance> <role> on|off
+    omniacli workspace-helper forward <workspace> <storage> acme|full|off   (its values, JSON, on the input)
     omniacli workspace-helper login-path check | add | remove | sync <host or all>
     omniacli workspace-helper login-path keep on | off
     omniacli workspace-helper portal <host or -> | portal-names
@@ -113,7 +114,26 @@ nginx -t, or the file before is put back; then, for certificate
 letsencrypt, certbot (--webroot, one certificate omniacli-<workspace> for
 all the names; an alias or a redirect only once this nginx answers a probe
 on its name) and the site again with https. No domain or no instance: the
-site and its certificate are removed.
+site and its certificate are removed (the certificate stays while a forward
+uses it). hold in the spec ({instance: [roles]}, AD-012) holds those
+environments: their names answer the challenges on port 80 and 503 on 443,
+Odoo not reached, until hold names them no more; kept in
+<project>/hold.json, root's (a spec without hold keeps what is there).
+
+forward <workspace> <storage> acme|full|off, on the input {"to": <address of
+the other machine>, "names": [...], "moved": {old: new}, "web": <the spec
+of web>} (docs/adr/AD-008-consegna-e-spostamento.md, AD-012): the
+workspace's names passed to another machine. acme: the challenges of the
+names that this machine has no token for are asked to the port 80 of "to"
+(a certificate is made there while the DNS points here). full: the names
+and the moved ones leave the workspace's site for a site of their own,
+/etc/nginx/conf.d/omniacli-forward-<workspace>.conf: port 80 passes to "to"
+(this machine's challenges first), 443 with this machine's certificate
+passes to the 443 of "to", its certificate verified for the name against
+the system's CAs; a moved name sends to its new one with a 301. off: that
+site goes and the names are the workspace's again. Kept in
+/etc/omniacli/forward/<workspace>.json, root's, which web reads; nginx -t
+over both sites, or both files and the record of before are back.
 
 web-names <workspace>: the names the other sites of nginx answer on (nginx
 -T), which the workspace may not take; it reads only.
@@ -929,8 +949,12 @@ def drop(name: str, storage: str) -> dict:
     made = {"workspace": name}
     # the site first: it names the certificate taken away below, and nginx refuses a site whose file is missing
     site = NGINX_SITES / f"omniacli-{name}.conf"
-    if site.is_file():
-        made["nginx"] = _put_site(site, None)
+    # and the site of a forward of its names (AD-012), with its record
+    if site.is_file() or forward_site(name).is_file():
+        made["nginx"] = _put_sites({site: None, forward_site(name): None})
+    (FORWARD_DIR / f"{name}.json").unlink(missing_ok=True)
+    with contextlib.suppress(OSError):
+        FORWARD_DIR.rmdir()
     (NGINX_SITES / f".omniacli-{name}.lock").unlink(missing_ok=True)
     if (LETSENCRYPT / f"omniacli-{name}").exists():
         _run("certbot", "delete", "--cert-name", f"omniacli-{name}", "--non-interactive", check=False)
@@ -1976,13 +2000,22 @@ def remove(name: str, storage: str, instance: str) -> dict:
     if folder.is_symlink() or not folder.is_dir():
         raise HelperError(f"no instance {instance} in workspace {name}")
     dropped = []
-    coming = folder / "production" / machinedb.DEDICATED_FOLDER / managedreplica.BACK_FOLDER
-    returning = (coming / "compose.yaml").is_file() and not coming.is_symlink()
-    if returning:
-        # its database was coming back from its promoted copy (UX-011 §A): the PostgreSQL that followed it goes first
-        code = subprocess.run(machinedb.compose(coming, "down", "-v", "--remove-orphans"), env=ENV, cwd=coming).returncode
+    # its database was coming back from its promoted copy (UX-011 §A), or arriving from another machine
+    # (ArrivePlace, AD-010): the PostgreSQL that followed it goes first
+    dedicated = folder / "production" / machinedb.DEDICATED_FOLDER
+    following = [p for p in (dedicated / managedreplica.BACK_FOLDER, dedicated / managedreplica.ARRIVE_FOLDER)
+                 if (p / "compose.yaml").is_file() and not p.is_symlink()]
+    for runs in following:
+        code = subprocess.run(machinedb.compose(runs, "down", "-v", "--remove-orphans"), env=ENV, cwd=runs).returncode
         if code:
-            raise HelperError(f"docker compose down of {coming} failed ({code}): nothing removed")
+            raise HelperError(f"docker compose down of {runs} failed ({code}): nothing removed")
+    # its own database published for a copy on another machine (AD-004): the firewall's entry of its port goes too
+    try:
+        subnet = str(ipaddress.ip_network(_env(folder / "production").get("SUBNET", "")))
+    except (OSError, ValueError):
+        subnet = ""
+    published = bool(subnet) and any(machinedb.PUBLISHED.fullmatch(key) and isinstance(value, dict)
+                                     and value.get("subnet") == subnet for key, value in db_listen_file().items())
     for role in ROLES:
         project = folder / role
         if any((project / f).is_file() for f in composehelper.COMPOSE_FILES):
@@ -2009,8 +2042,13 @@ def remove(name: str, storage: str, instance: str) -> dict:
     # its network is free again: no SMTP rule left on it
     if _mail_guard_file():
         mail_guard_apply()
-    if returning:
-        # the network its database came back on is gone: the firewall forgets it
+    kept = managedreplica.arrivals()
+    arrival = kept.pop(managedreplica.dedicated_key(name, storage, instance), None) is not None
+    if arrival:
+        managedreplica._save_arrivals(kept)
+    if following or published or arrival:
+        # the network its database came back or arrived on, or the port it listened on, is gone: the firewall
+        # forgets it (published_state forgets an instance whose project is gone)
         db_firewall()
     return {"workspace": name, "instance": instance, "removed": str(folder), "trimmed": trimmed,
             **({"machine": dropped} if dropped else {}), **({"database_left_on": left} if left else {})}
@@ -2073,10 +2111,16 @@ def web_spec(spec_json: str, instances: list[str]) -> dict:
     if not isinstance(relayed, dict) or any(not isinstance(r, list) or any(x not in ROLES for x in r)
                                             for r in relayed.values()):
         raise HelperError("relayed: {instance: [production, test]} of the workspace's instances")
+    # the environments held until a switch (AD-012): {instance: [roles]}; None (not in the spec) keeps what is held
+    hold = spec.get("hold")
+    if hold is not None and (not isinstance(hold, dict) or any(
+            str(i) not in instances or not isinstance(r, list) or any(x not in ROLES for x in r) for i, r in hold.items())):
+        raise HelperError("hold: {instance: [production, test]} of the workspace's instances")
     return {"domain": domain, "main": main, "subdomains": {str(k): str(v) for k, v in subdomains.items()},
             "certificate": certificate, "aliases": aliases, "redirects": redirects,
             # an instance not on the disk (being made, or gone) has no site: left out
-            "relayed": {str(i): [str(x) for x in r] for i, r in relayed.items() if r and i in instances}}
+            "relayed": {str(i): [str(x) for x in r] for i, r in relayed.items() if r and i in instances},
+            "hold": None if hold is None else {str(i): sorted({str(x) for x in r}) for i, r in hold.items() if r}}
 
 
 def _addresses(sites: list[dict], spec: dict) -> tuple[list[dict], list[str]]:
@@ -2152,6 +2196,9 @@ def _sites(mount: Path, spec: dict, instances: list[str]) -> list[dict]:
         # a normal update's page while its Odoo is stopped: kept
         record = project / workspaceweb.MAINTENANCE_FILE
         site["maintenance"] = record.is_file() and not record.is_symlink()
+        # held until a switch (AD-012): kept
+        record = project / HOLD_FILE
+        site["hold"] = record.is_file() and not record.is_symlink()
         # an update without stopping serves the environment from another container for its time: kept
         switched = _upstream_of(project)
         if switched:
@@ -2322,19 +2369,30 @@ def _nginx_reload() -> str:
 
 def _put_site(path: Path, text: str | None) -> str:
     """The site written (None: removed), nginx -t, or the file before back."""
-    before = path.read_text(encoding="utf-8") if path.is_file() else None
-    if text == before:
+    return _put_sites({path: text})
+
+
+def _put_sites(changes: dict[Path, str | None]) -> str:
+    """The sites written (None: removed), one nginx -t over them all, or
+    every file before back; one reload, which lets the requests under way
+    end where they are (a workspace's names that leave its site for the site
+    of its forward never answer from both, nor from neither)."""
+    befores = {path: path.read_text(encoding="utf-8") if path.is_file() else None for path in changes}
+    changed = {path: text for path, text in changes.items() if text != befores[path]}
+    if not changed:
         return "the site is unchanged"
-    if text is None:
-        path.unlink()
-    else:
-        _write(path, text)
+    for path, text in changed.items():
+        if text is None:
+            path.unlink()
+        else:
+            _write(path, text)
     test = subprocess.run([_tool("nginx"), "-t"], env=ENV, capture_output=True, text=True)
     if test.returncode:
-        if before is None:
-            path.unlink(missing_ok=True)
-        else:
-            _write(path, before)
+        for path in changed:
+            if befores[path] is None:
+                path.unlink(missing_ok=True)
+            else:
+                _write(path, befores[path])
         raise HelperError(f"nginx -t refused the site, the one before is back: {test.stderr.strip()}")
     return _nginx_reload()
 
@@ -2446,21 +2504,175 @@ def web(name: str, storage: str, spec_json: str) -> dict:
         return _web(name, storage, spec_json)
 
 
-def _web(name: str, storage: str, spec_json: str) -> dict:
+# --- the names of a workspace passed to another machine (docs/adr/AD-008-consegna-e-spostamento.md, AD-012):
+# forward acme|full|off, kept in FORWARD_DIR/<workspace>.json, which web reads; hold, kept in <project>/hold.json
+
+FORWARD_DIR = Path("/etc/omniacli/forward")
+FORWARD_MODES = ("acme", "full", "off")
+FORWARD_INPUT = 64 * 1024
+HOLD_FILE = "hold.json"
+# _web's forward when it is the one kept on the disk (a publication), not one being set
+_KEPT = object()
+
+
+def forward_site(name: str) -> Path:
+    return NGINX_SITES / f"omniacli-forward-{_name('workspace', name)}.conf"
+
+
+def forward_record(name: str) -> dict | None:
+    """The forward of the workspace as it is kept, only when it is what it
+    should be: {"mode": acme|full, "to", "names", "moved", "since"}."""
+    path = FORWARD_DIR / f"{_name('workspace', name)}.json"
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        workspaceweb.forward_target(str(data["to"]))
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    names, moved = data.get("names") or [], data.get("moved") or {}
+    if data.get("mode") not in FORWARD_MODES[:2] or not isinstance(names, list) or not isinstance(moved, dict):
+        return None
+    return {"mode": data["mode"], "to": str(data["to"]), "names": [str(n) for n in names],
+            "moved": {str(k): str(v) for k, v in moved.items()}, "since": int(data.get("since") or 0)}
+
+
+def forward(name: str, storage: str, mode: str) -> dict:
+    """forward <workspace> <storage> acme|full|off, on the input {"to",
+    "names", "moved", "web"} (AD-012): the record written, then the
+    workspace's site (and the site of the forward) written by web with it,
+    under the site's lock; a refusal or nginx -t puts the record of before
+    back."""
+    if mode not in FORWARD_MODES:
+        raise HelperError("usage: forward <workspace> <storage> acme|full|off, its values (JSON) on the input")
+    _name("workspace", name)
+    raw = sys.stdin.read(FORWARD_INPUT + 1)
+    if len(raw) > FORWARD_INPUT:
+        raise HelperError("the values of a forward on the input are too long")
+    try:
+        spec = json.loads(raw or "{}")
+    except ValueError:
+        raise HelperError("the values of a forward are not JSON") from None
+    if not isinstance(spec, dict) or not isinstance(spec.get("web"), dict):
+        raise HelperError("the values of a forward are a JSON object with the spec of web in \"web\"")
+    new = None
+    if mode != "off":
+        names, moved = spec.get("names") or [], spec.get("moved") or {}
+        if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+            raise HelperError("names: the list of the workspace's names passed")
+        if not isinstance(moved, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in moved.items()):
+            raise HelperError("moved: {old name: new name} of the provider's names that do not pass")
+        try:
+            workspaceweb.forward_target(str(spec.get("to") or ""))
+        except ValueError as exc:
+            raise HelperError(f"to: {exc}") from None
+        new = {"mode": mode, "to": str(spec["to"]), "names": sorted(set(names)), "moved": dict(sorted(moved.items()))}
+    path = FORWARD_DIR / f"{name}.json"
+    with _site_lock(name):
+        if path.is_symlink():
+            raise HelperError(f"{path} is a symbolic link")
+        kept = path.read_text(encoding="utf-8") if path.is_file() else None
+        old = forward_record(name)
+        if new is None:
+            path.unlink(missing_ok=True)
+        else:
+            same = old and old["mode"] == new["mode"] and old["to"] == new["to"]
+            new["since"] = old["since"] if same else int(time.time())
+            FORWARD_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+            _write(path, json.dumps(new, indent=1, sort_keys=True) + "\n", mode=0o600)
+        try:
+            made = _web(name, storage, json.dumps(spec["web"]), new)
+        except BaseException:
+            if kept is None:
+                path.unlink(missing_ok=True)
+            else:
+                _write(path, kept, mode=0o600)
+            raise
+        if new is None:
+            # the last forward of the machine gone: its folder too
+            with contextlib.suppress(OSError):
+                FORWARD_DIR.rmdir()
+    return {"workspace": name, "forward": mode, **({k: new[k] for k in ("to", "names", "moved", "since")} if new else {}),
+            "site": str(forward_site(name)) if mode == "full" else None, "names_here": made.get("names_here", []),
+            "nginx": made.get("nginx"), "https": made.get("https"), "certificate_error": made.get("certificate_error")}
+
+
+def _forward_checked(record: dict, every: set[str], relayed: set[str]) -> None:
+    """A forward being set names the workspace's names of today, none
+    published through a relay; a moved name goes to a name that is not."""
+    names, moved = record["names"], record["moved"]
+    if not names and not moved:
+        raise HelperError("a forward passes names (names) or moves them (moved)")
+    unknown = [n for n in [*names, *moved] if n not in every]
+    if unknown:
+        raise HelperError(f"not names of the workspace: {', '.join(unknown)}")
+    through = [n for n in [*names, *moved] if n in relayed]
+    if through:
+        raise HelperError(f"published through a relay, which does not pass: {', '.join(through)}")
+    both = sorted(set(names) & set(moved))
+    if both:
+        raise HelperError(f"passed and moved at once: {', '.join(both)}")
+    for old, new in moved.items():
+        if new in every or not DOMAIN_NAME.fullmatch(new):
+            raise HelperError(f"{old} moves to {new!r}, which is no other host name")
+
+
+def _hold_set(mount: Path, instances: list[str], hold: dict | None) -> dict[Path, str | None]:
+    """The environments' hold.json as hold says (None: as they are): {file: its text before}, to put back."""
+    if hold is None:
+        return {}
+    before = {}
+    for instance, roles in roles_on_disk(mount, instances).items():
+        for role in roles:
+            record = mount / instance / role / HOLD_FILE
+            if record.is_symlink():
+                raise HelperError(f"{record} is a symbolic link")
+            was = record.read_text(encoding="utf-8") if record.is_file() else None
+            if role in hold.get(instance, ()) and was is None:
+                _write(record, json.dumps({"since": int(time.time())}) + "\n")
+                before[record] = was
+            elif role not in hold.get(instance, ()) and was is not None:
+                record.unlink()
+                before[record] = was
+    return before
+
+
+def _web(name: str, storage: str, spec_json: str, forwarded=_KEPT) -> dict:
+    """forwarded: the forward being set (forward: a record, or None for
+    off), else the one kept on the disk, applied to the names of today."""
     image, mount = workspace(name, storage)
     path = NGINX_SITES / f"omniacli-{name}.conf"
     instances = instances_on_disk(mount) if mounted(image, mount) else []
     spec = {**web_spec(spec_json, instances), "workspace": name}
+    record = forward_record(name) if forwarded is _KEPT else forwarded
     made = {"workspace": name, "site": str(path), "names": [], "https": False, "certificate_error": None,
             "relayed_names": []}
     if not spec["domain"] or not instances:
+        if forwarded is not _KEPT and record is not None:
+            raise HelperError(f"workspace {name} has no names to pass: no domain, or no instance")
         made["nginx"] = _put_site(path, None) if path.exists() else "no site"
-        # no site, nothing to switch: its lock goes too (an action waiting on it makes the site anew)
-        (NGINX_SITES / f".omniacli-{name}.lock").unlink(missing_ok=True)
-        lineage = LETSENCRYPT / f"omniacli-{name}"
-        if lineage.exists():
-            _run("certbot", "delete", "--cert-name", f"omniacli-{name}", "--non-interactive")
+        if record is None:
+            # no site, nothing to switch: its lock goes too (an action waiting on it makes the site anew);
+            # a forward keeps them, its site uses the certificate
+            (NGINX_SITES / f".omniacli-{name}.lock").unlink(missing_ok=True)
+            lineage = LETSENCRYPT / f"omniacli-{name}"
+            if lineage.exists():
+                _run("certbot", "delete", "--cert-name", f"omniacli-{name}", "--non-interactive")
         return made
+    held = _hold_set(mount, instances, spec["hold"])
+    try:
+        return _web_names(name, mount, spec, instances, path, made, record, forwarded is not _KEPT)
+    except BaseException:
+        for file, text in held.items():
+            if text is None:
+                file.unlink(missing_ok=True)
+            else:
+                _write(file, text)
+        raise
+
+
+def _web_names(name: str, mount: Path, spec: dict, instances: list[str], path: Path, made: dict,
+               record: dict | None, checked: bool) -> dict:
     sites = _sites(mount, spec, instances)
     redirects, made["redirects_moved"] = _addresses(sites, spec)
     # only where a record of it still leads somewhere: without one there is nothing to keep working,
@@ -2476,10 +2688,18 @@ def _web(name: str, storage: str, spec_json: str) -> dict:
     relayed = {n for site in sites if site.get("relay_port") for n in (*site["names"], *site["aliases"])}
     relayed |= {n for r in redirects if r["to"] in relayed for n in r["names"]}
     made["relayed_names"] = sorted(relayed)
+    made["held"] = [n for site in sites if site.get("hold") for n in (*site["names"], *site["aliases"])]
+    every = set(names + extra)
+    if record is not None:
+        if checked:
+            _forward_checked(record, every, relayed)
+        # a forward kept names the names of its day: those the workspace no longer has are left out
+        record = {**record, "names": [n for n in record["names"] if n in every and n not in relayed],
+                  "moved": {k: v for k, v in record["moved"].items() if k in every and k not in relayed and v not in every}}
     dump = subprocess.run([_tool("nginx"), "-T"], env=ENV, capture_output=True, text=True)
     if dump.returncode:
         raise HelperError(f"nginx -T: {dump.stderr.strip()}")
-    taken = workspaceweb.clashes(names + extra, workspaceweb.names_elsewhere(dump.stdout, str(path)))
+    taken = workspaceweb.clashes(names + extra, workspaceweb.names_elsewhere(dump.stdout, (str(path), str(forward_site(name)))))
     if taken:
         raise HelperError("names other sites of nginx answer on: " + ", ".join(taken))
     _hash_bucket(dump.stdout)
@@ -2488,7 +2708,23 @@ def _web(name: str, storage: str, spec_json: str) -> dict:
     ipv6 = Path("/proc/net/if_inet6").exists()
     tls = _tls(name, spec["certificate"])
     omniacli = omniacli_address()
-    made["nginx"] = _put_site(path, workspaceweb.conf_text(name, sites, tls, ipv6, omniacli, redirects))
+
+    def texts() -> dict[Path, str | None]:
+        """The workspace's site and the site of its forward (None: none)."""
+        here, moved_here, acme_to, passed = sites, redirects, None, None
+        if record is not None and record["mode"] == "acme" and record["names"]:
+            acme_to = {"to": workspaceweb.forward_target(record["to"]), "names": set(record["names"])}
+        elif record is not None and record["mode"] == "full" and (record["names"] or record["moved"]):
+            gone = set(record["names"]) | set(record["moved"])
+            here = [s for s in ({**site, "names": [n for n in site["names"] if n not in gone],
+                                 "aliases": [n for n in site["aliases"] if n not in gone]} for site in sites)
+                    if s["names"] or s["aliases"]]
+            moved_here = [r for r in ({**r, "names": [n for n in r["names"] if n not in gone]} for r in redirects) if r["names"]]
+            passed = workspaceweb.forward_conf_text(name, record, tls, ipv6)
+        made["names_here"] = [n for site in here for n in (*site["names"], *site["aliases"])]
+        own = workspaceweb.conf_text(name, here, tls, ipv6, omniacli, moved_here, acme_to) if here or moved_here else None
+        return {path: own, forward_site(name): passed}
+    made["nginx"] = _put_sites(texts())
     if spec["certificate"] == "letsencrypt":
         # one name with no DNS record would fail the whole certificate: it is
         # asked for the names that resolve, the others are said (on http until
@@ -2505,7 +2741,7 @@ def _web(name: str, storage: str, spec_json: str) -> dict:
                                      else "no name of the workspace is in DNS yet")
         if made["certificate_error"] is None and tls is None and known:
             tls = _tls(name, spec["certificate"])
-            made["nginx"] = _put_site(path, workspaceweb.conf_text(name, sites, tls, ipv6, omniacli, redirects))
+            made["nginx"] = _put_sites(texts())
     elif tls is None:
         made["certificate_error"] = "no certificate of the customer's yet: upload it"
     made["https"] = tls is not None
@@ -2520,7 +2756,7 @@ def web_taken(name: str) -> dict:
     dump = subprocess.run([_tool("nginx"), "-T"], env=ENV, capture_output=True, text=True)
     if dump.returncode:
         raise HelperError(f"nginx -T: {dump.stderr.strip()}")
-    return {"elsewhere": workspaceweb.names_elsewhere(dump.stdout, str(path))}
+    return {"elsewhere": workspaceweb.names_elsewhere(dump.stdout, (str(path), str(forward_site(name))))}
 
 
 # --- the customers' portal (Options › Customers' portal): OmniaCLI's own
@@ -5196,7 +5432,7 @@ ACTIONS = {"disk": (disk, 3), "drop": (drop, 2), "limits": (limits, 3), "create"
            "tree-prune": (tree_prune, 4), "machine-db-arrive": (machine_db_arrive, 2),
            "machine-db-replica-stop": (machine_db_replica_stop, 2), "db-dump": (db_dump, 3), "db-restore": (db_restore, 3),
            "db-counts": (db_counts, 3),
-           "web": (web, 3), "web-names": (web_taken, 1), "upstream": (upstream, 6), "maintenance": (maintenance, 5), "owncert": (owncert, 2), "firewall": (firewall, 1), "template-install": (template_install, 1),
+           "web": (web, 3), "web-names": (web_taken, 1), "upstream": (upstream, 6), "maintenance": (maintenance, 5), "forward": (forward, 3), "owncert": (owncert, 2), "firewall": (firewall, 1), "template-install": (template_install, 1),
            "conf": (conf, 5), "space": (space, 0),
            "storage-setup": (storage_setup, 0), "storage-check": (storage_check, 1), "storage-reset": (storage_reset, 1),
            "pitr-enable": (pitr_enable, 4), "pitr-base": (pitr_base, 4), "pitr-state": (pitr_state, 4),

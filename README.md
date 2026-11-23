@@ -3408,6 +3408,79 @@ Odoo started, the row written 0.3 s before the stop there; a database of
 340 MB on the cluster by its dump (143 MB) in 18.6 s from the stop to its
 Odoo started.
 
+### Passing a workspace's names to another machine
+
+The third piece of the handover and of the move (AD-012 of
+`docs/adr/AD-008-consegna-e-spostamento.md`, step 3 of its §9): the machine
+that has the names passes them to the one that will serve them, and the one
+that receives them holds them until the switch. **No page yet**; for the
+machine's admins only:
+
+- `POST /api/workspaces/<workspace>/forward` with `{mode, to, names, moved}`,
+  a job that runs `workspace-helper forward <workspace> <storage>
+  acme|full|off` with its values on the input. `to` is the other machine's
+  address (an IP address or a host name; not this machine's loopback).
+  - **acme**: the names of `names` get a port 80 block of their own whose
+    Let's Encrypt challenges are looked for here first (this machine's
+    renewals do not change) and, when this machine has no such token, asked
+    to the port 80 of `to` (`try_files … @omniacli_forward`): the certificate
+    is made there while the DNS still points here. The rest does not change.
+  - **full**: those names, and the provider's names of `moved` (`{old: new}`),
+    leave the workspace's site for a site of their own,
+    `/etc/nginx/conf.d/omniacli-forward-<workspace>.conf`: port 80 passes to
+    the port 80 of `to` (this machine's challenges first); port 443, with this
+    machine's certificate of today, passes everything to the 443 of `to`, its
+    certificate verified for the name asked (`proxy_ssl_verify on`,
+    `proxy_ssl_name $host`) against the system's CAs
+    (`/etc/ssl/certs/ca-certificates.crt`), the websocket upgraded, the
+    visitor's address in `X-Forwarded-For`; a name of `moved` answers a 301 to
+    its new name, from 80 and 443. The workspace's own certificate keeps
+    every name (the forward serves with it). **The traffic of whoever still
+    has the old DNS passes through this machine decrypted and encrypted
+    again** until the forward is taken away (Carlo, 23/11/2026: accepted, for
+    the 7 days of the copy; the handover's summary says it).
+  - **off**: that site goes and the names are the workspace's again: the
+    site written is the one of before the forward, byte for byte.
+
+  Both sites are written together and checked with one `nginx -t`; refused,
+  both files and the record of before are back, and nothing was reloaded. The
+  forward is kept in `/etc/omniacli/forward/<workspace>.json` (root's, 600),
+  which every publication reads: Publish keeps it, a name the workspace no
+  longer has is left out of it. With no name left (no domain, no instance)
+  the workspace's site goes but its certificate stays while a forward uses
+  it; deleting the workspace (`drop`) takes the forward away too.
+- `POST /api/workspaces/<workspace>/hold` with `{environments: {instance:
+  [roles]}}` (`{}`: none), a publication whose spec has `hold`: a held
+  environment answers the challenges on port 80 and, on 443, the maintenance
+  page of the normal update with its own text («The service is moving, come
+  back in a few minutes», in the reader's language), 503 with `Retry-After`;
+  its Odoo is not reached. Kept in `<project>/hold.json` (root's): a
+  publication without `hold` keeps what is held.
+
+What is not built yet: the check every 10 minutes of where each name points
+and the `off` when all point elsewhere (the forward goes with the copy, AD-013);
+the 7 days of the provider's 301s (the forward lives as long as the copy). The
+receiving Odoo sees this machine's address as the visitor's for the forwarded
+requests (its nginx does not trust `X-Forwarded-For` from here).
+
+Measured on the lab pair (lab3 → lab4, 23/11/2026; a workspace with an
+Odoo 19 instance on both, the names asked with `curl --resolve` and checked
+against a test CA): with acme, a token that only lab4 had came through lab3,
+a token of lab3 was answered by lab3, other paths of port 80 unchanged; lab4
+held answered 503 with the Italian page and its own challenges on port 80.
+Asked every 100 ms through lab3 for 45 s across full and the release of
+lab4's hold: 450 answers, **0 × 502**, 69 × 200 from lab3, then from the
+very next probe (the job took 0.8 s, nginx reloaded once) 106 × 503 of
+lab4's held page, then 275 × 200 from lab4 through lab3 (all 275 in lab4's
+log from lab3's address); the websocket upgraded (101) through the forward.
+Without the test CA in lab3's system store the same request is a 502
+(`upstream SSL certificate verify error`): the verification is real. A
+forward to a host nginx cannot resolve was refused by `nginx -t` with both
+files and the record unchanged; off put the site of before back (same
+SHA-256), and deleting the workspace left no site, record or certificate.
+HTTP-01 with a real name was not provable on private addresses: only the
+challenge's passage was.
+
 ### Modules from the catalogs
 
 The **Modules** tab of an instance of a workspace (developers and admins)

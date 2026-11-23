@@ -315,23 +315,28 @@ def disk_problem(found: dict | None, workspaces: dict[str, Workspace], ws: Works
     return None
 
 
-def web_spec(ws: Workspace) -> str:
-    """The names of the workspace for the root helper (it reads the ports)."""
+def web_spec(ws: Workspace, hold: dict | None = None) -> str:
+    """The names of the workspace for the root helper (it reads the ports).
+    hold: {instance: [roles]} held until a switch (AD-012), {} none; None
+    keeps what the helper holds."""
     # the environments published through a relay (relay.py): their block on this loopback, out of the certificate
     relayed = {i: [r for r in ("production", "test") if ws.relayed(i, r)] for i in ws.instances()}
     return json.dumps({"domain": ws.domain, "main": ws.main, "subdomains": ws.subdomains,
                        "certificate": ws.certificate, "aliases": ws.aliases, "redirects": ws.redirects,
-                       "relayed": {i: r for i, r in relayed.items() if r}})
+                       "relayed": {i: r for i, r in relayed.items() if r}, **({"hold": hold} if hold is not None else {})})
 
 
-async def publish(job: Job, ws: Workspace) -> dict:
+async def publish(job: Job, ws: Workspace, hold: dict | None = None) -> dict:
     """The workspace's nginx site and its certificate: a certificate that
-    fails leaves the site on http (port 80 answers 503 until then)."""
+    fails leaves the site on http (port 80 answers 503 until then). hold:
+    as web_spec's."""
     if not ws.storage:
         job.log(f"--- workspace {ws.name} has no storage: no site")
         return {}
     job.log(f"--- the names of workspace {ws.name}" + (f" under {ws.domain}" if ws.domain else ": none (no domain)"))
-    made = await _helper(job, "web", ws.name, ws.storage, web_spec(ws))
+    made = await _helper(job, "web", ws.name, ws.storage, web_spec(ws, hold))
+    if made.get("held"):
+        job.log("Held until the switch, the maintenance page only: " + ", ".join(made["held"]))
     relayed = set(made.get("relayed_names") or [])
     for name in made.get("names", []):
         if name in relayed:

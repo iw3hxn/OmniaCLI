@@ -4476,7 +4476,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             said.append(((instance, role), bool(works), f"{why} {where}", remedy))
         return said
 
-    async def publish_names(job, ws: Workspace) -> dict:
+    async def publish_names(job, ws: Workspace, hold: dict | None = None) -> dict:
         """workspaceops.publish, its answer kept for the map: which names
         came out with HTTPS and with their DNS here. Before it an environment
         with no name in DNS gets its automatic one; after it each instance is
@@ -4486,7 +4486,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         ws, added = await automatic_names(job, ws)
         # through another machine (relay.py): a relay of before taken away, the tunnel's key and port first
         keyed = await relay_prepare(job, ws)
-        made = await workspaceops.publish(job, ws)
+        made = await workspaceops.publish(job, ws, **({"hold": hold} if hold is not None else {}))
         if keyed is not None:
             await relay_publish(job, ws, made, keyed)
         await asyncio.to_thread(web_names_state.record, ws.name, made)
@@ -20427,6 +20427,90 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                                  "counts": counts.get("counts"), "seconds": seconds, "stop_s": stopped,
                                                  "template": str(instance_meta(inst).get("template") or "")}}
         job = jobs.submit(f"Dump of {server} for {me.name}", [inst.key], f"manual: {me}", action)
+        return {"job": job.id}
+
+    # --- the names of a workspace passed to another machine (§9 step 3, AD-012): forward acme|full|off on the
+    # machine that has them, hold on the one that receives them until the switch. No page yet: the handover and
+    # the move drive them (§9 steps 4 and 8)
+
+    def names_workspace(name: str, me: Principal) -> Workspace:
+        if not machine_admin(me) or a_machine(me):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "An admin of the machine is required")
+        ws = settings.workspaces.get(name)
+        if ws is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"No workspace {name}")
+        if not ws.storage:
+            raise HTTPException(status.HTTP_409_CONFLICT, f"Workspace {name} has no storage: it has no names here")
+        return ws
+
+    def workspace_job_keys(ws: Workspace) -> list[str]:
+        return [f"{s}/{r}" for s in ws.servers for r in ROLES]
+
+    @app.post("/api/workspaces/{workspace}/forward")
+    async def forward_names(workspace: str, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """The workspace's names passed to another machine (AD-012, no page):
+        acme, the challenges this machine has no token for go to the port 80
+        of "to"; full, the names ("names") go there, port 443 verified, and the
+        provider's ("moved", {old: new}) send to their new name with a 301;
+        off, the names are the workspace's again. The machine's admins only."""
+        ws = names_workspace(workspace, me)
+        payload = payload if isinstance(payload, dict) else {}
+        mode = str(payload.get("mode") or "")
+        if mode not in ("acme", "full", "off"):
+            return refuse("A forward is acme, full or off")
+        names, moved = payload.get("names") or [], payload.get("moved") or {}
+        if not isinstance(names, list) or not isinstance(moved, dict):
+            return refuse("names is the list of the names passed, moved the new name of each name moved")
+        to = str(payload.get("to") or "")
+        if mode != "off":
+            try:
+                workspaceweb.forward_target(to)
+            except ValueError as exc:
+                return refuse(f"The machine the names go to: {exc}")
+        spec = {"to": to, "names": [str(n) for n in names], "moved": {str(k): str(v) for k, v in moved.items()},
+                "web": json.loads(workspaceops.web_spec(ws))}
+
+        async def action(job):
+            job.log(f"--- the names of workspace {ws.name}: " + {
+                "acme": f"the challenges of Let's Encrypt that this machine has no token for go to {to}",
+                "full": f"they go to {to}, verified, this machine's certificate on the way",
+                "off": "they are the workspace's again, here"}[mode])
+            made = await workspaceops._helper(job, "forward", ws.name, ws.storage, mode, input=json.dumps(spec).encode())
+            for passed in made.get("names") or []:
+                job.log(f"{passed} → {to}")
+            for old, new in (made.get("moved") or {}).items():
+                job.log(f"{old} → https://{new} (301)")
+            job.log(f"nginx: {made.get('nginx')}")
+            if mode == "full" and not made.get("https"):
+                job.warn("This machine has no certificate for those names: only port 80 is passed")
+            job.result = {**job.result, "forward": made}
+        job = jobs.submit(f"Names of workspace {ws.name} passed to another machine: {mode}", workspace_job_keys(ws),
+                          f"manual: {me}", action)
+        return {"job": job.id}
+
+    @app.post("/api/workspaces/{workspace}/hold")
+    async def hold_names(workspace: str, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """Environments of the workspace held until a switch (AD-012, no page):
+        their names answer the challenges of Let's Encrypt on port 80 and the
+        maintenance page on 443, Odoo not reached; "environments" {instance:
+        [roles]}, {} holds none. The machine's admins only."""
+        ws = names_workspace(workspace, me)
+        payload = payload if isinstance(payload, dict) else {}
+        held = payload.get("environments")
+        if not isinstance(held, dict) or any(
+                i not in ws.instances() or not isinstance(r, list) or any(x not in ROLES for x in r) for i, r in held.items()):
+            return refuse("environments is {instance: [production, test]} of the workspace's instances")
+        hold = {str(i): sorted({str(x) for x in r}) for i, r in held.items() if r}
+
+        async def action(job):
+            current = settings.workspaces.get(ws.name)
+            if current is None:
+                raise JobFailed(f"no workspace {ws.name}")
+            job.log(f"--- held until the switch: {', '.join(f'{i} {r}' for i, roles in hold.items() for r in roles)}"
+                    if hold else "--- nothing held any more: the names lead to Odoo again")
+            job.result.update(await publish_names(job, current, hold))
+        job = jobs.submit(f"Names of workspace {ws.name} held" if hold else f"Names of workspace {ws.name} no longer held",
+                          workspace_job_keys(ws), f"manual: {me}", action)
         return {"job": job.id}
 
     def linked_refusal(link: LinkTarget, resp: httpx.Response, major: str) -> str:

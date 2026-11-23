@@ -40,11 +40,29 @@ case "$1" in
             sed -i '/^# OmniaCLI relay: /,/^# end of OmniaCLI relay$/d' /etc/ssh/sshd_config
             systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
         fi
+        # the names of the workspaces passed to another machine (workspace-helper forward, AD-012): their sites
+        # and records
+        rm -f /etc/nginx/conf.d/omniacli-forward-*.conf
+        rm -rf /etc/omniacli/forward
+        # the customers' certificates (workspace-helper owncert) of the workspaces that have no site any more: a
+        # workspace's site that stays (its instances are not removed by the purge) serves with its own
+        for own in /etc/omniacli/certs/*; do
+            [ -e "$own" ] || continue
+            [ -e "/etc/nginx/conf.d/omniacli-$(basename "$own").conf" ] && continue
+            rm -rf "$own"
+        done
+        rmdir /etc/omniacli/certs 2>/dev/null || true
         if command -v nginx >/dev/null 2>&1 && nginx -t >/dev/null 2>&1; then
             systemctl reload nginx 2>/dev/null || true
         fi
         # the databases that were arriving here from another machine (managedreplica.ArrivePlace): the firewall's list
         rm -f /etc/omniacli/db-arrivals.json
+        # root's records of the firewall and of the copies of the databases (workspacehelper, machinedb): what
+        # listens for other machines, the databases of other machines, the stagings that may not send mail, the
+        # copies hosted here and the dedicated databases copied elsewhere
+        for kept in db-listen db-remote mail-guard machine-db-replica dedicated-replica; do
+            rm -f "/etc/omniacli/$kept.json" "/etc/omniacli/$kept.json.tmp"
+        done
         rm -f /etc/omniacli/omniacli.yaml /etc/omniacli/initial-admin-password
         rm -f /etc/systemd/system/omniacli.service.d/omniacli-user.conf
         rmdir /etc/systemd/system/omniacli.service.d 2>/dev/null || true

@@ -91,16 +91,124 @@ def relay_blocks(sites: list[dict], omniacli: str | None) -> list[str]:
                 "    set_real_ip_from 127.0.0.1;", "    real_ip_header X-Real-IP;",
                 f"    client_max_body_size {MAX_BODY};",
                 f"    proxy_read_timeout {TIMEOUT};", f"    proxy_send_timeout {TIMEOUT};",
-                *_locations(site, headers, omniacli), "}"]
+                *(hold_lines() if site.get("hold") else _locations(site, headers, omniacli)), "}"]
     return out
 
 
 # the mark of an environment's block that takes the requests of its relay's tunnel
 RELAY_MARK = "(through its relay)"
 
+# --- a workspace's names passed to another machine (docs/adr/AD-008-consegna-e-spostamento.md, AD-012). acme
+# passes the challenges this machine has no token for, so a certificate is made there while the DNS points here;
+# full passes everything, from a site of its own (omniacli-forward-<workspace>.conf); hold is the site of the
+# machine that receives, until the switch: the challenges, and 503 for the rest
+
+# the named location the challenges not found here go to
+FORWARD_LOCATION = "@omniacli_forward"
+# the CAs nginx verifies the other machine's certificate with: the system's (Debian's ca-certificates)
+SYSTEM_CA = "/etc/ssl/certs/ca-certificates.crt"
+# what a held name says (UX-014 A6), on the page of the maintenance
+HOLD_TEXT = "The service is moving, come back in a few minutes"
+HOLD_MARK = "    # omniacli: held, its names wait for a switch (AD-012)"
+_HOST_NAME = re.compile(r"(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]")
+
+
+def challenge_lines(to: str | None = None) -> list[str]:
+    """The challenges of Let's Encrypt (certbot --webroot), from ACME_ROOT;
+    to: the address of another machine the challenges not found here are
+    asked to (its port 80, the name kept). This machine's own are found here
+    first: its renewals do not change."""
+    if not to:
+        return ["    location /.well-known/acme-challenge/ {", f"        root {ACME_ROOT};", "    }"]
+    return ["    location /.well-known/acme-challenge/ {", f"        root {ACME_ROOT};",
+            f"        try_files $uri {FORWARD_LOCATION};", "    }",
+            f"    location {FORWARD_LOCATION} {{", f"        proxy_pass http://{to};", *_headers("        "), "    }"]
+
+
+def http_blocks(names: list[str], rest: str, listen80: list[str], acme_to: dict | None = None,
+                comment: str = "") -> list[str]:
+    """The port 80 server blocks of names: the challenges, rest for the
+    other paths; the names of acme_to {"to", "names"} in a block of their
+    own, whose challenges not found here go to acme_to["to"]. Each block
+    begins with an empty line, then comment."""
+    passed = [n for n in names if acme_to and n in acme_to["names"]]
+    out = []
+    for group, to in (([n for n in names if n not in passed], None), (passed, acme_to["to"] if acme_to else None)):
+        if group:
+            out += ["", *([comment] if comment else []), "server {", *listen80, f"    server_name {' '.join(group)};",
+                    *challenge_lines(to), "    location / {", rest, "    }", "}"]
+    return out
+
+
+def hold_lines() -> list[str]:
+    """The location of a held server block: every path answered with the
+    page of the maintenance (503, Retry-After, no cache, the reader's
+    language), with the text of a move (UX-014 A6); Odoo is not reached."""
+    return [HOLD_MARK, "    location / {", *page_lines(HOLD_TEXT), "    }"]
+
+
+def forward_target(to: str) -> str:
+    """The address of the machine names are passed to, as proxy_pass takes
+    it: an IP address (IPv6 in brackets) or a host name. ValueError when it
+    is neither, or an address that is no other machine's."""
+    try:
+        ip = ipaddress.ip_address(str(to).strip("[]"))
+    except ValueError:
+        if not _HOST_NAME.fullmatch(str(to)):
+            raise ValueError(f"{to!r} is no IP address nor host name") from None
+        return str(to)
+    if ip.is_loopback or ip.is_unspecified or ip.is_multicast or ip.is_link_local:
+        raise ValueError(f"{ip} is not the address of another machine")
+    return f"[{ip}]" if ip.version == 6 else str(ip)
+
+
+def forward_conf_text(workspace: str, record: dict, tls: tuple[str, str] | None, ipv6: bool) -> str:
+    """The site of a forward full (AD-012), record {"to", "names", "moved"}.
+    The names: port 80 answers the challenges found here and passes the
+    rest, the other challenges too, to the port 80 of "to"; port 443, with
+    this machine's certificate of today, passes everything to the 443 of
+    "to", its certificate verified for the name asked against the system's
+    CAs, the websocket upgraded, the visitor's address in X-Forwarded-For.
+    The moved names {old: new} (the provider's, which do not pass): a 301 to
+    the new name, from port 80 and from 443."""
+    to = forward_target(str(record["to"]))
+    names, moved = list(record.get("names") or []), dict(record.get("moved") or {})
+    listen80 = ["    listen 80;"] + (["    listen [::]:80;"] if ipv6 else [])
+    listen443 = ["    listen 443 ssl;"] + (["    listen [::]:443 ssl;"] if ipv6 else [])
+    out = [f"# written by omniacli workspace-helper: the names of workspace {workspace} passed to {to} (AD-012).",
+           "# Changed here, it is written again at the forward's next change."]
+    if names:
+        out += ["", "server {", *listen80, f"    server_name {' '.join(names)};", *challenge_lines(to),
+                "    location / {", f"        proxy_pass http://{to};", *_headers("        "),
+                "        proxy_redirect off;", "    }", "}"]
+    groups: dict[str, list[str]] = {}
+    for old, new in moved.items():
+        groups.setdefault(new, []).append(old)
+    for new, olds in groups.items():
+        out += http_blocks(olds, f"        return 301 https://{new}$request_uri;", listen80, None,
+                           f"# {' '.join(olds)} → {new} (moved)")
+    if tls is None:
+        return "\n".join(out) + "\n"
+    tls_lines = [f"    ssl_certificate {tls[0]};", f"    ssl_certificate_key {tls[1]};"]
+    passed = [f"        proxy_pass https://{to};", "        proxy_http_version 1.1;",
+              "        proxy_ssl_server_name on;", "        proxy_ssl_name $host;", "        proxy_ssl_verify on;",
+              "        proxy_ssl_verify_depth 4;", f"        proxy_ssl_trusted_certificate {SYSTEM_CA};",
+              *_headers("        ")]
+    if names:
+        out += ["", "server {", *listen443, f"    server_name {' '.join(names)};", *tls_lines,
+                f"    client_max_body_size {MAX_BODY};",
+                f"    proxy_read_timeout {TIMEOUT};", f"    proxy_send_timeout {TIMEOUT};",
+                "    location /websocket {", *passed,
+                "        proxy_set_header Upgrade $http_upgrade;", '        proxy_set_header Connection "upgrade";', "    }",
+                "    location / {", *passed, "        proxy_redirect off;", "    }", "}"]
+    for new, olds in groups.items():
+        out += ["", f"# {' '.join(olds)} → {new} (moved)", "server {", *listen443, f"    server_name {' '.join(olds)};",
+                *tls_lines, "    location / {", f"        return 301 https://{new}$request_uri;", "    }", "}"]
+    return "\n".join(out) + "\n"
+
 
 def conf_text(workspace: str, sites: list[dict], tls: tuple[str, str] | None, ipv6: bool,
-              omniacli: str | None = None, redirects: list[dict] = ()) -> str:
+              omniacli: str | None = None, redirects: list[dict] = (), acme_to: dict | None = None) -> str:
     """sites: [{instance, role, names, aliases (optional), http_port,
     websocket_port}]; an alias is one more name of its site (UX-008 §6.1).
     Port 80 answers the challenges and sends the rest to https; without a
@@ -110,22 +218,21 @@ def conf_text(workspace: str, sites: list[dict], tls: tuple[str, str] | None, ip
     block of their own, answering the challenges of their names on port 80.
     omniacli: the address OmniaCLI listens on (127.0.0.1:8090): each name
     passes it LOGIN_PATH, the links of Log in as (loginas.py), and HOOKS_PATH,
-    the webhooks of deploy on push (deployhooks.py)."""
+    the webhooks of deploy on push (deployhooks.py).
+    A site with "hold" answers the challenges on port 80 and 503 on 443
+    (hold_lines): its names wait for a switch (AD-012). acme_to {"to",
+    "names"}, a forward acme (AD-012): the challenges of those names not
+    found here are asked to the machine at "to" (http_blocks)."""
     names = [n for site in sites for n in (*site["names"], *site.get("aliases", ()))]
     out = [f"# written by omniacli workspace-helper: the names of workspace {workspace}.",
-           "# Changed here, it is written again at the workspace's next change.", ""]
+           "# Changed here, it is written again at the workspace's next change."]
     listen80 = ["    listen 80;"] + (["    listen [::]:80;"] if ipv6 else [])
-    challenges = ["    location /.well-known/acme-challenge/ {", f"        root {ACME_ROOT};", "    }"]
-    out += ["server {", *listen80, f"    server_name {' '.join(names)};", *challenges,
-            "    location / {",
-            "        return 301 https://$host$request_uri;" if tls else "        return 503;",
-            "    }", "}"]
+    out += http_blocks(names, "        return 301 https://$host$request_uri;" if tls else "        return 503;",
+                       listen80, acme_to)
     for redirect in redirects:
-        out += ["", f"# {' '.join(redirect['names'])} → {redirect['to']}", "server {", *listen80,
-                f"    server_name {' '.join(redirect['names'])};", *challenges,
-                "    location / {",
-                f"        return 301 https://{redirect['to']}$request_uri;" if tls else "        return 503;",
-                "    }", "}"]
+        out += http_blocks(redirect["names"], f"        return 301 https://{redirect['to']}$request_uri;" if tls
+                           else "        return 503;", listen80, acme_to,
+                           f"# {' '.join(redirect['names'])} → {redirect['to']}")
     out += relay_blocks(sites, omniacli)
     if tls is None:
         return "\n".join(out) + "\n"
@@ -142,8 +249,11 @@ def conf_text(workspace: str, sites: list[dict], tls: tuple[str, str] | None, ip
                 f"    server_name {' '.join((*site['names'], *site.get('aliases', ())))};",
                 f"    ssl_certificate {tls[0]};", f"    ssl_certificate_key {tls[1]};",
                 f"    client_max_body_size {MAX_BODY};",
-                f"    proxy_read_timeout {TIMEOUT};", f"    proxy_send_timeout {TIMEOUT};",
-                *(maintenance_lines() if site.get("maintenance") else []),
+                f"    proxy_read_timeout {TIMEOUT};", f"    proxy_send_timeout {TIMEOUT};"]
+        if site.get("hold"):
+            out += [*hold_lines(), "}"]
+            continue
+        out += [*(maintenance_lines() if site.get("maintenance") else []),
                 "    location /websocket {",
                 f"        proxy_pass http://127.0.0.1:{ws_port};",
                 "        proxy_http_version 1.1;",
@@ -260,9 +370,11 @@ _FILE = re.compile(r"^# configuration file (.+):$")
 _SERVER_NAME = re.compile(r"(?:^|[;{}\s])server_name\s+([^;]*);")
 
 
-def names_elsewhere(dump: str, own_file: str) -> dict[str, str]:
-    """The server names of nginx -T's dump, outside own_file: {name: file}.
+def names_elsewhere(dump: str, own_file: str | tuple[str, ...]) -> dict[str, str]:
+    """The server names of nginx -T's dump, outside own_file (a file, or
+    several: a workspace's site and the site of its forward): {name: file}.
     Regular expressions (~...) are left out: they cannot be compared."""
+    own = {own_file} if isinstance(own_file, str) else set(own_file)
     found: dict[str, str] = {}
     current = ""
     chunks: dict[str, list[str]] = {}
@@ -273,7 +385,7 @@ def names_elsewhere(dump: str, own_file: str) -> dict[str, str]:
             continue
         chunks.setdefault(current, []).append(line.split("#", 1)[0])
     for path, lines in chunks.items():
-        if path == own_file:
+        if path in own:
             continue
         for match in _SERVER_NAME.finditer("\n".join(lines)):
             for name in match.group(1).split():
@@ -399,10 +511,10 @@ _MAINTENANCE_END = "    # omniacli: maintenance end"
 _NGINX_STRING_SAFE = re.compile(r"[^\"$\\\n]*")
 
 
-def maintenance_page(language: str) -> str:
-    """The page, one line for nginx's return: its title the text in language
-    (i18n's catalog), reloaded by itself."""
-    text = i18n.gettext(language, MAINTENANCE_TEXT)
+def maintenance_page(language: str, said: str = MAINTENANCE_TEXT) -> str:
+    """The page, one line for nginx's return: its title the text said in
+    language (i18n's catalog), reloaded by itself."""
+    text = i18n.gettext(language, said)
     page = (f"<!doctype html><html lang='{language}'><meta charset='utf-8'>"
             f"<meta name='viewport' content='width=device-width'><meta http-equiv='refresh' content='15'>"
             f"<title>{text}</title><body style='font-family:sans-serif;text-align:center;padding-top:20vh'>"
@@ -417,15 +529,22 @@ def maintenance_lines() -> list[str]:
     stopped, starting) with the maintenance page: 503, Retry-After, in the
     first language of the reader's Accept-Language that the catalog has,
     else in English. Odoo's own answers pass as they are."""
-    lines = [_MAINTENANCE_BEGIN, "    error_page 502 504 = @omniacli_maintenance;",
-             "    location @omniacli_maintenance {", "        default_type text/html;", "        charset utf-8;",
+    return [_MAINTENANCE_BEGIN, "    error_page 502 504 = @omniacli_maintenance;",
+            "    location @omniacli_maintenance {", *page_lines(MAINTENANCE_TEXT), "    }", _MAINTENANCE_END]
+
+
+def page_lines(said: str) -> list[str]:
+    """The lines of a location that answers 503 with the page of said:
+    Retry-After, no cache, in the first language of the reader's
+    Accept-Language that the catalog has, else in English."""
+    lines = ["        default_type text/html;", "        charset utf-8;",
              f"        add_header Retry-After {MAINTENANCE_RETRY} always;",
              '        add_header Cache-Control "no-store" always;']
     for language in i18n.LANGUAGES:
-        if language != i18n.DEFAULT and i18n.catalog(language).get(MAINTENANCE_TEXT):
+        if language != i18n.DEFAULT and i18n.catalog(language).get(said):
             lines += [f'        if ($http_accept_language ~* "^{language}") {{',
-                      f'            return 503 "{maintenance_page(language)}";', "        }"]
-    return lines + [f'        return 503 "{maintenance_page(i18n.DEFAULT)}";', "    }", _MAINTENANCE_END]
+                      f'            return 503 "{maintenance_page(language, said)}";', "        }"]
+    return lines + [f'        return 503 "{maintenance_page(i18n.DEFAULT, said)}";']
 
 
 def switch_maintenance(text: str, instance: str, role: str, on: bool) -> str:
