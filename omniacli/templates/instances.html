@@ -147,6 +147,8 @@
 
   function stateCell(row) {
     if (row.inst.busy) return el("span", {class: "state-dot busy"}, T.busy);
+    // an instance on another machine of the provider that does not answer now (AD-014): what this one knows
+    if (row.inst.down) return el("span", {class: "state-dot unknown", title: row.inst.down}, row.inst.down);
     const st = row.inst.state;
     return el("span", {class: `state-dot ${st || ""}`}, {running: T.running, stopped: T.stopped}[st] || T.unknown);
   }
@@ -233,8 +235,9 @@
       }
     } else {
       onlyUnscheduled = false;
-      const unread = tops.filter((r) => !r.server.backup_schedule).length;
-      counts.append(!unread ? T.allScheduled : unread === tops.length ? T.noneRead : T.someUnread.replace("{n}", unread));
+      // a row of a machine that does not answer now (AD-014) is not an older one: its backups are not counted
+      const readable = tops.filter((r) => !r.inst.down), unread = readable.filter((r) => !r.server.backup_schedule).length;
+      if (readable.length) counts.append(!unread ? T.allScheduled : unread === readable.length ? T.noneRead : T.someUnread.replace("{n}", unread));
     }
     let shown = onlyUnscheduled ? missing : all;
     if (words.length) shown = shown.filter((r) => words.every((w) => r.text.includes(w)));

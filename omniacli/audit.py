@@ -61,6 +61,8 @@ AUDITED_BY_ROUTE = frozenset({
     "/api/pullers/{name}/files/{file}",  # download, with the file
     "/mcp",  # every MCP call, with its method and tool
     "/api/v1/instances/{server}/{role}/backups/{file}",  # download (REST API), with the file
+    # a placed instance's page or answer asked of its host (AD-014): logged as the route it asks there would be
+    "/placed/{server}/{path:path}",
 })
 
 # pages and data that are neither customer data nor security data: the

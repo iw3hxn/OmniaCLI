@@ -20,7 +20,7 @@ from urllib.parse import urlsplit, urlunsplit
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from . import apiguard, backupcheck, capabilities, instancearchive, ops, pgreport, plugins
@@ -100,6 +100,10 @@ _SCOPE = contextvars.ContextVar("omniacli_mcp_scope", default="")
 _GRANT = contextvars.ContextVar("omniacli_mcp_grant", default=None)
 # who calls through a link: "link <name> (<user there>)"
 _WHO = contextvars.ContextVar("omniacli_mcp_who", default="")
+# a token of a workspace hosted here, through the link of its home (AD-014, the delegated scope): its workspace,
+# its grant and its CI mark are the contextvars', not a token's of this machine
+_DELEGATED = contextvars.ContextVar("omniacli_mcp_delegated", default=False)
+_CI = contextvars.ContextVar("omniacli_mcp_ci", default=False)
 # the headers a link sends with who acts through it and the most it may do
 _ON_BEHALF = re.compile(r"[A-Za-z0-9._@-]{1,64}")
 
@@ -195,7 +199,8 @@ def _rpc_server(body: bytes) -> str:
     if not isinstance(data, dict) or not isinstance(data.get("params"), dict):
         return ""
     arguments = data["params"].get("arguments")
-    server = arguments.get("server") if isinstance(arguments, dict) else None
+    # the tools name it server_name (a few, server)
+    server = (arguments.get("server_name") or arguments.get("server")) if isinstance(arguments, dict) else None
     return server[:64] if isinstance(server, str) else ""
 
 
@@ -244,6 +249,8 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
 
     def grant_of(ctx: Context | None):
         """What the token of a person may do (capabilities.py): no more than the person now; None: its role."""
+        if _DELEGATED.get():
+            return _GRANT.get()
         name = token_of(ctx)
         return settings.token_grant(name) if name else None
 
@@ -269,7 +276,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
     def scope_of(ctx: Context | None) -> str:
         """The workspace the caller's token is bound to; empty: the machine's
         token, or a link (a link is the machine's)."""
-        if ctx is None:
+        if ctx is None or _DELEGATED.get():
             return _SCOPE.get()
         _, _, token = (ctx.headers or {}).get("authorization", "").partition(" ")
         name = authenticator.token_name(token.strip())
@@ -283,6 +290,8 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
 
     def ci_of(ctx: Context | None) -> bool:
         """A CI's token: it never acts on a production."""
+        if _DELEGATED.get():
+            return _CI.get()
         name = token_of(ctx)
         return bool(name) and settings.token_ci(name)
 
@@ -1063,7 +1072,21 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
             ip = (scope.get("client") or ("",))[0]
             role, workspace, who, kind = settings.token_role(name or ""), settings.token_workspace(name or ""), "", "mcp"
             link = authenticator.link_name(token.strip()) if scheme.lower() == "bearer" and name is None else None
-            if link is not None and link in settings.links:
+            delegated, scope_value = None, headers.get(b"x-omniacli-scope")
+            if link is not None and link in settings.links and scope_value is not None:
+                # a token of a workspace hosted here, through its home (AD-014 §6): only from that home's link
+                delegated = api["delegated"](link, scope_value.decode(errors="replace")) if api.get("delegated") else None
+                if delegated is None:
+                    access_log.record("failed", "link", link, ip, "a delegated scope refused: /mcp")
+                    await JSONResponse({"error": "A workspace's scope is taken from the link of the machine of that "
+                                                 "workspace only"}, status_code=403)(scope, receive, send)
+                    return
+            if delegated is not None:
+                role = min(delegated["role"], settings.links[link].role, key=ACCESS_ROLES.index)
+                who, workspace, kind = f"token {delegated['person']}", delegated["ws"], "link"
+                # in the access log the home's link acting for the token (AD-014 §5)
+                name = link
+            elif link is not None and link in settings.links:
                 # another OmniaCLI's MCP, for one of its tokens: the link's
                 # role, capped by the token's there
                 role = settings.links[link].role
@@ -1107,10 +1130,22 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
                     return
             access_log.record("mcp", kind, name, ip, _rpc_summary(body) or f"{scope.get('method', '')} /mcp",
                               role=role, server=server,
-                              workspace=workspace or (settings.workspace_of(server) if server else "") or "")
+                              workspace=workspace or (settings.workspace_of(server) if server else "") or "",
+                              **({"on_behalf": who} if delegated is not None else {}))
+            if kind == "mcp" and api.get("placed") and server:
+                # an instance of this machine's workspace placed on another machine: its tools are asked there
+                # (AD-014 §6), with the same scope; None: it is here
+                answered = await api["placed"](name, role, server, body)
+                if answered is not None:
+                    # in the access log here once (above), and there as the link acting for the token
+                    status_code, content_type, raw = answered
+                    await Response(raw, status_code=status_code, media_type=content_type)(scope, receive, send)
+                    return
             _ROLE.set(role)
             _SCOPE.set(workspace)
-            _GRANT.set(settings.token_grant(name) if kind == "mcp" else None)
+            _DELEGATED.set(delegated is not None)
+            _CI.set(bool(delegated and delegated.get("ci")))
+            _GRANT.set(settings.token_grant(name) if kind == "mcp" else _delegated_grant(delegated, role))
             _WHO.set(who)
             sent = False
 
@@ -1124,3 +1159,14 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
             await endpoint(scope, replay, send)
 
     return Route("/mcp", endpoint=Guarded(), methods=["GET", "POST", "DELETE"]), manager
+
+
+def _delegated_grant(found: dict | None, role: str):
+    """The capabilities.Grant of a token of a workspace hosted here, from its home's scope (None: its role)."""
+    if not found or found.get("grant") is None:
+        return None
+    grant = found["grant"]
+    servers = grant.get("servers")
+    return capabilities.Grant(grant.get("role") or role, frozenset(c for c in grant.get("capabilities") or []
+                                                                   if c in capabilities.PRESETS[role]),
+                              None if servers is None else frozenset(servers))

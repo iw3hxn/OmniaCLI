@@ -79,6 +79,11 @@ class Principal:
     # a user of workspaces, or a workspace's token of a person, in the workspaces where a custom role or
     # a limit to some servers applies: ((workspace, capabilities.Grant), ...); elsewhere its role is all
     grants: tuple = ()
+    # a person or a token of a workspace whose instance is on this machine for its home (AD-014, the delegated
+    # scope): the name of the home's link it came through; name and kind are then the person's, or the token's
+    via: str = ""
+    # such a token, when its home marks it a CI's: it never acts on a production (apiguard.production_refusal)
+    ci: bool = False
 
     def can(self, role: str) -> bool:
         return ROLES.index(self.role) >= ROLES.index(role)

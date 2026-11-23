@@ -1,0 +1,12 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{# The page of an instance placed on another machine of the provider when that machine does not answer
+   (AD-014, the delegated scope): a customer is told no machine's name, and that its Odoo goes on serving. -#}
+{% extends "base.html" %}
+{% block title %}{{ _("The instance does not answer here now") }} · {{ brand.name }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>{{ _("The instance does not answer here now") }}</h1>
+    <p>{{ message }}</p></div>
+  <div class="actions"><a class="button primary" href="{{ prefix }}/instances" title="{{ _('Opens the list of the instances you can reach') }}">{{ _("Back to the instances") }}</a></div>
+</div>
+{% endblock %}

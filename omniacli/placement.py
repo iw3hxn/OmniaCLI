@@ -20,16 +20,27 @@ What is kept, by OmniaCLI's user, 600 in folders 700:
 The states of a move: preparing (the job of Prepare runs), ready (copied,
 the database in step), completing, placed (it serves on the host; the copy
 here is stopped until copy_until), failed (Prepare did not end: Cancel
-takes away what it made). Until step 5 of §9 (the delegated scope) only an
-instance of a workspace without members moves: its users would not reach it
-on the host."""
+takes away what it made).
+
+The delegated scope (AD-014, step 5 of §9): the people and the tokens of
+the workspace keep reaching a placed instance through its home. The home
+serves the host's pages and answers under /placed/<server> (its link, the
+person checked here first, on the same route), with the header
+X-OmniaCLI-Scope: what the person is in the workspace, which the host
+takes from the link of the home recorded in hosted-workspaces.json only,
+and which only narrows what that link may do there. placed-jobs.json, on
+the home, names the server of each job the host answered through it, so
+that its page and its REST answer are asked there."""
 
 from __future__ import annotations
 
+import base64
+import binascii
 import datetime
 import json
 import math
 import os
+import re
 from pathlib import Path
 
 STATE_FILE = "state.json"
@@ -47,6 +58,20 @@ STOP_MOST = 90
 # a line the plan estimates a copy with when none was measured yet (megabytes per second)
 RATE_GUESS = 50.0
 STATES = ("preparing", "ready", "completing", "placed", "failed")
+# the delegated scope (AD-014 §3): a header of the home, read by the host from the home's link only
+SCOPE_HEADER = "X-OmniaCLI-Scope"
+# the prefix the home serves a placed instance's pages and answers under (AD-014 §2)
+PLACED_PREFIX = "/placed"
+PLACED_JOBS = "placed-jobs.json"
+# the jobs of the hosts a home remembers the server of
+PLACED_JOBS_KEPT = 500
+_NAME = re.compile(r"[A-Za-z0-9._@-]{1,64}")
+_WORKSPACE = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
+_ROLES = ("user", "developer", "admin")
+# the paths of a server the home passes to its host when the server is placed there (AD-014 §2): its page and
+# what it opens, its API, its backups' downloads, the REST API of its instances; never its move (the home's own)
+_SERVER_PATH = re.compile(r"/(?:servers|api/servers|backups|api/v1/instances)/(?P<server>[A-Za-z0-9._-]+)(?:/(?P<rest>.*))?")
+_JOB_PATH = re.compile(r"/(?:jobs|api/jobs|api/v1/jobs)/(?P<job>[A-Za-z0-9-]{1,64})(?:/.*)?")
 
 
 def _now() -> str:
@@ -117,6 +142,23 @@ class Moves:
     def placements(self) -> dict:
         found = _read(self.base / PLACEMENTS)
         return {str(k): v for k, v in found.items() if isinstance(v, dict)}
+
+    def host_of(self, server: str) -> str:
+        """The link of the machine server serves on now (it was moved there and completed), "" for none. Read at
+        every request of a server's path: the file is kept small, and its last read is reused while unchanged."""
+        path = self.base / PLACEMENTS
+        try:
+            stamp = path.stat().st_mtime_ns
+        except OSError:
+            return ""
+        if getattr(self, "_seen", (None, None))[0] != stamp:
+            self._seen = (stamp, self.placements())
+        found = self._seen[1].get(server) or {}
+        return str(found.get("link") or "") if found.get("state") == "placed" else ""
+
+    def copy_here(self, server: str) -> bool:
+        """Whether the stopped copy of a placed server is still here (Delete the copy takes it away)."""
+        return (self.placements().get(server) or {}).get("copy") != "deleted"
 
     def frozen(self, server: str) -> str:
         """Why nothing but the move's own jobs may act on server's instances here, "" when they may."""
@@ -231,3 +273,118 @@ def plan(sizes: dict, database: str, rate_mbs: float | None, restore_rate_mbs: f
         stop = 30 + 3 * seconds_at(size, restore_rate_mbs or rate_mbs)
     return {"copied": copied, "copy_seconds": seconds_at(copied, rate_mbs), "rate_mbs": rate_mbs or RATE_GUESS,
             "measured_rate": bool(rate_mbs), "stop_seconds": stop}
+
+
+# --- the delegated scope (AD-014) ------------------------------------------------------------------------------
+
+def scope_encode(scope: dict) -> str:
+    """The header's value: the scope as JSON in base64url (no padding)."""
+    raw = json.dumps(scope, sort_keys=True, separators=(",", ":")).encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def scope_decode(value: str) -> dict | None:
+    """The scope of the header checked, None when it is not one: {ws, person, kind (user|token), role, grant
+    ({role, capabilities, servers|None}|None), members, provider, ci (a CI's token)}. Nothing of it widens what the link may do."""
+    if not isinstance(value, str) or not value or len(value) > 16384:
+        return None
+    try:
+        data = json.loads(base64.urlsafe_b64decode(value + "=" * (-len(value) % 4)))
+    except (binascii.Error, ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    ws, person, kind, role = (data.get(k) for k in ("ws", "person", "kind", "role"))
+    if not (isinstance(ws, str) and _WORKSPACE.fullmatch(ws) and isinstance(person, str) and _NAME.fullmatch(person)
+            and kind in ("user", "token") and role in _ROLES):
+        return None
+    grant = data.get("grant")
+    if grant is not None:
+        if not isinstance(grant, dict) or not isinstance(grant.get("capabilities"), list):
+            return None
+        servers = grant.get("servers")
+        if servers is not None and not (isinstance(servers, list) and all(isinstance(s, str) for s in servers)):
+            return None
+        grant = {"role": str(grant.get("role") or role)[:64], "capabilities": [str(c) for c in grant["capabilities"]],
+                 "servers": None if servers is None else [str(s) for s in servers]}
+    members = data.get("members")
+    members = [m for m in members if isinstance(m, str) and _NAME.fullmatch(m)] if isinstance(members, list) else []
+    provider = data.get("provider")
+    return {"ws": ws, "person": person, "kind": kind, "role": role, "grant": grant, "members": members,
+            "provider": provider[:100] if isinstance(provider, str) else "", "ci": data.get("ci") is True}
+
+
+def server_of_path(path: str) -> tuple[str, str]:
+    """(server, the rest of the path) of a path of a server's (AD-014 §2), ("", "") for any other."""
+    found = _SERVER_PATH.fullmatch(path)
+    if found is None:
+        return "", ""
+    return found["server"], found["rest"] or ""
+
+
+def inner_path(path: str) -> str:
+    """The path a request under /placed/<server> asks of the host (the path itself for any other)."""
+    if not path.startswith(PLACED_PREFIX + "/"):
+        return path
+    rest = path[len(PLACED_PREFIX) + 1:]
+    return "/" + rest.partition("/")[2]
+
+
+def job_of_path(path: str) -> str:
+    """The id of the job of a path of a job's (its page, its answer, its stop, the REST API's), "" for any other."""
+    found = _JOB_PATH.fullmatch(path)
+    return found["job"] if found else ""
+
+
+class PlacedJobs:
+    """The jobs a host answered through its home: {job id: server} (the home's side), the newest
+    PLACED_JOBS_KEPT. Their pages and answers are asked of the host of that server."""
+
+    def __init__(self, base: Path):
+        self.path = base / PLACED_JOBS
+        self._cache: dict | None = None
+
+    def all(self) -> dict:
+        if self._cache is None:
+            found = _read(self.path)
+            self._cache = {str(k): str(v) for k, v in found.items() if isinstance(v, str)}
+        return self._cache
+
+    def server(self, job: str) -> str:
+        return self.all().get(job, "")
+
+    def add(self, job: str, server: str) -> None:
+        found = self.all()
+        if not job or found.get(job) == server:
+            return
+        found.pop(job, None)
+        found[job] = server
+        while len(found) > PLACED_JOBS_KEPT:
+            found.pop(next(iter(found)))
+        _write(self.path, found)
+
+    def forget(self, server: str) -> None:
+        found = {k: v for k, v in self.all().items() if v != server}
+        self._cache = found
+        if found:
+            _write(self.path, found)
+        else:
+            self.path.unlink(missing_ok=True)
+
+
+def job_ids(data) -> list[str]:
+    """The ids of the jobs an answer names ({"job": id}, {"job": {"id": id}}, {"jobs": [{"id": …}]}), to remember
+    which machine they are on."""
+    found = []
+    if isinstance(data, dict):
+        job = data.get("job")
+        if isinstance(job, str):
+            found.append(job)
+        elif isinstance(job, dict) and isinstance(job.get("id"), str):
+            found.append(job["id"])
+        if isinstance(data.get("id"), str) and "status" in data and "title" in data:
+            found.append(data["id"])
+        for one in data.get("jobs") if isinstance(data.get("jobs"), list) else []:
+            if isinstance(one, dict) and isinstance(one.get("id"), str):
+                found.append(one["id"])
+    return [j for j in found if re.fullmatch(r"[A-Za-z0-9-]{1,64}", j)]

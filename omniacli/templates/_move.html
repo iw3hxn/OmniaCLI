@@ -31,6 +31,7 @@
   {% elif ms.state == "placed" %}{{ icon("server") }} {{ _("On {machine} since {when}: the stopped copy stays here until {until}.", machine=ms.link, when=ms.placed_at | moment, until=ms.copy_until | moment) }}{% if ms.unserved %} {{ _("Without service for {n} s at the move.", n=ms.unserved.seconds) }}{% endif %}
   {% else %}{{ icon("triangle-alert") }} {{ _("The move to {machine} was not prepared: {why}", machine=ms.link, why=tr(ms.error or "")) }}{% endif %}
   {% if ms.job and ms.state in ("preparing", "completing") %}<a href="{{ prefix }}/jobs/{{ ms.job }}" title="{{ _('Opens the job of the move, with its steps') }}">{{ _("See the job") }}</a>{% endif %}
+  {% if ms.state == "placed" %}<a href="{{ prefix }}/placed/{{ server.name }}/servers/{{ server.name }}" title="{{ _('Opens its page on {machine}, through this machine: what its workspace sees and does there', machine=ms.link) }}">{{ _("Open it there") }}</a>{% endif %}
   </span>
   <span class="move-actions">
   {% if ms.state == "ready" %}
@@ -97,6 +98,7 @@
     names: {{ _("Its names ({n}) lead to {here}. After the completion {here} passes them to {machine} until the DNS leads there, at most until the copy is deleted: the traffic of whoever has the old DNS passes through {here} decrypted and encrypted again.") | tojson }},
     copyStays: {{ _("After the completion the stopped copy stays on {here} for {days} days, then Delete the copy… frees it.") | tojson }},
     choose: {{ _("Choose a machine first") | tojson }}, there: {{ _(" there") | tojson }},
+    install: {{ _(" missing there: Prepare installs it") | tojson }},
     seconds: {{ _("{n} seconds") | tojson }}, minutes: {{ _("{n} minutes") | tojson }}, minute: {{ _("1 minute") | tojson }},
     refused: {{ _("The move was refused.") | tojson }},
     completeAsk: {{ _("{name} stops for about {n} seconds, with the maintenance page, then starts again on {machine}. Here it stays stopped until {until}. Write its name to complete.") | tojson }},
@@ -205,7 +207,7 @@
       return el("label", {className: "mv-target" + (t.why ? " off" : ""), title: fill(T.rowTitle, {machine: t.machine})}, input,
         el("span", {},
           el("strong", {textContent: fill(T.row, {machine: t.machine, cpu: num(load.cpu_p95, 0), ram: num(load.ram_p95, 0), free: gb(t.free)})}),
-          el("span", {className: "mv-sub", textContent: fill(T.sub, {template: answer.template || "", ok: t.why ? "" : T.there,
+          el("span", {className: "mv-sub", textContent: fill(T.sub, {template: answer.template || "", ok: t.why ? "" : (t.install ? T.install : T.there),
             major: answer.kind === "dedicated" ? (t.majors || []).join(", ") || "—" : answer.major || "—", ms: num(t.ms, 1), via: t.via})}),
           t.why ? el("span", {className: "mv-why", title: t.why, textContent: t.why}) : null));
     }));

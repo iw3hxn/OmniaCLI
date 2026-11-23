@@ -3545,14 +3545,11 @@ a central panel's link), never for the users of a workspace.
 
 The names of a workspace pass to one machine at a time: its forward is one
 record (`/etc/omniacli/forward/<workspace>.json`), full for the instances
-placed there, else the challenges for those prepared. Until step 5 of §9
-(the people of a workspace reaching an instance on another machine through
-this one), only an instance of a **workspace without members** and **without
-a test** moves; a staging is not moved (it is made again there); a database
-on the cluster with the extension vector moves only to a cluster with
-pgvector. The page of the instance on its home disappears with Delete the
-copy (it lives on the host, reached through the link), Back to <here> is step
-6 and REST and MCP step 10.
+placed there, else the challenges for those prepared. An instance **without
+a test** moves (one with a test: a later step); a staging is not moved (it is
+made again there); a database on the cluster with the extension vector moves
+only to a cluster with pgvector. Back to <here> is step 6 and the move's own
+REST and MCP step 10.
 
 Measured on the lab pair (lab3 → lab4 through SSH links, a central panel of
 the proof linked to both, 23/11/2026; names asked every 100 ms through
@@ -3569,6 +3566,89 @@ maintenance, then 200 here again, nothing left there. The crons switched on
 again ran on their own, 54 and 55 s later (Odoo's cron thread looks every
 minute), with no restart. A staging rebuilt from the moved production held a
 row written there after the move.
+
+#### Its workspace, through its home
+
+The people and the tokens of the workspace of a moved instance keep reaching
+it through its home, with the same addresses, the same users and the same
+rights (AD-014, the *delegated scope*, step 5 of §9; a workspace with members
+moves since then). Nothing of it is copied to the host: the home checks who
+asks, then asks the host through its link.
+
+- **Where.** A page of a placed instance (`/servers/<server>`, what it opens)
+  is sent to `/placed/<server>/…` of the home (307); its answers
+  (`/api/servers/<server>/…`, the downloads of its backups, the REST API's
+  `/api/v1/instances/<server>/…`) are served there as they are. The home
+  serves them from the host, its pages drawn there with the home's menu and
+  under that prefix: what is not that server's (the workspace's page, the
+  lists, the account) is the home's own. A route of the workspace whose body
+  names the server (a repository added to it) goes there too. A job the host
+  answered through the home is remembered (`placed-jobs.json`, the newest
+  500), so `/jobs/<id>` and `/api/v1/jobs/<id>` are asked there.
+- **Who.** The home checks the person first on the route it asks there (the
+  same `in_workspaces`, role, custom role, its servers), then sends the
+  header `X-OmniaCLI-Scope` (JSON in base64url: workspace, person or token,
+  role there, the custom role's capabilities and servers, the members, the
+  provider's label, whether a token is a CI's). The host takes it only from
+  the link of that workspace's home in `hosted-workspaces.json`, with the
+  admin role, and only narrows: the role is the lower of the scope's and the
+  link's; from any other link it is a 403 and a line in its access log. Its
+  access log records the home's link acting for the person, with the
+  workspace; its jobs record the person (`manual: anna`).
+- **REST and MCP.** A workspace's token on the home reaches the instance's
+  REST API there with its own rules (it reads, it acts through `/api/v1`, a
+  CI's token never on a production); an MCP tool that names the instance
+  (`server_name`) is asked of the host's `/mcp` with the same scope.
+- **What the customer reads.** The host writes the pages with its customer
+  view (the provider's label of the home, the members of the scope, its own
+  name taken out); the home takes the names and addresses of both machines
+  and of its links out of what it passes on. The move itself is a job of the
+  home its people read as «<instance> moved to another machine of the
+  provider», with the maintenance, the stop measured and «the same addresses,
+  the same users»; Prepare, Cancel and Delete the copy are the provider's
+  own, not in its lists (nor the host's jobs of the move).
+- **The lists.** Dashboard, Instances and Backups of the home show its people
+  and tokens the instance as the host says it is (5 s, one request per host
+  and workspace); a host that does not answer is a row that says «The machine
+  of the provider does not answer: Odoo goes on serving its users». The
+  machine's admins read it in the lists of the host's link (the lists of
+  every machine: one row, not two), and its page through the home says which
+  machine does not answer and why. The instance stays its workspace's after
+  Delete the copy (the workspace keeps naming it, its token limits and
+  members' servers may name it).
+- **The machine's admins** keep the page of the stopped copy while it is here
+  (its banner: Delete the copy…, and **Open it there**, the host's page
+  through the home); once it is gone they are sent there too.
+- **Schedules and destinations.** At the completion the instance's schedules
+  (its automatic backups and the others that act on it, not a copy from a
+  link nor a script) and the workspace's destinations they copy to, with
+  their keys, are given to the host, which runs them from then; here they
+  are switched off and kept for the return (`suspended` in its move).
+- **The template.** A host without the instance's template that can install
+  it (published where it installs templates from) is not refused: Prepare
+  installs it first.
+
+Not through the home (yet): the shells of an instance (its admins reach the
+host through a central panel's link), Log in as through a tunnel, the host's
+jobs in the home's lists of jobs, its bell and its map (a job's page and its
+REST answer are reached through the home), the MCP tools that list (they
+list the home's), an instance with a test environment (refused at Prepare),
+the deletion of a placed instance by its workspace (refused here: the
+provider deletes it there).
+
+Measured on the lab pair (lab3 the home, lab4 the host, 23/11/2026): a
+workspace with four people (admin, developer, user, a custom role without the
+logs) and two tokens (admin, user); its instance moved with them. Every GET
+route of a server of `WORKSPACE_ROUTES` (38) asked as each of them through
+lab3's panel: **236 answers, the same 236 statuses** before the move, after
+it and after Delete the copy, and **0 names or addresses of lab3 and lab4**
+in what they read (pages, JSON, jobs, the move's job). A restart from the
+page, one through the REST API (its job followed through lab3) and MCP
+tools reached lab4, its access log naming lab3's link acting for each
+person and token; a user token's restart over MCP was refused there for its
+role. lab4's panel stopped: Odoo there answered 200, the customer's row and
+page said «The machine of the provider does not answer: Odoo goes on serving
+its users», the admin's page through the central panel which machine and why.
 
 ### Modules from the catalogs
 

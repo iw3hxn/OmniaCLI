@@ -14,7 +14,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from omniacli import composehelper, placement, treesync, workspacehelper
+from omniacli import composehelper, placement, pluginstore, templatestore, treesync, workspacehelper
 from omniacli.config import LinkTarget
 from omniacli.jobs import FAILED, SUCCESS, JobManager
 
@@ -160,7 +160,7 @@ def test_the_addons_of_an_instance_are_a_tree_root_copies():
 def test_the_purge_takes_the_moves_away():
     purge = (ROOT / "packaging" / "debian" / "files" / "postrm").read_text().split("    purge)", 1)[1]
     assert "rm -rf /var/lib/omniacli/move" in purge
-    for name in ("placements.json", "hosted-workspaces.json"):
+    for name in ("placements.json", "hosted-workspaces.json", "placed-jobs.json"):
         assert f"/var/lib/omniacli/{name} /var/lib/omniacli/{name}.tmp" in purge or (
             f"/var/lib/omniacli/{name}" in purge and f"/var/lib/omniacli/{name}.tmp" in purge)
 
@@ -188,7 +188,7 @@ async def test_the_item_is_the_machines_admins_only(two, acme):
     assert (await two.get("/api/placements/host", headers=post_as("mario"))).status_code == 403
 
 
-async def test_the_dialog_reads_the_machines_and_refuses_a_workspace_with_members(two, acme, env):
+async def test_the_dialog_reads_the_machines_and_says_why_not_before(two, acme, env):
     # far over https (a link through SSH would do as well): over plain HTTP the customer's data would pass in clear
     env["settings"].link_targets["far"] = LinkTarget("far", "https://far.test", FAR_TOKEN)
     plan = (await two.get("/api/servers/acme-odoo/move", headers={"Authorization": AUTH})).json()
@@ -200,12 +200,14 @@ async def test_the_dialog_reads_the_machines_and_refuses_a_workspace_with_member
     # far is another OmniaCLI of today: what it says of itself, the workspace new there
     far = rows["far"]
     assert far["why"] == "" and far["workspace"] == "new" and far["arch"] == os.uname().machine and "load" in far
-    # until step 5, a workspace with people is refused before anything is made, in the reader's language
-    assert any("has members" in w for w in plan["refusals"])
+    # a workspace with people moves (step 5, AD-014): what is refused is said before anything is made, in the
+    # reader's language (here its test environment)
+    assert not any("members" in w for w in plan["refusals"])
+    assert any("has a test environment" in w for w in plan["refusals"])
     resp = await two.post("/api/servers/acme-odoo/move", headers=POST, json={"link": "far"})
     assert resp.status_code == 400 and resp.json()["error"] in [w for w in plan["refusals"]]
     italian = (await two.get("/api/servers/acme-odoo/move", headers={"Authorization": AUTH, "Accept-Language": "it"})).json()
-    assert any("ha delle persone" in w for w in italian["refusals"])
+    assert any("ha un ambiente di test" in w for w in italian["refusals"])
     assert {r["link"]: r["why"] for r in italian["targets"]}["down"] == "down non risponde"
     # Complete, Cancel and Delete the copy without a move: refused, nothing done
     assert (await two.post("/api/servers/acme-odoo/move/complete", headers=POST,
@@ -226,3 +228,29 @@ async def test_a_hosted_workspace_answers_its_home_only(two, acme):
         assert resp.status_code == 404
         facts = (await c.get("/api/placements/host", headers=headers, params={"workspace": "acme"})).json()
         assert facts["workspace"]["why"] == "workspace acme is hosted here for another machine"
+
+
+async def test_a_host_without_the_template_installs_it_at_prepare(two, acme, monkeypatch):
+    """UX-014 B4: a machine that has not the instance's template, but installs it from where it installs templates,
+    is not refused: it says so, and Prepare installs it there first."""
+    published = [{"name": "odoo-17", "version": "17.0.3"}]
+
+    async def available(source):
+        return published
+    monkeypatch.setattr(templatestore, "available", available)
+    headers = {"Authorization": f"Bearer {FAR_TOKEN}", "Accept": "application/json"}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=two.far), base_url="http://far.test") as c:
+        facts = (await c.get("/api/placements/host", headers=headers, params={"template": "odoo-17"})).json()
+        assert facts["template"] is False and facts["template_store"] is True
+        # one it has: nothing to install
+        facts = (await c.get("/api/placements/host", headers=headers, params={"template": "odoo-19"})).json()
+        assert facts["template"] is True and facts["template_store"] is False
+
+        async def down(source):
+            raise pluginstore.StoreError("the index does not answer")
+        monkeypatch.setattr(templatestore, "available", down)
+        facts = (await c.get("/api/placements/host", headers=headers, params={"template": "odoo-17"})).json()
+        assert facts["template"] is False and facts["template_store"] is False
+        # an arrival of a template it has not and cannot install: refused before anything is made
+        resp = await c.post("/api/placements/acme/odoo/arrive", headers=headers, json={"template": "odoo-17"})
+        assert resp.status_code == 400 and "No template 'odoo-17' here" in resp.json()["error"]

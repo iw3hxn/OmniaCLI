@@ -46,6 +46,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
 from starlette.requests import ClientDisconnect, HTTPConnection, cookie_parser
+from starlette.routing import Match
 
 from . import (backupcheck, backupchoices, checks, deployhooks, destinations, enterprise, instancearchive, private, restoreroom, consumer, disks, gitcredentials, linkcopy, listgroups, ops, packages, placement, plugins, pluginstore, puller, publisher,
                schedules, selflog, sqldump, sshlinks, shell, stacktemplates, templatestore, treesync, tunnel, workspacehelper,
@@ -70,7 +71,7 @@ from . import passkeys, sso
 from . import uploads as uploads_mod
 from .uploads import Uploads
 from .diskhistory import DiskHistory, DiskRecorder
-from .customerview import CustomerView
+from .customerview import CustomerView, hidden_from_customers
 from .auth import ROLES as ACCESS_ROLES
 from .auth import WORKSPACE_ROLE, Authenticator, Principal, hash_password, hash_token, new_token, verify_password
 from .auth import unknown_password
@@ -705,7 +706,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         fields = {"method": scope.get("method") or ("WEBSOCKET" if scope.get("type") == "websocket" else ""),
                   "route": audit.route_template(scope)}
         if isinstance(user, Principal):
-            fields.update(role=user.role, on_behalf=user.on_behalf)
+            fields.update(role=user.role, on_behalf=audit_actor(user)[2])
         server, workspace = str(params.get("server") or ""), str(params.get("workspace") or "")
         if server:
             fields["server"] = server
@@ -719,6 +720,13 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     (ws for ws in map(settings.workspace_of, job.servers) if ws), "")
         fields["workspace"] = workspace
         return fields
+
+    def audit_actor(user: Principal) -> tuple[str, str, str]:
+        """(kind, name, on_behalf) of who made a request, for the access log: a person or a token of a workspace
+        through its home (AD-014) is the home's link acting for it."""
+        if user.via:
+            return "link", user.via, user.name
+        return user.kind, user.name, user.on_behalf
 
     def audit_scope_of(kind: str, name: str) -> list[str]:
         """The workspaces an entry of no workspace belongs to: those of a user
@@ -873,7 +881,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                         "An OAuth token is for /mcp only (and the downloads its tools give)")
                 # the REST API (README, REST API): there its role says what it may do, the API's own rules
                 # (apiguard.py) the rest; everywhere else it only reads, as before
-                v1 = request.url.path.startswith(apiv1.PREFIX + "/")
+                # (a placed instance's REST API through its home, AD-014: the route it asks there)
+                v1 = placement.inner_path(request.url.path).startswith(apiv1.PREFIX + "/")
                 if method not in ("GET", "HEAD") and not upload and not v1:
                     raise HTTPException(status.HTTP_403_FORBIDDEN, "A token may only read")
                 limited = settings.token_servers(name)
@@ -909,6 +918,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             cap = request.headers.get(_ROLE_CAP_HEADER, "")
             if cap in ACCESS_ROLES and ACCESS_ROLES.index(cap) < ACCESS_ROLES.index(role):
                 role = cap
+            scope_value = request.headers.get(placement.SCOPE_HEADER.lower())
+            if scope_value is not None:
+                # a person or a token of a workspace hosted here, through its home (AD-014 §3)
+                return delegated(request, name, role, scope_value, method)
             return Principal(name, role, "link", on_behalf if _ON_BEHALF.fullmatch(on_behalf) else "",
                              person=menu is not None and bool(request.state.prefix))
         # a browser: the session of the login form
@@ -929,6 +942,42 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                              grants=settings.grants(name))
         return Principal(name, role)
 
+    def delegated_scope(link: str, value: str) -> dict | None:
+        """The scope a link sends (X-OmniaCLI-Scope), when this machine takes it: the link is the home of the
+        scope's workspace in hosted-workspaces.json, with the admin role (AD-014 §3); None otherwise."""
+        found = placement.scope_decode(value)
+        if found is None or found["ws"] not in settings.workspaces or link not in settings.links:
+            return None
+        if hosted.home_of(found["ws"]) != link or settings.links[link].role != "admin":
+            return None
+        return found
+
+    def delegated(request: HTTPConnection, link: str, link_role: str, value: str, method: str) -> Principal:
+        """The person or the token of the workspace a home acts for (AD-014 §3): its role there, no more than the
+        link's; its custom role and its servers. Refused, and in the access log, from any other link."""
+        found = delegated_scope(link, value)
+        if found is None:
+            ip = request.client.host if request.client else ""
+            access_log.record("failed", "link", link, ip, f"a delegated scope refused: {method} {request.url.path}"[:200])
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "A workspace's scope is taken from the link of the machine "
+                                                           "of that workspace only")
+        ws = found["ws"]
+        role = min(found["role"], link_role, key=ACCESS_ROLES.index)
+        grant = found["grant"]
+        if grant is not None:
+            servers = grant["servers"]
+            grant = capabilities.Grant(grant["role"], frozenset(c for c in grant["capabilities"]
+                                                                if c in capabilities.PRESETS[role]),
+                                       None if servers is None else frozenset(servers))
+        if found["kind"] == "token":
+            # the rules of a token here too (identify): it reads, and acts through the REST API only
+            if method not in ("GET", "HEAD") and not request.url.path.startswith(apiv1.PREFIX + "/"):
+                raise HTTPException(status.HTTP_403_FORBIDDEN, "A token may only read")
+        request.state.delegated = {**found, "link": link}
+        return Principal(found["person"], "user", found["kind"], workspaces=((ws, role),), scoped=True,
+                         grants=((ws, grant),) if grant is not None else (), via=link,
+                         person=found["kind"] == "user", ci=bool(found.get("ci")))
+
     def in_workspaces(request: HTTPConnection, user: Principal) -> Principal:
         """A user of workspaces only reaches the routes of WORKSPACE_ROUTES,
         and of them only what is in its workspaces, with its role there; any
@@ -937,6 +986,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         route = request.scope.get("route")
         path = getattr(route, "path", None)
         params = request.scope.get("path_params") or {}
+        if path == placement.PLACED_PREFIX + "/{server}/{path:path}" and moves.host_of(str(params.get("server") or "")):
+            # a placed instance's page or answer (AD-014): checked by its route on the route it asks there
+            # (placed_caller, the same rules), before anything is asked or done
+            return user
         allowed = path in WORKSPACE_ROUTES or (
             # a plugin's own routes, of an instance only
             path is not None and path.startswith("/x/") and "server" in params and "role" in params)
@@ -1023,7 +1076,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         # a workspace's own job (an instance made or removed): not for a person limited to some servers
         mine = {ws for ws, _ in user.workspaces
                 if user.grant(ws) is None or user.grant(ws).servers is None}
-        return [j for j in found if (j.workspace and j.workspace in mine) or (j.servers and set(j.servers) <= shown)]
+        return [j for j in found if ((j.workspace and j.workspace in mine) or (j.servers and set(j.servers) <= shown))
+                and not hidden_from_customers(j)]
 
     def customer_view(request: HTTPConnection) -> CustomerView | None:
         """For a user of workspaces, what takes the integrator's names and the
@@ -1032,7 +1086,15 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         user = getattr(request.state, "user", None)
         if user is None or not user.scoped:
             return None
-        return customer_view_of({ws for ws, _ in user.workspaces}, request_language(request))
+        view = customer_view_of({ws for ws, _ in user.workspaces}, request_language(request))
+        found = getattr(request.state, "delegated", None)
+        if found:
+            # a workspace hosted here for its home (AD-014 §5): its people are the home's, and so is its provider
+            label = found.get("provider") or (hosted.get(found["ws"]).get("provider_label") or "")
+            view = dataclasses.replace(
+                view, provider=label or view.provider, members=view.members | frozenset(found.get("members") or ()),
+                tokens=view.tokens | (frozenset({user.name}) if user.kind == "token" else frozenset()))
+        return view
 
     def customer_view_of(mine: set, lang: str) -> CustomerView:
         """customer_view for the workspaces mine, in lang (a workspace's webhook: English)."""
@@ -1052,7 +1114,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                             machines=frozenset(machines_ - own - members - {"localhost", "127.0.0.1"}),
                             members=frozenset(members),
                             tokens=frozenset([*(n for n in settings.tokens if settings.token_workspace(n) in mine),
-                                              *(g["name"] for g in oauth_store.listed() if g["workspace"] in mine)]))
+                                              *(g["name"] for g in oauth_store.listed() if g["workspace"] in mine)]),
+                            # this machine's own name: a customer is never told which machine it is (shown_name),
+                            # «the server» as its map says it
+                            here=frozenset({here_name()} - own - members - {"localhost", "omniacli"}),
+                            here_word=i18n.gettext(lang, "the server"))
 
     def shown_jobs(request: HTTPConnection, found: list, lines: bool = False) -> list:
         """The jobs as the caller reads them (customer_view); a list's
@@ -1073,7 +1139,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 # refused before the handshake: the browser sees 403
                 raise WebSocketException(1008, exc.detail) from None
             raise
-        if user.kind != "user":
+        if user.via:
+            # a person or a token of a workspace through its home (AD-014): the link, acting for it
+            access_log.seen("link", user.via, ip, user.name)
+        elif user.kind != "user":
             # a link (with who acts there through it) or a token: a login is
             # its first request after a pause; a user's login is the form's
             access_log.seen(user.kind, user.name, ip, user.on_behalf)
@@ -1141,7 +1210,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                              "oauth": {"challenge": oauth_challenge, "audience": oauth_audience},
                                              "staging": lambda *a, **k: api_hooks["staging"](*a, **k),
                                              "deploys": lambda *a, **k: mcp_deploys(*a, **k),
-                                             "deploy_back": lambda *a, **k: api_hooks["deploy_back"](*a, **k)})
+                                             "deploy_back": lambda *a, **k: api_hooks["deploy_back"](*a, **k),
+                                             # AD-014 §6: a tool on an instance placed elsewhere asked there, and
+                                             # the scope a home sends taken from that home's link only
+                                             "placed": lambda *a, **k: mcp_placed(*a, **k),
+                                             "delegated": lambda *a, **k: delegated_scope(*a, **k)})
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -1261,13 +1334,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if user is None:
             return response
         ip = request.client.host if request.client else ""
-        who = f" for {user.on_behalf}" if user.on_behalf else ""
+        kind, name, on_behalf = audit_actor(user)
+        who = f" for {on_behalf}" if on_behalf else ""
         template = audit.route_template(request.scope)
         if reading:
             what = audit.SENSITIVE_READS.get(template)
-            if what is None or not access_log.first_read((user.kind, user.name, ip, request.url.path)):
+            if what is None or not access_log.first_read((kind, name, ip, request.url.path)):
                 return response
-            access_log.record("read", user.kind, user.name, ip,
+            access_log.record("read", kind, name, ip,
                               f"{what}: {request.method} {request.url.path} -> {response.status_code}{who}"[:300],
                               what=what, status=response.status_code)
             return response
@@ -1276,7 +1350,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         named = str(body.get("server") or "") if isinstance(body.get("server"), str) else ""
         if named and not request.scope.get("path_params", {}).get("server"):
             extra.update(server=named, workspace=settings.workspace_of(named) or "")
-        access_log.record("action", user.kind, user.name, ip,
+        access_log.record("action", kind, name, ip,
                           f"{request.method} {request.url.path}{target} -> {response.status_code}{who}"[:300],
                           **extra)
         return response
@@ -2402,6 +2476,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             }
             for srv in live
         ]
+        rows = await placed_section_rows(request, me, rows)
         rows = nest_stagings(rows)
         groups = settings.groups.get("servers", []) if shown is None else []
         for row in rows:
@@ -2726,7 +2801,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         live = [srv for srv in settings.active_servers() if shown is None or srv.name in shown]
         states = await run_states(live)
         known = stagings.load(stagings_file)
-        return [
+        rows = [
             {
                 "name": srv.name,
                 "type": srv.type,
@@ -2768,6 +2843,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             }
             for srv in live
         ]
+        # the instances placed on another machine: as that machine says they are (AD-014 §7)
+        return await placed_server_rows(request, request.state.user, rows)
 
     @app.get("/api/metrics")
     async def metrics(request: Request, since: int = 0, server: Optional[str] = None, machine_only: bool = False):
@@ -5244,7 +5321,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if ws.storage and ws.storage not in settings.storage_roots:
                 return refuse(f"storage: {ws.storage} is not one of workspaces.storage of the main configuration "
                               f"({', '.join(settings.storage_roots) or 'none'}): pick one of them")
-            unknown = [s for s in ws.servers if s not in settings.servers]
+            # an instance placed on another machine stays its workspace's (AD-014): no server of this one
+            unknown = [s for s in ws.servers if s not in settings.servers and not moves.host_of(s)]
             if unknown:
                 return refuse(f"No server {', '.join(unknown)}")
             strangers = [u for u in ws.members if u not in settings.users]
@@ -5306,9 +5384,17 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         # hosted here for the machine of its home (AD-014): that machine asks about it no more; the moves of its
         # instances to other machines, ended, are forgotten with it
         hosted.put(name, None)
-        for server in [s for s in moves.placements() if moves.state(s).get("workspace") == name
-                       and s not in settings.servers]:
+        gone = [s for s in moves.placements() if moves.state(s).get("workspace") == name and s not in settings.servers]
+        for server in gone:
             moves.forget(server)
+            # the jobs of its host it remembered, and its schedules kept here for its return (AD-014)
+            placed_jobs.forget(server)
+        if gone:
+            async with schedules_lock:
+                kept = {k: v for k, v in scheduler.schedules.items() if v.instance.partition("/")[0] not in gone}
+                if kept != scheduler.schedules:
+                    await asyncio.to_thread(schedules.save_schedules, settings.schedules_file, kept)
+                    scheduler.schedules = kept
         rec = relay_records().get(name)
         if rec is not None:
             # its names published through another machine: taken away on both machines, in a job
@@ -7146,6 +7232,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         ws = a_workspace(workspace)
         name = str(payload.get("server") or "")
         prefix = f"{ws.name}-"
+        if name in ws.servers and moves.host_of(name) and not refusal(me, None, ws.name, [name]):
+            # an instance placed on another machine (AD-014): deleted there by the provider, not from here
+            return refuse(f"{name} runs on another machine of the provider: the provider deletes it there")
         if (name not in ws.servers or not name.startswith(prefix) or name not in settings.servers
                 or refusal(me, None, ws.name, [name])):
             return refuse(f"No instance {name} in workspace {ws.name}", status.HTTP_404_NOT_FOUND)
@@ -10385,7 +10474,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         servers = [s for s in re.split(r"[\s,]+", servers) if s] if isinstance(servers, str) else servers or []
         if not isinstance(servers, list) or not all(isinstance(s, str) for s in servers):
             return refuse("The servers of a token are a list of names")
-        unknown = [s for s in servers if s not in settings.servers or (allowed is not None and s not in allowed)]
+        unknown = [s for s in servers if (s not in settings.servers and not moves.host_of(s))
+                   or (allowed is not None and s not in allowed)]
         if unknown:
             return refuse(f"No server {', '.join(unknown)} for this token")
         if payload.get("ci"):
@@ -13889,7 +13979,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if not sees_backups(me):
             raise HTTPException(status.HTTP_403_FORBIDDEN, "The developer role is required")
         if not link:
-            return {"name": shown_name(me), "link": "", **backup_rows(request, me), "links": listed_links(me)}
+            found = backup_rows(request, me)
+            found["rows"] = await placed_backup_rows(request, me, found["rows"])
+            return {"name": shown_name(me), "link": "", **found, "links": listed_links(me)}
         found, why = await link_list(request, me, link, "/api/backups")
         if found is not None and not (isinstance(found, dict) and isinstance(found.get("rows"), list)):
             found, why = None, "it did not answer a list"
@@ -20577,6 +20669,391 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     hosted = placement.Hosted(settings.jobs_dir.parent)
     # a moved instance's copy here is stopped: no job but the move's own runs on it (backups, updates, schedules)
     jobs.frozen = lambda key: moves.frozen(key.partition("/")[0])
+
+    # --- the delegated scope (AD-014, step 5 of §9): the people and the tokens of a workspace keep reaching an
+    # instance placed on another machine through this one, its home. A request of a placed server's path
+    # (placement.server_of_path) is served under /placed/<server>: a page's GET is sent there (307), the rest is
+    # served there as it is. The home checks the person first, on the same route (in_workspaces), then asks the
+    # host through its link with the scope of the person (X-OmniaCLI-Scope), which the host checks again. The
+    # machine's admins keep the page of the copy stopped here while it is here (its move's banner, Delete the
+    # copy…), and are sent there once it is gone.
+
+    placed_jobs = placement.PlacedJobs(settings.jobs_dir.parent)
+    # what a page through the home is asked with, besides what a link's proxy passes on
+    PLACED_REQUEST_HEADERS = (*_LINK_REQUEST_HEADERS, "range", "idempotency-key", "if-none-match")
+    # an answer the home reads before passing it on (the names of the provider's machines taken out for a
+    # customer, the jobs it names remembered): a page or JSON up to this size; bigger ones pass as they are
+    PLACED_READ_MOST = 8 << 20
+
+    def placed_target(path: str) -> tuple[str, str]:
+        """(server, link) of a request's path served by the host of a placed server, ("", "") for any other:
+        a server's path (not its move, the home's own), or a job the host answered through this machine."""
+        server, rest = placement.server_of_path(path)
+        if server:
+            if path.startswith("/api/servers/") and (rest == "move" or rest.startswith("move/")):
+                return "", ""
+            link = moves.host_of(server)
+            return (server, link) if link else ("", "")
+        job = placement.job_of_path(path)
+        if job and jobs.get(job) is None:
+            server = placed_jobs.server(job)
+            link = moves.host_of(server) if server else ""
+            if link:
+                return server, link
+        return "", ""
+
+    def placed_for(scope) -> bool:
+        """Whether a request of a placed server's path is the host's: always once its copy here is gone; while
+        it is here, for a user or a token of a workspace (the machine's admins keep the copy's page)."""
+        server, _link = placed_target(scope["path"])
+        if not moves.copy_here(server):
+            return True
+        try:
+            return identify(HTTPConnection(scope)).scoped
+        except HTTPException:
+            return False
+
+    class PlacedRoutes:
+        """The requests of a placed server's paths, to /placed/<server> (AD-014 §2)."""
+
+        def __init__(self, inner):
+            self.inner = inner
+
+        async def __call__(self, scope, receive, send):
+            path = scope.get("path") or ""
+            if scope["type"] == "http" and not path.startswith(placement.PLACED_PREFIX + "/"):
+                server, _link = placed_target(path)
+                if server and placed_for(scope):
+                    moved = f"{placement.PLACED_PREFIX}/{server}{path}"
+                    request = HTTPConnection(scope)
+                    if scope.get("method") in ("GET", "HEAD") and not path.startswith(("/api/", "/backups/")):
+                        # a page: the browser goes there, so its address says it
+                        given = request.headers.get(_PREFIX_HEADER, "")
+                        query = scope.get("query_string", b"").decode("latin-1")
+                        location = (given if _PREFIX.fullmatch(given) else "") + moved + (f"?{query}" if query else "")
+                        await RedirectResponse(location, status.HTTP_307_TEMPORARY_REDIRECT)(scope, receive, send)
+                        return
+                    # an answer: served there as it is (the same dict, which the access log reads)
+                    scope["path"], scope["raw_path"] = moved, moved.encode()
+            await self.inner(scope, receive, send)
+
+    def inner_route(method: str, path: str):
+        """(route, its parameters) of this machine that answers method on path, (None, {}) for none."""
+        probe = {"type": "http", "path": path, "method": method, "root_path": "", "query_string": b"", "headers": []}
+        for route in app.router.routes:
+            if str(getattr(route, "path", "") or "").startswith(placement.PLACED_PREFIX + "/") or not hasattr(route, "matches"):
+                continue
+            if hasattr(route, "original_router") and hasattr(route, "_match"):
+                # a router included (the REST API, a plugin's): the route it hands the request to, as it does
+                found, child, chosen, context = route._match(probe)
+                if found == Match.FULL:
+                    chosen = getattr(context, "original_route", None) or chosen
+                    return chosen, dict(child.get("path_params") or {})
+                continue
+            found, child = route.matches(probe)
+            if found == Match.FULL:
+                return route, dict(child.get("path_params") or {})
+        return None, {}
+
+    def placed_caller(request: Request, inner: str, route, params: dict, server: str) -> Principal:
+        """Who asks, checked here first on the route of the host it asks (AD-014 §4): its login, and for a user
+        or a token of a workspace its role and its capabilities on that route (a job of the host: as of its
+        server)."""
+        scope = {**request.scope, "path": inner, "route": route, "path_params": {**params}}
+        if "server" not in params:
+            scope["path_params"]["server"] = server
+        asked = Request(scope, request.receive)
+        user = identify(asked)
+        if user.scoped:
+            user = in_workspaces(asked, user)
+        request.state.user = user
+        return user
+
+    def placed_scope(me: Principal, server: str) -> dict:
+        """The scope of a user or a token of a workspace, for the host (X-OmniaCLI-Scope)."""
+        workspace = settings.workspace_of(server) or ""
+        ws = settings.workspaces.get(workspace)
+        grant = me.grant(workspace)
+        return {"ws": workspace, "person": me.name, "kind": "token" if me.kind == "token" else "user", "role": me.role,
+                "grant": None if grant is None else {
+                    "role": grant.role, "capabilities": sorted(grant.caps),
+                    "servers": None if grant.servers is None else sorted(grant.servers)},
+                "members": sorted(ws.members) if ws is not None else [],
+                "provider": settings.options.provider_label, "ci": me.kind == "token" and settings.token_ci(me.name)}
+
+    async def mcp_placed(name: str, role: str, server: str, body: bytes):
+        """A call of an MCP tool on an instance placed on another machine (AD-014 §6): asked of the /mcp there
+        through the link, with the scope of the token (a workspace's), and its answer (status, type, bytes);
+        None when the instance is here (its copy is here and the token is the machine's)."""
+        link_name = moves.host_of(server)
+        if not link_name or not settings.tokens.get(name) and settings.oauth_grant(name) is None:
+            return None
+        workspace = settings.token_workspace(name)
+        if not workspace and moves.copy_here(server):
+            return None
+        link = settings.link_targets.get(link_name)
+        if link is None:
+            return 502, "application/json", json.dumps({"error": "The machine of the instance does not answer"}).encode()
+        headers = {**link_headers(link, name, role), "Accept": "application/json, text/event-stream",
+                   "Content-Type": "application/json"}
+        if workspace:
+            ws = settings.workspaces.get(workspace)
+            grant = settings.token_grant(name)
+            headers[placement.SCOPE_HEADER] = placement.scope_encode({
+                "ws": workspace, "person": name, "kind": "token", "role": role,
+                "grant": None if grant is None else {"role": grant.role, "capabilities": sorted(grant.caps),
+                                                     "servers": None if grant.servers is None else sorted(grant.servers)},
+                "members": sorted(ws.members) if ws is not None else [], "provider": settings.options.provider_label,
+                "ci": settings.token_ci(name)})
+        try:
+            resp = await link_clients.client(link).post("/mcp", headers=headers, content=body, timeout=LINK_MCP_TIMEOUT)
+        except httpx.HTTPError:
+            return 502, "application/json", json.dumps({
+                "jsonrpc": "2.0", "id": None, "error": {"code": -32000, "message": (
+                    "The machine of the provider this instance runs on does not answer now: its Odoo goes on serving")
+                    if workspace else f"{link.name} does not answer"}}).encode()
+        raw = resp.content
+        if workspace:
+            raw = placed_text(raw.decode("utf-8", errors="replace"), placed_names(server, link), "en",
+                              Principal(name, role, "token", workspaces=((workspace, role),), scoped=True)).encode()
+        with contextlib.suppress(ValueError):
+            found = json.loads(raw)
+            text = json.dumps(found)
+            for job in re.findall(r'"(?:id|job)": "(\d{8}-\d{6}-[0-9a-f]{6})"', text):
+                placed_jobs.add(job, server)
+        return resp.status_code, resp.headers.get("content-type", "application/json"), raw
+
+    def placed_body_names(body: bytes | None, server: str) -> bool:
+        """Whether a request's JSON body names server ({"server": server})."""
+        try:
+            found = json.loads(body) if body and len(body) <= _AUDIT_MAX_BODY else None
+        except ValueError:
+            return False
+        return isinstance(found, dict) and found.get("server") == server
+
+    def placed_names(server: str, link: LinkTarget) -> list[str]:
+        """The names of the provider's machines an answer of the host may say, for a customer: this one's, the
+        host's link, their addresses."""
+        state = moves.state(server)
+        found = {here_name(), link.name, str(state.get("address") or ""), str(state.get("home_address") or "")}
+        host = urlsplit(link.url).hostname
+        found.update({host or "", link.ssh.host if link.ssh is not None else ""})
+        return sorted(n for n in found if n and n not in ("localhost", "127.0.0.1"))
+
+    def placed_text(text: str, names: list[str], lang: str, me: Principal) -> str:
+        """text without the names of the provider's machines and of its links that act here (its people), for a
+        customer (a typographic apostrophe in the words that take their place: they may land in a script's
+        string). Its own names (its workspace, instances, members, tokens) are kept."""
+        view = customer_view_of({ws for ws, _ in me.workspaces}, lang)
+        own = {*view.members, *view.tokens, *(n for ws, _ in me.workspaces for n in (
+            ws, *(settings.workspaces[ws].servers if ws in settings.workspaces else ())))}
+        elsewhere = i18n.gettext(lang, "another machine").replace("'", "\u2019")
+        provider = view.provider.replace("'", "\u2019")
+        swaps = {**{n: provider for n in view.links}, **{n: elsewhere for n in names}}
+        for name in sorted((n for n in swaps if n not in own), key=len, reverse=True):
+            text = re.sub(rf"(?<![\w.-]){re.escape(name)}(?![\w-])", swaps[name], text)
+        return text
+
+    def placed_failure(request: Request, me: Principal | None, link_name: str, why: str):
+        """The host of a placed server that does not answer: for a customer the provider's machine (no name),
+        and that Odoo goes on serving there; for the machine's admins the link and why."""
+        lang = request_language(request)
+        if me is None or me.scoped:
+            message = i18n.tr(lang, "The machine of the provider this instance runs on does not answer now: its Odoo "
+                                    "goes on serving its users, and this page comes back when it answers again")
+        else:
+            message = i18n.gettext(lang, "{link} does not answer: {why}", link=link_name, why=i18n.tr(lang, why))
+        if "text/html" not in request.headers.get("accept", ""):
+            return JSONResponse({"error": message}, status_code=502)
+        return _TEMPLATES.TemplateResponse(request, "placed_error.html", {"message": message}, status_code=502)
+
+    # the lists of a home (AD-014 §7): an instance placed on another machine as that machine says it is, asked
+    # with the scope of who reads (5 s, as the lists of the links); one that does not answer is a row that says so
+    PLACED_LIST_TIMEOUT = 5
+
+    def placed_seen(me: Principal) -> list[str]:
+        """The placed servers whose rows me reads from their host: a user or a token of their workspace. The
+        machine's users read the copy here as it is (stopped, its banner), and the instance in the lists of the
+        host's link (the lists of every machine): one row of it each, not two."""
+        shown = visible_servers(me)
+        if shown is None:
+            return []
+        return sorted(s for s in moves.placements() if moves.host_of(s) and s in shown)
+
+    async def placed_answers(request: Request, me: Principal, path: str) -> list[tuple[list, object, str]]:
+        """[(servers, the host's answer to GET path or None, why not)], one request per host and workspace."""
+        wanted: dict[tuple, list] = {}
+        for server in placed_seen(me):
+            wanted.setdefault((moves.host_of(server), settings.workspace_of(server) or ""), []).append(server)
+
+        async def one(link_name: str, workspace: str, servers: list):
+            link = settings.link_targets.get(link_name)
+            if link is None:
+                return servers, None, "there is no link to it here any more"
+            who = dataclasses.replace(me, role=me.workspace_role(workspace) or "user")
+            headers = {**link_headers(link, me.name, who.role),
+                       placement.SCOPE_HEADER: placement.scope_encode(placed_scope(who, servers[0]))}
+            headers.update({"Accept": "application/json", "Accept-Language": request_language(request)})
+            try:
+                resp = await asyncio.wait_for(link_clients.client(link).get(path, headers=headers,
+                                                                            timeout=PLACED_LIST_TIMEOUT),
+                                              PLACED_LIST_TIMEOUT)
+                data = resp.json() if resp.status_code == 200 else None
+                why = "" if resp.status_code == 200 else f"answered HTTP {resp.status_code}"
+            except (httpx.HTTPError, asyncio.TimeoutError, ValueError) as exc:
+                data, why = None, describe_error(exc) if isinstance(exc, httpx.HTTPError) else "it did not answer in time"
+            return servers, data, why
+        return await asyncio.gather(*(one(link, ws, servers) for (link, ws), servers in sorted(wanted.items())))
+
+    def placed_down(request: Request) -> str:
+        """What a customer's row of a placed instance whose machine does not answer says: no machine's name, and
+        that its Odoo goes on serving there (why, the machine's admins read in the lists of every machine)."""
+        return i18n.tr(request_language(request), "The machine of the provider does not answer: Odoo goes on serving "
+                                                  "its users")
+
+    async def placed_server_rows(request: Request, me: Principal, rows: list[dict]) -> list[dict]:
+        """rows (/api/servers) with each placed instance as its host says it is, or a row saying it does not
+        answer; its stopped copy here is not listed (it is the same instance)."""
+        if not placed_seen(me):
+            return rows
+        placed, down = {}, {}
+        for servers, data, _why in await placed_answers(request, me, "/api/servers"):
+            by_name = {r.get("name"): r for r in data if isinstance(r, dict)} if isinstance(data, list) else {}
+            for server in servers:
+                if server in by_name:
+                    placed[server] = {**by_name[server], "placed": True}
+                else:
+                    down[server] = placed_down(request)
+        out = [r for r in rows if r["name"] not in placed and r["name"] not in down]
+        out += placed.values()
+        for server, said in down.items():
+            out.append({"name": server, "type": "odoo", "placed": True, "workspace": settings.workspace_of(server) or "",
+                        "instances": {"production": {"state": "unknown", "down": said, "busy": False,
+                                                     "repositories": []}},
+                        "parent": "", "parent_machine": "", "created": "", "version": "", "enterprise": False,
+                        "backup_schedule": None})
+        return out
+
+    async def placed_section_rows(request: Request, me: Principal, rows: list[dict]) -> list[dict]:
+        """The Dashboard's rows with the state of each placed instance from its host (or unknown, with why)."""
+        seen = placed_seen(me)
+        if not seen:
+            return rows
+        listed = {r["name"]: r for r in await placed_server_rows(request, me, []) if r["name"] in seen}
+        out = [r for r in rows if r["name"] not in listed]
+        for server, row in sorted(listed.items()):
+            insts = row.get("instances") or {}
+            out.append({"link": "", "name": server, "label": server, "base": prefix_of(request),
+                        "workspace": row.get("workspace") or settings.workspace_of(server) or "",
+                        "roles": [r for r in ("production", "test") if r in insts],
+                        "busy": {r: bool(i.get("busy")) for r, i in insts.items()},
+                        "state": {r: i.get("state") or "unknown" for r, i in insts.items()},
+                        "restart": {r: "compose" for r in insts},
+                        "web": {r: f"https://{i['url']}" for r, i in insts.items() if i.get("url")},
+                        "down": next((i.get("down") for i in insts.values() if i.get("down")), ""),
+                        "text": server})
+        return out
+
+    async def placed_backup_rows(request: Request, me: Principal, rows: list[dict]) -> list[dict]:
+        """The backups the host of each placed instance keeps (their downloads go there through here)."""
+        if not placed_seen(me) or not sees_backups(me):
+            return rows
+        out = [r for r in rows if not moves.host_of(str(r.get("server") or ""))]
+        for servers, data, _why in await placed_answers(request, me, "/api/backups"):
+            found = data.get("rows") if isinstance(data, dict) else None
+            out += [r for r in found or [] if isinstance(r, dict) and r.get("server") in servers]
+        out.sort(key=lambda r: str(r.get("time") or ""), reverse=True)
+        return out
+
+    @app.api_route(placement.PLACED_PREFIX + "/{server}/{path:path}", methods=["GET", "HEAD", "POST", "PUT", "DELETE"])
+    async def placed_proxy(request: Request, server: str, path: str):
+        """A placed server's page or answer, asked of the machine it runs on through its link, for whoever may
+        ask it here (AD-014 §2-4). What is not that server's is this machine's own page (307)."""
+        inner = "/" + path
+        query = f"?{request.url.query}" if request.url.query else ""
+        given = request.headers.get(_PREFIX_HEADER, "")
+        here = given if _PREFIX.fullmatch(given) else ""
+        link_name = moves.host_of(server)
+        route, params = inner_route(request.method, inner)
+        body = await request.body() or None
+        own = route is not None and (params.get("server") == server or (
+            "job_id" in params and jobs.get(str(params["job_id"])) is None
+            and placed_jobs.server(str(params["job_id"])) in ("", server)) or (
+            # a route of the workspace that acts on this server (its body names it: a repository added to it)
+            params.get("workspace") == settings.workspace_of(server) and placed_body_names(body, server)))
+        if not link_name or not own:
+            # this machine's own (the copy here again, the workspace's page, the lists, the account)
+            return RedirectResponse(here + inner + query, status.HTTP_307_TEMPORARY_REDIRECT)
+        me = placed_caller(request, inner, route, params, server)
+        # the prefix a linked panel serves this machine under, as its login said it (identify)
+        here = prefix_of(request)
+        link = settings.link_targets.get(link_name)
+        if link is None:
+            return placed_failure(request, me, link_name, "there is no link to it here any more")
+        headers = {k: request.headers[k] for k in PLACED_REQUEST_HEADERS if k in request.headers}
+        # read here before it is passed on: an answer to read is asked plain
+        headers["accept-encoding"] = "identity"
+        headers["accept-language"] = request_language(request)
+        if me.scoped:
+            headers.update(link_headers(link, me.name, me.role))
+            headers[placement.SCOPE_HEADER] = placement.scope_encode(placed_scope(me, server))
+        else:
+            headers.update(link_headers(link, me.on_behalf or me.name, me.role))
+        # its pages under this machine's prefix (a central panel's, when it shows this one) and the server's
+        headers.pop("X-OmniaCLI-Prefix", None)
+        headers[_PREFIX_HEADER] = here + f"{placement.PLACED_PREFIX}/{server}"
+        menu = getattr(request.state, "central_menu", None)
+        headers[_MENU_HEADER] = ",".join(menu if menu is not None else menu_places(me))
+        what = audit.SENSITIVE_READS.get(getattr(route, "path", ""))
+        if what and request.method in ("GET", "HEAD"):
+            kind, name, on_behalf = audit_actor(me)
+            ip = request.client.host if request.client else ""
+            if access_log.first_read((kind, name, ip, inner)):
+                access_log.record("read", kind, name, ip, (f"{what}: {request.method} {inner} (on {link.name})"
+                                                           + (f" for {on_behalf}" if on_behalf else ""))[:300],
+                                  what=what, server=server)
+        client = link_clients.client(link)
+        for last in (False, True) if request.method in ("GET", "HEAD") else (True,):
+            try:
+                resp = await client.send(client.build_request(request.method, inner + query, headers=headers,
+                                                              content=body), stream=True)
+                break
+            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError, httpx.CloseError) as exc:
+                if last:
+                    return placed_failure(request, me, link.name, describe_error(exc))
+            except httpx.HTTPError as exc:
+                return placed_failure(request, me, link.name, describe_error(exc))
+        if resp.status_code == 401:
+            await resp.aclose()
+            return placed_failure(request, me, link.name, "the other instance refused the token: ask for a new one")
+        kept = {k: resp.headers[k] for k in _LINK_RESPONSE_HEADERS if k in resp.headers and k != "content-length"}
+        # an action that answers with its job's page (a 303 there): the job is the host's
+        started = placement.job_of_path(placement.inner_path(urlsplit(resp.headers.get("location", "")).path[len(here):]))
+        if started:
+            placed_jobs.add(started, server)
+        kind = resp.headers.get("content-type", "")
+        size = int(resp.headers.get("content-length") or 0)
+        if not (("json" in kind or "text/html" in kind) and size <= PLACED_READ_MOST):
+            if "content-length" in resp.headers:
+                kept["content-length"] = resp.headers["content-length"]
+            return StreamingResponse(resp.aiter_raw(), status_code=resp.status_code, headers=kept,
+                                     background=BackgroundTask(resp.aclose))
+        try:
+            raw = await resp.aread()
+        except httpx.HTTPError as exc:
+            return placed_failure(request, me, link.name, describe_error(exc))
+        finally:
+            await resp.aclose()
+        if "json" in kind:
+            with contextlib.suppress(ValueError):
+                for job in placement.job_ids(json.loads(raw)):
+                    placed_jobs.add(job, server)
+        if me.scoped:
+            text = raw.decode("utf-8", errors="replace")
+            raw = placed_text(text, placed_names(server, link), request_language(request), me).encode()
+        return Response(raw, status_code=resp.status_code, headers=kept)
+
+    app.add_middleware(PlacedRoutes)
     MOVE_FLOWS = 2
     # the trees of the instance copied, in this order: its code first (its modules), then its files, its backups
     MOVE_TREES = ("addons", "filestore", "backups")
@@ -20618,10 +21095,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             why.append(f"The database of {inst.server} is on another machine: it is not this machine's to move")
         if srv.test is not None:
             why.append(f"{inst.server} has a test environment: an instance with a test moves in a later step")
-        if ws.members:
-            # AD-014 consequence 3: until its people reach an instance on another machine through this one (step 5)
-            why.append(f"Workspace {ws.name} has members: until they can reach an instance on another machine "
-                       "through this one, only an instance of a workspace without members moves")
+        # a workspace with members moves too (AD-014, step 5 of §9): its people reach the instance through here
         key = dedicated_key(inst)
         if key and (replica_record(key) or {}).get("state") not in (None, ""):
             rec = replica_record(key) or {}
@@ -20717,7 +21191,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         """Why the machine of a link cannot hold the instance, "" when it can."""
         if link.ssh is None and not link.url.startswith("https://"):
             return "the link is in HTTP: the customer's data do not pass in clear"
-        if not facts.get("template"):
+        if not facts.get("template") and not facts.get("template_store"):
             return f"it has no template {template}"
         if not facts.get("storage") or not facts.get("docker"):
             return "no storage for workspaces"
@@ -20773,6 +21247,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if facts is not None:
                 row.update({k: facts.get(k) for k in ("load", "free", "version", "arch", "majors", "ms", "cluster")})
                 row["workspace"] = (facts.get("workspace") or {}).get("state") or "new"
+                # a template it has not but installs from its store: Prepare installs it first (UX-014 B4)
+                row["install"] = bool(facts.get("template_store") and not facts.get("template"))
                 why = host_refusal(link, facts, kind, need, tname, ws, sizes.get("vector"))
             elsewhere = move_other_link(ws, server)
             if not why and elsewhere and elsewhere != name:
@@ -21015,7 +21491,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                         raise JobFailed(f"The copy of the database on {link.name} is not in step after 300 s")
                     job.log(f"The database there is {lag} s behind this one")
                 there, _here = own_address_to(link)
-                moves.update(server, address=there, acme=True)
+                moves.update(server, address=there, home_address=_here, acme=True)
                 await move_forward(job, ws)
                 seconds = round(time.monotonic() - started, 1)
                 moves.update(server, state="ready", ready_at=datetime.datetime.now().isoformat(timespec="seconds"),
@@ -21031,6 +21507,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 raise
         job = jobs.submit(f"Move {server} to {link.name}: prepare", [inst.key], f"manual: {me}", action,
                           workspace=ws.name, frozen_ok=True)
+        job.result["customer"] = {"hidden": True}  # the provider's own: not in its customer's lists
         moves.save(server, {**moves.state(server), "link": link.name, "state": "preparing", "job": job.id,
                             "since": datetime.datetime.now().isoformat(timespec="seconds"), "kind": kind,
                             "workspace": ws.name, "instance": instance})
@@ -21075,6 +21552,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
         async def action(job):
             move_progress(job, MOVE_STEPS_COMPLETE, here_name(), link.name)
+            # what its customer reads of it (customerview: no machine's name, UX-014 B6)
+            job.result["customer"] = {"title": f"{server} moved to another machine of the provider", "lines": [
+                "In maintenance: the instance moves to another machine of the provider"]}
             moves.update(server, state="completing", job=job.id)
             probe = zerodowntime.Probe(site.url).start() if site is not None else None
             started = time.monotonic()
@@ -21112,6 +21592,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 if probe is not None:
                     found = await probe.stop()
                     zerodowntime.said(job, found, "the move that went back", site.url)
+                job.result["customer"] = {"title": f"{server} moved to another machine of the provider", "error": True,
+                                          "lines": [*job.result["customer"]["lines"],
+                                                    "The move did not end: the instance runs where it ran, as before"]}
                 raise
             move_step(job, "names")
             await move_forward(job, ws)
@@ -21146,20 +21629,59 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             line = (f"Without service for {found['seconds']:.1f} s" if found else
                     f"{server} has no name of its own here: its stop was not measured through a name")
             job.log(line)
+            job.result["customer"] = {"title": f"{server} moved to another machine of the provider", "lines": [
+                *job.result["customer"]["lines"], line if found else "Its stop was not measured through a name",
+                "It runs on another machine of the provider: the same addresses, the same users"]}
             entry = {"id": job.id, "job": job.id, "kind": "move", "title": job.title, "by": job.source,
                      "started": job.started, "finished": datetime.datetime.now().isoformat(timespec="seconds"), "outcome": "success",
                      "error": None, "repositories": [], "state": None, "backup": None, "back_to": None,
                      "unserved": {**found, "how": "the move"} if found else None,
                      "moved": {"from": here_name(), "to": link.name}}
             await asyncio.to_thread(deploys.record, deploys_folder, inst.key, entry)
-            with contextlib.suppress(JobFailed):
-                await link_post(job, link, headers, f"{base}/sync", {"deploy": entry}, "the line of its deploys there")
+            given = move_schedules(ws, server)
+            try:
+                await link_post(job, link, headers, f"{base}/sync", {"deploy": entry, **given},
+                                "the line of its deploys, its schedules and their destinations there")
+                if given["schedules"]:
+                    job.log(f"Its schedules run there now: {', '.join(sorted(given['schedules']))}"
+                            + (f" (to {', '.join(sorted(given['destinations']))})" if given["destinations"] else ""))
+                    await move_suspend(job, server)
+            except JobFailed as exc:
+                job.warn(f"Its schedules were not given to {link.name} ({exc}): they stay here, suspended by the "
+                         "copy's stop; set them again on its page there")
             job.log(f"On {link.name} from now; here {server} stays stopped until "
                     f"{placement._date(placement.copy_until(now))}, then Delete the copy… frees it")
             job.result = {**job.result, "move": {"unserved": found, "seconds": seconds, "odoo_s": odoo_s}}
         job = jobs.submit(f"Move {server} to {link.name}: complete", [inst.key], f"manual: {me}", action,
                           workspace=ws.name, frozen_ok=True)
         return {"job": job.id}
+
+    def move_schedules(ws: Workspace, server: str) -> dict:
+        """What a placed instance's schedules are on its host (AD-014 «Come seguono»): its schedules (the automatic
+        backups and the others that act on it: not a copy from a link nor a script, which are this machine's),
+        and the workspace's destinations they copy to, with their keys (a secret: in the body only)."""
+        own = [sch for sch in scheduler.schedules.values()
+               if sch.instance.partition("/")[0] == server and sch.copy is None and sch.script is None]
+        used = {sch.backup.destination for sch in own if sch.backup is not None and sch.backup.destination}
+        found = {n: d for n, d in load_destinations().items() if n in used and d.workspace == ws.name}
+        return {"schedules": {sch.name: schedules.schedule_to_dict(sch) for sch in own},
+                "destinations": {n: d.to_dict() for n, d in found.items()}}
+
+    async def move_suspend(job, server: str) -> None:
+        """The schedules of a placed instance here switched off, kept for its return (AD-014): its host runs them."""
+        async with schedules_lock:
+            updated, off = {}, []
+            for name, sch in scheduler.schedules.items():
+                if sch.instance.partition("/")[0] == server and sch.enabled:
+                    sch = dataclasses.replace(sch, enabled=False)
+                    off.append(name)
+                updated[name] = sch
+            if not off:
+                return
+            await asyncio.to_thread(schedules.save_schedules, settings.schedules_file, updated)
+            scheduler.schedules = updated
+        moves.update(server, suspended=sorted(off))
+        job.log(f"Here they are switched off, kept for its return: {', '.join(sorted(off))}")
 
     async def move_dump(job, ws: Workspace, instance: str, inst: Instance) -> dict:
         """The database of an instance on the machine's cluster dumped into its backups (with Odoo stopped),
@@ -21263,6 +21785,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             job.log(f"{server} stays here, as it was")
         job = jobs.submit(f"Move {server} to {state.get('link')}: cancel", [inst.key], f"manual: {me}", action,
                           workspace=ws.name, frozen_ok=True)
+        job.result["customer"] = {"hidden": True}  # the provider's own: not in its customer's lists
         return {"job": job.id}
 
     @app.post("/api/servers/{server}/move/delete-copy")
@@ -21306,15 +21829,18 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             for tree in MOVE_TREES:
                 shutil.rmtree(treesync_dir() / "copies" / f"move-{server}-{tree}", ignore_errors=True)
             moves.update(server, copy="deleted", deleted_at=datetime.datetime.now().isoformat(timespec="seconds"))
-            await rename_in_workspaces(server, None)
+            # the instance stays its workspace's (AD-014): its people reach it on the other machine through here,
+            # and the lists show it as that machine says it is
             current = settings.workspaces.get(ws.name)
             if current is not None:
                 with contextlib.suppress(JobFailed):
                     await publish_names(job, current)
             job.log(f"The copy of {server} is gone from here, with its backups ({freed >> 20} MB); it runs on "
                     f"{state.get('link')}")
-        return jobs.submit(f"Delete the copy of {server} moved to {state.get('link')}", [inst.key], source, action,
-                           workspace=ws.name, frozen_ok=True)
+        job = jobs.submit(f"Delete the copy of {server} moved to {state.get('link')}", [inst.key], source, action,
+                          workspace=ws.name, frozen_ok=True)
+        job.result["customer"] = {"hidden": True}  # the provider's own: not in its customer's lists
+        return job
 
     # --- the host's side: the routes the home of a workspace asks through its link (AD-014 consequence 1)
 
@@ -21336,6 +21862,18 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return refuse(f"No instance of workspace {workspace} is hosted here", status.HTTP_404_NOT_FOUND)
         return workspace, entry, f"{workspace}-{instance}"
 
+    async def placement_store_template(name: str) -> dict | None:
+        """The template name as the place this machine installs templates from publishes it (None: not there,
+        or that place does not answer): what Prepare installs when this machine has not it."""
+        if not name:
+            return None
+        try:
+            found = {t["name"]: t for t in await templatestore.available(settings.plugin_source)}
+        except pluginstore.StoreError:
+            return None
+        template = found.get(name)
+        return template if template is not None and not template.get("error") else None
+
     @app.get("/api/placements/host")
     async def placement_host(template: str = "", workspace: str = "", instance: str = "", major: str = "",
                              need: int = 0, domain: str = "", me: Principal = Depends(current_user)):
@@ -21347,6 +21885,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         found_templates = await asyncio.to_thread(workspaceops.templates)
         out = {"machine": here_name(), "version": _version(), "arch": os.uname().machine,
                "majors": sorted(machinedb.registry()), "template": template in found_templates if template else None,
+               # a template it has not, published where it installs templates from: Prepare installs it
+               "template_store": bool(template) and template not in found_templates
+               and await placement_store_template(template) is not None,
                "storage": bool(settings.storage_roots), "docker": workspaceops.docker_missing() is None,
                "load": placement.load_of(load_history.window(14)["points"]),
                "cluster": (major in machinedb.registry()) if major else None, "major_wanted": major,
@@ -21393,9 +21934,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return found
         _ws, entry, name = found
         payload = payload if isinstance(payload, dict) else {}
-        template = (await asyncio.to_thread(workspaceops.templates)).get(str(payload.get("template") or ""))
-        if template is None:
-            return refuse(f"No template {payload.get('template')!r} here")
+        wanted = str(payload.get("template") or "")
+        template = (await asyncio.to_thread(workspaceops.templates)).get(wanted)
+        published = await placement_store_template(wanted) if template is None else None
+        if template is None and published is None:
+            return refuse(f"No template {wanted!r} here")
         if name in settings.servers and (entry.get("instances") or {}).get(instance) is None:
             return refuse(f"{name} is here already")
         web = payload.get("web") if isinstance(payload.get("web"), dict) else {}
@@ -21403,6 +21946,16 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
         async def action(job):
             job.log(f"--- {name} arrives from {me.name}: made here, never started, its names held")
+            nonlocal template
+            if template is None:
+                # the template it is made from, installed first (UX-014 B4), as Settings › Templates installs it
+                manifest = await templatestore.download(job, settings.plugin_source, published,
+                                                        templatestore.templates_dir(settings.jobs_dir))
+                await ops.run(job, workspaceops.helper("template-install", wanted), timeout=workspaceops.HELPER_TIMEOUT)
+                job.log(f"Template {wanted} {manifest['version']} installed: the instance is made from it")
+                template = (await asyncio.to_thread(workspaceops.templates)).get(wanted)
+                if template is None:
+                    raise JobFailed(f"The template {wanted} is not here after its install")
             made_ws = workspace not in settings.workspaces
             if made_ws:
                 limits = {k: v for k, v in (payload.get("limits") or {}).items() if isinstance(v, (int, float))}
@@ -21463,6 +22016,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             job.result = {**job.result, "placement": {"workspace_made": made_ws, "server": name}}
         job = jobs.submit(f"{name} arrives from {me.name}", [f"{name}/production"], f"manual: {me}", action,
                           workspace=workspace)
+        job.result["customer"] = {"hidden": True}  # the provider's own: not in its customer's lists
         return {"job": job.id}
 
     def placement_held(ws: Workspace) -> dict:
@@ -21599,9 +22153,50 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if isinstance(payload.get("deploy"), dict):
                 await asyncio.to_thread(deploys.record, deploys_folder, f"{name}/production", payload["deploy"])
                 job.log("The line of the move in its deploys")
+            await placement_schedules(job, workspace, name, payload)
         job = jobs.submit(f"{name}: what its home gives it", [f"{name}/production"], f"manual: {me}", action,
                           workspace=workspace)
+        job.result["customer"] = {"hidden": True}  # the provider's own: not in its customer's lists
         return {"job": job.id}
+
+    async def placement_schedules(job, workspace: str, name: str, payload: dict) -> None:
+        """The schedules of an instance placed here and the destinations of its workspace they copy to, from its
+        home (AD-014): an instance's schedules only, a destination of that workspace only."""
+        given = payload.get("destinations")
+        if isinstance(given, dict) and given:
+            async with destinations_lock:
+                found = await asyncio.to_thread(load_destinations)
+                kept = []
+                for dest_name, data in given.items():
+                    if not isinstance(data, dict) or str(data.get("workspace") or "") != workspace:
+                        continue
+                    if dest_name in found and found[dest_name].workspace != workspace:
+                        job.warn(f"A destination {dest_name} of another workspace is here: it was not taken")
+                        continue
+                    try:
+                        found[dest_name] = destinations.parse_destination(str(dest_name), data)
+                    except ConfigError as exc:
+                        job.warn(f"The destination {dest_name}: {exc}")
+                        continue
+                    kept.append(str(dest_name))
+                await asyncio.to_thread(destinations.save_destinations, settings.destinations_file, found)
+            job.log(f"The destinations of its workspace: {', '.join(sorted(kept)) or 'none'}")
+        given = payload.get("schedules")
+        if isinstance(given, dict) and given:
+            async with schedules_lock:
+                updated, kept = dict(scheduler.schedules), []
+                for sch_name, data in given.items():
+                    if not isinstance(data, dict) or str(data.get("instance") or "").partition("/")[0] != name:
+                        continue
+                    try:
+                        updated[str(sch_name)] = schedules.parse_schedule(str(sch_name), data)
+                    except (ConfigError, TypeError, ValueError, AttributeError) as exc:
+                        job.warn(f"The schedule {sch_name}: {exc}")
+                        continue
+                    kept.append(str(sch_name))
+                await asyncio.to_thread(schedules.save_schedules, settings.schedules_file, updated)
+                scheduler.schedules = updated
+            job.log(f"Its schedules: {', '.join(sorted(kept)) or 'none'}")
 
     @app.post("/api/placements/{workspace}/{instance}/db/{op}")
     async def placement_db(workspace: str, instance: str, op: str, payload: dict = Body(...),
@@ -21674,6 +22269,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         action = {"follow": follow, "switch": switch, "restore": restore}[op]
         job = jobs.submit(f"Database of {name} from {me.name} ({op})", [f"{name}/production"], f"manual: {me}",
                           action, workspace=workspace)
+        job.result["customer"] = {"hidden": True}  # the provider's own: not in its customer's lists
         return {"job": job.id}
 
     @app.post("/api/placements/{workspace}/{instance}/{step}")
@@ -21748,6 +22344,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         action = {"start": start, "release": release, "crons": crons, "abort": abort}[step]
         job = jobs.submit(f"{name} from {me.name}: {step}", [f"{name}/production"], f"manual: {me}", action,
                           workspace=workspace)
+        job.result["customer"] = {"hidden": True}  # the provider's own: not in its customer's lists
         return {"job": job.id}
 
     def linked_refusal(link: LinkTarget, resp: httpx.Response, major: str) -> str:
@@ -22798,7 +23395,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     def api_production(me: Principal, inst: Instance, action: str, confirm: Optional[str],
                        confirm_needed: bool = True) -> None:
         """A production is updated by hand only: apiguard.production_refusal (MCP's acting says the same)."""
-        refused = apiguard.production_refusal(manual_only(inst), inst.server, me.role, settings.token_ci(me.name),
+        refused = apiguard.production_refusal(manual_only(inst), inst.server, me.role, settings.token_ci(me.name) or me.ci,
                                               confirm or "", action, confirm_needed)
         if refused is not None:
             raise refused

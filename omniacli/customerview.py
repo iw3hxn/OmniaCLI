@@ -39,6 +39,9 @@ class CustomerView:
     machines: frozenset[str] = frozenset()
     members: frozenset[str] = frozenset()
     tokens: frozenset[str] = frozenset()
+    # this machine's own names (its host name), and how the customer reads them: "the server" (the map's word)
+    here: frozenset[str] = frozenset()
+    here_word: str = "the server"
 
     def who(self, name: str) -> str:
         """Who acted, as the customer may read it: its own users and tokens
@@ -64,6 +67,8 @@ class CustomerView:
         for name in sorted(self.links | self.machines, key=len, reverse=True):
             value = re.sub(rf"(?<![\w.-]){re.escape(name)}(?![\w-])", self.elsewhere if name in self.machines
                            else self.provider, value)
+        for name in sorted(self.here - self.links - self.machines, key=len, reverse=True):
+            value = re.sub(rf"(?<![\w.-]){re.escape(name)}(?![\w-])", self.here_word, value)
         value = _UNIT_PATH.sub(lambda m: "…" + m.group(0)[m.group(0).rindex("."):], value)
         return _HOST_PATH.sub(lambda m: "…/" + m.group(0).rstrip("/").rsplit("/", 1)[-1], value)
 
@@ -85,7 +90,26 @@ class CustomerView:
 
     def job(self, job, lines: bool = True):
         """A copy of job to show, its lines too (a list shows none: they are
-        left out); the job itself is not changed."""
+        left out); the job itself is not changed. A job that writes what its
+        customer reads (result["customer"]: {title, lines}, the move of an
+        instance between the provider's machines) shows that only."""
+        own = customer_part(job)
+        if own is not None:
+            return dataclasses.replace(job, title=self.text(str(own.get("title") or "")), source=self.source(job.source),
+                                       error=self.text(job.error) if own.get("error") else None, result={},
+                                       lines=[self.text(str(line)) for line in own.get("lines") or []] if lines else [])
         return dataclasses.replace(job, title=self.text(job.title), source=self.source(job.source),
                                    error=self.text(job.error), result=self.data(job.result),
                                    lines=[self.text(line) for line in job.lines] if lines else [])
+
+
+def customer_part(job) -> dict | None:
+    """What a job writes for its customer to read instead of itself (result["customer"]), None for none."""
+    found = job.result.get("customer") if isinstance(job.result, dict) else None
+    return found if isinstance(found, dict) else None
+
+
+def hidden_from_customers(job) -> bool:
+    """A job of the provider's own on a customer's instance (the move's Prepare, Cancel, Delete the copy): the
+    customer does not see it in its lists."""
+    return bool((customer_part(job) or {}).get("hidden"))

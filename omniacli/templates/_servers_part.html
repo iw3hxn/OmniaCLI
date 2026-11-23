@@ -24,7 +24,7 @@
         {% if row.parent %}<span class="badge info" title="{{ _("Staging of {name}", name=row.parent) }}">{{ _("Staging") }}</span>{% else %}<span class="badge ok">{{ _("Production") }}</span>{% endif %}
         {% if host(row.web.get("production"), row.label) != row.label %}<span class="muted row-name hide-sm">{{ row.label }}</span>{% endif %}
         <span class="job-busy" data-link="{{ row.link }}" data-busy="{{ row.name }}/production" hidden></span></td>
-      <td>{{ state(row.state.get("production"), row.busy.get("production")) }}</td>
+      <td>{% if row.down %}<span class="state-dot unknown" title="{{ row.down }}">{{ row.down }}</span>{% else %}{{ state(row.state.get("production"), row.busy.get("production")) }}{% endif %}</td>
       <td class="muted when hide-sm">{% if row.created %}{{ row.created | moment }}{% else %}—{% endif %}</td>
     </tr>
     {% endif %}
