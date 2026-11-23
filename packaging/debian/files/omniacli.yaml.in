@@ -67,3 +67,15 @@ servers_file: /var/lib/omniacli/servers.yaml
 plugins:
   index: https://www.omniasolutions.website/download/omniacli-plugins.json
   public_key: "ed25519:Xj7pTjyUP/LolfpcvftRbL/DYs7CL9dZ4sug9p5fqfg="
+
+# OmniaCLI updated from its own panel (README, Update OmniaCLI): its package,
+# an https address, installed only when its signed manifest (OmniaCLI.deb.json
+# and .json.sig next to it) verifies with public_key (default: the one of
+# plugins). The address of one version ({version}) keeps the installed package
+# for the way back; releases gives the notes of the versions (GitHub's API).
+# Both are derived from a GitHub release address.
+# self_update:
+#   url: https://github.com/iw3hxn/OmniaCLI/releases/latest/download/OmniaCLI.deb
+#   public_key: "ed25519:..."
+#   version_url: https://github.com/iw3hxn/OmniaCLI/releases/download/omniacli-v{version}/OmniaCLI.deb
+#   releases: https://api.github.com/repos/iw3hxn/OmniaCLI/releases?per_page=100

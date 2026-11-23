@@ -344,6 +344,8 @@
     down: {{ _("{name} does not answer: {why}. Its workspaces are not here.") | tojson }},
     older: {{ _("{name} has an older OmniaCLI: update it to see its workspaces here.") | tojson }},
     olderMany: {{ _("To update to see their workspaces here (an older OmniaCLI): {names}.") | tojson }},
+    available: {{ _("OmniaCLI {version} is published.") | tojson }}, updateOn: {{ _("Update OmniaCLI on {name}…") | tojson }},
+    updateTitle: {{ _("Opens the page of {name} with the dialog of the update: what the new version brings, then install it there") | tojson }},
     checkLink: {{ _("Check the link") | tojson }},
     checkLinkTitle: {{ _("Opens Settings › Links, where the link is tried and corrected") | tojson }},
     asking: {{ _("{name}: asking…") | tojson }}, here: {{ _("this machine") | tojson }},
@@ -432,6 +434,13 @@
   const counts = document.getElementById("ws-counts");
 
   const baseOf = (m) => m.link ? "" : PREFIX;
+  // the OmniaCLI published (this machine's source: README, Update OmniaCLI), said next to the machines that are
+  // older; for the machine's admins only, the others get a 403 and nothing is said
+  let latest = null;
+  fetch(`${PREFIX}/api/machine/omniacli-update`, {headers: {Accept: "application/json"}})
+    .then((r) => (r.ok ? r.json() : null))
+    .then((d) => { if (d && d.latest) { latest = d.latest; if (Object.keys(found).length) draw(); } })
+    .catch(() => {});
   const href = (m, page) => page ? baseOf(m) + page : null;
   const keyOf = (m, ws) => `${m.key}/${ws.name}`;
   const levelOf = (ws) => (ws.watch || []).some((w) => w.level === "critical") ? 2 : (ws.watch || []).length ? 1 : 0;
@@ -714,7 +723,7 @@
     for (const m of machines) {
       const data = found[m.key];
       if (!data) continue;
-      if (data.error && data.older) { olderOnes.push(m.name); continue; }
+      if (data.error && data.older) { olderOnes.push(m); continue; }
       if (data.error) { special.push(machineRow(m, data)); continue; }
       for (const ws of data.workspaces || []) all.push({m, ws});
     }
@@ -728,8 +737,15 @@
     // the machines with an older OmniaCLI: one line under the rows, not one row each above them (they hide
     // nothing that is wrong: they only cannot say their workspaces yet)
     if (olderOnes.length) {
-      const td = el("td", {colspan: MACHINE_COLUMN ? 6 : 5}, "↑ ", fill(T.olderMany, {names: olderOnes.join(", ")}));
-      table.append(el("tbody", {class: "ws-machine-row older", "data-machine-error": olderOnes.join(",")}, el("tr", {}, td)));
+      const names = olderOnes.map((m) => m.name);
+      const td = el("td", {colspan: MACHINE_COLUMN ? 6 : 5}, "↑ ", fill(T.olderMany, {names: names.join(", ")}));
+      // where it is done: the page of each machine, whose dialog says what the new version brings (README, Update OmniaCLI)
+      if (latest) td.append(" ", fill(T.available, {version: latest}));
+      for (const m of olderOnes) {
+        td.append(" · ", el("a", {href: `${m.link ? `/links/${encodeURIComponent(m.link)}` : PREFIX}/#omniacli-update`,
+                                  title: fill(T.updateTitle, {name: m.name})}, fill(T.updateOn, {name: m.name})));
+      }
+      table.append(el("tbody", {class: "ws-machine-row older", "data-machine-error": names.join(",")}, el("tr", {}, td)));
     }
     // the counts: of every row read; the one of what is to look at is the filter
     const watched = all.filter(({ws}) => (ws.watch || []).length).length;

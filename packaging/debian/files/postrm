@@ -7,10 +7,12 @@ case "$1" in
     remove)
         # the workspaces' helpers are gone with the venv
         rm -f /etc/sudoers.d/omniacli-workspaces
+        rm -f /etc/sudoers.d/omniacli-self-update
         rm -rf /opt/omniacli/venv /opt/omniacli/venv.old /opt/omniacli/python /opt/omniacli/python.old /opt/omniacli/.python.*
         ;;
     purge)
         rm -f /etc/sudoers.d/omniacli-workspaces
+        rm -f /etc/sudoers.d/omniacli-self-update
         rm -rf /opt/omniacli/venv /opt/omniacli/venv.old /opt/omniacli/python /opt/omniacli/python.old /opt/omniacli/.python.*
         # the names published through another machine (relay.py): here the tunnels to a relay (their units,
         # keys and user); as a relay the tunnels hosted (their sites, certificates, the user omniacli-relay
@@ -59,6 +61,8 @@ case "$1" in
         # the templates installed from the download server (the instances
         # made from them keep their own files)
         rm -rf /var/lib/omniacli-templates
+        # the packages kept for the way back and the runs of the updates from the panel (selfupdate.py)
+        rm -rf /var/lib/omniacli-self-update
         rm -f /var/lib/omniacli/servers.yaml /var/lib/omniacli/servers.yaml.bak \
             /var/lib/omniacli/servers.yaml.tmp \
             /var/lib/omniacli/users.yaml /var/lib/omniacli/users.yaml.tmp \

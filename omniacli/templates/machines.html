@@ -44,6 +44,7 @@
   background-size: 200% 100%; animation: m-shine 1.4s linear infinite; }
 @keyframes m-shine { to { background-position: -200% 0; } }
 .m-note { font-size: 12px; color: var(--muted); }
+.m-facts .m-newer { color: var(--warn); font-weight: 600; }
 .m-error { font-size: 13px; color: var(--err); background: var(--err-soft); border-radius: var(--r); padding: 8px 10px;
   overflow-wrap: anywhere; }
 .m-progress .m-step { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; }
@@ -116,7 +117,11 @@
 
 <div class="page-head">
   <div><h1>{{ _("Servers") }}</h1></div>
-  <div class="actions"><span title="{{ _('Links a clean Ubuntu or Debian server: OmniaCLI installs everything there over ssh and shows it here, in about 15 minutes') }}">
+  <div class="actions">
+    {# README, Update OmniaCLI: the machines whose own source has a newer signed version, one after the other #}
+    <button type="button" id="m-update-all" hidden
+            title="{{ _('Updates OmniaCLI on every machine here where a newer version is published, one after the other; the first that fails stops the others') }}">{{ _("Update all…") }}</button>
+    <span title="{{ _('Links a clean Ubuntu or Debian server: OmniaCLI installs everything there over ssh and shows it here, in about 15 minutes') }}">
     <button type="button" class="primary" data-add-machine {{ "disabled" if not provision_key }}
             title="{{ _('Links a clean Ubuntu or Debian server: OmniaCLI installs everything there over ssh and shows it here, in about 15 minutes') }}">+ {{ _("Add a server") }}</button></span></div>
 </div>
@@ -203,6 +208,18 @@
   </form>
 </dialog>
 
+<dialog id="ua-dialog" aria-labelledby="ua-title" style="width: min(600px, calc(100vw - 32px))">
+  <form id="ua-form" novalidate>
+    <h2 id="ua-title">{{ _("Update OmniaCLI on the machines that are older") }}</h2>
+    <p class="muted">{{ _("One after the other, as the dialog of each machine does it: only OmniaCLI restarts there, Odoo does not. The first that fails stops the others.") }}</p>
+    <div id="ua-list"></div>
+    <p class="error" id="ua-error"></p>
+    <div class="actions" style="justify-content: flex-end">
+      <button type="button" id="ua-cancel" title="{{ _('Closes this window; an update that runs goes on, the next ones are not started') }}">{{ _("Close") }}</button>
+      <button type="submit" class="primary" id="ua-go"></button>
+    </div>
+  </form>
+</dialog>
 <dialog id="remove-dialog" aria-labelledby="remove-title" style="width: min(480px, calc(100vw - 32px))">
   <form method="dialog">
     <h2 id="remove-title"></h2>
@@ -221,6 +238,17 @@
     up: {{ _("Online") | tojson }}, starting: {{ _("Starting") | tojson }}, down: {{ _("Offline") | tojson }},
     preparing: {{ _("Preparing") | tojson }}, failed: {{ _("Not prepared") | tojson }},
     openTitle: {{ _("Opens the instances of {name}") | tojson }},
+    // OmniaCLI's own update (README, Update OmniaCLI): on the machine's page, which the card links to
+    available: {{ _("{version} available") | tojson }}, update: {{ _("Update OmniaCLI…") | tojson }},
+    unsigned: {{ _("{version} published, not installable from here") | tojson }},
+    updateTitle: {{ _("Opens the page of {name} with the dialog of the update: what the new version brings, then install it there") | tojson }},
+    uaGo: {{ _("Update {n} machines") | tojson }},
+    uaGoTitle: {{ _("Starts the updates one after the other; the job of each one is among the jobs of its machine") | tojson }},
+    uaRow: {{ _("{name}: OmniaCLI {from} → {to}") | tojson }}, uaType: {{ _("It serves productions: type {name}") | tojson }},
+    uaWaiting: {{ _("waiting") | tojson }}, uaRunning: {{ _("updating…") | tojson }},
+    uaDone: {{ _("done: OmniaCLI {to}, the panel was away {seconds} s") | tojson }}, uaFailed: {{ _("failed: {error}") | tojson }},
+    uaSkipped: {{ _("not started: an update before it failed") | tojson }}, uaAway: {{ _("updating… (its panel does not answer for {seconds} s)") | tojson }},
+    byHand: {{ _("its OmniaCLI cannot update itself from here yet: once by hand (README, Update OmniaCLI)") | tojson }},
     logTitle: {{ _("Opens the log of the job that prepares this server") | tojson }},
     retryTitle: {{ _("Opens the steps again with this server's address, to prepare it once more") | tojson }},
     testTitle: {{ _("Asks the OmniaCLI of this server whether it answers through the link. It changes nothing.") | tojson }},
@@ -252,6 +280,7 @@
   const grid = document.getElementById("m-grid"), empty = document.getElementById("m-empty");
   const summary = document.getElementById("m-summary");
   const stats = {};   // name: what its OmniaCLI said through the link, kept between redraws
+  let updating = false;   // Update all… runs: its button is left as it is meanwhile
   let cards = {{ machines | tojson }};
   // this machine, first: its instances are this OmniaCLI's own (Matteo's, by hand, or its workspaces)
   const HERE = {name: "", local: true, linked: true, state: "up", host: location.hostname, port: null};
@@ -321,6 +350,19 @@
     if (s.stagings) facts.append(el("span", {text: s.stagings === 1 ? T.staging : fill(T.stagings, {count: s.stagings})}));
     if (s.cores) facts.append(el("span", {text: fill(T.cores, {count: s.cores})}));
     if (s.version) facts.append(el("span", {text: fill(T.version, {version: s.version})}));
+    // a newer OmniaCLI: said by the machine itself (its own source), or, for one older than the update from the
+    // panel, by this one's; the first opens the dialog on its page, the second is done once by hand
+    const newer = s.update ? s.update.available : (central && central.latest && older(s.version, central.latest) ? central.latest : null);
+    if (newer) {
+      const unsigned = s.update && !s.update.signed;
+      const said = {class: "m-newer", text: fill(unsigned ? T.unsigned : T.available, {version: newer})};
+      if (unsigned && s.update.error) said.title = s.update.error;
+      facts.append(el("span", said));
+      if (s.update && s.update.signed && !s.update.unavailable) {
+        facts.append(el("a", {href: `${baseOf(card)}/#omniacli-update`, text: T.update,
+                              title: fill(T.updateTitle, {name: card.local ? T.here : card.name})}));
+      } else if (!s.update) facts.append(el("span", {text: T.byHand}));
+    }
     box.append(facts);
     if (s.portal) {
       box.append(el("div", {class: "m-note"}, T.portal + " ",
@@ -372,6 +414,7 @@
       el("span", {}, el("b", {text: String(shown)}), shown === 1 ? T.server : T.servers),
       el("span", {}, el("b", {text: String(counts.up)}), T.online),
       counts.preparing ? el("span", {}, el("b", {text: String(counts.preparing)}), T.preparingN) : "");
+    if (!updating) document.getElementById("m-update-all").hidden = updatable().length < 2;
   }
 
   async function getJson(url) {
@@ -385,10 +428,23 @@
     return `${n >= 10 || i === 0 ? Math.round(n) : n.toFixed(1)} ${units[i]}`;
   }
   // its OmniaCLI's own answers, through the link (the link proxy): version, load, disk, instances
+  // 2026.1.5477 < 2026.1.5502, number by number (selfupdate.version_key)
+  function older(version, than) {
+    const a = String(version || "").split("~")[0].match(/\d+/g) || [], b = String(than || "").split("~")[0].match(/\d+/g) || [];
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+      const x = Number(a[i] || 0), y = Number(b[i] || 0);
+      if (x !== y) return x < y;
+    }
+    return String(version).includes("~") && !String(than).includes("~");
+  }
+  // what this OmniaCLI knows is published: for the machines whose OmniaCLI does not say it yet
+  let central = null;
   async function loadStats(card) {
     const base = `${baseOf(card)}/api`;
-    const [info, metrics, disks, servers] = await Promise.all([
-      getJson(`${base}/info`), getJson(`${base}/metrics?machine_only=true`), getJson(`${base}/disks`), getJson(`${base}/servers`)]);
+    const [info, metrics, disks, servers, update] = await Promise.all([
+      getJson(`${base}/info`), getJson(`${base}/metrics?machine_only=true`), getJson(`${base}/disks`), getJson(`${base}/servers`),
+      getJson(`${base}/machine/omniacli-update`)]);
+    if (card.local && update) central = update;
     if (!info) { stats[card.name] = {error: T.unreachable}; return; }
     const points = ((metrics && metrics.machine) || []).map((p) => p.cpu).filter((v) => v !== null && v !== undefined);
     const recent = points.slice(-6);
@@ -396,7 +452,7 @@
     const all = (disks && disks.disks) || [];
     const root = all.find((d) => d.mount === "/") || all[0];
     stats[card.name] = {
-      version: info.version, cores: metrics && metrics.cores,
+      version: info.version, cores: metrics && metrics.cores, update,
       // where its customers log in: "" none yet, undefined an OmniaCLI of before
       portal: info.portal,
       cpu: recent.length ? recent.reduce((a, b) => a + b, 0) / recent.length : null, cpuSeries: points.slice(-60),
@@ -448,6 +504,75 @@
     if (removeDialog.returnValue !== "remove" || !removing) return;
     await post(`${PREFIX}/api/links/delete`, {name: removing.name});
     delete stats[removing.name]; removing = null;
+    refresh();
+  });
+
+  // Update all… (README, Update OmniaCLI): the machines whose OmniaCLI says a newer signed version is published,
+  // the linked ones first and this one last (its own restart does not stop the others), one after the other, each
+  // asked through its link as its own dialog asks it; the first that fails stops the others
+  const uaDialog = document.getElementById("ua-dialog"), uaList = document.getElementById("ua-list");
+  function updatable() {
+    return [...cards, HERE].filter((c) => {
+      const u = stats[c.name] && stats[c.name].update;
+      return u && u.available && u.signed && !u.unavailable && !u.job;
+    });
+  }
+  let uaRows = [];
+  document.getElementById("m-update-all").addEventListener("click", () => {
+    uaRows = updatable().map((card) => {
+      const u = stats[card.name].update, state = el("span", {class: "muted", text: T.uaWaiting});
+      const typed = u.confirm ? el("input", {type: "text", class: "mono", autocomplete: "off", placeholder: u.confirm,
+                                             "aria-label": fill(T.uaType, {name: u.confirm})}) : null;
+      const row = el("div", {class: "m-note", style: "margin: 0 0 10px; font-size: 14px"},
+        el("b", {text: fill(T.uaRow, {name: card.local ? T.here : card.name, from: u.installed, to: u.available})}), " · ", state,
+        typed ? el("label", {style: "display: block; margin-top: 4px"}, fill(T.uaType, {name: u.confirm}), " ", typed) : null);
+      return {card, u, state, typed, row};
+    });
+    uaList.replaceChildren(...uaRows.map((r) => r.row));
+    const go = document.getElementById("ua-go");
+    go.textContent = fill(T.uaGo, {n: uaRows.length}); go.title = T.uaGoTitle; go.hidden = false; go.disabled = false;
+    document.getElementById("ua-error").textContent = "";
+    uaDialog.showModal();
+  });
+  document.getElementById("ua-cancel").addEventListener("click", () => { updating = false; uaDialog.close(); });
+  async function followJob(base, id, state) {
+    let lostAt = null, interruptedAt = null;
+    for (;;) {
+      const data = await getJson(`${base}/api/jobs/${encodeURIComponent(id)}?said=1`);
+      if (!data) {
+        lostAt = lostAt || Date.now();
+        state.textContent = fill(T.uaAway, {seconds: Math.round((Date.now() - lostAt) / 1000)});
+      } else {
+        if (["success", "warned"].includes(data.outcome)) return {ok: true, result: (data.result || {}).self_update || {}};
+        interruptedAt = data.status === "interrupted" ? (interruptedAt || Date.now()) : null;
+        if (["failed", "stopped"].includes(data.status) || (interruptedAt && Date.now() - interruptedAt > 60000)) {
+          return {ok: false, error: data.error || data.status};
+        }
+      }
+      await new Promise((done) => setTimeout(done, 1500));
+    }
+  }
+  document.getElementById("ua-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const missing = uaRows.find((r) => r.typed && r.typed.value.trim() !== r.u.confirm);
+    if (missing) { document.getElementById("ua-error").textContent = fill(T.uaType, {name: missing.u.confirm}); return; }
+    const go = document.getElementById("ua-go");
+    go.hidden = true;
+    updating = true;
+    let failed = false;
+    for (const r of uaRows) {
+      if (failed || !updating) { r.state.textContent = T.uaSkipped; continue; }
+      r.state.textContent = T.uaRunning;
+      const {ok, data} = await post(`${baseOf(r.card)}/api/machine/omniacli-update`,
+                                    {action: "update", confirm: r.typed ? r.typed.value.trim() : ""});
+      if (!ok || !data.job) { r.state.textContent = fill(T.uaFailed, {error: data.error || data.detail || "—"}); failed = true; continue; }
+      const end = await followJob(baseOf(r.card), data.job, r.state);
+      if (end.ok) {
+        const seconds = end.result.away_seconds !== undefined && end.result.away_seconds !== null ? Math.round(end.result.away_seconds) : "?";
+        r.state.textContent = fill(T.uaDone, {to: end.result.to || r.u.available, seconds});
+      } else { r.state.textContent = fill(T.uaFailed, {error: end.error}); failed = true; }
+    }
+    updating = false;
     refresh();
   });
 

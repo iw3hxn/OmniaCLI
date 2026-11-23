@@ -621,6 +621,70 @@ kept so by upgrades). The sudoers lines name that user
 makes the machine a development one, with no restriction on the shells, unless
 the main configuration says `machine: server`.
 
+### Update OmniaCLI
+
+A machine's page says its OmniaCLI's version, and next to it the version
+published when it is newer (**2026.1.5502 available**): its admins get
+**Update OmniaCLI…**. The Servers list, the Workspaces list and the upload of
+a backup say the same of the linked machines and open their page with the
+dialog (`#omniacli-update` in the address); through a link the machine
+updates itself, asked by a person who is an admin there (never by the
+central alone).
+
+The dialog says from which version to which, the notes of every version in
+between (the GitHub releases of the source), what does not change (Odoo, its
+databases, its containers and the sites of nginx: only OmniaCLI restarts, and
+for how long the panel is away, measured at the last update: about 20 s on an
+Ubuntu 24.04 that reaches PyPI, where the install rebuilds the venv), and that the
+package of the version installed now is kept: **Back to the version
+before…** installs it again for 14 days. A machine that serves productions
+asks its name, typed, as for a deletion. The page then follows the job while
+OmniaCLI restarts and comes back.
+
+What it does, and what makes it safe:
+
+- **The source is root's**: `self_update` of `/etc/omniacli/omniacli.yaml`
+  (commented in the file): `url`, an https address of the OmniaCLI `.deb`
+  (by default the latest release of this fork, `OMNIACLI_PACKAGE_URL` of the
+  environment otherwise); `public_key`, the key its signature must verify
+  with (default: `plugins.public_key`); `version_url` (one version's
+  package, `{version}` in it) and `releases` (the notes, GitHub's API), both
+  derived from a GitHub release address. Only https, redirects included.
+- **Signed or not installed**: next to the package its signed manifest,
+  `OmniaCLI.deb.json` and `.json.sig` (`omniacli package-sign`, as for the
+  plugins): a package whose manifest does not verify with the machine's key,
+  or that is not the file the manifest signs (size, sha256, its own name and
+  version), is refused with the reason, and nothing is installed. The
+  release workflow signs `OmniaCLI.deb` when the repository has the secrets
+  `OMNIACLI_PACKAGE_KEY` (the private key of `omniacli package-key`) and
+  `OMNIACLI_KEY_PASSPHRASE`; without them a release has no manifest and the
+  dialog says it cannot be installed from here.
+- **Root does it, in a unit of its own**: `omniacli self-update`, allowed to
+  the service's user by `/etc/sudoers.d/omniacli-self-update` (written by
+  every install), downloads and verifies the package into
+  `/var/lib/omniacli-self-update/packages/<version>/` (root's), keeps the
+  installed version's package (its signed one, or the release's package
+  checked file by file against what dpkg installed: files, links,
+  maintainer scripts, configuration files as installed; one that differs is
+  not kept, and then nothing is updated), then starts the install with
+  `systemd-run` in the unit `omniacli-self-update-<job>`, which outlives
+  OmniaCLI's own restart. That unit (the system's `python3`, never
+  OmniaCLI's venv, which the install rebuilds) writes the facts before and
+  after (OmniaCLI's version and state, `nginx -t` and a digest of its files,
+  the start times of the running Odoo, PostgreSQL and nginx units and of the
+  containers, the login page), how long the panel did not answer, and the
+  outcome; if the install fails, or OmniaCLI does not answer within 5
+  minutes, it installs the version before again from its kept package.
+- **The job ends where it began**: the restarted OmniaCLI reads the outcome
+  and finishes the job, «Update OmniaCLI 2026.1.5477 → 2026.1.5502»; a
+  start time that changed (a container restarted meanwhile) is a warning.
+- **The access log** (NIS 2) has the update asked (who, from which panel),
+  downloaded and verified (its sha256), installed, gone back, or failed.
+
+An OmniaCLI older than the update from the panel updates itself once by hand
+(`sudo apt install ./OmniaCLI.deb`), and from the panel from then on. The
+packages kept and the runs go with `apt purge`.
+
 ### Build and test the package
 
 ```bash
@@ -650,7 +714,10 @@ Publishing a GitHub release builds its package
    publish a release on that tag;
 2. the workflow runs the tests, builds the package with
    `build_deb.sh --ci <version>` and attaches `omniacli_<version>_all.deb`
-   and `OmniaCLI.deb` to the release;
+   and `OmniaCLI.deb` to the release, and with the secrets
+   `OMNIACLI_PACKAGE_KEY` and `OMNIACLI_KEY_PASSPHRASE` its signed manifest
+   (`OmniaCLI.deb.json`, `.json.sig`, `.sha256`), which Update OmniaCLI
+   needs;
 3. it then installs the package in Debian 12 and Ubuntu 24.04 containers with
    systemd and checks it end to end (`test_deb.sh`). A failure there marks
    the run as failed: the package is already attached, so delete it from the

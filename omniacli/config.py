@@ -371,6 +371,8 @@ class Settings:
     connections: dict[str, PullerConnection] = field(default_factory=dict)
     # the plugins published for download (main configuration, plugins:)
     plugin_source: PluginSource = field(default_factory=lambda: PluginSource())
+    # self_update of the main configuration, as written (selfupdate.parse_source reads it)
+    self_update: dict = field(default_factory=dict)
     # the customers' workspaces (workspaces.yaml, Workspaces page), and the
     # folders they may live in (main configuration, workspaces.storage)
     workspaces_file: Path | None = None
@@ -2523,6 +2525,7 @@ def parse_settings(data: dict, base_dir: Path = Path(".")) -> Settings:
         connections_file=connections_file,
         connections=load_connections(connections_file),
         plugin_source=parse_plugin_source(data.get("plugins")),
+        self_update=data.get("self_update") if isinstance(data.get("self_update"), dict) else {},
         workspaces_file=workspaces_file,
         workspaces=load_workspaces(workspaces_file, storage_roots),
         credentials_file=servers_file.parent / "credentials.yaml",

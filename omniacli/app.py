@@ -58,7 +58,7 @@ from . import clusterpitr, inframap, linkedcluster, machinedb, managedreplica, r
 from . import stagingmail
 from . import deploys, zerodowntime
 from . import github
-from . import moduleupload, sshkeys
+from . import moduleupload, selfupdate, sshkeys
 from . import bell, brand, osupdates
 from . import dumpinfo
 from . import totp
@@ -138,7 +138,7 @@ from .config import (
     server_text,
     server_to_dict,
 )
-from .jobs import FINISHED, INTERRUPTED, STARTED as JOBS_STARTED, SUCCESS, JobFailed, JobManager, filter_jobs
+from .jobs import FINISHED, INTERRUPTED, STARTED as JOBS_STARTED, SUCCESS, Job, JobFailed, JobManager, filter_jobs
 from .plugin_api import ENTRY_POINT_GROUP, PLUGIN_API, ActionRefused, Host, ServicePlugin, restore_fetched
 from .pullcrypto import new_key
 from .links import LIST_TIMEOUT, LinkClients, describe_error, link_headers, proxy_websocket
@@ -1149,6 +1149,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         for ws in settings.workspaces.values():
             if settings.storage_problem(ws):
                 _logger.warning("workspace %s cannot be used: %s", ws.name, settings.storage_problem(ws))
+        # an update of OmniaCLI whose install outlived the stop of the OmniaCLI of before (defined further down)
+        self_update_resume()
         updater.start()
         scheduler.start()
         sampler.start()
@@ -15978,6 +15980,127 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                           f"automatic security updates of the system: {said(before)} -> {said(done)}"
                           + (f", for {me.on_behalf}" if me.on_behalf else ""))
         return done
+
+    # --- OmniaCLI updated from its own panel (README, Update OmniaCLI; selfupdate.py): the package of
+    # self_update.url, verified and installed by root in a unit of its own, the job finished by the
+    # OmniaCLI that comes back; the way back with the package kept. The machine's admins, a person through
+    # any panel too (the central asks the machine to update itself through the link), never a machine alone
+    def self_update_admin(me: Principal) -> None:
+        if not machine_admin(me) or a_machine(me):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Updating OmniaCLI is for the machine's admins")
+
+    def self_update_source() -> selfupdate.Source:
+        return selfupdate.parse_source(settings.self_update, settings.plugin_source.public_key, machines.PACKAGE_URL)
+
+    def self_update_confirm() -> str:
+        """The name to type before an update of a machine that serves a production (as for a deletion): its own."""
+        serves = any(srv.instances.get("production") for srv in settings.active_servers())
+        return (socket.gethostname().split(".")[0] or "omniacli") if serves else ""
+
+    def self_update_job() -> Job | None:
+        return next((j for j in jobs.recent(50) if not j.finished_flag
+                     and j.title.startswith(("Update OmniaCLI ", "OmniaCLI back to "))), None)
+
+    def self_update_record(job: Job):
+        return lambda detail: access_log.record("action", "job", job.source, "", detail, context=False, job=[job.id])
+
+    self_update_allowed: dict = {}
+
+    async def self_update_unavailable(lang: str) -> str | None:
+        """Why the root helper cannot run here (sudo does not allow it), checked once an hour."""
+        seen = self_update_allowed.get("at")
+        if seen is None or time.monotonic() - seen > 3600:
+            try:
+                await selfupdate.ask("check", timeout=30)
+                self_update_allowed.update(at=time.monotonic(), why=None)
+            except JobFailed as exc:
+                why = ("sudo does not let OmniaCLI run its root helper here: an OmniaCLI installed from its package "
+                       "updates itself (README, Update OmniaCLI)") if selfupdate.helper_refused(str(exc)) else str(exc)
+                self_update_allowed.update(at=time.monotonic(), why=why)
+        return i18n.tr(lang, self_update_allowed["why"]) if self_update_allowed.get("why") else None
+
+    def self_update_resume() -> None:
+        """The update jobs OmniaCLI's own restart interrupted: their unit goes on, its outcome is read here."""
+        try:
+            waiting = selfupdate.to_resume(jobs)
+        except OSError as exc:
+            _logger.warning("the runs of the updates of OmniaCLI cannot be read: %s", exc)
+            return
+        for job in waiting:
+            record = self_update_record(job)
+            jobs.resume(job, lambda j, record=record: selfupdate.wait_outcome(j, record),
+                        f"--- OmniaCLI {_version()} is back: the install goes on in its unit, its outcome is read here")
+
+    @app.get("/api/machine/omniacli-update")
+    async def omniacli_update_read(request: Request, fresh: bool = False, me: Principal = Depends(current_user)):
+        """OmniaCLI installed, the version published and the notes of those in between, the way back, the
+        name to type, the job running, why it cannot be done here."""
+        self_update_admin(me)
+        lang = request_language(request)
+        installed = _version()
+        running = self_update_job()
+        found = {"installed": installed, "available": None, "latest": None, "signed": False, "built": None,
+                 "size": None, "notes": [], "error": None, "back": None, "confirm": self_update_confirm(),
+                 "away": selfupdate.last_away(), "job": running.id if running else None, "unavailable": None,
+                 "source": None, "keep_days": selfupdate.KEEP_DAYS}
+        try:
+            source = self_update_source()
+        except selfupdate.SelfUpdateError as exc:
+            found["error"] = i18n.tr(lang, str(exc))
+            return found
+        found["source"] = source.url
+        published = await asyncio.to_thread(selfupdate.published_cached, source, installed, fresh)
+        latest = published["version"]
+        found.update(latest=latest, signed=published["signed"], built=published["built"], size=published["size"],
+                     notes=published["notes"], error=i18n.tr(lang, published["error"]) if published["error"] else None,
+                     available=latest if latest and selfupdate.newer(latest, installed) else None)
+        found["back"] = await asyncio.to_thread(selfupdate.way_back, installed)
+        found["unavailable"] = await self_update_unavailable(lang)
+        return found
+
+    @app.post("/api/machine/omniacli-update")
+    async def omniacli_update_start(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """{action: update|back, confirm}: the job of the update to the version published, or of the way back."""
+        self_update_admin(me)
+        mode = payload.get("action")
+        if mode not in ("update", "back"):
+            return refuse("action: update or back")
+        if self_update_job() is not None:
+            return refuse("An update of OmniaCLI is already running here: wait for its end")
+        name = self_update_confirm()
+        if name and str(payload.get("confirm") or "").strip() != name:
+            return refuse(f"This machine serves productions: type {name} to update its OmniaCLI")
+        installed = _version()
+        if mode == "update":
+            try:
+                published = await asyncio.to_thread(selfupdate.published_cached, self_update_source(), installed, True)
+            except selfupdate.SelfUpdateError as exc:
+                return refuse(str(exc))
+            target = published["version"]
+            if not target or not selfupdate.newer(target, installed):
+                return refuse(f"Nothing newer than OmniaCLI {installed} is published")
+            if not published["signed"]:
+                return refuse(published["error"] or f"OmniaCLI {target} is not signed: it is not installed from here")
+        else:
+            back = await asyncio.to_thread(selfupdate.way_back, installed)
+            if back is None:
+                return refuse(f"No version before {installed} is kept (it is kept {selfupdate.KEEP_DAYS} days)")
+            target = back["version"]
+        unavailable = await self_update_unavailable(request_language(request))
+        if unavailable:
+            return refuse(unavailable)
+        access_log.record("action", me.kind, me.name, request.client.host if request.client else "",
+                          (f"OmniaCLI update {installed} -> {target} asked" if mode == "update"
+                           else f"OmniaCLI back to {target} (from {installed}) asked")
+                          + (f", for {me.on_behalf}" if me.on_behalf else ""))
+        holder: dict = {}
+
+        async def action(job: Job) -> None:
+            await selfupdate.run_job(job, mode, holder["record"])
+
+        job = jobs.submit(selfupdate.title(mode, installed, target), [], str(me), action)
+        holder["record"] = self_update_record(job)
+        return {"ok": True, "job": job.id, "title": i18n.tr(request_language(request), job.title)}
 
     def postgres_machine() -> dict:
         """The memory for the databases of the machine (saved, else D13's

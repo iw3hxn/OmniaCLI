@@ -134,6 +134,7 @@
   <form method="dialog" id="up-form">
     <h2 id="up-title">{{ _("Upload a backup") }}</h2>
     <p class="muted" id="up-says"></p>
+    <p class="muted" id="up-older" hidden></p>
     <div class="form-grid">
       <label for="up-machine" id="up-machine-label">{{ _("Server") }}</label>
       <select id="up-machine" title="{{ _('The machine the file goes to: this one, or a linked one through its link (each is asked where it may go: GET /api/imports/places)') }}"></select>
@@ -237,6 +238,8 @@
     upSays: {{ _("An Odoo backup .zip (as Odoo's database manager makes it: dump.sql, filestore, manifest.json) or a plain SQL dump of pg_dump (.sql), up to {max} GB. It is kept {days} days in the workspace, then deleted by itself: from its row you make a staging or a new instance. A pg_dump of the custom format (.dump) is not taken: make a plain one.") | tojson }},
     upHere: {{ _("This machine") | tojson }}, upAsking: {{ _("asking…") | tojson }},
     upOlder: {{ _("an older OmniaCLI: update it to upload there from here") | tojson }},
+    upUpdate: {{ _("Update OmniaCLI on {name}…") | tojson }},
+    upUpdateTitle: {{ _("Opens the page of {name} with the dialog of the update: what the new version brings, then install it there") | tojson }},
     upNotAdmin: {{ _("you may not upload there") | tojson }}, upDown: {{ _("does not answer") | tojson }},
     upNone: {{ _("No machine takes an upload from you now: see why beside each") | tojson }},
     upCannotHold: {{ _("{name} · cannot hold an instance: {why}") | tojson }},
@@ -658,6 +661,11 @@
       await upAsked;
       upMachine.replaceChildren(...upTargets.map((t, i) => el("option", {value: String(i), disabled: t.why ? "" : null},
         t.why ? `${t.label} · ${t.why}` : t.label)));
+      // a machine with an older OmniaCLI: where it is updated, its page (README, Update OmniaCLI)
+      const olderOnes = upTargets.filter((t) => t.why === T.upOlder && t.link);
+      $("up-older").hidden = !olderOnes.length;
+      $("up-older").replaceChildren(...olderOnes.flatMap((t, i) => [i ? " · " : "", el("a", {
+        href: `${t.base}/#omniacli-update`, title: fill(T.upUpdateTitle, {name: t.label})}, fill(T.upUpdate, {name: t.label}))]));
       const first = upTargets.findIndex((t) => !t.why);
       if (first < 0) { upError.textContent = T.upNone; return; }
       upMachine.value = String(first);

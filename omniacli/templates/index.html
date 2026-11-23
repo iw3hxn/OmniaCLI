@@ -47,11 +47,18 @@
       {% if linked_name %}<span class="state-dot running">{{ _("Connected") }}</span>{% endif %}
       <span class="cores-fact" hidden></span>
       {% if machine %}<span>OmniaCLI {{ version }}</span>{% endif %}
+      {% if machine and is_admin %}<span class="ou-fact-new" id="omniacli-update-fact" hidden></span>{% endif %}
     </div>
   </div>
   <div class="actions">
     {% if linked_name and is_admin %}<button type="button" id="link-rename" data-name="{{ linked_name }}"
       title="{{ _('The name this server has here: in its address, in the list of servers, in the copies made from it') }}">{{ _("Rename") }}</button>{% endif %}
+    {# OmniaCLI's own update (README, Update OmniaCLI): shown once the machine says a newer version is published,
+       or a version before is kept #}
+    {% if machine and is_admin %}<button type="button" id="omniacli-update-open" hidden
+      title="{{ _('Shows what the newer OmniaCLI brings and installs it on this machine: only OmniaCLI restarts') }}">{{ _("Update OmniaCLI…") }}</button>
+    <button type="button" id="omniacli-back-open" hidden
+      title="{{ _('Installs again the OmniaCLI of before, from its package kept on this machine') }}">{{ _("Back to the version before…") }}</button>{% endif %}
     {% if machine %}<a class="button" href="{{ prefix }}/disks" title="{{ _('The disks of this machine, their free space and when they fill up') }}">{{ _("Disks") }}</a>{% endif %}
     {# through a link the menu stays the viewer's own: its Settings are of the panel that looks, so the machine's
        own (Git credentials, Users, Options…) are reached from here (Carlo, 23/11/2026: «dove inserisco la chiave») #}
@@ -91,6 +98,7 @@
 </script>
 {% endif %}
 {% if quick_instance %}{% include "_new_instance_dialog.html" %}{% endif %}
+{% if machine and is_admin %}{% include "_omniacli_update.html" %}{% endif %}
 {% include "_charts.html" %}
 {% include "_disk.html" %}
 {% include "_load.html" %}

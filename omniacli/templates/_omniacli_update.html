@@ -1,0 +1,219 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{# Update OmniaCLI (README, Update OmniaCLI; selfupdate.py), on a machine's page, for its admins: the head
+   says the version published next to the installed one, «Update OmniaCLI…» opens the dialog (also from
+   the lists of the central: #omniacli-update in the address). The dialog says from which version to
+   which, the notes of every version in between, what does not change and how long the panel is away,
+   the way back; a machine that serves productions asks its name. The job is followed here while
+   OmniaCLI restarts: its pages do not answer for a while, then the page comes back.
+   Through a link everything goes to the machine itself (the prefix). -#}
+<style>
+#ou-dialog { width: min(640px, calc(100vw - 32px)); padding: 0; }
+#ou-dialog form { margin: 0; }
+.ou-head { padding: 20px 24px 4px; } .ou-head h2 { margin: 0 0 4px; }
+.ou-body { padding: 8px 24px 4px; max-height: 60vh; overflow-y: auto; }
+.ou-body h3 { font-size: 14px; margin: 14px 0 6px; }
+.ou-body p { margin: 4px 0 8px; }
+.ou-notes details { border: 1px solid var(--border); border-radius: var(--r-lg); padding: 6px 10px; margin: 0 0 6px; }
+.ou-notes summary { cursor: pointer; font-weight: 600; }
+.ou-notes pre { white-space: pre-wrap; font: inherit; font-size: 13px; margin: 6px 0 0; color: var(--muted); }
+.ou-lines { font-family: var(--mono, monospace); font-size: 12px; white-space: pre-wrap; background: var(--panel-2);
+  border-radius: var(--r-lg); padding: 8px 10px; max-height: 28vh; overflow-y: auto; margin: 8px 0; }
+.ou-foot { display: flex; justify-content: flex-end; align-items: center; gap: 8px; padding: 16px 24px 20px; flex-wrap: wrap; }
+.ou-foot .error { margin: 0 auto 0 0; font-size: 13px; }
+.ou-fact-new { color: var(--warn); font-weight: 600; }
+</style>
+<dialog id="ou-dialog" aria-labelledby="ou-title">
+  <form id="ou-form" novalidate>
+    <div class="ou-head"><h2 id="ou-title"></h2><p class="muted" id="ou-sub" style="margin: 0"></p></div>
+    <div class="ou-body">
+      <div id="ou-offer">
+        <h3>{{ _("What changes") }}</h3>
+        <div class="ou-notes" id="ou-notes"></div>
+        <h3>{{ _("What does not change") }}</h3>
+        <p>{{ _("Odoo, its databases, its containers and the sites of nginx stay as they are: the update restarts only OmniaCLI.") }}
+          <span id="ou-away"></span></p>
+        <h3>{{ _("The way back") }}</h3>
+        <p id="ou-keep"></p>
+      </div>
+      <div id="ou-backinfo" hidden>
+        <p id="ou-backtext"></p>
+        <p>{{ _("Odoo, its databases, its containers and the sites of nginx stay as they are: the update restarts only OmniaCLI.") }}</p>
+      </div>
+      <div id="ou-confirm" hidden>
+        <label>{{ _("This machine serves productions. To go on, type its name:") }} <strong class="mono" id="ou-name"></strong>
+          <input type="text" id="ou-typed" autocomplete="off" class="mono" style="display: block; margin-top: 4px"></label>
+      </div>
+      <div id="ou-follow" hidden>
+        <p id="ou-state"></p>
+        <div class="ou-lines" id="ou-lines"></div>
+      </div>
+    </div>
+    <div class="ou-foot">
+      <p class="error" id="ou-error"></p>
+      <a class="button" id="ou-job" hidden title="{{ _('Opens the job of the update: every line, the facts before and after') }}">{{ _("Open the job") }}</a>
+      <button type="button" id="ou-cancel" title="{{ _('Closes without changing anything; an update that runs goes on') }}">{{ _("Close") }}</button>
+      <button type="submit" class="primary" id="ou-go"></button>
+      <button type="button" class="primary" id="ou-reload" hidden title="{{ _('Loads this page again, from the OmniaCLI now installed') }}">{{ _("Reload the page") }}</button>
+    </div>
+  </form>
+</dialog>
+<script>
+(function () {
+  const PREFIX = {{ prefix | tojson }};
+  const API = `${PREFIX}/api/machine/omniacli-update`;
+  const T = {
+    title: {{ _("Update OmniaCLI {from} → {to}") | tojson }}, backTitle: {{ _("Back to OmniaCLI {to}") | tojson }},
+    sub: {{ _("Published {built}, signed with the key of this machine.") | tojson }},
+    noNotes: {{ _("The source of the package gives no notes of its versions.") | tojson }},
+    away: {{ _("The panel does not answer for about {seconds} s (measured at the last update).") | tojson }},
+    awayFirst: {{ _("The panel does not answer for a minute or two: OmniaCLI rebuilds its Python environment.") | tojson }},
+    keep: {{ _("The package of {from} stays on this machine: «Back to the version before…» installs it again for {days} days.") | tojson }},
+    backText: {{ _("OmniaCLI {to} is installed again from its package kept on this machine, in place of {from}.") | tojson }},
+    go: {{ _("Update to {to}") | tojson }}, goTitle: {{ _("Downloads OmniaCLI {to}, checks its signature and installs it; OmniaCLI restarts, Odoo does not") | tojson }},
+    goBack: {{ _("Back to {to}") | tojson }}, goBackTitle: {{ _("Installs OmniaCLI {to} again from the package kept; OmniaCLI restarts, Odoo does not") | tojson }},
+    type: {{ _("Type {name} to go on.") | tojson }},
+    running: {{ _("The update runs. OmniaCLI restarts: this page waits for it to come back.") | tojson }},
+    away2: {{ _("OmniaCLI does not answer for {seconds} s: it is restarting.") | tojson }},
+    done: {{ _("OmniaCLI {to} is installed. The panel was away {seconds} s.") | tojson }},
+    doneBack: {{ _("OmniaCLI {to} is installed again. The panel was away {seconds} s.") | tojson }},
+    failed: {{ _("The update did not end well: {error}") | tojson }},
+    error: {{ _("Error {status}") | tojson }},
+    upToDate: {{ _("OmniaCLI {version} is the latest published.") | tojson }},
+  };
+  const dialog = document.getElementById("ou-dialog"), form = document.getElementById("ou-form");
+  const $ = (id) => document.getElementById(id);
+  const fill = (text, values) => text.replace(/\{(\w+)\}/g, (m, k) => (k in values ? values[k] : m));
+  let info = null, mode = "update", polling = null;
+
+  function show(part) {
+    $("ou-offer").hidden = part !== "update"; $("ou-backinfo").hidden = part !== "back";
+    $("ou-follow").hidden = !(part === "follow" || part === "done");
+    $("ou-confirm").hidden = !(part === "update" || part === "back") || !info.confirm;
+    $("ou-go").hidden = !(part === "update" || part === "back");
+    $("ou-reload").hidden = part !== "done";
+  }
+  function offer(which) {
+    mode = which;
+    $("ou-error").textContent = ""; $("ou-typed").value = ""; $("ou-name").textContent = info.confirm || "";
+    $("ou-job").hidden = true;
+    const go = $("ou-go");
+    if (which === "update") {
+      $("ou-title").textContent = fill(T.title, {from: info.installed, to: info.available});
+      $("ou-sub").textContent = info.built ? fill(T.sub, {built: window.whenText ? window.whenText(info.built) : info.built}) : "";
+      const notes = $("ou-notes"); notes.replaceChildren();
+      for (const n of info.notes || []) {
+        const box = document.createElement("details"), head = document.createElement("summary"), body = document.createElement("pre");
+        head.textContent = n.name || n.version; body.textContent = n.body || "";
+        box.append(head, body); notes.append(box);
+      }
+      if (!(info.notes || []).length) { const p = document.createElement("p"); p.className = "muted"; p.textContent = T.noNotes; notes.append(p); }
+      if ((info.notes || []).length === 1) notes.querySelector("details").open = true;
+      $("ou-away").textContent = info.away ? fill(T.away, {seconds: Math.round(info.away)}) : T.awayFirst;
+      $("ou-keep").textContent = fill(T.keep, {from: info.installed, days: info.keep_days});
+      go.textContent = fill(T.go, {to: info.available}); go.title = fill(T.goTitle, {to: info.available});
+      go.classList.remove("danger");
+    } else {
+      $("ou-title").textContent = fill(T.backTitle, {to: info.back.version});
+      $("ou-sub").textContent = "";
+      $("ou-backtext").textContent = fill(T.backText, {to: info.back.version, from: info.installed});
+      go.textContent = fill(T.goBack, {to: info.back.version}); go.title = fill(T.goBackTitle, {to: info.back.version});
+    }
+    show(which);
+    if (!dialog.open) dialog.showModal();
+  }
+  async function load(fresh) {
+    const resp = await fetch(`${API}${fresh ? "?fresh=1" : ""}`, {headers: {Accept: "application/json"}}).catch(() => null);
+    if (!resp || !resp.ok) return null;
+    return resp.json().catch(() => null);
+  }
+  // the head of the page: the version published next to the installed one, the buttons
+  async function head() {
+    info = await load(false);
+    if (!info) return;
+    const fact = document.getElementById("omniacli-update-fact");
+    const update = document.getElementById("omniacli-update-open"), back = document.getElementById("omniacli-back-open");
+    if (fact && info.available) {
+      // one not signed with this machine's key is said, with why, and offers no button
+      fact.textContent = (info.signed ? {{ _("{version} available") | tojson }}
+                          : {{ _("{version} published, not installable from here") | tojson }}).replace("{version}", info.available);
+      fact.title = info.signed ? "" : (info.error || "");
+      fact.hidden = false;
+    }
+    if (update) update.hidden = !info.available || !info.signed || !!info.unavailable;
+    if (back) back.hidden = !info.back || !!info.unavailable;
+    if (info.job) follow(info.job);
+    else if (location.hash === "#omniacli-update" && info.available && info.signed && !info.unavailable) offer("update");
+    else if (location.hash === "#omniacli-update") {
+      const said = info.unavailable || info.error || fill(T.upToDate, {version: info.installed});
+      window.omniaSay(said);
+    }
+  }
+  function lines(job) {
+    const box = $("ou-lines");
+    // their times by the machine's clock, moved to the reader's as the job's page does
+    const shift = window.clockShift ? window.clockShift(job.created) : 0;
+    box.textContent = (job.lines || []).slice(-14)
+      .map((line) => (window.shiftedTime ? line.replace(/^\d{2}:\d{2}:\d{2}(?= )/, (t) => window.shiftedTime(t, shift)) : line))
+      .join("\n");
+    box.scrollTop = box.scrollHeight;
+  }
+  async function follow(id) {
+    clearTimeout(polling);
+    show("follow");
+    $("ou-title").textContent = $("ou-title").textContent || {{ _("Update OmniaCLI") | tojson }};
+    $("ou-state").textContent = T.running;
+    const job = $("ou-job"); job.href = `${PREFIX}/jobs/${id}`; job.hidden = false;
+    if (!dialog.open) dialog.showModal();
+    // while OmniaCLI restarts its pages do not answer (through a link: the link's proxy says so); once back, the
+    // job runs again until the unit's outcome is read. One interrupted for a minute after the return is ended.
+    let lostAt = null, interruptedAt = null;
+    const tick = async () => {
+      // said=1: its lines and error in the reader's language, as the job's page reads them
+      const resp = await fetch(`${PREFIX}/api/jobs/${encodeURIComponent(id)}?said=1`, {headers: {Accept: "application/json"}}).catch(() => null);
+      const data = resp && resp.ok ? await resp.json().catch(() => null) : null;
+      if (!data) {
+        lostAt = lostAt || Date.now();
+        $("ou-state").textContent = fill(T.away2, {seconds: Math.round((Date.now() - lostAt) / 1000)});
+        polling = setTimeout(tick, 1000);
+        return;
+      }
+      lines(data);
+      if (["success", "warned"].includes(data.outcome)) {
+        const result = (data.result || {}).self_update || {};
+        const seconds = result.away_seconds !== undefined && result.away_seconds !== null ? Math.round(result.away_seconds) : "?";
+        $("ou-state").textContent = fill(result.mode === "back" ? T.doneBack : T.done, {to: result.to || "", seconds});
+        show("done");
+        return;
+      }
+      interruptedAt = data.status === "interrupted" ? (interruptedAt || Date.now()) : null;
+      if (["failed", "stopped"].includes(data.status) || (interruptedAt && Date.now() - interruptedAt > 60000)) {
+        $("ou-state").textContent = fill(T.failed, {error: data.error || data.status});
+        return;
+      }
+      polling = setTimeout(tick, 1500);
+    };
+    tick();
+  }
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const errorBox = $("ou-error");
+    if (info.confirm && $("ou-typed").value.trim() !== info.confirm) {
+      errorBox.textContent = fill(T.type, {name: info.confirm}); return;
+    }
+    const go = $("ou-go"); go.disabled = true; errorBox.textContent = "";
+    const resp = await fetch(API, {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
+                                   body: JSON.stringify({action: mode, confirm: $("ou-typed").value.trim()})}).catch(() => null);
+    const data = resp ? await resp.json().catch(() => ({})) : {};
+    go.disabled = false;
+    if (!resp || !resp.ok) { errorBox.textContent = data.error || data.detail || fill(T.error, {status: resp ? resp.status : "—"}); return; }
+    $("ou-title").textContent = data.title || "";
+    follow(data.job);
+  });
+  $("ou-cancel").addEventListener("click", () => { clearTimeout(polling); dialog.close(); });
+  $("ou-reload").addEventListener("click", () => { location.hash = ""; location.reload(); });
+  const openUpdate = document.getElementById("omniacli-update-open"), openBack = document.getElementById("omniacli-back-open");
+  if (openUpdate) openUpdate.addEventListener("click", async () => { info = (await load(true)) || info; if (info && info.available) offer("update"); });
+  if (openBack) openBack.addEventListener("click", async () => { info = (await load(false)) || info; if (info && info.back) offer("back"); });
+  head();
+})();
+</script>

@@ -258,6 +258,32 @@ for root, state in found.items():
     [ -n "$storages" ] || echo "omniacli: workspaces.storage of $CONFIG is empty: no workspace can have instances yet"
 }
 
+# OmniaCLI updated from its own panel (README, Update OmniaCLI): the service's
+# user may run the root helper that downloads OmniaCLI's own package from
+# self_update.url of the main configuration, verifies its signature and
+# installs it in a unit of its own (a sudoers file of the package's own,
+# written at every install; without sudo, none)
+SELF_UPDATE_SUDOERS=/etc/sudoers.d/omniacli-self-update
+apply_self_update() {
+    user="$1"
+    if ! command -v visudo >/dev/null 2>&1; then
+        echo "omniacli: no sudo here: OmniaCLI cannot update itself from its panel"
+        return 0
+    fi
+    tmp="$SELF_UPDATE_SUDOERS.tmp"
+    {
+        echo "# Written by the omniacli package: OmniaCLI's own update from its panel (README, Update OmniaCLI)."
+        echo "$user ALL=(root) NOPASSWD: $VENV/bin/omniacli self-update *"
+    } > "$tmp"
+    chmod 440 "$tmp"
+    if ! visudo -cf "$tmp" >/dev/null; then
+        rm -f "$tmp"
+        echo "omniacli: the sudoers line of the update from the panel does not check (visudo): not written" >&2
+        return 0
+    fi
+    mv "$tmp" "$SELF_UPDATE_SUDOERS"
+}
+
 case "$1" in
     configure)
         if ! getent passwd omniacli >/dev/null; then
@@ -270,6 +296,7 @@ case "$1" in
         build_venv
         create_config
         apply_workspaces "$(service_user)"
+        apply_self_update "$(service_user)"
         # the plugins installed from the Plugins page, into the new venv
         [ -x "$VENV/bin/omniacli" ] && "$VENV/bin/omniacli" plugin-install --all || true
         ;;

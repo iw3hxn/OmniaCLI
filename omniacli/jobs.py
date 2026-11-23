@@ -223,6 +223,21 @@ class JobManager:
         task.add_done_callback(lambda _: self._running.pop(job.id, None))
         return job
 
+    def resume(self, job: Job, action: Callable[[Job], Awaitable[None]], line: str) -> None:
+        """A job interrupted by OmniaCLI's own stop that goes on after its
+        restart (selfupdate.py: the install outlived it): running again, its
+        log and its start kept, action run as submit runs one."""
+        if job.status != INTERRUPTED:
+            return
+        job.status, job.error, job.finished = RUNNING, None, None
+        job.log(line)
+        self._save(job)
+        task = asyncio.get_running_loop().create_task(self._run(job, action, resumed=True))
+        self._tasks.add(task)
+        self._running[job.id] = task
+        task.add_done_callback(self._tasks.discard)
+        task.add_done_callback(lambda _: self._running.pop(job.id, None))
+
     def stop(self, job_id: str, by: str) -> bool:
         """Stop a queued or running job: its task is cancelled, which ends the
         program it runs (ops.run: SIGTERM to its process group, SIGKILL after
@@ -244,7 +259,7 @@ class JobManager:
             except Exception:  # noqa: BLE001 - a watcher must not change the job
                 _logger.exception("job %s: a watcher of its %s failed", job.id, moment)
 
-    async def _run(self, job: Job, action: Callable[[Job], Awaitable[None]]) -> None:
+    async def _run(self, job: Job, action: Callable[[Job], Awaitable[None]], resumed: bool = False) -> None:
         locks = [self.lock(key) for key in job.instances]  # sorted: no deadlock
         if any(lock.locked() for lock in locks):
             job.log("Waiting for another job on the same instance to finish")
@@ -254,7 +269,7 @@ class JobManager:
             for lock in locks:
                 await lock.acquire()
                 held.append(lock)
-            job.status, job.started = RUNNING, _now()
+            job.status, job.started = RUNNING, (job.started if resumed and job.started else _now())
             self._save(job)
             await self._watch("begin", job)
             await action(job)

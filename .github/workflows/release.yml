@@ -78,6 +78,27 @@ jobs:
           cp "dist/omniacli-workspaces_${VERSION}_all.deb" dist/OmniaCLI-workspaces.deb
           gh release upload "$TAG" "dist/omniacli_${VERSION}_all.deb" dist/OmniaCLI.deb \
             "dist/omniacli-workspaces_${VERSION}_all.deb" dist/OmniaCLI-workspaces.deb --clobber
+      - name: Sign the package for the update from the panel
+        # README, Update OmniaCLI: a machine installs a package from its panel only when the signed manifest
+        # next to it (OmniaCLI.deb.json, .json.sig) verifies with its key. The private key of omniacli package-key
+        # and its passphrase are secrets of the repository; without them the release is not signed, and is
+        # installed by hand.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          OMNIACLI_PACKAGE_KEY: ${{ secrets.OMNIACLI_PACKAGE_KEY }}
+          OMNIACLI_KEY_PASSPHRASE: ${{ secrets.OMNIACLI_KEY_PASSPHRASE }}
+        run: |
+          if [ -z "$OMNIACLI_PACKAGE_KEY" ]; then
+            echo "no secret OMNIACLI_PACKAGE_KEY: the package is not signed, the machines do not install it from their panel"
+            exit 0
+          fi
+          pip install -q -e .
+          key="$RUNNER_TEMP/package.key"
+          (umask 077; printf '%s\n' "$OMNIACLI_PACKAGE_KEY" > "$key")
+          omniacli package-sign --key "$key" dist/OmniaCLI.deb
+          rm -f "$key"
+          gh release upload "$TAG" dist/OmniaCLI.deb.json dist/OmniaCLI.deb.json.sig dist/OmniaCLI.deb.sha256 --clobber
       - uses: actions/upload-artifact@v6
         with:
           name: deb

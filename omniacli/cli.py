@@ -203,6 +203,14 @@ def _workspace_helper(args) -> int:
     return workspacehelper.main(args.args)
 
 
+def _self_update(args) -> int:
+    """As root (sudo): OmniaCLI's own package downloaded, verified and
+    installed in a unit of its own (selfupdate.py)."""
+    from . import selfupdate
+
+    return selfupdate.helper_main(args.args)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="omniacli")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -271,6 +279,13 @@ def main(argv: list[str] | None = None) -> int:
                                     "template or removed (disk, create, remove)")
     workspace.add_argument("args", nargs=argparse.REMAINDER, help="<action> [arguments]")
     workspace.set_defaults(func=_workspace_helper)
+
+    update = sub.add_parser("self-update",
+                            help="as root: download and verify OmniaCLI's own package from self_update.url of "
+                                 "/etc/omniacli/omniacli.yaml and install it in a unit of its own "
+                                 "(check, prepare, start update|back <job>)")
+    update.add_argument("args", nargs=argparse.REMAINDER, help="<action> [arguments]")
+    update.set_defaults(func=_self_update)
 
     check = sub.add_parser("check-config", help="run the Test & activate checks on every server")
     check.add_argument("-c", "--config", default="omniacli.yaml")

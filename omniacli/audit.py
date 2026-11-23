@@ -134,7 +134,7 @@ NOT_SENSITIVE = frozenset({
     # the bell (README, The bell): the map's things to look at, as /api/map says them; the panel's logo
     # (Whitelabel), public as the icons; whether the system updates itself and its last run (no package
     # list of the machine, no log of anybody's), the switch is an action, logged
-    "/api/bell", "/brand/logo", "/api/machine/os-updates",
+    "/api/bell", "/brand/logo", "/api/machine/os-updates", "/api/machine/omniacli-update",
     # a database uploaded from the Backups page: where it may go (workspaces, sizes) and how much of an upload
     # is here to resume it; the parts sent, the file kept or refused and its deletion are actions, logged
     "/api/imports/places", "/api/workspaces/{workspace}/imports/upload",
