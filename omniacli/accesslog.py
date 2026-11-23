@@ -248,7 +248,9 @@ class AccessLog:
         download, login-as, job, siem, second-factor (two-step
         verification, totp.py) or oauth (oauth.py: a client registered, a
         consent given or refused, a token issued, refreshed, revoked),
-        passkey (registered, removed: passkeys.py), session (one ended by
+        passkey (registered, removed: passkeys.py), relay (names published
+        through another machine, or hosted for one, and taken away: relay.py),
+        session (one ended by
         its person or an admin) or sso (a workspace's single sign-on set,
         changed, removed, a user made by it: sso.py) or permissions (a custom
         role of a workspace made, changed, deleted, a person given a role or

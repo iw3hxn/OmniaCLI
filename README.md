@@ -25,6 +25,9 @@ script, or an Odoo that OmniaCLI starts itself.
   as an outside sender.
 - **Addresses** of an instance (other names, redirects), its **modules**
   added from the catalog of the OCA, and its configuration of Odoo.
+- **Published through another machine**: a machine behind NAT has its
+  instances answer at their names on a machine of yours with a public
+  address, through an SSH tunnel it opens itself (no port opened).
 - **Deploy**: git pull (submodules included), update of the changed or chosen
   modules, restart; auto update in a time window; merge of what was tested
   into production, after a backup.
@@ -1696,6 +1699,103 @@ the dialog shows where each name's DNS points. Odoo does not restart. Not
 offered on an instance whose nginx OmniaCLI does not write (a server added
 from an existing machine): there the ⚙ is off, with the reason.
 
+#### Published through another machine
+
+A machine behind NAT (a customer's office server, no port open to it) is
+linked as any other (its OmniaCLI calls out: pullers, or a link it makes),
+but its Odoo would need a port open to be reached at a name. **Published
+by** lets the machine's admins publish its names through **another machine
+of theirs with a public address, the relay**: in the ⚙ **Addresses…** of an
+environment (that environment), or in **Names on the web** of the workspace
+(every environment). The choice lists this machine's links, each with its
+address, or with the reason it cannot be a relay (it does not answer, its
+OmniaCLI is older, its link is not an admin there, OmniaCLI does not keep
+its nginx, nginx is not installed); a relay without a public IPv4 is offered
+with its private address (reached from its network only, said in the job).
+One relay publishes a whole workspace. **Save and publish** runs the job:
+
+1. here, the root helper's `relay-key`: the workspace's tunnel key (ed25519,
+   `/etc/omniacli/relay/<workspace>/id_ed25519`, 600, never sent: its public
+   half only) and a port of this loopback (30000-30499);
+2. the workspace's site gets, for each environment published through the
+   relay, a server block on `127.0.0.1:<that port>` only, without TLS (the
+   tunnel is SSH, the relay holds the certificate), which takes the
+   visitor's address from `X-Real-IP` and believes it from `127.0.0.1` only
+   (`set_real_ip_from`), and passes the request to Odoo as the other blocks
+   do (`/websocket` upgraded, `X-Forwarded-Proto https`); their names stay
+   out of this machine's certificate;
+3. the relay, through the link (`POST /api/relay/hosted`, a job there, its
+   lines in this one): its root helper's `relay-host` makes the system user
+   `omniacli-relay` (no shell, its home and `authorized_keys` root's), gives
+   the tunnel a port of its loopback (31000-31999) and writes the key's line
+   `restrict,port-forwarding,permitlisten="127.0.0.1:<port>",command="/bin/false"`:
+   that key may listen on that one port of the loopback and nothing else (no
+   shell, no command, no pty, no `-L`, no agent); a `Match User
+   omniacli-relay` block at the end of `sshd_config` says the same
+   (`AllowTcpForwarding remote`, `GatewayPorts no`, `PermitOpen none`,
+   `ForceCommand /bin/false`) and frees the port of a tunnel whose machine
+   went away (`ClientAliveInterval 10`, 3 times), `sshd -t` or the file
+   before is back; its nginx serves the names
+   (`/etc/nginx/conf.d/omniacli-relay-<link>.<workspace>.conf`, a name
+   another site answers on is refused) and passes every request, the
+   websocket too, to the tunnel's port, with the visitor's address in
+   `X-Real-IP` (what a client sent is replaced); the certificate is Let's
+   Encrypt's (HTTP-01 on the relay) for the names that lead to it, a
+   self-signed one of the relay until then (the browser warns);
+4. here, `relay-tunnel <workspace> on`: the unit
+   `omniacli-relay-<workspace>.service` runs `ssh -N -R
+   127.0.0.1:<relay port>:127.0.0.1:<local port> omniacli-relay@<relay>` as
+   the system user `omniacli-tunnel` (no shell, no home), with the relay's
+   host key only (its own `known_hosts`, given by the relay through the
+   link), `ExitOnForwardFailure`, keepalives every 10 s, `Restart=always`
+   5 s after any end, without a limit; the job waits up to 20 s for the
+   relay to see the tunnel's port listening, then says each name's DNS: an
+   A record towards the relay.
+
+**Why SSH, not WireGuard.** sshd is on every machine OmniaCLI prepares (the
+links come through it): the relay opens no new port, needs no kernel module,
+no addresses and no routes; its side is one line of `authorized_keys`. Its
+cost: TCP inside TCP (a lossy line is slower than with WireGuard), and a
+dropped line is noticed by the keepalives within about 30 s. **When the line
+drops** the unit starts ssh again 5 s after it ends; on lab3/lab4 (lab4
+behind a simulated NAT, 23/11/2026) a killed ssh was back, the name
+answering 200 again through the relay, in 5.7 s. The Addresses dialog says
+the tunnel now (connected since, the last drop, the restarts since the
+publication; for the machine's admins whether the relay sees it and each
+name's DNS), the map draws the path (a dotted line from this machine to the
+relay, *names of <workspace>*, ✕ when down; the request's path of an
+instance has the relay between its names and the web server), and the
+monitor counts a tunnel not connected for two checks in a row as a thing to
+look at (`relay <workspace>`, the event `relay.down` of the webhooks). A
+customer (a user of the workspace) reads *published through a machine of
+the provider*, no name and no address, and is told that the DNS records are
+given by the provider. Each publication and removal is in the access log
+(`relay`) of both machines.
+
+**This machine again** (or the workspace deleted) takes it all away, on both
+machines: here the unit, the key, `known_hosts`, the port and, with the
+last tunnel, the user `omniacli-tunnel` (`relay-tunnel <workspace> off`);
+there the site, the certificates, the key's line and, with its last tunnel,
+the user `omniacli-relay`, its home, the Match block of `sshd_config` and
+`/etc/omniacli/relay-hosted.json` (`relay-unhost <link>.<workspace>`, by the
+machine that asked it or by an admin of the relay: `POST
+/api/relay/hosted/<key>/remove`). A relay that does not answer then: the job
+says what stays there and the command that removes it. The purge of the
+package removes all of it on either side.
+
+Limits: the relay's port 80 must be open for Let's Encrypt; a local process
+of the machine behind NAT can reach the tunnel's block on its loopback and
+send its own `X-Real-IP`; the relay accepts the tunnel's key from any
+address (an office's address changes); an `AllowUsers` or `AllowGroups` of
+the relay's sshd must let `omniacli-relay` in.
+
+**Cloudflare Tunnel** is the other way, for whoever has a Cloudflare account
+with the zone of the names there: it is not built. Its place is
+`relay.cloudflare_tunnel_unit_text` (a unit running `cloudflared tunnel run`
+with its token, its ingress to the same block of the workspace's site on
+this loopback, the visitor's address in `CF-Connecting-IP`), and it would be
+one more choice of **Published by**.
+
 A workspace without a domain or without instances has no site, and its
 certificate of Let's Encrypt is deleted. nginx, certbot and Docker come with
 the second package of every release, `omniacli-workspaces`
@@ -2236,7 +2336,7 @@ secret…** (a secret shown once), **Unsign**, *Jobs that fail or warn* and
 detail, as Slack reads it), `event` (stable: `instance.down`, `instance.up`,
 `instance.restarted`, `instance.restart_failed`, `instance.restart_held`,
 `machine.threshold`, `machine.threshold.cleared`, `certificate.ending`,
-`schedule.failed`, `job.failed`, `job.warned`, `notice.test`), `level`,
+`schedule.failed`, `job.failed`, `job.warned`, `notice.test`, `relay.down`), `level`,
 `machine`, `time`, `subject`, `detail` and the event's own fields
 (`instance`, `job`, `metric`, `value`...). Signed, it carries
 `X-OmniaCLI-Signature-256: sha256=<HMAC-SHA256 of the body with its secret,

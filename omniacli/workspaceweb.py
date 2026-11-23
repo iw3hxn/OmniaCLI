@@ -13,6 +13,8 @@ import re
 import socket
 import subprocess
 
+from . import relay
+
 # the challenges of Let's Encrypt (certbot --webroot), root's
 ACME_ROOT = "/var/lib/omniacli-acme"
 # an upload to Odoo (an attachment, a database restore is not done here)
@@ -44,6 +46,59 @@ def _headers(indent: str) -> list[str]:
     return [f"{indent}proxy_set_header {name} {value};" for name, value in _HEADERS]
 
 
+def _locations(site: dict, headers: list[str], omniacli: str | None) -> list[str]:
+    """The locations of an environment's server block: /websocket upgraded
+    (to the http port when Odoo is threaded), OmniaCLI's own paths, the rest."""
+    ws_port = site["websocket_port"] or site["http_port"]
+    return ["    location /websocket {",
+            f"        proxy_pass http://127.0.0.1:{ws_port};",
+            "        proxy_http_version 1.1;",
+            # a location's proxy_set_header replaces the server's: all again
+            *headers,
+            "        proxy_set_header Upgrade $http_upgrade;",
+            '        proxy_set_header Connection "upgrade";',
+            "    }",
+            *([f"    location = {LOGIN_PATH} {{",
+               f"        proxy_pass http://{omniacli};",
+               *headers,
+               "    }",
+               f"    location ^~ {HOOKS_PATH} {{",
+               f"        proxy_pass http://{omniacli};",
+               *headers,
+               "    }"] if omniacli else []),
+            "    location / {",
+            f"        proxy_pass http://127.0.0.1:{site['http_port']};",
+            *headers,
+            "        proxy_redirect off;",
+            "    }"]
+
+
+def relay_blocks(sites: list[dict], omniacli: str | None) -> list[str]:
+    """The server blocks of the environments published through a relay
+    (relay.py; site["relay_port"]): on 127.0.0.1:<that port> only, where the
+    tunnel comes in, without TLS (the tunnel is SSH, the relay holds the
+    certificate); the visitor's address taken from X-Real-IP, trusted from
+    127.0.0.1 only; https for Odoo, as the visitor sees it."""
+    out = []
+    headers = [f"        proxy_set_header {name} {value};" for name, value in relay.NAT_HEADERS]
+    for site in sites:
+        port = site.get("relay_port")
+        if not port:
+            continue
+        names = (*site["names"], *site.get("aliases", ()))
+        out += ["", f"# {site['instance']} {site['role']} {RELAY_MARK}", "server {",
+                f"    listen 127.0.0.1:{int(port)};", f"    server_name {' '.join(names)};",
+                "    set_real_ip_from 127.0.0.1;", "    real_ip_header X-Real-IP;",
+                f"    client_max_body_size {MAX_BODY};",
+                f"    proxy_read_timeout {TIMEOUT};", f"    proxy_send_timeout {TIMEOUT};",
+                *_locations(site, headers, omniacli), "}"]
+    return out
+
+
+# the mark of an environment's block that takes the requests of its relay's tunnel
+RELAY_MARK = "(through its relay)"
+
+
 def conf_text(workspace: str, sites: list[dict], tls: tuple[str, str] | None, ipv6: bool,
               omniacli: str | None = None, redirects: list[dict] = ()) -> str:
     """sites: [{instance, role, names, aliases (optional), http_port,
@@ -71,6 +126,7 @@ def conf_text(workspace: str, sites: list[dict], tls: tuple[str, str] | None, ip
                 "    location / {",
                 f"        return 301 https://{redirect['to']}$request_uri;" if tls else "        return 503;",
                 "    }", "}"]
+    out += relay_blocks(sites, omniacli)
     if tls is None:
         return "\n".join(out) + "\n"
     listen443 = ["    listen 443 ssl;"] + (["    listen [::]:443 ssl;"] if ipv6 else [])
@@ -311,20 +367,20 @@ def switch_upstream(text: str, instance: str, role: str, ports: dict[int, int]) 
     ValueError when the block is not there or proxies to none of them."""
     lines = text.split("\n")
     mark = f"# {instance} {role}"
-    try:
-        start = lines.index(mark)
-    except ValueError:
-        raise ValueError(f"the site has no server block of {instance} {role}") from None
-    if start + 1 >= len(lines) or lines[start + 1] != "server {":
+    # its block of the relay's tunnel (relay_blocks) follows the same ports
+    starts = [i for i, line in enumerate(lines) if line in (mark, f"{mark} {RELAY_MARK}")
+              and i + 1 < len(lines) and lines[i + 1] == "server {"]
+    if not starts:
         raise ValueError(f"the site has no server block of {instance} {role}")
     changed = 0
-    for index in range(start + 2, len(lines)):
-        if lines[index] == "}":
-            break
-        match = _PROXY_LOCAL.match(lines[index])
-        if match and int(match.group(2)) in ports:
-            lines[index] = f"{match.group(1)}{ports[int(match.group(2))]}{match.group(3)}"
-            changed += 1
+    for start in starts:
+        for index in range(start + 2, len(lines)):
+            if lines[index] == "}":
+                break
+            match = _PROXY_LOCAL.match(lines[index])
+            if match and int(match.group(2)) in ports:
+                lines[index] = f"{match.group(1)}{ports[int(match.group(2))]}{match.group(3)}"
+                changed += 1
     if not changed:
         raise ValueError(f"the server block of {instance} {role} proxies to none of the ports "
                          f"{', '.join(str(p) for p in sorted(ports))}")

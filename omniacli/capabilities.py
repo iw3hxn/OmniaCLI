@@ -235,7 +235,7 @@ ROUTES = {
         ("POST", "/api/workspaces/{workspace}/web/save"), ("POST", "/api/workspaces/{workspace}/web/publish"),
         ("POST", "/api/workspaces/{workspace}/web/certificate"), ("GET", "/api/servers/{server}/{role}/addresses"),
         ("POST", "/api/servers/{server}/{role}/addresses/check"),
-        ("POST", "/api/servers/{server}/{role}/addresses/save"))},
+        ("POST", "/api/servers/{server}/{role}/addresses/save"), ("GET", "/api/servers/{server}/{role}/relay"))},
     **{(m, p): "instances" for m, p in (
         ("POST", "/api/workspaces/{workspace}/instances/create"),
         ("GET", "/api/workspaces/{workspace}/archives"), ("POST", "/api/workspaces/{workspace}/archives/upload"),

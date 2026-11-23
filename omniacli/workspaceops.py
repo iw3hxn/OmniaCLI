@@ -298,8 +298,11 @@ def disk_problem(found: dict | None, workspaces: dict[str, Workspace], ws: Works
 
 def web_spec(ws: Workspace) -> str:
     """The names of the workspace for the root helper (it reads the ports)."""
+    # the environments published through a relay (relay.py): their block on this loopback, out of the certificate
+    relayed = {i: [r for r in ("production", "test") if ws.relayed(i, r)] for i in ws.instances()}
     return json.dumps({"domain": ws.domain, "main": ws.main, "subdomains": ws.subdomains,
-                       "certificate": ws.certificate, "aliases": ws.aliases, "redirects": ws.redirects})
+                       "certificate": ws.certificate, "aliases": ws.aliases, "redirects": ws.redirects,
+                       "relayed": {i: r for i, r in relayed.items() if r}})
 
 
 async def publish(job: Job, ws: Workspace) -> dict:
@@ -310,7 +313,10 @@ async def publish(job: Job, ws: Workspace) -> dict:
         return {}
     job.log(f"--- the names of workspace {ws.name}" + (f" under {ws.domain}" if ws.domain else ": none (no domain)"))
     made = await _helper(job, "web", ws.name, ws.storage, web_spec(ws))
+    relayed = set(made.get("relayed_names") or [])
     for name in made.get("names", []):
+        if name in relayed:
+            continue  # served by its relay: said by the relay's part of the job
         job.log(("https://" if made.get("https") else "http://") + name)
     for name, to in (made.get("redirects") or {}).items():
         job.log(f"{name} → {to}")

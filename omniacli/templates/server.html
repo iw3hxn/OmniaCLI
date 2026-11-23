@@ -506,6 +506,13 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
         <button type="button" class="small" id="addr-add-redirect"
                 title="{{ _('A name that takes the visitors to another address of this environment, with the same path. It takes effect with Save and publish.') }}">+ {{ _("Add a redirect") }}</button></div>
       <p class="sd-help">{{ _("Always on HTTPS: whoever opens http:// is taken to https://.") }}</p>
+      {# published by this machine, or through another one of the provider's (relay.py): read when opened (GET …/relay) #}
+      <div class="sd-field" id="addr-relay-field" hidden><div class="sd-label"><label for="addr-relay">{{ _("Published by") }}</label></div>
+        <select id="addr-relay" hidden
+                title="{{ _('The machine whose nginx serves these names: this one, or another machine of yours with a public address, reached by a tunnel this machine opens itself (no port is opened here). It takes effect with Save and publish.') }}"></select>
+        <p class="sd-help" id="addr-relay-now"></p>
+        <p class="sd-help" id="addr-relay-tunnel" role="status"></p>
+        <ul class="addr-list sd-help" id="addr-relay-dns"></ul></div>
       <p id="addr-error" class="error" role="alert"></p>
       <div class="sd-foot">
         <button type="button" id="addr-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
@@ -2618,13 +2625,91 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     const api = {{ (prefix ~ "/api/servers/") | tojson }};
     const aliases = document.getElementById("addr-aliases"), redirects = document.getElementById("addr-redirects");
     const save = document.getElementById("addr-save"), error = document.getElementById("addr-error");
-    let env = "", data = null, start = "", checked = {}, timer = null;
+    let env = "", data = null, start = "", checked = {}, timer = null, relayed = null;
     const names = (list) => [...list.querySelectorAll("input.addr-name")].map((i) => i.value.trim().toLowerCase().replace(/\.$/, "")).filter(Boolean);
+    const relaySelect = document.getElementById("addr-relay");
     function state() {
-      return JSON.stringify({aliases: names(aliases),
-                             redirects: [...redirects.children].map((li) => ({from: li.querySelector("input").value.trim().toLowerCase().replace(/\.$/, ""),
-                                                                               to: li.querySelector("select").value})).filter((r) => r.from)});
+      const out = {aliases: names(aliases),
+                   redirects: [...redirects.children].map((li) => ({from: li.querySelector("input").value.trim().toLowerCase().replace(/\.$/, ""),
+                                                                     to: li.querySelector("select").value})).filter((r) => r.from)};
+      // the machine it is published by: sent only when it may be chosen here
+      if (relayed && relayed.can_choose && !relaySelect.disabled) out.relay = relaySelect.value;
+      return JSON.stringify(out);
     }
+    // «Published by»: this machine or another one (relay.py), the tunnel now, the DNS records it needs
+    const R = {here: {{ _("this machine") | tojson }}, through: {{ _("Published through {machine}.") | tojson }},
+               own: {{ _("Published by this machine's nginx.") | tojson }},
+               privateAt: {{ _("private address {address}") | tojson }},
+               whole: {{ _("Every environment of the workspace is published through {machine}: it is changed in Names on the web.") | tojson }},
+               connected: {{ _("✓ Tunnel connected since {since}.") | tojson }}, connecting: {{ _("Tunnel connecting…") | tojson }},
+               down: {{ _("✗ Tunnel not connected: the names do not open. Its unit tries again every few seconds.") | tojson }},
+               none: {{ _("✗ Tunnel not started: Save and publish again.") | tojson }},
+               downSince: {{ _("✗ Tunnel not connected since {when}: the names do not open. Its unit tries again every few seconds.") | tojson }},
+               drop: {{ _("Last drop: {when}.") | tojson }}, restarts: {{ _("Started again by itself since the publication: {n} times.") | tojson }},
+               unseen: {{ _("The relay does not see the tunnel now.") | tojson }},
+               dnsMake: {{ _("Make an A record {name} → {address}") | tojson }},
+               dnsNow: {{ _("Make an A record {name} → {address} (now it leads to {found})") | tojson }},
+               dnsAfter: {{ _("After Save and publish: an A record of each name towards {address}") | tojson }},
+               provider: {{ _("The DNS records of these names are given by the provider.") | tojson }}};
+    const when = (stamp) => String(stamp || "").replace("T", " ");
+    const fillIn = (text, values) => Object.entries(values).reduce((t, [k, v]) => t.split(`{${k}}`).join(v), text);
+    function drawRelay() {
+      const field = document.getElementById("addr-relay-field");
+      const now = document.getElementById("addr-relay-now"), tunnel = document.getElementById("addr-relay-tunnel");
+      const dns = document.getElementById("addr-relay-dns");
+      if (!relayed) { field.hidden = true; return; }
+      field.hidden = false;
+      const chosen = relayed.can_choose ? relaySelect.value : relayed.via;
+      const choice = (relayed.choices || []).find((c) => c.name === chosen);
+      now.textContent = relayed.whole ? fillIn(R.whole, {machine: relayed.workspace_via})
+        : chosen ? fillIn(R.through, {machine: chosen}) : R.own;
+      tunnel.textContent = "";
+      dns.replaceChildren();
+      if (!chosen) return;
+      if (relayed.published && chosen === relayed.via) {
+        const t = relayed.tunnel || {};
+        const parts = [t.state === "connected" ? fillIn(R.connected, {since: when(t.since)})
+          : relayed.down_since ? fillIn(R.downSince, {when: when(relayed.down_since)}) : R[t.state] || R.none];
+        if (t.last_drop) parts.push(fillIn(R.drop, {when: when(t.last_drop)}));
+        if (t.restarts) parts.push(fillIn(R.restarts, {n: t.restarts}));
+        if (relayed.listening === false) parts.push(R.unseen);
+        tunnel.textContent = parts.join(" ");
+        tunnel.classList.toggle("bad", t.state !== "connected" || Boolean(relayed.down_since));
+        if (!relayed.can_choose) { dns.append(Object.assign(document.createElement("li"), {textContent: R.provider})); return; }
+        for (const row of relayed.dns || []) {
+          const found = (row.addresses || []).join(", ");
+          const text = row.state === "here" ? `✓ ${row.name} → ${relayed.address}`
+            : found ? fillIn(R.dnsNow, {name: row.name, address: relayed.address, found}) : fillIn(R.dnsMake, {name: row.name, address: relayed.address});
+          const li = Object.assign(document.createElement("li"), {className: row.state === "here" ? "" : "bad", textContent: text});
+          dns.append(li);
+        }
+      } else if (choice && choice.address) {
+        dns.append(Object.assign(document.createElement("li"), {textContent: fillIn(R.dnsAfter, {address: choice.address})}));
+      }
+    }
+    async function loadRelay() {
+      relayed = null;
+      relaySelect.replaceChildren();
+      const resp = await fetch(`${api}${env}/relay`, {headers: {Accept: "application/json"}}).catch(() => null);
+      const got = resp && resp.ok ? await resp.json().catch(() => null) : null;
+      if (!got) { drawRelay(); return; }
+      relayed = got;
+      relaySelect.hidden = !got.can_choose;
+      if (got.can_choose) {
+        relaySelect.append(Object.assign(document.createElement("option"), {value: "", textContent: R.here, selected: !got.via}));
+        for (const c of got.choices || []) {
+          const label = !c.can ? `${c.name}: ${c.reason}`
+            : `${c.name} (${c.private ? fillIn(R.privateAt, {address: c.address}) : c.address})`;
+          relaySelect.append(Object.assign(document.createElement("option"), {value: c.name, textContent: label,
+                                                                              disabled: !c.can && c.name !== got.via, selected: c.name === got.via}));
+        }
+        relaySelect.disabled = Boolean(got.whole);
+      }
+      start = state();
+      drawRelay();
+      refresh();
+    }
+    relaySelect.addEventListener("change", () => { drawRelay(); refresh(); });
     function removeButton(li) {
       const b = Object.assign(document.createElement("button"), {type: "button", className: "small", textContent: "✕", title: A.remove});
       b.setAttribute("aria-label", A.remove);
@@ -2731,6 +2816,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
       start = state();
       refresh();
       check();
+      loadRelay();
     }
     document.querySelectorAll(".addr-open").forEach((b) => b.addEventListener("click", () => open(b)));
     document.getElementById("addr-add-alias").addEventListener("click", () => { aliasRow("").querySelector("input").focus(); refresh(); });

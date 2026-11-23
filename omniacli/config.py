@@ -1211,6 +1211,19 @@ class Workspace:
     # the person a token of the workspace acts for (made for it, or by it): {token name: user name};
     # such a token gets no more than its person now (Settings.token_grant)
     token_people: dict[str, str] = field(default_factory=dict)
+    # published through another machine of the integrator (relay.py, README, Published through another
+    # machine), set by the machine's admins: {"via": link, "all": True} every environment, or
+    # {"via": link, "environments": {instance: [role]}} those only; {} none (this machine's own nginx)
+    relay: dict = field(default_factory=dict)
+
+    def relayed(self, instance: str, role: str) -> str:
+        """The link the environment is published through, "" when it is this machine's nginx."""
+        via = str(self.relay.get("via") or "")
+        if not via:
+            return ""
+        if self.relay.get("all") or role in (self.relay.get("environments") or {}).get(instance, ()):
+            return via
+        return ""
 
     def grant(self, user: str):
         """What user may do here when it uses the feature (a custom role, some
@@ -1260,6 +1273,9 @@ class Workspace:
             data["member_servers"] = {u: list(s) for u, s in self.member_servers.items()}
         if self.token_people:
             data["token_people"] = dict(self.token_people)
+        if self.relay.get("via"):
+            data["relay"] = {"via": self.relay["via"], **({"all": True} if self.relay.get("all") else {
+                "environments": {i: list(r) for i, r in (self.relay.get("environments") or {}).items()}})}
         return data
 
     def extra_names(self) -> list[tuple[str, str, str]]:
@@ -1413,7 +1429,36 @@ def parse_workspace(name: str, data: dict, storage_roots=()) -> Workspace:
     return replace(ws, members=members, main=main, subdomains=subdomains, certificate=certificate,
                    parameter_bounds=bounds, notify=parse_notify(data.get("notify"), f"{where}.notify"),
                    aliases=aliases, redirects=redirects, roles=roles, member_roles=member_roles,
-                   member_servers=member_servers, token_people=token_people)
+                   member_servers=member_servers, token_people=token_people,
+                   relay=parse_relay(where, data.get("relay"), instances))
+
+
+def parse_relay(where: str, data, instances: list[str]) -> dict:
+    """The machine a workspace's names are published through (relay.py):
+    {via: <link>, all: true} or {via: <link>, environments: {instance: [roles]}};
+    {} for none. Whether the link is there and can be a relay is checked
+    where the links are known (the page, the publication)."""
+    if data in (None, "", {}):
+        return {}
+    if not isinstance(data, dict):
+        raise ConfigError(f"{where}.relay: a mapping {{via: link, all: true}} or {{via: link, environments: ...}}")
+    via = str(data.get("via") or "").strip()
+    if not via:
+        return {}
+    if not _LINK_NAME.fullmatch(via):
+        raise ConfigError(f"{where}.relay.via: {via!r} is not the name of a link")
+    if data.get("all"):
+        return {"via": via, "all": True}
+    envs = {}
+    for instance, roles in (data.get("environments") or {}).items():
+        instance = str(instance)
+        if instance not in instances:
+            raise ConfigError(f"{where}.relay.environments: {instance!r} is not an instance of the workspace")
+        if not isinstance(roles, list) or any(str(r) not in ROLES for r in roles):
+            raise ConfigError(f"{where}.relay.environments.{instance}: a list of production, test")
+        if roles:
+            envs[instance] = [r for r in ROLES if r in {str(x) for x in roles}]
+    return {"via": via, "environments": envs} if envs else {}
 
 
 def parse_permissions(where: str, data: dict, members: dict) -> tuple[dict, dict, dict, dict]:
@@ -1531,7 +1576,13 @@ def addresses_follow(before: Workspace, ws: Workspace, gone: str | None, now: st
                 out[instance] = roles
         return out
     aliases, redirects = moved(ws.aliases), moved(ws.redirects)
-    after = replace(ws, aliases=aliases, redirects={})
+    relay = dict(ws.relay)
+    if relay.get("environments"):
+        # the environments published through a relay go with their instance too
+        relay["environments"] = moved(relay["environments"])
+        if not relay["environments"]:
+            relay = {}
+    after = replace(ws, aliases=aliases, redirects={}, relay=relay)
     kept: dict[str, dict[str, dict[str, str]]] = {}
     for instance, roles in redirects.items():
         was = gone if now and instance == now else instance

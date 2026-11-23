@@ -41,7 +41,7 @@ CERT_CRITICAL = 3
 LEVELS = {"stopped": "warning", "down": "critical", "backup_failed": "critical", "certificate": "warning",
           "names": "warning", "restarted": "warning", "job_failed": "critical", "job_warned": "warning",
           "disk": "warning", "load": "warning", "replica": "warning", "machine_older": "warning",
-          "machine_unread": "critical"}
+          "machine_unread": "critical", "relay": "warning"}
 
 
 def leveled(watch: list[dict]) -> list[dict]:
@@ -162,6 +162,10 @@ class WebNames:
         found = {str(name): {"https": bool(made.get("https")) and name not in missing | away,
                              "dns": "none" if name in missing else "elsewhere" if name in away else "here"}
                  for name in names}
+        # the names published through a relay (relay.py): their HTTPS is the relay's, their DNS leads there
+        for name, state in (made.get("relayed") or {}).items():
+            if isinstance(state, dict):
+                found[str(name)] = {"https": bool(state.get("https")), "dns": state.get("dns")}
         data = self.load()
         data[workspace] = {"at": now_text(), "names": found}
         self._sites.pop(workspace, None)

@@ -42,7 +42,7 @@ from pathlib import Path
 import httpx
 from cryptography import x509
 
-from . import notify, ops
+from . import notify, ops, relay
 from .jobs import JobFailed
 
 _logger = logging.getLogger(__name__)
@@ -83,6 +83,8 @@ class Monitor:
         self._task: asyncio.Task | None = None
         self._last = {"disk": 0.0, "cert": 0.0, "save": time.time()}
         self._restarts: set[asyncio.Task] = set()
+        # {workspace: checks in a row its relay's tunnel was not connected}
+        self._relay_misses: dict[str, int] = {}
         self.load()
 
     # --- state -----------------------------------------------------------
@@ -367,11 +369,37 @@ class Monitor:
             entry["told"] = today
             await self.tell(server, problem, problem, {**(event or {"event": "notice"}), "level": level})
 
+    async def check_relays(self) -> None:
+        """The tunnel of each workspace published through another machine
+        (relay.py): not connected for two checks in a row (its unit restarts
+        it every few seconds: a drop it gets over is not told), a problem of
+        the machine, «relay <workspace>», told as the others; gone when the
+        tunnel is connected again or the publication taken away."""
+        # a publication taken away here whose relay did not take its part back yet ("left") has no tunnel
+        records = {k: v for k, v in relay.load_records(self.settings.servers_file.parent / relay.RECORDS_FILE).items()
+                   if not v.get("left")}
+        for what in [w for w in self.machine if w.startswith("relay ") and w[6:] not in records]:
+            del self.machine[what]
+        for name, rec in records.items():
+            state = await asyncio.to_thread(relay.read_tunnel, name, int(rec.get("restarts_base") or 0))
+            down = state["state"] != "connected"
+            self._relay_misses[name] = self._relay_misses.get(name, 0) + 1 if down else 0
+            if down and self._relay_misses[name] < 2:
+                continue  # a first miss: what was said before stays (a restart of OmniaCLI counts again)
+            problem = ""
+            if down:
+                # the same words while it lasts: since when is the entry's own
+                problem = f"the tunnel of workspace {name} to {rec.get('link')} is not connected: its names do not open"
+            await self.machine_problem(f"relay {name}", problem, server=None, level="warning",
+                                       event={"event": "relay.down", "workspace": name, "relay": rec.get("link"),
+                                              "state": state["state"]})
+
     async def round(self) -> None:
         async with httpx.AsyncClient(follow_redirects=False) as client:
             await asyncio.gather(*(self.check_instance(client, inst) for inst in self.targets()),
                                  return_exceptions=True)
         await self.check_load()
+        await self.check_relays()
         now = time.time()
         if now - self._last["disk"] >= DISK_EVERY:
             self._last["disk"] = now

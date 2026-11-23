@@ -137,7 +137,16 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
       <option value="letsencrypt" {% if ws.certificate == "letsencrypt" %}selected{% endif %}>{{ _("Let's Encrypt (made and renewed by this machine)") }}</option>
       <option value="own" {% if ws.certificate == "own" %}selected{% endif %}>{{ _("the customer's own") }}</option>
     </select>
+    {# published by this machine or through another one of the provider's (relay.py) #}
+    {% if relay_links is not none %}
+    <label for="relay-via">{{ _("Published by") }}</label>
+    <select id="relay-via" title="{{ _('This machine, or another machine of yours with a public address for every environment, reached by a tunnel this machine opens itself (no port is opened here). One environment only: its Addresses. It takes effect with Save and publish.') }}">
+      <option value="">{{ _("this machine (or each environment in its Addresses)") }}</option>
+      {% for l in relay_links %}<option value="{{ l }}" {% if ws.relay.all and ws.relay.via == l %}selected{% endif %}>{{ _("{machine}, every environment", machine=l) }}</option>{% endfor %}
+    </select>
+    {% endif %}
   </div>
+  {% if relay_text %}<p class="muted">{{ _("Published through {machine}: its names lead to that machine, which holds their certificate.", machine=tr(relay_text)) }}</p>{% endif %}
   <h3>{{ _("Subdomains") }}</h3>
   <div class="scroll">
   <table id="subdomains">
@@ -867,7 +876,7 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
   // the names on the web: Save and publish waits for a change; a subdomain's row is the datum
   const instances = {{ instances | tojson }};
   const subTable = $("subdomains"), saveNames = $("save-names");
-  const namesNow = () => JSON.stringify([$("main-instance").value, $("certificate").value,
+  const namesNow = () => JSON.stringify([$("main-instance").value, $("certificate").value, $("relay-via") ? $("relay-via").value : null,
     [...subTable.querySelectorAll("[data-sub]")].map((row) => [row.querySelector(".sub").value.trim(), row.querySelector(".target").value])]);
   if (saveNames) {
     const namesBefore = namesNow();
@@ -895,7 +904,10 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
         const sub = row.querySelector(".sub").value.trim().toLowerCase();
         if (sub) subdomains[sub] = row.querySelector(".target").value;
       }
-      const data = await post("web/save", {main: $("main-instance").value, subdomains, certificate: $("certificate").value}, $("names-error"));
+      const body = {main: $("main-instance").value, subdomains, certificate: $("certificate").value};
+      // the machine every environment is published through (relay.py), when the machine's admin may choose it
+      if ($("relay-via")) body.relay = $("relay-via").value;
+      const data = await post("web/save", body, $("names-error"));
       if (data) data.job ? jobPage(data.job) : location.reload();
     };
     const publishNames = $("publish-names");

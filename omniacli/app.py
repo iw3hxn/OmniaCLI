@@ -54,7 +54,7 @@ from . import audit, siem
 from . import apiguard, apiv1
 from .apiguard import ApiError
 from . import i18n, loginas, machines, modulecatalog, pgreport, pgtuning, stagings, workspaceweb
-from . import clusterpitr, inframap, linkedcluster, machinedb, managedreplica
+from . import clusterpitr, inframap, linkedcluster, machinedb, managedreplica, relay
 from . import stagingmail
 from . import deploys, zerodowntime
 from . import github
@@ -392,6 +392,8 @@ WORKSPACE_ROUTES = frozenset({
     # the Addresses dialog of an environment (UX-008 §6.1): its admins (admin)
     "/api/servers/{server}/{role}/addresses", "/api/servers/{server}/{role}/addresses/check",
     "/api/servers/{server}/{role}/addresses/save",
+    # its publication through another machine (relay.py): its state, read by its admins
+    "/api/servers/{server}/{role}/relay",
     # the Modules tab: the catalog of the OCA, with the role in the workspace (UX-008 §7)
     "/api/servers/{server}/modules", "/api/servers/{server}/modules/catalog", "/api/servers/{server}/modules/plan",
     "/api/servers/{server}/{role}/modules", "/api/servers/{server}/{role}/modules/install",
@@ -4155,6 +4157,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 if not ws.domain or not ws.storage:
                     continue
                 for instance, role in environments_of(ws):
+                    if ws.relayed(instance, role):
+                        continue
                     names = environment_names(ws, instance, role)
                     name = automatic_name(ws.name, instance, role, address, domain)
                     if not names or name is None or name in names:
@@ -4197,6 +4201,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return ws, set()
         added: dict[tuple[str, str], str] = {}
         for instance, role in environments_of(ws):
+            if ws.relayed(instance, role):
+                continue  # published through a relay: no name on this machine's address
             names = environment_names(ws, instance, role)
             name = automatic_name(ws.name, instance, role, address, domain)
             if not names or name is None or name in names:
@@ -4241,7 +4247,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         certificate yet), address: this machine's public IPv4, instead: the
         name the environment is opened at ("" when none: only a tunnel reaches it)}.
         Asked to the DNS now: for the page of an instance and before a staging is made."""
-        if not names:
+        if not names or ws.relayed(instance, role):
+            # published through a relay (relay.py): its names lead there, its Addresses say what their DNS needs
             return None
         key = (ws.name, instance, role, tuple(names))
         seen = name_problems_seen.get(key)
@@ -4274,6 +4281,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         missing, away = set(made.get("without_dns") or []), set(made.get("elsewhere") or [])
         said = []
         for instance, role in environments_of(ws):
+            if ws.relayed(instance, role):
+                continue  # its names lead to its relay: relay_publish says what their DNS needs
             names = environment_names(ws, instance, role)
             if not names or names[0] not in missing | away:
                 continue
@@ -4296,7 +4305,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         warning of the job the first time (its automatic name was just given)
         and whenever nothing opens the environment, a line of its log after."""
         ws, added = await automatic_names(job, ws)
+        # through another machine (relay.py): a relay of before taken away, the tunnel's key and port first
+        keyed = await relay_prepare(job, ws)
         made = await workspaceops.publish(job, ws)
+        if keyed is not None:
+            await relay_publish(job, ws, made, keyed)
         await asyncio.to_thread(web_names_state.record, ws.name, made)
         apply_sites(settings.servers, settings.workspaces, sites_known())
         save_login_hosts()
@@ -5038,9 +5051,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return {"ok": True, "job": job.id}
 
     @app.post("/api/workspaces/delete", dependencies=[Depends(admin)])
-    async def workspace_delete(payload: dict = Body(...)):
+    async def workspace_delete(payload: dict = Body(...), me: Principal = Depends(current_user)):
         """Delete a workspace: its servers stay, its users of workspaces only
-        no longer see them."""
+        no longer see them; its names published through another machine are
+        taken away there too."""
         name = str(payload.get("name") or "")
         async with workspaces_lock:
             if name not in settings.workspaces:
@@ -5049,6 +5063,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             refused = await store_workspaces({n: w for n, w in settings.workspaces.items() if n != name})
             if refused:
                 return refused
+        rec = relay_records().get(name)
+        if rec is not None:
+            # its names published through another machine: taken away on both machines, in a job
+            async def unrelay(job):
+                await relay_teardown(job, name, rec, f"workspace {name} deleted")
+            jobs.submit(f"Names of workspace {name} through {rec.get('link')}: removed", [], f"manual: {me}", unrelay)
         # with no instance of its own left, its disk goes too (an empty one only)
         if ws.storage and not [s for s in ws.servers if s in settings.servers and s.startswith(f"{name}-")]:
             return {"ok": True, "disk": await workspaceops.drop_disk(None, ws)}
@@ -5109,6 +5129,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                   for role in ROLES if getattr(settings.servers[n], role) is not None}
                               for n in ws.servers if n in settings.servers},
              "sites": site_names(ws), "certificates": CERTIFICATES,
+             # the machines its names may be published through (relay.py): the links, for the machine's admins
+             "relay_links": sorted(settings.link_targets) if machine_admin(me) and not me.scoped else None,
+             "relay_text": (RELAY_PROVIDER if me.scoped else ws.relay.get("via")) if ws.relay.get("via") else "",
              "tokens": [{"name": n, "role": settings.token_role(n), "ci": settings.token_ci(n),
                          "servers": list(settings.token_servers(n)),
                          # the person it acts for: it gets no more than that person (capabilities.py)
@@ -6855,6 +6878,20 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             ws = a_workspace(workspace)
             data = {**ws.to_dict(), "main": payload.get("main") or "",
                     "subdomains": payload.get("subdomains") or {}, "certificate": payload.get("certificate")}
+            # the whole workspace published through another machine (relay.py), by the machine's admins
+            asked = payload.get("relay")
+            if asked is not None and str(asked or "") != (ws.relay.get("via") if ws.relay.get("all") else ""):
+                try:
+                    changed = relay_change(ws, None, None, str(asked or ""), me)
+                except ValueError as exc:
+                    return refuse(str(exc), status.HTTP_403_FORBIDDEN if not machine_admin(me) or me.scoped
+                                  else status.HTTP_400_BAD_REQUEST)
+                if changed is not None:
+                    data["relay"] = changed
+                    if str(asked or ""):
+                        facts = await relay_facts_of(settings.link_targets[str(asked)])
+                        if not facts["can"]:
+                            return refuse(f"{asked} cannot publish the names of this machine: {facts['reason']}")
             try:
                 found = parse_workspaces({**{n: w.to_dict() for n, w in settings.workspaces.items()}, workspace: data},
                                          settings.storage_roots)
@@ -7038,6 +7075,20 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 envs = {i: dict(r) for i, r in (data.get(key) or {}).items()}
                 envs.setdefault(instance, {})[role] = value
                 data[key] = {i: r for i, r in envs.items() if any(r.values())}
+            # «Published by»: this machine, or another one (relay.py), chosen by the machine's admins
+            asked = payload.get("relay")
+            if asked is not None and str(asked or "") != ws.relayed(instance, role):
+                try:
+                    changed = relay_change(ws, instance, role, str(asked or ""), me)
+                except ValueError as exc:
+                    return refuse(str(exc), status.HTTP_403_FORBIDDEN if not machine_admin(me) or me.scoped
+                                  else status.HTTP_400_BAD_REQUEST)
+                if changed is not None:
+                    data["relay"] = changed
+                    if str(asked or ""):
+                        facts = await relay_facts_of(settings.link_targets[str(asked)])
+                        if not facts["can"]:
+                            return refuse(f"{asked} cannot publish the names of this machine: {facts['reason']}")
             try:
                 found = parse_workspaces({**{n: w.to_dict() for n, w in settings.workspaces.items()}, ws.name: data},
                                          settings.storage_roots)
@@ -7048,7 +7099,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     return refuse(f"{taken[1]} is not available: choose another name")
                 return refuse(said)
             new = found[ws.name]
-            if (new.aliases, new.redirects) == (ws.aliases, ws.redirects):
+            if (new.aliases, new.redirects, new.relay) == (ws.aliases, ws.redirects, ws.relay):
                 return {"ok": True}
             # a name another site of nginx has would fail every publish of the
             # workspace after this one: refused here, not in the job
@@ -7069,6 +7120,417 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if refused:
                 return refused
         return {"ok": True, "job": submit_publish(new, f"manual: {me}").id}
+
+    # --- names published through another machine (relay.py; README, Published through another machine) ----
+    # The machine behind NAT (this one, for a workspace with relay set) asks the relay, a linked OmniaCLI
+    # with a public address, to serve its names: a job there (relay-host) gives a port of its loopback and
+    # lets the workspace's key listen on it; here the workspace's site takes the tunnel's requests on a port
+    # of this loopback, and a unit keeps the tunnel up (relay-tunnel). The relay's side: /api/relay/*.
+
+    relays_file = settings.servers_file.parent / relay.RECORDS_FILE
+    RELAY_WAIT = 20  # seconds a new tunnel is given to be seen listening on the relay
+    RELAY_PROVIDER = "a machine of the provider"
+
+    def relay_records() -> dict:
+        return relay.load_records(relays_file)
+
+    def relay_record(name: str, rec: dict | None) -> None:
+        data = relay_records()
+        if rec is None:
+            data.pop(name, None)
+        else:
+            data[name] = rec
+        relay.save_records(relays_file, data)
+
+    def relay_envs(ws: Workspace) -> list[tuple[str, str]]:
+        """(instance, role) of the environments of ws published through its relay."""
+        return [(i, r) for i, r in environments_of(ws) if ws.relayed(i, r)]
+
+    def relay_names(ws: Workspace, envs) -> tuple[list[str], dict[str, str]]:
+        """The names the relay serves (each environment's, its other names too) and the redirects to them."""
+        names: list[str] = []
+        redirects: dict[str, str] = {}
+        for instance, role in envs:
+            names += environment_names(ws, instance, role)
+            redirects.update(ws.redirects.get(instance, {}).get(role, {}))
+        names = list(dict.fromkeys(names))
+        return names, {n: to for n, to in redirects.items() if to in names and n not in names}
+
+    def relay_host_of(link: LinkTarget) -> str:
+        """Where this machine reaches the link's machine: its SSH host, or the host of its URL."""
+        return link.ssh.host if link.ssh is not None else (urlsplit(link.url).hostname or "")
+
+    def relay_link_headers(link: LinkTarget, who: str = "relay", role: str = "admin") -> dict:
+        # no menu header: on the relay this is the machine acting by itself (a_machine), never a person
+        return {**link_headers(link, who, role), "Accept": "application/json"}
+
+    async def relay_facts_of(link: LinkTarget) -> dict:
+        """Whether the link's machine can be a relay: {name, can, reason, address, private}. address: its
+        public IPv4, or the address this machine reaches it at (private: only machines of its network
+        reach it there)."""
+        out = {"name": link.name, "can": False, "reason": "", "address": "", "private": False}
+        try:
+            resp = await link_clients.client(link).get("/api/relay/facts", headers=relay_link_headers(link),
+                                                       timeout=LIST_TIMEOUT * 2)
+        except httpx.HTTPError as exc:
+            out["reason"] = f"it does not answer: {describe_error(exc)}"
+            return out
+        if resp.status_code in (404, 405):
+            out["reason"] = "its OmniaCLI is older: it publishes no names for other machines"
+            return out
+        if resp.status_code == 403:
+            out["reason"] = "its link is not an admin there"
+            return out
+        try:
+            facts = resp.json() if resp.status_code == 200 else {}
+        except ValueError:
+            facts = {}
+        if resp.status_code != 200 or not isinstance(facts, dict):
+            out["reason"] = f"it answered {resp.status_code}"
+            return out
+        if not facts.get("ours"):
+            out["reason"] = "OmniaCLI does not keep its nginx (no workspaces there)"
+            return out
+        if not facts.get("nginx"):
+            out["reason"] = "nginx is not installed there"
+            return out
+        public = next((a for a in facts.get("addresses") or [] if ":" not in str(a)), "")
+        out.update(can=True, address=public or relay_host_of(link), private=not public,
+                   ssh_port=facts.get("ssh_port"), hosted=facts.get("hosted"))
+        return out
+
+    async def relay_choices() -> list[dict]:
+        """The links of this machine, each with whether it can be a relay and why not."""
+        found = await asyncio.gather(*(relay_facts_of(link) for link in settings.link_targets.values()))
+        return sorted(found, key=lambda f: (not f["can"], f["name"]))
+
+    async def relay_call(job, link: LinkTarget, path: str, body: dict, what: str) -> dict:
+        """A job of the relay started through its link and followed here to its end: its result."""
+        headers = relay_link_headers(link)
+        client = link_clients.client(link)
+        try:
+            resp = await client.post(path, headers=headers, json=body)
+        except httpx.HTTPError as exc:
+            raise JobFailed(f"{link.name}: {describe_error(exc)}") from None
+        try:
+            answer = resp.json()
+        except ValueError:
+            answer = {}
+        if resp.status_code != 200:
+            said = answer.get("error") or answer.get("detail") if isinstance(answer, dict) else ""
+            if resp.status_code in (404, 405) and not said:
+                said = "its OmniaCLI is older: it publishes no names for other machines"
+            raise JobFailed(f"{link.name}: {said or f'HTTP {resp.status_code}'}")
+        if answer.get("gone"):
+            return {"gone": True}
+        data = await linkcopy.follow(job, client, link, headers, str(answer.get("job") or ""), what)
+        return data.get("result") or {}
+
+    async def relay_listening(link: LinkTarget, key: str) -> bool | None:
+        """The relay says the tunnel's port listens (the tunnel is connected); None: it does not answer."""
+        try:
+            resp = await link_clients.client(link).get("/api/relay/hosted", headers=relay_link_headers(link),
+                                                       timeout=LIST_TIMEOUT)
+            found = (resp.json().get("hosted") or {}).get(key) if resp.status_code == 200 else None
+        except (httpx.HTTPError, ValueError, AttributeError):
+            return None
+        return bool(found.get("listening")) if isinstance(found, dict) else False
+
+    async def relay_teardown(job, name: str, rec: dict, why: str) -> None:
+        """A workspace's publication through its relay taken away, on both machines: here the unit, the key,
+        the port (relay-tunnel off), there the site, the certificates, the key's line and, with its last
+        tunnel, the relay's user. A relay that does not answer: what stays there is said."""
+        job.log(f"--- the names of workspace {name} no longer published through {rec.get('link')}: {why}")
+        done = await workspaceops._helper(job, "relay-tunnel", name, "off")
+        job.log("Taken away here: " + (", ".join(done.get("removed") or []) or "nothing was left"))
+        key = str(rec.get("key") or "")
+        stays = (f"its site of nginx (omniacli-relay-{key}.conf), its certificate and the line of the tunnel's key: "
+                 f"an admin there removes them with workspace-helper relay-unhost {key}")
+        link = settings.link_targets.get(str(rec.get("link") or ""))
+        if link is None:
+            job.warn(f"The link {rec.get('link')} is no longer here: on that machine stay {stays}")
+        else:
+            try:
+                result = await relay_call(job, link, f"/api/relay/hosted/{key}/remove", {}, "the removal of the names")
+            except JobFailed as exc:
+                # kept, as left there: the next publication of the workspace asks it again
+                relay_record(name, {**rec, "left": True})
+                job.warn(f"{link.name} did not take its part back ({exc}): on it stay {stays}; the next publication "
+                         "of the workspace asks it again")
+                return
+            gone = (result.get("unhost") or {}).get("removed") or []
+            job.log(f"Taken away on {link.name}: " + (", ".join(gone) if gone else "nothing was left there"))
+        relay_record(name, None)
+        access_log.record("relay", "system", "relay", "", f"workspace {name}: no longer published through "
+                          f"{rec.get('link')} ({why})", context=False, workspace=name)
+
+    async def relay_prepare(job, ws: Workspace) -> dict | None:
+        """Before the workspace's site is written: a publication through another relay, or of nothing any
+        more, taken away; for one through a relay, the tunnel's key and the port of this loopback."""
+        rec = relay_records().get(ws.name)
+        via = str(ws.relay.get("via") or "")
+        envs = relay_envs(ws)
+        if rec and (not envs or rec.get("link") != via or rec.get("left")):
+            await relay_teardown(job, ws.name, rec, "no environment is published through it any more" if not envs
+                                 else f"published through {via} now" if rec.get("link") != via
+                                 else "what was left there is asked again")
+        if not envs:
+            return None
+        if via not in settings.link_targets:
+            raise JobFailed(f"The workspace is published through {via}, which is no link of this machine any more: "
+                            "choose another machine in Addresses or Names")
+        return await workspaceops._helper(job, "relay-key", ws.name)
+
+    async def relay_publish(job, ws: Workspace, made: dict, keyed: dict) -> None:
+        """After the site: the names asked of the relay (its job, followed here), the tunnel's unit
+        written and started, the relay asked until the tunnel listens there; what each name's DNS needs.
+        made gets "relayed": {name: {https, dns}} for the map."""
+        link = settings.link_targets[ws.relay["via"]]
+        envs = relay_envs(ws)
+        names, redirects = relay_names(ws, envs)
+        job.log(f"--- published through {link.name}: " + ", ".join(names + [f"{n} → {to}" for n, to in redirects.items()]))
+        facts = await relay_facts_of(link)
+        if not facts["can"]:
+            raise JobFailed(f"{link.name} cannot publish them: {facts['reason']}")
+        result = await relay_call(job, link, "/api/relay/hosted", {
+            "workspace": ws.name, "public_key": keyed["public_key"], "names": names, "redirects": redirects},
+            "the names")
+        hosted = result.get("hosted") or {}
+        if not hosted.get("port") or not hosted.get("host_key"):
+            raise JobFailed(f"{link.name} gave no port for the tunnel")
+        host = facts["address"]
+        tunnel = await workspaceops._helper(job, "relay-tunnel", ws.name, "on", input=json.dumps({
+            "relay": link.name, "host": host, "ssh_port": hosted.get("ssh_port") or 22,
+            "remote_port": hosted["port"], "host_key": hosted["host_key"]}).encode())
+        job.log(f"The tunnel: {tunnel.get('unit')}, ssh to {host}:{hosted.get('ssh_port') or 22} as "
+                f"{relay.RELAY_USER}, port {hosted['port']} of its loopback to port {keyed['local_port']} of this one, "
+                f"started again by systemd {relay.RESTART_SECONDS} s after any drop")
+        rec = {"link": link.name, "key": hosted.get("key") or relay.key_of(link.name, ws.name), "host": host,
+               "ssh_port": hosted.get("ssh_port") or 22, "remote_port": hosted["port"],
+               "local_port": keyed["local_port"], "names": names, "redirects": redirects,
+               "certificate": hosted.get("certificate") or "", "certificate_error": hosted.get("certificate_error"),
+               "private": facts["private"], "published": datetime.datetime.now().isoformat(timespec="seconds")}
+        relay_record(ws.name, rec)
+        access_log.record("relay", "system", "relay", "", f"workspace {ws.name}: published through {link.name} "
+                          f"({', '.join(names)}), tunnel to port {hosted['port']}", context=False, workspace=ws.name)
+        listening = None
+        for _ in range(RELAY_WAIT):
+            listening = await relay_listening(link, rec["key"])
+            if listening:
+                break
+            await asyncio.sleep(1)
+        # the restarts systemd counted until now are not drops of this publication
+        rec["restarts_base"] = (await asyncio.to_thread(relay.read_tunnel, ws.name))["nrestarts"]
+        relay_record(ws.name, rec)
+        if listening:
+            job.log(f"The tunnel is connected: {link.name} listens on its port {hosted['port']}")
+        else:
+            job.warn(f"The tunnel is not connected yet after {RELAY_WAIT} s: its unit retries every "
+                     f"{relay.RESTART_SECONDS} s; journalctl -u {tunnel.get('unit')} says why")
+        if hosted.get("certificate") == "letsencrypt":
+            job.log(f"{link.name} serves them with the certificate of Let's Encrypt")
+        elif hosted.get("certificate") == "self-signed":
+            job.log(f"{link.name} serves them with a certificate of its own for now (the browser warns): "
+                    "Let's Encrypt's comes when every name leads to it")
+        if hosted.get("certificate_error"):
+            job.log(f"The certificate: {hosted['certificate_error']}")
+        found = await asyncio.gather(*(asyncio.to_thread(workspaceweb.addresses_of, n) for n in [*names, *redirects]))
+        made["relayed"] = {}
+        for name, addresses in zip([*names, *redirects], found):
+            dns = relay.dns_state(addresses, host)
+            made["relayed"][name] = {"https": hosted.get("certificate") == "letsencrypt", "dns": dns}
+            if dns != "here":
+                job.log(f"{name}: make an A record {name} → {host}" + (f" (it leads to {', '.join(addresses)} now)"
+                                                                       if addresses else ""))
+        if facts["private"]:
+            job.warn(f"{link.name} has no public IPv4: its names reach it at {host}, from its network only")
+        made["relay"] = {"link": link.name, "address": host, "connected": bool(listening)}
+
+    def relay_view(me: Principal, ws: Workspace, instance: str, role: str) -> dict:
+        """What the page says of an environment's publication, for me: through which machine, since when,
+        the tunnel now, the DNS records to make; a customer reads «a machine of the provider», no address."""
+        rec = relay_records().get(ws.name) or {}
+        via = ws.relayed(instance, role)
+        published = bool(via) and rec.get("link") == via and not rec.get("left")
+        tunnel = relay.read_tunnel(ws.name, int(rec.get("restarts_base") or 0)) if published else {
+            "state": "none", "since": None, "last_drop": None, "restarts": 0}
+        names = environment_names(ws, instance, role)
+        out = {"via": via, "whole": bool(ws.relay.get("all")), "workspace_via": str(ws.relay.get("via") or ""),
+               "published": published, "tunnel": tunnel, "names": names,
+               "redirects": list(ws.redirects.get(instance, {}).get(role, {})),
+               "address": rec.get("host") if published else "", "certificate": rec.get("certificate") or "",
+               "private": bool(rec.get("private")), "can_choose": machine_admin(me) and not me.scoped,
+               # not connected for two checks of the monitor in a row: since when (a drop it got over is not one)
+               "down_since": None}
+        watched = monitor.machine.get(f"relay {ws.name}") or {}
+        if published and watched.get("problem"):
+            out["down_since"] = watched.get("since")
+        if me.scoped:
+            out.update(via=RELAY_PROVIDER if via else "", workspace_via=RELAY_PROVIDER if out["workspace_via"] else "",
+                       address="", private=False)
+        return out
+
+    @app.get("/api/servers/{server}/{role}/relay", dependencies=[Depends(admin)])
+    async def relay_get(server: str, role: str, request: Request, me: Principal = Depends(current_user)):
+        """The environment's publication through another machine (Addresses): its state, and for the
+        machine's admins the machines it may be published through, each with the reason when it cannot."""
+        owner = addresses_of_env(server, role)
+        if not isinstance(owner, tuple):
+            return owner
+        ws, instance = owner
+        out = relay_view(me, ws, instance, role)
+        lang = request_language(request)
+        if out["can_choose"]:
+            out["choices"] = [{**c, "reason": i18n.tr(lang, c["reason"])} for c in await relay_choices()]
+            if out["published"]:
+                link = settings.link_targets.get(out["via"])
+                rec = relay_records().get(ws.name) or {}
+                out["listening"] = await relay_listening(link, str(rec.get("key") or "")) if link else None
+                found = await asyncio.gather(*(asyncio.to_thread(workspaceweb.addresses_of, n)
+                                               for n in [*out["names"], *out["redirects"]]))
+                out["dns"] = [{"name": n, "addresses": a, "state": relay.dns_state(a, out["address"])}
+                              for n, a in zip([*out["names"], *out["redirects"]], found)]
+        return out
+
+    @app.get("/api/relays", dependencies=[Depends(admin)])
+    async def relays_list(request: Request, me: Principal = Depends(current_user)):
+        """The links of this machine as relays (Names of a workspace): each with whether it can be one and why not."""
+        if not machine_admin(me) or me.scoped:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "The machines of the provider are chosen by its admins")
+        lang = request_language(request)
+        return {"choices": [{**c, "reason": i18n.tr(lang, c["reason"])} for c in await relay_choices()],
+                "published": {name: {k: rec.get(k) for k in ("link", "host", "names", "certificate", "published")}
+                              for name, rec in relay_records().items()}}
+
+    def relay_change(ws: Workspace, instance: str | None, role: str | None, via: str, me: Principal) -> dict | None:
+        """The workspace's relay after choosing via for one environment (instance, role) or, with instance
+        None, for the whole workspace; None when nothing changes. ValueError: why it is refused."""
+        if not machine_admin(me) or me.scoped:
+            raise ValueError("The machine the names are published through is chosen by the machine's admins")
+        if via and via not in settings.link_targets:
+            raise ValueError(f"No link {via}")
+        current = dict(ws.relay)
+        if instance is None:
+            if via:
+                after = {"via": via, "all": True}
+            else:
+                after = {} if current.get("all") else current
+        else:
+            if current.get("all") and via != current.get("via"):
+                raise ValueError(f"Every environment of workspace {ws.name} is published through {current['via']}: "
+                                 "change it in Names on the web of the workspace")
+            if current.get("all"):
+                return None
+            envs = {i: list(r) for i, r in (current.get("environments") or {}).items()}
+            others = [(i, r) for i, roles in envs.items() for r in roles if (i, r) != (instance, role)]
+            if via and others and current.get("via") != via:
+                raise ValueError(f"Other environments of workspace {ws.name} are published through {current['via']}: "
+                                 "one machine publishes a workspace")
+            roles = [r for r in envs.get(instance, []) if r != role] + ([role] if via else [])
+            envs[instance] = [r for r in ROLES if r in roles]
+            envs = {i: r for i, r in envs.items() if r}
+            after = {"via": via or str(current.get("via") or ""), "environments": envs} if envs else {}
+        return None if after == current else after
+
+    # --- the relay's side: names of another machine served here, its tunnel let in
+
+    def relay_admin(me: Principal) -> None:
+        if not machine_admin(me):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "An admin of the machine is required")
+
+    @app.get("/api/relay/facts")
+    async def relay_facts_here(me: Principal = Depends(current_user)):
+        """Whether this machine can publish the names of another one: OmniaCLI keeps its nginx, its public
+        addresses, its sshd. Asked by the other machine through its link."""
+        relay_admin(me)
+        try:
+            return await workspaceops.ask("relay-facts")
+        except JobFailed as exc:
+            return refuse(str(exc).removeprefix("workspace-helper: "), status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    @app.get("/api/relay/hosted")
+    async def relay_hosted_here(me: Principal = Depends(current_user)):
+        """The tunnels hosted here and whether each listens now: a machine reads its own only."""
+        relay_admin(me)
+        try:
+            found = (await workspaceops.ask("relay-hosted")).get("hosted") or {}
+        except JobFailed as exc:
+            return refuse(str(exc).removeprefix("workspace-helper: "), status.HTTP_503_SERVICE_UNAVAILABLE)
+        if a_machine(me):
+            found = {k: v for k, v in found.items() if v.get("link") == me.name}
+        return {"hosted": found}
+
+    @app.post("/api/relay/hosted")
+    async def relay_host_here(payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """Names of the machine that asks through its link served here, through its tunnel: a job of the root
+        helper (relay-host). Its result: the port the tunnel listens on, this sshd's port and host key."""
+        relay_admin(me)
+        if not a_machine(me):
+            return refuse("A machine publishes its names here by itself, through its link", status.HTTP_403_FORBIDDEN)
+        name = str(payload.get("workspace") or "")
+        try:
+            key = relay.key_of(me.name, name)
+            public_key = relay.check_public_key(payload.get("public_key"))
+        except relay.RelayError as exc:
+            return refuse(str(exc))
+        names, redirects = payload.get("names"), payload.get("redirects") or {}
+        if not isinstance(names, list) or not names or not isinstance(redirects, dict) \
+                or len(names) + len(redirects) > relay.MAX_NAMES:
+            return refuse(f"names: a list of names, redirects: {{name: to}}, {relay.MAX_NAMES} at most in all")
+        try:
+            names = [address_name("name", n) for n in names]
+            redirects = {address_name("name", k): address_name("name", v) for k, v in redirects.items()}
+        except ConfigError as exc:
+            return refuse(str(exc).removeprefix("name: "))
+        # a name of a workspace of this machine stays this machine's
+        for given in [*names, *redirects]:
+            if address_taken(given, settings.workspaces, "", "", ""):
+                return refuse(f"{given} is a name of this machine's workspaces: it is not published for another one")
+        spec = {"link": me.name, "workspace": name, "public_key": public_key, "names": names, "redirects": redirects}
+
+        async def action(job):
+            job.log(f"--- names of another machine published here through its tunnel: {', '.join(names)}")
+            made = await workspaceops._helper(job, "relay-host", key, input=json.dumps(spec).encode())
+            job.log(f"Its key may listen on port {made.get('port')} of this machine's loopback, and do nothing else "
+                    f"(user {made.get('user')}, {made.get('sshd')})")
+            job.log(f"nginx: {made.get('nginx')}")
+            if made.get("certificate_error"):
+                job.log(f"The certificate: {made['certificate_error']}")
+            job.result = {**job.result, "hosted": {k: made.get(k) for k in (
+                "key", "port", "host_key", "ssh_port", "user", "addresses", "certificate", "certificate_error", "new")}}
+            access_log.record("relay", "link", me.name, "", f"tunnel {key} hosted: port {made.get('port')}, "
+                              f"names {', '.join(names)}", context=False)
+        job = jobs.submit(f"Names of {me.name} published through this machine", [f"{MACHINE_KEY}/relay"],
+                          f"manual: {me}", action)
+        return {"job": job.id}
+
+    @app.post("/api/relay/hosted/{key}/remove")
+    async def relay_unhost_here(key: str, me: Principal = Depends(current_user)):
+        """A tunnel hosted here taken away (its site, its certificates, its key's line; with the last one the
+        relay's user): by the machine that asked it, or by an admin of this machine."""
+        relay_admin(me)
+        try:
+            relay.check_key(key)
+            found = (await workspaceops.ask("relay-hosted")).get("hosted") or {}
+        except relay.RelayError as exc:
+            return refuse(str(exc), status.HTTP_404_NOT_FOUND)
+        except JobFailed as exc:
+            return refuse(str(exc).removeprefix("workspace-helper: "), status.HTTP_503_SERVICE_UNAVAILABLE)
+        rec = found.get(key)
+        if rec is None:
+            return {"ok": True, "gone": True}
+        if a_machine(me) and rec.get("link") != me.name:
+            return refuse(f"{key} is a tunnel of another machine here: it is not touched", status.HTTP_403_FORBIDDEN)
+
+        async def action(job):
+            done = await workspaceops._helper(job, "relay-unhost", key)
+            job.log("Taken away: " + (", ".join(done.get("removed") or []) or "nothing was left"))
+            job.result = {**job.result, "unhost": done}
+            access_log.record("relay", me.kind, me.name, "", f"tunnel {key} removed: "
+                              + ", ".join(done.get("removed") or []), context=False)
+        job = jobs.submit(f"Names of {rec.get('link')} no longer published through this machine",
+                          [f"{MACHINE_KEY}/relay"], f"manual: {me}", action)
+        return {"job": job.id}
 
     def instance_name_problem(ws: Workspace, instance: str) -> str | None:
         """Why a new instance may not be named instance: one of the names it
@@ -12328,7 +12790,18 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 return None
             return {"state": map_states.get(inst.key, "unknown"), "busy": jobs.is_busy(inst.key),
                     "job": running.get(inst.key), "queued": inst.key in queued and inst.key not in running,
-                    "names": env_names(srv, role, inst)}
+                    "names": env_names(srv, role, inst), "relay": env_relay(srv, role)}
+
+        def env_relay(srv: Server, role: str) -> dict | None:
+            """The machine an environment is published through (relay.py), for the map: its link for who sees the
+            whole machine, «a machine of the provider» for a customer; connected as the monitor saw it last."""
+            owner = workspace_of(srv.name)
+            via = owner[0].relayed(owner[1], role) if owner is not None else ""
+            if not via:
+                return None
+            problem = (monitor.machine.get(f"relay {owner[0].name}") or {}).get("problem")
+            return {"via": via if whole else say(RELAY_PROVIDER), "link": via if whole else None,
+                    "connected": not problem}
 
         def backup_of(srv: Server) -> dict | None:
             """The automatic backups of a production, for who may see its backups (developer)."""
@@ -12521,6 +12994,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                        "text": i18n.tr(lang, a["problem"]), "since": a["since"], "level": a["level"],
                        "page": "/options#monitoring"}
                       for a in monitor.alerts() if a["what"].startswith(("disk ", "load "))]
+            # a tunnel to the relay of a workspace not connected (relay.py): its names do not open
+            watch += [{"kind": "relay", "node": inframap.workspace_id(a["what"][6:]), "text": i18n.tr(lang, a["problem"]),
+                       "since": a["since"], "level": a["level"], "page": f"/workspaces/{a['what'][6:]}#names"}
+                      for a in monitor.alerts() if a["what"].startswith("relay ")]
             # the read replica of this machine's cluster, not connected or holding 1 GB or more of its disk
             # (UX-010 §9), as the look saw it last; and a replica hosted here that its primary does not see
             watch += [{"kind": "replica", "node": inframap.HERE, "text": i18n.tr(lang, text), "since": since,
@@ -12819,6 +13296,13 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 if here_asked:
                     data["edges"] += [{"from": inframap.HERE, "to": name, "kind": "link", "count": 1}
                                       for name in asked]
+                    # the names of a workspace published through a linked machine (relay.py): the path they take
+                    for ws_name, rec in relay_records().items():
+                        if rec.get("link") in asked and not rec.get("left") and (only is None or only.name == ws_name):
+                            problem = (monitor.machine.get(f"relay {ws_name}") or {}).get("problem")
+                            data["edges"].append({"from": inframap.HERE, "to": rec["link"], "kind": "relay", "count": 1,
+                                                  "workspace": ws_name, "names": rec.get("names") or [],
+                                                  "down": bool(problem)})
                 data["edges"] += inframap.link_stagings(data["machines"])
         if part == "all":
             used = {e["to"] for e in data["edges"]} | {e["from"] for e in data["edges"]}

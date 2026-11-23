@@ -140,6 +140,7 @@
 .map-edge.staging, .map-edge.copy { stroke-dasharray: 7 4; }
 .map-edge.database { stroke-dasharray: 9 3 2 3; }
 .map-edge.replica { stroke-dasharray: 2 4; }
+.map-edge.relay { stroke: var(--info); stroke-dasharray: 2 3; }
 .map-edge.name { stroke-width: 1; }
 .map-edge.moving { stroke: var(--warn); stroke-width: 2; stroke-dasharray: 6 6; animation: map-dash .6s linear infinite; }
 .map-edge.cut { stroke: var(--err); stroke-dasharray: 3 5; }
@@ -308,7 +309,10 @@ window.OmniaMap = (function () {
       replica: {{ _("These environments read from this replica") | tojson }},
       backup: {{ _("The automatic backup is copied there") | tojson }}, copy: {{ _("This staging is a copy of that production") | tojson }},
       name: {{ _("This name opens that environment") | tojson }},
+      relay: {{ _("These names are published through {name}, reached by a tunnel this machine opens: {names}") | tojson }},
+      relayDown: {{ _("The tunnel to {name} is not connected: {names} do not open") | tojson }},
     },
+    relayLabel: {{ _("names of {workspace}") | tojson }},
     stagingsCount: {{ _("{n} stagings") | tojson }}, oneStaging: {{ _("1 staging") | tojson }},
     envsCount: {{ _("{n} environments") | tojson }}, oneEnv: {{ _("1 environment") | tojson }},
     legend: {
@@ -323,6 +327,7 @@ window.OmniaMap = (function () {
       staging: {{ _("staging on another machine") | tojson }}, moving: {{ _("data moving now") | tojson }},
       database: {{ _("database on another machine or on the cluster") | tojson }}, replica: {{ _("read replica") | tojson }},
       backup: {{ _("copy of the backups") | tojson }}, copy: {{ _("copy of a production") | tojson }},
+      relay: {{ _("names published through another machine") | tojson }},
     },
     legendTitle: {
       running: {{ _("A full dot: the service runs") | tojson }}, stopped: {{ _("A square: a production that is stopped is to look at") | tojson }},
@@ -339,6 +344,7 @@ window.OmniaMap = (function () {
       lockUnread: {{ _("A grey lock: the names were not read; publishing the names of the workspace again reads them") | tojson }},
       older: {{ _("An arrow up: the machine answers, but its OmniaCLI is older than the map; it is not a machine that is down") | tojson }},
       link: {{ _("A solid line: this machine reaches that one through its link") | tojson }},
+      relay: {{ _("A dotted line: names of a workspace of this machine published through that one, by a tunnel this machine opens") | tojson }},
       linkDown: {{ _("A dashed line with a cross: the link gives no answer") | tojson }},
       staging: {{ _("A dashed line with an arrow: stagings made on that machine from productions of this one") | tojson }},
       moving: {{ _("A line that flows: a transfer is running, with its percentage") | tojson }},
@@ -366,7 +372,9 @@ window.OmniaMap = (function () {
       request: {{ _("The path of a request") | tojson }}, mail: {{ _("The path of the mail") | tojson }}, facts: {{ _("Facts") | tojson }},
       browser: {{ _("Browser") | tojson }}, names: {{ _("Names") | tojson }}, web: {{ _("Web server") | tojson }},
       odoo: {{ _("Odoo") | tojson }}, database: {{ _("Database") | tojson }}, replica: {{ _("Replica") | tojson }},
-      theServer: {{ _("the server") | tojson }},
+      theServer: {{ _("the server") | tojson }}, relay: {{ _("Relay") | tojson }},
+      relayLine: {{ _("Through {machine}: its nginx holds the certificate and passes the request into the tunnel") | tojson }},
+      relayDown: {{ _("Through {machine}: the tunnel is not connected, the request stops there") | tojson }},
       redirect: {{ _("{name} → {to} (redirect)") | tojson }},
       odooLine: {{ _("Odoo: {state}") | tojson }}, testLine: {{ _("test: {state}") | tojson }},
       monitorUp: {{ _("up since {when}, last answer {ms} ms") | tojson }}, monitorUpPlain: {{ _("answers since {when}") | tojson }},
@@ -951,7 +959,7 @@ window.OmniaMap = (function () {
     // over the nodes: a label is never under a box it passes by
     if (edge.label) (labelLayer || g).append(S("text", {class: "t-label" + (edge.moving || edge.down ? " t-warn" : ""), x: mid[0], y: mid[1] - 5,
                                                         "text-anchor": edge.anchor || "middle", "data-edge-label": edge.kind}, edge.label));
-    legend.add(edge.down ? "linkDown" : edge.moving ? "moving" : edge.kind);
+    legend.add(edge.down && edge.kind !== "relay" ? "linkDown" : edge.moving ? "moving" : edge.kind);
   }
   // the transfer running between two machines now, {from, to, label}
   function transfers() {
@@ -1085,7 +1093,9 @@ window.OmniaMap = (function () {
     labelLayer = S("g", {class: "map-labels"});
     svg.append(gEdges);
     // the links run above each row of machines: a band for them
-    const band = wide && machines.length > 1 ? 20 + 18 * Math.min(machines.length - 1, 3) : 0, rowOf = {}, colOf = {};
+    // (a relay's line, relay.py, runs there too: one more level for each)
+    const lines = machines.length - 1 + (data.edges || []).filter((e) => e.kind === "relay").length;
+    const band = wide && machines.length > 1 ? 20 + 18 * Math.min(lines, 3) : 0, rowOf = {}, colOf = {};
     const envsOn = (id) => (data.edges || []).filter((e) => e.to === id).reduce((n, e) => n + (e.count || 1), 0);
     let y = band, rowH = 0;
     machines.forEach((m, n) => {
@@ -1109,12 +1119,14 @@ window.OmniaMap = (function () {
     // the lines: the links, and the stagings made elsewhere (one line a pair of workspaces)
     const moving = transfers(), by = {}, linked = {};
     for (const e of data.edges || []) {
-      if (e.kind === "link") {
-        const m = machines.find((x) => x.id === e.to), flow = moving.find((t) => (t.from === e.from && t.to === e.to) || (t.from === e.to && t.to === e.from));
+      if (e.kind === "link" || e.kind === "relay") {
+        // a relay: the names of a workspace of this machine published through that one (relay.py), a line of its own
+        const relay = e.kind === "relay";
+        const m = machines.find((x) => x.id === e.to), flow = relay ? null : moving.find((t) => (t.from === e.from && t.to === e.to) || (t.from === e.to && t.to === e.from));
         const a = pos[e.from], b = pos[e.to];
         if (!m || !a || !b) continue;
         const k = Object.keys(linked).length, level = 14 + 18 * (k % 3);
-        linked[e.to] = true;
+        linked[`${e.kind}:${e.to}:${e.workspace || ""}`] = true;
         let points, labelAt, anchor = "middle";
         if (!wide) {
           // a phone: the machines one under the other, the link comes in from above
@@ -1127,6 +1139,12 @@ window.OmniaMap = (function () {
           // that row, so the link runs through no machine's box and none of the databases under one
           const gx = a.x + a.w + 14 + 8 * (k % 4), y1 = a.y + 18 + 8 * (k % 4), x2 = b.x + 36;
           points = [[a.x + a.w, y1], [gx, y1], [gx, b.y - level], [x2, b.y - level], [x2, b.y]]; labelAt = [(gx + x2) / 2, b.y - level];
+        }
+        if (relay) {
+          edges.push({kind: "relay", from: e.from, to: e.to, points, labelAt, anchor, down: !!e.down,
+                      label: (e.down ? "✕ " : "") + fill(T.relayLabel, {workspace: e.workspace || ""}),
+                      title: fill(e.down ? T.edge.relayDown : T.edge.relay, {name: machineLabel(m), names: (e.names || []).join(", ")})});
+          continue;
         }
         // one whose OmniaCLI is older answers: its link is a link that works
         const down = !m.answered && !m.older;
@@ -1424,7 +1442,7 @@ window.OmniaMap = (function () {
 
   // --- the legend, the list, the crumbs
   const LEGEND_ORDER = ["running", "stopped", "idle", "unknown", "busy", "queued", "down", "older", "warn", "dedicated", "mail",
-                        "lock", "lockBad", "lockUnread", "link", "linkDown", "staging", "moving", "database", "replica", "backup", "copy"];
+                        "lock", "lockBad", "lockUnread", "link", "linkDown", "relay", "staging", "moving", "database", "replica", "backup", "copy"];
   const SIGNS = {running: "●", stopped: "■", idle: "○", unknown: "?", busy: "⟳", queued: "⏳", down: "✕", older: "↑", warn: "⚠", dedicated: "⛁", mail: "✉"};
   const LOCKS = {lock: "ok", lockBad: "bad", lockUnread: "unread"};
   function drawLegend() {
@@ -1604,11 +1622,14 @@ window.OmniaMap = (function () {
     const monitor = (flow && flow.odoo.monitor) || i.monitor;
     const steps = [{name: T.panel.browser, detail: ""},
       {name: T.panel.names, detail: main ? main.name : T.noName, cls: badNames(i).length ? "t-warn" : null},
+      ...(env.relay ? [{name: T.panel.relay, detail: env.relay.via, cls: env.relay.connected ? null : "t-err"}] : []),
       {name: T.panel.web, detail: webLabel}, {name: T.panel.odoo, detail: `${st.sign} ${st.word}`, cls: {running: "t-ok", stopped: "t-err", down: "t-err"}[st.key]},
       {name: T.panel.database, detail: !db || !db.where ? T.panel.dbUnread : db.where === "remote" ? (db.label || db.host) : db.where === "machine" ? T.dbMachine : db.where === "dedicated" ? T.panel.dbDedicated : T.system}];
     if (db && db.replica) steps.push({name: T.panel.replica, detail: db.replica});
     const list = el("ol", {id: "map-flow-list"}, el("li", {}, T.panel.browser));
     list.append(el("li", {}, names.length ? names.map(nameDetail).join("; ") : T.noName));
+    if (env.relay) list.append(el("li", {"data-relay": env.relay.link || ""},
+      fill(env.relay.connected ? T.panel.relayLine : T.panel.relayDown, {machine: env.relay.via})));
     list.append(el("li", {}, `${T.panel.web}: ${webLabel}`));
     const odoo = [fill(T.panel.odooLine, {state: st.word})];
     if (i.envs && i.envs.production && i.envs.test) odoo.push(fill(T.panel.testLine, {state: stateOf(i.envs.test, true).word}));

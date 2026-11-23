@@ -84,6 +84,8 @@ NOT_SENSITIVE = frozenset({
     "/api/instances/versions", "/api/servers/{server}/stagings", "/api/servers/{server}/stagings/new",
     "/api/servers/{server}/stagings/elsewhere", "/api/stagings/host", "/api/servers/{server}/pitr",
     "/api/servers/{server}/{role}/addresses", "/api/catalog", "/api/servers/{server}/modules",
+    # the publication through another machine (relay.py): its state, the relays, what a relay hosts
+    "/api/servers/{server}/{role}/relay", "/api/relays", "/api/relay/facts", "/api/relay/hosted",
     "/api/servers/{server}/modules/catalog", "/api/servers/{server}/modules/plan",
     "/api/servers/{server}/{role}/modules", "/api/servers/{server}/modules/uploaded", "/users", "/help", "/plugins", "/api/plugins/available",
     "/links", "/machines", "/api/machines", "/links/{name}",

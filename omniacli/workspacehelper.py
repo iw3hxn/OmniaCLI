@@ -39,6 +39,9 @@
     omniacli workspace-helper storage-setup | storage-check <storage> | storage-reset <storage>
     omniacli workspace-helper enterprise-sync <version>
     omniacli workspace-helper enterprise <workspace> <storage> <instance> on|off
+    omniacli workspace-helper relay-facts | relay-hosted | relay-host <key> | relay-unhost <key>   (on a relay)
+    omniacli workspace-helper relay-key <workspace> | relay-tunnel <workspace> on|off   (behind NAT)
+    (relay-host and relay-tunnel on take their values, JSON, on the input; README, Published through another machine)
 
 OmniaCLI runs it with sudo (sudoers: README, Workspaces). It takes no path
 and no command of the caller's: a workspace and an instance are names
@@ -298,7 +301,7 @@ from pathlib import Path
 
 import yaml
 
-from . import (clusterpitr, composehelper, config, enterprise, machinedb, managedreplica, pitrhelper,
+from . import (clusterpitr, composehelper, config, enterprise, machinedb, managedreplica, pitrhelper, relay,
                stacktemplates, templatestore, workspaceweb)
 from .composehelper import ENV, HelperError, caller
 from .config import (CERTIFICATES, DOMAIN_NAME, OMNIACLI_COMMAND, SUBDOMAIN, TEST_LABEL, WORKSPACE_NAME,
@@ -1975,8 +1978,15 @@ def web_spec(spec_json: str, instances: list[str]) -> dict:
         aliases, redirects = config.parse_addresses("names", spec.get("aliases"), spec.get("redirects"), instances)
     except ConfigError as exc:
         raise HelperError(str(exc)) from None
+    # the environments published through a relay (relay.py): {instance: [roles]}
+    relayed = spec.get("relayed") or {}
+    if not isinstance(relayed, dict) or any(not isinstance(r, list) or any(x not in ROLES for x in r)
+                                            for r in relayed.values()):
+        raise HelperError("relayed: {instance: [production, test]} of the workspace's instances")
     return {"domain": domain, "main": main, "subdomains": {str(k): str(v) for k, v in subdomains.items()},
-            "certificate": certificate, "aliases": aliases, "redirects": redirects}
+            "certificate": certificate, "aliases": aliases, "redirects": redirects,
+            # an instance not on the disk (being made, or gone) has no site: left out
+            "relayed": {str(i): [str(x) for x in r] for i, r in relayed.items() if r and i in instances}}
 
 
 def _addresses(sites: list[dict], spec: dict) -> tuple[list[dict], list[str]]:
@@ -2055,6 +2065,12 @@ def _sites(mount: Path, spec: dict, instances: list[str]) -> list[dict]:
             site["http_port"] = switched["http_port"]
             if site["websocket_port"] is not None:
                 site["websocket_port"] = switched.get("websocket_port") or site["websocket_port"]
+    relayed = spec.get("relayed") or {}
+    if any(relayed.values()):
+        port = relay_local_port(_name("workspace", spec.get("workspace") or ""))
+        for site in sites:
+            if site["role"] in relayed.get(site["instance"], ()):
+                site["relay_port"] = port
     return sites
 
 
@@ -2302,8 +2318,9 @@ def _web(name: str, storage: str, spec_json: str) -> dict:
     image, mount = workspace(name, storage)
     path = NGINX_SITES / f"omniacli-{name}.conf"
     instances = instances_on_disk(mount) if mounted(image, mount) else []
-    spec = web_spec(spec_json, instances)
-    made = {"workspace": name, "site": str(path), "names": [], "https": False, "certificate_error": None}
+    spec = {**web_spec(spec_json, instances), "workspace": name}
+    made = {"workspace": name, "site": str(path), "names": [], "https": False, "certificate_error": None,
+            "relayed_names": []}
     if not spec["domain"] or not instances:
         made["nginx"] = _put_site(path, None) if path.exists() else "no site"
         # no site, nothing to switch: its lock goes too (an action waiting on it makes the site anew)
@@ -2322,6 +2339,11 @@ def _web(name: str, storage: str, spec_json: str) -> dict:
     extra = [n for site in sites for n in site["aliases"]] + [n for r in redirects for n in r["names"]]
     made["names"] = names + [n for site in sites for n in site["aliases"]]
     made["redirects"] = {n: r["to"] for r in redirects for n in r["names"]}
+    # the names of the environments published through a relay lead to the relay, which holds their
+    # certificate: they stay out of this machine's (Let's Encrypt would reach the relay, not here)
+    relayed = {n for site in sites if site.get("relay_port") for n in (*site["names"], *site["aliases"])}
+    relayed |= {n for r in redirects if r["to"] in relayed for n in r["names"]}
+    made["relayed_names"] = sorted(relayed)
     dump = subprocess.run([_tool("nginx"), "-T"], env=ENV, capture_output=True, text=True)
     if dump.returncode:
         raise HelperError(f"nginx -T: {dump.stderr.strip()}")
@@ -2341,13 +2363,15 @@ def _web(name: str, storage: str, spec_json: str) -> dict:
         # their record is there and the site is published again). An other
         # name (www.customer.com) often still points to the customer's old
         # site: it goes in only when this nginx answers its challenge
-        known = [n for n in names if _resolves(n)]
-        reached = [n for n in extra if _resolves(n) and _reaches_here(n)]
-        made["without_dns"] = [n for n in names + extra if not _resolves(n)]
-        made["elsewhere"] = [n for n in extra if n not in reached and n not in made["without_dns"]]
+        own, other = [n for n in names if n not in relayed], [n for n in extra if n not in relayed]
+        known = [n for n in own if _resolves(n)]
+        reached = [n for n in other if _resolves(n) and _reaches_here(n)]
+        made["without_dns"] = [n for n in own + other if not _resolves(n)]
+        made["elsewhere"] = [n for n in other if n not in reached and n not in made["without_dns"]]
         known += reached
-        made["certificate_error"] = _certbot(name, known) if known else "no name of the workspace is in DNS yet"
-        if made["certificate_error"] is None and tls is None:
+        made["certificate_error"] = (_certbot(name, known) if known else None if not own + other
+                                     else "no name of the workspace is in DNS yet")
+        if made["certificate_error"] is None and tls is None and known:
             tls = _tls(name, spec["certificate"])
             made["nginx"] = _put_site(path, workspaceweb.conf_text(name, sites, tls, ipv6, omniacli, redirects))
     elif tls is None:
@@ -4220,6 +4244,474 @@ def enterprise_switch(name: str, storage: str, instance: str, mode: str) -> dict
 
 
 
+# --- published through another machine (relay.py; README, Published through another machine) ---------
+# On the relay: relay-facts, relay-host <key> (its values on the input), relay-unhost <key>, relay-hosted.
+# On the machine behind NAT: relay-key <workspace>, relay-tunnel <workspace> on (its values on the input) | off.
+
+HOSTED = Path(relay.HOSTED_FILE)
+RELAY_HOME = Path(relay.RELAY_HOME)
+TUNNELS = Path(relay.TUNNEL_ROOT)
+SSHD_CONFIG = Path("/etc/ssh/sshd_config")
+SSH_HOST_KEYS = (Path("/etc/ssh/ssh_host_ed25519_key.pub"), Path("/etc/ssh/ssh_host_ecdsa_key.pub"),
+                 Path("/etc/ssh/ssh_host_rsa_key.pub"))
+PROC_TCP = (Path("/proc/net/tcp"), Path("/proc/net/tcp6"))
+
+
+@contextlib.contextmanager
+def _relay_lock():
+    """One relay action at a time: the hosted tunnels, authorized_keys and sshd_config are shared."""
+    HOSTED.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(HOSTED.with_name(".relay.lock"), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+def _hosted() -> dict:
+    if HOSTED.is_symlink() or not HOSTED.is_file():
+        return {}
+    try:
+        data = json.loads(HOSTED.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise HelperError(f"{HOSTED} cannot be read") from None
+    if not isinstance(data, dict):
+        return {}
+    return {k: v for k, v in data.items() if isinstance(v, dict) and relay.KEY.fullmatch(k)}
+
+
+def _listening() -> set[int]:
+    texts = []
+    for path in PROC_TCP:
+        try:
+            texts.append(path.read_text(encoding="ascii"))
+        except OSError:
+            continue
+    return relay.listening_ports(texts)
+
+
+def _sshd_port() -> int:
+    """The port this sshd listens on (sshd -T), 22 when it cannot be read."""
+    done = subprocess.run([_tool("sshd"), "-T"], env=ENV, capture_output=True, text=True)
+    for line in done.stdout.splitlines():
+        key, _, value = line.partition(" ")
+        if key == "port" and value.strip().isdigit():
+            return int(value.strip())
+    return 22
+
+
+def _host_key() -> str:
+    for path in SSH_HOST_KEYS:
+        try:
+            return relay.check_host_key(path.read_text(encoding="utf-8"))
+        except (OSError, relay.RelayError):
+            continue
+    raise HelperError("this machine's sshd has no host key in /etc/ssh")
+
+
+def _sshd_reload() -> None:
+    for unit in ("ssh", "sshd"):
+        if _run("systemctl", "is-active", unit, check=False).strip() == "active":
+            _run("systemctl", "reload", unit)
+            return
+
+
+def _sshd_config(text: str) -> bool:
+    """sshd_config written (True when it changed), sshd -t, or the one before back."""
+    before = SSHD_CONFIG.read_text(encoding="utf-8")
+    if text == before:
+        return False
+    mode = stat.S_IMODE(SSHD_CONFIG.stat().st_mode)
+    _write(SSHD_CONFIG, text, mode=mode)
+    test = subprocess.run([_tool("sshd"), "-t"], env=ENV, capture_output=True, text=True)
+    if test.returncode:
+        _write(SSHD_CONFIG, before, mode=mode)
+        raise HelperError(f"sshd -t refused the relay's Match block, sshd_config is back: {test.stderr.strip()}")
+    _sshd_reload()
+    return True
+
+
+def _relay_user() -> None:
+    """The relay's user: a system user without a shell nor a password (not
+    locked: sshd refuses the key of a locked account without PAM), its home
+    and authorized_keys root's."""
+    try:
+        pwd.getpwnam(relay.RELAY_USER)
+    except KeyError:
+        _run("useradd", "--system", "--user-group", "--home-dir", str(RELAY_HOME), "--no-create-home",
+             "--shell", "/usr/sbin/nologin", "--comment", "OmniaCLI relay, tunnels only", relay.RELAY_USER)
+    _run("usermod", "-p", "*", relay.RELAY_USER)
+    for folder in (RELAY_HOME, RELAY_HOME / ".ssh"):
+        if folder.is_symlink():
+            raise HelperError(f"{folder} is a link: nothing is written")
+        folder.mkdir(mode=0o755, exist_ok=True)
+        os.chown(folder, 0, 0)
+        os.chmod(folder, 0o755)
+
+
+def _relay_site(key: str) -> Path:
+    return NGINX_SITES / f"omniacli-relay-{relay.check_key(key)}.conf"
+
+
+def _relay_self_signed(key: str, names: list[str]) -> tuple[str, str] | None:
+    """A certificate of the relay's own for the names of a tunnel, while
+    Let's Encrypt cannot give one (no DNS yet, a lab): the browser warns, the
+    traffic is encrypted. Made again when the names change or near its end."""
+    folder = OWN_CERTS / f"relay-{key}"
+    chain, key_file, listed = folder / "fullchain.pem", folder / "privkey.pem", folder / "names"
+    wanted = "\n".join(names) + "\n"
+    fresh = chain.is_file() and subprocess.run(
+        [_tool("openssl"), "x509", "-in", str(chain), "-noout", "-checkend", str(SELF_SIGNED_RENEW * 86400)],
+        env=ENV, capture_output=True, stdin=subprocess.DEVNULL).returncode == 0
+    if fresh and key_file.is_file() and listed.is_file() and listed.read_text(encoding="utf-8") == wanted:
+        return str(chain), str(key_file)
+    OWN_CERTS.mkdir(mode=0o700, parents=True, exist_ok=True)
+    folder.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(folder, 0o700)
+    new_chain, new_key = folder / "fullchain.pem.new", folder / "privkey.pem.new"
+    try:
+        done = subprocess.run([_tool("openssl"), "req", "-x509", "-newkey", "ec", "-pkeyopt",
+                               "ec_paramgen_curve:prime256v1", "-nodes", "-days", str(SELF_SIGNED_DAYS),
+                               "-subj", f"/CN={names[0]}", "-addext",
+                               "subjectAltName=" + ",".join(f"DNS:{n}" for n in names),
+                               "-keyout", str(new_key), "-out", str(new_chain)],
+                              env=ENV, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        if done.returncode or not new_chain.is_file() or not new_key.is_file():
+            return None
+        os.chmod(new_key, 0o600)
+        os.replace(new_chain, chain)
+        os.replace(new_key, key_file)
+        _write(listed, wanted, mode=0o600)
+    finally:
+        new_chain.unlink(missing_ok=True)
+        new_key.unlink(missing_ok=True)
+    return str(chain), str(key_file)
+
+
+def _relay_certs_removed(key: str) -> list[str]:
+    removed = []
+    if (LETSENCRYPT / f"omniacli-relay-{key}").exists():
+        _run("certbot", "delete", "--cert-name", f"omniacli-relay-{key}", "--non-interactive", check=False)
+        removed.append(f"the certificate omniacli-relay-{key} of Let's Encrypt")
+    folder = OWN_CERTS / f"relay-{key}"
+    for name in ("fullchain.pem", "privkey.pem", "names"):
+        (folder / name).unlink(missing_ok=True)
+    if folder.is_dir():
+        folder.rmdir()
+        removed.append(str(folder))
+    return removed
+
+
+def relay_facts() -> dict:
+    """Whether this machine can be a relay, as another machine asks before
+    choosing it: OmniaCLI keeps its nginx (workspaces.storage), its public
+    addresses, its sshd's port and host key, the tunnels it hosts."""
+    ours = bool(storage_roots())
+    nginx = shutil.which("nginx", path=ENV["PATH"]) is not None
+    addresses = sorted(workspaceweb.machine_addresses(shutil.which("ip", path=ENV["PATH"])))
+    return {"ours": ours, "nginx": nginx, "addresses": addresses, "ssh_port": _sshd_port(),
+            "host_key": _host_key(), "hosted": len(_hosted())}
+
+
+def _relay_spec() -> dict:
+    spec = _input_json("the publication")
+    try:
+        public_key = relay.check_public_key(spec.get("public_key"))
+    except relay.RelayError as exc:
+        raise HelperError(str(exc)) from None
+    names, redirects = spec.get("names"), spec.get("redirects") or {}
+    if not isinstance(names, list) or not isinstance(redirects, dict) or not names \
+            or len(names) + len(redirects) > relay.MAX_NAMES:
+        raise HelperError(f"names: a list, redirects: {{name: to}}, {relay.MAX_NAMES} at most in all, one name at least")
+    try:
+        served = list(dict.fromkeys(config.address_name("name", n) for n in names))
+        sent = {config.address_name("name", k): config.address_name("name", v) for k, v in redirects.items()}
+    except ConfigError as exc:
+        raise HelperError(str(exc).removeprefix("name: ")) from None
+    if set(served) & set(sent) or any(to not in served for to in sent.values()):
+        raise HelperError("a redirect goes to a name the publication serves, and is none of them")
+    link, workspace_name = str(spec.get("link") or ""), str(spec.get("workspace") or "")
+    if not re.fullmatch(r"[A-Za-z0-9._@-]{1,64}", link) or not WORKSPACE_NAME.fullmatch(workspace_name):
+        raise HelperError("link and workspace: the names of the machine behind and of its workspace")
+    return {"public_key": public_key, "names": served, "redirects": sent, "link": link, "workspace": workspace_name}
+
+
+def relay_host(key: str) -> dict:
+    """A tunnel of a machine behind NAT hosted here: its key may listen on
+    one port of this loopback (authorized_keys of omniacli-relay, the Match
+    block of sshd_config), and this nginx serves its names there
+    (omniacli-relay-<key>.conf), with Let's Encrypt's certificate when every
+    name leads here, a self-signed one until then. Again with the same key:
+    the same port, its names and key as given now."""
+    try:
+        relay.check_key(key)
+    except relay.RelayError as exc:
+        raise HelperError(str(exc)) from None
+    if not storage_roots():
+        raise HelperError(NOT_OUR_NGINX)
+    spec = _relay_spec()
+    with _relay_lock():
+        hosted = _hosted()
+        before = hosted.get(key)
+        taken = {int(r.get("port") or 0) for k, r in hosted.items() if k != key}
+        if before and int(before.get("port") or 0) in relay.RELAY_PORTS:
+            port = int(before["port"])
+        else:
+            busy = _listening()
+            port = next((p for p in relay.RELAY_PORTS if p not in taken and p not in busy and _free(p)), None)
+        if port is None:
+            raise HelperError(f"no port free in {relay.RELAY_PORTS.start}-{relay.RELAY_PORTS.stop - 1}")
+        path = _relay_site(key)
+        dump = subprocess.run([_tool("nginx"), "-T"], env=ENV, capture_output=True, text=True)
+        if dump.returncode:
+            raise HelperError(f"nginx -T: {dump.stderr.strip()}")
+        every = [*spec["names"], *spec["redirects"]]
+        clash = workspaceweb.clashes(every, workspaceweb.names_elsewhere(dump.stdout, str(path)))
+        if clash:
+            raise HelperError("names other sites of nginx answer on: " + ", ".join(clash))
+        _hash_bucket(dump.stdout)
+        _relay_user()
+        hosted[key] = {**{k: spec[k] for k in ("link", "workspace", "public_key", "names", "redirects")}, "port": port,
+                       "created": (before or {}).get("created") or time.strftime("%Y-%m-%dT%H:%M:%S")}
+        keys_file = RELAY_HOME / ".ssh" / "authorized_keys"
+        kept = keys_file.read_text(encoding="utf-8") if keys_file.is_file() else None
+        ipv6 = Path("/proc/net/if_inet6").exists()
+
+        def site(found):
+            return relay.relay_site_text(key, spec["names"], spec["redirects"], port, found, ipv6,
+                                         workspaceweb.ACME_ROOT, workspaceweb.MAX_BODY, workspaceweb.TIMEOUT)
+        sshd = False
+        try:
+            _write(keys_file, relay.authorized_keys(hosted), mode=0o644)
+            sshd = _sshd_config(relay.with_block(SSHD_CONFIG.read_text(encoding="utf-8")))
+            Path(workspaceweb.ACME_ROOT).mkdir(mode=0o755, exist_ok=True)
+            tls = _tls(f"relay-{key}", "letsencrypt")
+            kind = "letsencrypt" if tls else ""
+            if tls is None:
+                tls = _relay_self_signed(key, every)
+                kind = "self-signed" if tls else ""
+            said = _put_site(path, site(tls))
+        except BaseException:
+            if before is None:
+                # nothing of a new tunnel stays when its site cannot be written
+                hosted.pop(key, None)
+                if kept is None:
+                    keys_file.unlink(missing_ok=True)
+                else:
+                    _write(keys_file, kept, mode=0o644)
+                if sshd and not hosted:
+                    # the Match block this first tunnel added goes with it
+                    _sshd_config(relay.without_block(SSHD_CONFIG.read_text(encoding="utf-8")))
+            raise
+        _write(HOSTED, json.dumps(hosted, indent=1, sort_keys=True) + "\n", mode=0o600)
+        # Let's Encrypt for the names that lead here (HTTP-01 on this nginx); the others are said
+        reached = [n for n in every if _resolves(n) and _reaches_here(n)]
+        missing = [n for n in every if n not in reached]
+        error = ("not leading to this machine yet, so not in Let's Encrypt's certificate: " + ", ".join(missing)
+                 if missing else None)
+        if reached:
+            failed = _certbot(f"relay-{key}", reached)
+            # certbot's own lines (its log, where to ask for help) out: its reason only
+            failed = " ".join(line.strip() for line in (failed or "").splitlines() if line.strip() and not line.startswith(
+                ("Saving debug log", "Ask for help", "An unexpected error occurred"))) or failed
+            found = _tls(f"relay-{key}", "letsencrypt") if failed is None else None
+            if found and not missing:
+                tls, kind = found, "letsencrypt"
+                said = _put_site(path, site(tls))
+            error = failed or error
+    return {"key": key, "port": port, "user": relay.RELAY_USER, "host_key": _host_key(), "ssh_port": _sshd_port(),
+            "addresses": sorted(workspaceweb.machine_addresses(shutil.which("ip", path=ENV["PATH"]))),
+            "names": spec["names"], "redirects": spec["redirects"], "site": str(path), "nginx": said,
+            "sshd": "the Match block of omniacli-relay added, sshd reloaded" if sshd else "sshd unchanged",
+            "certificate": kind, "certificate_error": error, "new": before is None}
+
+
+def relay_unhost(key: str) -> dict:
+    """A tunnel hosted here taken away: its line of authorized_keys, its
+    site and certificates; with the last one the relay's user, its home and
+    the Match block of sshd_config too. One no longer here: nothing to do."""
+    try:
+        relay.check_key(key)
+    except relay.RelayError as exc:
+        raise HelperError(str(exc)) from None
+    with _relay_lock():
+        hosted = _hosted()
+        found = hosted.pop(key, None)
+        path = _relay_site(key)
+        done = {"key": key, "was": bool(found), "site": str(path), "removed": []}
+        if path.exists():
+            done["nginx"] = _put_site(path, None)
+            done["removed"].append(str(path))
+        else:
+            done["nginx"] = "no site"
+        done["removed"] += _relay_certs_removed(key)
+        keys_file = RELAY_HOME / ".ssh" / "authorized_keys"
+        if hosted:
+            _write(keys_file, relay.authorized_keys(hosted), mode=0o644)
+            _write(HOSTED, json.dumps(hosted, indent=1, sort_keys=True) + "\n", mode=0o600)
+            if found:
+                done["removed"].append(f"its line of {keys_file}")
+            done["left"] = len(hosted)
+            return done
+        # the last one: nothing of the relay stays
+        if SSHD_CONFIG.is_file() and _sshd_config(relay.without_block(SSHD_CONFIG.read_text(encoding="utf-8"))):
+            done["removed"].append("the Match block of omniacli-relay in sshd_config")
+        try:
+            pwd.getpwnam(relay.RELAY_USER)
+        except KeyError:
+            pass
+        else:
+            # its sessions end first: a tunnel still connected keeps the user busy
+            _run("pkill", "-KILL", "-u", relay.RELAY_USER, check=False)
+            _run("userdel", relay.RELAY_USER)
+            done["removed"].append(f"the user {relay.RELAY_USER}")
+        if keys_file.exists():
+            keys_file.unlink()
+            done["removed"].append(str(keys_file))
+        for folder in (RELAY_HOME / ".ssh", RELAY_HOME):
+            if folder.is_dir() and not folder.is_symlink():
+                folder.rmdir()
+                done["removed"].append(str(folder))
+        if HOSTED.exists():
+            HOSTED.unlink()
+            done["removed"].append(str(HOSTED))
+        HOSTED.with_name(".relay.lock").unlink(missing_ok=True)
+        done["left"] = 0
+        return done
+
+
+def relay_hosted() -> dict:
+    """The tunnels hosted here: whose (the link, its workspace), the port,
+    the names, and whether the tunnel listens now. It reads only."""
+    listening = _listening()
+    return {"hosted": {k: {"link": r.get("link"), "workspace": r.get("workspace"), "port": r.get("port"),
+                           "names": r.get("names") or [], "redirects": r.get("redirects") or {},
+                           "created": r.get("created"), "listening": int(r.get("port") or 0) in listening}
+                       for k, r in sorted(_hosted().items())}}
+
+
+def relay_local_port(name: str, make: bool = True) -> int:
+    """The port of this loopback where the workspace's nginx takes its
+    tunnel's requests, kept in /etc/omniacli/relay/<workspace>/port."""
+    _name("workspace", name)
+    path = TUNNELS / name / "port"
+    if path.is_file() and not path.is_symlink():
+        try:
+            return relay.check_port(path.read_text(encoding="ascii").strip(), relay.LOCAL_PORTS)
+        except relay.RelayError:
+            pass
+    if not make:
+        raise HelperError(f"workspace {name} has no tunnel yet: its key and port are made first (relay-key)")
+    taken = set()
+    for other in TUNNELS.glob("*/port") if TUNNELS.is_dir() else ():
+        try:
+            taken.add(int(other.read_text(encoding="ascii").strip()))
+        except (OSError, ValueError):
+            continue
+    busy = _listening()
+    port = next((p for p in relay.LOCAL_PORTS if p not in taken and p not in busy and _free(p)), None)
+    if port is None:
+        raise HelperError(f"no port free in {relay.LOCAL_PORTS.start}-{relay.LOCAL_PORTS.stop - 1}")
+    _write(_tunnel_folder(name) / "port", f"{port}\n")
+    return port
+
+
+def _tunnel_folder(name: str) -> Path:
+    _name("workspace", name)
+    for folder in (TUNNELS.parent, TUNNELS, TUNNELS / name):
+        if folder.is_symlink():
+            raise HelperError(f"{folder} is a link: nothing is written")
+        folder.mkdir(mode=0o755, exist_ok=True)
+    for folder in (TUNNELS, TUNNELS / name):
+        os.chown(folder, 0, 0)
+        os.chmod(folder, 0o755)
+    return TUNNELS / name
+
+
+def relay_key(name: str) -> dict:
+    """The tunnel's key of the workspace (made the first time: ed25519, root's
+    600, never sent: its public half only) and the port of this loopback its
+    requests come in on."""
+    folder = _tunnel_folder(name)
+    key = folder / "id_ed25519"
+    if not key.is_file() or not key.with_suffix(".pub").is_file():
+        key.unlink(missing_ok=True)
+        key.with_suffix(".pub").unlink(missing_ok=True)
+        _run("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", f"omniacli-relay@{socket.gethostname()}:{name}",
+             "-f", str(key))
+        os.chmod(key, 0o600)
+    return {"workspace": name, "public_key": relay.check_public_key(key.with_suffix(".pub").read_text(encoding="utf-8")),
+            "local_port": relay_local_port(name)}
+
+
+def relay_tunnel(name: str, mode: str) -> dict:
+    """on: the unit that keeps the workspace's tunnel to its relay up
+    (omniacli-relay-<workspace>.service; its values on the input: relay, host,
+    ssh_port, remote_port, host_key), started again now; off: the unit
+    stopped and taken away, with the key, the relay's host key and the port."""
+    if mode not in ("on", "off"):
+        raise HelperError("usage: relay-tunnel <workspace> on|off")
+    unit = SYSTEMD / relay.unit_name(_name("workspace", name))
+    if mode == "off":
+        removed = []
+        if unit.exists():
+            _run("systemctl", "disable", "--now", unit.name, check=False)
+            unit.unlink()
+            _run("systemctl", "daemon-reload")
+            removed.append(str(unit))
+        folder = TUNNELS / name
+        if folder.is_dir() and not folder.is_symlink():
+            for item in ("id_ed25519", "id_ed25519.pub", "known_hosts", "port"):
+                if (folder / item).exists():
+                    (folder / item).unlink()
+                    removed.append(str(folder / item))
+            folder.rmdir()
+            removed.append(str(folder))
+        if TUNNELS.is_dir() and not any(TUNNELS.iterdir()):
+            TUNNELS.rmdir()
+            # the last tunnel: its user goes too
+            try:
+                pwd.getpwnam(relay.TUNNEL_USER)
+            except KeyError:
+                pass
+            else:
+                _run("userdel", relay.TUNNEL_USER)
+                removed.append(f"the user {relay.TUNNEL_USER}")
+        return {"workspace": name, "unit": unit.name, "removed": removed}
+    spec = _input_json("the tunnel")
+    folder = _tunnel_folder(name)
+    if not (folder / "id_ed25519").is_file():
+        raise HelperError(f"workspace {name} has no tunnel key yet (relay-key)")
+    try:
+        host, ssh_port = relay.check_host(spec.get("host")), relay.check_port(spec.get("ssh_port"))
+        line = relay.known_hosts_line(host, ssh_port, spec.get("host_key"))
+        text = relay.tunnel_unit_text(name, str(spec.get("relay") or ""), host, ssh_port, spec.get("remote_port"),
+                                      relay_local_port(name, make=False), str(folder))
+    except relay.RelayError as exc:
+        raise HelperError(str(exc)) from None
+    try:
+        user = pwd.getpwnam(relay.TUNNEL_USER)
+    except KeyError:
+        _run("useradd", "--system", "--user-group", "--home-dir", "/nonexistent", "--no-create-home",
+             "--shell", "/usr/sbin/nologin", "--comment", "OmniaCLI, tunnels to a relay", relay.TUNNEL_USER)
+        user = pwd.getpwnam(relay.TUNNEL_USER)
+    # the key the tunnel's ssh reads: the tunnels' user's, nobody else's
+    os.chown(folder / "id_ed25519", user.pw_uid, user.pw_gid)
+    os.chmod(folder / "id_ed25519", 0o600)
+    known = folder / "known_hosts"
+    changed = not unit.is_file() or unit.read_text(encoding="utf-8") != text \
+        or not known.is_file() or known.read_text(encoding="utf-8") != line
+    _write(known, line)
+    _write(unit, text)
+    _run("systemctl", "daemon-reload")
+    _run("systemctl", "enable", unit.name)
+    # the same tunnel published again (another name of the workspace): its connection is not cut
+    if changed or _run("systemctl", "is-active", unit.name, check=False).strip() != "active":
+        _run("systemctl", "restart", unit.name)
+    return {"workspace": name, "unit": unit.name, "changed": changed, "host": host, "ssh_port": ssh_port}
+
+
 ACTIONS = {"disk": (disk, 3), "drop": (drop, 2), "limits": (limits, 3), "create": (create, 5), "remove": (remove, 3),
            "web": (web, 3), "web-names": (web_taken, 1), "upstream": (upstream, 6), "owncert": (owncert, 2), "firewall": (firewall, 1), "template-install": (template_install, 1),
            "conf": (conf, 5), "space": (space, 0),
@@ -4248,7 +4740,9 @@ ACTIONS = {"disk": (disk, 3), "drop": (drop, 2), "limits": (limits, 3), "create"
            "machine-db-replica-grant": (machine_db_replica_grant, 3), "machine-db-moved": (machine_db_moved, 3),
            "machine-db-replica-lent": (machine_db_replica_lent, 1),
            "machine-db-replica-unlisten": (machine_db_replica_unlisten, 1),
-           "enterprise-sync": (enterprise_sync, 1), "enterprise": (enterprise_switch, 4)}
+           "enterprise-sync": (enterprise_sync, 1), "enterprise": (enterprise_switch, 4),
+           "relay-facts": (relay_facts, 0), "relay-host": (relay_host, 1), "relay-unhost": (relay_unhost, 1),
+           "relay-hosted": (relay_hosted, 0), "relay-key": (relay_key, 1), "relay-tunnel": (relay_tunnel, 2)}
 
 
 def run(argv: list[str]) -> dict:

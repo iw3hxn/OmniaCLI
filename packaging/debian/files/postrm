@@ -12,6 +12,35 @@ case "$1" in
     purge)
         rm -f /etc/sudoers.d/omniacli-workspaces
         rm -rf /opt/omniacli/venv /opt/omniacli/venv.old /opt/omniacli/python /opt/omniacli/python.old /opt/omniacli/.python.*
+        # the names published through another machine (relay.py): here the tunnels to a relay (their units,
+        # keys and user); as a relay the tunnels hosted (their sites, certificates, the user omniacli-relay
+        # and the Match block of sshd_config)
+        for unit in /etc/systemd/system/omniacli-relay-*.service; do
+            [ -e "$unit" ] || continue
+            systemctl disable --now "$(basename "$unit")" >/dev/null 2>&1 || true
+            rm -f "$unit"
+        done
+        rm -rf /etc/omniacli/relay
+        if id omniacli-tunnel >/dev/null 2>&1; then userdel omniacli-tunnel || true; fi
+        rm -f /etc/nginx/conf.d/omniacli-relay-*.conf
+        rm -rf /etc/omniacli/certs/relay-*
+        for lineage in /etc/letsencrypt/live/omniacli-relay-*; do
+            [ -e "$lineage" ] || continue
+            certbot delete --cert-name "$(basename "$lineage")" --non-interactive >/dev/null 2>&1 || true
+        done
+        rm -f /etc/omniacli/relay-hosted.json /etc/omniacli/.relay.lock
+        if id omniacli-relay >/dev/null 2>&1; then
+            pkill -KILL -u omniacli-relay || true
+            userdel omniacli-relay || true
+        fi
+        rm -rf /var/lib/omniacli-relay
+        if grep -q "^# OmniaCLI relay: " /etc/ssh/sshd_config 2>/dev/null; then
+            sed -i '/^# OmniaCLI relay: /,/^# end of OmniaCLI relay$/d' /etc/ssh/sshd_config
+            systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
+        fi
+        if command -v nginx >/dev/null 2>&1 && nginx -t >/dev/null 2>&1; then
+            systemctl reload nginx 2>/dev/null || true
+        fi
         rm -f /etc/omniacli/omniacli.yaml /etc/omniacli/initial-admin-password
         rm -f /etc/systemd/system/omniacli.service.d/omniacli-user.conf
         rmdir /etc/systemd/system/omniacli.service.d 2>/dev/null || true
@@ -61,6 +90,7 @@ case "$1" in
             /var/lib/omniacli/sso.json /var/lib/omniacli/sso.json.tmp \
             /var/lib/omniacli/api-idempotency.json /var/lib/omniacli/api-idempotency.json.tmp \
             /var/lib/omniacli/credentials.yaml /var/lib/omniacli/credentials.yaml.tmp \
+            /var/lib/omniacli/relays.json /var/lib/omniacli/relays.json.tmp \
             /var/lib/omniacli/workspaces.yaml /var/lib/omniacli/workspaces.yaml.tmp
         if [ -d /var/lib/omniacli/backups ] && [ -n "$(ls -A /var/lib/omniacli/backups)" ]; then
             echo "omniacli: the database backups are kept in /var/lib/omniacli/backups"
