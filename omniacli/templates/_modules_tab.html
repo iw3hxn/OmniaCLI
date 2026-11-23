@@ -19,7 +19,7 @@
   <p class="muted mods-line" id="mods-line">{{ _("Reading the catalog of the OCA…") }}</p>
   <span {% if is_busy %}title="{{ _('A job is working on {name}: try again when it ends.', name=server.name) }}"{% endif %}>
   <button type="button" class="primary" id="mods-open" {{ off }}
-    title="{{ _('Looks for a module in the catalog of the OCA for this version of Odoo and installs it, with the repositories it depends on') }}">+ {{ _("Add modules") }}</button></span>
+    title="{{ _('Looks for a module of this instance (Odoo, Odoo Enterprise when it is on, its repositories) or of the catalogs for this version of Odoo (the OCA and the sources added) and installs it, with the modules and the repositories it depends on') }}">+ {{ _("Add modules") }}</button></span>
 </div>
 <dialog id="mods-dialog" class="mods-dialog" aria-labelledby="mods-title">
   <form method="dialog" id="mods-form">
@@ -28,9 +28,10 @@
     <div id="mods-search-step">
       <div class="mods-meta">
         <label class="mods-source" for="mods-source">{{ _("Look in") }}
-          <select id="mods-source" title="{{ _('Where the modules are looked for: every catalog, or one of them') }}">
+          <select id="mods-source" title="{{ _('Where the modules are looked for: this instance and every catalog, this instance only, or one catalog') }}">
             <option value="">{{ _("All the sources") }}</option>
             <option value="oca">OCA</option>
+            <option value="instance">{{ _("This instance: Odoo, Enterprise, its repositories") }}</option>
           </select></label>
         <span class="muted" id="mods-meta"></span>
         <button type="button" class="small" id="mods-refresh" hidden
@@ -141,8 +142,10 @@ dialog.mods-dialog { width: min(960px, calc(100vw - 32px)); }
     remove: {{ _("Take away") | tojson }}, removeTitle: {{ _("Takes the source away from this machine, with its catalogs; the repositories the instances took from it stay") | tojson }},
     removeSure: {{ _("Click again: take away {label}") | tojson }},
     ocaFixed: {{ _("the OCA's repositories, read every night") | tojson }},
-    noneAll: {{ _("No module of the catalogs for Odoo {series} with \"{text}\". A module of another repository is added with + Add a repository.") | tojson }},
+    noneAll: {{ _("No module of this instance nor of the catalogs for Odoo {series} with \"{text}\". A module of another repository is added with + Add a repository.") | tojson }},
+    noneInstance: {{ _("No module of this instance with \"{text}\".") | tojson }},
     notFree: {{ _("not free") | tojson }},
+    inInstance: {{ _("in the instance: {origin}") | tojson }},
     sizes: {{ _("on GitHub (its history, every branch; a clone takes at least as much in each environment): {list}") | tojson }},
     licenceHead: {{ _("Not free: install them only with their licence (bought from their author, or granted).") | tojson }},
     never: {{ _("The catalog of the OCA for Odoo {series} has not been read yet.") | tojson }},
@@ -165,6 +168,7 @@ dialog.mods-dialog { width: min(960px, calc(100vw - 32px)); }
     reposStaging: {{ _("{count} new repositories ({names}), added to this staging: it restarts") | tojson }},
     repoStaging: {{ _("1 new repository ({names}), added to this staging: it restarts") | tojson }},
     noRepo: {{ _("no new repository: the code is there already") | tojson }},
+    noRepoFrom: {{ _("no new repository: the code is in the instance ({origin})") | tojson }},
     modules: {{ _("{count} modules") | tojson }}, module: {{ _("1 module") | tojson }},
     python: {{ _("the Python packages {names}") | tojson }}, pythonOne: {{ _("the Python package {names}") | tojson }},
     already: {{ _("{name} is installed there already.") | tojson }},
@@ -201,7 +205,7 @@ dialog.mods-dialog { width: min(960px, calc(100vw - 32px)); }
   function modsSourceOptions(info) {
     const select = $("mods-source");
     const keep = select.value;
-    select.querySelectorAll("option").forEach((o, i) => { if (i > 1) o.remove(); });
+    select.querySelectorAll("option").forEach((o, i) => { if (i > 2) o.remove(); });
     for (const s of (info.sources || []).filter((s) => s.source !== "oca")) {
       const option = document.createElement("option"); option.value = s.source; option.textContent = s.label;
       select.append(option);
@@ -248,7 +252,7 @@ dialog.mods-dialog { width: min(960px, calc(100vw - 32px)); }
     const name = document.createElement("strong"); name.textContent = row.name || row.module;
     what.append(name, " ", row.summary || "");
     const tech = document.createElement("div"); tech.className = "small mono mods-tech";
-    tech.textContent = [row.module, row.origin || row.repository, row.license,
+    tech.textContent = [row.module, row.source === "instance" ? fill(M.inInstance, {origin: row.origin}) : (row.origin || row.repository), row.license,
                         row.price && Number(row.price) > 0 ? `${row.price} ${row.currency || "EUR"}` : ""].filter(Boolean).join(" · ");
     what.append(tech);
     const side = document.createElement("div"); side.className = "mods-side";
@@ -290,7 +294,7 @@ dialog.mods-dialog { width: min(960px, calc(100vw - 32px)); }
       list.replaceChildren(); return;
     }
     list.replaceChildren(...data.modules.map(modsRow));
-    if (!data.modules.length) { $("mods-none").hidden = false; $("mods-none").textContent = fill(modsSource === "oca" ? M.none : M.noneAll, {series: data.series, text}); }
+    if (!data.modules.length) { $("mods-none").hidden = false; $("mods-none").textContent = fill(modsSource === "oca" ? M.none : modsSource === "instance" ? M.noneInstance : M.noneAll, {series: data.series, text}); }
     if (data.total > data.modules.length) {
       $("mods-more").hidden = false; $("mods-more").textContent = fill(M.more, {shown: data.modules.length, total: data.total});
     }
@@ -299,7 +303,7 @@ dialog.mods-dialog { width: min(960px, calc(100vw - 32px)); }
     const parts = [];
     const n = plan.repositories.length, names = plan.repositories.join(", ");
     const both = plan.restarts.length > 1;
-    if (!n) parts.push(M.noRepo);
+    if (!n) parts.push(plan.origin ? fill(M.noRepoFrom, {origin: plan.origin}) : M.noRepo);
     else if (n === 1) parts.push(fill(both ? M.repo : modsInfo.staging ? M.repoStaging : M.repoOne, {names}));
     else parts.push(fill(both ? M.repos : modsInfo.staging ? M.reposStaging : M.reposOne, {count: n, names}));
     parts.push(plan.modules.length === 1 ? M.module : fill(M.modules, {count: plan.modules.length}));

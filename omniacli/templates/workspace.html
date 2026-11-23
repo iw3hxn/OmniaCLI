@@ -296,7 +296,7 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
 
 <section class="panel" id="git-credentials">
   <h2>{{ _("Git credentials") }}</h2>
-  <p class="muted ws-line" style="margin-bottom: 10px">{{ _("The user and token OmniaCLI reads the private repositories of the instances with, one for each git server (github.com, bitbucket.org…).") }}</p>
+  <p class="muted ws-line" style="margin-bottom: 10px">{{ _("The user and token OmniaCLI reads the private repositories of the instances with, one for each git server (github.com, bitbucket.org…).") }} {{ _("A token is used for the repositories added over https, and reads only those it reaches (a fine-grained GitHub token: those of its Repository access); a repository added over ssh keeps its deploy key.") }}</p>
   <div class="scroll">
   <table class="credentials ws-table" id="credentials">
     <tr><th>{{ _("Git server") }}</th><th>{{ _("User") }}</th><th>{{ _("Token") }}</th><th></th></tr>

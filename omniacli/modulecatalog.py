@@ -494,6 +494,70 @@ def merged(catalogs: list[Catalog], series: str) -> Catalog:
     return found
 
 
+# the modules an instance has in its own addons path (the image's Odoo, Enterprise when on, its repositories, the
+# uploaded ones): a source of Add modules as the catalogs are, their repository already there (ber, 23/11/2026:
+# mrp_workorder and stock answered «not in the catalogs»)
+INSTANCE = "instance"
+INSTANCE_LABEL = "This instance"
+# Odoo's licence of Enterprise's modules
+ENTERPRISE_LICENSE = "OEEL-1"
+
+
+def _text(value, language: str = "") -> str:
+    """A field of ir_module_module: a text, or (a translatable field, Odoo 16
+    and later) {language: text}, the reader's (it: it_IT) when the database
+    has it, else the English one."""
+    if isinstance(value, dict):
+        own = f"{language}_{language.upper()}" if language else ""
+        return str(value.get(own) or value.get("en_US") or next(iter(value.values()), "") or "")
+    return "" if value is None else str(value)
+
+
+def origin_of(module: str, author: str, license_: str, origins: dict[str, str]) -> str:
+    """Where a module of an instance comes from: its repository, the uploaded
+    ones or Enterprise (origins, read on its disk), else what its manifest
+    says: Odoo Enterprise (OEEL-1), Odoo (Odoo S.A.), the addons path."""
+    if module in origins:
+        return origins[module]
+    if license_ == ENTERPRISE_LICENSE:
+        return "Odoo Enterprise"
+    if "Odoo S.A." in (author or ""):
+        return "Odoo"
+    return "the addons path of the instance"
+
+
+def instance_catalog(series: str, rows: list[dict] | None, on_disk: dict[str, dict],
+                     origins: dict[str, str], language: str = "") -> Catalog:
+    """The modules of an instance as a catalog whose modules need no
+    repository: those its database knows (rows: ir_module_module with their
+    dependencies, what Odoo lists once its Apps list is updated), the ones
+    it cannot install left out, and those on its disk the database does not
+    know yet (on_disk: {module: its manifest}; odoo -i updates the list
+    first, as Odoo's Update Apps List); each with where it comes from."""
+    found = Catalog(series, ident=INSTANCE, label=INSTANCE_LABEL)
+
+    def add(module: str, entry: dict) -> None:
+        origin = origin_of(module, entry.get("author", ""), entry.get("license", ""), origins)
+        found.modules[module] = {**entry, "module": module, "repository": "", "origin": origin,
+                                 "source": INSTANCE, "source_label": INSTANCE_LABEL}
+
+    for row in rows or []:
+        module = str(row.get("name") or "")
+        if not MODULE.fullmatch(module) or (row.get("state") == "uninstallable" and module not in on_disk):
+            continue
+        add(module, {"name": _text(row.get("shortdesc"), language) or module,
+                     "summary": _text(row.get("summary"), language),
+                     "author": _text(row.get("author")), "license": _text(row.get("license")),
+                     "depends": [str(d) for d in row.get("depends") or [] if isinstance(d, str) and MODULE.fullmatch(d)],
+                     "python": list((on_disk.get(module) or {}).get("python") or [])})
+    for module, manifest in sorted(on_disk.items()):
+        if module not in found.modules and MODULE.fullmatch(module):
+            add(module, {"name": manifest.get("name") or module, "summary": manifest.get("summary", ""),
+                         "author": manifest.get("author", ""), "license": manifest.get("license", ""),
+                         "depends": list(manifest.get("depends") or []), "python": list(manifest.get("python") or [])})
+    return found
+
+
 def _fold(text: str) -> str:
     """Lower case, without accents: contabilità finds contabilita."""
     return "".join(c for c in unicodedata.normalize("NFKD", str(text).lower()) if not unicodedata.combining(c))
@@ -521,7 +585,8 @@ def search(catalog: Catalog, query: str, limit: int = LIMIT) -> tuple[list[dict]
             else:
                 break
         else:
-            scored.append((-score, module, entry))
+            # the technical name typed whole (stock, mrp): that module first
+            scored.append((-score - (100 if module in words else 0), module, entry))
     scored.sort(key=lambda item: (item[0], item[1]))
     return [entry for _, _, entry in scored[:limit]], len(scored)
 
@@ -565,13 +630,15 @@ def plan(catalog: Catalog, module: str, role: str, known: dict[str, dict[str, st
         if state in INSTALLED:
             return
         entry = catalog.modules.get(name)
-        if state == "uninstallable" and name not in code and entry is None:
+        # in the instance's own addons path (instance_catalog): no repository to add
+        local = name in code or (entry is not None and not entry.get("repository"))
+        if state == "uninstallable" and not local and entry is None:
             missing.append(name)
             return
-        if name in code or (target is not None and state is not None and state != "uninstallable"):
-            # in the instance's code or the image's (the database knows it)
+        if local or (target is not None and state is not None and state != "uninstallable"):
+            # in the instance's code or the image's (the database knows it): what it needs, as Odoo resolves it
             modules.append(name)
-            for dep in (entry or {}).get("depends", []) if name in code else []:
+            for dep in (entry or {}).get("depends", []) if local else []:
                 visit(dep)
             return
         if entry is None:
@@ -596,7 +663,8 @@ def plan(catalog: Catalog, module: str, role: str, known: dict[str, dict[str, st
     visit(module)
     blocked = None
     if module not in catalog.modules and module not in code:
-        blocked = f"{module} is not in the catalogs of modules for Odoo {catalog.series}"
+        blocked = (f"{module} is neither in this instance (Odoo, Odoo Enterprise when it is on, its repositories, the "
+                   f"modules uploaded) nor in the catalogs of modules for Odoo {catalog.series}")
     elif missing:
         blocked = (f"Requires {', '.join(missing)}, which this instance does not have and the catalogs of modules "
                    "do not know (Odoo Enterprise, or another author's)")

@@ -52,10 +52,12 @@ command of the caller's, and runs docker with an environment of its own:
                                          odoo -u a,b --stop-after-init
     update <odoo service> <db> --install a,b
                                          odoo -i a,b --stop-after-init, in
-                                         the running service, an existing
-                                         database (the catalog of modules),
-                                         without demo data (the flag of the
-                                         image's Odoo: without_demo())
+                                         a container of the service of its
+                                         own (the service running or
+                                         stopped), an existing database (Add
+                                         modules), without demo data (the
+                                         flag of the image's Odoo:
+                                         without_demo())
     next-update <odoo service> <db>      an update without stopping: the
                                          changed modules (click-odoo-update) of
                                          the new code, OmniaCLI's copy in
@@ -72,6 +74,12 @@ command of the caller's, and runs docker with an environment of its own:
                                          path known to the database, in Apps
     modules <database service> <db>      the modules the database knows, each
                                          name|state (fixed query)
+    modules-info <database service> <db>
+                                         the same with what Add modules
+                                         shows and resolves: one JSON object
+                                         a line (name, state, shortdesc,
+                                         summary, author, license, depends;
+                                         fixed query)
     terminal <odoo service>              a login shell in the running service,
                                          on the caller's terminal, as the
                                          image's user (never root), in the
@@ -329,11 +337,18 @@ PG_SETTINGS = f"""SELECT json_build_object(
 # the modules a database knows (ir_module_module), each name|state: the
 # catalog of modules tells installed, not installed and unknown apart
 MODULES_QUERY = "SELECT name, state FROM ir_module_module ORDER BY name"
+# what Add modules shows of the modules of an instance and resolves their dependencies with, a JSON object a line
+# (shortdesc and summary: text before Odoo 16, {language: text} from it)
+MODULES_INFO_QUERY = (
+    "SELECT json_build_object('name', m.name, 'state', m.state, 'shortdesc', m.shortdesc, 'summary', m.summary, "
+    "'author', m.author, 'license', m.license, 'depends', coalesce((SELECT json_agg(d.name ORDER BY d.name) "
+    "FROM ir_module_module_dependency d WHERE d.module_id = m.id), '[]'::json)) "
+    "FROM ir_module_module m ORDER BY m.name")
 WITH_ARGUMENTS = ("logs", "version", "port", "dump", "load", "update", "psql", "init", "link-filestore", "login",
                   "setup", "options", "image", "verify", "pip-freeze",
                   "pg-report", "pg-terminate", "neutralize", "pip-requirements", "terminal",
                   "mail-list", "mail-get", "mail-clear", "pg-settings", "pg-set", "pg-reset", "db-restart",
-                  "modules", "mail-send", "mail-inbox", "update-list",
+                  "modules", "modules-info", "mail-send", "mail-inbox", "update-list",
                   "next-update", "next-start", "next-stop", "next-state")
 # the tuning's actions that read their values on the input (pg_tune())
 TUNE_ACTIONS = ("pg-set", "pg-reset", "db-restart")
@@ -841,8 +856,11 @@ def commands(project: Path, action: str, args: list[str], major: int | None = No
                 raise HelperError(f"{args[3]!r} is not a list of module names")
             if args[2] == "--modules":
                 return [_script(service(project, args[0]), "update-modules", _database(args[1]), ",".join(modules))]
-            return [_script(service(project, args[0]), "install-modules", _database(args[1]), ",".join(modules),
-                            without_demo(major))]
+            # in a container of its own, as the update of the changed modules: the same whether the service runs
+            # or an update stopped it first (the install with Odoo stopped, to come: a running Odoo holds locks
+            # an install's ALTER TABLE waits for, «deadlock detected» on ber, 23/11/2026)
+            return [["run", "--rm", "--no-deps", "-T", "--entrypoint", "sh", service(project, args[0]), "-c",
+                     SCRIPTS["install-modules"], "sh", _database(args[1]), ",".join(modules), without_demo(major)]]
         raise HelperError("usage: update <service> <database> [--modules a,b | --install a,b]")
     if action == "next-update":
         # next-update <odoo service> <database>: click-odoo-update with the addons path of the new code
@@ -859,12 +877,13 @@ def commands(project: Path, action: str, args: list[str], major: int | None = No
         if len(args) != 2:
             raise HelperError("usage: update-list <service> <database>")
         return [_script(service(project, args[0]), "update-list", _database(args[1]))]
-    if action == "modules":
-        # modules <database service> <database>: the fixed query above
+    if action in ("modules", "modules-info"):
+        # modules[-info] <database service> <database>: the fixed queries above
         if len(args) != 2:
-            raise HelperError("usage: modules <service> <database>")
+            raise HelperError(f"usage: {action} <service> <database>")
         name, prefix, options = db_target(project, args[0])
-        return [_script(name, prefix + "pg-modules", _database(args[1]), MODULES_QUERY, options=options)]
+        return [_script(name, prefix + "pg-modules", _database(args[1]),
+                        MODULES_QUERY if action == "modules" else MODULES_INFO_QUERY, options=options)]
     if action == "init":
         # init <odoo service> <database> <modules> [<language>]: a new database,
         # in a container of its own (the image's entrypoint gives the connection)
@@ -1636,7 +1655,8 @@ def run(argv: list[str]) -> int:
     cmds = commands(project, action, args)
     if installs_modules(action, args):
         # its arguments checked first: the flag without demo data is the image's Odoo's
-        cmds = commands(project, action, args, odoo_major(project, args[0], running=action != "init"))
+        # asked in a container of its own: the service may be stopped (init: not started yet)
+        cmds = commands(project, action, args, odoo_major(project, args[0], running=False))
     env = on_cluster(project) if action in (*CREATES_DATABASE, "init") else None
     if env is None:
         return _each(project, cmds, extra)

@@ -448,8 +448,10 @@ class DockerPlugin(ServicePlugin):
 
     async def install_modules(self, job: Job, instance: Instance, modules: list[str]) -> None:
         """odoo -i <modules> --stop-after-init into the instance's existing
-        database, in its running service (compose-helper update --install),
-        a neutralized database's crons kept off: the catalog of modules."""
+        database, in a container of the Odoo service of its own (compose-helper
+        update --install: the service running, or stopped by an update first),
+        a neutralized database's crons kept off: Add modules. odoo -i updates
+        the list of the modules first, as Apps › Update Apps List."""
         bad = [m for m in modules if not MODULE.fullmatch(m)]
         if not modules or bad:
             raise JobFailed(f"invalid module list: {', '.join(bad) or 'empty'}")
@@ -491,6 +493,27 @@ class DockerPlugin(ServicePlugin):
             name, sep, state = line.strip().partition("|")
             if sep and MODULE.fullmatch(name):
                 found[name] = state
+        return found
+
+    async def module_infos(self, instance: Instance) -> list[dict]:
+        """What the instance's database knows of each module (compose-helper
+        modules-info: name, state, shortdesc, summary, author, license,
+        depends): Add modules shows them and resolves their dependencies;
+        JobFailed when it does not answer."""
+        opts = instance.options
+        code, out = await capture(instance.restart.command("modules-info", opts.db_service, opts.database),
+                                  timeout=MODULES_TIMEOUT)
+        if code:
+            lines = [line for line in out.splitlines() if line.strip()]
+            raise JobFailed(f"the database {opts.database} did not answer: {(lines[-1] if lines else code)}")
+        found = []
+        for line in out.splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue  # a warning of docker compose
+            if isinstance(row, dict) and MODULE.fullmatch(str(row.get("name") or "")):
+                found.append(row)
         return found
 
     async def _update_changed(self, job: Job, instance: Instance, force: bool = False) -> None:

@@ -813,45 +813,52 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
       <ul class="ag-list" id="ag-list"></ul>
       <p class="muted small" id="ag-more" hidden></p>
     </div>
+    {# several repositories chosen at once: one job, one restart (ber, 23/11/2026: nine restarts in two minutes) #}
     <div id="ag-chosen" hidden>
-      <div class="addons-fields">
-        <div><label>{{ _("Repository") }}</label><div class="mono" id="ag-name"></div></div>
-        <div><label for="ag-branch">{{ _("Branch") }}</label><select id="ag-branch" class="mono" style="width: 100%"></select></div>
-        <div class="addons-go"><button type="button" id="ag-add" {{ off }}
-          title="{{ _('Downloads the repository chosen into production and test on the branch chosen, over https with the GitHub token of the git credentials, adds it to their odoo.conf and restarts them: its modules are then installed from Odoo › Apps. With the CI on, its webhook on GitHub is made by itself.') }}">{{ _("Add") }}</button></div>
-      </div>
-      <p class="muted small" id="ag-hint"></p>
-      <button type="button" class="small ghost" id="ag-back" title="{{ _('Goes back to the list of the repositories, to choose another one') }}">{{ _("Another repository") }}</button>
+      <div class="scroll"><table class="ag-chosen">
+        <tr><th>{{ _("Repository") }}</th><th>{{ _("Branch") }}</th><th></th></tr>
+        <tbody id="ag-rows"></tbody>
+      </table></div>
+      <div class="addons-go-line"><button type="button" id="ag-add" disabled {{ off }}
+        title="{{ _('Downloads the repositories chosen into production and test, each on the branch chosen, over https with the GitHub token of the git credentials, adds them to their odoo.conf and restarts them once at the end: their modules are then installed from Modules › + Add modules. With the CI on, their webhooks on GitHub are made by themselves.') }}">{{ _("Add") }}</button>
+        <span class="muted small" id="ag-count"></span></div>
     </div>
     <p class="error" id="ag-error" role="alert"></p>
   </div>
   <form id="addons-add">
     <div class="addons-fields">
-      <div><label for="addons-url">{{ _("Repository address") }}</label>
-        <input type="text" id="addons-url" class="mono" required placeholder="https://github.com/OCA/web.git · git@github.com:org/repo.git" spellcheck="false"></div>
+      <div><label for="addons-url">{{ _("Repository addresses") }}</label>
+        <textarea id="addons-url" class="mono" required rows="2" placeholder="https://github.com/OCA/web.git&#10;git@github.com:org/repo.git" spellcheck="false"
+          title="{{ _('One address per line: several are added in one go, with one restart at the end') }}"></textarea></div>
       <div><label for="addons-branch">{{ _("Branch") }}</label>
         <input type="text" id="addons-branch" class="mono" required placeholder="19.0" spellcheck="false"></div>
       <div class="addons-go"><button type="submit" {{ off }}
-        title="{{ _('Downloads the repository into production and test, each on its branch, adds it to their odoo.conf and restarts them: its modules are then installed from Odoo › Apps. A private one: over https with the git credentials of the workspace, over ssh (git@…) with the key here below.') }}">{{ _("Add") }}</button></div>
+        title="{{ _('Downloads the repositories into production and test, each on its branch, adds them to their odoo.conf and restarts them once at the end: their modules are then installed from Modules › + Add modules. A private one: over https with the git credentials of the workspace, over ssh (git@…) with its own deploy key, shown here below.') }}">{{ _("Add") }}</button></div>
     </div>
-    <p class="muted" style="font-size: 12px; margin: 6px 0 0">{{ _("A private repository: over https with the git credentials of the workspace (Settings › Credentials), or over ssh (git@…) with OmniaCLI's key added to it as a deploy key. Its modules are then installed from Odoo's Apps.") }}</p>
+    <p class="muted" style="font-size: 12px; margin: 6px 0 0">{{ _("A private repository: over https with a token of the git credentials of the workspace (Settings › Credentials) that reads it, or over ssh (git@…) with its own deploy key, shown below as soon as its address is written.") }}</p>
     <p class="muted" id="addons-gh-none" hidden style="font-size: 12px; margin: 4px 0 0">{{ _("With a GitHub token in the git credentials of the workspace, the repository and its branch are picked from a list, and its webhook is made by itself:") }}
       <a href="{{ prefix }}/workspaces/{{ stagings.workspace.name | urlencode }}#git-credentials" title="{{ _('Opens the git credentials of the workspace, where a GitHub token is added') }}">{{ _("Git credentials") }} ›</a></p>
+    {# the deploy key of each address over ssh: GitHub takes a key as the deploy key of one repository only #}
+    <div id="addons-deploy" hidden>
+      <p class="muted" style="font-size: 13px; margin: 10px 0 4px">{{ _("Over ssh each repository has its own deploy key: GitHub refuses a key that is already the deploy key of another repository («Key is already in use»). Paste each one in its repository, read only, before Add.") }}</p>
+      <div id="addons-deploy-list"></div>
+    </div>
     <details class="addons-more">
       <summary title="{{ _('Another branch for the test and the name of its folder, when the ones worked out by themselves do not fit') }}">{{ _("Advanced") }}</summary>
       <div class="addons-fields" style="grid-template-columns: 1fr 1fr; margin-top: 8px">
         <div><label for="addons-test-branch">{{ _("Branch of the test") }}</label>
           <input type="text" id="addons-test-branch" class="mono" placeholder="{{ _('empty: the same branch') }}" spellcheck="false"></div>
         <div><label for="addons-name">{{ _("Name of its folder") }}</label>
-          <input type="text" id="addons-name" class="mono" placeholder="{{ _('empty: the last part of the address') }}" spellcheck="false"></div>
+          <input type="text" id="addons-name" class="mono" placeholder="{{ _('empty: the last part of the address') }}" spellcheck="false"
+            title="{{ _('Only for one address: with several, each folder takes the last part of its address') }}"></div>
       </div>
     </details>
     <p class="error" id="addons-error" role="alert"></p>
     <details class="addons-key">
-      <summary title="{{ _('The public key OmniaCLI reads the private repositories with over ssh') }}">{{ _("The key for the repositories over ssh (git@…)") }}</summary>
-      <p class="muted" style="font-size: 13px">{{ _("Add it to each private repository as a read-only deploy key (GitHub: Settings › Deploy keys; GitLab: Settings › Repository › Deploy keys). One key for all of them, made the first time it is shown.") }}</p>
+      <summary title="{{ _('The key of this machine for a GitHub or GitLab account that reads several repositories') }}">{{ _("The key of this machine, for an account") }}</summary>
+      <p class="muted" style="font-size: 13px">{{ _("For an account that reads several repositories (a machine user): add it to the account's SSH keys (GitHub: Settings › SSH and GPG keys), not as a deploy key. It is tried after the repository's own deploy key.") }}</p>
       <button type="button" class="small" id="addons-key-show"
-        title="{{ _('Shows the public key OmniaCLI reads the repositories with over ssh (made the first time): add it to the repository as a read-only deploy key.') }}">{{ _("Show the key") }}</button>
+        title="{{ _('Shows the public key of this machine for the repositories over ssh (made the first time): add it to the SSH keys of an account that reads them.') }}">{{ _("Show the key") }}</button>
       <pre class="console mono copyable" id="addons-key" hidden style="white-space: pre-wrap; overflow-wrap: anywhere"></pre>
     </details>
   </form>
@@ -865,7 +872,13 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
 .addons-key, .addons-more { margin-top: 10px; } .addons-key summary, .addons-more summary { cursor: pointer; font-size: 13px; color: var(--muted); }
 .addons-fields { display: grid; grid-template-columns: 1fr 160px auto; gap: 10px; align-items: end; }
 .addons-fields label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; }
-.addons-fields input { width: 100%; }
+.addons-fields input, .addons-fields textarea { width: 100%; }
+.addons-fields textarea { resize: vertical; min-height: 38px; }
+.addons-deploy-one { margin: 6px 0 10px; } .addons-deploy-one .mono { font-size: 13px; }
+.ag-chosen { width: 100%; margin-top: 8px; } .ag-chosen select { width: 100%; }
+.addons-go-line { display: flex; gap: 10px; align-items: center; margin-top: 8px; }
+.ag-list label { display: flex; gap: 10px; align-items: center; width: 100%; padding: 8px 10px; cursor: pointer; }
+.ag-list label:hover { background: var(--accent-soft); } .ag-list input { width: auto; }
 #au-fields label { display: block; font-size: 13px; font-weight: 600; margin: 10px 0 4px; }
 .addons-from { display: flex; gap: 16px; margin: 10px 0; font-size: 14px; } .addons-from input { width: auto; }
 #addons-github { margin-top: 8px; } #addons-github .addons-fields label { margin-bottom: 4px; }
@@ -1510,13 +1523,57 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
       headers: {"Content-Type": "application/json", Accept: "application/json"}, body: JSON.stringify(body)});
     return {ok: resp.ok, data: await resp.json().catch(() => ({}))};
   }
+  // + Add a repository by its addresses: one per line, all in one job (one restart); an address over ssh shows
+  // its own deploy key, with the page of the repository where it goes
+  const KEYS = {deploy: {{ _("Deploy key of {url}") | tojson }}, where: {{ _("Add it in the repository: Settings › Deploy keys") | tojson }},
+                show: {{ _("Show its key") | tojson }}, showTitle: {{ _("Makes (the first time) and shows the deploy key of this repository: paste it in the repository's Settings › Deploy keys, read only") | tojson }},
+                open: {{ _("Open the deploy keys of the repository") | tojson }}, nameOne: {{ _("The name of the folder is for one address only") | tojson }}};
+  const sshAddress = (url) => /^(git@[A-Za-z0-9.-]+:|ssh:\/\/git@)/.test(url);
+  function addonsLines() {
+    return document.getElementById("addons-url").value.split(/\n/).map((l) => l.trim()).filter(Boolean);
+  }
+  function addonsDeployDraw() {
+    const box = document.getElementById("addons-deploy"), list = document.getElementById("addons-deploy-list");
+    if (!box) return;
+    const wanted = addonsLines().filter(sshAddress);
+    const kept = new Map([...list.children].map((el) => [el.dataset.url, el]));
+    list.replaceChildren(...wanted.map((url) => {
+      if (kept.has(url)) return kept.get(url);
+      const one = Object.assign(document.createElement("div"), {className: "addons-deploy-one"});
+      one.dataset.url = url;
+      const head = Object.assign(document.createElement("div"), {className: "mono", textContent: KEYS.deploy.replace("{url}", url)});
+      const show = Object.assign(document.createElement("button"), {type: "button", className: "small", textContent: KEYS.show, title: KEYS.showTitle});
+      const pre = Object.assign(document.createElement("pre"), {className: "console mono copyable", hidden: true});
+      pre.style.whiteSpace = "pre-wrap"; pre.style.overflowWrap = "anywhere";
+      const where = Object.assign(document.createElement("p"), {className: "muted small", hidden: true});
+      show.addEventListener("click", async () => {
+        const {ok, data} = await addonsPost("git-key", {url});
+        if (!ok || !data.public_key) { document.getElementById("addons-error").textContent = data.error || data.detail || ADD.refused; return; }
+        pre.textContent = data.public_key; pre.hidden = false; show.hidden = true;
+        where.textContent = KEYS.where + " ";
+        if (data.page) {
+          const link = Object.assign(document.createElement("a"), {href: data.page, target: "_blank", rel: "noopener", textContent: KEYS.open + " ↗", title: data.page});
+          where.append(link);
+        }
+        where.hidden = false;
+      });
+      one.append(head, show, pre, where);
+      return one;
+    }));
+    box.hidden = !wanted.length;
+  }
+  document.getElementById("addons-url")?.addEventListener("input", addonsDeployDraw);
   document.getElementById("addons-add")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const error = document.getElementById("addons-error");
     error.textContent = "";
-    const {ok, data} = await addonsPost("repositories/add", {server: {{ server.name | tojson }},
-      url: document.getElementById("addons-url").value.trim(), branch: document.getElementById("addons-branch").value.trim(),
-      test_branch: document.getElementById("addons-test-branch").value.trim(), name: document.getElementById("addons-name").value.trim()});
+    const lines = addonsLines(), branch = document.getElementById("addons-branch").value.trim();
+    const testBranch = document.getElementById("addons-test-branch").value.trim(), name = document.getElementById("addons-name").value.trim();
+    if (lines.length > 1 && name) { error.textContent = KEYS.nameOne; return; }
+    const body = lines.length > 1
+      ? {server: {{ server.name | tojson }}, repositories: lines.map((url) => ({url, branch, test_branch: testBranch}))}
+      : {server: {{ server.name | tojson }}, url: lines[0] || "", branch, test_branch: testBranch, name};
+    const {ok, data} = await addonsPost("repositories/add", body);
     if (!ok || !data.job) { error.textContent = data.error || data.detail || ADD.refused; return; }
     location.href = `{{ prefix }}/jobs/${data.job}`;
   });
@@ -1526,55 +1583,80 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     if (!ok || !data.public_key) { document.getElementById("addons-error").textContent = data.error || ADD.refused; return; }
     box.textContent = data.public_key; box.hidden = false; event.target.hidden = true;
   });
-  // Add a repository «From GitHub»: the repositories the GitHub token of the git credentials reads, then the
-  // branches of the one chosen (the Odoo version's, else its default, chosen), then the same job as by address
+  // Add a repository «From GitHub»: the repositories the GitHub token of the git credentials reads, several
+  // ticked at once, each with its branches (the Odoo version's, else its default, chosen), then one job
   (function () {
     const details = document.querySelector(".addons-add");
     const pane = document.getElementById("addons-github");
     if (!details || !pane) return;
     const GH = {private: {{ _("private") | tojson }}, branch: {{ _("default: {branch}") | tojson }},
                 none: {{ _("The GitHub token reads no repository: give it the repositories in its Repository access on github.com.") | tojson }},
-                count: {{ _("{count} repositories of {account}: choose one.") | tojson }},
+                count: {{ _("{count} repositories of {account}: tick the ones to add.") | tojson }},
                 cut: {{ _("Only the first {count} are listed: search by name.") | tojson }},
                 noMatch: {{ _("No repository with that name.") | tojson }}, reading: {{ _("Reading the branches…") | tojson }},
-                series: {{ _("{branch} is the branch of the Odoo version of this instance.") | tojson }},
-                byDefault: {{ _("{branch} is the default branch of the repository.") | tojson }},
-                choose: {{ _("Chooses {repo}: its branches are read from GitHub") | tojson }},
+                choose: {{ _("Ticks {repo}: its branches are read from GitHub") | tojson }},
+                chosen: {{ _("{count} chosen: added in one job, one restart at the end") | tojson }},
+                remove: {{ _("Takes it out of the ones chosen") | tojson }},
                 refused: {{ _("Refused") | tojson }}};
     const $ = (id) => document.getElementById(id);
     const from = $("addons-from"), form = $("addons-add");
-    let repos = [], loaded = false, picked = null;
+    let repos = [], loaded = false;
+    // full_name → {repo, select (its branches), row}
+    const picked = new Map();
     const server = {{ server.name | tojson }};
     function showMode() {
       const github = from.querySelector('input[value="github"]').checked && !from.hidden;
       pane.hidden = !github; form.hidden = github;
+    }
+    function drawCount() {
+      $("ag-chosen").hidden = !picked.size;
+      $("ag-count").textContent = picked.size ? GH.chosen.replace("{count}", picked.size) : "";
+      $("ag-add").disabled = {{ "true" if off else "false" }} || !picked.size
+        || [...picked.values()].some((p) => !p.select.options.length);
     }
     function drawList() {
       const text = $("ag-search").value.trim().toLowerCase();
       const shown = repos.filter((r) => r.full_name.toLowerCase().includes(text)).slice(0, 200);
       const list = $("ag-list");
       list.replaceChildren(...shown.map((r) => {
-        const button = Object.assign(document.createElement("button"), {type: "button", title: GH.choose.replace("{repo}", r.full_name)});
-        button.append(Object.assign(document.createElement("span"), {className: "mono", textContent: r.full_name}));
-        if (r.private) button.append(Object.assign(document.createElement("span"), {className: "badge", textContent: GH.private}));
-        button.append(Object.assign(document.createElement("span"), {className: "ag-branch", textContent: GH.branch.replace("{branch}", r.default_branch)}));
-        button.addEventListener("click", () => choose(r));
-        const li = document.createElement("li"); li.append(button); return li;
+        const label = Object.assign(document.createElement("label"), {title: GH.choose.replace("{repo}", r.full_name)});
+        const box = Object.assign(document.createElement("input"), {type: "checkbox", checked: picked.has(r.full_name)});
+        box.addEventListener("change", () => (box.checked ? pick(r) : unpick(r.full_name)));
+        label.append(box, Object.assign(document.createElement("span"), {className: "mono", textContent: r.full_name}));
+        if (r.private) label.append(Object.assign(document.createElement("span"), {className: "badge", textContent: GH.private}));
+        label.append(Object.assign(document.createElement("span"), {className: "ag-branch", textContent: GH.branch.replace("{branch}", r.default_branch)}));
+        const li = document.createElement("li"); li.append(label); return li;
       }));
       if (!shown.length) list.append(Object.assign(document.createElement("li"), {className: "muted small", textContent: GH.noMatch, style: "padding: 8px 10px"}));
     }
-    async function choose(repo) {
+    function unpick(full) {
+      const p = picked.get(full);
+      if (p) p.row.remove();
+      picked.delete(full);
+      drawCount(); drawList();
+    }
+    async function pick(repo) {
       $("ag-error").textContent = "";
-      picked = repo;
-      $("ag-pick").hidden = true; $("ag-chosen").hidden = false;
-      $("ag-name").textContent = repo.full_name; $("ag-hint").textContent = GH.reading;
-      const select = $("ag-branch"); select.replaceChildren(); $("ag-add").disabled = true;
+      const row = document.createElement("tr");
+      const select = Object.assign(document.createElement("select"), {className: "mono"});
+      select.setAttribute("aria-label", repo.full_name);
+      const name = Object.assign(document.createElement("td"), {className: "mono", textContent: repo.full_name});
+      const where = document.createElement("td"); where.append(Object.assign(document.createElement("span"), {className: "muted small", textContent: GH.reading}));
+      const out = Object.assign(document.createElement("button"), {type: "button", className: "small ghost", textContent: "×", title: GH.remove});
+      out.addEventListener("click", () => unpick(repo.full_name));
+      const last = document.createElement("td"); last.append(out);
+      row.append(name, where, last);
+      $("ag-rows").append(row);
+      const entry = {repo: {...repo}, select, row};
+      picked.set(repo.full_name, entry);
+      drawCount();
       const {ok, data} = await addonsPost("github/branches", {server, host: repos.host, repository: repo.full_name});
-      if (!ok) { $("ag-error").textContent = data.error || data.detail || GH.refused; $("ag-hint").textContent = ""; return; }
+      if (!picked.has(repo.full_name)) return;
+      if (!ok) { where.replaceChildren(Object.assign(document.createElement("span"), {className: "error small", textContent: data.error || data.detail || GH.refused})); return; }
       select.replaceChildren(...data.branches.map((b) => Object.assign(document.createElement("option"), {value: b, textContent: b, selected: b === data.chosen})));
-      picked = {...repo, clone_url: data.clone_url || repo.clone_url};
-      $("ag-hint").textContent = data.chosen === data.series ? GH.series.replace("{branch}", data.chosen) : GH.byDefault.replace("{branch}", data.chosen);
-      $("ag-add").disabled = {{ "true" if off else "false" }} || !data.branches.length;
+      entry.repo.clone_url = data.clone_url || repo.clone_url;
+      where.replaceChildren(select);
+      drawCount();
     }
     async function load() {
       if (loaded) return;
@@ -1592,13 +1674,13 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     }
     from.addEventListener("change", showMode);
     $("ag-search").addEventListener("input", drawList);
-    $("ag-back").addEventListener("click", () => { $("ag-chosen").hidden = true; $("ag-pick").hidden = !repos.length; $("ag-error").textContent = ""; });
     $("ag-add").addEventListener("click", async () => {
-      if (!picked) return;
+      if (!picked.size) return;
       $("ag-error").textContent = ""; $("ag-add").disabled = true;
-      const {ok, data} = await addonsPost("repositories/add", {server, url: picked.clone_url, branch: $("ag-branch").value,
-                                                               name: picked.full_name.split("/")[1]});
-      if (!ok || !data.job) { $("ag-error").textContent = data.error || data.detail || GH.refused; $("ag-add").disabled = false; return; }
+      const chosen = [...picked.values()].map((p) => ({url: p.repo.clone_url, branch: p.select.value, name: p.repo.full_name.split("/")[1]}));
+      const body = chosen.length > 1 ? {server, repositories: chosen} : {server, ...chosen[0]};
+      const {ok, data} = await addonsPost("repositories/add", body);
+      if (!ok || !data.job) { $("ag-error").textContent = data.error || data.detail || GH.refused; drawCount(); return; }
       location.href = `{{ prefix }}/jobs/${data.job}`;
     });
     details.addEventListener("toggle", () => { if (details.open) load(); });

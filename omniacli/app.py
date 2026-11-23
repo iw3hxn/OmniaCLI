@@ -5753,9 +5753,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         roles = [role for role in ROLES if getattr(server, role) is not None]
         rows = [r for r in instancearchive.read_json(archive, "repositories.json") or []
                 if isinstance(r, dict) and r.get("name") and r.get("commit")]
-        options = gitcredentials.options_for(settings, name)
         made = {role: [] for role in roles}
         for row in rows:
+            # its keys over ssh: the repository's deploy key first
+            options = gitcredentials.options_for(settings, name, str(row.get("url") or "") or None)
             for role in roles:
                 path = await repository_from_archive(job, ws, instance, role, row, archive, options)
                 made[role].append({"name": row["name"], "path": str(path), "branch": row["branch"], "remote": "origin"})
@@ -6592,7 +6593,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 job.log(f"--- [{theirs.name}] not in {server}: cloned as in {parent}")
                 url = await ops.git(theirs, "remote", "get-url", theirs.remote)
                 path = await workspaceops.clone(job, ws, instance, "production", theirs.name, url, theirs.branch,
-                                                gitcredentials.options_for(settings, server))
+                                                gitcredentials.options_for(settings, server, url))
                 repo = dataclasses.replace(theirs, path=path, remote="origin")
                 added.append(theirs.name)
             job.log(f"--- [{repo.name}] to {commit[:10]} of {parent} ({theirs.branch})")
@@ -7851,22 +7852,42 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             raise JobFailed(f"the servers file was not written: {error.body.decode()}")
         return settings.servers[name]
 
-    async def add_repositories(job, ws: Workspace, name: str, instance: str, wanted: list[tuple[str, str, dict]]):
+    async def add_repositories(job, ws: Workspace, name: str, instance: str, wanted: list[tuple[str, str, dict]],
+                               keep_going: bool = False):
         """Repositories (name, url, {role: branch}) cloned into each role of
-        the instance with the workspace's git credentials, named in their
-        odoo.conf and in the servers file, their Python packages installed,
-        the roles restarted; none of them left when one fails. The server as
-        it is then (Add a repository, the catalog of modules)."""
+        the instance with the workspace's git credentials (over ssh: the
+        repository's deploy key first), named in their odoo.conf and in the
+        servers file, their Python packages installed, the roles restarted
+        once for all of them; none of them left when one fails, or, with
+        keep_going (several chosen in + Add a repository), the one that
+        cannot be cloned left out, said as a warning of the job (its
+        result's left_out: {name: why}), and the others added. The server
+        as it is then (Add a repository, the catalog of modules)."""
         server = settings.servers[name]
         roles = [role for role in ROLES if getattr(server, role) is not None]
-        options = gitcredentials.options_for(settings, name)
         current = {role: list(getattr(server, role).repositories) for role in roles}
         cloned: dict[str, dict[str, Path]] = {role: {} for role in roles}
+        left: dict[str, str] = {}
         try:
-            for repo, url, branches in wanted:
-                for role in roles:
-                    cloned[role][repo] = await workspaceops.clone(job, ws, instance, role, repo, url, branches[role],
-                                                                  options)
+            for repo, url, branches in list(wanted):
+                options = gitcredentials.options_for(settings, name, url)
+                try:
+                    for role in roles:
+                        cloned[role][repo] = await workspaceops.clone(job, ws, instance, role, repo, url,
+                                                                      branches[role], options)
+                except JobFailed as exc:
+                    if not keep_going:
+                        raise
+                    for role in roles:
+                        path = cloned[role].pop(repo, None)
+                        if path is not None:
+                            workspaceops.remove_clone(path)
+                    left[repo] = str(exc)
+                    job.warn(f"{repo} is not added: {exc}")
+                    job.result = {**job.result, "left_out": left}
+            wanted = [w for w in wanted if w[0] not in left]
+            if not wanted:
+                raise JobFailed(f"No repository was added: {'; '.join(left.values())}")
             for role in roles:
                 await workspaceops.write_conf(job, ws, instance, role,
                                               [*(r.name for r in current[role]), *(w[0] for w in wanted)])
@@ -7888,13 +7909,20 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             await ops.restart(job, getattr(done, role))
         return done
 
+    # repositories added in one job, one restart (ber, 23/11/2026: nine added one by one, nine restarts of the
+    # production in two minutes)
+    ADD_MOST = 30
+
     @app.post("/api/workspaces/{workspace}/repositories/add", dependencies=[Depends(admin)])
     async def repository_add(workspace: str, payload: dict = Body(...), me: Principal = Depends(current_user)):
-        """A customer's repository (https, the workspace's git credentials)
-        cloned into production and test of an instance, each on its branch
-        (a test branch is merged into production's as for every server),
-        named in their odoo.conf, both restarted: its modules can then be
-        installed from Odoo's Apps."""
+        """Customer's repositories (https with the workspace's git
+        credentials, or ssh with the repository's deploy key) cloned into
+        production and test of an instance, each on its branch (a test
+        branch is merged into production's as for every server), named in
+        their odoo.conf, both restarted once at the end: their modules can
+        then be installed. One ({url, branch, test_branch, name}) or several
+        (repositories: [{url, branch, name}]): of several, one that cannot be
+        cloned is left out and said, the others added."""
         ws = a_workspace(workspace)
         found = workspace_instance(ws, payload, me)
         if not isinstance(found, tuple):
@@ -7903,47 +7931,75 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         server = settings.servers[name]
         # the roles it has: production, and its test when it has one
         roles = [role for role in ROLES if getattr(server, role) is not None]
-        url = str(payload.get("url") or "").strip()
-        # no name given: the repository's own (…/OCA/web.git → web)
-        repo = str(payload.get("name") or "").strip() or re.split(r"[/:]", url.rstrip("/"))[-1].removesuffix(".git")
-        given = str(payload.get("branch") or payload.get("production_branch") or "").strip()
-        branches = {role: str(payload.get(f"{role}_branch") or "").strip() or given for role in roles}
-        try:
-            for branch in branches.values():
-                workspaceops.check_repository(repo, url, branch)
-        except JobFailed as exc:
-            return refuse(str(exc))
-        if any(r.name == repo for role in roles for r in getattr(server, role).repositories):
-            return refuse(f"{name} has a repository {repo} already")
-        if repo == moduleupload.FOLDER:
-            return refuse(f"{repo} is the folder of the modules uploaded as a .zip: give the repository another name")
+        several = payload.get("repositories")
+        if several is not None and (not isinstance(several, list) or not several
+                                    or not all(isinstance(r, dict) for r in several)):
+            return refuse("repositories: a list of {url, branch} is expected")
+        if several is not None and len(several) > ADD_MOST:
+            return refuse(f"At most {ADD_MOST} repositories at a time")
+        asked = several if several is not None else [payload]
+        wanted: list[tuple[str, str, dict]] = []
+        for one in asked:
+            url = str(one.get("url") or "").strip()
+            # no name given: the repository's own (…/OCA/web.git → web)
+            repo = str(one.get("name") or "").strip() or re.split(r"[/:]", url.rstrip("/"))[-1].removesuffix(".git")
+            given = str(one.get("branch") or one.get("production_branch") or "").strip()
+            branches = {role: str(one.get(f"{role}_branch") or "").strip() or given for role in roles}
+            try:
+                for branch in branches.values():
+                    workspaceops.check_repository(repo, url, branch)
+            except JobFailed as exc:
+                return refuse(str(exc))
+            if any(r.name == repo for role in roles for r in getattr(server, role).repositories):
+                return refuse(f"{name} has a repository {repo} already")
+            if repo == moduleupload.FOLDER:
+                return refuse(f"{repo} is the folder of the modules uploaded as a .zip: give the repository another name")
+            if any(w[0] == repo for w in wanted):
+                return refuse(f"{repo} is chosen twice")
+            wanted.append((repo, url, branches))
+        names = ", ".join(w[0] for w in wanted)
 
         async def action(job):
-            await add_repositories(job, ws, name, instance, [(repo, url, branches)])
-            job.log(f"{repo} is in {name}: install its modules from Odoo's Apps")
-            job.result = {"server": name, "repository": repo}
+            await add_repositories(job, ws, name, instance, wanted, keep_going=len(wanted) > 1)
+            added = [w for w in wanted if w[0] not in job.result.get("left_out", {})]
+            job.log(f"{', '.join(w[0] for w in added)} in {name}: install their modules from Modules › + Add modules")
+            job.result = {**job.result, "server": name, "repository": added[0][0],
+                          "repositories": [w[0] for w in added]}
             # with the CI of one of its roles on, the repository's webhook on GitHub made by itself
-            await github_sync(job, {url})
+            await github_sync(job, {w[1] for w in added})
 
-        job = jobs.submit(f"Add repository {repo} to {name}", [f"{name}/{role}" for role in roles],
-                          f"manual: {me}", action)
+        title = f"Add repository {names} to {name}" if len(wanted) == 1 else f"Add repositories {names} to {name}"
+        job = jobs.submit(title, [f"{name}/{role}" for role in roles], f"manual: {me}", action)
         return {"job": job.id}
 
     @app.post("/api/workspaces/{workspace}/git-key", dependencies=[Depends(admin)])
-    async def workspace_git_key(workspace: str):
-        """OmniaCLI's git key for the repositories reached over ssh, made the
-        first time: its public half, to add as a read-only deploy key."""
+    async def workspace_git_key(workspace: str, payload: dict = Body(default={})):
+        """A key OmniaCLI reads repositories with over ssh, made the first
+        time, its public half: with url (git@host:org/repo.git), that
+        repository's own deploy key and the page where it is added (GitHub
+        accepts a key as the deploy key of one repository only); without,
+        the machine's git key, for an account's SSH keys (an account that
+        reads several repositories)."""
         a_workspace(workspace)
         if settings.credentials_file is None:
             return refuse("No credentials file in this configuration: the git key has no place")
-        key = gitcredentials.git_key(settings.credentials_file)
+        url = str((payload or {}).get("url") or "").strip()
+        if url:
+            key = gitcredentials.deploy_key(settings.credentials_file, url)
+            if key is None or not workspaceops.REPOSITORY_SSH.fullmatch(url) or ".." in url:
+                return refuse(f"{url!r} is not the address of a repository over ssh (git@host:org/repo.git): "
+                              "one over https is read with the token of the git credentials")
+        else:
+            key = gitcredentials.git_key(settings.credentials_file)
         try:
             public = await sshlinks.ensure_key(key.parent, key.name)
         except (sshlinks.SshError, OSError) as exc:
             return refuse(str(exc), 500)
         # the repositories of the workspaces' servers use it from now
         await asyncio.to_thread(gitcredentials.bind, settings)
-        return {"ok": True, "public_key": public}
+        if url:
+            return {"ok": True, "public_key": public, "kind": "deploy", "page": gitcredentials.deploy_key_page(url)}
+        return {"ok": True, "public_key": public, "kind": "machine"}
 
     # --- Add a repository «From GitHub» (github.py): its repositories, then its branches ---
 
@@ -8277,6 +8333,87 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     found.update(moduleupload.record(uploads_folder(made[0], made[1], role)))
         return found
 
+    # what each database says of its modules for Add modules, asked at most every KNOWN_SECONDS: key → (time, rows)
+    infos_memo: dict[str, tuple[float, list | None]] = {}
+
+    def manifests_in(folder: Path, names=None) -> dict[str, dict]:
+        """{module: what its manifest says} of an addons folder (names: only these)."""
+        found = {}
+        try:
+            paths = sorted(folder.glob("*/__manifest__.py")) if names is None else \
+                [folder / name / "__manifest__.py" for name in sorted(names)]
+        except OSError:
+            return found
+        for manifest in paths:
+            module = manifest.parent.name
+            if not modulecatalog.MODULE.fullmatch(module):
+                continue
+            try:
+                read = modulecatalog.parse_manifest(manifest.read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                continue
+            if read is not None:
+                found[module] = read
+        return found
+
+    def on_disk_modules(srv, role: str, known_names: set[str]) -> tuple[dict[str, dict], dict[str, str]]:
+        """({module: manifest} the role's disk has and its database does not
+        know yet, {module: where it comes from}): its repositories, the
+        modules uploaded as a .zip, Odoo Enterprise when it is on."""
+        inst = getattr(srv, role)
+        on_disk: dict[str, dict] = {}
+        origins: dict[str, str] = {}
+        for repo in inst.repositories:
+            for module, manifest in manifests_in(repo.path).items():
+                origins.setdefault(module, f"repository {repo.name}")
+                if module not in known_names:
+                    on_disk.setdefault(module, manifest)
+        made = workspace_of(srv.name)
+        if made is not None:
+            folder = uploads_folder(made[0], made[1], role)
+            for module, manifest in manifests_in(folder).items():
+                origins.setdefault(module, "uploaded as a .zip")
+                if module not in known_names:
+                    on_disk.setdefault(module, manifest)
+        ent = enterprise_of(srv)
+        if ent is not None:
+            folder = Path(ent["folder"]) if ent["own"] else enterprise.ROOT / ent["series"]
+            names = enterprise.modules_in(folder)
+            for module in names:
+                origins.setdefault(module, "Odoo Enterprise")
+            for module, manifest in manifests_in(folder, [n for n in names if n not in known_names]).items():
+                on_disk.setdefault(module, manifest)
+        return on_disk, origins
+
+    async def instance_catalog(srv, role: str, series: str, language: str = "") -> modulecatalog.Catalog:
+        """The modules the role has in its own addons path (Odoo, Enterprise
+        when on, its repositories, the uploaded ones), installable from Add
+        modules with no repository to add: what its database lists, and what
+        its disk has that the database does not list yet."""
+        inst = getattr(srv, role)
+        kept = infos_memo.get(inst.key)
+        if kept is not None and time.monotonic() - kept[0] < KNOWN_SECONDS:
+            rows = kept[1]
+        else:
+            reader = getattr(inst.plugin, "module_infos", None)
+            try:
+                rows = await reader(inst) if reader is not None else None
+            except JobFailed:
+                rows = None
+            infos_memo[inst.key] = (time.monotonic(), rows)
+        names = {str(r.get("name")) for r in rows or [] if r.get("state") != "uninstallable"}
+        on_disk, origins = await asyncio.to_thread(on_disk_modules, srv, role, names)
+        return modulecatalog.instance_catalog(series, rows, on_disk, origins, language)
+
+    async def plan_catalog(srv, role: str, series: str, source: str) -> modulecatalog.Catalog:
+        """What a plan resolves a module through: the instance's own modules
+        first (they need no repository), then the catalogs (the source
+        chosen first)."""
+        own = await instance_catalog(srv, role, series)
+        if source == modulecatalog.INSTANCE:
+            return own
+        return modulecatalog.merged([own, catalog_chosen(series, source)], series)
+
     def repository_names(srv) -> set[str]:
         return {r.name for role in ROLES if getattr(srv, role) is not None for r in getattr(srv, role).repositories}
 
@@ -8448,22 +8585,30 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         _, _, srv, series = found
         catalogs = catalogs_for(series)
         chosen = next((c for c in catalogs if c.ident == source), None)
-        if source and chosen is None:
+        if source and source != modulecatalog.INSTANCE and chosen is None:
             return refuse(f"No source {source} in the catalogs of modules", status.HTTP_404_NOT_FOUND)
-        catalog = chosen or catalog_chosen(series, "")
-        rows, total = modulecatalog.search(catalog, q)
         known, _, code, repos = await modules_view(srv)
         role = role if role in known else ("test" if "test" in known else "production")
+        # the instance's own modules (Odoo, Enterprise, its repositories) first, then the catalogs
+        own = await instance_catalog(srv, role, series, request_language(request))
+        catalog = (own if source == modulecatalog.INSTANCE else chosen if chosen is not None
+                   else modulecatalog.merged([own, catalog_chosen(series, "")], series))
+        rows, total = modulecatalog.search(catalog, q)
+        local = code | set(own.modules)
         result = []
         through: dict[str, modulecatalog.Catalog] = {}
         for entry in rows:
-            state = modulecatalog.state_of(entry["module"], known, code)
-            each = through.get(entry["source"]) or through.setdefault(entry["source"],
-                                                                       catalog_chosen(series, entry["source"]))
+            state = modulecatalog.state_of(entry["module"], known, local)
+            each = through.get(entry["source"]) or through.setdefault(entry["source"], own if entry["source"] ==
+                                                                       modulecatalog.INSTANCE else modulecatalog.merged(
+                [own, catalog_chosen(series, entry["source"])], series))
             blocked = modulecatalog.plan(each, entry["module"], role, known, code, repos)["blocked"]
-            result.append(module_row(entry, state, i18n.tr(request_language(request), blocked) if blocked else None))
+            row = module_row(entry, state, i18n.tr(request_language(request), blocked) if blocked else None)
+            if entry["source"] == modulecatalog.INSTANCE:
+                row["origin"] = i18n.tr(request_language(request), entry["origin"])
+            result.append(row)
         meta = catalog_for(series).meta() if chosen is None else chosen.meta()
-        return {**meta, "source": source, "total": total, "query": q, "modules": result}
+        return {**meta, "series": series, "source": source, "total": total, "query": q, "modules": result}
 
     @app.get("/api/servers/{server}/modules/plan", dependencies=[Depends(developer)])
     async def modules_plan(request: Request, server: str, module: str = "", role: str = "test", source: str = ""):
@@ -8476,7 +8621,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         _, _, srv, series = found
         if role not in ROLES or getattr(srv, role) is None:
             return refuse(f"{server} has no {role}", status.HTTP_404_NOT_FOUND)
-        catalog = catalog_chosen(series, source)
+        catalog = await plan_catalog(srv, role, series, source)
         known, why, code, repos = await modules_view(srv)
         made = modulecatalog.plan(catalog, module, role, known, code, repos)
         entry = catalog.modules.get(module) or {}
@@ -8487,6 +8632,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return {**made, "blocked": say(made["blocked"]) if made["blocked"] else None,
                 "licenses": [{**row, "why": say(row["why"])} for row in made["licenses"]],
                 "name": entry.get("name") or module, "series": series, "source": entry.get("source_label") or "",
+                "origin": say(entry["origin"]) if entry.get("source") == modulecatalog.INSTANCE else "",
                 "restarts": [r for r in ROLES if getattr(srv, r) is not None] if made["repositories"] else [role],
                 "unread": say(why[role]) if why.get(role) else None}
 
@@ -8527,7 +8673,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                           "a backup first, and production restarts")
         if server_busy(server):
             return refuse(f"A job is running on {server}: try again when it ends")
-        catalog = catalog_chosen(series, str(payload.get("source") or ""))
+        catalog = await plan_catalog(srv, role, series, str(payload.get("source") or ""))
         known, why, code, repos = await modules_view(srv)
         made = modulecatalog.plan(catalog, module, role, known, code, repos)
         made["blocked"] = made["blocked"] or (await room_for(ws, srv, made, role))[1]
@@ -8556,13 +8702,20 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                                backup_folder(inst))
             first = len(job.lines)
             try:
+                # (with the stop for an update, branch pending-stop-during-update: ops.while_stopped(job, inst,
+                # install) with the maintenance page, the install already runs in a container of its own)
                 await inst.plugin.install_modules(job, inst, [module])
             except JobFailed:
-                raise JobFailed(vector_failure(module, inst, job.lines[first:])
-                                or f"The module {module} was not installed: {odoo_error(job.lines[first:])}. "
-                                   "The full log is in the job.") from None
+                known_memo.pop(inst.key, None)
+                infos_memo.pop(inst.key, None)
+                said = vector_failure(module, inst, job.lines[first:])
+                if said is None:
+                    after, _ = await known_modules(inst, fresh=True)
+                    said = install_failure(module, made["modules"], after, job.lines[first:])
+                raise JobFailed(said) from None
             finally:
                 known_memo.pop(inst.key, None)
+                infos_memo.pop(inst.key, None)
             await ops.restart(job, inst)
             now_known, why_not = await known_modules(inst, fresh=True)
             if now_known is not None and now_known.get(module) not in modulecatalog.INSTALLED:
@@ -8587,6 +8740,33 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                               f"modules not free installed in {server}/{role}, the licence declared: "
                               f"{', '.join(licensed)}", server=server, workspace=ws.name)
         return {"job": job.id}
+
+    def install_failure(module: str, wanted: list[str], known: dict | None, lines: list[str]) -> str:
+        """Why an install of module failed and what it left: of the modules
+        it was installing (wanted), those the database has installed and
+        those it has not, and that installing again goes on from there (Odoo
+        installs what is not installed yet). A deadlock: the running Odoo
+        held a lock the install needed (ber, 23/11/2026: 27 of the modules
+        installed, the others not, the job said only failed)."""
+        error = odoo_error(lines)
+        locked = any("deadlock detected" in line or "could not obtain lock" in line for line in lines)
+        cause = (f"the Odoo that was serving held a lock the install needed ({error})" if locked
+                 else f"Odoo stopped on {error}")
+        if known is None:
+            return (f"The module {module} was not installed: {cause}. Which of its modules were installed is not "
+                    "known: its database did not answer. Install it again: Odoo goes on from where it stopped. "
+                    "The full log is in the job.")
+        done = [m for m in wanted if known.get(m) in modulecatalog.INSTALLED]
+        left = [m for m in wanted if known.get(m) not in modulecatalog.INSTALLED]
+        if not left:
+            return (f"Odoo reported an error while installing {module} ({error}), but its {len(wanted)} modules are "
+                    "installed: check them in the instance. The full log is in the job.")
+        if not done:
+            return (f"The module {module} was not installed: {cause}. None of its {len(wanted)} modules was "
+                    "installed: the database is as before. The full log is in the job.")
+        return (f"The install of {module} stopped half way: {cause}. Installed: {len(done)} of {len(wanted)} modules "
+                f"({', '.join(done)}); not installed: {', '.join(left)}. Install {module} again: Odoo goes on with "
+                "the ones not installed, the others stay. The full log is in the job.")
 
     def odoo_error(lines: list[str]) -> str:
         """The first error Odoo logged, without its time and logger."""

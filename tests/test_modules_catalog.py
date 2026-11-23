@@ -14,7 +14,7 @@ import pytest
 
 from omniacli import modulecatalog, ops, stagings, workspaceops
 from omniacli.docker import DockerPlugin
-from omniacli.jobs import Job
+from omniacli.jobs import Job, JobFailed
 
 from .test_app import client, wait_job  # noqa: F401 - the client fixture
 from .test_workspace_repositories import instance  # noqa: F401 - the instance fixture
@@ -214,7 +214,7 @@ async def test_the_state_and_what_an_install_takes(tmp_path):
     # a database that did not answer: the modules of Odoo are not checked
     plan = modulecatalog.plan(catalog, "account_enterprise_thing", "production", {"production": None}, set(), set())
     assert plan["blocked"] is None and plan["checked"] is False
-    assert "not in the catalog" in modulecatalog.plan(catalog, "nope", "test", known, set(), set())["blocked"]
+    assert "nor in the catalogs" in modulecatalog.plan(catalog, "nope", "test", known, set(), set())["blocked"]
 
 
 # --- the routes and the page
@@ -457,18 +457,19 @@ async def test_the_primary_waits_for_a_running_job(modules, client, env):
 
 
 def test_the_helper_installs_into_the_running_service_and_lists_the_modules(tmp_path, monkeypatch):
-    """compose-helper update --install: odoo -i in the running service, the
-    module names checked, the crons of a neutralized database kept off;
-    compose-helper modules: the fixed query, never as root."""
+    """compose-helper update --install: odoo -i in a container of the service
+    of its own (the service running or stopped for the install), the module
+    names checked, the crons of a neutralized database kept off;
+    compose-helper modules and modules-info: the fixed queries, never as root."""
     from omniacli import composehelper
 
     monkeypatch.setattr(composehelper, "services", lambda project: ["odoo", "db"])
     monkeypatch.setattr(composehelper, "psql_options", lambda project, name: ("--user", "postgres"))
     [cmd] = composehelper.commands(tmp_path, "update", ["odoo", "DB_test", "--install", "date_range,report_xlsx"])
-    assert cmd[:5] == ["exec", "-T", "odoo", "sh", "-c"] and cmd[-3:] == ["DB_test", "date_range,report_xlsx",
-                                                                          "--without-demo=all"]
+    assert cmd[:8] == ["run", "--rm", "--no-deps", "-T", "--entrypoint", "sh", "odoo", "-c"]
+    assert cmd[-3:] == ["DB_test", "date_range,report_xlsx", "--without-demo=all"] and cmd[-4] == "sh"
     script = composehelper.SCRIPTS["install-modules"]
-    assert ' -i "$2" --stop-after-init --no-http "$3"' in script and "DB_test" not in cmd[5]
+    assert ' -i "$2" --stop-after-init --no-http "$3"' in script and "DB_test" not in cmd[8]
     assert "without-demo" not in script
     assert script.index("database.is_neutralized") < script.index("--stop-after-init") and script.endswith("exit $code")
     for bad in ("web;x", "Base", "a,../b"):
@@ -478,6 +479,9 @@ def test_the_helper_installs_into_the_running_service_and_lists_the_modules(tmp_
     assert cmd[:4] == ["exec", "-T", "--user", "postgres"] and cmd[-2:] == ["DB_test", composehelper.MODULES_QUERY]
     with pytest.raises(composehelper.HelperError, match="usage"):
         composehelper.commands(tmp_path, "modules", ["db"])
+    [cmd] = composehelper.commands(tmp_path, "modules-info", ["db", "DB_test"])
+    assert cmd[:4] == ["exec", "-T", "--user", "postgres"] and cmd[-2:] == ["DB_test", composehelper.MODULES_INFO_QUERY]
+    assert "ir_module_module_dependency" in composehelper.MODULES_INFO_QUERY
 
 
 @pytest.mark.parametrize("version, flag", [
@@ -488,8 +492,8 @@ def test_the_helper_installs_into_the_running_service_and_lists_the_modules(tmp_
     # not known: the older flag, which 19 and 20 still read
     ("", "--without-demo=all")])
 def test_the_flag_without_demo_is_the_one_of_the_image_odoo(tmp_path, monkeypatch, version, flag):
-    """update --install and init ask the image's Odoo its version (odoo --version: in the running service, in a
-    container of its own for a new database) and pass the flag it reads."""
+    """update --install and init ask the image's Odoo its version (odoo --version, in a container of its own: the
+    service may be stopped, or not started yet for a new database) and pass the flag it reads."""
     from omniacli import composehelper
 
     monkeypatch.setattr(composehelper, "services", lambda project: ["odoo", "db"])
@@ -505,7 +509,7 @@ def test_the_flag_without_demo_is_the_one_of_the_image_odoo(tmp_path, monkeypatc
     monkeypatch.setattr(composehelper.subprocess, "run", fake_run)
     assert composehelper.run([str(tmp_path), "update", "odoo", "DB_test", "--install", "date_range"]) == 0
     asked, done = ran
-    assert asked[-5:] == ["exec", "-T", "odoo", "odoo", "--version"]
+    assert asked[-8:] == ["run", "--rm", "--no-deps", "-T", "--entrypoint", "odoo", "odoo", "--version"]
     assert done[-1] == flag and done[-3:-1] == ["DB_test", "date_range"]
     ran.clear()
     assert composehelper.run([str(tmp_path), "init", "odoo", "DB_test", "base"]) == 0
@@ -536,3 +540,120 @@ async def test_the_plugin_reads_what_the_database_knows(monkeypatch):
     monkeypatch.setattr(docker, "capture", stopped)
     with pytest.raises(Exception, match="did not answer"):
         await DockerPlugin().known_modules(inst)
+
+    # what Add modules shows of each module: one JSON object a line, its own command
+    async def infos(cmd, timeout=None):
+        if cmd != ["helper", "modules-info", "db", "main"]:
+            return 1, f"unexpected {cmd}"
+        return 0, ('{"name": "stock", "state": "uninstalled", "shortdesc": {"en_US": "Inventory"}, "depends": ["product"]}\n'
+                   'WARN[0000] a warning of docker compose\n{"name": "Bad"}\n')
+    monkeypatch.setattr(docker, "capture", infos)
+    assert [row["name"] for row in await DockerPlugin().module_infos(inst)] == ["stock"]
+
+
+# --- the modules of the instance itself (ber, 23/11/2026: «stock is not in the catalogs of modules for Odoo 19.0»)
+
+ODOO_ROWS = [
+    {"name": "base", "state": "installed", "shortdesc": {"en_US": "Base"}, "author": "Odoo S.A.", "license": "LGPL-3",
+     "depends": []},
+    {"name": "stock", "state": "uninstalled", "shortdesc": {"en_US": "Inventory", "it_IT": "Magazzino"},
+     "summary": {"en_US": "Manage your stock and logistics activities"}, "author": "Odoo S.A.", "license": "LGPL-3",
+     "depends": ["barcodes_gs1_nomenclature", "digest", "product"]},
+    {"name": "product", "state": "uninstalled", "shortdesc": {"en_US": "Products & Pricelists"}, "author": "Odoo S.A.",
+     "license": "LGPL-3", "depends": ["base", "mail"]},
+    {"name": "digest", "state": "installed", "shortdesc": {"en_US": "KPI Digests"}, "author": "Odoo S.A.",
+     "license": "LGPL-3", "depends": ["mail"]},
+    {"name": "barcodes_gs1_nomenclature", "state": "uninstalled", "shortdesc": {"en_US": "Barcode - GS1 Nomenclature"},
+     "author": "Odoo S.A.", "license": "LGPL-3", "depends": ["barcodes"]},
+    {"name": "barcodes", "state": "uninstalled", "shortdesc": {"en_US": "Barcode"}, "author": "Odoo S.A.",
+     "license": "LGPL-3", "depends": ["web"]},
+    {"name": "mrp_workorder", "state": "uninstalled", "shortdesc": {"en_US": "MRP II"}, "author": "Odoo S.A.",
+     "license": "OEEL-1", "depends": ["mrp"]},
+    {"name": "mrp", "state": "uninstalled", "shortdesc": {"en_US": "Manufacturing"}, "author": "Odoo S.A.",
+     "license": "LGPL-3", "depends": ["product", "stock"]},
+    {"name": "gone", "state": "uninstallable", "shortdesc": "Gone", "author": "", "license": "", "depends": []},
+]
+
+
+@pytest.fixture
+def own_modules(modules, monkeypatch):
+    """The databases of acme-main list Odoo's modules (and an Enterprise one), as ir_module_module does."""
+    async def module_infos(self, inst):
+        known = modules["known"][inst.role]
+        return [{**row, "state": known.get(row["name"], row["state"])} for row in ODOO_ROWS]
+
+    async def known_modules(self, inst):
+        return {**{row["name"]: row["state"] for row in ODOO_ROWS}, **modules["known"][inst.role]}
+    monkeypatch.setattr(DockerPlugin, "module_infos", module_infos, raising=False)
+    monkeypatch.setattr(DockerPlugin, "known_modules", known_modules)
+    return modules
+
+
+def test_the_catalog_of_an_instance():
+    """What its database lists and what its disk has that the database does
+    not list yet, each with where it comes from; one it cannot install left out."""
+    on_disk = {"web_studio_x": {"name": "Studio X", "depends": ["web"], "license": "OEEL-1", "python": []}}
+    found = modulecatalog.instance_catalog("19.0", ODOO_ROWS, on_disk, {"web_studio_x": "Odoo Enterprise"})
+    assert "gone" not in found.modules
+    assert found.modules["stock"]["name"] == "Inventory" and found.modules["stock"]["origin"] == "Odoo"
+    # in the reader's language when the database has it
+    italian = modulecatalog.instance_catalog("19.0", ODOO_ROWS, {}, {}, "it")
+    assert italian.modules["stock"]["name"] == "Magazzino" and italian.modules["mrp"]["name"] == "Manufacturing"
+    assert found.modules["stock"]["repository"] == "" and found.modules["stock"]["source"] == "instance"
+    assert found.modules["mrp_workorder"]["origin"] == "Odoo Enterprise"
+    assert found.modules["web_studio_x"]["origin"] == "Odoo Enterprise"
+    known = {"test": {row["name"]: row["state"] for row in ODOO_ROWS} | {"web": "installed", "mail": "installed"}}
+    plan = modulecatalog.plan(found, "stock", "test", known, set(), set())
+    # no repository; its dependencies as Odoo resolves them, the installed ones left out
+    assert plan["blocked"] is None and plan["repositories"] == []
+    assert plan["modules"] == ["stock", "barcodes_gs1_nomenclature", "barcodes", "product"]
+    plan = modulecatalog.plan(found, "mrp_workorder", "test", known, set(), set())
+    assert plan["blocked"] is None and plan["licenses"] == [] and plan["modules"][:2] == ["mrp_workorder", "mrp"]
+    # on the disk, not listed by the database yet: installable too (odoo -i updates the list first)
+    assert modulecatalog.plan(found, "web_studio_x", "test", known, set(), set())["blocked"] is None
+
+
+async def test_odoo_and_enterprise_modules_are_installable(own_modules, client):
+    calls = own_modules["calls"]
+    await _read_catalog(client)
+    url = "/api/servers/acme-main/modules/catalog"
+    listed = (await client.get(url + "?q=stock", headers=post_as("eva"))).json()["modules"]
+    # the technical name typed whole comes first
+    assert listed[0]["module"] == "stock"
+    rows = {m["module"]: m for m in listed}
+    assert rows["stock"]["blocked"] is None and rows["stock"]["origin"] == "Odoo" and rows["stock"]["state"] == "in_code"
+    rows = (await client.get(url + "?q=mrp&source=instance", headers=post_as("eva"))).json()["modules"]
+    assert {m["module"] for m in rows} == {"mrp", "mrp_workorder"}
+    plan = (await client.get("/api/servers/acme-main/modules/plan?module=mrp_workorder&role=test",
+                             headers=post_as("eva"))).json()
+    assert plan["blocked"] is None and plan["repositories"] == [] and plan["origin"] == "Odoo Enterprise"
+    resp = await client.post("/api/servers/acme-main/test/modules/install", headers=post_as("eva"),
+                             json={"module": "stock"})
+    assert resp.status_code == 200, resp.text
+    job = await wait_job(client, resp.json()["job"])
+    assert job["status"] == "success", job["lines"]
+    assert calls["install"] == [("acme-main/test", ["stock"])] and calls["clone"] == []
+
+
+async def test_an_install_left_half_done_says_what_is_installed(own_modules, client, monkeypatch):
+    """ber, 23/11/2026: odoo -i against the running Odoo, «deadlock detected», some modules installed and the
+    others not, and the job said only that it failed."""
+    known = own_modules["known"]
+
+    async def install_modules(self, job, inst, names):
+        known[inst.role]["product"] = "installed"
+        known[inst.role]["barcodes"] = "installed"
+        job.log('2026-11-23 10:00:00,000 1 ERROR main odoo.sql_db: bad query: ALTER TABLE "res_company" ADD COLUMN x')
+        job.log("psycopg2.errors.DeadlockDetected: deadlock detected")
+        raise JobFailed("omniacli compose-helper update exited with code 1")
+    monkeypatch.setattr(DockerPlugin, "install_modules", install_modules)
+    resp = await client.post("/api/servers/acme-main/test/modules/install", headers=post_as("eva"),
+                             json={"module": "stock"})
+    job = await wait_job(client, resp.json()["job"])
+    assert job["status"] == "failed"
+    error = job["error"]
+    assert error.startswith("The install of stock stopped half way: the Odoo that was serving held a lock"), error
+    assert "Installed: 2 of 4 modules (barcodes, product)" in error
+    assert "not installed: stock, barcodes_gs1_nomenclature" in error and "Install stock again" in error
+    page = (await client.get(f"/jobs/{job['id']}", headers={**post_as("eva"), "Accept-Language": "it"})).text
+    assert "si è fermata a metà" in page

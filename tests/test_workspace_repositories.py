@@ -239,6 +239,100 @@ async def test_a_repository_over_ssh(instance, client):
     assert not any("sshCommand" in o for o in gitcredentials.options_for(settings, "srv-alone"))
 
 
+async def test_each_repository_over_ssh_gets_its_own_deploy_key(instance, client):
+    """ber, 23/11/2026: one key for every repository cannot be a GitHub deploy
+    key of two («Key is already in use»). The key of a repository's address,
+    with the page where it goes; the clone uses it first."""
+    calls, settings = instance["calls"], instance["settings"]
+    settings.servers["acme-main"].instances.pop("test")
+    url = "/api/workspaces/acme/git-key"
+    common = (await client.post(url, headers=post_as("mario"), json={"url": "git@github.com:DueEsseTI/Common.git"})).json()
+    other = (await client.post(url, headers=post_as("mario"), json={"url": "git@github.com:DueEsseTI/OCA-PR.git"})).json()
+    machine = (await client.post(url, headers=post_as("mario"), json={})).json()
+    assert common.get("kind") == "deploy" and machine.get("kind") == "machine", (common, machine)
+    assert len({common["public_key"], other["public_key"], machine["public_key"]}) == 3
+    assert common["page"] == "https://github.com/DueEsseTI/Common/settings/keys/new"
+    # the same key the next time
+    again = (await client.post(url, headers=post_as("mario"), json={"url": "ssh://git@github.com/DueEsseTI/Common"})).json()
+    assert again["public_key"] == common["public_key"]
+    resp = await client.post(url, headers=post_as("mario"), json={"url": "https://github.com/DueEsseTI/Common.git"})
+    assert resp.status_code == 400 and "over ssh" in resp.json()["error"]
+    seen = []
+    original = gitcredentials.options_for
+
+    def options_for(settings_, server, url=None):
+        seen.append(url)
+        return original(settings_, server, url)
+    gitcredentials.options_for = options_for
+    try:
+        resp = await client.post("/api/workspaces/acme/repositories/add", headers=post_as("mario"),
+                                 json={"server": "acme-main", "url": "git@github.com:DueEsseTI/Common.git", "branch": "19.0"})
+        job = await wait_job(client, resp.json()["job"])
+    finally:
+        gitcredentials.options_for = original
+    assert job["status"] == "success", job["lines"]
+    assert seen == ["git@github.com:DueEsseTI/Common.git"]
+    own = gitcredentials.deploy_key(settings.credentials_file, "git@github.com:DueEsseTI/Common.git")
+    command = next(o for o in original(settings, "acme-main", "git@github.com:DueEsseTI/Common.git")
+                   if o.startswith("core.sshCommand="))
+    assert command.index(str(own)) < command.index(str(gitcredentials.git_key(settings.credentials_file)))
+    # the add form says it: a key per repository, the machine's for an account
+    page = (await client.get("/servers/acme-main", headers=post_as("mario"))).text
+    assert 'id="addons-deploy"' in page and "Key is already in use" in page and "One key for all" not in page
+
+
+async def test_several_repositories_in_one_job_one_restart(instance, client, monkeypatch):
+    """ber, 23/11/2026: nine repositories added one by one restarted the
+    production nine times in two minutes. Several in one job: one restart per
+    role at the end; one that cannot be cloned is left out and said."""
+    calls, settings = instance["calls"], instance["settings"]
+    body = {"server": "acme-main", "repositories": [
+        {"url": "https://github.com/OCA/web.git", "branch": "19.0"},
+        {"url": "git@github.com:DueEsseTI/Common.git", "branch": "19.0"},
+        {"url": "https://github.com/OCA/server-ux.git", "branch": "19.0"}]}
+    resp = await client.post("/api/workspaces/acme/repositories/add", headers=post_as("mario"), json=body)
+    assert resp.status_code == 200, resp.text
+    job = await wait_job(client, resp.json()["job"])
+    assert job["status"] == "success", job["lines"]
+    assert job["title"] == "Add repositories web, Common, server-ux to acme-main"
+    assert [c[2] for c in calls["clone"]] == ["web", "web", "Common", "Common", "server-ux", "server-ux"]
+    assert calls["restart"] == ["acme-main/production", "acme-main/test"]
+    assert [r.name for r in settings.servers["acme-main"].production.repositories] == ["web", "Common", "server-ux"]
+    # one the git server refuses: the others added, it said
+    clone = workspaceops.clone
+
+    async def refusing(job, ws, inst, role, name, url, branch, git_options=()):
+        if name == "OCA-PR":
+            raise JobFailed(f"{url}: github.com did not let OmniaCLI's keys read this repository")
+        return await clone(job, ws, inst, role, name, url, branch, git_options)
+    monkeypatch.setattr(workspaceops, "clone", refusing)
+    calls["restart"].clear()
+    body = {"server": "acme-main", "repositories": [{"url": "git@github.com:DueEsseTI/OCA-PR.git", "branch": "19.0"},
+                                                     {"url": "https://github.com/OCA/queue.git", "branch": "19.0"}]}
+    job = await wait_job(client, (await client.post("/api/workspaces/acme/repositories/add", headers=post_as("mario"),
+                                                     json=body)).json()["job"])
+    assert job["status"] == "success" and any("OCA-PR is not added" in w for w in job["result"]["warnings"])
+    assert job["result"]["repositories"] == ["queue"] and calls["restart"] == ["acme-main/production", "acme-main/test"]
+    for bad, message in (({"repositories": []}, "a list"), ({"repositories": [{"url": URL, "branch": "19.0"}] * 2},
+                                                             "chosen twice")):
+        resp = await client.post("/api/workspaces/acme/repositories/add", headers=post_as("mario"),
+                                 json={"server": "acme-main", **bad})
+        assert resp.status_code == 400 and message in resp.json()["error"], bad
+
+
+async def test_a_clone_the_git_server_refuses_says_why(tmp_path, monkeypatch):
+    ws = Workspace("acme", storage=str(tmp_path))
+    workspaceops.addons_folder(ws, "main", "test").mkdir(parents=True)
+
+    async def run(job, cmd, **kw):
+        job.log("ERROR: Repository not found.")
+        job.log("fatal: Could not read from remote repository.")
+        raise JobFailed("git exited with code 128")
+    monkeypatch.setattr(workspaceops, "run", run)
+    with pytest.raises(JobFailed, match="deploy key"):
+        await workspaceops.clone(_job(), ws, "main", "test", "OCA-PR", "git@github.com:DueEsseTI/OCA-PR.git", "19.0")
+
+
 async def test_the_odoo_config_tab_of_a_workspaces_instance(instance, client, monkeypatch):
     """Its template's parameters, on the instance's page, posted to the
     workspace's parameters/save."""

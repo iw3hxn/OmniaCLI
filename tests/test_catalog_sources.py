@@ -183,7 +183,7 @@ async def test_the_plan_goes_across_the_catalogs(tmp_path, gh):
     plan = modulecatalog.plan(merged, "paid_report", "test", known, set(), set())
     assert [(row["module"], row["why"], row["source"]) for row in plan["licenses"]] == [
         ("paid_report", "OPL-1, 49.0 EUR", "CybroOdoo")]
-    assert "not in the catalogs" in modulecatalog.plan(merged, "nope", "test", known, set(), set())["blocked"]
+    assert "nor in the catalogs" in modulecatalog.plan(merged, "nope", "test", known, set(), set())["blocked"]
 
 
 # --- the routes

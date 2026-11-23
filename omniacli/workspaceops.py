@@ -556,15 +556,24 @@ def _remove_tree(path: Path) -> None:
 async def clone(job: Job, ws: Workspace, instance: str, role: str, name: str, url: str, branch: str,
                 git_options: tuple = ()) -> Path:
     """The customer's repository cloned, with its submodules, into the role's
-    addons/ (OmniaCLI's own folder there), with the server's git credentials."""
+    addons/ (OmniaCLI's own folder there), with the server's git credentials;
+    a refusal of the git server said in words (git_failure)."""
     check_repository(name, url, branch)
     target = addons_folder(ws, instance, role) / name
     if target.exists() or target.is_symlink():
         raise JobFailed(f"{target} exists already")
     job.log(f"--- clone {url} ({branch}) into {target}")
+    first = len(job.lines)
     try:
         await run(job, ["git", *git_options, "clone", "--branch", branch, "--recurse-submodules", "--", url,
                         str(target)], timeout=CLONE_TIMEOUT)
+    except JobFailed:
+        if target.exists():
+            _remove_tree(target)
+        said = ops.git_failure(url, job.lines[first:])
+        if said is None:
+            raise
+        raise JobFailed(said) from None
     except BaseException:
         if target.exists():
             _remove_tree(target)

@@ -19,10 +19,28 @@ https with the token as well, its .git/config untouched (*verified* with
 git 2.30.2: the clone of an ssh remote went over https with ssh disabled,
 and no token reached .git/config). A host without a credential is reached
 as before, as the machine's git user.
+
+The rewrite to https is for an ssh remote OmniaCLI has no key for (an
+adopted machine's working copies): a repository of a workspace added over
+ssh is read with its keys, its deploy key and the machine's git key, and a
+token of its host never takes it to https. A GitHub fine-grained token
+reaches the repositories it was given only: on ber (23/11/2026) a token
+limited to one repository took every ssh repository of github.com to https,
+where it could not read them (403).
+
+The keys of the repositories of the workspaces reached over ssh: one deploy
+key per repository (DEPLOY_KEYS/<its name>), since GitHub refuses a key that
+is a deploy key of another repository already («Key is already in use»),
+and the machine's git key (GIT_KEY_NAME), for an account's SSH keys (an
+account that reads several repositories). git's ssh offers the deploy key
+first, then the machine's: a server accepts the first key it knows, so the
+deploy key of the repository comes before a key that may be another
+repository's.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shlex
@@ -168,32 +186,127 @@ def store_dir(credentials_file: Path) -> Path:
     return credentials_file.parent / "credentials"
 
 
-# the key of OmniaCLI for the repositories of the workspaces reached over ssh
-# (git@host:org/repo.git): its public half is added to each repository as a
-# read-only deploy key; made on demand (the Addons tab), in the store folder
+# the machine's key of OmniaCLI for the repositories of the workspaces reached
+# over ssh (git@host:org/repo.git): for an account's SSH keys (an account that
+# reads several repositories); made on demand (the Addons tab), in the store
+# folder. A repository's own deploy key is in DEPLOY_KEYS (deploy_key)
 GIT_KEY_NAME = "id_ed25519_git"
 GIT_KNOWN_HOSTS = "known_hosts_git"
+DEPLOY_KEYS = "deploy-keys"
+# git@host:path, ssh://git@host[:port]/path
+_SCP = re.compile(r"git@([A-Za-z0-9.-]+):/?(.+)")
+_SSH = re.compile(r"ssh://git@([A-Za-z0-9.-]+)(?::(\d{1,5}))?/(.+)")
 
 
 def git_key(credentials_file: Path) -> Path:
     return store_dir(credentials_file) / GIT_KEY_NAME
 
 
-def ssh_options(key: Path) -> tuple[str, ...]:
-    """The -c option that has git's ssh use OmniaCLI's git key only (no agent,
-    no prompt), a host's key recorded the first time it is met."""
-    known = key.parent / GIT_KNOWN_HOSTS
-    command = (f"ssh -i {shlex.quote(str(key))} -o IdentitiesOnly=yes -o IdentityAgent=none -o BatchMode=yes"
+def ssh_address(url: str) -> tuple[str, str, str] | None:
+    """(host, port or "", path without .git) of an ssh address of git, None
+    for any other (https, a folder)."""
+    url = (url or "").strip()
+    found = _SSH.fullmatch(url)
+    if found:
+        host, port, path = found[1], found[2] or "", found[3]
+    else:
+        found = _SCP.fullmatch(url)
+        if not found:
+            return None
+        host, port, path = found[1], "", found[2]
+    path = path.strip("/").removesuffix(".git").strip("/")
+    return (host.lower(), port, path) if path and ".." not in path else None
+
+
+def deploy_key_name(url: str) -> str | None:
+    """The file name of the deploy key of the repository at an ssh address
+    (the same for git@host:org/repo.git and ssh://git@host/org/repo); None
+    for an address that is not over ssh."""
+    found = ssh_address(url)
+    if found is None:
+        return None
+    host, port, path = found
+    # no dot: the public half is the name with .pub as its suffix (sshlinks.public_key)
+    readable = re.sub(r"[^a-z0-9_-]+", "_", f"{host}_{path}".lower()).strip("_")[:60]
+    digest = hashlib.sha256(f"{host}:{port}/{path.lower()}".encode()).hexdigest()[:10]
+    return f"id_ed25519_{readable}-{digest}"
+
+
+def deploy_key(credentials_file: Path, url: str) -> Path | None:
+    """Where the deploy key of the repository at an ssh address is (made or
+    not); None for an address that is not over ssh."""
+    name = deploy_key_name(url)
+    return store_dir(credentials_file) / DEPLOY_KEYS / name if name else None
+
+
+def deploy_key_page(url: str) -> str | None:
+    """The page where a deploy key of the repository at an ssh address is
+    added: GitHub's, GitLab's, Bitbucket's; None for another host."""
+    found = ssh_address(url)
+    if found is None:
+        return None
+    host, _, path = found
+    if host == "github.com":
+        return f"https://github.com/{path}/settings/keys/new"
+    if host == "bitbucket.org":
+        return f"https://bitbucket.org/{path}/admin/access-keys/"
+    if "gitlab" in host:
+        return f"https://{host}/{path}/-/settings/repository#js-deploy-keys-settings"
+    return None
+
+
+def ssh_options(*keys: Path, known: Path | None = None) -> tuple[str, ...]:
+    """The -c option that has git's ssh use these keys only, in this order
+    (no agent, no prompt), a host's key recorded the first time it is met."""
+    known = known or keys[0].parent / GIT_KNOWN_HOSTS
+    command = ("ssh " + " ".join(f"-i {shlex.quote(str(key))}" for key in keys)
+               + " -o IdentitiesOnly=yes -o IdentityAgent=none -o BatchMode=yes"
                f" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={shlex.quote(str(known))}")
     return ("-c", f"core.sshCommand={command}")
 
 
-def _with_key(settings, server: str, options: tuple[str, ...]) -> tuple[str, ...]:
-    """options and, for a workspace's server once the git key is made, the key's."""
-    key = git_key(settings.credentials_file)
-    if settings.workspace_of(server) is None or not key.is_file():
+def keys_for(settings, server: str, url: str | None = None) -> list[Path]:
+    """The keys of OmniaCLI a workspace's server reads a repository with over
+    ssh: the repository's deploy key (when made), then the machine's git key
+    (when made); none for a server outside the workspaces."""
+    if settings.credentials_file is None or settings.workspace_of(server) is None:
+        return []
+    own = deploy_key(settings.credentials_file, url) if url else None
+    machine = git_key(settings.credentials_file)
+    return [key for key in (own, machine) if key is not None and key.is_file()]
+
+
+def _with_keys(settings, server: str, options: tuple[str, ...], url: str | None = None) -> tuple[str, ...]:
+    """options and, for a workspace's server, its keys' (keys_for)."""
+    keys = keys_for(settings, server, url)
+    if not keys:
         return options
-    return (*options, *ssh_options(key))
+    return (*options, *ssh_options(*keys, known=store_dir(settings.credentials_file) / GIT_KNOWN_HOSTS))
+
+
+def remote_url(path: Path, remote: str = "origin") -> str | None:
+    """The address of a remote of a working copy, read from its .git/config
+    (no git run); None when it cannot be read."""
+    folder = Path(path) / ".git"
+    try:
+        if folder.is_file():
+            found = re.match(r"gitdir:\s*(.+)", folder.read_text(encoding="utf-8"))
+            if not found:
+                return None
+            folder = (Path(path) / found[1].strip()).resolve()
+        text = (folder / "config").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    section = None
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("["):
+            section = line
+        elif section == f'[remote "{remote}"]':
+            key, sep, value = line.partition("=")
+            if sep and key.strip() == "url":
+                return value.strip()
+    return None
 
 
 def write_store(folder: Path, server: str, creds: dict[str, Credential]) -> Path:
@@ -210,10 +323,12 @@ def write_store(folder: Path, server: str, creds: dict[str, Credential]) -> Path
     return path
 
 
-def git_options(store: Path, hosts) -> tuple[str, ...]:
-    """The -c options of every git command on a repository of the server."""
+def git_options(store: Path, hosts, rewrite: bool = True) -> tuple[str, ...]:
+    """The -c options of every git command on a repository of the server:
+    the store's credentials, and (rewrite) an ssh remote of a host that has
+    one reached over https."""
     options = ["-c", "credential.helper=", "-c", f"credential.helper=store --file={shlex.quote(str(store))}"]
-    for host in sorted(hosts):
+    for host in sorted(hosts) if rewrite else []:
         if ":" in host:
             continue  # an https port of its own: its ssh one is not known
         options += ["-c", f"url.https://{host}/.insteadOf=git@{host}:",
@@ -221,25 +336,34 @@ def git_options(store: Path, hosts) -> tuple[str, ...]:
     return tuple(options)
 
 
-def options_for(settings, server: str) -> tuple[str, ...]:
+def _options(settings, server: str, creds: dict, store: Path | None, url: str | None) -> tuple[str, ...]:
+    """The options of a repository of a server at url (None: not known): an
+    ssh remote OmniaCLI has a key for keeps ssh, whatever token its host
+    has; an https one gets the token of its host from the store."""
+    keys = keys_for(settings, server, url)
+    options = git_options(store, creds, rewrite=not keys) if creds and store is not None else ()
+    return _with_keys(settings, server, options, url)
+
+
+def options_for(settings, server: str, url: str | None = None) -> tuple[str, ...]:
     """The git options of a server's credentials (a server of the form, not
-    saved yet, included); () without any."""
+    saved yet, included) for its repository at url (a clone: its deploy key
+    over ssh; None: any); () without any."""
     if settings.credentials_file is None:
         return ()
     try:
         creds = merged(load(settings.credentials_file), server, settings.workspace_of(server))
     except CredentialError:
         creds = {}
-    if not creds:
-        return _with_key(settings, server, ())
-    return _with_key(settings, server,
-                     git_options(write_store(store_dir(settings.credentials_file), server, creds), creds))
+    store = write_store(store_dir(settings.credentials_file), server, creds) if creds else None
+    return _options(settings, server, creds, store, url)
 
 
 def bind(settings) -> None:
     """Every repository of every server gets the git options of its server's
-    credentials (none: the machine's git); the store files of servers that
-    have none any more are removed."""
+    credentials (none: the machine's git) and of its address (its keys over
+    ssh, read from its .git/config); the store files of servers that have
+    none any more are removed."""
     if settings.credentials_file is None:
         return
     try:
@@ -250,15 +374,13 @@ def bind(settings) -> None:
     kept = set()
     for name, server in settings.servers.items():
         creds = merged(found, name, settings.workspace_of(name))
-        options: tuple[str, ...] = ()
+        store = None
         if creds:
             store = write_store(folder, name, creds)
             kept.add(store.name)
-            options = git_options(store, creds)
-        options = _with_key(settings, name, options)
         for inst in (server.production, server.test):
             for repo in (inst.repositories if inst is not None else []):
-                repo.git_options = options
+                repo.git_options = _options(settings, name, creds, store, remote_url(repo.path, repo.remote))
     if folder.is_dir():
         for stale in folder.glob("server-*.store"):
             if stale.name not in kept:

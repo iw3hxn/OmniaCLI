@@ -292,6 +292,39 @@ def mark_code(job: Job, instance: Instance) -> None:
         marked.append(instance.key)
 
 
+def git_failure(url: str, lines: list[str]) -> str | None:
+    """What a git command that could not reach a repository means here, in
+    words (its output: lines), or None when it said something else. GitHub
+    answers «Repository not found» to a key it knows that does not read
+    that repository (a deploy key of another one), and «Write access to
+    repository not granted» (403) to a clone with a token that cannot read
+    it: neither says what to do (ber, 23/11/2026)."""
+    text = "\n".join(lines)
+    host = (re.match(r"(?:https://|ssh://git@|git@)([^/:]+)", url) or [None, "the git server"])[1]
+    # an ssh remote a token's host rewrites goes over https: what git reached is in its output
+    if url.startswith(("git@", "ssh://")) and "unable to access 'https://" not in text:
+        if ("Repository not found" in text or "Permission denied (publickey)" in text
+                or "Could not read from remote repository" in text or "does not appear to be a git repository" in text):
+            return (f"{url}: {host} did not let OmniaCLI's keys read this repository. Over ssh it is read with the "
+                    "repository's own deploy key (+ Add a repository › its key, pasted in the repository's Settings › "
+                    "Deploy keys) or with the machine's git key added to an account that reads it; a key that is "
+                    "already the deploy key of another repository is not accepted by GitHub for this one. Or add "
+                    "it over https with a token that reads it")
+        return None
+    if "Write access to repository not granted" in text or "returned error: 403" in text:
+        return (f"{url}: the token of {host} in the git credentials cannot read this repository ({host} answered "
+                "403). On GitHub: give the token Contents: Read on this repository (Settings › Developer settings › "
+                "Personal access tokens › the token › Repository access), or have the organisation approve the "
+                "token; or add the repository over ssh with its deploy key")
+    if "Authentication failed" in text or "could not read Username" in text or re.search(r"returned error: 401", text):
+        return (f"{url}: {host} refused the credentials: no token for {host} in the git credentials of the "
+                "workspace, or the token is wrong or expired")
+    if "Repository not found" in text or re.search(r"repository '[^']*' not found|returned error: 404", text):
+        return (f"{url}: {host} says there is no such repository for these credentials: the address is wrong, or "
+                "the token does not reach it (a private repository looks absent to whoever cannot read it)")
+    return None
+
+
 async def pull(job: Job, instance: Instance, only: set[str] | None = None) -> bool:
     """Fast-forward every repository of the instance and its submodules,
     then install its package if a new one is published (packages.py).
@@ -310,7 +343,15 @@ async def pull(job: Job, instance: Instance, only: set[str] | None = None) -> bo
         job.log(f"--- [{repo.name}] pull {repo.remote}/{repo.branch}")
         await ensure_ready(job, repo, keep_changes=instance.keeps_local_changes)
         before = await git(repo, "rev-parse", "HEAD")
-        await run(job, repo.git("pull", "--ff-only", repo.remote, repo.branch), cwd=repo.path)
+        first = len(job.lines)
+        try:
+            await run(job, repo.git("pull", "--ff-only", repo.remote, repo.branch), cwd=repo.path)
+        except JobFailed:
+            code, url = await capture(["git", "remote", "get-url", repo.remote], cwd=repo.path)
+            said = git_failure(url.strip() if code == 0 else "", job.lines[first:])
+            if said is None:
+                raise
+            raise JobFailed(said) from None
         await update_submodules(job, repo)
         after = await git(repo, "rev-parse", "HEAD")
         if before != after:

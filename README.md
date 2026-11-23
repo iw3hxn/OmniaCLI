@@ -1115,7 +1115,34 @@ credential.helper=store --file=<the server's file>`, and for each host
 `-c url.https://<host>/.insteadOf=git@<host>:` and `ssh://git@<host>/`: a
 working copy with an ssh remote is reached over https with the token, its
 `.git/config` untouched, and no token is written in a repository (so a
-container that mounts it never reads it). The credentials are kept in
+container that mounts it never reads it). That rewrite is for an ssh
+remote OmniaCLI has **no key** for (an adopted machine's working copies): a
+repository of a workspace added over ssh keeps ssh and its keys (below),
+whatever token its host has. A token reads only the repositories it
+reaches: a fine-grained GitHub token limited to one repository rewrote,
+before (ber, 23/11/2026), every ssh repository of github.com to https,
+where the token could not read them (403).
+
+**Keys over ssh** (a workspace's repository added as `git@host:org/repo.git`
+or `ssh://git@host/…`): **one deploy key per repository**, since GitHub
+accepts a key as the deploy key of one repository only («Key is already in
+use»). Writing an ssh address in **+ Add a repository** shows its own key
+(*Show its key*: made the first time, `POST /api/workspaces/<ws>/git-key`
+with `{"url"}`, kept in `credentials/deploy-keys/`, 0600 in 0700) and the
+page where it goes (GitHub: the repository's *Settings › Deploy keys*,
+read only). The machine's git key stays, for an **account** that reads
+several repositories (its *SSH keys*, not a deploy key): *The key of this
+machine, for an account*. git's ssh (`core.sshCommand`, `IdentitiesOnly`)
+offers the repository's deploy key first, then the machine's: a server
+takes the first key it knows, so a key that is another repository's deploy
+key must not come first (GitHub answers «Repository not found» to it).
+A refusal is said in words in the job instead of «git exited with code
+128»: over ssh, «Repository not found» or *Permission denied* (the keys do
+not read that repository: paste its deploy key, or use a token); over
+https, GitHub's misleading «Write access to repository not granted» (403)
+on a clone (the token lacks *Contents: Read* on that repository, or the
+organisation has not approved it), 401 (no token, or a wrong or expired
+one), 404 (a wrong address, or a token that does not reach it). The credentials are kept in
 `credentials.yaml` next to the servers file and the files git reads in
 `credentials/`, readable by OmniaCLI's user only; a token is never shown
 again (changing a credential with the token left empty keeps it).
@@ -1173,6 +1200,15 @@ for an instance of `odoo-19`) chosen when it exists, else the default
 branch; **Add** is the job of a typed address (each role cloned on that
 branch, odoo.conf, Python packages, restart) with the clone address GitHub
 gave. The typed address stays the second choice.
+
+**Several at once**: in the list each repository has a box, and each one
+ticked is listed with its branches (the Odoo version's chosen); the typed
+addresses take one per line, on the branch given. They are added in **one
+job** (`repositories: [{url, branch, name}]`, at most 30), the roles
+restarted **once** at the end (ber, 23/11/2026: nine repositories added one
+by one restarted the production nine times in two minutes); one that
+cannot be cloned is left out, said as a warning of the job with why, and
+the others added.
 
 **The webhook made by itself**: when the CI of an instance is switched on
 («CI: update at every push», above, Stagings) or a repository is added to an
@@ -3358,16 +3394,39 @@ admins add (below).
 - **Search** by name or by what a module does (at most 50 rows): each module
   with its summary, technical name, repository and licence, and its state:
   installed, installed in test, in the code, to add.
+- **The modules of the instance itself** (*Look in: This instance*, and
+  first in *All the sources*): what its own addons path has — the image's
+  Odoo, Odoo Enterprise when it is on, its repositories, the modules
+  uploaded — installable from the same dialog with no repository to add,
+  each saying where it comes from (*in the instance: Odoo*, *Odoo
+  Enterprise*, *repository Common*). They are read from its database
+  (`ir_module_module` with `ir_module_module_dependency`, compose-helper
+  `modules-info`, at most every 30 s) and, for what the database does not
+  list yet (a repository just added, Enterprise switched on later), from the
+  manifests on its disk; `odoo -i` updates the list of the modules first, as
+  *Apps › Update Apps List*. Their dependencies are resolved as Odoo
+  resolves them (the database's, the installed ones left out). Before (ber,
+  23/11/2026) `stock` and `mrp_workorder` answered «not in the catalogs».
 - **Install…** says what it takes: the repositories to add and the modules
   they bring (resolved through the catalog, dependencies of dependencies
   included), the Python packages; it is refused when a dependency is neither
   in the instance nor in the catalog (an Enterprise module). Then a job: the
   missing repositories added as **Add a repository** does (production and
-  test restarted), a backup first for a production, `odoo -i` in the
-  running service (the scheduled actions of a neutralized database kept
-  off), a restart, the module's state checked. In test by a developer, in
-  production by an admin, after a confirmation; a staging's own copy by a
-  developer.
+  test restarted), a backup first for a production, `odoo -i` in a
+  container of the Odoo service of its own (the scheduled actions of a
+  neutralized database kept off), a restart, the module's state checked. In
+  test by a developer, in production by an admin, after a confirmation; a
+  staging's own copy by a developer.
+- **An install that stops half way** says what it left: the job reads the
+  database again and names the modules installed and those not, and that
+  installing again goes on from there (Odoo installs what is not installed
+  yet). A *deadlock detected* is said as such: the Odoo that was serving held
+  a lock the install needed (ber, 23/11/2026: `ALTER TABLE res_company`, 27
+  modules installed, the others reset; a second try passed). The install
+  already runs in a container of its own, so that it can run with the Odoo
+  service stopped and the maintenance page up once the stop for an update
+  (branch `pending-stop-during-update`) is merged: the install then goes
+  through `ops.while_stopped`.
 
 - **Sources** (**Sources…** in the dialog, the machine's admins): a GitHub
   user or organisation typed by its name (`CybroOdoo`, `odoomates`), by
@@ -3730,7 +3789,7 @@ as its arguments, never in a script's text:
 | `load <odoo service> <db> [--neutralize]` | in a container of its own of the service (`run --rm`, which starts the database it depends on: the service may be stopped), the zip read from the input into a file, `odoo db load --force` |
 | `update <odoo service> <db>` | `click-odoo-update`: in a container of its own of the service (`run --rm --no-deps`), OmniaCLI's tools mounted read only; on a neutralized database the crons that were off are off again afterwards |
 | `update <odoo service> <db> --modules a,b` | `odoo -u a,b --stop-after-init --no-http` in the service's container, with the same care for the crons |
-| `update <odoo service> <db> --install a,b`, `init <odoo service> <db> <modules> [<language>]` | `odoo -i a,b --stop-after-init --no-http` without demo data, in the running service (the catalog of modules) or, a new database, in a container of its own; the flag is the one of the image's Odoo, asked first (`odoo --version`): `--without-demo=all` before 19, `--without-demo` from 19 (a boolean there: Odoo 19 and 20 warn of `=all`, *invalid boolean value*). From 19 a module installed into an existing database takes the demo data that database has: Odoo has no flag against it |
+| `update <odoo service> <db> --install a,b`, `init <odoo service> <db> <modules> [<language>]` | `odoo -i a,b --stop-after-init --no-http` without demo data, in a container of its own (Add modules: the service running or stopped; a new database: not started yet); the flag is the one of the image's Odoo, asked first in a container of its own (`odoo --version`): `--without-demo=all` before 19, `--without-demo` from 19 (a boolean there: Odoo 19 and 20 warn of `=all`, *invalid boolean value*). From 19 a module installed into an existing database takes the demo data that database has: Odoo has no flag against it |
 | `psql <database service> <db>` | `psql` on the caller's terminal (the web shell), as the image's `postgres`, else the container's own user: never root, its `\!` runs commands; a service that only has root is refused |
 
 The zip goes through the helper's input and output: the helper never opens a

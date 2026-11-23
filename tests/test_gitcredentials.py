@@ -15,7 +15,8 @@ from omniacli.jobs import Job
 from .test_app import POST, client  # noqa: F401 - the client fixture
 from .test_workspaces import basic, post_as, workspaces  # noqa: F401 - the workspaces fixture
 
-ENV = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_SSH_COMMAND": "false"}
+ENV = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_SSH_COMMAND": "false", "GIT_CONFIG_GLOBAL": "/dev/null",
+       "GIT_CONFIG_NOSYSTEM": "1"}
 
 
 def creds(*entries):
@@ -149,3 +150,89 @@ async def test_the_pages(workspaces, client, env, tmp_path):
     assert (await client.post("/api/credentials/delete", headers=POST,
                               json={"kind": "server", "name": "srv", "host": "github.com"})).status_code == 200
     assert settings.servers["srv"].test.repositories[0].git_options == ()
+
+
+def _working_copy(path, remote):
+    # the fixture's working copy: its origin is now this address
+    assert _git("init", "-q", str(path)).returncode == 0
+    _git("remote", "remove", "origin", cwd=path)
+    assert _git("remote", "add", "origin", remote, cwd=path).returncode == 0
+
+
+def test_a_token_leaves_an_ssh_repository_with_its_key_on_ssh(workspaces, env, tmp_path):
+    """ber, 23/11/2026: a GitHub token limited to one repository took every
+    ssh repository of github.com to https, where it could not read them:
+    Common, read until then with the machine's git key, answered 403. A
+    repository of a workspace that OmniaCLI has a key for stays on ssh; one
+    over https gets the token; an adopted machine's ssh working copy, with no
+    key of OmniaCLI, is still reached over https with it."""
+    settings = env["settings"]
+    settings.credentials_file = tmp_path / "credentials.yaml"
+    gitcredentials.save(settings.credentials_file, {"workspace:acme": creds(("github.com", "bot", "tok"))})
+    key = gitcredentials.git_key(settings.credentials_file)
+    key.parent.mkdir(parents=True)
+    key.write_text("a key\n")
+    repo = settings.servers["srv"].test.repositories[0]
+    _working_copy(repo.path, "git@github.com:DueEsseTI/Common.git")
+    gitcredentials.bind(settings)
+    options = list(repo.git_options)
+    assert not any("insteadOf" in o for o in options)
+    assert any(o.startswith("core.sshCommand=ssh -i ") for o in options)
+    assert _git(*options, "remote", "get-url", "origin", cwd=repo.path).stdout.strip() == "git@github.com:DueEsseTI/Common.git"
+    # the token is still there for an https repository of the same server
+    assert "-c" in options and any(o.startswith("credential.helper=store --file=") for o in options)
+    # no key of OmniaCLI (outside the workspaces, or none made): over https with the token, as before
+    key.unlink()
+    gitcredentials.bind(settings)
+    assert _git(*repo.git_options, "remote", "get-url", "origin", cwd=repo.path).stdout.strip() == \
+        "https://github.com/DueEsseTI/Common.git"
+
+
+def test_each_repository_over_ssh_has_its_own_deploy_key(workspaces, env, tmp_path):
+    """GitHub accepts a key as the deploy key of one repository only («Key is
+    already in use»): each repository over ssh gets its own, offered before
+    the machine's git key (a server takes the first key it knows)."""
+    settings = env["settings"]
+    settings.credentials_file = tmp_path / "credentials.yaml"
+    names = {gitcredentials.deploy_key_name(u) for u in ("git@github.com:DueEsseTI/Common.git",
+                                                         "ssh://git@github.com/DueEsseTI/Common",
+                                                         "git@GitHub.com:DueEsseTI/Common.git/")}
+    assert len(names) == 1 and next(iter(names)).startswith("id_ed25519_github_com_dueesseti_common-")
+    assert gitcredentials.deploy_key_name("git@github.com:DueEsseTI/OCA-PR.git") not in names
+    assert gitcredentials.deploy_key_name("https://github.com/DueEsseTI/Common.git") is None
+    assert gitcredentials.deploy_key_page("git@github.com:DueEsseTI/Common.git") == \
+        "https://github.com/DueEsseTI/Common/settings/keys/new"
+    assert gitcredentials.deploy_key_page("git@gitlab.example.com:acme/x.git").endswith("/acme/x/-/settings/repository#js-deploy-keys-settings")
+    assert gitcredentials.deploy_key_page("git@172.30.0.13:x.git") is None
+    machine = gitcredentials.git_key(settings.credentials_file)
+    own = gitcredentials.deploy_key(settings.credentials_file, "git@github.com:DueEsseTI/Common.git")
+    for path in (machine, own):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("a key\n")
+    command = next(o for o in gitcredentials.options_for(settings, "srv", "git@github.com:DueEsseTI/Common.git")
+                   if o.startswith("core.sshCommand="))
+    assert command.index(str(own)) < command.index(str(machine)) and "IdentitiesOnly=yes" in command
+    other = next(o for o in gitcredentials.options_for(settings, "srv", "git@github.com:DueEsseTI/OCA-PR.git")
+                 if o.startswith("core.sshCommand="))
+    assert str(own) not in other and str(machine) in other
+    # bind reads each working copy's address
+    repo = settings.servers["srv"].test.repositories[0]
+    _working_copy(repo.path, "ssh://git@github.com/DueEsseTI/Common")
+    gitcredentials.bind(settings)
+    assert any(str(own) in o for o in repo.git_options)
+
+
+def test_what_a_refusal_of_the_git_server_means():
+    """«Repository not found» to a key, 403 to a token: said in words."""
+    said = ops.git_failure("git@github.com:DueEsseTI/OCA-PR.git",
+                           ["14:00:00 ERROR: Repository not found.", "14:00:00 fatal: Could not read from remote repository."])
+    assert "deploy key" in said and "another repository" in said
+    said = ops.git_failure("https://github.com/DueEsseTI/Common.git", [
+        "remote: Write access to repository not granted.",
+        "fatal: unable to access 'https://github.com/DueEsseTI/Common.git/': The requested URL returned error: 403"])
+    assert "Contents: Read" in said and "approve" in said
+    # an ssh remote a token's host took to https: what git reached decides
+    said = ops.git_failure("git@github.com:DueEsseTI/Common.git", [
+        "fatal: unable to access 'https://github.com/DueEsseTI/Common.git/': The requested URL returned error: 403"])
+    assert "Contents: Read" in said
+    assert ops.git_failure("https://github.com/a/b.git", ["fatal: not a git repository"]) is None
