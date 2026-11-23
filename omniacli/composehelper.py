@@ -54,6 +54,16 @@ command of the caller's, and runs docker with an environment of its own:
                                          odoo -i a,b --stop-after-init, in
                                          the running service, an existing
                                          database (the catalog of modules)
+    next-update <odoo service> <db>      an update without stopping: the
+                                         changed modules (click-odoo-update) of
+                                         the new code, OmniaCLI's copy in
+                                         addons/.omniacli-next/<repository>, its
+                                         addons path read here, in a container
+                                         of its own; the instance's keeps serving
+    next-start <odoo service>            a container of the service on that code,
+                                         on free ports of 127.0.0.1, no cron
+                                         thread: its name and ports as JSON
+    next-stop, next-state                that container removed; it, as JSON
     update-list <odoo service> <db>      Odoo's Update the module list (a fixed
                                          line of odoo shell, in the running
                                          service): the modules of the addons
@@ -195,6 +205,7 @@ import os
 import pwd
 import re
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -319,7 +330,8 @@ WITH_ARGUMENTS = ("logs", "version", "port", "dump", "load", "update", "psql", "
                   "setup", "options", "image", "verify", "pip-freeze",
                   "pg-report", "pg-terminate", "neutralize", "pip-requirements", "terminal",
                   "mail-list", "mail-get", "mail-clear", "pg-settings", "pg-set", "pg-reset", "db-restart",
-                  "modules", "mail-send", "mail-inbox", "update-list")
+                  "modules", "mail-send", "mail-inbox", "update-list",
+                  "next-update", "next-start", "next-stop", "next-state")
 # the tuning's actions that read their values on the input (pg_tune())
 TUNE_ACTIONS = ("pg-set", "pg-reset", "db-restart")
 # a staging's caught mail (stacktemplates.MAIL_SERVICE, templates' compose.yaml):
@@ -473,6 +485,12 @@ SCRIPTS = {
     "mail-send": 'f="$1"; shift; exec /mailpit sendmail -S 127.0.0.1:1025 -f "$f" "$@"',
     # odoo shell reads mail_inbox.py from its input; quiet, the answer is its last line
     "mail-inbox": ODOO_DB + 'exec odoo shell -d "$1" --no-http --log-level=critical',
+    # an update without stopping: the changed modules of the new code (its addons path, $2), in a container of
+    # its own, while the instance's Odoo keeps serving
+    "next-update": ODOO_DB + CRONS_BEFORE + f'p={TOOLS_MOUNT}; '
+                             "python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' || "
+                             f'p={TOOLS_MOUNT}/{TOOLS_PY39}:$p; export PYTHONPATH="$p"; '
+                             f'python3 {TOOLS_MOUNT}/bin/click-odoo-update -d "$1" --addons-path "$2"; ' + CRONS_AFTER,
     "pip-requirements": 'f="/mnt/customer-addons/$1/requirements.txt"; if [ -f "$f" ]; then '
                         'exec python3 -m pip install --user --break-system-packages --disable-pip-version-check '
                         '--no-warn-script-location -r "$f"; else echo "$1 has no requirements.txt"; fi',
@@ -783,6 +801,16 @@ def commands(project: Path, action: str, args: list[str]) -> list[list[str]]:
             script = "update-modules" if args[2] == "--modules" else "install-modules"
             return [_script(service(project, args[0]), script, _database(args[1]), ",".join(modules))]
         raise HelperError("usage: update <service> <database> [--modules a,b | --install a,b]")
+    if action == "next-update":
+        # next-update <odoo service> <database>: click-odoo-update with the addons path of the new code
+        # (next_addons_path), in a container of its own with the tools mounted
+        if len(args) != 2:
+            raise HelperError("usage: next-update <service> <database>")
+        if not (TOOLS / "bin" / "click-odoo-update").is_file():
+            raise HelperError(f"{TOOLS} holds no click-odoo-update: install OmniaCLI's tools")
+        return [["run", "--rm", "--no-deps", "-T", "-v", f"{TOOLS}:{TOOLS_MOUNT}:ro",
+                 "--entrypoint", "sh", service(project, args[0]), "-c", SCRIPTS["next-update"], "sh",
+                 _database(args[1]), next_addons_path(project)]]
     if action == "update-list":
         # update-list <odoo service> <database>: the fixed line above, in the running service
         if len(args) != 2:
@@ -1028,6 +1056,155 @@ def image_state(project: Path, args: list[str]) -> int:
     except ValueError:
         digests = []
     print(json.dumps({"image": f"{row.get('Repository')}:{row.get('Tag')}", "digests": digests or []}))
+    return 0
+
+
+# --- an update without stopping (zerodowntime.py) --------------------------
+# The new code is OmniaCLI's copy of each repository that moves, at its new
+# commit, in addons/NEXT_FOLDER/<repository> (the caller's folder, mounted as
+# the repositories are, read only): a container of its own of the Odoo
+# service runs it on other ports, against the same database, while the
+# instance's keeps serving; nginx is switched to it (workspace-helper
+# upstream), the instance's restarted with the code moved, nginx back, this
+# container removed. A name never starting with a dot is a repository's
+# (REPOSITORY), so the folder is never one of them.
+NEXT_FOLDER = ".omniacli-next"
+CUSTOMER_ADDONS = "/mnt/customer-addons"
+PROJECT_NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,62}")
+
+
+def _odoo_conf(project: Path) -> dict[str, str]:
+    """The options of the project's config/odoo.conf."""
+    found = {}
+    try:
+        text = (project / "config" / "odoo.conf").read_text(encoding="utf-8")
+    except OSError as exc:
+        raise HelperError(f"{project}/config/odoo.conf: {exc.strerror}") from None
+    for line in text.splitlines():
+        key, sep, value = line.partition("=")
+        if sep and not key.lstrip().startswith((";", "#", "[")):
+            found[key.strip()] = value.strip()
+    return found
+
+
+def next_addons_path(project: Path) -> str:
+    """The addons path of config/odoo.conf, each repository whose new code is
+    in addons/NEXT_FOLDER/<repository> taken from there; refused when none is."""
+    folder = project / "addons" / NEXT_FOLDER
+    if folder.is_symlink() or not folder.is_dir():
+        raise HelperError(f"{folder} is not there: no new code to run")
+    entries, moved = [], 0
+    for entry in _odoo_conf(project).get("addons_path", "").split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        if entry.startswith(CUSTOMER_ADDONS + "/"):
+            repo, _, rest = entry[len(CUSTOMER_ADDONS) + 1:].partition("/")
+            copy = folder / repo
+            if REPOSITORY.fullmatch(repo) and not copy.is_symlink() and copy.is_dir():
+                entry = f"{CUSTOMER_ADDONS}/{NEXT_FOLDER}/{repo}" + (f"/{rest}" if rest else "")
+                moved += 1
+        entries.append(entry)
+    if not moved:
+        raise HelperError(f"no repository of the addons path has its new code in {folder}")
+    return ",".join(entries)
+
+
+def next_name(project: Path) -> str:
+    """The container of the new code: <project's name>-next."""
+    try:
+        text = (project / ".env").read_text(encoding="utf-8")
+    except OSError as exc:
+        raise HelperError(f"{project}/.env: {exc.strerror}") from None
+    values = dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
+    name = values.get("PROJECT", "").strip()
+    if not PROJECT_NAME.fullmatch(name):
+        raise HelperError(f"{project}/.env names no project (PROJECT)")
+    return f"{name}-next"
+
+
+def _free_port(taken: tuple[int, ...] = ()) -> int:
+    """A port of 127.0.0.1 nothing listens on, the kernel's choice."""
+    for _ in range(20):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        if port >= 1024 and port not in taken:
+            return port
+    raise HelperError("no free port on 127.0.0.1")
+
+
+def _next_container(project: Path) -> dict | None:
+    """{"name", "running", "http_port", "websocket_port"} of the container of
+    the new code, None when there is none."""
+    name = next_name(project)
+    done = subprocess.run([compose(project)[0], "inspect", "--format",
+                           "{{json .State.Running}} {{json .HostConfig.PortBindings}} "
+                           "{{index .Config.Labels \"com.docker.compose.project.working_dir\"}}", name],
+                          env=ENV, cwd=project, capture_output=True, text=True)
+    if done.returncode:
+        return None
+    running, _, rest = done.stdout.strip().partition(" ")
+    bindings, _, folder = rest.partition(" ")
+    if folder.strip() != str(project):
+        raise HelperError(f"a container {name} is there, not of {project}: it is not touched")
+    try:
+        ports = json.loads(bindings) or {}
+    except ValueError:
+        ports = {}
+
+    def published(inside: str) -> int | None:
+        for row in ports.get(f"{inside}/tcp") or []:
+            value = str(row.get("HostPort") or "")
+            if value.isdigit():
+                return int(value)
+        return None
+
+    return {"name": name, "running": running == "true", "http_port": published("8069"),
+            "websocket_port": published("8072")}
+
+
+def next_action(project: Path, action: str, args: list[str]) -> int:
+    """next-start <odoo service>: the container of the new code started
+    (docker compose run -d of the service: its environment, volumes, network
+    and slice), the addons path of next_addons_path, no cron thread (the
+    instance's Odoo runs them), on a free port of 127.0.0.1 (and one for
+    the websocket with workers), as JSON; refused when one is there.
+    next-stop: that container removed (none: said). next-state: it as JSON
+    (null: none)."""
+    if action == "next-start":
+        if len(args) != 1:
+            raise HelperError("usage: next-start <service>")
+        name = service(project, args[0])
+        if _next_container(project) is not None:
+            raise HelperError(f"a container {next_name(project)} is there already: next-stop first")
+        path = next_addons_path(project)
+        workers = _odoo_conf(project).get("workers", "0")
+        http = _free_port()
+        websocket = _free_port((http,)) if workers.isdigit() and int(workers) > 0 else None
+        cmd = ["run", "-d", "--no-deps", "--name", next_name(project), "-p", f"127.0.0.1:{http}:8069",
+               *(["-p", f"127.0.0.1:{websocket}:8072"] if websocket else []),
+               name, "odoo", f"--addons-path={path}", "--max-cron-threads=0"]
+        done = subprocess.run(compose(project, *cmd), env=ENV, cwd=project, capture_output=True, text=True)
+        if done.returncode:
+            raise HelperError(f"docker compose run failed: {(done.stderr or done.stdout).strip()[-400:]}")
+        print(json.dumps({"container": next_name(project), "http_port": http, "websocket_port": websocket,
+                          "addons_path": path}))
+        return 0
+    if args:
+        raise HelperError(f"{action} takes no arguments")
+    found = _next_container(project)
+    if action == "next-state":
+        print(json.dumps(found))
+        return 0
+    if found is None:
+        print(json.dumps({"removed": None}))
+        return 0
+    done = subprocess.run([compose(project)[0], "rm", "-f", found["name"]], env=ENV, cwd=project,
+                          capture_output=True, text=True)
+    if done.returncode:
+        raise HelperError(f"docker rm {found['name']} failed: {done.stderr.strip()[-300:]}")
+    print(json.dumps({"removed": found["name"]}))
     return 0
 
 
@@ -1391,6 +1568,8 @@ def run(argv: list[str]) -> int:
         return link_filestore(project, args, uid, groups)
     if action == "image":
         return image_state(project, args)
+    if action in ("next-start", "next-stop", "next-state"):
+        return next_action(project, action, args)
     if action in TUNE_ACTIONS:
         return pg_tune(project, action, args, sys.stdin.buffer.read(TUNE_INPUT))
     # login: the script on the input of odoo shell, the helper's own file;

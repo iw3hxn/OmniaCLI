@@ -961,6 +961,15 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     <p class="error" id="dh-error"></p>
   </div>
   {% endif %}
+  {% if can_act and inst.repositories and inst.restart.type == "compose" %}
+  {# the update without stopping (zerodowntime.py, README Deploys): how an update runs, never when it runs #}
+  <div class="zero-downtime" data-api="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}/zero-downtime" hidden>
+    <label id="zd-label" title="{{ _('On: an update (Git pull and restart, a push, the auto update, Back to this deploy) starts a second Odoo on the new code and updates its changed modules while this one keeps serving, then sends nginx to it and stops this one once its requests end. When the update changes what the old code reads (a field, a model, a migration script), the normal update runs, and its job says why.') }}">
+      <input type="checkbox" id="zd-enabled" style="width: auto"> <strong>{{ _("Update without stopping") }}</strong></label>
+    <span class="muted" id="zd-state" style="margin-left: 8px"></span>
+    <p class="error" id="zd-error"></p>
+  </div>
+  {% endif %}
 </section>
 {% if can_act %}{% include "_deploys.html" %}{% endif %}
 <style>
@@ -990,6 +999,7 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
 .tech-details > summary { font-weight: 600; color: var(--text); } .tech-details > dl { margin-top: 10px; }
 .tech-details .shell-paths { margin-top: 12px; }
 .deploy-hook { margin: 4px 0 8px; }
+.zero-downtime { margin: 4px 0 8px; }
 .shell-paths dl { display: grid; grid-template-columns: minmax(140px, max-content) 1fr; gap: 8px 16px; margin: 12px 0 0; }
 .shell-paths dd { margin: 0; min-width: 0; }
 .shell-paths .sp-cmd { margin: 0; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -1942,6 +1952,35 @@ dialog.sd { width: min(560px, calc(100vw - 32px)); }
     });
     $("dh-new").addEventListener("click", async () => { if (await omniaAsk(D.newQ, $("dh-new"))) save({new_secret: true}); });
     $("dh-forget").addEventListener("click", async () => { if (await omniaAsk(D.forgetQ, $("dh-forget"), {danger: true})) save({forget: true}); });
+  })();
+  // the update without stopping of the instance (zerodowntime.py): its switch, who switched it on, or why it cannot
+  (async function () {
+    const box = document.querySelector(".zero-downtime");
+    if (!box) return;
+    const Z = {on: {{ _("Switched on by {by}, {when}: the users see no stop, but for an update that changes what the old code reads.") | tojson }},
+               off: {{ _("Off: an update restarts Odoo, its users wait for it.") | tojson }},
+               role: {{ _("Its {role}s switch it.") | tojson }}};
+    const $ = (id) => document.getElementById(id);
+    function draw(data) {
+      box.hidden = false;
+      const check = $("zd-enabled");
+      check.checked = data.enabled;
+      check.disabled = !data.can_edit || (!data.available && !data.enabled);
+      const said = !data.available && !data.enabled ? data.reason
+        : data.enabled ? Z.on.replace("{by}", (data.on && data.on.by) || "?").replace("{when}", whenText(data.on && data.on.at))
+        : Z.off;
+      $("zd-state").textContent = said + (data.can_edit ? "" : " " + Z.role.replace("{role}", data.role));
+    }
+    const resp = await fetch(box.dataset.api).catch(() => null);
+    if (resp && resp.ok) draw(await resp.json());
+    $("zd-enabled").addEventListener("change", async (e) => {
+      $("zd-error").textContent = "";
+      const answer = await fetch(box.dataset.api, {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
+                                                   body: JSON.stringify({enabled: e.target.checked})}).catch(() => null);
+      const data = answer ? await answer.json().catch(() => ({})) : {};
+      if (!answer || !answer.ok) { e.target.checked = !e.target.checked; $("zd-error").textContent = data.error || data.detail || (answer ? answer.status : ""); return; }
+      draw(data);
+    });
   })();
   // the head of the Environments tab: read after the page, a git fetch and the registry take a while
   (async function () {

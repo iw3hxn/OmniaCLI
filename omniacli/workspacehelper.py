@@ -6,6 +6,7 @@
     omniacli workspace-helper create <workspace> <storage> <instance> <template> <values as JSON>
     omniacli workspace-helper remove <workspace> <storage> <instance>
     omniacli workspace-helper limits <workspace> <cpus> <memory in GB>
+    omniacli workspace-helper upstream <workspace> <storage> <instance> <role> <http port>|- <websocket port>|-
     omniacli workspace-helper login-path check | add | remove | sync <host or all>
     omniacli workspace-helper login-path keep on | off
     omniacli workspace-helper portal <host or -> | portal-names
@@ -106,6 +107,13 @@ site and its certificate are removed.
 
 web-names <workspace>: the names the other sites of nginx answer on (nginx
 -T), which the workspace may not take; it reads only.
+
+upstream <workspace> <storage> <instance> <role> <http port>|- <websocket
+port>|-: the environment's server block of the site proxying to other ports
+of 127.0.0.1 (the container of an update without stopping, zerodowntime.py),
+or back to its own (-); a port where nothing answers is refused; nginx -t,
+or the site before is back; a reload, the requests under way end where they
+are. The ports are kept in <project>/upstream.json, root's, which web reads.
 
 portal <host or ->: the customers' portal, OmniaCLI's own panel on host
 (docs/portale-clienti.md), /etc/nginx/conf.d/omniacli-_portal.conf: port 80
@@ -261,6 +269,8 @@ openssl (the key is the certificate's, not expired), kept in
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import ipaddress
 import json
 import os
@@ -2008,7 +2018,114 @@ def _sites(mount: Path, spec: dict, instances: list[str]) -> list[dict]:
             raise HelperError(f"{project}/.env has no HTTP_PORT or WEBSOCKET_PORT")
         site["http_port"] = int(env["HTTP_PORT"])
         site["websocket_port"] = int(env["WEBSOCKET_PORT"]) if workspaceweb.workers(conf) else None
+        # an update without stopping serves the environment from another container for its time: kept
+        switched = _upstream_of(project)
+        if switched:
+            site["http_port"] = switched["http_port"]
+            if site["websocket_port"] is not None:
+                site["websocket_port"] = switched.get("websocket_port") or site["websocket_port"]
     return sites
+
+
+def _upstream_of(project: Path) -> dict | None:
+    """The ports an update without stopping switched the environment's nginx
+    to (upstream): {"http_port", "websocket_port"}, or None."""
+    path = project / workspaceweb.UPSTREAM_FILE
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    ports = [data.get("http_port"), data.get("websocket_port")] if isinstance(data, dict) else []
+    if not ports or not _a_port(ports[0]) or (ports[1] is not None and not _a_port(ports[1])):
+        return None
+    return {"http_port": ports[0], "websocket_port": ports[1]}
+
+
+def _a_port(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and 1024 <= value <= 65535
+
+
+def _listens(port: int) -> bool:
+    """Something answers TCP on 127.0.0.1:port: nginx is never sent to a port where nothing listens."""
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=3):
+            return True
+    except OSError:
+        return False
+
+
+def upstream(name: str, storage: str, instance: str, role: str, http_port: str, websocket_port: str) -> dict:
+    """The environment's server block of the workspace's site proxying to
+    other ports of this machine (a container of an update without stopping,
+    zerodowntime.py), or back to its own (-): nginx -t and a reload, which
+    lets the requests under way end where they are; the ports kept in
+    <project>/upstream.json, so the site written again keeps them. A port
+    where nothing answers is refused."""
+    with _site_lock(name):
+        return _upstream(name, storage, instance, role, http_port, websocket_port)
+
+
+def _upstream(name: str, storage: str, instance: str, role: str, http_port: str, websocket_port: str) -> dict:
+    image, mount = workspace(name, storage)
+    _name("instance", instance)
+    if role not in ROLES:
+        raise HelperError(f"{role!r} is not production or test")
+    if not mounted(image, mount):
+        raise HelperError(f"the disk of workspace {name} is not mounted")
+    project = mount / instance / role
+    if project.is_symlink() or not (project / ".env").is_file():
+        raise HelperError(f"no environment {instance} {role} in workspace {name}")
+    path = NGINX_SITES / f"omniacli-{name}.conf"
+    if path.is_symlink() or not path.is_file():
+        raise HelperError(f"workspace {name} has no site: its names are not published")
+    env = _env(project)
+    if not (env.get("HTTP_PORT", "").isdigit() and env.get("WEBSOCKET_PORT", "").isdigit()):
+        raise HelperError(f"{project}/.env has no HTTP_PORT or WEBSOCKET_PORT")
+    own = {"http_port": int(env["HTTP_PORT"]), "websocket_port": int(env["WEBSOCKET_PORT"])}
+    now = _upstream_of(project) or own
+    if http_port == "-":
+        then = own
+    else:
+        if not http_port.isdigit() or not _a_port(int(http_port)) \
+                or not (websocket_port == "-" or (websocket_port.isdigit() and _a_port(int(websocket_port)))):
+            raise HelperError("usage: upstream <workspace> <storage> <instance> <role> <http port>|- <websocket port>|-")
+        then = {"http_port": int(http_port), "websocket_port": int(websocket_port) if websocket_port != "-" else None}
+        if then["http_port"] in own.values() or then["websocket_port"] in own.values():
+            raise HelperError("those are the environment's own ports: - goes back to them")
+    # the websocket port is the site's with workers only (threaded, /websocket goes to the http port)
+    try:
+        threaded = not workspaceweb.workers((project / "config" / "odoo.conf").read_text(encoding="utf-8"))
+    except OSError:
+        threaded = True
+    for port in {then["http_port"], None if threaded else then["websocket_port"]} - {None}:
+        if not _listens(port):
+            raise HelperError(f"nothing answers on 127.0.0.1:{port}: nginx is not sent there")
+    ports = {now["http_port"]: then["http_port"]}
+    if now.get("websocket_port") and then.get("websocket_port"):
+        ports[now["websocket_port"]] = then["websocket_port"]
+    before = path.read_text(encoding="utf-8")
+    try:
+        text = workspaceweb.switch_upstream(before, instance, role, ports)
+    except ValueError as exc:
+        raise HelperError(f"{path}: {exc}") from None
+    record = project / workspaceweb.UPSTREAM_FILE
+    kept = record.read_text(encoding="utf-8") if record.is_file() and not record.is_symlink() else None
+    if then == own:
+        record.unlink(missing_ok=True)
+    else:
+        _write(record, json.dumps(then) + "\n")
+    try:
+        said = _put_site(path, text)
+    except BaseException:
+        if kept is None:
+            record.unlink(missing_ok=True)
+        else:
+            _write(record, kept)
+        raise
+    return {"workspace": name, "instance": instance, "role": role, "site": str(path), **then,
+            "from": now, "own": then == own, "nginx": said}
 
 
 def _tls(name: str, certificate: str) -> tuple[str, str] | None:
@@ -2130,7 +2247,27 @@ def omniacli_address(defaults: Path = SERVICE_DEFAULTS) -> str:
     return f"{host}:{port}"
 
 
+@contextlib.contextmanager
+def _site_lock(name: str):
+    """The workspace's site read and written by one action at a time: an
+    update without stopping of one instance (upstream) and of another, or a
+    publication (web), would otherwise write over each other's change. A
+    dot-file beside the sites, which nginx (conf.d/*.conf) does not read."""
+    NGINX_SITES.mkdir(parents=True, exist_ok=True)
+    fd = os.open(NGINX_SITES / f".omniacli-{_name('workspace', name)}.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
 def web(name: str, storage: str, spec_json: str) -> dict:
+    with _site_lock(name):
+        return _web(name, storage, spec_json)
+
+
+def _web(name: str, storage: str, spec_json: str) -> dict:
     image, mount = workspace(name, storage)
     path = NGINX_SITES / f"omniacli-{name}.conf"
     instances = instances_on_disk(mount) if mounted(image, mount) else []
@@ -2138,6 +2275,8 @@ def web(name: str, storage: str, spec_json: str) -> dict:
     made = {"workspace": name, "site": str(path), "names": [], "https": False, "certificate_error": None}
     if not spec["domain"] or not instances:
         made["nginx"] = _put_site(path, None) if path.exists() else "no site"
+        # no site, nothing to switch: its lock goes too (an action waiting on it makes the site anew)
+        (NGINX_SITES / f".omniacli-{name}.lock").unlink(missing_ok=True)
         lineage = LETSENCRYPT / f"omniacli-{name}"
         if lineage.exists():
             _run("certbot", "delete", "--cert-name", f"omniacli-{name}", "--non-interactive")
@@ -4051,7 +4190,7 @@ def enterprise_switch(name: str, storage: str, instance: str, mode: str) -> dict
 
 
 ACTIONS = {"disk": (disk, 3), "drop": (drop, 2), "limits": (limits, 3), "create": (create, 5), "remove": (remove, 3),
-           "web": (web, 3), "web-names": (web_taken, 1), "owncert": (owncert, 2), "firewall": (firewall, 1), "template-install": (template_install, 1),
+           "web": (web, 3), "web-names": (web_taken, 1), "upstream": (upstream, 6), "owncert": (owncert, 2), "firewall": (firewall, 1), "template-install": (template_install, 1),
            "conf": (conf, 5), "space": (space, 0),
            "storage-setup": (storage_setup, 0), "storage-check": (storage_check, 1), "storage-reset": (storage_reset, 1),
            "pitr-enable": (pitr_enable, 4), "pitr-base": (pitr_base, 4), "pitr-state": (pitr_state, 4),

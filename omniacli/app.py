@@ -56,7 +56,7 @@ from .apiguard import ApiError
 from . import i18n, loginas, machines, modulecatalog, pgreport, pgtuning, stagings, workspaceweb
 from . import clusterpitr, inframap, linkedcluster, machinedb, managedreplica
 from . import stagingmail
-from . import deploys
+from . import deploys, zerodowntime
 from . import github
 from . import moduleupload, sshkeys
 from . import dumpinfo
@@ -354,6 +354,7 @@ WORKSPACE_ROUTES = frozenset({
     # the New staging dialog (UX-008 §5.1): here only, no choice of the machine
     "/api/servers/{server}/stagings/new", "/api/servers/{server}/stagings/elsewhere",
     "/api/servers/{server}/{role}/deploy-hook", "/api/servers/{server}/{role}/deploys",
+    "/api/servers/{server}/{role}/zero-downtime",
     "/api/servers/{server}/{role}/deploys/{deploy_id}/back",
     "/api/servers/{server}/pitr", "/api/servers/{server}/pitr/enable",
     "/api/servers/{server}/pitr/base", "/api/servers/{server}/pitr/restore",
@@ -10948,6 +10949,66 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 "follows": [{"name": r.name, "branch": r.branch} for r in instance.repositories],
                 "repositories": [r.name for r in instance.repositories]}
 
+    # --- the update without stopping (zerodowntime.py) ------------------------
+    # Per instance, off by default, kept in its file of deploys: an instance of a workspace (a compose project
+    # made from a template, whose nginx OmniaCLI writes), served by its name with https. It changes how an update
+    # runs, never when: a production still moves by hand only.
+
+    def zero_downtime_problem(instance: Instance) -> str | None:
+        """Why the instance cannot be updated without stopping, None when it can."""
+        found = workspace_of(instance.server)
+        if instance.restart.type != "compose" or instance.type != "docker" or found is None:
+            return "only an instance of a workspace, whose nginx OmniaCLI writes, is updated without stopping"
+        ws, _ = found
+        if not ws.storage:
+            return f"workspace {ws.name} has no storage: its instances have no site"
+        if not ws.domain or not (instance.site or "").startswith("https://"):
+            return "it has no name served with https yet (the names of its workspace, published)"
+        if not instance.repositories:
+            return "it has no repository: its code is the image's, with nothing to copy"
+        return None
+
+    def zero_downtime_of(instance) -> "zerodowntime.Target | str | None":
+        """How an update of the instance runs (zerodowntime.choice): None off."""
+        if not isinstance(instance, Instance) or not deploys.zero_downtime(deploys_folder, instance.key):
+            return None
+        problem = zero_downtime_problem(instance)
+        if problem:
+            return problem
+        ws, name = workspace_of(instance.server)
+        return zerodowntime.Target(workspace=ws.name, storage=ws.storage, instance=name, role=instance.role,
+                                   url=instance.site.rstrip("/"), project=Path(instance.restart.service))
+
+    zerodowntime.configure(zero_downtime_of)
+
+    def zero_downtime_view(request: Request, instance: Instance, me: Principal) -> dict:
+        lang, view = request_language(request), customer_view(request)
+        on = deploys.zero_downtime(deploys_folder, instance.key)
+        problem = zero_downtime_problem(instance)
+        return {"enabled": bool(on), "can_edit": me.can(backup_role(instance)), "role": backup_role(instance),
+                "available": problem is None, "reason": i18n.tr(lang, problem) if problem else None,
+                "on": {**on, "by": view.who(str(on.get("by") or "")) if view else on.get("by")} if on else None}
+
+    @app.get("/api/servers/{server}/{role}/zero-downtime", dependencies=[Depends(developer)])
+    async def zero_downtime_get(request: Request, server: str, role: str, me: Principal = Depends(current_user)):
+        return zero_downtime_view(request, get_instance(server, role), me)
+
+    @app.post("/api/servers/{server}/{role}/zero-downtime")
+    async def zero_downtime_save(request: Request, server: str, role: str, payload: dict = Body(...),
+                                 me: Principal = Depends(current_user)):
+        """{"enabled": true|false}: the updates of the instance without
+        stopping, or the normal ones. Its role is the backup role, as the CI's."""
+        instance = get_instance(server, role)
+        if not me.can(backup_role(instance)):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, f"The {backup_role(instance)} role is required")
+        enabled = bool(payload.get("enabled"))
+        if enabled and zero_downtime_problem(instance):
+            return refuse(zero_downtime_problem(instance))
+        await asyncio.to_thread(deploys.set_zero_downtime, deploys_folder, instance.key, str(me) if enabled else None)
+        access_log.record("action", me.kind, me.name, request.client.host if request.client else "",
+                          f"Update without stopping of {instance.key}: {'on' if enabled else 'off'}")
+        return zero_downtime_view(request, instance, me)
+
     @app.get("/api/servers/{server}/{role}/deploy-hook", dependencies=[Depends(developer)])
     async def deploy_hook_get(request: Request, server: str, role: str, me: Principal = Depends(current_user)):
         instance = get_instance(server, role)
@@ -11523,7 +11584,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                                         "before_subject", "brought", "taken", "commits")}
                                  for r in entry.get("repositories") or [] if isinstance(r, dict)],
                 "backup": {"name": backup, "kept": backup in kept} if backup else None,
-                "back_to": entry.get("back_to"), "current": current, "kind": entry.get("kind") or "deploy"})
+                "back_to": entry.get("back_to"), "current": current, "kind": entry.get("kind") or "deploy",
+                # the time its users were not served, measured by an update of an instance switched to the update
+                # without stopping (zerodowntime.py)
+                "unserved": ({k: entry["unserved"].get(k) for k in ("seconds", "failed", "asked", "how")}
+                             if isinstance(entry.get("unserved"), dict) else None)})
         return rows
 
     async def available_now(instance: Instance, entries: list) -> list[dict]:

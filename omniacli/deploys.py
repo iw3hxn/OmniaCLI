@@ -33,7 +33,7 @@ import os
 import re
 from pathlib import Path
 
-from . import ops
+from . import ops, zerodowntime
 from .jobs import Job, JobFailed
 
 FOLDER = "deploys"
@@ -57,7 +57,9 @@ def file_of(folder: Path, key: str) -> Path:
 
 
 def load(folder: Path, key: str) -> dict:
-    """{"deploys": [oldest first], "paused": {"by", "at"} or None}."""
+    """{"deploys": [oldest first], "paused": {"by", "at"} or None,
+    "zero_downtime": {"by", "at"} or None (its updates without stopping,
+    zerodowntime.py: who switched them on, when)}."""
     try:
         data = json.loads(file_of(folder, key).read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -66,7 +68,8 @@ def load(folder: Path, key: str) -> dict:
         data = {}
     found = data.get("deploys")
     return {"deploys": [d for d in found if isinstance(d, dict)] if isinstance(found, list) else [],
-            "paused": data.get("paused") if isinstance(data.get("paused"), dict) else None}
+            "paused": data.get("paused") if isinstance(data.get("paused"), dict) else None,
+            "zero_downtime": data.get("zero_downtime") if isinstance(data.get("zero_downtime"), dict) else None}
 
 
 def save(folder: Path, key: str, data: dict) -> None:
@@ -76,7 +79,8 @@ def save(folder: Path, key: str, data: dict) -> None:
     tmp = path.with_name(path.name + ".tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        json.dump({"deploys": data.get("deploys") or [], "paused": data.get("paused")}, fh, indent=1)
+        json.dump({"deploys": data.get("deploys") or [], "paused": data.get("paused"),
+                   **({"zero_downtime": data["zero_downtime"]} if data.get("zero_downtime") else {})}, fh, indent=1)
     os.replace(tmp, path)
 
 
@@ -103,6 +107,18 @@ def set_paused(folder: Path, key: str, by: str | None) -> dict | None:
     data["paused"] = {"by": by, "at": datetime.datetime.now().isoformat(timespec="seconds")} if by else None
     save(folder, key, data)
     return data["paused"]
+
+
+def zero_downtime(folder: Path, key: str) -> dict | None:
+    return load(folder, key)["zero_downtime"]
+
+
+def set_zero_downtime(folder: Path, key: str, by: str | None) -> dict | None:
+    """Its updates without stopping switched on by by (None: off); what it is now."""
+    data = load(folder, key)
+    data["zero_downtime"] = {"by": by, "at": datetime.datetime.now().isoformat(timespec="seconds")} if by else None
+    save(folder, key, data)
+    return data["zero_downtime"]
 
 
 def find(folder: Path, key: str, deploy_id: str) -> dict | None:
@@ -260,7 +276,9 @@ class Recorder:
             entry = {"id": job.id, "job": job.id, "title": job.title, "by": job.source,
                      "started": job.started, "finished": job.finished, "outcome": job.outcome,
                      "error": (job.error or "")[:500] or None, "repositories": rows, "state": now,
-                     "backup": (notes.get("backups") or {}).get(key), "back_to": notes.get("back_to")}
+                     "backup": (notes.get("backups") or {}).get(key), "back_to": notes.get("back_to"),
+                     # the time its users were not served, measured (zerodowntime.py)
+                     "unserved": notes.get("unserved") if isinstance(notes.get("unserved"), dict) else None}
             record(self.folder, key, entry)
 
 
@@ -329,18 +347,33 @@ async def go_back(job: Job, instance, entry: dict, backup_folder: Path | None) -
             if not await _lines(repo.path, "cat-file", "-t", row["to"]):
                 raise JobFailed(f"[{repo.name}] the commit {row['to'][:10]} of that deploy is no longer in "
                                 "the repository: restore the backup taken before it instead")
-    await ops.backup_before_update(job, instance, backup_folder, always=True)
-    for row in moving:
-        repo = repos[row["name"]]
-        job.log(f"--- [{repo.name}] {(row['now'] or '?')[:10]} → {row['to'][:10]} on {repo.branch}"
-                + (f": {row['taken']} commits after that deploy taken away" if row["taken"] else ""))
-        await ops.run(job, repo.git("reset", "--hard", row["to"]), cwd=repo.path)
-        await ops.update_submodules(job, repo)
     for name in plan["kept"]:
         job.log(f"[{name}] not in that deploy: kept as it is")
     for name in plan["gone"]:
         job.log(f"[{name}] was in that deploy and is no longer a repository of the instance: not added back")
-    await instance.plugin.after_pull(job, instance)
-    await ops.restart(job, instance)
+
+    async def normal() -> None:
+        await ops.backup_before_update(job, instance, backup_folder, always=True)
+        for row in moving:
+            repo = repos[row["name"]]
+            job.log(f"--- [{repo.name}] {(row['now'] or '?')[:10]} → {row['to'][:10]} on {repo.branch}"
+                    + (f": {row['taken']} commits after that deploy taken away" if row["taken"] else ""))
+            await ops.run(job, repo.git("reset", "--hard", row["to"]), cwd=repo.path)
+            await ops.update_submodules(job, repo)
+        await instance.plugin.after_pull(job, instance)
+        await ops.restart(job, instance)
+
+    # the update without stopping, when the instance is switched to it (zerodowntime.py)
+    found = zerodowntime.choice(instance)
+    if found is None or await ops._stopped(instance):
+        await normal()
+    elif isinstance(found, str):
+        job.warn(f"Not without stopping: {found}. The update restarts Odoo: its users wait for it")
+        await normal()
+    else:
+        job.log(f"--- back without stopping: a second Odoo on the code of that deploy, then nginx of {found.url} to it")
+        await zerodowntime.leftover(job, instance, found)
+        await zerodowntime.switch(job, instance, found, {r["name"]: (r["now"], r["to"]) for r in moving}, "back",
+                                  backup_folder, normal, always_backup=True)
     job.log("The database was not taken back: a module whose data changed after that deploy may need the "
             "backup taken before it")

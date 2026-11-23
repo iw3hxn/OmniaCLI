@@ -18,7 +18,7 @@ import signal
 import subprocess
 from pathlib import Path
 
-from . import backupcheck, backupchoices, packages, private
+from . import backupcheck, backupchoices, packages, private, zerodowntime
 from .config import Instance, Repository, Server
 from .jobs import Job, JobFailed
 
@@ -823,7 +823,20 @@ async def pull_restart(job: Job, instance: Instance, only_if_changed: bool = Fal
                        only: set[str] | None = None, backup_folder: Path | None = None) -> None:
     """Pull, do what follows a pull (Odoo: update the changed modules) and
     restart; backup_folder: where the backup before the update goes, made
-    only when the pull brings something (none: no backup)."""
+    only when the pull brings something (none: no backup). An instance
+    switched to the update without stopping (zerodowntime.py), running:
+    that one, or the normal one with why not."""
+    found = zerodowntime.choice(instance)
+    if found is not None and not await _stopped(instance):
+        await zerodowntime.pull_restart(
+            job, instance, found, only, only_if_changed, backup_folder,
+            lambda: _pull_restart(job, instance, only_if_changed, only, backup_folder))
+        return
+    await _pull_restart(job, instance, only_if_changed, only, backup_folder)
+
+
+async def _pull_restart(job: Job, instance: Instance, only_if_changed: bool, only: set[str] | None,
+                        backup_folder: Path | None) -> None:
     if backup_folder is not None and instance.backup_before_update and instance.plugin.has_backup:
         rows = await pull_preview(instance)
         if any((row["pending"] or 0) > 0 for row in rows if only is None or row["name"] in only):

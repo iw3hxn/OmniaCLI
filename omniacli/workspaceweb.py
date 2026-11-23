@@ -297,6 +297,40 @@ def dns_state(found: list[str], here: set[str]) -> str:
     return "elsewhere" if here else "unknown"
 
 
+# the ports an environment's nginx proxies to now, when an update without stopping (zerodowntime.py) has
+# switched it to another container: a file of root's in the role's project, which a site written again keeps
+UPSTREAM_FILE = "upstream.json"
+_PROXY_LOCAL = re.compile(r"^(\s*proxy_pass http://127\.0\.0\.1:)(\d+)(;\s*)$")
+
+
+def switch_upstream(text: str, instance: str, role: str, ports: dict[int, int]) -> str:
+    """The site's text with the server block of instance's role (its line
+    «# <instance> <role>», as conf_text writes it) proxying to the new
+    ports: ports {now: then}, its http port and its websocket port; the
+    other proxy_pass of the block (OmniaCLI's own address) left as they are.
+    ValueError when the block is not there or proxies to none of them."""
+    lines = text.split("\n")
+    mark = f"# {instance} {role}"
+    try:
+        start = lines.index(mark)
+    except ValueError:
+        raise ValueError(f"the site has no server block of {instance} {role}") from None
+    if start + 1 >= len(lines) or lines[start + 1] != "server {":
+        raise ValueError(f"the site has no server block of {instance} {role}")
+    changed = 0
+    for index in range(start + 2, len(lines)):
+        if lines[index] == "}":
+            break
+        match = _PROXY_LOCAL.match(lines[index])
+        if match and int(match.group(2)) in ports:
+            lines[index] = f"{match.group(1)}{ports[int(match.group(2))]}{match.group(3)}"
+            changed += 1
+    if not changed:
+        raise ValueError(f"the server block of {instance} {role} proxies to none of the ports "
+                         f"{', '.join(str(p) for p in sorted(ports))}")
+    return "\n".join(lines)
+
+
 def workers(conf: str) -> int:
     """workers of an odoo.conf, 0 when not set."""
     for line in conf.splitlines():

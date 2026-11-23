@@ -2074,6 +2074,80 @@ branch stays the one the instance follows, so the next Git pull fast-forwards
 to its head again. A developer of the instance goes back, a production too
 (it is a manual action).
 
+**Update without stopping** (`zerodowntime.py`; an instance's Modules tab,
+under Updates of the code, next to the CI; off by default, switched by the
+same role as the CI, an entry of the access log; kept in the instance's file
+of deploys). For an instance of a workspace only: a Docker Compose project
+made from a template, whose nginx OmniaCLI writes, served on its name with
+https; its repositories in the project's `addons/`. The native instances
+(systemd, a process, a compose project OmniaCLI did not make) are updated
+as before: their switch is off, with why. It changes how an update runs,
+never when: a production still moves by hand only. On, every update of the
+code (Git pull and restart, a deploy on push, the auto update, a scheduled
+pull, **Back to this deploy…**) is a job of these steps:
+
+1. each repository fetched: the commits it moves to (a fast-forward, or the
+   deploy's);
+2. whether the old Odoo can keep serving while the database takes the new
+   code's modules: refused, with the reasons as warnings of the job, when
+   an *installed* module changes a field or a model (a line of its Python
+   that defines a field, `_name`, `_inherit`, a constraint, an index or a
+   field's attribute), has a migration script, changes what it depends on,
+   or is taken away; when `requirements.txt` changes, a repository has
+   submodules, a working copy has local changes, or the instance has a
+   Debian package. Views, data, security, translations, static files and
+   the body of methods are of the kinds the old Odoo reads with its code.
+   Refused, the job runs the normal update (a restart, users wait) and says
+   so: **the decision is to fall back, not a read-only window**, because
+   Odoo has no read-only mode a running instance could be put in;
+3. the backup before the update, when the instance asks it;
+4. the new code copied (`git worktree`, `addons/.omniacli-next/<repository>`,
+   which the containers see read only), its changed modules updated
+   (`click-odoo-update` with the new code's addons path, the crons of a
+   neutralized database kept off) in a container of its own
+   (`compose-helper next-update`) **before** the switch: the old Odoo keeps
+   serving with its code, its registry reloaded from it when the update
+   commits;
+5. a second Odoo on the new code (`compose-helper next-start`: `docker
+   compose run -d` of the Odoo service, its environment, volumes, network
+   and slice, on free ports of 127.0.0.1, `--max-cron-threads=0`, the
+   sessions in the filestore both share), checked: `/web/login` 200 and the
+   version of its Odoo, the old one's;
+6. nginx sent to it (`workspace-helper upstream`: the environment's server
+   block, `/` and `/websocket`, to the second Odoo's ports, the websocket
+   port with workers, the http port threaded; a port where nothing answers
+   is refused; `nginx -t`, or the site before is back; a reload, so the
+   requests under way end where they are); the ports kept in the project's
+   `upstream.json` (root's), which the site written again (Publish) keeps;
+   the site is read and written by one action at a time (a lock,
+   `/etc/nginx/conf.d/.omniacli-<workspace>.lock`, gone with the site), so
+   two instances of a workspace switched together and a publication do not
+   undo each other; the old Odoo drained: until no connection is open to its ports, at least
+   2 and at most 30 seconds (an open page's websocket keeps one: it
+   reconnects to the new Odoo when the old one stops);
+7. the instance's repositories moved to the commits (the branch kept), its
+   Odoo restarted on them and checked, nginx back to it (`upstream.json`
+   removed), the second Odoo drained and removed, the copies too.
+
+A failure before 6 removes the second Odoo and the copies and moves no
+code: the users never left the old Odoo (the job says *Nothing changed for
+the users*); the database keeps what Odoo committed before the error (a
+module that raises at install is rolled back). After 6, a failure leaves the
+users on the second Odoo and says so; the next update takes it away first
+(nginx back to the instance's own Odoo, when it answers). While the job
+works, the instance's name is asked through nginx every 100 ms
+(`/web/login`): its last line is *Users not served: N s* (from an ask
+without a 200 to the next with one), and the deploy keeps it (Deploys: *users
+not served*). On lab4 (Odoo 19, 2026-11-23, asked every 100 ms through nginx
+from the machine) a normal update left the users without an answer for 0.8 to
+1.6 s (nginx's 502 while Odoo restarts), an update without stopping for 0 in
+each of eleven runs. An open page's bus (its websocket) is cut when the old Odoo
+stops and reconnects by itself, with Odoo's own wait (about 9 s on lab4):
+no request fails, its notifications come after. Not covered: Update modules,
+Pull image, a restore (they restart as before); the crons do not run in the
+second Odoo for its time; each update starts Odoo twice (the second one, then
+the instance's own) and waits up to 30 s for each one's websockets.
+
 **Monitoring** (`monitor.py`, Options › Monitoring): every minute each live
 instance is asked for `/web/login` on its own port; it is down after 3 failed
 checks in a row while its service says it runs (one stopped on purpose, a
@@ -3141,6 +3215,7 @@ servers:
 |---|---|
 | Checks | Odoo 16 or later (`odoo --version`), the HTTP port docker publishes, OmniaCLI's tools, the two services; the core's checks of the project and of the sudoers line |
 | Git pull + restart | pull, `click-odoo-update` of the changed modules (the tools mounted into a container of its own; an image whose Python is older than 3.10 finds click 8.1.8 first, in `omniacli-tools/py39`), restart |
+| Update without stopping | an instance of a workspace only, switched on: a second Odoo on the new code, nginx switched to it, the instance's restarted behind it (*Update without stopping*, under Stagings, deploy on push, monitoring); the others restart as before |
 | Update modules | the changed modules, or those named (`odoo -u … --stop-after-init`), and a restart if asked |
 | Pull image | `docker compose pull`, then `up -d`: a newer image (a new DockerOdooPLM build) |
 | Backup | `odoo db dump`, `<db>_<time>.zip` (`_nofilestore` without filestore: from Odoo 19, Odoo 18 refuses it) |

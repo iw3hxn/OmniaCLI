@@ -156,6 +156,9 @@ class DeployRow(BaseModel):
     outcome: Optional[str] = Field(None, description="success, failed...")
     current: bool = Field(description="The code is at this deploy now")
     repositories: List[DeployRepository] = Field(description="Each repository's commits before and after")
+    unserved: Optional[Dict[str, Any]] = Field(
+        None, description="An instance updated without stopping: the time its users were not served, measured "
+                          "(seconds, failed and asked of the asks every 100 ms through nginx, how)")
 
 
 class Deploys(BaseModel):

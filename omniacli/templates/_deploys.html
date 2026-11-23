@@ -88,6 +88,8 @@
     restoreAdmin: {{ _("An admin who logs in here restores it from Backups.") | tojson }},
     nothing: {{ _("Every repository is at the commits of that deploy already.") | tojson }},
     error: {{ _("Error {status}") | tojson }}, unreachable: {{ _("OmniaCLI cannot be reached") | tojson }},
+    unserved: {{ _("users not served: {seconds} s") | tojson }}, unservedNone: {{ _("users not served: none") | tojson }},
+    unservedTitle: {{ _("Measured while the job worked: the instance's name asked through nginx every 100 ms, {failed} of {asked} asks without an answer") | tojson }},
   };
   const fill = (text, values) => text.replace(/\{(\w+)\}/g, (m, k) => (k in values ? values[k] : m));
   const el = (tag, attrs = {}, ...children) => {
@@ -149,7 +151,9 @@
       }
       return el("tr", {"data-deploy": d.id, "data-kind": d.kind},
                 el("td", {class: "when"}, whenText(d.finished)), codeCell(d), el("td", {}, d.by),
-                el("td", {class: "status " + (d.outcome || "")}, status, d.error ? el("div", {class: "dp-subject"}, d.error) : null),
+                el("td", {class: "status " + (d.outcome || "")}, status, d.error ? el("div", {class: "dp-subject"}, d.error) : null,
+                   d.unserved ? el("div", {class: "dp-subject", title: fill(T.unservedTitle, {failed: d.unserved.failed, asked: d.unserved.asked})},
+                                   d.unserved.seconds ? fill(T.unserved, {seconds: d.unserved.seconds}) : T.unservedNone) : null),
                 el("td", {}, backup), el("td", {class: "row-open"}, action));
     }));
   }
