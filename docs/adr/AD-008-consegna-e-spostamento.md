@@ -768,6 +768,12 @@ Le route vanno in `app.py`, come per le staging.
 - **Un nome di utente che il cliente ha già**: entra come `<nome>.<ws>`. UX-014 non lo prevede: serve una riga nel
   passo 2 di §A5.
 
+### Decise da Carlo (23/11/2026)
+
+Backup locali nello spostamento B: viaggiano tutti. L'inoltro decifrato fino a 7 giorni (AD-012 A) va bene, il
+riepilogo lo dice. Un nome di utente che il cliente ha già entra come `<nome>.<ws>`. «Torna su lab1» per un database
+dedicato copia il database intero (accettato con la raccomandata); il testo di UX-014 B6 va corretto.
+
 ## Non verificato
 
 - `dcf5cab` (la pagina di manutenzione) non è su `carlo_dev_2026`: UX-014 §0 la dà per esistente.
