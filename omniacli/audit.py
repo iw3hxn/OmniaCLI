@@ -46,6 +46,7 @@ SENSITIVE_READS = {
     "/enterprise": "Odoo Enterprise access (its address, its SSH key)",
     "/x/odoo/servers/{server}/{role}/odoo-config": "Odoo configuration file",
     "/api/machine/ssh-keys": "SSH keys of the machine",
+    "/api/access/users/sessions": "sessions of a user (addresses, browsers)",
 }
 
 # reads the route logs itself, with more than a read would say
@@ -63,6 +64,9 @@ NOT_SENSITIVE = frozenset({
     "/favicon.ico", "/icon-180.png", "/login-background.jpg", "/login", "/.omniacli/login", "/language/{code}",
     # the second step of a login (its outcome is logged by the route)
     "/login/code", "/login/setup",
+    # the single sign-on of a workspace (sso.py): the way to its provider and back; the outcome
+    # (login, refused, a user made) the routes log
+    "/sso/{workspace}/start", "/sso/{workspace}/callback",
     # OAuth (oauth.py): the public metadata of the discovery, the authorization request and the consent
     # page; what they give (consent given or refused, token issued, refreshed, revoked) the routes log
     "/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp",

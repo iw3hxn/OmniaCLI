@@ -392,6 +392,8 @@ class Settings:
     web: Access = field(default_factory=Access)
     # the grants of the OAuth clients (oauth.OAuthStore, set by the app): their tokens are named oauth:…
     oauth: object = None
+    # the networks of the LAN the identity providers of single sign-on may be on (main configuration, sso:)
+    sso_networks: tuple = ()
 
     def storage_problem(self, ws: Workspace) -> str | None:
         """Why ws cannot use its storage, None when it can (or has none yet)."""
@@ -2357,10 +2359,29 @@ def parse_settings(data: dict, base_dir: Path = Path(".")) -> Settings:
         storage_error=storage_error,
         machine=parse_machine(data.get("machine"), os.environ.get("OMNIACLI_USER")),
         fixed=fixed,
+        sso_networks=parse_sso_networks(data.get("sso")),
     )
     settings.set_web_access(load_access(users_file))
     apply_sites(settings.servers, settings.workspaces, load_web_names(servers_file.parent / WEB_NAMES_FILE))
     return settings
+
+
+def parse_sso_networks(data) -> tuple:
+    """sso.private_networks of the main configuration: the networks of the
+    LAN an identity provider of single sign-on may be on (sso.py; a Keycloak
+    of the company). None: the providers are reached on the internet only,
+    and a workspace's admin cannot make this machine call its LAN."""
+    if data in (None, ""):
+        return ()
+    if not isinstance(data, dict):
+        raise ConfigError("sso must be a mapping")
+    found = []
+    for item in data.get("private_networks") or []:
+        try:
+            found.append(ipaddress.ip_network(str(item), strict=False))
+        except ValueError as exc:
+            raise ConfigError(f"sso.private_networks: {item!r} is not a network (10.0.0.0/8, 192.0.2.7/32)") from exc
+    return tuple(found)
 
 
 def logs_dir_of(jobs_dir: Path) -> Path:

@@ -4,6 +4,7 @@ annotated-doc==0.0.5
 annotated-types==0.8.0
 anyio==4.15.1
 attrs==26.1.0
+cbor2==6.2.0.post2
 certifi==2026.10.19
 cffi==2.1.1
 click==8.5.0
@@ -24,10 +25,13 @@ MarkupSafe==3.0.4
 mcp==2.3.0
 mcp-types==2.3.0
 opentelemetry-api==1.45.1
+pyasn1==0.6.5
+pyasn1_modules==0.4.2
 pycparser==3.11
 pydantic==2.14.1
 pydantic_core==2.50.1
 PyJWT==2.15.1
+pyOpenSSL==26.4.0
 python-dateutil==3.0.0
 python-multipart==0.0.32
 PyYAML==6.0.3
@@ -42,4 +46,5 @@ typing-inspection==0.4.4
 typing_extensions==4.16.0
 tzdata==2026.5
 uvicorn==0.54.0
+webauthn==3.0.1
 websockets==16.1.1

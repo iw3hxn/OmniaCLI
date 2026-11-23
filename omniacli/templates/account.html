@@ -3,6 +3,10 @@
 {% from "_oauth_grants.html" import grants_table, grants_script with context %}
 {% block title %}{{ _("Account") }} · OmniaCLI{% endblock %}
 {% block content %}
+<style>
+.section-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+.section-head h2 { margin: 0; }
+</style>
 {% set role_names = {"user": _("user"), "developer": _("developer"), "admin": _("admin"), "workspace": _("workspace")} %}
 <div class="page-head">
   <div>
@@ -128,10 +132,122 @@ document.getElementById("password-form").onsubmit = async (event) => {
   });
 })();
 </script>
+{#- passkeys (README, Passkeys): each of the address it was made on #}
+<section class="panel" id="passkeys">
+  <div class="section-head"><h2>{{ _("Passkeys") }}</h2>
+    {% if passkeys_available and passkey_rp %}<button type="button" class="small" id="pk-add" hidden title="{{ _('Makes a passkey of this address on this device (or on a phone or a security key): the browser asks its PIN, fingerprint or face. Then it logs you in without the password and without a code.') }}">{{ _("Add a passkey…") }}</button>{% endif %}</div>
+  <p class="muted" style="margin: 4px 0 10px">{{ _("A passkey logs you in without the password: the browser keeps it, and asks its PIN, fingerprint or face. After the password, it is also the second step in the place of the code.") }}
+    {% if passkey_rp %}{{ _("Those made here are of {address}: on another address of OmniaCLI (the customers' portal, the panel) make one there too.", address=passkey_rp) }}{% endif %}</p>
+  {% if not passkeys_available %}<div class="banner info">{{ _("Passkeys need Python 3.10 or newer on this machine (the webauthn library).") }}</div>
+  {% elif not passkey_rp %}<div class="banner info">{{ _("Passkeys work on a name of this machine over HTTPS (or localhost), not on an address: open OmniaCLI by its name to make one.") }}</div>
+  {% endif %}
+  <div id="pk-error" class="banner" hidden></div>
+  {% if passkeys %}
+  <div class="scroll"><table>
+    <tr><th>{{ _("Passkey") }}</th><th>{{ _("Address") }}</th><th>{{ _("Made") }}</th><th>{{ _("Last used") }}</th><th></th></tr>
+    {% for k in passkeys %}
+    <tr data-passkey="{{ k.id }}" data-name="{{ k.name }}"><td><strong>{{ k.name }}</strong>{% if k.synced %} <span class="badge" title="{{ _('The device copies it to the other devices of its account (a password manager, iCloud, Google)') }}">{{ _("synced") }}</span>{% endif %}</td>
+      <td class="mono">{{ k.rp }}{% if k.here %} <span class="badge ok" title="{{ _('The address of this page: this passkey works here') }}">{{ _("here") }}</span>{% endif %}</td>
+      <td>{{ k.created }}</td><td>{{ k.used or "—" }}</td>
+      <td style="text-align: right"><button type="button" class="small danger" data-pk-remove title="{{ _('Takes the passkey away: it logs you in no more. Not the last second step where two-step verification is required for you. It goes in the access log.') }}">{{ _("Remove…") }}</button></td></tr>
+    {% endfor %}
+  </table></div>
+  {% else %}<p class="muted" style="margin: 0">{{ _("No passkey yet.") }}</p>{% endif %}
+</section>
+<dialog id="pk-dialog" aria-labelledby="pk-title">
+  <form id="pk-form">
+    <h2 id="pk-title">{{ _("Add a passkey") }}</h2>
+    <p>{{ _("Give it the name of where it is, then the browser asks where to keep it and its PIN, fingerprint or face.") }}</p>
+    <p><label>{{ _("Name") }}<br><input type="text" id="pk-name" maxlength="40" required placeholder="{{ _('Laptop, Phone…') }}" autocomplete="off"></label></p>
+    <p class="error" id="pk-dialog-error" role="alert"></p>
+    <div class="actions">
+      <button type="button" id="pk-cancel" title="{{ _('Closes without making a passkey') }}">{{ _("Cancel") }}</button>
+      <button type="submit" class="primary" title="{{ _('Asks the browser to make the passkey of this address, then saves it here') }}">{{ _("Create the passkey") }}</button>
+    </div>
+  </form>
+</dialog>
+{% include "_passkey_js.html" %}
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const post = async (path, body) => {
+    const resp = await fetch("{{ prefix }}/api/account/" + path, {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body || {})}).catch(() => null);
+    const data = resp ? await resp.json().catch(() => ({})) : {};
+    if (!resp || !resp.ok) throw new Error(data.error || data.detail || (resp ? {{ _("Error") | tojson }} + " " + resp.status : {{ _("OmniaCLI cannot be reached") | tojson }}));
+    return data;
+  };
+  const add = $("pk-add"), dialog = $("pk-dialog");
+  if (add && OmniaPasskey.supported()) add.hidden = false;
+  if (add) add.onclick = () => { $("pk-name").value = ""; $("pk-dialog-error").textContent = ""; dialog.showModal(); $("pk-name").focus(); };
+  $("pk-cancel").onclick = () => dialog.close();
+  $("pk-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const box = $("pk-dialog-error"); box.textContent = "";
+    try {
+      const options = await post("passkeys/options", {name: $("pk-name").value});
+      const credential = await OmniaPasskey.create(options.publicKey);
+      await post("passkeys/register", {credential});
+      location.reload();
+    } catch (e) {
+      box.textContent = OmniaPasskey.cancelled(e) ? {{ _("The browser did not make the passkey (closed, or no device answered).") | tojson }} : (e.message || String(e));
+    }
+  });
+  for (const button of document.querySelectorAll("[data-pk-remove]")) {
+    button.onclick = async () => {
+      const row = button.closest("tr");
+      if (!await omniaAsk({{ _("Remove the passkey {name}? It logs you in no more.") | tojson }}.replace("{name}", row.dataset.name), button, {danger: true})) return;
+      try { await post("passkeys/delete", {id: row.dataset.passkey}); location.reload(); }
+      catch (e) { $("pk-error").textContent = e.message; $("pk-error").hidden = false; }
+    };
+  }
+})();
+</script>
 </div>
 {#- the assistants let in with OAuth (oauth.py): wider than the forms above, a table #}
 <div style="max-width: 820px; margin-top: 16px">
-<section class="panel" id="assistants">
+{#- where the person is logged in now (README, Login and security, Sessions): ended one by one or all the others #}
+<section class="panel" id="sessions">
+  <div class="section-head"><h2>{{ _("Sessions") }} ({{ sessions | length }})</h2>
+    {% if sessions | length > 1 %}<button type="button" class="small danger" id="ss-others" title="{{ _('Logs you out of every other browser at once: their next click asks the login again. This one stays. It goes in the access log.') }}">{{ _("End all the others…") }}</button>{% endif %}</div>
+  <p class="muted" style="margin: 4px 0 10px">{{ _("The browsers where you are logged in now. One you do not know: end it, then change your password.") }}</p>
+  <div id="ss-error" class="banner" hidden></div>
+  <div class="scroll"><table>
+    <tr><th>{{ _("Device") }}</th><th>{{ _("Address") }}</th><th>{{ _("Began") }}</th><th>{{ _("Last activity") }}</th><th>{{ _("How") }}</th><th></th></tr>
+    {% for s in sessions %}
+    <tr data-session="{{ s.id }}" data-device="{{ s.device }}"><td title="{{ s.ua }}"><strong>{{ s.device }}</strong></td><td class="mono">{{ s.ip or "—" }}</td>
+      <td>{{ s.since or "—" }}</td><td>{{ s.seen or "—" }}</td><td>{{ s.how_said }}</td>
+      <td style="text-align: right">{% if s.current %}<span class="badge ok" title="{{ _('The session of this browser: Log out ends it') }}">{{ _("this session") }}</span>
+        {% else %}<button type="button" class="small danger" data-ss-end title="{{ _('Logs that browser out at once: its next click asks the login again. It goes in the access log.') }}">{{ _("End") }}</button>{% endif %}</td></tr>
+    {% endfor %}
+  </table></div>
+</section>
+<script>
+(function () {
+  const box = document.getElementById("ss-error");
+  const end = async (body) => {
+    const resp = await fetch("{{ prefix }}/api/account/sessions/end", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body)}).catch(() => null);
+    const data = resp ? await resp.json().catch(() => ({})) : {};
+    if (resp && resp.ok) { location.reload(); return; }
+    box.textContent = data.error || data.detail || (resp ? {{ _("Error") | tojson }} + " " + resp.status : {{ _("OmniaCLI cannot be reached") | tojson }});
+    box.hidden = false;
+  };
+  for (const button of document.querySelectorAll("[data-ss-end]")) {
+    button.onclick = async () => {
+      const row = button.closest("tr");
+      if (!await omniaAsk({{ _("End the session of {device}? That browser is logged out at once.") | tojson }}.replace("{device}", row.dataset.device), button, {danger: true})) return;
+      await end({id: row.dataset.session});
+    };
+  }
+  const others = document.getElementById("ss-others");
+  if (others) others.onclick = async () => {
+    if (!await omniaAsk({{ _("End every other session? Only this browser stays logged in.") | tojson }}, others, {danger: true})) return;
+    await end({all: true});
+  };
+})();
+</script>
+<section class="panel" id="assistants" style="margin-top: 16px">
   <h2>{{ _("Connected assistants") }}</h2>
   <p class="muted" style="margin: 0 0 10px">{{ _("The AI assistants (claude.ai, ChatGPT, Claude Desktop…) you let in with OAuth: each acts as you, with the level you chose. They connect to") }} <span class="mono">{{ mcp_url }}</span>.</p>
   {{ grants_table(grants, people=false) }}

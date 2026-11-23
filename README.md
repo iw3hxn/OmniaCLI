@@ -3807,6 +3807,130 @@ internet is not.
   policy changed; wrong codes are *Failed login* entries ("second step:
   wrong code"); a login says how it passed ("login form, second step: code").
 
+#### Sessions
+
+**Account › Sessions** lists every browser where the person is logged in
+now: the device read from its User-Agent ("Chrome on Linux", "Safari on
+iOS"), the address of its last request, when it began, its last activity
+(written at most once a minute), how it was opened (password, password and
+a code of the app, passkey, single sign-on of a provider) and *this
+session*. **End** logs one out at once (its next request is refused, its
+next page is the login); **End all the others…** keeps only this browser;
+this browser's own ends with Log out. On **Settings › Users** the machine's
+admins open **Sessions (n)…** of a user and end one or all of them (their
+own browser excepted). A session is named on the pages by a digest of the
+digest `sessions.json` keeps: it opens nothing. In the access log: *Session
+ended* ("session ended by admin (Users): Firefox on Windows from
+203.0.113.9, began 23/11/2026 10:02"); the list read by an admin is a read
+of security data. A shell already open stays open until it closes: ending a
+session refuses its next request, not a WebSocket already connected.
+
+#### Passkeys
+
+A passkey (WebAuthn) is a key pair the person's device keeps — a laptop's
+or a phone's authenticator, a password manager, a security key — used with
+its PIN, fingerprint or face. It is both:
+
+- **a login without password nor code**: **Log in with a passkey** on the
+  login page; the browser offers the passkeys it has for this address (a
+  discoverable credential) and asks the person to verify (user verification
+  required), so it is two factors by itself and no code is asked;
+- **the second step after the password**, in the place of the code of an
+  app: the code page shows **Use your passkey** (and only it, when the user
+  has no app).
+
+**Account › Passkeys › Add a passkey…** names it (*Laptop*, *Phone*) and
+asks the browser to make it; the list shows each one's address, when it was
+made and last used, *synced* when the device copies it to its other
+devices; **Remove…** takes one away. Where two-step verification is
+required for the person, the last second step cannot be removed (another
+passkey or the code of an app first). An admin's **Reset two-step…**
+(Users, a workspace's Users tab) takes the passkeys away too: a lost phone
+may be the passkey's device.
+
+- **The address**: the RP ID is the name the browser opened OmniaCLI on (the
+  Host without the port). The panel's name and the customers' portal are two
+  RP IDs: a passkey made on one works there only, and is listed with it;
+  make one on each. WebAuthn wants a name over HTTPS: on an IP address no
+  passkey is offered; `localhost` over http (an SSH tunnel to the panel)
+  works.
+- **Through a link**: a passkey is of the machine that serves the login
+  page. A person who reaches another machine through this panel's link is
+  logged in here already; the other machine trusts the link and asks no
+  passkey (its Account is not reachable through a link).
+- **Checks** (py_webauthn, the `webauthn` package, 3.x): the challenge
+  (random, 5 minutes, taken once), the origin, the RP ID's hash, the user's
+  presence and verification, the signature, a counter that must grow (a
+  cloned key is refused); attestation is not asked. A passkey refused counts
+  with the failed logins (the same waits).
+- **Kept** in `passkeys.json` next to the users file (mode 600): per user a
+  random handle (not the name) and each passkey's credential id, public
+  key, counter, name, address, dates. A deleted user's go with it.
+- **Python 3.10** or newer (the library's): an older Python runs without
+  passkeys and the pages do not offer them, as without MCP.
+- In the access log: *Passkey* (registered, removed), logins ("passkey
+  «Laptop», without password"; "login form, second step: passkey
+  «Phone»"), refused ones as *Failed login* ("passkey: «Laptop» not
+  verified: …").
+
+#### Single sign-on
+
+A workspace's admins can let its people log in with the account of their
+company (OpenID Connect: Microsoft Entra ID, Google Workspace, Okta,
+Keycloak, authentik…): the workspace's page › Users › **Single sign-on ›
+Set up…** takes the name on the button, the **issuer**, the **client ID**
+and **client secret** the provider gave (the secret is never shown again:
+an empty field keeps it), the **e-mail domains** let in, the **role** of a
+new person (default *user*) and whether **the provider's MFA counts** as
+the second step. The dialog shows the redirect URI to register at the
+provider (`https://<portal>/sso/<workspace>/callback`); saving reads the
+provider's discovery document first. The page then gives the login to send
+to the people, `https://<portal>/login?sso=<workspace>`, with **Log in
+with <name>**; a browser that used it once sees the button again by itself.
+
+- **The flow**: authorization code with PKCE (S256), a `state` bound to the
+  browser by a cookie of its own and taken once, a `nonce`; the token
+  endpoint with the client secret (`client_secret_basic`, or `_post` when
+  the provider lists only that). The ID token is checked here: its
+  signature against the provider's JWKS (RS256/384/512, PS256/384/512,
+  ES256/384/512; never `none` nor an HMAC), `iss` the issuer exactly, `aud`
+  the client ID (and `azp`), `exp` and `iat` with 2 minutes of clock, the
+  nonce. The e-mail must be verified by the provider (`email_verified`) and
+  of an allowed domain: a provider that does not send `email_verified`
+  (Microsoft Entra ID without its optional claim) is refused.
+- **The person**: the first login links the identity (issuer and subject)
+  to the workspace's user named as the e-mail when one exists and is a user
+  of this workspace only; otherwise it makes that user, a user of
+  workspaces with the role chosen. A user of that name who is of the
+  machine or of other workspaces is never taken by a provider (refused: ask
+  the admin). Later logins find the identity, even if the e-mail changed.
+- **The second step**: with *the provider's MFA counts* ticked, the login
+  is done; otherwise OmniaCLI's own two-step verification is asked where it
+  is required (the portal's policy asks it of the users of the workspaces:
+  set up at the first login). OmniaCLI does not read `amr`: ticking it is
+  the admin's statement that the provider asks a second factor.
+- **The SSRF guard** of the OAuth work (oauth.py) carries every request to
+  the provider (discovery, token, keys): https only, every address the name
+  resolves to of the internet, the request sent to the address checked, no
+  redirect, 10 s, 256 KB; the certificates against the machine's trust
+  store. A provider of the LAN (a company's Keycloak) needs the machine's
+  administrator to let its network in, in the main configuration:
+  `sso: {private_networks: [10.20.0.0/16]}`; a workspace's admin cannot make
+  the machine call its LAN.
+- **Why not authlib**: every request must go through that guard, which
+  authlib's clients do not; the ID token's checks are written in `sso.py`
+  with `cryptography` (already a dependency), each named after OIDC Core
+  §3.1.3.7.
+- **Kept** in `sso.json` next to the users file (mode 600): each
+  workspace's provider and the identities that logged in. A deleted
+  workspace's goes with it.
+- In the access log: *Single sign-on* (set, changed, removed, by whom; a
+  user made by it), logins ("single sign-on Acme ID"), refused ones as
+  *Failed login* ("single sign-on Acme ID (acme): the e-mail's domain
+  evil.example is not allowed", "… the signature of the ID token is not
+  the provider's").
+- Not built: single sign-on for the machine's own users (Settings), SAML.
+
 Every page is sent with `X-Frame-Options: DENY` and `Content-Security-Policy:
 frame-ancestors 'none'` (no framing by other sites), `X-Content-Type-Options:
 nosniff`, `Referrer-Policy: same-origin`, and over HTTPS
@@ -4071,7 +4195,7 @@ been possible: thank you.
 
 OmniaCLI also builds on [Odoo](https://www.odoo.com), and on FastAPI,
 Starlette, Uvicorn, websockets, Jinja, HTTPX, PyYAML, croniter, cryptography,
-segno (the QR codes of two-step verification) and the MCP Python SDK.
+segno (the QR codes of two-step verification), py_webauthn (the passkeys) and the MCP Python SDK.
 The terminal of the shell page is [xterm.js](https://github.com/xtermjs/xterm.js)
 with its fit addon (MIT, shipped in `omniacli/static`).
 

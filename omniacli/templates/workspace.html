@@ -210,6 +210,22 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
       <dt>{{ _("admin") }}</dt><dd>{{ _("also manages these users") }}</dd>
     </dl>
   </details>
+  {#- the workspace's single sign-on (README, Single sign-on): its people log in with their company's account #}
+  <div id="sso" style="margin-top: 18px; border-top: 1px solid var(--border); padding-top: 14px">
+    <div class="section-head"><h3 style="margin: 0">{{ _("Single sign-on") }}</h3>
+      <div class="actions" style="margin: 0">
+        {% if sso %}<button type="button" class="small danger" id="sso-remove" title="{{ _('Takes the provider away: its people log in no more with it, only with a password an admin gives them. It goes in the access log.') }}">{{ _("Remove…") }}</button>{% endif %}
+        <button type="button" class="small" id="sso-edit" title="{{ _('The identity provider of your company (Microsoft Entra ID, Google Workspace, Okta, Keycloak…) its people log in with: issuer, client ID and secret, the e-mail domains let in') }}">{{ _("Edit…") if sso else _("Set up…") }}</button>
+      </div></div>
+    {% if sso %}
+    <p class="ws-line" style="margin: 6px 0 0">{{ _("People of {domains} log in with {name}: the first time a user of this workspace is made for them, with the role {role}.", domains=sso.domains | join(", "), name=sso.name, role=role_names.get(sso.role, sso.role)) }}
+      {% if sso.mfa %}{{ _("Its multi-factor authentication counts as the second step.") }}{% else %}{{ _("OmniaCLI's two-step verification is asked too, where it is required.") }}{% endif %}
+      {{ _("People who logged in with it: {count}.", count=sso_people) }}</p>
+    <p class="muted small" style="margin: 6px 0 0">{{ _("The login to give them:") }} <span class="mono copyable">{{ sso_login }}</span></p>
+    {% else %}
+    <p class="muted ws-line" style="margin: 6px 0 0">{{ _("Off: the users of this workspace log in with a password. With single sign-on they log in with the account of their company, and a new person of an allowed domain gets a user by itself.") }}</p>
+    {% endif %}
+  </div>
 </section>
 
 {# D. what the workspace talks to outside: four short sections #}
@@ -394,6 +410,29 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
 </dialog>
 {% endif %}
 
+{# the provider of the single sign-on, set or changed #}
+<dialog id="sso-dialog" aria-labelledby="sso-title">
+  <form id="sso-form">
+    <h2 id="sso-title">{{ _("Single sign-on") }}</h2>
+    <p class="muted" style="font-size: 13px">{{ _("At the provider, register OmniaCLI as a web application (OpenID Connect, authorization code) with this redirect URI:") }}<br>
+      <span class="mono copyable">{{ sso_redirect }}</span></p>
+    <p><label>{{ _("Name on the button") }}<br><input type="text" id="sso-name" maxlength="40" required value="{{ sso.name if sso }}" placeholder="Microsoft"></label></p>
+    <p><label>{{ _("Issuer") }}<br><input type="url" id="sso-issuer" required class="mono" value="{{ sso.issuer if sso }}" placeholder="https://login.microsoftonline.com/<tenant>/v2.0"></label></p>
+    <p><label>{{ _("Client ID") }}<br><input type="text" id="sso-client" required class="mono" autocomplete="off" value="{{ sso.client_id if sso }}"></label></p>
+    <p><label>{{ _("Client secret") }}<br><input type="password" id="sso-secret" class="mono" autocomplete="new-password" {{ "" if sso else "required" }}
+      placeholder="{{ _('empty: it stays the one saved') if sso else '' }}"></label>
+      <span class="muted small">{{ _("It is not shown again: OmniaCLI keeps it in a file only it reads.") }}</span></p>
+    <p><label>{{ _("E-mail domains let in") }}<br><input type="text" id="sso-domains" required value="{{ sso.domains | join(', ') if sso }}" placeholder="example.com"></label></p>
+    <p><label>{{ _("Role of a new person") }}<br><select id="sso-role">
+      {% for r in roles %}<option value="{{ r }}" {{ "selected" if (sso.role if sso else "user") == r }}>{{ role_names.get(r, r) }}</option>{% endfor %}</select></label></p>
+    <p><label><input type="checkbox" id="sso-mfa" {{ "checked" if sso and sso.mfa }}> {{ _("The provider asks a second factor: OmniaCLI does not ask its own") }}</label></p>
+    <p class="error" id="sso-error" role="alert"></p>
+    <div class="actions">
+      <button type="button" id="sso-cancel" title="{{ _('Closes without saving') }}">{{ _("Cancel") }}</button>
+      <button type="submit" class="primary" title="{{ _('Reads the discovery document of the provider to check the issuer, then saves. It goes in the access log.') }}">{{ _("Save") }}</button>
+    </div>
+  </form>
+</dialog>
 {# one dialog for a new one and for a change: a user of the workspace, a key of an assistant #}
 <dialog id="item-dialog" aria-labelledby="id-title">
   <form method="dialog" id="id-form">
@@ -929,6 +968,22 @@ dialog .field-help { display: block; font-size: 13px; margin-top: 3px; }
       if (await post("members/second-factor/reset", {name})) location.reload();
     };
   }
+  // the single sign-on: its provider in a dialog; removed after a question
+  const ssoDialog = $("sso-dialog");
+  $("sso-edit").onclick = () => { $("sso-error").textContent = ""; $("sso-secret").value = ""; ssoDialog.showModal(); $("sso-name").focus(); };
+  $("sso-cancel").onclick = () => ssoDialog.close();
+  $("sso-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const body = {name: $("sso-name").value, issuer: $("sso-issuer").value.trim(), client_id: $("sso-client").value.trim(),
+                  client_secret: $("sso-secret").value, domains: $("sso-domains").value, role: $("sso-role").value,
+                  mfa: $("sso-mfa").checked};
+    if (await post("sso/save", body, $("sso-error"))) location.reload();
+  });
+  const ssoRemove = $("sso-remove");
+  if (ssoRemove) ssoRemove.onclick = async () => {
+    if (!await omniaAsk({{ _("Remove the single sign-on of this workspace? Its people log in with it no more: an admin gives them a password.") | tojson }}, ssoRemove, {danger: true})) return;
+    if (await post("sso/delete", {})) location.reload();
+  };
 
   // whom the monitor tells: the list in a dialog, saved once it is changed
   const notifyDialog = $("notify-dialog"), notifyList = $("notify-list"), notifyBefore = notifyList.value;

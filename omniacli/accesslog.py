@@ -247,7 +247,10 @@ class AccessLog:
         """event: login, logout, failed, mcp, shell, tunnel, action, read,
         download, login-as, job, siem, second-factor (two-step
         verification, totp.py) or oauth (oauth.py: a client registered, a
-        consent given or refused, a token issued, refreshed, revoked); kind:
+        consent given or refused, a token issued, refreshed, revoked),
+        passkey (registered, removed: passkeys.py), session (one ended by
+        its person or an admin) or sso (a workspace's single sign-on set,
+        changed, removed, a user made by it: sso.py); kind:
         user, link, token or mcp.
         extra: the FIELDS this entry knows (they win over the request's);
         context False: none taken from the request being served (a job's end)."""

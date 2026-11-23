@@ -1,0 +1,40 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{#- the browser's side of a passkey (passkeys.py): the options of the server to the WebAuthn API and its answer
+    back as JSON (base64url), for the login page and Account; window.OmniaPasskey.supported() first #}
+<script>
+window.OmniaPasskey = (function () {
+  const toBytes = (text) => {
+    const b64 = text.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((text.length + 3) % 4);
+    return Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)).buffer;
+  };
+  const toText = (buffer) => {
+    if (!buffer) return null;
+    let s = ""; for (const b of new Uint8Array(buffer)) s += String.fromCharCode(b);
+    return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  };
+  const ids = (list) => (list || []).map((c) => ({...c, id: toBytes(c.id)}));
+  const common = (cred) => ({id: cred.id, rawId: toText(cred.rawId), type: cred.type,
+    authenticatorAttachment: cred.authenticatorAttachment || null,
+    clientExtensionResults: cred.getClientExtensionResults ? cred.getClientExtensionResults() : {}});
+  return {
+    supported: () => !!(window.PublicKeyCredential && window.isSecureContext && navigator.credentials),
+    async create(options) {
+      const publicKey = {...options, challenge: toBytes(options.challenge), user: {...options.user, id: toBytes(options.user.id)},
+                         excludeCredentials: ids(options.excludeCredentials)};
+      const cred = await navigator.credentials.create({publicKey});
+      const r = cred.response;
+      return {...common(cred), response: {clientDataJSON: toText(r.clientDataJSON), attestationObject: toText(r.attestationObject),
+                                          transports: r.getTransports ? r.getTransports() : []}};
+    },
+    async get(options) {
+      const publicKey = {...options, challenge: toBytes(options.challenge), allowCredentials: ids(options.allowCredentials)};
+      const cred = await navigator.credentials.get({publicKey});
+      const r = cred.response;
+      return {...common(cred), response: {clientDataJSON: toText(r.clientDataJSON), authenticatorData: toText(r.authenticatorData),
+                                          signature: toText(r.signature), userHandle: toText(r.userHandle)}};
+    },
+    // the person closed the browser's dialog, or let it time out: no error to show
+    cancelled: (e) => e && (e.name === "NotAllowedError" || e.name === "AbortError"),
+  };
+})();
+</script>

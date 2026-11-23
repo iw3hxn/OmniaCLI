@@ -58,7 +58,9 @@
         {% elif u.invitation %} <span class="badge error" title="{{ _('The link was not used in time: the person cannot log in. Send it again or revoke it.') }}">{{ _("invitation expired on {date}", date=u.invitation.expires) }}</span>{% endif %}</td>
       <td>{{ role_names.get(u.role, u.role) }}
         {% if u.workspaces %}<span class="small-note">{% for w in u.workspaces %}<a href="{{ prefix }}/workspaces/{{ w }}#users">{{ w }}</a>{% if not loop.last %}, {% endif %}{% endfor %}</span>{% endif %}</td>
-      <td>{% if u.fixed and u.two_step and u.name != account %}<div class="actions" style="margin: 0; justify-content: flex-end">
+      <td>{% if u.sessions and u.name != account %}<div class="actions" style="margin: 0 0 4px; justify-content: flex-end">
+        <button type="button" class="small" data-sessions title="{{ _('The browsers where this user is logged in now (device, address, since when), each to end at once') }}">{{ _("Sessions ({count})…", count=u.sessions) }}</button></div>{% endif %}
+        {% if u.fixed and u.two_step and u.name != account %}<div class="actions" style="margin: 0; justify-content: flex-end">
         <button type="button" class="small" data-reset-two-step title="{{ _('Switches the two-step verification of this user off, for a lost phone: it sets it up again, at its next login where it is required. It goes in the access log.') }}">{{ _("Reset two-step…") }}</button></div>{% endif %}
         {% if not u.fixed %}<div class="actions" style="margin: 0; justify-content: flex-end">
         {% if u.two_step and u.name != account %}<button type="button" class="small" data-reset-two-step title="{{ _('Switches the two-step verification of this user off, for a lost phone: it sets it up again, at its next login where it is required. It goes in the access log.') }}">{{ _("Reset two-step…") }}</button>{% endif %}
@@ -180,6 +182,17 @@
       <span id="id-save-wrap"><button type="submit" class="primary" id="id-save" disabled></button></span>
     </div>
   </form>
+</dialog>
+{#- a user's sessions (README, Login and security, Sessions): read when the dialog opens, each ended at once #}
+<dialog id="sessions-dialog" aria-labelledby="ssd-title" style="max-width: min(760px, calc(100vw - 32px))">
+  <h2 id="ssd-title"></h2>
+  <p class="muted" style="font-size: 13px">{{ _("Ending one logs that browser out at once: its next click asks the login again. It goes in the access log.") }}</p>
+  <p class="error" id="ssd-error" role="alert"></p>
+  <div class="scroll"><table id="ssd-table"></table></div>
+  <div class="actions">
+    <button type="button" id="ssd-close" title="{{ _('Closes the list: nothing is ended') }}">{{ _("Close") }}</button>
+    <button type="button" class="danger" id="ssd-all" title="{{ _('Logs this user out of every browser at once') }}">{{ _("End them all…") }}</button>
+  </div>
 </dialog>
 <dialog id="secret-dialog" aria-labelledby="sd-title">
   <h2 id="sd-title"></h2>
@@ -408,6 +421,51 @@
       if (await post("users/second-factor/reset", {name}, errorBox)) location.reload();
     };
   }
+  // a user's sessions: listed in their dialog, ended one by one or all
+  const sessionsDialog = $("sessions-dialog");
+  const S = {title: {{ _("Sessions of {name}") | tojson }}, device: {{ _("Device") | tojson }}, address: {{ _("Address") | tojson }},
+             began: {{ _("Began") | tojson }}, seen: {{ _("Last activity") | tojson }}, how: {{ _("How") | tojson }},
+             end: {{ _("End") | tojson }}, endHelp: {{ _("Logs that browser out at once") | tojson }},
+             none: {{ _("No open session: the user is logged in nowhere.") | tojson }},
+             allQ: {{ _("End every session of {name}? It is logged out of every browser at once.") | tojson }}};
+  let sessionsOf = "";
+  async function listSessions() {
+    const box = $("ssd-error"), table = $("ssd-table");
+    box.textContent = "";
+    const resp = await fetch("{{ prefix }}/api/access/users/sessions?name=" + encodeURIComponent(sessionsOf),
+      {headers: {Accept: "application/json"}}).catch(() => null);
+    const data = resp ? await resp.json().catch(() => ({})) : {};
+    if (!resp || !resp.ok) { box.textContent = data.error || data.detail || (T.error + " " + (resp ? resp.status : "")); return; }
+    table.replaceChildren();
+    const head = table.insertRow();
+    for (const t of [S.device, S.address, S.began, S.seen, S.how, ""]) { const th = document.createElement("th"); th.textContent = t; head.append(th); }
+    for (const s of data.sessions) {
+      const row = table.insertRow();
+      for (const [text, title] of [[s.device, s.ua], [s.ip || "—"], [s.since || "—"], [s.seen || "—"], [s.how_said]]) {
+        const cell = row.insertCell(); cell.textContent = text; if (title) cell.title = title;
+      }
+      const cell = row.insertCell(); cell.style.textAlign = "right";
+      const button = document.createElement("button");
+      Object.assign(button, {type: "button", className: "small danger", textContent: S.end, title: S.endHelp});
+      button.onclick = async () => { if (await post("users/sessions/end", {name: sessionsOf, id: s.id}, box)) listSessions(); };
+      cell.append(button);
+    }
+    $("ssd-all").hidden = !data.sessions.length;
+    if (!data.sessions.length) { const cell = table.insertRow().insertCell(); cell.colSpan = 6; cell.className = "muted"; cell.textContent = S.none; }
+  }
+  for (const button of document.querySelectorAll("[data-sessions]")) {
+    button.onclick = async () => {
+      sessionsOf = button.closest("tr").dataset.user;
+      $("ssd-title").textContent = S.title.replace("{name}", sessionsOf);
+      await listSessions();
+      sessionsDialog.showModal();
+    };
+  }
+  $("ssd-close").onclick = () => { sessionsDialog.close(); location.reload(); };
+  $("ssd-all").onclick = async () => {
+    if (!await omniaAsk(S.allQ.replace("{name}", sessionsOf), $("ssd-all"), {danger: true})) return;
+    if (await post("users/sessions/end", {name: sessionsOf, all: true}, $("ssd-error"))) listSessions();
+  };
 })();
 </script>
 <script>

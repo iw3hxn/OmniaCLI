@@ -239,6 +239,67 @@ async def _resolve(host: str, port: int) -> list[str]:
     return list(dict.fromkeys(item[4][0] for item in found))
 
 
+class FetchRefused(Exception):
+    """An outbound request not made, or not answered whole (guarded_fetch);
+    private: refused for an address that is not of the internet."""
+
+    def __init__(self, message: str, private: bool = False):
+        super().__init__(message)
+        self.private = private
+
+
+def _allowed(address: str, networks) -> bool:
+    """address is of the internet, or of one of networks (ipaddress networks
+    the main configuration lets in: an identity provider of the LAN)."""
+    if public_address(address):
+        return True
+    try:
+        ip = ipaddress.ip_address(address.split("%", 1)[0])
+    except ValueError:
+        return False
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return any(ip.version == net.version and ip in net for net in networks or ())
+
+
+async def guarded_fetch(url: str, method: str = "GET", form: dict | None = None, headers: dict | None = None,
+                        networks=(), verify=True, max_bytes: int = METADATA_MAX_BYTES,
+                        timeout: float = METADATA_TIMEOUT) -> tuple[int, bytes]:
+    """(status, body) of an https request to url, the SSRF guard around it:
+    every address its host resolves to of the internet (or of networks);
+    the request sent to the address checked (no second resolution that could
+    answer another), with no redirect followed, no proxy, timeout and
+    max_bytes at most. form: a POST's fields (x-www-form-urlencoded).
+    FetchRefused when it cannot be made or read."""
+    parts = urlsplit(url)
+    if parts.scheme != "https" or not parts.hostname:
+        raise FetchRefused(f"{url} is not an https:// address")
+    host, port = parts.hostname, parts.port or 443
+    addresses = await _resolve(host, port)
+    if not addresses:
+        raise FetchRefused(f"{host} does not resolve")
+    refused = [a for a in addresses if not _allowed(a, networks)]
+    if refused:
+        raise FetchRefused(f"{host} resolves to an address that is not of the internet ({refused[0]})", private=True)
+    address = addresses[0]
+    netloc = f"[{address}]" if ":" in address else address
+    target = urlunsplit(("https", f"{netloc}:{port}", parts.path, parts.query, ""))
+    sent = {"Host": parts.netloc.rsplit("@", 1)[-1], "Accept": "application/json", **(headers or {})}
+    try:
+        async with httpx.AsyncClient(transport=TRANSPORT, timeout=timeout, follow_redirects=False,
+                                     trust_env=False, verify=verify) as client:
+            async with client.stream(method, target, headers=sent, data=form,
+                                     extensions={"sni_hostname": host}) as resp:
+                body = b""
+                async for chunk in resp.aiter_bytes():
+                    body += chunk
+                    if len(body) > max_bytes:
+                        raise FetchRefused(f"{url} is larger than {max_bytes} bytes")
+                return resp.status_code, body
+    except httpx.HTTPError as exc:
+        raise FetchRefused(f"{url} cannot be fetched: {type(exc).__name__}") from None
+
+
 async def fetch_metadata(url: str) -> dict:
     """The client ID metadata document at url (an OAuthError when it cannot
     be had): its host must be of the internet only, every address it resolves
@@ -248,33 +309,13 @@ async def fetch_metadata(url: str) -> dict:
     problem = metadata_url_problem(url)
     if problem:
         raise OAuthError("invalid_client", problem)
-    parts = urlsplit(url)
-    host, port = parts.hostname, parts.port or 443
-    addresses = await _resolve(host, port)
-    if not addresses:
-        raise OAuthError("invalid_client", f"{host} does not resolve")
-    refused = [a for a in addresses if not public_address(a)]
-    if refused:
-        raise OAuthError("invalid_client", f"{host} resolves to an address that is not of the internet ({refused[0]}): "
-                         "a client's metadata is not fetched from a private network")
-    address = addresses[0]
-    netloc = f"[{address}]" if ":" in address else address
-    target = urlunsplit(("https", f"{netloc}:{port}", parts.path, "", ""))
-    headers = {"Host": parts.netloc.rsplit("@", 1)[-1], "Accept": "application/json"}
     try:
-        async with httpx.AsyncClient(transport=TRANSPORT, timeout=METADATA_TIMEOUT, follow_redirects=False,
-                                     trust_env=False) as client:
-            async with client.stream("GET", target, headers=headers,
-                                     extensions={"sni_hostname": host}) as resp:
-                if resp.status_code != 200:
-                    raise OAuthError("invalid_client", f"{url} answered {resp.status_code}")
-                body = b""
-                async for chunk in resp.aiter_bytes():
-                    body += chunk
-                    if len(body) > METADATA_MAX_BYTES:
-                        raise OAuthError("invalid_client", f"{url} is larger than {METADATA_MAX_BYTES} bytes")
-    except httpx.HTTPError as exc:
-        raise OAuthError("invalid_client", f"{url} cannot be fetched: {type(exc).__name__}") from None
+        code, body = await guarded_fetch(url)
+    except FetchRefused as exc:
+        said = str(exc) + (": a client's metadata is not fetched from a private network" if exc.private else "")
+        raise OAuthError("invalid_client", said) from None
+    if code != 200:
+        raise OAuthError("invalid_client", f"{url} answered {code}")
     try:
         data = json.loads(body)
     except ValueError:

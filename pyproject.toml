@@ -28,6 +28,8 @@ dependencies = [
     "segno>=1.6",
     # the MCP interface (/mcp); the SDK needs Python 3.10, older ones run without it
     "mcp>=2.3; python_version >= '3.10'",
+    # the passkeys (WebAuthn, passkeys.py); like MCP it needs Python 3.10, older ones run without passkeys
+    "webauthn>=3.0; python_version >= '3.10'",
 ]
 
 [project.optional-dependencies]

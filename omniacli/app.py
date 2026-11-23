@@ -62,6 +62,7 @@ from . import moduleupload, sshkeys
 from . import dumpinfo
 from . import totp
 from . import oauth
+from . import passkeys, sso
 from . import uploads as uploads_mod
 from .uploads import Uploads
 from .diskhistory import DiskHistory, DiskRecorder
@@ -145,7 +146,7 @@ from .metrics import Sampler
 from . import metricshistory
 from .metricshistory import MetricsHistory, MetricsRecorder
 from .scheduler import AutoUpdater
-from .sessions import COOKIE, LIFETIME, LoginLimiter, SessionStore
+from .sessions import COOKIE, LIFETIME, LoginLimiter, SessionStore, device
 
 
 def request_language(request: HTTPConnection) -> str:
@@ -308,6 +309,9 @@ WORKSPACE_ROUTES = frozenset({
     # its two-step verification, and its workspace's admins' reset of a member's
     "/api/account/second-factor/start", "/api/account/second-factor/confirm",
     "/api/account/second-factor/disable", "/api/workspaces/{workspace}/members/second-factor/reset",
+    # its sessions and its passkeys (Account), and its workspace's single sign-on (its admins)
+    "/api/account/sessions/end", "/api/account/passkeys/options", "/api/account/passkeys/register",
+    "/api/account/passkeys/delete", "/api/workspaces/{workspace}/sso/save", "/api/workspaces/{workspace}/sso/delete",
     "/", "/dashboard/servers", "/api/servers", "/api/metrics",
     "/jobs", "/jobs/{job_id}", "/jobs/{job_id}/stop", "/api/jobs", "/api/jobs/{job_id}",
     "/servers/{server}", "/servers/{server}/merge", "/servers/{server}/x/{plugin}/{action}",
@@ -679,6 +683,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         else settings.jobs_dir.parent / "second-factor.json")
     pending_logins = totp.PendingLogins()
     account_setups: dict[str, tuple[str, float]] = {}
+    # the passkeys (passkeys.py) and the single sign-on of the workspaces (sso.py), next to the users file
+    private_dir = settings.users_file.parent if settings.users_file else settings.jobs_dir.parent
+    passkey_store = passkeys.PasskeyStore(private_dir / passkeys.FILE)
+    ceremonies = passkeys.Ceremonies()
+    sso_store = sso.SsoStore(private_dir / sso.FILE)
+    sso_flows = sso.Flows()
     # the links of the Log in as button (loginas.py)
     login_tickets = loginas.LoginTickets()
     # the pullers this instance relays: their state next to the jobs
@@ -824,6 +834,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if name is None:
             # marked, so the pages' scripts tell it from a link's or a token's 401
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Login required", headers={_LOGIN_HEADER: "required"})
+        # its last activity and address, for the person's list of sessions (Account)
+        sessions.seen(request.cookies.get(COOKIE), request.client.host if request.client else "")
         if method not in ("GET", "HEAD") and not _same_origin(request):
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Cross-site request refused")
         if not portal_admits(request, name):
@@ -1091,6 +1103,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     app.state.pullers, app.state.publications, app.state.consumers = pullers, publications, consumers
     app.state.sessions, app.state.authenticator = sessions, authenticator
     app.state.second_factors = second_factors
+    app.state.passkeys, app.state.sso = passkey_store, sso_store
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
@@ -1200,19 +1213,51 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return FileResponse(_STATIC / name, media_type=media_type,
                             headers={"Cache-Control": "public, max-age=86400"})
 
+    def passkey_rp(request: HTTPConnection) -> str | None:
+        """The RP ID of a passkey here (passkeys.py): the name the browser
+        opened this page on; None without the library or on an address."""
+        return passkeys.rp_of(request.headers.get("host", "")) if passkeys.available() else None
+
+    def sso_buttons(request: Request) -> list[dict]:
+        """The «Log in with …» of the login page: the workspace of ?sso= and
+        the one of this browser's last single sign-on, when they have a provider."""
+        names = [request.query_params.get("sso", ""), request.cookies.get(sso.LAST_COOKIE, "")]
+        found = []
+        for ws in dict.fromkeys(n for n in names if n and WORKSPACE_NAME.fullmatch(n)):
+            provider = sso_store.provider(ws) if ws in settings.workspaces else None
+            if provider:
+                found.append({"workspace": ws, "name": provider["name"]})
+        return found
+
     def login_page(request: Request, next_path: str, error: str = "", code: int = 200, **step):
-        return _TEMPLATES.TemplateResponse(request, "login.html", {"next": next_path, "error": error, "step": "", **step},
+        context = {"next": next_path, "error": error, "step": "", "passkey_login": bool(passkey_rp(request)),
+                   "sso": sso_buttons(request), **step}
+        return _TEMPLATES.TemplateResponse(request, "login.html", context,
                                            status_code=code, headers={"Cache-Control": "no-store"})
 
-    def needs_second_step(request: Request, name: str) -> bool:
-        return second_factors.on(name) or second_step_required(request, name)
+    def continue_page(request: Request, href: str):
+        """A page that moves on to href by itself: after a provider's redirect,
+        a cookie of SameSite strict is sent only with a navigation this site starts."""
+        return _TEMPLATES.TemplateResponse(request, "login.html", {"next": href, "error": "", "step": "continue",
+                                                                   "passkey_login": False, "sso": []},
+                                           headers={"Cache-Control": "no-store"})
 
-    def to_second_step(request: Request, name: str, next_path: str, via: str) -> RedirectResponse:
-        """The password was right: the code before the session, or first its
-        set-up when the user must and has none (secret: the pending's)."""
-        setup = not second_factors.on(name)
+    def has_second_factor(request: HTTPConnection, name: str) -> bool:
+        """name has a second step it can give here: the code of an app, or a passkey of this site."""
+        return second_factors.on(name) or passkey_store.has(name, passkey_rp(request))
+
+    def needs_second_step(request: Request, name: str) -> bool:
+        return has_second_factor(request, name) or second_step_required(request, name)
+
+    def to_second_step(request: Request, name: str, next_path: str, via: str, page: bool = False):
+        """The password was right: the code (or a passkey) before the
+        session, or first its set-up when the user must and has none
+        (secret: the pending's). page: a page that moves on by itself
+        (continue_page) in the place of the redirect."""
+        setup = not has_second_factor(request, name)
         token = pending_logins.create(name, next_path, settings.users[name], setup, via)
-        response = RedirectResponse("/login/setup" if setup else "/login/code", status.HTTP_303_SEE_OTHER)
+        target = "/login/setup" if setup else "/login/code"
+        response = continue_page(request, target) if page else RedirectResponse(target, status.HTTP_303_SEE_OTHER)
         response.set_cookie(totp.STEP_COOKIE, token, max_age=totp.PENDING_SECONDS, httponly=True, samesite="strict",
                             secure=request.url.scheme == "https", path="/login")
         return response
@@ -1221,7 +1266,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if recovery:
             return login_page(request, found.next_path, step="recovery", user=found.user, recovery=recovery)
         if not found.setup:
-            return login_page(request, found.next_path, error, code, step="code", user=found.user)
+            return login_page(request, found.next_path, error, code, step="code", user=found.user,
+                              totp_on=second_factors.on(found.user),
+                              passkey_step=passkey_store.has(found.user, passkey_rp(request)))
         uri = totp.otpauth_uri(found.secret, f"{found.user}@{request.url.hostname}")
         return login_page(request, found.next_path, error, code, step="setup", user=found.user, uri=uri,
                           secret=found.secret, qr=totp.qr_svg(uri))
@@ -1282,8 +1329,13 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         response = (step_page(request, found, recovery=codes) if codes
                     else RedirectResponse(found.next_path, status.HTTP_303_SEE_OTHER))
         response.delete_cookie(totp.STEP_COOKIE, path="/login")
-        set_session_cookie(request, response, sessions.create(name, settings.users[name]))
+        open_session(request, response, name, step_how(found, "recovery code" if result[0] == "recovery" else "code"))
         return response
+
+    def step_how(found: totp.Pending, second: str) -> str:
+        """How a session made after a second step was opened (Account's list)."""
+        first = found.via[len("single sign-on "):] if found.via.startswith("single sign-on ") else "password"
+        return f"{'sso:' + first if first != 'password' else first} + {second}"
 
     async def login(request: Request):
         """The login form (GET) and its check (POST): a session cookie of
@@ -1319,12 +1371,255 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         limiter.succeeded(ip, name)
         access_log.record("login", "user", name, ip, "login form", role=settings.user_role(name))
         response = RedirectResponse(next_path, status.HTTP_303_SEE_OTHER)
-        set_session_cookie(request, response, sessions.create(name, settings.users[name]))
+        open_session(request, response, name)
         return response
 
     def set_session_cookie(request: Request, response, token: str) -> None:
         response.set_cookie(COOKIE, token, max_age=LIFETIME, httponly=True, samesite="strict",
                             secure=request.url.scheme == "https", path="/")
+
+    def open_session(request: Request, response, name: str, how: str = "password") -> None:
+        """A new session of name for this browser (its User-Agent and address
+        kept for the person's list of sessions, Account)."""
+        token = sessions.create(name, settings.users[name], request.headers.get("user-agent", ""),
+                                request.client.host if request.client else "", how)
+        set_session_cookie(request, response, token)
+
+    # --- passkeys at the login (passkeys.py; README, Passkeys): without a password (any passkey of
+    # this site, the browser asks which), or as the second step after it (the user's)
+
+    def login_json(error: str, code: int = 400) -> JSONResponse:
+        return JSONResponse({"error": error}, status_code=code, headers={"Cache-Control": "no-store"})
+
+    async def json_body(request: Request) -> dict:
+        try:
+            data = json.loads(await request.body() or b"{}")
+        except ValueError:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    async def passkey_options(request: Request):
+        """POST /login/passkey/options (without a password) and
+        /login/code/passkey/options (the second step): the challenge, its
+        cookie of the login's path."""
+        if not _same_origin(request):
+            return login_json("Cross-site login refused", 403)
+        rp = passkey_rp(request)
+        if rp is None:
+            return login_json("Passkeys work on a name of this machine over HTTPS (or localhost), not on an address")
+        host = request.headers.get("host", "")
+        if request.url.path.startswith("/login/code/"):
+            found = pending_logins.get(request.cookies.get(totp.STEP_COOKIE), settings.users)
+            if found is None or found.setup:
+                return login_json("Log in again with your password", 401)
+            keys = passkey_store.keys(found.user, rp)
+            if not keys:
+                return login_json("You have no passkey for this address")
+            token, challenge = ceremonies.start("second", found.user, rp, host)
+            options = passkeys.authentication_options(rp, challenge, keys, "preferred")
+        else:
+            token, challenge = ceremonies.start("login", "", rp, host)
+            options = passkeys.authentication_options(rp, challenge, None, "required")
+        response = JSONResponse({"publicKey": options}, headers={"Cache-Control": "no-store"})
+        response.set_cookie(passkeys.COOKIE, token, max_age=passkeys.CEREMONY_SECONDS, httponly=True,
+                            samesite="strict", secure=request.url.scheme == "https", path="/login")
+        return response
+
+    async def passkey_login(request: Request):
+        """POST /login/passkey and /login/code/passkey: the browser's answer,
+        checked by py_webauthn; the session (its next page in the answer).
+        A passkey refused counts with the failed logins."""
+        if not _same_origin(request):
+            return login_json("Cross-site login refused", 403)
+        second = request.url.path.startswith("/login/code/")
+        body = await json_body(request)
+        credential = body.get("credential") if isinstance(body.get("credential"), dict) else {}
+        ip = request.client.host if request.client else ""
+        ceremony = ceremonies.take(request.cookies.get(passkeys.COOKIE), "second" if second else "login")
+        if ceremony is None or ceremony.host != request.headers.get("host", ""):
+            return login_json("The request of the passkey has expired: try again")
+        step_token = request.cookies.get(totp.STEP_COOKIE)
+        pending = pending_logins.get(step_token, settings.users) if second else None
+        if second and (pending is None or pending.user != ceremony.user):
+            return login_json("Log in again with your password", 401)
+        found = passkey_store.find(str(credential.get("id") or ""), ceremony.rp) if credential.get("id") else None
+        name = found[0] if found else (pending.user if pending else "")
+        wait = limiter.wait(ip, name)
+        if wait:
+            access_log.record("failed", "user", name, ip, f"passkey: too many failed logins: wait {wait} s")
+            return login_json(f"Too many failed logins: try again in {wait} seconds.", 429)
+
+        def refused(reason: str):
+            limiter.failed(ip, name)
+            if pending is not None:
+                pending_logins.failed(step_token)
+            access_log.record("failed", "user", name, ip, f"{'second step: ' if second else ''}passkey: {reason}"[:300])
+            return login_json("This passkey was not accepted.", 401)
+
+        if found is None or name not in settings.users or (pending is not None and name != pending.user):
+            return refused("a passkey this machine does not know")
+        key = found[1]
+        handle = (credential.get("response") or {}).get("userHandle") if isinstance(credential.get("response"), dict) else None
+        if handle:
+            try:
+                owner = passkey_store.owner(passkeys.unb64(str(handle)))
+            except ValueError:
+                owner = None
+            if owner != name:
+                return refused("the passkey says another user")
+        try:
+            verified = await asyncio.to_thread(passkeys.verify_assertion, credential, ceremony, key, not second)
+        except (passkeys.WebAuthnException, ValueError, KeyError, TypeError) as exc:
+            return refused(f"«{key.get('name')}» not verified: {exc}")
+        if not second and not portal_admits(request, name):
+            access_log.record("failed", "user", name, ip, "passkey: a user of the machine at the customers' portal")
+            return login_json(PORTAL_STAFF_REFUSED + ".", 403)
+        await asyncio.to_thread(passkey_store.used, name, key["id"], verified.new_sign_count)
+        limiter.succeeded(ip, name)
+        if second:
+            pending_logins.drop(step_token)
+            detail, target, how = f"{pending.via}, second step: passkey «{key['name']}»", pending.next_path, step_how(
+                pending, "passkey")
+        else:
+            detail, target, how = f"passkey «{key['name']}», without password", _next_path(str(body.get("next") or "/")), "passkey"
+        access_log.record("login", "user", name, ip, detail, role=settings.user_role(name))
+        response = JSONResponse({"next": target}, headers={"Cache-Control": "no-store"})
+        response.delete_cookie(passkeys.COOKIE, path="/login")
+        if second:
+            response.delete_cookie(totp.STEP_COOKIE, path="/login")
+        open_session(request, response, name, how)
+        return response
+
+    # --- single sign-on of a workspace (sso.py; README, Single sign-on): «Log in with <provider>» sends
+    # the person to its identity provider, which sends it back to the callback with a code
+
+    def sso_redirect_uri(request: HTTPConnection, workspace: str) -> str:
+        """Where the provider sends the person back: on the portal when there is one (what its admin
+        registers at the provider), else on this request's address."""
+        return f"{public_base(Request(request.scope))}/sso/{quote(workspace)}/callback"
+
+    async def sso_start(request: Request):
+        workspace = request.path_params["workspace"]
+        next_path = _next_path(request.query_params.get("next", "/"))
+        provider = sso_store.provider(workspace) if workspace in settings.workspaces else None
+        if provider is None:
+            return login_page(request, next_path, "This workspace has no single sign-on", 404)
+        if portal_url() and not on_portal(request):
+            # the flow on the portal, where the provider sends the person back (its cookie is of that name)
+            return RedirectResponse(f"{portal_url()}/sso/{quote(workspace)}/start?next={quote(next_path)}",
+                                    status.HTTP_303_SEE_OTHER)
+        ip = request.client.host if request.client else ""
+        try:
+            meta = await sso.discover(provider["issuer"], settings.sso_networks)
+        except sso.SsoError as exc:
+            access_log.record("failed", "user", "", ip, f"single sign-on {provider['name']} ({workspace}): {exc}"[:300],
+                              workspace=workspace)
+            return login_page(request, next_path, "The identity provider cannot be reached now: try again later", 502,
+                              sso=[{"workspace": workspace, "name": provider["name"]}])
+        state, cookie, flow = sso_flows.start(workspace, next_path, sso_redirect_uri(request, workspace))
+        response = RedirectResponse(sso.authorize_url(meta, provider, flow, state), status.HTTP_303_SEE_OTHER,
+                                    headers={"Cache-Control": "no-store"})
+        # Lax: the provider's redirect back is a navigation from its site
+        response.set_cookie(sso.COOKIE, cookie, max_age=sso.FLOW_SECONDS, httponly=True, samesite="lax",
+                            secure=request.url.scheme == "https", path="/sso")
+        return response
+
+    async def sso_person(workspace: str, provider: dict, claims: dict, email: str) -> tuple[str, bool, str]:
+        """(the workspace's user of this identity, whether it was made now,
+        why it is refused). Its first login links it to a user of this
+        workspace only named as its e-mail, or makes one (a user of
+        workspaces, with the provider's role); a user of that name who is
+        of the machine or of other workspaces is never taken by a provider."""
+        async with access_lock, workspaces_lock:
+            ws = settings.workspaces.get(workspace)
+            if ws is None:
+                return "", False, "the workspace is gone"
+            known = sso_store.identity(workspace, claims["iss"], claims["sub"])
+            if known and known["user"] in ws.members and known["user"] in settings.users:
+                await asyncio.to_thread(sso_store.link, workspace, claims["iss"], claims["sub"], known["user"], email)
+                return known["user"], False, ""
+            name = email
+            if name in settings.users or name in settings.fixed.users:
+                if only_here(name, workspace):
+                    await asyncio.to_thread(sso_store.link, workspace, claims["iss"], claims["sub"], name, email)
+                    return name, False, ""
+                return "", False, f"a user named {name} exists and is not a user of this workspace only"
+            if not _ACCESS_NAME.fullmatch(name):
+                return "", False, f"{name} is longer than 64 characters or has characters a user name has not"
+            web = web_copy()
+            web.users[name] = await asyncio.to_thread(unknown_password)
+            web.roles[name] = WORKSPACE_ROLE
+            refused = await store_access(web)
+            if refused is not None:
+                return "", False, "the users file cannot be written"
+            found = dict(settings.workspaces)
+            found[workspace] = dataclasses.replace(ws, members={**ws.members, name: provider["role"]})
+            refused = await store_workspaces(found)
+            if refused is not None:
+                return "", False, "the workspaces file cannot be written"
+            await asyncio.to_thread(sso_store.link, workspace, claims["iss"], claims["sub"], name, email)
+            return name, True, ""
+
+    async def sso_callback(request: Request):
+        workspace = request.path_params["workspace"]
+        q = request.query_params
+        ip = request.client.host if request.client else ""
+        provider = sso_store.provider(workspace) if workspace in settings.workspaces else None
+        flow = sso_flows.take(q.get("state", ""), request.cookies.get(sso.COOKIE))
+        said = provider["name"] if provider else "?"
+        buttons = [{"workspace": workspace, "name": said}] if provider else []
+
+        def refused(reason: str, message: str, code: int = 401, who: str = ""):
+            access_log.record("failed", "user", who, ip, f"single sign-on {said} ({workspace}): {reason}"[:300],
+                              workspace=workspace)
+            response = login_page(request, flow.next_path if flow else "/", message, code, sso=buttons)
+            response.delete_cookie(sso.COOKIE, path="/sso")
+            return response
+
+        if provider is None or flow is None or flow.workspace != workspace:
+            return refused("an answer of no login this browser started (state), or too late",
+                           "This login has expired or was started in another browser: start it again.", 400)
+        if q.get("error"):
+            return refused(f"the provider answered {q.get('error', '')[:60]}",
+                           "The identity provider did not log you in.")
+        try:
+            meta = await sso.discover(provider["issuer"], settings.sso_networks)
+            token = await sso.exchange(meta, provider, q.get("code", ""), flow, settings.sso_networks)
+            try:
+                claims = sso.verify_id_token(token, await sso.keys(meta, settings.sso_networks), provider["issuer"],
+                                             provider["client_id"], flow.nonce)
+            except sso.SsoError as exc:
+                if "no key" not in str(exc):
+                    raise
+                # a key the provider has just rotated in: its keys again, once
+                claims = sso.verify_id_token(token, await sso.keys(meta, settings.sso_networks, fresh=True),
+                                             provider["issuer"], provider["client_id"], flow.nonce)
+        except sso.SsoError as exc:
+            return refused(str(exc), "The answer of the identity provider was not accepted: log in again.")
+        try:
+            email = sso.email_of(claims, provider["domains"])
+        except sso.SsoError as exc:
+            return refused(str(exc), "Your e-mail address is not one this workspace lets in with this provider.", 403,
+                           str(claims.get("email") or "")[:64])
+        name, made, problem = await sso_person(workspace, provider, claims, email)
+        if problem:
+            return refused(problem, "Your user cannot log in with this provider: ask the administrator of the "
+                                    "workspace.", 403, email)
+        role = settings.user_role(name)
+        if made:
+            access_log.record("sso", "user", name, ip, f"user made by the single sign-on of {said}: role "
+                              f"{provider['role']} in {workspace}", role=role, workspace=workspace)
+        if not provider.get("mfa") and needs_second_step(request, name):
+            response = to_second_step(request, name, flow.next_path, f"single sign-on {said}", page=True)
+        else:
+            access_log.record("login", "user", name, ip, f"single sign-on {said}"
+                              + (", its MFA as the second step" if provider.get("mfa") else ""), role=role)
+            response = continue_page(request, flow.next_path)
+            open_session(request, response, name, f"sso:{said}")
+        response.delete_cookie(sso.COOKIE, path="/sso")
+        response.set_cookie(sso.LAST_COOKIE, workspace, max_age=400 * 86400, httponly=True, samesite="lax",
+                            secure=request.url.scheme == "https", path="/login")
+        return response
 
     # Starlette routes: the app's login dependency does not apply to them
     for path in _PUBLIC_FILES:
@@ -1332,6 +1627,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     app.add_route("/login", login, methods=["GET", "POST"])
     app.add_route("/login/code", login_step, methods=["GET", "POST"])
     app.add_route("/login/setup", login_step, methods=["GET", "POST"])
+    app.add_route("/login/passkey/options", passkey_options, methods=["POST"])
+    app.add_route("/login/passkey", passkey_login, methods=["POST"])
+    app.add_route("/login/code/passkey/options", passkey_options, methods=["POST"])
+    app.add_route("/login/code/passkey", passkey_login, methods=["POST"])
+    app.add_route("/sso/{workspace}/start", sso_start, methods=["GET"])
+    app.add_route("/sso/{workspace}/callback", sso_callback, methods=["GET"])
 
     # --- OAuth 2.1 for the MCP clients (oauth.py; README, MCP interface, OAuth): the discovery, the
     # registration, the person's login and consent (pages of OmniaCLI), the tokens and their revocation.
@@ -3682,6 +3983,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         settings.workspaces = found
         apply_sites(settings.servers, settings.workspaces, sites_known())
         gitcredentials.bind(settings)
+        try:
+            # a deleted workspace's single sign-on goes with it (a new one of that name starts without)
+            await asyncio.to_thread(sso_store.keep, set(found), set(settings.users))
+        except OSError as exc:
+            _logger.error("The single sign-on of the deleted workspaces is not removed: %s", exc)
         return None
 
     async def rename_in_workspaces(old: str | None, new: str | None):
@@ -4649,13 +4955,18 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         members = [{"name": n, "role": r, "only_here": only_here(n, ws.name),
                     "invitation": invitation_state(n) if only_here(n, ws.name) else None,
                     # its two-step verification: on, and whether its admins here may reset it
-                    "two_step": second_factors.on(n),
-                    "can_reset": second_factors.on(n) and n != me.name and (machine_admin(me) or only_here(n, ws.name))}
+                    "two_step": second_factors.on(n) or passkey_store.count(n) > 0, "passkeys": passkey_store.count(n),
+                    "can_reset": (second_factors.on(n) or passkey_store.count(n) > 0) and n != me.name and (machine_admin(me) or only_here(n, ws.name))}
                    for n, r in sorted(ws.members.items())]
         found = await asyncio.to_thread(workspaceops.templates)
         return _TEMPLATES.TemplateResponse(
             request, "workspace.html",
             {"ws": ws, "members": members, "roles": ACCESS_ROLES, "me": me.name, "min_password": _MIN_PASSWORD,
+             # its single sign-on (sso.py): the provider without its secret, where it sends people back to,
+             # the login address to give them
+             "sso": sso.shown(sso_store.provider(ws.name)), "sso_redirect": sso_redirect_uri(request, ws.name),
+             "sso_login": f"{public_base(request)}/login?sso={quote(ws.name)}",
+             "sso_people": len(sso_store.users_of(ws.name)),
              "can_mail": bool(settings.options.smtp_host), "invitation_hours": INVITATION_HOURS,
              "servers": [n for n in ws.servers if n in settings.servers],
              "templates": [t.to_dict() for t in found.values()],
@@ -7766,6 +8077,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         try:
             # a deleted user's two-step verification goes with it (a new one of that name starts without)
             await asyncio.to_thread(second_factors.keep, set(settings.users))
+            # and its passkeys, and what its provider's identity pointed to
+            await asyncio.to_thread(passkey_store.keep, set(settings.users))
+            await asyncio.to_thread(sso_store.keep, set(settings.workspaces), set(settings.users))
         except OSError as exc:
             _logger.error("The second factors of the deleted users are not removed: %s", exc)
         return None
@@ -7801,6 +8115,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     @app.get("/users", dependencies=[Depends(admin)])
     async def users_page(request: Request):
         fixed = settings.fixed
+        open_sessions = sessions.count()
         return _TEMPLATES.TemplateResponse(
             request,
             "users.html",
@@ -7809,7 +8124,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                            # where a customer's user gets in
                            "workspaces": sorted(w.name for w in settings.workspaces.values() if n in w.members),
                            "invitation": None if n in fixed.users else invitation_state(n),
-                           "two_step": second_factors.on(n)}
+                           "two_step": second_factors.on(n) or passkey_store.count(n) > 0,
+                           "passkeys": passkey_store.count(n), "sessions": open_sessions.get(n, 0)}
                           for n in sorted(settings.users)],
                 "links": [{"name": n, "role": link.role, "fixed": n in fixed.links}
                           for n, link in sorted(settings.links.items())],
@@ -8402,7 +8718,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return to_second_step(request, name, "/", "invitation")
         access_log.record("login", "user", name, ip, "invitation", role=settings.user_role(name))
         response = RedirectResponse("/", status.HTTP_303_SEE_OTHER)
-        set_session_cookie(request, response, sessions.create(name, settings.users[name]))
+        open_session(request, response, name)
         return response
 
     app.add_route("/invite/{token}", invitation_page, methods=["GET", "POST"])
@@ -12540,8 +12856,176 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             {"name": me.name, "role": WORKSPACE_ROLE if me.scoped else me.role, "workspaces": me.workspaces,
              "fixed": me.name in settings.fixed.users, "two_step": two_step_state(request, me.name),
              # the assistants this person let in with OAuth (oauth.py), revocable here
-             "grants": oauth_rows(oauth_store.listed(user=me.name)), "mcp_url": mcp_resource(request)},
+             "grants": oauth_rows(oauth_store.listed(user=me.name)), "mcp_url": mcp_resource(request),
+             # its open sessions (sessions.py) and its passkeys (passkeys.py)
+             "sessions": session_rows(sessions.listed(me.name, request.cookies.get(COOKIE)), request_language(request)),
+             "passkeys": passkey_rows(request, me.name), "passkey_rp": passkey_rp(request),
+             "passkeys_available": passkeys.available()},
         )
+
+    _SECOND_SAID = {"code": "and a code of the app", "recovery code": "and a recovery code", "passkey": "and a passkey"}
+
+    def session_rows(rows: list[dict], lang: str) -> list[dict]:
+        """The sessions as the pages show them, in lang: the device («Chrome
+        on Linux»), how it was opened, its moments in the machine's time."""
+        def said(text: str, **values) -> str:
+            return i18n.gettext(lang, text, **values)
+
+        found = []
+        for r in rows:
+            if r["browser"] and r["system"]:
+                # a catalog's text of its own: "{browser} on {system}" would also translate every "x on y" said elsewhere
+                where = (f"{r['browser']} on {r['system']}" if lang == i18n.DEFAULT else
+                         said("the browser {browser} on the system {system}", browser=r["browser"], system=r["system"]))
+            else:
+                where = r["browser"] or r["system"] or said("Unknown browser")
+            first, _, second = (r.get("how") or "").partition(" + ")
+            if first.startswith("sso:"):
+                how = said("Single sign-on: {name}", name=first[4:])
+            else:
+                how = {"password": said("Password"), "passkey": said("Passkey, without password")}.get(first, "—")
+            if second in _SECOND_SAID:
+                how += " " + said(_SECOND_SAID[second])
+            found.append({**r, "device": where, "how_said": how, "since": moment(r["since"]) if r["since"] else "",
+                          "seen": moment(r["seen"]) if r["seen"] else "",
+                          "expires": moment(r["expires"]) if r["expires"] else ""})
+        return found
+
+    def passkey_rows(request: Request, name: str) -> list[dict]:
+        rp = passkey_rp(request)
+        return [{"id": k["id"], "name": k.get("name") or "", "rp": k.get("rp", ""), "here": k.get("rp") == rp,
+                 "created": moment(k["created"]) if k.get("created") else "",
+                 "used": moment(k["used"]) if k.get("used") else "", "synced": bool(k.get("synced"))}
+                for k in passkey_store.keys(name)]
+
+    def session_said(row: dict) -> str:
+        """A session as the access log says it: its browser, its address, when it began."""
+        browser, system = row.get("browser") or "unknown browser", row.get("system") or "unknown system"
+        since = moment(row["since"]) if row.get("since") else "?"
+        return f"{browser} on {system} from {row.get('ip') or '?'}, began {since}"
+
+    def end_sessions(request: Request, me: Principal, name: str, ids: list[str] | None, where: str) -> int:
+        """End name's sessions ids (None: all but this browser's), each in the access log: how many ended."""
+        current = request.cookies.get(COOKIE)
+        mine = {r["id"] for r in sessions.listed(name, current) if r["current"]} if me.kind == "user" and me.name == name else set()
+        targets = [r["id"] for r in sessions.listed(name) if r["id"] not in mine] if ids is None else ids
+        ip = request.client.host if request.client else ""
+        ended = 0
+        for session in targets:
+            if session in mine:
+                continue
+            gone = sessions.end(name, session)
+            if gone is None:
+                continue
+            ended += 1
+            access_log.record("session", "user", name, ip, f"session ended by {me}{where}: {session_said(gone)}"[:300],
+                              role=settings.user_role(name) if name in settings.users else "")
+        return ended
+
+    @app.post("/api/account/sessions/end")
+    async def account_session_end(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """End one of its sessions (another browser's: this one logs out); all: every other one."""
+        password_user(me)
+        if payload.get("all"):
+            return {"ok": True, "ended": end_sessions(request, me, me.name, None, " (Account)")}
+        session = str(payload.get("id") or "")
+        current = next((r for r in sessions.listed(me.name, request.cookies.get(COOKIE)) if r["current"]), None)
+        if current is not None and current["id"] == session:
+            return refuse("This is the session of this browser: Log out ends it")
+        if not end_sessions(request, me, me.name, [session], " (Account)"):
+            return refuse("No such session: it has ended already", status.HTTP_404_NOT_FOUND)
+        return {"ok": True, "ended": 1}
+
+    @app.get("/api/access/users/sessions", dependencies=[Depends(admin)])
+    async def user_sessions(request: Request, name: str = ""):
+        """A user's open sessions, for the machine's admins (Users)."""
+        if name not in settings.users:
+            return refuse(f"No user {name}", status.HTTP_404_NOT_FOUND)
+        return {"name": name, "sessions": session_rows(sessions.listed(name, request.cookies.get(COOKIE)), request_language(request))}
+
+    @app.post("/api/access/users/sessions/end")
+    async def user_sessions_end(request: Request, payload: dict = Body(...), me: Principal = Depends(admin)):
+        """End a user's session (id) or all of them (all), the admin's own browser excepted."""
+        name = str(payload.get("name") or "")
+        if name not in settings.users:
+            return refuse(f"No user {name}", status.HTTP_404_NOT_FOUND)
+        ids = None if payload.get("all") else [str(payload.get("id") or "")]
+        ended = end_sessions(request, me, name, ids, " (Users)")
+        if not ended and ids is not None:
+            return refuse("No such session: it has ended already", status.HTTP_404_NOT_FOUND)
+        return {"ok": True, "ended": ended}
+
+    # --- its passkeys (passkeys.py; README, Passkeys): registered on Account, one ceremony each
+
+    def passkey_refused(request: Request) -> JSONResponse | None:
+        if not passkeys.available():
+            return refuse("Passkeys need Python 3.10 or newer on this machine (the webauthn library)")
+        if passkey_rp(request) is None:
+            return refuse("Passkeys work on a name of this machine over HTTPS (or localhost), not on an address")
+        return None
+
+    @app.post("/api/account/passkeys/options")
+    async def passkey_register_options(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """The options of navigator.credentials.create() for a new passkey named as the person says."""
+        password_user(me)
+        refused = passkey_refused(request)
+        if refused:
+            return refused
+        name = passkeys.clean_name(payload.get("name"))
+        if not name:
+            return refuse("Give the passkey a name: where it is (Laptop, Phone…)")
+        if passkey_store.count(me.name) >= passkeys.MAX_PER_USER:
+            return refuse(f"At most {passkeys.MAX_PER_USER} passkeys: remove one first")
+        rp, host = passkey_rp(request), request.headers.get("host", "")
+        handle = passkey_store.handle(me.name)
+        token, challenge = ceremonies.start("register", me.name, rp, host, name, handle)
+        options = passkeys.registration_options(rp, me.name, handle, challenge, passkey_store.keys(me.name, rp))
+        response = JSONResponse({"publicKey": options}, headers={"Cache-Control": "no-store"})
+        response.set_cookie(passkeys.COOKIE, token, max_age=passkeys.CEREMONY_SECONDS, httponly=True,
+                            samesite="strict", secure=request.url.scheme == "https", path="/api/account/passkeys")
+        return response
+
+    @app.post("/api/account/passkeys/register")
+    async def passkey_register(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        password_user(me)
+        ceremony = ceremonies.take(request.cookies.get(passkeys.COOKIE), "register")
+        if ceremony is None or ceremony.user != me.name or ceremony.host != request.headers.get("host", ""):
+            return refuse("The request of the passkey has expired: start again")
+        credential = payload.get("credential") if isinstance(payload.get("credential"), dict) else {}
+        ip = request.client.host if request.client else ""
+        try:
+            verified = await asyncio.to_thread(passkeys.verify_registration, credential, ceremony)
+            key = await asyncio.to_thread(
+                passkey_store.add, me.name, ceremony.handle, ceremony.rp, verified.credential_id,
+                verified.credential_public_key, verified.sign_count, ceremony.name,
+                (credential.get("response") or {}).get("transports") or [], verified.credential_backed_up)
+        except (passkeys.WebAuthnException, ValueError, KeyError, TypeError) as exc:
+            access_log.record("failed", "user", me.name, ip, f"passkey not registered: {exc}"[:300])
+            return refuse("The passkey was not registered: try again")
+        access_log.record("passkey", "user", me.name, ip, f"passkey «{key['name']}» registered for {key['rp']}",
+                          role=settings.user_role(me.name))
+        response = JSONResponse({"ok": True, "id": key["id"]})
+        response.delete_cookie(passkeys.COOKIE, path="/api/account/passkeys")
+        return response
+
+    @app.post("/api/account/passkeys/delete")
+    async def passkey_delete(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """A passkey away; not the last second step of a user who must have one."""
+        password_user(me)
+        key_id = str(payload.get("id") or "")
+        key = next((k for k in passkey_store.keys(me.name) if k["id"] == key_id), None)
+        if key is None:
+            return refuse("No such passkey", status.HTTP_404_NOT_FOUND)
+        if (second_step_required(request, me.name) and not second_factors.on(me.name)
+                and passkey_store.count(me.name) <= 1):
+            return refuse("Two-step verification is required for you on this machine and this passkey is your only "
+                          "second step: add another passkey or switch on the code of an app first",
+                          status.HTTP_403_FORBIDDEN)
+        await asyncio.to_thread(passkey_store.remove, me.name, key_id)
+        access_log.record("passkey", "user", me.name, request.client.host if request.client else "",
+                          f"passkey «{key.get('name')}» of {key.get('rp')} removed (Account)",
+                          role=settings.user_role(me.name))
+        return {"ok": True}
 
     # --- its two-step verification (totp.py): on with a code of the app, the
     # recovery codes shown once; off with a code, unless it is required here
@@ -12623,13 +13107,16 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         again (at its next login, where it is required)."""
         if me.kind == "user" and name == me.name:
             return refuse("Your own is switched off on your Account page, with a code")
-        if not second_factors.on(name):
+        if not second_factors.on(name) and not passkey_store.count(name):
             return refuse(f"{name} has no two-step verification on")
         await asyncio.to_thread(second_factors.disable, name)
+        # its passkeys too: a lost phone may be the passkey's device
+        keys = await asyncio.to_thread(passkey_store.drop_user, name)
         # every session of that user ends: it logs in again and sets the second step up
         sessions.drop_user(name)
         access_log.record("second-factor", "user", name, request.client.host if request.client else "",
-                          f"reset by {me}{where}: it sets it up again", role=settings.user_role(name))
+                          f"reset by {me}{where}: it sets it up again"
+                          + (f" ({keys} passkeys removed)" if keys else ""), role=settings.user_role(name))
         return {"ok": True}
 
     @app.post("/api/access/users/second-factor/reset")
@@ -12653,6 +13140,41 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                           "ask the administrator of the machine to reset it")
         return await reset_second_factor(request, me, name, f" (workspace {workspace})")
 
+    # --- a workspace's single sign-on (sso.py; README, Single sign-on), set by its admins
+
+    @app.post("/api/workspaces/{workspace}/sso/save", dependencies=[Depends(admin)])
+    async def workspace_sso_save(request: Request, workspace: str, payload: dict = Body(...),
+                                 me: Principal = Depends(current_user)):
+        """The provider of the workspace, checked: its discovery document
+        read through the SSRF guard before it is saved. An empty client
+        secret keeps the one saved (it is never shown again)."""
+        a_workspace(workspace)
+        current = sso_store.provider(workspace)
+        try:
+            provider = sso.provider_of(payload, current)
+            await sso.discover(provider["issuer"], settings.sso_networks, fresh=True)
+        except sso.SsoError as exc:
+            return refuse(str(exc))
+        await asyncio.to_thread(sso_store.set_provider, workspace, provider, str(me))
+        access_log.record("sso", me.kind, me.name, request.client.host if request.client else "",
+                          f"single sign-on of {workspace} {'changed' if current else 'set'}: {provider['name']}, "
+                          f"{provider['issuer']}, domains {', '.join(provider['domains'])}, new people as "
+                          f"{provider['role']}, its MFA {'counts' if provider['mfa'] else 'does not count'} as the "
+                          f"second step" + (", a new client secret" if payload.get("client_secret") else ""),
+                          workspace=workspace)
+        return {"ok": True}
+
+    @app.post("/api/workspaces/{workspace}/sso/delete", dependencies=[Depends(admin)])
+    async def workspace_sso_delete(request: Request, workspace: str, me: Principal = Depends(current_user)):
+        """No single sign-on for the workspace: its people log in with a password (an admin gives them one)."""
+        a_workspace(workspace)
+        current = sso_store.provider(workspace)
+        if current is None or not await asyncio.to_thread(sso_store.remove, workspace):
+            return refuse("The workspace has no single sign-on", status.HTTP_404_NOT_FOUND)
+        access_log.record("sso", me.kind, me.name, request.client.host if request.client else "",
+                          f"single sign-on of {workspace} removed: {current['name']}", workspace=workspace)
+        return {"ok": True}
+
     @app.post("/api/account/password")
     async def account_password(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
         password_user(me)
@@ -12671,7 +13193,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 return refused
             # the new password ends every session of the user: a new one for this browser
             response = JSONResponse({"ok": True})
-            set_session_cookie(request, response, sessions.create(me.name, settings.users[me.name]))
+            open_session(request, response, me.name)
             return response
 
     # --- the machine's Database tab (UX-008 §6.2; docs/adr/postgresql-della-macchina.md

@@ -37,6 +37,9 @@ le altre voci.
 | `invitation` | un invito creato, inviato di nuovo o revocato (da chi), e usato dalla persona invitata, che sceglie la sua password (poi il suo `login`); una password mandata con un link scaduto, usato o revocato è un `failed` |
 | `second-factor` | verifica in due passaggi attivata o disattivata (da Account o al login, dove è obbligatoria), codice di recupero usato (con quanti ne restano), azzerata da un amministratore (chi), regola «obbligatoria per» cambiata; un codice sbagliato è un `failed` («second step: wrong code») e il `login` dice come è passato («login form, second step: code» o «recovery code») |
 | `oauth` | OAuth degli assistenti (claude.ai, ChatGPT…): un client registrato, un consenso dato (livello, giorni, server) o rifiutato dalla persona, un token emesso, rinnovato, revocato (da chi, o perché un refresh token o un codice è stato usato due volte); una richiesta rifiutata (codice, verifier, refresh token o client sbagliati) è un `failed` |
+| `passkey` | una passkey registrata (nome, indirizzo) o rimossa dalla persona; il `login` con una passkey dice quale («passkey «Portatile», without password», o «login form, second step: passkey «Telefono»»); una passkey rifiutata (sconosciuta, firma, origine, contatore) è un `failed` |
+| `session` | una sessione terminata dalla persona (Account) o da un amministratore (Users), con chi l'ha terminata e quale (browser, sistema, indirizzo, inizio); la sua richiesta seguente è rifiutata |
+| `sso` | il single sign-on di un workspace impostato, cambiato o tolto (da chi: provider, issuer, domini, ruolo, se la sua MFA vale come secondo passaggio; mai il client secret), un utente creato dal primo accesso; il `login` dice quale provider («single sign-on Acme ID»); un accesso rifiutato (dominio, e-mail non verificata, firma o nonce dell'ID token, state di un altro browser, utente della macchina con quel nome) è un `failed` |
 | `job` | la fine di ogni job, con il suo esito (`success`, `failed`, `stopped`, `interrupted`) e l'errore |
 | `siem` | un invio al SIEM che fallisce, e quando riprende |
 
@@ -61,7 +64,8 @@ Le letture registrate stanno in un solo posto, `omniacli/audit.py`
 database («Accedi come»), posta trattenuta delle staging (elenco e messaggio),
 elenchi dei backup e degli archivi (anche sulle destinazioni), report dei
 puller, file di configurazione di Odoo, registro degli accessi stesso
-(pagina, verifica, esportazioni), log di OmniaCLI, credenziali git. Ogni altra
+(pagina, verifica, esportazioni), log di OmniaCLI, credenziali git, sessioni di un utente
+(indirizzi, browser: Users). Ogni altra
 rotta GET è in `NOT_SENSITIVE` o in `AUDITED_BY_ROUTE` (download, MCP: si
 registrano da sé). Il test `tests/test_audit.py::test_every_read_is_classified`
 fallisce quando una rotta GET nuova non è in nessuna delle liste: chi la
