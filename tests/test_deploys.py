@@ -4,6 +4,7 @@
 with them, kept in a file of its own; going back to one, with a backup
 first; the automatic deploys paused, a push then deploying nothing."""
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -83,6 +84,18 @@ async def test_a_job_that_moves_the_code_is_a_deploy(env, tmp_path):
     assert not deploys.file_of(folder, "srv/test").exists()
 
 
+async def deploys_after(client, api, count):
+    """The deploys once there are count of them: a job reads success a moment before the watcher of its end
+    has written its deploy (jobs.py, _run: the status, then the watchers; GitHub's runner read two of three,
+    23/11/2026)."""
+    for _ in range(100):
+        data = (await client.get(api, headers={"Authorization": AUTH})).json()
+        if len(data["deploys"]) >= count:
+            break
+        await asyncio.sleep(0.05)
+    return data
+
+
 async def test_three_deploys_back_to_the_first_and_a_push(workspaces, client, env, tmp_path):
     settings = env["settings"]
     instance = settings.servers["srv"].test
@@ -95,7 +108,7 @@ async def test_three_deploys_back_to_the_first_and_a_push(workspaces, client, en
         resp = await client.post("/servers/srv/test/pull-restart", headers=POST, follow_redirects=False)
         job_id = resp.headers["location"].rsplit("/", 1)[-1]
         assert (await wait_job(client, job_id))["status"] == "success"
-    data = (await client.get(api, headers={"Authorization": AUTH})).json()
+    data = await deploys_after(client, api, 3)
     assert [d["repositories"][0]["after"] for d in data["deploys"]] == shas[::-1]
     assert [d["current"] for d in data["deploys"]] == [True, False, False]
     assert data["deploys"][0]["repositories"][0]["subject"] == "v3"
@@ -121,7 +134,7 @@ async def test_three_deploys_back_to_the_first_and_a_push(workspaces, client, en
     assert sh("git", "rev-parse", "HEAD", cwd=addons.path) == shas[0]
     assert sh("git", "rev-parse", "--abbrev-ref", "HEAD", cwd=addons.path) == "test"
     assert any("backup before the update" in line for line in done["lines"])
-    data = (await client.get(api, headers={"Authorization": AUTH})).json()
+    data = await deploys_after(client, api, 4)
     assert len(data["deploys"]) == 4 and data["deploys"][0]["back_to"] == first["id"]
     assert data["deploys"][0]["current"] and data["deploys"][-1]["current"] is False
     assert data["deploys"][0]["backup"]["kept"] and data["paused"]["by"] == "admin"
