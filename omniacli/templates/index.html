@@ -173,15 +173,19 @@
 <div class="machine-grid">
   <section class="panel machine-panel" data-link="">
     <div class="live-view">
-    <div class="tiles">
-      <div class="tile"><div class="tile-label">{{ _("CPU now") }}</div><div class="tile-value" data-tile="cpu">–</div></div>
-      <div class="tile"><div class="tile-label">{{ _("Received") }}</div><div class="tile-value" data-tile="rx">–</div></div>
-      <div class="tile"><div class="tile-label">{{ _("Sent") }}</div><div class="tile-value" data-tile="tx">–</div></div>
+    {# the same four tiles and the same charts as the history's periods (Carlo, 24/11/2026), here now and over the hour #}
+    <div class="tiles tiles-4">
+      <div class="tile"><div class="tile-label">{{ _("CPU") }}</div><div class="tile-value" data-tile="cpu">–</div><div class="tile-sub" data-tile-sub="cpu"></div></div>
+      <div class="tile"><div class="tile-label">{{ _("Memory") }}</div><div class="tile-value" data-tile="mem">–</div><div class="tile-sub" data-tile-sub="mem"></div></div>
+      <div class="tile"><div class="tile-label">{{ _("Disk") }}</div><div class="tile-value" data-tile="disk">–</div><div class="tile-sub" data-tile-sub="disk"></div></div>
+      <div class="tile"><div class="tile-label">{{ _("Network") }}</div><div class="tile-value" data-tile="net">–</div><div class="tile-sub" data-tile-sub="net"></div></div>
     </div>
     <p class="muted machine-state" style="margin: 6px 0 0"></p>
     <h3 class="chart-title">{{ _("CPU, % of all") }} <span class="cores">?</span></h3>
     <div class="chart-box"><svg class="chart" data-chart="cpu" role="img" aria-label="{{ _("CPU of this machine over the last hour") }}"></svg><div class="chart-tip" hidden></div></div>
     <div class="chart-legend" data-legend="cpu"></div>
+    <h3 class="chart-title">{{ _("Memory, GB") }} <span class="muted" style="font-weight: var(--fw-regular)"><span class="key s1"></span>{{ _("in use") }}<span class="key s2"></span>{{ _("in all") }}</span></h3>
+    <div class="chart-box"><svg class="chart" data-chart="mem" role="img" aria-label="{{ _('Memory of this machine over the period, in use and in all') }}"></svg><div class="chart-tip" hidden></div></div>
     <h3 class="chart-title">{{ _("Network, per second") }} <span class="muted" style="font-weight: var(--fw-regular)"><span class="key s1"></span>{{ _("received") }}<span class="key s2"></span>{{ _("sent") }}</span></h3>
     <div class="chart-box"><svg class="chart" data-chart="net" role="img" aria-label="{{ _("Network traffic of this machine over the last hour") }}"></svg><div class="chart-tip" hidden></div></div>
     <h3 class="chart-title">{{ _("Disks, free space") }}</h3>
@@ -251,6 +255,10 @@ const DASH_T = {
   core: {{ _("{n} core") | tojson }}, cores: {{ _("{n} cores") | tojson }},
   others: {{ _("{n} other instances") | tojson }}, total: {{ _("total {value}") | tojson }}, totalLabel: {{ _("Total") | tojson }},
   traffic: {{ _("received {rx} · sent {tx}") | tojson }},
+  cpuSub: {{ _("mean {mean} · maximum {max} on {when}") | tojson }},
+  memSub: {{ _("{used} of {total} now · maximum {max}") | tojson }},
+  memTip: {{ _("in use {used} of {total}") | tojson }},
+  diskFree: {{ _("free {percent}") | tojson }},
   spark: {{ _("{cpu}% CPU, {mem} MiB, {procs} processes") | tojson }},
   open: {{ _("Open the load of this machine") | tojson }}, shut: {{ _("Close the load of this machine") | tojson }},
   limit: {{ _("(limit {n})") | tojson }}, noLimit: {{ _("(no limit)") | tojson }},
@@ -542,11 +550,27 @@ const dashFill = (text, values) => text.replace(/\{(\w+)\}/g, (all, k) => (k in 
       ...lines.map((l) => ({label: l.label, cls: l.cls, value: pct(l.value(now))}))] : []);
     OmniaCharts.draw(panel.querySelector('[data-chart="net"]'), points, "rx",
       {also: "tx", minMax: 1024, format: rate, padLeft: 70, tip: (p) => dashFill(DASH_T.traffic, {rx: rate(p.rx), tx: rate(p.tx)})});
+    const gb = (mib) => (mib === null || mib === undefined ? "–" : (mib / 1024).toFixed(1) + " GB");
+    const memory = points.map((p) => ({t: p.t, used: p.ram === null || p.ram === undefined ? null : p.ram / 1024,
+                                       total: p.ram_total === null || p.ram_total === undefined ? null : p.ram_total / 1024}));
+    OmniaCharts.draw(panel.querySelector('[data-chart="mem"]'), memory, "used",
+      {also: "total", minMax: 1, format: (v) => v.toFixed(1),
+       tip: (p) => dashFill(DASH_T.memTip, {used: p.used === null ? "–" : p.used.toFixed(1) + " GB", total: p.total === null ? "–" : p.total.toFixed(1) + " GB"})});
     const last = points[points.length - 1];
     if (last) {
-      panel.querySelector('[data-tile="cpu"]').textContent = last.cpu === null ? "–" : last.cpu.toFixed(1) + "%";
-      panel.querySelector('[data-tile="rx"]').textContent = rate(last.rx);
-      panel.querySelector('[data-tile="tx"]').textContent = rate(last.tx);
+      const tile = (k, value, sub) => {
+        panel.querySelector(`[data-tile="${k}"]`).textContent = value;
+        panel.querySelector(`[data-tile-sub="${k}"]`).textContent = sub;
+      };
+      const cpus = points.filter((p) => p.cpu !== null && p.cpu !== undefined);
+      const top = cpus.reduce((a, p) => (a && a.cpu >= p.cpu ? a : p), null);
+      const hhmm = (t) => new Date(t * 1000).toTimeString().slice(0, 5);
+      tile("cpu", pct(last.cpu), top ? dashFill(DASH_T.cpuSub, {mean: pct(cpus.reduce((a, p) => a + p.cpu, 0) / cpus.length),
+                                                                 max: pct(top.cpu), when: hhmm(top.t)}) : "");
+      const rams = points.map((p) => p.ram).filter((v) => v !== null && v !== undefined);
+      tile("mem", last.ram && last.ram_total ? pct(last.ram / last.ram_total * 100) : "–",
+           last.ram === null || last.ram === undefined ? "" : dashFill(DASH_T.memSub, {used: gb(last.ram), total: gb(last.ram_total), max: gb(Math.max(...rams))}));
+      tile("net", rate((last.rx || 0) + (last.tx || 0)), dashFill(DASH_T.traffic, {rx: rate(last.rx), tx: rate(last.tx)}));
     }
   }
   const refresh = () => panels.forEach((p) => show(p));
@@ -568,6 +592,11 @@ const dashFill = (text, values) => text.replace(/\{(\w+)\}/g, (all, k) => (k in 
       else error = resp.status === 404 ? DASH_T.older : dashFill(DASH_T.http, {status: resp.status});
     } catch (e) { error = DASH_T.noAnswer; }
     if (!disks || !disks.length) { OmniaDisk.message(list, error || DASH_T.noDisks, !!error); return; }
+    const main = disks.find((d) => d.mount === "/") || disks[0], diskTile = panel.querySelector('[data-tile="disk"]');
+    if (diskTile && main.total) {
+      diskTile.textContent = (main.free / 1073741824).toFixed(1) + " GB";
+      panel.querySelector('[data-tile-sub="disk"]').textContent = dashFill(DASH_T.diskFree, {percent: Math.round(main.free / main.total * 100) + "%"});
+    }
     list.replaceChildren();
     for (const d of disks) {
       const item = document.createElement("div");
@@ -666,6 +695,7 @@ const dashFill = (text, values) => text.replace(/\{(\w+)\}/g, (all, k) => (k in 
     for (const b of buttons) b.setAttribute("aria-pressed", String(b.dataset.period === chosen));
     const isLive = chosen === "hour";
     live.hidden = !isLive; hist.hidden = isLive;
+    if (isLive && !older) note.hidden = true;  // where the history starts is said of its periods only
     for (const p of document.querySelectorAll("[data-view]")) p.hidden = p.dataset.view !== (isLive ? "live" : "history");
     if (keep) { try { localStorage.setItem(KEY, chosen); } catch (e) { /* no storage */ } }
     if (isLive) window.dispatchEvent(new Event("resize"));  // the live charts drawn while hidden
