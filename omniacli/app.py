@@ -24471,6 +24471,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return {"code": handover.make_code(url, state["id"], secret, pin),
                 "handover": handover_public(ws, state, request_language(request))}
 
+    def helper_said(exc: Exception) -> str:
+        """The last line of what a helper that failed said (its traceback is in the job's lines already): what a
+        banner and the handover's record keep."""
+        lines = [line.strip() for line in str(exc).splitlines() if line.strip()]
+        return lines[-1] if lines else str(exc)
+
     async def handover_close(job, ws: Workspace, state: dict) -> list[str]:
         """What the provider opened for the customer's machine closed: the port of each database of its own let
         in for it (machine-db-replica-drop). What is still open, a line each (warned)."""
@@ -24484,8 +24490,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     await workspaceops._helper(job, "machine-db-replica-drop", key, timeout=MACHINE_TIMEOUT)
                     job.log(f"The database of {server}: closed again to the customer's machine")
                 except JobFailed as exc:
-                    left.append(f"the database of {server} is still open to the customer's machine: {exc}")
-                    job.warn(f"The database of {server} is still open to the customer's machine: {exc}")
+                    left.append(f"the database of {server} is still open to the customer's machine: {helper_said(exc)}")
+                    job.warn(f"The database of {server} is still open to the customer's machine: {helper_said(exc)}")
         return left
 
     def handover_cancel_job(ws: Workspace, why: str, source: str, phase: str = "cancelled") -> Job:
@@ -26212,8 +26218,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         try:
             await handover_names_forward(job, ws, "off", "")
         except JobFailed as exc:
-            left.append(f"its names are still passed to the customer's machine: {exc}")
-            job.warn(f"The names of {ws.name} are still passed to the customer's machine: {exc}")
+            left.append(f"its names are still passed to the customer's machine: {helper_said(exc)}")
+            job.warn(f"The names of {ws.name} are still passed to the customer's machine: {helper_said(exc)}")
         return [*left, *await handover_close(job, ws, state)]
 
     def handover_relit(job, ws: Workspace, state: dict, who: str, left: list[str]) -> None:
