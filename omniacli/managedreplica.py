@@ -797,7 +797,9 @@ def allow(major: str, spec: dict) -> dict:
     origin = machinedb.address(spec.get("address"))
     verifier = machinedb.literal(str(spec.get("verifier") or ""), machinedb.VERIFIER)
     link, by = str(spec.get("link") or ""), str(spec.get("by") or "")
-    if not machinedb.LINK_NAME.fullmatch(link):
+    # the machine of a link, or the customer's of a handover (handover:<id>, AD-010 consequence 2): a database
+    # of its own that arrives there
+    if not (machinedb.LINK_NAME.fullmatch(link) or (ARRIVE_FROM.fullmatch(link) and spec.get("arrives"))):
         raise ClusterError("a replica is asked by the machine that hosts it, through its link")
     cap = src.cap(spec.get("cap_gb", CAP_GB if src.kind == "cluster" else None))
     found = record(src.folder)

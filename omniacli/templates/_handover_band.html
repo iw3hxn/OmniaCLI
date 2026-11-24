@@ -1,0 +1,136 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{# The banners of a workspace's handover (UX-014 A5, A7; AD-008, step 7 of §9), in the head of its page, for the
+   machine's admins: on the provider's machine its handover (prepared, receiving, ready, expired) with Redo the
+   code… and Cancel the handover…; on the customer's its reception (arriving, ready, out of step, cancelling) with
+   See the job, Retry and Cancel the reception…. The switch is the next step. #}
+{% from "_icons.html" import icon, dialog_x with context %}
+<style>
+.hv-band { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.hv-band .hv-text { flex: 1 1 320px; min-width: 0; overflow-wrap: anywhere; }
+.hv-band .hv-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+#hv-redo-dialog { --dialog-w: 620px; }
+#hv-redo-dialog .hv-code { display: block; width: 100%; min-height: 88px; padding: 8px; border: 1px solid var(--border); border-radius: var(--r); overflow-wrap: anywhere; word-break: break-all; }
+@media (max-width: 767.98px) { .hv-band .hv-actions { width: 100%; } .hv-band .hv-actions button, .hv-band .hv-actions a.button, #hv-redo-dialog .actions button { min-height: 44px; } }
+</style>
+{% if handover_out %}{% set ho = handover_out %}{% set rc = ho.receiver or {} %}
+<div class="banner {{ 'warn' if ho.phase == 'expired' else 'info' }} hv-band" role="status" id="handover-band" data-phase="{{ ho.phase }}">
+  <span class="hv-text">
+  {% if ho.phase == "expired" %}{{ _("The code of the handover expired on {when}: the customer no longer copies. Redo the code… to go on, from what it has.", when=ho.expires | moment) }}
+  {% elif ho.phase == "ready" %}{{ _("The customer is ready to switch: the instances here stop when the customer chooses so.") }}
+  {% elif ho.phase == "receiving" %}{% if rc.total %}{{ _("The customer is receiving: {pct} %. Here everything runs.", pct=(100 * (rc.done or 0) / rc.total) | int) }}{% else %}{{ _("The customer is receiving. Here everything runs.") }}{% endif %}{% if rc.phase == "failed" and rc.error %} {{ _("Its copy stopped: {why}", why=tr(rc.error)) }}{% endif %}
+  {% else %}{{ _("Handover prepared: the code expires on {when}. The customer has not used it yet.", when=ho.expires | moment) }}{% endif %}
+  {% if ho.claim %}<br><span class="small">{{ _("Received by the machine {ip} on {when}, print of its key {print}.", ip=ho.claim.ip, when=ho.claim.at | moment, print=ho.claim.fingerprint) }}</span>{% endif %}
+  </span>
+  <span class="hv-actions">
+  {% if ho.phase in ("prepared", "expired") %}
+    <button type="button" id="handover-redo" title="{{ _('Makes a new code; the one of before stops being valid. What the customer has copied already stays valid: with the new code it goes on from there.') }}">{{ _("Redo the code…") }}</button>
+  {% endif %}
+    <button type="button" class="small danger" id="handover-cancel" title="{{ _('The code stops being valid and the customer\'s machine deletes what it copied. Here nothing changes.') }}">{{ _("Cancel the handover…") }}</button>
+  </span>
+</div>
+<dialog id="hv-redo-dialog" aria-labelledby="hv-redo-title">
+  <form method="dialog">
+    <h2 id="hv-redo-title">{{ _("The new code of the handover") }}</h2>
+    <textarea class="hv-code mono" id="hv-redo-code" readonly rows="4" aria-labelledby="hv-redo-title"></textarea>
+    <p id="hv-redo-text"></p>
+    <div class="actions">
+      <button type="button" class="primary" id="hv-redo-copy" title="{{ _('Copies the code to the clipboard. It will not be shown again.') }}">{{ _("Copy") }}</button>
+      <button type="button" id="hv-redo-close" title="{{ _('Closes the dialog: the code will not be shown again') }}">{{ _("Close") }}</button>
+    </div>
+  </form>
+{{ dialog_x() }}
+</dialog>
+{% endif %}
+{% if handover_in %}{% set hi = handover_in %}{% set pg = hi.progress or {} %}
+<div class="banner {{ 'warn' if hi.phase in ('out_of_step', 'failed') else 'info' }} hv-band" role="status" id="reception-band" data-phase="{{ hi.phase }}" data-id="{{ hi.id }}">
+  <span class="hv-text">
+  {% if hi.phase == "receiving" %}{% if pg.total %}{{ _("Arriving from {provider}: {pct} % · {done} of {total} GB", provider=tr(hi.provider or "the provider"), pct=(100 * (pg.done or 0) / pg.total) | int, done=((pg.done or 0) / 1073741824) | round(2), total=(pg.total / 1073741824) | round(2)) }}{% else %}{{ _("Arriving from {provider}.", provider=tr(hi.provider or "the provider")) }}{% endif %}
+  {% elif hi.phase == "ready" %}{% set lags = (hi.db or {}).values() | selectattr("lag", "ne", none) | map(attribute="lag") | list %}{% if lags %}{{ _("Ready to switch · in step: the database {lag} s behind, the files of the round of {when}", lag=lags | max | round(1), when=hi.last_round_at | moment) }}{% else %}{{ _("Ready to switch · in step: the files of the round of {when}; the database passes at the switch", when=hi.last_round_at | moment) }}{% endif %}
+  {% elif hi.phase in ("out_of_step", "failed") %}{{ _("Ready, but not receiving from {provider} since {when}: {why}", provider=tr(hi.provider or "the provider"), when=(hi.out_since or hi.ready_at or hi.since) | moment, why=tr(hi.error or "")) if hi.ready_at else _("The reception from {provider} stopped: {why}", provider=tr(hi.provider or "the provider"), why=tr(hi.error or "")) }}
+  {% else %}{{ _("The reception is being cancelled: what was copied here is deleted.") }}{% endif %}
+  {% if hi.fingerprint %}<br><span class="small">{{ _("The print of this machine's key, to compare with the provider by phone: {print}.", print=hi.fingerprint) }}</span>{% endif %}
+  </span>
+  <span class="hv-actions">
+  {% if hi.job and hi.phase in ("receiving", "cancelling") %}<a class="button" href="{{ prefix }}/jobs/{{ hi.job }}" title="{{ _('Opens the job of the reception, with its steps') }}">{{ _("See the job") }} ›</a>{% endif %}
+  {% if hi.phase in ("out_of_step", "failed") %}
+    <button type="button" id="reception-retry" title="{{ _('Receives again from what was copied: only what changed since is copied. With a new code of the provider, use Recover a workspace… instead.') }}">{{ _("Retry") }}</button>
+  {% endif %}
+  {% if hi.phase in ("ready", "out_of_step", "failed", "receiving") %}
+    <button type="button" class="small danger" id="reception-cancel" title="{{ _('Deletes what was copied here. At the provider\'s nothing changes.') }}">{{ _("Cancel the reception…") }}</button>
+  {% endif %}
+  </span>
+</div>
+{% endif %}
+{% if handover_out or handover_in %}
+<script>
+(() => {
+  const PREFIX = {{ prefix | tojson }}, WS = {{ ws.name | tojson }};
+  const T = {
+    cancelAsk: {{ _("The code of the handover of {ws} stops being valid and the customer's machine deletes what it copied, at its next look. Here nothing changes.") | tojson }},
+    cancelGo: {{ _("Cancel the handover") | tojson }},
+    redoAsk: {{ _("A new code is made for the handover of {ws}: the one of before stops being valid. What the customer copied stays: with the new code it goes on from there.") | tojson }},
+    redoGo: {{ _("Redo the code") | tojson }},
+    redoText: {{ _("Send it to the customer as a password, until {expires}.") | tojson }},
+    receptionAsk: {{ _("What was copied of {ws} here is deleted, and the provider is told. At the provider's nothing changes.") | tojson }},
+    receptionGo: {{ _("Cancel the reception") | tojson }},
+    copied: {{ _("Copied") | tojson }}, refused: {{ _("Refused.") | tojson }},
+  };
+  const fill = (text, values) => text.replace(/\{(\w+)\}/g, (_m, k) => (values[k] === undefined ? `{${k}}` : String(values[k])));
+  // a moment of the other machine (with its offset) in the reader's clock, dd/mm/yyyy hh:mm
+  const day = (iso) => { const d = new Date(iso || ""); if (isNaN(d)) return iso || ""; const p = (n) => String(n).padStart(2, "0");
+    return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`; };
+  const say = (text) => window.omniaSay ? window.omniaSay(text) : null;
+  async function post(url) {
+    const resp = await fetch(url, {method: "POST", headers: {Accept: "application/json", "Content-Type": "application/json"}, body: "{}"}).catch(() => null);
+    const got = resp ? await resp.json().catch(() => ({})) : {};
+    return resp && resp.ok ? got : {error: got.error || got.detail || T.refused};
+  }
+  const base = `${PREFIX}/api/workspaces/${encodeURIComponent(WS)}/handover`;
+  document.getElementById("handover-cancel")?.addEventListener("click", async (event) => {
+    const b = event.currentTarget;
+    if (!await window.omniaAsk(fill(T.cancelAsk, {ws: WS}), T.cancelGo, {danger: true, goTitle: b.title})) return;
+    b.disabled = true;
+    const got = await post(`${base}/cancel`);
+    if (got.error) { b.disabled = false; say(got.error); return; }
+    location.href = `${PREFIX}/jobs/${got.job}`;
+  });
+  document.getElementById("handover-redo")?.addEventListener("click", async (event) => {
+    const b = event.currentTarget;
+    if (!await window.omniaAsk(fill(T.redoAsk, {ws: WS}), T.redoGo, {goTitle: b.title})) return;
+    b.disabled = true;
+    const got = await post(`${base}/code`);
+    b.disabled = false;
+    if (got.error) { say(got.error); return; }
+    const dialog = document.getElementById("hv-redo-dialog");
+    document.getElementById("hv-redo-code").value = got.code;
+    document.getElementById("hv-redo-text").textContent = fill(T.redoText, {expires: day((got.handover || {}).expires)});
+    dialog.showModal();
+  });
+  document.getElementById("hv-redo-copy")?.addEventListener("click", async (event) => {
+    const field = document.getElementById("hv-redo-code");
+    try { await navigator.clipboard.writeText(field.value); } catch (_e) { field.select(); document.execCommand("copy"); }
+    event.currentTarget.textContent = T.copied;
+  });
+  document.getElementById("hv-redo-close")?.addEventListener("click", () => location.reload());
+  // closed by its X or Esc too: the page reads the new state of the handover
+  document.getElementById("hv-redo-dialog")?.addEventListener("close", () => location.reload());
+  const band = document.getElementById("reception-band");
+  const reception = band ? `${PREFIX}/api/handover/${band.dataset.id}` : "";
+  document.getElementById("reception-retry")?.addEventListener("click", async (event) => {
+    const b = event.currentTarget;
+    b.disabled = true;
+    const got = await post(`${reception}/retry`);
+    if (got.error) { b.disabled = false; say(got.error); return; }
+    location.href = `${PREFIX}/jobs/${got.job}`;
+  });
+  document.getElementById("reception-cancel")?.addEventListener("click", async (event) => {
+    const b = event.currentTarget;
+    if (!await window.omniaAsk(fill(T.receptionAsk, {ws: WS}), T.receptionGo, {danger: true, goTitle: b.title})) return;
+    b.disabled = true;
+    const got = await post(`${reception}/cancel`);
+    if (got.error) { b.disabled = false; say(got.error); return; }
+    location.href = `${PREFIX}/jobs/${got.job}`;
+  });
+})();
+</script>
+{% endif %}

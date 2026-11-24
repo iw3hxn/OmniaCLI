@@ -765,21 +765,45 @@ class LocalFiles(Source, Sink):
     instance), with its hashes kept in cache (hashes.json)."""
     kind = "files"
 
-    def __init__(self, root: Path, cache: Path | None = None):
+    def __init__(self, root: Path, cache: Path | None = None, only: Iterable[str] | None = None):
+        # only: the paths of the tree this end shows, the others neither listed nor read (a handover passes the
+        # last backup of each environment, AD-009)
         self.root, self.cache = root, cache
+        self.only = None if only is None else sorted({safe_rel(p) for p in only})
 
     async def listing(self, into: Path) -> dict:
         def run():
             cache = HashCache(self.cache) if self.cache else None
             with open(os.open(into, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as fh:
-                counts = list_files(self.root, fh, cache)
+                counts = list_files(self.root, fh, cache) if self.only is None else self._list_only(fh, cache)
             if cache:
                 cache.save()
             return counts
         return await asyncio.to_thread(run)
 
+    def _list_only(self, out, cache: HashCache | None) -> dict:
+        counts = {"files": 0, "bytes": 0}
+        for rel in self.only:
+            try:
+                fh, st = open_file(self.root, rel)
+            except TreeError:
+                continue
+            with fh:
+                def compute(fh=fh):
+                    digest = hashlib.sha256()
+                    for chunk in iter(lambda: fh.read(CHUNK), b""):
+                        digest.update(chunk)
+                    return "sha256:" + digest.hexdigest()
+                found = cache.digest(rel, st, compute) if cache else compute()
+            out.write(line_of(entry(rel, st.st_size, found, st.st_mtime_ns)))
+            counts["files"] += 1
+            counts["bytes"] += st.st_size
+        return counts
+
     @contextlib.asynccontextmanager
     async def fetch(self, rel: str, offset: int):
+        if self.only is not None and safe_rel(rel) not in self.only:
+            raise TreeError(f"{rel} is not in the tree")
         fh, st = await asyncio.to_thread(open_file, self.root, rel)
 
         async def body():
@@ -871,13 +895,14 @@ class RemoteTree(Source, Sink):
     """A tree of an instance of the machine of a link, through its routes
     /api/treesync/v1/... (that machine's own LocalTree or LocalFiles)."""
 
-    def __init__(self, client: httpx.AsyncClient, headers: dict, server: str, role: str, tree: str):
-        self.client, self.headers = client, headers
+    def __init__(self, client: httpx.AsyncClient, headers: dict, server: str, role: str, tree: str, api: str = API):
+        # api: the routes' prefix (a handover's own, /api/handover/v1/<id>/treesync, AD-008)
+        self.client, self.headers, self.api = client, headers, api
         self.spec = {"server": server, "role": role, "tree": tree}
         self.kind = tree_kind(tree)
 
     async def _stream_into(self, path: str, into: Path) -> dict:
-        async with self.client.stream("POST", API + path, json=self.spec, headers=self.headers,
+        async with self.client.stream("POST", self.api + path, json=self.spec, headers=self.headers,
                                       timeout=STREAM_TIMEOUT) as resp:
             if resp.status_code != 200:
                 raise Refused(resp.status_code, _said(resp, await resp.aread()))
@@ -892,7 +917,7 @@ class RemoteTree(Source, Sink):
 
     @contextlib.asynccontextmanager
     async def read(self, paths: list[str]):
-        async with self.client.stream("POST", API + "/read", json={**self.spec, "paths": paths},
+        async with self.client.stream("POST", self.api + "/read", json={**self.spec, "paths": paths},
                                       headers=self.headers, timeout=STREAM_TIMEOUT) as resp:
             if resp.status_code != 200:
                 raise Refused(resp.status_code, _said(resp, await resp.aread()))
@@ -901,14 +926,14 @@ class RemoteTree(Source, Sink):
     @contextlib.asynccontextmanager
     async def fetch(self, rel: str, offset: int):
         headers = {**self.headers, **({"Range": f"bytes={offset}-"} if offset else {})}
-        async with self.client.stream("GET", API + "/file", params={**self.spec, "path": rel}, headers=headers,
+        async with self.client.stream("GET", self.api + "/file", params={**self.spec, "path": rel}, headers=headers,
                                       timeout=STREAM_TIMEOUT) as resp:
             if resp.status_code not in (200, 206) or (offset and resp.status_code != 206):
                 raise Refused(resp.status_code, _said(resp, await resp.aread()))
             yield resp.aiter_bytes()
 
     async def _post_json(self, path: str, params: dict, content) -> dict:
-        resp = await self.client.post(API + path, params={**self.spec, **params}, content=content,
+        resp = await self.client.post(self.api + path, params={**self.spec, **params}, content=content,
                                       headers={**self.headers, "Content-Type": "application/octet-stream"},
                                       timeout=STREAM_TIMEOUT)
         if resp.status_code != 200:
@@ -922,7 +947,7 @@ class RemoteTree(Source, Sink):
         return await self._post_json("/write", {}, chunks)
 
     async def have(self, rel: str) -> int:
-        resp = await self.client.get(API + "/part", params={**self.spec, "path": rel}, headers=self.headers)
+        resp = await self.client.get(self.api + "/part", params={**self.spec, "path": rel}, headers=self.headers)
         if resp.status_code != 200:
             raise Refused(resp.status_code, _said(resp))
         return int(resp.json().get("size") or 0)

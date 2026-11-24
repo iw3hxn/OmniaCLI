@@ -21,6 +21,7 @@
 <div id="edit-view">
   <p><a href="{{ prefix }}/workspaces" title="{{ _('Back to the list of the workspaces: what was changed here and not saved is lost') }}">{{ icon("arrow-left") }} {{ _("All workspaces") }}</a></p>
   <div id="workspaces"></div>
+  {% if handover_ws %}{% include "_handover_dialog.html" %}{% endif %}
 </div>
 {% set limit_labels = {"disk_gb": _("Disk, GB"), "cpus": _("CPUs"), "memory_gb": _("Memory, GB"), "instances": _("Instances")} %}
 <template id="ws-template">
@@ -245,7 +246,8 @@
     <p>{{ _("The customers of your machines: where they run, their instances and who comes in.") }}</p>
     <p class="small muted" id="ws-read" role="status"></p>
   </div>
-  {% if can_create %}<div class="actions"><span id="ws-new-wrap"><button type="button" class="primary" id="add" disabled
+  {% if can_create %}<div class="actions">{% if can_receive %}<button type="button" id="receive-open"
+    title="{{ _('Receives a workspace from another OmniaCLI with the code of the handover your provider gave you. It says first what arrives and whether it fits.') }}">{{ _("Recover a workspace…") }}</button>{% endif %}<span id="ws-new-wrap"><button type="button" class="primary" id="add" disabled
     title="{{ _('Opens the form of a new workspace, a closed part of a machine for a customer, with its own disk, limits, domain and users. Nothing is created until you save there.') }}">{{ _("New workspace") }}</button></span></div>{% endif %}
 </div>
 <p class="ws-counts" id="ws-counts" role="status">{{ _("Loading…") }}</p>
@@ -329,6 +331,7 @@
 </dialog>
 {% endif %}
 {% include "_login_as_dialog.html" %}
+{% if can_create and can_receive %}{% include "_receive_dialog.html" %}{% endif %}
 <script>
 (function () {
   const PREFIX = {{ prefix | tojson }}, SEARCH_FROM = 8, PRODUCTIONS_SHOWN = 6, USERS_SHOWN = 8, WATCH_SHOWN = 5;
@@ -666,8 +669,10 @@
       diskTitle = ws.disk.day ? fill(T.diskDay, {day: dayText(ws.disk.day)}) : "";
     }
     const stateTitle = (ws.watch || []).slice(0, 3).map((w) => w.text).join(" · ");
-    const state = level ? el("span", {class: level === 2 ? "ws-err" : "ws-warn", title: stateTitle}, omniaIcon(level === 2 ? "circle-x" : "triangle-alert"), " ", fill(T.toLook, {n: ws.watch.length}))
-                        : el("span", {class: "ws-ok"}, omniaIcon("check"), " ", T.fine);
+    // its handover to the customer, or its reception from a provider (UX-014 A5, A7): the banner's word, no button
+    const handed = ws.handover ? el("span", {class: ws.handover.level ? "ws-warn" : ""}, omniaIcon(ws.handover.level ? "triangle-alert" : "hourglass"), " ", ws.handover.text) : null;
+    const state = level ? el("span", {class: level === 2 ? "ws-err" : "ws-warn", title: stateTitle}, omniaIcon(level === 2 ? "circle-x" : "triangle-alert"), " ", fill(T.toLook, {n: ws.watch.length}), handed ? " · " : null, handed)
+                        : handed || el("span", {class: "ws-ok"}, omniaIcon("check"), " ", T.fine);
     const phone = [MACHINE_COLUMN ? m.name : null, instancesText, users !== "—" ? plural(Number(users), T.usersN1, T.usersN) : null, diskText].filter(Boolean).join(" · ");
     const first = el("td", {}, toggle, name, ws.label && ws.label !== ws.name ? el("span", {class: "muted"}, " " + ws.label) : null,
       ws.storage_problem ? el("span", {class: "badge error", title: ws.storage_problem}, T.unusable) : null,

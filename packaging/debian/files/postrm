@@ -82,6 +82,9 @@ case "$1" in
         # the moves of instances to other machines (placement.py, AD-015): their states, the instances placed
         # elsewhere, the workspaces hosted here for their home
         rm -rf /var/lib/omniacli/move
+        # the handovers of workspaces to a customer's OmniaCLI and the receptions from a provider (handover.py,
+        # AD-008): the hashes of the codes and sessions, the keys of the claims, the parts of the copies
+        rm -rf /var/lib/omniacli/handover
         # and the jobs of their hosts a home answered through itself (the delegated scope, AD-014)
         rm -f /var/lib/omniacli/placements.json /var/lib/omniacli/placements.json.tmp \
             /var/lib/omniacli/hosted-workspaces.json /var/lib/omniacli/hosted-workspaces.json.tmp \

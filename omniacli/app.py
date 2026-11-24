@@ -15,6 +15,7 @@ import functools
 import hashlib
 import importlib.metadata
 import importlib.util
+import inspect
 import io
 import ipaddress
 import json
@@ -25,6 +26,7 @@ import re
 import secrets
 import shutil
 import socket
+import ssl
 import tempfile
 import time
 import types
@@ -69,6 +71,7 @@ from . import clock
 from . import oauth
 from . import passkeys, sso
 from . import uploads as uploads_mod
+from . import handover
 from .uploads import Uploads
 from .diskhistory import DiskHistory, DiskRecorder
 from .customerview import CustomerView, hidden_from_customers
@@ -1256,6 +1259,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         # defined further down, with the Database tab's code
         replica_tasks.append(asyncio.get_running_loop().create_task(replica_loop()))
         replica_tasks.append(asyncio.get_running_loop().create_task(moved_loop()))
+        # the handovers of workspaces, on both sides (AD-008): codes expired, a cancel seen from the other side
+        replica_tasks.append(asyncio.get_running_loop().create_task(handover_loop()))
         catalog_tasks.append(asyncio.get_running_loop().create_task(catalog_loop()))
         disk_recorder.start()
         load_recorder.start()
@@ -5205,6 +5210,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return _TEMPLATES.TemplateResponse(
             request, "workspaces.html",
             {"form": form, "links": links, "machine_column": bool(links), "can_create": True,
+             # Where it lives › Hand over to the customer… (UX-014 A3) in the form of a workspace of the machine;
+             # Recover a workspace… (A5) beside New workspace: the machine's admins only
+             "handover_ws": request.query_params.get("edit") if request.query_params.get("edit") in settings.workspaces
+             and machine_admin(me) else "",
+             "can_receive": machine_admin(me),
              "here_name": shown_name(me), "two_step_in_row": TWO_STEP_IN_ROW, "open_in_rows": OPEN_IN_INSTANCE_ROWS,
              "workspaces": workspace_rows(), "workspaces_file": settings.workspaces_file,
              "servers": sorted(settings.servers), "users": sorted(settings.users),
@@ -5413,6 +5423,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         name = str(payload.get("name") or "")
         if name not in settings.workspaces:
             return refuse(f"No workspace {name}", status.HTTP_404_NOT_FOUND)
+        # a handover under way (AD-008): the customer's machine learns it is over from its cancel only
+        if handover.phase_of(handovers_out.state(name)) not in ("", "cancelled"):
+            return refuse(f"The handover of {name} to the customer is under way: Cancel the handover… first")
+        if handovers_in.of_workspace(name):
+            return refuse(f"Workspace {name} is being received from a provider: Cancel the reception… first")
         # its servers' webhooks on GitHub and its token, read while it is here: one to take away still (its
         # instance deleted while GitHub did not answer) is taken away with it, with its token
         gh_servers, own = list(settings.workspaces[name].servers), f"workspace:{name}"
@@ -5428,6 +5443,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         # hosted here for the machine of its home (AD-014): that machine asks about it no more; the moves of its
         # instances to other machines, ended, are forgotten with it
         hosted.put(name, None)
+        # the record of a handover of it that was cancelled
+        handovers_out.forget(name)
         gone = [s for s in moves.placements() if moves.state(s).get("workspace") == name and s not in settings.servers]
         for server in gone:
             moves.forget(server)
@@ -5503,6 +5520,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
              "can_create": bool(ws.storage and ws.limits.get("disk_gb")) and settings.storage_problem(ws) is None,
              "docker_missing": workspaceops.docker_missing(),
              "storage_problem": settings.storage_problem(ws),
+             # its handover to the customer (AD-008, the banner of UX-014 A7) and, on the customer's machine, its
+             # reception (A5): the machine's admins only
+             **(handover_bands(ws) if machine_admin(me) and not me.scoped else {}),
              "instances": [i for i in ws.instances() if workspaceops.server_name(ws, i) in settings.servers],
              "parameters": {n: {role: role_parameters(ws, n[len(ws.name) + 1:], role) for role in ROLES}
                             for n in ws.servers if n in settings.servers and n.startswith(f"{ws.name}-")},
@@ -14774,6 +14794,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             # D4: an admin without two-step verification, said in the Users cell, not among the things to look at
             node["admins_without_two_step"] = (len([m for m in members if m["role"] == "admin" and not m["two_step"]])
                                                if members is not None else None)
+            if not me.scoped and machine_admin(me):
+                # its handover to the customer, or its reception from a provider (UX-014 A5, A7): the word of the
+                # banner of its page, no button in the list
+                node["handover"] = handover_word(ws, request_language(request))
             for inst in node["instances"]:
                 for env in (inst.get("envs") or {}).values():
                     if env and env.get("job"):
@@ -23863,6 +23887,1316 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return {"where": place["where"], "reads": bool(place.get("reads")), "copied": bool(place.get("copied")),
                 "tuned": rec.get("tuned") if rec.get("params") else None,
                 "restart": (rec.get("restart") or {}).get("at"), **move_offer(inst)}
+
+    # --- the handover of a workspace to the customer's own OmniaCLI (docs/adr/AD-008-consegna-e-spostamento.md,
+    # AD-008…AD-011, UX-014 part A; step 7 of its §9: up to «ready»). Here both sides: the provider's (Prepare, the
+    # code, Redo, Cancel, and the routes /api/handover/v1/… the customer's machine calls with the code, then with
+    # its session) and the customer's (Recover a workspace…: read the code, Receive, Retry, Cancel the reception).
+    # The customer's machine calls the provider's, never the other way: no port opens on its side.
+
+    handovers_out = handover.Out(settings.jobs_dir.parent)
+    handovers_in = handover.In(settings.jobs_dir.parent)
+    handover_tries = handover.Tries()
+    HANDOVER_API = "/api/handover/v1"
+    HANDOVER_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
+    HANDOVER_STEPS = (("checks", "Checks"), ("templates", "Templates and images"), ("copy", "Copy"),
+                      ("step", "In step"))
+    # the customer's machine asks the provider whether its handover still holds, and the provider expires its codes
+    HANDOVER_EVERY = 60
+
+    def handover_public_route(method: str, path: str):
+        """A route of the handover the customer's machine calls (AD-008): outside the login (the app's
+        current_user), authorized by the code or the session only. Its parameters as the function names them:
+        request, the path's, payload (the JSON body), range_ (the header), any other one from the query."""
+        def wrap(fn):
+            wanted = list(inspect.signature(fn).parameters)
+
+            async def endpoint(request: Request):
+                values = {}
+                for name in wanted:
+                    if name == "request":
+                        values[name] = request
+                    elif name in request.path_params:
+                        values[name] = str(request.path_params[name])
+                    elif name == "payload":
+                        try:
+                            body = await request.json() if int(request.headers.get("content-length") or 0) else {}
+                        except ValueError:
+                            body = None
+                        if not isinstance(body, dict):
+                            return JSONResponse({"error": "The body is a JSON object"}, status_code=400)
+                        values[name] = body
+                    elif name == "range_":
+                        values[name] = request.headers.get("range", "")
+                    else:
+                        if name not in request.query_params:
+                            return JSONResponse({"error": f"{name} is missing"}, status_code=400)
+                        values[name] = request.query_params[name]
+                try:
+                    answer = await fn(**values)
+                except HTTPException as exc:
+                    return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
+                return answer if isinstance(answer, Response) else JSONResponse(answer)
+            app.add_route(path, endpoint, methods=[method])
+            return fn
+        return wrap
+
+    def handover_provider_label(lang: str = "en") -> str:
+        return settings.options.provider_label or i18n.gettext(lang, "the provider")
+
+    def handover_refuse(message: str, code: int, ip: str = "", detail: str = ""):
+        """A refusal of the routes of the handover; a failed try (a wrong code or session) in the access log's file
+        of the failed ones, and counted for the 429 (AD-008)."""
+        if code == status.HTTP_401_UNAUTHORIZED:
+            handover_tries.failed(ip)
+            access_log.record("failed", "handover", "", ip, detail[:200])
+        return JSONResponse({"error": message}, status_code=code)
+
+    def handover_ip(request: Request) -> str:
+        return request.client.host if request.client else ""
+
+    def handover_phase_refusal(state: dict):
+        """410 with the true reason (and the phase, which the customer's machine reads) for a handover cancelled
+        or whose code expired; None while it holds."""
+        phase = handover.phase_of(state)
+        if phase == "cancelled":
+            return JSONResponse({"error": "The handover was cancelled by the provider: ask for a new code",
+                                 "phase": phase}, status_code=status.HTTP_410_GONE)
+        if phase == "expired":
+            # the moment with this machine's offset: the customer's machine says it in its reader's clock
+            return JSONResponse({"error": f"The code expired on {handover.iso(float(state.get('expires') or 0))}: "
+                                          "ask the provider for a new one", "phase": phase},
+                                status_code=status.HTTP_410_GONE)
+        return None
+
+    def handover_by_code(request: Request, code: str):
+        """(workspace, state, the code's parts) of the code a request carries, or the refusal: always the same 401
+        for a wrong id or secret; the true reason (expired, cancelled) with the right secret only."""
+        ip = handover_ip(request)
+        if handover_tries.blocked(ip):
+            return refuse("Too many tries from this address: wait 10 minutes", status.HTTP_429_TOO_MANY_REQUESTS)
+        try:
+            parts = handover.read_code(code)
+        except handover.CodeError:
+            return handover_refuse("The code is not valid", 401, ip, f"a handover code refused: {request.url.path}")
+        found = handovers_out.find(parts["h"])
+        if found is not None and handover.same(str(found[1].get("was_code_hash") or ""), parts["s"]):
+            # the right secret of a code cancelled or expired: the true reason, and nothing else
+            refused = handover_phase_refusal(found[1])
+            if refused is not None:
+                return refused
+        if found is None or not handover.same(str(found[1].get("code_hash") or ""), parts["s"]):
+            return handover_refuse("The code is not valid", 401, ip, f"a handover code refused: {request.url.path}")
+        return found[0], found[1], parts
+
+    def handover_by_session(request: Request, handover_id: str):
+        """(workspace, state) of the session a request carries for handover_id, or the refusal."""
+        ip = handover_ip(request)
+        if handover_tries.blocked(ip):
+            return refuse("Too many tries from this address: wait 10 minutes", status.HTTP_429_TOO_MANY_REQUESTS)
+        scheme, _, token = request.headers.get("authorization", "").partition(" ")
+        found = handovers_out.find(handover_id)
+        if (found is not None and scheme.lower() == "bearer"
+                and handover.same(str(found[1].get("was_session_hash") or ""), token.strip())):
+            # the session of a handover cancelled or whose code expired reads why, so that the customer's machine
+            # takes away what it copied (UX-014 A10), and reaches nothing else
+            refused = handover_phase_refusal(found[1])
+            if refused is not None:
+                return refused
+        if (found is None or scheme.lower() != "bearer"
+                or not handover.same(str(found[1].get("session_hash") or ""), token.strip())):
+            return handover_refuse("The session of the handover is not valid: read the code again", 401, ip,
+                                   f"a handover session refused: {request.url.path}")
+        refused = handover_phase_refusal(found[1])
+        return refused if refused is not None else found
+
+    def handover_instances(ws: Workspace) -> list[tuple[str, str, Instance | None, str]]:
+        """(server, instance, its production, why it cannot pass: "" when it can) of the workspace's servers."""
+        known = stagings.load(stagings_file)
+        rows = []
+        for server in ws.servers:
+            srv = settings.servers.get(server)
+            instance = server[len(ws.name) + 1:] if server.startswith(f"{ws.name}-") else server
+            inst = srv.production if srv is not None else None
+            why = ""
+            if server in known:
+                why = "A staging is made again from its production in a minute, on the customer's machine"
+            elif inst is None or inst.restart.type != "compose":
+                why = f"{server} is not an instance of Docker Compose"
+            elif on_remote_db(inst):
+                why = f"The database of {server} is on another machine: it is not this machine's to hand over"
+            elif srv.test is not None:
+                why = f"{server} has a test environment: an instance with a test passes in a later step"
+            elif moves.host_of(server):
+                why = f"{server} runs on another machine of the provider: bring it back first"
+            elif moves.state(server).get("state") == "returned":
+                # its stopped copy there holds the customer's data and passes its names here: the handover does not
+                # reach that machine, so that copy goes first (decided at step 7: no copy stays behind the handover)
+                why = (f"{server} came back from {moves.state(server).get('link')}, which keeps its copy stopped: "
+                       "Delete the copy there… first, so that none of its data stays on a machine of the provider")
+            rows.append((server, instance, inst, why))
+        return rows
+
+    def handover_last_backup(inst: Instance) -> tuple[str, int]:
+        """(the name of the newest backup zip of inst, its bytes); ("", 0) for none."""
+        folder = backup_folder(inst)
+        found = [p for p in folder.iterdir() if p.is_file() and p.suffix == ".zip"] if folder.is_dir() else []
+        if not found:
+            return "", 0
+        newest = max(found, key=lambda p: p.stat().st_mtime)
+        return newest.name, newest.stat().st_size
+
+    async def handover_sizes(ws: Workspace, instance: str, inst: Instance) -> dict:
+        sizes = await move_sizes(ws, instance, inst)
+        name, size = await asyncio.to_thread(handover_last_backup, inst)
+        template = await asyncio.to_thread(instance_template, ws, instance)
+        return {"database": sizes["database"], "filestore": sizes["filestore"], "addons": sizes["addons"],
+                "backup": size, "backup_name": name, "kind": move_kind(inst),
+                "template": template.name if template else "", "version": template.version if template else "",
+                "label": template.label if template else ""}
+
+    def handover_public(ws: Workspace, state: dict, lang: str) -> dict:
+        """The provider's handover as its page reads it: no hash, no secret."""
+        if not state:
+            return {}
+        phase = handover.phase_of(state)
+        claim = state.get("claim") or {}
+        return {"id": state.get("id"), "phase": phase, "created": state.get("created"),
+                "expires": handover.iso(float(state.get("expires") or 0)), "by": state.get("by"),
+                "instances": state.get("instances") or [], "claimed": bool(claim),
+                "claim": {"ip": claim.get("ip"), "fingerprint": claim.get("fingerprint"), "at": claim.get("at")}
+                if claim else None, "receiver": state.get("receiver") or {},
+                "cancelled_at": state.get("cancelled_at"), "cancelled_by": state.get("cancelled_by"),
+                "delete_on": handover.iso(float(state.get("expires") or 0) + handover.COPY_DAYS * 86400)}
+
+    def handover_people(ws: Workspace) -> dict:
+        """Who of the workspace passes (its users of role workspace) and what of them does not (AD-009): the
+        provider's own people that are members stay here."""
+        people = [m for m in ws.members if settings.user_role(m) == WORKSPACE_ROLE]
+        return {"users": len(people), "totp": sum(1 for m in people if second_factors.on(m)),
+                "passkeys": sum(1 for m in people if passkey_store.count(m) > 0),
+                "providers": len([m for m in ws.members if m not in people]), "roles": len(ws.roles)}
+
+    def handover_word(ws: Workspace, lang: str) -> dict | None:
+        """The State of a workspace's row in the list (UX-014 A5, A7): {"text", "level"}, None for none."""
+        bands = handover_bands(ws)
+        out, got = bands["handover_out"], bands["handover_in"]
+        if got:
+            phase = got.get("phase")
+            if phase == "receiving":
+                progress = got.get("progress") or {}
+                pct = int(100 * (progress.get("done") or 0) / progress["total"]) if progress.get("total") else 0
+                return {"text": i18n.gettext(lang, "Arriving from the provider: {pct} %", pct=pct), "level": 0}
+            if phase == "ready":
+                return {"text": i18n.gettext(lang, "Ready to switch"), "level": 0}
+            if phase in ("out_of_step", "failed"):
+                return {"text": i18n.gettext(lang, "Ready, but not receiving from the provider"), "level": 1}
+            return {"text": i18n.gettext(lang, "The reception is being cancelled"), "level": 0}
+        if out:
+            word = {"prepared": "Handover prepared", "receiving": "The customer is receiving",
+                    "ready": "The customer is ready to switch", "expired": "The code of the handover expired"}
+            text = word.get(out.get("phase") or "")
+            # a handover prepared and never used once its code expired is to look at (A7)
+            return {"text": i18n.gettext(lang, text), "level": 1 if out.get("phase") == "expired" else 0} if text else None
+        return None
+
+    def handover_bands(ws: Workspace) -> dict:
+        """The banners of the workspace's page: its handover here (prepared, receiving, ready, expired), its
+        reception from a provider (receiving, ready, out of step, failed, cancelling)."""
+        out = handovers_out.state(ws.name)
+        found = handovers_in.of_workspace(ws.name)
+        reception = handover_in_public(*found) if found else None
+        if reception:
+            job = jobs.get(str(reception.get("job") or ""))
+            reception["progress"] = (job.result or {}).get("progress") if job is not None else None
+        return {"handover_out": handover_public(ws, out, "en") if out and handover.phase_of(out) != "cancelled" else None,
+                "handover_in": reception}
+
+    def handover_admin(me: Principal) -> None:
+        if not (machine_admin(me) and not me.scoped):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "A workspace is handed over by the admins of the machine")
+
+    @app.get("/api/workspaces/{workspace}/handover")
+    async def handover_view(request: Request, workspace: str, me: Principal = Depends(current_user)):
+        """The handover of a workspace (UX-014 A4): its state, and what the dialog offers when none is under way:
+        each instance with its sizes or why it cannot pass, the people and what does not pass, the total, the
+        dates the summary says, why Prepare is off (no address of this panel the customer's machine opens)."""
+        handover_admin(me)
+        ws = a_workspace(workspace)
+        lang = request_language(request)
+        state = handovers_out.state(ws.name)
+        url, why = handover_url()
+        rows = []
+        for server, instance, inst, refused in handover_instances(ws):
+            row = {"server": server, "instance": instance, "why": i18n.tr(lang, refused) if refused else ""}
+            if not refused and inst is not None:
+                row.update(await handover_sizes(ws, instance, inst))
+                row["busy"] = server_busy(server)
+                if row["busy"]:
+                    row["why"] = i18n.tr(lang, f"{server} has a job under way: wait for it to end")
+            rows.append(row)
+        tokens = sum(1 for n in settings.tokens if settings.token_workspace(n) == ws.name)
+        now = handover.now()
+        return {"workspace": ws.name, "label": ws.label, "domain": ws.domain, "url_why": i18n.tr(lang, why) if why else "",
+                "rows": rows, "people": handover_people(ws),
+                "tokens": tokens, "provider": handover_provider_label(lang),
+                "expires": handover.iso(now + handover.CODE_HOURS * 3600),
+                # the copy here goes 7 days after the switch (D-A3): the day said for a switch made today
+                "delete_on": handover.iso(now + handover.COPY_DAYS * 86400), "copy_days": handover.COPY_DAYS,
+                "oauth": len(oauth_store.listed(workspace=ws.name)), "names": len(site_names(ws)) if ws.domain else 0,
+                "stagings_elsewhere": len([s for s in ws.servers if s not in settings.servers]),
+                "handover": handover_public(ws, state, lang)}
+
+    def handover_url() -> tuple[str, str]:
+        """(the public HTTPS address of this panel the customer's machine calls, why there is none)."""
+        url = portal_url()
+        if not url:
+            return "", ("The customer's machine must reach this panel in HTTPS: Settings › Options › Customers' "
+                        "portal, or a name with a certificate.")
+        return url, ""
+
+    async def handover_code(url: str) -> tuple[str, str, str]:
+        """(a new secret, the pin of the certificate the portal presents now, why not): read from this machine's
+        own portal, as the customer's machine will read it."""
+        try:
+            pin = await asyncio.to_thread(handover.presented_pin, url)
+        except (OSError, ValueError) as exc:
+            return "", "", f"This panel does not answer at {url}: {exc}"
+        return handover.new_secret(), pin, ""
+
+    def handover_active(state: dict) -> bool:
+        return handover.phase_of(state) in ("prepared", "receiving", "ready")
+
+    @app.post("/api/workspaces/{workspace}/handover")
+    async def handover_prepare(request: Request, workspace: str, payload: dict = Body(...),
+                               me: Principal = Depends(current_user)):
+        """Prepare the handover (UX-014 A4, step 2's primary): the name of the workspace written, the instances
+        chosen; the code is answered once and only its hash stays. Nothing stops here."""
+        handover_admin(me)
+        ws = a_workspace(workspace)
+        payload = payload if isinstance(payload, dict) else {}
+        if str(payload.get("confirm") or "") != ws.name:
+            return refuse(f"Write the name of the workspace, {ws.name}, to prepare its handover")
+        if handover.phase_of(handovers_out.state(ws.name)) not in ("", "cancelled"):
+            # an expired one too: its customer's machine still holds what it copied, and learns of a cancel only
+            return refuse(f"The handover of {ws.name} is prepared already: Redo the code, or cancel it first")
+        url, why = handover_url()
+        if why:
+            return refuse(why)
+        allowed = {server for server, _i, _inst, refused in handover_instances(ws) if not refused}
+        chosen = [str(s) for s in payload.get("instances") or [] if str(s) in allowed]
+        if not chosen:
+            return refuse("Choose at least one instance that can pass")
+        busy = [s for s in chosen if server_busy(s)]
+        if busy:
+            return refuse(f"{busy[0]} has a job under way: wait for it to end")
+        secret, pin, why = await handover_code(url)
+        if why:
+            return refuse(why)
+        hid, at = handover.new_id(), handover.now()
+        state = {"id": hid, "code_hash": handover.hashed(secret), "pin": pin, "url": url, "created": handover.iso(at),
+                 "expires": at + handover.CODE_HOURS * 3600, "by": me.on_behalf or me.name, "instances": chosen,
+                 "phase": "prepared"}
+        handovers_out.save(ws.name, state)
+        access_log.record("handover", me.kind, me.name, handover_ip(request),
+                          f"prepared the handover of {ws.name} ({', '.join(chosen)}), its code valid until "
+                          f"{handover.iso(state['expires'])}", workspace=ws.name)
+        return {"code": handover.make_code(url, hid, secret, pin), "handover": handover_public(ws, state,
+                                                                                            request_language(request))}
+
+    @app.post("/api/workspaces/{workspace}/handover/code")
+    async def handover_redo(request: Request, workspace: str, me: Principal = Depends(current_user)):
+        """Redo the code: a new secret and 72 hours, the session of before gone; the same id, so the machine that
+        copied resumes from what it has when it reads the new code, and another one starts anew."""
+        handover_admin(me)
+        ws = a_workspace(workspace)
+        state = handovers_out.state(ws.name)
+        if not state or handover.phase_of(state) == "cancelled":
+            return refuse(f"No handover of {ws.name} to make a new code for: prepare one")
+        url, why = handover_url()
+        if why:
+            return refuse(why)
+        secret, pin, why = await handover_code(url)
+        if why:
+            return refuse(why)
+        at = handover.now()
+        state = handovers_out.save(ws.name, {**state, "code_hash": handover.hashed(secret), "pin": pin, "url": url,
+                                             "expires": at + handover.CODE_HOURS * 3600, "session_hash": "",
+                                             "was_code_hash": "", "was_session_hash": "",
+                                             "claim": None, "phase": "prepared", "redone": handover.iso(at)})
+        access_log.record("handover", me.kind, me.name, handover_ip(request),
+                          f"a new code for the handover of {ws.name}, valid until {handover.iso(state['expires'])}: "
+                          "the one of before no longer is", workspace=ws.name)
+        return {"code": handover.make_code(url, state["id"], secret, pin),
+                "handover": handover_public(ws, state, request_language(request))}
+
+    async def handover_close(job, ws: Workspace, state: dict) -> None:
+        """What the provider opened for the customer's machine closed: the port of each database of its own let
+        in for it (machine-db-replica-drop)."""
+        for server in state.get("instances") or []:
+            srv = settings.servers.get(server)
+            key = dedicated_key(srv.production) if srv is not None and srv.production is not None else ""
+            rec = replica_record(key) if key else None
+            if rec and rec.get("link") == f"handover:{state.get('id')}":
+                try:
+                    await workspaceops._helper(job, "machine-db-replica-drop", key, timeout=MACHINE_TIMEOUT)
+                    job.log(f"The database of {server}: closed again to the customer's machine")
+                except JobFailed as exc:
+                    job.warn(f"The database of {server} is still open to the customer's machine: {exc}")
+
+    def handover_cancel_job(ws: Workspace, why: str, source: str, phase: str = "cancelled") -> Job:
+        state = handovers_out.state(ws.name)
+
+        async def action(job):
+            job.log(f"--- the handover of {ws.name}: {why}")
+            # the code and the session no longer hold: kept apart, they read only why (handover_by_code|session)
+            now_state = handovers_out.state(ws.name)
+            handovers_out.update(ws.name, phase=phase, code_hash="", session_hash="",
+                                 was_code_hash=now_state.get("code_hash") or now_state.get("was_code_hash") or "",
+                                 was_session_hash=now_state.get("session_hash") or now_state.get("was_session_hash") or "",
+                                 cancelled_at=handover.iso(handover.now()), cancelled_by=source)
+            access_log.record("handover", "handover", state.get("id") or "", "",
+                              f"the handover of {ws.name} {phase}: {why}; the code no longer holds", workspace=ws.name,
+                              context=False)
+            await handover_close(job, ws, state)
+            job.log("The code no longer holds; here nothing had stopped")
+        return jobs.submit(f"Handover of {ws.name}: {phase}", [f"{s}/production" for s in state.get("instances") or []
+                                                               if s in settings.servers],
+                           source, action, workspace=ws.name)
+
+    @app.post("/api/workspaces/{workspace}/handover/cancel")
+    async def handover_cancel(request: Request, workspace: str, me: Principal = Depends(current_user)):
+        """Cancel the handover (UX-014 A10, before the switch): the code no longer holds, the customer's machine
+        deletes what it copied at its next look, the database closed to it. Here nothing changes."""
+        handover_admin(me)
+        ws = a_workspace(workspace)
+        state = handovers_out.state(ws.name)
+        if not handover_active(state) and handover.phase_of(state) != "expired":
+            return refuse(f"No handover of {ws.name} under way")
+        job = handover_cancel_job(ws, "cancelled by the provider", f"manual: {me}")
+        return {"job": job.id}
+
+    # --- the routes the customer's machine calls (public: the code, then the session, authorize them)
+
+    @handover_public_route("GET", HANDOVER_API + "/offer")
+    async def handover_offer(request: Request):
+        """What the code gives, read only (UX-014 A5 step 1): the provider, the workspace, its expiry, the
+        instances with their sizes, whether a machine claimed it already. Nothing changes."""
+        found = handover_by_code(request, request.headers.get(handover.CODE_HEADER, ""))
+        if not isinstance(found, tuple):
+            return found
+        workspace, state, _parts = found
+        refused = handover_phase_refusal(state)
+        if refused is not None:
+            return refused
+        ws = settings.workspaces.get(workspace)
+        if ws is None:
+            return refuse("The workspace of the code is not here any more", status.HTTP_410_GONE)
+        return {"protocol": handover.PROTOCOL, "id": state["id"], "provider": handover_provider_label(),
+                "workspace": {"name": ws.name, "label": ws.label, "disk_gb": ws.limits.get("disk_gb")},
+                "expires": handover.iso(float(state["expires"])), "claimed": bool(state.get("claim")),
+                "items": await handover_items(ws, state), "people": handover_people(ws)}
+
+    @handover_public_route("POST", HANDOVER_API + "/probe")
+    async def handover_probe(request: Request):
+        """Whether the customer's machine is reached from outside on its ports 80 and 443 (UX-014 A5 step 2, A8):
+        this machine tries the address the request comes from, and no other, with a connection that sends
+        nothing. With the code (the dialog, before Receive) or the session."""
+        session = request.headers.get("authorization", "")
+        found = None
+        if session.lower().startswith("bearer "):
+            hid = str(request.query_params.get("id") or "")
+            found = handover_by_session(request, hid)
+        else:
+            found = handover_by_code(request, request.headers.get(handover.CODE_HEADER, ""))
+        if not isinstance(found, tuple):
+            return found
+        ip = handover_ip(request)
+
+        def reach(port: int) -> bool:
+            try:
+                with socket.create_connection((ip, port), timeout=3):
+                    return True
+            except OSError:
+                return False
+        got = await asyncio.gather(*(asyncio.to_thread(reach, p) for p in (80, 443)))
+        return {"80": got[0], "443": got[1]}
+
+    async def handover_items(ws: Workspace, state: dict) -> list[dict]:
+        out = []
+        for server in state.get("instances") or []:
+            srv = settings.servers.get(server)
+            if srv is None or srv.production is None:
+                continue
+            instance = server[len(ws.name) + 1:]
+            sizes = await handover_sizes(ws, instance, srv.production)
+            out.append({"server": server, "instance": instance, **{k: sizes[k] for k in (
+                "database", "filestore", "addons", "backup", "kind", "template", "version", "label")}})
+        return out
+
+    @handover_public_route("POST", HANDOVER_API + "/claim")
+    async def handover_claim(request: Request, payload: dict):
+        """The first claim binds the code to the X25519 key the customer's machine made for it and gives it a
+        session (only its hash stays); the same key again, a new session (the answer of before was lost); another
+        key, 409. In the access log, with the address and the print of the key (AD-008 consequence 4)."""
+        payload = payload if isinstance(payload, dict) else {}
+        found = handover_by_code(request, str(payload.get("code") or ""))
+        if not isinstance(found, tuple):
+            return found
+        workspace, state, _parts = found
+        refused = handover_phase_refusal(state)
+        if refused is not None:
+            return refused
+        try:
+            key = handover.public_key(payload.get("key"))
+        except (handover.CodeError, ValueError):
+            return refuse("The key of the claim is not an X25519 public key")
+        claim = state.get("claim") or {}
+        if claim and claim.get("key") != key:
+            return refuse("The code was used by another machine already", status.HTTP_409_CONFLICT)
+        ip, session = handover_ip(request), handover.new_secret()
+        print_ = handover.fingerprint(key)
+        state = handovers_out.save(workspace, {**state, "session_hash": handover.hashed(session),
+                                               "claim": {"key": key, "ip": ip, "fingerprint": print_,
+                                                         "at": claim.get("at") or handover.iso(handover.now())},
+                                               "phase": "receiving" if state.get("phase") == "prepared"
+                                               else state.get("phase")})
+        access_log.record("handover", "handover", state["id"], ip,
+                          f"the code of the handover of {workspace} used by the machine {ip}, key {print_}",
+                          workspace=workspace)
+        return {"id": state["id"], "session": session, "expires": handover.iso(float(state["expires"])),
+                "fingerprint": print_}
+
+    @handover_public_route("GET", HANDOVER_API + "/{handover_id}/manifest")
+    async def handover_manifest(request: Request, handover_id: str):
+        """What passes (AD-009 format 1), with logical names only: the workspace, what the customer's machine
+        needs (the protocol, the version, the templates, the architecture), the items with their trees and the
+        last backup of each, what does not pass with why."""
+        found = handover_by_session(request, handover_id)
+        if not isinstance(found, tuple):
+            return found
+        workspace, state = found
+        ws = settings.workspaces.get(workspace)
+        if ws is None:
+            return refuse("The workspace of the handover is not here any more", status.HTTP_410_GONE)
+        items = await handover_items(ws, state)
+        return {"format": 1, "provider": handover_provider_label(),
+                "workspace": {"name": ws.name, "label": ws.label, "domain": ws.domain,
+                              "disk_gb": ws.limits.get("disk_gb"), "limits": ws.limits},
+                "requirements": {"protocol": handover.PROTOCOL, "omniacli": _version(), "arch": os.uname().machine,
+                                 "templates": sorted({i["template"] for i in items if i["template"]})},
+                "items": [{**i, "trees": list(handover.TREES)} for i in items],
+                "not_passed": [{"what": w, "why": y} for w, y in handover.NOT_PASSED]}
+
+    def handover_end(state: dict, spec: dict):
+        """This machine's end of a tree of the handover: an instance it chose, its production; of its backups, the
+        last one only."""
+        server = str(spec.get("server") or "")
+        if server not in (state.get("instances") or []) or str(spec.get("role") or "") != "production" \
+                or str(spec.get("tree") or "") not in handover.TREES:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Not a tree of the handover")
+        end = treesync_end(spec)
+        if end.kind == "files":
+            inst = settings.servers[server].production
+            name, _size = handover_last_backup(inst)
+            return treesync.LocalFiles(end.root, end.cache, only=[name] if name else [])
+        return end
+
+    @handover_public_route("POST", HANDOVER_API + "/{handover_id}/treesync/list")
+    async def handover_tree_list(request: Request, handover_id: str, payload: dict):
+        """The manifest of one tree of the handover, as /api/treesync/v1/list answers a link (treesync.py)."""
+        found = handover_by_session(request, handover_id)
+        if not isinstance(found, tuple):
+            return found
+        end = handover_end(found[1], payload if isinstance(payload, dict) else {})
+        into = treesync_temp("handover-list")
+        try:
+            counts = await end.listing(into)
+        except treesync.TreeError as exc:
+            into.unlink(missing_ok=True)
+            return refuse(str(exc), status.HTTP_409_CONFLICT)
+        handover_served(found[0], counts["bytes"], 0, handover_ip(request))
+        return StreamingResponse(file_chunks(into, delete=True), media_type="application/x-ndjson",
+                                 headers={"X-Treesync-Files": str(counts["files"]), "X-Treesync-Bytes": str(counts["bytes"])})
+
+    def handover_served(workspace: str, listed: int, sent: int, ip: str) -> None:
+        """What the customer's machine took, kept for the provider's banner and its access log."""
+        state = handovers_out.state(workspace)
+        served = state.get("served") or {}
+        handovers_out.update(workspace, served={"bytes": int(served.get("bytes") or 0) + sent, "ip": ip,
+                                                "at": handover.iso(handover.now())})
+
+    @handover_public_route("POST", HANDOVER_API + "/{handover_id}/treesync/read")
+    async def handover_tree_read(request: Request, handover_id: str, payload: dict):
+        """A batch of a root tree of the handover as a tar (root's tree-read)."""
+        found = handover_by_session(request, handover_id)
+        if not isinstance(found, tuple):
+            return found
+        payload = payload if isinstance(payload, dict) else {}
+        end = handover_end(found[1], payload)
+        paths = payload.get("paths")
+        if not isinstance(paths, list) or not 0 < len(paths) <= treesync.BATCH_FILES or end.kind != "root":
+            return refuse("A batch is a list of the paths of a root tree")
+        try:
+            paths = [treesync.safe_rel(p) for p in paths]
+        except treesync.TreeError as exc:
+            return refuse(str(exc))
+        reading = end.read(paths)
+        stream = await reading.__aenter__()
+        workspace, ip = found[0], handover_ip(request)
+
+        async def body():
+            sent = 0
+            try:
+                async for chunk in stream:
+                    sent += len(chunk)
+                    yield chunk
+            finally:
+                await reading.__aexit__(None, None, None)
+                handover_served(workspace, 0, sent, ip)
+        return StreamingResponse(body(), media_type="application/x-tar")
+
+    @handover_public_route("GET", HANDOVER_API + "/{handover_id}/treesync/file")
+    async def handover_tree_file(request: Request, handover_id: str, server: str, role: str, tree: str, path: str,
+                                 range_: str = ""):
+        """A file of the handover's backups (the last of each environment) from the byte its Range says."""
+        found = handover_by_session(request, handover_id)
+        if not isinstance(found, tuple):
+            return found
+        end = handover_end(found[1], {"server": server, "role": role, "tree": tree})
+        if end.kind != "files":
+            return refuse(f"{tree} is not a tree of files")
+        match = re.fullmatch(r"bytes=(\d+)-", range_.strip()) if range_ else None
+        if range_ and not match:
+            return refuse("Only a range from a byte to the end (bytes=<n>-) is served",
+                          status.HTTP_416_RANGE_NOT_SATISFIABLE)
+        if end.only is not None and treesync.safe_rel(path) not in end.only:
+            return refuse(f"{path} is not in the tree", status.HTTP_404_NOT_FOUND)
+        try:
+            fh, st = await asyncio.to_thread(treesync.open_file, end.root, path)
+        except treesync.TreeError as exc:
+            return refuse(str(exc), status.HTTP_404_NOT_FOUND)
+        fh.close()
+        start = int(match.group(1)) if match else 0
+        if start > st.st_size:
+            return refuse(f"{path} has {st.st_size} bytes", status.HTTP_416_RANGE_NOT_SATISFIABLE)
+        headers = {"Content-Length": str(st.st_size - start), "Accept-Ranges": "bytes"}
+        if match:
+            headers["Content-Range"] = f"bytes {start}-{max(start, st.st_size - 1)}/{st.st_size}"
+        handover_served(found[0], 0, st.st_size - start, handover_ip(request))
+        access_log.record("download", "handover", handover_id, handover_ip(request),
+                          f"{server}/production {tree}/{path} from byte {start}, taken by the customer's machine",
+                          workspace=found[0], server=server)
+        return StreamingResponse(file_chunks(end.root / path, start), status_code=206 if match else 200,
+                                 media_type="application/octet-stream", headers=headers)
+
+    async def handover_wait(job: Job, seconds: float) -> None:
+        end = time.monotonic() + seconds
+        while job.status not in FINISHED and time.monotonic() < end:
+            await asyncio.sleep(0.5)
+
+    def handover_key_of(state: dict, instance: str, workspace: str) -> tuple[str, str]:
+        server = f"{workspace}-{instance}"
+        srv = settings.servers.get(server)
+        if server not in (state.get("instances") or []) or srv is None or srv.production is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Not an instance of the handover")
+        key = dedicated_key(srv.production)
+        if not key:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"{server} has its database on the machine's cluster: "
+                                                             "it passes at the switch, dumped")
+        return server, key
+
+    @handover_public_route("POST", HANDOVER_API + "/{handover_id}/db/{instance}/allow")
+    async def handover_db_allow(request: Request, handover_id: str, instance: str, payload: dict):
+        """The database of its own of an instance let in for the customer's machine to copy it and follow it
+        (AD-010): the one address its request comes from (read here, never said by it), its role's verifier, the
+        port published over TLS for this panel's name. A database let in for this handover already is let in
+        again (a copy that broke starts again)."""
+        found = handover_by_session(request, handover_id)
+        if not isinstance(found, tuple):
+            return found
+        workspace, state = found
+        server, key = handover_key_of(state, instance, workspace)
+        payload = payload if isinstance(payload, dict) else {}
+        verifier = str(payload.get("verifier") or "")
+        ip = handover_ip(request)
+        rec = replica_record(key)
+        if rec and rec.get("link") != f"handover:{handover_id}":
+            return refuse(f"The database of {server} has a copy on another machine of the provider: one copy per "
+                          "database, the provider drops it first", status.HTTP_409_CONFLICT)
+        host = urlsplit(str(state.get("url") or "")).hostname or ""
+
+        async def action(job):
+            if rec:
+                await workspaceops._helper(job, "machine-db-replica-drop", key, timeout=MACHINE_TIMEOUT)
+                job.log("The copy of before closed: it starts again")
+            allowed = await workspaceops._helper(job, "machine-db-replica-allow", key, timeout=MACHINE_TIMEOUT,
+                                                 input=json.dumps({
+                                                     "address": ip, "verifier": verifier, "reached_as": host,
+                                                     "link": f"handover:{handover_id}", "by": "the customer",
+                                                     "cap_gb": None, "restart": True, "arrives": True}).encode())
+            facts = await workspaceops.ask("machine-db-replica-facts", key, timeout=pgtuning.READ_TIMEOUT * 4)
+            job.log(f"The database of {server} let in for the customer's machine ({ip}), port "
+                    f"{allowed.get('port')} over TLS")
+            job.result = {**job.result, "allowed": {
+                "host": host, "port": allowed.get("port"), "ca": allowed.get("ca"),
+                "size": allowed.get("size") or facts.get("size") or 0,
+                "major": str(allowed.get("major") or facts.get("major") or ""),
+                "database": str(facts.get("database") or "")}}
+        job = jobs.submit(f"Handover of {workspace}: the database of {server} let in", [f"{server}/production"],
+                          f"handover: {ip}", action, workspace=workspace)
+        await handover_wait(job, MACHINE_TIMEOUT)
+        if job.status != SUCCESS:
+            return refuse(f"The provider could not let the database of {server} in: "
+                          f"{(job.error or 'it did not end').splitlines()[-1]}", status.HTTP_409_CONFLICT)
+        access_log.record("handover", "handover", handover_id, ip,
+                          f"the database of {server} let in for the machine {ip}, port {job.result['allowed']['port']}",
+                          workspace=workspace)
+        return job.result["allowed"]
+
+    @handover_public_route("GET", HANDOVER_API + "/{handover_id}/db/{instance}/state")
+    async def handover_db_state(request: Request, handover_id: str, instance: str):
+        """Whether the copy of the customer's machine is connected, and how far behind."""
+        found = handover_by_session(request, handover_id)
+        if not isinstance(found, tuple):
+            return found
+        _server, key = handover_key_of(found[1], instance, found[0])
+        try:
+            got = await workspaceops.ask("machine-db-replica-state", key, timeout=pgtuning.READ_TIMEOUT * 4)
+        except JobFailed as exc:
+            return refuse(str(exc).splitlines()[-1] if str(exc) else "not read", status.HTTP_409_CONFLICT)
+        return {"connected": bool(got.get("connected")), "lag": got.get("lag") if got.get("connected") else None,
+                "state": got.get("state")}
+
+    @handover_public_route("POST", HANDOVER_API + "/{handover_id}/progress")
+    async def handover_progress(request: Request, handover_id: str, payload: dict):
+        """What the customer's machine says of its reception (receiving, with the bytes; ready; failed): the
+        provider's banner reads it (UX-014 A7)."""
+        found = handover_by_session(request, handover_id)
+        if not isinstance(found, tuple):
+            return found
+        workspace, state = found
+        payload = payload if isinstance(payload, dict) else {}
+        phase = str(payload.get("phase") or "")
+        if phase not in ("receiving", "ready", "failed"):
+            return refuse("receiving, ready or failed")
+        receiver = {"phase": phase, "done": int(payload.get("done") or 0), "total": int(payload.get("total") or 0),
+                    "at": handover.iso(handover.now()), "error": str(payload.get("error") or "")[:300]}
+        handovers_out.update(workspace, receiver=receiver, phase="ready" if phase == "ready" else "receiving")
+        if phase == "ready" and state.get("phase") != "ready":
+            access_log.record("handover", "handover", handover_id, handover_ip(request),
+                              f"the customer's machine is ready for the switch of {workspace}: "
+                              f"{receiver['done'] / 1048576:.1f} MB of files received", workspace=workspace)
+        return {"ok": True}
+
+    @handover_public_route("GET", HANDOVER_API + "/{handover_id}/state")
+    async def handover_state(request: Request, handover_id: str):
+        """Whether the handover still holds (the customer's machine asks it every minute): 410 once cancelled or
+        expired, with why."""
+        found = handover_by_session(request, handover_id)
+        if not isinstance(found, tuple):
+            return found
+        return {"phase": handover.phase_of(found[1]), "expires": handover.iso(float(found[1].get("expires") or 0))}
+
+    @handover_public_route("POST", HANDOVER_API + "/{handover_id}/cancel")
+    async def handover_cancel_there(request: Request, handover_id: str):
+        """Cancel the reception, from the customer's machine (UX-014 A10): the code no longer holds here either."""
+        found = handover_by_session(request, handover_id)
+        if not isinstance(found, tuple):
+            return found
+        ws = settings.workspaces.get(found[0])
+        if ws is None:
+            return refuse("The workspace of the handover is not here any more", status.HTTP_410_GONE)
+        job = handover_cancel_job(ws, "cancelled by the customer, from its machine", f"handover: {handover_ip(request)}")
+        return {"job": job.id}
+
+    # --- the customer's side: Recover a workspace… (UX-014 A5)
+
+    @contextlib.asynccontextmanager
+    async def handover_open(url: str, pin: str, label: str):
+        """A client to the provider's panel (handover.client), once its certificate is trusted here and is the one
+        the code pins: checked before the code or the session is sent (AD-008 consequence 1); JobFailed with what
+        the customer may read otherwise."""
+        try:
+            await asyncio.to_thread(handover.check_pin, url, pin)
+        except (handover.PinError, ssl.SSLError, OSError) as exc:
+            raise JobFailed(handover_error(url, label, exc)) from None
+        async with handover.client(url, pin, HANDOVER_TIMEOUT) as client:
+            yield client
+
+    def handover_said(url: str, label: str, text: str) -> str:
+        """A text the customer reads: the provider's name, address and folders out of it (UX-014 A2.3)."""
+        host = urlsplit(url).hostname or ""
+        view = CustomerView(label, "another machine", machines=frozenset({host} - {""}))
+        return view.text(str(text or "").replace(url, label))
+
+    def handover_error(url: str, label: str, exc: BaseException) -> str:
+        if isinstance(exc, handover.PinError):
+            return str(exc)
+        if isinstance(exc, ssl.SSLCertVerificationError) or isinstance(exc, (httpx.HTTPError, ssl.SSLError)) and (
+                "CERTIFICATE_VERIFY_FAILED" in str(exc) or "certificate" in str(exc).lower()):
+            return (f"The certificate of {label} is not one this machine trusts: a proxy that reads the connection, "
+                    "or a certificate not signed by an authority this machine knows")
+        if isinstance(exc, (httpx.HTTPError, OSError)):
+            return f"{label} does not answer"
+        return handover_said(url, label, str(exc))
+
+    async def handover_ask(client: httpx.AsyncClient, method: str, path: str, url: str, label: str, **kwargs):
+        """An answer of the provider as JSON, or JobFailed with what the customer may read."""
+        try:
+            resp = await client.request(method, path, **kwargs)
+        except (httpx.HTTPError, handover.PinError) as exc:
+            raise JobFailed(handover_error(url, label, exc)) from None
+        try:
+            data = resp.json()
+        except ValueError:
+            data = None
+        if resp.status_code != 200 or not isinstance(data, dict):
+            said = (data or {}).get("error") if isinstance(data, dict) else None
+            raise JobFailed(handover_said(url, label, said or f"{label} answered HTTP {resp.status_code}"))
+        return data
+
+    def handover_customer(me: Principal) -> None:
+        if not (machine_admin(me) and not me.scoped):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "A workspace is received by the admins of the machine")
+
+    async def handover_local_checks(offer: dict, lang: str) -> dict:
+        """What this machine has and lacks for what the code gives (UX-014 A5 step 2)."""
+        total = sum(int(i.get(k) or 0) for i in offer.get("items") or [] for k in ("database", "filestore", "addons",
+                                                                                     "backup"))
+        try:
+            space = await workspaceops.space()
+        except workspaceops.SpaceError:
+            space = None
+        free = quick_room(space) * workspaceops.GB if space else None
+        templates = await asyncio.to_thread(workspaceops.templates)
+        rows = []
+        for item in offer.get("items") or []:
+            name = str(item.get("template") or "")
+            if name in templates:
+                rows.append({"what": name, "ok": True, "text": i18n.tr(lang, f"Template {name}: here")})
+            elif await placement_store_template(name) is not None:
+                rows.append({"what": name, "ok": True,
+                             "text": i18n.tr(lang, f"Template {name}: installed signed during the reception")})
+            else:
+                rows.append({"what": name, "ok": False,
+                             "text": i18n.tr(lang, f"Template {name}: not here nor where this machine installs "
+                                                   "templates from: install it in Settings › Templates")})
+        missing = workspaceops.docker_missing()
+        if missing is not None or not settings.storage_roots:
+            rows.append({"what": "docker", "ok": False, "text": i18n.tr(lang, "Docker and nginx: the package of the "
+                                                                              "workspaces is missing — sudo apt install "
+                                                                              "./OmniaCLI-workspaces.deb")})
+        name = handover.received_name(str((offer.get("workspace") or {}).get("name") or ""), settings.workspaces)
+        return {"total": total, "free": free, "fits": free is None or free >= total, "rows": rows,
+                "name": name, "taken": name != (offer.get("workspace") or {}).get("name")}
+
+    @app.post("/api/handover/read")
+    async def handover_read(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """Read a code (the dialog's step 1; the browser never calls the provider): its offer, read only, and
+        what this machine has and lacks for it. Nothing changes, here or there."""
+        handover_customer(me)
+        lang = request_language(request)
+        payload = payload if isinstance(payload, dict) else {}
+        try:
+            parts = handover.read_code(payload.get("code"))
+        except handover.CodeError:
+            return refuse("The code is not valid")
+        label = "the provider"
+        code = str(payload.get("code") or "").strip()
+        reached: dict = {}
+        try:
+            async with handover_open(parts["u"], parts["p"], label) as client:
+                offer = await handover_ask(client, "GET", HANDOVER_API + "/offer", parts["u"], label,
+                                           headers={handover.CODE_HEADER: code})
+                label = str(offer.get("provider") or label)
+                # whether this machine is reached from outside on 80 and 443 (the provider tries): a warning only,
+                # the copy is made the same; the switch asks it again (UX-014 A5 step 2)
+                with contextlib.suppress(JobFailed):
+                    reached = await handover_ask(client, "POST", HANDOVER_API + "/probe", parts["u"], label,
+                                               headers={handover.CODE_HEADER: code}, json={})
+        except JobFailed as exc:
+            return refuse(str(exc))
+        mine = handovers_in.state(parts["h"])
+        if offer.get("claimed") and not mine:
+            return refuse("The code was used by another machine already")
+        checks = await handover_local_checks(offer, lang)
+        if mine.get("workspace"):
+            # a reception of this code under way here: it goes on in its workspace
+            checks.update(name=mine["workspace"], taken=False)
+        # the provider's label, «the provider» in the reader's language when it has none
+        return {"provider": i18n.tr(lang, label), "workspace": offer.get("workspace"), "expires": offer.get("expires"),
+                "items": offer.get("items") or [], "people": offer.get("people") or {}, "checks": checks,
+                "resume": bool(mine), "id": parts["h"],
+                "reached": {"80": reached.get("80"), "443": reached.get("443")} if reached else None,
+                "not_passed": [{"what": i18n.tr(lang, w), "why": i18n.tr(lang, y)} for w, y in handover.NOT_PASSED]}
+
+    def handover_in_public(hid: str, state: dict) -> dict:
+        keep = ("id", "phase", "workspace", "source", "provider", "job", "since", "ready_at", "error", "done",
+                "total", "rounds", "db", "expires", "fingerprint", "cancelled_by", "last_round_at", "out_since")
+        return {k: state.get(k) for k in keep if k in state}
+
+    @app.post("/api/handover/receive")
+    async def handover_receive(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """Receive (UX-014 A5 step 3): a job claims the code, makes the workspace and its instances from the
+        same templates (never started), copies their trees while everything runs at the provider's, follows each
+        database of its own, and ends «ready». The same code (or a new one of the same handover) again resumes
+        from what was copied."""
+        handover_customer(me)
+        payload = payload if isinstance(payload, dict) else {}
+        try:
+            parts = handover.read_code(payload.get("code"))
+        except handover.CodeError:
+            return refuse("The code is not valid")
+        hid = parts["h"]
+        mine = handovers_in.state(hid)
+        if mine.get("job") and jobs.get(mine["job"]) is not None and jobs.get(mine["job"]).status not in FINISHED:
+            return {"job": mine["job"], "id": hid}
+        if mine.get("phase") == "cancelled":
+            handovers_in.forget(hid)
+            mine = {}
+        wanted = str(payload.get("name") or "").strip()
+        if wanted and (not WORKSPACE_NAME.fullmatch(wanted) or (wanted in settings.workspaces
+                                                               and wanted != mine.get("workspace"))):
+            return refuse(f"{wanted!r} is not a name a workspace may have here")
+        disk = payload.get("disk_gb")
+        code = str(payload.get("code") or "").strip()
+        handovers_in.put_secret(hid, "code", code.encode())
+        job = jobs.submit("Receive a workspace from the provider", [], f"manual: {me}",
+                          lambda job: handover_receive_job(job, hid, parts, wanted, disk, me),
+                          workspace=mine.get("workspace") or "")
+        handovers_in.save(hid, {**mine, "id": hid, "phase": "receiving", "job": job.id,
+                                "since": mine.get("since") or handover.iso(handover.now()), "error": None})
+        return {"job": job.id, "id": hid}
+
+    def handover_progress_steps(job) -> None:
+        job.result["progress"] = {"steps": [{"id": i, "label": label, **({"bytes": True} if i == "copy" else {})}
+                                            for i, label in HANDOVER_STEPS], "step": "checks", "done": 0, "total": 0,
+                                  "since": time.time()}
+
+    async def handover_receive_job(job, hid: str, parts: dict, wanted: str, disk, me: Principal) -> None:
+        url, pin = parts["u"], parts["p"]
+        handover_progress_steps(job)
+        label = "the provider"
+        state = handovers_in.state(hid)
+        try:
+            async with handover_open(url, pin, label) as client:
+                # 1. Checks: the claim (a key of this machine's, for this handover), the manifest, the room
+                if not handovers_in.get_secret(hid, "claim.key") or not state.get("public_key"):
+                    key_raw, public = handover.new_key()
+                    handovers_in.put_secret(hid, "claim.key", key_raw)
+                    state = handovers_in.update(hid, public_key=public)
+                job.log("--- the code of the provider: its certificate checked against the pin of the code, the "
+                        "code claimed for this machine")
+                claimed = await handover_ask(client, "POST", HANDOVER_API + "/claim", url, label,
+                                             json={"code": handovers_in.get_secret(hid, "code").decode(),
+                                                   "key": state["public_key"]})
+                session = str(claimed["session"])
+                handovers_in.put_secret(hid, "session", session.encode())
+                auth = {"Authorization": f"Bearer {session}"}
+                manifest = await handover_ask(client, "GET", f"{HANDOVER_API}/{hid}/manifest", url, label, headers=auth)
+                label = str(manifest.get("provider") or label)[:100]
+                job.title = f"Receive a workspace from {label}"
+                source = manifest.get("workspace") if isinstance(manifest.get("workspace"), dict) else {}
+                if not WORKSPACE_NAME.fullmatch(str(source.get("name") or "")):
+                    raise JobFailed(f"{str(source.get('name'))[:60]!r} is not the name of a workspace")
+                name = state.get("workspace") or wanted or handover.received_name(str(source["name"]), settings.workspaces)
+                if not WORKSPACE_NAME.fullmatch(name):
+                    raise JobFailed(f"{name!r} is not a name a workspace may have")
+                first = not state.get("claimed_at")
+                state = handovers_in.update(hid, workspace=name, source=str(source["name"]), provider=label,
+                                            expires=claimed.get("expires"), fingerprint=claimed.get("fingerprint"),
+                                            claimed_at=state.get("claimed_at") or handover.iso(handover.now()))
+                job.workspace = name
+                until = clock.shown(str(claimed.get("expires") or ""))
+                job.log(f"From {label}: workspace {source['name']}, arriving here as {name}; the code is valid until "
+                        f"{until}, the print of this machine's key {claimed.get('fingerprint')}")
+                if first:
+                    access_log.record("handover", me.kind, me.name, "",
+                                      f"the code of {label} used: workspace {source['name']} arrives here as {name}, "
+                                      f"the code valid until {until}", workspace=name)
+                items = manifest.get("items") if isinstance(manifest.get("items"), list) else []
+                for item in items:
+                    if not isinstance(item, dict) or not WORKSPACE_NAME.fullmatch(str(item.get("instance") or "")):
+                        raise JobFailed("the provider named an instance that is no name of an instance")
+                total = sum(int(i.get(k) or 0) for i in items for k in ("database", "filestore", "addons", "backup"))
+                job.result["progress"]["total"] = total
+                needs = manifest.get("requirements") if isinstance(manifest.get("requirements"), dict) else {}
+                if int(needs.get("protocol") or 0) != handover.PROTOCOL:
+                    raise JobFailed(f"{label} hands over with protocol {needs.get('protocol')}, this machine reads "
+                                    f"{handover.PROTOCOL}: update OmniaCLI on the older of the two")
+                with contextlib.suppress(workspaceops.SpaceError):
+                    free = quick_room(await workspaceops.space()) * workspaceops.GB
+                    if name not in settings.workspaces and free < total:
+                        raise JobFailed(f"{total / workspaceops.GB:.1f} GB are to be received, this machine has "
+                                        f"{free / workspaceops.GB:.1f} GB free")
+                job.log(f"Instances: {len(items)}, {total / workspaceops.GB:.2f} GB to receive while everything "
+                        f"runs at {label}'s")
+                await handover_post(client, hid, auth, url, label, "receiving", 0, total)
+                # 2. Templates and images: the workspace and its instances made, never started
+                move_step(job, "templates")
+                if name not in settings.workspaces:
+                    handovers_in.update(hid, made_workspace=True)
+                ws = await handover_workspace(job, name, source, disk)
+                for item in items:
+                    template = await handover_template(job, str(item.get("template") or ""))
+                    server = f"{ws.name}-{item['instance']}"
+                    if server in settings.servers and server not in (handovers_in.state(hid).get("servers") or []):
+                        raise JobFailed(f"{server} is here already, and not from this reception")
+                    # recorded before it is made: a cancel takes away what this reception made, and only that
+                    handovers_in.update(hid, servers=sorted({*(handovers_in.state(hid).get("servers") or []), server}))
+                    await placement_make(job, ws.name, str(item["instance"]), template)
+                # 3. Copy: the trees of each instance, a round each; a database of its own followed
+                move_step(job, "copy")
+                done = files = 0
+                for item in items:
+                    copied = await handover_trees(job, client, hid, auth, url, label, ws.name, item)
+                    done += copied["bytes"]
+                    files += copied["files"]
+                    job.result["progress"]["done"] = done
+                    await handover_post(client, hid, auth, url, label, "receiving", done, total)
+                db = {}
+                for item in items:
+                    if item.get("kind") == "dedicated":
+                        db[item["instance"]] = await handover_follow(job, client, hid, auth, url, label, ws.name, item)
+                # 4. In step: every tree copied this round, each database of its own at most LAG_MOST s behind
+                move_step(job, "step")
+                for instance in db:
+                    db[instance] = {**db[instance], **await handover_lag(job, client, hid, auth, url, label, instance)}
+                rounds = int(handovers_in.state(hid).get("rounds") or 0) + 1
+                if handovers_in.state(hid).get("phase") != "receiving":
+                    raise JobFailed("the reception was cancelled meanwhile")
+                handovers_in.update(hid, phase="ready", ready_at=handover.iso(handover.now()), db=db, error=None,
+                                    done=done, total=total, last_round_at=handover.iso(handover.now()), rounds=rounds)
+                await handover_post(client, hid, auth, url, label, "ready", done, total)
+                access_log.record("handover", me.kind, me.name, "",
+                                  f"round {rounds} of the reception of {name}: {files} files, {done / 1048576:.1f} MB "
+                                  f"received from {label}; ready for the switch", workspace=name)
+                job.log(f"Ready: everything of {source['name']} copied here while {label} kept running ({files} "
+                        f"files, {done / 1048576:.1f} MB this round); the switch stops its instances there")
+        except BaseException as exc:
+            said = handover_said(url, label, str(exc) or type(exc).__name__)
+            if handovers_in.state(hid).get("phase") == "receiving":
+                # a reception cancelled meanwhile keeps its word (its cancel takes the folder away)
+                handovers_in.update(hid, phase="failed", error=said)
+            if isinstance(exc, JobFailed):
+                raise JobFailed(said) from None
+            raise
+
+    async def handover_post(client, hid: str, auth: dict, url: str, label: str, phase: str, done: int, total: int,
+                            error: str = "") -> None:
+        with contextlib.suppress(JobFailed):
+            await handover_ask(client, "POST", f"{HANDOVER_API}/{hid}/progress", url, label, headers=auth,
+                               json={"phase": phase, "done": done, "total": total, "error": error})
+
+    async def handover_workspace(job, name: str, source: dict, disk) -> Workspace:
+        """The workspace that arrives, made here when it is not (the disk the provider promised, or more)."""
+        if name in settings.workspaces:
+            job.log(f"Workspace {name} is here already from this reception: it is kept")
+            return settings.workspaces[name]
+        if not settings.storage_roots:
+            raise JobFailed("This machine has no storage for workspaces: install the package of the workspaces")
+        promised = float((source.get("limits") or {}).get("disk_gb") or source.get("disk_gb") or 0)
+        try:
+            asked = float(disk) if disk not in (None, "") else promised
+        except (TypeError, ValueError):
+            asked = promised
+        limits = {k: v for k, v in (source.get("limits") or {}).items() if isinstance(v, (int, float))}
+        limits["disk_gb"] = max(asked, promised) or QUICK_DISK_GB[0]
+        data = {"label": str(source.get("label") or name)[:100], "domain": "",
+                "storage": next(iter(settings.storage_roots)), "limits": limits, "servers": [], "members": {}}
+        async with workspaces_lock:
+            try:
+                parsed = parse_workspaces({**{n: w.to_dict() for n, w in settings.workspaces.items()}, name: data},
+                                          settings.storage_roots)
+            except ConfigError as exc:
+                raise JobFailed(str(exc)) from None
+            refused = await store_workspaces(parsed)
+            if refused is not None:
+                raise JobFailed(refused.body.decode())
+        job.log(f"Workspace {name} made here: disk {limits['disk_gb']:g} GB; its names, people and services pass "
+                "with the switch")
+        return settings.workspaces[name]
+
+    async def handover_template(job, name: str):
+        """The template an instance arrives from: here, or installed signed from where this machine installs
+        templates from (Settings › Templates)."""
+        template = (await asyncio.to_thread(workspaceops.templates)).get(name)
+        if template is not None:
+            return template
+        published = await placement_store_template(name)
+        if published is None:
+            raise JobFailed(f"The template {name} is neither here nor where this machine installs templates from")
+        manifest = await templatestore.download(job, settings.plugin_source, published,
+                                                templatestore.templates_dir(settings.jobs_dir))
+        await ops.run(job, workspaceops.helper("template-install", name), timeout=workspaceops.HELPER_TIMEOUT)
+        job.log(f"Template {name} {manifest['version']} installed: the instance is made from it")
+        template = (await asyncio.to_thread(workspaceops.templates)).get(name)
+        if template is None:
+            raise JobFailed(f"The template {name} is not here after its install")
+        return template
+
+    async def handover_trees(job, client, hid: str, auth: dict, url: str, label: str, workspace: str,
+                             item: dict) -> dict:
+        """One round of each tree of an instance, pulled from the provider (treesync.py): {"bytes", "files"} it
+        copied (a round after the first copies what changed)."""
+        ws = settings.workspaces[workspace]
+        instance = str(item["instance"])
+        server = f"{workspace}-{instance}"
+        inst = settings.servers[server].production
+        copied = {"bytes": 0, "files": 0}
+        for tree in handover.TREES:
+            there = treesync.RemoteTree(client, {**auth, "Accept": "*/*"}, str(item["server"]), "production", tree,
+                                        api=f"{HANDOVER_API}/{hid}/treesync")
+            if treesync.tree_kind(tree) == "files":
+                here = treesync.LocalFiles(backup_folder(inst),
+                                           treesync_dir() / "hashes" / f"{server}.production.{tree}.json")
+            else:
+                here = treesync.LocalTree(workspaceops.helper, ws.name, ws.storage, instance, "production", tree)
+            work = handovers_in.parts(hid) / f"{instance}-{tree}"
+            job.log(f"--- {instance}: {tree} from {label}")
+            try:
+                found = await treesync.Copy(work).run(there, here, job.log, prune=False, flows=treesync.FLOWS)
+            except (treesync.TreeError, httpx.HTTPError, handover.PinError) as exc:
+                raise JobFailed(f"The copy stopped ({instance}, {tree}): {handover_error(url, label, exc)}. Retry "
+                                "goes on from here") from None
+            if found.get("refused"):
+                raise JobFailed(f"{len(found['refused'])} files of {instance} ({tree}) refused here: "
+                                f"{found['refused'][0].get('p')}: {found['refused'][0].get('why')}")
+            copied["bytes"] += int(found.get("copied_bytes") or 0)
+            copied["files"] += int(found.get("copied_files") or 0)
+        return copied
+
+    async def handover_follow(job, client, hid: str, auth: dict, url: str, label: str, workspace: str,
+                              item: dict) -> dict:
+        """The database of its own of an instance copied from the provider's and followed (ArrivePlace): the
+        provider lets in the address this machine calls from, this machine connects out to its port."""
+        ws = settings.workspaces[workspace]
+        instance = str(item["instance"])
+        key = managedreplica.dedicated_key(ws.name, ws.storage, instance)
+        with contextlib.suppress(JobFailed):
+            got = await workspaceops.ask("machine-db-arrive", key, "state", timeout=pgtuning.READ_TIMEOUT * 4)
+            there = {}
+            with contextlib.suppress(JobFailed):
+                there = await handover_ask(client, "GET", f"{HANDOVER_API}/{hid}/db/{instance}/state", url, label,
+                                           headers=auth)
+            if got.get("state") == "ready" and there.get("connected"):
+                job.log(f"The database of {instance} follows {label} already")
+                return {"key": key}
+            if got.get("state") in ("copying", "failed", "ready"):
+                # a copy that broke (its port closed there at an expiry, a cancel): it starts again
+                job.log(f"The copy of the database of {instance} no longer follows {label}: it is made again")
+                await workspaceops._helper(job, "machine-db-arrive", key, "cancel", timeout=MACHINE_TIMEOUT)
+        password = stacktemplates.new_password()
+        job.log(f"--- the database of {instance}: {label} lets this machine in to copy it and follow it, over TLS")
+        allowed = await handover_ask(client, "POST", f"{HANDOVER_API}/{hid}/db/{instance}/allow", url, label,
+                                     headers=auth, json={"verifier": linkedcluster.scram_verifier(password)},
+                                     timeout=httpx.Timeout(MACHINE_TIMEOUT, connect=10.0))
+        spec = {"link": f"handover:{hid}", "by": "handover", "host": allowed.get("host"), "port": allowed.get("port"),
+                "ca": allowed.get("ca"), "password": password, "size": allowed.get("size") or 0,
+                "major": str(allowed.get("major") or ""), "database": str(allowed.get("database") or ""),
+                "reserve_gb": 0}
+        try:
+            await workspaceops._helper(job, "machine-db-arrive", key, "prepare", timeout=MACHINE_TIMEOUT,
+                                       input=json.dumps(spec).encode())
+            copied = await workspaceops._helper(job, "machine-db-arrive", key, "copy",
+                                                timeout=managedreplica.COPY_TIMEOUT + 60)
+            up = await workspaceops._helper(job, "machine-db-arrive", key, "start", timeout=MACHINE_TIMEOUT)
+        except JobFailed as exc:
+            raise JobFailed(handover_said(url, label, str(exc))) from None
+        size = int(copied.get("size") or 0)
+        job.log(f"Copied: {size >> 20} MB in {copied.get('seconds')} s, over TLS verified against the CA of {label}; "
+                f"it follows {label}, read only (started in {up.get('seconds')} s)")
+        return {"key": key, "size": size}
+
+    async def handover_lag(job, client, hid: str, auth: dict, url: str, label: str, instance: str,
+                           wait: float = 300) -> dict:
+        """The seconds the copy here is behind the provider's database, once at most LAG_MOST (or failed)."""
+        end = time.monotonic() + wait
+        while True:
+            got = await handover_ask(client, "GET", f"{HANDOVER_API}/{hid}/db/{instance}/state", url, label,
+                                     headers=auth)
+            lag = got.get("lag")
+            if got.get("connected") and lag is not None and float(lag) <= handover.LAG_MOST:
+                job.log(f"The database of {instance} is {lag} s behind {label}'s")
+                return {"connected": True, "lag": lag, "at": handover.iso(handover.now())}
+            if time.monotonic() > end:
+                raise JobFailed(f"The copy of the database of {instance} is not in step after {int(wait)} s")
+            await asyncio.sleep(3)
+
+    def handover_in_mine(hid: str) -> dict:
+        try:
+            state = handovers_in.state(hid)
+        except handover.CodeError:
+            state = {}
+        if not state:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "No such handover here")
+        return state
+
+    @app.get("/api/handover/{handover_id}")
+    async def handover_in_view(handover_id: str, me: Principal = Depends(current_user)):
+        """The reception as this machine knows it (its banner): no secret, nothing of the provider's but its label."""
+        handover_customer(me)
+        return handover_in_public(handover_id, handover_in_mine(handover_id))
+
+    @app.post("/api/handover/{handover_id}/retry")
+    async def handover_retry(handover_id: str, me: Principal = Depends(current_user)):
+        """Retry (a copy that stopped, or out of step): the reception again, from what it has."""
+        handover_customer(me)
+        state = handover_in_mine(handover_id)
+        if state.get("phase") not in ("failed", "ready", "out_of_step"):
+            return refuse("The reception is under way: wait for its job")
+        code = handovers_in.get_secret(handover_id, "code").decode()
+        try:
+            parts = handover.read_code(code)
+        except handover.CodeError:
+            return refuse("No code of this reception here: read it again with Recover a workspace…")
+        job = jobs.submit(f"Receive {state.get('workspace')} from {state.get('provider') or 'the provider'}: again",
+                          [], f"manual: {me}",
+                          lambda job: handover_receive_job(job, handover_id, parts, "", None, me),
+                          workspace=str(state.get("workspace") or ""))
+        handovers_in.update(handover_id, phase="receiving", job=job.id, error=None)
+        return {"job": job.id}
+
+    def handover_in_cancel_job(hid: str, why: str, source: str, tell: bool) -> Job:
+        """What the reception made here taken away: the copy of each database, the instances it made, the
+        workspace when it made it and nothing else is in it, the parts, the key and the session; and the provider
+        told (tell), when it is the customer who cancels."""
+        state = handovers_in.state(hid)
+        workspace = str(state.get("workspace") or "")
+        label = str(state.get("provider") or "the provider")
+
+        async def action(job):
+            job.log(f"--- the reception of {workspace or 'a workspace'}: {why}")
+            if tell:
+                session = handovers_in.get_secret(hid, "session").decode()
+                try:
+                    parts = handover.read_code(handovers_in.get_secret(hid, "code").decode())
+                    async with handover_open(parts["u"], parts["p"], label) as client:
+                        await handover_ask(client, "POST", f"{HANDOVER_API}/{hid}/cancel", parts["u"], label,
+                                           headers={"Authorization": f"Bearer {session}"})
+                    job.log(f"{label} told: the code no longer holds there")
+                except handover.CodeError:
+                    job.log(f"{label} not told: no code of it here")
+                except JobFailed as exc:
+                    job.warn(f"{label} not told: {exc}. Its code stops holding at its expiry, or when it cancels")
+            ws = settings.workspaces.get(workspace)
+            if ws is not None:
+                made = set(state.get("servers") or [])
+                for server in [s for s in ws.servers if s in made]:
+                    instance = server[len(ws.name) + 1:]
+                    key = managedreplica.dedicated_key(ws.name, ws.storage, instance)
+                    with contextlib.suppress(JobFailed):
+                        await workspaceops._helper(job, "machine-db-arrive", key, "cancel", timeout=MACHINE_TIMEOUT)
+                    if server in settings.servers or (workspaceops.storage_path(ws) / ws.name / instance).is_dir():
+                        with contextlib.suppress(JobFailed):
+                            await workspaceops.remove_instance(job, ws, instance)
+                    if server in settings.servers:
+                        async with config_lock:
+                            await store({k: v for k, v in settings.servers.items() if k != server})
+                    await rename_in_workspaces(server, None)
+                    shutil.rmtree(settings.backup_dir / server, ignore_errors=True)
+                    await asyncio.to_thread(forget_server_files, server)
+                    job.log(f"{server} taken away")
+                current = settings.workspaces.get(workspace)
+                if current is not None and not current.servers and state.get("made_workspace"):
+                    said = await workspaceops.drop_disk(job, current)
+                    async with workspaces_lock:
+                        await store_workspaces({k: v for k, v in settings.workspaces.items() if k != workspace})
+                    job.log(f"Workspace {workspace} taken away" + (f": {said}" if said else ""))
+            handovers_in.forget(hid)
+            access_log.record("handover", "handover", hid, "", f"the reception of {workspace or 'a workspace'} "
+                              f"cancelled ({why}): what it copied here is taken away", workspace=workspace,
+                              context=False)
+            job.log("Nothing of the reception is left here")
+        return jobs.submit(f"Cancel the reception of {workspace or 'a workspace'}", [], source, action,
+                           workspace=workspace)
+
+    @app.post("/api/handover/{handover_id}/cancel")
+    async def handover_in_cancel(handover_id: str, me: Principal = Depends(current_user)):
+        """Cancel the reception (UX-014 A10): what was copied here deleted, the provider told; there nothing had
+        stopped."""
+        handover_customer(me)
+        state = handover_in_mine(handover_id)
+        if state.get("phase") == "cancelling":
+            return refuse("The reception is being cancelled already")
+        running = jobs.get(str(state.get("job") or ""))
+        if running is not None and running.status not in FINISHED:
+            jobs.stop(running.id, f"manual: {me}")
+        handovers_in.update(handover_id, phase="cancelling")
+        job = handover_in_cancel_job(handover_id, "cancelled here", f"manual: {me}", tell=True)
+        return {"job": job.id}
+
+    async def handover_look_in(hid: str, state: dict) -> None:
+        """A reception ready (or out of step) asks the provider whether its handover still holds: cancelled
+        there, what it copied here is taken away (UX-014 A10); its code expired or made anew, out of step with why;
+        still holding, the lag of each database of its own read again for its banner."""
+        try:
+            parts = handover.read_code(handovers_in.get_secret(hid, "code").decode())
+        except handover.CodeError:
+            return
+        auth = {"Authorization": f"Bearer {handovers_in.get_secret(hid, 'session').decode()}"}
+        label = str(state.get("provider") or "the provider")
+        out_since = state.get("out_since") or handover.iso(handover.now())
+        try:
+            async with handover_open(parts["u"], parts["p"], label) as client:
+                resp = await client.get(f"{HANDOVER_API}/{hid}/state", headers=auth)
+                db = dict(state.get("db") or {})
+                if resp.status_code == 200:
+                    for instance in db:
+                        got = await client.get(f"{HANDOVER_API}/{hid}/db/{instance}/state", headers=auth)
+                        found = got.json() if got.status_code == 200 else {}
+                        db[instance] = {**db[instance], "connected": bool(found.get("connected")),
+                                        "lag": found.get("lag"), "at": handover.iso(handover.now())}
+        except JobFailed as exc:
+            handovers_in.update(hid, phase="out_of_step", error=str(exc), out_since=out_since)
+            return
+        except (httpx.HTTPError, handover.PinError, ValueError) as exc:
+            handovers_in.update(hid, phase="out_of_step", error=handover_error(parts["u"], label, exc),
+                                out_since=out_since)
+            return
+        try:
+            said = resp.json() if isinstance(resp.json(), dict) else {}
+        except ValueError:
+            said = {}
+        if resp.status_code == 200:
+            lagging = [i for i, d in db.items() if not d.get("connected") or d.get("lag") is None
+                       or float(d["lag"]) > handover.LAG_MOST]
+            if lagging:
+                handovers_in.update(hid, db=db, phase="out_of_step", out_since=out_since,
+                                    error=f"the copy of the database of {lagging[0]} is not in step with {label}'s: "
+                                          "Retry copies it again")
+            else:
+                handovers_in.update(hid, db=db, phase="ready", error=None, out_since=None)
+        elif resp.status_code == 410 and said.get("phase") == "cancelled":
+            handovers_in.update(hid, phase="cancelling", cancelled_by="provider")
+            handover_in_cancel_job(hid, f"cancelled by {label}", "handover: the provider", tell=False)
+        else:
+            handovers_in.update(hid, phase="out_of_step", out_since=out_since,
+                                error=handover_said(parts["u"], label, str(said.get("error") or "")
+                                                    or f"{label} answered HTTP {resp.status_code}"))
+
+    async def handover_look() -> None:
+        """Every HANDOVER_EVERY seconds: the provider expires its codes (the database closed again, the customer's
+        machine told why at its next look); the customer's machine looks at its receptions (handover_look_in)."""
+        for workspace, state in handovers_out.all().items():
+            if state.get("phase") in ("prepared", "receiving", "ready") and handover.phase_of(state) == "expired":
+                ws = settings.workspaces.get(workspace)
+                if ws is not None:
+                    handover_cancel_job(ws, "its code expired", "handover: expiry", phase="expired")
+        for hid, state in handovers_in.all().items():
+            if state.get("phase") in ("ready", "out_of_step"):
+                await handover_look_in(hid, state)
+
+    async def handover_loop() -> None:
+        while True:
+            try:
+                await handover_look()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - the loop must survive
+                _logger.exception("the look at the handovers failed")
+            await asyncio.sleep(HANDOVER_EVERY)
 
     # --- a move between a dedicated database and the machine's cluster (AD-007, step 6)
 

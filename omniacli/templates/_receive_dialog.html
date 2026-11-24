@@ -1,0 +1,142 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{# Recover a workspace… on the customer's own OmniaCLI (UX-014 A5, AD-008; step 7 of §9): the code read (this
+   machine asks the provider, the browser never does), what arrives and whether it fits, then Receive, a job that
+   copies while everything runs at the provider's. For the machine's admins (can_receive). #}
+{% from "_icons.html" import icon, dialog_x with context %}
+<style>
+#receive-dialog { --dialog-w: 680px; }
+#receive-dialog .rv-nav { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0 0 8px; padding: 0; list-style: none; color: var(--muted); }
+#receive-dialog .rv-nav li[aria-current="step"] { color: var(--text); font-weight: var(--fw-semibold); }
+#receive-dialog textarea { width: 100%; min-height: 72px; }
+#receive-dialog .rv-list { margin: 4px 0 8px; padding-left: 20px; } #receive-dialog .rv-list li { margin-bottom: 4px; overflow-wrap: anywhere; }
+#receive-dialog .rv-bad { color: var(--err); } #receive-dialog .rv-warn { color: var(--warn-text, var(--warn)); }
+#receive-dialog .rv-said { overflow-wrap: anywhere; }
+@media (max-width: 767.98px) { #receive-dialog .actions button, #receive-open { min-height: 44px; } }
+</style>
+<dialog id="receive-dialog" aria-labelledby="rv-title">
+  <form method="dialog" id="rv-form">
+    <h2 id="rv-title" style="margin-bottom: 4px">{{ _("Recover a workspace") }}</h2>
+    <ol class="rv-nav" aria-label="{{ _('The steps of the reception') }}">
+      <li data-step="1">{{ _("1 The code") }}</li><li data-step="2">{{ _("2 What arrives") }}</li><li data-step="3">{{ _("3 Receive") }}</li>
+    </ol>
+    <div id="rv-step1">
+      <p><label for="rv-code">{{ _("The code of the handover your provider gave you") }}</label></p>
+      <textarea id="rv-code" class="mono" rows="3" spellcheck="false" autocomplete="off" placeholder="omniacli-consegna-1.…"></textarea>
+      <p class="rv-said" id="rv-said" role="status"></p>
+    </div>
+    <div id="rv-step2" hidden>
+      <p id="rv-from"></p>
+      <ul class="rv-list" id="rv-items"></ul>
+      <ul class="rv-list" id="rv-checks"></ul>
+      <p><label for="rv-disk">{{ _("Disk of the workspace, GB") }}</label>
+        <input type="number" id="rv-disk" min="1" step="1" class="mono" style="width: 8em" title="{{ _('The disk the workspace has here: at least what the provider promised it, more if you want') }}"></p>
+      <details>
+        <summary title="{{ _('What does not pass from the provider, with why') }}">{{ _("What does not pass") }}</summary>
+        <ul class="rv-list" id="rv-not"></ul>
+      </details>
+    </div>
+    <p class="error" id="rv-error" role="alert"></p>
+    <div class="actions">
+      <span id="rv-next-box"><button type="button" class="primary" id="rv-next" disabled title="{{ _('Shows what arrives and whether it fits here. Nothing is copied yet.') }}">{{ _("Next") }}</button></span>
+      <span id="rv-go-box" hidden><button type="button" class="primary" id="rv-go" title="{{ _('Copies the workspace here while everything runs at the provider\'s. It is a job; there nothing stops.') }}">{{ _("Receive") }}</button></span>
+      <button type="button" id="rv-back" hidden title="{{ _('Back to the code: nothing was copied') }}">{{ _("Back") }}</button>
+      <button type="button" id="rv-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
+    </div>
+  </form>
+{{ dialog_x() }}
+</dialog>
+<script>
+(() => {
+  const PREFIX = {{ prefix | tojson }};
+  const T = {
+    from: {{ _("From the provider: {provider} · workspace {ws} · it expires on {expires}") | tojson }},
+    reading: {{ _("Reading the code…") | tojson }},
+    notCode: {{ _("The code is not valid: it begins with omniacli-consegna-1.") | tojson }},
+    resume: {{ _("This machine copied part of it already: Receive goes on from there.") | tojson }},
+    item: {{ _("{instance}: {label} · database {db} · files {files} · code {code} · its last backup {backup}") | tojson }},
+    dedicated: {{ _("a database of its own: this machine follows it, and at the switch it stops for about 1 minute") | tojson }},
+    cluster: {{ _("a database on the provider's cluster: it passes at the switch, dumped and restored here") | tojson }},
+    people: {{ _("{n} users of the workspace and {r} custom roles pass at the switch, with their password and their two-step verification; {p} passkeys are registered again here.") | tojson }},
+    room: {{ _("{total} to receive · on this machine {free} free") | tojson }},
+    noRoom: {{ _("{total} to receive, this machine has {free} free: Receive is off.") | tojson }},
+    taken: {{ _("This machine has a workspace {ws} already: it arrives as {name}.") | tojson }},
+    reached: {{ _("Reached from outside on the ports 80 and 443: no. It is needed for the names and the certificates. The copy is made the same; before the switch it is checked again.") | tojson }},
+    reachedOk: {{ _("Reached from outside on the ports 80 and 443: yes.") | tojson }},
+    refused: {{ _("Refused.") | tojson }},
+  };
+  const lang = document.documentElement.lang || "en";
+  const num = (n, d = 1) => Number(n || 0).toLocaleString(lang, {maximumFractionDigits: d});
+  const size = (b) => b >= 1073741824 ? `${num(b / 1073741824, 1)} GB` : `${num(b / 1048576, 0)} MB`;
+  const fill = (text, values) => text.replace(/\{(\w+)\}/g, (_m, k) => (values[k] === undefined ? `{${k}}` : String(values[k])));
+  // a moment of the other machine (with its offset) in the reader's clock, dd/mm/yyyy hh:mm
+  const day = (iso) => { const d = new Date(iso || ""); if (isNaN(d)) return iso || ""; const p = (n) => String(n).padStart(2, "0");
+    return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`; };
+  const el = (tag, props = {}, ...children) => { const n = Object.assign(document.createElement(tag), props); n.append(...children.filter((c) => c !== null && c !== undefined)); return n; };
+  const dialog = document.getElementById("receive-dialog"), of = (id) => document.getElementById(id);
+  let data = null, asked = 0, timer = null;
+  function show(n) {
+    of("rv-step1").hidden = n !== 1; of("rv-step2").hidden = n !== 2;
+    of("rv-next-box").hidden = n !== 1; of("rv-go-box").hidden = n !== 2; of("rv-back").hidden = n !== 2;
+    dialog.querySelectorAll(".rv-nav li").forEach((li) => { if (Number(li.dataset.step) === n) li.setAttribute("aria-current", "step"); else li.removeAttribute("aria-current"); });
+  }
+  async function read() {
+    const code = of("rv-code").value.trim(), mine = ++asked;
+    data = null; of("rv-next").disabled = true; of("rv-error").textContent = "";
+    if (!code) { of("rv-said").textContent = ""; return; }
+    if (!code.startsWith("omniacli-consegna-1.")) { of("rv-said").textContent = T.notCode; of("rv-said").className = "rv-said rv-bad"; return; }
+    of("rv-said").textContent = T.reading; of("rv-said").className = "rv-said muted";
+    const resp = await fetch(`${PREFIX}/api/handover/read`, {method: "POST", headers: {Accept: "application/json", "Content-Type": "application/json"},
+      body: JSON.stringify({code})}).catch(() => null);
+    const got = resp ? await resp.json().catch(() => ({})) : {};
+    if (mine !== asked) return;
+    if (!resp || !resp.ok) { of("rv-said").textContent = got.error || got.detail || T.refused; of("rv-said").className = "rv-said rv-bad"; return; }
+    data = got;
+    of("rv-said").className = "rv-said";
+    of("rv-said").textContent = fill(T.from, {provider: got.provider, ws: (got.workspace || {}).name, expires: day(got.expires)}) + (got.resume ? " " + T.resume : "");
+    of("rv-next").disabled = false;
+  }
+  function draw() {
+    const items = data.items || [], c = data.checks || {}, p = data.people || {};
+    of("rv-from").textContent = fill(T.from, {provider: data.provider, ws: (data.workspace || {}).name, expires: day(data.expires)});
+    of("rv-items").replaceChildren(...items.map((i) => el("li", {textContent: fill(T.item, {instance: i.instance, label: i.label || i.template || "",
+      db: size(i.database), files: size(i.filestore), code: size(i.addons), backup: size(i.backup)}) + " · " + (i.kind === "dedicated" ? T.dedicated : T.cluster)})),
+      el("li", {textContent: fill(T.people, {n: p.users || 0, r: p.roles || 0, p: p.passkeys || 0})}));
+    const checks = [];
+    const fits = c.fits !== false;
+    // a row that is fine ends with the check icon (no glyph: UX-017)
+    const row = (text, ok, className) => el("li", {className}, text, ok ? " " : null, ok ? window.omniaIcon("check") : null);
+    checks.push(row(c.free === null || c.free === undefined ? fill(T.room, {total: size(c.total || 0), free: "—"})
+      : fill(fits ? T.room : T.noRoom, {total: size(c.total || 0), free: size(c.free)}), fits && c.free !== null && c.free !== undefined, fits ? "" : "rv-bad"));
+    if (c.taken) checks.push(el("li", {textContent: fill(T.taken, {ws: (data.workspace || {}).name, name: c.name})}));
+    for (const r of c.rows || []) checks.push(row(r.text, r.ok, r.ok ? "" : "rv-bad"));
+    if (data.reached) checks.push(el("li", {className: data.reached["80"] && data.reached["443"] ? "" : "rv-warn",
+      textContent: data.reached["80"] && data.reached["443"] ? T.reachedOk : T.reached}));
+    of("rv-checks").replaceChildren(...checks);
+    of("rv-not").replaceChildren(...(data.not_passed || []).map((n) => el("li", {textContent: `${n.what}: ${n.why}`})));
+    const promised = Number((data.workspace || {}).disk_gb || 0);
+    of("rv-disk").min = String(Math.max(1, Math.ceil(promised))); of("rv-disk").value = String(Math.max(1, Math.ceil(promised || 10)));
+    const blocked = !fits || (c.rows || []).some((r) => !r.ok);
+    of("rv-go").disabled = blocked;
+    of("rv-go-box").title = blocked ? [!fits ? fill(T.noRoom, {total: size(c.total || 0), free: size(c.free || 0)}) : "", ...(c.rows || []).filter((r) => !r.ok).map((r) => r.text)].filter(Boolean).join(" ") : "";
+  }
+  document.getElementById("receive-open")?.addEventListener("click", () => {
+    asked++; data = null; of("rv-code").value = ""; of("rv-said").textContent = ""; of("rv-error").textContent = "";
+    of("rv-next").disabled = true; show(1); dialog.showModal(); of("rv-code").focus();
+  });
+  of("rv-code").addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(read, 300); });
+  of("rv-next").addEventListener("click", () => { if (!data) return; draw(); show(2); });
+  of("rv-back").addEventListener("click", () => show(1));
+  of("rv-cancel").addEventListener("click", () => { asked++; dialog.close(); });
+  dialog.addEventListener("cancel", () => { asked++; });
+  of("rv-go").addEventListener("click", async () => {
+    const b = of("rv-go");
+    if (b.disabled || !data) return;
+    b.disabled = true; of("rv-error").textContent = "";
+    const resp = await fetch(`${PREFIX}/api/handover/receive`, {method: "POST", headers: {Accept: "application/json", "Content-Type": "application/json"},
+      body: JSON.stringify({code: of("rv-code").value.trim(), name: (data.checks || {}).name, disk_gb: Number(of("rv-disk").value || 0)})}).catch(() => null);
+    const got = resp ? await resp.json().catch(() => ({})) : {};
+    if (!resp || !resp.ok) { b.disabled = false; of("rv-error").textContent = got.error || got.detail || T.refused; return; }
+    location.href = `${PREFIX}/jobs/${got.job}`;
+  });
+})();
+</script>

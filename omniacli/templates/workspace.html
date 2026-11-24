@@ -71,6 +71,7 @@ dialog .field-help { display: block; font-size: var(--fs-14); margin-top: 4px; l
   </div>
 </div>
 <div id="error" class="banner" hidden></div>
+{% if handover_out or handover_in %}{% include "_handover_band.html" %}{% endif %}
 <nav class="tabs" role="tablist" aria-label="{{ _('The parts of the workspace') }}">
   <button type="button" role="tab" data-tab="instances" aria-selected="true" title="{{ _('The instances of the workspace, each with its addresses') }}">{{ _("Instances") }} ({{ servers | length }})</button>
   <button type="button" role="tab" data-tab="names" title="{{ _('The names the instances answer on, the subdomains and the certificate') }}">{{ _("Names on the web") }}</button>

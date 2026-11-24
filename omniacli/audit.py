@@ -63,6 +63,9 @@ AUDITED_BY_ROUTE = frozenset({
     "/api/v1/instances/{server}/{role}/backups/{file}",  # download (REST API), with the file
     # a placed instance's page or answer asked of its host (AD-014): logged as the route it asks there would be
     "/placed/{server}/{path:path}",
+    # a file of a workspace handed over (AD-008: its last backups), taken by the customer's machine with the
+    # session of its claim: logged by the route, with the file and the byte it starts from
+    "/api/handover/v1/{handover_id}/treesync/file",
 })
 
 # pages and data that are neither customer data nor security data: the
@@ -110,6 +113,13 @@ NOT_SENSITIVE = frozenset({
     "/api/servers/{server}/{role}/zero-downtime",
     "/api/servers/{server}/{role}/deploys/{deploy_id}/back", "/destinations", "/workspaces/{workspace}/destinations",
     "/instances", "/api/instances", "/backups", "/account", "/api/postgres",
+    # the handover of a workspace to the customer (AD-008): what the dialog says before Prepare, the state the
+    # customer's machine asks with its code or its session (a wrong one logged as failed by the routes), what the
+    # workspace holds and passes (no file, no data of its instances), the reception's own state; Prepare, Redo,
+    # the claim, the copies and Cancel are actions, logged
+    "/api/workspaces/{workspace}/handover", "/api/handover/v1/offer", "/api/handover/v1/{handover_id}/manifest",
+    "/api/handover/v1/{handover_id}/db/{instance}/state", "/api/handover/v1/{handover_id}/state",
+    "/api/handover/{handover_id}",
     # the map of the infrastructure (UX-009): the facts of /api/servers and /api/instances as a
     # diagram; of the caught mail the count only, no list of backups, no text, no log
     "/api/map",

@@ -3481,6 +3481,15 @@ SHA-256), and deleting the workspace left no site, record or certificate.
 HTTP-01 with a real name was not provable on private addresses: only the
 challenge's passage was.
 
+The machine that receives a workspace's names believes `X-Forwarded-For` from
+the machine that passes them only (`set_real_ip_from <its address>` and
+`real_ip_header X-Forwarded-For` in the workspace's site, `web`'s `trust`, kept
+in `/etc/omniacli/forwarded/<workspace>.json`, root's 600): the host of a move
+learns the home's address when the instance arrives, the home the host's after
+a return. The forward sends the visitor's own address (`$remote_addr`), never
+a header the visitor began, so the customer's Odoo logs the visitor and not
+the machine of before (step 5 found its logs naming the provider's address).
+
 ### Moving an instance to another machine
 
 An instance of a workspace changes machine and stays the same instance: the
@@ -3547,9 +3556,14 @@ The names of a workspace pass to one machine at a time: its forward is one
 record (`/etc/omniacli/forward/<workspace>.json`), full for the instances
 placed there, else the challenges for those prepared. An instance **without
 a test** moves (one with a test: a later step); a staging is not moved (it is
-made again there); a database on the cluster with the extension vector moves
-only to a cluster with pgvector. Back to <here> is below; the move's own REST
-and MCP are step 10.
+made again there); a database on the cluster whose tables hold vectors (Odoo
+Enterprise's ai module) moves only to a cluster with pgvector. The extension
+alone does not hold it: `odoo-19-machine` makes `vector` in every database of
+a cluster with pgvector (only the superuser makes it, and the ai module is
+installed by the instance's role), so `pg-report` says whether a table uses
+it (`vector_used`), and the restore on a cluster without pgvector leaves the
+unused extension out and says so in the job. Back to <here> is below; the
+move's own REST and MCP are step 10.
 
 Measured on the lab pair (lab3 → lab4 through SSH links, a central panel of
 the proof linked to both, 23/11/2026; names asked every 100 ms through
@@ -3716,6 +3730,119 @@ maintenance page (503), through lab3's nginx and lab4's (its forward to lab3
 once back). The same from the pages, clicked: 11.1 s and 6.4 s. The
 workspace's people and token read the same 118 statuses of the 38 GET routes
 of a server before the move and after the return.
+
+### Handing a workspace over to the customer
+
+A workspace leaves this machine for an OmniaCLI of the customer's own
+(AD-008…AD-011, UX-014 part A). The customer's machine **calls this one** in
+HTTPS with a code; nothing calls the customer's machine, which may stay behind
+a NAT with no port open (D-A2). Built up to «ready» (step 7 of §9): the copy
+while everything runs here. **Switch to this machine** (the two phases, the
+users and secrets, the names) is the next step.
+
+**Here, the provider** (the machine's admins only; not the workspace's admins,
+not a link below admin):
+
+- **Limits and disk › Where it lives › Hand over to the customer…**, a dialog
+  in three steps. *1 What*: each instance with its database, files, code and
+  last backup, the people (they pass at the switch with their password and
+  their two-step verification; a passkey is registered again: it is bound to
+  this panel's address), the tokens and OAuth accesses that do not pass, the
+  total. *2 Summary*: the code's expiry, what stops and for how long, the copy
+  kept 7 days after the switch, the names this machine passes on decrypted for
+  at most 7 days (AD-012, Carlo 23/11/2026), a user name the customer has
+  already arriving as `<name>.<workspace>`. *3 Code*: **Prepare the
+  handover…** asks the workspace's name and shows the code **once**: one line,
+  `omniacli-consegna-1.<base64url>`, carrying this panel's address (the
+  customers' portal, Settings › Options; without one Prepare is off and says
+  why), the handover's id, 32 random bytes and the SHA-256 of the public key of
+  the certificate the portal presents now (the pin). Only the SHA-256 of the
+  secret stays here (`handover/out/<workspace>/state.json`, 600). Send it as a
+  password.
+- The code is valid **72 hours** and for **one machine**: the first claim binds
+  it to the X25519 key that machine made for it and gives it a session (only
+  its hash here); another key gets 409. A wrong id or secret is always the same
+  401 («the code is not valid», in the failed-access log); 10 failures in 10
+  minutes from an address: 429. Cancelled or expired, the right secret (or
+  the session) reads why (410), and reaches nothing else.
+- The banner of the workspace's page says where it is: *prepared* (the code's
+  expiry), *receiving* (its percent, the address and the print of the key of
+  the machine that claimed it), *ready*, *expired*. **Redo the code…** (a new
+  secret and 72 hours, the same handover; the session of before stops; the
+  machine that copied goes on from what it has), **Cancel the handover…**
+  (the code stops; the database closed again; the customer's machine deletes
+  what it copied at its next look). The list of the workspaces says the same
+  word in State, no button. A workspace with a handover under way is not
+  deleted, nor prepared again over an expired one: cancel it first.
+- What can pass now: a production of Docker Compose without a test
+  environment, with a database of its own or on the machine's cluster. Each
+  other one says why: a staging (made again from its production there), a
+  test environment (a later step), a database on another machine, an
+  instance placed on another machine of yours, or one back from there whose
+  host keeps its stopped copy (**Delete the copy there…** first: none of its
+  data stays on a machine the handover does not delete).
+
+**There, the customer** (the admins of its machine):
+
+- **Workspaces › Recover a workspace…** (beside New workspace, not a primary):
+  the code pasted is read **by the machine**, never by the browser
+  (`POST /api/handover/read`): the provider's certificate verified against
+  the system's CAs **and** against the pin, before anything is sent (a proxy
+  that reads TLS is refused, and meant to be); then «From the provider: … ·
+  workspace … · it expires on …», what arrives with its sizes, whether it fits
+  (the room, the templates: here, or installed signed from where this machine
+  installs templates), the name it arrives with (`<name>-2` when taken), the
+  disk of the workspace (at least the one promised), and whether this machine
+  is reached from outside on 80 and 443 (the provider tries the address the
+  request comes from, a connection that sends nothing): only a warning, it is
+  needed at the switch.
+- **Receive** is a job (Checks · Templates and images · Copy · In step): the
+  claim, the workspace made, each instance made from the same template and
+  never started, its trees pulled with `treesync` over the handover's own
+  routes (`/api/handover/v1/<id>/treesync/list|read|file`: the code, the
+  filestore, the **last backup** of each environment only), a database of its
+  own followed from the provider's published port (`ArrivePlace`; the
+  provider lets in, for this handover only, the one address the customer's
+  machine called from, read there and never said by it; the connection goes
+  out from the customer). It ends **ready**: the banner says how far the
+  database is behind and when the files' last round was; every minute the
+  machine asks the provider whether the handover still holds. Cancelled there:
+  what it copied is taken away; expired, made anew, or a certificate that is
+  no longer the pinned one: *out of step*, with why. **Recover a workspace…**
+  with a new code of the same handover goes on from what is here (a round
+  copies what changed; a database whose port was closed meanwhile is copied
+  again). **Cancel the reception…** takes away what the reception made (the
+  database's copy, the instances, the workspace when it made it) and tells
+  the provider.
+- Nothing of the provider in what the customer reads: the provider is its
+  label (Settings › Options › Customers' portal), else «the provider»; no
+  machine name, address, link or folder of its in the dialog, the jobs, their
+  JSON or the access log.
+
+Behind the provider's nginx (the portal's site) the downloads are not
+buffered, the bodies may be large and an answer may take an hour
+(`proxy_buffering off`, `client_max_body_size 50g`, `proxy_read_timeout 3600s`).
+Purge: `/var/lib/omniacli/handover`.
+
+Measured on the lab pair (lab3 the provider, its portal on a name with a
+certificate of a test CA; lab4 the customer behind a simulated NAT, no
+connection from lab3 coming in; 24/11/2026): Receive of a workspace with an
+instance of its own database (22 MB, its filestore and last backup) reached
+**ready in 7 s**, the database copied and followed from lab3's published port
+(`pg_stat_replication` there: 172.30.0.14, streaming); a row written on lab3
+was read on lab4's copy. On lab4's firewall **0 rules let a connection in**:
+the 11 rules the reception added are those of its copy's network, out to
+lab3's port only, the answers of that connection and drops. The certificate
+of lab3's portal changed for one with another key, of the same trusted CA:
+lab4 said «the certificate of the provider is not the one of the code» at
+its next look (42 s), and *ready* again 54 s after the old one was back.
+Cancel from lab3: lab4 had taken everything away 45 s later; Cancel from
+lab4: lab3 said cancelled at once, its database closed again. The code
+expired (its expiry set in the past: a lab does not wait 72 hours): lab3
+closed the database within its minute, lab4 said why; Redo, then Recover a
+workspace… with the new code went on with round 1 (0 files to copy). The
+jobs of lab4 (9 of them, in Italian and in English) and its access log named
+nothing of lab3.
 
 ### Modules from the catalogs
 
@@ -4855,7 +4982,7 @@ provides: OmniaCLI installed by hand on Python 3.9 runs without it.
 | `server_status` | repositories (branch, last commit), Odoo running, CPU and memory, auto update, last jobs |
 | `pending_updates` | commits not yet pulled, per repository (`git fetch`) |
 | `read_log` | the last lines of an instance's log, optionally only ERROR/CRITICAL with their tracebacks |
-| `list_jobs`, `get_job`, `job_log` | the jobs, filtered by server and text, a job with the end of its log, its log from an offset |
+| `list_jobs`, `get_job`, `job_log` | the jobs, filtered by server and text, a job with the end of its log, its log from an offset; a workspace's token reads them (and `last_jobs` of `server_status`, `diagnose_instance`) as its people read them on the pages, without the provider's machines, links and folders (customerview) |
 | `update_test` | git pull + update of the changed modules + restart of the **test** instance |
 | `diagnose_instance` | what is wrong with an instance, in one answer: whether it runs, CPU and memory, the ERROR records of its log, its last jobs (a failed one with the end of its log), its last backup and last restore tried |
 | `restart_instance`, `start_instance`, `stop_instance` | (developer token) on a test or a staging; on a **production** an admin token and `confirm` = the server's name, never a CI token |
