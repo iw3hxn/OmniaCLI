@@ -66,6 +66,9 @@ AUDITED_BY_ROUTE = frozenset({
     # a file of a workspace handed over (AD-008: its last backups), taken by the customer's machine with the
     # session of its claim: logged by the route, with the file and the byte it starts from
     "/api/handover/v1/{handover_id}/treesync/file",
+    # the sealed secrets of a handover's switch (AD-009), taken by the customer's machine: logged by the route, with
+    # what they hold by name (users, schedules, destinations, credentials), never a secret
+    "/api/handover/v1/{handover_id}/secrets",
 })
 
 # pages and data that are neither customer data nor security data: the
@@ -120,6 +123,9 @@ NOT_SENSITIVE = frozenset({
     "/api/workspaces/{workspace}/handover", "/api/handover/v1/offer", "/api/handover/v1/{handover_id}/manifest",
     "/api/handover/v1/{handover_id}/db/{instance}/state", "/api/handover/v1/{handover_id}/state",
     "/api/handover/{handover_id}",
+    # the switch of a handover as the provider has it (step 8, AD-011): its phase, its deadline, the last record of
+    # each database, the dumps' names and sizes; no secret
+    "/api/handover/v1/{handover_id}/switch",
     # the map of the infrastructure (UX-009): the facts of /api/servers and /api/instances as a
     # diagram; of the caught mail the count only, no list of backups, no text, no log
     "/api/map",

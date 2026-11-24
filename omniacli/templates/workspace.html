@@ -63,10 +63,12 @@ dialog .field-help { display: block; font-size: var(--fs-14); margin-top: 4px; l
   </div>
   <div class="actions" style="margin: 0; align-items: center">
     {% if machine_admin %}<a href="{{ limits_url }}" title="{{ _('Opens the form of the machine for this workspace: its limits, disk, domain and servers. For the administrators of the machine only.') }}">{{ _("Limits and disk") }} ›</a>{% endif %}
+    {# the banner of a reception ready to switch has the page's only primary (UX-014 A5): New instance gives way #}
+    {% set head_class = "" if (handover_in and handover_in.phase == "ready") else "primary" %}
     {% if new_instance %}
-    <button type="button" class="primary" id="new-instance" title="{{ _('Opens the form of a new instance of the workspace, from a template or from a full archive, on the disk of the workspace. Disabled when the workspace has no disk or disk limit, when Docker or a template is missing, or when it has all the instances of its limit.') }}">{{ _("New instance") }}</button>
+    <button type="button" class="{{ head_class }}" id="new-instance" title="{{ _('Opens the form of a new instance of the workspace, from a template or from a full archive, on the disk of the workspace. Disabled when the workspace has no disk or disk limit, when Docker or a template is missing, or when it has all the instances of its limit.') }}">{{ _("New instance") }}</button>
     {% else %}
-    <span title="{{ why_not }}"><button type="button" class="primary" id="new-instance" disabled>{{ _("New instance") }}</button></span>
+    <span title="{{ why_not }}"><button type="button" class="{{ head_class }}" id="new-instance" disabled>{{ _("New instance") }}</button></span>
     {% endif %}
   </div>
 </div>

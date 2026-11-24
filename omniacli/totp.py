@@ -185,6 +185,24 @@ class SecondFactors:
             self._save()
         return codes
 
+    def record(self, user: str) -> dict | None:
+        """user's second factor as it is kept (its secret, the step of its last code, its salted recovery codes),
+        for the handover of its workspace (AD-009: it passes sealed); None when it has none."""
+        found = self._users.get(user)
+        return json.loads(json.dumps(found)) if found else None
+
+    def adopt(self, user: str, record: dict) -> None:
+        """user's second factor as another machine kept it (AD-009): the same app, the same recovery codes, and
+        the step of its last code, so that a code used there is not used again here."""
+        if not isinstance(record, dict) or not isinstance(record.get("secret"), str) or not record["secret"]:
+            raise ValueError("a second factor has a secret")
+        kept = {"secret": record["secret"], "since": int(record.get("since") or time.time()),
+                "last": int(record.get("last", -1)), "salt": str(record.get("salt") or ""),
+                "recovery": [str(h) for h in record.get("recovery") or [] if isinstance(h, str)]}
+        with self._lock:
+            self._users[user] = kept
+            self._save()
+
     def disable(self, user: str) -> bool:
         """Off (switched off, or reset by an admin); False when it was not on."""
         with self._lock:

@@ -17,8 +17,17 @@ AD-008…AD-011; UX-014 part A), up to «ready» (step 7 of its §9).
   phase) and ``handover/in/<id>/`` (the customer's: state.json, claim.key, session, parts/), in OmniaCLI's own
   /var/lib/omniacli, 600 in folders of 700. No data of the customer in them: the copies go to the workspace's disk.
 
-What passes at the switch (users, two-step secrets, roles, schedules, destinations, credentials, the certificate,
-the extract of the access log) is step 8: the sealed secrets travel then (AD-009)."""
+- **The switch** (step 8, AD-011): two phases, the provider coordinating. The customer's machine asks
+  ``switch/begin`` with a ``switch_id`` of its own (every step after is idempotent on it); the provider writes the
+  phase before it acts, puts its maintenance page up, stops Odoo, stops each database of its own clean (its last
+  record) or dumps one of the machine's cluster, suspends the workspace's schedules, and reads «frozen» with a
+  deadline (10 minutes at least). The customer takes the last round and the sealed secrets (``seal``: X25519 with
+  the claim's key, HKDF-SHA256, AES-256-GCM, the id and the switch_id as associated data), starts its instances
+  without their crons, held, and asks ``commit``; the provider passes the names on (forward full) and revokes the
+  workspace's tokens; then the customer imports the users with their hashes and two-step secrets, the roles, the
+  schedules, the destinations, the credentials, the deploys and the extract of the access log, and releases its
+  names. A failure before the commit is ``abort``: everything runs at the provider's again. The deadline passed
+  with neither, the provider aborts by itself, and a commit after reads 409."""
 
 from __future__ import annotations
 
@@ -42,7 +51,11 @@ from urllib.parse import urlsplit
 import httpx
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 PREFIX = "omniacli-consegna-1."
 # the header the code travels in, read only (offer, probe): never in a URL, which logs keep
@@ -255,6 +268,16 @@ def client(url: str, pin: str, timeout: httpx.Timeout | None = None) -> httpx.As
                              event_hooks={"response": [pinned]})
 
 
+def reaches(ip: str, port: int, timeout: float = 3) -> bool:
+    """Whether a connection to ip:port opens (it sends nothing): the provider trying the customer's machine from
+    outside, on the address its request came from (UX-014 A5 step 2, A8)."""
+    try:
+        with socket.create_connection((ip, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 def fingerprint(text: str) -> str:
     """A short print of a key or a pin to compare by phone: 4 groups of 4 hex."""
     digest = hashlib.sha256(text.encode()).hexdigest()[:16]
@@ -356,11 +379,12 @@ def retired(state: dict, field: str, secret: str) -> bool:
 
 
 def phase_of(state: dict, at: float | None = None) -> str:
-    """The provider's word for a handover: prepared (code not used yet), receiving, ready, cancelled, expired."""
+    """The provider's word for a handover: prepared (code not used yet), receiving, ready, cancelled, expired;
+    switching and committed (the switch: it closes by its own deadline, past the code's 72 hours, AD-008)."""
     if not state:
         return ""
     phase = str(state.get("phase") or "prepared")
-    if phase in ("cancelled", "expired"):
+    if phase in ("cancelled", "expired", "switching", "committed"):
         return phase
     if float(state.get("expires") or 0) < (at if at is not None else now()):
         return "expired"
@@ -454,3 +478,124 @@ def received_name(wanted: str, taken) -> str:
 def user_name(wanted: str, workspace: str, taken) -> str:
     """A user name the customer has already arrives as <name>.<workspace> (Carlo, 23/11/2026)."""
     return wanted if wanted not in taken else f"{wanted}.{workspace}"
+
+
+# --- the switch (step 8 of §9, AD-011) -----------------------------------------------------------------------
+
+# the provider waits for a commit at least this long after its instances stopped, else it aborts by itself
+SWITCH_MOST = 600
+# what a switch_id looks like (made by the customer's machine)
+SWITCH_ID = re.compile(r"[0-9a-f]{16}")
+# the switch's phases at the provider's while it may still go either way: stopping, stopped and waiting
+SWITCH_OPEN = ("freezing", "frozen")
+_SEAL_INFO = b"omniacli-handover-1 secrets"
+
+
+def deadline_of(estimate_s: float, at: float | None = None) -> float:
+    """The moment the provider aborts a switch by itself: max(10 minutes, 3 × the restores estimated)."""
+    return (at if at is not None else now()) + max(SWITCH_MOST, 3 * float(estimate_s or 0))
+
+
+def sealed_aad(handover_id: str, switch_id: str) -> bytes:
+    return f"omniacli-handover:{handover_id}:{switch_id}".encode()
+
+
+def _seal_key(shared: bytes) -> bytes:
+    return HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=_SEAL_INFO).derive(shared)
+
+
+def seal(data: bytes, public: str, aad: bytes) -> dict:
+    """data sealed to the X25519 public key of a claim (AD-009): an ephemeral key of this machine's, HKDF-SHA256,
+    AES-256-GCM with aad as associated data. Nothing of it is written here."""
+    ephemeral = X25519PrivateKey.generate()
+    key = _seal_key(ephemeral.exchange(X25519PublicKey.from_public_bytes(_unb64(public_key(public)))))
+    nonce = secrets.token_bytes(12)
+    return {"format": 1, "epk": _b64(ephemeral.public_key().public_bytes(serialization.Encoding.Raw,
+                                                                        serialization.PublicFormat.Raw)),
+            "nonce": _b64(nonce), "data": _b64(AESGCM(key).encrypt(nonce, data, aad))}
+
+
+def unseal(private_raw: bytes, sealed: dict, aad: bytes) -> bytes:
+    """What seal sealed, with the claim's private key; CodeError for anything else (another key, another
+    handover or switch, a byte changed)."""
+    try:
+        private = X25519PrivateKey.from_private_bytes(private_raw)
+        key = _seal_key(private.exchange(X25519PublicKey.from_public_bytes(_unb64(str(sealed["epk"])))))
+        return AESGCM(key).decrypt(_unb64(str(sealed["nonce"])), _unb64(str(sealed["data"])), aad)
+    except (KeyError, TypeError, ValueError, CodeError, InvalidTag) as exc:
+        raise CodeError(f"the secrets do not open with this machine's key ({type(exc).__name__})") from None
+
+
+def server_renamed(server: str, source: str, workspace: str) -> str:
+    """A server <source>-<instance> of the provider's workspace as the customer's <workspace>-<instance>."""
+    return f"{workspace}-{server[len(source) + 1:]}" if server.startswith(f"{source}-") else server
+
+
+def names_map(wanted, taken, workspace: str) -> dict[str, str]:
+    """{name there: name here} of users (or destinations, schedules) that arrive: a name taken here arrives as
+    <name>.<workspace> (Carlo, 23/11/2026), and -2, -3… after it when that one is taken too."""
+    out: dict[str, str] = {}
+    used = set(taken)
+    for name in wanted:
+        new = user_name(name, workspace, used)
+        n = 2
+        while new in used:
+            new = f"{name}.{workspace}-{n}"
+            n += 1
+        out[name] = new
+        used.add(new)
+    return out
+
+
+def cron_shifted(cron: str, hours: int) -> str:
+    """A crontab expression whose hour is one number moved by hours: the same instant on a machine in another
+    zone (UX-014 A11); any other hour (*/2, 1-5, a list) stays as it is."""
+    parts = str(cron).split()
+    if len(parts) != 5 or not hours or not parts[1].isdigit():
+        return cron
+    parts[1] = str((int(parts[1]) + hours) % 24)
+    return " ".join(parts)
+
+
+# the fields of an entry of the access log that pass in its extract (AD-009 «L'estratto del registro»)
+EXTRACT_FIELDS = ("utc", "time", "event", "kind", "name", "on_behalf", "role", "ip", "method", "route", "server",
+                  "env", "status", "job", "detail")
+
+
+def log_extract(files, workspace: str, view, verified: dict, at: float | None = None) -> str:
+    """The entries of the access log that are the workspace's (its own, or one of its), the oldest first, as
+    JSONL: a head with the period and the result of the log's verify() at the extraction, then each entry with
+    the redaction of customerview (the provider's people as the provider, their address left out, other machines
+    as «another machine», folders as their last part) and orig, the SHA-256 of its line in the provider's log,
+    which the provider can show is there. files: the log's files, the newest first (accesslog.numbered)."""
+    rows = []
+    for path in reversed(list(files)):
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                lines = fh.readlines()
+        except OSError:
+            continue
+        for line in lines:
+            line = line.rstrip("\n")
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(entry, dict) or (entry.get("workspace") != workspace
+                                               and workspace not in (entry.get("workspaces") or [])):
+                continue
+            out = {k: view.text(entry[k]) if isinstance(entry[k], str) else entry[k]
+                   for k in EXTRACT_FIELDS if entry.get(k) not in (None, "", [])}
+            name = str(entry.get("name") or "").strip()
+            if name and view.who(name) != name:
+                out["name"], out["kind"] = view.who(name), "provider"
+                out.pop("ip", None)
+                out.pop("on_behalf", None)
+            out["orig"] = hashlib.sha256(line.encode("utf-8")).hexdigest()
+            rows.append(out)
+    head = {"extract": workspace, "provider": view.provider, "entries": len(rows),
+            "from": rows[0].get("utc") if rows else None, "to": rows[-1].get("utc") if rows else None,
+            "made": iso(at if at is not None else now()),
+            "verify": {"ok": bool(verified.get("ok")), "entries": verified.get("entries"),
+                       "breaks": len(verified.get("breaks") or [])}}
+    return "\n".join(json.dumps(r, ensure_ascii=False, sort_keys=True) for r in [head, *rows]) + "\n"

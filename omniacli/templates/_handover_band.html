@@ -2,7 +2,10 @@
 {# The banners of a workspace's handover (UX-014 A5, A7; AD-008, step 7 of §9), in the head of its page, for the
    machine's admins: on the provider's machine its handover (prepared, receiving, ready, expired) with Redo the
    code… and Cancel the handover…; on the customer's its reception (arriving, ready, out of step, cancelling) with
-   See the job, Retry and Cancel the reception…. The switch is the next step. #}
+   See the job, Retry and Cancel the reception…; the switch (step 8): at the provider's switching and handed over
+   (the day its copy here is deleted), at the customer's Switch to this machine… (the banner's only primary, the
+   name written; off with why when this machine is not reached on 80 and 443), switching, stopped (Retry asks the
+   provider how it ended), on this machine. #}
 {% from "_icons.html" import icon, dialog_x with context %}
 <style>
 .hv-band { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
@@ -15,7 +18,9 @@
 {% if handover_out %}{% set ho = handover_out %}{% set rc = ho.receiver or {} %}
 <div class="banner {{ 'warn' if ho.phase == 'expired' else 'info' }} hv-band" role="status" id="handover-band" data-phase="{{ ho.phase }}">
   <span class="hv-text">
-  {% if ho.phase == "expired" %}{{ _("The code of the handover expired on {when}: the customer no longer copies. Redo the code… to go on, from what it has.", when=ho.expires | moment) }}
+  {% if ho.phase == "committed" %}{{ _("Handed over to the customer on {when}. Here a stopped copy stays until {until}.", when=ho.committed | moment, until=ho.delete_after | moment) }}
+  {% elif ho.phase == "switching" %}{{ _("The customer is switching: the instances here are stopped behind the maintenance page since {when}; if the customer's machine does not commit by {until}, they run here again by themselves.", when=(ho.switch or {}).began | moment, until=(ho.switch or {}).deadline | moment) }}
+  {% elif ho.phase == "expired" %}{{ _("The code of the handover expired on {when}: the customer no longer copies. Redo the code… to go on, from what it has.", when=ho.expires | moment) }}
   {% elif ho.phase == "ready" %}{{ _("The customer is ready to switch: the instances here stop when the customer chooses so.") }}
   {% elif ho.phase == "receiving" %}{% if rc.total %}{{ _("The customer is receiving: {pct} %. Here everything runs.", pct=(100 * (rc.done or 0) / rc.total) | int) }}{% else %}{{ _("The customer is receiving. Here everything runs.") }}{% endif %}{% if rc.phase == "failed" and rc.error %} {{ _("Its copy stopped: {why}", why=tr(rc.error)) }}{% endif %}
   {% else %}{{ _("Handover prepared: the code expires on {when}. The customer has not used it yet.", when=ho.expires | moment) }}{% endif %}
@@ -25,7 +30,9 @@
   {% if ho.phase in ("prepared", "expired") %}
     <button type="button" id="handover-redo" data-restarts="{{ (ho.restarts or []) | join(', ') }}" title="{{ _('Makes a new code; the one of before stops being valid. What the customer has copied already stays valid: with the new code it goes on from there.') }}">{{ _("Redo the code…") }}</button>
   {% endif %}
+  {% if ho.phase in ("prepared", "receiving", "ready", "expired") %}
     <button type="button" class="small danger" id="handover-cancel" title="{{ _('The code stops being valid and the customer\'s machine deletes what it copied. Here nothing changes.') }}">{{ _("Cancel the handover…") }}</button>
+  {% endif %}
   </span>
 </div>
 <dialog id="hv-redo-dialog" aria-labelledby="hv-redo-title">
@@ -47,13 +54,21 @@
   {% if hi.phase == "receiving" %}{% if pg.total %}{{ _("Arriving from {provider}: {pct} % · {done} of {total} GB", provider=tr(hi.provider or "the provider"), pct=(100 * (pg.done or 0) / pg.total) | int, done=((pg.done or 0) / 1073741824) | round(2), total=(pg.total / 1073741824) | round(2)) }}{% else %}{{ _("Arriving from {provider}.", provider=tr(hi.provider or "the provider")) }}{% endif %}
   {% elif hi.phase == "ready" %}{% set lags = (hi.db or {}).values() | selectattr("lag", "ne", none) | map(attribute="lag") | list %}{% if lags %}{{ _("Ready to switch · in step: the database {lag} s behind, the files of the round of {when}", lag=lags | max | round(1), when=hi.last_round_at | moment) }}{% else %}{{ _("Ready to switch · in step: the files of the round of {when}; the database passes at the switch", when=hi.last_round_at | moment) }}{% endif %}
   {% elif hi.phase in ("out_of_step", "failed") %}{{ _("Ready, but not receiving from {provider} since {when}: {why}", provider=tr(hi.provider or "the provider"), when=(hi.out_since or hi.ready_at or hi.since) | moment, why=tr(hi.error or "")) if hi.ready_at else _("The reception from {provider} stopped: {why}", provider=tr(hi.provider or "the provider"), why=tr(hi.error or "")) }}
+  {% elif hi.phase == "switching" %}{{ _("Switch under way: the instances of {provider} are stopped, this machine takes their last changes and starts them.", provider=tr(hi.provider or "the provider")) }}
+  {% elif hi.phase == "interrupted" %}{{ _("The switch stopped: {why}", why=tr(hi.error or "")) }}
+  {% elif hi.phase == "switched" %}{{ _("On this machine since {when}.", when=hi.switched_at | moment) }}{% if hi.unserved %} {{ _("Without service for {n} s.", n=hi.unserved.seconds) }}{% endif %}{% if hi.imported and hi.imported.renamed %} {{ _("Users renamed because their name was taken here: {names}.", names=hi.imported.renamed.items() | map("join", " → ") | join(", ")) }}{% endif %}
   {% else %}{{ _("The reception is being cancelled: what was copied here is deleted.") }}{% endif %}
   {% if hi.fingerprint %}<br><span class="small">{{ _("The print of this machine's key, to compare with the provider by phone: {print}.", print=hi.fingerprint) }}</span>{% endif %}
   </span>
   <span class="hv-actions">
-  {% if hi.job and hi.phase in ("receiving", "cancelling") %}<a class="button" href="{{ prefix }}/jobs/{{ hi.job }}" title="{{ _('Opens the job of the reception, with its steps') }}">{{ _("See the job") }} ›</a>{% endif %}
-  {% if hi.phase in ("out_of_step", "failed") and not hi.stale %}
-    <button type="button" id="reception-retry" title="{{ _('Receives again from what was copied: only what changed since is copied. With a new code of the provider, use Recover a workspace… instead.') }}">{{ _("Retry") }}</button>
+  {% if hi.job and hi.phase in ("receiving", "cancelling", "switching", "interrupted") %}<a class="button" href="{{ prefix }}/jobs/{{ hi.job }}" title="{{ _('Opens the job of the reception, with its steps') }}">{{ _("See the job") }} ›</a>{% endif %}
+  {% if hi.phase == "ready" %}{% set rc = hi.reached or {} %}{% set unreached = hi.reached and not (rc["80"] and rc["443"]) %}
+    {% if unreached %}<span title="{{ _('This machine is not reached from outside on its ports 80 and 443: it needs a public address, or a relay of its own (the provider\'s relay does not pass with the handover).') }}">{% endif %}
+    <button type="button" class="primary" id="reception-switch" {% if unreached %}disabled{% endif %} data-workspace="{{ hi.workspace }}" data-instances="{{ hi.instances }}" data-minutes="{{ hi.stop_minutes or 1 }}" data-users="{{ (hi.people or {}).users or 0 }}" data-passkeys="{{ (hi.people or {}).passkeys or 0 }}" title="{{ _('Stops the instances at the provider\'s, takes their last changes and starts them here. A stop of about {n} min. Asks the name of the workspace.', n=hi.stop_minutes or 1) }}">{{ _("Switch to this machine…") }}</button>
+    {% if unreached %}</span>{% endif %}
+  {% endif %}
+  {% if hi.phase in ("out_of_step", "failed", "interrupted") and not hi.stale %}
+    <button type="button" id="reception-retry" title="{{ _('Receives again from what was copied: only what changed since is copied. With a new code of the provider, use Recover a workspace… instead.') if hi.phase != 'interrupted' else _('Asks the provider how the switch ended, then finishes it here or takes back what it did here') }}">{{ _("Retry") }}</button>
   {% endif %}
   {% if hi.phase in ("ready", "out_of_step", "failed", "receiving") %}
     <button type="button" class="small danger" id="reception-cancel" title="{{ _('Deletes what was copied here. At the provider\'s nothing changes.') }}">{{ _("Cancel the reception…") }}</button>
@@ -74,6 +89,9 @@
     redoText: {{ _("Send it to the customer as a password, until {expires}.") | tojson }},
     receptionAsk: {{ _("What was copied of {ws} here is deleted, and the provider is told. At the provider's nothing changes.") | tojson }},
     receptionGo: {{ _("Cancel the reception") | tojson }},
+    switchAsk: {{ _("The {n} instances of {ws} at the provider's stop now, behind a maintenance page. This machine takes the changes made since it was ready, then starts them. A stop of about {minutes} min foreseen. Your {users} users will log in here with their passwords and their app of two-step verification.") | tojson }},
+    switchPasskeys: {{ _("{passkeys} of them must register their passkey again: it is bound to the address of the provider's panel.") | tojson }},
+    switchGo: {{ _("Switch to this machine") | tojson }},
     copied: {{ _("Copied") | tojson }}, refused: {{ _("Refused.") | tojson }},
   };
   const fill = (text, values) => text.replace(/\{(\w+)\}/g, (_m, k) => (values[k] === undefined ? `{${k}}` : String(values[k])));
@@ -124,6 +142,19 @@
     b.disabled = true;
     const got = await post(`${reception}/retry`);
     if (got.error) { b.disabled = false; say(got.error); return; }
+    location.href = `${PREFIX}/jobs/${got.job}`;
+  });
+  document.getElementById("reception-switch")?.addEventListener("click", async (event) => {
+    const b = event.currentTarget, d = b.dataset;
+    let ask = fill(T.switchAsk, {n: d.instances, ws: d.workspace, minutes: d.minutes, users: d.users});
+    if (Number(d.passkeys) > 0) ask += " " + fill(T.switchPasskeys, {passkeys: d.passkeys});
+    const typed = await window.omniaTypeName(ask, d.workspace, T.switchGo, b.title);
+    if (!typed) return;
+    b.disabled = true;
+    const resp = await fetch(`${reception}/switch`, {method: "POST", headers: {Accept: "application/json", "Content-Type": "application/json"},
+      body: JSON.stringify({confirm: d.workspace})}).catch(() => null);
+    const got = resp ? await resp.json().catch(() => ({})) : {};
+    if (!resp || !resp.ok) { b.disabled = false; say(got.error || got.detail || T.refused); return; }
     location.href = `${PREFIX}/jobs/${got.job}`;
   });
   document.getElementById("reception-cancel")?.addEventListener("click", async (event) => {

@@ -85,6 +85,8 @@ case "$1" in
         # the handovers of workspaces to a customer's OmniaCLI and the receptions from a provider (handover.py,
         # AD-008): the hashes of the codes and sessions, the keys of the claims, the parts of the copies
         rm -rf /var/lib/omniacli/handover
+        # the extracts of a provider's access log a workspace received brought with it (AD-009, D-A8)
+        rm -rf /var/lib/omniacli/access-archive
         # and the jobs of their hosts a home answered through itself (the delegated scope, AD-014)
         rm -f /var/lib/omniacli/placements.json /var/lib/omniacli/placements.json.tmp \
             /var/lib/omniacli/hosted-workspaces.json /var/lib/omniacli/hosted-workspaces.json.tmp \

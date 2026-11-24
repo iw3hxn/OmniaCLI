@@ -3736,9 +3736,10 @@ of a server before the move and after the return.
 A workspace leaves this machine for an OmniaCLI of the customer's own
 (AD-008…AD-011, UX-014 part A). The customer's machine **calls this one** in
 HTTPS with a code; nothing calls the customer's machine, which may stay behind
-a NAT with no port open (D-A2). Built up to «ready» (step 7 of §9): the copy
-while everything runs here. **Switch to this machine** (the two phases, the
-users and secrets, the names) is the next step.
+a NAT with no port open while it copies (D-A2). Built up to the switch (steps 7
+and 8 of §9): the copy while everything runs here, then **Switch to this
+machine** (below). The stopped copy's own days (its hourly deletion, Delete the
+copy now, Reactivate) are the next step.
 
 **Here, the provider** (the machine's admins only; not the workspace's admins,
 not a link below admin):
@@ -3893,6 +3894,112 @@ Recover a workspace… with the new code, from the page, went on in 4.6 s:
 round 3 copied 97 files, 20.3 MB (77 files and 0.3 MB of code, 20 files and
 20.0 MB of filestore, 0 of the backup), and the row was read on lab4's copy.
 Cancel on lab3: lab4 had taken everything away 33 s later.
+
+#### Switch to this machine
+
+The switch (AD-011) is pressed by the customer (D-A4), on its own machine,
+and coordinated by the provider's, which has the data until then: two phases,
+all or nothing.
+
+- **Where.** The banner of the received workspace, once *ready*: **Switch to
+  this machine…**, the page's only primary (New instance gives way), asks the
+  workspace's name after a short summary (the instances that stop at the
+  provider's, the stop foreseen, the users who log in here with their password
+  and their app of two-step verification, the passkeys to register again). It
+  is off, with why in its title, while this machine is not reached from
+  outside on 80 and 443 (the provider tries the address the customer calls
+  from, at every look; a public address, or a relay of its own: the
+  provider's relay does not pass, A8); refused when the provider does not
+  answer (its instances could not be stopped, and the data would split).
+- **The job** (Maintenance at the provider's · Last changes · Start here ·
+  Names and certificates). A last round of the files first when the one of
+  the reception is older than 10 minutes, while everything runs there. Then
+  `switch/begin` with a `switch_id` of this machine's (every step after is
+  idempotent on it): the provider writes the phase before it acts, puts its
+  maintenance page up, stops Odoo, stops each database of its own clean
+  (`machine-db-replica-stop`, its last record) or dumps one of its cluster
+  among the backups, switches the workspace's schedules off, passes the
+  names' challenges of Let's Encrypt here (forward acme), and reads **frozen**
+  with a **deadline** (10 minutes at least, 3 times the restores foreseen).
+  Here: the **sealed secrets** (`GET …/secrets`, at the switch only: X25519
+  between an ephemeral key of the provider's and this machine's claim key,
+  HKDF-SHA256, AES-256-GCM with the handover's id and the switch_id as
+  associated data; never written in clear at the provider's, kept sealed here
+  until they are imported), the last round with what is gone there taken away,
+  each database of its own waited for to its last record and promoted, one of
+  the cluster restored from the dump (its SHA-256 and what it holds checked),
+  the workspace's names and the customer's certificate published **held**
+  (the challenges and the maintenance page only), the instances started with
+  their crons off, `/web/login` 200 each within 300 s; then **commit**.
+- **Commit** at the provider's: written first, then its names passed to this
+  machine (forward full, its certificate verified for the name: decrypted and
+  encrypted again there for at most 7 days, until the DNS leads here, as the
+  summary of Prepare said), the databases closed to it, its copy stopped whole,
+  the workspace's tokens and OAuth accesses revoked, the sessions of its
+  people ended; the handover reads *handed over*, the copy kept until
+  `delete_after` (7 days, D-A3). A commit whose answer is lost is asked again
+  with the same `switch_id` and answers as the first time; after the deadline
+  it is 409.
+- **After the commit**, here: the people imported (the users of role
+  workspace with the hash of their password and their two-step secret, the
+  step of its last code and the salted recovery codes: the same password and
+  the same app; a name this machine has already arrives as
+  `<name>.<workspace>`, said in the job and in the banner), the members, roles
+  and custom roles, the schedules of the instances (the same instant in this
+  machine's zone), the destinations with their keys, the git credentials, the
+  deploys, and the **extract of the provider's access log**: the workspace's
+  entries, the provider's people as the provider, other machines as «another
+  machine», each with `orig` (the SHA-256 of its line there, the `prev` of the
+  next one: the provider can show it is in its log) and a head with the period
+  and the provider's `verify()`, kept apart from this machine's own log
+  (`/var/lib/omniacli/access-archive/<workspace>-<moment>.jsonl`, 600). Its
+  names released, its crons on again by id, the stop measured through its
+  names, from the begin to the first 200 («Without service for N s»), the
+  claim's key, the sealed secrets and the session deleted.
+- **Going back.** Anything that fails before the commit asks the provider to
+  **abort** (its databases started again where they stopped, Odoo started,
+  the maintenance page taken away at its first 200, the schedules on, the
+  dumps deleted, the names served there again, *ready* again); here the
+  instances stop, a database that took the writes is emptied (Retry copies it
+  again) and nothing is imported. The provider not answering: *interrupted*,
+  and **Retry** asks it how the switch ended, then finishes here (committed
+  there) or goes back. The deadline passed with neither commit nor abort, the
+  provider aborts by itself (its look every minute) and a late commit is 409.
+- **At the provider's after it.** The banner says *handed over on …, a
+  stopped copy until …* (the next step deletes it); no job but the handover's
+  own runs on its instances; a person of the workspace who logs in here
+  reads, after the password, «Your workspace moved to another machine. Ask
+  your administrator for the new address.», and gets no session.
+
+Routes: `POST /api/handover/v1/<id>/switch/begin|commit|abort`,
+`GET /api/handover/v1/<id>/switch|secrets` (the session of the claim), and on
+the customer's machine `POST /api/handover/<id>/switch` (the name written).
+Purge: `/var/lib/omniacli/access-archive`. Not built yet: the 301 of the
+provider's own names (a workspace without a domain of the customer's passes
+no name), the state of its CI, the tool of MCP and REST of the switch (step 10).
+
+Measured on the lab pair (24/11/2026; lab3 the provider, its portal on a name
+of a test CA; lab4 behind a simulated NAT router that sends everything to lab3
+from 172.30.0.24 and forwards only that address's 80 and 443 to it): a
+workspace on the customer's domain with its own certificate, two instances (a
+database of its own, one on the machine's cluster), two people (one with
+two-step verification), a token, a schedule, an SFTP destination, a git
+credential; a user `anna` on lab4 already. Probed through lab3's nginx every
+100 ms on both names, the switch went without service for **30.1 s and 28.4
+s**, 452 answers each, only 200 and 503 (0 × 502); the job of lab4 said
+«Without service for 30.9 s». A partner written on lab3 10 s before the click
+was on lab4 in both databases; on lab4 `bruno` logged in with its password of
+lab3 and a code of the app it set up at lab3, `anna` of lab3 as `anna.hv8`
+with its password (lab4's own `anna` untouched), and no token passed; on
+lab3 no container of the workspace ran and `bruno` read the text above at
+the login. An instance made not to start on lab4: after its 300 s the switch
+went back, both instances 200 on lab3 again (321.7 s of 503, 0 × 502), its
+database of its own emptied on lab4 and copied again at Retry. lab4 cut from
+lab3 once frozen: lab4 said *interrupted*; lab3 aborted by itself 61 s past
+its deadline (663.6 s of 503, 0 × 502, then 200); a late commit was 409
+(«expired») and Retry on lab4 went back. A commit whose answer lab3 dropped
+for 45 s: lab4 asked again twice (a read timeout at 30 s, a connect timeout)
+and the third answer was the same switch, committed once on lab3.
 
 ### Modules from the catalogs
 
