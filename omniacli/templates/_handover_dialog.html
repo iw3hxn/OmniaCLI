@@ -94,6 +94,7 @@
     plan2: {{ _("With the code the customer copies on its machine what you chose. Here nothing stops.") | tojson }},
     plan2Restart: {{ _("Now, at Prepare, the database of {names} restarts once to open its port for the copy: Odoo there loses its connections for a few seconds. Then, while the customer copies, nothing stops here.") | tojson }},
     plan3: {{ _("When the customer chooses Switch to this machine, the {n} productions here stop, with the maintenance page, for about {time}.") | tojson }},
+    plan3One: {{ _("When the customer chooses Switch to this machine, the production here stops, with the maintenance page, for about {time}.") | tojson }},
     plan4: {{ _("From then on {ws} here is a stopped copy: no instance, no backup, no user of the customer comes in from this panel any more.") | tojson }},
     plan5: {{ _("{days} days after the switch the copy and its backups here are deleted (for a switch today: on {day}). Before, with Delete the copy now…, when you want.") | tojson }},
     plan6: {{ _("For at most {days} days after the switch this machine passes the customer's names to its machine: the traffic of whoever still has the old DNS passes through here, decrypted and encrypted again.") | tojson }},
@@ -174,7 +175,7 @@
     const slowest = Math.max(60, ...picked.map((r) => r.kind === "dedicated" ? 60 : 30 + 3 * (r.database || 0) / (22 * 1048576)));
     const restarts = picked.filter((r) => r.restarts).map((r) => r.server).join(", ");
     const lines = [fill(T.plan1, {expires: day(data.expires)}), restarts ? fill(T.plan2Restart, {names: restarts}) : T.plan2,
-      fill(T.plan3, {n: picked.length, time: span(slowest)}), fill(T.plan4, {ws: WS}),
+      fill(picked.length === 1 ? T.plan3One : T.plan3, {n: picked.length, time: span(slowest)}), fill(T.plan4, {ws: WS}),
       fill(T.plan5, {days: data.copy_days, day: day(data.delete_on)}), fill(T.plan6, {days: data.copy_days}),
       fill(T.plan7, {ws: WS}), fill(T.plan8, {days: data.copy_days})];
     of("hv-plan").replaceChildren(...lines.map((t) => el("li", {textContent: t})));

@@ -124,6 +124,7 @@ def test_the_purge_takes_the_handovers_away():
 # --- the provider's side ----------------------------------------------------------------------------------------
 
 MB = 1 << 20
+GB_ = 1 << 30
 
 
 class Root:
@@ -461,6 +462,30 @@ async def test_the_customer_reads_the_code_and_nothing_changes(customer, provide
         assert bad.status_code == 400 and bad.json()["error"] == "Il codice non è valido"
     # reading claims nothing there
     assert handover.Out(env["settings"].jobs_dir.parent).state("acme")["phase"] == "prepared"
+
+
+async def test_a_few_hundred_megabytes_not_promised_receive_a_small_workspace(customer, provider, env, monkeypatch):
+    """Carlo's lab2 on 24/11/2026: 0.3 GB of its real disk not promised to other workspaces, 22 MB to receive; the
+    room was read as quick_room's whole GB less 10 % («0 MB free»), and Receive was off. It is the bytes now."""
+    code = await prepare(provider)
+    far = provider.far_settings
+    storage = next(iter(far.storage_roots))
+
+    async def space():
+        return {"roots": [{"root": storage, "device": "d", "total": 900 * GB_, "free": 300 * MB, "images": {}}]}
+    monkeypatch.setattr(workspaceops, "space", space)
+    async with customer as c:
+        read = (await c.post("/api/handover/read", headers={"Authorization": AUTH, "Origin": "http://far.test"},
+                             json={"code": code})).json()
+        assert read["checks"]["free"] == 300 * MB and read["checks"]["fits"] is True
+        assert read["checks"]["total"] < 300 * MB
+
+        async def full():
+            return {"roots": [{"root": storage, "device": "d", "total": 900 * GB_, "free": 1024, "images": {}}]}
+        monkeypatch.setattr(workspaceops, "space", full)
+        read = (await c.post("/api/handover/read", headers={"Authorization": AUTH, "Origin": "http://far.test"},
+                             json={"code": code})).json()
+        assert read["checks"]["fits"] is False
 
 
 async def test_a_cancel_from_the_customer_tells_the_provider(customer, provider, env):

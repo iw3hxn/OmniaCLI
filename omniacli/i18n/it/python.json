@@ -1924,7 +1924,7 @@
  "{name}: {free} MiB free here, not enough": "{name}: qui ci sono {free} MiB liberi, non bastano",
  "{name}: {free} MiB free here, not enough for {size} MiB": "{name}: qui ci sono {free} MiB liberi, non bastano per {size} MiB",
  "{name}: {size} of {length} bytes downloaded": "{name}: scaricati {size} di {length} byte",
- "{need} GB are to be received, this machine has {free} GB free": "Si ricevono {need} GB, questa macchina ne ha {free} liberi",
+ "{need} GB are to be received, this machine has {free} GB free and not promised to other workspaces": "Si ricevono {need} GB, questa macchina ne ha {free} liberi e non promessi ad altri workspace",
  "{n} aliases moved onto {domain}": "{n} alias spostati su {domain}",
  "{n} aliases without a mailbox (more than {most})": "{n} alias senza casella (più di {most})",
  "{n} companies on {domain}": "{n} aziende su {domain}",

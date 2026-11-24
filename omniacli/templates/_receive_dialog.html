@@ -58,7 +58,7 @@
     cluster: {{ _("a database on the provider's cluster: it passes at the switch, dumped and restored here") | tojson }},
     people: {{ _("{n} users of the workspace and {r} custom roles pass at the switch, with their password and their two-step verification; {p} passkeys are registered again here.") | tojson }},
     room: {{ _("{total} to receive · on this machine {free} free") | tojson }},
-    noRoom: {{ _("{total} to receive, this machine has {free} free: Receive is off.") | tojson }},
+    noRoom: {{ _("{total} to receive, this machine has {free} free and not promised to other workspaces: Receive is off.") | tojson }},
     taken: {{ _("This machine has a workspace {ws} already: it arrives as {name}.") | tojson }},
     reached: {{ _("Reached from outside on the ports 80 and 443: no. It is needed for the names and the certificates. The copy is made the same; before the switch it is checked again.") | tojson }},
     reachedOk: {{ _("Reached from outside on the ports 80 and 443: yes.") | tojson }},

@@ -6156,6 +6156,13 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 await store_workspaces({**settings.workspaces, name: dataclasses.replace(ws, main=QUICK_INSTANCE)})
         return {**made, "workspace": name, "server": workspaceops.server_name(settings.workspaces[name], QUICK_INSTANCE)}
 
+    def receive_room(found: dict | None) -> int | None:
+        """The bytes a workspace received here may fill on the first storage: its real disk's free room not promised
+        to the other workspaces, to the byte (quick_room's GB, rounded down and less 10 %, read 0.3 GB as none)."""
+        storage = next(iter(settings.storage_roots), None)
+        room = workspaceops.room(found, settings.workspaces, storage, None) if found and storage else None
+        return int(room["allowed"]) if room else None
+
     def quick_room(found: dict | None) -> int:
         """The disk a workspace made here by itself gets, in GB: what the real
         disk of the first storage allows, at most QUICK_DISK_GB."""
@@ -24955,7 +24962,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             space = await workspaceops.space()
         except workspaceops.SpaceError:
             space = None
-        free = quick_room(space) * workspaceops.GB if space else None
+        free = receive_room(space) if space else None
         templates = await asyncio.to_thread(workspaceops.templates)
         rows = []
         for item in offer.get("items") or []:
@@ -25124,10 +25131,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     raise JobFailed(f"{label} hands over with protocol {needs.get('protocol')}, this machine reads "
                                     f"{handover.PROTOCOL}: update OmniaCLI on the older of the two")
                 with contextlib.suppress(workspaceops.SpaceError):
-                    free = quick_room(await workspaceops.space()) * workspaceops.GB
-                    if name not in settings.workspaces and free < total:
+                    free = receive_room(await workspaceops.space())
+                    if name not in settings.workspaces and free is not None and free < total:
                         raise JobFailed(f"{total / workspaceops.GB:.1f} GB are to be received, this machine has "
-                                        f"{free / workspaceops.GB:.1f} GB free")
+                                        f"{free / workspaceops.GB:.1f} GB free and not promised to other workspaces")
                 job.log(f"Instances: {len(items)}, {total / workspaceops.GB:.2f} GB to receive while everything "
                         f"runs at {label}'s")
                 await handover_post(client, hid, auth, url, label, "receiving", 0, total)
