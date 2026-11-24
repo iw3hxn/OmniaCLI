@@ -810,6 +810,10 @@ def allow(major: str, spec: dict) -> dict:
     if why:
         raise ClusterError(why)
     if src.listening() is None and not spec.get("restart"):
+        if spec.get("arrives") and ARRIVE_FROM.fullmatch(link):
+            # the customer's Receive restarts nothing at the provider's: its Prepare opened the port (AD-008)
+            raise ClusterError(f"the PostgreSQL of {src.name} does not listen for the copy: the provider makes the "
+                               "code again (Redo the code…), which opens its port")
         raise ClusterError(src.restart_refused())
     listen = src.listen_on([str(spec.get("reached_as") or "")])
     envs = src.environments()

@@ -139,7 +139,11 @@ quelli dell'esempio di Cliente1, letti prima di aprire il dialogo:
 
 **Passo 2 — Riepilogo, «cosa succederà».** Un elenco numerato, le date calcolate dal giorno di oggi:
 1. «Ti diamo un codice. Vale fino al 26/11/2026 10:00 (72 ore) e una volta sola.»
-2. «Con il codice, il cliente copia sulla sua macchina quello che hai scelto. Qui non si ferma niente.»
+2. «Con il codice, il cliente copia sulla sua macchina quello che hai scelto. Qui non si ferma niente.» Se un database
+   dedicato scelto non è ancora in ascolto su una porta: «Adesso, a Prepara, il database di `cliente1-erp` si riavvia
+   una volta per aprire la sua porta alla copia: Odoo lì perde le connessioni per qualche secondo. Poi, mentre il
+   cliente copia, qui non si ferma niente.» (correzione del passo 7, 24/11/2026: il riavvio avviene al clic del
+   fornitore, mai alla Ricevi del cliente; il title del primario lo dice).
 3. «Quando il cliente sceglie **Passa a questa macchina**, le 2 produzioni qui si fermano, con la pagina di
    manutenzione, per circa 3 minuti (la più lenta, `cliente1-shop`).» Con D-A4 alternativa, la frase dice «quando tu
    scegli…».
@@ -461,7 +465,7 @@ capo. Completa e Torna si fanno anche da telefono. Niente scorrimento orizzontal
 
 | Pulsante | Dove | Tipo | `title` |
 |---|---|---|---|
-| Consegna al cliente… | Limiti e disco › Dove vive | secondario | «Prepara la consegna di questo workspace a un OmniaCLI del cliente: scegli cosa passa, poi ricevi un codice. Qui non si ferma niente finché il cliente non passa alla sua macchina.» |
+| Consegna al cliente… | Limiti e disco › Dove vive | secondario | «Prepara la consegna di questo workspace a un OmniaCLI del cliente: scegli cosa passa, poi ricevi un codice. Il riepilogo dice cosa si ferma qui e quando.» |
 | Prepara la consegna… | dialogo, passo 2 | primario del passo | «Chiede il nome del workspace e crea il codice, valido 72 ore e una volta sola. Con il nome confermi che dopo il passaggio il workspace lascia questa macchina e si cancella il giorno scritto sopra.» |
 | Copia | dialogo, passo 3 | primario del passo | «Copia il codice negli appunti. Non si vedrà più.» |
 | Rifai il codice… | banner | secondario | «Crea un codice nuovo; quello di prima smette di valere. Quello che il cliente ha già copiato resta valido.» |

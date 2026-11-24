@@ -429,7 +429,8 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
             if scope_of(ctx):
                 # a working copy that is not there says its folder: a workspace's token reads …/<its last part>
                 result[role] = _NO_PATHS.data(result[role])
-        result["last_jobs"] = [job_dict(ctx, j) for j in filter_jobs(jobs.recent(len(jobs.jobs)), server_name)[:5]]
+        result["last_jobs"] = [job_dict(ctx, j) for j in filter_jobs(jobs.recent(len(jobs.jobs)), server_name)
+                               if job_seen(ctx, j)][:5]
         return result
 
     @server.tool()
@@ -776,7 +777,8 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
             errors = (await log_lines(inst, 30, True))["lines"]
         except ToolError as exc:
             errors = [str(exc)]
-        recent = [j for j in filter_jobs(jobs.recent(len(jobs.jobs)), server_name) if inst.key in j.instances][:5]
+        recent = [j for j in filter_jobs(jobs.recent(len(jobs.jobs)), server_name)
+                  if inst.key in j.instances and job_seen(ctx, j)][:5]
         series = sampler.series(inst.key)
         folder = settings.backup_dir / inst.server / inst.role
         backups = backups_of(inst, 1)

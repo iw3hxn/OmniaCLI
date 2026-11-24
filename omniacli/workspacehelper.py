@@ -244,6 +244,11 @@ take such an instance too (its Odoo verifies its own database's certificate
 and the replica's). machine-db-replica-unlisten: the port closed again and
 the override gone, the database's container made again, once it has no
 replica (Close the port… on the instance's row of the Database tab).
+machine-db-replica-listen <workspace>.<storage>.<instance> ({"reached_as"}
+on the input): the port opened alone, over TLS for that name, its container
+made again once (the seconds), reached from no machine until a replica is
+let in: the handover of a workspace opens it at Prepare, on the provider's
+click, so that the customer's Receive restarts nothing there (AD-008).
 
 The return after a promotion (UX-011 §A). machine-db-replica-return, on the
 machine that hosts the promoted copy: facts, allow (the cluster it
@@ -3540,6 +3545,27 @@ def machine_db_replica_unlisten(key: str) -> dict:
         db_firewall()
 
 
+def machine_db_replica_listen(key: str) -> dict:
+    """machine-db-replica-listen <workspace>.<storage>.<instance>, {"reached_as": the name the other machine
+    reaches this one by} on the input: the dedicated database of an instance listens over TLS on a port of this
+    machine, reached from no other machine yet (the firewall lets an address in with machine-db-replica-allow);
+    its container made again once when it did not listen, "restarted_s" the seconds, None when it did."""
+    if not managedreplica.is_dedicated(key):
+        raise HelperError("machine-db-replica-listen <workspace>.<storage>.<instance>")
+    spec = _input_json("a port")
+
+    def listen() -> dict:
+        src = managedreplica.source(key)
+        if src.refusal():
+            raise machinedb.ClusterError(src.refusal())
+        found = src.listen_on([str(spec.get("reached_as") or "")])
+        return {"port": found.get("port"), "restarted_s": found.get("restarted_s")}
+    try:
+        return _cluster(listen)
+    finally:
+        db_firewall()
+
+
 def machine_db_replica_replaced(major: str) -> dict:
     return _cluster(managedreplica.replaced, major)
 
@@ -5576,6 +5602,7 @@ ACTIONS = {"disk": (disk, 3), "drop": (drop, 2), "limits": (limits, 3), "create"
            "machine-db-replica-grant": (machine_db_replica_grant, 3), "machine-db-moved": (machine_db_moved, 3),
            "machine-db-replica-lent": (machine_db_replica_lent, 1),
            "machine-db-replica-unlisten": (machine_db_replica_unlisten, 1),
+           "machine-db-replica-listen": (machine_db_replica_listen, 1),
            "enterprise-sync": (enterprise_sync, 1), "enterprise": (enterprise_switch, 4),
            "relay-facts": (relay_facts, 0), "relay-host": (relay_host, 1), "relay-unhost": (relay_unhost, 1),
            "relay-hosted": (relay_hosted, 0), "relay-key": (relay_key, 1), "relay-tunnel": (relay_tunnel, 2)}

@@ -3748,8 +3748,10 @@ not a link below admin):
   last backup, the people (they pass at the switch with their password and
   their two-step verification; a passkey is registered again: it is bound to
   this panel's address), the tokens and OAuth accesses that do not pass, the
-  total. *2 Summary*: the code's expiry, what stops and for how long, the copy
-  kept 7 days after the switch, the names this machine passes on decrypted for
+  total. *2 Summary*: the code's expiry, what stops and for how long (a
+  database of its own that does not listen on a port yet restarts once, at
+  Prepare, on this click: named in the summary and in the title of the
+  button that prepares), the copy kept 7 days after the switch, the names this machine passes on decrypted for
   at most 7 days (AD-012, Carlo 23/11/2026), a user name the customer has
   already arriving as `<name>.<workspace>`. *3 Code*: **Prepare the
   handover…** asks the workspace's name and shows the code **once**: one line,
@@ -3764,7 +3766,19 @@ not a link below admin):
   its hash here); another key gets 409. A wrong id or secret is always the same
   401 («the code is not valid», in the failed-access log); 10 failures in 10
   minutes from an address: 429. Cancelled or expired, the right secret (or
-  the session) reads why (410), and reaches nothing else.
+  the session) reads why (410), and reaches nothing else. Redo retires the
+  code and the session of before, kept as their hashes: they read «made anew»
+  (410) and are **never a failed try**, so the customer's machine that asks
+  every minute with them is not blocked from its address when the new code
+  arrives, hours later.
+- Prepare opens the port of each database of its own chosen
+  (`workspace-helper machine-db-replica-listen`: over TLS, for this panel's
+  name, reached by no machine yet), its container made again once: the job
+  *Handover of <ws>: the databases opened for the copy* says the seconds.
+  Redo opens it again on its click when it was closed meanwhile (its
+  question says so). The customer's Receive restarts nothing here: its
+  allow asks no restart, and a database that does not listen is refused in
+  words (the provider makes the code again).
 - The banner of the workspace's page says where it is: *prepared* (the code's
   expiry), *receiving* (its percent, the address and the print of the key of
   the machine that claimed it), *ready*, *expired*. **Redo the code…** (a new
@@ -3773,7 +3787,13 @@ not a link below admin):
   (the code stops; the database closed again; the customer's machine deletes
   what it copied at its next look). The list of the workspaces says the same
   word in State, no button. A workspace with a handover under way is not
-  deleted, nor prepared again over an expired one: cancel it first.
+  deleted, nor prepared again over an expired one: cancel it first. Its
+  instances chosen are **frozen** from Prepare until the handover is
+  cancelled (an expired one too: the customer's machine still holds its
+  copy): not moved to another machine, deleted, renamed, given a test
+  environment, nor their database moved between the cluster and one of
+  their own («… is in the handover of … under way: Cancel the handover…
+  first»). They keep running: backups, updates and restarts go on.
 - What can pass now: a production of Docker Compose without a test
   environment, with a database of its own or on the machine's cluster. Each
   other one says why: a staging (made again from its production there), a
@@ -3804,11 +3824,19 @@ not a link below admin):
   own followed from the provider's published port (`ArrivePlace`; the
   provider lets in, for this handover only, the one address the customer's
   machine called from, read there and never said by it; the connection goes
-  out from the customer). It ends **ready**: the banner says how far the
+  out from the customer). Every call of the handover goes **over IPv4**
+  (the pin's check and the client bind an IPv4 address): the database is let
+  in for one IPv4 address, so a dual-stack machine reaching the provider over
+  IPv6 would have been refused at the allow; a panel of the provider without
+  an IPv4 address is refused in words when the code is read, an IPv6 caller
+  in words at the allow. When the machine's connections leave from more than
+  one public address (a NAT with a pool), the copy of the database times out
+  and the job says so, with the address the provider let in. It ends **ready**: the banner says how far the
   database is behind and when the files' last round was; every minute the
   machine asks the provider whether the handover still holds. Cancelled there:
   what it copied is taken away; expired, made anew, or a certificate that is
-  no longer the pinned one: *out of step*, with why. **Recover a workspace…**
+  no longer the pinned one: *out of step*, with why (made anew: no
+  **Retry**, which would use the code of before). **Recover a workspace…**
   with a new code of the same handover goes on from what is here (a round
   copies what changed; a database whose port was closed meanwhile is copied
   again). **Cancel the reception…** takes away what the reception made (the
@@ -3843,6 +3871,28 @@ closed the database within its minute, lab4 said why; Redo, then Recover a
 workspace… with the new code went on with round 1 (0 files to copy). The
 jobs of lab4 (9 of them, in Italian and in English) and its access log named
 nothing of lab3.
+
+Measured again after the review of step 7 (24/11/2026), lab4 behind a real
+NAT: its traffic to lab3 translated to 172.30.0.24 (SNAT), nothing from lab3
+coming in; a workspace of 412 commits (3.3 MB of code, 2,069 files), 300 MB
+of filestore and a 300 MB last backup, its database of its own. Prepare
+restarted that database once, on its click (0.4 s in the job, its container
+started at that second and never again); 3,413 probes of Odoo's /web/login
+every 100 ms from Prepare to the last Receive, all 200. The first Receive
+copied the trees (3.3 + 300.1 + 300.6 MB in 6 s) and then timed out on the
+database, saying why: the provider had let in 172.30.0.24, the address of
+the HTTPS calls, while Docker's own masquerade of the copy's network, put
+above the SNAT, made its connection leave from 172.30.0.14 (two public
+addresses, as behind a NAT with a pool). With everything leaving from
+172.30.0.24, Retry was ready in 8 s with nothing restarted there,
+`pg_stat_replication` on lab3 saying 172.30.0.24 streaming. Redo, then 12
+commits and 20 MB of files more and a row written on lab3: lab4 said «made
+anew» within 25 s, without Retry, and kept asking every minute; 11 minutes
+later (11 looks) lab3's log of the failed accesses had nothing from lab4 and
+Recover a workspace… with the new code, from the page, went on in 4.6 s:
+round 3 copied 97 files, 20.3 MB (77 files and 0.3 MB of code, 20 files and
+20.0 MB of filestore, 0 of the backup), and the row was read on lab4's copy.
+Cancel on lab3: lab4 had taken everything away 33 s later.
 
 ### Modules from the catalogs
 

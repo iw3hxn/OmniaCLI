@@ -4115,6 +4115,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             for busy_name in {original, name} - {None}:
                 if server_busy(busy_name):
                     return refuse(f"A job is running on {busy_name}: try again when it ends")
+                if handover_frozen(busy_name):
+                    return refuse(handover_frozen(busy_name))
             server_data = dict(payload.get("server") or {})
             # the status is never taken from the form: a save makes a draft,
             # only passing checks make it active
@@ -4332,6 +4334,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 return refuse(f"No server {name}", status.HTTP_404_NOT_FOUND)
             if server_busy(name):
                 return refuse(f"A job is running on {name}: try again when it ends")
+            if handover_frozen(name):
+                return refuse(handover_frozen(name))
             # an instance a workspace made: its line alone would leave its
             # containers running and its data on the disk (18/11/2026: a
             # staging taken off here kept 2 containers up). It is deleted
@@ -7309,6 +7313,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return refuse(why, status.HTTP_403_FORBIDDEN)
         if server_busy(name):
             return refuse(f"A job is running on {name}: try again when it ends")
+        if handover_frozen(name):
+            return refuse(handover_frozen(name))
         instance = name[len(prefix):]
         # its database on the cluster of a linked OmniaCLI (read before its record goes): that machine takes it back
         production = settings.servers[name].production
@@ -21215,6 +21221,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if moves.state(inst.server).get("state") == "returned":
             why.append(f"{inst.server} came back from {moves.state(inst.server).get('link')}, which keeps its copy "
                        "stopped: Delete the copy there… first")
+        if handover_frozen(inst.server):
+            why.append(handover_frozen(inst.server))
         if busy and server_busy(inst.server):
             why.append(f"A job is running on {inst.server}: wait for it")
         return why
@@ -23969,6 +23977,16 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                 status_code=status.HTTP_410_GONE)
         return None
 
+    def handover_redone(state: dict):
+        """The refusal of a code or a session a Redo retired: why (410, phase «redone»), never a failed try, so that
+        the customer's machine that still holds it is not blocked from its address when the new code arrives."""
+        refused = handover_phase_refusal(state)
+        if refused is not None:
+            return refused
+        return JSONResponse({"error": "The provider made a new code for this handover: Recover a workspace… with "
+                                      "the new code goes on from what is here", "phase": "redone"},
+                            status_code=status.HTTP_410_GONE)
+
     def handover_by_code(request: Request, code: str):
         """(workspace, state, the code's parts) of the code a request carries, or the refusal: always the same 401
         for a wrong id or secret; the true reason (expired, cancelled) with the right secret only."""
@@ -23985,6 +24003,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             refused = handover_phase_refusal(found[1])
             if refused is not None:
                 return refused
+        if (found is not None and not handover.same(str(found[1].get("code_hash") or ""), parts["s"])
+                and handover.retired(found[1], "old_codes", parts["s"])):
+            return handover_redone(found[1])
         if found is None or not handover.same(str(found[1].get("code_hash") or ""), parts["s"]):
             return handover_refuse("The code is not valid", 401, ip, f"a handover code refused: {request.url.path}")
         return found[0], found[1], parts
@@ -24003,6 +24024,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             refused = handover_phase_refusal(found[1])
             if refused is not None:
                 return refused
+        if (found is not None and scheme.lower() == "bearer"
+                and not handover.same(str(found[1].get("session_hash") or ""), token.strip())
+                and handover.retired(found[1], "old_sessions", token.strip())):
+            return handover_redone(found[1])
         if (found is None or scheme.lower() != "bearer"
                 or not handover.same(str(found[1].get("session_hash") or ""), token.strip())):
             return handover_refuse("The session of the handover is not valid: read the code again", 401, ip,
@@ -24067,7 +24092,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 "claim": {"ip": claim.get("ip"), "fingerprint": claim.get("fingerprint"), "at": claim.get("at")}
                 if claim else None, "receiver": state.get("receiver") or {},
                 "cancelled_at": state.get("cancelled_at"), "cancelled_by": state.get("cancelled_by"),
-                "delete_on": handover.iso(float(state.get("expires") or 0) + handover.COPY_DAYS * 86400)}
+                "delete_on": handover.iso(float(state.get("expires") or 0) + handover.COPY_DAYS * 86400),
+                # the databases Redo restarts once, to open their port again (closed meanwhile)
+                "restarts": [s for s, _k in handover_closed(state.get("instances") or [])]
+                if phase != "cancelled" else []}
 
     def handover_people(ws: Workspace) -> dict:
         """Who of the workspace passes (its users of role workspace) and what of them does not (AD-009): the
@@ -24132,6 +24160,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if not refused and inst is not None:
                 row.update(await handover_sizes(ws, instance, inst))
                 row["busy"] = server_busy(server)
+                # a database of its own that does not listen yet restarts once at Prepare (handover_listen)
+                row["restarts"] = bool(handover_closed([server]))
                 if row["busy"]:
                     row["why"] = i18n.tr(lang, f"{server} has a job under way: wait for it to end")
             rows.append(row)
@@ -24167,6 +24197,59 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     def handover_active(state: dict) -> bool:
         return handover.phase_of(state) in ("prepared", "receiving", "ready")
 
+    def handover_closed(servers) -> list[tuple[str, str]]:
+        """(server, key) of the databases of their own among servers that do not listen on a port yet: Prepare (or
+        Redo) opens them, restarting each once, so that the customer's Receive restarts nothing here."""
+        found = []
+        for server in servers:
+            srv = settings.servers.get(server)
+            inst = srv.production if srv is not None else None
+            key = dedicated_key(inst) if inst is not None else ""
+            if key and not machinedb.listening(dedicated_folder(inst)):
+                found.append((server, key))
+        return found
+
+    async def handover_listen(ws: Workspace, servers, url: str, source: str) -> str:
+        """The port of each database of its own among servers opened (machine-db-replica-listen), reached from no
+        machine until the customer's is let in: a job that says the seconds each did not answer; why not, or ""."""
+        closed = handover_closed(servers)
+        if not closed:
+            return ""
+        host = urlsplit(url).hostname or ""
+
+        async def action(job):
+            job.log(f"--- the databases of their own of {ws.name} open a port over TLS for the customer's copy, once: "
+                    "each restarts, Odoo loses its connections to it for those seconds and takes them again")
+            for server, key in closed:
+                got = await workspaceops._helper(job, "machine-db-replica-listen", key, timeout=MACHINE_TIMEOUT,
+                                                 input=json.dumps({"reached_as": host}).encode())
+                if got.get("restarted_s") is not None:
+                    job.log(f"The database of {server}: port {got.get('port')} opened, reached by no machine yet; "
+                            f"{got['restarted_s']} s without answers")
+                else:
+                    job.log(f"The database of {server} listened already on port {got.get('port')}: not restarted")
+                job.result = {**job.result, "restarted": {**(job.result.get("restarted") or {}),
+                                                          server: got.get("restarted_s")}}
+        job = jobs.submit(f"Handover of {ws.name}: the databases opened for the copy",
+                          [f"{s}/production" for s, _k in closed], source, action, workspace=ws.name)
+        await handover_wait(job, MACHINE_TIMEOUT)
+        if job.status != SUCCESS:
+            return (f"The database of {closed[0][0]} did not open its port for the copy: "
+                    f"{(job.error or 'it did not end').splitlines()[-1]}")
+        return ""
+
+    def handover_frozen(server: str | None) -> str:
+        """Why server is not moved, deleted, renamed or given a test or its database elsewhere now: it is in a
+        handover under way (prepared, receiving, ready, or expired and not cancelled: the customer's machine still
+        holds its copy), whose customer copies it as it is; "" when it may."""
+        if not server:
+            return ""
+        for workspace, state in handovers_out.all().items():
+            if server in (state.get("instances") or []) and handover.phase_of(state) not in ("", "cancelled"):
+                return (f"{server} is in the handover of {workspace} under way: the customer's machine copies it as it "
+                        "is. Cancel the handover… first")
+        return ""
+
     @app.post("/api/workspaces/{workspace}/handover")
     async def handover_prepare(request: Request, workspace: str, payload: dict = Body(...),
                                me: Principal = Depends(current_user)):
@@ -24191,6 +24274,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if busy:
             return refuse(f"{busy[0]} has a job under way: wait for it to end")
         secret, pin, why = await handover_code(url)
+        if why:
+            return refuse(why)
+        # the databases of their own restart here once, now, on this click (the summary said so), never later at a
+        # moment the customer picks
+        why = await handover_listen(ws, chosen, url, f"manual: {me}")
         if why:
             return refuse(why)
         hid, at = handover.new_id(), handover.now()
@@ -24219,8 +24307,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         secret, pin, why = await handover_code(url)
         if why:
             return refuse(why)
+        why = await handover_listen(ws, state.get("instances") or [], url, f"manual: {me}")
+        if why:
+            return refuse(why)
         at = handover.now()
-        state = handovers_out.save(ws.name, {**state, "code_hash": handover.hashed(secret), "pin": pin, "url": url,
+        # the code and the session of before retired, kept as hashes: the machine that holds them reads «made anew»
+        # (410) at its next look and stops, and is not blocked from its address when the new code arrives
+        state = handovers_out.save(ws.name, {**state, **handover.retire(state),
+                                             "code_hash": handover.hashed(secret), "pin": pin, "url": url,
                                              "expires": at + handover.CODE_HOURS * 3600, "session_hash": "",
                                              "was_code_hash": "", "was_session_hash": "",
                                              "claim": None, "phase": "prepared", "redone": handover.iso(at)})
@@ -24470,9 +24564,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if range_ and not match:
             return refuse("Only a range from a byte to the end (bytes=<n>-) is served",
                           status.HTTP_416_RANGE_NOT_SATISFIABLE)
-        if end.only is not None and treesync.safe_rel(path) not in end.only:
-            return refuse(f"{path} is not in the tree", status.HTTP_404_NOT_FOUND)
         try:
+            # of the backups, the last one only (handover_end): any other name, or no path under the tree, 404
+            if end.only is not None and treesync.safe_rel(path) not in end.only:
+                raise treesync.TreeError(f"{path} is not in the tree")
             fh, st = await asyncio.to_thread(treesync.open_file, end.root, path)
         except treesync.TreeError as exc:
             return refuse(str(exc), status.HTTP_404_NOT_FOUND)
@@ -24519,7 +24614,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         server, key = handover_key_of(state, instance, workspace)
         payload = payload if isinstance(payload, dict) else {}
         verifier = str(payload.get("verifier") or "")
-        ip = handover_ip(request)
+        ip = handover.ipv4_of(handover_ip(request))
+        if not ip:
+            # the database is let in for one IPv4 address (machinedb.address): an IPv6 caller is told, in words
+            return refuse(f"This machine called over IPv6 ({handover_ip(request)}): the database of {server} is let in "
+                          "for one IPv4 address only. Update OmniaCLI there: it calls over IPv4",
+                          status.HTTP_409_CONFLICT)
         rec = replica_record(key)
         if rec and rec.get("link") != f"handover:{handover_id}":
             return refuse(f"The database of {server} has a copy on another machine of the provider: one copy per "
@@ -24534,15 +24634,20 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                                  input=json.dumps({
                                                      "address": ip, "verifier": verifier, "reached_as": host,
                                                      "link": f"handover:{handover_id}", "by": "the customer",
-                                                     "cap_gb": None, "restart": True, "arrives": True}).encode())
+                                                     "cap_gb": None, "restart": False, "arrives": True}).encode())
             facts = await workspaceops.ask("machine-db-replica-facts", key, timeout=pgtuning.READ_TIMEOUT * 4)
-            job.log(f"The database of {server} let in for the customer's machine ({ip}), port "
-                    f"{allowed.get('port')} over TLS")
+            if allowed.get("restarted_s") is not None:
+                job.log(f"The database of {server} let in for the customer's machine ({ip}), port {allowed.get('port')} "
+                        f"over TLS; it restarted, {allowed['restarted_s']} s without answers")
+            else:
+                job.log(f"The database of {server} let in for the customer's machine ({ip}), port {allowed.get('port')} "
+                        "over TLS; nothing restarted")
             job.result = {**job.result, "allowed": {
                 "host": host, "port": allowed.get("port"), "ca": allowed.get("ca"),
                 "size": allowed.get("size") or facts.get("size") or 0,
                 "major": str(allowed.get("major") or facts.get("major") or ""),
-                "database": str(facts.get("database") or "")}}
+                "database": str(facts.get("database") or ""), "restarted_s": allowed.get("restarted_s"),
+                "address": ip}}
         job = jobs.submit(f"Handover of {workspace}: the database of {server} let in", [f"{server}/production"],
                           f"handover: {ip}", action, workspace=workspace)
         await handover_wait(job, MACHINE_TIMEOUT)
@@ -24631,7 +24736,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return view.text(str(text or "").replace(url, label))
 
     def handover_error(url: str, label: str, exc: BaseException) -> str:
-        if isinstance(exc, handover.PinError):
+        if isinstance(exc, (handover.PinError, handover.NoIPv4)):
             return str(exc)
         if isinstance(exc, ssl.SSLCertVerificationError) or isinstance(exc, (httpx.HTTPError, ssl.SSLError)) and (
                 "CERTIFICATE_VERIFY_FAILED" in str(exc) or "certificate" in str(exc).lower()):
@@ -24733,7 +24838,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     def handover_in_public(hid: str, state: dict) -> dict:
         keep = ("id", "phase", "workspace", "source", "provider", "job", "since", "ready_at", "error", "done",
-                "total", "rounds", "db", "expires", "fingerprint", "cancelled_by", "last_round_at", "out_since")
+                "total", "rounds", "db", "expires", "fingerprint", "cancelled_by", "last_round_at", "out_since", "stale")
         return {k: state.get(k) for k in keep if k in state}
 
     @app.post("/api/handover/receive")
@@ -24766,7 +24871,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                           lambda job: handover_receive_job(job, hid, parts, wanted, disk, me),
                           workspace=mine.get("workspace") or "")
         handovers_in.save(hid, {**mine, "id": hid, "phase": "receiving", "job": job.id,
-                                "since": mine.get("since") or handover.iso(handover.now()), "error": None})
+                                "since": mine.get("since") or handover.iso(handover.now()), "error": None, "stale": None})
         return {"job": job.id, "id": hid}
 
     def handover_progress_steps(job) -> None:
@@ -25003,7 +25108,19 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                                 timeout=managedreplica.COPY_TIMEOUT + 60)
             up = await workspaceops._helper(job, "machine-db-arrive", key, "start", timeout=MACHINE_TIMEOUT)
         except JobFailed as exc:
-            raise JobFailed(handover_said(url, label, str(exc))) from None
+            said = handover_said(url, label, str(exc))
+            if allowed.get("address") and re.search(r"timeout|timed out|could not connect|connection refused|no route",
+                                                     said, re.IGNORECASE):
+                # a NAT with a pool of addresses may send the database's connection from another one than the
+                # HTTPS calls: said with the one let in
+                said += (f". {label} let in {allowed['address']}, the address this machine's calls came from: if its "
+                         "connections leave from more than one public address (a NAT with a pool), its connection to "
+                         "the database may come from another one. Have this machine leave from one address, then Retry")
+            raise JobFailed(said) from None
+        if allowed.get("restarted_s") is not None:
+            job.log(f"At {label}'s the database restarted to let this machine in: {allowed['restarted_s']} s")
+        else:
+            job.log(f"At {label}'s nothing restarted: its database listened already")
         size = int(copied.get("size") or 0)
         job.log(f"Copied: {size >> 20} MB in {copied.get('seconds')} s, over TLS verified against the CA of {label}; "
                 f"it follows {label}, read only (started in {up.get('seconds')} s)")
@@ -25046,6 +25163,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         state = handover_in_mine(handover_id)
         if state.get("phase") not in ("failed", "ready", "out_of_step"):
             return refuse("The reception is under way: wait for its job")
+        if state.get("stale"):
+            return refuse("The provider made a new code for this handover: Recover a workspace… with the new code goes "
+                          "on from what is here")
         code = handovers_in.get_secret(handover_id, "code").decode()
         try:
             parts = handover.read_code(code)
@@ -25171,6 +25291,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         elif resp.status_code == 410 and said.get("phase") == "cancelled":
             handovers_in.update(hid, phase="cancelling", cancelled_by="provider")
             handover_in_cancel_job(hid, f"cancelled by {label}", "handover: the provider", tell=False)
+        elif (resp.status_code == 410 and said.get("phase") == "redone") or resp.status_code == 401:
+            # its code made anew there (a 410, never a failed try: it goes on looking, and learns of a cancel), or its
+            # session no longer known (a 401, a failed try there: it stops looking, not to block its own address);
+            # only a code read again goes on, so Retry (with the code of before) is not offered
+            handovers_in.update(hid, phase="out_of_step", out_since=out_since,
+                                stale="redone" if resp.status_code == 410 else "refused",
+                                error=handover_said(parts["u"], label, str(said.get("error") or "") if resp.status_code == 410
+                                                    else "The session of the handover is not valid: read the code again"))
         else:
             handovers_in.update(hid, phase="out_of_step", out_since=out_since,
                                 error=handover_said(parts["u"], label, str(said.get("error") or "")
@@ -25185,7 +25313,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 if ws is not None:
                     handover_cancel_job(ws, "its code expired", "handover: expiry", phase="expired")
         for hid, state in handovers_in.all().items():
-            if state.get("phase") in ("ready", "out_of_step"):
+            # a session the provider refused is not asked again every minute: each ask would be a failed try there
+            if state.get("phase") in ("ready", "out_of_step") and state.get("stale") != "refused":
                 await handover_look_in(hid, state)
 
     async def handover_loop() -> None:
@@ -25261,6 +25390,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if srv is None or srv.production is None or found is None:
             return refuse(f"{server} is not an instance of a workspace", status.HTTP_404_NOT_FOUND)
         ws, instance = found
+        if handover_frozen(server):
+            return refuse(handover_frozen(server))
         offer = await asyncio.to_thread(move_offer, srv.production)
         if offer["move"] != to:
             return refuse(f"{server} cannot move to " + ("the machine's cluster" if to == "machine"
@@ -25957,6 +26088,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     app.state.return_look = return_look
     app.state.moved_look = moved_look
     app.state.moved_seen = moved_seen
+    app.state.handover_look = handover_look
     app.state.cluster_archive_tick = cluster_archive_tick
 
     return app

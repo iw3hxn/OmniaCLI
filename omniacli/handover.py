@@ -27,6 +27,7 @@ import binascii
 import datetime
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import re
@@ -177,6 +178,45 @@ class PinError(Exception):
     """The provider's certificate is not the one of the code (AD-008 consequence 1)."""
 
 
+class NoIPv4(OSError):
+    """The provider's panel has no IPv4 address this machine reaches."""
+
+
+NO_IPV4 = ("The panel of the provider has no IPv4 address: a handover goes over IPv4, since the database is let in "
+           "for the one IPv4 address this machine calls from")
+
+
+def connect_v4(host: str, port: int, timeout: float) -> socket.socket:
+    """A connection to host over IPv4 only (AD-008): the address the provider reads from the customer's HTTPS calls is
+    the IPv4 one, the one its database copy leaves from too, never an IPv6 one its firewall cannot let in."""
+    try:
+        found = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
+    except socket.gaierror:
+        raise NoIPv4(NO_IPV4) from None
+    last: OSError = NoIPv4(NO_IPV4)
+    for family, kind, proto, _name, address in found:
+        sock = socket.socket(family, kind, proto)
+        sock.settimeout(timeout)
+        try:
+            sock.connect(address)
+            return sock
+        except OSError as exc:
+            sock.close()
+            last = exc
+    raise last
+
+
+def ipv4_of(address: str) -> str:
+    """The IPv4 address a request came from ("::ffff:a.b.c.d" as a.b.c.d), "" for an IPv6 one."""
+    try:
+        found = ipaddress.ip_address(str(address or ""))
+    except ValueError:
+        return ""
+    if found.version == 6 and found.ipv4_mapped is not None:
+        return str(found.ipv4_mapped)
+    return str(found) if found.version == 4 else ""
+
+
 PIN_REFUSED = "The certificate of the provider is not the one of the code: ask the provider for a new code"
 
 
@@ -185,7 +225,7 @@ def verified_pin(url: str, timeout: float = 10.0) -> str:
     name: ssl.SSLCertVerificationError for one this machine does not trust, OSError when it does not answer."""
     parts = urlsplit(url)
     host, port = parts.hostname or "", parts.port or 443
-    with socket.create_connection((host, port), timeout=timeout) as raw:
+    with connect_v4(host, port, timeout) as raw:
         with ssl.create_default_context().wrap_socket(raw, server_hostname=host) as tls:
             der = tls.getpeercert(binary_form=True)
     return spki_pin(der)
@@ -209,8 +249,10 @@ def client(url: str, pin: str, timeout: httpx.Timeout | None = None) -> httpx.As
         der = tls.getpeercert(binary_form=True) if tls is not None else None
         if not der or spki_pin(der) != pin:
             raise PinError(PIN_REFUSED)
-    return httpx.AsyncClient(base_url=url, verify=ssl.create_default_context(),
-                             timeout=timeout or httpx.Timeout(30.0, connect=10.0), event_hooks={"response": [pinned]})
+    # over IPv4 only (connect_v4): the provider lets the database in for the address these calls come from
+    transport = httpx.AsyncHTTPTransport(verify=ssl.create_default_context(), local_address="0.0.0.0")
+    return httpx.AsyncClient(base_url=url, transport=transport, timeout=timeout or httpx.Timeout(30.0, connect=10.0),
+                             event_hooks={"response": [pinned]})
 
 
 def fingerprint(text: str) -> str:
@@ -290,6 +332,27 @@ class Out:
             if state.get("id") == handover_id:
                 return workspace, state
         return None
+
+
+# the codes and sessions a Redo retired, the newest kept as their hashes: the customer's machine that still holds one
+# reads why (410 «made anew») and is never counted as a failed try (its look every minute would block its address)
+RETIRED_MOST = 20
+
+
+def retire(state: dict) -> dict:
+    """The lists of retired hashes once a Redo makes the code and the session of before stop holding."""
+    out = {}
+    for field, now_key, was_key in (("old_codes", "code_hash", "was_code_hash"),
+                                    ("old_sessions", "session_hash", "was_session_hash")):
+        found = [str(h) for h in (state.get(field) or []) if h]
+        found += [str(state[k]) for k in (now_key, was_key) if state.get(k) and str(state[k]) not in found]
+        out[field] = found[-RETIRED_MOST:]
+    return out
+
+
+def retired(state: dict, field: str, secret: str) -> bool:
+    """Whether secret is a code (field old_codes) or a session (old_sessions) a Redo retired."""
+    return any(same(str(h), secret) for h in (state.get(field) or []))
 
 
 def phase_of(state: dict, at: float | None = None) -> str:

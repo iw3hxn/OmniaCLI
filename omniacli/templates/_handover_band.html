@@ -23,7 +23,7 @@
   </span>
   <span class="hv-actions">
   {% if ho.phase in ("prepared", "expired") %}
-    <button type="button" id="handover-redo" title="{{ _('Makes a new code; the one of before stops being valid. What the customer has copied already stays valid: with the new code it goes on from there.') }}">{{ _("Redo the code…") }}</button>
+    <button type="button" id="handover-redo" data-restarts="{{ (ho.restarts or []) | join(', ') }}" title="{{ _('Makes a new code; the one of before stops being valid. What the customer has copied already stays valid: with the new code it goes on from there.') }}">{{ _("Redo the code…") }}</button>
   {% endif %}
     <button type="button" class="small danger" id="handover-cancel" title="{{ _('The code stops being valid and the customer\'s machine deletes what it copied. Here nothing changes.') }}">{{ _("Cancel the handover…") }}</button>
   </span>
@@ -52,7 +52,7 @@
   </span>
   <span class="hv-actions">
   {% if hi.job and hi.phase in ("receiving", "cancelling") %}<a class="button" href="{{ prefix }}/jobs/{{ hi.job }}" title="{{ _('Opens the job of the reception, with its steps') }}">{{ _("See the job") }} ›</a>{% endif %}
-  {% if hi.phase in ("out_of_step", "failed") %}
+  {% if hi.phase in ("out_of_step", "failed") and not hi.stale %}
     <button type="button" id="reception-retry" title="{{ _('Receives again from what was copied: only what changed since is copied. With a new code of the provider, use Recover a workspace… instead.') }}">{{ _("Retry") }}</button>
   {% endif %}
   {% if hi.phase in ("ready", "out_of_step", "failed", "receiving") %}
@@ -70,6 +70,7 @@
     cancelGo: {{ _("Cancel the handover") | tojson }},
     redoAsk: {{ _("A new code is made for the handover of {ws}: the one of before stops being valid. What the customer copied stays: with the new code it goes on from there.") | tojson }},
     redoGo: {{ _("Redo the code") | tojson }},
+    redoRestart: {{ _("The database of {names} restarts once now to open its port again: Odoo there loses its connections for a few seconds.") | tojson }},
     redoText: {{ _("Send it to the customer as a password, until {expires}.") | tojson }},
     receptionAsk: {{ _("What was copied of {ws} here is deleted, and the provider is told. At the provider's nothing changes.") | tojson }},
     receptionGo: {{ _("Cancel the reception") | tojson }},
@@ -96,7 +97,9 @@
   });
   document.getElementById("handover-redo")?.addEventListener("click", async (event) => {
     const b = event.currentTarget;
-    if (!await window.omniaAsk(fill(T.redoAsk, {ws: WS}), T.redoGo, {goTitle: b.title})) return;
+    const restarts = b.dataset.restarts || "";
+    const ask = fill(T.redoAsk, {ws: WS}) + (restarts ? " " + fill(T.redoRestart, {names: restarts}) : "");
+    if (!await window.omniaAsk(ask, T.redoGo, {goTitle: b.title})) return;
     b.disabled = true;
     const got = await post(`${base}/code`);
     b.disabled = false;

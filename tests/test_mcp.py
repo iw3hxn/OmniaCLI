@@ -301,3 +301,13 @@ async def test_a_workspace_token_reads_its_jobs_redacted(client, env):
     assert "manual: admin" not in text and "another machine" in text and "x.zip" in text
     # the machine's token reads it whole
     assert "lab9" in json.dumps(await call(client, "get_job", job_id=done.id))
+    # the provider's own job on its instance (a move's Prepare, Cancel) is in none of its lists, as on the pages
+    async def own(job):
+        job.result["customer"] = {"hidden": True}
+    hidden = client.app.state.jobs.submit("Move srv to lab9: prepared", ["srv/test"], "manual: admin", own)
+    await wait_job(client, hidden.id)
+    lists = [await call(client, "list_jobs", headers=scoped),
+             (await call(client, "server_status", headers=scoped, server_name="srv"))["last_jobs"],
+             (await call(client, "diagnose_instance", headers=scoped, server_name="srv", role="test"))["last_jobs"]]
+    assert all(done.id in json.dumps(found) and hidden.id not in json.dumps(found) for found in lists), lists
+    assert hidden.id in json.dumps((await call(client, "server_status", server_name="srv"))["last_jobs"])
