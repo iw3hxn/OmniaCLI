@@ -1081,16 +1081,28 @@ the shells, Help, About and Settings; the others are still the machine's own.
   the one before. When the machine's number is outside that, or it has a
   plugin this panel has not at the same version, its own page passes as
   before, with a line on top: «Page written by lab4 (2026.1.5513): update it to
-  see the new one», or «… the panel is older than the machine». The number is
-  read by **Try** and again when older than 10 minutes, kept in memory, and
-  read again right after an **Update OmniaCLI** asked from here.
+  see the new one», or «… the panel is older than the machine». The line is on
+  those pages only: the others look as they always did. The number is read by
+  **Try** and again when older than 10 minutes, kept in memory, and read again
+  right after an **Update OmniaCLI** asked from here; a machine that does not
+  answer is not asked again for a minute.
+- **A contract that goes back.** The highest `agent_api` each link's machine
+  said is kept (`link-agents.json` beside the links file). Once it said 1, a
+  machine that says less, or has no data for one of those pages, does not get
+  its own page shown by its word alone: this panel shows a page that says so,
+  until an administrator sets the link's pages to the machine's (below).
 - **The model.** The machine answers each page's data at
   `GET /api/pages/<page>` (to a link's token only, with the page's own role,
   its fields by name: no object, no secret); the page's script calls
   `/links/<name>/api/…` as before.
-- **Only data.** For such a link this panel takes from the machine JSON, files
-  to save and WebSockets; an HTML or script answer is refused (and in the
-  access log), but for the pages not written here yet and the line's way back.
+- **Only data, where it is written here.** For such a link, the machine's
+  answers to `/links/<name>/api/…` and to the paths of the pages written here
+  pass only as data: JSON, text, CSV, raster images (no SVG), files to save,
+  answers without a body; an HTML or script answer is refused with a 502 (and
+  in the access log). A browser's `/api` request is asked as JSON, so the
+  machine's reason is what the person reads. **Not refused:** the pages not
+  written here yet (the instance's page, Jobs, Users, …) and their parts still
+  come as the machine writes them, HTML included, until they are moved too.
 - **The way back**: on the link's **Edit… › Advanced**, untick **Pages written
   by this panel** (`pages: machine` in the links file): the machine writes its
   own pages again, as before, without a release.

@@ -1,0 +1,19 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{# AD-017 §17.2: a page this panel draws for a linked machine whose contract went back (it said agent_api 1 or more,
+   now it says less or has no model of the page): its own HTML is not shown by its word alone -#}
+{% extends "base.html" %}
+{% block title %}{{ _("Page of {machine} not shown", machine=machine) }} · {{ brand.name }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>{{ _("Page of {machine} not shown", machine=machine) }}</h1>
+    <p>{% if no_models %}{{ _("{machine} ({version}) said it gives this panel the data of its pages, and now it does not give them.", machine=machine, version=version) }}
+      {% else %}{{ _("{machine} ({version}) said its API was at level {seen}, and now it says {now}.", machine=machine, version=version, seen=seen, now=now) }}{% endif %}</p></div>
+</div>
+<section class="panel">
+  <p style="margin-top: 0">{{ _("This panel does not show a page the machine writes itself on the machine's word alone: a machine put back to an older version, or one that is not what it says. If it was put back on purpose, an administrator of this panel can let it write its own pages again: on the link, Edit… › Advanced, untick «Pages written by this panel».") }}</p>
+  <div class="actions">
+    <a class="button primary" href="/links" title="{{ _('Opens the list of the links of this panel, where each one is changed') }}">{{ _("Open the links") }}</a>
+    <a class="button" href="/instances" title="{{ _('Opens the list of the instances you can reach') }}">{{ _("Back to the instances") }}</a>
+  </div>
+</section>
+{% endblock %}

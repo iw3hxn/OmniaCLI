@@ -102,6 +102,7 @@ case "$1" in
             /var/lib/omniacli/servers.yaml.tmp \
             /var/lib/omniacli/users.yaml /var/lib/omniacli/users.yaml.tmp \
             /var/lib/omniacli/links.yaml /var/lib/omniacli/links.yaml.tmp \
+            /var/lib/omniacli/link-agents.json /var/lib/omniacli/link-agents.json.tmp \
             /var/lib/omniacli/groups.yaml /var/lib/omniacli/groups.yaml.tmp \
             /var/lib/omniacli/options.yaml /var/lib/omniacli/options.yaml.tmp \
             /var/lib/omniacli/pullers.yaml /var/lib/omniacli/pullers.yaml.tmp \

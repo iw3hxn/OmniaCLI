@@ -22,8 +22,11 @@ away or renaming one raises the number."""
 
 from __future__ import annotations
 
+import json
+import os
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 from . import plugins
 
@@ -47,6 +50,11 @@ PLUGINS = "plugins"  # a plugin of the machine this panel has not, or at another
 # for a while, much sooner: the machine restarts with its new version
 READ_EVERY = 600
 READ_AFTER_UPDATE = 15
+# a machine that did not answer GET /api/info is not asked again before (seconds): no round trip at every page
+AGENT_DOWN = 60
+# the highest agent_api each link's machine has said, beside the links file: once 1 or more, a machine that says
+# less (or has no model of a page) does not get its own HTML shown for a page drawn here by its word alone
+SEEN_FILE = "link-agents.json"
 # a built-in plugin comes with the package: the package's agent_api answers for it, not its version
 BUILT_IN = "built-in"
 
@@ -147,9 +155,28 @@ _DATA_TYPES = frozenset({
 })
 
 
+def load_seen(path: Path) -> dict[str, int]:
+    """{link: the highest agent_api its machine said}; none yet, or unreadable, is none."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {str(k): v for k, v in data.items() if isinstance(v, int) and not isinstance(v, bool) and v > 0} \
+        if isinstance(data, dict) else {}
+
+
+def save_seen(path: Path, seen: dict[str, int]) -> None:
+    """Write it atomically, readable by its owner only (it names the links)."""
+    tmp = path.with_name(path.name + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(dict(sorted(seen.items())), indent=1) + "\n")
+    os.replace(tmp, path)
+
+
 def is_data(content_type: str, disposition: str, has_body: bool = True) -> bool:
     """Whether an answer of a machine passes for a page drawn here: JSON and the other data types, a file to save
-    (Content-Disposition: attachment), an answer without a body (a redirect, 204)."""
+    (Content-Disposition: attachment), an answer without a body (a redirect, 204, 304)."""
     media = content_type.split(";", 1)[0].strip().lower()
     if disposition.strip().lower().startswith("attachment"):
         return True

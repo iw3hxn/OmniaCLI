@@ -21,12 +21,12 @@
 </div>
 <section class="panel">
   <div id="shell">{{ terminal(kind) }}</div>
-  <p class="muted" style="margin: 8px 0 0; font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("Drop files on the terminal (a mail saved as .eml, a spreadsheet…, up to {size} MiB each): they are uploaded into {folder} and their path is typed, as a local terminal does; they are kept {days} days.", size=drop_max // 1048576, folder=drops, days=drop_days) }}</p>
+  <p class="muted" style="margin: 8px 0 0; font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("Drop files on the terminal (a mail saved as .eml, a spreadsheet…, up to {size} MiB each): they are uploaded into {folder} and their path is typed, as a local terminal does; they are kept {days} days.", size=(drop_max | int) // 1048576, folder=drops, days=drop_days | int) }}</p>
 </section>
 {{ console_script() }}
 <script>
 OmniaConsole.terminal(document.querySelector("#shell .console-box"), (location.protocol === "https:" ? "wss://" : "ws://")
   + location.host + "{{ prefix }}/servers/{{ instance.server }}/{{ instance.role }}/{{ kind }}/ws",
-  {upload: "{{ prefix }}/servers/{{ instance.server }}/{{ instance.role }}/{{ kind }}/upload", max: {{ drop_max }}});
+  {upload: "{{ prefix }}/servers/{{ instance.server }}/{{ instance.role }}/{{ kind }}/upload", max: {{ drop_max | int | tojson }}});
 </script>
 {% endblock %}

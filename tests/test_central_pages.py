@@ -4,6 +4,8 @@
 the panel draws itself for a link with pages: here, from the model the machine answers; the machine's own page,
 with a line on top, when the contract does not allow it; pages: machine as the way back; and a machine's HTML
 refused where the panel takes data only."""
+import base64
+import gzip
 import json
 
 import httpx
@@ -12,10 +14,11 @@ import yaml
 
 from omniacli import centralpages
 from omniacli.app import create_app
-from omniacli.config import LinkAccess, parse_settings
+from omniacli.config import LinkAccess, parse_connection, parse_settings
 
-from .conftest import LINK_TOKEN, USER_HASH, BasicAsSession, hash_token
+from .conftest import LINK_TOKEN, PASSWORD, USER_HASH, BasicAsSession, hash_token
 from .test_app import AUTH
+from .test_delegated_scope import pair  # noqa: F401 - the pair fixture (a home and its host)
 
 N = centralpages.CENTRAL_AGENT_API
 PAGE = {"Authorization": AUTH, "Accept": "text/html,application/xhtml+xml"}
@@ -47,11 +50,18 @@ class Machine(httpx.AsyncBaseTransport):
         self.asked: list[str] = []
         self.info: dict | None = None
         self.html_at = ""
+        # path: (status, headers, body) the machine answers instead
+        self.answer: dict[str, tuple] = {}
+        self.accepts: list[str] = []
 
     async def handle_async_request(self, request):
         self.asked.append(request.url.path)
+        self.accepts.append(request.headers.get("accept", ""))
         if self.html_at and request.url.path == self.html_at:
             return httpx.Response(200, headers={"content-type": "text/html"}, stream=httpx.ByteStream(b"<script>alert(1)</script>"))
+        if request.url.path in self.answer:
+            code, headers, body = self.answer[request.url.path]
+            return httpx.Response(code, headers=headers, stream=httpx.ByteStream(body))
         resp = await self.asgi.handle_async_request(request)
         if request.url.path == "/api/info" and self.info is not None:
             await resp.aread()
@@ -67,12 +77,16 @@ async def central(env, tmp_path):
     machine_settings = env["settings"]
     machine_settings.fixed.links["omnia"] = LinkAccess(hash_token(LINK_TOKEN), "admin")
     machine_settings.set_web_access(machine_settings.web)
+    # a puller's connection there: its page has the commands only who logged in there sends
+    machine_settings.connections = {"api-prod": parse_connection("api-prod", {"link": "vps", "puller": "api-prod"})}
     machine = Machine(create_app(machine_settings))
     conf = tmp_path / "central"
     conf.mkdir()
     (conf / "links.yaml").write_text(yaml.safe_dump({"links": {
         "cliente": {"url": "http://customer.test", "token": LINK_TOKEN}}}))
-    settings = parse_settings({"auth": {"users": {"admin": USER_HASH}}, "backup_dir": str(tmp_path / "b"),
+    settings = parse_settings({"auth": {"users": {"admin": USER_HASH, "dev": {"password": USER_HASH, "role": "developer"},
+                                                  "viewer": {"password": USER_HASH, "role": "user"}}},
+                               "backup_dir": str(tmp_path / "b"),
                                "jobs_dir": str(tmp_path / "j"), "servers_file": "servers.yaml"}, base_dir=conf)
     app = create_app(settings, link_transport=machine)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=BasicAsSession(app)),
@@ -211,9 +225,17 @@ async def test_a_text_changed_here_shows_without_the_machine(central, monkeypatc
 
 
 async def test_a_machine_at_zero_writes_its_pages_with_the_line(central):
-    """A machine of before (no agent_api): every page is its own, as before, with the line that says why."""
+    """A machine of before (no agent_api): every page is its own, as before; the line that says why only on the
+    pages this panel would draw, the others exactly as with pages: machine."""
     central.machine.info = {"version": "2026.1.5513"}
-    for path in ("disks", "servers/srv", "help"):
+    for path in ("servers/srv", "jobs", ""):
+        here = await central.get(f"/links/cliente/{path}", headers=PAGE)
+        link_pages(central, "machine")
+        theirs = await central.get(f"/links/cliente/{path}", headers=PAGE)
+        link_pages(central, "here")
+        assert here.status_code == theirs.status_code and here.text == theirs.text, path
+        assert "data-machine-page-line" not in here.text
+    for path in ("disks", "help"):
         central.machine.asked.clear()
         resp = await central.get(f"/links/cliente/{path}", headers=PAGE)
         assert resp.status_code == 200 and f"/{path}" in central.machine.asked, path
@@ -263,6 +285,123 @@ async def test_a_here_link_refuses_the_machines_html(central):
     assert "/static/xterm.js" not in central.machine.asked
 
 
+def as_(user: str) -> dict:
+    return {"Authorization": "Basic " + base64.b64encode(f"{user}:{PASSWORD}".encode()).decode(),
+            "Accept": "text/html"}
+
+
+def main_of(html: str) -> str:
+    """What a page shows in its <main>, the controls and their scripts with it (the bar and the footer are the
+    panel's own either way)."""
+    return html[html.index("<main>"):html.index("</main>")]
+
+
+async def test_the_drawn_pages_have_the_controls_of_the_machines(central):
+    """AD-017 §8.3, parity: for each of the 12 pages, what the person can press (buttons, links, the disabled
+    ones, the switches of its scripts: can_act, is_admin, account…) is the same on the page drawn here and on the
+    machine's own, for admin, developer and user (a central's person has no custom role: a person of a workspace
+    with one does not open a link, either way)."""
+    paths = {**PATHS, "connection": "pullers/connections/api-prod"}
+    for user in ("admin", "dev", "viewer"):
+        for name, path in paths.items():
+            here = await central.get(f"/links/cliente/{path}", headers=as_(user))
+            link_pages(central, "machine")
+            theirs = await central.get(f"/links/cliente/{path}", headers=as_(user))
+            link_pages(central, "here")
+            assert here.status_code == theirs.status_code, (user, name)
+            if here.status_code == 200:
+                assert main_of(here.text) == main_of(theirs.text), (user, name)
+    # the commands of a puller's connection: off for a person through a link, as there
+    page = (await central.get("/links/cliente/pullers/connections/api-prod", headers=as_("admin"))).text
+    assert "account = null;" in page and "isAdmin = true" in page
+
+
+async def test_a_machine_whose_contract_goes_back_is_not_shown(central):
+    """Once a machine said agent_api 1, it saying 0 again (or having no model) does not show its own HTML on the
+    pages drawn here: this panel's page says so, until its pages: machine; the highest kept on disk."""
+    assert (await central.get("/links/cliente/disks", headers=PAGE)).status_code == 200
+    seen_file = central.app.state.settings.links_file.parent / centralpages.SEEN_FILE
+    assert json.loads(seen_file.read_text()) == {"cliente": 1} and oct(seen_file.stat().st_mode)[-3:] == "600"
+    central.machine.info = {"version": "2026.1.5513"}
+    central.app.state.link_agents["cliente"]["at"] -= centralpages.READ_EVERY + 1
+    central.machine.asked.clear()
+    resp = await central.get("/links/cliente/disks", headers=PAGE)
+    assert resp.status_code == 502 and "Page of cliente not shown" in resp.text and "now it says 0" in resp.text
+    assert "/disks" not in central.machine.asked and "data-machine-page-line" not in resp.text
+    # a page not drawn here: the machine's, as before
+    assert (await central.get("/links/cliente/servers/srv", headers=PAGE)).status_code == 200
+    # what was seen stays seen in a panel started again
+    assert centralpages.load_seen(seen_file) == {"cliente": 1}
+    # the admin lets it write its own again
+    link_pages(central, "machine")
+    resp = await central.get("/links/cliente/disks", headers=PAGE)
+    assert resp.status_code == 200 and "/disks" in central.machine.asked
+
+
+async def test_a_machine_without_models_or_answer_is_remembered(central):
+    """It says 1 but has no /api/pages: this panel's page, and not asked again at every page; one that does not
+    answer /api/info: not asked again for a minute, and never its HTML once it said 1."""
+    assert (await central.get("/links/cliente/disks", headers=PAGE)).status_code == 200
+    central.app.state.link_agents["cliente"]["at"] -= centralpages.READ_EVERY + 1
+    central.machine.answer["/api/pages/help"] = (404, {"content-type": "application/json"}, b'{"detail": "Not Found"}')
+    central.machine.asked.clear()
+    for _ in range(3):
+        resp = await central.get("/links/cliente/help", headers=PAGE)
+        assert resp.status_code == 502 and "does not give them" in resp.text
+    assert central.machine.asked.count("/api/pages/help") == 1 and central.machine.asked.count("/api/info") == 1
+    assert "/help" not in central.machine.asked
+    # /api/info answers 503: a minute without asking, and its page not shown
+    central.machine.answer["/api/info"] = (503, {"content-type": "text/plain"}, b"down")
+    central.app.state.link_agents["cliente"]["at"] -= centralpages.READ_EVERY + 1
+    central.machine.asked.clear()
+    for _ in range(3):
+        resp = await central.get("/links/cliente/disks", headers=PAGE)
+        assert resp.status_code == 502 and "/disks" not in central.machine.asked
+    assert central.machine.asked.count("/api/info") == 1
+
+
+async def test_a_placed_servers_log_and_shell_go_to_its_host(central, monkeypatch):
+    """AD-014: the model of the log or shell of a server placed elsewhere sends the page to the host through the
+    home, as the home's page does (PlacedRoutes 307)."""
+    moved = "/links/cliente/placed/srv/servers/srv/test/log"
+    central.machine.answer["/api/pages/log"] = (200, {"content-type": "application/json"}, json.dumps({
+        "agent_api": 1, "page": "log", "role": "admin", "development": True, "moved": moved}).encode())
+    resp = await central.get("/links/cliente/servers/srv/test/log", headers=PAGE, follow_redirects=False)
+    assert resp.status_code == 307 and resp.headers["location"] == moved
+    # elsewhere than under the link: not followed
+    central.machine.answer["/api/pages/log"] = (200, {"content-type": "application/json"}, json.dumps({
+        "agent_api": 1, "role": "admin", "moved": "https://evil.test/x", "context": {}}).encode())
+    resp = await central.get("/links/cliente/servers/srv/test/log", headers=PAGE, follow_redirects=False)
+    assert resp.status_code != 307
+
+
+async def test_the_api_of_a_here_link_answers_json_and_data_without_body(central):
+    """A browser's /api request through a here-link is asked as JSON (the machine's reason, not its error page);
+    an answer without a body and without a length is data."""
+    resp = await central.get("/links/cliente/api/servers/nope/test/log", headers=PAGE)
+    assert central.machine.accepts[-1] == "application/json"
+    assert resp.status_code == 404 and "nope" in resp.text and "refused" not in resp.text
+    central.machine.answer["/api/empty"] = (204, {}, b"")
+    assert (await central.get("/links/cliente/api/empty", headers=JSON)).status_code == 204
+    central.machine.answer["/api/empty"] = (200, {}, b"")
+    assert (await central.get("/links/cliente/api/empty", headers=JSON)).status_code == 200
+    central.machine.answer["/api/empty"] = (200, {}, b"<script>x</script>")
+    assert (await central.get("/links/cliente/api/empty", headers=JSON)).status_code == 502
+
+
+async def test_no_line_in_an_encoded_body_and_the_way_back_of_a_404(central):
+    central.machine.info = {"version": "2026.1.5513"}
+    central.machine.answer["/disks"] = (200, {"content-type": "text/html", "content-encoding": "gzip"},
+                                       gzip.compress(b"<html><body>its own</body></html>"))
+    resp = await central.get("/links/cliente/disks", headers={**PAGE, "Accept-Encoding": "gzip"})
+    assert resp.text == "<html><body>its own</body></html>"
+    # a page drawn here that is not there: this panel's error page, its way back under the link
+    central.machine.info = None
+    central.app.state.link_agents.clear()
+    resp = await central.get("/links/cliente/servers/nope/test/log", headers=PAGE)
+    assert resp.status_code == 404 and 'href="/links/cliente/instances"' in resp.text
+
+
 async def test_the_switch_on_the_links_settings(central):
     post = {**JSON, "Origin": "http://central.test"}
     page = (await central.get("/links", headers=PAGE)).text
@@ -282,3 +421,24 @@ async def test_the_switch_on_the_links_settings(central):
         "name": "cliente", "url": "http://customer.test", "pages": "here"})
     saved = yaml.safe_load(central.app.state.settings.links_file.read_text())["links"]["cliente"]
     assert "pages" not in saved
+    # a save reads its machine's contract again; a delete forgets what it said
+    assert "cliente" not in central.app.state.link_agents
+    await central.get("/links/cliente/disks", headers=PAGE)
+    assert central.app.state.link_agents_seen == {"cliente": 1}
+    await central.post("/api/links/delete", headers=post, json={"name": "cliente"})
+    assert central.app.state.link_agents_seen == {} and "cliente" not in central.app.state.link_agents
+
+
+async def test_the_model_of_a_placed_server_sends_to_its_host(pair):
+    """The home's model of the log and the shell of a server placed on another machine (AD-014): the address its
+    own page sends a browser to (PlacedRoutes), under the panel's prefix."""
+    pair.place(copy_here=False)
+    pair.app.state.settings.servers.pop("srv")
+    link = {"Authorization": f"Bearer {LINK_TOKEN}", "X-OmniaCLI-Prefix": "/links/home", "X-OmniaCLI-User": "admin",
+            "Accept": "application/json"}
+    for page, params, path in (("log", {"server": "srv", "role": "production"}, "servers/srv/production/log"),
+                               ("shell", {"server": "srv", "role": "production", "kind": "terminal"},
+                                "servers/srv/production/terminal")):
+        data = (await pair.get(f"/api/pages/{page}", params=params, headers=link)).json()
+        own = await pair.get(f"/{path}", headers={**link, "Accept": "text/html"}, follow_redirects=False)
+        assert own.status_code == 307 and data["moved"] == own.headers["location"] == f"/links/home/placed/srv/{path}"

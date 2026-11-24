@@ -254,6 +254,27 @@ pagine scritte dal centrale la macchina fornisce solo JSON, inserito con l'autoe
 1. Per un collegamento `pages: here` il centrale inoltra solo `application/json`, i download dichiarati e i websocket.
    L'HTML della macchina passa solo nel ritorno di 17.2, che resta il rischio di oggi finché quella macchina non si
    aggiorna.
+
+   **Com'è nel codice (fette 1-2, `centralpages.is_data`).** Sulle risposte a `/links/<m>/api/…` e alle richieste dei
+   percorsi delle 12 pagine A, il centrale lascia passare:
+   - i tipi `application/json` e `application/*+json`, `application/x-ndjson`;
+   - `text/plain` e `text/csv`;
+   - le immagini raster (`png`, `jpeg`, `gif`, `webp`, `x-icon`), **mai** `image/svg+xml`;
+   - `application/octet-stream`, `zip`, `x-tar`, `gzip`, `sql`;
+   - qualunque risposta con `Content-Disposition: attachment`;
+   - le risposte senza corpo (204, 304, `Content-Length: 0`, e senza tipo né lunghezza solo se il corpo letto è vuoto).
+
+   Tutte escono con `X-Content-Type-Options: nosniff`. Il resto (HTML, script, SVG, XML) è rifiutato con 502 e una
+   riga `failed` nel registro. A una richiesta `/api` del browser il centrale chiede `Accept: application/json`, così
+   la macchina risponde con il suo motivo e non con la sua pagina d'errore.
+
+   **Cosa passa ancora come HTML della macchina:** le pagine B e C, non ancora scritte dal centrale (fette 3-5), con i
+   loro frammenti; con `pages: machine`, tutto. Nelle 12 pagine A l'HTML della macchina passa solo nel ritorno di 17.2
+   (con la riga in testa), e solo finché quella macchina non ha mai detto `agent_api ≥ 1`: il valore più alto detto da
+   ogni collegamento è tenuto su disco (`link-agents.json`, nel purge). Dopo, se dice meno o non ha il modello della
+   pagina, il centrale mostra una sua pagina che lo dice, finché un amministratore non mette `pages: machine`. Un
+   centrale più vecchio della macchina o un plugin diverso tornano ancora alla pagina della macchina sulla sua parola:
+   resta il rischio di oggi, per quella macchina.
 2. Nessun mTLS. Il trasporto resta SSH: la chiave dell'host fissata vale quanto un certificato client più la CA, e c'è
    già su 7 collegamenti su 7. Un collegamento HTTPS nuovo continua a usare `ca_file`.
 3. Le sessioni del centrale valgono quanto tutte le macchine. Il secondo fattore per gli utenti del centrale è §10.4.
