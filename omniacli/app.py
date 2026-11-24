@@ -8,6 +8,7 @@ import asyncio
 import base64
 import configparser
 import contextlib
+import contextvars
 import csv
 import dataclasses
 import datetime
@@ -475,12 +476,18 @@ WORKSPACE_ROUTES = frozenset({
     # Log in as on its instances: its admin (from_link_role), a person who
     # logs in here; not the nginx line (the machine's)
     "/api/servers/{server}/{role}/login-as/users", "/api/servers/{server}/{role}/login-as",
-    # the REST API (README, REST API), for a workspace's token: its instances and jobs, with its role there
-    *(path for _, path in apiv1.V1_TOOLS), *(path for _, path in apiv1.DOCUMENT_ROUTES),
+    # the REST API (README, REST API), for a workspace's token: its instances and jobs, with its role there (the
+    # handover and the move, V1_MACHINE_TOOLS, are the machine's)
+    *(path for _, path in apiv1.V1_WORKSPACE_TOOLS), *(path for _, path in apiv1.DOCUMENT_ROUTES),
 })
+V1_MACHINE_PATHS = frozenset(path for _, path in apiv1.V1_MACHINE_TOOLS)
 
 
 _logger = logging.getLogger(__name__)
+# who starts the jobs of a page's code the REST API or MCP calls (a handover, a move): "api: token <name>" or
+# "mcp: token <name>" instead of the person's "manual: <name>"; set only around that call, and only then does the
+# code of a move take a token for who moves (a token never posts to the pages: identify)
+_ACTING = contextvars.ContextVar("omniacli_acting_source", default="")
 # an MCP call through a link: a tool may wait 600 s for its job
 LINK_MCP_TIMEOUT = 660
 # the day the automatic backups' Try a restore runs (6: Sunday)
@@ -997,6 +1004,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             # a placed instance's page or answer (AD-014): checked by its route on the route it asks there
             # (placed_caller, the same rules), before anything is asked or done
             return user
+        if path in V1_MACHINE_PATHS:
+            # the handover and the move through the REST API: said as MCP says it (apiguard.machine_refusal)
+            raise apiguard.machine_refusal(True, user.role, False, "")
         allowed = path in WORKSPACE_ROUTES or (
             # a plugin's own routes, of an instance only
             path is not None and path.startswith("/x/") and "server" in params and "role" in params)
@@ -1230,6 +1240,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                              "staging": lambda *a, **k: api_hooks["staging"](*a, **k),
                                              "deploys": lambda *a, **k: mcp_deploys(*a, **k),
                                              "deploy_back": lambda *a, **k: api_hooks["deploy_back"](*a, **k),
+                                             # the handover and the move (AD-008 §9 step 10): the pages' code
+                                             "machine": lambda *a, **k: api_hooks["machine"](*a, **k),
                                              # AD-014 §6: a tool on an instance placed elsewhere asked there, and
                                              # the scope a home sends taken from that home's link only
                                              "placed": lambda *a, **k: mcp_placed(*a, **k),
@@ -21210,10 +21222,16 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                            ("start", "Start on {machine}"), ("names", "Names"), ("stop", "Stop on {here}")]
 
     def mover(me: Principal) -> None:
-        """Who moves an instance: an admin of this machine, a person (here or through a central panel's link)."""
-        if not (machine_admin(me) and acts_for_a_person(me) and not me.scoped):
+        """Who moves an instance: an admin of this machine, a person (here or through a central panel's link), or
+        an admin token of the machine through the REST API or MCP (their own rules first, apiguard.machine_refusal)."""
+        through_api = me.kind == "token" and bool(_ACTING.get())
+        if not (machine_admin(me) and (acts_for_a_person(me) or through_api) and not me.scoped):
             raise HTTPException(status.HTTP_403_FORBIDDEN,
                                 "Only an admin of the machine moves an instance to another machine")
+
+    def acting_source(me: Principal) -> str:
+        """The source of a job of a handover or a move: the person's, or the REST API's or MCP's token's."""
+        return _ACTING.get() or f"manual: {me}"
 
     def move_source(server: str):
         """(workspace, instance, production) of a server that may be asked about a move, or the refusal."""
@@ -21684,7 +21702,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     job.log("--- Prepare did not end: Cancel the move takes away what it made there; here nothing "
                             "changed")
                 raise
-        job = jobs.submit(f"Move {server} to {link.name}: prepare", [inst.key], f"manual: {me}", action,
+        job = jobs.submit(f"Move {server} to {link.name}: prepare", [inst.key], acting_source(me), action,
                           workspace=ws.name, frozen_ok=True)
         job.result["customer"] = {"hidden": True}  # the provider's own: not in its customer's lists
         moves.save(server, {**moves.state(server), "link": link.name, "state": "preparing", "job": job.id,
@@ -21831,7 +21849,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             job.log(f"On {link.name} from now; here {server} stays stopped until "
                     f"{placement._date(placement.copy_until(now))}, then Delete the copy… frees it")
             job.result = {**job.result, "move": {"unserved": found, "seconds": seconds, "odoo_s": odoo_s}}
-        job = jobs.submit(f"Move {server} to {link.name}: complete", [inst.key], f"manual: {me}", action,
+        job = jobs.submit(f"Move {server} to {link.name}: complete", [inst.key], acting_source(me), action,
                           workspace=ws.name, frozen_ok=True)
         return {"job": job.id}
 
@@ -21962,7 +21980,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             for tree in MOVE_TREES:
                 shutil.rmtree(treesync_dir() / "copies" / f"move-{server}-{tree}", ignore_errors=True)
             job.log(f"{server} stays here, as it was")
-        job = jobs.submit(f"Move {server} to {state.get('link')}: cancel", [inst.key], f"manual: {me}", action,
+        job = jobs.submit(f"Move {server} to {state.get('link')}: cancel", [inst.key], acting_source(me), action,
                           workspace=ws.name, frozen_ok=True)
         job.result["customer"] = {"hidden": True}  # the provider's own: not in its customer's lists
         return {"job": job.id}
@@ -21983,7 +22001,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return refuse(f"{server} has no stopped copy here of a move")
         if (state.get("back") or {}).get("state") in placement.BACK_STATES:
             return refuse(f"The return of {server} is under way: cancel it first")
-        return {"job": move_delete_job(ws, instance, inst, state, f"manual: {me}").id}
+        return {"job": move_delete_job(ws, instance, inst, state, acting_source(me)).id}
 
     def move_delete_job(ws: Workspace, instance: str, inst: Instance, state: dict, source: str) -> Job:
         server = inst.server
@@ -22249,7 +22267,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     job.log(f"--- Prepare the return did not end: Cancel the return… takes away what it made here; on "
                             f"{link.name} nothing changed")
                 raise
-        job = jobs.submit(f"Bring {server} back from {link.name}: prepare", [f"{server}/production"], f"manual: {me}",
+        job = jobs.submit(f"Bring {server} back from {link.name}: prepare", [f"{server}/production"], acting_source(me),
                           action, workspace=ws.name, frozen_ok=True)
         job.result["customer"] = {"hidden": True}  # the provider's own: not in its customer's lists
         back_update(server, state="preparing", job=job.id, mode=mode, kind=kind, error=None,
@@ -22428,7 +22446,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     f"{placement._date(placement.copy_until(returned_at))}, passing its names here, then Delete the "
                     f"copy on {link.name}… frees it")
             job.result = {**job.result, "back": {"unserved": found, "seconds": seconds, "copied": copied}}
-        job = jobs.submit(f"Bring {server} back from {link.name}: complete", [inst.key], f"manual: {me}", action,
+        job = jobs.submit(f"Bring {server} back from {link.name}: complete", [inst.key], acting_source(me), action,
                           workspace=ws.name, frozen_ok=True)
         return {"job": job.id}
 
@@ -22533,7 +22551,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 shutil.rmtree(treesync_dir() / "copies" / f"back-{server}-{tree}", ignore_errors=True)
             moves.update(server, back=None)
             job.log(f"{server} stays on {link.name}, as it was")
-        job = jobs.submit(f"Bring {server} back from {link.name}: cancel", [f"{server}/production"], f"manual: {me}",
+        job = jobs.submit(f"Bring {server} back from {link.name}: cancel", [f"{server}/production"], acting_source(me),
                           action, workspace=ws.name, frozen_ok=True)
         job.result["customer"] = {"hidden": True}  # the provider's own: not in its customer's lists
         return {"job": job.id}
@@ -22558,7 +22576,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             moves.forget(server)
             back_works(server)
             job.log(f"Nothing of {server} is left on {link.name}")
-        job = jobs.submit(f"Delete the copy of {server} on {link.name}", [f"{server}/production"], f"manual: {me}",
+        job = jobs.submit(f"Delete the copy of {server} on {link.name}", [f"{server}/production"], acting_source(me),
                           action, workspace=ws.name)
         job.result["customer"] = {"hidden": True}  # the provider's own: not in its customer's lists
         return {"job": job.id}
@@ -24425,7 +24443,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return refuse(why)
         # the databases of their own restart here once, now, on this click (the summary said so), never later at a
         # moment the customer picks
-        why = await handover_listen(ws, chosen, url, f"manual: {me}")
+        why = await handover_listen(ws, chosen, url, acting_source(me))
         if why:
             return refuse(why)
         hid, at = handover.new_id(), handover.now()
@@ -24454,7 +24472,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         secret, pin, why = await handover_code(url)
         if why:
             return refuse(why)
-        why = await handover_listen(ws, state.get("instances") or [], url, f"manual: {me}")
+        why = await handover_listen(ws, state.get("instances") or [], url, acting_source(me))
         if why:
             return refuse(why)
         at = handover.now()
@@ -24523,7 +24541,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         state = handovers_out.state(ws.name)
         if not handover_active(state) and handover.phase_of(state) != "expired":
             return refuse(f"No handover of {ws.name} under way")
-        job = handover_cancel_job(ws, "cancelled by the provider", f"manual: {me}")
+        job = handover_cancel_job(ws, "cancelled by the provider", acting_source(me))
         return {"job": job.id}
 
     # --- the routes the customer's machine calls (public: the code, then the session, authorize them)
@@ -25036,7 +25054,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         disk = payload.get("disk_gb")
         code = str(payload.get("code") or "").strip()
         handovers_in.put_secret(hid, "code", code.encode())
-        job = jobs.submit("Receive a workspace from the provider", [], f"manual: {me}",
+        job = jobs.submit("Receive a workspace from the provider", [], acting_source(me),
                           lambda job: handover_receive_job(job, hid, parts, wanted, disk, me),
                           workspace=mine.get("workspace") or "")
         handovers_in.save(hid, {**mine, "id": hid, "phase": "receiving", "job": job.id,
@@ -25342,7 +25360,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             # finishes it (committed there) or takes back what it did (aborted or expired there); every server of
             # the workspace busy meanwhile (AD-011), and any failure of it «interrupted» again, with Retry
             job = jobs.submit(f"Switch {state.get('workspace')} to this machine: again", handover_in_keys(state),
-                              f"manual: {me}",
+                              acting_source(me),
                               lambda job: handover_switch_guard(job, handover_id,
                                                                 lambda: handover_switch_resume(job, handover_id, me)),
                               workspace=str(state.get("workspace") or ""))
@@ -25359,7 +25377,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         except handover.CodeError:
             return refuse("No code of this reception here: read it again with Recover a workspace…")
         job = jobs.submit(f"Receive {state.get('workspace')} from {state.get('provider') or 'the provider'}: again",
-                          [], f"manual: {me}",
+                          [], acting_source(me),
                           lambda job: handover_receive_job(job, handover_id, parts, "", None, me),
                           workspace=str(state.get("workspace") or ""))
         handovers_in.update(handover_id, phase="receiving", job=job.id, error=None)
@@ -25431,9 +25449,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return refuse("The switch is under way or done: the reception is no longer cancelled")
         running = jobs.get(str(state.get("job") or ""))
         if running is not None and running.status not in FINISHED:
-            jobs.stop(running.id, f"manual: {me}")
+            jobs.stop(running.id, acting_source(me))
         handovers_in.update(handover_id, phase="cancelling")
-        job = handover_in_cancel_job(handover_id, "cancelled here", f"manual: {me}", tell=True)
+        job = handover_in_cancel_job(handover_id, "cancelled here", acting_source(me), tell=True)
         return {"job": job.id}
 
     async def handover_look_in(hid: str, state: dict) -> None:
@@ -26342,7 +26360,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         why = handover_after_refusal(ws, handovers_out.state(ws.name))
         if why:
             return refuse(why)
-        return {"job": handover_delete_job(ws, f"manual: {me}").id}
+        return {"job": handover_delete_job(ws, acting_source(me)).id}
 
     @app.post("/api/workspaces/{workspace}/handover/relight")
     async def handover_relight_route(request: Request, workspace: str, payload: dict = Body(...),
@@ -26362,7 +26380,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return refuse(f"The day of the copy of {ws.name} passed: it is being deleted, it cannot run again")
         if str(payload.get("confirm") or "") != ws.name:
             return refuse(f"Write the name of the workspace, {ws.name}, to light its copy again")
-        return {"job": handover_relight_job(ws, str(me), f"manual: {me}").id}
+        return {"job": handover_relight_job(ws, str(me), acting_source(me)).id}
 
     @handover_public_route("POST", HANDOVER_API + "/{handover_id}/switch/commit")
     async def handover_switch_commit(request: Request, handover_id: str, payload: dict):
@@ -26482,7 +26500,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         switch_id = secrets.token_hex(8)
         # every server of the workspace busy for the switch (AD-011): no other job enters them meanwhile; any failure
         # that leaves the switch «switching» is «interrupted», with Retry
-        job = jobs.submit(f"Switch {name} to this machine", handover_in_keys(state), f"manual: {me}",
+        job = jobs.submit(f"Switch {name} to this machine", handover_in_keys(state), acting_source(me),
                           lambda job: handover_switch_guard(job, handover_id,
                                                             lambda: handover_switch_job(job, handover_id, switch_id, me)),
                           workspace=name)
@@ -27838,6 +27856,274 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 raise api_refusal(found)
             return api_accepted(request, jobs.get(found["job"]), server=found["server"])
         return await api_once(request, me, idempotency_key, run)
+
+    # --- the handover of a workspace and the move of an instance (AD-008 §9 step 10, UX-014 A13 and B6): the
+    # pages' code itself, called by the REST API and MCP alike (machine_act), with their rules first
+    # (apiguard.machine_refusal: a token of the machine, never a CI's, the admin role, confirm = the name typed)
+
+    # op: (what it is, for the refusals; what confirm names: the instance's server, the workspace, the reception's
+    # workspace; None: a read, or a reception, which changes nothing of what runs)
+    MACHINE_ACTS = {
+        "handover_status": ("Reading a handover", None), "prepare_handover": ("Preparing a handover", "workspace"),
+        "receive_read": ("Reading a handover code", None), "receive": ("Receiving a workspace", None),
+        "reception_status": ("Reading a reception", None),
+        "switch_workspace": ("Switching a workspace to this machine", "reception"),
+        "move_status": ("Reading the move of an instance", None),
+        **{f"move:{step}": (what, "server") for step, what in (
+            ("prepare", "Preparing a move"), ("complete", "Completing a move"), ("cancel", "Cancelling a move"),
+            ("delete_copy", "Deleting the copy a move left"))},
+        **{f"back:{step}": (what, "server") for step, what in (
+            ("prepare", "Preparing a return"), ("complete", "Completing a return"),
+            ("cancel", "Cancelling a return"), ("delete_copy", "Deleting the copy a return left"))},
+    }
+
+    def api_request(ip: str) -> Request:
+        """The request the pages' code reads (the caller's address for the access log; English, as the API's
+        messages are)."""
+        return Request({"type": "http", "method": "POST", "path": P, "root_path": "", "query_string": b"",
+                        "headers": [(b"accept-language", b"en")], "client": (ip, 0), "app": app})
+
+    def machine_named(op: str, server: str, workspace: str, handover_id: str) -> str | None:
+        """The name confirm must be for op; None: none asked (a read, or no such reception: the page says so)."""
+        kind = MACHINE_ACTS[op][1]
+        if kind == "reception":
+            state = handovers_in.state(handover_id) if handover.ID.fullmatch(handover_id or "") else {}
+            return str(state.get("workspace") or "") if state else None
+        return {"server": server, "workspace": workspace}.get(kind or "")
+
+    async def machine_act(op: str, me: Principal, source: str, ip: str = "", *, server: str = "", workspace: str = "",
+                          handover_id: str = "", confirm: Optional[str] = None, body: Optional[dict] = None
+                          ) -> tuple[int, dict]:
+        """(status, answer) of a step of a handover or a move, as the page's own route answers it ({"error": ...}
+        for a refusal); its rules (apiguard.machine_refusal) checked first, its jobs started by source."""
+        what = MACHINE_ACTS[op][0]
+        ci = bool(me.ci or (me.kind == "token" and settings.token_ci(me.name)))
+        named = machine_named(op, server, workspace, handover_id)
+        refused = apiguard.machine_refusal(me.scoped, me.role, ci, what, None if named is None else (confirm or ""),
+                                           named or "")
+        if refused is not None:
+            return refused.status, {"error": refused.message, "code": refused.code}
+        body = dict(body or {})
+        request = api_request(ip)
+        kept = _ACTING.set(source)
+        try:
+            if op == "handover_status":
+                found = await handover_view(request, workspace, me)
+            elif op == "prepare_handover":
+                found = await handover_prepare(request, workspace, {"confirm": confirm, **body}, me)
+            elif op == "receive_read":
+                found = await handover_read(request, body, me)
+                if isinstance(found, dict):
+                    found = {"id": found.get("id"), "offer": found}
+            elif op == "receive":
+                found = await handover_receive(request, body, me)
+            elif op == "reception_status":
+                found = await handover_in_view(handover_id, me)
+            elif op == "switch_workspace":
+                found = await handover_switch(handover_id, {"confirm": confirm}, me)
+            elif op == "move_status":
+                found = await move_plan(request, server, me)
+            else:
+                kind, step = op.split(":")
+                payload = {"confirm": confirm, **body}
+                found = await {
+                    ("move", "prepare"): lambda: move_prepare(server, payload, me),
+                    ("move", "complete"): lambda: move_complete(server, payload, me),
+                    ("move", "cancel"): lambda: move_cancel(server, me),
+                    ("move", "delete_copy"): lambda: move_delete_copy(server, me),
+                    ("back", "prepare"): lambda: move_back_prepare(server, payload, me),
+                    ("back", "complete"): lambda: move_back_complete(server, payload, me),
+                    ("back", "cancel"): lambda: move_back_cancel(server, me),
+                    ("back", "delete_copy"): lambda: move_back_delete_copy(server, me)}[(kind, step)]()
+        except HTTPException as exc:
+            return exc.status_code, {"error": str(exc.detail)}
+        finally:
+            _ACTING.reset(kept)
+        if isinstance(found, Response):
+            try:
+                data = json.loads(found.body)
+            except ValueError:
+                data = {}
+            return found.status_code, data if isinstance(data, dict) else {"error": "Refused"}
+        return 200, found
+
+    api_hooks["machine"] = machine_act
+
+    def api_machine_answer(request: Request, status_code: int, data: dict, **extra) -> dict:
+        """A step's answer as the API gives it: a refusal raised, a job as the job to follow."""
+        if status_code >= 400:
+            message = data.get("error") if isinstance(data.get("error"), str) else "Refused"
+            raise ApiError(status_code, data.get("code") or apiv1.code_of(status_code), message)
+        job = jobs.get(str(data.get("job") or "")) if data.get("job") else None
+        if job is not None:
+            return api_accepted(request, job, **{k: v for k, v in {**data, **extra}.items() if k != "job"})
+        return {**data, **extra}
+
+    def api_ip(request: Request) -> str:
+        return request.client.host if request.client else ""
+
+    @api_router.get(P + "/workspaces/{workspace}/handover", summary="Read a handover",
+                    description="The handover of a workspace to a customer's OmniaCLI (UX-014 A4), as its dialog "
+                                "says it: each instance with its sizes or why it cannot pass, the people and what "
+                                "does not pass, the dates, and the handover under way (its phase, expiry, claim). "
+                                "A token of the machine with the production level (admin), never a CI token.")
+    async def api_handover(request: Request, workspace: str = PathParam(description="The workspace's name"),
+                           me: Principal = Depends(api_token)):
+        status_code, data = await machine_act("handover_status", me, f"api: {me}", api_ip(request),
+                                              workspace=workspace)
+        return api_machine_answer(request, status_code, data)
+
+    @api_router.post(P + "/workspaces/{workspace}/handover", response_model=apiv1.HandoverPrepared,
+                     summary="Prepare a handover",
+                     description="Prepare the handover of a workspace to the customer's own OmniaCLI (UX-014 A4): "
+                                 "the instances chosen, confirm = the workspace's name. Nothing stops here; a "
+                                 "database of its own restarts once to open its port. The answer gives the code "
+                                 "once (only its hash stays here): the customer receives it with "
+                                 "/api/v1/handovers/receive on its machine. A token of the machine with the "
+                                 "production level, never a CI token. With an Idempotency-Key a repeated answer "
+                                 "has code null.")
+    async def api_handover_prepare(request: Request, workspace: str = PathParam(description="The workspace's name"),
+                                   body: Optional[apiv1.HandoverBody] = None,
+                                   idempotency_key: Optional[str] = IDEMPOTENCY_HEADER,
+                                   me: Principal = Depends(api_token)):
+        body = body or apiv1.HandoverBody()
+
+        async def run():
+            status_code, data = await machine_act("prepare_handover", me, f"api: {me}", api_ip(request),
+                                                  workspace=workspace, confirm=body.confirm,
+                                                  body={"instances": body.instances})
+            return api_machine_answer(request, status_code, data)
+        if idempotency_key is None:
+            return await run()
+        refused = guard.idempotency.check_key(idempotency_key)
+        if refused is not None:
+            raise refused
+        print_ = apiguard.fingerprint(request.method, request.url.path, await request.body())
+        async with guard.idempotency.lock(me.name, idempotency_key):
+            before = guard.idempotency.lookup(me.name, idempotency_key, print_)
+            if before is not None:
+                return JSONResponse(before["body"], status_code=before["status"], headers={"Idempotent-Replayed": "true"})
+            answer = await run()
+            # the code is given once: never kept in the file of the keys
+            guard.idempotency.remember(me.name, idempotency_key, print_, 200, {**answer, "code": None})
+        return answer
+
+    @api_router.post(P + "/handovers/receive", status_code=202, response_model=apiv1.Reception,
+                     summary="Receive a workspace",
+                     description="On the customer's machine (UX-014 A5): with dry_run true (the default) what the "
+                                 "code gives, read only (the instances, the people, the sizes, what this machine "
+                                 "lacks, what does not pass); with dry_run false the reception, a job: the code "
+                                 "claimed, the workspace and its instances made (never started), their files and "
+                                 "databases copied while everything runs at the provider's, until «ready». The same "
+                                 "code again resumes. Then switch it with /handovers/{id}/switch. A token of this "
+                                 "machine with the production level, never a CI token.")
+    async def api_receive(request: Request, body: apiv1.ReceiveBody,
+                          idempotency_key: Optional[str] = IDEMPOTENCY_HEADER, me: Principal = Depends(api_token)):
+        async def run():
+            given = {"code": body.code, "name": body.name or "", "disk_gb": body.disk_gb}
+            status_code, data = await machine_act("receive_read" if body.dry_run else "receive", me, f"api: {me}",
+                                                  api_ip(request), body=given)
+            return api_machine_answer(request, status_code, data)
+        if body.dry_run:
+            return JSONResponse(await run(), status_code=200)
+        return await api_once(request, me, idempotency_key, run)
+
+    @api_router.get(P + "/handovers/{handover_id}", summary="Read a reception",
+                    description="A reception on this machine as its banner says it: its phase (receiving, ready, "
+                                "switching, switched, interrupted, cancelled), the workspace, the copy's progress; "
+                                "no secret. A token of the machine with the production level.")
+    async def api_reception(request: Request, handover_id: str = PathParam(description="The handover's id"),
+                            me: Principal = Depends(api_token)):
+        status_code, data = await machine_act("reception_status", me, f"api: {me}", api_ip(request),
+                                              handover_id=handover_id)
+        return api_machine_answer(request, status_code, data)
+
+    @api_router.post(P + "/handovers/{handover_id}/switch", status_code=202, response_model=apiv1.Accepted,
+                     summary="Switch a workspace to this machine",
+                     description="On the customer's machine (UX-014 A5-A7, D-A4: the customer presses it): the "
+                                 "provider's instances stop behind the maintenance page, their last changes come "
+                                 "here, they start here and are checked, the names pass; if one fails, all run at "
+                                 "the provider's again. A job. confirm = the workspace's name here; a token of this "
+                                 "machine with the production level, never a CI token.")
+    async def api_switch(request: Request, handover_id: str = PathParam(description="The handover's id"),
+                         body: Optional[apiv1.ConfirmBody] = None, idempotency_key: Optional[str] = IDEMPOTENCY_HEADER,
+                         me: Principal = Depends(api_token)):
+        confirm = (body or apiv1.ConfirmBody()).confirm
+
+        async def run():
+            status_code, data = await machine_act("switch_workspace", me, f"api: {me}", api_ip(request),
+                                                  handover_id=handover_id, confirm=confirm)
+            return api_machine_answer(request, status_code, data)
+        return await api_once(request, me, idempotency_key, run)
+
+    @api_router.get(P + "/moves/{server}", summary="Read the move of an instance",
+                    description="What the dialog Move to another machine… says (UX-014 B4): the instance's sizes "
+                                "and names, each machine of a link with its load and room or why it cannot hold "
+                                "it, and the move under way (or the return). A token of the machine with the "
+                                "production level.")
+    async def api_move_plan(request: Request, server: str = PathParam(description="The server's name"),
+                            me: Principal = Depends(api_token)):
+        status_code, data = await machine_act("move_status", me, f"api: {me}", api_ip(request), server=server)
+        return api_machine_answer(request, status_code, data)
+
+    def api_move_step(kind: str, step: str, summary: str, what: str):
+        """POST /moves/{server}[/back][/<step>]: a step of a move or of its return, as the pages' buttons."""
+        tail = "/back" if kind == "back" else ""
+        if apiv1.MOVE_STEPS[step]:
+            tail += "/" + apiv1.MOVE_STEPS[step]
+        decorate = api_router.post(P + "/moves/{server}" + tail, status_code=202, response_model=apiv1.Accepted,
+                                   summary=summary, name=f"api_{kind}_{step}",
+                                   description=f"{what} A job. confirm = the server's name; a token of the machine "
+                                               "with the production level, never a CI token (a move acts on a "
+                                               "production).")
+
+        async def act(request: Request, server: str, confirm: Optional[str], link: Optional[str],
+                      idempotency_key: Optional[str], me: Principal):
+            async def run():
+                status_code, data = await machine_act(f"{kind}:{step}", me, f"api: {me}", api_ip(request),
+                                                      server=server, confirm=confirm,
+                                                      body={"link": link} if link is not None else {})
+                return api_machine_answer(request, status_code, data)
+            return await api_once(request, me, idempotency_key, run)
+
+        if (kind, step) == ("move", "prepare"):
+            @decorate
+            async def prepare(request: Request, server: str = PathParam(description="The server's name"),
+                              body: Optional[apiv1.MoveBody] = None,
+                              idempotency_key: Optional[str] = IDEMPOTENCY_HEADER, me: Principal = Depends(api_token)):
+                given = body or apiv1.MoveBody()
+                return await act(request, server, given.confirm, given.link or "", idempotency_key, me)
+            return prepare
+
+        @decorate
+        async def route(request: Request, server: str = PathParam(description="The server's name"),
+                        body: Optional[apiv1.ConfirmBody] = None, idempotency_key: Optional[str] = IDEMPOTENCY_HEADER,
+                        me: Principal = Depends(api_token)):
+            return await act(request, server, (body or apiv1.ConfirmBody()).confirm, None, idempotency_key, me)
+        return route
+
+    api_move_step("move", "prepare", "Prepare the move of an instance",
+                  "Prepare the move to the machine of a link (UX-014 B4, AD-015): the instance made there, never "
+                  "started, its names held there; its code, files and backups copied, its database followed there "
+                  "while it runs here. Nothing stops here.")
+    api_move_step("move", "complete", "Complete the move of an instance",
+                  "The instance stops here behind the maintenance page, its last changes go there, it starts there "
+                  "and is checked, its names pass (UX-014 B5); if it does not start there it runs here again. The "
+                  "stop is measured and written in the job and in its deploys.")
+    api_move_step("move", "cancel", "Cancel the move of an instance",
+                  "Before Complete: what Prepare made on the other machine taken away; here nothing changed.")
+    api_move_step("move", "delete_copy", "Delete the copy a move left",
+                  "After Complete: the stopped copy kept here for 7 days deleted now (it cannot be undone).")
+    api_move_step("back", "prepare", "Prepare the return of an instance",
+                  "Bring a moved instance back here (AD-015 «Back to»): the files that changed copied from the other "
+                  "machine, its database copied whole and followed; it goes on running there.")
+    api_move_step("back", "complete", "Complete the return of an instance",
+                  "The instance stops there, its last changes come here, it starts here and its names pass back; if "
+                  "it does not start here it runs there again.")
+    api_move_step("back", "cancel", "Cancel the return of an instance",
+                  "Before Complete: what the return's Prepare made here taken away; it goes on running there.")
+    api_move_step("back", "delete_copy", "Delete the copy a return left",
+                  "After the return: the stopped copy on the other machine deleted now (it cannot be undone).")
 
     api_openapi_cache: dict = {}
 

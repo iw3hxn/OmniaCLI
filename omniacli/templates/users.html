@@ -11,7 +11,7 @@
 {% from "_oauth_grants.html" import grants_table, grants_script with context %}
 {% include "_list.html" %}
 {% set role_names = {"user": _("user"), "developer": _("developer"), "admin": _("admin"), "workspace": _("a customer's user")} %}
-{% set levels = {"user": _("read"), "developer": _("write: tests and stagings"), "admin": _("write and productions, with confirm")} %}
+{% set levels = {"user": _("read"), "developer": _("write: tests and stagings"), "admin": _("write, productions, handovers and moves, with confirm")} %}
 {# the users (docs/ux/UX-007 §4.2): three tabs, each a list read with one primary; what changes is in a dialog,
    a secret (a token, an invitation's link) is shown once in a dialog of its own #}
 <style>
@@ -171,7 +171,7 @@
       <div data-for-password><input type="password" id="id-password" autocomplete="new-password" minlength="{{ min_password }}">
         <span class="muted field-help" id="id-password-help"></span></div>
       <span class="label" data-for-token>CI</span>
-      <div data-for-token class="id-ways"><label title="{{ _('A production is updated by hand only: a CI token never starts, stops, updates nor backs one up, whatever its level') }}"><input type="checkbox" id="id-ci"> {{ _("A token of a CI: never on a production") }}</label></div>
+      <div data-for-token class="id-ways"><label title="{{ _('A production is updated by hand only: a CI token never starts, stops, updates, backs up, hands over nor moves one, whatever its level') }}"><input type="checkbox" id="id-ci"> {{ _("A token of a CI: never on a production") }}</label></div>
       <label for="id-servers" data-for-token>{{ _("Servers") }}</label>
       <div data-for-token><input type="text" id="id-servers" autocomplete="off" list="id-server-names" placeholder="{{ _('all') }}">
         <datalist id="id-server-names">{% for n in server_names %}<option value="{{ n }}"></option>{% endfor %}</datalist>

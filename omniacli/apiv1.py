@@ -19,8 +19,11 @@ VERSION = "1"
 DESCRIPTION = (
     "A small, stable API for scripts and CI: the instances and their state, the jobs and their logs, the backups, "
     "and the actions (start, stop, restart, update the code, go back to a deploy, make a staging), each answered "
-    "with the job to follow. Authenticate with `Authorization: Bearer <token>`: a token made on Settings › Users › "
-    "API and AI assistants (or on a workspace's page), the same token as for MCP at /mcp. Its level is its role: "
+    "with the job to follow; for the machine's admin tokens, the handover of a workspace to a customer's OmniaCLI "
+    "(prepare it here, receive it and switch it there) and the move of an instance to another machine and its "
+    "return, each step with `confirm` = the name, never a CI token's. Authenticate with "
+    "`Authorization: Bearer <token>`: a token made on Settings › Users › API and AI assistants (or on a "
+    "workspace's page), the same token as for MCP at /mcp. Its level is its role: "
     "`user` reads; `developer` also acts on the tests and the stagings; `admin` also acts on a production, each "
     "call with `confirm` = the server's name. A token marked CI never acts on a production: a production is "
     "updated by hand only. Every write is in the access log with the token's name. At most 600 reads and 60 "
@@ -29,7 +32,7 @@ DESCRIPTION = (
     '`{"error": {"code": "...", "message": "..."}}` with a stable code.')
 
 # what each action of /api/v1 is as an MCP tool (the same rules): a test fails when one is missing
-V1_TOOLS = {
+V1_WORKSPACE_TOOLS = {
     ("GET", "/api/v1/instances"): ("list_servers",),
     ("GET", "/api/v1/instances/{server}/{role}"): ("server_status",),
     ("GET", "/api/v1/jobs"): ("list_jobs",),
@@ -46,6 +49,28 @@ V1_TOOLS = {
     ("POST", "/api/v1/instances/{server}/{role}/deploys/{deploy_id}/back"): ("deploy_back",),
     ("POST", "/api/v1/instances/{server}/stagings"): ("create_staging",),
 }
+# the handover of a workspace to a customer's OmniaCLI and the move of an instance to another machine (AD-008 §9
+# step 10, UX-014 A13 and B6): the machine's admin tokens only, never a workspace's (not in WORKSPACE_ROUTES)
+V1_MACHINE_TOOLS = {
+    ("GET", "/api/v1/workspaces/{workspace}/handover"): ("handover_status",),
+    ("POST", "/api/v1/workspaces/{workspace}/handover"): ("prepare_handover",),
+    ("POST", "/api/v1/handovers/receive"): ("receive_workspace",),
+    ("GET", "/api/v1/handovers/{handover_id}"): ("reception_status",),
+    ("POST", "/api/v1/handovers/{handover_id}/switch"): ("switch_workspace",),
+    ("GET", "/api/v1/moves/{server}"): ("move_status",),
+    ("POST", "/api/v1/moves/{server}"): ("move_instance",),
+    ("POST", "/api/v1/moves/{server}/complete"): ("move_instance",),
+    ("POST", "/api/v1/moves/{server}/cancel"): ("move_instance",),
+    ("POST", "/api/v1/moves/{server}/delete-copy"): ("move_instance",),
+    ("POST", "/api/v1/moves/{server}/back"): ("move_back",),
+    ("POST", "/api/v1/moves/{server}/back/complete"): ("move_back",),
+    ("POST", "/api/v1/moves/{server}/back/cancel"): ("move_back",),
+    ("POST", "/api/v1/moves/{server}/back/delete-copy"): ("move_back",),
+}
+V1_TOOLS = {**V1_WORKSPACE_TOOLS, **V1_MACHINE_TOOLS}
+# the steps of a move and of its return as MCP's move_instance and move_back name them: what follows move/ (or
+# move/back/) in the REST path
+MOVE_STEPS = {"prepare": "", "complete": "complete", "cancel": "cancel", "delete_copy": "delete-copy"}
 # the routes of the document itself
 DOCUMENT_ROUTES = {("GET", "/api/v1/openapi.json"), ("GET", "/api/v1/docs")}
 
@@ -65,8 +90,8 @@ class _Model(BaseModel):
 class ErrorDetail(BaseModel):
     code: str = Field(description="A stable code for programs: unauthorized, read_only_token, forbidden, "
                                   "not_found, invalid_request, refused, confirm_required, production_by_hand, "
-                                  "production_level_required, rate_limited, idempotency_conflict, "
-                                  "invalid_idempotency_key, failed")
+                                  "production_level_required, machine_token_required, rate_limited, "
+                                  "idempotency_conflict, invalid_idempotency_key, failed")
     message: str = Field(description="What happened and what to do, in English, for a person")
 
 
@@ -191,6 +216,50 @@ class DeployBackBody(_Model):
 
 class StagingBody(_Model):
     pass
+
+
+class ConfirmBody(_Model):
+    confirm: Optional[str] = Field(None, description="The name typed, given once the token's owner agreed to this "
+                                                     "very action: the instance's server for a move and its return, "
+                                                     "the workspace's name for a handover and its switch")
+
+
+class MoveBody(ConfirmBody):
+    link: Optional[str] = Field(None, description="Prepare only: the link of the machine the instance moves to "
+                                                  "(GET .../move lists them, with why one cannot hold it)")
+
+
+class HandoverBody(ConfirmBody):
+    instances: List[str] = Field(default_factory=list,
+                                 description="The servers of the workspace that pass (GET .../handover lists them, "
+                                             "with why one cannot)")
+
+
+class ReceiveBody(_Model):
+    code: str = Field(description="The handover code the provider gave (omniacli-consegna-1.…), in the body: a "
+                                  "password, never in a URL")
+    dry_run: bool = Field(True, description="true (the default): what arrives and what this machine lacks, read "
+                                            "only, nothing changes here or there; false: receive")
+    name: Optional[str] = Field(None, description="The workspace's name here, when its own is taken (default: its "
+                                                  "own, or <name>-2)")
+    disk_gb: Optional[int] = Field(None, description="The workspace's disk here in GB (default: its own)")
+
+
+class HandoverPrepared(BaseModel):
+    code: Optional[str] = Field(None, description="The handover code, given once and kept here as a hash only: for "
+                                                  "the customer, sent as a password. null in an answer repeated for "
+                                                  "an Idempotency-Key: Redo the code on the page for a new one")
+    handover: Dict[str, Any] = Field(description="The handover as its page has it: its phase, expiry, instances")
+
+
+class Reception(BaseModel):
+    id: str = Field(description="The handover's id: follow the reception at /api/v1/handovers/{id}")
+    offer: Optional[Dict[str, Any]] = Field(None, description="dry_run=true: what arrives (instances, people, "
+                                                              "sizes), what this machine has and lacks, what does "
+                                                              "not pass and why")
+    job: Optional[JobRow] = Field(None, description="dry_run=false: the job of the reception")
+    follow: Optional[str] = Field(None, description="dry_run=false: where to follow the job")
+    log: Optional[str] = Field(None, description="dry_run=false: where to read its log from an offset")
 
 
 def _schema(doc: dict, schema: dict) -> dict:

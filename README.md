@@ -3492,6 +3492,10 @@ the machine of before (step 5 found its logs naming the provider's address).
 
 ### Moving an instance to another machine
 
+Also through the REST API (`/api/v1/moves/{server}`) and MCP (`move_status`,
+`move_instance`, `move_back`), for an admin token of the machine, never a CI's,
+each step with `confirm` = the server's name (step 10 of §9; README, REST API).
+
 An instance of a workspace changes machine and stays the same instance: the
 same name, workspace, names on the web, deploys and backups
 (`docs/adr/AD-008-consegna-e-spostamento.md`, AD-014 and AD-015, step 4 of
@@ -3732,6 +3736,12 @@ workspace's people and token read the same 118 statuses of the 38 GET routes
 of a server before the move and after the return.
 
 ### Handing a workspace over to the customer
+
+Also through the REST API (`/api/v1/workspaces/{workspace}/handover` here,
+`/api/v1/handovers/receive` and `/api/v1/handovers/{id}/switch` on the
+customer's machine) and MCP (`prepare_handover`, `receive_workspace`,
+`switch_workspace`, with their reads), for an admin token of that machine,
+never a CI's, `confirm` = the workspace's name (step 10 of §9; README, REST API).
 
 A workspace leaves this machine for an OmniaCLI of the customer's own
 (AD-008…AD-011, UX-014 part A). The customer's machine **calls this one** in
@@ -5300,6 +5310,9 @@ provides: OmniaCLI installed by hand on Python 3.9 runs without it.
 | `dev_setup` | what a client needs to rebuild an instance locally: remote URLs (without credentials), branches, commits, `addons_path` as repository folders, Odoo and Python versions, the Odoo config options without secrets nor server paths, and the backups to download |
 | `upload_backup` | (admin token) a one-time URL (30 minutes, this token only, the size told, the SHA-256 checked when given) to `PUT` a database from outside: an Odoo backup zip or a plain SQL dump, into a workspace's import area (kept 7 days, as an upload of the Backups page); with `link` this OmniaCLI sends it on to that linked machine and keeps no copy |
 | `restore_new_instance` | (admin token) a new instance of a workspace from that file (or `backup_of` a server's backup): the template of its Odoo version (from the dump's module `base`, or its manifest), restored neutralized; first `dry_run` (the default) tells, starting nothing, the modules installed in the database without code in the new instance, grouped by OCA repository of the catalog (`add_repositories` adds them) or not found (a private repository, Odoo Enterprise); refused while modules are missing unless `allow_missing`; `staging_of` makes it a staging of a production (its mail caught). On a linked machine through `call_linked` |
+| `handover_status`, `prepare_handover` | (admin token of the machine, never a CI's) the handover of a workspace to its customer's own OmniaCLI as its dialog says it, and Prepare: `instances`, `confirm` = the workspace's name; the answer has the **code once** (with an `idempotency_key` a repeated call answers `code: null`, and the code is never kept) |
+| `receive_workspace`, `reception_status`, `switch_workspace` | (admin token of the customer's machine, never a CI's) the code read (`dry_run`, the default: what arrives and what this machine lacks, nothing changes), then received (a job, until *ready*), its reception's state, and Switch to this machine with `confirm` = the workspace's name |
+| `move_status`, `move_instance`, `move_back` | (admin token of the machine, never a CI's) the move of an instance to the machine of a link and its return, a `step` at a time: `prepare` (with `link` for a move), `complete`, `cancel`, `delete_copy`, each with `confirm` = the server's name; asked of the home even for an instance placed elsewhere |
 
 With an admin token `dev_setup`, `backup` and `list_backups` also reach the
 draft servers (saved complete), and their backups download with that token;
@@ -5492,6 +5505,26 @@ that reads it at `/api/v1/docs` (with a token or logged in); the other
 
 Every POST answers `202` with the job (`{"job": {...}, "follow", "log"}`).
 
+**The handover and the move** (AD-008 §9 step 10): the pages' own code, for
+the tokens of the machine with the production level only (`admin`), never a
+CI token's, never a workspace's (`machine_token_required`), and every write
+with `"confirm"` = the name the dialog asks typed. Each has its MCP tool.
+
+| Route | What it does | `confirm` |
+|---|---|---|
+| `GET /api/v1/workspaces/{workspace}/handover` | what the dialog *Hand over to the customer…* says, and the handover under way | — |
+| `POST /api/v1/workspaces/{workspace}/handover` | Prepare (`{"instances": [...]}`): answers `200` with the **code once** (`{"code", "handover"}`); with an `Idempotency-Key` a repeated answer has `"code": null` and the keys' file never holds it | the workspace |
+| `POST /api/v1/handovers/receive` | on the customer's machine, `{"code": "..."}` in the body (never in a URL): `dry_run` true (the default) reads what arrives (`200`, `{"id", "offer"}`), false receives (`202`, the job, `id`) | — |
+| `GET /api/v1/handovers/{id}` | the reception as its banner says it | — |
+| `POST /api/v1/handovers/{id}/switch` | Switch to this machine | the workspace here |
+| `GET /api/v1/moves/{server}` | what *Move to another machine…* says: sizes, names, each machine of a link and why not, the move or its return under way | — |
+| `POST /api/v1/moves/{server}` (`{"link"}`), `…/complete`, `…/cancel`, `…/delete-copy` | the steps of the move | the server |
+| `POST /api/v1/moves/{server}/back`, `…/back/complete`, `…/back/cancel`, `…/back/delete-copy` | the steps of its return | the server |
+
+Their jobs read `api: token <name>` (or `mcp: token <name>`) as who started
+them. The routes of a move are not a server's path: for an instance placed
+on another machine they are answered by its home, never sent to the host.
+
 **Levels**: a token's role. `user` reads; `developer` (write) also acts on
 the tests and the stagings and makes stagings; `admin` also acts on a
 production. **A production is updated by hand only** (a staging is not one):
@@ -5519,7 +5552,7 @@ keeps them.
 
 **Errors** are `{"error": {"code": "...", "message": "..."}}`, the message in
 English: `unauthorized` (401), `read_only_token`, `forbidden`,
-`production_by_hand`, `production_level_required` (403), `not_found` (404),
+`production_by_hand`, `production_level_required`, `machine_token_required` (403), `not_found` (404),
 `confirm_required`, `refused`, `invalid_idempotency_key` (400),
 `idempotency_conflict` (409), `invalid_request` (422), `rate_limited` (429).
 
@@ -5544,6 +5577,11 @@ curl -s -X POST -H "$H" $OMNIACLI/api/v1/instances/acme-odoo-stg-20261122/produc
 # a production: by hand only, an admin token and its name
 curl -s -X POST -H "$H" -H "Content-Type: application/json" -d '{"confirm": "acme-odoo"}' \
      $OMNIACLI/api/v1/instances/acme-odoo/production/restart
+# a move to the machine of the link lab4, then its Complete (an admin token of the machine)
+curl -s -X POST -H "$H" -H "Content-Type: application/json" -d '{"link": "lab4", "confirm": "acme-odoo"}' \
+     $OMNIACLI/api/v1/moves/acme-odoo
+curl -s -X POST -H "$H" -H "Content-Type: application/json" -d '{"confirm": "acme-odoo"}' \
+     $OMNIACLI/api/v1/moves/acme-odoo/complete
 ```
 
 ## Run

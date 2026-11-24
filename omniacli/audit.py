@@ -126,6 +126,8 @@ NOT_SENSITIVE = frozenset({
     # the switch of a handover as the provider has it (step 8, AD-011): its phase, its deadline, the last record of
     # each database, the dumps' names and sizes; no secret
     "/api/handover/v1/{handover_id}/switch",
+    # the same through the REST API (AD-008 §9 step 10): a handover, a reception, a move as their pages read them
+    "/api/v1/workspaces/{workspace}/handover", "/api/v1/handovers/{handover_id}", "/api/v1/moves/{server}",
     # the map of the infrastructure (UX-009): the facts of /api/servers and /api/instances as a
     # diagram; of the caught mail the count only, no list of backups, no text, no log
     "/api/map",

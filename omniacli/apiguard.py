@@ -84,6 +84,28 @@ def production_refusal(by_hand: bool, server: str, role: str, ci: bool, confirm:
     return None
 
 
+def machine_refusal(scoped: bool, role: str, ci: bool, action: str, confirm: str | None = None,
+                    name: str = "") -> ApiError | None:
+    """Why a token may not hand a workspace over, receive one, switch one, move an instance or bring it back
+    (AD-008 §9 step 10; None: it may). They act on productions, the machine's: a token of the machine (never a
+    workspace's), never a CI's, with the admin role; and a write (confirm not None) with confirm = name, the name
+    typed on the pages' dialogs."""
+    if scoped:
+        return ApiError(403, "machine_token_required",
+                        "The handover of a workspace and the move of an instance are for a token of the machine: "
+                        "a workspace's token never reaches them")
+    if ci:
+        return ApiError(403, "production_by_hand",
+                        f"{action} acts on productions, by hand only: a CI token never does it")
+    if not can(role, "admin"):
+        return ApiError(403, "production_level_required",
+                        f"{action} needs a token with the production level (role admin); this one is {role}")
+    if confirm is not None and (confirm or "").strip() != name:
+        return ApiError(400, "confirm_required",
+                        f"{action}: give confirm={name!r}, once the token's owner has agreed to it")
+    return None
+
+
 class RateLimiter:
     """The requests of each token in the last WINDOW seconds, reads and
     writes apart."""

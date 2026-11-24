@@ -23,7 +23,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
-from . import apiguard, backupcheck, capabilities, instancearchive, ops, pgreport, plugins
+from . import apiguard, apiv1, backupcheck, capabilities, instancearchive, ops, pgreport, plugins
 from .auth import Principal
 from .accesslog import AccessLog
 from .auth import ROLES as ACCESS_ROLES
@@ -66,7 +66,15 @@ To restore a database from outside as a new instance ("restore the database
 X on the server Y creating a new neutralized instance"): upload_backup gives
 a URL to PUT the file to (with link=<machine> it is sent on there), then
 restore_new_instance, first with dry_run=true: it tells the modules without
-code, which you report to the user before restoring with dry_run=false."""
+code, which you report to the user before restoring with dry_run=false.
+With an admin token of the machine (never a CI's, never a workspace's): hand a
+workspace over to its customer's own OmniaCLI (handover_status, then
+prepare_handover with confirm=<workspace>: its code, given once, goes to the
+customer as a password); on the customer's machine receive_workspace (first
+dry_run=true), reception_status, then switch_workspace with
+confirm=<workspace>; move an instance to the machine of a link (move_status,
+then move_instance step prepare, complete, cancel or delete_copy) and bring it
+back (move_back, the same steps), each step with confirm=<server name>."""
 
 
 def _instructions() -> str:
@@ -86,13 +94,26 @@ TOOL_ROLES = {"update_test": "developer", "backup_test": "developer",
               "update_production": "developer",
               # what the REST API does too (README, REST API): the same rules
               "create_staging": "developer", "list_deploys": "developer", "deploy_back": "developer",
-              "database_report": "developer", "upload_backup": "admin", "restore_new_instance": "admin"}
+              "database_report": "developer", "upload_backup": "admin", "restore_new_instance": "admin",
+              # the handover and the move (AD-008 §9 step 10): the machine's admin tokens, never a CI's
+              # (apiguard.machine_refusal)
+              "handover_status": "admin", "prepare_handover": "admin", "receive_workspace": "admin",
+              "reception_status": "admin", "switch_workspace": "admin", "move_status": "admin",
+              "move_instance": "admin", "move_back": "admin"}
 # the tools that change something: a write in the rate limit of a token (apiguard.RateLimiter)
 WRITE_TOOLS = {"update_test", "backup_test", "backup", "add_draft_server", "restart_instance", "start_instance",
                "stop_instance", "run_action", "verify_backup", "full_archive", "stop_job", "update_production",
-               "upload_backup", "restore_new_instance", "create_staging", "deploy_back"}
+               "upload_backup", "restore_new_instance", "create_staging", "deploy_back",
+               "prepare_handover", "receive_workspace", "switch_workspace", "move_instance", "move_back"}
 # the tools of the machine's tokens only: a workspace's token never reaches them
-MACHINE_TOOLS = {"read_server", "add_draft_server", "list_links", "linked_tools", "call_linked"}
+MACHINE_TOOLS = {"read_server", "add_draft_server", "list_links", "linked_tools", "call_linked",
+                 "handover_status", "prepare_handover", "receive_workspace", "reception_status", "switch_workspace",
+                 "move_status", "move_instance", "move_back"}
+# the tools of a move asked of the home of a placed instance, never of the machine it is on (its move is the home's)
+HOME_TOOLS = {"move_status", "move_instance", "move_back"}
+# the tools a CI's token never uses, whatever its role (apiguard.machine_refusal): not in its list
+NOT_FOR_CI = {"handover_status", "prepare_handover", "receive_workspace", "reception_status", "switch_workspace",
+              "move_status", "move_instance", "move_back"}
 # the role of the token of the request being served, for the list of tools,
 # and the workspace it is bound to (empty: the machine's)
 _ROLE = contextvars.ContextVar("omniacli_mcp_role", default="user")
@@ -280,6 +301,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         """Only the tools the caller's token may use."""
         role, scope, grant = _ROLE.get(), _SCOPE.get(), _GRANT.get()
         return [t for t in await every_tool() if allowed(t.name, role) and not (scope and t.name in MACHINE_TOOLS)
+                and not (_CI.get() and t.name in NOT_FOR_CI)
                 and not (grant is not None and (grant.lacks(capabilities.TOOLS.get(t.name)) or (
                     grant.servers is not None and t.name in capabilities.WHOLE_TOOLS)))]
     server.list_tools = list_tools
@@ -733,9 +755,10 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         if refused is not None:
             raise ToolError(f"{refused.code}: {refused.message}")
 
-    async def once(ctx: Context, tool: str, key: str, arguments: dict, run) -> dict:
+    async def once(ctx: Context, tool: str, key: str, arguments: dict, run, keep=None) -> dict:
         """A tool that starts a job, with its idempotency_key: the same key with the same arguments
-        within 24 hours answers the job of the first call (shared with the REST API's keys)."""
+        within 24 hours answers the job of the first call (shared with the REST API's keys). keep(answer): what
+        is kept of an answer that is not a job's (a secret it gives once taken out), answered again as it is."""
         if not key or guard is None:
             return await run()
         refused = guard.idempotency.check_key(key)
@@ -752,7 +775,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
                 job = jobs.get(str((before["body"] or {}).get("id") or ""))
                 return job_dict(ctx, job, tail=30) if job is not None else before["body"]
             answer = await run()
-            guard.idempotency.remember(who, key, print_, 200, {"id": answer.get("id")})
+            guard.idempotency.remember(who, key, print_, 200, keep(answer) if keep else {"id": answer.get("id")})
             return answer
 
     async def submit(ctx: Context, title: str, inst: Instance, action, wait_seconds: int) -> dict:
@@ -912,6 +935,124 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
             return job_dict(ctx, found, tail=30)
         return await once(ctx, "deploy_back", idempotency_key,
                           {"server_name": server_name, "role": role, "deploy_id": deploy_id, "pause": pause}, run)
+
+    # --- the handover of a workspace and the move of an instance (AD-008 §9 step 10): the REST API's code
+    # (app.machine_act, the pages' code with apiguard.machine_refusal first), the same answers and refusals
+
+    async def machine(ctx: Context, op: str, wait_seconds: int = 0, **given) -> dict:
+        """A step of a handover or a move: its answer, a job's as get_job gives it (with what else it said)."""
+        if api.get("machine") is None:
+            raise ToolError("This OmniaCLI hands over and moves nothing through MCP")
+        code, data = await api["machine"](op, as_principal(ctx), source_of(ctx), **given)
+        if code >= 400:
+            raise ToolError(f"{data.get('code') or apiv1.code_of(code)}: {data.get('error') or 'Refused'}")
+        job = jobs.get(str(data.get("job") or "")) if data.get("job") else None
+        if job is None:
+            return data
+        await _wait(job, wait_seconds)
+        return {**job_dict(ctx, job, tail=30), **{k: v for k, v in data.items() if k not in ("job", "id")},
+                **({"handover_id": data["id"]} if data.get("id") else {})}
+
+    @server.tool()
+    async def handover_status(workspace: str, ctx: Context) -> dict:
+        """(admin token of the machine) The handover of a workspace to its
+        customer's own OmniaCLI, as its dialog says it: each instance with its
+        sizes or why it cannot pass, the people and what does not pass, and the
+        handover under way (phase, expiry, claim). Then prepare_handover."""
+        return await machine(ctx, "handover_status", workspace=workspace)
+
+    @server.tool()
+    async def prepare_handover(workspace: str, instances: list[str], ctx: Context, confirm: str = "",
+                               idempotency_key: str = "") -> dict:
+        """(admin token of the machine, never a CI's) Prepare the handover of
+        a workspace to the customer's own OmniaCLI: instances are the servers
+        that pass (handover_status lists them), confirm=<workspace name>, given
+        only after the user agreed. Nothing stops here. The answer has the
+        code ONCE: give it to the user to send to the customer as a password
+        (never in a chat log of others); the customer receives it on its
+        machine with receive_workspace. idempotency_key: a repeated call
+        answers the handover again with code null."""
+        return await once(ctx, "prepare_handover", idempotency_key, {"workspace": workspace, "instances": instances},
+                          lambda: machine(ctx, "prepare_handover", workspace=workspace, confirm=confirm,
+                                          body={"instances": list(instances)}),
+                          keep=lambda answer: {**answer, "code": None})
+
+    @server.tool()
+    async def receive_workspace(code: str, ctx: Context, dry_run: bool = True, name: str = "",
+                                disk_gb: int | None = None, wait_seconds: int = 0, idempotency_key: str = "") -> dict:
+        """(admin token of the customer's machine, never a CI's) Receive a
+        workspace a provider hands over, with the code it gave. FIRST with
+        dry_run=true (the default): what arrives (instances, people, sizes),
+        what this machine lacks, what does not pass; nothing changes. Tell the
+        user, then dry_run=false: a job copies everything while it runs at the
+        provider's, until ready (reception_status with handover_id). name: the
+        workspace's name here when its own is taken; disk_gb: its disk here.
+        Then switch_workspace."""
+        given = {"code": code, "name": name, "disk_gb": disk_gb}
+        if dry_run:
+            return await machine(ctx, "receive_read", body=given)
+        return await once(ctx, "receive_workspace", idempotency_key, {"code": code, "name": name, "disk_gb": disk_gb},
+                          lambda: machine(ctx, "receive", wait_seconds, body=given))
+
+    @server.tool()
+    async def reception_status(handover_id: str, ctx: Context) -> dict:
+        """(admin token of the machine) A reception on this machine: its phase
+        (receiving, ready, switching, switched, interrupted, cancelled), the
+        workspace, the copy's progress. No secret."""
+        return await machine(ctx, "reception_status", handover_id=handover_id)
+
+    @server.tool()
+    async def switch_workspace(handover_id: str, ctx: Context, confirm: str = "", wait_seconds: int = 0,
+                               idempotency_key: str = "") -> dict:
+        """(admin token of the customer's machine, never a CI's) Switch a
+        received workspace to this machine (its reception ready): the
+        provider's instances stop behind the maintenance page, their last
+        changes come here, they start here and are checked, the names pass; if
+        one fails all run at the provider's again. confirm=<the workspace's
+        name here>, given only after the user agreed. A job (get_job)."""
+        return await once(ctx, "switch_workspace", idempotency_key, {"handover_id": handover_id},
+                          lambda: machine(ctx, "switch_workspace", wait_seconds, handover_id=handover_id,
+                                          confirm=confirm))
+
+    @server.tool()
+    async def move_status(server_name: str, ctx: Context) -> dict:
+        """(admin token of the machine) The move of an instance to another
+        machine: its sizes and names, each machine of a link with its load and
+        room or why it cannot hold it, the move (or its return) under way."""
+        return await machine(ctx, "move_status", server=server_name)
+
+    @server.tool()
+    async def move_instance(server_name: str, ctx: Context, step: str = "prepare", link: str = "", confirm: str = "",
+                            wait_seconds: int = 0, idempotency_key: str = "") -> dict:
+        """(admin token of the machine, never a CI's) Move an instance of a
+        workspace to the machine of a link (move_status lists them), a step at
+        a time: prepare (with link: made there, its files and database copied
+        while it runs here), complete (it stops here, starts there, its names
+        pass; the stop is measured), cancel (before complete), delete_copy
+        (the stopped copy kept here 7 days, deleted now). Every step:
+        confirm=<server name>, given only after the user agreed. A job
+        (get_job). Its return: move_back."""
+        if step not in apiv1.MOVE_STEPS:
+            raise ToolError(f"step is one of {', '.join(apiv1.MOVE_STEPS)}")
+        return await once(ctx, "move_instance", idempotency_key, {"server_name": server_name, "step": step,
+                                                                  "link": link},
+                          lambda: machine(ctx, f"move:{step}", wait_seconds, server=server_name, confirm=confirm,
+                                          body={"link": link} if step == "prepare" else {}))
+
+    @server.tool()
+    async def move_back(server_name: str, ctx: Context, step: str = "prepare", confirm: str = "",
+                        wait_seconds: int = 0, idempotency_key: str = "") -> dict:
+        """(admin token of the machine, never a CI's) Bring a moved instance
+        back to this machine, a step at a time: prepare (the files that
+        changed and its whole database copied here, it runs there meanwhile),
+        complete (it stops there, starts here, its names pass back), cancel
+        (before complete), delete_copy (the stopped copy left on the other
+        machine deleted now). Every step: confirm=<server name>, given only
+        after the user agreed. A job (get_job)."""
+        if step not in apiv1.MOVE_STEPS:
+            raise ToolError(f"step is one of {', '.join(apiv1.MOVE_STEPS)}")
+        return await once(ctx, "move_back", idempotency_key, {"server_name": server_name, "step": step},
+                          lambda: machine(ctx, f"back:{step}", wait_seconds, server=server_name, confirm=confirm))
 
     @server.tool()
     def list_actions(server_name: str, role: str, ctx: Context) -> list[dict]:
@@ -1174,7 +1315,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
                               role=role, server=server,
                               workspace=workspace or (settings.workspace_of(server) if server else "") or "",
                               **({"on_behalf": who} if delegated is not None else {}))
-            if kind == "mcp" and api.get("placed") and server:
+            if kind == "mcp" and api.get("placed") and server and not set(_rpc_tools(body)) & HOME_TOOLS:
                 # an instance of this machine's workspace placed on another machine: its tools are asked there
                 # (AD-014 §6), with the same scope; None: it is here
                 answered = await api["placed"](name, role, server, body)
@@ -1186,7 +1327,10 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
             _ROLE.set(role)
             _SCOPE.set(workspace)
             _DELEGATED.set(delegated is not None)
-            _CI.set(bool(delegated and delegated.get("ci")))
+            # a CI's token: through its home (delegated), or of this machine (for the list of tools only: ci_of reads
+            # this machine's tokens' mark itself)
+            _CI.set(bool(delegated.get("ci")) if delegated is not None
+                    else bool(kind == "mcp" and settings.token_ci(name)))
             _FOUND.set(delegated)
             _GRANT.set(settings.token_grant(name) if kind == "mcp" else _delegated_grant(delegated, role))
             _WHO.set(who)

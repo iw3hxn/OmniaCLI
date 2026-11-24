@@ -1,5 +1,6 @@
 {
  "A production is updated by hand only: a CI token never starts, stops, updates nor backs one up, whatever its level": "Una produzione si aggiorna solo a mano: un token di una CI non la avvia, non la ferma, non la aggiorna e non ne fa il backup, qualunque sia il suo livello",
+ "A production is updated by hand only: a CI token never starts, stops, updates, backs up, hands over nor moves one, whatever its level": "Una produzione si aggiorna solo a mano: un token di una CI non la avvia, non la ferma, non la aggiorna, non ne fa il backup, non la consegna e non la sposta, qualunque sia il suo livello",
  "A token of a CI: it never acts on a production, which is updated by hand only": "Un token di una CI: non agisce mai su una produzione, che si aggiorna solo a mano",
  "A token of a CI: never on a production": "Token di una CI: mai su una produzione",
  "API and AI assistants": "API e assistenti AI",
@@ -38,5 +39,6 @@
  "read": "lettura",
  "user only reads; developer also acts on the tests and the stagings and makes stagings; admin also acts on a production, each time with its name in confirm, and adds draft servers.": "user legge soltanto; developer agisce anche sui test e sulle staging e crea staging; admin agisce anche su una produzione, ogni volta con il suo nome in confirm, e aggiunge server in bozza.",
  "write and productions, with confirm": "scrittura e produzioni, con conferma",
+ "write, productions, handovers and moves, with confirm": "scrittura, produzioni, consegne e spostamenti, con conferma",
  "write: tests and stagings": "scrittura: test e staging"
 }
