@@ -36,7 +36,7 @@
  "Two-step verification is required on this machine.": "Su questa macchina la verifica in due passaggi è obbligatoria.",
  "Two-step verification required": "Verifica in due passaggi obbligatoria",
  "Users at the portal address: whoever logs in there, and the users of the workspaces wherever they log in, once the portal has an address; without one, nobody is asked.": "Utenti all'indirizzo del portale: chi entra da lì, e gli utenti dei workspace da qualunque indirizzo, appena il portale ha un indirizzo; senza, non è chiesta a nessuno.",
- "Who must type a code of an authenticator app after the password. A user who must and has none sets it up right after the password. Anyone may switch it on from Account.": "Chi deve scrivere un codice di un'app di autenticazione dopo la password. Chi deve e non l'ha ancora la attiva subito dopo la password. Chiunque può attivarla da Account.",
+ "Who types a code of an authenticator app after the password": "Chi scrive un codice di un'app di autenticazione dopo la password",
  "Wrong code.": "Codice sbagliato.",
  "Wrong code: type the one the app shows now (check the clock of the phone)": "Codice sbagliato: scrivi quello che l'app mostra adesso (controlla l'orologio del telefono)",
  "Your own is switched off on your Account page, with a code": "La tua si disattiva dalla pagina Account, con un codice",

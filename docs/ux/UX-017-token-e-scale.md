@@ -371,7 +371,7 @@ Il rosso (`--accent`, `--accent-strong`, `--danger`, `--err`) compare solo in: i
 
 ### 5.7 Badge
 
-`.badge`: 12/18 peso 600, padding 2/8, raggio `--r-pill`. **Icona 12** prima della parola su `ok` (`check`), `warn` (`triangle-alert`), `error` (`circle-x`); `info`, `test`, neutro: senza icona. L'icona è disegnata dal CSS (`::before` con `mask-image` e `background-color: currentColor`, il percorso Lucide in un `data:` URI), così **nessuno dei 51 badge nei template e degli 84 creati in JS cambia markup**. È decorativa: la parola porta il significato.
+`.badge`: 12/18 peso 600, padding 2/8, raggio `--r-pill`. **Icona 12** prima della parola su `ok` (`check`), `warn` (`triangle-alert`), `error` (`circle-x`); `info`, `test`, neutro: senza icona. L'icona è disegnata dal CSS (`::before` con `mask-image` e `background-color: currentColor`, il percorso Lucide in un `data:` URI), così **nessuno dei 51 badge nei template e degli 84 creati in JS cambia markup**. È decorativa: la parola porta il significato. **Deciso da Carlo il 24/11/2026**: anche `info` porta la sua icona (`info`), come chiede il playbook; neutro e `test` restano senza.
 
 ### 5.8 Banner e avvisi
 
@@ -416,7 +416,7 @@ Il rosso (`--accent`, `--accent-strong`, `--danger`, `--err`) compare solo in: i
 ### 5.10 Menu
 
 - **CSS morto, via**: `.menu`, `.menu-label`, `.menu-items` (`base.html:184-193`, 0 usi), `.button.current` (`:500`).
-- I menu a `details` (Altro ▾ di `server.html:232`, «Azioni ▾» di `backups.html:310`, «Apri ↗ ▾» di `_environments.html:24`/`:419`): `summary` con `chevron-down` che ruota; pannello `--shadow-md`, raggio `--r-lg`, padding 4; voci terziarie alte `--control-h`, testo a sinistra; le voci di pericolo `.danger`. **Un gestore comune** in `base.html` per `details.menu`: Esc chiude e rimette il fuoco sul `summary`, un click fuori chiude (oggi solo `backups.html:406`).
+- I menu a `details` (Altro ▾ di `server.html:232`, «Azioni ▾» di `backups.html:310`, «Apri ↗ ▾» di `_environments.html:24`/`:419`): `summary` con `chevron-down` che ruota; pannello `--shadow-md`, raggio `--r-lg`, padding 4; voci terziarie alte `--control-h`, testo a sinistra; le voci di pericolo `.danger`. **Un gestore comune** in `base.html` per `details.menu`: Esc chiude e rimette il fuoco sul `summary`, un click fuori chiude (oggi solo `backups.html:406`). **Deciso da Carlo il 24/11/2026**: dentro un menu aperto ↑ ↓ spostano il fuoco fra le voci (in giro), Home e End alla prima e all'ultima; ↓ sul `summary` di un menu chiuso lo apre sulla prima voce. Le voci disabilitate si saltano.
 - I menu a pulsante (campanella, ☰) hanno già `aria-expanded`; restano.
 - Le 13 voci di «Altro» e lo spostamento di Console e «Sostituisci il database» nella pagina: **non sono di questo contratto** (IA della pagina istanza, UX-006).
 
@@ -434,7 +434,7 @@ Niente sparisce senza un posto: oggi sotto 560 «Esci» e la lingua non ci sono 
 
 ### 5.12 Scheletri
 
-- `.skeleton-line` (alta quanto l'interlinea del testo che sostituisce, 20 di default; larghezze `.w-40` `.w-60` `.w-80`) e `.skeleton-block` (`height: var(--h, 64px)`): fondo `--panel-2`, raggio `--r-sm`; impulso d'opacità 1 → .6 su `--dur-400`, al più 5 s (§2.8).
+- `.skeleton-line` (alta quanto l'interlinea del testo che sostituisce, 20 di default; larghezze `.w-40` `.w-60` `.w-80`) e `.skeleton-block` (`height: var(--h, 64px)`): fondo `--panel-2`, raggio `--r-sm`; impulso d'opacità 1 → .6 su `--dur-400`, al più 5 s (§2.8). **Deciso da Carlo il 24/11/2026**: l'impulso di 5 s resta, contro il playbook (che vuole lo scheletro fermo e mette pulse e shimmer «in quarantena»): con la riduzione del moto è fermo.
 - Il contenitore ha `aria-busy="true"` e un testo `role="status"` per i lettori di schermo («Lettura dei database…», il testo di oggi). **Dopo 5 s** il testo diventa visibile accanto allo scheletro: chi aspetta sa che il pannello lavora ancora (Nielsen 1).
 - Dove: Database della macchina (`_machine_database.html:129`), Moduli (`_modules_tab.html:19`), Backup (lista globale `backups.html:64` e scheda Backup dell'istanza). Gli scheletri fatti a mano di oggi (`.deploy-card.skeleton`, `.m-skeleton`, `.map-skeleton`) passano alle stesse classi. Gli altri «Lettura…» restano testo.
 
@@ -443,10 +443,10 @@ Niente sparisce senza un posto: oggi sotto 560 «Esci» e la lingua non ci sono 
 Decisa qui, piccola e sicura:
 
 1. **Il contenuto dei 773 `title` resta.** È il canone («ogni pulsante ha il suo aiuto») e `test_the_page_explains_itself` lo controlla.
-2. **Campi** (60 `title` su `input`/`select`/`textarea`): se il testo dice cosa scrivere o cosa cambia, diventa il `.hint` visibile sotto il campo (con `aria-describedby`) e il `title` del campo va via (non lo stesso testo due volte). Se un suggerimento visibile lo dice già, il `title` va via e basta.
+2. **Campi** (60 `title` su `input`/`select`/`textarea`): se il testo dice cosa scrivere o cosa cambia, diventa il `.hint` visibile sotto il campo (con `aria-describedby`) e il `title` del campo va via (non lo stesso testo due volte). Se un suggerimento visibile lo dice già, il `title` va via e basta. **Deciso da Carlo il 24/11/2026**: i filtri e le ricerche delle liste (filtro degli ambienti, ricerca del log, filtri del registro degli accessi, «Cerca in» dei moduli, ricerca dei database, casella di posta) e i 4 campi in una riga (la casella dei webhook in una riga di tabella, il selettore del colore, le due vie «Da GitHub» / «Dal suo indirizzo», la select «Server lì» in una riga di tre) tengono l'aiuto nel solo `title`: la loro etichetta, il segnaposto o il nome della scelta dicono già cosa fanno.
 3. **Pericolo** (70 pulsanti `.danger`): la conseguenza scritta nel `title` deve essere anche nel testo della conferma (`data-confirm`, `omniaAsk`, `omniaTypeName`), che sul telefono è l'unico posto dove si legge.
 4. **Pulsanti-icona**: `aria-label` col nome corto, `title` con l'aiuto.
-5. **«?» toggletip**: solo dove una scelta si fa leggendo una spiegazione più lunga di un suggerimento, e chi la fa può essere sul telefono. Al più **uno per sezione**. Un `.icon-btn` `circle-help` 16 (bersaglio 32/44) con `aria-label="{{ _('Help') }}: <sezione>"` e `aria-expanded`, che apre sotto di sé un riquadro (`--shadow-md`, max 320px) col testo del `title`, annunciato con `role="status"`; Esc e un click fuori lo chiudono. **Nessun posto obbligatorio in questa build**: i candidati sono i `summary` con `title` delle Opzioni e delle Impostazioni (52 `summary` con `title` in tutto), da scegliere schermo per schermo con il loro contratto.
+5. **«?» toggletip** (**deciso da Carlo il 24/11/2026**, sostituisce la regola di prima): un suggerimento sta su **una riga** (80 caratteri in inglese, 95 in italiano); quello che diceva in più va nel «?» della sua parte, **al più uno per parte**, accanto al titolo della parte (o al campo, se la parte non ha titolo). È fatto come quello del playbook: un `.icon-btn` `circle-help` 16 (bersaglio 32/44) con `aria-label` «Di più su <parte>», `title`, `aria-expanded` e `aria-controls`, che apre sotto di sé un dialogo che non blocca la pagina (`role="dialog"` con lo stesso nome, max 320 px, `--shadow-md`, raggio `--r-lg`) con la sua X; il «?», la X, Esc e un clic fuori lo chiudono e il fuoco torna sul «?»; uno aperto per volta; Tab entra ed esce, il fuoco non è trattenuto; dentro un dialogo Esc chiude solo lui. Il testo: al più circa 350 caratteri, mai la ripetizione del suggerimento. Macro `toggletip(id, parte, testo)` in `_icons.html`, script in `base.html`. Prima: le Opzioni (8 parti) e il database di una nuova istanza su un'altra macchina, con «Pubblicato da» del workspace; gli altri schermi quando si ritoccano.
 6. **Niente** libreria di tooltip né un tooltip al fuoco per tutti i 773: duplicherebbe il `title`, che i lettori di schermo già leggono come descrizione.
 
 ---
@@ -597,3 +597,11 @@ Rimisurato contro i componenti del DX Playbook (Alert, Badge, Skeleton, Toggleti
 - **§5.13 aiuti**: 72 campi non hanno più l'aiuto solo nel `title`: 67 lo mostrano sotto (`.hint` + `aria-describedby`; quattro dicevano un percorso dell'API, tolto), 5 lo avevano già scritto accanto (la nota collegata) o nella loro etichetta. Restano col `title` 21 campi: i filtri delle liste, la casella di una riga di tabella, il selettore del colore, le due vie per aggiungere un repository, le opzioni bloccate dalla scheda Posta (dette ora anche sopra la tabella), una scelta in una riga di tre. Due conferme di pericolo dicono ora la conseguenza del loro aiuto (revoca e cancellazione di un collegamento).
 - **§2.9, A6**: `.form-grid` mobile-first (etichette sopra i campi sotto 576 px, accanto da 576), la seconda colonna e i `fieldset` possono stringersi: il modulo di modifica di un workspace non fa più scorrere la pagina a 375 px (lo faceva già prima), e le Opzioni a 375 non tagliano più la select del riavvio.
 - **§2.7**: i 44 px scritti per larghezza (dialoghi del passaggio e della ricezione, bande, menu degli ambienti, mappa, workspace) sono `--control-h`: 44 al tocco, 36 col mouse.
+
+## Decise (24/11/2026, seconda volta)
+
+Carlo, sulle decisioni nuove della chiusura:
+1. **Suggerimenti lunghi**: sì, una riga e il resto in un toggletip «?» come quello del playbook (§5.13 regola 5). Fatto sulle Opzioni (8 «?», 20 suggerimenti accorciati) e sul database di un'altra macchina (un «?» sotto il titolo nuovo «Il database dell'istanza su un'altra macchina», 8 suggerimenti) e su «Pubblicato da» (un «?»); italiano aggiornato.
+2. **Scheletro**: l'impulso di 5 s resta (§5.12).
+3. **Menu**: frecce, Home e End fra le voci (§5.10). **Badge info**: con la sua icona (§5.7).
+4. **Filtri e ricerche delle liste, e i 4 campi in una riga**: l'aiuto resta nel solo `title` (§5.13 regola 2).

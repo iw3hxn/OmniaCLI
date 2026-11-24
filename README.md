@@ -5699,7 +5699,7 @@ controls and motion. A page writes `var(--…)`, never a value of its own.
   No character or emoji stands for an icon any more (› and → stay in the
   sentences and in the paths of the menus; the map keeps its signs). A state
   is said by a word, an icon and a colour, never by the colour alone: the
-  badges of a good, a warned and a failed state (padding 2/8) and every
+  badges of a good, a warned, a failed and an informative state (padding 2/8) and every
   banner carry their icon, and a production is told by its rocket.
 - **Warnings**: a warning that is a paragraph of its own is a warning banner
   (its amber border, its triangle, its words in the colour of the text); one
@@ -5709,8 +5709,11 @@ controls and motion. A page writes `var(--…)`, never a value of its own.
   without its mark.
 - **Fields**: what a field wants is written under it, not only in a help
   that shows on hover (a phone has none), and read with it by a screen
-  reader; the filters of a list keep theirs on hover, their label and
-  placeholder say what they do. The question of what cannot be undone says
+  reader, on one line; what it says more is in the «?» beside the title of its
+  part (the Options, the database of an instance on another machine): a short
+  explanation that the «?», its X, Esc or a click elsewhere closes. The
+  filters of a list keep their help on hover, their label and placeholder say
+  what they do. The question of what cannot be undone says
   its consequence. On a phone a form's labels are over their fields (beside
   them from 576 px). A field the browser or the panel refuses says why under it, in red with its
   icon, the field marked as wrong and the first one in focus; typing in it
@@ -5721,8 +5724,10 @@ controls and motion. A page writes `var(--…)`, never a value of its own.
   screen reader by the title of its part of the page (also the tables the
   scripts draw); numbers on the right.
 - **Menus and reading**: a menu that opens from a button (More, the menu of
-  a row, of an environment, of a machine) turns its chevron when open and
-  closes with Esc (the focus back on its button) or a click elsewhere. What
+  a row, of an environment, of a machine) turns its chevron when open, its
+  entries reached with the arrows (Home and End the first and the last; the
+  down arrow on its button opens it), and closes with Esc (the focus back on
+  its button) or a click elsewhere. What
   is being read (the databases of a machine, the catalog of the modules, the
   backups of every machine and of an instance, the deploys, the map, the
   workspaces) shows grey lines in its place; its «Reading…» is said to a

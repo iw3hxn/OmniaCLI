@@ -381,14 +381,14 @@ def test_a_warning_is_a_banner_or_a_marked_line():
 
 
 def test_badges_carry_their_mark():
-    """UX-017 §5.7: a badge 12/18 semibold, padding 2/8, a pill; a good, a warned and a failed one draw their icon
-    (check, triangle, circle-x) from the CSS, in the colour of their words."""
+    """UX-017 §5.7: a badge 12/18 semibold, padding 2/8, a pill; a good, a warned, a failed and (Carlo, 24/11/2026) an
+    informative one draw their icon (check, triangle, circle-x, info) from the CSS, in the colour of their words."""
     base = (TEMPLATES / "base.html").read_text(encoding="utf-8")
     badge = re.search(r"\n\.badge \{([^}]*)\}", base).group(1)
     assert "padding: 2px 8px" in badge and "var(--fs-12)" in badge and "var(--r-pill)" in badge and "var(--lh-18)" in badge
     assert re.search(r"\.badge\.ok::before, \.badge\.active::before, \.badge\.warn::before, \.badge\.draft::before, "
-                     r"\.badge\.error::before, \.badge\.err::before \{[^}]*background-color: currentColor", base)
-    for state, mark in (("ok", "--m-check"), ("warn", "--m-triangle"), ("error", "--m-circle-x")):
+                     r"\.badge\.error::before, \.badge\.err::before,\s*\.badge\.info::before \{[^}]*background-color: currentColor", base)
+    for state, mark in (("ok", "--m-check"), ("warn", "--m-triangle"), ("error", "--m-circle-x"), ("info", "--m-info")):
         assert re.search(rf"\.badge\.{state}[^{{]*\{{ --mark: var\({mark}\); \}}", base), state
     # no badge of a template pads itself apart
     for name, selector, body in _css_rules():
@@ -443,3 +443,58 @@ def test_a_dangerous_question_says_its_consequence():
     """UX-017 §5.13 rule 3: what the help of a dangerous button says that cannot be undone is in its question too."""
     assert "that instance gets in again only with a new token" in (TEMPLATES / "users.html").read_text(encoding="utf-8")
     assert "on the other instance its token stays valid until you revoke it there" in (TEMPLATES / "links.html").read_text(encoding="utf-8")
+
+
+def _italian():
+    found = {}
+    for catalog in (TEMPLATES.parent / "i18n" / "it").glob("*.json"):
+        found.update(json.loads(catalog.read_text(encoding="utf-8")))
+    return found
+
+
+def test_a_hint_is_one_line_and_the_rest_a_toggletip():
+    """UX-017 §5.13 (Carlo, 24/11/2026): a field's hint on the Options and on the database of a new instance on another
+    machine is one line (80 characters in English, 95 in Italian); what it said more is in the «?» of its part, at most
+    one a part: a dialog that does not block the page, named, with its X, opened and closed by its «?» (aria-expanded),
+    by the X, Esc and a click elsewhere, its text at most about 350 characters."""
+    italian = _italian()
+    icons = (TEMPLATES / "_icons.html").read_text(encoding="utf-8")
+    macro = icons[icons.index("{% macro toggletip("):icons.index("{%- endmacro %}", icons.index("{% macro toggletip("))]
+    for needed in ('class="icon-btn toggletip-open" aria-expanded="false" aria-controls="{{ id }}"', 'role="dialog"', "hidden",
+                   'class="icon-btn toggletip-x" aria-label="{{ _(\'Close\') }}"', "#i-circle-help"):
+        assert needed in macro, needed
+    base = (TEMPLATES / "base.html").read_text(encoding="utf-8")
+    for needed in ('button.setAttribute("aria-expanded", "true")', 'target.closest(".toggletip-x")', "close(box, true);\n  }, true);",
+                   "max-width: min(320px, calc(100vw - 32px))"):
+        assert needed in base, needed
+    options = (TEMPLATES / "options.html").read_text(encoding="utf-8")
+    workspace = (TEMPLATES / "workspace.html").read_text(encoding="utf-8")
+    remote = workspace[workspace.index('<div id="remote-fields"'):workspace.index('<div id="from-archive"')]
+    relay = workspace[workspace.index('<div id="names-form">'):workspace.index('id="relay-via-hint"') + 300]
+    tips = 0
+    for name, text in (("options.html", options), ("remote", remote), ("relay", relay)):
+        for hint in re.findall(r'<small class="hint" id="[^"]+">\{\{ _\(\'((?:[^\'\\]|\\.)*)\'', text):
+            hint = hint.replace("\\'", "'")
+            assert len(hint) <= 80 and hint in italian and len(italian[hint]) <= 95, (name, hint)
+        for said in re.findall(r'toggletip\("[^"]+", _\("[^"]*"\), _\(\'((?:[^\'\\]|\\.)*)\'\)\)', text):
+            said = said.replace("\\'", "'")
+            assert len(said) <= 360 and said in italian, (name, said[:40])
+            tips += 1
+    assert tips == 10
+    # at most one a part of the Options
+    for part in options.split("<section")[1:]:
+        assert part.count("toggletip(") <= 1, part[:80]
+    for msgid in ("More about {part}", "Opens a short explanation of this part; Esc closes it", "Closes this explanation"):
+        assert msgid in italian, msgid
+
+
+def test_the_arrows_move_in_a_menu():
+    """UX-017 §5.10 (Carlo, 24/11/2026): in More, Actions and the menus of a machine and of an environment the arrows
+    move the focus between the entries, round, Home and End to the first and the last; ↓ on a closed menu's button
+    opens it on its first entry."""
+    base = (TEMPLATES / "base.html").read_text(encoding="utf-8")
+    script = base[base.index('const MENUS = "details.more-menu, details.row-menu, details.m-more"'):]
+    script = script[:script.index("})();")]
+    for needed in ('["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)', 'if (!onButton || event.key !== "ArrowDown") return;',
+                   "(at + 1) % list.length", "(at - 1 + list.length) % list.length", "list[next].focus();", "event.preventDefault();"):
+        assert needed in script, needed

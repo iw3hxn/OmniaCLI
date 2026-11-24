@@ -289,6 +289,17 @@ label:has(> input[type=checkbox]), label:has(> input[type=radio]) { display: inl
   min-height: 24px; padding-block: 2px; }
 /* what a field wants, under it; what is wrong with it, under it in red with its icon (the field says so too) */
 .hint { display: block; color: var(--muted); font-size: var(--fs-12); line-height: var(--lh-18); margin-top: var(--sp-4); flex-basis: 100%; }
+/* a «?» toggletip (UX-017 §5.13, Carlo 24/11/2026): a short explanation of a part under its «?», a dialog that does not
+   block the page, at most 320 px wide, with its X; base.html's script opens and closes it */
+.toggletip { position: relative; display: inline-flex; vertical-align: middle; font-size: var(--fs-14); font-weight: var(--fw-regular);
+  line-height: var(--lh-20); letter-spacing: normal; }
+.toggletip-open { color: var(--muted); } .toggletip-open:hover, .toggletip-open[aria-expanded="true"] { color: var(--text); }
+.toggletip-panel { position: absolute; top: calc(100% + var(--sp-4)); left: 0; z-index: 30; width: max-content;
+  max-width: min(320px, calc(100vw - 32px)); padding: var(--sp-12) var(--sp-40) var(--sp-12) var(--sp-12); background: var(--panel);
+  color: var(--text); border: var(--bw) solid var(--border-input); border-radius: var(--r-lg); box-shadow: var(--shadow-md);
+  white-space: normal; text-align: left; }
+.toggletip-x { position: absolute; top: var(--sp-4); right: var(--sp-4); color: var(--muted); }
+.tt-row { display: flex; gap: var(--sp-8); align-items: center; } .tt-row > select { flex: 1; min-width: 0; }
 .field-error { display: flex; align-items: flex-start; gap: var(--sp-6); color: var(--err); font-size: var(--fs-14);
   line-height: var(--lh-20); margin-top: var(--sp-4); }
 .field-error .i { margin-top: 2px; }
@@ -333,11 +344,12 @@ dialog h2 + p:not(.muted) { font-size: var(--fs-16); line-height: var(--lh-24); 
 /* the marks of the badges and the banners: Lucide's symbols as masks, in the colour of their state (UX-017 §5.7-8) */
 :root { --m-check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E"); --m-circle-check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='m9 12 2 2 4-4'/%3E%3C/svg%3E"); --m-circle-x: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='m15 9-6 6'/%3E%3Cpath d='m9 9 6 6'/%3E%3C/svg%3E");
   --m-triangle: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3'/%3E%3Cpath d='M12 9v4'/%3E%3Cpath d='M12 17h.01'/%3E%3C/svg%3E"); --m-info: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M12 16v-4'/%3E%3Cpath d='M12 8h.01'/%3E%3C/svg%3E"); --m-chevron-right: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m9 18 6-6-6-6'/%3E%3C/svg%3E"); }
-.badge.ok::before, .badge.active::before, .badge.warn::before, .badge.draft::before, .badge.error::before, .badge.err::before { content: "";
+.badge.ok::before, .badge.active::before, .badge.warn::before, .badge.draft::before, .badge.error::before, .badge.err::before,
+.badge.info::before { content: "";
   width: var(--icon-12); height: var(--icon-12); flex: none; background-color: currentColor;
   -webkit-mask: var(--mark) center / contain no-repeat; mask: var(--mark) center / contain no-repeat; }
 .badge.ok, .badge.active { --mark: var(--m-check); } .badge.warn, .badge.draft { --mark: var(--m-triangle); }
-.badge.error, .badge.err { --mark: var(--m-circle-x); }
+.badge.error, .badge.err { --mark: var(--m-circle-x); } .badge.info { --mark: var(--m-info); }
 dialog > .dialog-x { position: absolute; top: var(--sp-12); right: var(--sp-12); color: var(--muted); }
 dialog > .dialog-x:hover { color: var(--text); }
 /* the row of a dialog's buttons: in a row from 576 px, one under the other as wide as the sheet on a phone */
@@ -1026,6 +1038,68 @@ window.sizeText = (n) => {
       if (menu.open && !menu.contains(event.target) && !(event.target instanceof Element && event.target.closest("dialog"))) menu.open = false;
     }
   });
+  // the arrows move the focus between its entries (round), Home and End to the first and the last; the down arrow on the button
+  // of a closed menu opens it on its first entry (UX-017 §5.10, Carlo 24/11/2026)
+  const entries = (menu) => [...menu.querySelectorAll("a[href], button:not([disabled])")].filter((e) => !e.closest("summary") && e.checkVisibility());
+  document.addEventListener("keydown", (event) => {
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key) || !(event.target instanceof Element)) return;
+    const menu = event.target.closest(MENUS);
+    if (!menu) return;
+    const onButton = !!event.target.closest("summary");
+    if (!menu.open) {
+      if (!onButton || event.key !== "ArrowDown") return;
+      menu.open = true;
+    }
+    const list = entries(menu);
+    if (!list.length) return;
+    event.preventDefault();
+    const at = list.indexOf(document.activeElement);
+    const next = event.key === "Home" ? 0 : event.key === "End" ? list.length - 1
+      : event.key === "ArrowDown" ? (at < 0 ? 0 : (at + 1) % list.length) : (at < 0 ? list.length - 1 : (at - 1 + list.length) % list.length);
+    list[next].focus();
+  });
+})();
+// the toggletips: the «?» opens its explanation and closes it; its X, Esc and a click elsewhere close it, the focus back
+// on the «?»; one open at a time; the explanation kept inside the window
+(function () {
+  const parts = (box) => [box.querySelector(".toggletip-open"), box.querySelector(".toggletip-panel")];
+  const close = (box, focus) => {
+    const [button, panel] = parts(box);
+    if (panel.hidden) return;
+    panel.hidden = true;
+    button.setAttribute("aria-expanded", "false");
+    if (focus) button.focus();
+  };
+  const open = (box) => {
+    document.querySelectorAll(".toggletip").forEach((other) => other !== box && close(other));
+    const [button, panel] = parts(box);
+    panel.style.left = "0px";
+    panel.hidden = false;
+    button.setAttribute("aria-expanded", "true");
+    // inside the window, and inside the dialog it may be in (a dialog scrolls and clips what passes its edge)
+    const frame = panel.closest("dialog[open]")?.getBoundingClientRect() || {left: 0, right: document.documentElement.clientWidth};
+    const least = frame.left + 16, room = frame.right - 16, r = panel.getBoundingClientRect();
+    if (r.right > room) panel.style.left = `${Math.max(least - r.left, room - r.right)}px`;
+  };
+  document.addEventListener("click", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    const box = target && target.closest(".toggletip");
+    if (target && target.closest(".toggletip-open")) {
+      if (parts(box)[1].hidden) open(box); else close(box);
+      return;
+    }
+    if (target && target.closest(".toggletip-x")) { close(box, true); return; }
+    document.querySelectorAll(".toggletip").forEach((other) => other !== box && close(other));
+  });
+  // before the dialog it may be in: Esc closes the explanation only
+  window.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    const box = [...document.querySelectorAll(".toggletip")].find((b) => !parts(b)[1].hidden);
+    if (!box) return;
+    event.preventDefault();
+    event.stopPropagation();
+    close(box, true);
+  }, true);
 })();
 // what is being read: [data-skeleton="N"] on its «Reading…» line draws N grey lines before it while it says that;
 // the line is said to a screen reader at once and shown after 5 s (the panel is still at work); when the line

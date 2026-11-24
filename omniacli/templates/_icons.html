@@ -19,6 +19,14 @@
 <button type="button" class="icon-btn dialog-x" aria-label="{{ _('Close') }}" title="{{ _('Closes without changing anything') }}"><svg class="i i-20" aria-hidden="true" focusable="false"><use href="#i-x"/></svg></button>
 {%- endmacro %}
 
+{# toggletip(id, part, text): a «?» beside the title of a part (UX-017 §5.13, Carlo 24/11/2026: at most one a part) that
+   opens a short explanation under it, a dialog that does not block the page, with its X; Esc, the X and a click
+   elsewhere close it and give the focus back to the «?» (base.html's script). Its text says more than the one-line
+   hints of the part's fields, never the same #}
+{% macro toggletip(id, part, text) -%}
+<span class="toggletip"><button type="button" class="icon-btn toggletip-open" aria-expanded="false" aria-controls="{{ id }}" aria-label="{{ _('More about {part}', part=part) }}" title="{{ _('Opens a short explanation of this part; Esc closes it') }}"><svg class="i i-16" aria-hidden="true" focusable="false"><use href="#i-circle-help"/></svg></button><span class="toggletip-panel" id="{{ id }}" role="dialog" aria-label="{{ _('More about {part}', part=part) }}" hidden><span class="toggletip-text">{{ text }}</span><button type="button" class="icon-btn toggletip-x" aria-label="{{ _('Close') }}" title="{{ _('Closes this explanation') }}"><svg class="i i-16" aria-hidden="true" focusable="false"><use href="#i-x"/></svg></button></span></span>
+{%- endmacro %}
+
 {# runner(extra): the man who runs while a job runs; extra "mini" makes it
    the size of a line of text #}
 {% macro runner(extra="") -%}

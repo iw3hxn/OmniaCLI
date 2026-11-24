@@ -1,5 +1,6 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
 {% extends "base.html" %}
+{% from "_icons.html" import toggletip with context %}
 {% block title %}{{ _("Options") }} · {{ brand.name }}{% endblock %}
 {% block crumbs %}{% from "_crumbs.html" import crumbs with context %}
 {{ crumbs([(_("Settings"), "/settings"), (_("Options"), None)]) }}
@@ -20,7 +21,7 @@
   <span class="muted">{{ _("Root sets it with") }} <span class="mono">machine:</span> {{ _("in the main configuration.") }}</span></p>
 </section>
 <section class="panel" id="portal-address-panel">
-  <h2 style="margin-bottom: 4px">{{ _("Address of the portal") }}</h2>
+  <h2 style="margin-bottom: 4px">{{ _("Address of the portal") }} {{ toggletip("tt-portal-address", _("Address of the portal"), _('The DNS record of the name points to this machine. It is not the name of a workspace.')) }}</h2>
   <p class="muted" style="font-size: var(--fs-14); margin-top: 0; line-height: var(--lh-20);">{{ _("The name the customers (the users of the workspaces) open in the browser to log in to their own part of this machine. OmniaCLI publishes itself there in https, with a certificate of Let's Encrypt; each user sees only its workspaces.") }}</p>
   <p id="portal-now" style="margin: 0 0 10px">{% if portal_url %}{{ _("The customers log in at") }} <a class="mono" href="{{ portal_url }}" target="_blank" rel="noopener">{{ portal_url }}</a>{% else %}<strong>{{ _("The portal has no address yet:") }}</strong> {{ _("the customers cannot log in from the internet, and the invitations carry the address you see now. Choose a name, point its DNS record to this machine, then Publish.") }}{% endif %}</p>
   {% if portal_refused %}<p class="banner" style="margin: 0">{{ tr(portal_refused) }}</p>{% else %}
@@ -33,7 +34,7 @@
         <button type="button" id="portal-check" title="{{ _('Checks the name: that it is free on this machine and where its DNS record points. It changes nothing.') }}">{{ _("Check the name") }}</button>
         <button type="button" id="portal-publish" title="{{ _('Publishes the portal at this name: the site of nginx, then the certificate, in a job you follow; the invitations carry this address from then on.') }}">{{ _("Publish") }}</button>
         {% if options.portal_address %}<button type="button" class="danger" id="portal-remove" title="{{ _('Takes the portal away: the site and its certificate are removed, the customers no longer log in from the internet. It asks first.') }}">{{ _("Take away…") }}</button>{% endif %}
-      </div><small class="hint" id="portal-address-hint">{{ _('A host name of yours whose DNS record points to this machine, for example portale.esempio.it; not a name of a workspace') }}</small>
+      </div><small class="hint" id="portal-address-hint">{{ _('A host name of yours that points to this machine, e.g. portale.esempio.it') }}</small>
       <p id="portal-dns" class="muted" style="font-size: var(--fs-14); margin: 6px 0 0; line-height: var(--lh-20);" aria-live="polite"></p>
     </div>
   </div>
@@ -41,13 +42,13 @@
   {% endif %}
 </section>
 <section class="panel" id="os-updates">
-  <h2 style="margin-bottom: 4px">{{ _("Automatic security updates of the system") }}</h2>
+  <h2 style="margin-bottom: 4px">{{ _("Automatic security updates of the system") }} {{ toggletip("tt-os-updates", _("Automatic security updates of the system"), _('Some updates (the kernel, the C library) work only after a restart of the machine. The time of the restart is said by your clock; the machine keeps it by its own.')) }}</h2>
   <p class="muted" style="font-size: var(--fs-14); margin-top: 0; line-height: var(--lh-20);">{{ _("The security updates of the operating system of this machine, installed by unattended-upgrades every day. The state is read from the machine; a change is written by root at once and goes in the access log.") }}</p>
   <p id="osu-state" aria-live="polite" style="margin: 0 0 10px">{{ _("Reading the machine…") }}</p>
   <div class="form-grid" id="osu-form" hidden>
     <label for="osu-enabled">{{ _("Updates") }}</label>
     <div><label style="display: inline-flex; gap: 6px; align-items: center"><input type="checkbox" id="osu-enabled" role="switch" style="width: auto" aria-describedby="osu-enabled-hint">
-      {{ _("Automatic security updates of the system") }}</label><small class="hint" id="osu-enabled-hint">{{ _('On: the security updates are installed every day by themselves. Off: nobody installs them until you do it by hand (apt-get upgrade).') }}</small></div>
+      {{ _("Automatic security updates of the system") }}</label><small class="hint" id="osu-enabled-hint">{{ _('On: installed every day by themselves. Off: only by hand (apt-get upgrade).') }}</small></div>
     <label for="osu-reboot">{{ _("Restart when an update asks it") }}</label>
     <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center">
       <select id="osu-reboot" aria-describedby="osu-reboot-hint">
@@ -55,7 +56,7 @@
         <option value="at">{{ _("by itself, at a time") }}</option>
       </select>
       <input type="time" id="osu-time" value="03:00" data-server-time style="width: auto" aria-describedby="osu-time-hint">
-    <small class="hint" id="osu-reboot-hint">{{ _('Some updates (the kernel, the C library) work only after a restart of the machine: never (you restart it when you choose), or by itself at a time of the night') }}</small><small class="hint" id="osu-time-hint">{{ _('The time of the restart, by your clock (the machine keeps it by its own): the instances do not answer for a few minutes') }}</small></div>
+    <small class="hint" id="osu-reboot-hint">{{ _('Never (you restart it when you choose), or by itself at a time of the night') }}</small><small class="hint" id="osu-time-hint">{{ _('By your clock: the instances do not answer for a few minutes') }}</small></div>
   </div>
   <p id="osu-last" class="muted" style="font-size: var(--fs-14); margin: 8px 0 0; line-height: var(--lh-20);" hidden></p>
   <details id="osu-lines-box" hidden style="margin-top: 6px"><summary title="{{ _('Shows the last lines unattended-upgrades wrote in its log') }}">{{ _("Its last lines") }}</summary>
@@ -66,21 +67,21 @@
 <div id="error" class="banner" hidden></div>
 <form id="form" autocomplete="off">
   <section class="panel">
-    <h2 style="margin-bottom: 12px">{{ _("Consoles (logs, shells, Claude, psql)") }}</h2>
+    <h2 style="margin-bottom: 12px">{{ _("Consoles (logs, shells, Claude, psql)") }} {{ toggletip("tt-consoles", _("Consoles (logs, shells, Claude, psql)"), _('The A− and A+ buttons of a console change the size in that browser, for that kind of console.')) }}</h2>
     <div class="form-grid">
       <label for="shell-font-size">{{ _("Text size (pixels)") }}</label>
       <div><input type="number" id="shell-font-size" class="mono" required
-             min="{{ font_sizes[0] }}" max="{{ font_sizes[1] }}" step="1" value="{{ options.shell_font_size }}" aria-describedby="shell-font-size-hint"><small class="hint" id="shell-font-size-hint">{{ _('The text size every log and terminal opens with ({low}-{high}); the A− and A+ buttons of a console change it in that browser, for that kind of console', low=font_sizes[0], high=font_sizes[1]) }}</small></div>
+             min="{{ font_sizes[0] }}" max="{{ font_sizes[1] }}" step="1" value="{{ options.shell_font_size }}" aria-describedby="shell-font-size-hint"><small class="hint" id="shell-font-size-hint">{{ _('The text size every log and terminal opens with ({low}-{high})', low=font_sizes[0], high=font_sizes[1]) }}</small></div>
     </div>
   </section>
   <section class="panel">
-    <h2 style="margin-bottom: 12px">{{ _("Tunnels") }}</h2>
+    <h2 style="margin-bottom: 12px">{{ _("Tunnels") }} {{ toggletip("tt-tunnels", _("Tunnels"), _('127.0.0.1: only a browser on this machine reaches a tunnel. 0.0.0.0: every address of this machine; then open the ports in the firewall. Every tunnel takes the first free port of the range.')) }}</h2>
     <div class="form-grid">
       <label for="tunnel-idle">{{ _("Close after (hours without traffic)") }}</label>
       <input type="number" id="tunnel-idle" class="mono" required min="{{ idle_hours[0] }}" max="{{ idle_hours[1] }}" step="1"
              value="{{ options.tunnel_idle_hours }}">
       <label for="tunnel-bind">{{ _("Listen on (IP address)") }}</label>
-      <div><input type="text" id="tunnel-bind" class="mono" required value="{{ options.tunnel_bind }}" aria-describedby="tunnel-bind-hint"><small class="hint" id="tunnel-bind-hint">{{ _('127.0.0.1: only a browser on this machine reaches a tunnel; 0.0.0.0: every address of this machine (then open the ports in the firewall)') }}</small></div>
+      <div><input type="text" id="tunnel-bind" class="mono" required value="{{ options.tunnel_bind }}" aria-describedby="tunnel-bind-hint"><small class="hint" id="tunnel-bind-hint">{{ _('127.0.0.1: this machine only; 0.0.0.0: every address of this machine') }}</small></div>
       <label for="tunnel-ports">{{ _("Ports") }}</label>
       <div><input type="text" id="tunnel-ports" class="mono" required value="{{ options.tunnel_ports }}" aria-describedby="tunnel-ports-hint"><small class="hint" id="tunnel-ports-hint">{{ _('A port or a range low-high (1024-65535): every tunnel takes the first free one') }}</small></div>
     </div>
@@ -107,7 +108,7 @@
     </div>
   </section>
   <section class="panel" id="monitoring">
-    <h2 style="margin-bottom: 4px">{{ _("Monitoring") }}</h2>
+    <h2 style="margin-bottom: 4px">{{ _("Monitoring") }} {{ toggletip("tt-monitoring", _("Monitoring"), _('CPU and memory are back to normal when every reading of the minutes is under the warning; a disk counts at once. A webhook\'s JSON keeps a stable event field. An instance still not answering after its restart is told, not restarted again, until those minutes have gone by.')) }}</h2>
     <p class="muted" style="font-size: var(--fs-14); margin-top: 0; line-height: var(--lh-20);">{{ _("Every minute each instance is asked for its login page and the CPU and the memory of the machine are read; every five minutes the disks are measured, each day the certificates read. Told: when an instance goes down (3 checks in a row) and comes back, a threshold below passed or back under, a certificate that ends within 14 days. Each notice says its level, warning or critical, and goes in «things to look at» of the map. Each workspace's admins add their own on its page.") }}</p>
     <div class="form-grid">
       <label for="monitor-notify">{{ _("Tell") }}</label>
@@ -117,7 +118,7 @@
       <div><select id="notice-language" aria-describedby="notice-language-hint">
         {% for value, label in (("en", "English"), ("it", "Italiano")) %}
         <option value="{{ value }}" {{ "selected" if options.notice_language == value }}>{{ label }}</option>{% endfor %}
-      </select><small class="hint" id="notice-language-hint">{{ _('The language the emails of the notices are written in; the JSON of a webhook is always in English, with a stable event field') }}</small></div>
+      </select><small class="hint" id="notice-language-hint">{{ _('The language of the emails of the notices; a webhook\'s JSON is in English') }}</small></div>
     </div>
     <h3 class="opt-sub">{{ _("Thresholds of the machine") }}</h3>
     <div class="scroll">
@@ -135,16 +136,16 @@
     <div class="form-grid" style="margin-top: 8px">
       <label for="monitor-minutes">{{ _("For (minutes in a row)") }}</label>
       <div><input type="number" id="monitor-minutes" class="mono" required min="{{ minutes_limits[0] }}" max="{{ minutes_limits[1] }}" step="1"
-             value="{{ options.monitor_minutes }}" aria-describedby="monitor-minutes-hint"><small class="hint" id="monitor-minutes-hint">{{ _('The CPU and the memory are a warning or critical only when every reading of these minutes is above the threshold, and back to normal when every one is under the warning; a disk counts at once') }}</small></div>
+             value="{{ options.monitor_minutes }}" aria-describedby="monitor-minutes-hint"><small class="hint" id="monitor-minutes-hint">{{ _('CPU and memory: only when every reading of these minutes is over the threshold') }}</small></div>
     </div>
     <h3 class="opt-sub">{{ _("Automatic restart") }}</h3>
     <label class="opt-check"><input type="checkbox" id="restart-enabled" style="width: auto" {{ "checked" if options.restart_down }} aria-describedby="restart-enabled-hint">
-      {{ _("Restart an instance that does not answer") }}</label><small class="hint" id="restart-enabled-hint">{{ _('On: an instance of this machine that does not answer is restarted by the monitor, in a job of the system that says why. Off (the default): it is told, not restarted.') }}</small>
+      {{ _("Restart an instance that does not answer") }}</label><small class="hint" id="restart-enabled-hint">{{ _('On: restarted by the monitor, in a job that says why. Off (default): only told.') }}</small>
     <div class="form-grid" style="margin-top: 8px">
       <label for="restart-after">{{ _("After (checks in a row without an answer)") }}</label>
       <div><input type="number" id="restart-after" class="mono" required min="{{ after_limits[0] }}" max="{{ after_limits[1] }}" step="1" value="{{ options.restart_after }}" aria-describedby="restart-after-hint"><small class="hint" id="restart-after-hint">{{ _('A check a minute: 5 is about five minutes without an answer') }}</small></div>
       <label for="restart-every">{{ _("At most once every (minutes)") }}</label>
-      <div><input type="number" id="restart-every" class="mono" required min="{{ every_limits[0] }}" max="{{ every_limits[1] }}" step="1" value="{{ options.restart_every }}" aria-describedby="restart-every-hint"><small class="hint" id="restart-every-hint">{{ _('One that still does not answer after its restart is told, not restarted again, until these minutes have gone by') }}</small></div>
+      <div><input type="number" id="restart-every" class="mono" required min="{{ every_limits[0] }}" max="{{ every_limits[1] }}" step="1" value="{{ options.restart_every }}" aria-describedby="restart-every-hint"><small class="hint" id="restart-every-hint">{{ _('After a restart that did not help, it is only told until these minutes pass') }}</small></div>
     </div>
     <p class="muted" style="font-size: var(--fs-14); margin: 6px 0 0; line-height: var(--lh-20);">{{ _("Never while another job works on the instance, never one whose service was stopped (on purpose, as a staging stopped).") }}</p>
     <h3 class="opt-sub">{{ _("Webhooks") }}</h3>
@@ -177,48 +178,48 @@
   .opt-check { display: inline-flex; gap: 6px; align-items: center; }
   </style>
   <section class="panel" id="audit">
-    <h2 style="margin-bottom: 4px">{{ _("Access log (NIS 2)") }}</h2>
+    <h2 style="margin-bottom: 4px">{{ _("Access log (NIS 2)") }} {{ toggletip("tt-audit", _("Access log (NIS 2)"), _('Confirm the period your NIS 2 obligations ask for. With UDP a lost entry is not known. With TLS the server is checked against the system certificates or the CA file, an absolute path on this machine.')) }}</h2>
     <p class="muted" style="font-size: var(--fs-14); margin-top: 0; line-height: var(--lh-20);">{{ _("Every entry of the access log is kept at least this many days: past it, the oldest files go when the log grows, never a younger entry. 0 keeps 10 files of 5 MB, as before. Each entry can also be sent, as it is written, to a SIEM by syslog (RFC 5424): a SIEM that does not answer never stops an action, its failure is written in the log.") }}</p>
     <div class="form-grid">
       <label for="audit-retention">{{ _("Keep (days)") }}</label>
       <div><input type="number" id="audit-retention" class="mono" required min="{{ retention_limits[0] }}" max="{{ retention_limits[1] }}" step="1"
-             value="{{ options.audit_retention_days }}" aria-describedby="audit-retention-hint"><small class="hint" id="audit-retention-hint">{{ _('The days every entry is kept at least ({low}-{high}); 365 by default: confirm the period your NIS 2 obligations ask for', low=retention_limits[0], high=retention_limits[1]) }}</small></div>
+             value="{{ options.audit_retention_days }}" aria-describedby="audit-retention-hint"><small class="hint" id="audit-retention-hint">{{ _('The days every entry is kept at least ({low}-{high}); 365 by default', low=retention_limits[0], high=retention_limits[1]) }}</small></div>
       <label for="syslog-host">{{ _("SIEM: syslog server") }}</label>
-      <div><input type="text" id="syslog-host" class="mono" value="{{ options.syslog_host }}" placeholder="{{ _('empty: none') }}" aria-describedby="syslog-host-hint"><small class="hint" id="syslog-host-hint">{{ _('The host name or IP address of the syslog server every entry is sent to; empty: none') }}</small></div>
+      <div><input type="text" id="syslog-host" class="mono" value="{{ options.syslog_host }}" placeholder="{{ _('empty: none') }}" aria-describedby="syslog-host-hint"><small class="hint" id="syslog-host-hint">{{ _('The syslog server every entry is sent to (a name or an IP); empty: none') }}</small></div>
       <label for="syslog-protocol">{{ _("Protocol") }}</label>
       <div><select id="syslog-protocol" aria-describedby="syslog-protocol-hint">
         {% for value, label in (("udp", "UDP"), ("tcp", "TCP"), ("tls", "TCP + TLS")) %}
         <option value="{{ value }}" {{ "selected" if options.syslog_protocol == value }}>{{ label }}</option>{% endfor %}
-      </select><small class="hint" id="syslog-protocol-hint">{{ _('UDP: no answer, a lost entry is not known; TCP: in order, with a reconnection; TLS: TCP encrypted, the server checked against the system certificates or the CA file') }}</small></div>
+      </select><small class="hint" id="syslog-protocol-hint">{{ _('UDP: no answer; TCP: in order, it reconnects; TLS: TCP encrypted') }}</small></div>
       <label for="syslog-port">{{ _("Port") }}</label>
       <div><input type="number" id="syslog-port" class="mono" min="1" max="65535" value="{{ options.syslog_port }}" aria-describedby="syslog-port-hint"><small class="hint" id="syslog-port-hint">{{ _('514 for UDP and TCP, 6514 for TLS, as a rule') }}</small></div>
       <label for="syslog-ca">{{ _("CA file (TLS)") }}</label>
-      <div><input type="text" id="syslog-ca" class="mono" value="{{ options.syslog_ca_file }}" placeholder="/etc/ssl/certs/siem-ca.pem" aria-describedby="syslog-ca-hint"><small class="hint" id="syslog-ca-hint">{{ _('The certificate of the authority that signed the syslog server’s, an absolute path on this machine; empty: the system certificates') }}</small></div>
+      <div><input type="text" id="syslog-ca" class="mono" value="{{ options.syslog_ca_file }}" placeholder="/etc/ssl/certs/siem-ca.pem" aria-describedby="syslog-ca-hint"><small class="hint" id="syslog-ca-hint">{{ _('The CA of the syslog server\'s certificate, a path; empty: the system\'s') }}</small></div>
     </div>
   </section>
   <section class="panel" id="portal">
-    <h2 style="margin-bottom: 4px">{{ _("Customers' portal") }}</h2>
+    <h2 style="margin-bottom: 4px">{{ _("Customers' portal") }} {{ toggletip("tt-portal", _("Customers' portal"), _('The provider: for example your company name; empty, «the provider» in their language. Off, the machine\'s administrators and developers come in through their link; on, they log in at the portal too, from the internet. Anyone may switch the second step on from Account.')) }}</h2>
     <p class="muted" style="font-size: var(--fs-14); margin-top: 0; line-height: var(--lh-20);">{{ _("The users of the workspaces read their jobs without the names of this machine's users, of the links and of the other machines, and without its folders: who acted for the machine is shown with this name.") }}</p>
     <div class="form-grid">
       <label for="provider-label">{{ _("Name of the provider") }}</label>
-      <div><input type="text" id="provider-label" maxlength="100" value="{{ options.provider_label }}" placeholder="{{ _('the provider') }}" aria-describedby="provider-label-hint"><small class="hint" id="provider-label-hint">{{ _('The name the users of the workspaces read for who started a job for the machine (a link, an administrator), for example your company name; empty: the provider, in their language') }}</small></div>
+      <div><input type="text" id="provider-label" maxlength="100" value="{{ options.provider_label }}" placeholder="{{ _('the provider') }}" aria-describedby="provider-label-hint"><small class="hint" id="provider-label-hint">{{ _('Who started a job for the machine, as the users of the workspaces read it') }}</small></div>
       <label for="portal-staff">{{ _("Users of the machine") }}</label>
       <div><label style="display: inline-flex; gap: 6px; align-items: center"><input type="checkbox" id="portal-staff" style="width: auto" {{ "checked" if options.portal_staff }} aria-describedby="portal-staff-hint">
-        {{ _("log in at the address of the portal too") }}</label><small class="hint" id="portal-staff-hint">{{ _('Off (advised): at the address of the portal only the users of the workspaces log in; the administrators and developers of the machine come in through their link. On: they log in there too, from the internet.') }}</small></div>
+        {{ _("log in at the address of the portal too") }}</label><small class="hint" id="portal-staff-hint">{{ _('Off (advised): only the users of the workspaces log in at the portal') }}</small></div>
       <label for="second-factor">{{ _("Two-step verification required") }}</label>
       <div><select id="second-factor" aria-describedby="second-factor-hint">
         {% for value, label in [("portal", _("users at the portal address (advised)")), ("everybody", _("everybody")), ("nobody", _("nobody"))] %}
         <option value="{{ value }}" {{ "selected" if options.second_factor == value }}>{{ label }}</option>{% endfor %}
-      </select><small class="hint" id="second-factor-hint">{{ _('Who must type a code of an authenticator app after the password. A user who must and has none sets it up right after the password. Anyone may switch it on from Account.') }}</small></div>
+      </select><small class="hint" id="second-factor-hint">{{ _('Who types a code of an authenticator app after the password') }}</small></div>
     </div>
     <p class="muted" style="font-size: var(--fs-14); margin: 8px 0 0; line-height: var(--lh-20);">{{ _("Users at the portal address: whoever logs in there, and the users of the workspaces wherever they log in, once the portal has an address; without one, nobody is asked.") }}</p>
   </section>
   <section class="panel" id="whitelabel">
-    <h2 style="margin-bottom: 4px">{{ _("Whitelabel") }}</h2>
+    <h2 style="margin-bottom: 4px">{{ _("Whitelabel") }} {{ toggletip("tt-whitelabel", _("Whitelabel"), _('White text on the colour must reach a contrast of 4.5:1 (WCAG AA): the page says the ratio while you choose it. An SVG logo has no scripts and no outside references.')) }}</h2>
     <p class="muted" style="font-size: var(--fs-14); margin-top: 0; line-height: var(--lh-20);">{{ _("The panel under your name: in the header, in the title of the pages and in the emails, on the panel, the customers' portal and the login page. Empty: the look of OmniaCLI.") }}</p>
     <div class="form-grid">
       <label for="brand-name">{{ _("Name of the panel") }}</label>
-      <div><input type="text" id="brand-name" maxlength="40" value="{{ options.brand_name }}" placeholder="OmniaCLI" aria-describedby="brand-name-hint"><small class="hint" id="brand-name-hint">{{ _('The name shown instead of OmniaCLI, for example your company name; empty: OmniaCLI') }}</small></div>
+      <div><input type="text" id="brand-name" maxlength="40" value="{{ options.brand_name }}" placeholder="OmniaCLI" aria-describedby="brand-name-hint"><small class="hint" id="brand-name-hint">{{ _('The name shown instead of OmniaCLI, e.g. your company; empty: OmniaCLI') }}</small></div>
       <label for="brand-color">{{ _("Primary colour") }}</label>
       <div>
         <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center">
@@ -226,7 +227,7 @@
                  title="{{ _('Chooses the colour; the code beside it is what is saved') }}">
           <input type="text" id="brand-color" class="mono" maxlength="7" value="{{ options.brand_color }}" placeholder="#DC2626" style="width: 120px"
                  autocomplete="off" spellcheck="false" aria-describedby="brand-color-hint">
-        </div><small class="hint" id="brand-color-hint">{{ _('The colour of the buttons and the links, #RRGGBB; empty: the red of OmniaCLI. White text on it must reach a contrast of 4.5:1 (WCAG AA)') }}</small>
+        </div><small class="hint" id="brand-color-hint">{{ _('The colour of the primary buttons and of the focus, #RRGGBB; empty: red') }}</small>
         <p id="brand-contrast" class="muted" style="font-size: var(--fs-14); margin: 6px 0 0; line-height: var(--lh-20);" aria-live="polite"></p>
       </div>
       <label for="brand-logo">{{ _("Logo") }}</label>
@@ -237,7 +238,7 @@
           <input type="file" id="brand-logo" accept="image/png,image/svg+xml,.png,.svg" style="width: auto; max-width: 100%" aria-describedby="brand-logo-hint">
           <button type="button" id="brand-logo-send" title="{{ _('Puts the chosen file as the logo of the panel at once, for every page') }}">{{ _("Use this logo") }}</button>
           <button type="button" id="brand-logo-remove" {% if not brand.logo %}hidden{% endif %} title="{{ _('Takes your logo away: the «O» of OmniaSolutions again') }}">{{ _("Take the logo away") }}</button>
-        </div><small class="hint" id="brand-logo-hint">{{ _('A PNG or an SVG of at most 256 kB, square looks best; an SVG without scripts or outside references') }}</small>
+        </div><small class="hint" id="brand-logo-hint">{{ _('A PNG or an SVG of at most 256 kB, square looks best') }}</small>
         <p id="brand-logo-said" class="muted" style="font-size: var(--fs-14); margin: 6px 0 0; line-height: var(--lh-20);" aria-live="polite"></p>
       </div>
     </div>
