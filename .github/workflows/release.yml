@@ -30,8 +30,8 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-24.04
-    # the suite takes about 3 minutes: a test that hangs ends the job
-    timeout-minutes: 20
+    # the suite takes about 18-20 minutes on a runner (1940 tests, 24/11/2026): a test that hangs ends the job
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
         with:
