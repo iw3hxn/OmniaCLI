@@ -27,8 +27,10 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 from . import plugins
+from .auth import ROLES
 from .config import Instance, Server, Workspace
 from .jobs import Job
 from .plugin_api import Action, Field
@@ -130,6 +132,21 @@ def match(path: str) -> tuple[Page, dict[str, str]] | None:
         if found is not None:
             return page, found.groupdict()
     return None
+
+
+def drawn_for(link: str, role: str, development: bool, person: str, zone: str = "") -> dict:
+    """What a page of link's machine drawn here says of who looks (the globals of the templates, app._page_context):
+    what the machine's role there allows, never more, as the machine draws it for a link (no account of its own,
+    the person's name); zone: the machine's clock (its moments are written by it), "" for this panel's."""
+    rank = ROLES.index(role) if role in ROLES else 0
+    found = {"drawn_here": link, "can_act": rank >= 1, "is_admin": rank >= 2, "own_user_shells": development,
+             "scoped": False, "my_workspaces": [],
+             # a person through a link has no account there: what a page offers to who logged in there (the
+             # commands of a puller's connection) stays off, as on the machine's own page
+             "account": None, "central_user": person}
+    if zone:
+        found["server_zone"] = zone
+    return found
 
 
 def plugin_versions(registry: plugins.Registry | None = None) -> dict[str, str]:
@@ -388,9 +405,65 @@ def instance_view(model) -> Fields | None:
     return view
 
 
-def server_view(model: dict) -> dict:
-    """The context server.html is drawn with, from the model a machine answered (its fields by name);
-    ValueError when it names a dialog this panel cannot draw."""
+# the keys whose text a page uses as an address (a link, a form's action, a request of its script)
+_URL_KEYS = frozenset({"url", "web_url", "open", "page", "ci_url", "deploys_url", "install", "upload", "backups",
+                       "preview", "users"})
+# of those, the links to elsewhere (the Odoo of an instance, its repository): http or https only; every other one
+# is an address of the machine's own, under the link's prefix
+_EXTERNAL = re.compile(r"(?:.*\.)?(?:web_url|open)|.*\.repo\.url|stagings\.parent\.url|stagings\.rows\[\]\.url")
+# an address of the machine's own that is not under a key of _URL_KEYS
+_INTERNAL_AT = frozenset({"enterprise.pgvector.machine"})
+# under such a key, a text the page shows and never opens (where an instance's Debian package is published)
+_TEXT_AT = re.compile(r".*\.package\.url")
+_CONTROL = re.compile(r"[\x00-\x20\x7f\\]")
+
+
+def under(prefix: str, address: str) -> bool:
+    """Whether address is a path of this site under prefix (/links/<m>): no scheme, no host, no . or .. segment
+    (encoded or not), no backslash, space or control character; prefix "" (a machine's own page): any absolute
+    path."""
+    if not isinstance(address, str) or _CONTROL.search(address) or address.startswith("//"):
+        return False
+    parts = urlsplit(address)
+    if parts.scheme or parts.netloc or not parts.path.startswith("/"):
+        return False
+    path = unquote(parts.path)
+    if _CONTROL.search(path) or any(segment in (".", "..") for segment in path.split("/")):
+        return False
+    return not prefix or path == prefix or path.startswith(prefix + "/")
+
+
+def elsewhere(address: str) -> bool:
+    """Whether address is a link to another site: http or https, with a host."""
+    if not isinstance(address, str) or _CONTROL.search(address):
+        return False
+    parts = urlsplit(address)
+    return parts.scheme in ("http", "https") and bool(parts.netloc)
+
+
+def checked_addresses(value, prefix: str, where: str = "") -> None:
+    """ValueError when an address of a model is not one the page may use: a link to elsewhere that is not http(s),
+    an address of the machine that is not under its link's prefix (another machine, this panel's own routes)."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            at = f"{where}.{key}" if where else str(key)
+            if (isinstance(item, str) and item and (key in _URL_KEYS or at in _INTERNAL_AT)
+                    and not _TEXT_AT.fullmatch(at)):
+                ok = elsewhere(item) if _EXTERNAL.fullmatch(at) else under(prefix, item)
+                if not ok:
+                    raise ValueError(f"its page has the address {item[:80]!r} at {at}, which is not one it may use")
+            else:
+                checked_addresses(item, prefix, at)
+    elif isinstance(value, list):
+        for item in value:
+            checked_addresses(item, prefix, f"{where}[]")
+
+
+def server_view(model: dict, prefix: str) -> dict:
+    """The context server.html is drawn with, from the model a machine answered (its fields by name), its
+    addresses under prefix (the link's /links/<m>; "" for a machine's own page); ValueError when it names a dialog
+    this panel cannot draw or an address it may not use."""
+    checked_addresses(model, prefix)
     context = {k: fields_of(v) for k, v in model.items()}
     context["instances"] = [instance_view(i) for i in model.get("instances") or []]
     server = model.get("server")
@@ -404,3 +477,14 @@ def server_view(model: dict) -> dict:
             raise ValueError(f"its page names the dialog {dialog}, which this panel has not")
     context["dialogs"] = dialogs
     return context
+
+
+def moved_away_view(model: dict, prefix: str) -> dict:
+    """The context of the page of an instance placed on another machine whose copy there was deleted
+    (moved_away.html, class D), drawn here from its small model (its name and its move), never the machine's HTML."""
+    checked_addresses(model, prefix)
+    server = model.get("server") if isinstance(model.get("server"), dict) else {}
+    move = model.get("move")
+    if not isinstance(server.get("name"), str) or not isinstance(move, dict):
+        raise ValueError("its page of a move has no server or no move")
+    return {"server": Fields(name=server["name"]), "move": fields_of(move)}

@@ -8,6 +8,7 @@ import base64
 import dataclasses
 import gzip
 import json
+import re
 
 import httpx
 import pytest
@@ -575,15 +576,35 @@ async def test_every_read_of_a_model_is_in_the_machines_access_log(central):
                and e["status"] == 200 and "for dev" in e["detail"] for e in reads), reads
 
 
-async def test_an_instance_moved_away_keeps_the_machines_page(central):
-    """The machine says the page is its own (an instance placed elsewhere, its copy deleted: the page of its
-    move, class D): it passes as before, without the line."""
+async def test_the_machines_word_never_lets_its_html_through(central):
+    """A model that says the page is the machine's own (own_page, as 549606a took it) does not bring the machine's
+    HTML: its /servers/<x> is never asked, its script never reaches the browser."""
     central.machine.answer["/api/pages/server"] = (200, {"content-type": "application/json"}, json.dumps({
         "agent_api": centralpages.AGENT_API, "page": "server", "role": "admin", "own_page": True}).encode())
     central.machine.answer["/servers/srv"] = (200, {"content-type": "text/html"},
-                                             b"<html><body>its move's page</body></html>")
+                                             b"<html><body><script>alert(1)</script></body></html>")
+    central.machine.asked.clear()
     resp = await central.get("/links/cliente/servers/srv", headers=PAGE)
-    assert resp.status_code == 200 and resp.text == "<html><body>its move's page</body></html>"
+    assert resp.status_code == 502 and "<script>alert(1)" not in resp.text
+    assert "/servers/srv" not in central.machine.asked
+
+
+async def test_the_page_of_a_move_is_drawn_here_from_its_model(central):
+    """An instance placed elsewhere whose copy there was deleted: the page of its move (moved_away.html) drawn
+    here from its small model, never the machine's HTML; of another instance than the path's, refused."""
+    move = {"state": {"state": "placed", "link": "far", "copy": "deleted", "since": "2026-11-24T10:00:00"},
+            "can": False, "here": "cliente", "busy": False, "stop_seconds": 40, "until": "2026-12-08"}
+    for name, code in (("srv", 200), ("other", 502)):
+        central.machine.answer["/api/pages/server"] = (200, {"content-type": "application/json"}, json.dumps({
+            "agent_api": centralpages.AGENT_API, "page": "server", "role": "admin",
+            "moved_away": {"server": {"name": name}, "move": move}}).encode())
+        central.machine.answer["/servers/srv"] = (200, {"content-type": "text/html"}, b"<script>alert(1)</script>")
+        central.machine.asked.clear()
+        resp = await central.get("/links/cliente/servers/srv", headers=PAGE)
+        assert resp.status_code == code and "<script>alert(1)" not in resp.text, name
+        assert "/servers/srv" not in central.machine.asked
+        if code == 200:
+            assert "<h1>srv</h1>" in resp.text and 'data-move' in resp.text or "far" in resp.text
 
 
 async def test_the_instance_model_of_a_placed_server_is_its_hosts(pair):
@@ -599,7 +620,139 @@ async def test_the_instance_model_of_a_placed_server_is_its_hosts(pair):
     pair.app.state.settings.servers.pop("srv")
     data = (await pair.get("/api/pages/server", params={"server": "srv"}, headers=link)).json()
     own = await pair.get("/servers/srv", headers={**link, "Accept": "text/html"}, follow_redirects=False)
-    if own.status_code == 307:
-        assert data["moved"] == own.headers["location"] == "/links/home/placed/srv/servers/srv"
+    assert own.status_code == 307 and data["moved"] == own.headers["location"] == "/links/home/placed/srv/servers/srv"
+    # a link that is an admin of the machine keeps the page of the move here: its small model, drawn the same
+    settings = pair.app.state.settings
+    settings.fixed.links["omnia"] = LinkAccess(hash_token(LINK_TOKEN), "admin")
+    settings.set_web_access(settings.web)
+    model = await pair.get("/api/pages/server", params={"server": "srv"}, headers=link)
+    own = await pair.get("/servers/srv", headers={**link, "Accept": "text/html"}, follow_redirects=False)
+    # (srv is not named as a workspace's instance here: no page of its move, on both)
+    assert model.status_code == own.status_code == 404 and "own_page" not in model.text
+
+
+# --- the review of 549606a -----------------------------------------------------------------------------------
+
+async def own_model(central, **params) -> dict:
+    link = central.app.state.settings.link_targets["cliente"]
+    return (await central.app.state.link_clients.client(link).get(
+        "/api/pages/server", params={"server": "srv", **params},
+        headers={"Authorization": f"Bearer {LINK_TOKEN}", "X-OmniaCLI-User": "admin",
+                 "X-OmniaCLI-Prefix": "/links/cliente"})).json()
+
+
+def answer_model(central, data: dict) -> None:
+    central.machine.answer["/api/pages/server"] = (200, {"content-type": "application/json"}, json.dumps(data).encode())
+
+
+@pytest.mark.parametrize("where, address", [
+    ("web_url", "javascript:alert(1)"),
+    ("web_url", " javascript:alert(1)"),
+    ("open", "data:text/html,<script>alert(1)</script>"),
+    ("page", "javascript:alert(1)"),
+    ("page", "/api/links/save"),
+    ("button", "/api/links/delete"),
+    ("button", "/links/other/servers/srv/production/x/odoo/update"),
+    ("button", "/links/cliente/../../api/links/delete"),
+    ("button", "/links/cliente/%2e%2e/%2e%2e/api/links/delete"),
+    ("button", "//evil.test/x"),
+    ("button", "https://evil.test/x"),
+    ("login_as", "/links/cliente/..\\..\\api/x"),
+])
+async def test_an_address_the_page_may_not_use_refuses_the_model(central, where, address):
+    """AD-017 review, finding 2: a link to elsewhere is http(s) only (the Odoo of an instance, its repository); an
+    address of the machine's own is under /links/<m>/ once its path is read (no .., encoded or not, no other
+    machine, no route of this panel): any other refuses the whole model, this panel's error page."""
+    data = await own_model(central)
+    context = data["context"]
+    if where == "web_url":
+        context["instances"][0]["web_url"] = address
+    elif where in ("open", "page"):
+        context["environments"][0][where] = address
+    elif where == "button":
+        group = next(g for g in context["buttons"]["srv/production"].values() if g)
+        group[0]["url"] = address
     else:
-        assert data.get("own_page") is True and own.status_code == 200
+        context["login_as"]["srv/production"]["url"] = address
+    answer_model(central, data)
+    resp = await central.get("/links/cliente/servers/srv", headers=PAGE)
+    assert resp.status_code == 502 and "is not the one this panel reads" in resp.text, (where, address)
+    assert address not in resp.text
+
+
+def test_the_addresses_of_a_model():
+    assert centralpages.under("/links/m", "/links/m/servers/x?view=test#log")
+    assert centralpages.under("/links/m", "/links/m")
+    for bad in ("/links/mm/x", "/links/other/x", "/api/x", "/links/m/../x", "/links/m/%2E%2E/x", "//x/y",
+                "links/m/x", "javascript:x", "/links/m/a\\b", "/links/m/a b"):
+        assert not centralpages.under("/links/m", bad), bad
+    assert centralpages.elsewhere("https://acme.example.com/odoo") and centralpages.elsewhere("http://localhost:8069")
+    for bad in ("javascript:alert(1)", "data:x", "https:/x", "ftp://x/y", "https://a b"):
+        assert not centralpages.elsewhere(bad), bad
+    # where a package is published is a text of the page, not an address it opens
+    centralpages.checked_addresses({"server": {"test": {"package": {"url": "https://download.example.com/x.deb"}}}},
+                                   "/links/m")
+
+
+async def test_the_models_are_not_reached_through_the_link(central):
+    """AD-017 review, finding 3: /links/<m>/api/pages/* is this panel's to read, never a browser's."""
+    central.machine.asked.clear()
+    for path in ("api/pages/server?server=srv", "api/pages/settings", "api/pages"):
+        resp = await central.get(f"/links/cliente/{path}", headers=JSON)
+        assert resp.status_code == 404, path
+    assert not [p for p in central.machine.asked if p.startswith("/api/pages")]
+
+
+async def test_a_model_of_another_instance_is_refused(central):
+    """AD-017 review, finding 4: the model's instance is the path's."""
+    data = await own_model(central)
+    data["context"]["server"]["name"] = "other"
+    answer_model(central, data)
+    resp = await central.get("/links/cliente/servers/srv", headers=PAGE)
+    assert resp.status_code == 502 and "is not the one this panel reads" in resp.text
+
+
+def test_names_in_the_scripts_are_written_as_json():
+    """AD-017 review, finding 4: a name a script takes is JSON (tojson), never put between quotes by hand."""
+    from omniacli import app as app_module
+
+    for name in ("server.html", "_module_upload.html", "_environments.html", "_move.html", "_deploys.html",
+                 "_modules_tab.html", "_backup_dialog.html", "_restore_dialog.html", "_from_link_dialog.html"):
+        source = app_module._TEMPLATES.env.loader.get_source(app_module._TEMPLATES.env, name)[0]
+        for script in re.findall(r"<script\b[^>]*>(.*?)</script>", source, re.S):
+            quoted = re.findall(r"""["'`]\{\{(?![^}]*tojson)[^}]*\}\}["'`]""", script)
+            assert not [q for q in quoted if "prefix" not in q], (name, quoted)
+
+
+async def test_the_line_only_on_a_page_of_200(central):
+    """AD-017 review, finding 5: a machine at 0 has its pages with the line; its error pages and anything but a
+    page of 200 pass as it wrote them (streamed, untouched)."""
+    central.machine.info = {"version": "2026.1.5513"}
+    resp = await central.get("/links/cliente/servers/srv", headers=PAGE)
+    assert resp.status_code == 200 and "data-machine-page-line" in resp.text
+    central.machine.answer["/servers/srv"] = (404, {"content-type": "text/html"}, b"<html><body>not here</body></html>")
+    resp = await central.get("/links/cliente/servers/srv", headers=PAGE)
+    assert resp.status_code == 404 and resp.text == "<html><body>not here</body></html>"
+
+
+async def test_the_moments_by_the_machines_clock(central):
+    """AD-017 review, finding 6: the page drawn here says the machine's zone (window.serverZone) and writes its
+    moments by it, not by this panel's."""
+    data = await own_model(central)
+    data["server_zone"] = "Asia/Tokyo"
+    answer_model(central, data)
+    resp = await central.get("/links/cliente/servers/srv", headers=PAGE)
+    assert resp.status_code == 200 and 'window.serverZone = "Asia/Tokyo";' in resp.text
+    data["server_zone"] = "</script><script>alert(1)//"
+    answer_model(central, data)
+    resp = await central.get("/links/cliente/servers/srv", headers=PAGE)
+    assert resp.status_code == 200 and "alert(1)" not in resp.text
+
+
+@pytest.mark.parametrize("moved", ["/links/cliente/../../api/links/delete", "/links/cliente/%2e%2e/x",
+                                   "/links/other/placed/srv/servers/srv", "https://evil.test/links/cliente/x"])
+async def test_a_moved_page_is_followed_under_the_link_only(central, moved):
+    """AD-017 review, finding 7: «moved» is followed when, its path read, it is under the link."""
+    answer_model(central, {"agent_api": centralpages.AGENT_API, "page": "server", "role": "admin", "moved": moved})
+    resp = await central.get("/links/cliente/servers/srv", headers=PAGE, follow_redirects=False)
+    assert resp.status_code != 307, moved

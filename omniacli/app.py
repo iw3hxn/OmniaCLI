@@ -11284,21 +11284,15 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             why=why, plugins=", ".join(centralpages.plugins_apart(agent.get("plugins") or {},
                                                                   centralpages.plugin_versions())))
 
-    def as_drawn_here(request: Request, link: LinkTarget, me: Principal, role: str, development: bool) -> None:
+    def as_drawn_here(request: Request, link: LinkTarget, me: Principal, role: str, development: bool,
+                      zone: str = "") -> None:
         """The page (or the error page) of link's machine drawn here: its prefix, this panel's menu, and what who
-        looks may do there, as the machine draws it for a link (no account of its own, the person's name)."""
+        looks may do there, as the machine draws it for a link (no account of its own, the person's name); zone:
+        the machine's clock, which its moments are written by."""
         request.state.prefix = f"/links/{link.name}"
         # this panel's menu, as a machine draws it for a person of a link (_MENU_HEADER)
         request.state.central_menu = tuple(menu_places(me))
-        request.state.drawn_for = {
-            "drawn_here": link.name, "can_act": reaches(role, "developer"), "is_admin": reaches(role, "admin"),
-            "own_user_shells": development, "scoped": False, "my_workspaces": [],
-            # a person through a link has no account there: what a page offers to who logged in there (the
-            # commands of a puller's connection) stays off, as on the machine's own page
-            "account": None, "central_user": me.name}
-
-    # what draw_linked_page answers for a page the machine keeps as its own (the page of a move, class D)
-    OWN_PAGE = "own"
+        request.state.drawn_for = centralpages.drawn_for(link.name, role, development, me.name, zone)
 
     def contract_back_page(request: Request, link: LinkTarget, me: Principal, agent: dict | None, seen: int):
         """A page drawn here whose machine said agent_api `seen` and now says less, or has no model of it: this
@@ -11310,10 +11304,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             status_code=status.HTTP_502_BAD_GATEWAY)
 
     async def draw_linked_page(request: Request, link: LinkTarget, me: Principal, page: centralpages.Page,
-                               params: dict) -> Response | str | None:
+                               params: dict) -> Response | None:
         """A page of the machine of link drawn with this panel's template, from the model the machine answers
-        for me (its role there, its fields by name); None when the machine has no model of it; OWN_PAGE when the
-        machine says the page is its own (an instance moved away: the page of its move, class D)."""
+        for me (its role there, its fields by name); None when the machine has no model of it. Never the
+        machine's HTML: what it says of a page (moved elsewhere, the page of a move) is drawn here too."""
         headers = {**link_headers(link, me.name, me.role), "Accept": "application/json",
                    "Accept-Language": request_language(request), _MENU_HEADER: ",".join(menu_places(me))}
         if tunnel_reaches_browser(request):
@@ -11338,32 +11332,45 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         role = data.get("role") if data.get("role") in ACCESS_ROLES else "user"
         # what who looks may do there: the machine's word (its role there), never more than here
         role = min(role, me.role, key=ACCESS_ROLES.index) if me.role in ACCESS_ROLES else role
-        as_drawn_here(request, link, me, role, bool(data.get("development")))
+        zone = str(data.get("server_zone") or "")
+        zone = zone if clock.is_zone(zone) else ""
+        as_drawn_here(request, link, me, role, bool(data.get("development")), zone)
         if resp.status_code != 200:
             # this panel's error page, its way back under the link (/links/<m>/instances)
             raise HTTPException(resp.status_code if resp.status_code in (403, 404) else status.HTTP_502_BAD_GATEWAY,
                                 str(data.get("detail") or data.get("error") or f"{link.name}: {resp.status_code}"))
+        prefix = f"/links/{link.name}"
         moved = data.get("moved")
-        if isinstance(moved, str) and moved.startswith(f"/links/{link.name}/"):
+        if isinstance(moved, str) and moved.startswith(prefix + "/") and centralpages.under(prefix, moved):
             # a server placed on another machine (AD-014): its page is the host's, through the home, as before
             return RedirectResponse(moved, status.HTTP_307_TEMPORARY_REDIRECT)
-        if data.get("own_page") is True and page.name == "server":
-            return OWN_PAGE
-        model = data.get("context")
+        template, model = page.template, data.get("context")
+        if page.name == "server" and isinstance(data.get("moved_away"), dict):
+            # an instance whose copy there was deleted: the page of its move, drawn here from its small model
+            template, model = "moved_away.html", data["moved_away"]
         if not isinstance(model, dict):
             return link_failure(request, link, "its model of the page has no context")
         # its fields by name: nothing else the machine sends enters the template
-        context = {k: model[k] for k in page.fields if k in model}
+        context = {k: model[k] for k in page.fields if k in model} if template == page.template else model
+        mark = clock.HERE.set(zone) if zone else None
         try:
             if page.name == "settings":
                 context = translated_settings(context, request_language(request))
+            elif template == "moved_away.html":
+                context = centralpages.moved_away_view(context, prefix)
             elif page.name == "server":
-                context = centralpages.server_view(context)
-            return _TEMPLATES.TemplateResponse(request, page.template, context)
+                context = centralpages.server_view(context, prefix)
+            if page.name == "server" and (context.get("server") or {}).get("name") != params.get("server"):
+                raise ValueError(f"its page is of {str((context.get('server') or {}).get('name'))[:60]!r}, "
+                                 f"not of {params.get('server')}")
+            return _TEMPLATES.TemplateResponse(request, template, context)
         except (jinja2.TemplateError, TypeError, ValueError, AttributeError, KeyError) as exc:
             # a model without a field the page needs, or of another shape: said, not a 500
             _logger.warning("the page %s of %s: %s", page.name, link.name, exc)
             return link_failure(request, link, f"its model of the page {page.name} is not the one this panel reads")
+        finally:
+            if mark is not None:
+                clock.HERE.reset(mark)
 
     @app.api_route("/links/{name}/{path:path}", methods=["GET", "HEAD", "POST"])
     async def link_proxy(request: Request, name: str, path: str, me: Principal = Depends(current_user)):
@@ -11375,6 +11382,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if me.kind != "user":
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Only a user who logs in here may use a link")
         link = a_link(name)
+        if path == "api/pages" or path.startswith("api/pages/"):
+            # the models of the pages are read by this panel, never by a browser through the link (they are drawn
+            # here with the role of who looks, and its script has nothing to do with them)
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Not Found")
         client = link_clients.client(link)
         here = link.pages == centralpages.PAGES_HERE
         api = path == "api" or path.startswith("api/")
@@ -11397,17 +11408,13 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 page.needs_agent_api, agent["agent_api"], agent["plugins"], centralpages.plugin_versions())
             if not why and agent is not None and agent.get("no_models"):
                 why = centralpages.BEHIND
-            own_page = False
             if not why and agent is not None and request.method == "GET":
                 response = await draw_linked_page(request, link, me, page, params)
-                if response == OWN_PAGE:
-                    own_page = True
-                elif response is not None:
+                if response is not None:
                     return response
-                else:
-                    # no model there: an older machine than it said (an update undone); kept until it is read again
-                    agent["no_models"] = True
-                    why = centralpages.BEHIND
+                # no model there: an older machine than it said (an update undone); kept until it is read again
+                agent["no_models"] = True
+                why = centralpages.BEHIND
             # a machine that says what it said before but less than this page needs (a page of a newer slice) has
             # never had its model: its own page as before, with the line; one that says less than before, or has
             # no model of what it says, went back
@@ -11422,8 +11429,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     return link_failure(request, link, f"it said agent_api {seen} and now says less: refused")
                 return contract_back_page(request, link, me, agent, seen)
             # the way back (§17.2): a machine that never said 1 or more, or this panel older, or a plugin apart, or
-            # a page it has no model of yet; the page of a move its own (class D)
-            machine_html = agent is None or bool(why) or own_page
+            # a page it has no model of yet
+            machine_html = agent is None or bool(why)
             if why and request.method == "GET":
                 line = machine_page_line(request, link, agent, why)
         headers = {k: request.headers[k] for k in _LINK_REQUEST_HEADERS if k in request.headers}
@@ -11487,7 +11494,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                                "where this panel takes data only: refused")
         if read is not None:
             return Response(read, status_code=resp.status_code, headers=kept)
-        if (line and "text/html" in resp.headers.get("content-type", "")
+        if (line and resp.status_code == 200 and "text/html" in resp.headers.get("content-type", "")
                 and resp.headers.get("content-encoding", "identity").lower() in ("", "identity")):
             # (a body the machine encoded all the same is passed as it is, without the line)
             try:
@@ -12332,7 +12339,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             raise HTTPException(status.HTTP_403_FORBIDDEN, f"The {needed} role is required")
         answer = {"agent_api": centralpages.AGENT_API, "page": page, "role": me.role,
                   # a shell of OmniaCLI's own user: not on a server (the pages' own_user_shells)
-                  "development": settings.machine == MACHINE_DEVELOPMENT}
+                  "development": settings.machine == MACHINE_DEVELOPMENT,
+                  # the clock its moments are written by: the panel writes them by it, not by its own
+                  "server_zone": clock.here()}
         if page in ("log", "shell", "server"):
             # a server placed on another machine (AD-014): its page is the host's, as PlacedRoutes sends a browser
             # there; the panel sends it to that address under its link
@@ -12347,9 +12356,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 query = f"?{urlencode({'view': params['view']})}" if page == "server" and params.get("view") else ""
                 return {**answer, "moved": (given if _PREFIX.fullmatch(given) else "")
                         + f"{placement.PLACED_PREFIX}/{server}{target}{query}"}
-            if page == "server" and name not in settings.servers and moved_away_page(request, name) is not None:
-                # its copy here deleted: the page of its move, the machine's own (AD-017 §17.1, class D)
-                return {**answer, "own_page": True}
+            away = moved_away_context(request, name) if page == "server" and name not in settings.servers else None
+            if away is not None:
+                # its copy here deleted: the page of its move (class D), drawn by the panel from this small model
+                return {**answer, "moved_away": centralpages.plain(away, "moved_away")}
         context = await page_context(page, request, params)
         return {**answer, "context": context}
 
@@ -21754,13 +21764,17 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     def moved_away_page(request: Request, server: str):
         """The page of an instance placed on another machine whose copy here was deleted, for the machine's admins
         (UX-014 B6): where it is, Open it there, Back to <here>… (None: not such a page)."""
+        context = moved_away_context(request, server)
+        return None if context is None else _TEMPLATES.TemplateResponse(request, "moved_away.html", context)
+
+    def moved_away_context(request: Request, server: str) -> dict | None:
+        """Its context (plain values: a panel draws it from them too, AD-017), None: not such a page."""
         me = getattr(request.state, "user", None)
         state = moves.state(server)
         if me is None or me.scoped or not machine_admin(me) or state.get("state") != "placed" \
                 or state.get("copy") != "deleted" or workspace_of(server) is None:
             return None
-        return _TEMPLATES.TemplateResponse(request, "moved_away.html", {
-            "server": {"name": server}, "move": move_view(server, state, str(state.get("kind") or "cluster"))})
+        return {"server": {"name": server}, "move": move_view(server, state, str(state.get("kind") or "cluster"))}
 
     def move_headers(link: LinkTarget, me: Principal) -> dict:
         return {**link_headers(link, me.on_behalf or me.name, me.role), "Accept": "application/json"}

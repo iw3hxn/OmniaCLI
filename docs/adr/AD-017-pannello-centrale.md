@@ -365,8 +365,17 @@ Per ogni fetta: il rilascio, la prova su lab3/lab4, come si annulla, la stima.
      suo `repr`. Dell'`odoo.conf` di un'istanza di un workspace il modello dice solo se ha opzioni sue
      (`has_extra`), mai i valori.
    - Il centrale ricostruisce dal JSON oggetti che il template legge come attributi (`centralpages.server_view`) e
-     scrive lo stesso `server.html` con i suoi 11 parziali. Un dialogo di un plugin che il centrale non ha, o un
-     nome che non è `<plugin>/<file>.html`, è rifiutato.
+     scrive lo stesso `server.html` con i suoi 11 parziali. Il modello intero è rifiutato, con la pagina d'errore
+     del centrale, quando:
+     - nomina un dialogo di un plugin che il centrale non ha, o un nome che non è `<plugin>/<file>.html`;
+     - è di un'altra istanza di quella del percorso;
+     - ha un indirizzo che la pagina non può usare (`centralpages.checked_addresses`). Un link verso fuori (l'Odoo
+       di un'istanza, il suo repository) è solo `http` o `https`. Un indirizzo della macchina, cioè il `url` di un
+       pulsante, le richieste dei dialoghi e le pagine delle righe, sta sotto `/links/<m>/` dopo aver letto il
+       percorso: niente `..`, nemmeno codificato, niente un'altra macchina, niente le route del centrale.
+   - Le ore della pagina sono scritte con il fuso della macchina, che il modello dice (`server_zone`), non con quello
+     del centrale. I nomi che finiscono negli script passano da `tojson`.
+   - `/links/<m>/api/pages/*` non passa dal collegamento: i modelli li legge solo il centrale.
    - La parità si misura sull'intero `<main>`, non sui soli pulsanti: `tests/serverparity.py` scrive ogni pagina
      dell'istanza due volte, dal contesto vivo e dal modello passato per JSON, e le confronta. Con
      `OMNIACLI_PARITY=1` lo fa per ogni test della suite.
@@ -375,9 +384,12 @@ Per ogni fetta: il rilascio, la prova su lab3/lab4, come si annulla, la stima.
      `NOT_SENSITIVE` ad `AUDITED_BY_ROUTE`.
    - Il centrale manda al modello anche `X-OmniaCLI-Tunnel`, come `link_proxy`: senza, «Entra come…» attraverso un
      tunnel del centrale risultava spento solo nella pagina scritta dal centrale (trovato sul lab, ora nel test).
-   - Un'istanza spostata altrove (AD-014) va al suo host con il 307 di prima, con `?view=` tenuto. Un'istanza la cui
-     copia qui è cancellata dà la pagina del suo spostamento: è di classe D e resta quella della macchina
-     (`own_page`).
+   - Un'istanza spostata altrove (AD-014) va al suo host con il 307 di prima, con `?view=` tenuto. Il 307 si segue
+     solo se il percorso, letto, sta sotto il collegamento. Un'istanza la cui copia lì è cancellata dà la pagina del
+     suo spostamento (`moved_away.html`, classe D). Il centrale la scrive da un piccolo modello: il nome e lo
+     spostamento. L'HTML della macchina non passa mai perché il modello lo dice: la prima versione di questa
+     fetta (`own_page`) lo lasciava passare, e la revisione l'ha tolto.
+   - La riga «aggiornala» si aggiunge solo a una pagina HTML con esito 200. Il resto passa com'è, in streaming.
    - Il ritorno di 17.2 distingue ora due casi. Una macchina che dice quello che ha sempre detto, ma meno di quanto
      chiede una pagina più nuova (una macchina a 1 per la pagina dell'istanza), mostra la sua pagina con la riga
      «aggiornala». Una macchina che dice meno di quanto aveva detto, o non ha il modello di quello che dice, ha la

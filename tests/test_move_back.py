@@ -8,9 +8,11 @@ import re
 
 import httpx
 
-from omniacli import placement
-from omniacli.config import Workspace, parse_servers, server_to_dict
+from omniacli import centralpages, placement
+from omniacli.config import LinkAccess, Workspace, parse_servers, server_to_dict
 
+from .conftest import LINK_TOKEN, hash_token
+from .serverparity import Twice
 from .test_app import AUTH, POST  # noqa: F401
 from .test_staging_dialog import FAR_TOKEN, acme, two  # noqa: F401 - the fixtures
 from .test_workspaces import post_as, workspaces  # noqa: F401 - the workspaces fixture
@@ -127,6 +129,26 @@ async def test_the_page_of_an_instance_whose_copy_was_deleted(two, acme, env):
     # any other path of it is the host's, for the admins too
     resp = await two.get("/servers/acme-odoo/logs", headers={"Authorization": AUTH}, follow_redirects=False)
     assert resp.status_code == 307
+
+
+async def test_the_page_of_a_move_has_a_small_model_for_a_panel(two, acme, env, monkeypatch):
+    """AD-017: its model through a link (an admin of the machine) is the page's own context, drawn the same from
+    it (serverparity.Twice); never «own_page», which a panel took as leave to pass the machine's HTML."""
+    twice = Twice(monkeypatch)
+    place(env["settings"], copy="deleted")
+    env["settings"].servers.pop("acme-odoo")
+    settings = env["settings"]
+    settings.fixed.links["omnia"] = LinkAccess(hash_token(LINK_TOKEN), "admin")
+    settings.set_web_access(settings.web)
+    link = {"Authorization": f"Bearer {LINK_TOKEN}", "X-OmniaCLI-Prefix": "/links/home", "X-OmniaCLI-User": "carlo",
+            "Accept": "application/json"}
+    data = (await two.get("/api/pages/server", params={"server": "acme-odoo"}, headers=link)).json()
+    assert "own_page" not in data and "context" not in data
+    assert data["moved_away"]["server"] == {"name": "acme-odoo"} and data["moved_away"]["move"]["state"]["state"] == "placed"
+    view = centralpages.moved_away_view(data["moved_away"], "/links/home")
+    assert view["server"].name == "acme-odoo"
+    resp = await two.get("/servers/acme-odoo", headers={**link, "Accept": "text/html"})
+    assert resp.status_code == 200 and [c["page"] for c in twice.compared] == ["moved_away.html"]
 
 
 async def test_the_host_answers_the_return_to_the_home_only(two, acme, env):

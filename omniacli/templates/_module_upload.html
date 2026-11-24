@@ -217,7 +217,7 @@
     $("mu-replace-label").textContent = fill(U.replaceLabel, {names});
     $("mu-replace-input").value = "";
     const wrap = $("mu-go-wrap");
-    if (answer.busy) wrap.title = fill(U.busy, {name: "{{ server.name }}"}); else wrap.removeAttribute("title");
+    if (answer.busy) wrap.title = fill(U.busy, {name: {{ server.name | tojson }}}); else wrap.removeAttribute("title");
     choices();
     note();
   }
@@ -270,7 +270,7 @@
   function ghAllow() {
     const name = $("mu-gh-name").value.trim();
     const taken = $("mu-gh-follow").checked && gh.taken.includes(name);
-    $("mu-gh-error").textContent = taken ? fill(U.ghTaken, {server: "{{ server.name }}", name}) : "";
+    $("mu-gh-error").textContent = taken ? fill(U.ghTaken, {server: {{ server.name | tojson }}, name}) : "";
     $("mu-gh-go").disabled = !gh.may || !name || taken;
   }
   async function ghCheck() {
@@ -304,7 +304,7 @@
     $("mu-gh-owner").value = data.owner || $("mu-gh-owner").value;
     $("mu-gh-name").value = data.name;
     $("mu-gh-private").checked = true; $("mu-gh-follow").checked = true;
-    $("mu-gh-follow-text").textContent = fill(U.ghFollow, {server: "{{ server.name }}"});
+    $("mu-gh-follow-text").textContent = fill(U.ghFollow, {server: {{ server.name | tojson }}});
     $("mu-gh-fields").hidden = false;
     $("mu-gh-may").textContent = data.may ? fill(U.ghMay, {owner: data.owner}) : (data.missing || data.error || "");
     $("mu-gh-may").className = data.may ? "muted small" : "error small";

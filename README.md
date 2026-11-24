@@ -1102,8 +1102,14 @@ Settings; the others are still the machine's own.
   and why, the dialogs) comes in it, and this panel never widens it; of the
   instance its fields by name (never its options, the database's password or
   a repository's credentials). An instance placed on another machine (AD-014)
-  is sent to its host as before; a page of a plugin's dialog this panel has
-  not is refused. Every read of a model is in the machine's access log
+  is sent to its host as before; the page of a move of one whose copy there
+  was deleted is drawn here too, from its name and its move. A model is
+  refused (this panel's error page) when it names a plugin's dialog this panel
+  has not, another instance than the address's, or an address the page may
+  not use: a link elsewhere that is not http(s), an address of the machine not
+  under `/links/<name>/` (no `..`, no other machine, no route of this panel).
+  The page writes its moments by the machine's clock. The models are never
+  reached by a browser through the link (`/links/<name>/api/pages/…`: 404). Every read of a model is in the machine's access log
   (`read`, with who looks through the link and the server).
 - **Only data, where it is written here.** For such a link, the machine's
   answers to `/links/<name>/api/…` and to the paths of the pages written here
