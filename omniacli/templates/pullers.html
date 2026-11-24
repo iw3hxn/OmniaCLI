@@ -42,7 +42,7 @@
 <style>
 .pub-table td { vertical-align: top; } .pub-table .actions button, .pub-table td:first-child a { white-space: nowrap; }
 .pub-note { display: block; font-size: var(--fs-14); color: var(--muted); white-space: normal; max-width: 52ch; line-height: var(--lh-20);}
-.pub-note.warn, .pub-warn { color: var(--warn); } .pub-note.error { color: var(--err); }
+.pub-note.error { color: var(--err); }
 .pub-note.error::first-letter { text-transform: uppercase; }
 .pub-dot { display: inline-flex; align-items: center; gap: 6px; font-weight: var(--fw-semibold); white-space: nowrap; }
 .pub-dot::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
@@ -97,7 +97,7 @@
       <td>{% for c in on %}{{ tr(c | capitalize) }} {{ (p.commands[c].window | replace("-", "–")) if p.commands[c].window else _("always") }}{% if not loop.last %} · {% endif %}{% else %}{{ _("No command: reports only") }}{% endfor %}
         {% if risky and not p.has_key %}<span class="pub-note error">{{ _("{commands} without a key: whoever controls the relay machine can send them", commands=risky | join(", ")) }}</span>
         {% elif p.has_key %}<span class="pub-note">{{ _("With a key") }}</span>
-        {% else %}<span class="pub-note warn">{{ _("In clear") }}</span>{% endif %}</td>
+        {% else %}<span class="pub-note warn-line">{{ _("In clear") }}</span>{% endif %}</td>
       <td role="status">{% if p.status.ok %}<span class="pub-dot up">{{ _("Arrives") }}</span>
         <span class="pub-note">{{ _("last report") }} <span data-time="{{ p.status.at or '' }}"></span></span>
         {% if p.status.commands %}<span class="pub-note">{{ _("1 command taken") if p.status.commands == 1 else _("{count} commands taken", count=p.status.commands) }}</span>{% endif %}
@@ -163,7 +163,7 @@
     <tr data-operated="{{ c.name }}" data-link="{{ c.link }}" data-box="{{ c.puller }}" data-has-key="{{ '1' if c.has_key else '' }}" {{ item(c.name ~ " " ~ c.link ~ " " ~ c.puller) }}>
       <td><strong><a href="{{ prefix }}/pullers/connections/{{ c.name }}" title="{{ _('Opens the instance: state, load, jobs and commands, as its reports tell them') }}">{{ c.name }}</a></strong></td>
       <td>{{ where(c.link, c.puller, c.link_missing) }}</td>
-      <td>{% if c.has_key %}{{ _("With a key") }}{% else %}<span class="pub-warn">{{ _("In clear") }}</span>{% endif %}</td>
+      <td>{% if c.has_key %}{{ _("With a key") }}{% else %}<span class="warn-line">{{ _("In clear") }}</span>{% endif %}</td>
       <td role="status">{% if c.status.ok %}<span class="pub-dot up">{{ _("Reports read") }}</span>
         <span class="pub-note"><span data-time="{{ c.status.at or '' }}"></span></span>
         {% elif c.status.ok is sameas false and c.status.error.startswith("a report refused") %}{% set said = tr(c.status.error) %}<span class="pub-dot down">{{ _("Reports refused") }}</span>
@@ -217,7 +217,8 @@
       <div>{% for c in commands %}
         <div class="pub-choice"><label title="{{ command_help[c] }}"><input type="checkbox" data-cmd="{{ c }}"> {{ tr(c | capitalize) }}</label>
           <input type="text" class="mono" data-window="{{ c }}" placeholder="{{ _('always') }}" aria-label="{{ _('Hours of {command}', command=tr(c | capitalize)) }}" hidden
-                 title="{{ _('The hours the command is taken in, by the clock of this machine, for example 22:00-06:00. Empty: always. Outside its hours the command is refused at once.') }}"></div>{% endfor %}
+                 aria-describedby="pd-window-hint"></div>{% endfor %}
+        <small class="hint" id="pd-window-hint">{{ _('The hours the command is taken in, by the clock of this machine, for example 22:00-06:00. Empty: always. Outside its hours the command is refused at once.') }}</small>
         <span class="error field-help" id="pd-window-bad" hidden></span>
         <span class="error field-help" id="pd-risk" hidden></span></div>
       <label>{{ _("Key") }}</label>

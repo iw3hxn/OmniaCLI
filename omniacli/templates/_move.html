@@ -5,9 +5,8 @@
    (server_page's move). #}
 {% from "_icons.html" import icon, dialog_x with context %}
 <style>
-.move-band { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0 0 16px; padding: 10px 12px;
-  border-radius: var(--r); border: 1px solid var(--border); background: var(--info-soft); color: var(--text); }
-.move-band.failed { background: var(--err-soft, var(--warn-soft)); }
+/* the band of a move is a banner (UX-017 §5.8): its state said by its border, its icon and its words */
+.move-band { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
 .move-band .move-text { flex: 1 1 320px; min-width: 0; overflow-wrap: anywhere; }
 .move-band .move-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 #move-dialog { --dialog-w: 680px; }
@@ -21,23 +20,23 @@
 .mv-target .mv-why { display: block; color: var(--err); font-size: var(--fs-14); line-height: var(--lh-20); margin-top: 2px; overflow-wrap: anywhere; }
 .mv-steps { margin: 4px 0 0; padding-left: 20px; } .mv-steps li { margin-bottom: 4px; overflow-wrap: anywhere; }
 .mv-plan-title { margin: 10px 0 2px; font-weight: var(--fw-semibold); }
-@media (max-width: 767.98px) { .move-band .move-actions { width: 100%; } .move-band .move-actions button, #move-dialog .actions button { min-height: 44px; } }
+@media (max-width: 767.98px) { .move-band .move-actions { width: 100%; } }
 </style>
 {% if move.state %}{% set ms = move.state %}{% set mb = ms.back or {} %}{% set back = mb.state if ms.state == "placed" and mb.state in ("preparing", "ready", "completing", "failed") else "" %}
-<div class="move-band{{ ' failed' if ms.state == 'failed' or back == 'failed' }}" role="status" id="move-band" data-state="{{ ms.state }}" data-back="{{ back }}">
+<div class="move-band banner{{ ' failed' if ms.state == 'failed' or back == 'failed' else ' info' }}" role="status" id="move-band" data-state="{{ ms.state }}" data-back="{{ back }}">
   <span class="move-text">
-  {% if back == "preparing" %}{{ icon("hourglass") }} {{ _("Coming back from {machine}: the copy is under way, there everything runs.", machine=ms.link) }}
-  {% elif back == "ready" %}{{ icon("server") }} {{ _("Ready to come back from {machine} since {when}: the database here is {lag} s behind.", machine=ms.link, when=mb.ready_at | moment, lag=mb.lag if mb.lag is not none else "—") if mb.kind == "dedicated" else _("Ready to come back from {machine} since {when}: the database comes here at the completion.", machine=ms.link, when=mb.ready_at | moment) }}
-  {% elif back == "completing" %}{{ icon("hourglass") }} {{ _("The return from {machine} is completing: the instance is stopped there.", machine=ms.link) }}
-  {% elif back == "failed" %}{{ icon("triangle-alert") }} {{ _("The return from {machine} did not end: {why} The instance runs there.", machine=ms.link, why=tr(mb.error or "")) }}
-  {% elif ms.state == "placed" and ms.get("copy") == "deleted" %}{{ icon("server") }} {{ _("On {machine} since {when}: its copy here was deleted. Back to {here}… makes it here again and copies it whole.", machine=ms.link, when=ms.placed_at | moment, here=move.here) }}
-  {% elif ms.state == "returned" %}{{ icon("server") }} {{ _("Back here from {machine} since {when}: its copy there stays stopped and passes its names here until {until}.", machine=ms.link, when=ms.returned_at | moment, until=ms.there_until | moment) }}{% if ms.unserved %} {{ _("Without service for {n} s at the return.", n=ms.unserved.seconds) }}{% endif %}
+  {% if back == "preparing" %}{{ _("Coming back from {machine}: the copy is under way, there everything runs.", machine=ms.link) }}
+  {% elif back == "ready" %}{{ _("Ready to come back from {machine} since {when}: the database here is {lag} s behind.", machine=ms.link, when=mb.ready_at | moment, lag=mb.lag if mb.lag is not none else "—") if mb.kind == "dedicated" else _("Ready to come back from {machine} since {when}: the database comes here at the completion.", machine=ms.link, when=mb.ready_at | moment) }}
+  {% elif back == "completing" %}{{ _("The return from {machine} is completing: the instance is stopped there.", machine=ms.link) }}
+  {% elif back == "failed" %}{{ _("The return from {machine} did not end: {why} The instance runs there.", machine=ms.link, why=tr(mb.error or "")) }}
+  {% elif ms.state == "placed" and ms.get("copy") == "deleted" %}{{ _("On {machine} since {when}: its copy here was deleted. Back to {here}… makes it here again and copies it whole.", machine=ms.link, when=ms.placed_at | moment, here=move.here) }}
+  {% elif ms.state == "returned" %}{{ _("Back here from {machine} since {when}: its copy there stays stopped and passes its names here until {until}.", machine=ms.link, when=ms.returned_at | moment, until=ms.there_until | moment) }}{% if ms.unserved %} {{ _("Without service for {n} s at the return.", n=ms.unserved.seconds) }}{% endif %}
   {% else %}
-  {% if ms.state == "preparing" %}{{ icon("hourglass") }} {{ _("Moving to {machine}: the copy is under way, here everything runs.", machine=ms.link) }}
-  {% elif ms.state == "ready" %}{{ icon("server") }} {{ _("Ready on {machine} since {when}: the database there is {lag} s behind.", machine=ms.link, when=ms.ready_at | moment, lag=ms.lag if ms.lag is not none else "—") if ms.kind == "dedicated" else _("Ready on {machine} since {when}: the database goes there at the completion.", machine=ms.link, when=ms.ready_at | moment) }}
-  {% elif ms.state == "completing" %}{{ icon("hourglass") }} {{ _("The move to {machine} is completing: the instance is stopped here.", machine=ms.link) }}
-  {% elif ms.state == "placed" %}{{ icon("server") }} {{ _("On {machine} since {when}: the stopped copy stays here until {until}.", machine=ms.link, when=ms.placed_at | moment, until=ms.copy_until | moment) }}{% if ms.unserved %} {{ _("Without service for {n} s at the move.", n=ms.unserved.seconds) }}{% endif %}
-  {% else %}{{ icon("triangle-alert") }} {{ _("The move to {machine} was not prepared: {why}", machine=ms.link, why=tr(ms.error or "")) }}{% endif %}{% endif %}
+  {% if ms.state == "preparing" %}{{ _("Moving to {machine}: the copy is under way, here everything runs.", machine=ms.link) }}
+  {% elif ms.state == "ready" %}{{ _("Ready on {machine} since {when}: the database there is {lag} s behind.", machine=ms.link, when=ms.ready_at | moment, lag=ms.lag if ms.lag is not none else "—") if ms.kind == "dedicated" else _("Ready on {machine} since {when}: the database goes there at the completion.", machine=ms.link, when=ms.ready_at | moment) }}
+  {% elif ms.state == "completing" %}{{ _("The move to {machine} is completing: the instance is stopped here.", machine=ms.link) }}
+  {% elif ms.state == "placed" %}{{ _("On {machine} since {when}: the stopped copy stays here until {until}.", machine=ms.link, when=ms.placed_at | moment, until=ms.copy_until | moment) }}{% if ms.unserved %} {{ _("Without service for {n} s at the move.", n=ms.unserved.seconds) }}{% endif %}
+  {% else %}{{ _("The move to {machine} was not prepared: {why}", machine=ms.link, why=tr(ms.error or "")) }}{% endif %}{% endif %}
   {% if ms.job and ms.state in ("preparing", "completing") %}<a href="{{ prefix }}/jobs/{{ ms.job }}" title="{{ _('Opens the job of the move, with its steps') }}">{{ _("See the job") }}</a>{% endif %}
   {% if mb.job and back in ("preparing", "completing") %}<a href="{{ prefix }}/jobs/{{ mb.job }}" title="{{ _('Opens the job of the return, with its steps') }}">{{ _("See the job") }}</a>{% endif %}
   {% if ms.state == "placed" %}<a href="{{ prefix }}/placed/{{ server.name }}/servers/{{ server.name }}" title="{{ _('Opens its page on {machine}, through this machine: what its workspace sees and does there', machine=ms.link) }}">{{ _("Open it there") }}</a>{% endif %}
@@ -281,7 +280,7 @@
           el("strong", {textContent: fill(T.row, {machine: t.machine, cpu: num(load.cpu_p95, 0), ram: num(load.ram_p95, 0), free: gb(t.free)})}),
           el("span", {className: "mv-sub", textContent: fill(T.sub, {template: answer.template || "", ok: t.why ? "" : (t.install ? T.install : T.there),
             major: answer.kind === "dedicated" ? (t.majors || []).join(", ") || "—" : answer.major || "—", ms: num(t.ms, 1), via: t.via})}),
-          t.why ? el("span", {className: "mv-why", title: t.why, textContent: t.why}) : null));
+          t.why ? el("span", {className: "mv-why", title: t.why}, window.omniaIcon("circle-x"), " ", t.why) : null));
     }));
     if (first >= 0) dialog.querySelectorAll('input[name="mv-target"]')[first].checked = true;
     of("mv-targets").hidden = false;

@@ -322,3 +322,124 @@ async def test_the_header_on_a_phone_leaves_nothing_out(client):  # noqa: F811
     end = page[page.index('<div class="top-end">'):page.index("</header>")]
     assert 'action="/logout"' in end and 'href="/language/it?' in end and 'href="/account"' in end
     assert "@media (max-width: 560px)" not in page and ".top-end .side-account, .top-end .logout { display: flex; }" in page
+
+
+
+# the rules that may paint their words in the warning's colour: each says it with a mark too (an icon, the dot of a
+# state, a badge's or a line's triangle), or is a step of a job, or the map's (D2)
+WARN_COLOURED = {
+    ("base.html", ".status.running, .status.queued, .status.warned"), ("base.html", ".warn-line, .status-warning"),
+    ("base.html", ".job-running"), ("base.html", ".disk-head .warn"), ("base.html", ".disk-note.warn"),
+    ("base.html", ".disk-compact .warn"), ("base.html", ".badge.draft, .badge.warn"), ("base.html", ".bell-list .mark"),
+    ("_machine_database.html", ".pg-table .pg-sub.warn-line"), ("_new_instance_dialog.html", ".ni-help.warn-line"),
+    ("_new_instance_dialog.html", ".ni-server .ni-why.warn-line"), ("_receive_dialog.html", "#receive-dialog .rv-warn"),
+    ("instances.html", ".inst-backup.warn, .inst-backup.warn a"), ("job.html", ".job-warned"), ("job.html", ".step.active"),
+    ("machines.html", ".m-state.starting, .m-state.preparing"), ("machines.html", ".m-rows .m-pct.warn"),
+    ("server.html", ".repo-state .warn-text"), ("workspaces.html", ".ws-rows .ws-warn"), ("workspaces.html", ".ws-machine-row td"),
+    ("_map.html", ".map-verdict.watch"), ("_map.html", ".map-watch .mark"), ("_map.html", ".map-job.warned .sign"),
+    ("_map.html", ".map-strip .step.active"),
+}
+
+
+def test_a_warning_is_a_banner_or_a_marked_line():
+    """UX-017 §5.8 and §7: no loose orange paragraph left. A warning that is a paragraph of its own is a .banner.warn
+    (its border, its triangle, its words in the colour of the text); one said in a line of another place (a cell, a
+    fact, a line under a value) is a .warn-line, the triangle before its words; no other rule paints a text orange."""
+    painted = set()
+    for name, selector, body in _css_rules():
+        if re.search(r"(?<![\w-])color\s*:\s*var\(--warn\)", body):
+            assert selector, f"{name}: a colour written in a style attribute"
+            painted.add((name, selector))
+    assert painted == WARN_COLOURED, (painted - WARN_COLOURED, WARN_COLOURED - painted)
+    base = (TEMPLATES / "base.html").read_text(encoding="utf-8")
+    assert re.search(r"\.warn-line::before, \.status-warning::before \{[^}]*mask: var\(--m-triangle\)", base)
+    assert re.search(r"\.banner\.warn \{[^}]*--mark: var\(--m-triangle\)", base)
+    for page in TEMPLATES.glob("*.html"):
+        text = page.read_text(encoding="utf-8")
+        # a paragraph, a box or a list's line painted orange without its mark: the classes of before are gone
+        for gone in ("pg-warn", 'class="fb-off"', "ni-once", "mods-alpha", 'class="mods-licence"', "ab-line off", "pub-warn", "--warn-text"):
+            assert gone not in text, (page.name, gone)
+        assert not re.search(r'el\("p", \{class(?:Name)?: "warn"', text), page.name
+    # the paragraphs of before, each a warning banner now
+    for name, marker in (("backups.html", '<p class="banner warn fb-off" id="fb-staging-off"'),
+                         ("backups.html", '<p class="banner warn fb-off" id="fb-instance-off"'),
+                         ("backups.html", 'lines.push(el("p", {class: "banner warn"}, p.passwords))'),
+                         ("_machine_database.html", 'box.append(el("p", {className: "banner warn", textContent: fill(T.rp.replacedStill'),
+                         ("_machine_database.html", 'for (const c of ["banner", "warn"]) trip.classList.toggle(c, slow);'),
+                         ("_machine_database.html", 'for (const c of ["banner", "warn"]) changes.classList.toggle(c, !!f.restarts);'),
+                         ("_machine_database.html", 'for (const c of ["banner", "warn"]) restart.classList.toggle(c, !a.enabled && archiveRestarts(row));'),
+                         ("_modules_tab.html", '<div class="banner warn mods-licence" id="mods-licence"'),
+                         ("server.html", 'line.className = "ab-line" + (data.enabled ? "" : " banner warn");'),
+                         ("workspace.html", '<p class="banner warn" id="rd-rtt-warn"'),
+                         ("_new_instance_dialog.html", '<div class="ni-help warn-line">'),
+                         ("_modules_tab.html", 'paid.className = "badge warn";'), ("_modules_tab.html", 'alpha.className = "badge warn";')):
+        assert marker in (TEMPLATES / name).read_text(encoding="utf-8"), (name, marker)
+    # the values beside a meter and the verdict of the map say their level with a mark too
+    assert "marked(spaceLevel(d), node(" in (TEMPLATES / "_disk.html").read_text(encoding="utf-8")
+    assert 'window.omniaIcon(lv === "warn" ? "triangle-alert" : "circle-x")' in (TEMPLATES / "machines.html").read_text(encoding="utf-8")
+    assert 'verdict.replaceChildren(window.omniaIcon(watch.length ? "triangle-alert" : "circle-check")' in (TEMPLATES / "_map.html").read_text(encoding="utf-8")
+
+
+def test_badges_carry_their_mark():
+    """UX-017 §5.7: a badge 12/18 semibold, padding 2/8, a pill; a good, a warned and a failed one draw their icon
+    (check, triangle, circle-x) from the CSS, in the colour of their words."""
+    base = (TEMPLATES / "base.html").read_text(encoding="utf-8")
+    badge = re.search(r"\n\.badge \{([^}]*)\}", base).group(1)
+    assert "padding: 2px 8px" in badge and "var(--fs-12)" in badge and "var(--r-pill)" in badge and "var(--lh-18)" in badge
+    assert re.search(r"\.badge\.ok::before, \.badge\.active::before, \.badge\.warn::before, \.badge\.draft::before, "
+                     r"\.badge\.error::before, \.badge\.err::before \{[^}]*background-color: currentColor", base)
+    for state, mark in (("ok", "--m-check"), ("warn", "--m-triangle"), ("error", "--m-circle-x")):
+        assert re.search(rf"\.badge\.{state}[^{{]*\{{ --mark: var\({mark}\); \}}", base), state
+    # no badge of a template pads itself apart
+    for name, selector, body in _css_rules():
+        assert selector == ".badge" or not (re.search(r"\.badge(?![\w-])", selector) and re.search(r"(?<![\w-])padding", body)), (name, selector)
+
+
+def test_what_is_read_shows_grey_lines_everywhere_alike():
+    """UX-017 §5.12: the instance's Backup tab reads with grey lines too; the skeletons made by hand before (the
+    deploys, the map, the workspaces) use the same two classes; a list drawn in the place of the line leaves its box
+    no longer busy."""
+    base = (TEMPLATES / "base.html").read_text(encoding="utf-8")
+    assert "note.isConnected && !note.hidden" in base and "new MutationObserver(check).observe(box, {childList: true})" in base
+    server = (TEMPLATES / "server.html").read_text(encoding="utf-8")
+    assert '<div class="backup-list"><p class="muted" data-skeleton="3">' in server
+    for name, marker in (("_environments.html", '<span class="skeleton-line w-80"></span><span class="skeleton-line w-60"></span>'),
+                         ("_map.html", '<span class="skeleton-block" style="--h: 150px"></span>'),
+                         ("workspaces.html", '<td><span class="skeleton-line"></span></td>')):
+        assert marker in (TEMPLATES / name).read_text(encoding="utf-8"), name
+    for name, selector, body in _css_rules():
+        assert not re.search(r"\.skeleton span|map-skeleton div|ws-skel td div", selector), (name, selector)
+
+
+# the fields that keep their help in a title: the filters of a list (their placeholder and label say what they do),
+# a box ticked in a row of a table, the colour picker named by it, the two ways of adding a repository (their words
+# are the choice), the options locked by the Mail tab (said on the page above them) and a choice in a row of three
+KEEP_TITLE = {
+    "_environments.html": 1, "_list.html": 1, "_machine_database.html": 1, "_modules_tab.html": 1, "_odoo_log.html": 3,
+    "access.html": 4, "options.html": 2, "server.html": 7, "server_form.html": 1,
+}
+
+
+def test_a_field_shows_its_help():
+    """UX-017 §5.13 rule 2: the help of a field is written under it (.hint, read with it by aria-describedby), not
+    only in a title nobody sees on a phone; every hint with an id is the description of its field."""
+    kept = {}
+    for page in TEMPLATES.glob("*.html"):
+        text = page.read_text(encoding="utf-8")
+        for m in re.finditer(r'<(?:input|select|textarea)\b((?:[^>"]|"[^"]*")*)>', text):
+            attrs = m.group(1)
+            if 'type="hidden"' not in attrs and re.search(r'(?<![\w-])title="', attrs):
+                kept[page.name] = kept.get(page.name, 0) + 1
+        said = re.findall(r'aria-describedby="([^"]+)"', text)
+        described = set(said) | set(" ".join(said).split())
+        for hint in re.findall(r'<small class="hint" id="([^"]+)"', text):
+            assert hint in described, (page.name, hint)
+    assert kept == KEEP_TITLE, kept
+    assert "flex-basis: 100%" in re.search(r"\n\.hint \{([^}]*)\}", (TEMPLATES / "base.html").read_text(encoding="utf-8")).group(1)
+    assert 'id="op-mail-said"' in (TEMPLATES / "server.html").read_text(encoding="utf-8")
+
+
+def test_a_dangerous_question_says_its_consequence():
+    """UX-017 §5.13 rule 3: what the help of a dangerous button says that cannot be undone is in its question too."""
+    assert "that instance gets in again only with a new token" in (TEMPLATES / "users.html").read_text(encoding="utf-8")
+    assert "on the other instance its token stays valid until you revoke it there" in (TEMPLATES / "links.html").read_text(encoding="utf-8")

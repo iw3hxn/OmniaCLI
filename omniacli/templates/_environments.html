@@ -78,7 +78,7 @@
       </div>
       {% if e.code %}
       <div class="env-strip" data-strip="{{ e.key }}" aria-busy="true">
-        {% for _i in range(3) %}<div class="deploy-card skeleton" aria-hidden="true"><span></span><span></span><span></span></div>{% endfor %}
+        {% for _i in range(3) %}<div class="deploy-card skeleton" aria-hidden="true"><span class="skeleton-line w-80"></span><span class="skeleton-line w-60"></span><span class="skeleton-line w-40"></span></div>{% endfor %}
       </div>
       {% endif %}
     </div>
@@ -132,9 +132,6 @@
 .deploy-card .dc-action .env-actions { margin-top: 0; }
 .badge.neutral { color: var(--muted); background: var(--panel-2); }
 .badge.err { color: var(--err); background: var(--err-soft); }
-.deploy-card.skeleton span { display: block; height: 12px; border-radius: var(--r); background: var(--panel-2); }
-.deploy-card.skeleton span:first-child { width: 80%; } .deploy-card.skeleton span:nth-child(2) { width: 55%; }
-.deploy-card.skeleton span:nth-child(3) { width: 35%; margin-top: auto; }
 .env-filter { margin: 0 0 8px; } .env-filter input { width: min(360px, 100%); }
 @media (max-width: 1199.98px) { .deploy-card { flex-basis: 220px; width: 220px; } }
 @media (max-width: 767.98px) {
@@ -143,7 +140,7 @@
   .env-strip { flex-direction: column; }
   .deploy-card { width: 100%; flex-basis: auto; }
   .env-actions .button, .env-actions summary, .env-left .env-rebuild, .env-actions .more-items .button,
-  .env-actions .more-items button { min-height: 44px; }
+  .env-actions .more-items button { min-height: var(--control-h); }
   .env-actions .env-menu[open] { flex-basis: auto; }
   .env-actions .more-items { position: absolute; width: max-content; max-width: calc(100vw - 48px); }
 }
@@ -427,7 +424,7 @@
         {% if is_admin_here %}el("span", {title: why}, el("button", {type: "button", class: "small danger env-rebuild", disabled: true, title: why}, T.rebuild)),{% endif %}
         el("div", {class: "env-actions-home"}, actions));
       const strip = el("div", {class: "env-strip", "data-strip": key, "aria-busy": "true"},
-        ...[0, 1, 2].map(() => el("div", {class: "deploy-card skeleton", "aria-hidden": "true"}, el("span"), el("span"), el("span"))));
+        ...[0, 1, 2].map(() => el("div", {class: "deploy-card skeleton", "aria-hidden": "true"}, el("span", {class: "skeleton-line w-80"}), el("span", {class: "skeleton-line w-60"}), el("span", {class: "skeleton-line w-40"}))));
       homes[key] = left.lastElementChild;
       if (s.unread) {
         strip.removeAttribute("aria-busy");

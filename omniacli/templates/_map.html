@@ -71,7 +71,6 @@
 @keyframes map-spin { to { transform: rotate(360deg); } }
 @keyframes map-flow-bar { from { background-position: 0 0; } to { background-position: 12px 0; } }
 @keyframes map-dash { to { stroke-dashoffset: -24; } }
-@keyframes map-pulse { 50% { opacity: .45; } }
 @media (max-width: 767.98px) {
   .map-strip .steps { flex-direction: column; align-items: flex-start; }
   .map-strip .step-wire { flex: 0 0 8px; width: 2px; height: 8px; margin-left: 12px; }
@@ -87,8 +86,6 @@
 .map-canvas.stale { opacity: .55; }
 .map-canvas svg { display: block; max-width: 100%; }
 .map-skeleton { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
-.map-skeleton div { height: 150px; border: 1px dashed var(--border-strong); border-radius: var(--r-lg); background: var(--panel-2);
-  animation: map-pulse 1.4s ease-in-out 3; }
 .map-empty { border: 1px dashed var(--border-strong); border-radius: var(--r-lg); padding: 20px; max-width: 640px; }
 .map-empty p { margin: 0 0 6px; }
 /* the diagram: only the variables of base.html, so the dark theme follows */
@@ -163,7 +160,7 @@
 @media (max-width: 767.98px) {
   .map-body { display: block; }
   .map-panel { position: fixed; inset: 0; z-index: 30; width: auto; max-height: none; border-radius: 0; border: 0; }
-  .map-job, .map-count { min-height: 44px; } .map-count { display: inline-flex; align-items: center; }
+  .map-job, .map-count { min-height: var(--control-h); } .map-count { display: inline-flex; align-items: center; }
 }
 #map-list { margin-top: 16px; } #map-list > summary { cursor: pointer; color: var(--map-ink); }
 #map-list ul { margin: 6px 0 0; padding-left: 20px; } #map-list li { margin: 4px 0; overflow-wrap: anywhere; }
@@ -196,7 +193,7 @@
   </div>
   <div class="map-body">
     <div class="map-canvas" id="map-canvas">
-      <div class="map-skeleton" aria-hidden="true"><div></div><div></div><div></div></div>
+      <div class="map-skeleton" aria-hidden="true">{% for _i in range(3) %}<span class="skeleton-block" style="--h: 150px"></span>{% endfor %}</div>
     </div>
     <aside class="map-panel" id="map-panel" role="dialog" aria-labelledby="map-panel-title" tabindex="-1" hidden></aside>
   </div>
@@ -627,7 +624,8 @@ window.OmniaMap = (function () {
   function drawHead() {
     const verdict = document.getElementById("map-verdict"), watch = data.verdict.watch || [];
     verdict.className = "map-verdict " + (watch.length ? "watch" : "ok");
-    verdict.replaceChildren(watch.length
+    // the verdict says its state with its mark too, not by its colour alone (UX-017 §7)
+    verdict.replaceChildren(window.omniaIcon(watch.length ? "triangle-alert" : "circle-check"), " ", watch.length
       ? count(watch.length === 1 ? T.watchOne : fill(T.watchMany, {n: watch.length}), T.watchTitle, "watch", filterIds("watch"),
               watch.length, watch.filter((w) => drawn(w.node)).length)
       : T.ok);
@@ -756,7 +754,7 @@ window.OmniaMap = (function () {
     if (NARROW) {
       // another workspace is another answer of the server: the skeleton until it comes
       generation += 1; data = null;
-      canvas.replaceChildren(el("div", {class: "map-skeleton", "aria-hidden": "true"}, el("div"), el("div"), el("div")));
+      canvas.replaceChildren(el("div", {class: "map-skeleton", "aria-hidden": "true"}, ...[0, 1, 2].map(() => el("span", {class: "skeleton-block", style: "--h: 150px"}))));
       tick(true);
     } else draw(true);
   }

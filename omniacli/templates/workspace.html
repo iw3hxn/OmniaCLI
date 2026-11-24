@@ -147,10 +147,10 @@ dialog .field-help { display: block; font-size: var(--fs-14); margin-top: 4px; l
     {# published by this machine or through another one of the provider's (relay.py) #}
     {% if relay_links is not none %}
     <label for="relay-via">{{ _("Published by") }}</label>
-    <select id="relay-via" title="{{ _('This machine, or another machine of yours with a public address for every environment, reached by a tunnel this machine opens itself (no port is opened here). One environment only: its Addresses. It takes effect with Save and publish.') }}">
+    <div><select id="relay-via" aria-describedby="relay-via-hint">
       <option value="">{{ _("this machine (or each environment in its Addresses)") }}</option>
       {% for l in relay_links %}<option value="{{ l }}" {% if ws.relay.all and ws.relay.via == l %}selected{% endif %}>{{ _("{machine}, every environment", machine=l) }}</option>{% endfor %}
-    </select>
+    </select><small class="hint" id="relay-via-hint">{{ _('This machine, or another machine of yours with a public address for every environment, reached by a tunnel this machine opens itself (no port is opened here). One environment only: its Addresses. It takes effect with Save and publish.') }}</small></div>
     {% endif %}
   </div>
   {% if relay_text %}<p class="muted">{{ _("Published through {machine}: its names lead to that machine, which holds their certificate.", machine=tr(relay_text)) }}</p>{% endif %}
@@ -388,21 +388,21 @@ dialog .field-help { display: block; font-size: var(--fs-14); margin-top: 4px; l
         {% if db_links %}
         <div class="form-grid" style="margin-top: 10px">
           <label for="rd-where">{{ _("Where the database is") }}</label>
-          <select id="rd-where" title="{{ _('On the cluster of a linked machine OmniaCLI makes the role and the database there, lets this machine in and brings the connection back. Of a third party: you give the connection its administrator gave you.') }}">
+          <div><select id="rd-where" aria-describedby="rd-where-hint">
             <option value="">{{ _("of a third party: I give its connection") }}</option>
             {% for l in db_links %}<option value="{{ l }}">{{ _("on the cluster of {link}", link=l) }}</option>{% endfor %}
-          </select>
+          </select><small class="hint" id="rd-where-hint">{{ _('On the cluster of a linked machine OmniaCLI makes the role and the database there, lets this machine in and brings the connection back. Of a third party: you give the connection its administrator gave you.') }}</small></div>
         </div>
         <div id="rd-linked" hidden>
           <p class="muted" id="rd-linked-state" style="font-size: var(--fs-14); margin: 10px 0 4px; line-height: var(--lh-20);" role="status"></p>
           <div class="form-grid" id="rd-linked-fields" hidden>
             <label for="rd-major">PostgreSQL</label>
-            <select id="rd-major" style="width: auto" title="{{ _('The cluster of that machine the database is made on') }}"></select>
+            <div><select id="rd-major" style="width: auto" aria-describedby="rd-major-hint"></select><small class="hint" id="rd-major-hint">{{ _('The cluster of that machine the database is made on') }}</small></div>
             <label for="rd-address">{{ _("This machine as seen from there") }}</label>
-            <input type="text" id="rd-address" class="mono" autocomplete="off" spellcheck="false" style="width: 14em" title="{{ _('The one address that machine lets in to this database (pg_hba.conf and firewall): the one this machine goes out with to reach it. Change it when this machine goes out through another address (NAT): the job checks it before anything is made here.') }}">
+            <div><input type="text" id="rd-address" class="mono" autocomplete="off" spellcheck="false" style="width: 14em" aria-describedby="rd-address-hint"><small class="hint" id="rd-address-hint">{{ _('The one address that machine lets in to this database (pg_hba.conf and firewall): the one this machine goes out with to reach it. Change it when this machine goes out through another address (NAT): the job checks it before anything is made here.') }}</small></div>
           </div>
           <p class="muted" id="rd-rtt" style="font-size: var(--fs-14); margin: 8px 0 0; line-height: var(--lh-20);" hidden></p>
-          <p class="error" id="rd-rtt-warn" style="font-size: var(--fs-14); margin: 4px 0 0; line-height: var(--lh-20);" hidden></p>
+          <p class="banner warn" id="rd-rtt-warn" style="margin: 4px 0 0" hidden></p>
           <p class="muted" id="rd-first" style="font-size: var(--fs-14); margin: 4px 0 0; line-height: var(--lh-20);" hidden></p>
         </div>
         {% endif %}
@@ -410,20 +410,20 @@ dialog .field-help { display: block; font-size: var(--fs-14); margin-top: 4px; l
         <p class="muted" style="font-size: var(--fs-14); margin: 10px 0 4px; line-height: var(--lh-20);">{{ _("The database is on another machine: Odoo reaches it over TLS and checks its certificate against the CA below. OmniaCLI only makes the connection: the database is tuned, backed up as a server and kept by who runs that machine. Machine admins only.") }}</p>
         <div class="form-grid">
           <label for="rd-host">{{ _("Host of the database") }}</label>
-          <input type="text" id="rd-host" class="mono" autocomplete="off" spellcheck="false" placeholder="db.example.com" title="{{ _('The name the certificate of that PostgreSQL is made for: it is checked against it') }}">
+          <div><input type="text" id="rd-host" class="mono" autocomplete="off" spellcheck="false" placeholder="db.example.com" aria-describedby="rd-host-hint"><small class="hint" id="rd-host-hint">{{ _('The name the certificate of that PostgreSQL is made for: it is checked against it') }}</small></div>
           <label for="rd-port">{{ _("Port") }}</label>
           <input type="number" id="rd-port" class="mono" value="5432" min="1" max="65535" style="width: 110px">
           <label for="rd-user">{{ _("Role") }}</label>
-          <input type="text" id="rd-user" class="mono" autocomplete="off" spellcheck="false" title="{{ _('A role of this instance only, never the superuser; it needs CREATEDB to make its database and the throwaway one of the backup check') }}">
+          <div><input type="text" id="rd-user" class="mono" autocomplete="off" spellcheck="false" aria-describedby="rd-user-hint"><small class="hint" id="rd-user-hint">{{ _('A role of this instance only, never the superuser; it needs CREATEDB to make its database and the throwaway one of the backup check') }}</small></div>
           <label for="rd-password">{{ _("Password of the role") }}</label>
-          <input type="password" id="rd-password" autocomplete="new-password" title="{{ _('It is written in the instance only (its .env, read by root): never in a job or in the access log') }}">
+          <div><input type="password" id="rd-password" autocomplete="new-password" aria-describedby="rd-password-hint"><small class="hint" id="rd-password-hint">{{ _('It is written in the instance only (its .env, read by root): never in a job or in the access log') }}</small></div>
           <label for="rd-database">{{ _("Database") }}</label>
-          <input type="text" id="rd-database" class="mono" autocomplete="off" spellcheck="false" title="{{ _('The name of the database Odoo makes there, or of an empty one already made for it') }}">
+          <div><input type="text" id="rd-database" class="mono" autocomplete="off" spellcheck="false" aria-describedby="rd-database-hint"><small class="hint" id="rd-database-hint">{{ _('The name of the database Odoo makes there, or of an empty one already made for it') }}</small></div>
           <label for="rd-replica">{{ _("Read replica (optional)") }}</label>
-          <span><input type="text" id="rd-replica" class="mono" autocomplete="off" spellcheck="false" placeholder="db-replica.example.com" style="width: 60%" title="{{ _('The host of a read-only replica of that database, when who runs it gives one: Odoo (18 and later) reads from it and writes to the database. Odoo does not move to it by itself if the database is gone. Same role, password and CA') }}">
-            <input type="number" id="rd-replica-port" class="mono" min="1" max="65535" placeholder="5432" style="width: 110px" title="{{ _('The port of the replica: empty, the port of the database') }}"></span>
+          <span><input type="text" id="rd-replica" class="mono" autocomplete="off" spellcheck="false" placeholder="db-replica.example.com" style="width: 60%" aria-describedby="rd-replica-hint">
+            <input type="number" id="rd-replica-port" class="mono" min="1" max="65535" placeholder="5432" style="width: 110px" aria-describedby="rd-replica-port-hint"><small class="hint" id="rd-replica-hint">{{ _('The host of a read-only replica of that database, when who runs it gives one: Odoo (18 and later) reads from it and writes to the database. Odoo does not move to it by itself if the database is gone. Same role, password and CA') }}</small><small class="hint" id="rd-replica-port-hint">{{ _('The port of the replica: empty, the port of the database') }}</small></span>
           <label for="rd-ca">{{ _("CA of its certificate (PEM)") }}</label>
-          <textarea id="rd-ca" class="mono" rows="4" spellcheck="false" placeholder="-----BEGIN CERTIFICATE-----" title="{{ _('The certificate of the authority that signed the certificate of that PostgreSQL: without it the server is not verified and the instance is not made') }}"></textarea>
+          <div><textarea id="rd-ca" class="mono" rows="4" spellcheck="false" placeholder="-----BEGIN CERTIFICATE-----" aria-describedby="rd-ca-hint"></textarea><small class="hint" id="rd-ca-hint">{{ _('The certificate of the authority that signed the certificate of that PostgreSQL: without it the server is not verified and the instance is not made') }}</small></div>
         </div>
         </div>
       </div>
@@ -435,7 +435,7 @@ dialog .field-help { display: block; font-size: var(--fs-14); margin-top: 4px; l
         <label for="fa-archive">{{ _("Archive") }}</label>
         <select id="fa-archive"><option value="">{{ _("Loading…") }}</option></select>
         <label for="fa-file">{{ _("or upload a .zip file") }}</label>
-        <span><input type="file" id="fa-file" accept=".zip" title="{{ _('Uploads a full archive made by another OmniaCLI (Backups › More › Full archive)') }}"> <span class="muted" id="fa-progress"></span></span>
+        <span><input type="file" id="fa-file" accept=".zip" aria-describedby="fa-file-hint"><small class="hint" id="fa-file-hint">{{ _('Uploads a full archive made by another OmniaCLI (Backups › More › Full archive)') }}</small> <span class="muted" id="fa-progress"></span></span>
         {% if links %}
         <label for="fa-link">{{ _("or copy one from a link") }}</label>
         <span class="fa-from">

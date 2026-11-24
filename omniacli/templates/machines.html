@@ -47,7 +47,7 @@
 .m-spark { display: block; width: 100%; height: 22px; margin-top: 4px; color: var(--series-1); }
 .m-facts { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: var(--fs-14); color: var(--muted); line-height: var(--lh-20);}
 .m-note { font-size: var(--fs-12); color: var(--muted); line-height: var(--lh-18);}
-.m-facts .m-newer { color: var(--warn); font-weight: var(--fw-semibold); }
+.m-facts .m-newer { font-weight: var(--fw-semibold); }
 .m-error { font-size: var(--fs-14); color: var(--err); background: var(--err-soft); border-radius: var(--r); padding: 8px 10px;
   overflow-wrap: anywhere; line-height: var(--lh-20);}
 .m-progress .m-step { display: flex; justify-content: space-between; gap: 8px; font-size: var(--fs-14); line-height: var(--lh-20);}
@@ -101,7 +101,7 @@
 .m-rows .m-cpu { display: flex; align-items: center; gap: 8px; }
 .m-rows .m-spark { width: 72px; height: 18px; margin: 0; flex: none; }
 .m-rows .m-ver .mono { display: block; }
-.m-rows .m-ver .m-newer { display: block; font-size: var(--fs-12); color: var(--warn); font-weight: var(--fw-semibold); line-height: var(--lh-18);}
+.m-rows .m-ver .m-newer { display: block; font-size: var(--fs-12); font-weight: var(--fw-semibold); line-height: var(--lh-18);}
 .m-rows a.m-newer { text-decoration: underline; }
 .m-rows .m-acts > div { display: flex; gap: 6px; align-items: center; justify-content: flex-end; }
 .m-rows .m-acts .button, .m-rows .m-acts button { padding: 4px 10px; font-size: var(--fs-14); white-space: nowrap; line-height: var(--lh-20);}
@@ -447,7 +447,7 @@
     const newer = newerOf(s);
     // a newer version is said only where it can be installed from here: one that cannot is no use to the reader
     if (newer && s.update && s.update.signed && !s.update.unavailable) {
-      facts.append(el("span", {class: "m-newer", text: fill(T.available, {version: newer})}));
+      facts.append(el("span", {class: "m-newer warn-line", text: fill(T.available, {version: newer})}));
       facts.append(el("a", {href: `${baseOf(card)}/#omniacli-update`, text: T.update,
                             title: fill(T.updateTitle, {name: card.local ? T.here : card.name})}));
     }
@@ -559,7 +559,11 @@
     if (again) again.focus();
   }
   const dash = () => el("span", {class: "muted", text: "–"});
-  const pct = (value) => el("span", {class: `m-pct ${level(value)}`, text: `${Math.round(value)}%`});
+  // a level to look at says it with its mark too, not by its colour alone (UX-017 §7)
+  const pct = (value) => {
+    const lv = level(value);
+    return el("span", {class: `m-pct ${lv}`}, lv ? window.omniaIcon(lv === "warn" ? "triangle-alert" : "circle-x") : null, lv ? " " : null, `${Math.round(value)}%`);
+  };
   function rowOf(item) {
     const {card, state} = item, s = stats[card.name], ok = s && !s.error && state === "up";
     const name = el("td", {class: "m-name"},
@@ -587,7 +591,7 @@
     if (ok && s.version) version.append(el("span", {class: "mono", text: s.version}));
     const newer = ok ? newerOf(s) : null;
     if (newer && s.update && s.update.signed && !s.update.unavailable) {
-      version.append(el("a", {class: "m-newer", href: `${baseOf(card)}/#omniacli-update`, text: fill(T.available, {version: newer}),
+      version.append(el("a", {class: "m-newer warn-line", href: `${baseOf(card)}/#omniacli-update`, text: fill(T.available, {version: newer}),
                               title: fill(T.updateTitle, {name: nameOf(card)})}));
     }
     if (!version.childNodes.length) version.append(dash());

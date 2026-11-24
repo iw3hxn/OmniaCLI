@@ -26,9 +26,8 @@
     <h2 style="margin-bottom: 16px">{{ _("General") }}</h2>
     <div class="form-grid">
       <label for="name">{{ _("Name") }}</label>
-      <div><input type="text" id="name" required pattern="[A-Za-z0-9][A-Za-z0-9._\-]*"
-             title="{{ _("Letters, digits, '.', '_' and '-'") }}">
-        <div class="muted field-help">{{ _("Letters, digits, '.', '_' and '-'") }}</div></div>
+      <div><input type="text" id="name" required pattern="[A-Za-z0-9][A-Za-z0-9._\-]*" aria-describedby="name-help">
+        <div class="muted field-help" id="name-help">{{ _("Letters, digits, '.', '_' and '-'") }}</div></div>
       <label for="type">{{ _("Type") }}</label>
       <div><select id="type"></select>
         <div class="muted field-help">{{ _("The plugin that serves the server; an existing server keeps its type") }}</div></div>

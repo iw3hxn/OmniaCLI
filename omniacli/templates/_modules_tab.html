@@ -74,7 +74,7 @@
       <p id="mods-plan-text"></p>
       <p class="muted" id="mods-plan-unread" hidden></p>
       <p class="error" id="mods-plan-blocked" hidden></p>
-      <div class="mods-licence" id="mods-licence" hidden>
+      <div class="banner warn mods-licence" id="mods-licence" hidden>
         <p id="mods-licence-text"></p>
         <ul id="mods-licence-list"></ul>
         <label class="mods-check"><input type="checkbox" id="mods-licensed"> {{ _("I have the licence of these modules") }}</label>
@@ -108,13 +108,13 @@ dialog.mods-dialog { --dialog-w: 960px; }
 .mods-row .mods-side { display: flex; align-items: center; gap: 10px; white-space: nowrap; }
 .mods-state { font-size: var(--fs-14); color: var(--muted); line-height: var(--lh-20);}
 .mods-state.on { color: var(--ok); font-weight: var(--fw-semibold); }
-.mods-alpha { font-size: var(--fs-12); color: var(--warn); line-height: var(--lh-18);}
 .mods-source { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-14); white-space: nowrap; line-height: var(--lh-20);}
 .mods-h3 { font-size: var(--fs-16); margin: 6px 0 6px; line-height: var(--lh-24);}
 .mods-label { display: block; font-size: var(--fs-14); font-weight: var(--fw-semibold); margin: 10px 0 4px; line-height: var(--lh-20);}
 #mods-src-owner, #mods-src-repos { width: 100%; }
 .mods-check { display: flex; gap: 8px; align-items: flex-start; margin: 10px 0 4px; }
-.mods-licence { border-left: var(--bw-4) solid var(--warn); padding: 2px 0 2px 12px; margin: 10px 0; }
+.mods-licence { margin: 10px 0; }
+.mods-licence p { margin: 0; }
 .mods-licence ul { margin: 4px 0 6px; padding-left: 20px; }
 #mods-sources-list { max-height: min(30vh, 280px); }
 .mods-where { border: 0; padding: 0; margin: 10px 0; display: flex; gap: 6px 20px; flex-wrap: wrap; }
@@ -259,10 +259,10 @@ dialog.mods-dialog { --dialog-w: 960px; }
     what.append(tech);
     const side = document.createElement("div"); side.className = "mods-side";
     if (row.not_free) {
-      const paid = document.createElement("span"); paid.className = "mods-alpha"; paid.textContent = M.notFree; paid.title = row.not_free; side.append(paid);
+      const paid = document.createElement("span"); paid.className = "badge warn"; paid.textContent = M.notFree; paid.title = row.not_free; side.append(paid);
     }
     if (row.development_status === "Alpha") {
-      const alpha = document.createElement("span"); alpha.className = "mods-alpha"; alpha.textContent = M.alpha; side.append(alpha);
+      const alpha = document.createElement("span"); alpha.className = "badge warn"; alpha.textContent = M.alpha; side.append(alpha);
     }
     const state = document.createElement("span");
     state.className = "mods-state" + (row.state === "installed" || row.state === "installed_test" ? " on" : "");

@@ -158,7 +158,7 @@
     up: {{ _("Answers") | tojson }}, down: {{ _("Does not answer") | tojson }}, starting: {{ _("Tunnel starting") | tojson }},
     trying: {{ _("Trying…") | tojson }}, as: {{ _("OmniaCLI {version} · there you are {role}") | tojson }},
     roles: {admin: {{ _("admin") | tojson }}, developer: {{ _("developer") | tojson }}, user: {{ _("user") | tojson }}},
-    deleteQ: {{ _("Delete link {name}? Its servers leave the Dashboard.") | tojson }},
+    deleteQ: {{ _("Delete link {name}? Its servers leave the Dashboard and its SSH tunnel closes; on the other instance its token stays valid until you revoke it there.") | tojson }},
     error: {{ _("Error {status}") | tojson }},
   };
   const errorBox = document.getElementById("error"), dialog = document.getElementById("link-dialog");

@@ -226,7 +226,7 @@
  "Restart OmniaCLI? The pages answer again in a few seconds.": "Riavviare OmniaCLI? Le pagine tornano a rispondere in pochi secondi.",
  "Revoke": "Revoca",
  "Revoke MCP token {name}? It stops working at once.": "Revocare il token MCP {name}? Smette subito di funzionare.",
- "Revoke link {name}? It stops working at once.": "Revocare il collegamento {name}? Smette subito di funzionare.",
+ "Revoke link {name}? It stops working at once: that instance gets in again only with a new token.": "Revocare il collegamento {name}? Smette subito di funzionare: quell'istanza rientra solo con un token nuovo.",
  "Role of MCP token {name}": "Ruolo del token MCP {name}",
  "Role of link {name}": "Ruolo del collegamento {name}",
  "Role of the new MCP token": "Ruolo del nuovo token MCP",

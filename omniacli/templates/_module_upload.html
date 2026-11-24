@@ -46,7 +46,7 @@
         <input type="text" id="mu-replace-input" class="mono" autocomplete="off" spellcheck="false" style="width: 100%">
       </div>
       <label for="mu-then" class="mu-label">{{ _("Then") }}</label>
-      <select id="mu-then" title="{{ _('After the modules are in the instance: only that (they are installed later from Odoo’s Apps), or installed now in one database') }}"></select>
+      <select id="mu-then" aria-describedby="mu-then-hint"></select><small class="hint" id="mu-then-hint">{{ _('After the modules are in the instance: only that (they are installed later from Odoo’s Apps), or installed now in one database') }}</small>
       <p class="muted" id="mu-note"></p>
       <p class="muted small">{{ _("Once it is in, Make a repository on GitHub… on its row makes it a repository of its own, which the instance can follow.") }}</p>
     </div>
@@ -66,10 +66,10 @@
     <div id="mu-gh-fields" hidden>
       <div id="mu-gh-host-box" hidden>
         <label for="mu-gh-host" class="mu-label">{{ _("GitHub") }}</label>
-        <select id="mu-gh-host" title="{{ _('The GitHub of the token: github.com, or a GitHub Enterprise') }}"></select>
+        <select id="mu-gh-host" aria-describedby="mu-gh-host-hint"></select><small class="hint" id="mu-gh-host-hint">{{ _('The GitHub of the token: github.com, or a GitHub Enterprise') }}</small>
       </div>
       <label for="mu-gh-owner" class="mu-label">{{ _("Owner") }}</label>
-      <select id="mu-gh-owner" title="{{ _('Whose the repository is: the token’s account, or one of its organisations') }}"></select>
+      <select id="mu-gh-owner" aria-describedby="mu-gh-owner-hint"></select><small class="hint" id="mu-gh-owner-hint">{{ _('Whose the repository is: the token’s account, or one of its organisations') }}</small>
       <p class="muted small" id="mu-gh-may"></p>
       <label for="mu-gh-name" class="mu-label">{{ _("Name of the repository") }}</label>
       <input type="text" id="mu-gh-name" class="mono" autocomplete="off" spellcheck="false" maxlength="64" style="width: 100%">

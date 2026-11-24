@@ -16,7 +16,7 @@
 {% macro connect_fields(id) %}
 <div class="form-grid" style="margin-top: 10px">
   <label for="{{ id }}-client">{{ _("Client") }}</label>
-  <div><select id="{{ id }}-client" title="{{ _('The program that will use the token: its snippet below') }}"></select></div>
+  <div><select id="{{ id }}-client" aria-describedby="{{ id }}-client-hint"></select><small class="hint" id="{{ id }}-client-hint">{{ _('The program that will use the token: its snippet below') }}</small></div>
 </div>
 <p class="muted" id="{{ id }}-where" style="font-size: var(--fs-14); margin: 8px 0 4px; line-height: var(--lh-20);"></p>
 <pre class="console mono copyable" id="{{ id }}-snippet" style="white-space: pre-wrap; word-break: break-all"></pre>

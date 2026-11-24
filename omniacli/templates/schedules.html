@@ -74,8 +74,7 @@
     <label for="f-instance">{{ _("Instance") }}</label>
     <select id="f-instance">{% for key, t in targets.items() %}<option value="{{ key }}">{{ key }}{{ "" if t.live else " (" ~ _("draft") ~ ")" }}</option>{% endfor %}</select>
     <label for="f-cron">{{ _("When (crontab)") }}</label>
-    <div><input type="text" id="f-cron" class="mono" placeholder="{{ _("0 2 * * *  (every day at 02:00)") }}"
-        title="{{ _("By the clock of this machine ({zone}): the next runs under it are by yours", zone=server_zone) }}">
+    <div><input type="text" id="f-cron" class="mono" placeholder="{{ _("0 2 * * *  (every day at 02:00)") }}" aria-describedby="f-cron-hint"><small class="hint" id="f-cron-hint">{{ _("By the clock of this machine ({zone}): the next runs under it are by yours", zone=server_zone) }}</small>
       <div class="muted" id="f-next" style="margin-top: 4px"></div></div>
     <label for="f-user">{{ _("Acting as") }}</label>
     <div><input type="text" id="f-user" placeholder="{{ _("empty: {user}", user=default_user) }}">
@@ -109,7 +108,7 @@
     <select id="f-link">{% for l in links %}<option value="{{ l }}">{{ l }}</option>{% endfor %}
       {% for c in connections %}<option value="puller:{{ c }}">{{ c }} ({{ _("puller") }})</option>{% endfor %}</select>
     <label for="f-src-server">{{ _("Server there") }}</label>
-    <div><select id="f-src-server" title="{{ _("A server of the instance's type there, with its databases") }}"></select>
+    <div><select id="f-src-server" aria-describedby="f-src-server-hint"></select><small class="hint" id="f-src-server-hint">{{ _("A server of the instance's type there, with its databases") }}</small>
       <p class="muted" id="f-src-note" hidden style="margin: 4px 0 0"></p></div>
     <label for="f-src-role">{{ _("Its role") }}</label>
     <select id="f-src-role"></select>

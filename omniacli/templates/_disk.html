@@ -107,6 +107,11 @@ const OmniaDisk = (function () {
     parts.push(forecastText(d.forecast));
     return parts.join(" · ");
   }
+  // a level to look at says it with its mark too, not by its colour alone (UX-017 §7)
+  const marked = (lvl, el) => {
+    if ((lvl === "warn" || lvl === "error") && window.omniaIcon) el.prepend(window.omniaIcon(lvl === "warn" ? "triangle-alert" : "circle-x"), " ");
+    return el;
+  };
   function render(box, d, opts) {
     opts = opts || {};
     box.replaceChildren();
@@ -116,9 +121,9 @@ const OmniaDisk = (function () {
       const item = node(d.href ? "a" : "span", "disk-compact");
       if (d.href) item.href = d.href;
       item.title = (d.label ? d.label + ": " : "") + summaryText(d) + (d.note ? " · " + d.note : "");
-      item.append(bar(d), node("span", "mono " + (lvl === "ok" ? "" : lvl), percent.toFixed(0) + "%"));
+      item.append(bar(d), marked(lvl, node("span", "mono " + (lvl === "ok" ? "" : lvl), percent.toFixed(0) + "%")));
       if (d.forecast && d.forecast.full && fullLevel(d.forecast) !== "ok") {
-        item.appendChild(node("span", "mono " + fullLevel(d.forecast), fill(T.fullSoon, {day: dayText(d.forecast.full)})));
+        item.appendChild(marked(fullLevel(d.forecast), node("span", "mono " + fullLevel(d.forecast), fill(T.fullSoon, {day: dayText(d.forecast.full)}))));
       }
       box.appendChild(item);
       return;
@@ -127,8 +132,8 @@ const OmniaDisk = (function () {
     const head = node("div", "disk-head");
     const where = node("span", "mono", d.label || "");
     if (d.title) where.title = d.title;
-    head.append(where, node("span", "mono " + (spaceLevel(d) === "ok" ? "" : spaceLevel(d)),
-                            fill(T.usedOf, {used: size(d.used), total: size(d.total), free: size(freeOf(d))})));
+    head.append(where, marked(spaceLevel(d), node("span", "mono " + (spaceLevel(d) === "ok" ? "" : spaceLevel(d)),
+                            fill(T.usedOf, {used: size(d.used), total: size(d.total), free: size(freeOf(d))}))));
     const notes = [];
     if (d.reserved > 0) notes.push(fill(T.promisedWs, {size: size(d.reserved)}));
     if (d.note) notes.push(d.note);
@@ -136,6 +141,7 @@ const OmniaDisk = (function () {
     if (notes.length) row.appendChild(node("div", "muted disk-note", notes.join(" · ")));
     const when = node("div", "disk-note " + (fullLevel(d.forecast) === "ok" ? "muted" : fullLevel(d.forecast)));
     when.textContent = fill(T.estimate, {text: forecastText(d.forecast)});
+    marked(fullLevel(d.forecast), when);
     if (d.href) {
       when.appendChild(document.createTextNode(" · "));
       const history = node("a", "", T.history);

@@ -49,7 +49,7 @@
 .fb-ways { margin: 10px 0 6px; }
 .fb-way { display: block; margin: 6px 0 2px; font-weight: var(--fw-semibold); }
 .fb-way.off { color: var(--muted); font-weight: var(--fw-regular); cursor: not-allowed; }
-.fb-off { margin: 0 0 6px 24px; font-size: var(--fs-14); color: var(--warn); line-height: var(--lh-20);}
+.fb-off { margin: 0 0 6px 24px; }
 .fb-part { margin: 8px 0 0 24px; }
 .fb-part .form-grid { margin-bottom: 8px; }
 .fb-help { font-size: var(--fs-14); margin: 2px 0 8px 24px; line-height: var(--lh-20);}
@@ -58,7 +58,6 @@
   background: var(--panel-2); font-size: var(--fs-14); line-height: var(--lh-20);}
 .fb-plan p { margin: 0 0 6px; } .fb-plan p:last-child { margin-bottom: 0; }
 .fb-plan .mono { font-size: var(--fs-12); word-break: break-word; line-height: var(--lh-18);}
-.fb-plan .warn { color: var(--warn); }
 .fb-name-help { display: block; font-size: var(--fs-12); margin-top: 4px; line-height: var(--lh-18);}
 .up-progress { display: flex; gap: 10px; align-items: center; margin-top: 12px; }
 .up-progress progress { flex: 1; }
@@ -100,24 +99,24 @@
     <p id="fb-what"></p>
     <div class="fb-ways" role="radiogroup" aria-label="{{ _('What the backup becomes') }}">
       <label class="fb-way" id="fb-way-staging-label"><input type="radio" name="fb-way" value="staging" id="fb-way-staging"> <span id="fb-staging-text"></span></label>
-      <p class="fb-off" id="fb-staging-off" hidden></p>
+      <p class="banner warn fb-off" id="fb-staging-off" hidden></p>
       <div class="fb-part" id="fb-staging" hidden>
         <div class="form-grid" id="fb-prod-row" hidden>
           <label for="fb-prod">{{ _("Production") }}</label>
-          <select id="fb-prod" title="{{ _('The production of the workspace the staging is made beside, from its template and with its repositories (GET …/instances/from-backup?staging_of=… reads the plan again)') }}"></select>
+          <div><select id="fb-prod" aria-describedby="fb-prod-hint"></select><small class="hint" id="fb-prod-hint">{{ _('The production of the workspace the staging is made beside, from its template and with its repositories') }}</small></div>
         </div>
         <p class="muted" id="fb-says"></p>
       </div>
       <label class="fb-way" id="fb-way-instance-label"><input type="radio" name="fb-way" value="instance" id="fb-way-instance"> {{ _("A new instance") }}</label>
-      <p class="fb-off" id="fb-instance-off" hidden></p>
+      <p class="banner warn fb-off" id="fb-instance-off" hidden></p>
       <div class="fb-part" id="fb-instance" hidden>
         <div class="form-grid">
           <label for="fb-name">{{ _("Name") }}</label>
-          <div><input type="text" id="fb-name" class="mono" maxlength="32" autocomplete="off" spellcheck="false"
-              title="{{ _('a-z 0-9 -: the server is <workspace>-<name>. Empty: the name of the backup\'s database. Checked while you write it (GET …/instances/from-backup?name=…)') }}">
+          <div><input type="text" id="fb-name" class="mono" maxlength="32" autocomplete="off" spellcheck="false" aria-describedby="fb-name-hint">
+            <small class="hint" id="fb-name-hint">{{ _('a-z 0-9 -: the server is <workspace>-<name>. Empty: the name of the backup\'s database. Checked while you write it') }}</small>
             <span class="fb-name-help muted" id="fb-name-help"></span></div>
           <label for="fb-ws">{{ _("Workspace") }}</label>
-          <select id="fb-ws" title="{{ _('The workspace the instance is made in, with its disk; the backup\'s own by default. The machine\'s admins may choose another one of this machine (GET …/instances/from-backup of that workspace)') }}"></select>
+          <div><select id="fb-ws" aria-describedby="fb-ws-hint"></select><small class="hint" id="fb-ws-hint">{{ _('The workspace the instance is made in, with its disk; the backup\'s own by default. The machine\'s admins may choose another one of this machine') }}</small></div>
         </div>
         <label class="fb-check" title="{{ _('Restores it with Odoo\'s neutralize: outgoing mail servers and scheduled actions off, as in a staging (POST …/instances/from-backup with neutralize)') }}"><input type="checkbox" id="fb-neutralize" checked> {{ _("Neutralized") }}</label>
         <p class="muted fb-help">{{ _("Outgoing mail and scheduled actions off: nobody gets a mail from this copy and nothing runs by itself. Off: it works as the production it comes from, mail included.") }}</p>
@@ -144,11 +143,11 @@
     <p class="muted" id="up-older" hidden></p>
     <div class="form-grid">
       <label for="up-machine" id="up-machine-label">{{ _("Server") }}</label>
-      <select id="up-machine" title="{{ _('The machine the file goes to: this one, or a linked one through its link (each is asked where it may go: GET /api/imports/places)') }}"></select>
+      <div><select id="up-machine" aria-describedby="up-machine-hint"></select><small class="hint" id="up-machine-hint">{{ _('The machine the file goes to: this one, or a linked one through its link') }}</small></div>
       <label for="up-ws">{{ _("Workspace") }}</label>
-      <select id="up-ws" title="{{ _('The workspace whose import area keeps the file: its stagings and new instances are made from it') }}"></select>
+      <div><select id="up-ws" aria-describedby="up-ws-hint"></select><small class="hint" id="up-ws-hint">{{ _('The workspace whose import area keeps the file: its stagings and new instances are made from it') }}</small></div>
       <label for="up-file">{{ _("File") }}</label>
-      <input type="file" id="up-file" accept=".zip,.sql" title="{{ _('An Odoo backup .zip (dump.sql, filestore, manifest.json, as Odoo\'s database manager makes it) or a plain SQL dump of pg_dump (.sql)') }}">
+      <div><input type="file" id="up-file" accept=".zip,.sql" aria-describedby="up-file-hint"><small class="hint" id="up-file-hint">{{ _('An Odoo backup .zip (dump.sql, filestore, manifest.json, as Odoo\'s database manager makes it) or a plain SQL dump of pg_dump (.sql)') }}</small></div>
     </div>
     <div class="up-progress" id="up-progress" hidden><progress id="up-bar" max="100" value="0"></progress> <span class="muted" id="up-said"></span></div>
     <div class="up-done" id="up-done" role="status" hidden></div>
@@ -540,7 +539,7 @@
     // its dump makes vector (Odoo Enterprise's ai module): the staging or the instance gets pgvector, or why not
     if (p.pgvector) lines.push(el("p", {class: p.pgvector.problem ? "error" : "bk-ok"}, p.pgvector.text));
     // a file made elsewhere: its passwords come with it
-    if (p.passwords) lines.push(el("p", {class: "warn"}, p.passwords));
+    if (p.passwords) lines.push(el("p", {class: "banner warn"}, p.passwords));
     const room = p.room || {};
     lines.push(el("p", {class: room.problem ? "error" : "muted"}, room.problem ||
       (room.free_gb === null || room.free_gb === undefined ? fill(T.roomUnknown, {need: number.format(room.needed_gb)})

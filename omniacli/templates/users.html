@@ -156,10 +156,10 @@
       <div><select id="id-role"></select>
         <span class="muted field-help" id="id-role-help"></span></div>
       <label for="id-workspace" data-for-customer>{{ _("Workspace") }}</label>
-      <div data-for-customer><select id="id-workspace" title="{{ _('The workspaces of this machine and of the linked machines: the user is made on the machine of the workspace, and sees only its instances') }}"></select>
+      <div data-for-customer><select id="id-workspace" aria-describedby="id-workspace-hint"></select><small class="hint" id="id-workspace-hint">{{ _('The workspaces of this machine and of the linked machines: the user is made on the machine of the workspace, and sees only its instances') }}</small>
         <span class="muted field-help" id="id-workspace-help"></span></div>
       <label for="id-ws-role" data-for-customer>{{ _("Role in the workspace") }}</label>
-      <div data-for-customer><select id="id-ws-role" title="{{ _('user watches and restarts; developer also pulls, updates and backs up; admin also manages the users of the workspace') }}"></select></div>
+      <div data-for-customer><select id="id-ws-role" aria-describedby="id-ws-role-hint"></select><small class="hint" id="id-ws-role-hint">{{ _('user watches and restarts; developer also pulls, updates and backs up; admin also manages the users of the workspace') }}</small></div>
       <span class="label" data-for-new>{{ _("Access") }}</span>
       <div data-for-new class="id-ways" role="radiogroup" aria-label="{{ _('Access') }}">
         <label title="{{ _('A link you pass on, valid {hours} hours and once: there the person chooses its own password and is logged in', hours=invitation_hours) }}"><input type="radio" name="id-way" value="invite" checked> {{ _("Send an invitation") }}</label>
@@ -233,7 +233,7 @@
       newTitle: {{ _("New token for a link") | tojson }}, editTitle: {{ _("Edit {name}") | tojson }}, create: {{ _("Make the token") | tojson }},
       createHelp: {{ _("Makes the token and shows it once. Disabled until the name is written.") | tojson }},
       saveHelp: {{ _("Saves the highest role of who comes from that instance. Disabled until it is changed.") | tojson }},
-      namePlaceholder: {{ _("who links in, e.g. omniasolutions") | tojson }}, deleteQ: {{ _("Revoke link {name}? It stops working at once.") | tojson }},
+      namePlaceholder: {{ _("who links in, e.g. omniasolutions") | tojson }}, deleteQ: {{ _("Revoke link {name}? It stops working at once: that instance gets in again only with a new token.") | tojson }},
       secret: {{ _("Token of link {name}: enter it in the link of the other instance.") | tojson }}, how: ""},
     tokens: {tab: "tokens", roles: {{ roles | list | tojson }}, first: "developer", row: "token",
       newLabel: {{ _("New token") | tojson }}, newHelp: {{ _("Makes a token for an AI assistant (MCP) or a script and a CI (REST API): it reads the instances of this machine and does what its level allows. You see it once.") | tojson }},

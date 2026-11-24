@@ -43,7 +43,7 @@
       {% if linked_name %}<span class="state-dot running">{{ _("Connected") }}</span>{% endif %}
       <span class="cores-fact" hidden></span>
       {% if machine %}<span>OmniaCLI {{ version }}</span>{% endif %}
-      {% if machine and is_admin %}<span class="ou-fact-new" id="omniacli-update-fact" hidden></span>{% endif %}
+      {% if machine and is_admin %}<span class="ou-fact-new warn-line" id="omniacli-update-fact" hidden></span>{% endif %}
     </div>
   </div>
   <div class="actions">

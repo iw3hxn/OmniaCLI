@@ -351,7 +351,8 @@ async def test_the_state_of_an_environment_as_each_one_reads_it(dialog, client, 
     assert got["via"] == "lab3" and got["can_choose"] and got["choices"] == []
     page = (await client.get("/workspaces/acme", headers={"Authorization": POST["Authorization"]})).text
     select = re.search(r'<select id="relay-via"[^>]*>', page).group(0)
-    assert 'title="' in select
+    # what it does is written under it (UX-017 §5.13), read with it
+    assert 'aria-describedby="relay-via-hint"' in select and '<small class="hint" id="relay-via-hint">' in page
 
 
 async def test_only_the_machines_admins_choose_the_relay(dialog, client, env):

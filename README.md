@@ -5699,10 +5699,20 @@ controls and motion. A page writes `var(--…)`, never a value of its own.
   No character or emoji stands for an icon any more (› and → stay in the
   sentences and in the paths of the menus; the map keeps its signs). A state
   is said by a word, an icon and a colour, never by the colour alone: the
-  badges of a good, a warned and a failed state and every banner carry their
-  icon, and a production is told by its rocket.
-- **Fields**: a field's hint under it is read with it by a screen reader; a
-  field the browser or the panel refuses says why under it, in red with its
+  badges of a good, a warned and a failed state (padding 2/8) and every
+  banner carry their icon, and a production is told by its rocket.
+- **Warnings**: a warning that is a paragraph of its own is a warning banner
+  (its amber border, its triangle, its words in the colour of the text); one
+  said in a line of another place (a cell, a fact, a line under a value: a
+  job's warnings, «In clear», a newer version, a disk or a CPU over its
+  threshold) carries the triangle before its amber words. No text is orange
+  without its mark.
+- **Fields**: what a field wants is written under it, not only in a help
+  that shows on hover (a phone has none), and read with it by a screen
+  reader; the filters of a list keep theirs on hover, their label and
+  placeholder say what they do. The question of what cannot be undone says
+  its consequence. On a phone a form's labels are over their fields (beside
+  them from 576 px). A field the browser or the panel refuses says why under it, in red with its
   icon, the field marked as wrong and the first one in focus; typing in it
   takes the message away. Boxes to tick are 18 px, their whole label the
   target.
@@ -5714,8 +5724,9 @@ controls and motion. A page writes `var(--…)`, never a value of its own.
   a row, of an environment, of a machine) turns its chevron when open and
   closes with Esc (the focus back on its button) or a click elsewhere. What
   is being read (the databases of a machine, the catalog of the modules, the
-  backups of every machine) shows grey lines in its place; its «Reading…»
-  is said to a screen reader at once and shown after 5 s.
+  backups of every machine and of an instance, the deploys, the map, the
+  workspaces) shows grey lines in its place; its «Reading…» is said to a
+  screen reader at once and shown after 5 s.
 - **Space, radii, motion**: spaces on a scale of 2 to 64 px, radii 4, 8,
   12 and the pill, four durations (100 ms an icon that turns, 200 a hover, 300
   a menu or a fold, 400 a dialog or a toast) and two curves; the pages are

@@ -22,15 +22,17 @@
     {% for f in a.params %}
       <label for="{{ b.dom_id }}-{{ f.key }}">{{ tr(f.label) }}</label>
       {% if f.kind == "checkbox" %}
-      <input type="checkbox" id="{{ b.dom_id }}-{{ f.key }}" name="{{ f.key }}" {% if f.default %}checked{% endif %} {% if f.help %}title="{{ tr(f.help) }}"{% endif %}>
+      <div><input type="checkbox" id="{{ b.dom_id }}-{{ f.key }}" name="{{ f.key }}" {% if f.default %}checked{% endif %} {% if f.help %}aria-describedby="{{ b.dom_id }}-{{ f.key }}-hint"{% endif %}>
+        {% if f.help %}<small class="hint" id="{{ b.dom_id }}-{{ f.key }}-hint">{{ tr(f.help) }}</small>{% endif %}</div>
       {% elif f.kind == "select" %}
-      <select id="{{ b.dom_id }}-{{ f.key }}" name="{{ f.key }}">
+      <div><select id="{{ b.dom_id }}-{{ f.key }}" name="{{ f.key }}">
         {% for value, label in f.choices %}<option value="{{ value }}" {% if value == f.default %}selected{% endif %}>{{ tr(label) }}</option>{% endfor %}
-      </select>
+      </select>{% if f.help %}<small class="hint">{{ tr(f.help) }}</small>{% endif %}</div>
       {% else %}
-      <input type="{{ 'number' if f.kind == 'number' else 'text' }}" id="{{ b.dom_id }}-{{ f.key }}" name="{{ f.key }}"
+      <div><input type="{{ 'number' if f.kind == 'number' else 'text' }}" id="{{ b.dom_id }}-{{ f.key }}" name="{{ f.key }}"
              {% if f.kind == "path" %}class="mono"{% endif %} {% if f.required %}required{% endif %}
-             value="{{ f.default if f.default is not none else '' }}" placeholder="{{ tr(f.placeholder) }}" {% if f.help %}title="{{ tr(f.help) }}"{% endif %}>
+             value="{{ f.default if f.default is not none else '' }}" placeholder="{{ tr(f.placeholder) }}" {% if f.help %}aria-describedby="{{ b.dom_id }}-{{ f.key }}-hint"{% endif %}>
+        {% if f.help %}<small class="hint" id="{{ b.dom_id }}-{{ f.key }}-hint">{{ tr(f.help) }}</small>{% endif %}</div>
       {% endif %}
     {% endfor %}
     </div>

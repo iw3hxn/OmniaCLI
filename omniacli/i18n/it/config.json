@@ -132,7 +132,7 @@
  "Database": "Database",
  "Database from link": "Database da collegamento",
  "Delete": "Elimina",
- "Delete link {name}? Its servers leave the Dashboard.": "Eliminare il collegamento {name}? I suoi server escono dalla Dashboard.",
+ "Delete link {name}? Its servers leave the Dashboard and its SSH tunnel closes; on the other instance its token stays valid until you revoke it there.": "Eliminare il collegamento {name}? I suoi server escono dalla Dashboard e il suo tunnel SSH si chiude; sull'altra istanza il token resta valido finché non lo revochi lì.",
  "Delete the box {name}?": "Eliminare la casella {name}?",
  "Delete the box {name}? This goes too: {what}.": "Eliminare la casella {name}? Va via anche questo: {what}.",
  "Delete the box {name}? {commands} and {files} go too.": "Eliminare la casella {name}? Se ne vanno anche {commands} e {files}.",

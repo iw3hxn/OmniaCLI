@@ -204,7 +204,6 @@
 .ws-rows .ws-warn { color: var(--warn); } .ws-rows .ws-err { color: var(--err); } .ws-rows .ws-ok { color: var(--ok); }
 .ws-rows .ws-dim > td { opacity: .6; }
 .ws-machine-row td { color: var(--warn); } .ws-machine-row.older td { color: var(--info); }
-.ws-skel td div { height: 14px; border-radius: var(--r-sm); background: var(--panel-2); }
 .ws-more > td { background: var(--panel-2); padding: 12px 16px 16px; }
 .ws-watch { list-style: none; margin: 0 0 12px; padding: 0; }
 .ws-watch li { padding: 4px 0; }
@@ -233,7 +232,7 @@
   .ws-rows tr.ws-row > td { display: block; border: 0; padding: 0; }
   .ws-rows tr.ws-row > td:first-child { flex: 1 1 60%; }
   .ws-rows tr.ws-row > td.hide-sm { display: none; }
-  .ws-rows .ws-toggle { min-height: 44px; min-width: 44px; }
+  .ws-rows .ws-toggle { min-height: var(--control-h); min-width: var(--control-h); }
   .ws-block .ws-acts { display: none; }
   .ws-rows .ws-phone { display: block; }
   .ws-rows .ws-domain, .ws-rows .ws-phone { margin-left: 50px; }
@@ -266,7 +265,7 @@
     </tr></thead>
     <tbody id="ws-machines"></tbody>
     <tbody id="ws-skeleton" aria-hidden="true">
-      {% for _i in range(3) %}<tr class="ws-skel">{% for _c in range(5 + (1 if machine_column else 0)) %}<td><div></div></td>{% endfor %}</tr>{% endfor %}
+      {% for _i in range(3) %}<tr class="ws-skel">{% for _c in range(5 + (1 if machine_column else 0)) %}<td><span class="skeleton-line"></span></td>{% endfor %}</tr>{% endfor %}
     </tbody>
   </table>
   </div>
@@ -575,7 +574,7 @@
     const rows = shown.map((u) => el("tr", {"data-user": u.name},
       el("td", {}, u.name),
       el("td", {}, u.custom || T.roles[u.role] || u.role, u.limited ? el("span", {class: "small muted"}, " " + fill(T.limitedTo, {n: u.limited})) : null),
-      el("td", {class: u.two_step ? "" : (u.role === "admin" ? "ws-warn" : "muted")}, u.two_step ? omniaMarked("check", T.twoStepOn) : T.twoStepOff)));
+      el("td", {class: u.two_step ? "" : (u.role === "admin" ? "ws-warn" : "muted")}, u.two_step ? omniaMarked("check", T.twoStepOn) : u.role === "admin" ? omniaMarked("triangle-alert", T.twoStepOff) : T.twoStepOff)));
     box.append(el("table", {class: "ws-users"}, el("tbody", {}, ...rows)));
     if (list.length > shown.length) box.append(el("p", {class: "small"}, el("a", {href: href(m, ws.page) + "#users", title: T.moreUsersTitle}, fill(T.moreUsers, {n: list.length - shown.length}) + " ›")));
     return box;
@@ -683,8 +682,8 @@
       farNames.length ? el("span", {class: "small", title: farNames.map((n) => fill(T.stagingsOn, {n: far.filter((s) => s.machine.name === n).length, machine: n})).join(", ")}, " " + fill(T.plusMachine, {machine: farNames.join(", ")})) : null));
     cells.push(el("td", {class: "hide-sm", title: limit ? fill(T.allowed, {n: pr, limit}) : null}, instancesText));
     cells.push(el("td", {class: "hide-sm", title: users === "—" && m.link && roleOf(m) ? fill(T.noOpen, {link: m.name, role: T.roles[roleOf(m)] || roleOf(m)}) : null},
-      users, noTwoStep ? el("span", {class: "small ws-warn", style: "display: block"}, noTwoStep) : null));
-    cells.push(el("td", {class: "hide-sm" + (diskWarn ? " ws-warn" : ""), title: diskTitle || null}, diskText, diskWarn ? " · " + T.almostFull : null));
+      users, noTwoStep ? el("span", {class: "small ws-warn", style: "display: block"}, omniaIcon("triangle-alert"), " ", noTwoStep) : null));
+    cells.push(el("td", {class: "hide-sm" + (diskWarn ? " ws-warn" : ""), title: diskTitle || null}, diskWarn ? omniaIcon("triangle-alert") : null, diskWarn ? " " : null, diskText, diskWarn ? " · " + T.almostFull : null));
     const tr = el("tr", {class: "ws-row", "data-ws": ws.name, "data-machine": m.name || null, tabindex: "0"}, ...cells);
     const text = [ws.name, ws.label, ws.domain, m.name, ...(ws.instances || []).map((i) => `${i.name} ${i.server || ""}`),
                   ...(ws.members_list || []).map((u) => u.name)].join(" ").toLowerCase();
@@ -715,7 +714,7 @@
   function machineRow(m, data) {
     const cols = MACHINE_COLUMN ? 6 : 5;
     const older = !!data.older;
-    const td = el("td", {colspan: cols}, omniaIcon(older ? "arrow-up" : "circle-x"), " ", fill(older ? T.older : T.down, {name: m.name, why: data.error}));
+    const td = el("td", {colspan: cols}, omniaIcon(older ? "arrow-up" : "triangle-alert"), " ", fill(older ? T.older : T.down, {name: m.name, why: data.error}));
     if (!older && {{ can_create | tojson }}) td.append(" ", el("a", {href: "/links", title: T.checkLinkTitle}, T.checkLink + " ›"));
     return el("tbody", {class: "ws-machine-row" + (older ? " older" : ""), "data-machine-error": m.name}, el("tr", {}, td));
   }

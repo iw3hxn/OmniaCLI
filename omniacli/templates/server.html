@@ -444,8 +444,7 @@ dialog.sd { --dialog-w: 560px; }
       <p class="sd-help">{{ _("Always on HTTPS: whoever opens http:// is taken to https://.") }}</p>
       {# published by this machine, or through another one of the provider's (relay.py): read when opened (GET …/relay) #}
       <div class="sd-field" id="addr-relay-field" hidden><div class="sd-label"><label for="addr-relay">{{ _("Published by") }}</label></div>
-        <select id="addr-relay" hidden
-                title="{{ _('The machine whose nginx serves these names: this one, or another machine of yours with a public address, reached by a tunnel this machine opens itself (no port is opened here). It takes effect with Save and publish.') }}"></select>
+        <select id="addr-relay" hidden aria-describedby="addr-relay-hint"></select><small class="hint" id="addr-relay-hint">{{ _('The machine whose nginx serves these names: this one, or another machine of yours with a public address, reached by a tunnel this machine opens itself (no port is opened here). It takes effect with Save and publish.') }}</small>
         <p class="sd-help" id="addr-relay-now"></p>
         <p class="sd-help" id="addr-relay-tunnel" role="status"></p>
         <ul class="addr-list sd-help" id="addr-relay-dns"></ul></div>
@@ -535,13 +534,11 @@ dialog.sd { --dialog-w: 560px; }
   <form id="mw-form" novalidate>
     <h2 id="mw-title">{{ _("Write as an outside sender") }}</h2>
     <div class="sd-field"><label class="sd-label" for="mw-from">{{ _("Mail from") }}</label>
-      <input type="email" id="mw-from" class="mono" required value="cliente@example.com" spellcheck="false" style="width: 100%"
-             title="{{ _('The address of the person who writes: Odoo finds the partner with this address, or treats it as a new sender') }}"></div>
+      <input type="email" id="mw-from" class="mono" required value="cliente@example.com" spellcheck="false" style="width: 100%" aria-describedby="mw-from-hint"><small class="hint" id="mw-from-hint">{{ _('The address of the person who writes: Odoo finds the partner with this address, or treats it as a new sender') }}</small></div>
     <div class="sd-field"><label class="sd-label" for="mw-name">{{ _("Name") }}</label>
       <input type="text" id="mw-name" maxlength="80" value="{{ _('Test customer') }}" style="width: 100%"></div>
     <div class="sd-field"><label class="sd-label" for="mw-to">{{ _("Mail to") }}</label>
-      <input type="text" id="mw-to" class="mono" required list="mw-boxes" value="catchall@{{ mail_domain }}" spellcheck="false" style="width: 100%"
-             title="{{ _('An address of this staging (its catchall or an alias, @{domain}) reaches Odoo; any other stays in this tab. Several separated by commas.', domain=mail_domain) }}">
+      <input type="text" id="mw-to" class="mono" required list="mw-boxes" value="catchall@{{ mail_domain }}" spellcheck="false" style="width: 100%" aria-describedby="mw-to-hint"><small class="hint" id="mw-to-hint">{{ _('An address of this staging (its catchall or an alias, @{domain}) reaches Odoo; any other stays in this tab. Several separated by commas.', domain=mail_domain) }}</small>
       <datalist id="mw-boxes"></datalist></div>
     <div class="sd-field"><label class="sd-label" for="mw-subject">{{ _("Subject") }}</label>
       <input type="text" id="mw-subject" required maxlength="250" style="width: 100%"></div>
@@ -602,8 +599,7 @@ dialog.sd { --dialog-w: 560px; }
     <div class="ab-row">
       <label for="ab-notify">{{ _("When it fails, tell") }}</label>
       <input type="text" id="ab-notify" class="mono" style="flex: 1; min-width: 240px"
-             placeholder="{{ _('emails or webhook URLs, separated by commas') }}"
-             title="{{ _('An email (the SMTP server of the Options page) or an https:// webhook that gets a JSON text: Slack, Teams, Telegram, ntfy') }}">
+             placeholder="{{ _('emails or webhook URLs, separated by commas') }}" aria-describedby="ab-notify-hint"><small class="hint" id="ab-notify-hint">{{ _('An email (the SMTP server of the Options page) or an https:// webhook that gets a JSON text: Slack, Teams, Telegram, ntfy') }}</small>
       <span title="{{ _('Saves the time, the rotation, the destination and the notices of the automatic backups of this instance. The next backup starts at the chosen time, not now: for one at once use More › Back up now. Disabled until something is changed.') }}">
         <button type="submit" id="ab-save" disabled>{{ _("Save") }}</button></span>
     </div>
@@ -612,7 +608,7 @@ dialog.sd { --dialog-w: 560px; }
     </form>
   </details>
   {% endif %}
-  <div class="backup-list muted">{{ _("Loading…") }}</div>
+  <div class="backup-list"><p class="muted" data-skeleton="3">{{ _("Loading…") }}</p></div>
   <details class="remote-list" hidden>
     <summary title="{{ _('The copies of the backups kept in the destination: one can be brought back among the backups of this machine') }}">{{ _("Copies in") }} <span class="rl-name"></span> <span class="rl-count"></span></summary>
     <div class="rl-body muted">{{ _("Loading…") }}</div>
@@ -627,7 +623,7 @@ dialog.sd { --dialog-w: 560px; }
     <div class="actions pitr-off" hidden><button type="button" id="pitr-enable" {{ off }}
       title="{{ _('Switches recovery at a minute on: the database starts keeping the record of every change and makes the first full copy at once, then one every night. The database restarts once, for a few seconds: in those seconds Odoo does not answer. Admins only.') }}">{{ _("Switch on…") }}</button></div>
     <div class="actions pitr-on" hidden>
-      <input type="datetime-local" id="pitr-time" step="60" aria-label="{{ _('The minute to go back to, by your clock') }}" title="{{ _('The minute to go back to, by your clock') }}">
+      <input type="datetime-local" id="pitr-time" step="60" aria-label="{{ _('The minute to go back to, by your clock') }}">
       <span id="pitr-restore-wrap"><button type="button" id="pitr-restore" {{ off }} title="{{ _('Makes a new staging with the database of this production as it was at the minute chosen above; the production is not touched') }}">{{ _("New staging at this minute") }}</button></span>
       <button type="button" id="pitr-base" {{ off }}
         title="{{ _('Makes now the full copy of the database recovery at a minute starts from; it is made by itself every night. After a big change it shortens the recovery. It is a job.') }}">{{ _("Full copy now") }}</button>
@@ -642,10 +638,6 @@ dialog.sd { --dialog-w: 560px; }
 </section>
 <style>
 .ab-line { margin: 0 0 10px; font-size: var(--fs-14); line-height: var(--lh-20);}
-.ab-line.off { color: var(--text); padding: var(--sp-8) var(--sp-12) var(--sp-8) calc(var(--sp-12) + var(--icon-16) + var(--sp-8)); position: relative;
-  border: var(--bw) solid var(--warn); border-radius: var(--r); background: var(--warn-soft); }
-.ab-line.off::before { content: ""; position: absolute; left: var(--sp-12); top: calc(var(--sp-8) + 2px); width: var(--icon-16); height: var(--icon-16);
-  background-color: var(--warn); -webkit-mask: var(--m-triangle) center / contain no-repeat; mask: var(--m-triangle) center / contain no-repeat; }
 .backup-auto { border-bottom: 1px solid var(--border); padding-bottom: 12px; margin-bottom: 12px; }
 .backup-auto > summary, .remote-list > summary { font-weight: var(--fw-semibold); color: var(--text); }
 .backup-auto form { margin-top: 10px; }
@@ -841,8 +833,7 @@ dialog.sd { --dialog-w: 560px; }
   <form id="addons-add">
     <div class="addons-fields">
       <div><label for="addons-url">{{ _("Repository addresses") }}</label>
-        <textarea id="addons-url" class="mono" required rows="2" placeholder="https://github.com/OCA/web.git&#10;git@github.com:org/repo.git" spellcheck="false"
-          title="{{ _('One address per line: several are added in one go, with one restart at the end') }}"></textarea></div>
+        <textarea id="addons-url" class="mono" required rows="2" placeholder="https://github.com/OCA/web.git&#10;git@github.com:org/repo.git" spellcheck="false" aria-describedby="addons-url-hint"></textarea><small class="hint" id="addons-url-hint">{{ _('One address per line: several are added in one go, with one restart at the end') }}</small></div>
       <div><label for="addons-branch">{{ _("Branch") }}</label>
         <input type="text" id="addons-branch" class="mono" required placeholder="19.0" spellcheck="false"></div>
       <div class="addons-go"><button type="submit" {{ off }}
@@ -862,8 +853,7 @@ dialog.sd { --dialog-w: 560px; }
         <div><label for="addons-test-branch">{{ _("Branch of the test") }}</label>
           <input type="text" id="addons-test-branch" class="mono" placeholder="{{ _('empty: the same branch') }}" spellcheck="false"></div>
         <div><label for="addons-name">{{ _("Name of its folder") }}</label>
-          <input type="text" id="addons-name" class="mono" placeholder="{{ _('empty: the last part of the address') }}" spellcheck="false"
-            title="{{ _('Only for one address: with several, each folder takes the last part of its address') }}"></div>
+          <input type="text" id="addons-name" class="mono" placeholder="{{ _('empty: the last part of the address') }}" spellcheck="false" aria-describedby="addons-name-hint"><small class="hint" id="addons-name-hint">{{ _('Only for one address: with several, each folder takes the last part of its address') }}</small></div>
       </div>
     </details>
     <p class="error" id="addons-error" role="alert"></p>
@@ -1021,9 +1011,11 @@ dialog.sd { --dialog-w: 560px; }
     <label class="oc-all" title="{{ _('Shows also the options that are rarely changed; the ones already changed are always shown') }}">
       <input type="checkbox" id="op-all"> {{ _("Show all the options") }} <span id="op-count"></span></label></div>
   {% if not is_admin_here %}<p class="muted" style="font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("An admin changes them.") }}</p>{% endif %}
+  {% set mail_reason = _("The mail of this staging goes to the Mail tab: these values are not used") %}
+  {# said on the page too, not only over the rows it locks: a phone has no hover (UX-017 §5.13) #}
+  {% if odoo_params.parameters | selectattr("mail") | list %}<p class="muted" id="op-mail-said" style="font-size: var(--fs-14); line-height: var(--lh-20);">{{ mail_reason }}</p>{% endif %}
   <div class="scroll"><table class="oc-table">
     <tr><th scope="col">{{ _("Option") }}</th><th scope="col">{{ _("Value") }}</th></tr>
-    {% set mail_reason = _("The mail of this staging goes to the Mail tab: these values are not used") %}
     {% for p in odoo_params.parameters %}
     {% set off = not is_admin_here or p.mail %}
     <tr data-name="{{ p.name }}"{% if p.mail %} class="op-locked" title="{{ mail_reason }}"{% endif %}>
@@ -1197,7 +1189,7 @@ dialog.sd { --dialog-w: 560px; }
              machine and whether it is connected (as the look of the Database tab saw it last, never PostgreSQL
              asked here); a user of workspaces reads that it reads from a replica, and nothing else #}
           {% set rl = (replica_line or {}).get(inst.key) %}
-          {% if machine_admin and rl and rl.reads and rl.code in ("off", "lost") %}<span class="db-replica-state" style="color: var(--warn); font-weight: var(--fw-semibold)" title="{{ _('As this machine saw the replica at {when}: Odoo goes back to the replica by itself, 20 minutes after it could not reach it', when=when(rl.read_at)) }}">· {{ _("replica not connected: it reads from its database") if rl.dedicated else _("replica not connected: it reads from the cluster") }}</span>
+          {% if machine_admin and rl and rl.reads and rl.code in ("off", "lost") %}· <span class="db-replica-state warn-line" title="{{ _('As this machine saw the replica at {when}: Odoo goes back to the replica by itself, 20 minutes after it could not reach it', when=when(rl.read_at)) }}">{{ _("replica not connected: it reads from its database") if rl.dedicated else _("replica not connected: it reads from the cluster") }}</span>
           {% elif machine_admin and rl and rl.reads and rl.dedicated %}<span class="db-replica-state" title="{{ _('Odoo sends the reads of the pages that do not write to the replica, and writes to its own database. As this machine saw the replica at {when}', when=when(rl.read_at)) if rl.read_at else _('Odoo sends the reads of the pages that do not write to the replica, and writes to its own database') }}">· {{ _("reads also from the replica on {machine} ({address})", machine=rl.machine, address=rl.address) }}</span>
           {% elif machine_admin and rl and rl.reads %}<span class="db-replica-state" title="{{ _('Odoo sends the reads of the pages that do not write to the replica, and writes to this machine\'s cluster. As this machine saw the replica at {when}', when=when(rl.read_at)) if rl.read_at else _('Odoo sends the reads of the pages that do not write to the replica, and writes to this machine\'s cluster') }}">· {{ _("reads also from the replica on {machine} ({address})", machine=rl.machine, address=rl.address) }}</span>
           {% elif dbl.reads and not machine_admin %}<span class="db-replica-state" title="{{ _('The pages that do not write may read from a copy of the database kept up to date: a value just saved may show a few seconds late') }}">· {{ _("Reads: also from a replica") }}</span>{% endif %}
@@ -1211,11 +1203,11 @@ dialog.sd { --dialog-w: 560px; }
         {% elif dbl.link and machine_admin %}
           {% if dbl.on_copy %}<span class="db-copy">{{ _("PostgreSQL {major} of {link}, on the promoted copy on {machine} ({address}) · since {when}", major=dbl.major, link=dbl.link, machine=dbl.on_copy.machine or "?", address=dbl.host.rsplit(":", 1)[0], when=when(dbl.on_copy.at)) }}</span>
           {% else %}{{ _("PostgreSQL {major} of {link} ({host}) · tuned there", major=dbl.major, link=dbl.link, host=dbl.host) }}{% endif %}
-          {% if dbl.down and dbl.down.place == "copy" %}<span class="db-moved" style="color: var(--warn); font-weight: var(--fw-semibold)" title="{{ _('Odoo is pointed to where its database is once the database has not answered for 60 seconds, its machine says where it is and it answers there') }}">· {{ _("not reachable since {when}: {link} moved it to {machine}, Odoo is pointed there by itself", when=when(dbl.down.since), link=dbl.link, machine=dbl.down.machine or "?") }}</span>
-          {% elif dbl.down and dbl.down.place == "cluster" and dbl.on_copy %}<span class="db-moved" style="color: var(--warn); font-weight: var(--fw-semibold)" title="{{ _('Odoo is pointed to where its database is once the database has not answered for 60 seconds, its machine says where it is and it answers there') }}">· {{ _("not reachable since {when}: {link} has it on its cluster again, Odoo is pointed there by itself", when=when(dbl.down.since), link=dbl.link) }}</span>
+          {% if dbl.down and dbl.down.place == "copy" %}· <span class="db-moved warn-line" title="{{ _('Odoo is pointed to where its database is once the database has not answered for 60 seconds, its machine says where it is and it answers there') }}">{{ _("not reachable since {when}: {link} moved it to {machine}, Odoo is pointed there by itself", when=when(dbl.down.since), link=dbl.link, machine=dbl.down.machine or "?") }}</span>
+          {% elif dbl.down and dbl.down.place == "cluster" and dbl.on_copy %}· <span class="db-moved warn-line" title="{{ _('Odoo is pointed to where its database is once the database has not answered for 60 seconds, its machine says where it is and it answers there') }}">{{ _("not reachable since {when}: {link} has it on its cluster again, Odoo is pointed there by itself", when=when(dbl.down.since), link=dbl.link) }}</span>
           {% elif dbl.down and dbl.down.error %}<span class="db-moved" style="color: var(--err); font-weight: var(--fw-semibold)" title="{{ _('Its machine says where the database is: until it answers, Odoo is not pointed anywhere else') }}">· {{ _("not reachable since {when}: {link} does not answer ({reason})", when=when(dbl.down.since), link=dbl.link, reason=tr(dbl.down.error)) }}</span>
           {% elif dbl.down %}<span class="db-moved" style="color: var(--err); font-weight: var(--fw-semibold)" title="{{ _('Its machine says the database is where Odoo looks for it: it is not pointed anywhere else') }}">· {{ _("not reachable since {when}", when=when(dbl.down.since)) }}</span>
-          {% elif dbl.still %}<span class="db-moved" style="color: var(--warn); font-weight: var(--fw-semibold)" title="{{ _('An instance is pointed elsewhere by itself only when its database does not answer: an Odoo that answers is never restarted') }}">· {{ _("{link} says it is on {machine}, but it still answers here: it is not moved by itself", link=dbl.link, machine=dbl.still) }}</span>{% endif %}
+          {% elif dbl.still %}· <span class="db-moved warn-line" title="{{ _('An instance is pointed elsewhere by itself only when its database does not answer: an Odoo that answers is never restarted') }}">{{ _("{link} says it is on {machine}, but it still answers here: it is not moved by itself", link=dbl.link, machine=dbl.still) }}</span>{% endif %}
           {% if not prefix %}<a href="/links/{{ dbl.link | urlencode }}/#database" title="{{ _('Opens the Database tab of that machine, where its cluster is tuned and this database is listed among those used from other machines') }}">{{ _("Database of {link} ›", link=dbl.link) }}</a>{% endif %}
         {# the promoted replica of this machine's cluster: the provider's machine, whose address a user of workspaces does not read #}
         {% elif dbl.provider and not machine_admin %}{% if dbl.down %}<span class="db-moved">{{ _("not reachable since {when}", when=when(dbl.down.since)) }}</span>{% else %}{{ _("on another machine · tuned there") }}{% endif %}
@@ -2545,7 +2537,7 @@ dialog.sd { --dialog-w: 560px; }
     // the line on top: what the automatic backups do, the last one, the last restore tried
     const line = document.getElementById("ab-status"), said = [];
     line.hidden = false;
-    line.className = "ab-line" + (data.enabled ? "" : " off");
+    line.className = "ab-line" + (data.enabled ? "" : " banner warn");
     if (!data.enabled) said.push(T.abOff);
     else {
       const yours = window.yourTime(data.time);
@@ -2611,7 +2603,7 @@ dialog.sd { --dialog-w: 560px; }
     const resp = await fetch(`${box.dataset.api}/backup-schedule`).catch(() => null);
     if (resp && resp.ok) { drawBackupSchedule(await resp.json()); return; }
     const line = document.getElementById("ab-status");
-    line.hidden = false; line.className = "ab-line off"; line.textContent = T.abUnread;
+    line.hidden = false; line.className = "ab-line banner warn"; line.textContent = T.abUnread;
   }
   document.getElementById("ab-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();

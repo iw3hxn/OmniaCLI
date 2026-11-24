@@ -50,7 +50,7 @@
     <textarea id="ssh-key" class="mono" spellcheck="false" autocomplete="off" placeholder="ssh-ed25519 AAAA… mario@laptop"></textarea>
     <p class="muted" style="margin: 4px 0 0">{{ _("The line of the .pub file (for example ~/.ssh/id_ed25519.pub). Never the private key.") }}</p>
     <label for="ssh-account">{{ _("It opens the account") }}</label>
-    <select id="ssh-account" title="{{ _('The account of this machine the person logs in as: root, or a user of the machine with a login shell') }}"></select>
+    <select id="ssh-account" aria-describedby="ssh-account-hint"></select><small class="hint" id="ssh-account-hint">{{ _('The account of this machine the person logs in as: root, or a user of the machine with a login shell') }}</small>
     <p class="muted" id="ssh-account-note" style="margin: 4px 0 0"></p>
     <p class="error" id="ssh-dialog-error" role="alert"></p>
     <div class="actions">

@@ -32,8 +32,8 @@
   {% if workspace_user %}
   {% if choices | length > 1 %}
   <p><label for="c-workspace">{{ _("Workspace") }}</label><br>
-    <select name="workspace" id="c-workspace" title="{{ _('The assistant sees only the instances of this workspace, with your role there') }}">
-      {% for ws in choices %}<option value="{{ ws }}">{{ ws }}</option>{% endfor %}</select></p>
+    <select name="workspace" id="c-workspace" aria-describedby="c-workspace-hint">
+      {% for ws in choices %}<option value="{{ ws }}">{{ ws }}</option>{% endfor %}</select><small class="hint" id="c-workspace-hint">{{ _('The assistant sees only the instances of this workspace, with your role there') }}</small></p>
   {% else %}
   {% for ws in choices %}<input type="hidden" name="workspace" id="c-workspace" value="{{ ws }}">
   <p class="muted">{{ _("Only the instances of workspace {name}.", name=ws) }}</p>{% endfor %}
@@ -57,9 +57,9 @@
     </div>
   </details>
   <p style="margin-top: 12px"><label for="c-days">{{ _("For how long") }}</label><br>
-    <select name="days" id="c-days" title="{{ _('After these days the assistant asks you again. You can revoke it earlier from your Account page.') }}">
+    <select name="days" id="c-days" aria-describedby="c-days-hint">
       {% for d in days %}<option value="{{ d }}" {{ "selected" if d == default_days }}>{{ _("1 day") if d == 1 else _("{n} days", n=d) }}</option>{% endfor %}
-    </select></p>
+    </select><small class="hint" id="c-days-hint">{{ _('After these days the assistant asks you again. You can revoke it earlier from your Account page.') }}</small></p>
   <p class="muted" style="font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("The assistant gets a key valid {minutes} minutes, renewed by itself while you let it. It is listed on your Account page, with its last use: there you revoke it, and it stops at once.", minutes=access_minutes) }}</p>
   <div class="actions">
     <button type="submit" name="decision" value="deny" formnovalidate title="{{ _('Tells the assistant no: it gets nothing, and OmniaCLI goes back to it') }}">{{ _("Refuse") }}</button>

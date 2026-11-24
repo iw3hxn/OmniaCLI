@@ -77,6 +77,7 @@
 .pg-table tr.pg-row { cursor: pointer; }
 .pg-table tr.pg-row:hover td { background: var(--panel-2); }
 .pg-table td.num { text-align: right; white-space: nowrap; }
+.pg-table .pg-sub.warn-line { color: var(--warn); }
 .pg-table .pg-sub { display: block; font-weight: var(--fw-regular); color: var(--muted); font-size: var(--fs-12); margin-top: 2px; line-height: var(--lh-18);}
 .pg-state { display: inline-flex; align-items: center; gap: 6px; font-weight: var(--fw-semibold); }
 .pg-state::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
@@ -98,7 +99,6 @@
 #pg-dialog { --dialog-w: 760px; }
 #pg-dialog .pg-when label { display: block; margin: 4px 0; }
 #pg-dialog .pg-when input[type="time"] { width: 7em; }
-.pg-warn { color: var(--warn); font-weight: var(--fw-semibold); }
 .pg-archive-lines > div { margin-bottom: 4px; }
 #pg-archive { --dialog-w: 680px; }
 #pg-archive p.pga-note, #pg-replica-dialog p.pga-note { margin: 0 0 8px; font-size: var(--fs-14); line-height: var(--lh-20);}
@@ -172,11 +172,11 @@
   <form method="dialog" id="pga-form">
     <h2 id="pga-title" style="margin-bottom: 4px">{{ _("Recovery at a minute of the machine's cluster") }}</h2>
     <p class="muted" id="pga-what" style="margin-top: 0"></p>
-    <p style="margin: 8px 0 2px"><label>{{ _("Full copies kept:") }} <input type="number" id="pga-keep" min="1" max="60" step="1" style="width: 5em" title="{{ _('How many full copies of the cluster are kept: one is made every night') }}"></label></p>
-    <p class="muted pga-note">{{ _("One is made every night. The oldest minute that can be reached is that of the oldest full copy kept.") }}</p>
-    <p style="margin: 8px 0 2px"><label>{{ _("Disk for the full copies and the record of the changes:") }} <input type="number" id="pga-budget" min="0.1" step="0.1" style="width: 6em" title="{{ _('The disk the full copies and the record of the changes may take before OmniaCLI warns') }}"> GB</label></p>
-    <p class="muted pga-note">{{ _("Above it OmniaCLI warns, here and in its log. It never deletes what a recovery may need.") }}</p>
-    <p style="margin: 8px 0 2px"><label>{{ _("Room a recovery leaves free on the machine's disk:") }} <input type="number" id="pga-reserve" min="0" step="1" style="width: 6em" title="{{ _('A recovery is refused when its temporary copy would leave less than this free on the disk of the machine') }}"> GB</label></p>
+    <p style="margin: 8px 0 2px"><label>{{ _("Full copies kept:") }} <input type="number" id="pga-keep" min="1" max="60" step="1" style="width: 5em" aria-describedby="pga-keep-note"></label></p>
+    <p class="muted pga-note" id="pga-keep-note">{{ _("One is made every night. The oldest minute that can be reached is that of the oldest full copy kept.") }}</p>
+    <p style="margin: 8px 0 2px"><label>{{ _("Disk for the full copies and the record of the changes:") }} <input type="number" id="pga-budget" min="0.1" step="0.1" style="width: 6em" aria-describedby="pga-budget-note"> GB</label></p>
+    <p class="muted pga-note" id="pga-budget-note">{{ _("Above it OmniaCLI warns, here and in its log. It never deletes what a recovery may need.") }}</p>
+    <p style="margin: 8px 0 2px"><label>{{ _("Room a recovery leaves free on the machine's disk:") }} <input type="number" id="pga-reserve" min="0" step="1" style="width: 6em" aria-describedby="pga-reserve-hint"> GB</label><small class="hint" id="pga-reserve-hint">{{ _('A recovery is refused when its temporary copy would leave less than this free on the disk of the machine') }}</small></p>
     <p class="muted pga-note" id="pga-room"></p>
     <p id="pga-restart" style="margin: 10px 0 0"></p>
     <p class="error" id="pga-error" role="alert"></p>
@@ -190,18 +190,18 @@
 <dialog id="pg-replica-dialog" aria-labelledby="pgr-title">
   <form method="dialog" id="pgr-form">
     <h2 id="pgr-title" style="margin-bottom: 4px">{{ _("Read replica of another machine") }}</h2>
-    <p style="margin: 8px 0 2px" id="pgr-which"><label>{{ _("Of which machine:") }} <select id="pgr-link" title="{{ _('The linked machines whose PostgreSQL can be copied here: those reached over HTTPS or SSH') }}"></select></label><strong id="pgr-link-one" hidden></strong></p>
-    <p style="margin: 8px 0 2px" id="pgr-source" hidden><label>{{ _("Which PostgreSQL:") }} <select id="pgr-pg" title="{{ _('What of that machine is copied here: its cluster, with every instance on it, or the PostgreSQL of one production that has a database of its own') }}"></select></label></p>
+    <p style="margin: 8px 0 2px" id="pgr-which"><label>{{ _("Of which machine:") }} <select id="pgr-link" aria-describedby="pgr-link-hint"></select></label><small class="hint" id="pgr-link-hint">{{ _('The linked machines whose PostgreSQL can be copied here: those reached over HTTPS or SSH') }}</small><strong id="pgr-link-one" hidden></strong></p>
+    <p style="margin: 8px 0 2px" id="pgr-source" hidden><label>{{ _("Which PostgreSQL:") }} <select id="pgr-pg" aria-describedby="pgr-pg-hint"></select></label><small class="hint" id="pgr-pg-hint">{{ _('What of that machine is copied here: its cluster, with every instance on it, or the PostgreSQL of one production that has a database of its own') }}</small></p>
     <p class="muted" id="pgr-reading" hidden>{{ _("Reading that machine…") }}</p>
     <div id="pgr-facts" hidden>
       <p id="pgr-what" style="margin: 8px 0 4px"></p>
       <p id="pgr-disk" style="margin: 0 0 4px" hidden></p>
       <p id="pgr-time" style="margin: 0 0 4px"></p>
       <p id="pgr-trip" style="margin: 0 0 8px"></p>
-      <p style="margin: 8px 0 2px"><label><span id="pgr-address-label"></span> <input type="text" id="pgr-address" style="width: 11em" autocomplete="off" spellcheck="false" title="{{ _('The address that machine sees this one come from: the only one it lets in, and the name of the replica\'s certificate. Change it when this machine goes out through another one (NAT).') }}"></label></p>
-      <p style="margin: 8px 0 2px"><label><span id="pgr-cap-label"></span> <input type="number" id="pgr-cap" min="0.1" step="1" style="width: 6em" title="{{ _('The most that machine keeps of its changes for a replica that does not take them') }}"> GB</label></p>
+      <p style="margin: 8px 0 2px"><label><span id="pgr-address-label"></span> <input type="text" id="pgr-address" style="width: 11em" autocomplete="off" spellcheck="false" aria-describedby="pgr-address-hint"></label><small class="hint" id="pgr-address-hint">{{ _('The address that machine sees this one come from: the only one it lets in, and the name of the replica\'s certificate. Change it when this machine goes out through another one (NAT).') }}</small></p>
+      <p style="margin: 8px 0 2px"><label><span id="pgr-cap-label"></span> <input type="number" id="pgr-cap" min="0.1" step="1" style="width: 6em" aria-describedby="pgr-cap-hint"> GB</label><small class="hint" id="pgr-cap-hint">{{ _('The most that machine keeps of its changes for a replica that does not take them') }}</small></p>
       <p class="muted pga-note" id="pgr-cap-note"></p>
-      <p style="margin: 8px 0 2px"><label>{{ _("Room to leave free on this machine's disk:") }} <input type="number" id="pgr-reserve" min="0" step="1" style="width: 6em" title="{{ _('The replica is refused when its copy would leave less than this free on the disk of this machine') }}"> GB</label></p>
+      <p style="margin: 8px 0 2px"><label>{{ _("Room to leave free on this machine's disk:") }} <input type="number" id="pgr-reserve" min="0" step="1" style="width: 6em" aria-describedby="pgr-reserve-hint"> GB</label><small class="hint" id="pgr-reserve-hint">{{ _('The replica is refused when its copy would leave less than this free on the disk of this machine') }}</small></p>
       <p id="pgr-changes" style="margin: 10px 0 0"></p>
     </div>
     <p class="error" id="pgr-error" role="alert"></p>
@@ -843,7 +843,7 @@
         el("span", {className: "pg-sub", textContent: fill(["promoted", "returned"].includes(here.state)
           ? (row.instance ? T.rp.subPromotedDedicated : T.rp.subPromoted) : (row.instance ? T.rp.subDedicated : T.rp.sub),
           {link: row.link, port: here.own_port || "?", instance: row.instance})}));
-      if (row.fence) td.append(el("span", {className: "pg-sub pg-warn", textContent: fill(T.rp.fence, {link: row.link, s: 10})}));
+      if (row.fence) td.append(el("span", {className: "pg-sub warn-line", textContent: fill(T.rp.fence, {link: row.link, s: 10})}));
       // the cluster it replaced comes back: its state on this closed row too, and what this copy keeps for it
       const back = here.state === "promoted" ? here.return : null;
       if (back && back.exists) {
@@ -887,7 +887,7 @@
       if (done) {
         td.append(el("span", {className: "pg-sub pg-return-line", textContent: fill(T.rt.back, {machine: done.machine || "?", when: when(done.returned_at),
           n: done.instances || 0}), title: fill(T.rt.backTitle, {machine: done.machine || "?"})}));
-        if ((row.return.pending || []).length) td.append(el("span", {className: "pg-sub pg-warn", textContent: fill(T.rt.backPending, {list: row.return.pending.join(", ")})}));
+        if ((row.return.pending || []).length) td.append(el("span", {className: "pg-sub warn-line", textContent: fill(T.rt.backPending, {list: row.return.pending.join(", ")})}));
       }
       return td;
     }
@@ -1075,7 +1075,7 @@
   const replicaApi = (row) => `${API}/machine/${encodeURIComponent(row.pg || row.major)}/replica`;
   function ownedBlock(row) {
     const r = row.replica, v = r.verdict || {}, machine = r.link || "?", dd = el("dd", {className: "pg-archive-lines"});
-    const line = (text, warn) => { const div = el("div", {className: warn ? "pg-warn" : "", textContent: text}); dd.append(div); return div; };
+    const line = (text, warn) => { const div = el("div", {className: warn ? "warn-line" : "", textContent: text}); dd.append(div); return div; };
     line(fill(T.rp.line, {machine, address: r.address || "?", when: when(r.ready_at || r.at), state: ownedWords(r)[0]}));
     const readers = r.readers || [], own = row.where === "dedicated";
     if (own) {
@@ -1196,7 +1196,7 @@
     const b = row.return, here = b.here || {}, there = b.there || {}, machine = here.machine || (row.state || {}).link || "?";
     const dd = el("dd", {className: "pg-archive-lines"}), aside = here.aside || {}, n = (b.pending || []).length;
     const own = row.where === "dedicated", server = row.server;
-    const line = (text, warn) => dd.append(el("div", {className: warn ? "pg-warn" : "", textContent: text}));
+    const line = (text, warn) => dd.append(el("div", {className: warn ? "warn-line" : "", textContent: text}));
     line(fill(T.rt.line, {machine, address: here.host || "?", when: when(here.at), state: backWords(row)[0]}));
     line(own && !aside.size ? T.rt.asideNone : fill(T.rt.aside, {when: when(aside.at), size: bytes(aside.size)}));
     line(own ? fill(T.rt.stillDedicated, {server, machine}) : fill(T.rt.still, {n, machine}));
@@ -1238,7 +1238,7 @@
     else box.append(el("p", {textContent: fill(T.rp.replacedDetail, {when: when(s.at), machine})}));
     const actions = el("div", {className: "pg-actions"});
     if (!coming) actions.append(prepareButton(row, machine));
-    if (using.length) box.append(el("p", {className: "pg-warn", textContent: fill(T.rp.replacedStill, {list: using.join(", "), machine: s.link || "?"})}));
+    if (using.length) box.append(el("p", {className: "banner warn", textContent: fill(T.rp.replacedStill, {list: using.join(", "), machine: s.link || "?"})}));
     // Take the cluster away…: the other way, the one of not coming back; never under a return
     else if (coming || (row.waited || []).length) actions.append(el("span", {title: coming ? T.rt.removeNot
       : fill(T.rp.removeWaits, {list: row.waited.join(", "), machine})}, el("button", {type: "button", className: "small danger", textContent: T.removeCluster,
@@ -1412,7 +1412,7 @@
       rpOf("pgr-time").textContent = fill(T.rp.time, {time: minutesText(f.seconds)});
       const trip = rpOf("pgr-trip"), slow = f.ms !== null && f.ms !== undefined && f.ms > f.warn_ms;
       trip.textContent = f.ms === null || f.ms === undefined ? fill(T.rp.tripNone, {link}) : fill(slow ? T.rp.tripWarn : T.rp.trip, {ms: dec(f.ms, 2), trips: dec(f.trips, 1)});
-      trip.classList.toggle("pg-warn", slow);
+      for (const c of ["banner", "warn"]) trip.classList.toggle(c, slow);
       rpOf("pgr-address-label").textContent = fill(T.rp.addressLabel, {link});
       rpOf("pgr-cap-label").textContent = fill(T.rp.capLabel, {link});
       rpOf("pgr-cap-note").textContent = own ? fill(T.rp.capNoteDedicated, {max: capMax}) : fill(T.rp.capNote, {link});
@@ -1420,7 +1420,7 @@
       changes.textContent = f.restarts ? (own ? fill(T.rp.changesRestartDedicated, {name, s: seconds})
         : fill(T.rp.changesRestart, {link, n: (f.instances || []).length, list: (f.instances || []).join(", ") || "–"}))
         : fill(T.rp.changes, {link, address: address || "?"});
-      changes.classList.toggle("pg-warn", !!f.restarts);
+      for (const c of ["banner", "warn"]) changes.classList.toggle(c, !!f.restarts);
       rpGo.textContent = f.restarts ? (own ? fill(T.rp.goRestartDedicated, {name}) : fill(T.rp.goRestart, {link})) : T.rp.go;
       rpGo.title = fill(own ? T.rp.goTitleDedicated : T.rp.goTitle, {link, name, address: address || "?"});
       if (f.free - f.need < reserve * GIB) why = fill(own ? T.rp.noRoomDedicated : T.rp.noRoom, {link, name, need: bytes(f.need), free: bytes(f.free), reserve: dec(reserve, 1) + " GB"});
@@ -1530,7 +1530,7 @@
         : fill(T.to.port, {port: src.port || "?", machine}),
       fill(T.to.after, {target}),
     ];
-    toOf("pgt-steps").replaceChildren(...steps.map((text, i) => el("li", {textContent: text, className: i === 2 && t.restarts ? "pg-warn" : ""})));
+    toOf("pgt-steps").replaceChildren(...steps.map((text, i) => el("li", {textContent: text, className: i === 2 && t.restarts ? "warn-line" : ""})));
     if (t.restarts) toGo.textContent = own ? fill(T.to.goRestartDedicated, {name}) : fill(T.to.goRestartCluster, {machine});
     toGo.title = fill(T.to.goTitle, {target, machine});
   }
@@ -1619,7 +1619,7 @@
       const text = r.down && r.link ? T.notHereDown : r.copy && r.link ? T.notHereCopy
         : r.promoted ? (many ? T.notHerePromotedMany : T.notHerePromoted)
         : r.link ? (many ? T.notHereLinkedMany : T.notHereLinked) : (many ? T.notHereMany : T.notHere);
-      return el("span", {className: r.down && r.link ? "pg-warn" : "", textContent: fill(text, {key: list, list, host: r.host, link: r.link, major: r.major,
+      return el("span", {className: r.down && r.link ? "warn-line" : "", textContent: fill(text, {key: list, list, host: r.host, link: r.link, major: r.major,
         machine: r.copy || r.promoted, when: r.down ? when(r.down.since) : "", reason: r.down ? r.down.why : ""}) + " "});
     });
   }
@@ -1774,7 +1774,7 @@
   function archiveBlock(row) {
     const a = row.archive, dd = el("dd", {className: "pg-archive-lines"});
     if (!a) { dd.textContent = T.archiveUnread; return dd; }
-    const line = (text, warn) => { const div = el("div", {className: warn ? "pg-warn" : "", textContent: text}); dd.append(div); return div; };
+    const line = (text, warn) => { const div = el("div", {className: warn ? "warn-line" : "", textContent: text}); dd.append(div); return div; };
     // a recovery names the instance and the staging born of it; the database's own name after, small
     const names = (r) => ({instance: r.instance || r.database, staging: r.staging || T.archiveNoStaging});
     const technical = (div, r) => { if (r.instance && r.database) div.append(" ", el("span", {className: "small mono", textContent: r.database, title: T.archiveDatabaseTitle})); };
@@ -1831,7 +1831,7 @@
       const lent = (row.grants || []).filter((g) => !g.revoked).map((g) => g.name).join(", ");
       restart.textContent = fill(T.archiveRestart, {n: row.serves.length, list: servedList(row) || "–"}) + (lent ? " " + fill(T.archiveRestartGrants, {list: lent}) : "");
     }
-    restart.classList.toggle("pg-warn", !a.enabled && archiveRestarts(row));
+    for (const c of ["banner", "warn"]) restart.classList.toggle(c, !a.enabled && archiveRestarts(row));
     archiveGo.textContent = a.enabled ? T.archiveSave : archiveRestarts(row) ? T.archiveGoRestart : T.archiveGo;
     archiveGo.disabled = false;
     archiveBox.showModal();

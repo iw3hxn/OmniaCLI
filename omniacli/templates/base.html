@@ -230,7 +230,13 @@ summary { min-height: 24px; }
 .status { font-weight: var(--fw-semibold); }
 .status.success { color: var(--ok); } .status.failed, .status.interrupted, .status.stopped, .error { color: var(--err); }
 .status.running, .status.queued, .status.warned { color: var(--warn); }
-.status-warning { display: block; color: var(--warn); }
+/* a warning said in a line of another place (a cell, a fact, a line under a value): the triangle before its words, both
+   in the warning's colour (UX-017 §7: word, icon and colour); a warning that is a paragraph of its own is a .banner.warn */
+.status-warning { display: block; }
+.warn-line, .status-warning { color: var(--warn); }
+.warn-line::before, .status-warning::before { content: ""; display: inline-block; width: var(--icon-16);
+  height: var(--icon-16); margin-right: var(--sp-4); vertical-align: -.2em; background-color: currentColor;
+  -webkit-mask: var(--m-triangle) center / contain no-repeat; mask: var(--m-triangle) center / contain no-repeat; }
 .status::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: currentColor;
   margin-right: 6px; vertical-align: 1px; }
 .muted { color: var(--muted); }
@@ -258,7 +264,10 @@ input[type=search].console-search { width: 14em; padding: 4px 8px; }
 .console-box.expanded { position: fixed; inset: 0; z-index: 40; background: var(--bg); padding: 12px; }
 .console-box.expanded .console-out, .console-box.expanded .console-term { flex: 1; height: auto !important; min-height: 0; }
 body.console-expanded { overflow: hidden; }
-.form-grid { display: grid; grid-template-columns: max-content 1fr; gap: 8px 12px; align-items: center; }
+/* a form's labels beside their fields from 576 px; on a phone over them, so a long label never widens the page */
+.form-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px 12px; align-items: center; }
+.form-grid > label:not(:first-child) { margin-top: var(--sp-8); }
+@media (min-width: 576px) { .form-grid { grid-template-columns: max-content minmax(0, 1fr); row-gap: 8px; } .form-grid > label:not(:first-child) { margin-top: 0; } }
 .form-grid label { color: var(--muted); }
 .with-button { display: flex; flex-wrap: wrap; gap: 8px; }
 .with-button.one-line { flex-wrap: nowrap; } .with-button.one-line > input { flex: 1; min-width: 0; } .with-button.one-line > button { flex-shrink: 0; }
@@ -279,13 +288,13 @@ input[type=checkbox], input[type=radio] { width: var(--checkbox) !important; hei
 label:has(> input[type=checkbox]), label:has(> input[type=radio]) { display: inline-flex; align-items: flex-start; gap: var(--sp-8);
   min-height: 24px; padding-block: 2px; }
 /* what a field wants, under it; what is wrong with it, under it in red with its icon (the field says so too) */
-.hint { display: block; color: var(--muted); font-size: var(--fs-12); line-height: var(--lh-18); margin-top: var(--sp-4); }
+.hint { display: block; color: var(--muted); font-size: var(--fs-12); line-height: var(--lh-18); margin-top: var(--sp-4); flex-basis: 100%; }
 .field-error { display: flex; align-items: flex-start; gap: var(--sp-6); color: var(--err); font-size: var(--fs-14);
   line-height: var(--lh-20); margin-top: var(--sp-4); }
 .field-error .i { margin-top: 2px; }
 input[aria-invalid="true"], select[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--err); }
 .job-filter select, .job-filter input { width: auto; } .job-filter input { min-width: min(16em, 100%); }
-fieldset { border: 1px solid var(--border); border-radius: var(--r-lg); margin: 0 0 16px; padding: 12px 16px; }
+fieldset { border: 1px solid var(--border); border-radius: var(--r-lg); margin: 0 0 16px; padding: 12px 16px; min-width: 0; }
 legend { padding: 0 6px; }
 .repos td { padding: 4px; } .repos input { min-width: 90px; }
 /* a banner: its state said by its border, its icon and its words; the text in the colour of the text */
@@ -523,7 +532,7 @@ a.disk-compact { color: inherit; text-decoration: none; } a.disk-compact:hover .
 .button.link-off:hover { border-color: var(--border); color: var(--text); }
 .config-main td { border-bottom: 0; padding-bottom: 2px; }
 .config-actions td { padding-top: 4px; padding-bottom: 12px; }
-.badge { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-12); font-weight: var(--fw-semibold); padding: 2px 10px;
+.badge { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-12); font-weight: var(--fw-semibold); padding: 2px 8px;
   border-radius: var(--r-pill); border: 1px solid transparent; background: var(--panel-2); color: var(--muted); line-height: var(--lh-18);}
 .badge.active, .badge.ok { color: var(--ok); background: var(--ok-soft); }
 .badge.draft, .badge.warn { color: var(--warn); background: var(--warn-soft); }
@@ -1052,9 +1061,11 @@ window.sizeText = (n) => {
       note.classList.remove("reading-quiet", "reading-slow");
       box.removeAttribute("aria-busy");
     };
-    const check = () => (!note.hidden && note.textContent.trim() === reading ? arm() : disarm());
+    // a list drawn in its place takes the line away with the grey lines: its box is no longer busy
+    const check = () => (note.isConnected && !note.hidden && note.textContent.trim() === reading ? arm() : disarm());
     check();
     new MutationObserver(check).observe(note, {attributes: true, attributeFilter: ["hidden"], childList: true, characterData: true, subtree: true});
+    if (box) new MutationObserver(check).observe(box, {childList: true});
   }
   document.addEventListener("DOMContentLoaded", () => document.querySelectorAll("[data-skeleton]").forEach(watch));
 })();

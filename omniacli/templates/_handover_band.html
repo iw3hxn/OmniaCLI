@@ -15,7 +15,7 @@
 .hv-band .hv-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 #hv-redo-dialog { --dialog-w: 620px; }
 #hv-redo-dialog .hv-code { display: block; width: 100%; min-height: 88px; padding: 8px; border: 1px solid var(--border); border-radius: var(--r); overflow-wrap: anywhere; word-break: break-all; }
-@media (max-width: 767.98px) { .hv-band .hv-actions { width: 100%; } .hv-band .hv-actions button, .hv-band .hv-actions a.button, #hv-redo-dialog .actions button { min-height: 44px; } }
+@media (max-width: 767.98px) { .hv-band .hv-actions { width: 100%; } }
 </style>
 {% if handover_out %}{% set ho = handover_out %}{% set rc = ho.receiver or {} %}
 {% set dl = ho.deletion or {} %}{% set rl = ho.relight or {} %}

@@ -9,9 +9,8 @@
 #receive-dialog .rv-nav li[aria-current="step"] { color: var(--text); font-weight: var(--fw-semibold); }
 #receive-dialog textarea { width: 100%; min-height: 72px; }
 #receive-dialog .rv-list { margin: 4px 0 8px; padding-left: 20px; } #receive-dialog .rv-list li { margin-bottom: 4px; overflow-wrap: anywhere; }
-#receive-dialog .rv-bad { color: var(--err); } #receive-dialog .rv-warn { color: var(--warn-text, var(--warn)); }
+#receive-dialog .rv-bad { color: var(--err); } #receive-dialog .rv-warn { color: var(--warn); }
 #receive-dialog .rv-said { overflow-wrap: anywhere; }
-@media (max-width: 767.98px) { #receive-dialog .actions button, #receive-open { min-height: 44px; } }
 </style>
 <dialog id="receive-dialog" aria-labelledby="rv-title">
   <form method="dialog" id="rv-form">
@@ -29,7 +28,7 @@
       <ul class="rv-list" id="rv-items"></ul>
       <ul class="rv-list" id="rv-checks"></ul>
       <p><label for="rv-disk">{{ _("Disk of the workspace, GB") }}</label>
-        <input type="number" id="rv-disk" min="1" step="1" class="mono" style="width: 8em" title="{{ _('The disk the workspace has here: at least what the provider promised it, more if you want') }}"></p>
+        <input type="number" id="rv-disk" min="1" step="1" class="mono" style="width: 8em" aria-describedby="rv-disk-hint"><small class="hint" id="rv-disk-hint">{{ _('The disk the workspace has here: at least what the provider promised it, more if you want') }}</small></p>
       <details>
         <summary title="{{ _('What does not pass from the provider, with why') }}">{{ _("What does not pass") }}</summary>
         <ul class="rv-list" id="rv-not"></ul>
@@ -103,14 +102,15 @@
       el("li", {textContent: fill(T.people, {n: p.users || 0, r: p.roles || 0, p: p.passkeys || 0})}));
     const checks = [];
     const fits = c.fits !== false;
-    // a row that is fine ends with the check icon (no glyph: UX-017)
-    const row = (text, ok, className) => el("li", {className}, text, ok ? " " : null, ok ? window.omniaIcon("check") : null);
+    // a row that is fine ends with the check icon (no glyph: UX-017); one that is not starts with its mark, not its colour alone
+    const row = (text, ok, className) => el("li", {className}, className ? window.omniaIcon(className === "rv-warn" ? "triangle-alert" : "circle-x") : null,
+                                            className ? " " : null, text, ok ? " " : null, ok ? window.omniaIcon("check") : null);
     checks.push(row(c.free === null || c.free === undefined ? fill(T.room, {total: size(c.total || 0), free: "—"})
       : fill(fits ? T.room : T.noRoom, {total: size(c.total || 0), free: size(c.free)}), fits && c.free !== null && c.free !== undefined, fits ? "" : "rv-bad"));
     if (c.taken) checks.push(el("li", {textContent: fill(T.taken, {ws: (data.workspace || {}).name, name: c.name})}));
     for (const r of c.rows || []) checks.push(row(r.text, r.ok, r.ok ? "" : "rv-bad"));
-    if (data.reached) checks.push(el("li", {className: data.reached["80"] && data.reached["443"] ? "" : "rv-warn",
-      textContent: data.reached["80"] && data.reached["443"] ? T.reachedOk : T.reached}));
+    if (data.reached) checks.push(row(data.reached["80"] && data.reached["443"] ? T.reachedOk : T.reached, false,
+      data.reached["80"] && data.reached["443"] ? "" : "rv-warn"));
     of("rv-checks").replaceChildren(...checks);
     of("rv-not").replaceChildren(...(data.not_passed || []).map((n) => el("li", {textContent: `${n.what}: ${n.why}`})));
     const promised = Number((data.workspace || {}).disk_gb || 0);
