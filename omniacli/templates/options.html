@@ -102,7 +102,7 @@
       <label for="mail-user">{{ _("User") }}</label>
       <input type="text" id="mail-user" class="mono" value="{{ options.smtp_user }}">
       <label for="mail-password">{{ _("Password") }}</label>
-      <input type="password" id="mail-password" autocomplete="new-password" placeholder="{{ _('set: empty keeps it') if options.smtp_password else '' }}">
+      <input type="password" id="mail-password" autocomplete="new-password" placeholder="{{ _('set: empty keeps it') if options.smtp_password_set else '' }}">
       <label for="mail-from">{{ _("Sender") }}</label>
       <input type="email" id="mail-from" class="mono" value="{{ options.mail_from }}" placeholder="omniacli@example.com">
     </div>
@@ -155,8 +155,8 @@
     <table class="opt-hooks" id="webhooks">
       <tr><th scope="col">{{ _("Webhook") }}</th><th scope="col">{{ _("Of") }}</th><th scope="col">{{ _("Signed") }}</th><th scope="col">{{ _("Jobs that fail or warn") }}</th><th scope="col"></th></tr>
       {% for hook in webhooks %}
-      <tr data-url="{{ hook.url }}">
-        <td class="mono" title="{{ hook.url.split('?')[0] }}">{{ hook.shown }}</td>
+      <tr data-ref="{{ hook.ref }}">
+        <td class="mono">{{ hook.shown }}</td>
         <td>{{ hook.where or _("this machine") }}</td>
         <td><span class="hook-signed">{{ _("yes") if hook.signed else _("no") }}</span>
           <button type="button" class="small hook-secret" title="{{ _('Makes a new secret, shown once: the receiver checks the signature with it. The one of before stops signing at once.') }}">{{ _("New secret…") if hook.signed else _("Sign…") }}</button>
@@ -233,11 +233,11 @@
       <label for="brand-logo">{{ _("Logo") }}</label>
       <div>
         <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center">
-          <img id="brand-logo-now" alt="{{ _('The logo now') }}" src="{{ prefix ~ brand.logo if brand.logo else '/icon-180.png' }}"
+          <img id="brand-logo-now" alt="{{ _('The logo now') }}" src="{{ prefix ~ machine_logo if machine_logo else '/icon-180.png' }}"
                style="width: 34px; height: 34px; object-fit: contain; border-radius: var(--r); background: var(--side-bg)">
           <input type="file" id="brand-logo" accept="image/png,image/svg+xml,.png,.svg" style="width: auto; max-width: 100%" aria-describedby="brand-logo-hint">
           <button type="button" id="brand-logo-send" title="{{ _('Puts the chosen file as the logo of the panel at once, for every page') }}">{{ _("Use this logo") }}</button>
-          <button type="button" id="brand-logo-remove" {% if not brand.logo %}hidden{% endif %} title="{{ _('Takes your logo away: the «O» of OmniaSolutions again') }}">{{ _("Take the logo away") }}</button>
+          <button type="button" id="brand-logo-remove" {% if not machine_logo %}hidden{% endif %} title="{{ _('Takes your logo away: the «O» of OmniaSolutions again') }}">{{ _("Take the logo away") }}</button>
         </div><small class="hint" id="brand-logo-hint">{{ _('A PNG or an SVG of at most 256 kB, square looks best') }}</small>
         <p id="brand-logo-said" class="muted" style="font-size: var(--fs-14); margin: 6px 0 0; line-height: var(--lh-20);" aria-live="polite"></p>
       </div>
@@ -275,12 +275,12 @@ function thresholds() {
     if (!resp || !resp.ok) throw new Error(data.error || data.detail || H.unreachable);
     return data;
   }
-  for (const row of table.querySelectorAll("tr[data-url]")) {
-    const url = row.dataset.url;
+  for (const row of table.querySelectorAll("tr[data-ref]")) {
+    const ref = row.dataset.ref;
     row.querySelector(".hook-secret").addEventListener("click", async (ev) => {
       if (row.querySelector(".hook-signed").textContent === H.yes && !await omniaAsk(H.again, H.againGo)) return;
       try {
-        const data = await post("secret", {url});
+        const data = await post("secret", {ref});
         document.getElementById("hook-secret").textContent = data.secret;
         document.getElementById("hook-secret-box").hidden = false;
         row.querySelector(".hook-signed").textContent = H.yes;
@@ -289,15 +289,15 @@ function thresholds() {
     });
     row.querySelector(".hook-unsign")?.addEventListener("click", async () => {
       if (!await omniaAsk(H.unsign, H.unsignGo, {danger: true})) return;
-      try { await post("save", {url, unsigned: true}); row.querySelector(".hook-signed").textContent = H.no; }
+      try { await post("save", {ref, unsigned: true}); row.querySelector(".hook-signed").textContent = H.no; }
       catch (e) { said.textContent = e.message; }
     });
     row.querySelector(".hook-jobs").addEventListener("change", async (ev) => {
-      try { await post("save", {url, jobs: ev.target.checked}); } catch (e) { ev.target.checked = !ev.target.checked; said.textContent = e.message; }
+      try { await post("save", {ref, jobs: ev.target.checked}); } catch (e) { ev.target.checked = !ev.target.checked; said.textContent = e.message; }
     });
     row.querySelector(".hook-test").addEventListener("click", async () => {
       try {
-        const data = await post("test", {url});
+        const data = await post("test", {ref});
         said.textContent = data.ok ? H.sent.replace("{host}", row.cells[0].textContent) : data.problems.join("; ");
       } catch (e) { said.textContent = e.message; }
     });

@@ -126,16 +126,16 @@ def test_a_machine_that_says_nothing_is_zero():
 
 def test_every_page_is_found_with_its_parameters():
     assert {centralpages.match(path)[0].name for path in PATHS.values()} == set(PATHS) == set(centralpages.BY_NAME) - {
-        p.name for p in centralpages.CLASS_B}
+        p.name for p in centralpages.BY_MODEL}
     assert centralpages.match("servers/srv/test/log")[1] == {"server": "srv", "role": "test"}
     assert centralpages.match("servers/srv/test/psql")[1] == {"server": "srv", "role": "test", "kind": "psql"}
-    for other in ("servers/srv/x", "servers", "", "servers/srv/test/log/x", "disks/x"):
+    for other in ("servers/srv/x", "servers", "/", "servers/srv/test/log/x", "disks/x", "invite/x"):
         assert centralpages.match(other) is None, other
 
 
 async def test_the_machine_says_its_contract(central):
     info = (await central.get("/api/info", headers=JSON)).json()
-    assert info["agent_api"] == centralpages.AGENT_API == 3
+    assert info["agent_api"] == centralpages.AGENT_API == 4
     assert info["plugins"] == centralpages.plugin_versions() and info["plugins"]["odoo"] == centralpages.BUILT_IN
     # Try the link reads it, and keeps it
     tried = (await central.post("/api/links/cliente/test", headers={**JSON, "Origin": "http://central.test"})).json()
@@ -227,7 +227,8 @@ async def test_a_machine_at_zero_writes_its_pages_with_the_line(central):
     """A machine of before (no agent_api): every page is its own, as before; the line that says why only on the
     pages this panel would draw, the others exactly as with pages: machine."""
     central.machine.info = {"version": "2026.1.5513"}
-    for path in ("pullers", "", "users"):
+    # (since slice 5 every page of the machine is drawn here, but those of who logs in there: an invitation's)
+    for path in ("invite/nothing",):
         here = await central.get(f"/links/cliente/{path}", headers=PAGE)
         link_pages(central, "machine")
         theirs = await central.get(f"/links/cliente/{path}", headers=PAGE)
@@ -321,8 +322,10 @@ async def test_a_machine_whose_contract_goes_back_is_not_shown(central):
     resp = await central.get("/links/cliente/disks", headers=PAGE)
     assert resp.status_code == 502 and "Page of cliente not shown" in resp.text and "now it says 0" in resp.text
     assert "/disks" not in central.machine.asked and "data-machine-page-line" not in resp.text
-    # a page not drawn here: the machine's, as before
-    assert (await central.get("/links/cliente/users", headers=PAGE)).status_code == 200
+    # a page not drawn here (an invitation's): the machine's, as before
+    central.machine.asked.clear()
+    await central.get("/links/cliente/invite/nothing", headers=PAGE)
+    assert "/invite/nothing" in central.machine.asked
     # what was seen stays seen in a panel started again
     assert centralpages.load_seen(seen_file) == {"cliente": N}
     # the admin lets it write its own again
@@ -523,46 +526,46 @@ async def test_the_parity_of_the_custom_roles_and_of_the_delegated_scope(pair, m
 
 
 async def test_a_machine_one_behind_writes_its_newer_pages_with_the_line(central):
-    """A machine of slice 3 (agent_api N-1 = 2): the pages of class A and the instance's page drawn here, the pages
-    of class B its own with the line that says to update it; once it said N, it saying N-1 again is this panel's
-    page that says so for those, and the others are still drawn."""
-    central.machine.info = {"agent_api": N - 1, "plugins": {}, "version": "2026.1.5517"}
-    for path in ("jobs", "config", "links"):
+    """A machine of slice 4 (agent_api N-1 = 3): the pages of class A, the instance's page and the pages of class B
+    drawn here, the other pages of class C its own with the line that says to update it; once it said N, it saying
+    N-1 again is this panel's page that says so for those, and the others are still drawn."""
+    central.machine.info = {"agent_api": N - 1, "plugins": {}, "version": "2026.1.5518"}
+    for path in ("", "pullers", "users", "options", "config/new"):
         central.machine.asked.clear()
         resp = await central.get(f"/links/cliente/{path}", headers=PAGE)
         assert resp.status_code == 200 and f"/{path}" in central.machine.asked, path
         assert not [a for a in central.machine.asked if a.startswith("/api/pages/")], path
-        assert "data-machine-page-line" in resp.text and "cliente (2026.1.5517): update it" in resp.text, path
-    for path, name in (("disks", "disks"), ("servers/srv", "server")):
+        assert "data-machine-page-line" in resp.text and "cliente (2026.1.5518): update it" in resp.text, path
+    for path, name in (("disks", "disks"), ("servers/srv", "server"), ("jobs", "jobs"), ("config", "config")):
         central.machine.asked.clear()
         resp = await central.get(f"/links/cliente/{path}", headers=PAGE)
         assert resp.status_code == 200 and "data-machine-page-line" not in resp.text, path
         assert f"/api/pages/{name}" in central.machine.asked and f"/{path}" not in central.machine.asked, path
     assert central.app.state.link_agents_seen == {"cliente": N - 1}
-    # it said N, then N-1 again: its pages of class B are not shown by its word; the others are still drawn
+    # it said N, then N-1 again: its pages of slice 5 are not shown by its word; the others are still drawn
     central.machine.info = None
     central.app.state.link_agents.clear()
     assert (await central.get("/links/cliente/disks", headers=PAGE)).status_code == 200
     assert central.app.state.link_agents_seen == {"cliente": N}
-    central.machine.info = {"agent_api": N - 1, "plugins": {}, "version": "2026.1.5517"}
+    central.machine.info = {"agent_api": N - 1, "plugins": {}, "version": "2026.1.5518"}
     central.app.state.link_agents.clear()
     central.machine.asked.clear()
-    resp = await central.get("/links/cliente/jobs", headers=PAGE)
+    resp = await central.get("/links/cliente/pullers", headers=PAGE)
     assert resp.status_code == 502 and "Page of cliente not shown" in resp.text
-    assert "/jobs" not in central.machine.asked
-    for path in ("disks", "servers/srv"):
+    assert "/pullers" not in central.machine.asked
+    for path in ("disks", "servers/srv", "jobs"):
         assert (await central.get(f"/links/cliente/{path}", headers=PAGE)).status_code == 200
 
 
 async def test_a_machine_two_behind_writes_every_page_with_the_line(central):
     """AD-017 §10.6: the panel reads N and N-1; a machine of slices 1-2 (agent_api 1) has every page its own, with
     the line, as long as it never said more."""
-    central.machine.info = {"agent_api": N - 2, "plugins": {}, "version": "2026.1.5515"}
-    for path in ("disks", "servers/srv", "jobs"):
+    central.machine.info = {"agent_api": N - 2, "plugins": {}, "version": "2026.1.5517"}
+    for path in ("disks", "servers/srv", "jobs", "pullers", ""):
         central.machine.asked.clear()
         resp = await central.get(f"/links/cliente/{path}", headers=PAGE)
         assert resp.status_code == 200 and f"/{path}" in central.machine.asked, path
-        assert "data-machine-page-line" in resp.text and "cliente (2026.1.5515): update it" in resp.text, path
+        assert "data-machine-page-line" in resp.text and "cliente (2026.1.5517): update it" in resp.text, path
 
 
 async def test_a_plugin_only_on_the_machine_brings_back_its_instance_page(central):
@@ -879,7 +882,7 @@ def test_the_pages_of_class_b_are_found_with_their_parameters():
     assert centralpages.match("workspaces/acme/destinations")[1] == {"workspace": "acme"}
     assert centralpages.match("destinations")[1] == {}
     assert centralpages.match("workspaces/acme/audit")[0].name == "access"
-    for other in ("jobs/1/stop", "workspaces/acme", "workspaces/acme/users", "access/x", "config/srv/edit"):
+    for other in ("jobs/1/stop", "workspaces/acme/users", "access/x", "config/srv/delete"):
         assert centralpages.match(other) is None, other
     # the names a page puts in an address: a server's, a job's, the machine's own (_machine), an instance's key
     for name in ("srv", "20261124-101500-abc123", "_machine", "srv/production", "acme.example"):
@@ -924,7 +927,8 @@ async def test_the_class_b_models_carry_no_secret_value(central, monkeypatch):
                 continue
             assert resp.status_code == 200, (name, resp.text[:300])
             data = resp.json()
-            assert data["agent_api"] == 3 and set(data["context"]) <= set(centralpages.BY_NAME[name].fields), name
+            assert data["agent_api"] == centralpages.AGENT_API and set(data["context"]) <= set(
+                centralpages.BY_NAME[name].fields), name
             for secret in (*B_SECRETS, LINK_TOKEN):
                 assert secret not in resp.text, (name, secret)
             assert not secret_keys(data["context"]), name

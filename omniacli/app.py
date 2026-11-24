@@ -537,15 +537,9 @@ def _field_value(field, raw):
     return text
 
 
-def _field_dict(field) -> dict:
-    """A Field for the server form's script."""
-    return {"key": field.key, "label": field.label, "kind": field.kind, "default": field.default,
-            "required": field.required, "placeholder": field.placeholder, "help": field.help,
-            "choices": [list(c) for c in field.choices], "restart_types": list(field.restart_types),
-            "disabled_placeholder": field.disabled_placeholder,
-            "shown_with": field.shown_with, "threshold": field.threshold,
-            "buttons": [{"label": b.label, "route": b.route, "title": b.title, "confirm": b.confirm,
-                         "only_with_value": b.only_with_value} for b in field.buttons]}
+# a Field for the scripts of the pages (the server form's, a backup's choices): the panel that draws a server's form
+# for a link makes its plugins' with the same function (AD-017 slice 5)
+_field_dict = centralpages.form_field
 
 
 @functools.lru_cache(maxsize=1)
@@ -2580,12 +2574,13 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 return [group.name, *group_names(group.groups, key)]
         return []
 
-    @app.get("/")
-    async def index(request: Request, q: str = "", me: Principal = Depends(current_user)):
+    @context_of("index")
+    async def index_context(request: Request, params: dict) -> dict:
         """The Dashboard: this instance's servers, its workspaces (for its
         admins), the machine of each link (Linked), this machine, the jobs."""
+        me: Principal = request.state.user
         shown = visible_servers(me)
-        context = await server_sections(request, q, me)
+        context = await server_sections(request, str(params.get("q") or ""), me)
         links = sorted(settings.link_targets) if me.kind == "user" and shown is None else []
         linked = [{"name": n, "url": settings.link_targets[n].url} for n in links]
         context.update({
@@ -2607,14 +2602,24 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             "machine_ssh": shown is None and machine_admin(me) and not a_machine(me),
             # the access log's room, the clock, the SIEM (NIS 2): the machine's admins
             "audit": await asyncio.to_thread(audit_status) if shown is None and machine_admin(me) else None,
+            # the OmniaCLI of this machine (its facts): through a link, the machine's, not the panel's that draws it
+            "machine_version": _version(),
         })
-        return _TEMPLATES.TemplateResponse(request, "index.html", context)
+        return context
+
+    @app.get("/")
+    async def index(request: Request, q: str = "", me: Principal = Depends(current_user)):
+        return _TEMPLATES.TemplateResponse(request, "index.html", await index_context(request, {"q": q}))
+
+    @context_of("dashboard_servers")
+    async def dashboard_servers_context(request: Request, params: dict) -> dict:
+        """The Dashboard's server table again (a job started or ended)."""
+        return await server_sections(request, str(params.get("q") or ""), request.state.user)
 
     @app.get("/dashboard/servers")
     async def dashboard_servers(request: Request, q: str = "", me: Principal = Depends(current_user)):
-        """The Dashboard's server table again (a job started or ended)."""
-        context = await server_sections(request, q, me)
-        return _TEMPLATES.TemplateResponse(request, "_servers_part.html", context)
+        return _TEMPLATES.TemplateResponse(request, "_servers_part.html",
+                                           await dashboard_servers_context(request, {"q": q}))
 
     @app.get("/servers/{server}")
     async def server_page(request: Request, server: str, view: str = "production"):
@@ -3046,7 +3051,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         """Whom the monitor tells when an instance of the workspace goes down."""
         ws = a_workspace(workspace)
         try:
-            notify_list = parse_notify(payload.get("notify"), "notify")
+            notify_list = parse_notify(notices_kept(payload.get("notify"), ws.notify, "notify"), "notify")
         except ConfigError as exc:
             return refuse(str(exc))
         async with workspaces_lock:
@@ -3887,31 +3892,42 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     def server_busy(name: str) -> bool:
         return any(jobs.is_busy(f"{name}/{role}") for role in ("production", "test"))
 
-    def server_form(request: Request, title: str, original, name: str, data: dict):
-        return _TEMPLATES.TemplateResponse(
-            request,
-            "server_form.html",
-            {
-                "title": title,
-                "model": {
-                    "original": original,
-                    "name": name,
-                    "server": data,
-                    "active": bool(original and settings.servers[original].active),
-                    "logs_dir": str(settings.logs_dir),
-                    # what the form offers: the loaded plugins, with their fields
-                    "types": {n: {"label": p.label, "has_process": p.has_process, "has_compose": p.has_compose,
-                                  "has_restore": p.has_restore,
-                                  "fields": [_field_dict(f) for f in p.fields()]}
-                              for n, p in plugins.registry().plugins.items()},
-                    "default_type": plugins.DEFAULT_TYPE,
-                    # where a database may come from (Copy from link)
-                    "links": sorted(settings.link_targets),
-                    # or a puller connection (Pullers page)
-                    "connections": sorted(settings.connections),
-                },
+    def server_form_of(title: str, original, name: str, data: dict) -> dict:
+        """The context of the form of a server (new, edit, clone): its configuration as the form edits it (no
+        password: a server's has none, the database's is read from its Odoo configuration), the plugins' fields."""
+        return {
+            "title": title,
+            "model": {
+                "original": original,
+                "name": name,
+                "server": data,
+                "active": bool(original and settings.servers[original].active),
+                "logs_dir": str(settings.logs_dir),
+                # what the form offers: the loaded plugins, with their fields
+                "types": centralpages.plugin_types(),
+                "default_type": plugins.DEFAULT_TYPE,
+                # where a database may come from (Copy from link)
+                "links": sorted(settings.link_targets),
+                # or a puller connection (Pullers page)
+                "connections": sorted(settings.connections),
             },
-        )
+        }
+
+    @context_of("server_form")
+    async def server_form_context(request: Request, params: dict) -> dict:
+        """The form of a new server (no name), of a server's change (form edit) or of its clone (form clone)."""
+        if not request.state.user.can("admin"):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "The admin role is required")
+        name = str(params.get("name") or "")
+        if not name:
+            return server_form_of("New server", None, "", {})
+        srv = editable(name)
+        if params.get("form") == "clone":
+            new_name = f"{name}_copy"
+            while new_name in settings.servers:
+                new_name += "_copy"
+            return server_form_of(f"Clone of {name}", None, new_name, server_to_dict(srv))
+        return server_form_of(f"Edit {name}", name, name, server_to_dict(srv))
 
     def configured(name: str):
         srv = settings.servers.get(name)
@@ -3938,20 +3954,17 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     @app.get("/config/new", dependencies=[Depends(admin)])
     async def config_new(request: Request):
-        return server_form(request, "New server", None, "", {})
+        return _TEMPLATES.TemplateResponse(request, "server_form.html", await server_form_context(request, {}))
 
     @app.get("/config/{name}/edit", dependencies=[Depends(admin)])
     async def config_edit(request: Request, name: str):
-        srv = editable(name)
-        return server_form(request, f"Edit {name}", name, name, server_to_dict(srv))
+        return _TEMPLATES.TemplateResponse(request, "server_form.html", await server_form_context(
+            request, {"name": name, "form": "edit"}))
 
     @app.get("/config/{name}/clone", dependencies=[Depends(admin)])
     async def config_clone(request: Request, name: str):
-        srv = editable(name)
-        new_name = f"{name}_copy"
-        while new_name in settings.servers:
-            new_name += "_copy"
-        return server_form(request, f"Clone of {name}", None, new_name, server_to_dict(srv))
+        return _TEMPLATES.TemplateResponse(request, "server_form.html", await server_form_context(
+            request, {"name": name, "form": "clone"}))
 
     def refuse(message: str, code: int = status.HTTP_400_BAD_REQUEST):
         return JSONResponse({"error": message}, status_code=code)
@@ -4722,6 +4735,24 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             parts = urlsplit(address)
             shown.append(f"{parts.scheme}://{parts.netloc}/…" if parts.scheme and parts.netloc else address)
         return shown
+
+    def notices_kept(given, saved: list[str], where: str):
+        """The addresses of notices a page sends back (a workspace's notices, Options › Monitoring), with each
+        webhook it shows by its site only (notices_shown: https://hooks.slack.com/…) the saved one it stands for,
+        in their order; ConfigError when such a site stands for none. Anything else is as given."""
+        if not isinstance(given, list):
+            return given
+        left = list(zip(notices_shown(saved), saved))
+        out = []
+        for address in given:
+            if isinstance(address, str) and address.endswith("/…"):
+                found = next((i for i, (shown, _saved) in enumerate(left) if shown == address.strip()), None)
+                if found is None:
+                    raise ConfigError(f"{where}: {address} is a webhook shown by its site only, and none saved goes "
+                                      "there: write its whole address")
+                address = left.pop(found)[1]
+            out.append(address)
+        return out
 
     # --- git credentials (gitcredentials.py) ---------------------------------
 
@@ -5559,11 +5590,22 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"No workspace {name}")
         return found
 
-    @app.get("/workspaces/{workspace}", dependencies=[Depends(admin)])
-    async def workspace_page(request: Request, workspace: str):
+    def workspace_shown(ws: Workspace) -> dict:
+        """What a workspace's page reads of it (AD-017 slice 5: its fields by name, the same for its page and its
+        model): of its notices' webhooks only where they go (notices_shown), the rest kept at saving
+        (notices_kept)."""
+        return {"name": ws.name, "label": ws.label, "domain": ws.domain, "certificate": ws.certificate,
+                "main": ws.main, "limits": dict(ws.limits), "subdomains": dict(ws.subdomains),
+                "relay": {"via": ws.relay.get("via") or "", "all": bool(ws.relay.get("all"))},
+                "notify": notices_shown(ws.notify)}
+
+    @context_of("workspace")
+    async def workspace_context(request: Request, params: dict) -> dict:
         """The users and the instances of a workspace, for its admins (and the machine's)."""
-        ws = a_workspace(workspace)
         me = request.state.user
+        if not me.can("admin"):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "The admin role is required")
+        ws = a_workspace(str(params.get("workspace") or ""))
         members = [{"name": n, "role": r, "only_here": only_here(n, ws.name),
                     "invitation": invitation_state(n) if only_here(n, ws.name) else None,
                     # its two-step verification: on, and whether its admins here may reset it
@@ -5578,9 +5620,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         mine, _ = my_caps(me, ws)
         # what the caller's own custom role takes away on this page: those buttons off, saying why
         denied = {c: why for c in capabilities.CAPABILITIES if (why := refusal(me, c, ws.name))}
-        return _TEMPLATES.TemplateResponse(
-            request, "workspace.html",
-            {"ws": ws, "members": members, "roles": ACCESS_ROLES, "me": me.name, "min_password": _MIN_PASSWORD,
+        return {"ws": workspace_shown(ws), "members": members, "roles": ACCESS_ROLES, "me": me.name, "min_password": _MIN_PASSWORD,
              # the custom roles (README, Custom roles of a workspace): the capabilities, the presets, those the
              # caller may give (None: all), each custom role with who has it
              "denied": denied, "capabilities": capabilities.CAPABILITIES,
@@ -5605,12 +5645,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
              # reception (A5): the machine's admins only
              **(handover_bands(ws) if machine_admin(me) and not me.scoped else {}),
              "instances": [i for i in ws.instances() if workspaceops.server_name(ws, i) in settings.servers],
-             "parameters": {n: {role: role_parameters(ws, n[len(ws.name) + 1:], role) for role in ROLES}
-                            for n in ws.servers if n in settings.servers and n.startswith(f"{ws.name}-")},
-             "repositories": {n: {role: [{"name": r.name, "branch": r.branch} for r in getattr(settings.servers[n], role).repositories]
-                                  for role in ROLES if getattr(settings.servers[n], role) is not None}
-                              for n in ws.servers if n in settings.servers},
-             "sites": site_names(ws), "certificates": CERTIFICATES,
+             "sites": site_names(ws),
              # the machines its names may be published through (relay.py): the links, for the machine's admins
              "relay_links": sorted(settings.link_targets) if machine_admin(me) and not me.scoped else None,
              "relay_text": (RELAY_PROVIDER if me.scoped else ws.relay.get("via")) if ws.relay.get("via") else "",
@@ -5620,7 +5655,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                          "person": ws.token_people.get(n, ""),
                          "gone": bool(ws.token_people.get(n)) and ws.token_people[n] not in ws.members}
                         for n in sorted(settings.tokens) if settings.token_workspace(n) == ws.name],
-             "mcp_url": public_base(request) + "/mcp", "api_base": api_base(request),
+             "api_base": api_base(request),
              "grants": oauth_rows(oauth_store.listed(workspace=ws.name)), "oauth_reach": await oauth_reach(request),
              # the links an archive may be copied through: the machine's admins'
              "links": sorted(settings.link_targets) if me.kind == "user" and not me.workspaces and me.can("admin")
@@ -5632,8 +5667,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
              # how many remote destinations its backups have (their page lists them)
              "destinations_count": len(destination_rows(ws.name)),
              "instances_left": None if not ws.limits.get("instances")
-             else int(ws.limits["instances"]) - len([n for n in ws.servers if n in settings.servers])},
-        )
+             else int(ws.limits["instances"]) - len([n for n in ws.servers if n in settings.servers])}
+
+    @app.get("/workspaces/{workspace}", dependencies=[Depends(admin)])
+    async def workspace_page(request: Request, workspace: str):
+        return _TEMPLATES.TemplateResponse(request, "workspace.html",
+                                           await workspace_context(request, {"workspace": workspace}))
 
     def left_by_interruption(ws: Workspace, name: str) -> bool:
         """name stays in ws with no server because OmniaCLI was stopped while
@@ -10004,42 +10043,46 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     def check_role(role: str, roles: tuple[str, ...] = ACCESS_ROLES):
         return None if role in roles else refuse(f"The role must be one of {', '.join(roles)}")
 
-    @app.get("/users", dependencies=[Depends(admin)])
-    async def users_page(request: Request):
+    @context_of("users")
+    async def users_context(request: Request, params: dict) -> dict:
+        """The people, the links and the tokens of this machine: their names, roles and states, never a hash, a
+        second factor, a passkey or a session (how many)."""
+        if not request.state.user.can("admin"):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "The admin role is required")
         fixed = settings.fixed
         open_sessions = sessions.count()
-        return _TEMPLATES.TemplateResponse(
-            request,
-            "users.html",
-            {
-                "users": [{"name": n, "role": settings.user_role(n), "fixed": n in fixed.users,
-                           # where a customer's user gets in
-                           "workspaces": sorted(w.name for w in settings.workspaces.values() if n in w.members),
-                           "invitation": None if n in fixed.users else invitation_state(n),
-                           "two_step": second_factors.on(n) or passkey_store.count(n) > 0,
-                           "passkeys": passkey_store.count(n), "sessions": open_sessions.get(n, 0)}
-                          for n in sorted(settings.users)],
-                "links": [{"name": n, "role": link.role, "fixed": n in fixed.links}
-                          for n, link in sorted(settings.links.items())],
-                "tokens": [{"name": n, "role": settings.token_role(n), "fixed": n in fixed.tokens,
-                            "workspace": settings.token_workspace(n), "ci": settings.token_ci(n),
-                            "servers": list(settings.token_servers(n))}
-                           for n in sorted(settings.tokens)],
-                # how a client is connected with a token (README, REST API; _api_clients.html)
-                "api_base": api_base(request), "server_names": sorted(settings.servers),
-                # the assistants connected with OAuth (oauth.py), every person's, and where they connect
-                "grants": oauth_rows(oauth_store.listed()), "oauth_reach": await oauth_reach(request),
-                "users_file": settings.users_file,
-                "roles": ACCESS_ROLES,
-                "user_roles": USER_ROLES,
-                "min_password": _MIN_PASSWORD,
-                "can_mail": bool(settings.options.smtp_host),
-                # where the customers log in (docs/portale-clienti.md)
-                "portal_url": portal_url(), "portal_settable": bool(settings.storage_roots),
-                "invitation_hours": INVITATION_HOURS,
-                "link_names": sorted(settings.link_targets),
-            },
-        )
+        return {
+            "users": [{"name": n, "role": settings.user_role(n), "fixed": n in fixed.users,
+                       # where a customer's user gets in
+                       "workspaces": sorted(w.name for w in settings.workspaces.values() if n in w.members),
+                       "invitation": None if n in fixed.users else invitation_state(n),
+                       "two_step": second_factors.on(n) or passkey_store.count(n) > 0,
+                       "passkeys": passkey_store.count(n), "sessions": open_sessions.get(n, 0)}
+                      for n in sorted(settings.users)],
+            "links": [{"name": n, "role": link.role, "fixed": n in fixed.links}
+                      for n, link in sorted(settings.links.items())],
+            "tokens": [{"name": n, "role": settings.token_role(n), "fixed": n in fixed.tokens,
+                        "workspace": settings.token_workspace(n), "ci": settings.token_ci(n),
+                        "servers": list(settings.token_servers(n))}
+                       for n in sorted(settings.tokens)],
+            # how a client is connected with a token (README, REST API; _api_clients.html)
+            "api_base": api_base(request), "server_names": sorted(settings.servers),
+            # the assistants connected with OAuth (oauth.py), every person's, and where they connect
+            "grants": oauth_rows(oauth_store.listed()), "oauth_reach": await oauth_reach(request),
+            "users_file": settings.users_file,
+            "roles": ACCESS_ROLES,
+            "user_roles": USER_ROLES,
+            "min_password": _MIN_PASSWORD,
+            "can_mail": bool(settings.options.smtp_host),
+            # where the customers log in (docs/portale-clienti.md)
+            "portal_url": portal_url(), "portal_settable": bool(settings.storage_roots),
+            "invitation_hours": INVITATION_HOURS,
+            "link_names": sorted(settings.link_targets),
+        }
+
+    @app.get("/users", dependencies=[Depends(admin)])
+    async def users_page(request: Request):
+        return _TEMPLATES.TemplateResponse(request, "users.html", await users_context(request, {}))
 
     @app.get("/help", dependencies=[Depends(developer)])
     async def help_page(request: Request):
@@ -11409,7 +11452,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 context = centralpages.moved_away_view(context, prefix)
             elif page.name == "server":
                 context = centralpages.server_view(context, prefix)
-            elif page in centralpages.CLASS_B:
+            elif page in centralpages.BY_MODEL:
                 context = centralpages.page_view(page.name, context, prefix, request_language(request))
             if page.name == "server" and (context.get("server") or {}).get("name") != params.get("server"):
                 raise ValueError(f"its page is of {str((context.get('server') or {}).get('name'))[:60]!r}, "
@@ -11417,11 +11460,26 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if page.name == "job" and (context.get("job") or {}).get("id") != params.get("job_id"):
                 raise ValueError(f"its page is of the job {str((context.get('job') or {}).get('id'))[:60]!r}, "
                                  f"not of {params.get('job_id')}")
-            if page.name in ("destinations", "access") and (
+            if page.name in ("destinations", "access", "workspace") and (
                     (context.get("ws") or {}).get("name") or "") != params.get("workspace", ""):
                 raise ValueError(f"its page is of the workspace {str((context.get('ws') or {}).get('name'))[:60]!r}, "
                                  f"not of {params.get('workspace') or 'none'}")
-            return _TEMPLATES.TemplateResponse(request, template, context)
+            if page.name == "server_form":
+                # the form of the server of the path: a new one, its change, its clone (named after it)
+                name, form, model = params.get("name", ""), params.get("form", ""), context.get("model") or {}
+                title = {"": "New server", "edit": f"Edit {name}", "clone": f"Clone of {name}"}[form]
+                original = name if form == "edit" else None
+                given = str(model.get("name") or "")
+                if (context.get("title") != title or model.get("original") != original
+                        or (form == "edit" and given != name) or (form == "clone" and not given.startswith(f"{name}_copy"))
+                        or (not form and given)):
+                    raise ValueError(f"its form is of {str(model.get('original') or given)[:60]!r} "
+                                     f"({str(context.get('title'))[:60]!r}), not of {name or 'a new server'}")
+            drawn = _TEMPLATES.TemplateResponse(request, template, context)
+            if zone:
+                # the machine's clock, which its moments are written by, as its own page says it (ZoneScope)
+                drawn.headers[clock.HEADER] = zone
+            return drawn
         except (jinja2.TemplateError, TypeError, ValueError, AttributeError, KeyError) as exc:
             # a model without a field the page needs, or of another shape: said, not a 500
             _logger.warning("the page %s of %s: %s", page.name, link.name, exc)
@@ -11436,7 +11494,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         (AD-017 §17.2) a page of centralpages.PAGES is drawn by this panel when the machine's contract allows it;
         else, if the machine never said agent_api 1 or more, its page passes with a line that says why. On such a
         link the machine's /api answers and the requests of the pages drawn here pass only as data (JSON, a file
-        to save); the pages this panel does not draw yet (slice 5) pass as before, HTML included."""
+        to save); the pages this panel does not draw (those of who logs in there: an invitation, a plugin's own
+        pages under /x/) pass as before, HTML included."""
         if me.kind != "user":
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Only a user who logs in here may use a link")
         link = a_link(name)
@@ -11455,8 +11514,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if here and path.startswith("static/") and path[len("static/"):] in _STATIC_FILES:
             # the files of this panel's pages: its own, never the machine's script
             return await static_file(path[len("static/"):])
-        # the machine's own HTML passes: on a link with pages: machine, for a page this panel does not draw (yet:
-        # AD-017 §9, slice 5), and as the way back of §17.2 for a machine that never said agent_api 1 or more
+        # the machine's own HTML passes: on a link with pages: machine, for a page this panel does not draw (an
+        # invitation, a plugin's page), and as the way back of §17.2 for a machine that never said agent_api 1 or more
         machine_html = not here or (not api and drawn is None)
         if drawn is not None:
             page, params = drawn
@@ -11992,8 +12051,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         except puller.PullerRefused as exc:
             return puller_answer(exc)
 
-    @app.get("/pullers", dependencies=[Depends(admin)])
-    async def pullers_page(request: Request):
+    @context_of("pullers")
+    async def pullers_context(request: Request, params: dict) -> dict:
+        """The boxes of this machine, its publications and its connections: never a key (whether it has one)."""
+        if not request.state.user.can("admin"):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "The admin role is required")
         rows = []
         for name in sorted(settings.pullers):
             info = pullers.info(name)
@@ -12008,7 +12070,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                               "live": settings.instance(*key.split("/", 1)) is not None,
                               "link_missing": pub.link not in settings.link_targets})
         instances = [i.key for srv in settings.servers.values() for i in srv.instances.values()]
-        return _TEMPLATES.TemplateResponse(request, "pullers.html", {
+        return {
             "pullers": rows, "links": sorted(settings.links), "pullers_file": settings.pullers_file,
             "keep_hours": PULLER_KEEP_HOURS, "max_file_mib": PULLER_FILE_MIB,
             # this machine's clock: who publishes on a box is online when seen in the last two minutes
@@ -12020,7 +12082,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                              "status": consumers.conn(c.name).status,
                              "link_missing": c.link not in settings.link_targets}
                             for c in settings.connections.values()],
-            "connections_file": settings.connections_file})
+            "connections_file": settings.connections_file}
+
+    @app.get("/pullers", dependencies=[Depends(admin)])
+    async def pullers_page(request: Request):
+        return _TEMPLATES.TemplateResponse(request, "pullers.html", await pullers_context(request, {}))
 
     @app.post("/api/pullers/save", dependencies=[Depends(admin)])
     async def pullers_save(payload: dict = Body(...)):
@@ -12442,16 +12508,35 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     # --- options of the system ------------------------------------------
 
+    # what the Options page reads of the options, by name (AD-017 slice 5): never the SMTP password (whether it is
+    # set), the webhooks of Monitoring by their site only (notices_shown, kept at saving by notices_kept)
+    OPTIONS_SHOWN = ("audit_retention_days", "brand_color", "brand_name", "mail_from", "monitor_minutes",
+                     "monitor_thresholds", "notice_language", "portal_address", "portal_staff", "provider_label",
+                     "restart_after", "restart_down", "restart_every", "second_factor", "shell_font_size", "smtp_host",
+                     "smtp_port", "smtp_security", "smtp_user", "syslog_ca_file", "syslog_host", "syslog_port",
+                     "syslog_protocol", "tunnel_bind", "tunnel_idle_hours", "tunnel_ports")
+
+    @context_of("options")
+    async def options_context(request: Request, params: dict) -> dict:
+        me = request.state.user
+        if not me.can("admin"):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "The admin role is required")
+        options = settings.options
+        shown = {name: getattr(options, name) for name in OPTIONS_SHOWN}
+        shown.update(monitor_notify=notices_shown(options.monitor_notify), smtp_password_set=bool(options.smtp_password))
+        return {"portal_url": portal_url(), "portal_refused": portal_refusal(me),
+                "options": shown, "options_file": settings.options_file, "machine": settings.machine,
+                "font_sizes": SHELL_FONT_SIZES, "idle_hours": TUNNEL_IDLE_HOURS,
+                "retention_limits": AUDIT_RETENTION_LIMITS, "syslog_protocols": SYSLOG_PROTOCOLS,
+                "metrics": MONITOR_METRICS, "minutes_limits": MONITOR_MINUTES_LIMITS,
+                "after_limits": RESTART_AFTER_LIMITS, "every_limits": RESTART_EVERY_LIMITS,
+                "webhooks": webhook_rows(),
+                # the logo of this machine's panel (Whitelabel), not of the panel that draws the page
+                "machine_logo": _brand_of(settings)["logo"]}
+
     @app.get("/options", dependencies=[Depends(admin)])
     async def options_page(request: Request, me: Principal = Depends(current_user)):
-        return _TEMPLATES.TemplateResponse(request, "options.html", {
-            "portal_url": portal_url(), "portal_refused": portal_refusal(me),
-            "options": settings.options, "options_file": settings.options_file, "machine": settings.machine,
-            "font_sizes": SHELL_FONT_SIZES, "idle_hours": TUNNEL_IDLE_HOURS,
-            "retention_limits": AUDIT_RETENTION_LIMITS, "syslog_protocols": SYSLOG_PROTOCOLS,
-            "metrics": MONITOR_METRICS, "minutes_limits": MONITOR_MINUTES_LIMITS,
-            "after_limits": RESTART_AFTER_LIMITS, "every_limits": RESTART_EVERY_LIMITS,
-            "webhooks": webhook_rows()})
+        return _TEMPLATES.TemplateResponse(request, "options.html", await options_context(request, {}))
 
     @app.post("/api/options/save", dependencies=[Depends(admin)])
     async def options_save(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
@@ -12467,8 +12552,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if not isinstance(payload.get("monitor"), dict):
             payload = {**payload, "monitor": monitor_to_dict(settings.options)}
         else:
-            # the webhooks' secrets are never in the page: kept
-            payload = {**payload, "monitor": {**payload["monitor"],
+            # the webhooks' secrets are never in the page: kept; a webhook it shows by its site only, the saved one
+            try:
+                told = notices_kept(payload["monitor"].get("notify"), settings.options.monitor_notify, "monitor.notify")
+            except ConfigError as exc:
+                return refuse(str(exc))
+            payload = {**payload, "monitor": {**payload["monitor"], **({"notify": told} if told is not None else {}),
                                               "webhooks": monitor_to_dict(settings.options).get("webhooks", {})}}
         if "audit" not in payload:
             # the access log's: not posted keeps the saved ones (a script of before)
@@ -12554,10 +12643,21 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     continue
                 seen.add(url)
                 parts = urlsplit(url)
-                rows.append({"url": url, "where": where,
+                # never its address (Slack and Teams keep their secret in its path): the page shows its site and
+                # names it by ref
+                rows.append({"ref": webhook_ref(url), "where": where,
                              "shown": f"https://{parts.hostname}" + ("/…" if parts.path not in ("", "/") or parts.query else ""),
                              "signed": bool((keys.get(url) or {}).get("secret")), "jobs": bool((keys.get(url) or {}).get("jobs"))})
         return rows
+
+    def webhook_ref(url: str) -> str:
+        """The name a page gives a webhook: a digest of its address, which it does not tell."""
+        return hashlib.sha256(f"omniacli-webhook:{url}".encode()).hexdigest()[:20]
+
+    def webhook_urls() -> list[str]:
+        """The webhooks of webhook_rows, by their addresses."""
+        lists = [settings.options.monitor_notify] + [ws.notify for ws in settings.workspaces.values()]
+        return list(dict.fromkeys(u for urls in lists for u in urls if not notify.is_email(u)))
 
     async def save_webhook(url: str, secret: str | None = None, jobs_: bool | None = None, unsign: bool = False):
         keys = {k: dict(v) for k, v in settings.options.webhook_keys.items()}
@@ -12577,8 +12677,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         settings.options = options
 
     def webhook_of(payload: dict) -> str:
-        url = str(payload.get("url") or "")
-        if url not in {r["url"] for r in webhook_rows()}:
+        """The webhook a request names: by its ref (the page's), or by its address (a script of before)."""
+        url, ref = str(payload.get("url") or ""), str(payload.get("ref") or "")
+        known = webhook_urls()
+        if ref:
+            url = next((u for u in known if webhook_ref(u) == ref), "")
+        if url not in known:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Not a webhook of Monitoring or of a workspace's notices")
         return url
 

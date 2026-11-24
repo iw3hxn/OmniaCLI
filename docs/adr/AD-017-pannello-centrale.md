@@ -268,8 +268,9 @@ pagine scritte dal centrale la macchina fornisce solo JSON, inserito con l'autoe
    riga `failed` nel registro. A una richiesta `/api` del browser il centrale chiede `Accept: application/json`, così
    la macchina risponde con il suo motivo e non con la sua pagina d'errore.
 
-   **Cosa passa ancora come HTML della macchina:** le pagine C, non ancora scritte dal centrale (fetta 5; la pagina
-   dell'istanza lo è dalla fetta 3, le 14 pagine B dalla fetta 4), con i loro frammenti; con `pages: machine`, tutto. Nelle 12 pagine A l'HTML della macchina passa solo nel ritorno di 17.2
+   **Cosa passa ancora come HTML della macchina:** dalla fetta 5 solo le pagine che il centrale non scrive: quella
+   di un invito (di chi entra lì) e le pagine proprie di un plugin (`/x/<plugin>/…`); con `pages: machine`, tutto.
+   Nelle pagine scritte qui (le 12 A, l'istanza, le 14 B, le altre C) l'HTML della macchina passa solo nel ritorno di 17.2
    (con la riga in testa), e solo finché quella macchina non ha mai detto `agent_api ≥ 1`: il valore più alto detto da
    ogni collegamento è tenuto su disco (`link-agents.json`, nel purge). Dopo, se dice meno o non ha il modello della
    pagina, il centrale mostra una sua pagina che lo dice, finché un amministratore non mette `pages: machine`. Un
@@ -503,6 +504,103 @@ Per ogni fetta: il rilascio, la prova su lab3/lab4, come si annulla, la stima.
    `options`.
    - *Prova*: come la fetta 3.
    - *Stima*: 9 g.
+
+   **Com'è nel codice (fetta 5).**
+   - Sette modelli nuovi nella stessa route: `GET /api/pages/<pagina>` per `index` (la sezione della macchina, con
+     le schede Monitoraggio, Database e Accesso SSH), `dashboard_servers` (la tabella delle istanze che lo script
+     della sezione richiede quando un job parte o finisce: `_servers_part.html`, una parte di `index`),
+     `workspace` (`workspace=<w>`), `users`, `pullers`, `server_form` (`name`, `form=edit|clone`; senza: un server
+     nuovo) e `options`. `AGENT_API` e `CENTRAL_AGENT_API` passano a 4, `OLDEST_READ` a 3. Le sette chiedono 4; le
+     14 B restano a 3, l'istanza a 2, le 12 A a 1.
+   - **Una macchina a 3 (2026.1.5518)** ha dal centrale le 12 A, l'istanza e le 14 B; la sezione della macchina,
+     la pagina di un workspace, Utenti, Puller, il modulo di un server e Opzioni sono le sue, con la riga
+     «aggiornala». Una macchina a 2 o a 1 (5517, 5515) ha tutte le pagine sue, con la riga (§10.6, come nella
+     fetta 4 per quelle a 1).
+   - Ogni route è divisa in due come nelle fette 3-4: un contesto registrato con `context_of` (`index_context`,
+     `dashboard_servers_context`, `workspace_context`, `users_context`, `pullers_context`, `server_form_context`,
+     `options_context`), che fa i controlli della route e che la pagina della macchina scrive così com'è;
+     `centralpages.page_model` lo prende campo per campo. Il contesto della macchina ora è già fatto di valori
+     semplici: il workspace della sua pagina è `workspace_shown` (nome, etichetta, dominio, certificato,
+     istanza principale, limiti, sottodomini, relay, avvisi), le Opzioni sono `OPTIONS_SHOWN` più due valori
+     calcolati. Le chiavi del contesto della pagina del workspace che il template non leggeva (`parameters`, con
+     i valori delle opzioni Odoo di un'istanza, `repositories`, `certificates`, `mcp_url`) sono tolte.
+   - **`_machine_database.html` è JavaScript** (il «Non verificato» qui sotto): delle sue 2.115 righe legge dal
+     contesto solo `prefix`; i dati li chiede a `/api/postgres` dal browser. Il suo modello è un sì o no
+     (`machine_database`); per questo la fetta è costata meno della stima.
+   - **I segreti, mai nel modello, provati per valore** (`test_the_models_of_slice_5_carry_no_secret_value`):
+     - Opzioni: la password SMTP (il modello dice `smtp_password_set`); gli avvisi di Monitoraggio con il solo sito
+       (`notices_shown`); i webhook della tabella con un nome (`ref`, sha-256 dell'indirizzo, 20 cifre), mai
+       l'indirizzo: Slack e Teams tengono il segreto nel percorso, e la pagina della macchina lo metteva in
+       `data-url` e nel `title`; il segreto di firma di un webhook non c'è mai stato;
+     - pagina di un workspace: il segreto del provider SSO (`sso.shown`: `secret_set`); gli avvisi con il solo
+       sito; dei token del workspace solo nome, ruolo e persona; delle credenziali git `token_set`;
+     - Utenti e persone di un workspace: mai un hash, un segreto TOTP, un codice di recupero, una passkey, una
+       sessione: se il secondo fattore è attivo, quante passkey e quante sessioni;
+     - Puller: di una pubblicazione e di una connessione se ha la chiave (`has_key`);
+     - modulo di un server: la configurazione del server com'è nel file (un server non ha password: quella del
+       database si legge dal suo `odoo.conf`);
+     - sezione della macchina: il cluster, le repliche e le loro password stanno dietro `/api/postgres`, non nel
+       modello.
+   - **Avvisi mostrati con il solo sito, tenuti al salvataggio** (`notices_kept`). La pagina di un workspace e le
+     Opzioni mostrano un webhook come `https://hooks.slack.com/…` anche nel campo da modificare, sulla pagina della
+     macchina e qui (la parità). Al salvataggio, una riga uguale al sito di un webhook salvato vale quel webhook,
+     nell'ordine; una che non corrisponde a nessuno è rifiutata («scrivi il suo indirizzo intero»). Le azioni dei
+     webhook di Opzioni (firma, togli la firma, job, prova) li nominano con `ref`; `url` resta accettato per uno
+     script di prima.
+   - Il centrale scrive dal modello (`centralpages.page_view`) con questi controlli, oltre a quelli della fetta 4:
+     - nomi al loro posto (`_NAMES_AT`): le righe delle istanze (nome e genitore, anche nei gruppi a ogni
+       profondità), i job, i workspace del carico; le persone, i server, le istanze, i collegamenti e i token di
+       un workspace; le persone, i loro workspace, i collegamenti e i token di Utenti; puller, connessioni,
+       pubblicazioni e collegamenti di Puller; il server e i collegamenti del modulo;
+     - indirizzi verso fuori al loro posto (`_ELSEWHERE_AT`): l'indirizzo del portale di Utenti e di Opzioni;
+     - il logo della macchina in Opzioni (`machine_logo`) è `/brand/logo?v=…` sotto il prefisso, o niente;
+     - **campi forzati dal centrale, mai la parola della macchina**: delle righe delle istanze `base` (il prefisso
+       del collegamento) e `link` (vuoto); attraverso un collegamento, i Collegati della sezione
+       (`machine_links`, `linked_sections`) sono vuoti, come la macchina li dà a un collegamento; del modulo di un
+       server i tipi, con i campi e i pulsanti dei plugin (`centralpages.plugin_types`, la stessa funzione che usa
+       la macchina): un `route` di un pulsante viene preso dallo script del modulo e aperto;
+     - il modello è della pagina dell'indirizzo: lo stesso workspace; per il modulo di un server lo stesso
+       server, il titolo atteso (`New server`, `Edit <s>`, `Clone of <s>`) e il nome del clone `<s>_copy…`.
+   - La sezione della macchina dice la versione di OmniaCLI **della macchina** (`machine_version`), non quella del
+     pannello che la scrive; le Opzioni il logo della macchina, non quello del centrale.
+   - Ogni pagina scritta qui (anche delle fette 1-4) dice nella risposta il fuso della macchina
+     (`X-OmniaCLI-Zone`), come la sua pagina: prima diceva quello del centrale, mentre le ore erano già scritte con
+     quello della macchina (trovato da `test_clock` sulla sezione della macchina, che prima arrivava dalla macchina).
+   - La parità: `tests/serverparity.py` scrive anche ognuna delle sette due volte (`Twice`, per ogni test della
+     suite con `OMNIACLI_PARITY=1`); una parte di pagina senza `<main>` si confronta intera. Nei test: admin,
+     developer e user attraverso il collegamento; le persone di un workspace (mario, user, developer, admin, la
+     copia di admin e il ruolo personalizzato senza i log) sulla sezione e sulla pagina del workspace, prima e
+     dopo il posizionamento di srv sull'host.
+   - **Utenti e Opzioni attraverso un collegamento** (la scelta chiesta): si scrivono. Non sono della persona che ha
+     fatto il login (come Account e Tunnel): sono le persone della macchina e dei suoi workspace e le opzioni della
+     macchina, che il suo admin cura. Nessun segreto passa (sopra). AD-018 porterà le identità dei clienti nel
+     centrale: allora Utenti di una macchina avrà solo il suo personale, e la pagina resta scritta qui.
+
+   - **Sul lab** (lab3 centrale, lab4 macchina, 24/11/2026): con il codice della fetta su tutte e due, le 11 pagine
+     provate (la sezione con e senza ricerca, la tabella, due workspace, Utenti, Puller, i tre moduli di un server,
+     Opzioni) e le 9 delle fette 1-4 sono scritte da lab3; parità per admin, developer e user: 33 confronti, 0
+     differenze; nei 18 modelli letti su lab4 i 46 valori segreti che lab4 tiene (token dei collegamenti, hash di
+     persone e token, segreti TOTP e codici di recupero, sessioni, segreto SSO, password SMTP e segreto di firma di un
+     webhook, percorsi dei webhook, chiavi dei puller, chiavi private e store git, la password della replica): 0
+     trovati. Il giro con Playwright (italiano, 1440 e 375, chiaro e scuro): 0 errori di pagina, 0 dialoghi del
+     browser, 0 risposte 5xx; aperte le quattro schede della sezione e 80 finestre (nulla inviato). Con lab4 alla
+     2026.1.5518 (`agent_api` 3): le 9 pagine delle fette 1-4 scritte da lab3, le 10 pagine della fetta 5 di lab4 con
+     la riga, la tabella delle istanze di lab4 senza la riga. La riga dentro la tabella, a ogni job, l'ha trovata il
+     lab: ora `with_line` lascia com'è una parte di pagina senza `<body>`.
+   - Le righe della scheda Database con i loro pulsanti (proposta, replica verso, archivio) non si sono potute aprire
+     sul lab: i cluster di lab4 erano fermi. Si è aperta «Replica di un'altra macchina…». Il loro script è quello di
+     prima, e dal modello legge solo il prefisso.
+
+   **Dove la fetta si discosta dal piano.**
+   - **Una pagina in più, `dashboard_servers`.** Lo script della sezione richiede la tabella delle istanze come HTML
+     (`/dashboard/servers`): scritta dalla macchina, sarebbe passata sotto l'origine del centrale proprio sulla
+     pagina che il centrale scrive. Ora la scrive il centrale, dallo stesso tipo di modello.
+   - **La pagina della macchina cambia in tre punti, per la parità e per i segreti**: gli avvisi di un workspace e
+     di Monitoraggio si vedono con il solo sito anche nel campo da modificare (un webhook si cambia riscrivendolo
+     intero, e una riga lasciata com'è lo tiene); i webhook di Opzioni non hanno più l'indirizzo nella pagina; la
+     sezione legge `machine_version` invece della versione globale.
+   - **Restano HTML della macchina** l'invito (classe D) e le pagine proprie di un plugin sotto `/x/` (i dialoghi
+     dei plugin del pacchetto sono già scritti qui con l'istanza): sono della fetta 6, che inoltra solo JSON.
 6. **La modalità `agent`**: la scritta in testa, l'admin locale obbligatorio, il centrale che inoltra solo JSON per i
    collegamenti `here`.
    - *Prova*:
@@ -592,8 +690,8 @@ Totale ≈ 30 giornate. Le fette 0-3 (9 g) bastano per il caso di oggi e per la 
   macchina per la regola di 17.2.
 - La quota di commit «solo pagina» in una settimana senza helper nuovi: misurata solo dal 17/11, durante la costruzione
   di AD-008.
-- Che `_machine_database.html` (2.115 righe, 565 `{{`, 1 `fetch`) sia soprattutto JS: dai conteggi sembra scritta dal
-  server. La stima della fetta 5 lo presume.
+- ~~Che `_machine_database.html` (2.115 righe, 565 `{{`, 1 `fetch`) sia soprattutto JS~~: verificato nella fetta 5. È
+  JavaScript: dal contesto legge solo `prefix` (le 565 `{{` sono testi `_()`), i dati vengono da `/api/postgres`.
 - Che `ssh -R` sul relay regga due porte per macchina (nomi di Odoo e agente) senza cambiare `relay-hosted.json`: il
   formato è letto, la prova no.
 - Il tempo del ripristino del centrale: nessuna misura.

@@ -2132,6 +2132,7 @@
  "{where}: repository names must be unique": "{where}: i nomi dei repository devono essere unici",
  "{where}: the name is letters, digits and . _ - (at most 64)": "{where}: il nome è di lettere, cifre e . _ - (al massimo 64)",
  "{where}: window must be 'HH:MM-HH:MM'": "{where}: la finestra deve essere 'HH:MM-HH:MM'",
+ "{where}: {address} is a webhook shown by its site only, and none saved goes there: write its whole address": "{where}: {address} è un webhook mostrato solo con il suo sito, e nessuno di quelli salvati va lì: scrivi il suo indirizzo intero",
  "{where}: {expr} is not a crontab expression of 5 fields (minute hour day-of-month month day-of-week)": "{where}: {expr} non è un'espressione crontab di 5 campi (minuto ora giorno-del-mese mese giorno-della-settimana)",
  "{where}: {key} is required": "{where}: {key} è obbligatorio",
  "{where}: {value} has no valid port": "{where}: {value} non ha una porta valida",

@@ -1076,20 +1076,24 @@ the instance's Log, OmniaCLI's own Log, Instances, Backups, Servers
 Settings; then Jobs and a job's page, Workspaces (the list and a workspace's
 form), Backup destinations (the machine's and a workspace's), the Access log
 (the machine's and a workspace's), Servers (the configuration), Git
-credentials, Odoo Enterprise, Links, Groups, Plugins and Schedules. A
-person's own Account and Tunnels are the panel's where the person logged in:
-through a link the machine refuses them (404, 403), and this panel says so
-with its own error page. The others (the Dashboard, a workspace's page,
-Users, Pullers, a server's form, Options) are still the machine's own.
+credentials, Odoo Enterprise, Links, Groups, Plugins and Schedules; then the
+machine's section (the Dashboard of a link, with its Monitoring, Database and
+SSH access tabs, and the table of its instances its script asks again), a
+workspace's page, Users, Pullers, a server's form (new, change, clone) and
+Options. A person's own Account and Tunnels are the panel's where the person
+logged in: through a link the machine refuses them (404, 403), and this panel
+says so with its own error page. Still the machine's own: what only who logs
+in there opens (an invitation) and a plugin's own pages (under `/x/`).
 
-- **The contract.** `GET /api/info` of a machine says `agent_api` (3 from this
-  version, 2 from 2026.1.5517, 1 from 2026.1.5515) and its `plugins` (`{name: version}`, `built-in` for the
-  package's own); a machine that does not say it is 0. Each page here needs an
+- **The contract.** `GET /api/info` of a machine says `agent_api` (4 from this
+  version, 3 from 2026.1.5518, 2 from 2026.1.5517, 1 from 2026.1.5515) and its `plugins` (`{name: version}`,
+  `built-in` for the package's own); a machine that does not say it is 0. Each page here needs an
   `agent_api` (`omniacli/centralpages.py`), and this panel reads its own and
-  the one before. The pages of Jobs, Workspaces and the others of the second
-  list above need 3, an instance's page 2, the first ones 1: a machine at 2
-  has the first ones and its instances' pages written here and its own Jobs,
-  Workspaces…; a machine at 1 has every page its own. When the machine's
+  the one before. The machine's section, a workspace's page, Users, Pullers,
+  a server's form and Options need 4; Jobs, Workspaces and the others of the
+  second list 3; an instance's page 2; the first ones 1: a machine at 3
+  (2026.1.5518) has every page written here but those of 4, which are its own
+  with the line; a machine at 2 or 1 has every page its own. When the machine's
   number is outside that, or it has a plugin this panel has not at the same
   version, its own page passes as before, with a line on top: «Page written by lab4 (2026.1.5513): update it to
   see the new one», or «… the panel is older than the machine». The line is on
@@ -1116,9 +1120,22 @@ Users, Pullers, a server's form, Options) are still the machine's own.
   the Enterprise source or a destination they say whether its token, password
   or key is set, never its value; of a link where it goes and the SSH host key
   it fixed, never its token; of the machine's SSH key the public half only.
-  The notices of a schedule or a workspace come with their site only
-  (`https://hooks.slack.com/…`: a webhook carries its secret in its path), on
-  the machine's page too. What the machine's own page shows the same person
+  The notices of a schedule or a workspace, and of Options › Monitoring, come
+  with their site only (`https://hooks.slack.com/…`: a webhook carries its
+  secret in its path), on the machine's page too: a workspace's page and
+  Options show them so in their fields, and a webhook sent back as its site
+  keeps the address saved (a site that stands for none is refused: write the
+  whole address). The webhooks of Options are named by a digest (`ref`), never
+  by their address. Of Options the model never has the SMTP password (whether
+  it is set); of a workspace never its SSO provider's secret, nor the values
+  of its Odoo options; of Users and a workspace's people whether their second
+  factor is on and how many passkeys and sessions they have, never a hash, a
+  TOTP secret, a recovery code, a passkey or a session; of Pullers whether a
+  publication or a connection has its key. A server's form offers this
+  panel's plugins with their fields (the contract wants them the same as the
+  machine's), never the routes of the machine's word. On the machine's section
+  the rows of the instances open under `/links/<name>/`, and Linked is this
+  panel's own. What the machine's own page shows the same person
   passes as it is: the text of an error reading a file, which may quote it.
   An instance placed on another machine (AD-014), or a job its host answered,
   is sent to its host as before; the page of a move of one whose copy there
@@ -1140,8 +1157,8 @@ Users, Pullers, a server's form, Options) are still the machine's own.
   answers without a body; an HTML or script answer is refused with a 502 (and
   in the access log). A browser's `/api` request is asked as JSON, so the
   machine's reason is what the person reads. **Not refused:** the pages not
-  written here yet (the Dashboard, Users, …) and their parts still
-  come as the machine writes them, HTML included, until they are moved too.
+  written here (an invitation, a plugin's own pages under `/x/`) still come as
+  the machine writes them, HTML included.
 - **The way back**: on the link's **Edit… › Advanced**, untick **Pages written
   by this panel** (`pages: machine` in the links file): the machine writes its
   own pages again, as before, without a release.

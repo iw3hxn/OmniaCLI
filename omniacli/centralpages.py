@@ -36,10 +36,12 @@ from .jobs import Job
 from .plugin_api import Action, Field
 
 # what this machine's API speaks: GET /api/info says it, GET /api/pages/* answers from it. 2: the model of an
-# instance's page (GET /api/pages/server, AD-017 §9 slice 3); 3: the models of the 14 pages of class B (slice 4)
-AGENT_API = 3
+# instance's page (GET /api/pages/server, AD-017 §9 slice 3); 3: the models of the 14 pages of class B (slice 4);
+# 4: the models of the other pages of class C (slice 5: the machine's section and its Database tab, a workspace's
+# page, Users, Pullers, a server's form, Options), and the webhooks of Options named by ref
+AGENT_API = 4
 # the newest a panel of this version reads; it reads that one and the one before it (AD-017 §10.6)
-CENTRAL_AGENT_API = 3
+CENTRAL_AGENT_API = 4
 OLDEST_READ = CENTRAL_AGENT_API - 1
 
 # a link's pages (links.yaml, pages:): drawn here, or the machine's own as before (the undo switch)
@@ -84,6 +86,10 @@ class Page:
     def pattern(self) -> re.Pattern:
         return re.compile(self.path)
 
+
+# the context of the machine's section (index.html, with its Database and SSH access tabs), by name
+INDEX_FIELDS = ("rows", "sections", "total", "q", "machine", "machine_links", "linked_sections", "quick_instance",
+                "jobs", "load_workspaces", "machine_database", "machine_ssh", "audit", "machine_version")
 
 # the context of an instance's page (server.html and its partials) its model carries, by name (AD-017 §17.1
 # constraint 1): app.server_context makes it with the live objects, server_model takes each one as plain values
@@ -149,6 +155,30 @@ PAGES = (
     Page("schedules", r"schedules", "schedules.html",
          ("schedules", "targets", "links", "connections", "scripts", "scripts_dir", "schedules_file", "load_error",
           "default_user"), needs_agent_api=3),
+    # the other pages of class C (slice 5): each model is page_model, drawn from page_view
+    Page("index", r"", "index.html", INDEX_FIELDS, needs_agent_api=4, query=("q",)),
+    # the Dashboard's table of instances again, drawn by its script (a job started or ended): a part of index
+    Page("dashboard_servers", r"dashboard/servers", "_servers_part.html", ("rows", "sections", "total", "q"),
+         needs_agent_api=4, query=("q",)),
+    Page("workspace", rf"workspaces/(?P<workspace>{_SEGMENT})", "workspace.html",
+         ("ws", "members", "roles", "me", "min_password", "denied", "capabilities", "presets", "my_caps", "custom_roles",
+          "sso", "sso_redirect", "sso_login", "sso_people", "can_mail", "invitation_hours", "servers", "templates",
+          "can_create", "docker_missing", "storage_problem", "handover_out", "handover_in", "instances", "sites",
+          "relay_links", "relay_text", "tokens", "api_base", "grants", "oauth_reach", "links", "db_links",
+          "credentials", "destinations_count", "instances_left"), needs_agent_api=4),
+    Page("users", r"users", "users.html",
+         ("users", "links", "tokens", "api_base", "server_names", "grants", "oauth_reach", "users_file", "roles",
+          "user_roles", "min_password", "can_mail", "portal_url", "portal_settable", "invitation_hours", "link_names"),
+         needs_agent_api=4),
+    Page("pullers", r"pullers", "pullers.html",
+         ("pullers", "links", "pullers_file", "keep_hours", "max_file_mib", "now", "publications", "publications_file",
+          "instances", "link_targets", "commands", "connections", "connections_file"), needs_agent_api=4),
+    Page("server_form", rf"config/new|config/(?P<name>{_SEGMENT})/(?P<form>edit|clone)", "server_form.html",
+         ("title", "model"), needs_agent_api=4),
+    Page("options", r"options", "options.html",
+         ("portal_url", "portal_refused", "options", "options_file", "machine", "font_sizes", "idle_hours",
+          "retention_limits", "syslog_protocols", "metrics", "minutes_limits", "after_limits", "every_limits",
+          "webhooks", "machine_logo"), needs_agent_api=4),
 )
 BY_NAME = {p.name: p for p in PAGES}
 # the least any page here needs: below it, every page of the machine is its own
@@ -157,6 +187,11 @@ LEAST_NEEDED = min(p.needs_agent_api for p in PAGES)
 CLASS_B = tuple(BY_NAME[name] for name in (
     "account", "jobs", "job", "workspaces", "destinations", "access", "config", "credentials", "enterprise", "links",
     "tunnels", "groups", "plugins", "schedules"))
+# the other pages of class C (slice 5), drawn the same way
+CLASS_C = tuple(BY_NAME[name] for name in (
+    "index", "dashboard_servers", "workspace", "users", "pullers", "server_form", "options"))
+# every page drawn from page_view
+BY_MODEL = CLASS_B + CLASS_C
 # of those, the pages of who logged in there (its account, its tunnels): a link has none on the machine, which
 # refuses their model as it refuses their page (404, 403); drawn here as this panel's error page, never with a
 # context (the person's own are this panel's /account and /tunnels; AD-018 brings the customers' account here)
@@ -267,10 +302,12 @@ _BODY = re.compile(rb"<body\b[^>]*>", re.I)
 
 
 def with_line(html: bytes, line: str) -> bytes:
-    """The machine's page with line (HTML) on top of its body."""
+    """The machine's page with line (HTML) on top of its body; a part of a page (no <body>: the Dashboard's table of
+    instances its script asks again) as it is: the page it goes in has the line already."""
     found = _BODY.search(html)
-    at = found.end() if found else 0
-    return html[:at] + line.encode() + html[at:]
+    if found is None:
+        return html
+    return html[:found.end()] + line.encode() + html[found.end():]
 
 
 # --- the model of an instance's page (AD-017 §9 slice 3) -----------------------------------------------------
@@ -620,13 +657,27 @@ _NAMES_AT = {
     "links": ("links[].name",),
     "schedules": ("schedules[].name", "schedules[].data.instance", "schedules[].runs[].job"),
     "workspaces": ("handover_ws",),
+    # slice 5
+    "index": ("rows[].name", "rows[].parent", "jobs[].id", "load_workspaces[][]"),
+    "dashboard_servers": ("rows[].name", "rows[].parent"),
+    "workspace": ("ws.name", "members[].name", "servers[]", "instances[]", "relay_links[]", "links[]", "db_links[]",
+                  "tokens[].name", "grants[].id", "sites[].instance"),
+    "users": ("users[].name", "users[].workspaces[]", "links[].name", "tokens[].name", "tokens[].workspace",
+              "grants[].id", "link_names[]"),
+    "pullers": ("pullers[].puller", "connections[].name", "publications[].instance", "instances[]", "links[]",
+                "link_targets[]"),
+    "server_form": ("model.original", "model.name", "model.links[]", "model.connections[]"),
 }
 # the addresses of the pages of class B, by their exact place (never by the name of a key: these pages' mappings are
 # keyed by the customer's own names, a storage root, a token, a subdomain called «backups» or «preview»), all links to
 # elsewhere (http or https with a host); the address of the destinations page's requests is checked apart
 _ELSEWHERE_AT = {
     "links": ("links[].url",),
+    "users": ("portal_url",),
+    "options": ("portal_url",),
 }
+# the logo of a machine's panel (Options › Whitelabel), drawn under its prefix: its route and the word of its version
+_LOGO = re.compile(r"/brand/logo\?v=[A-Za-z0-9._-]*")
 
 
 def a_name(value) -> bool:
@@ -663,6 +714,59 @@ def checked_elsewhere(value, at_places: tuple[str, ...]) -> None:
             raise ValueError(f"its page has the address {str(found)[:80]!r} at {at}, which is not one it may use")
 
 
+def section_rows(sections) -> list:
+    """The rows of the sections of the list widget (listgroups.sections), at any depth."""
+    found = []
+    for section in sections if isinstance(sections, list) else []:
+        if isinstance(section, dict):
+            found += [row for row in section.get("items") or [] if isinstance(row, dict)]
+            found += section_rows(section.get("groups"))
+    return found
+
+
+def instance_rows(context: dict, prefix: str) -> None:
+    """The Dashboard's rows of instances (index, dashboard_servers) as the page opens them: each under the link's
+    prefix, of this machine (a row of the machine's own instances is always so on its page: the rows of a link's
+    machine are another page's, Instances), never a base or a link of the machine's word. Its name and its parent
+    are names (_NAMES_AT), in the sections too."""
+    rows = section_rows(context.get("sections"))
+    names = [(row.get("name"), row.get("parent")) for row in rows]
+    if any(not a_name(n) or p not in (None, "") and not a_name(p) for n, p in names):
+        raise ValueError("its page has a row of an instance whose name is not a name")
+    for row in [*(context.get("rows") or []), *rows]:
+        if isinstance(row, dict):
+            row["base"], row["link"] = prefix, ""
+
+
+def server_form_view(context: dict) -> None:
+    """A server's form drawn here: what it offers of the plugins (their fields, the buttons of a field and the
+    routes they ask) is this panel's own, as its contract wants them the same as the machine's (never a route of the
+    machine's word, which the form's script would fetch and open)."""
+    model = context.get("model")
+    if not isinstance(model, dict):
+        raise ValueError("its page of a server's form has no model")
+    model["types"] = fields_of(plugin_types())
+    model["default_type"] = plugins.DEFAULT_TYPE
+
+
+def form_field(field: Field) -> dict:
+    """A plugin's Field for the scripts of the pages (a server's form, a backup's and a restore's choices)."""
+    return {"key": field.key, "label": field.label, "kind": field.kind, "default": field.default,
+            "required": field.required, "placeholder": field.placeholder, "help": field.help,
+            "choices": [list(c) for c in field.choices], "restart_types": list(field.restart_types),
+            "disabled_placeholder": field.disabled_placeholder,
+            "shown_with": field.shown_with, "threshold": field.threshold,
+            "buttons": [{"label": b.label, "route": b.route, "title": b.title, "confirm": b.confirm,
+                         "only_with_value": b.only_with_value} for b in field.buttons]}
+
+
+def plugin_types() -> dict:
+    """What a server's form offers: the plugins loaded here, with their fields."""
+    return {n: {"label": p.label, "has_process": p.has_process, "has_compose": p.has_compose,
+                "has_restore": p.has_restore, "fields": [form_field(f) for f in p.fields()]}
+            for n, p in plugins.registry().plugins.items()}
+
+
 def page_view(name: str, model: dict, prefix: str, lang: str = i18n.DEFAULT) -> Drawn:
     """The context of a page of class B drawn here, from the model a machine answered (its fields by name), under
     prefix (the link's /links/<m>; "" for a machine's own page), its texts in lang; ValueError when it has an address
@@ -677,6 +781,17 @@ def page_view(name: str, model: dict, prefix: str, lang: str = i18n.DEFAULT) -> 
         # the list's machines are this panel's links on its own page, never a machine's word: through a link the
         # machine has none (listed_links of a link), and a name there would make rows and forms under /links/<name>
         context["links"], context["machine_column"] = [], False
+    if name in ("index", "dashboard_servers"):
+        instance_rows(context, prefix)
+    if name == "index" and prefix:
+        # Linked: this panel's links on its own page (a link's machine has none for a link)
+        context["machine_links"], context["linked_sections"] = [], []
+    elif name == "server_form":
+        server_form_view(context)
+    elif name == "options":
+        logo = model.get("machine_logo")
+        if logo not in (None, "") and not (isinstance(logo, str) and _LOGO.fullmatch(logo)):
+            raise ValueError(f"its page has the logo {str(logo)[:80]!r}, which is not one it may use")
     if name == "config":
         for server in context.get("servers") or []:
             for inst in (server.get("instances") or {}).values():

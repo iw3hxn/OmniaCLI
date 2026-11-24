@@ -16,9 +16,13 @@ from omniacli import centralpages, clock
 SECRETS = ("admin_passwd", "db_password", "token", "secret", "password")
 # names that have one of those words and say no secret: whether a token is set, which person a workspace's token is,
 # whether a copy resets the passwords of its database (an option of a schedule)
-NOT_SECRETS = frozenset({"token_set", "token_people", "reset_passwords"})
-# the pages of class B drawn again, by their template (a person's own pages have no model for a link)
-CLASS_B = {p.template: p for p in centralpages.CLASS_B if p.name not in centralpages.PERSON_PAGES}
+# (slice 5: the tokens of a workspace and of the machine by their names, whether an SSO provider's secret and the SMTP
+# password are set, the shortest password a page accepts)
+NOT_SECRETS = frozenset({"token_set", "token_people", "reset_passwords", "tokens", "secret_set", "smtp_password_set",
+                         "min_password"})
+# the pages of classes B and C drawn again from page_view, by their template (a person's own pages have no model for
+# a link)
+CLASS_B = {p.template: p for p in centralpages.BY_MODEL if p.name not in centralpages.PERSON_PAGES}
 
 
 def keys(value) -> list[str]:
@@ -36,7 +40,10 @@ def secret_keys(value) -> list[str]:
 
 
 def main_of(html: str) -> str:
-    """What a page shows in its <main>, the controls and their scripts with it."""
+    """What a page shows in its <main>, the controls and their scripts with it; a part of a page (the Dashboard's
+    table of instances), all of it."""
+    if "<main>" not in html:
+        return html
     return html[html.index("<main>"):html.index("</main>")]
 
 

@@ -10,6 +10,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import re
 import time
 
 import httpx
@@ -220,8 +221,10 @@ async def test_the_webhooks_of_options_and_the_jobs_that_fail(client, env, monke
     assert (await client.post("/api/options/save", headers=POST, json=body)).status_code == 200
     assert settings.options.restart_down and settings.options.monitor_thresholds["cpu"] == [50, 60]
     page = (await client.get("/options", headers={"Authorization": AUTH})).text
-    assert 'data-url="https://hooks.example.com/ops"' in page
-    secret = (await client.post("/api/options/webhooks/secret", headers=POST, json={"url": url})).json()["secret"]
+    # the webhook by its site and its ref, never its address (Slack and Teams keep their secret in its path)
+    ref = re.search(r'data-ref="([0-9a-f]{20})"', page).group(1)
+    assert url not in page and "https://hooks.example.com/…" in page
+    secret = (await client.post("/api/options/webhooks/secret", headers=POST, json={"ref": ref})).json()["secret"]
     assert secret not in (await client.get("/options", headers={"Authorization": AUTH})).text
     assert settings.options.webhook_keys[url]["secret"] == secret
     # the Options page saved again keeps the secret
@@ -259,7 +262,8 @@ async def test_the_webhooks_of_options_and_the_jobs_that_fail(client, env, monke
     await client.post("/api/options/webhooks/save", headers=POST, json={"url": url, "unsigned": True})
     assert not settings.options.webhook_keys[url]["secret"] and settings.options.webhook_keys[url]["jobs"]
     settings.workspaces["acme"] = Workspace("acme", servers=["srv"], notify=["https://acme.example.com/h"])
-    assert 'data-url="https://acme.example.com/h"' in (await client.get("/options", headers={"Authorization": AUTH})).text
+    page = (await client.get("/options", headers={"Authorization": AUTH})).text
+    assert "<td>acme</td>" in page and "https://acme.example.com/…" in page and "acme.example.com/h" not in page
 
 
 async def test_a_level_on_each_thing_to_look_at(client, env):

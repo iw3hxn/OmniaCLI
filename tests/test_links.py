@@ -81,10 +81,11 @@ async def wait_remote_job(client, job_id, user="admin"):
 async def test_proxy_asks_the_encoding_the_browser_accepts(mine):
     # the body is passed on as it comes: the other instance (or the nginx in
     # front of it) must not compress it for a client that cannot read it
-    await mine.get("/links/cliente/", headers={**as_user("admin"), "Accept-Encoding": "gzip"})
+    # (a page of the machine is drawn here since AD-017 slice 5: its API passes on as it comes)
+    await mine.get("/links/cliente/api/servers", headers={**as_user("admin"), "Accept-Encoding": "gzip"})
     assert mine.network.requests[-1].headers["accept-encoding"] == "gzip"
     del mine.headers["accept-encoding"]
-    await mine.get("/links/cliente/", headers=as_user("admin"))
+    await mine.get("/links/cliente/api/servers", headers=as_user("admin"))
     assert mine.network.requests[-1].headers["accept-encoding"] == "identity"
 
 
@@ -255,14 +256,14 @@ async def test_a_read_through_a_link_is_asked_once_more(mine, monkeypatch):
 
     async def send(self, request, **kwargs):
         # the request to the other instance, not the test's own to this one
-        if "/links/" not in request.url.path and request.url.path in ("/", "/servers/srv/test/pull") \
+        if "/links/" not in request.url.path and request.url.path in ("/api/servers", "/servers/srv/test/pull") \
                 and len([m for m in dropped if m == request.method]) < 1:
             dropped.append(request.method)
             raise httpx.RemoteProtocolError("Server disconnected without sending a response.", request=request)
         return await real(self, request, **kwargs)
 
     monkeypatch.setattr(httpx.AsyncClient, "send", send)
-    assert (await mine.get("/links/cliente/", headers=as_user("admin"))).status_code == 200
+    assert (await mine.get("/links/cliente/api/servers", headers=as_user("admin"))).status_code == 200
     assert dropped == ["GET"]
     resp = await mine.post("/links/cliente/servers/srv/test/pull", headers=as_user("dev", post=True))
     assert resp.status_code == 502 and dropped == ["GET", "POST"]
