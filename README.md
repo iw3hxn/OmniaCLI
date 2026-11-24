@@ -1070,17 +1070,19 @@ links (the Test link button says so).
 A linked machine's pages are written by **this** panel, with its own version
 (AD-017), from the data the machine gives: a fix of a page reaches every
 linked machine when this panel is updated, without updating them. The pages
-written here so far are Disks, the instance's Log, OmniaCLI's own Log,
-Instances, Backups, Servers (machines), Discover, a Publication's connection,
-the shells, Help, About and Settings; the others are still the machine's own.
+written here so far are an instance's page (with its tabs and dialogs), Disks,
+the instance's Log, OmniaCLI's own Log, Instances, Backups, Servers
+(machines), Discover, a Publication's connection, the shells, Help, About and
+Settings; the others are still the machine's own.
 
-- **The contract.** `GET /api/info` of a machine says `agent_api` (1 from this
-  version) and its `plugins` (`{name: version}`, `built-in` for the package's
+- **The contract.** `GET /api/info` of a machine says `agent_api` (2 from this
+  version, 1 from 2026.1.5515) and its `plugins` (`{name: version}`, `built-in` for the package's
   own); a machine that does not say it is 0. Each page here needs an
   `agent_api` (`omniacli/centralpages.py`), and this panel reads its own and
-  the one before. When the machine's number is outside that, or it has a
-  plugin this panel has not at the same version, its own page passes as
-  before, with a line on top: «Page written by lab4 (2026.1.5513): update it to
+  the one before. An instance's page needs 2, the others 1: a machine at 1
+  has the others written here and its own instance's page. When the machine's
+  number is outside that, or it has a plugin this panel has not at the same
+  version, its own page passes as before, with a line on top: «Page written by lab4 (2026.1.5513): update it to
   see the new one», or «… the panel is older than the machine». The line is on
   those pages only: the others look as they always did. The number is read by
   **Try** and again when older than 10 minutes, kept in memory, and read again
@@ -1088,20 +1090,28 @@ the shells, Help, About and Settings; the others are still the machine's own.
   answer is not asked again for a minute.
 - **A contract that goes back.** The highest `agent_api` each link's machine
   said is kept (`link-agents.json` beside the links file). Once it said 1, a
-  machine that says less, or has no data for one of those pages, does not get
-  its own page shown by its word alone: this panel shows a page that says so,
+  machine that says less than it said, or has no data for one of those pages,
+  does not get its own page shown by its word alone: this panel shows a page that says so,
   until an administrator sets the link's pages to the machine's (below).
 - **The model.** The machine answers each page's data at
   `GET /api/pages/<page>` (to a link's token only, with the page's own role,
   its fields by name: no object, no secret); the page's script calls
-  `/links/<name>/api/…` as before.
+  `/links/<name>/api/…` as before. An instance's page is
+  `GET /api/pages/server?server=<name>&view=test`: what the machine decides
+  there (the buttons of the person's role and custom role, the disabled ones
+  and why, the dialogs) comes in it, and this panel never widens it; of the
+  instance its fields by name (never its options, the database's password or
+  a repository's credentials). An instance placed on another machine (AD-014)
+  is sent to its host as before; a page of a plugin's dialog this panel has
+  not is refused. Every read of a model is in the machine's access log
+  (`read`, with who looks through the link and the server).
 - **Only data, where it is written here.** For such a link, the machine's
   answers to `/links/<name>/api/…` and to the paths of the pages written here
   pass only as data: JSON, text, CSV, raster images (no SVG), files to save,
   answers without a body; an HTML or script answer is refused with a 502 (and
   in the access log). A browser's `/api` request is asked as JSON, so the
   machine's reason is what the person reads. **Not refused:** the pages not
-  written here yet (the instance's page, Jobs, Users, …) and their parts still
+  written here yet (Jobs, Users, …) and their parts still
   come as the machine writes them, HTML included, until they are moved too.
 - **The way back**: on the link's **Edit… › Advanced**, untick **Pages written
   by this panel** (`pages: machine` in the links file): the machine writes its

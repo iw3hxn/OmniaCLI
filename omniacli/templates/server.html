@@ -2322,7 +2322,7 @@ dialog.sd { --dialog-w: 560px; }
     opShow();
   });
   // the other options already saved are shown without the switch: read at once when there are any
-  if ({{ (odoo_params.extra | length > 0) | tojson }}) opExtended();
+  if ({{ (odoo_params.has_extra is sameas true) | tojson }}) opExtended();
   {% endif %}
   {% if can_act and odoo_params and inst.type != "odoo" and is_admin_here %}
   document.getElementById("op-save")?.addEventListener("click", async () => {

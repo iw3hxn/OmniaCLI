@@ -77,6 +77,15 @@ def storage_where_it_is(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def server_page_parity(monkeypatch):
+    """OMNIACLI_PARITY=1: every instance's page a test draws is drawn again from its model and compared
+    (tests/serverparity.py, AD-017 slice 3); off by default (each page twice)."""
+    if os.environ.get("OMNIACLI_PARITY") == "1":
+        from .serverparity import Twice
+        Twice(monkeypatch)
+
+
+@pytest.fixture(autouse=True)
 def mail_guard_here(monkeypatch, tmp_path):
     """The capturing stagings' SMTP rules are kept in the test's folder, not in /etc/omniacli."""
     monkeypatch.setattr(workspacehelper, "MAIL_GUARD", tmp_path / "mail-guard.json")

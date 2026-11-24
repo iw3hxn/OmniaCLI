@@ -268,7 +268,7 @@ pagine scritte dal centrale la macchina fornisce solo JSON, inserito con l'autoe
    riga `failed` nel registro. A una richiesta `/api` del browser il centrale chiede `Accept: application/json`, così
    la macchina risponde con il suo motivo e non con la sua pagina d'errore.
 
-   **Cosa passa ancora come HTML della macchina:** le pagine B e C, non ancora scritte dal centrale (fette 3-5), con i
+   **Cosa passa ancora come HTML della macchina:** le pagine B e C, non ancora scritte dal centrale (fette 4-5; la pagina dell'istanza lo è dalla fetta 3), con i
    loro frammenti; con `pages: machine`, tutto. Nelle 12 pagine A l'HTML della macchina passa solo nel ritorno di 17.2
    (con la riga in testa), e solo finché quella macchina non ha mai detto `agent_api ≥ 1`: il valore più alto detto da
    ogni collegamento è tenuto su disco (`link-agents.json`, nel purge). Dopo, se dice meno o non ha il modello della
@@ -350,6 +350,49 @@ Per ogni fetta: il rilascio, la prova su lab3/lab4, come si annulla, la stima.
      - un plugin presente solo su lab4 riporta la pagina di lab4, con la riga che lo dice;
      - nel registro di lab4 c'è la lettura, con `on_behalf`.
    - *Stima*: 5 g.
+
+   **Com'è nel codice (fetta 3).**
+   - Il modello è `GET /api/pages/server?server=<x>&view=test` (non `/api/pages/server/{server}`: la stessa route
+     delle pagine A, con i parametri in query). È un'API nuova, quindi `AGENT_API` e `CENTRAL_AGENT_API` passano a 2;
+     la pagina dell'istanza chiede 2, le 12 pagine A restano a 1 e il centrale le legge ancora da una macchina a 1
+     (N−1).
+   - La route della pagina è divisa in due: `server_context` fa il contesto con gli oggetti vivi, come prima, e la
+     pagina della macchina lo scrive così; `centralpages.server_model` lo prende campo per campo. I 49 campi del
+     contesto sono in `SERVER_FIELDS`. Degli oggetti vivi (`Instance`, `Server`, `Action`, `Field`, `Job`,
+     `Workspace`) c'è un elenco di campi per ciascuno; quello che il template chiama (`describe`, `db_shell`,
+     `db_shell_as_service`, `backup_fields`, `window_label`) è risposto una volta, come valore: di `db_shell` solo
+     sì o no, mai il comando con `PGPASSWORD`. Ogni altro oggetto è rifiutato (`ModelError`), mai scritto con il
+     suo `repr`. Dell'`odoo.conf` di un'istanza di un workspace il modello dice solo se ha opzioni sue
+     (`has_extra`), mai i valori.
+   - Il centrale ricostruisce dal JSON oggetti che il template legge come attributi (`centralpages.server_view`) e
+     scrive lo stesso `server.html` con i suoi 11 parziali. Un dialogo di un plugin che il centrale non ha, o un
+     nome che non è `<plugin>/<file>.html`, è rifiutato.
+   - La parità si misura sull'intero `<main>`, non sui soli pulsanti: `tests/serverparity.py` scrive ogni pagina
+     dell'istanza due volte, dal contesto vivo e dal modello passato per JSON, e le confronta. Con
+     `OMNIACLI_PARITY=1` lo fa per ogni test della suite.
+   - Ogni lettura di un modello è una riga `read` nel registro della macchina, con `on_behalf`, il server e
+     l'esito, ogni volta (non una ogni 10 minuti come le letture sensibili): `/api/pages/{page}` passa da
+     `NOT_SENSITIVE` ad `AUDITED_BY_ROUTE`.
+   - Il centrale manda al modello anche `X-OmniaCLI-Tunnel`, come `link_proxy`: senza, «Entra come…» attraverso un
+     tunnel del centrale risultava spento solo nella pagina scritta dal centrale (trovato sul lab, ora nel test).
+   - Un'istanza spostata altrove (AD-014) va al suo host con il 307 di prima, con `?view=` tenuto. Un'istanza la cui
+     copia qui è cancellata dà la pagina del suo spostamento: è di classe D e resta quella della macchina
+     (`own_page`).
+   - Il ritorno di 17.2 distingue ora due casi. Una macchina che dice quello che ha sempre detto, ma meno di quanto
+     chiede una pagina più nuova (una macchina a 1 per la pagina dell'istanza), mostra la sua pagina con la riga
+     «aggiornala». Una macchina che dice meno di quanto aveva detto, o non ha il modello di quello che dice, ha la
+     pagina del centrale che lo dice, come nelle fette 1-2.
+
+   **Dove la fetta si discosta dal piano.**
+   - «Il pulsante "Scarica" c'è con lab4 fermo alla release della fetta 1»: non si può. Il modello è calcolato
+     sulla macchina (17.1), e la macchina della fetta 1 (2026.1.5515, `agent_api` 1) non ha `/api/pages/server`:
+     mostra la sua pagina con la riga «aggiornala». La 5515, tra l'altro, ha già «Scarica» nel suo template. La
+     prova fatta è quella che il caso chiede: lab4 con il codice di questa fetta ma con «Scarica» tolto dal suo
+     `server.html`. Il centrale lo mostra, la pagina di lab4 (`pages: machine`) no.
+   - Il ruolo personalizzato non passa da un collegamento: un collegamento ha il ruolo della persona del centrale,
+     e una persona di un workspace non apre i collegamenti. La parità del ruolo personalizzato, e quella dello
+     scope delegato di AD-014, sono provate nei test: `copy-admin` e `no-logs` sulla casa e attraverso la casa
+     sull'host. Sul lab la parità è misurata per admin, developer e user.
 4. **Le 14 pagine B**, in 2-3 rilasci.
    - *Prova*: la parità e lo 0 segreti, pagina per pagina.
    - *Stima*: 5,5 g.

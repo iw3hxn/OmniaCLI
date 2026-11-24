@@ -29,11 +29,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import plugins
+from .config import Instance, Server, Workspace
+from .jobs import Job
+from .plugin_api import Action, Field
 
-# what this machine's API speaks: GET /api/info says it, GET /api/pages/* answers from it
-AGENT_API = 1
+# what this machine's API speaks: GET /api/info says it, GET /api/pages/* answers from it. 2: the model of an
+# instance's page (GET /api/pages/server, AD-017 §9 slice 3)
+AGENT_API = 2
 # the newest a panel of this version reads; it reads that one and the one before it (AD-017 §10.6)
-CENTRAL_AGENT_API = 1
+CENTRAL_AGENT_API = 2
 OLDEST_READ = CENTRAL_AGENT_API - 1
 
 # a link's pages (links.yaml, pages:): drawn here, or the machine's own as before (the undo switch)
@@ -71,11 +75,25 @@ class Page:
     template: str
     fields: tuple[str, ...] = ()
     needs_agent_api: int = 1
+    # the parameters of its query the machine's page reads (?view=test), passed to its model
+    query: tuple[str, ...] = ()
 
     @property
     def pattern(self) -> re.Pattern:
         return re.compile(self.path)
 
+
+# the context of an instance's page (server.html and its partials) its model carries, by name (AD-017 §17.1
+# constraint 1): app.server_context makes it with the live objects, server_model takes each one as plain values
+SERVER_FIELDS = (
+    "environments", "denied", "from_link", "map_workspace", "login_as", "name_problems", "row_login_as", "stagings",
+    "is_admin_here", "move", "addresses", "mail_capture", "mail_inbox", "mail_old_odoo", "mail_domain",
+    "is_developer_here", "shell_paths", "test_state", "pull_choices", "restore_file", "keep_deploys", "available",
+    "manual_only", "restore_fields", "backup_fields", "server", "view", "instances", "buttons", "server_buttons",
+    "dialogs", "core_groups", "settings_rows", "db_line", "replica_line", "machine_admin", "repo_status",
+    "repo_urls", "odoo_params", "param_role", "enterprise", "package_state", "auto_state", "busy", "busy_job",
+    "running", "service_state", "run_state", "jobs",
+)
 
 # the 12 pages of class A (AD-017 §17.1): a shell whose script reads /api, a context of a few plain values
 PAGES = (
@@ -96,6 +114,9 @@ PAGES = (
     Page("help", r"help", "help.html", ("base_url",)),
     Page("about", r"about", "about.html"),
     Page("settings", r"settings", "settings.html", ("groups",)),
+    # an instance's page (class C, slice 3): its model is server_model, drawn from server_view
+    Page("server", rf"servers/(?P<server>{_SEGMENT})", "server.html", SERVER_FIELDS, needs_agent_api=2,
+         query=("view",)),
 )
 BY_NAME = {p.name: p for p in PAGES}
 # the least any page here needs: below it, every page of the machine is its own
@@ -193,3 +214,193 @@ def with_line(html: bytes, line: str) -> bytes:
     found = _BODY.search(html)
     at = found.end() if found else 0
     return html[:at] + line.encode() + html[at:]
+
+
+# --- the model of an instance's page (AD-017 §9 slice 3) -----------------------------------------------------
+#
+# server.html reads live objects: the instances (Instance), the server, the plugin's actions (Action) and their
+# fields, the jobs, the workspace. Their model is a list of fields by name for each (never a dump of the
+# dataclass: an Instance holds its options, a Repository its git credentials, a plugin's db_shell the database's
+# password); what the page calls on them (the plugin's describe, db_shell, backup_fields; the window of its auto
+# update) is answered here once, as a value. Everything else of the context is plain values already (the routes
+# make those dicts field by field): taken as they are, and any other object is refused (ModelError), never
+# written with its repr.
+
+# a dialog of a plugin the page draws once (Action.dialog): <plugin>/<file>.html
+_DIALOG = re.compile(r"[a-z0-9_-]+/[A-Za-z0-9_-]+\.html")
+
+
+class ModelError(TypeError):
+    """A value of a page's context that has no model (an object this module does not know)."""
+
+
+def field_model(field: Field) -> dict:
+    """A plugin's Field as the pages read it (a dialog of an action, a backup's choices)."""
+    return {"key": field.key, "label": field.label, "kind": field.kind, "default": plain(field.default, field.key),
+            "required": field.required, "placeholder": field.placeholder, "help": field.help,
+            "choices": [[plain(v, field.key), str(label)] for v, label in field.choices],
+            "restart_types": list(field.restart_types), "disabled_placeholder": field.disabled_placeholder,
+            "shown_with": field.shown_with, "threshold": field.threshold}
+
+
+def action_model(action: Action) -> dict:
+    """A plugin's action as its button draws it (_actions.html): never its run, prepare or confirm callables."""
+    return {"id": action.id, "label": action.label, "icon": action.icon, "tooltip": action.tooltip,
+            "dialog": action.dialog, "params": [field_model(f) for f in action.params]}
+
+
+def instance_model(inst: Instance | None) -> dict | None:
+    """What the page reads of an instance: no option, no password, no git credential."""
+    if inst is None:
+        return None
+    return {
+        "key": inst.key, "server": inst.server, "role": inst.role, "type": inst.type, "web_url": inst.web_url,
+        "log_label": inst.log_label, "claude_dir": str(inst.claude_dir) if inst.claude_dir else None,
+        "package": {"name": inst.package.name, "url": inst.package.url} if inst.package is not None else None,
+        "repositories": [{"name": r.name, "branch": r.branch, "path": str(r.path)} for r in inst.repositories],
+        "restart": {"type": inst.restart.type, "service": inst.restart.service},
+        "auto_update": {"enabled": inst.auto_update.enabled, "interval_minutes": inst.auto_update.interval_minutes,
+                        "window_label": inst.auto_update.window_label()},
+        "plugin": plugin_model(inst) if inst.plugin is not None else None,
+    }
+
+
+def plugin_model(inst: Instance) -> dict:
+    """What the page reads and asks of an instance's plugin, answered once: whether it has a database shell (never
+    the shell's command and its environment, which holds the database's password), its database's name."""
+    plugin = inst.plugin
+
+    def asked(call, default):
+        # what the page would have asked while drawing: a configuration it cannot read is no shell, as there
+        try:
+            return call()
+        except (OSError, ValueError):
+            return default
+    found = {"label": plugin.label, "has_backup": bool(plugin.has_backup), "restores_sql": bool(plugin.restores_sql),
+             "backup_fields": [field_model(f) for f in plugin.backup_fields()],
+             "describe": {"database": str((asked(lambda: plugin.describe(inst), None) or {}).get("database") or "")},
+             "db_shell": bool(asked(lambda: plugin.db_shell(inst), None)),
+             "db_shell_as_service": bool(asked(lambda: plugin.db_shell_as_service(inst), False))}
+    if hasattr(plugin, "container_shell"):
+        # the page asks whether it is defined, never calls it
+        found["container_shell"] = True
+    return found
+
+
+def job_model(job: Job) -> dict:
+    """A job as the page's last action reads it: no lines, no result."""
+    return {"id": job.id, "title": job.title, "status": job.status, "outcome": job.outcome, "created": job.created,
+            "duration": job.duration, "error": job.error, "warnings": list(job.warnings)}
+
+
+def plain(value, where: str = ""):
+    """value as JSON values: the objects of the page by their models, any other object refused."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): plain(v, f"{where}.{k}") for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [plain(v, f"{where}[]") for v in value]
+    if isinstance(value, Instance):
+        return instance_model(value)
+    if isinstance(value, Server):
+        return {"name": value.name, "production": instance_model(value.production), "test": instance_model(value.test)}
+    if isinstance(value, Action):
+        return action_model(value)
+    if isinstance(value, Field):
+        return field_model(value)
+    if isinstance(value, Job):
+        return job_model(value)
+    if isinstance(value, Workspace):
+        return {"name": value.name}
+    if isinstance(value, Path):
+        return str(value)
+    raise ModelError(f"{where or 'a value'}: a {type(value).__name__} has no model")
+
+
+def server_model(context: dict) -> dict:
+    """The model of an instance's page from its context (app.server_context): SERVER_FIELDS, each as plain
+    values; of the Odoo configuration of a workspace's instance whether it has options of its own, never them."""
+    model = {}
+    for name in SERVER_FIELDS:
+        value = context.get(name)
+        if name == "odoo_params" and isinstance(value, dict):
+            value = {"parameters": value.get("parameters") or [], "debug": bool(value.get("debug")),
+                     "mail_capture": bool(value.get("mail_capture")), "has_extra": bool(value.get("has_extra"))}
+        elif name == "settings_rows" and isinstance(value, dict):
+            # a password among a plugin's settings is never in a page
+            value = {key: [row for row in rows if row[2] != "password"] for key, rows in value.items()}
+        model[name] = plain(value, name)
+    return model
+
+
+class Fields(dict):
+    """A dict of a model whose keys a template reads as attributes too (inst.key as inst["key"])."""
+
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(name) from None
+
+
+class PluginFields(Fields):
+    """An instance's plugin as server.html calls it: what the machine answered once."""
+
+    def describe(self, *_):
+        return self.get("describe") or Fields()
+
+    def db_shell(self, *_):
+        return self.get("db_shell")
+
+    def db_shell_as_service(self, *_):
+        return self.get("db_shell_as_service")
+
+    def backup_fields(self):
+        return self.get("backup_fields") or []
+
+
+class AutoUpdateFields(Fields):
+    """An instance's auto update, its window as the machine wrote it."""
+
+    def window_label(self):
+        return self.get("window_label") or ""
+
+
+def fields_of(value):
+    """A model's JSON values as a template reads them."""
+    if isinstance(value, dict):
+        return Fields({k: fields_of(v) for k, v in value.items()})
+    if isinstance(value, list):
+        return [fields_of(v) for v in value]
+    return value
+
+
+def instance_view(model) -> Fields | None:
+    """An instance's model as server.html reads an Instance."""
+    if not isinstance(model, dict):
+        return None
+    view = fields_of(model)
+    if isinstance(model.get("plugin"), dict):
+        view["plugin"] = PluginFields(fields_of(model["plugin"]))
+    if isinstance(model.get("auto_update"), dict):
+        view["auto_update"] = AutoUpdateFields(fields_of(model["auto_update"]))
+    return view
+
+
+def server_view(model: dict) -> dict:
+    """The context server.html is drawn with, from the model a machine answered (its fields by name);
+    ValueError when it names a dialog this panel cannot draw."""
+    context = {k: fields_of(v) for k, v in model.items()}
+    context["instances"] = [instance_view(i) for i in model.get("instances") or []]
+    server = model.get("server")
+    if isinstance(server, dict):
+        context["server"] = Fields(name=server.get("name"), production=instance_view(server.get("production")),
+                                   test=instance_view(server.get("test")))
+    dialogs = [str(d) for d in model.get("dialogs") or []]
+    loaded = plugins.registry()
+    for dialog in dialogs:
+        if not _DIALOG.fullmatch(dialog) or loaded.get(dialog.partition("/")[0]) is None:
+            raise ValueError(f"its page names the dialog {dialog}, which this panel has not")
+    context["dialogs"] = dialogs
+    return context

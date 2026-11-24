@@ -35,7 +35,7 @@ import zipfile
 from dataclasses import asdict
 from pathlib import Path
 from typing import List, Optional
-from urllib.parse import parse_qs, quote, unquote_plus, urlsplit
+from urllib.parse import parse_qs, quote, unquote_plus, urlencode, urlsplit
 
 import httpx
 import jinja2
@@ -2615,6 +2615,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             away = moved_away_page(request, server)
             if away is not None:
                 return away
+        return _TEMPLATES.TemplateResponse(request, "server.html", await server_context(request, server, view))
+
+    async def server_context(request: Request, server: str, view: str) -> dict:
+        """The context of an instance's page (server.html) for the caller, with the live objects it reads (the
+        instances, the server, the plugin's actions): this machine's page draws it as it is, the model a panel
+        draws it from (GET /api/pages/server, centralpages.server_model) takes its fields by name."""
         srv = active_server(server)
         staging_of = stagings.load(stagings_file).get(srv.name)
         if view == "both" or (staging_of and view == "test" and srv.production is not None):
@@ -2746,96 +2752,92 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         environments = await environment_rows(
             request, me, srv, view, staging_of, run_state_of(shown[0], service_states[shown[0].key]), staging_now,
             row_login_as, env_addresses)
-        return _TEMPLATES.TemplateResponse(
-            request,
-            "server.html",
-            {
-                # the rows of «Environments and deploys» (UX-015)
-                "environments": environments,
-                "denied": denied,
-                "from_link": from_link,
-                # the workspace it is in: «On the map» opens its schema, where the node of this instance is
-                "map_workspace": settings.workspace_of(srv.name),
-                "login_as": login_as_buttons,
-                # a name of its own the DNS does not lead here: said in the head, with the record to add
-                "name_problems": name_problems,
-                # its copies: its test and its stagings (made beside it in its
-                # workspace); or the production it is a staging of
-                "row_login_as": row_login_as,
-                "stagings": {"rows": staging_now,
-                             "can": request.state.user.can("admin") and workspace_of(srv.name) is not None
-                             and not moves.frozen(srv.name)
-                             and srv.production is not None and not staging_of,
-                             # what it is a copy of, at the address the page names it by (none
-                             # when its production is on another machine: staging_of["machine"])
-                             "parent": staging_of and {**staging_of, "url": None if staging_of.get("machine") else getattr(
-                                 (settings.servers.get(staging_of.get("parent")) or srv).production, "web_url", None)},
-                             "workspace": (workspace_of(srv.name) or (None,))[0],
-                             # the links asked for the stagings of this production made on
-                             # them (their /api/instances): for an admin of this machine
-                             "elsewhere": bool(settings.link_targets) and chooses_machine(request.state.user)
-                             and srv.production is not None and not staging_of,
-                             },
-                "is_admin_here": request.state.user.can("admin"),
-                # the move of the production to another machine (UX-014 part B): its banner and its dialog
-                "move": move_page(srv, view, staging_of, me),
-                # the other names of each row of Environments, and its ⚙ Addresses… (UX-008 §6.1)
-                "addresses": env_addresses,
-                # a staging whose mail is caught: its Mail tab (UX-008 §5.3)
-                "mail_capture": bool(staging_of) and await asyncio.to_thread(staging_mail, srv.name) is not None,
-                # and its mailboxes Odoo reads, written to as an outside sender (UX-008 §5.4)
-                "mail_inbox": bool(staging_of) and await asyncio.to_thread(staging_inbox, srv.name) is not None,
-                # an Odoo older than the alias domain: why it has no mailboxes
-                "mail_old_odoo": workspacehelper.without_alias_domain(
-                    (await asyncio.to_thread(staging_mail_meta, srv.name))[1]) if staging_of else None,
-                "mail_domain": stagingmail.domain_of(srv.name),
-                "is_developer_here": request.state.user.can("developer"),
-                # the paths and the commands of an instance, for the machine's admins (ssh)
-                "shell_paths": {i.key: i.plugin.shell_paths(i) for i in shown if i.plugin is not None}
-                if request.state.user.can("admin") and not request.state.user.workspaces else {},
-                "test_state": await run_state(srv.test) if srv.test is not None and view != "test" else None,
-                "pull_choices": pull_choices,
-                "restore_file": restore_file,
-                # the deploys kept of each instance (deploys.py); a production's new commits pushed, not deployed
-                "keep_deploys": deploys.KEEP,
-                "available": {i.key: await available_now(i, deploys.load(deploys_folder, i.key)["deploys"])
-                              for i in shown if request.state.user.can("developer") and manual_only(i)},
-                "manual_only": {i.key: manual_only(i) for i in shown},
-                "restore_fields": [_field_dict(f) for f in plugin.restore_fields()] if plugin else [],
-                "backup_fields": [_field_dict(f) for f in plugin.backup_fields()] if plugin else [],
-                "server": srv,
-                "view": view,
-                "instances": shown,
-                "buttons": buttons,
-                "server_buttons": server_buttons,
-                "dialogs": dialogs,
-                "core_groups": core_groups,
-                # the plugin's settings of each instance, as its fields name them
-                "settings_rows": {i.key: settings_rows(i) for i in shown},
-                # the Database row of Settings (UX-008 §6.2.6), from the tuning's record
-                "db_line": {i.key: database_line(i) for i in shown},
-                # its reads from the replica of the machine's cluster (UX-010 §5.4): the machine's admins only
-                "replica_line": ({i.key: replica_offer_of(i) for i in shown}
-                                 if machine_admin(request.state.user) else {}),
-                "machine_admin": machine_admin(request.state.user),
-                "repo_status": {i.key: s for i, s in zip(shown, statuses)},
-                "repo_urls": repo_urls,
-                "odoo_params": odoo_params, "param_role": param_role,
-                # Odoo Enterprise (UX-012): its switch in Settings, its badge in the head
-                "enterprise": await asyncio.to_thread(enterprise_line, request, srv, me),
-                "package_state": {i.key: packages.installed_state(i.package) for i in shown if i.package},
-                "auto_state": updater.state,
-                "busy": {i.key: jobs.is_busy(i.key) for i in srv.instances.values()},
-                "busy_job": {i.key: jobs.running_on(i.key) for i in shown},
-                # Odoo started by OmniaCLI: its pid, None when stopped
-                "running": {i.key: ops.managed_pid(i) for i in shown if i.restart.type == "process"},
-                "service_state": service_states,
-                # running, stopped or unknown, as on the Dashboard: the web link off when stopped
-                "run_state": {i.key: run_state_of(i, service_states[i.key]) for i in shown},
-                "jobs": shown_jobs(request, [j for j in jobs.recent(200)
-                                             if any(k.startswith(f"{server}/") for k in j.instances)][:5]),
-            },
-        )
+        return {
+            # the rows of «Environments and deploys» (UX-015)
+            "environments": environments,
+            "denied": denied,
+            "from_link": from_link,
+            # the workspace it is in: «On the map» opens its schema, where the node of this instance is
+            "map_workspace": settings.workspace_of(srv.name),
+            "login_as": login_as_buttons,
+            # a name of its own the DNS does not lead here: said in the head, with the record to add
+            "name_problems": name_problems,
+            # its copies: its test and its stagings (made beside it in its
+            # workspace); or the production it is a staging of
+            "row_login_as": row_login_as,
+            "stagings": {"rows": staging_now,
+                         "can": request.state.user.can("admin") and workspace_of(srv.name) is not None
+                         and not moves.frozen(srv.name)
+                         and srv.production is not None and not staging_of,
+                         # what it is a copy of, at the address the page names it by (none
+                         # when its production is on another machine: staging_of["machine"])
+                         "parent": staging_of and {**staging_of, "url": None if staging_of.get("machine") else getattr(
+                             (settings.servers.get(staging_of.get("parent")) or srv).production, "web_url", None)},
+                         "workspace": (workspace_of(srv.name) or (None,))[0],
+                         # the links asked for the stagings of this production made on
+                         # them (their /api/instances): for an admin of this machine
+                         "elsewhere": bool(settings.link_targets) and chooses_machine(request.state.user)
+                         and srv.production is not None and not staging_of,
+                         },
+            "is_admin_here": request.state.user.can("admin"),
+            # the move of the production to another machine (UX-014 part B): its banner and its dialog
+            "move": move_page(srv, view, staging_of, me),
+            # the other names of each row of Environments, and its ⚙ Addresses… (UX-008 §6.1)
+            "addresses": env_addresses,
+            # a staging whose mail is caught: its Mail tab (UX-008 §5.3)
+            "mail_capture": bool(staging_of) and await asyncio.to_thread(staging_mail, srv.name) is not None,
+            # and its mailboxes Odoo reads, written to as an outside sender (UX-008 §5.4)
+            "mail_inbox": bool(staging_of) and await asyncio.to_thread(staging_inbox, srv.name) is not None,
+            # an Odoo older than the alias domain: why it has no mailboxes
+            "mail_old_odoo": workspacehelper.without_alias_domain(
+                (await asyncio.to_thread(staging_mail_meta, srv.name))[1]) if staging_of else None,
+            "mail_domain": stagingmail.domain_of(srv.name),
+            "is_developer_here": request.state.user.can("developer"),
+            # the paths and the commands of an instance, for the machine's admins (ssh)
+            "shell_paths": {i.key: i.plugin.shell_paths(i) for i in shown if i.plugin is not None}
+            if request.state.user.can("admin") and not request.state.user.workspaces else {},
+            "test_state": await run_state(srv.test) if srv.test is not None and view != "test" else None,
+            "pull_choices": pull_choices,
+            "restore_file": restore_file,
+            # the deploys kept of each instance (deploys.py); a production's new commits pushed, not deployed
+            "keep_deploys": deploys.KEEP,
+            "available": {i.key: await available_now(i, deploys.load(deploys_folder, i.key)["deploys"])
+                          for i in shown if request.state.user.can("developer") and manual_only(i)},
+            "manual_only": {i.key: manual_only(i) for i in shown},
+            "restore_fields": [_field_dict(f) for f in plugin.restore_fields()] if plugin else [],
+            "backup_fields": [_field_dict(f) for f in plugin.backup_fields()] if plugin else [],
+            "server": srv,
+            "view": view,
+            "instances": shown,
+            "buttons": buttons,
+            "server_buttons": server_buttons,
+            "dialogs": dialogs,
+            "core_groups": core_groups,
+            # the plugin's settings of each instance, as its fields name them
+            "settings_rows": {i.key: settings_rows(i) for i in shown},
+            # the Database row of Settings (UX-008 §6.2.6), from the tuning's record
+            "db_line": {i.key: database_line(i) for i in shown},
+            # its reads from the replica of the machine's cluster (UX-010 §5.4): the machine's admins only
+            "replica_line": ({i.key: replica_offer_of(i) for i in shown}
+                             if machine_admin(request.state.user) else {}),
+            "machine_admin": machine_admin(request.state.user),
+            "repo_status": {i.key: s for i, s in zip(shown, statuses)},
+            "repo_urls": repo_urls,
+            "odoo_params": odoo_params, "param_role": param_role,
+            # Odoo Enterprise (UX-012): its switch in Settings, its badge in the head
+            "enterprise": await asyncio.to_thread(enterprise_line, request, srv, me),
+            "package_state": {i.key: packages.installed_state(i.package) for i in shown if i.package},
+            "auto_state": updater.state,
+            "busy": {i.key: jobs.is_busy(i.key) for i in srv.instances.values()},
+            "busy_job": {i.key: jobs.running_on(i.key) for i in shown},
+            # Odoo started by OmniaCLI: its pid, None when stopped
+            "running": {i.key: ops.managed_pid(i) for i in shown if i.restart.type == "process"},
+            "service_state": service_states,
+            # running, stopped or unknown, as on the Dashboard: the web link off when stopped
+            "run_state": {i.key: run_state_of(i, service_states[i.key]) for i in shown},
+            "jobs": shown_jobs(request, [j for j in jobs.recent(200)
+                                         if any(k.startswith(f"{server}/") for k in j.instances)][:5]),
+        }
 
     def settings_rows(inst: Instance) -> list[tuple]:
         """(label, value, kind) of the plugin's fields that apply to the instance."""
@@ -9527,7 +9529,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                          "value": "" if param.type == "password" else value,
                          "set": bool(value) if param.type == "password" else None,
                          "mail": caught and param.name in stacktemplates.MAIL_PARAMETERS})
-        return {"parameters": rows, "debug": state["debug"], "extra": state["extra"], "mail_capture": caught}
+        return {"parameters": rows, "debug": state["debug"], "extra": state["extra"], "mail_capture": caught,
+                # what an instance's page reads of its options of its own: whether it has any (never their values)
+                "has_extra": bool(state["extra"])}
 
     @app.post("/api/workspaces/{workspace}/parameters/options", dependencies=[Depends(admin)])
     async def parameters_options(workspace: str, payload: dict = Body(...), me: Principal = Depends(current_user)):
@@ -11293,6 +11297,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             # commands of a puller's connection) stays off, as on the machine's own page
             "account": None, "central_user": me.name}
 
+    # what draw_linked_page answers for a page the machine keeps as its own (the page of a move, class D)
+    OWN_PAGE = "own"
+
     def contract_back_page(request: Request, link: LinkTarget, me: Principal, agent: dict | None, seen: int):
         """A page drawn here whose machine said agent_api `seen` and now says less, or has no model of it: this
         panel's page that says so, never the machine's HTML by its word alone (until its pages: machine)."""
@@ -11303,11 +11310,16 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             status_code=status.HTTP_502_BAD_GATEWAY)
 
     async def draw_linked_page(request: Request, link: LinkTarget, me: Principal, page: centralpages.Page,
-                               params: dict) -> Response | None:
+                               params: dict) -> Response | str | None:
         """A page of the machine of link drawn with this panel's template, from the model the machine answers
-        for me (its role there, its fields by name); None when the machine has no model of it."""
+        for me (its role there, its fields by name); None when the machine has no model of it; OWN_PAGE when the
+        machine says the page is its own (an instance moved away: the page of its move, class D)."""
         headers = {**link_headers(link, me.name, me.role), "Accept": "application/json",
                    "Accept-Language": request_language(request), _MENU_HEADER: ",".join(menu_places(me))}
+        if tunnel_reaches_browser(request):
+            # what the machine offers depends on it as for its own page (Log in as through a tunnel of this panel)
+            headers[TUNNEL_HEADER] = "1"
+        params = {**params, **{k: request.query_params[k] for k in page.query if k in request.query_params}}
         try:
             resp = await link_clients.client(link).get(f"/api/pages/{page.name}", params=params, headers=headers)
         except httpx.HTTPError as exc:
@@ -11335,16 +11347,20 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if isinstance(moved, str) and moved.startswith(f"/links/{link.name}/"):
             # a server placed on another machine (AD-014): its page is the host's, through the home, as before
             return RedirectResponse(moved, status.HTTP_307_TEMPORARY_REDIRECT)
+        if data.get("own_page") is True and page.name == "server":
+            return OWN_PAGE
         model = data.get("context")
         if not isinstance(model, dict):
             return link_failure(request, link, "its model of the page has no context")
         # its fields by name: nothing else the machine sends enters the template
         context = {k: model[k] for k in page.fields if k in model}
-        if page.name == "settings":
-            context = translated_settings(context, request_language(request))
         try:
+            if page.name == "settings":
+                context = translated_settings(context, request_language(request))
+            elif page.name == "server":
+                context = centralpages.server_view(context)
             return _TEMPLATES.TemplateResponse(request, page.template, context)
-        except (jinja2.TemplateError, TypeError, ValueError, AttributeError) as exc:
+        except (jinja2.TemplateError, TypeError, ValueError, AttributeError, KeyError) as exc:
             # a model without a field the page needs, or of another shape: said, not a 500
             _logger.warning("the page %s of %s: %s", page.name, link.name, exc)
             return link_failure(request, link, f"its model of the page {page.name} is not the one this panel reads")
@@ -11355,7 +11371,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         (AD-017 §17.2) a page of centralpages.PAGES is drawn by this panel when the machine's contract allows it;
         else, if the machine never said agent_api 1 or more, its page passes with a line that says why. On such a
         link the machine's /api answers and the requests of the pages drawn here pass only as data (JSON, a file
-        to save); the pages this panel does not draw yet (slices 3-5) pass as before, HTML included."""
+        to save); the pages this panel does not draw yet (slices 4-5) pass as before, HTML included."""
         if me.kind != "user":
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Only a user who logs in here may use a link")
         link = a_link(name)
@@ -11371,7 +11387,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             # the files of this panel's pages: its own, never the machine's script
             return await static_file(path[len("static/"):])
         # the machine's own HTML passes: on a link with pages: machine, for a page this panel does not draw (yet:
-        # AD-017 §9, slices 3-5), and as the way back of §17.2 for a machine that never said agent_api 1 or more
+        # AD-017 §9, slices 4-5), and as the way back of §17.2 for a machine that never said agent_api 1 or more
         machine_html = not here or (not api and drawn is None)
         if drawn is not None:
             page, params = drawn
@@ -11381,14 +11397,23 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 page.needs_agent_api, agent["agent_api"], agent["plugins"], centralpages.plugin_versions())
             if not why and agent is not None and agent.get("no_models"):
                 why = centralpages.BEHIND
+            own_page = False
             if not why and agent is not None and request.method == "GET":
                 response = await draw_linked_page(request, link, me, page, params)
-                if response is not None:
+                if response == OWN_PAGE:
+                    own_page = True
+                elif response is not None:
                     return response
-                # no model there: an older machine than it said (an update undone); kept until it is read again
-                agent["no_models"] = True
-                why = centralpages.BEHIND
-            if seen >= 1 and (agent is None or why == centralpages.BEHIND):
+                else:
+                    # no model there: an older machine than it said (an update undone); kept until it is read again
+                    agent["no_models"] = True
+                    why = centralpages.BEHIND
+            # a machine that says what it said before but less than this page needs (a page of a newer slice) has
+            # never had its model: its own page as before, with the line; one that says less than before, or has
+            # no model of what it says, went back
+            went_back = agent is None or agent["agent_api"] < seen or (
+                bool(agent.get("no_models")) and agent["agent_api"] >= page.needs_agent_api)
+            if seen >= 1 and went_back and (agent is None or why == centralpages.BEHIND):
                 # it said 1 or more before: its own HTML is not shown by its word alone
                 if agent is None:
                     return link_failure(request, link, f"it does not answer GET /api/info, and it said agent_api {seen}"
@@ -11396,8 +11421,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 if request.method != "GET":
                     return link_failure(request, link, f"it said agent_api {seen} and now says less: refused")
                 return contract_back_page(request, link, me, agent, seen)
-            # the way back (§17.2): a machine that never said 1 or more, or this panel older, or a plugin apart
-            machine_html = agent is None or bool(why)
+            # the way back (§17.2): a machine that never said 1 or more, or this panel older, or a plugin apart, or
+            # a page it has no model of yet; the page of a move its own (class D)
+            machine_html = agent is None or bool(why) or own_page
             if why and request.method == "GET":
                 line = machine_page_line(request, link, agent, why)
         headers = {k: request.headers[k] for k in _LINK_REQUEST_HEADERS if k in request.headers}
@@ -12257,6 +12283,15 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                                  else str(request.base_url).rstrip("/"))}
         if page == "settings":
             return {"groups": settings_groups(request, me)}
+        if page == "server":
+            # class C (slice 3): the live context of the page, taken field by field (centralpages.server_model)
+            try:
+                return centralpages.server_model(await server_context(request, str(params.get("server") or ""),
+                                                                      str(params.get("view") or "production")))
+            except centralpages.ModelError as exc:
+                _logger.warning("the model of the page of %s: %s", params.get("server"), exc)
+                raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                    f"The model of the page has no field for {exc}") from None
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"No model of a page {page}")
 
     @app.get("/api/pages/{page}")
@@ -12269,25 +12304,54 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             raise HTTPException(status.HTTP_403_FORBIDDEN, "The model of a page is for the panel of a link only")
         if page not in centralpages.BY_NAME:
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"No model of a page {page}")
+        params = dict(request.query_params)
+        answered = status.HTTP_200_OK
+        try:
+            return await page_model_of(request, page, params, me)
+        except HTTPException as exc:
+            answered = exc.status_code
+            raise
+        except Exception:
+            answered = status.HTTP_500_INTERNAL_SERVER_ERROR
+            raise
+        finally:
+            # every read of a page's model, with who looks through the link (AD-017 §17.5 decision 5), each time
+            server = str(params.get("server") or "")
+            access_log.record("read", "link", me.name, request.client.host if request.client else "",
+                              (f"model of the page {page}: GET {request.url.path}"
+                               + (f"?{request.url.query}" if request.url.query else "") + f" -> {answered}"
+                               + (f" for {me.on_behalf}" if me.on_behalf else ""))[:300],
+                              what=f"model of the page {page}", status=answered, server=server,
+                              workspace=(settings.workspace_of(server) or "") if server else "")
+
+    async def page_model_of(request: Request, page: str, params: dict, me: Principal) -> dict:
+        """The answer of GET /api/pages/{page}: the role the page asks, a placed server's page at its host, the
+        context by name."""
         needed = PAGE_ROLES.get(page)
         if needed and not me.can(needed):
             raise HTTPException(status.HTTP_403_FORBIDDEN, f"The {needed} role is required")
-        params = dict(request.query_params)
         answer = {"agent_api": centralpages.AGENT_API, "page": page, "role": me.role,
+                  # a shell of OmniaCLI's own user: not on a server (the pages' own_user_shells)
                   "development": settings.machine == MACHINE_DEVELOPMENT}
-        if page in ("log", "shell"):
+        if page in ("log", "shell", "server"):
             # a server placed on another machine (AD-014): its page is the host's, as PlacedRoutes sends a browser
             # there; the panel sends it to that address under its link
-            target = f"/servers/{params.get('server', '')}/{params.get('role', '')}/{params.get('kind', 'log') if page == 'shell' else 'log'}"
+            name = str(params.get("server") or "")
+            if page == "server":
+                target = f"/servers/{name}"
+            else:
+                target = f"/servers/{name}/{params.get('role', '')}/{params.get('kind', 'log') if page == 'shell' else 'log'}"
             server, _host = placed_target(target)
             if server and placed_for(dict(request.scope, path=target, method="GET")):
                 given = request.headers.get(_PREFIX_HEADER, "")
+                query = f"?{urlencode({'view': params['view']})}" if page == "server" and params.get("view") else ""
                 return {**answer, "moved": (given if _PREFIX.fullmatch(given) else "")
-                        + f"{placement.PLACED_PREFIX}/{server}{target}"}
+                        + f"{placement.PLACED_PREFIX}/{server}{target}{query}"}
+            if page == "server" and name not in settings.servers and moved_away_page(request, name) is not None:
+                # its copy here deleted: the page of its move, the machine's own (AD-017 §17.1, class D)
+                return {**answer, "own_page": True}
         context = await page_context(page, request, params)
-        return {"agent_api": centralpages.AGENT_API, "page": page, "role": me.role,
-                # a shell of OmniaCLI's own user: not on a server (the pages' own_user_shells)
-                "development": settings.machine == MACHINE_DEVELOPMENT, "context": context}
+        return {**answer, "context": context}
 
     # --- options of the system ------------------------------------------
 

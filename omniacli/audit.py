@@ -69,6 +69,9 @@ AUDITED_BY_ROUTE = frozenset({
     # the sealed secrets of a handover's switch (AD-009), taken by the customer's machine: logged by the route, with
     # what they hold by name (users, schedules, destinations, credentials), never a secret
     "/api/handover/v1/{handover_id}/secrets",
+    # the model of a page a panel draws for a link (AD-017 §17.1, §17.5 decision 5): every read, with who looks
+    # through the link (on_behalf) and the server of the page
+    "/api/pages/{page}",
 })
 
 # pages and data that are neither customer data nor security data: the
@@ -103,9 +106,6 @@ NOT_SENSITIVE = frozenset({
     "/api/servers/{server}/modules/catalog", "/api/servers/{server}/modules/plan",
     "/api/servers/{server}/{role}/modules", "/api/servers/{server}/modules/uploaded", "/users", "/help", "/plugins", "/api/plugins/available",
     "/links", "/machines", "/api/machines", "/links/{name}",
-    # the model of a page of class A a panel draws (AD-017 §17.1): the same plain values its page shows, which is
-    # not sensitive either (disks, the log's file, the lists' links, the settings' places, a shell's folder)
-    "/api/pages/{page}",
     # through a link: the linked OmniaCLI logs it, with who acts here
     "/links/{name}/{path:path}",
     "/static/{name}", "/servers/{server}/{role}/shell", "/servers/{server}/{role}/claude",
