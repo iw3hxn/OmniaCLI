@@ -1073,14 +1073,23 @@ linked machine when this panel is updated, without updating them. The pages
 written here so far are an instance's page (with its tabs and dialogs), Disks,
 the instance's Log, OmniaCLI's own Log, Instances, Backups, Servers
 (machines), Discover, a Publication's connection, the shells, Help, About and
-Settings; the others are still the machine's own.
+Settings; then Jobs and a job's page, Workspaces (the list and a workspace's
+form), Backup destinations (the machine's and a workspace's), the Access log
+(the machine's and a workspace's), Servers (the configuration), Git
+credentials, Odoo Enterprise, Links, Groups, Plugins and Schedules. A
+person's own Account and Tunnels are the panel's where the person logged in:
+through a link the machine refuses them (404, 403), and this panel says so
+with its own error page. The others (the Dashboard, a workspace's page,
+Users, Pullers, a server's form, Options) are still the machine's own.
 
-- **The contract.** `GET /api/info` of a machine says `agent_api` (2 from this
-  version, 1 from 2026.1.5515) and its `plugins` (`{name: version}`, `built-in` for the package's
-  own); a machine that does not say it is 0. Each page here needs an
+- **The contract.** `GET /api/info` of a machine says `agent_api` (3 from this
+  version, 2 from 2026.1.5517, 1 from 2026.1.5515) and its `plugins` (`{name: version}`, `built-in` for the
+  package's own); a machine that does not say it is 0. Each page here needs an
   `agent_api` (`omniacli/centralpages.py`), and this panel reads its own and
-  the one before. An instance's page needs 2, the others 1: a machine at 1
-  has the others written here and its own instance's page. When the machine's
+  the one before. The pages of Jobs, Workspaces and the others of the second
+  list above need 3, an instance's page 2, the first ones 1: a machine at 2
+  has the first ones and its instances' pages written here and its own Jobs,
+  Workspaces…; a machine at 1 has every page its own. When the machine's
   number is outside that, or it has a plugin this panel has not at the same
   version, its own page passes as before, with a line on top: «Page written by lab4 (2026.1.5513): update it to
   see the new one», or «… the panel is older than the machine». The line is on
@@ -1101,13 +1110,22 @@ Settings; the others are still the machine's own.
   there (the buttons of the person's role and custom role, the disabled ones
   and why, the dialogs) comes in it, and this panel never widens it; of the
   instance its fields by name (never its options, the database's password or
-  a repository's credentials). An instance placed on another machine (AD-014)
+  a repository's credentials). The other pages are
+  `GET /api/pages/<page>` with the address's names (`job_id`, `workspace`) and
+  the page's filters (`server`, `q`, `since`…, `edit`, `new`): of a credential,
+  the Enterprise source or a destination they say whether its token, password
+  or key is set, never its value; of a link where it goes and the SSH host key
+  it fixed, never its token; of the machine's SSH key the public half only.
+  An instance placed on another machine (AD-014), or a job its host answered,
   is sent to its host as before; the page of a move of one whose copy there
   was deleted is drawn here too, from its name and its move. A model is
   refused (this panel's error page) when it names a plugin's dialog this panel
-  has not, another instance than the address's, or an address the page may
-  not use: a link elsewhere that is not http(s), an address of the machine not
-  under `/links/<name>/` (no `..`, no other machine, no route of this panel).
+  has not, another instance, job or workspace than the address's, an address
+  the page may not use (a link elsewhere that is not http(s), an address of
+  the machine not under `/links/<name>/`: no `..`, no other machine, no route
+  of this panel), or a name it puts in an address (a job's id, a server's, a
+  workspace's) that is not one: a `..`, a slash, a space. The kinds of a
+  destination come in English and are said here in the reader's language.
   The page writes its moments by the machine's clock. The models are never
   reached by a browser through the link (`/links/<name>/api/pages/…`: 404). Every read of a model is in the machine's access log
   (`read`, with who looks through the link and the server).
@@ -1117,7 +1135,7 @@ Settings; the others are still the machine's own.
   answers without a body; an HTML or script answer is refused with a 502 (and
   in the access log). A browser's `/api` request is asked as JSON, so the
   machine's reason is what the person reads. **Not refused:** the pages not
-  written here yet (Jobs, Users, …) and their parts still
+  written here yet (the Dashboard, Users, …) and their parts still
   come as the machine writes them, HTML included, until they are moved too.
 - **The way back**: on the link's **Edit… › Advanced**, untick **Pages written
   by this panel** (`pages: machine` in the links file): the machine writes its

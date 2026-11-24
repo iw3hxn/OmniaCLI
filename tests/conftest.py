@@ -78,8 +78,8 @@ def storage_where_it_is(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def server_page_parity(monkeypatch):
-    """OMNIACLI_PARITY=1: every instance's page a test draws is drawn again from its model and compared
-    (tests/serverparity.py, AD-017 slice 3); off by default (each page twice)."""
+    """OMNIACLI_PARITY=1: every instance's page and every page of class B a test draws is drawn again from its
+    model and compared (tests/serverparity.py, AD-017 slices 3-4); off by default (each page twice)."""
     if os.environ.get("OMNIACLI_PARITY") == "1":
         from .serverparity import Twice
         Twice(monkeypatch)

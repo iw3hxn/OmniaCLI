@@ -29,17 +29,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-from . import plugins
+from . import i18n, plugins
 from .auth import ROLES
 from .config import Instance, Server, Workspace
 from .jobs import Job
 from .plugin_api import Action, Field
 
 # what this machine's API speaks: GET /api/info says it, GET /api/pages/* answers from it. 2: the model of an
-# instance's page (GET /api/pages/server, AD-017 §9 slice 3)
-AGENT_API = 2
+# instance's page (GET /api/pages/server, AD-017 §9 slice 3); 3: the models of the 14 pages of class B (slice 4)
+AGENT_API = 3
 # the newest a panel of this version reads; it reads that one and the one before it (AD-017 §10.6)
-CENTRAL_AGENT_API = 2
+CENTRAL_AGENT_API = 3
 OLDEST_READ = CENTRAL_AGENT_API - 1
 
 # a link's pages (links.yaml, pages:): drawn here, or the machine's own as before (the undo switch)
@@ -119,10 +119,48 @@ PAGES = (
     # an instance's page (class C, slice 3): its model is server_model, drawn from server_view
     Page("server", rf"servers/(?P<server>{_SEGMENT})", "server.html", SERVER_FIELDS, needs_agent_api=2,
          query=("view",)),
+    # the 14 pages of class B (slice 4): the pages a customer sees first (AD-018 §18.8), then the others; each
+    # model is page_model, drawn from page_view
+    Page("account", r"account", "account.html", needs_agent_api=3),
+    Page("jobs", r"jobs", "jobs.html", ("jobs", "total", "servers", "server", "q"), needs_agent_api=3,
+         query=("server", "q")),
+    Page("job", rf"jobs/(?P<job_id>{_SEGMENT})", "job.html", ("job", "live", "offers_download"), needs_agent_api=3),
+    Page("workspaces", r"workspaces", "workspaces.html",
+         ("form", "links", "machine_column", "storage_roots", "storage_error", "templates", "workspaces", "can_create",
+          "here_name", "two_step_in_row", "open_in_rows", "handover_ws", "can_receive", "workspaces_file", "servers",
+          "users", "user_roles", "system_config", "roles", "limits", "templates_index"), needs_agent_api=3,
+         query=("edit", "new")),
+    Page("destinations", rf"(?:workspaces/(?P<workspace>{_SEGMENT})/)?destinations", "destinations.html",
+         ("rows", "kinds", "api", "workspace", "ws", "rclone", "file"), needs_agent_api=3),
+    Page("access", rf"access|workspaces/(?P<workspace>{_SEGMENT})/audit", "access.html",
+         ("entries", "total", "q", "since", "until", "who", "event", "ws", "log_file", "failed_file", "status"),
+         needs_agent_api=3, query=("q", "since", "until", "who", "event")),
+    Page("config", r"config", "config.html", ("servers", "servers_file", "busy"), needs_agent_api=3),
+    Page("credentials", r"credentials", "credentials.html", ("scopes", "error", "credentials_file"),
+         needs_agent_api=3),
+    Page("enterprise", r"enterprise", "enterprise.html",
+         ("source", "error", "default_url", "public_key", "file", "copies", "root", "helpers"), needs_agent_api=3),
+    Page("links", r"links", "links.html", ("links", "links_file", "public_key", "ssh"), needs_agent_api=3),
+    Page("tunnels", r"tunnels", "tunnels.html", needs_agent_api=3),
+    Page("groups", r"groups", "groups.html", ("lists", "known", "groups_file"), needs_agent_api=3),
+    Page("plugins", r"plugins", "plugins.html",
+         ("found", "count", "missing", "api_version", "group", "route_errors", "source", "sudoers", "systemd"),
+         needs_agent_api=3),
+    Page("schedules", r"schedules", "schedules.html",
+         ("schedules", "targets", "links", "connections", "scripts", "scripts_dir", "schedules_file", "load_error",
+          "default_user"), needs_agent_api=3),
 )
 BY_NAME = {p.name: p for p in PAGES}
 # the least any page here needs: below it, every page of the machine is its own
 LEAST_NEEDED = min(p.needs_agent_api for p in PAGES)
+# the pages of class B (slice 4): drawn from page_view, and the parity harness draws each again from its model
+CLASS_B = tuple(BY_NAME[name] for name in (
+    "account", "jobs", "job", "workspaces", "destinations", "access", "config", "credentials", "enterprise", "links",
+    "tunnels", "groups", "plugins", "schedules"))
+# of those, the pages of who logged in there (its account, its tunnels): a link has none on the machine, which
+# refuses their model as it refuses their page (404, 403); drawn here as this panel's error page, never with a
+# context (the person's own are this panel's /account and /tunnels; AD-018 brings the customers' account here)
+PERSON_PAGES = frozenset({"account", "tunnels"})
 
 
 def match(path: str) -> tuple[Page, dict[str, str]] | None:
@@ -130,7 +168,7 @@ def match(path: str) -> tuple[Page, dict[str, str]] | None:
     for page in PAGES:
         found = page.pattern.fullmatch(path)
         if found is not None:
-            return page, found.groupdict()
+            return page, {k: v for k, v in found.groupdict().items() if v is not None}
     return None
 
 
@@ -141,6 +179,8 @@ def drawn_for(link: str, role: str, development: bool, person: str, zone: str = 
     rank = ROLES.index(role) if role in ROLES else 0
     found = {"drawn_here": link, "can_act": rank >= 1, "is_admin": rank >= 2, "own_user_shells": development,
              "scoped": False, "my_workspaces": [],
+             # the crumb «Workspaces» of a workspace's pages (destinations, access log): the machine's admins
+             "workspaces_menu": rank >= 2,
              # a person through a link has no account there: what a page offers to who logged in there (the
              # commands of a puller's connection) stays off, as on the machine's own page
              "account": None, "central_user": person}
@@ -305,9 +345,11 @@ def plugin_model(inst: Instance) -> dict:
 
 
 def job_model(job: Job) -> dict:
-    """A job as the page's last action reads it: no lines, no result."""
+    """A job as the pages read it (an instance's last action, the Jobs list, a job's page): no lines (its page's
+    script reads them from /api/jobs/<id>), no result."""
     return {"id": job.id, "title": job.title, "status": job.status, "outcome": job.outcome, "created": job.created,
-            "duration": job.duration, "error": job.error, "warnings": list(job.warnings)}
+            "finished": job.finished, "duration": job.duration, "error": job.error, "warnings": list(job.warnings),
+            "instances": list(job.instances), "servers": job.servers, "source": job.source}
 
 
 def plain(value, where: str = ""):
@@ -329,7 +371,7 @@ def plain(value, where: str = ""):
     if isinstance(value, Job):
         return job_model(value)
     if isinstance(value, Workspace):
-        return {"name": value.name}
+        return {"name": value.name, "label": value.label}
     if isinstance(value, Path):
         return str(value)
     raise ModelError(f"{where or 'a value'}: a {type(value).__name__} has no model")
@@ -410,11 +452,11 @@ _URL_KEYS = frozenset({"url", "web_url", "open", "page", "ci_url", "deploys_url"
                        "preview", "users"})
 # of those, the links to elsewhere (the Odoo of an instance, its repository): http or https only; every other one
 # is an address of the machine's own, under the link's prefix
-_EXTERNAL = re.compile(r"(?:.*\.)?(?:web_url|open)|.*\.repo\.url|stagings\.parent\.url|stagings\.rows\[\]\.url")
+_EXTERNAL = re.compile(r"(?:.*\.)?(?:web_url|open)|.*\.repo\.url|stagings\.parent\.url|stagings\.rows\[\]\.url|links\[\]\.url")
 # an address of the machine's own that is not under a key of _URL_KEYS
 _INTERNAL_AT = frozenset({"enterprise.pgvector.machine"})
 # under such a key, a text the page shows and never opens (where an instance's Debian package is published)
-_TEXT_AT = re.compile(r".*\.package\.url")
+_TEXT_AT = re.compile(r".*\.package\.url|source\.url")
 _CONTROL = re.compile(r"[\x00-\x20\x7f\\]")
 
 
@@ -488,3 +530,140 @@ def moved_away_view(model: dict, prefix: str) -> dict:
     if not isinstance(server.get("name"), str) or not isinstance(move, dict):
         raise ValueError("its page of a move has no server or no move")
     return {"server": Fields(name=server["name"]), "move": fields_of(move)}
+
+
+# --- the models of the pages of class B (AD-017 §9 slice 4) ---------------------------------------------------
+#
+# Each page's context is made on the machine by the route that draws its own page (app.page_contexts); its model
+# is the page's fields by name, each as plain values (page_model). The few live objects these pages read have a
+# list of fields of their own here: a server of the Servers page, a link of the Links page (never its token), a
+# plugin found, a job. Any other object is refused (ModelError).
+
+def config_server_model(server: Server) -> dict:
+    """A server as the Servers page (config.html) reads it: its state, of each instance the words it is found by and
+    its repositories (name and branch), never its options or its repositories' credentials."""
+    instances = {}
+    for role, inst in server.instances.items():
+        try:
+            words = [str(w) for w in inst.plugin.search_text(inst)] if inst.plugin is not None else []
+        except (OSError, ValueError):
+            # what the page would have asked while drawing: a configuration it cannot read has no words, as there
+            words = []
+        instances[role] = {"key": inst.key, "plugin": {"search_text": words},
+                           "repositories": [{"name": r.name, "branch": r.branch} for r in inst.repositories]}
+    return {"name": server.name, "type": server.type, "status": server.status, "active": server.active,
+            "missing_plugin": server.missing_plugin, "error": server.error, "instances": instances}
+
+
+def link_model(link) -> dict:
+    """A link as the Links page (links.html) reads it: where it goes, how, its SSH route and the host key it fixed
+    (public); never its token."""
+    ssh = link.ssh
+    return {"name": link.name, "url": link.url, "ca_file": link.ca_file, "pages": link.pages,
+            "remote": list(link.remote) if ssh is not None else [],
+            "ssh": {"host": ssh.host, "port": ssh.port, "user": ssh.user, "host_key": ssh.host_key}
+            if ssh is not None else None}
+
+
+def plugin_found_model(info: plugins.PluginInfo) -> dict:
+    """A plugin found, as the Plugins page reads it: its name, where it comes from, why it failed."""
+    return {"name": info.name, "target": info.target, "source": info.source, "version": info.version,
+            "error": info.error, "plugin": {"label": info.plugin.label} if info.plugin is not None else None}
+
+
+def page_model(name: str, context: dict) -> dict:
+    """The model of a page of class B from the context its route made: its fields by name (those the route set),
+    each as plain values; the objects of the page by their models above."""
+    model = {}
+    for field in BY_NAME[name].fields:
+        if field not in context:
+            continue
+        value = context[field]
+        if name == "config" and field == "servers":
+            value = [config_server_model(s) for s in value]
+        elif name == "links" and field == "links":
+            value = [link_model(link) for link in value]
+        elif name == "plugins" and field == "found":
+            value = [plugin_found_model(i) for i in value]
+        elif name == "plugins" and field == "missing":
+            value = [{"name": s.name, "type": s.type, "error": s.error} for s in value]
+        elif name == "plugins" and field == "source":
+            value = {"index": value.index, "public_key": value.public_key}
+        model[field] = plain(value, field)
+    return model
+
+
+class Drawn(dict):
+    """The context of a page drawn from its model (page_view): the parity harness draws a page again only when its
+    context is a live one."""
+
+
+class PluginWords(Fields):
+    """An instance's plugin as config.html calls it: the words the machine answered once."""
+
+    def search_text(self, *_):
+        return self.get("search_text") or []
+
+
+# a name a page puts in an address of the machine (a job's id, a server's, a workspace's): one segment of a path,
+# never . or .., no slash (the machine's own jobs are of _machine); an instance's key (server/role) is two of them
+_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._~@+-]*")
+_NAMES_AT = {
+    "jobs": ("jobs[].id",),
+    "job": ("job.id", "live[]", "job.instances[]"),
+    "destinations": ("rows[].name", "rows[].workspace", "workspace", "ws.name"),
+    "access": ("entries[].job[]", "ws.name"),
+    "config": ("servers[].name",),
+    "enterprise": ("copies[].users[]",),
+    "schedules": ("schedules[].name", "schedules[].data.instance", "schedules[].runs[].job"),
+    "workspaces": ("handover_ws",),
+}
+
+
+def a_name(value) -> bool:
+    """Whether value is a name a page may put in an address: one or two segments (server/role), each a name."""
+    return isinstance(value, str) and 0 < len(value) <= 200 and all(
+        _NAME.fullmatch(part) for part in value.split("/", 1))
+
+
+def checked_names(value, names: tuple[str, ...], where: str = "") -> None:
+    """ValueError when a value at one of the places names puts in an address is not a name (a .. that would take
+    the page's links out of its machine, a slash, a space)."""
+    if where in names:
+        for item in value if isinstance(value, list) else [value]:
+            if item not in (None, "") and not a_name(item):
+                raise ValueError(f"its page has {str(item)[:80]!r} at {where}, which is not a name")
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            checked_names(item, names, f"{where}.{key}" if where else str(key))
+    elif isinstance(value, list):
+        for item in value:
+            checked_names(item, names, f"{where}[]")
+
+
+def page_view(name: str, model: dict, prefix: str, lang: str = i18n.DEFAULT) -> Drawn:
+    """The context of a page of class B drawn here, from the model a machine answered (its fields by name), its
+    addresses under prefix (the link's /links/<m>; "" for a machine's own page), its texts in lang; ValueError when
+    it has an address it may not use or a name that would leave the machine."""
+    if name in PERSON_PAGES:
+        raise ValueError(f"the page {name} is of who logged in there: a link has none")
+    model = {k: model[k] for k in BY_NAME[name].fields if k in model}
+    checked_addresses(model, prefix)
+    checked_names(model, _NAMES_AT.get(name, ()))
+    context = Drawn({k: fields_of(v) for k, v in model.items()})
+    if name == "config":
+        for server in context.get("servers") or []:
+            for inst in (server.get("instances") or {}).values():
+                inst["plugin"] = PluginWords(inst.get("plugin") or {})
+    elif name == "destinations":
+        api = model.get("api")
+        if not isinstance(api, str) or not under("", api):
+            raise ValueError(f"its page has the address {str(api)[:80]!r} of its requests")
+        # the kinds of destination in the words of who looks: the machine says them in English
+        context["kinds"] = Fields({
+            k: Fields({**v, "label": i18n.tr(lang, v.get("label")),
+                       "settings": [Fields({**s, "label": i18n.tr(lang, s.get("label")), "help": i18n.tr(lang, s.get("help"))})
+                                    for s in v.get("settings") or []]})
+            for k, v in (context.get("kinds") or {}).items()})
+    return context

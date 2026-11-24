@@ -34,7 +34,7 @@ import types
 import zipfile
 from dataclasses import asdict
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional
 from urllib.parse import parse_qs, quote, unquote_plus, urlencode, urlsplit
 
 import httpx
@@ -1161,6 +1161,17 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         without their lines (lines: a job's page)."""
         view = customer_view(request)
         return found if view is None else [view.job(j, lines) for j in found]
+
+    # the context of each page of class B (AD-017 §9 slice 4), by its name: made once for the caller, drawn by the
+    # route with its live objects, and taken field by field as the model a panel draws the page from
+    # (GET /api/pages/<page>, centralpages.page_model)
+    page_contexts: dict[str, Callable] = {}
+
+    def context_of(page: str):
+        def register(make):
+            page_contexts[page] = make
+            return make
+        return register
 
     def current_user(request: HTTPConnection) -> Principal:
         ip = request.client.host if request.client else ""
@@ -3778,32 +3789,38 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         except OSError as exc:
             return JSONResponse({"error": f"Cannot read {own_log_file}: {exc.strerror}"}, status_code=404)
 
-    @app.get("/jobs")
-    async def job_list(request: Request, server: str = "", q: str = ""):
-        """Every job kept, filtered by server and by text (title, started
-        by, error, server)."""
+    @context_of("jobs")
+    async def jobs_context(request: Request, params: dict) -> dict:
         me = request.state.user
+        server, q = str(params.get("server") or ""), str(params.get("q") or "")
         found = visible_jobs(me, jobs.recent(len(jobs.jobs)))
         shown = visible_servers(me)
         names = sorted((set(settings.servers) if shown is None else shown) | {n for j in found for n in j.servers})
         # a customer searches what it reads: the names taken out are not found
         found = filter_jobs(shown_jobs(request, found), server, q)
-        return _TEMPLATES.TemplateResponse(
-            request, "jobs.html",
-            {"jobs": found[:200], "total": len(found), "servers": names, "server": server, "q": q},
-        )
+        return {"jobs": found[:200], "total": len(found), "servers": names, "server": server, "q": q}
 
-    @app.get("/jobs/{job_id}")
-    async def job_page(request: Request, job_id: str):
-        job = jobs.get(job_id)
+    @app.get("/jobs")
+    async def job_list(request: Request, server: str = "", q: str = ""):
+        """Every job kept, filtered by server and by text (title, started
+        by, error, server)."""
+        return _TEMPLATES.TemplateResponse(request, "jobs.html",
+                                           await jobs_context(request, {"server": server, "q": q}))
+
+    @context_of("job")
+    async def job_context(request: Request, params: dict) -> dict:
+        job = jobs.get(str(params.get("job_id") or ""))
         if job is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "No such job")
         # a draft or deleted server has no page: its crumb goes to its jobs
         live = [srv.name for srv in settings.active_servers()]
         # a custom role without Download backups: no download offered at the end (the route refuses it)
         offers = refusal(request.state.user, "download", None, job.servers) is None
-        return _TEMPLATES.TemplateResponse(request, "job.html", {"job": shown_jobs(request, [job], True)[0], "live": live,
-                                                                 "offers_download": offers})
+        return {"job": shown_jobs(request, [job], True)[0], "live": live, "offers_download": offers}
+
+    @app.get("/jobs/{job_id}")
+    async def job_page(request: Request, job_id: str):
+        return _TEMPLATES.TemplateResponse(request, "job.html", await job_context(request, {"job_id": job_id}))
 
     @app.post("/jobs/{job_id}/stop")
     async def job_stop(request: Request, job_id: str, user: Principal = Depends(admin)):
@@ -3910,17 +3927,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             raise HTTPException(status.HTTP_400_BAD_REQUEST, f"{name} cannot be edited: {srv.error}")
         return srv
 
+    @context_of("config")
+    async def config_context(request: Request, params: dict) -> dict:
+        return {"servers": list(settings.servers.values()), "servers_file": settings.servers_file,
+                "busy": {name: server_busy(name) for name in settings.servers}}
+
     @app.get("/config", dependencies=[Depends(admin)])
     async def config_page(request: Request):
-        return _TEMPLATES.TemplateResponse(
-            request,
-            "config.html",
-            {
-                "servers": settings.servers.values(),
-                "servers_file": settings.servers_file,
-                "busy": {name: server_busy(name) for name in settings.servers},
-            },
-        )
+        return _TEMPLATES.TemplateResponse(request, "config.html", await config_context(request, {}))
 
     @app.get("/config/new", dependencies=[Depends(admin)])
     async def config_new(request: Request):
@@ -4738,6 +4752,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     @app.get("/credentials", dependencies=[Depends(admin)])
     async def credentials_page(request: Request):
         """The git credentials of every server and workspace (users of the machine only)."""
+        return _TEMPLATES.TemplateResponse(request, "credentials.html", await credentials_context(request, {}))
+
+    @context_of("credentials")
+    async def credentials_context(request: Request, params: dict) -> dict:
+        """Of each credential its host, user and kind, and whether a token is set: never the token (public)."""
         try:
             found = await asyncio.to_thread(gitcredentials.load, settings.credentials_file)
             error = None
@@ -4747,9 +4766,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     "credentials": credential_rows(found, f"server:{n}")} for n in sorted(settings.servers)]
                   + [{"kind": "workspace", "name": n, "workspace": None,
                       "credentials": credential_rows(found, f"workspace:{n}")} for n in sorted(settings.workspaces)])
-        return _TEMPLATES.TemplateResponse(
-            request, "credentials.html",
-            {"scopes": scopes, "error": error, "credentials_file": settings.credentials_file})
+        return {"scopes": scopes, "error": error, "credentials_file": settings.credentials_file}
 
     @app.post("/api/credentials/save", dependencies=[Depends(admin)])
     async def credentials_save(payload: dict = Body(...)):
@@ -4973,16 +4990,20 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     async def enterprise_page(request: Request, me: Principal = Depends(current_user)):
         """Settings › Odoo Enterprise: where the code comes from, the copies
         of each version and the instances that use them."""
-        if not enterprise_admin(me):
+        return _TEMPLATES.TemplateResponse(request, "enterprise.html", await enterprise_context(request, {}))
+
+    @context_of("enterprise")
+    async def enterprise_context(request: Request, params: dict) -> dict:
+        """Where the code comes from (never its token: public), its SSH key's public half, the copies."""
+        if not enterprise_admin(request.state.user):
             raise HTTPException(status.HTTP_403_FORBIDDEN, "An admin of the machine is required")
         source, error = enterprise_source()
         users = await asyncio.to_thread(enterprise_users)
         copies = [{**found, "users": users.get(series, [])}
                   for series, found in (await asyncio.to_thread(enterprise.states)).items()]
-        return _TEMPLATES.TemplateResponse(request, "enterprise.html", {
-            "source": source.public() if source else None, "error": error, "default_url": enterprise.DEFAULT_URL,
-            "public_key": enterprise.public_key(enterprise_folder), "file": enterprise_file,
-            "copies": copies, "root": enterprise.ROOT, "helpers": bool(settings.storage_roots)})
+        return {"source": source.public() if source else None, "error": error, "default_url": enterprise.DEFAULT_URL,
+                "public_key": enterprise.public_key(enterprise_folder), "file": enterprise_file,
+                "copies": copies, "root": enterprise.ROOT, "helpers": bool(settings.storage_roots)}
 
     def enterprise_given(payload: dict) -> enterprise.Source:
         """The source of the form: a token left empty keeps the one saved for the same address kind."""
@@ -5229,41 +5250,43 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return workspaces_menu(me)
         return me.can("admin") or me.kind == "link"
 
+    @context_of("workspaces")
+    async def workspaces_context(request: Request, params: dict) -> dict:
+        me = request.state.user
+        if not reads_workspaces(me) or (not me.scoped and not me.can("admin")):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "The admin role is required")
+        form = "edit" in params or "new" in params
+        if form and me.scoped:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "The admin role of the machine is required")
+        if me.scoped:
+            # a person of workspaces: its list only; no form, disk, templates or machine of the machine
+            return {"form": False, "links": [], "machine_column": False, "storage_roots": {}, "storage_error": None,
+                    "templates": [], "workspaces": [], "can_create": False, "here_name": "",
+                    "two_step_in_row": TWO_STEP_IN_ROW, "open_in_rows": OPEN_IN_INSTANCE_ROWS}
+        links = listed_links(me)
+        edit = params.get("edit")
+        return {"form": form, "links": links, "machine_column": bool(links), "can_create": True,
+                # Where it lives › Hand over to the customer… (UX-014 A3) in the form of a workspace of the machine;
+                # Recover a workspace… (A5) beside New workspace: the machine's admins only
+                "handover_ws": edit if edit in settings.workspaces and machine_admin(me) else "",
+                "can_receive": machine_admin(me),
+                "here_name": shown_name(me), "two_step_in_row": TWO_STEP_IN_ROW, "open_in_rows": OPEN_IN_INSTANCE_ROWS,
+                "workspaces": workspace_rows(), "workspaces_file": settings.workspaces_file,
+                "servers": sorted(settings.servers), "users": sorted(settings.users),
+                "user_roles": {n: settings.user_role(n) for n in settings.users},
+                "storage_roots": settings.storage_roots, "storage_error": settings.storage_error,
+                "system_config": pluginstore.SYSTEM_CONFIG,
+                "roles": ACCESS_ROLES, "limits": WORKSPACE_LIMITS,
+                "templates": await asyncio.to_thread(template_rows),
+                "templates_index": templatestore.index_url(settings.plugin_source)}
+
     @app.get("/workspaces")
     async def workspaces_page(request: Request, me: Principal = Depends(current_user)):
         """The workspaces of this machine and of its links (UX-013 §A): the page of the menu's Workspaces, its
         rows drawn by its script from /api/workspaces/list, machine by machine; the form of a workspace of the
         machine (?edit=<name>, ?new) for the machine's admins."""
-        if not reads_workspaces(me) or (not me.scoped and not me.can("admin")):
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "The admin role is required")
-        form = "edit" in request.query_params or "new" in request.query_params
-        if form and me.scoped:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "The admin role of the machine is required")
-        if me.scoped:
-            # a person of workspaces: its list only; no form, disk, templates or machine of the machine
-            return _TEMPLATES.TemplateResponse(request, "workspaces.html", {
-                "form": False, "links": [], "machine_column": False, "storage_roots": {}, "storage_error": None,
-                "templates": [], "workspaces": [], "can_create": False, "here_name": "",
-                "two_step_in_row": TWO_STEP_IN_ROW, "open_in_rows": OPEN_IN_INSTANCE_ROWS})
-        links = listed_links(me)
-        return _TEMPLATES.TemplateResponse(
-            request, "workspaces.html",
-            {"form": form, "links": links, "machine_column": bool(links), "can_create": True,
-             # Where it lives › Hand over to the customer… (UX-014 A3) in the form of a workspace of the machine;
-             # Recover a workspace… (A5) beside New workspace: the machine's admins only
-             "handover_ws": request.query_params.get("edit") if request.query_params.get("edit") in settings.workspaces
-             and machine_admin(me) else "",
-             "can_receive": machine_admin(me),
-             "here_name": shown_name(me), "two_step_in_row": TWO_STEP_IN_ROW, "open_in_rows": OPEN_IN_INSTANCE_ROWS,
-             "workspaces": workspace_rows(), "workspaces_file": settings.workspaces_file,
-             "servers": sorted(settings.servers), "users": sorted(settings.users),
-             "user_roles": {n: settings.user_role(n) for n in settings.users},
-             "storage_roots": settings.storage_roots, "storage_error": settings.storage_error,
-             "system_config": pluginstore.SYSTEM_CONFIG,
-             "roles": ACCESS_ROLES, "limits": WORKSPACE_LIMITS,
-             "templates": await asyncio.to_thread(template_rows),
-             "templates_index": templatestore.index_url(settings.plugin_source)},
-        )
+        return _TEMPLATES.TemplateResponse(request, "workspaces.html",
+                                           await workspaces_context(request, dict(request.query_params)))
 
     def template_rows() -> list[dict]:
         """The templates here: the package's and those downloaded, and which one is used."""
@@ -10010,23 +10033,24 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         """How to create a link and how to connect an MCP client."""
         return _TEMPLATES.TemplateResponse(request, "help.html", await page_context("help", request))
 
-    @app.get("/plugins", dependencies=[Depends(admin)])
-    async def plugins_page(request: Request):
-        """The plugins found, those disabled with the reason, and the servers
-        whose plugin is missing."""
+    @context_of("plugins")
+    async def plugins_context(request: Request, params: dict) -> dict:
         found = plugins.registry().found
         count = {}
         for srv in settings.servers.values():
             count[srv.type] = count.get(srv.type, 0) + 1
         missing = [srv for srv in settings.servers.values() if srv.missing_plugin]
-        return _TEMPLATES.TemplateResponse(
-            request, "plugins.html",
-            {"found": found, "count": count, "missing": missing, "api_version": PLUGIN_API,
-             "group": ENTRY_POINT_GROUP, "route_errors": route_errors,
-             "source": settings.plugin_source,
-             "sudoers": pluginstore.sudoers_line(pwd.getpwuid(os.getuid()).pw_name),
-             "systemd": bool(os.environ.get("INVOCATION_ID"))},
-        )
+        return {"found": list(found), "count": count, "missing": missing, "api_version": PLUGIN_API,
+                "group": ENTRY_POINT_GROUP, "route_errors": dict(route_errors),
+                "source": settings.plugin_source,
+                "sudoers": pluginstore.sudoers_line(pwd.getpwuid(os.getuid()).pw_name),
+                "systemd": bool(os.environ.get("INVOCATION_ID"))}
+
+    @app.get("/plugins", dependencies=[Depends(admin)])
+    async def plugins_page(request: Request):
+        """The plugins found, those disabled with the reason, and the servers
+        whose plugin is missing."""
+        return _TEMPLATES.TemplateResponse(request, "plugins.html", await plugins_context(request, {}))
 
     def installed_plugins() -> dict[str, str]:
         """{plugin name: version of its package} of the plugins found."""
@@ -10162,12 +10186,21 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 "failed_file": access_log.failed_path,
                 "status": audit_status() if workspace is None else None}
 
+    @context_of("access")
+    async def access_context(request: Request, params: dict) -> dict:
+        """The access log of the machine (params without workspace) or of a workspace, filtered as asked: the last
+        500 entries found, how many, the room and the clock of the log (the machine's only)."""
+        ws = a_workspace(str(params["workspace"])) if params.get("workspace") else None
+        given = {k: str(params.get(k) or "") for k in ("since", "until", "who", "event", "q")}
+        return await asyncio.to_thread(audit_context, request, given["since"], given["until"], given["who"],
+                                       given["event"], given["q"], ws)
+
     @app.get("/access", dependencies=[Depends(admin)])
     async def access_page(request: Request, q: str = "", since: str = "", until: str = "", who: str = "",
                           event: str = ""):
         """The access log: logins, failed logins, actions, reads of customer
         or security data, MCP calls, jobs; the newest first."""
-        context = await asyncio.to_thread(audit_context, request, since, until, who, event, q, None)
+        context = await access_context(request, {"q": q, "since": since, "until": until, "who": who, "event": event})
         return _TEMPLATES.TemplateResponse(request, "access.html", context)
 
     @app.get("/api/access/export", dependencies=[Depends(admin)])
@@ -10188,8 +10221,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         """The access log of a workspace, for its admins (their auditors):
         what was done on its instances and by its users, by anyone, the
         machine's admins too; never the machine's own entries."""
-        ws = a_workspace(workspace)
-        context = await asyncio.to_thread(audit_context, request, since, until, who, event, q, ws)
+        context = await access_context(request, {"workspace": workspace, "q": q, "since": since, "until": until,
+                                                  "who": who, "event": event})
         return _TEMPLATES.TemplateResponse(request, "access.html", context)
 
     @app.get("/api/workspaces/{workspace}/audit/export", dependencies=[Depends(admin)])
@@ -10792,8 +10825,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         ssh_tunnels.sync(links)
         return None
 
-    @app.get("/links", dependencies=[Depends(admin)])
-    async def links_page(request: Request):
+    @context_of("links")
+    async def links_context(request: Request, params: dict) -> dict:
+        """The links (centralpages.link_model takes of each what the page shows, never its token), this machine's
+        public SSH key, and of each SSH link its tunnel, the host key's fingerprint and the lines for its server."""
         public = sshlinks.public_key(ssh_tunnels.folder)
         ssh = {}
         for link in settings.link_targets.values():
@@ -10801,11 +10836,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 ssh[link.name] = {"status": ssh_tunnels.status(link.name), "fingerprint": sshlinks.fingerprint(
                     link.ssh.host_key), "line": sshlinks.authorized_line(public, link) if public else "",
                     "block": sshlinks.sshd_block(link)}
-        return _TEMPLATES.TemplateResponse(
-            request, "links.html",
-            {"links": list(settings.link_targets.values()), "links_file": settings.links_file,
-             "public_key": public, "ssh": ssh},
-        )
+        return {"links": list(settings.link_targets.values()), "links_file": settings.links_file,
+                "public_key": public, "ssh": ssh}
+
+    @app.get("/links", dependencies=[Depends(admin)])
+    async def links_page(request: Request):
+        return _TEMPLATES.TemplateResponse(request, "links.html", await links_context(request, {}))
 
     @app.post("/api/links/ssh/key", dependencies=[Depends(admin)])
     async def link_ssh_key():
@@ -11360,9 +11396,18 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 context = centralpages.moved_away_view(context, prefix)
             elif page.name == "server":
                 context = centralpages.server_view(context, prefix)
+            elif page in centralpages.CLASS_B:
+                context = centralpages.page_view(page.name, context, prefix, request_language(request))
             if page.name == "server" and (context.get("server") or {}).get("name") != params.get("server"):
                 raise ValueError(f"its page is of {str((context.get('server') or {}).get('name'))[:60]!r}, "
                                  f"not of {params.get('server')}")
+            if page.name == "job" and (context.get("job") or {}).get("id") != params.get("job_id"):
+                raise ValueError(f"its page is of the job {str((context.get('job') or {}).get('id'))[:60]!r}, "
+                                 f"not of {params.get('job_id')}")
+            if page.name in ("destinations", "access") and (
+                    (context.get("ws") or {}).get("name") or "") != params.get("workspace", ""):
+                raise ValueError(f"its page is of the workspace {str((context.get('ws') or {}).get('name'))[:60]!r}, "
+                                 f"not of {params.get('workspace') or 'none'}")
             return _TEMPLATES.TemplateResponse(request, template, context)
         except (jinja2.TemplateError, TypeError, ValueError, AttributeError, KeyError) as exc:
             # a model without a field the page needs, or of another shape: said, not a 500
@@ -11378,7 +11423,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         (AD-017 §17.2) a page of centralpages.PAGES is drawn by this panel when the machine's contract allows it;
         else, if the machine never said agent_api 1 or more, its page passes with a line that says why. On such a
         link the machine's /api answers and the requests of the pages drawn here pass only as data (JSON, a file
-        to save); the pages this panel does not draw yet (slices 4-5) pass as before, HTML included."""
+        to save); the pages this panel does not draw yet (slice 5) pass as before, HTML included."""
         if me.kind != "user":
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Only a user who logs in here may use a link")
         link = a_link(name)
@@ -11398,7 +11443,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             # the files of this panel's pages: its own, never the machine's script
             return await static_file(path[len("static/"):])
         # the machine's own HTML passes: on a link with pages: machine, for a page this panel does not draw (yet:
-        # AD-017 §9, slices 4-5), and as the way back of §17.2 for a machine that never said agent_api 1 or more
+        # AD-017 §9, slice 5), and as the way back of §17.2 for a machine that never said agent_api 1 or more
         machine_html = not here or (not api and drawn is None)
         if drawn is not None:
             page, params = drawn
@@ -11743,13 +11788,17 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Only a user who logs in here may open a tunnel")
         return me
 
+    @context_of("tunnels")
+    async def tunnels_context(request: Request, params: dict) -> dict:
+        """The tunnels of who logged in here: a link has none (403, its model as its page)."""
+        me = tunnel_user(request.state.user)
+        rows = await remote_servers(me)
+        return {"tunnels": tunnel_rows(request, me), "servers": [r for r in rows if "error" not in r],
+                "errors": [r for r in rows if "error" in r], "options": settings.options}
+
     @app.get("/tunnels")
     async def tunnels_page(request: Request, me: Principal = Depends(current_user)):
-        tunnel_user(me)
-        rows = await remote_servers(me)
-        return _TEMPLATES.TemplateResponse(request, "tunnels.html", {
-            "tunnels": tunnel_rows(request, me), "servers": [r for r in rows if "error" not in r],
-            "errors": [r for r in rows if "error" in r], "options": settings.options})
+        return _TEMPLATES.TemplateResponse(request, "tunnels.html", await tunnels_context(request, {}))
 
     @app.get("/api/tunnels")
     async def tunnels_list(request: Request, me: Principal = Depends(current_user)):
@@ -11783,16 +11832,17 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     # --- groups of the Dashboard ----------------------------------------
 
+    @context_of("groups")
+    async def groups_context(request: Request, params: dict) -> dict:
+        return {"lists": {name: [g.to_dict() for g in settings.groups.get(name, [])] for name in listgroups.LISTS},
+                "known": {"servers": [srv.name for srv in settings.active_servers()],
+                          "links": sorted(settings.link_targets)},
+                "groups_file": settings.groups_file}
+
     @app.get("/groups")
     async def groups_page(request: Request, me: Principal = Depends(admin)):
         """The groups of the Dashboard's lists: servers and linked instances."""
-        return _TEMPLATES.TemplateResponse(
-            request, "groups.html",
-            {"lists": {name: [g.to_dict() for g in settings.groups.get(name, [])] for name in listgroups.LISTS},
-             "known": {"servers": [srv.name for srv in settings.active_servers()],
-                       "links": sorted(settings.link_targets)},
-             "groups_file": settings.groups_file},
-        )
+        return _TEMPLATES.TemplateResponse(request, "groups.html", await groups_context(request, {}))
 
     @app.post("/api/groups/save", dependencies=[Depends(admin)])
     async def groups_save(payload: dict = Body(...)):
@@ -12223,9 +12273,13 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     # --- the pages' models (AD-017 §17.1): what a page of class A takes, by name ---------------------------
 
-    # the least role of each page's model (its page route asks the same)
+    # the least role of each page's model (its page route asks the same; the rest of what a route checks, its
+    # context checks for both)
     PAGE_ROLES = {"own_log": "admin", "machines": "admin", "discover": "admin", "shell": "developer",
-                  "help": "developer", "settings": "developer"}
+                  "help": "developer", "settings": "developer",
+                  # class B (slice 4)
+                  "destinations": "admin", "access": "admin", "config": "admin", "credentials": "admin",
+                  "enterprise": "admin", "links": "admin", "groups": "admin", "plugins": "admin", "schedules": "admin"}
 
     def translated_settings(context: dict, lang: str) -> dict:
         """The Settings page's groups in lang: the model says them in English, who draws the page in its words."""
@@ -12299,6 +12353,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 _logger.warning("the model of the page of %s: %s", params.get("server"), exc)
                 raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
                                     f"The model of the page has no field for {exc}") from None
+        if page in page_contexts:
+            # class B (slice 4): the context its route draws, taken field by field (centralpages.page_model)
+            try:
+                return centralpages.page_model(page, await page_contexts[page](request, params))
+            except centralpages.ModelError as exc:
+                _logger.warning("the model of the page %s: %s", page, exc)
+                raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                    f"The model of the page has no field for {exc}") from None
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"No model of a page {page}")
 
     @app.get("/api/pages/{page}")
@@ -12342,12 +12404,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                   "development": settings.machine == MACHINE_DEVELOPMENT,
                   # the clock its moments are written by: the panel writes them by it, not by its own
                   "server_zone": clock.here()}
-        if page in ("log", "shell", "server"):
-            # a server placed on another machine (AD-014): its page is the host's, as PlacedRoutes sends a browser
-            # there; the panel sends it to that address under its link
+        if page in ("log", "shell", "server", "job"):
+            # a server placed on another machine (AD-014), or a job its host answered through here: its page is the
+            # host's, as PlacedRoutes sends a browser there; the panel sends it to that address under its link
             name = str(params.get("server") or "")
             if page == "server":
                 target = f"/servers/{name}"
+            elif page == "job":
+                target = f"/jobs/{params.get('job_id', '')}"
             else:
                 target = f"/servers/{name}/{params.get('role', '')}/{params.get('kind', 'log') if page == 'shell' else 'log'}"
             server, _host = placed_target(target)
@@ -12662,6 +12726,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     @app.get("/schedules", dependencies=[Depends(admin)])
     async def schedules_page(request: Request):
+        return _TEMPLATES.TemplateResponse(request, "schedules.html", await schedules_context(request, {}))
+
+    @context_of("schedules")
+    async def schedules_context(request: Request, params: dict) -> dict:
         targets = {}
         for srv in settings.servers.values():
             plugin = plugins.registry().get(srv.type)
@@ -12676,14 +12744,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     "restore_fields": [_field_dict(f) for f in plugin.restore_fields()] if plugin else [],
                     "from_link": src.to_dict() if src else None,
                 }
-        return _TEMPLATES.TemplateResponse(
-            request, "schedules.html",
-            {"schedules": [schedule_view(s) for s in scheduler.schedules.values()], "targets": targets,
-             "links": list(settings.link_targets), "connections": list(settings.connections),
-             "scripts": schedules.list_scripts(settings.scripts_dir),
-             "scripts_dir": settings.scripts_dir, "schedules_file": settings.schedules_file,
-             "load_error": schedules_error, "default_user": schedules.DEFAULT_USER},
-        )
+        return {"schedules": [schedule_view(s) for s in scheduler.schedules.values()], "targets": targets,
+                "links": list(settings.link_targets), "connections": list(settings.connections),
+                "scripts": schedules.list_scripts(settings.scripts_dir),
+                "scripts_dir": settings.scripts_dir, "schedules_file": settings.schedules_file,
+                "load_error": schedules_error, "default_user": schedules.DEFAULT_USER}
 
     @app.get("/api/schedules/next", dependencies=[Depends(admin)])
     async def schedules_next(cron: str = ""):
@@ -14186,9 +14251,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 for d in sorted(load_destinations().values(), key=lambda d: (d.workspace, d.name))
                 if workspace is None or d.workspace == workspace]
 
-    def destination_kinds(request: Request) -> dict:
-        """The kinds and their settings, in the page's language."""
-        lang = request_language(request)
+    def destination_kinds(lang: str) -> dict:
+        """The kinds and their settings, in lang."""
         return {k: {"label": i18n.tr(lang, label),
                     "settings": [{**s.to_dict(), "label": i18n.tr(lang, s.label), "help": i18n.tr(lang, s.help)}
                                  for s in found]}
@@ -14262,14 +14326,26 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                           dest.name)
         return {"key": dest.key}
 
+    @context_of("destinations")
+    async def destinations_context(request: Request, params: dict, lang: str = i18n.DEFAULT) -> dict:
+        """The machine's destinations and the workspaces' (params without workspace), or a workspace's: of each its
+        settings without a secret's value (public), which are set, which schedules use it; the kinds in lang (the
+        model in English: the panel that draws it says them in its words)."""
+        if params.get("workspace"):
+            ws = a_workspace(str(params["workspace"]))
+            return {"rows": destination_rows(ws.name), "kinds": destination_kinds(lang),
+                    "api": f"/api/workspaces/{ws.name}/destinations", "workspace": ws.name, "ws": ws,
+                    "rclone": destinations.rclone_path() is not None, "file": None}
+        return {"rows": destination_rows(None), "kinds": destination_kinds(lang), "api": "/api/destinations",
+                "workspace": "", "rclone": destinations.rclone_path() is not None,
+                "file": settings.destinations_file}
+
     @app.get("/destinations", dependencies=[Depends(admin)])
     async def destinations_page(request: Request):
         """The machine's destinations, and the workspaces' (each workspace's
         admins set theirs on its page)."""
-        return _TEMPLATES.TemplateResponse(request, "destinations.html", {
-            "rows": destination_rows(None), "kinds": destination_kinds(request), "api": "/api/destinations",
-            "workspace": "", "rclone": destinations.rclone_path() is not None,
-            "file": settings.destinations_file})
+        return _TEMPLATES.TemplateResponse(request, "destinations.html",
+                                           await destinations_context(request, {}, request_language(request)))
 
     @app.post("/api/destinations/save", dependencies=[Depends(admin)])
     async def machine_destination_save(payload: dict = Body(...)):
@@ -14290,11 +14366,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     @app.get("/workspaces/{workspace}/destinations", dependencies=[Depends(admin)])
     async def workspace_destinations_page(request: Request, workspace: str):
-        ws = a_workspace(workspace)
-        return _TEMPLATES.TemplateResponse(request, "destinations.html", {
-            "rows": destination_rows(ws.name), "kinds": destination_kinds(request),
-            "api": f"/api/workspaces/{ws.name}/destinations", "workspace": ws.name, "ws": ws,
-            "rclone": destinations.rclone_path() is not None, "file": None})
+        return _TEMPLATES.TemplateResponse(request, "destinations.html", await destinations_context(
+            request, {"workspace": workspace}, request_language(request)))
 
     @app.post("/api/workspaces/{workspace}/destinations/save", dependencies=[Depends(admin)])
     async def workspace_destination_save(workspace: str, payload: dict = Body(...)):
@@ -16395,20 +16468,23 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Only a user who logs in has an account")
         return me
 
+    @context_of("account")
+    async def account_context(request: Request, params: dict) -> dict:
+        """Who logged in here: its password, second factor, sessions, passkeys. A link has no account here (404, its
+        model as its page): the person's own is the panel's where it logged in."""
+        me = password_user(request.state.user)
+        return {"name": me.name, "role": WORKSPACE_ROLE if me.scoped else me.role, "workspaces": me.workspaces,
+                "fixed": me.name in settings.fixed.users, "two_step": two_step_state(request, me.name),
+                # the assistants this person let in with OAuth (oauth.py), revocable here
+                "grants": oauth_rows(oauth_store.listed(user=me.name)), "mcp_url": mcp_resource(request),
+                # its open sessions (sessions.py) and its passkeys (passkeys.py)
+                "sessions": session_rows(sessions.listed(me.name, request.cookies.get(COOKIE)), request_language(request)),
+                "passkeys": passkey_rows(request, me.name), "passkey_rp": passkey_rp(request),
+                "passkeys_available": passkeys.available()}
+
     @app.get("/account")
     async def account_page(request: Request, me: Principal = Depends(current_user)):
-        password_user(me)
-        return _TEMPLATES.TemplateResponse(
-            request, "account.html",
-            {"name": me.name, "role": WORKSPACE_ROLE if me.scoped else me.role, "workspaces": me.workspaces,
-             "fixed": me.name in settings.fixed.users, "two_step": two_step_state(request, me.name),
-             # the assistants this person let in with OAuth (oauth.py), revocable here
-             "grants": oauth_rows(oauth_store.listed(user=me.name)), "mcp_url": mcp_resource(request),
-             # its open sessions (sessions.py) and its passkeys (passkeys.py)
-             "sessions": session_rows(sessions.listed(me.name, request.cookies.get(COOKIE)), request_language(request)),
-             "passkeys": passkey_rows(request, me.name), "passkey_rp": passkey_rp(request),
-             "passkeys_available": passkeys.available()},
-        )
+        return _TEMPLATES.TemplateResponse(request, "account.html", await account_context(request, {}))
 
     _SECOND_SAID = {"code": "and a code of the app", "recovery code": "and a recovery code", "passkey": "and a passkey"}
 

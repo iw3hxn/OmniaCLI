@@ -4,6 +4,7 @@
 the panel draws itself for a link with pages: here, from the model the machine answers; the machine's own page,
 with a line on top, when the contract does not allow it; pages: machine as the way back; and a machine's HTML
 refused where the panel takes data only."""
+import asyncio
 import base64
 import dataclasses
 import gzip
@@ -14,13 +15,13 @@ import httpx
 import pytest
 import yaml
 
-from omniacli import centralpages
+from omniacli import centralpages, destinations, enterprise, gitcredentials, pullcrypto
 from omniacli.app import create_app
-from omniacli.config import LinkAccess, parse_connection, parse_settings
+from omniacli.config import LinkAccess, LinkTarget, SshRoute, parse_connection, parse_settings, parse_workspaces
 
 from .conftest import LINK_TOKEN, PASSWORD, USER_HASH, BasicAsSession, hash_token
 from .test_app import AUTH
-from .serverparity import SECRETS, Twice, keys, main_of
+from .serverparity import SECRETS, Twice, keys, main_of, secret_keys
 from .test_delegated_scope import as_user, pair  # noqa: F401 - the pair fixture (a home and its host)
 
 N = centralpages.CENTRAL_AGENT_API
@@ -119,21 +120,22 @@ def test_a_machine_that_says_nothing_is_zero():
 
 
 def test_every_page_is_found_with_its_parameters():
-    assert {centralpages.match(path)[0].name for path in PATHS.values()} == set(centralpages.BY_NAME) == set(PATHS)
+    assert {centralpages.match(path)[0].name for path in PATHS.values()} == set(PATHS) == set(centralpages.BY_NAME) - {
+        p.name for p in centralpages.CLASS_B}
     assert centralpages.match("servers/srv/test/log")[1] == {"server": "srv", "role": "test"}
     assert centralpages.match("servers/srv/test/psql")[1] == {"server": "srv", "role": "test", "kind": "psql"}
-    for other in ("servers/srv/x", "servers", "", "jobs/1", "servers/srv/test/log/x", "disks/x"):
+    for other in ("servers/srv/x", "servers", "", "servers/srv/test/log/x", "disks/x"):
         assert centralpages.match(other) is None, other
 
 
 async def test_the_machine_says_its_contract(central):
     info = (await central.get("/api/info", headers=JSON)).json()
-    assert info["agent_api"] == centralpages.AGENT_API == 2
+    assert info["agent_api"] == centralpages.AGENT_API == 3
     assert info["plugins"] == centralpages.plugin_versions() and info["plugins"]["odoo"] == centralpages.BUILT_IN
     # Try the link reads it, and keeps it
     tried = (await central.post("/api/links/cliente/test", headers={**JSON, "Origin": "http://central.test"})).json()
-    assert tried["ok"] and tried["agent_api"] == 2
-    assert central.app.state.link_agents["cliente"]["agent_api"] == 2
+    assert tried["ok"] and tried["agent_api"] == N
+    assert central.app.state.link_agents["cliente"]["agent_api"] == N
 
 
 async def test_read_every_ten_minutes_and_again_after_an_update(central, monkeypatch):
@@ -220,7 +222,7 @@ async def test_a_machine_at_zero_writes_its_pages_with_the_line(central):
     """A machine of before (no agent_api): every page is its own, as before; the line that says why only on the
     pages this panel would draw, the others exactly as with pages: machine."""
     central.machine.info = {"version": "2026.1.5513"}
-    for path in ("jobs", "", "users"):
+    for path in ("pullers", "", "users"):
         here = await central.get(f"/links/cliente/{path}", headers=PAGE)
         link_pages(central, "machine")
         theirs = await central.get(f"/links/cliente/{path}", headers=PAGE)
@@ -269,7 +271,7 @@ async def test_a_here_link_refuses_the_machines_html(central):
     resp = await central.head("/links/cliente/disks", headers=JSON)
     assert resp.status_code == 502
     # a page this panel does not draw yet (AD-017 §9, slices 4-5): the machine's, as before
-    resp = await central.get("/links/cliente/jobs", headers=PAGE)
+    resp = await central.get("/links/cliente/users", headers=PAGE)
     assert resp.status_code == 200 and "data-machine-page-line" not in resp.text
     # the panel's own script files, never the machine's
     central.machine.asked.clear()
@@ -307,7 +309,7 @@ async def test_a_machine_whose_contract_goes_back_is_not_shown(central):
     pages drawn here: this panel's page says so, until its pages: machine; the highest kept on disk."""
     assert (await central.get("/links/cliente/disks", headers=PAGE)).status_code == 200
     seen_file = central.app.state.settings.links_file.parent / centralpages.SEEN_FILE
-    assert json.loads(seen_file.read_text()) == {"cliente": 2} and oct(seen_file.stat().st_mode)[-3:] == "600"
+    assert json.loads(seen_file.read_text()) == {"cliente": N} and oct(seen_file.stat().st_mode)[-3:] == "600"
     central.machine.info = {"version": "2026.1.5513"}
     central.app.state.link_agents["cliente"]["at"] -= centralpages.READ_EVERY + 1
     central.machine.asked.clear()
@@ -315,9 +317,9 @@ async def test_a_machine_whose_contract_goes_back_is_not_shown(central):
     assert resp.status_code == 502 and "Page of cliente not shown" in resp.text and "now it says 0" in resp.text
     assert "/disks" not in central.machine.asked and "data-machine-page-line" not in resp.text
     # a page not drawn here: the machine's, as before
-    assert (await central.get("/links/cliente/jobs", headers=PAGE)).status_code == 200
+    assert (await central.get("/links/cliente/users", headers=PAGE)).status_code == 200
     # what was seen stays seen in a panel started again
-    assert centralpages.load_seen(seen_file) == {"cliente": 2}
+    assert centralpages.load_seen(seen_file) == {"cliente": N}
     # the admin lets it write its own again
     link_pages(central, "machine")
     resp = await central.get("/links/cliente/disks", headers=PAGE)
@@ -410,7 +412,7 @@ async def test_the_switch_on_the_links_settings(central):
     # a save reads its machine's contract again; a delete forgets what it said
     assert "cliente" not in central.app.state.link_agents
     await central.get("/links/cliente/disks", headers=PAGE)
-    assert central.app.state.link_agents_seen == {"cliente": 2}
+    assert central.app.state.link_agents_seen == {"cliente": N}
     await central.post("/api/links/delete", headers=post, json={"name": "cliente"})
     assert central.app.state.link_agents_seen == {} and "cliente" not in central.app.state.link_agents
 
@@ -515,30 +517,47 @@ async def test_the_parity_of_the_custom_roles_and_of_the_delegated_scope(pair, m
     assert all(without[k]["main"] != full[k]["main"] and without[k]["disabled"] > full[k]["disabled"] for k in full)
 
 
-async def test_a_machine_at_one_writes_its_instance_page_with_the_line(central):
-    """A machine of slices 1-2 (agent_api 1): the pages of class A drawn here, its instance's page its own with the
-    line that says to update it; once it said 2, it saying 1 again is this panel's page that says so."""
-    central.machine.info = {"agent_api": 1, "plugins": {}, "version": "2026.1.5515"}
-    central.machine.asked.clear()
-    resp = await central.get("/links/cliente/servers/srv", headers=PAGE)
-    assert resp.status_code == 200 and "/servers/srv" in central.machine.asked
-    assert "/api/pages/server" not in central.machine.asked
-    assert "data-machine-page-line" in resp.text and "cliente (2026.1.5515): update it" in resp.text
-    resp = await central.get("/links/cliente/disks", headers=PAGE)
-    assert resp.status_code == 200 and "data-machine-page-line" not in resp.text
-    assert central.app.state.link_agents_seen == {"cliente": 1}
-    # it said 2, then 1 again: its instance's page is not shown by its word; the pages of 1 are still drawn
+async def test_a_machine_one_behind_writes_its_newer_pages_with_the_line(central):
+    """A machine of slice 3 (agent_api N-1 = 2): the pages of class A and the instance's page drawn here, the pages
+    of class B its own with the line that says to update it; once it said N, it saying N-1 again is this panel's
+    page that says so for those, and the others are still drawn."""
+    central.machine.info = {"agent_api": N - 1, "plugins": {}, "version": "2026.1.5517"}
+    for path in ("jobs", "config", "links"):
+        central.machine.asked.clear()
+        resp = await central.get(f"/links/cliente/{path}", headers=PAGE)
+        assert resp.status_code == 200 and f"/{path}" in central.machine.asked, path
+        assert not [a for a in central.machine.asked if a.startswith("/api/pages/")], path
+        assert "data-machine-page-line" in resp.text and "cliente (2026.1.5517): update it" in resp.text, path
+    for path, name in (("disks", "disks"), ("servers/srv", "server")):
+        central.machine.asked.clear()
+        resp = await central.get(f"/links/cliente/{path}", headers=PAGE)
+        assert resp.status_code == 200 and "data-machine-page-line" not in resp.text, path
+        assert f"/api/pages/{name}" in central.machine.asked and f"/{path}" not in central.machine.asked, path
+    assert central.app.state.link_agents_seen == {"cliente": N - 1}
+    # it said N, then N-1 again: its pages of class B are not shown by its word; the others are still drawn
     central.machine.info = None
     central.app.state.link_agents.clear()
     assert (await central.get("/links/cliente/disks", headers=PAGE)).status_code == 200
-    assert central.app.state.link_agents_seen == {"cliente": 2}
-    central.machine.info = {"agent_api": 1, "plugins": {}, "version": "2026.1.5515"}
+    assert central.app.state.link_agents_seen == {"cliente": N}
+    central.machine.info = {"agent_api": N - 1, "plugins": {}, "version": "2026.1.5517"}
     central.app.state.link_agents.clear()
     central.machine.asked.clear()
-    resp = await central.get("/links/cliente/servers/srv", headers=PAGE)
+    resp = await central.get("/links/cliente/jobs", headers=PAGE)
     assert resp.status_code == 502 and "Page of cliente not shown" in resp.text
-    assert "/servers/srv" not in central.machine.asked
-    assert (await central.get("/links/cliente/disks", headers=PAGE)).status_code == 200
+    assert "/jobs" not in central.machine.asked
+    for path in ("disks", "servers/srv"):
+        assert (await central.get(f"/links/cliente/{path}", headers=PAGE)).status_code == 200
+
+
+async def test_a_machine_two_behind_writes_every_page_with_the_line(central):
+    """AD-017 §10.6: the panel reads N and N-1; a machine of slices 1-2 (agent_api 1) has every page its own, with
+    the line, as long as it never said more."""
+    central.machine.info = {"agent_api": N - 2, "plugins": {}, "version": "2026.1.5515"}
+    for path in ("disks", "servers/srv", "jobs"):
+        central.machine.asked.clear()
+        resp = await central.get(f"/links/cliente/{path}", headers=PAGE)
+        assert resp.status_code == 200 and f"/{path}" in central.machine.asked, path
+        assert "data-machine-page-line" in resp.text and "cliente (2026.1.5515): update it" in resp.text, path
 
 
 async def test_a_plugin_only_on_the_machine_brings_back_its_instance_page(central):
@@ -756,3 +775,261 @@ async def test_a_moved_page_is_followed_under_the_link_only(central, moved):
     answer_model(central, {"agent_api": centralpages.AGENT_API, "page": "server", "role": "admin", "moved": moved})
     resp = await central.get("/links/cliente/servers/srv", headers=PAGE, follow_redirects=False)
     assert resp.status_code != 307, moved
+
+
+# --- the pages of class B (slice 4) --------------------------------------------------------------------------
+
+# a page of each of the 14 of class B, as the browser opens it under /links/<name>/ ({job}: a job of the machine),
+# in the order AD-018 §18.8 puts them: the pages a customer sees first
+B_PATHS = {"account": "account", "jobs": "jobs", "job": "jobs/{job}", "workspaces": "workspaces",
+           "destinations": "destinations", "access": "access", "config": "config", "credentials": "credentials",
+           "enterprise": "enterprise", "links": "links", "tunnels": "tunnels", "groups": "groups",
+           "plugins": "plugins", "schedules": "schedules"}
+# their other forms: a workspace's destinations and access log, the filters, a workspace's form, a job not there
+B_MORE = ("workspaces/acme/destinations", "workspaces/acme/audit", "jobs?server=srv&q=pull", "access?event=read",
+          "workspaces?new=", "workspaces?edit=acme", "jobs/nope", "workspaces/nope/audit", "jobs/{own}",
+          "jobs?server=_machine")
+# a destination's key (the text form of pullcrypto)
+DEST_KEY = pullcrypto.new_key()
+# the secrets the machine keeps that its pages of class B are about: none of their values is ever in a model
+B_SECRETS = ("FarTok-914", "GitTok-914", "EntTok-914", "DestPass-914", DEST_KEY, "SmtpPw-914", "PRIVATE-KEY-914",
+             "WsDestPass-914")
+LINK = {"Authorization": f"Bearer {LINK_TOKEN}", "X-OmniaCLI-Prefix": "/links/cliente", "X-OmniaCLI-User": "admin",
+        "X-OmniaCLI-Menu": "servers,instances,backups,settings",
+        "Accept": "application/json"}
+
+
+async def class_b(central, monkeypatch) -> dict:
+    """The machine with what the pages of class B show, and the secrets they are about: a job, a workspace (acme,
+    with srv), a link of its own over SSH (its token), its SSH key (the private half), a git credential, the source
+    of Odoo Enterprise, two destinations (a password and the key of each), the SMTP password; {job: the job's id}."""
+    machine = central.machine.asgi.app
+    settings = machine.state.settings
+    settings.workspaces = parse_workspaces({"acme": {"label": "ACME", "servers": ["srv"], "members": {}}})
+    settings.link_targets = {"far": LinkTarget("far", "http://127.0.0.1:8090", "FarTok-914", ssh=SshRoute(
+        "far.example.com", "omniacli", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGhvc3Qta2V5LTkxNC1vZi1mYXItZXhhbXBsZS1jb20h"))}
+    folder = machine.state.ssh_tunnels.folder
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "id_ed25519").write_text("-----BEGIN OPENSSH PRIVATE KEY-----\nPRIVATE-KEY-914\n")
+    (folder / "id_ed25519.pub").write_text("ssh-ed25519 AAAApub914 omniacli\n")
+    gitcredentials.save(settings.credentials_file, {
+        "server:srv": {"github.com": gitcredentials.check("github.com", "bot", "GitTok-914")}})
+    enterprise.save(enterprise.file_of(settings.servers_file),
+                    enterprise.check("https://github.com/odoo/enterprise.git", "bot", "EntTok-914"))
+    destinations.save_destinations(settings.destinations_file, {
+        "off": destinations.Destination("off", "sftp", "/b", settings={"host": "h", "user": "u", "pass": "DestPass-914"},
+                                        key=DEST_KEY),
+        "ws-off": destinations.Destination("ws-off", "sftp", "/w", workspace="acme",
+                                           settings={"host": "h", "user": "u", "pass": "WsDestPass-914"}, key=DEST_KEY)})
+    monkeypatch.setattr(settings, "options", dataclasses.replace(settings.options, smtp_host="smtp.example.com",
+                                                                 smtp_password="SmtpPw-914"))
+
+    async def pulled(job):
+        job.log("pulled")
+
+    # a job of the machine's own (its key _machine/<x>: found on lab4, a name of the page that is not a server's)
+    own = machine.state.jobs.submit("Names published through this machine", ["_machine/relay"], "manual: admin", pulled)
+    job = machine.state.jobs.submit("Git pull srv/test", ["srv/test"], "manual: admin", pulled)
+    for _ in range(100):
+        if job.finished and own.finished:
+            break
+        await asyncio.sleep(0.01)
+    return {"job": job.id, "own": own.id}
+
+
+def b_paths(ids: dict) -> list[str]:
+    return [p.format(**ids) for p in (*B_PATHS.values(), *B_MORE)]
+
+
+def test_the_pages_of_class_b_are_found_with_their_parameters():
+    assert {centralpages.match(p.format(job="20261124-101500-abc123"))[0].name for p in B_PATHS.values()} == set(B_PATHS)
+    assert {p.name for p in centralpages.CLASS_B} == set(B_PATHS)
+    assert all(p.needs_agent_api == 3 for p in centralpages.CLASS_B)
+    assert centralpages.match("jobs/20261124-1")[1] == {"job_id": "20261124-1"}
+    assert centralpages.match("workspaces/acme/destinations")[1] == {"workspace": "acme"}
+    assert centralpages.match("destinations")[1] == {}
+    assert centralpages.match("workspaces/acme/audit")[0].name == "access"
+    for other in ("jobs/1/stop", "workspaces/acme", "workspaces/acme/users", "access/x", "config/srv/edit"):
+        assert centralpages.match(other) is None, other
+    # the names a page puts in an address: a server's, a job's, the machine's own (_machine), an instance's key
+    for name in ("srv", "20261124-101500-abc123", "_machine", "srv/production", "acme.example"):
+        assert centralpages.a_name(name), name
+    for name in ("..", ".", "../x", "srv/../x", "a/b/c", "a b", "%2e%2e", "", "/srv", "srv/", "a\\b"):
+        assert not centralpages.a_name(name), name
+
+
+async def test_every_page_of_class_b_drawn_here_from_its_model(central, monkeypatch):
+    """agent_api 3: each of the 14 is drawn here from /api/pages/<page>, with the status the machine's own page has;
+    never the machine's page. A person's own pages (account, tunnels) are this panel's error page, as the machine
+    refuses them to a link."""
+    ids = await class_b(central, monkeypatch)
+    client = central.app.state.link_clients.client(central.app.state.settings.link_targets["cliente"])
+    for path in b_paths(ids):
+        name = centralpages.match(path.split("?")[0])[0].name
+        own = await client.get(f"/{path}", headers={**LINK, "X-OmniaCLI-Menu": "servers,instances,backups,settings",
+                                                    "Accept": "text/html"})
+        central.machine.asked.clear()
+        resp = await central.get(f"/links/cliente/{path}", headers=PAGE)
+        assert resp.status_code == own.status_code, (path, resp.text[:300])
+        assert f"/api/pages/{name}" in central.machine.asked, path
+        assert f"/{path.split('?')[0]}" not in central.machine.asked, path
+        assert "data-machine-page-line" not in resp.text, path
+        if name in centralpages.PERSON_PAGES:
+            assert resp.status_code in (403, 404) and 'href="/links/cliente/instances"' in resp.text, path
+        elif resp.status_code == 200:
+            assert "/links/cliente/" in resp.text, path
+
+
+async def test_the_class_b_models_carry_no_secret_value(central, monkeypatch):
+    """AD-017 §8.1 for the 14: no secret's name among the fields of a model, at any depth, and no secret's value: a
+    link's token, the private SSH key, a git credential's token, the Enterprise source's, a destination's password
+    and key, the SMTP password. Of each the page says only whether it is set."""
+    ids = await class_b(central, monkeypatch)
+    async with httpx.AsyncClient(transport=central.machine.asgi, base_url="http://customer.test") as machine:
+        for name, path in B_PATHS.items():
+            params = centralpages.match(path.format(**ids))[1]
+            resp = await machine.get(f"/api/pages/{name}", params=params, headers=LINK)
+            if name in centralpages.PERSON_PAGES:
+                assert resp.status_code in (403, 404) and "context" not in resp.json(), name
+                continue
+            assert resp.status_code == 200, (name, resp.text[:300])
+            data = resp.json()
+            assert data["agent_api"] == 3 and set(data["context"]) <= set(centralpages.BY_NAME[name].fields), name
+            for secret in (*B_SECRETS, LINK_TOKEN):
+                assert secret not in resp.text, (name, secret)
+            assert not secret_keys(data["context"]), name
+        # the workspace's destinations too
+        resp = await machine.get("/api/pages/destinations", params={"workspace": "acme"}, headers=LINK)
+        assert resp.status_code == 200 and not [s for s in B_SECRETS if s in resp.text]
+        # what they show of them: set or not, the public halves
+        model = (await machine.get("/api/pages/links", headers=LINK)).json()["context"]
+        assert model["links"][0]["ssh"]["host_key"] == "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGhvc3Qta2V5LTkxNC1vZi1mYXItZXhhbXBsZS1jb20h" and "token" not in model["links"][0]
+        assert model["public_key"] == "ssh-ed25519 AAAApub914 omniacli"
+        model = (await machine.get("/api/pages/credentials", headers=LINK)).json()["context"]
+        assert model["scopes"][0]["credentials"] == [{"host": "github.com", "username": "bot", "token_set": True}]
+        model = (await machine.get("/api/pages/enterprise", headers=LINK)).json()["context"]
+        assert model["source"]["token_set"] is True
+        model = (await machine.get("/api/pages/destinations", headers=LINK)).json()["context"]
+        assert {r["name"]: r["set"] for r in model["rows"]} == {"off": ["pass"], "ws-off": ["pass"]}
+        # the kinds in English: the panel says them in its words
+        assert model["kinds"]["s3"]["label"] == "S3 and compatible"
+
+
+async def test_the_class_b_pages_have_the_controls_of_the_machines(central, monkeypatch):
+    """AD-017 §8.3 for the 14: the whole <main> drawn here equals the machine's own, for admin, developer and user
+    through the link; and on the machine every page it draws equals the one drawn from its model
+    (serverparity.Twice)."""
+    ids = await class_b(central, monkeypatch)
+    twice = Twice(monkeypatch)
+    for user in ("admin", "dev", "viewer"):
+        for path in b_paths(ids):
+            here = await central.get(f"/links/cliente/{path}", headers=as_(user))
+            link_pages(central, "machine")
+            theirs = await central.get(f"/links/cliente/{path}", headers=as_(user))
+            link_pages(central, "here")
+            assert here.status_code == theirs.status_code, (user, path, here.text[:300])
+            # (an access log grows between two requests, the reads of these very pages: its page drawn from the
+            # model is compared with the one drawn from the same context, by Twice on the machine)
+            if here.status_code == 200 and centralpages.match(path.split("?")[0])[0].name != "access":
+                assert main_of(here.text) == main_of(theirs.text), (user, path)
+    # the machine drew each page through the link, with the role of who looks (never more than the link's)
+    compared = {(c["page"], c["role"]) for c in twice.compared}
+    assert {p for p, _ in compared} == set(B_PATHS) - centralpages.PERSON_PAGES
+    assert {r for p, r in compared if p == "jobs"} == {"admin", "developer", "user"}
+    assert {r for p, r in compared if p == "config"} == {"admin"}
+
+
+async def test_the_class_b_parity_of_the_people_of_a_workspace(pair, monkeypatch):
+    """The people of a workspace (user, developer, admin, a copy of admin and a custom role without the logs) on the
+    pages of class B they reach on their home, and once srv is placed on its host (AD-014's delegated scope): the
+    page drawn from the model equals the page drawn from the live objects, every time."""
+    twice = Twice(monkeypatch)
+    job = pair.app.state.jobs.submit("Git pull srv/test", ["srv/test"], "manual: mario", _nothing, workspace="acme")
+    people = ("mario", "as-user", "as-developer", "as-admin", "copy-admin", "no-logs")
+    paths = ("/jobs", f"/jobs/{job.id}", "/workspaces/acme/destinations", "/workspaces/acme/audit", "/workspaces")
+    answered = {}
+    for placed in (False, True):
+        if placed:
+            pair.place()
+        for person in people:
+            for path in paths:
+                resp = await pair.get(path, headers=as_user(person), follow_redirects=True)
+                answered.setdefault((person, path), set()).add(resp.status_code)
+    # the same answers placed or not; each page a person reaches drawn the same from its model
+    assert all(len(codes) == 1 for codes in answered.values()), answered
+    drawn = {(c["user"], c["page"]) for c in twice.compared}
+    assert all(c["scoped"] for c in twice.compared)
+    for person in people:
+        assert {(person, "jobs"), (person, "job")} <= drawn, person
+    assert {("mario", "destinations"), ("mario", "access")} <= drawn
+    # a person who reaches a page has it from the model with what its role allows: the user does not get the
+    # workspace's destinations
+    assert answered[("as-user", "/workspaces/acme/destinations")] == {403}
+
+
+async def _nothing(job):
+    job.log("done")
+
+
+async def test_a_model_of_class_b_that_leaves_the_machine_is_refused(central, monkeypatch):
+    """A name the page puts in an address (a job's id, a server's, a workspace's) that is not a name, the address
+    of a page's requests that is not a path of the machine, a model of another job or workspace than the path's, a
+    person's page answered with a context: the whole model refused, this panel's error page."""
+    ids = await class_b(central, monkeypatch)
+
+    async def own(name: str, **params) -> dict:
+        async with httpx.AsyncClient(transport=central.machine.asgi, base_url="http://customer.test") as machine:
+            return (await machine.get(f"/api/pages/{name}", params=params, headers=LINK)).json()
+
+    cases = []
+    data = await own("jobs")
+    data["context"]["jobs"][0]["id"] = "../../api/links/delete"
+    cases.append(("jobs", "jobs", data))
+    data = await own("job", job_id=ids["job"])
+    data["context"]["job"]["id"] = "20261124-000000-other"
+    cases.append(("job", f"jobs/{ids['job']}", data))
+    data = await own("job", job_id=ids["job"])
+    data["context"]["job"]["instances"] = ["../x/production"]
+    cases.append(("job", f"jobs/{ids['job']}", data))
+    data = await own("destinations")
+    data["context"]["api"] = "//evil.test/x"
+    cases.append(("destinations", "destinations", data))
+    data = await own("destinations")
+    data["context"]["rows"][0]["workspace"] = "../../links/other"
+    cases.append(("destinations", "destinations", data))
+    data = await own("access", workspace="acme")
+    data["context"]["ws"]["name"] = "other"
+    cases.append(("access", "workspaces/acme/audit", data))
+    data = await own("config")
+    data["context"]["servers"][0]["name"] = "../../links/other/config"
+    cases.append(("config", "config", data))
+    cases.append(("account", "account", {"agent_api": 3, "page": "account", "role": "admin",
+                                         "context": {"name": "admin"}}))
+    for name, path, data in cases:
+        central.machine.answer[f"/api/pages/{name}"] = (200, {"content-type": "application/json"},
+                                                       json.dumps(data).encode())
+        resp = await central.get(f"/links/cliente/{path}", headers=PAGE)
+        assert resp.status_code == 502 and "is not the one this panel reads" in resp.text, (name, path)
+        assert "../../" not in resp.text and "evil.test" not in resp.text, (name, path)
+        del central.machine.answer[f"/api/pages/{name}"]
+
+
+async def test_the_kinds_of_destination_in_the_words_of_who_looks(central, monkeypatch):
+    """The model says the kinds of destination in English; the page drawn here says them in the reader's
+    language, by this panel's catalogue."""
+    await class_b(central, monkeypatch)
+    resp = await central.get("/links/cliente/destinations", headers={**PAGE, "Cookie": "omniacli_lang=it"})
+    assert resp.status_code == 200 and "S3 e compatibili" in resp.text and "Chiave privata (PEM)" in resp.text
+    assert "S3 and compatible" not in resp.text
+
+
+async def test_every_read_of_a_class_b_model_is_in_the_machines_access_log(central, monkeypatch):
+    """AD-017 §17.5 decision 5: each read of a model of class B, with who looks through the link (on_behalf)."""
+    ids = await class_b(central, monkeypatch)
+    for path in ("jobs", f"jobs/{ids['job']}", "workspaces/acme/audit"):
+        assert (await central.get(f"/links/cliente/{path}", headers=as_("dev"))).status_code in (200, 403), path
+    reads = [e for e in central.machine.asgi.app.state.access_log.recent(200)
+             if e.get("event") == "read" and str(e.get("what", "")).startswith("model of the page ")]
+    assert {e["what"] for e in reads} >= {"model of the page jobs", "model of the page job",
+                                          "model of the page access"}
+    assert all(e["kind"] == "link" and e["on_behalf"] == "dev" for e in reads), reads

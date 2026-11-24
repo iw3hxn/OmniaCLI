@@ -268,8 +268,8 @@ pagine scritte dal centrale la macchina fornisce solo JSON, inserito con l'autoe
    riga `failed` nel registro. A una richiesta `/api` del browser il centrale chiede `Accept: application/json`, così
    la macchina risponde con il suo motivo e non con la sua pagina d'errore.
 
-   **Cosa passa ancora come HTML della macchina:** le pagine B e C, non ancora scritte dal centrale (fette 4-5; la pagina dell'istanza lo è dalla fetta 3), con i
-   loro frammenti; con `pages: machine`, tutto. Nelle 12 pagine A l'HTML della macchina passa solo nel ritorno di 17.2
+   **Cosa passa ancora come HTML della macchina:** le pagine C, non ancora scritte dal centrale (fetta 5; la pagina
+   dell'istanza lo è dalla fetta 3, le 14 pagine B dalla fetta 4), con i loro frammenti; con `pages: machine`, tutto. Nelle 12 pagine A l'HTML della macchina passa solo nel ritorno di 17.2
    (con la riga in testa), e solo finché quella macchina non ha mai detto `agent_api ≥ 1`: il valore più alto detto da
    ogni collegamento è tenuto su disco (`link-agents.json`, nel purge). Dopo, se dice meno o non ha il modello della
    pagina, il centrale mostra una sua pagina che lo dice, finché un amministratore non mette `pages: machine`. Un
@@ -408,6 +408,72 @@ Per ogni fetta: il rilascio, la prova su lab3/lab4, come si annulla, la stima.
 4. **Le 14 pagine B**, in 2-3 rilasci.
    - *Prova*: la parità e lo 0 segreti, pagina per pagina.
    - *Stima*: 5,5 g.
+
+   **Com'è nel codice (fetta 4).**
+   - Un'API nuova per pagina, nella stessa route delle fette 2-3: `GET /api/pages/<pagina>`, con i nomi
+     dell'indirizzo (`job_id`, `workspace`) e i filtri della pagina in query (`server`, `q`, `since`, `until`, `who`,
+     `event`, `edit`, `new`). `AGENT_API` e `CENTRAL_AGENT_API` passano a 3; le 14 pagine chiedono 3, la pagina
+     dell'istanza resta a 2, le 12 pagine A a 1. Il centrale legge 3 e 2 (§10.6): una macchina a 2 (2026.1.5517) ha
+     dal centrale le pagine A e quella dell'istanza, e le sue pagine B con la riga «aggiornala»; una macchina a 1
+     (2026.1.5515) ha tutte le pagine sue, con la riga.
+   - L'ordine è quello di AD-018 §18.8: `account`, `jobs`, `job`, `workspaces`, `destinations` (della macchina e di un
+     workspace, `workspaces/<w>/destinations`), `access` (della macchina e di un workspace, `workspaces/<w>/audit`),
+     poi `config`, `credentials`, `enterprise`, `links`, `tunnels`, `groups`, `plugins`, `schedules`.
+   - Ogni route è divisa in due come nella fetta 3: un contesto (`app.<pagina>_context`, registrato con `context_of`)
+     che fa i controlli della route e i dati con gli oggetti vivi, scritto dalla pagina della macchina così com'è;
+     `centralpages.page_model` lo prende campo per campo (`Page.fields`), i campi che la route ha messo. Gli oggetti
+     vivi hanno un elenco di campi ciascuno: un server della pagina Server (`config_server_model`: stato, parole
+     della ricerca del plugin, nome e ramo dei repository), un collegamento (`link_model`: dove va, il percorso SSH e
+     la chiave dell'host fissata, **mai** il token), un plugin trovato, un job (`job_model`, con istanze, server,
+     origine e fine; mai le righe, che lo script legge da `/api/jobs/<id>`). Ogni altro oggetto è rifiutato
+     (`ModelError`).
+   - Nessun segreto nei modelli, provato per valore e non solo per nome (`test_the_class_b_models_carry_no_secret_value`):
+     il token di un collegamento della macchina, la chiave SSH privata, il token di una credenziale git, quello della
+     sorgente di Enterprise, la password e la chiave di una destinazione (della macchina e di un workspace), la
+     password SMTP. Delle credenziali, della sorgente e delle destinazioni il modello dice solo se il segreto c'è
+     (`token_set`, `set`); della chiave SSH della macchina solo la metà pubblica. Il controllo dei nomi
+     (`serverparity.secret_keys`) conosce tre nomi che non sono segreti: `token_set`, `token_people` e
+     `reset_passwords` (un'opzione sì o no della copia di una pianificazione).
+   - Il centrale scrive dal modello (`centralpages.page_view`) con gli stessi controlli della fetta 3, più due:
+     - un nome che la pagina mette in un indirizzo (l'id di un job, il nome di un server, di un workspace, la chiave
+       di un'istanza `server/ruolo`) deve essere un nome: niente `..`, niente barra, niente spazio. Un
+       `servers[0].name = "../../links/altro/config"` porterebbe il pulsante «Modifica» su un'altra macchina;
+     - il modello è della stessa pagina dell'indirizzo: lo stesso job, lo stesso workspace.
+     L'indirizzo delle richieste della pagina delle destinazioni (`api`) è un percorso della macchina.
+   - I tipi di destinazione arrivano in inglese e il centrale li dice nella lingua di chi guarda, con il suo
+     catalogo (come i gruppi di Impostazioni nella fetta 2).
+   - `drawn_for` dice anche `workspaces_menu` (la briciola «Workspace» delle pagine di un workspace), per il ruolo di
+     lì.
+   - Un job che l'host di uno spostamento ha risposto attraverso la casa va all'host con il 307 di prima, come il
+     log e la pagina dell'istanza.
+   - La parità: `tests/serverparity.py` scrive anche ogni pagina B due volte, dal contesto vivo e dal modello passato
+     per JSON (`Twice`, che con `OMNIACLI_PARITY=1` lo fa per ogni test della suite). Nei test: admin, developer e
+     user attraverso il collegamento; le persone di un workspace (mario, user, developer, admin, la copia di admin
+     e il ruolo personalizzato senza i log) sulla casa, prima e dopo il posizionamento di srv sull'host.
+   - Sul lab è stato trovato un difetto che i test non avevano: i job della macchina stessa hanno la chiave
+     `_machine/<x>`, e il controllo dei nomi li rifiutava (la pagina Job di lab4 dava 502). Ora un nome può
+     cominciare con `_`, e i test hanno un job `_machine/relay`.
+
+   **Dove la fetta si discosta dal piano.**
+   - **Un rilascio, non 2-3.** Le 14 pagine chiedono tutte `agent_api` 3. Con due numeri in più (3 e 4) il centrale,
+     che legge N e N−1, avrebbe smesso di scrivere le pagine della fetta 3 a una macchina a 2 già al secondo
+     rilascio.
+   - **`account` e `tunnels` non hanno un modello.** Sono della persona che ha fatto il login su quel pannello: la
+     macchina li rifiuta a un collegamento oggi (404 «Only a user who logs in has an account», 403 «Only a user who
+     logs in here may open a tunnel»). Il loro modello risponde lo stesso rifiuto, e il centrale scrive la sua
+     pagina d'errore con lo stesso codice, senza mai l'HTML della macchina. Se una macchina risponde 200 con un
+     contesto, il modello è rifiutato (`PERSON_PAGES`). L'account delle persone dei clienti passa nel centrale con
+     AD-018: è il `/account` del centrale, non una pagina di un collegamento.
+   - **Le pagine con segreti (`credentials`, `links`, `tunnels`) non vanno in classe D.** `credentials` e `links` si
+     scrivono senza nessun valore segreto (provato per valore); `tunnels` è una pagina della persona (sopra).
+   - **Il registro degli accessi sul lab** si confronta senza le righe e senza il conteggio: il registro cresce tra
+     una richiesta e l'altra, con le letture di queste stesse pagine. La parità esatta della pagina è quella di
+     `Twice`, sullo stesso contesto.
+   - Come nella fetta 3, il ruolo personalizzato e le persone di un workspace non passano da un collegamento: la loro
+     parità è nei test. Sul lab è misurata per admin, developer e user.
+   - La pagina `workspaces` di una persona di workspace (il suo elenco, da `WORKSPACES_MENU_FROM` workspace in su)
+     ha il suo modello e la sua parità nei test; i clienti la vedranno dal centrale solo dopo il loro passaggio
+     (AD-018 §18.8).
 5. **Le altre pagine C**: `index` (sezione macchina e scheda Database), `workspace`, `users`, `pullers`, `server_form`,
    `options`.
    - *Prova*: come la fetta 3.
