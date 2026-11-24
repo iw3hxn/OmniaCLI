@@ -43,7 +43,7 @@
     <tr data-link="{{ link.name }}" data-url="{{ link.url }}" data-ca="{{ link.ca_file }}" data-tunnel="{{ tunnel }}" data-pages="{{ link.pages }}"
         {% if link.ssh %}data-ssh-host="{{ link.ssh.host }}" data-ssh-port="{{ link.ssh.port }}" data-ssh-user="{{ link.ssh.user }}"
         data-ssh-key="{{ link.ssh.host_key }}" data-fingerprint="{{ s.fingerprint }}"{% endif %}>
-      <td><strong><a href="/links/{{ link.name }}/">{{ link.name }}</a></strong></td>
+      <td><strong><a href="{{ prefix }}/links/{{ link.name }}/">{{ link.name }}</a></strong></td>
       <td class="link-how">{% if link.ssh %}{{ _("Through SSH") }} · <span class="mono">{{ link.ssh.host }}{% if link.ssh.port != 22 %}:{{ link.ssh.port }}{% endif %}</span>
         {% else %}{{ _("Direct") }} · <span class="mono">{{ link.url }}</span>{% endif %}
         {% if link.url.startswith("http://") and not link.ssh %}<br><span class="error">{{ _("http: the token travels in clear, use it only through a VPN or an SSH tunnel") }}</span>{% endif %}

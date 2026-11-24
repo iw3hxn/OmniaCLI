@@ -452,11 +452,11 @@ _URL_KEYS = frozenset({"url", "web_url", "open", "page", "ci_url", "deploys_url"
                        "preview", "users"})
 # of those, the links to elsewhere (the Odoo of an instance, its repository): http or https only; every other one
 # is an address of the machine's own, under the link's prefix
-_EXTERNAL = re.compile(r"(?:.*\.)?(?:web_url|open)|.*\.repo\.url|stagings\.parent\.url|stagings\.rows\[\]\.url|links\[\]\.url")
+_EXTERNAL = re.compile(r"(?:.*\.)?(?:web_url|open)|.*\.repo\.url|stagings\.parent\.url|stagings\.rows\[\]\.url")
 # an address of the machine's own that is not under a key of _URL_KEYS
 _INTERNAL_AT = frozenset({"enterprise.pgvector.machine"})
 # under such a key, a text the page shows and never opens (where an instance's Debian package is published)
-_TEXT_AT = re.compile(r".*\.package\.url|source\.url")
+_TEXT_AT = re.compile(r".*\.package\.url")
 _CONTROL = re.compile(r"[\x00-\x20\x7f\\]")
 
 
@@ -608,6 +608,8 @@ class PluginWords(Fields):
 # a name a page puts in an address of the machine (a job's id, a server's, a workspace's): one segment of a path,
 # never . or .., no slash (the machine's own jobs are of _machine); an instance's key (server/role) is two of them
 _NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._~@+-]*")
+# (a place that ends in [] is a list of names: the value there is a list, never a text the page would go through
+# letter by letter)
 _NAMES_AT = {
     "jobs": ("jobs[].id",),
     "job": ("job.id", "live[]", "job.instances[]"),
@@ -615,8 +617,15 @@ _NAMES_AT = {
     "access": ("entries[].job[]", "ws.name"),
     "config": ("servers[].name",),
     "enterprise": ("copies[].users[]",),
+    "links": ("links[].name",),
     "schedules": ("schedules[].name", "schedules[].data.instance", "schedules[].runs[].job"),
     "workspaces": ("handover_ws",),
+}
+# the addresses of the pages of class B, by their exact place (never by the name of a key: these pages' mappings are
+# keyed by the customer's own names, a storage root, a token, a subdomain called «backups» or «preview»), all links to
+# elsewhere (http or https with a host); the address of the destinations page's requests is checked apart
+_ELSEWHERE_AT = {
+    "links": ("links[].url",),
 }
 
 
@@ -626,32 +635,48 @@ def a_name(value) -> bool:
         _NAME.fullmatch(part) for part in value.split("/", 1))
 
 
-def checked_names(value, names: tuple[str, ...], where: str = "") -> None:
-    """ValueError when a value at one of the places names puts in an address is not a name (a .. that would take
-    the page's links out of its machine, a slash, a space)."""
-    if where in names:
-        for item in value if isinstance(value, list) else [value]:
-            if item not in (None, "") and not a_name(item):
-                raise ValueError(f"its page has {str(item)[:80]!r} at {where}, which is not a name")
-        return
+def places(value, where: str = ""):
+    """(place, value) of every value of a model, its place written as the places of _NAMES_AT (jobs[].id)."""
+    yield where, value
     if isinstance(value, dict):
         for key, item in value.items():
-            checked_names(item, names, f"{where}.{key}" if where else str(key))
+            yield from places(item, f"{where}.{key}" if where else str(key))
     elif isinstance(value, list):
         for item in value:
-            checked_names(item, names, f"{where}[]")
+            yield from places(item, f"{where}[]")
+
+
+def checked_names(value, names: tuple[str, ...]) -> None:
+    """ValueError when a value at one of the places names puts in an address is not a name (a .. that would take
+    the page's links out of its machine, a slash, a space), or a list of names is not a list."""
+    for at, found in places(value):
+        if at + "[]" in names and found is not None and not isinstance(found, list):
+            raise ValueError(f"its page has {str(found)[:80]!r} at {at}, which is not a list of names")
+        if at in names and found not in (None, "") and not a_name(found):
+            raise ValueError(f"its page has {str(found)[:80]!r} at {at}, which is not a name")
+
+
+def checked_elsewhere(value, at_places: tuple[str, ...]) -> None:
+    """ValueError when a value at one of at_places is not a link to elsewhere (http or https, with a host)."""
+    for at, found in places(value):
+        if at in at_places and found not in (None, "") and not elsewhere(found):
+            raise ValueError(f"its page has the address {str(found)[:80]!r} at {at}, which is not one it may use")
 
 
 def page_view(name: str, model: dict, prefix: str, lang: str = i18n.DEFAULT) -> Drawn:
-    """The context of a page of class B drawn here, from the model a machine answered (its fields by name), its
-    addresses under prefix (the link's /links/<m>; "" for a machine's own page), its texts in lang; ValueError when
-    it has an address it may not use or a name that would leave the machine."""
+    """The context of a page of class B drawn here, from the model a machine answered (its fields by name), under
+    prefix (the link's /links/<m>; "" for a machine's own page), its texts in lang; ValueError when it has an address
+    it may not use (at the places of _ELSEWHERE_AT) or a name that would leave the machine (_NAMES_AT)."""
     if name in PERSON_PAGES:
         raise ValueError(f"the page {name} is of who logged in there: a link has none")
     model = {k: model[k] for k in BY_NAME[name].fields if k in model}
-    checked_addresses(model, prefix)
+    checked_elsewhere(model, _ELSEWHERE_AT.get(name, ()))
     checked_names(model, _NAMES_AT.get(name, ()))
     context = Drawn({k: fields_of(v) for k, v in model.items()})
+    if name == "workspaces" and prefix:
+        # the list's machines are this panel's links on its own page, never a machine's word: through a link the
+        # machine has none (listed_links of a link), and a name there would make rows and forms under /links/<name>
+        context["links"], context["machine_column"] = [], False
     if name == "config":
         for server in context.get("servers") or []:
             for inst in (server.get("instances") or {}).values():

@@ -415,7 +415,9 @@ Per ogni fetta: il rilascio, la prova su lab3/lab4, come si annulla, la stima.
      `event`, `edit`, `new`). `AGENT_API` e `CENTRAL_AGENT_API` passano a 3; le 14 pagine chiedono 3, la pagina
      dell'istanza resta a 2, le 12 pagine A a 1. Il centrale legge 3 e 2 (§10.6): una macchina a 2 (2026.1.5517) ha
      dal centrale le pagine A e quella dell'istanza, e le sue pagine B con la riga «aggiornala»; una macchina a 1
-     (2026.1.5515) ha tutte le pagine sue, con la riga.
+     (2026.1.5515) ha tutte le pagine sue, con la riga. **Questo cambia per le macchine a 1**: fino alla fetta 3 il
+     centrale scriveva loro le 12 pagine A; ora `OLDEST_READ` è 2 e le pagine A di una macchina a 1 tornano le sue,
+     con la riga, finché non si aggiorna (la regola N e N−1 di §10.6, voluta).
    - L'ordine è quello di AD-018 §18.8: `account`, `jobs`, `job`, `workspaces`, `destinations` (della macchina e di un
      workspace, `workspaces/<w>/destinations`), `access` (della macchina e di un workspace, `workspaces/<w>/audit`),
      poi `config`, `credentials`, `enterprise`, `links`, `tunnels`, `groups`, `plugins`, `schedules`.
@@ -427,19 +429,42 @@ Per ogni fetta: il rilascio, la prova su lab3/lab4, come si annulla, la stima.
      la chiave dell'host fissata, **mai** il token), un plugin trovato, un job (`job_model`, con istanze, server,
      origine e fine; mai le righe, che lo script legge da `/api/jobs/<id>`). Ogni altro oggetto è rifiutato
      (`ModelError`).
-   - Nessun segreto nei modelli, provato per valore e non solo per nome (`test_the_class_b_models_carry_no_secret_value`):
-     il token di un collegamento della macchina, la chiave SSH privata, il token di una credenziale git, quello della
-     sorgente di Enterprise, la password e la chiave di una destinazione (della macchina e di un workspace), la
-     password SMTP. Delle credenziali, della sorgente e delle destinazioni il modello dice solo se il segreto c'è
-     (`token_set`, `set`); della chiave SSH della macchina solo la metà pubblica. Il controllo dei nomi
+   - Nessuno dei segreti che queste pagine gestiscono è nel modello, provato per valore e non solo per nome
+     (`test_the_class_b_models_carry_no_secret_value`): il token di un collegamento della macchina, la chiave SSH
+     privata, il token di una credenziale git, quello della sorgente di Enterprise, la password e la chiave di una
+     destinazione (della macchina e di un workspace, anche WebDAV), la password SMTP. Delle credenziali, della
+     sorgente e delle destinazioni il modello dice solo se il segreto c'è (`token_set`, `set`); della chiave SSH
+     della macchina solo la metà pubblica.
+   - Gli indirizzi degli avvisi (`notify`) di una pianificazione e di un workspace arrivano solo con il loro sito
+     (`https://hooks.slack.com/…`): Slack e Teams portano il segreto nel percorso. Vale per la pagina della macchina
+     e per il modello insieme (`notices_shown`, nel contesto), perché queste due pagine non li mostrano e non li
+     rimandano al salvataggio: si cambiano nella pagina del workspace e nelle Opzioni, che restano della macchina.
+   - **Cosa il modello porta com'è, perché la pagina della macchina lo mostra alla stessa persona** (la parità): i
+     testi d'errore della lettura di un file (credenziali, Enterprise, archivi). Un errore di PyYAML riporta la riga
+     che non legge, e quella riga può avere un token. Il modello va solo al pannello del collegamento, con il ruolo
+     della persona (admin per queste pagine), come la pagina della macchina andava al suo browser. Il controllo dei nomi
      (`serverparity.secret_keys`) conosce tre nomi che non sono segreti: `token_set`, `token_people` e
      `reset_passwords` (un'opzione sì o no della copia di una pianificazione).
-   - Il centrale scrive dal modello (`centralpages.page_view`) con gli stessi controlli della fetta 3, più due:
-     - un nome che la pagina mette in un indirizzo (l'id di un job, il nome di un server, di un workspace, la chiave
-       di un'istanza `server/ruolo`) deve essere un nome: niente `..`, niente barra, niente spazio. Un
-       `servers[0].name = "../../links/altro/config"` porterebbe il pulsante «Modifica» su un'altra macchina;
-     - il modello è della stessa pagina dell'indirizzo: lo stesso job, lo stesso workspace.
-     L'indirizzo delle richieste della pagina delle destinazioni (`api`) è un percorso della macchina.
+   - Il centrale scrive dal modello (`centralpages.page_view`) con questi controlli:
+     - un nome che la pagina mette in un indirizzo (l'id di un job, il nome di un server, di un workspace, di un
+       collegamento, la chiave di un'istanza `server/ruolo`) deve essere un nome: niente `..`, niente barra, niente
+       spazio (`_NAMES_AT`). Un `servers[0].name = "../../links/altro/config"` porterebbe il pulsante «Modifica» su
+       un'altra macchina. Dove la pagina aspetta un elenco di nomi (i job di una voce del registro, le istanze di un
+       job) c'è un elenco, mai un testo che la pagina percorrerebbe lettera per lettera;
+     - gli indirizzi verso fuori stanno al loro posto esatto (`_ELSEWHERE_AT`: l'indirizzo di un collegamento,
+       solo `http` o `https`), non al nome di una chiave come nella fetta 3: le mappe di queste pagine hanno per
+       chiave i nomi del cliente (una radice dello spazio, un token, un sottodominio chiamato `backups` o
+       `preview`, l'`url` di una destinazione WebDAV), e il controllo per nome rifiutava le loro pagine;
+     - il modello è della stessa pagina dell'indirizzo: lo stesso job, lo stesso workspace;
+     - l'indirizzo delle richieste della pagina delle destinazioni (`api`) è un percorso della macchina;
+     - nella pagina dei workspace attraverso un collegamento, le macchine dell'elenco (`links`, `machine_column`)
+       sono vuote: la macchina non ne ha per un collegamento, e un nome lì costruirebbe righe e moduli sotto
+       `/links/<nome>` del centrale.
+     Due indirizzi sono cambiati nei template, uguali sulla macchina e qui: la riga di un collegamento nella pagina
+     Collegamenti apre `{{ prefix }}/links/<nome>/` (prima `/links/<nome>/`, che attraverso un collegamento portava
+     al collegamento omonimo del centrale), e lo script di un job usa `result.download` solo se è un percorso della
+     macchina (niente schema, niente `//`, niente `.` o `..`) prima di offrirlo e di aprirlo da solo con
+     `?download=1`.
    - I tipi di destinazione arrivano in inglese e il centrale li dice nella lingua di chi guarda, con il suo
      catalogo (come i gruppi di Impostazioni nella fetta 2).
    - `drawn_for` dice anche `workspaces_menu` (la briciola «Workspace» delle pagine di un workspace), per il ruolo di

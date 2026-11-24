@@ -293,9 +293,17 @@
   }
   // a backup's zip: always a link; started by itself when the job was
   // launched with "Backup + download" (?download=1), once
+  // the address of the file, from the job's result: a path of this machine (under the page's prefix once added),
+  // never another site, another machine or a route of a panel it is seen through (no scheme, no //, no . or ..)
+  function downloadPath(path) {
+    if (typeof path !== "string" || !path.startsWith("/") || path.startsWith("//") || /[\\\s]/.test(path)) return false;
+    let decoded;
+    try { decoded = decodeURIComponent(path.split(/[?#]/)[0]); } catch (e) { return false; }
+    return !/[\\\s]/.test(decoded) && !decoded.split("/").some((part) => part === "." || part === "..");
+  }
   function offerDownload(result) {
     const box = document.getElementById("download");
-    if (!box.hidden) return;
+    if (!box.hidden || !downloadPath(result.download)) return;
     const a = document.createElement("a");
     a.href = {{ prefix | tojson }} + result.download; a.setAttribute("download", result.file);
     const size = window.sizeText(result.size);

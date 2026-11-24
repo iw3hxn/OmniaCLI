@@ -1116,6 +1116,10 @@ Users, Pullers, a server's form, Options) are still the machine's own.
   the Enterprise source or a destination they say whether its token, password
   or key is set, never its value; of a link where it goes and the SSH host key
   it fixed, never its token; of the machine's SSH key the public half only.
+  The notices of a schedule or a workspace come with their site only
+  (`https://hooks.slack.com/…`: a webhook carries its secret in its path), on
+  the machine's page too. What the machine's own page shows the same person
+  passes as it is: the text of an error reading a file, which may quote it.
   An instance placed on another machine (AD-014), or a job its host answered,
   is sent to its host as before; the page of a move of one whose copy there
   was deleted is drawn here too, from its name and its move. A model is
@@ -1124,7 +1128,8 @@ Users, Pullers, a server's form, Options) are still the machine's own.
   the page may not use (a link elsewhere that is not http(s), an address of
   the machine not under `/links/<name>/`: no `..`, no other machine, no route
   of this panel), or a name it puts in an address (a job's id, a server's, a
-  workspace's) that is not one: a `..`, a slash, a space. The kinds of a
+  workspace's, a link's) that is not one: a `..`, a slash, a space. Through a
+  link, the Workspaces list has no machines of the machine's word. The kinds of a
   destination come in English and are said here in the reader's language.
   The page writes its moments by the machine's clock. The models are never
   reached by a browser through the link (`/links/<name>/api/pages/…`: 404). Every read of a model is in the machine's access log

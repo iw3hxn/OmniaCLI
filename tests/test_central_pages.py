@@ -10,14 +10,19 @@ import dataclasses
 import gzip
 import json
 import re
+import shutil
+import subprocess
 
 import httpx
 import pytest
 import yaml
 
+from omniacli import app as app_module
 from omniacli import centralpages, destinations, enterprise, gitcredentials, pullcrypto
 from omniacli.app import create_app
-from omniacli.config import LinkAccess, LinkTarget, SshRoute, parse_connection, parse_settings, parse_workspaces
+from omniacli.config import (LinkAccess, LinkTarget, Server, SshRoute, parse_connection, parse_settings,
+                             parse_workspaces)
+from omniacli.listgroups import ListGroup
 
 from .conftest import LINK_TOKEN, PASSWORD, USER_HASH, BasicAsSession, hash_token
 from .test_app import AUTH
@@ -793,7 +798,7 @@ B_MORE = ("workspaces/acme/destinations", "workspaces/acme/audit", "jobs?server=
 DEST_KEY = pullcrypto.new_key()
 # the secrets the machine keeps that its pages of class B are about: none of their values is ever in a model
 B_SECRETS = ("FarTok-914", "GitTok-914", "EntTok-914", "DestPass-914", DEST_KEY, "SmtpPw-914", "PRIVATE-KEY-914",
-             "WsDestPass-914")
+             "WsDestPass-914", "DavPass-914", "Hook914")
 LINK = {"Authorization": f"Bearer {LINK_TOKEN}", "X-OmniaCLI-Prefix": "/links/cliente", "X-OmniaCLI-User": "admin",
         "X-OmniaCLI-Menu": "servers,instances,backups,settings",
         "Accept": "application/json"}
@@ -802,10 +807,25 @@ LINK = {"Authorization": f"Bearer {LINK_TOKEN}", "X-OmniaCLI-Prefix": "/links/cl
 async def class_b(central, monkeypatch) -> dict:
     """The machine with what the pages of class B show, and the secrets they are about: a job, a workspace (acme,
     with srv), a link of its own over SSH (its token), its SSH key (the private half), a git credential, the source
-    of Odoo Enterprise, two destinations (a password and the key of each), the SMTP password; {job: the job's id}."""
+    of Odoo Enterprise, three destinations (a password and the key of each, a WebDAV one with its url), the SMTP
+    password, a schedule, groups, a server whose plugin is missing; the customer's own names that are also words of
+    the pages' addresses (a storage root, a token, users, subdomains called backups, upload, preview, open, install);
+    {job: the job's id}."""
     machine = central.machine.asgi.app
     settings = machine.state.settings
-    settings.workspaces = parse_workspaces({"acme": {"label": "ACME", "servers": ["srv"], "members": {}}})
+    acme = parse_workspaces({"acme": {"label": "ACME", "servers": ["srv"],
+                                      "members": {"backups": "admin", "upload": "user"}}})["acme"]
+    settings.workspaces = {"acme": dataclasses.replace(
+        acme, subdomains={"preview": "srv", "open": "srv", "install": "srv"}, token_people={"backups": "backups",
+                                                                                          "users": "upload"},
+        notify=["https://hooks.example.com/services/T0/B0/Hook914"])}
+    web = settings.web
+    settings.set_web_access(dataclasses.replace(web, users={**web.users, "backups": USER_HASH, "upload": USER_HASH},
+                                                roles={**web.roles, "backups": "user", "upload": "developer"}))
+    settings.storage_roots = {"default": "/srv/omniacli/default", "backups": "/srv/omniacli/backups"}
+    settings.groups = {"servers": [ListGroup("Customers", ["srv"])], "links": [ListGroup("upload", ["far"])]}
+    settings.servers = {**settings.servers, "old": Server(name="old", instances={}, status="draft", type="acme",
+                                                          error="no plugin acme here", missing_plugin=True)}
     settings.link_targets = {"far": LinkTarget("far", "http://127.0.0.1:8090", "FarTok-914", ssh=SshRoute(
         "far.example.com", "omniacli", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGhvc3Qta2V5LTkxNC1vZi1mYXItZXhhbXBsZS1jb20h"))}
     folder = machine.state.ssh_tunnels.folder
@@ -820,7 +840,17 @@ async def class_b(central, monkeypatch) -> dict:
         "off": destinations.Destination("off", "sftp", "/b", settings={"host": "h", "user": "u", "pass": "DestPass-914"},
                                         key=DEST_KEY),
         "ws-off": destinations.Destination("ws-off", "sftp", "/w", workspace="acme",
-                                           settings={"host": "h", "user": "u", "pass": "WsDestPass-914"}, key=DEST_KEY)})
+                                           settings={"host": "h", "user": "u", "pass": "WsDestPass-914"}, key=DEST_KEY),
+        "dav": destinations.Destination("dav", "webdav", "odoo", workspace="acme", key=DEST_KEY, settings={
+            "url": "https://cloud.example.com/remote.php/dav/files/u", "vendor": "nextcloud", "user": "u",
+            "pass": "DavPass-914"})})
+    saved = await httpx.AsyncClient(transport=central.machine.asgi, base_url="http://customer.test").post(
+        "/api/schedules/save", headers=LINK, json={"original": "", "name": "nightly", "schedule": {
+            "instance": "srv/test", "cron": "0 2 * * *", "pull": True, "enabled": False,
+            "notify": ["https://hooks.example.com/services/T0/B0/Hook914"],
+            "copy": {"link": "far", "server": "srv", "role": "production",
+                     "restore_options": {"reset_passwords": True}}}})
+    assert saved.status_code == 200, saved.text
     monkeypatch.setattr(settings, "options", dataclasses.replace(settings.options, smtp_host="smtp.example.com",
                                                                  smtp_password="SmtpPw-914"))
 
@@ -906,13 +936,19 @@ async def test_the_class_b_models_carry_no_secret_value(central, monkeypatch):
         assert model["links"][0]["ssh"]["host_key"] == "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGhvc3Qta2V5LTkxNC1vZi1mYXItZXhhbXBsZS1jb20h" and "token" not in model["links"][0]
         assert model["public_key"] == "ssh-ed25519 AAAApub914 omniacli"
         model = (await machine.get("/api/pages/credentials", headers=LINK)).json()["context"]
-        assert model["scopes"][0]["credentials"] == [{"host": "github.com", "username": "bot", "token_set": True}]
+        assert next(s for s in model["scopes"] if s["name"] == "srv")["credentials"] == [
+            {"host": "github.com", "username": "bot", "token_set": True}]
         model = (await machine.get("/api/pages/enterprise", headers=LINK)).json()["context"]
         assert model["source"]["token_set"] is True
         model = (await machine.get("/api/pages/destinations", headers=LINK)).json()["context"]
-        assert {r["name"]: r["set"] for r in model["rows"]} == {"off": ["pass"], "ws-off": ["pass"]}
+        assert {r["name"]: r["set"] for r in model["rows"]} == {"off": ["pass"], "ws-off": ["pass"], "dav": ["pass"]}
         # the kinds in English: the panel says them in its words
         assert model["kinds"]["s3"]["label"] == "S3 and compatible"
+        # the notices of a schedule and of a workspace: their sites only (a webhook keeps its secret in its path)
+        model = (await machine.get("/api/pages/schedules", headers=LINK)).json()["context"]
+        assert model["schedules"][0]["data"]["notify"] == ["https://hooks.example.com/…"]
+        model = (await machine.get("/api/pages/workspaces", headers=LINK)).json()["context"]
+        assert model["workspaces"][0]["notify"] == ["https://hooks.example.com/…"]
 
 
 async def test_the_class_b_pages_have_the_controls_of_the_machines(central, monkeypatch):
@@ -1033,3 +1069,89 @@ async def test_every_read_of_a_class_b_model_is_in_the_machines_access_log(centr
     assert {e["what"] for e in reads} >= {"model of the page jobs", "model of the page job",
                                           "model of the page access"}
     assert all(e["kind"] == "link" and e["on_behalf"] == "dev" for e in reads), reads
+
+
+# --- the review of 6228654 -----------------------------------------------------------------------------------
+
+async def own_b(central, name: str, **params) -> dict:
+    async with httpx.AsyncClient(transport=central.machine.asgi, base_url="http://customer.test") as machine:
+        return (await machine.get(f"/api/pages/{name}", params=params, headers=LINK)).json()
+
+
+def answer_b(central, name: str, data: dict) -> None:
+    central.machine.answer[f"/api/pages/{name}"] = (200, {"content-type": "application/json"}, json.dumps(data).encode())
+
+
+async def test_a_links_row_stays_under_the_link(central, monkeypatch):
+    """Review finding 1: the row of a link of the machine opens it under the link's prefix (the machine's own link
+    far, never this panel's link far), and a link named to leave the machine refuses the model."""
+    await class_b(central, monkeypatch)
+    page = (await central.get("/links/cliente/links", headers=PAGE)).text
+    assert 'href="/links/cliente/links/far/"' in page and 'href="/links/far/"' not in page
+    for name in ("../../options", "../other/servers", "a/b"):
+        data = await own_b(central, "links")
+        data["context"]["links"][0]["name"] = name
+        answer_b(central, "links", data)
+        resp = await central.get("/links/cliente/links", headers=PAGE)
+        assert resp.status_code == 502 and f"/links/{name}" not in resp.text, name
+
+
+async def test_the_customers_names_are_not_addresses(central, monkeypatch):
+    """Review finding 2: the mappings of these pages are keyed by the customer's own names (a WebDAV destination's
+    url, a storage root, a token, users, subdomains called backups, upload, preview, open, install): drawn, never
+    taken for addresses; the address of a link to elsewhere is still checked at its place."""
+    await class_b(central, monkeypatch)
+    for path in ("workspaces", "workspaces?edit=acme", "workspaces/acme/destinations", "destinations", "links"):
+        resp = await central.get(f"/links/cliente/{path}", headers=PAGE)
+        assert resp.status_code == 200 and "data-machine-page-line" not in resp.text, (path, resp.text[:300])
+    data = await own_b(central, "links")
+    data["context"]["links"][0]["url"] = "javascript:alert(1)"
+    answer_b(central, "links", data)
+    resp = await central.get("/links/cliente/links", headers=PAGE)
+    assert resp.status_code == 502 and "javascript:alert(1)" not in resp.text
+
+
+async def test_the_workspaces_list_has_no_machines_of_the_machines_word(central, monkeypatch):
+    """Review finding 3: through a link the list's machines are never the machine's word (through a link it has none):
+    a name there would build rows and forms under /links/<name> of this panel."""
+    await class_b(central, monkeypatch)
+    data = await own_b(central, "workspaces")
+    data["context"].update(links=["../../evil", "other"], machine_column=True)
+    answer_b(central, "workspaces", data)
+    resp = await central.get("/links/cliente/workspaces", headers=PAGE)
+    assert resp.status_code == 200 and "../../evil" not in resp.text and '"other"' not in resp.text
+    assert "const MACHINE_COLUMN = false" in resp.text
+
+
+async def test_a_list_of_names_is_a_list(central, monkeypatch):
+    """Review finding 5: the jobs of an access log's entry, a job's instances, its live servers are lists of names;
+    a text there (which the page would go through letter by letter) refuses the model."""
+    ids = await class_b(central, monkeypatch)
+    for name, path, params, change in (
+            ("access", "access", {}, lambda c: c["entries"][0].update(job="../x")),
+            ("job", f"jobs/{ids['job']}", {"job_id": ids["job"]}, lambda c: c["job"].update(instances="srv/test")),
+            ("job", f"jobs/{ids['job']}", {"job_id": ids["job"]}, lambda c: c.update(live="srv"))):
+        data = await own_b(central, name, **params)
+        change(data["context"])
+        answer_b(central, name, data)
+        resp = await central.get(f"/links/cliente/{path}", headers=PAGE)
+        assert resp.status_code == 502 and "is not the one this panel reads" in resp.text, (name, path)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_a_jobs_download_is_a_path_of_the_machine():
+    """Review finding 4: the file a job's page offers (and with ?download=1 opens by itself) comes from the job's
+    result: a path of the machine under the page's prefix, never another site, another machine or a route of the
+    panel it is seen through."""
+    source = app_module._TEMPLATES.env.loader.get_source(app_module._TEMPLATES.env, "job.html")[0]
+    function = re.search(r"function downloadPath\(path\) \{.*?\n  \}", source, re.S).group(0)
+    assert "|| !downloadPath(result.download)) return;" in source
+    cases = {"/api/servers/srv/test/backups/x.zip/download": True, "/api/jobs/1/file?name=a%20b.zip": True,
+             "//evil.test/x": False, "https://evil.test/x": False, "javascript:alert(1)": False,
+             "/../../api/links/delete": False, "/%2e%2e/%2e%2e/api/x": False, "/a\\b": False, "/a b": False,
+             "x.zip": False, "": False, "/%E0%A4%A": False}
+    script = function + f"\nconsole.log(JSON.stringify({json.dumps(list(cases))}.map(downloadPath)));" + \
+        "\nconsole.log(JSON.stringify([downloadPath(undefined), downloadPath(5)]));"
+    out = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout.splitlines()
+    assert dict(zip(cases, json.loads(out[0]))) == cases
+    assert json.loads(out[1]) == [False, False]

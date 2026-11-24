@@ -4706,9 +4706,22 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 for s in sites]
 
     def workspace_rows() -> list[dict]:
+        """The workspaces as the Workspaces page reads them: of their notices' webhooks only where they go
+        (notices_shown), which the page neither shows nor sends back."""
         return [{**ws.to_dict(), "name": ws.name, "storage_problem": settings.storage_problem(ws),
-                 "instances_count": len([s for s in ws.servers if s in settings.servers])}
+                 "instances_count": len([s for s in ws.servers if s in settings.servers]),
+                 **({"notify": notices_shown(ws.notify)} if ws.notify else {})}
                 for ws in sorted(settings.workspaces.values(), key=lambda w: w.name)]
+
+    def notices_shown(addresses: list[str]) -> list[str]:
+        """The addresses of notices as a page carries them: an email as it is, a webhook's site only (Slack and
+        Teams keep their secret in its path: https://hooks.slack.com/…); its page edits them elsewhere (a
+        workspace's page, Options), never sends these back."""
+        shown = []
+        for address in addresses:
+            parts = urlsplit(address)
+            shown.append(f"{parts.scheme}://{parts.netloc}/…" if parts.scheme and parts.netloc else address)
+        return shown
 
     # --- git credentials (gitcredentials.py) ---------------------------------
 
@@ -12744,7 +12757,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     "restore_fields": [_field_dict(f) for f in plugin.restore_fields()] if plugin else [],
                     "from_link": src.to_dict() if src else None,
                 }
-        return {"schedules": [schedule_view(s) for s in scheduler.schedules.values()], "targets": targets,
+        found = [schedule_view(s) for s in scheduler.schedules.values()]
+        for row in found:
+            if row["data"].get("notify"):
+                # the page neither shows nor sends them back (its form has no notices): their sites only
+                row["data"]["notify"] = notices_shown(row["data"]["notify"])
+        return {"schedules": found, "targets": targets,
                 "links": list(settings.link_targets), "connections": list(settings.connections),
                 "scripts": schedules.list_scripts(settings.scripts_dir),
                 "scripts_dir": settings.scripts_dir, "schedules_file": settings.schedules_file,
