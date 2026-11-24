@@ -1355,6 +1355,7 @@ dialog.sd { --dialog-w: 560px; }
     remove: {{ _("Delete…") | tojson }},
     removeTitle: {{ _("Deletes this backup file from this machine. It cannot be undone. For production an admin is needed.") | tojson }},
     downloadTitle: {{ _("Downloads this backup to your computer") | tojson }},
+    download: {{ _("Download") | tojson }},
     neverTried: {{ _("Never restored for a try") | tojson }},
     showAll: {{ _("Show all ({n})") | tojson }}, showAllTitle: {{ _("Shows the rows left out of this list") | tojson }},
     removeQ: {{ _("Delete the backup {file}? It cannot be undone.") | tojson }},
@@ -2471,6 +2472,13 @@ dialog.sd { --dialog-w: 560px; }
         } else { check.className = "muted"; check.textContent = "—"; check.title = T.neverTried; }
         const cell = tr.insertCell();
         cell.style.textAlign = "right"; cell.style.whiteSpace = "nowrap";
+        // the download is a button of its own: the file's name in the colour of the text did not read as a link (Carlo, 24/11/2026)
+        const dl = document.createElement(f.download ? "a" : "button");
+        dl.className = "button small"; dl.style.marginRight = "6px";
+        dl.replaceChildren(omniaIcon("download"), " ", T.download);
+        if (f.download) { dl.href = f.download; dl.setAttribute("download", f.file); dl.title = T.downloadTitle; }
+        else { dl.type = "button"; dl.disabled = true; dl.className = "small"; dl.title = f.download_refused || ""; }
+        cell.appendChild(dl);
         if (f.can_verify) {
           const vb = document.createElement("button");
           vb.type = "button"; vb.className = "small"; vb.textContent = T.verify; vb.title = T.verifyTitle;
