@@ -42,8 +42,37 @@ _HEADERS = (
 )
 
 
-def _headers(indent: str) -> list[str]:
-    return [f"{indent}proxy_set_header {name} {value};" for name, value in _HEADERS]
+# what a forward passes to the other machine (AD-012): the visitor's own address, never one the visitor sent, so that
+# the machine that receives, trusting it from this machine's address only (trusted_lines), reads the visitor's
+_FORWARD_HEADERS = (
+    ("Host", "$host"),
+    ("X-Forwarded-Host", "$host"),
+    ("X-Forwarded-For", "$remote_addr"),
+    ("X-Forwarded-Proto", "$scheme"),
+    ("X-Real-IP", "$remote_addr"),
+)
+
+
+def _headers(indent: str, headers=_HEADERS) -> list[str]:
+    return [f"{indent}proxy_set_header {name} {value};" for name, value in headers]
+
+
+def trusted_address(value: str) -> str:
+    """An address of another machine whose X-Forwarded-For a site trusts: one IP address (a forward of AD-012 comes
+    from one machine). ValueError for anything else, a network or the loopback included."""
+    ip = ipaddress.ip_address(str(value))
+    if ip.is_loopback or ip.is_unspecified or ip.is_multicast:
+        raise ValueError(f"{ip} is not the address of another machine")
+    return str(ip)
+
+
+def trusted_lines(trust) -> list[str]:
+    """The visitor's address of a request another machine passed here (its forward of a workspace's names, AD-012):
+    taken from X-Forwarded-For when the request comes from that machine's address, and from nothing else."""
+    found = sorted({trusted_address(a) for a in trust or ()})
+    if not found:
+        return []
+    return [*(f"    set_real_ip_from {a};" for a in found), "    real_ip_header X-Forwarded-For;"]
 
 
 def _locations(site: dict, headers: list[str], omniacli: str | None) -> list[str]:
@@ -122,7 +151,8 @@ def challenge_lines(to: str | None = None) -> list[str]:
         return ["    location /.well-known/acme-challenge/ {", f"        root {ACME_ROOT};", "    }"]
     return ["    location /.well-known/acme-challenge/ {", f"        root {ACME_ROOT};",
             f"        try_files $uri {FORWARD_LOCATION};", "    }",
-            f"    location {FORWARD_LOCATION} {{", f"        proxy_pass http://{to};", *_headers("        "), "    }"]
+            f"    location {FORWARD_LOCATION} {{", f"        proxy_pass http://{to};", *_headers("        ", _FORWARD_HEADERS),
+            "    }"]
 
 
 def http_blocks(names: list[str], rest: str, listen80: list[str], acme_to: dict | None = None,
@@ -179,7 +209,7 @@ def forward_conf_text(workspace: str, record: dict, tls: tuple[str, str] | None,
            "# Changed here, it is written again at the forward's next change."]
     if names:
         out += ["", "server {", *listen80, f"    server_name {' '.join(names)};", *challenge_lines(to),
-                "    location / {", f"        proxy_pass http://{to};", *_headers("        "),
+                "    location / {", f"        proxy_pass http://{to};", *_headers("        ", _FORWARD_HEADERS),
                 "        proxy_redirect off;", "    }", "}"]
     groups: dict[str, list[str]] = {}
     for old, new in moved.items():
@@ -193,7 +223,7 @@ def forward_conf_text(workspace: str, record: dict, tls: tuple[str, str] | None,
     passed = [f"        proxy_pass https://{to};", "        proxy_http_version 1.1;",
               "        proxy_ssl_server_name on;", "        proxy_ssl_name $host;", "        proxy_ssl_verify on;",
               "        proxy_ssl_verify_depth 4;", f"        proxy_ssl_trusted_certificate {SYSTEM_CA};",
-              *_headers("        ")]
+              *_headers("        ", _FORWARD_HEADERS)]
     if names:
         out += ["", "server {", *listen443, f"    server_name {' '.join(names)};", *tls_lines,
                 f"    client_max_body_size {MAX_BODY};",
@@ -208,7 +238,8 @@ def forward_conf_text(workspace: str, record: dict, tls: tuple[str, str] | None,
 
 
 def conf_text(workspace: str, sites: list[dict], tls: tuple[str, str] | None, ipv6: bool,
-              omniacli: str | None = None, redirects: list[dict] = (), acme_to: dict | None = None) -> str:
+              omniacli: str | None = None, redirects: list[dict] = (), acme_to: dict | None = None,
+              trust=()) -> str:
     """sites: [{instance, role, names, aliases (optional), http_port,
     websocket_port}]; an alias is one more name of its site (UX-008 §6.1).
     Port 80 answers the challenges and sends the rest to https; without a
@@ -222,7 +253,11 @@ def conf_text(workspace: str, sites: list[dict], tls: tuple[str, str] | None, ip
     A site with "hold" answers the challenges on port 80 and 503 on 443
     (hold_lines): its names wait for a switch (AD-012). acme_to {"to",
     "names"}, a forward acme (AD-012): the challenges of those names not
-    found here are asked to the machine at "to" (http_blocks)."""
+    found here are asked to the machine at "to" (http_blocks). trust: the
+    addresses of the machines that pass these names here (their forward,
+    AD-012), whose X-Forwarded-For says the visitor's address (trusted_lines);
+    from any other address the header is not believed."""
+    trusted = trusted_lines(trust)
     names = [n for site in sites for n in (*site["names"], *site.get("aliases", ()))]
     out = [f"# written by omniacli workspace-helper: the names of workspace {workspace}.",
            "# Changed here, it is written again at the workspace's next change."]
@@ -249,7 +284,7 @@ def conf_text(workspace: str, sites: list[dict], tls: tuple[str, str] | None, ip
                 f"    server_name {' '.join((*site['names'], *site.get('aliases', ())))};",
                 f"    ssl_certificate {tls[0]};", f"    ssl_certificate_key {tls[1]};",
                 f"    client_max_body_size {MAX_BODY};",
-                f"    proxy_read_timeout {TIMEOUT};", f"    proxy_send_timeout {TIMEOUT};"]
+                f"    proxy_read_timeout {TIMEOUT};", f"    proxy_send_timeout {TIMEOUT};", *trusted]
         if site.get("hold"):
             out += [*hold_lines(), "}"]
             continue

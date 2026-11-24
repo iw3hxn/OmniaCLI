@@ -32,7 +32,7 @@ def test_the_site_of_a_forward_full():
     assert text.count(f"proxy_pass https://{LAB4};") == 2  # the websocket and the rest
     for line in ("proxy_ssl_verify on;", "proxy_ssl_server_name on;", "proxy_ssl_name $host;",
                  f"proxy_ssl_trusted_certificate {workspaceweb.SYSTEM_CA};", "ssl_certificate /c/fullchain.pem;",
-                 "proxy_set_header Upgrade $http_upgrade;", "proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;"):
+                 "proxy_set_header Upgrade $http_upgrade;", "proxy_set_header X-Forwarded-For $remote_addr;"):
         assert line in text, line
     # the provider's name: a 301 to the new one, from 80 and 443
     assert text.count("return 301 https://erp.172-30-0-14.sslip.io$request_uri;") == 2
@@ -160,6 +160,35 @@ def test_hold_is_kept_until_a_spec_says_otherwise(fwd):
     for bad in ({"nope": ["production"]}, {"main": ["stage"]}, {"main": "production"}):
         with pytest.raises(HelperError, match="hold:"):
             workspacehelper.web("acme", storage, spec(hold=bad))
+
+
+LAB3 = "172.30.0.13"
+
+
+def test_the_site_that_receives_believes_the_forwarding_machine_only(fwd):
+    """After a forward the customer's Odoo logged lab3's address (step 5, 24/11): the site of the workspace that
+    receives the names takes the visitor's address from X-Forwarded-For when the request comes from the machine
+    that passes them, and from no one else; the forward sends the visitor's own address, not a list it began."""
+    storage, site = str(fwd["storage"]), fwd["site"]
+    workspacehelper.web("acme", storage, spec(trust=[LAB3]))
+    text = site.read_text()
+    block = text.split("# main production\n", 1)[1].split("\n}\n", 1)[0]
+    assert f"    set_real_ip_from {LAB3};\n    real_ip_header X-Forwarded-For;" in block
+    assert text.count(f"set_real_ip_from {LAB3};") == 2 and "set_real_ip_from 127.0.0.1" not in text  # both roles
+    assert "proxy_set_header X-Real-IP $remote_addr;" in block  # Odoo reads the visitor's, once nginx took it
+    kept = fwd["record"].parent.parent / "forwarded" / "acme.json"
+    assert json.loads(kept.read_text()) == {"from": [LAB3]} and oct(kept.stat().st_mode & 0o777) == "0o600"
+    # a publication of every day (no trust in its spec) keeps it; [] takes it away
+    workspacehelper.web("acme", storage, spec())
+    assert site.read_text() == text
+    workspacehelper.web("acme", storage, spec(trust=[]))
+    assert "set_real_ip_from" not in site.read_text() and not kept.exists()
+    for bad in (["127.0.0.1"], ["10.0.0.0/8"], "1.2.3.4", ["x"]):
+        with pytest.raises(HelperError, match="trust"):
+            workspacehelper.web("acme", storage, spec(trust=bad))
+    # the forwarding machine passes $remote_addr, never $proxy_add_x_forwarded_for (a visitor's own header)
+    passed = workspaceweb.forward_conf_text("acme", {"to": LAB4, "names": ["acme.it"]}, ("c", "k"), False)
+    assert "$proxy_add_x_forwarded_for" not in passed and passed.count("X-Forwarded-For $remote_addr;") == 4
 
 
 def test_drop_takes_the_forward_away(fwd, monkeypatch):

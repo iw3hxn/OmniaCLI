@@ -273,3 +273,31 @@ async def test_acting_on_instances(client, env):
     assert "no action nope" in (await call(client, "run_action", server_name="srv", role="test", action="nope"))["error"]
     # stop_job: a finished job is not running
     assert "not running" in (await call(client, "stop_job", job_id=job["id"]))["error"]
+
+
+async def test_a_workspace_token_reads_its_jobs_redacted(client, env):
+    """MCP's last_jobs, list_jobs, get_job and job_log are what the pages and the REST API show its people
+    (customerview.py): the provider's links and machines and this machine's folders taken out (step 5, 24/11)."""
+    from omniacli.config import LinkTarget, Workspace
+    settings = env["settings"]
+    settings.workspaces["acme"] = Workspace("acme", servers=["srv"], members={"dev": "admin"})
+    settings.link_targets = {"lab9": LinkTarget("lab9", "https://lab9.example.net", "t")}
+    resp = await client.post("/api/workspaces/acme/tokens/save", headers=POST,
+                             json={"name": "acme-bot", "role": "admin", "new": True})
+    scoped = {**HEADERS, "Authorization": f"Bearer {resp.json()['token']}"}
+
+    async def act(job):
+        job.log("copied /var/lib/omniacli/backups/srv/test/x.zip to lab9")
+        job.result = {"folder": "/srv/omniacli/acme/srv-test"}
+    done = client.app.state.jobs.submit("Copy srv/test to lab9.example.net", ["srv/test"], "manual: admin", act)
+    await wait_job(client, done.id)
+    answers = [await call(client, "list_jobs", headers=scoped),
+               await call(client, "get_job", headers=scoped, job_id=done.id),
+               await call(client, "job_log", headers=scoped, job_id=done.id),
+               (await call(client, "server_status", headers=scoped, server_name="srv"))["last_jobs"],
+               (await call(client, "diagnose_instance", headers=scoped, server_name="srv", role="test"))["last_jobs"]]
+    text = json.dumps(answers)
+    assert done.id in text and "lab9" not in text and "/var/lib" not in text and "/srv/omniacli" not in text
+    assert "manual: admin" not in text and "another machine" in text and "x.zip" in text
+    # the machine's token reads it whole
+    assert "lab9" in json.dumps(await call(client, "get_job", job_id=done.id))

@@ -29,7 +29,7 @@ from .accesslog import AccessLog
 from .auth import ROLES as ACCESS_ROLES
 from .auth import Authenticator
 from .config import ConfigError, Instance, Settings, server_to_dict
-from .customerview import CustomerView
+from .customerview import CustomerView, hidden_from_customers
 from .jobs import FINISHED, Job, JobFailed, JobManager, filter_jobs
 from .logtail import last_lines
 from .plugin_api import ActionRefused
@@ -105,6 +105,8 @@ _WHO = contextvars.ContextVar("omniacli_mcp_who", default="")
 # its grant and its CI mark are the contextvars', not a token's of this machine
 _DELEGATED = contextvars.ContextVar("omniacli_mcp_delegated", default=False)
 _CI = contextvars.ContextVar("omniacli_mcp_ci", default=False)
+# the home's scope of that token (placement.scope_decode): its provider's label and its members, for the redaction
+_FOUND = contextvars.ContextVar("omniacli_mcp_found", default=None)
 # the headers a link sends with who acts through it and the most it may do
 _ON_BEHALF = re.compile(r"[A-Za-z0-9._@-]{1,64}")
 
@@ -157,7 +159,11 @@ def _refusal(response) -> str:
 _NO_PATHS = CustomerView(provider="", elsewhere="")
 
 
-def _job_dict(job: Job, tail: int = 0) -> dict:
+def _job_dict(job: Job, tail: int = 0, view: CustomerView | None = None) -> dict:
+    """A job as a tool answers it; view (a workspace's token): its titles, results, errors and lines as its customer
+    reads them on the pages (customerview.py), the provider's names and this machine's folders taken out."""
+    if view is not None:
+        job = view.job(job, lines=bool(tail))
     data = {
         "id": job.id, "title": job.title, "servers": job.servers, "instances": job.instances,
         "status": job.status, "source": job.source, "created": job.created,
@@ -329,7 +335,21 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
                 job.servers and all(grant.reaches(s) for s in job.servers)):
             return False
         scope = scope_of(ctx)
+        if scope and hidden_from_customers(job):
+            # the provider's own job on a customer's instance (a move's Prepare, Cancel): not in its lists
+            return False
         return not scope or job.workspace == scope or any(sees(ctx, s) for s in job.servers)
+
+    def view_of(ctx: Context | None) -> CustomerView | None:
+        """What a workspace's token reads of a job, as its people read it on the pages and through the REST API
+        (customerview.py); None for the machine's tokens and its links: they read everything."""
+        scope = scope_of(ctx)
+        if not scope or api.get("view") is None:
+            return None
+        return api["view"](scope, _FOUND.get() if _DELEGATED.get() else None, token_of(ctx))
+
+    def job_dict(ctx: Context | None, job: Job, tail: int = 0) -> dict:
+        return _job_dict(job, tail, view_of(ctx))
 
     def instance(name: str, role: str, ctx: Context | None = None, drafts_too: bool = False) -> Instance:
         """An instance of an active server; with drafts_too and an admin
@@ -409,7 +429,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
             if scope_of(ctx):
                 # a working copy that is not there says its folder: a workspace's token reads …/<its last part>
                 result[role] = _NO_PATHS.data(result[role])
-        result["last_jobs"] = [_job_dict(j) for j in filter_jobs(jobs.recent(len(jobs.jobs)), server_name)[:5]]
+        result["last_jobs"] = [job_dict(ctx, j) for j in filter_jobs(jobs.recent(len(jobs.jobs)), server_name)[:5]]
         return result
 
     @server.tool()
@@ -453,7 +473,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         """The last jobs, newest first, of a server and/or containing every
         word of query (title, started by, error, server/role)."""
         found = [j for j in filter_jobs(jobs.recent(len(jobs.jobs)), server_name, query) if job_seen(ctx, j)]
-        return [_job_dict(j) for j in found[:min(max(limit, 1), 200)]]
+        return [job_dict(ctx, j) for j in found[:min(max(limit, 1), 200)]]
 
     @server.tool()
     def get_job(job_id: str, ctx: Context, tail: int = 200) -> dict:
@@ -461,7 +481,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         job = jobs.get(job_id)
         if job is None or not job_seen(ctx, job):
             raise ToolError(f"No job {job_id}")
-        return _job_dict(job, tail=min(max(tail, 1), 5000))
+        return job_dict(ctx, job, tail=min(max(tail, 1), 5000))
 
     @server.tool()
     def job_log(job_id: str, ctx: Context, offset: int = 0, limit: int = 1000) -> dict:
@@ -471,9 +491,11 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         if job is None or not job_seen(ctx, job):
             raise ToolError(f"No job {job_id}")
         start = max(offset, 0)
-        given = job.lines[start:start + min(max(limit, 1), 5000)]
+        view = view_of(ctx)
+        lines = view.job(job).lines if view is not None else job.lines
+        given = lines[start:start + min(max(limit, 1), 5000)]
         return {"job": job.id, "status": job.status, "offset": start, "next_offset": start + len(given),
-                "finished": job.status in FINISHED and start + len(given) >= len(job.lines), "lines": given}
+                "finished": job.status in FINISHED and start + len(given) >= len(lines), "lines": given}
 
     @server.tool()
     async def update_test(server_name: str, ctx: Context, wait_seconds: int = 0, idempotency_key: str = "") -> dict:
@@ -489,7 +511,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
                               lambda job: ops.pull_restart(
                                   job, inst, backup_folder=settings.backup_dir / inst.server / inst.role))
             await _wait(job, wait_seconds)
-            return _job_dict(job, tail=50)
+            return job_dict(ctx, job, tail=50)
         return await once(ctx, "update_test", idempotency_key, {"server_name": server_name}, run)
 
     def backup_options(inst: Instance, options: dict | None) -> dict:
@@ -525,7 +547,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         job = jobs.submit(f"Backup {inst.key}" + (f" ({', '.join(flags)})" if flags else ""), [inst.key],
                           source_of(ctx), action)
         await _wait(job, wait_seconds)
-        return _job_dict(job, tail=20)
+        return job_dict(ctx, job, tail=20)
 
     def backups_of(inst: Instance, limit: int) -> list[dict]:
         """The instance's backup zips, newest first, with their download path."""
@@ -727,7 +749,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
                 raise ToolError(f"{exc.code}: {exc.message}") from None
             if before is not None:
                 job = jobs.get(str((before["body"] or {}).get("id") or ""))
-                return _job_dict(job, tail=30) if job is not None else before["body"]
+                return job_dict(ctx, job, tail=30) if job is not None else before["body"]
             answer = await run()
             guard.idempotency.remember(who, key, print_, 200, {"id": answer.get("id")})
             return answer
@@ -735,7 +757,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
     async def submit(ctx: Context, title: str, inst: Instance, action, wait_seconds: int) -> dict:
         job = jobs.submit(title, [inst.key], source_of(ctx), action)
         await _wait(job, wait_seconds)
-        return _job_dict(job, tail=30)
+        return job_dict(ctx, job, tail=30)
 
     @server.tool()
     async def diagnose_instance(server_name: str, ctx: Context, role: str = "production") -> dict:
@@ -765,7 +787,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
             "load": series[-1] if series else None, "job_running": jobs.is_busy(inst.key),
             "reachable": uptime(inst.key) if uptime else None,
             "log_errors": errors,
-            "last_jobs": [_job_dict(j, tail=15 if j.status == "failed" else 0) for j in recent],
+            "last_jobs": [job_dict(ctx, j, tail=15 if j.status == "failed" else 0) for j in recent],
             "last_backup": backups[0] if backups else None,
             "last_restore_tried": max(verified, key=lambda v: v.get("time") or "") if verified else None,
         }
@@ -847,7 +869,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
                 raise ToolError(_refusal(found))
             job = jobs.get(found["job"])
             await _wait(job, wait_seconds)
-            return {**_job_dict(job, tail=30), "server": found["server"]}
+            return {**job_dict(ctx, job, tail=30), "server": found["server"]}
         return await once(ctx, "create_staging", idempotency_key, {"server_name": server_name}, run)
 
     @server.tool()
@@ -885,7 +907,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
             if not isinstance(found, Job):
                 raise ToolError(_refusal(found))
             await _wait(found, wait_seconds)
-            return _job_dict(found, tail=30)
+            return job_dict(ctx, found, tail=30)
         return await once(ctx, "deploy_back", idempotency_key,
                           {"server_name": server_name, "role": role, "deploy_id": deploy_id, "pause": pause}, run)
 
@@ -987,7 +1009,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
             raise ToolError(f"No job {job_id}")
         if not jobs.stop(job_id, source_of(ctx)):
             raise ToolError(f"{job_id} is not running")
-        return _job_dict(job)
+        return job_dict(ctx, job)
 
     # --- a database from outside into a new instance ----------------------
 
@@ -1065,7 +1087,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         job = jobs.get(answer.get("job") or "") if not dry_run else None
         if job is not None:
             await _wait(job, wait_seconds)
-            answer["job"] = _job_dict(job, tail=30)
+            answer["job"] = job_dict(ctx, job, tail=30)
         return answer
 
     server.streamable_http_app(
@@ -1163,6 +1185,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
             _SCOPE.set(workspace)
             _DELEGATED.set(delegated is not None)
             _CI.set(bool(delegated and delegated.get("ci")))
+            _FOUND.set(delegated)
             _GRANT.set(settings.token_grant(name) if kind == "mcp" else _delegated_grant(delegated, role))
             _WHO.set(who)
             sent = False

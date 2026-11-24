@@ -106,6 +106,8 @@ def _local(language: str, name: str, value: str, measured: frozenset) -> str:
 # a sentence it happens to match (a line of a job with no text of its own) stays whole, not half in each language
 _LABEL_FIXED = 8
 _LABEL_WORDS = 8
+# the values of a pattern that are the reason of a refusal or a failure: translated by their own patterns
+_REASONS = frozenset({"why", "reason"})
 
 
 def gettext(language: str, text: str, **values) -> str:
@@ -174,6 +176,10 @@ def _tr(language: str, text: str) -> str:
                 known = catalog(language)
 
                 def inner(name: str, value: str) -> str:
+                    if name in _REASONS and " " in value:
+                        # a reason is a sentence of its own, however short ("lab4 cannot hold it: it has no
+                        # template odoo-19"): its own pattern applies
+                        return _tr(language, value)
                     if " " not in value:
                         return _local(language, name, value, measured)
                     if value in known:

@@ -280,6 +280,10 @@ PG_REPORT = """SELECT json_build_object(
      FROM pg_stat_user_tables WHERE seq_scan > 0 AND n_live_tup > 10000
      ORDER BY seq_tup_read DESC LIMIT 10) t),
  'vector', EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector'),
+ 'vector_used', EXISTS (SELECT 1 FROM pg_attribute a JOIN pg_type t ON t.oid = a.atttypid
+     JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE t.typname IN ('vector', 'halfvec', 'sparsevec') AND NOT a.attisdropped AND c.relkind IN ('r', 'p', 'm')
+       AND n.nspname NOT IN ('pg_catalog', 'information_schema')),
  'statements_on', EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements'))::jsonb"""
 PG_STATEMENTS = """SELECT coalesce(json_agg(s), '[]')::jsonb FROM (
  SELECT calls, round(total_exec_time::numeric, 1) AS total_ms, round(mean_exec_time::numeric, 1) AS mean_ms,

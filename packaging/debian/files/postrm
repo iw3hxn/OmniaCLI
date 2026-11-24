@@ -43,7 +43,7 @@ case "$1" in
         # the names of the workspaces passed to another machine (workspace-helper forward, AD-012): their sites
         # and records
         rm -f /etc/nginx/conf.d/omniacli-forward-*.conf
-        rm -rf /etc/omniacli/forward
+        rm -rf /etc/omniacli/forward /etc/omniacli/forwarded
         # the customers' certificates (workspace-helper owncert) of the workspaces that have no site any more: a
         # workspace's site that stays (its instances are not removed by the purge) serves with its own
         for own in /etc/omniacli/certs/*; do

@@ -483,3 +483,34 @@ async def test_the_clone_reads_the_token_from_the_store(tmp_path, monkeypatch):
     await workspaceops.clone(Job(id="j", title="t", instances=[], source="s"), ws, "main", "production", "addons",
                              REMOTE, "19.0", options)
     assert all(TOKEN not in arg for arg in ran[0]) and TOKEN in store.read_text()
+
+
+async def test_a_deleted_instance_leaves_no_folders_nor_caches(instance, client, env, monkeypatch):
+    """Step 6 found an instance deleted leaving its empty backups/<server>/ folders and the hash caches of its trees
+    (treesync/hashes/<server>.<role>.<tree>.json): they go with it; a backup file kept stays, and another server's
+    cache too."""
+    settings = env["settings"]
+
+    async def remove_instance(job, ws, name, linked=False):
+        return None
+
+    async def publish(job, ws):
+        return {}
+    monkeypatch.setattr(workspaceops, "remove_instance", remove_instance)
+    monkeypatch.setattr(workspaceops, "publish", publish)
+    for role in ("production", "test"):
+        (settings.backup_dir / "acme-main" / role).mkdir(parents=True, exist_ok=True)
+    hashes = settings.jobs_dir.parent / "treesync" / "hashes"
+    hashes.mkdir(parents=True)
+    for name in ("acme-main.production.backups.json", "acme-main.test.backups.json", "acme-mainx.production.backups.json"):
+        (hashes / name).write_text("{}")
+    copy = settings.jobs_dir.parent / "treesync" / "copies" / "move-acme-main-filestore"
+    copy.mkdir(parents=True)
+    (settings.backup_dir / "kept" / "production").mkdir(parents=True)
+    (settings.backup_dir / "kept" / "production" / "a.zip").write_bytes(b"zip")
+    resp = await client.post("/api/workspaces/acme/instances/delete", headers=POST, json={"server": "acme-main"})
+    job = await wait_job(client, resp.json()["job"])
+    assert job["status"] == "success", job["lines"]
+    assert not (settings.backup_dir / "acme-main").exists() and not copy.exists()
+    assert sorted(p.name for p in hashes.iterdir()) == ["acme-mainx.production.backups.json"]
+    assert (settings.backup_dir / "kept" / "production" / "a.zip").is_file()

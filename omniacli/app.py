@@ -1120,6 +1120,18 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                             here=frozenset({here_name()} - own - members - {"localhost", "omniacli"}),
                             here_word=i18n.gettext(lang, "the server"))
 
+    def mcp_view(workspace: str, found: dict | None, token: str | None) -> CustomerView:
+        """What a workspace's MCP token reads of the jobs (customer_view, in English: MCP has no language); found:
+        the scope its home sent (AD-014 §6), whose provider and members are the home's."""
+        view = customer_view_of({workspace}, "en")
+        if found:
+            label = found.get("provider") or (hosted.get(found["ws"]).get("provider_label") or "")
+            view = dataclasses.replace(
+                view, provider=label or view.provider, members=view.members | frozenset(found.get("members") or ()),
+                tokens=view.tokens | (frozenset({str(found.get("person") or "")}) if found.get("kind") == "token"
+                                      else frozenset()))
+        return view
+
     def shown_jobs(request: HTTPConnection, found: list, lines: bool = False) -> list:
         """The jobs as the caller reads them (customer_view); a list's
         without their lines (lines: a job's page)."""
@@ -1214,7 +1226,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                              # AD-014 §6: a tool on an instance placed elsewhere asked there, and
                                              # the scope a home sends taken from that home's link only
                                              "placed": lambda *a, **k: mcp_placed(*a, **k),
-                                             "delegated": lambda *a, **k: delegated_scope(*a, **k)})
+                                             "delegated": lambda *a, **k: delegated_scope(*a, **k),
+                                             # a workspace's token reads its jobs as its people do (customerview)
+                                             "view": lambda *a, **k: mcp_view(*a, **k)})
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -4565,6 +4579,24 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             said.append(((instance, role), bool(works), f"{why} {where}", remedy))
         return said
 
+    def forwarders_of(ws: Workspace) -> list[str]:
+        """The addresses of the machines that pass the names of ws here (their forward, AD-012), whose
+        X-Forwarded-For its site believes, so that its Odoo logs the visitor's address and not theirs: the home of
+        a workspace hosted here (its address as recorded when its instance arrived), and the host of an instance
+        of ws placed elsewhere, which passes its names back here after a return."""
+        found = {str(hosted.get(ws.name).get("forwarder") or "")}
+        placed = moves.placements()
+        for server in ws.servers:
+            link = settings.link_targets.get(str((placed.get(server) or {}).get("link") or ""))
+            if link is not None:
+                with contextlib.suppress(managedreplica.ClusterError, OSError, ValueError):
+                    found.add(managedreplica._primary_address(linkedcluster.host_of(link)))
+        trusted = []
+        for address in sorted(found - {""}):
+            with contextlib.suppress(ValueError):
+                trusted.append(workspaceweb.trusted_address(address))
+        return trusted
+
     async def publish_names(job, ws: Workspace, hold: dict | None = None) -> dict:
         """workspaceops.publish, its answer kept for the map: which names
         came out with HTTPS and with their DNS here. Before it an environment
@@ -4575,7 +4607,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         ws, added = await automatic_names(job, ws)
         # through another machine (relay.py): a relay of before taken away, the tunnel's key and port first
         keyed = await relay_prepare(job, ws)
-        made = await workspaceops.publish(job, ws, **({"hold": hold} if hold is not None else {}))
+        # the machines that pass its names here (AD-012): their X-Forwarded-For believed; none said, the helper's kept
+        trust = forwarders_of(ws)
+        made = await workspaceops.publish(job, ws, **({"hold": hold} if hold is not None else {}),
+                                          **({"trust": trust} if trust else {}))
         if keyed is not None:
             await relay_publish(job, ws, made, keyed)
         await asyncio.to_thread(web_names_state.record, ws.name, made)
@@ -7283,6 +7318,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if error is not None:
                 raise JobFailed(f"the instance is removed, but the servers file was not written: {error.body.decode()}")
             await rename_in_workspaces(name, None)
+            await asyncio.to_thread(forget_server_files, name)
             job.log(f"Server {name} removed")
             # its CI goes with it: a webhook made for it is taken away where nothing else here follows it with the
             # CI on (23/11/2026: a deleted staging's stayed on GitHub, and in github-hooks.json)
@@ -20026,6 +20062,25 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     def treesync_dir() -> Path:
         return settings.jobs_dir.parent / "treesync"
 
+    def forget_server_files(server: str) -> None:
+        """What a server removed leaves behind of its own here: the hash caches of its trees
+        (treesync/hashes/<server>.<role>.<tree>.json), the state of its copies (treesync/copies/move-|back-<server>-…)
+        and its folders of backups once they hold no file (a backup kept is not this function's to delete)."""
+        hashes = treesync_dir() / "hashes"
+        for path in hashes.glob("*.json") if hashes.is_dir() else ():
+            if path.name.split(".", 1)[0] == server:
+                path.unlink(missing_ok=True)
+        copies = treesync_dir() / "copies"
+        for way in ("move", "back"):
+            for tree in MOVE_TREES:
+                shutil.rmtree(copies / f"{way}-{server}-{tree}", ignore_errors=True)
+        folder = settings.backup_dir / server
+        if folder.is_dir() and not folder.is_symlink():
+            for root, dirs, files in os.walk(folder, topdown=False):
+                if not files:
+                    with contextlib.suppress(OSError):
+                        os.rmdir(root)
+
     def treesync_peer(me: Principal) -> None:
         if not (a_machine(me) and machine_admin(me)):
             raise HTTPException(status.HTTP_403_FORBIDDEN, "A tree is copied by another machine, through its link "
@@ -21145,7 +21200,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     async def move_sizes(ws: Workspace, instance: str, inst: Instance) -> dict:
         """The bytes of what Prepare copies: the database, the filestore, the addons, the backups; and whether
-        its database has the extension vector (a cluster without pgvector cannot take its dump)."""
+        its database uses the extension vector (a table holds vectors: Odoo Enterprise's ai module), which a cluster
+        without pgvector cannot take. The extension alone, which the template of a database with pgvector makes in
+        every database (so that the ai module may be installed by its role), is no use: "vector_unused", left out
+        of the restore there (db-restore)."""
         try:
             found = await pgreport.report(inst)
         except JobFailed:
@@ -21171,8 +21229,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             pass
         finally:
             listing.unlink(missing_ok=True)
+        # a report of an older helper says only whether the extension is there: taken as used
+        used = bool(found.get("vector_used", found.get("vector")))
         return {"database": int(found.get("size") or 0), "filestore": files, "addons": addons, "backups": kept,
-                "vector": bool(found.get("vector"))}
+                "vector": used, "vector_unused": bool(found.get("vector")) and not used}
 
     def move_public(state: dict) -> dict:
         """A move's state as the page reads it (nothing of it is a secret)."""
@@ -21492,11 +21552,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 why_not = why_not or host_refusal(link, facts or {}, kind, need, template.name, ws,
                                                   sizes.get("vector"))
                 if why_not:
-                    raise JobFailed(f"{link.name}: {why_not}")
+                    raise JobFailed(f"{link.name} cannot hold it: {why_not}")
                 job.log(f"{link.name} can hold it: {int(facts.get('free') or 0) / workspaceops.GB:.1f} GB free, "
                         f"{need / workspaceops.GB:.2f} GB to copy (database {sizes['database'] >> 20} MB, files "
                         f"{sizes['filestore'] >> 20} MB, code {sizes['addons'] >> 20} MB, backups "
                         f"{sizes['backups'] >> 20} MB)")
+                if sizes.get("vector_unused") and kind == "cluster" and not facts.get("vector"):
+                    job.log(f"The extension vector, which the template made and no table of it uses, is left out "
+                            f"of the copy on {link.name}: its cluster has no pgvector")
                 moves.update(server, sizes=sizes)
                 move_step(job, "there")
                 spec = {"server": server, "template": template.name, "label": ws.label, "limits": ws.limits,
@@ -21505,6 +21568,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                 "subdomains": {s: i for s, i in ws.subdomains.items() if i == instance},
                                 "aliases": {instance: ws.aliases.get(instance)} if ws.aliases.get(instance) else {},
                                 "redirects": {instance: ws.redirects.get(instance)} if ws.redirects.get(instance) else {}}}
+                with contextlib.suppress(JobFailed):
+                    # where this machine passes the names from (forward full): the host believes its
+                    # X-Forwarded-For from that address only, when it does not see the link come from elsewhere
+                    spec["forwarder"] = own_address_to(link)[1]
                 if ws.domain and ws.certificate == "own":
                     # the customer's certificate goes with the instance: read by root here, in the body there only
                     spec["own"] = await workspaceops.ask("owncert-read", ws.name, ws.storage)
@@ -21878,8 +21945,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 shutil.rmtree(folder, ignore_errors=True)
             await asyncio.to_thread(deploys.remove, deploys_folder, inst.key)
             # the state of the copies of its trees (their rounds, the listings): the copy they followed is gone
-            for tree in MOVE_TREES:
-                shutil.rmtree(treesync_dir() / "copies" / f"move-{server}-{tree}", ignore_errors=True)
+            await asyncio.to_thread(forget_server_files, server)
             moves.update(server, copy="deleted", deleted_at=datetime.datetime.now().isoformat(timespec="seconds"))
             # the instance stays its workspace's (AD-014): its people reach it on the other machine through here,
             # and the lists show it as that machine says it is
@@ -22393,6 +22459,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     raise JobFailed(f"the instance is removed, but the servers file was not written: {error.body.decode()}")
                 await asyncio.to_thread(deploys.remove, deploys_folder, f"{server}/production")
                 shutil.rmtree(settings.backup_dir / server, ignore_errors=True)
+                await asyncio.to_thread(forget_server_files, server)
                 moves.update(server, copy="deleted")
                 current = settings.workspaces.get(ws.name)
                 if current is not None and current.domain:
@@ -22512,8 +22579,17 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         out["workspace"] = state
         return out
 
+    def placement_forwarder(request: Request, payload: dict) -> str:
+        """The address the home passes the workspace's names here from (its forward full, AD-012): the one the
+        link's request comes from, or, through a tunnel (the loopback), the one the home says; "" for none."""
+        seen = request.client.host if request.client else ""
+        for value in (seen, str(payload.get("forwarder") or "")):
+            with contextlib.suppress(ValueError):
+                return workspaceweb.trusted_address(value)
+        return ""
+
     @app.post("/api/placements/{workspace}/{instance}/arrive")
-    async def placement_arrive(workspace: str, instance: str, payload: dict = Body(...),
+    async def placement_arrive(request: Request, workspace: str, instance: str, payload: dict = Body(...),
                                me: Principal = Depends(current_user)):
         """An instance of a workspace of the machine of the link arrives here
         (AD-015 Prepare): the workspace made when it is not here (with the
@@ -22535,6 +22611,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return refuse(f"{name} is here already")
         web = payload.get("web") if isinstance(payload.get("web"), dict) else {}
         own = payload.get("own") if isinstance(payload.get("own"), dict) else None
+        forwarder = placement_forwarder(request, payload)
 
         async def action(job):
             job.log(f"--- {name} arrives from {me.name}: made here, never started, its names held")
@@ -22565,6 +22642,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                         raise JobFailed(refused.body.decode())
                 job.log(f"Workspace {workspace} made here, with the limits of its home")
             hosted.put(workspace, {**entry, "home": me.name, "provider_label": str(payload.get("provider_label") or ""),
+                                   **({"forwarder": forwarder} if forwarder else {}),
                                    "members": [], "made": bool(entry.get("made")) or made_ws,
                                    "instances": {**(entry.get("instances") or {}), instance: {
                                        "state": "arriving", "since": datetime.datetime.now().isoformat(timespec="seconds"),
@@ -22681,6 +22759,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             await rename_in_workspaces(name, None)
             await asyncio.to_thread(deploys.remove, deploys_folder, f"{name}/production")
             shutil.rmtree(settings.backup_dir / name, ignore_errors=True)
+            await asyncio.to_thread(forget_server_files, name)
         left = {k: v for k, v in (entry.get("instances") or {}).items() if k != instance}
         current = settings.workspaces.get(workspace)
         if entry.get("made") and current is not None and not current.servers and not left:
@@ -22856,6 +22935,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                 f"{payload.get('counts')} there, {restored.get('counts')} here)")
             job.log(f"Restored in {restored.get('seconds')} s ({restored.get('counts')} installed modules|users|"
                     "partners, as there)")
+            if restored.get("left_out"):
+                job.log("The extension vector, which no table of it uses, is not made here: this PostgreSQL has no "
+                        "pgvector")
             job.result = {**job.result, "database": {"seconds": round(time.monotonic() - began, 1)}}
 
         action = {"follow": follow, "switch": switch, "restore": restore}[op]

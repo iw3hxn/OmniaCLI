@@ -144,6 +144,7 @@ def web_root(root, monkeypatch, tmp_path):
         (tmp_path / path).mkdir()
         monkeypatch.setattr(workspacehelper, name, tmp_path / path)
     monkeypatch.setattr(workspaceweb, "ACME_ROOT", str(tmp_path / "acme-challenges"))
+    monkeypatch.setattr(workspacehelper, "TRUST_DIR", tmp_path / "forwarded")
     monkeypatch.setattr(workspacehelper, "_tool", lambda name: shutil.which(name) or name)
     monkeypatch.setattr(workspacehelper, "_system", lambda config=None: {"workspaces": {"acme_email": "ops@acme.it"}})
     workspacehelper.disk("acme", str(root["storage"]), "2")

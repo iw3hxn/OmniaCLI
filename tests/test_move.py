@@ -105,6 +105,30 @@ def test_the_numbers_of_the_plan():
     assert until == datetime.datetime(2026, 11, 30, 20, 42)
 
 
+def test_vector_made_by_the_template_does_not_hold_an_instance_on_its_cluster():
+    """odoo-19-machine makes vector in every database of a cluster with pgvector, so that Odoo Enterprise's ai module
+    may be installed by its role (only the superuser makes the extension): the move refuses a cluster without
+    pgvector only for a database whose tables hold vectors (pg-report's vector_used), and the restore there leaves
+    the extension alone out (step 5, 24/11)."""
+    assert "'vector_used', EXISTS (SELECT 1 FROM pg_attribute" in composehelper.PG_REPORT
+    assert workspacehelper._extensions_here(["pg_trgm", "vector"], vector=False) == (["pg_trgm"], ["vector"])
+    assert workspacehelper._extensions_here(["pg_trgm", "vector"], vector=True) == (["pg_trgm", "vector"], [])
+    assert workspacehelper._extensions_here(["pg_trgm"], vector=False) == (["pg_trgm"], [])
+
+
+def test_the_refusals_of_a_move_are_in_the_readers_language():
+    """«lab4: the database uses the extension vector…» stayed in English in the job (step 5, 24/11)."""
+    from omniacli import i18n
+    why = ("the database uses the extension vector of PostgreSQL (pgvector), which the machine's cluster there does "
+           "not have")
+    said = i18n.tr("it", f"lab4 cannot hold it: {why}")
+    assert said == "lab4 non può ospitarla: il database usa l'estensione vector di PostgreSQL (pgvector), che il cluster " \
+                   "della macchina là non ha"
+    assert i18n.tr("it", "FAILED: lab4 cannot hold it: it has no template odoo-19").endswith(
+        "lab4 non può ospitarla: non ha il template odoo-19")
+    assert i18n.tr("it", "lab4 did not answer JSON") == "lab4 non ha risposto in JSON"
+
+
 # --- what runs: the frozen copy, the crons, the trees ----------------------------------------------------------
 
 async def test_no_job_runs_on_a_frozen_copy_but_the_moves_own(tmp_path):

@@ -2119,11 +2119,22 @@ def web_spec(spec_json: str, instances: list[str]) -> dict:
     if hold is not None and (not isinstance(hold, dict) or any(
             str(i) not in instances or not isinstance(r, list) or any(x not in ROLES for x in r) for i, r in hold.items())):
         raise HelperError("hold: {instance: [production, test]} of the workspace's instances")
+    # the machines that pass these names here (their forward, AD-012), whose X-Forwarded-For is believed;
+    # None (not in the spec) keeps the ones kept
+    trust = spec.get("trust")
+    if trust is not None:
+        if not isinstance(trust, list) or len(trust) > 8:
+            raise HelperError("trust: the IP addresses of the machines that pass the workspace's names here")
+        try:
+            trust = sorted({workspaceweb.trusted_address(str(a)) for a in trust})
+        except ValueError as exc:
+            raise HelperError(f"trust: {exc}") from None
     return {"domain": domain, "main": main, "subdomains": {str(k): str(v) for k, v in subdomains.items()},
             "certificate": certificate, "aliases": aliases, "redirects": redirects,
             # an instance not on the disk (being made, or gone) has no site: left out
             "relayed": {str(i): [str(x) for x in r] for i, r in relayed.items() if r and i in instances},
-            "hold": None if hold is None else {str(i): sorted({str(x) for x in r}) for i, r in hold.items() if r}}
+            "hold": None if hold is None else {str(i): sorted({str(x) for x in r}) for i, r in hold.items() if r},
+            "trust": trust}
 
 
 def _addresses(sites: list[dict], spec: dict) -> tuple[list[dict], list[str]]:
@@ -2514,6 +2525,8 @@ FORWARD_DIR = Path("/etc/omniacli/forward")
 FORWARD_MODES = ("acme", "full", "off")
 FORWARD_INPUT = 64 * 1024
 HOLD_FILE = "hold.json"
+# the addresses whose X-Forwarded-For the workspace's site believes (the machine that passes its names here), root's
+TRUST_DIR = Path("/etc/omniacli/forwarded")
 # _web's forward when it is the one kept on the disk (a publication), not one being set
 _KEPT = object()
 
@@ -2620,6 +2633,28 @@ def _forward_checked(record: dict, every: set[str], relayed: set[str]) -> None:
             raise HelperError(f"{old} moves to {new!r}, which is no other host name")
 
 
+def _trust_kept(name: str, trust: list[str] | None) -> list[str]:
+    """The addresses the site of the workspace trusts X-Forwarded-For from: trust written ([] takes them away), or
+    None for the ones kept (TRUST_DIR/<workspace>.json)."""
+    path = TRUST_DIR / f"{name}.json"
+    if path.is_symlink():
+        raise HelperError(f"{path} is a symbolic link")
+    if trust is None:
+        try:
+            kept = json.loads(path.read_text(encoding="utf-8")).get("from") if path.is_file() else []
+            return sorted({workspaceweb.trusted_address(str(a)) for a in kept or []})
+        except (OSError, ValueError, AttributeError, TypeError):
+            return []
+    if trust:
+        TRUST_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+        _write(path, json.dumps({"from": trust}) + "\n", mode=0o600)
+    else:
+        path.unlink(missing_ok=True)
+        with contextlib.suppress(OSError):
+            TRUST_DIR.rmdir()
+    return trust
+
+
 def _hold_set(mount: Path, instances: list[str], hold: dict | None) -> dict[Path, str | None]:
     """The environments' hold.json as hold says (None: as they are): {file: its text before}, to put back."""
     if hold is None:
@@ -2654,6 +2689,7 @@ def _web(name: str, storage: str, spec_json: str, forwarded=_KEPT) -> dict:
         if forwarded is not _KEPT and record is not None:
             raise HelperError(f"workspace {name} has no names to pass: no domain, or no instance")
         made["nginx"] = _put_site(path, None) if path.exists() else "no site"
+        _trust_kept(name, [])
         if record is None:
             # no site, nothing to switch: its lock goes too (an action waiting on it makes the site anew);
             # a forward keeps them, its site uses the certificate
@@ -2663,6 +2699,7 @@ def _web(name: str, storage: str, spec_json: str, forwarded=_KEPT) -> dict:
                 _run("certbot", "delete", "--cert-name", f"omniacli-{name}", "--non-interactive")
         return made
     held = _hold_set(mount, instances, spec["hold"])
+    spec["trust"] = _trust_kept(name, spec["trust"])
     try:
         return _web_names(name, mount, spec, instances, path, made, record, forwarded is not _KEPT)
     except BaseException:
@@ -2725,7 +2762,8 @@ def _web_names(name: str, mount: Path, spec: dict, instances: list[str], path: P
             moved_here = [r for r in ({**r, "names": [n for n in r["names"] if n not in gone]} for r in redirects) if r["names"]]
             passed = workspaceweb.forward_conf_text(name, record, tls, ipv6)
         made["names_here"] = [n for site in here for n in (*site["names"], *site["aliases"])]
-        own = workspaceweb.conf_text(name, here, tls, ipv6, omniacli, moved_here, acme_to) if here or moved_here else None
+        own = (workspaceweb.conf_text(name, here, tls, ipv6, omniacli, moved_here, acme_to, spec["trust"])
+               if here or moved_here else None)
         return {path: own, forward_site(name): passed}
     made["nginx"] = _put_sites(texts())
     if spec["certificate"] == "letsencrypt":
@@ -5422,6 +5460,7 @@ def db_restore(name: str, storage: str, instance: str) -> dict:
                 raise HelperError(f"the database of {instance} is not empty: a dump is restored only into an empty one")
             listing = machinedb._run(cluster, "exec", "-T", machinedb.SERVICE, "pg_restore", "-l", str(dump)).stdout
             extensions, kept_list = machinedb.restore_list(listing)
+            extensions, left_out = _extensions_here(extensions, machinedb.vector_available(cluster))
             list_file = moves / "arrive.list"
             machinedb.write(list_file, kept_list, mode=0o600, uid=uid, gid=gid)
             machinedb.make_extensions(lambda db, q: machinedb.sql(cluster, db, q), database, extensions)
@@ -5446,6 +5485,9 @@ def db_restore(name: str, storage: str, instance: str) -> dict:
             if listing.returncode:
                 raise HelperError(f"the dump is not one pg_restore reads: {listing.stderr.strip()[-400:]}")
             extensions, kept_list = machinedb.restore_list(listing.stdout)
+            extensions, left_out = _extensions_here(extensions, _dedicated_sql(
+                project, "postgres", f"SELECT 1 FROM pg_available_extensions WHERE name = '{machinedb.VECTOR}';\n"
+            ).strip() == "1")
             _dedicated_sql(project, "postgres", f"CREATE DATABASE {machinedb.ident(database)} OWNER odoo TEMPLATE "
                                                 "template0 ENCODING 'UTF8' LC_COLLATE 'C';\n")
             machinedb.make_extensions(lambda db, q: _dedicated_sql(project, db, q), database, extensions)
@@ -5464,7 +5506,17 @@ def db_restore(name: str, storage: str, instance: str) -> dict:
         dump.unlink(missing_ok=True)
         (moves / "arrive.list").unlink(missing_ok=True)
     return {"database": database, "size": size, "counts": after, "seconds": round(time.monotonic() - started, 1),
-            "cluster": env["major"] if env is not None else None}
+            "cluster": env["major"] if env is not None else None, "left_out": left_out}
+
+
+def _extensions_here(extensions: list[str], vector: bool) -> tuple[list[str], list[str]]:
+    """(the extensions a dump makes that are made here, those left out): vector, made in every database by the
+    template of a PostgreSQL with pgvector, is left out where this PostgreSQL has no pgvector. A database whose
+    tables hold vectors does not come here (the move refuses it first); one that did would fail its restore on
+    those tables, said, nothing served."""
+    if vector or machinedb.VECTOR not in extensions:
+        return extensions, []
+    return [e for e in extensions if e != machinedb.VECTOR], [machinedb.VECTOR]
 
 
 def db_empty(name: str, storage: str, instance: str) -> dict:
