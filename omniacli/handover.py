@@ -116,6 +116,14 @@ def iso(at: float) -> str:
     return datetime.datetime.fromtimestamp(at).astimezone().isoformat(timespec="seconds")
 
 
+def epoch_of(text: str) -> float:
+    """The instant of a moment iso wrote; 0 for none."""
+    try:
+        return datetime.datetime.fromisoformat(str(text)).timestamp()
+    except ValueError:
+        return 0.0
+
+
 def moment(at: float) -> str:
     """A moment as a text says it to the other machine and to people, dd/mm/yyyy hh:mm, by this machine's clock."""
     return time.strftime("%d/%m/%Y %H:%M", time.localtime(at))

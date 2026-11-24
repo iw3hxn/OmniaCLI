@@ -5,7 +5,9 @@
    See the job, Retry and Cancel the reception…; the switch (step 8): at the provider's switching and handed over
    (the day its copy here is deleted), at the customer's Switch to this machine… (the banner's only primary, the
    name written; off with why when this machine is not reached on 80 and 443), switching, stopped (Retry asks the
-   provider how it ended), on this machine. #}
+   provider how it ended), on this machine; after the switch (step 9, AD-013) at the provider's the stopped copy
+   until its day, with Delete the copy now… and Light the copy again… (the name written), its deletion running or
+   partial. #}
 {% from "_icons.html" import icon, dialog_x with context %}
 <style>
 .hv-band { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
@@ -16,9 +18,12 @@
 @media (max-width: 767.98px) { .hv-band .hv-actions { width: 100%; } .hv-band .hv-actions button, .hv-band .hv-actions a.button, #hv-redo-dialog .actions button { min-height: 44px; } }
 </style>
 {% if handover_out %}{% set ho = handover_out %}{% set rc = ho.receiver or {} %}
-<div class="banner {{ 'warn' if ho.phase == 'expired' else 'info' }} hv-band" role="status" id="handover-band" data-phase="{{ ho.phase }}">
+{% set dl = ho.deletion or {} %}
+<div class="banner {{ 'warn' if ho.phase == 'expired' or dl.partial else 'info' }} hv-band" role="status" id="handover-band" data-phase="{{ ho.phase }}"{% if ho.phase == "committed" %} data-deletion="{{ 'running' if dl.running else 'partial' if dl.partial else 'began' if dl.began else 'none' }}"{% endif %}>
   <span class="hv-text">
-  {% if ho.phase == "committed" %}{{ _("Handed over to the customer on {when}. Here a stopped copy stays until {until}.", when=ho.committed | moment, until=ho.delete_after | moment) }}
+  {% if ho.phase == "committed" and dl.running %}{{ _("The stopped copy of {ws} is being deleted: its instances, its backups here and the workspace's entries.", ws=ws.name) }}
+  {% elif ho.phase == "committed" and dl.partial %}{{ _("The deletion of the copy is partial since {when}: {why}. Its instances and backups here are gone; the deletion is tried again every hour.", when=dl.tried | moment, why=tr(dl.partial)) }}
+  {% elif ho.phase == "committed" %}{{ _("Handed over to the customer on {when}. Here a stopped copy stays until {until}.", when=ho.committed | moment, until=ho.delete_after | moment) }}
   {% elif ho.phase == "switching" %}{{ _("The customer is switching: the instances here are stopped behind the maintenance page since {when}; if the customer's machine does not commit by {until}, they run here again by themselves.", when=(ho.switch or {}).began | moment, until=(ho.switch or {}).deadline | moment) }}
   {% elif ho.phase == "expired" %}{{ _("The code of the handover expired on {when}: the customer no longer copies. Redo the code… to go on, from what it has.", when=ho.expires | moment) }}
   {% elif ho.phase == "ready" %}{{ _("The customer is ready to switch: the instances here stop when the customer chooses so.") }}
@@ -29,6 +34,11 @@
   <span class="hv-actions">
   {% if ho.phase in ("prepared", "expired") %}
     <button type="button" id="handover-redo" data-restarts="{{ (ho.restarts or []) | join(', ') }}" title="{{ _('Makes a new code; the one of before stops being valid. What the customer has copied already stays valid: with the new code it goes on from there.') }}">{{ _("Redo the code…") }}</button>
+  {% endif %}
+  {% if ho.phase == "committed" and dl.running and dl.job %}<a class="button" href="{{ prefix }}/jobs/{{ dl.job }}" title="{{ _('Opens the job of the deletion, with what it deletes') }}">{{ _("See the job") }} ›</a>{% endif %}
+  {% if ho.phase == "committed" and not dl.running %}
+    <button type="button" class="small danger" id="handover-delete" data-until="{{ ho.delete_after | moment }}" title="{{ _('Deletes now the stopped copy of {ws}, its backups here and its stagings on other machines, instead of {until}. It cannot be undone.', ws=ws.name, until=ho.delete_after | moment) if not dl.partial else _('Tries the deletion of the copy of {ws} again now, instead of at the next round.', ws=ws.name) }}">{{ _("Delete the copy now…") }}</button>
+    {% if not dl.began %}<button type="button" class="small danger" id="handover-relight" data-committed="{{ ho.committed | moment }}" title="{{ _('Starts {ws} here again as it was at the switch, if the customer\'s machine is gone. What the customer wrote after that is not here. Asks the name of the workspace.', ws=ws.name) }}">{{ _("Light the copy again…") }}</button>{% endif %}
   {% endif %}
   {% if ho.phase in ("prepared", "receiving", "ready", "expired") %}
     <button type="button" class="small danger" id="handover-cancel" title="{{ _('The code stops being valid and the customer\'s machine deletes what it copied. Here nothing changes.') }}">{{ _("Cancel the handover…") }}</button>
@@ -92,6 +102,10 @@
     switchAsk: {{ _("The {n} instances of {ws} at the provider's stop now, behind a maintenance page. This machine takes the changes made since it was ready, then starts them. A stop of about {minutes} min foreseen. Your {users} users will log in here with their passwords and their app of two-step verification.") | tojson }},
     switchPasskeys: {{ _("{passkeys} of them must register their passkey again: it is bound to the address of the provider's panel.") | tojson }},
     switchGo: {{ _("Switch to this machine") | tojson }},
+    deleteAsk: {{ _("The stopped copy of {ws} is deleted now, instead of {until}: its instances with their databases and files, its backups here, its stagings on other machines, its schedules, destinations and credentials, its users of it only, its disk and its names. One entry in the access log says what went. It cannot be undone.") | tojson }},
+    deleteGo: {{ _("Delete the copy now") | tojson }},
+    relightAsk: {{ _("{ws} starts here again as it was on {when}: what the customer wrote after that on its machine is not here. Its names come back here only where their DNS leads here; its tokens stay revoked; the customer is not told. The copy is then this machine's again, and is not deleted.") | tojson }},
+    relightGo: {{ _("Light the copy again") | tojson }},
     copied: {{ _("Copied") | tojson }}, refused: {{ _("Refused.") | tojson }},
   };
   const fill = (text, values) => text.replace(/\{(\w+)\}/g, (_m, k) => (values[k] === undefined ? `{${k}}` : String(values[k])));
@@ -111,6 +125,25 @@
     b.disabled = true;
     const got = await post(`${base}/cancel`);
     if (got.error) { b.disabled = false; say(got.error); return; }
+    location.href = `${PREFIX}/jobs/${got.job}`;
+  });
+  document.getElementById("handover-delete")?.addEventListener("click", async (event) => {
+    const b = event.currentTarget;
+    if (!await window.omniaAsk(fill(T.deleteAsk, {ws: WS, until: b.dataset.until}), T.deleteGo, {danger: true, goTitle: b.title})) return;
+    b.disabled = true;
+    const got = await post(`${base}/delete`);
+    if (got.error) { b.disabled = false; say(got.error); return; }
+    location.href = `${PREFIX}/jobs/${got.job}`;
+  });
+  document.getElementById("handover-relight")?.addEventListener("click", async (event) => {
+    const b = event.currentTarget;
+    const typed = await window.omniaTypeName(fill(T.relightAsk, {ws: WS, when: b.dataset.committed}), WS, T.relightGo, b.title);
+    if (!typed) return;
+    b.disabled = true;
+    const resp = await fetch(`${base}/relight`, {method: "POST", headers: {Accept: "application/json", "Content-Type": "application/json"},
+      body: JSON.stringify({confirm: WS})}).catch(() => null);
+    const got = resp ? await resp.json().catch(() => ({})) : {};
+    if (!resp || !resp.ok) { b.disabled = false; say(got.error || got.detail || T.refused); return; }
     location.href = `${PREFIX}/jobs/${got.job}`;
   });
   document.getElementById("handover-redo")?.addEventListener("click", async (event) => {

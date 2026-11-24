@@ -3995,7 +3995,7 @@ all or nothing.
   neither commit nor abort, the provider aborts by itself (its look every
   minute) and a late commit is 409.
 - **At the provider's after it.** The banner says *handed over on …, a
-  stopped copy until …* (the next step deletes it); no job but the handover's
+  stopped copy until …* (below, *After the switch*); no job but the handover's
   own runs on its instances; a person of the workspace who logs in here
   reads, after the password, «Your workspace moved to another machine. Ask
   your administrator for the new address.», and gets no session.
@@ -4051,6 +4051,78 @@ lab4 and lab3 answering again, Retry found it committed, started the instance
 its deploys started by lab3's admin read «the provider» and «another machine»,
 its schedule had no maker and no address, its destination arrived as
 `hv9-sftp-hv9` beside lab4's own `hv9-sftp`.
+
+#### After the switch: the stopped copy, its deletion, Light the copy again
+
+At the provider's, a workspace handed over stays as a **stopped copy** for 7
+days (D-A3, decided by Carlo), then it is deleted whole (AD-013).
+
+- **The banner** of its page (the machine's admins) says *Handed over to the
+  customer on …. Here a stopped copy stays until …* with **Delete the copy
+  now…** and **Light the copy again…**, both small and red, neither the
+  page's primary; the State of the list says *Handed over to the customer: a
+  stopped copy until …*, to look at the day before. While it is being
+  deleted the banner says so with **See the job ›**; a deletion that ended
+  partial says why (warn), with Delete the copy now… to try again at once.
+- **The deletion** (`Handover of <ws>: the copy deleted`, a job of the
+  system) runs from the look of every minute once `delete_after` passed (so
+  also at the start of OmniaCLI), or at once with **Delete the copy now…**
+  (a question that says everything that goes; it cannot be undone). It puts
+  together what exists, no helper new: the stagings of its productions on
+  the linked machines (each link's `/api/instances`, then their Remove there,
+  followed), each instance removed as Remove does it (`remove`: containers,
+  database of its own or on the machine's cluster, files; the servers file,
+  its CI), the folders of its backups (all of them, the switch's dumps too),
+  its schedules, destinations, git credentials (its own and its servers'),
+  deploys, its users of this workspace only (with their two-step
+  verification, passkeys and sessions), the workspace's record, then `drop`
+  of its disk (the site, the forward of its names and its record, the
+  lineage `omniacli-<ws>` of Let's Encrypt, the customer's certificate, the
+  mount unit, docker's drop-in and the slice) and the handover's record; at
+  the end **one entry in the access log** says what went (the instances,
+  how many backup files and GB, the GB its disk used, the schedules,
+  destinations, credentials and users). A link that does not answer for its
+  stagings leaves it **partial**: the instances and backups here are gone,
+  the workspace's record stays with its banner, the round tries again every
+  hour (`OMNIACLI_HANDOVER_DELETE_EVERY`, 3600 s), and `delete_after` does
+  not move.
+- **Light the copy again…** (before the deletion began; the workspace's name
+  written) is for a customer's machine that is gone: the names served here
+  again (`forward off`, then the site), each database of its own started
+  where it stopped and closed again to the customer's machine (the commit
+  cannot close it: it is stopped then), the instances started, the
+  maintenance page taken away at their first 200, the schedules suspended at
+  the switch on again. Its tokens stay revoked, its names come back only
+  where their DNS leads here, the customer is not told (there is no
+  channel); what the customer wrote after the switch is not here. The
+  handover's record goes: the workspace is this machine's again, its people
+  log in here, and it may be handed over again.
+
+Routes: `POST /api/workspaces/<ws>/handover/delete` and
+`POST /api/workspaces/<ws>/handover/relight` (`{"confirm": "<ws>"}`), the
+machine's admins only. While a copy is handed over, New instance is off in
+it (and refused), saying why.
+
+Measured on the lab pair (24/11/2026, lab3 the provider, lab4 behind the
+simulated NAT router of the switch): a workspace on the customer's domain
+with its own certificate, a database of its own and one on the machine's
+cluster, two people, a token, a schedule, a destination, a git credential,
+backups, and a lineage of Let's Encrypt made by hand (private addresses: no
+real ACME). Switched, then **Light the copy again…** from the page: a job of
+8 s, both names 200 through lab3's nginx again, the forward gone, a row
+written on lab4 after the switch not on lab3. Handed over again, its day set
+in the past and OmniaCLI restarted: the round at the start (after an
+interrupted try) deleted it **partial** — lab3's link to lab4 was cut by the
+NAT — and the banner said why; with the NAT taken away, **Delete the copy
+now…** finished it. A third workspace handed over and deleted from the page:
+before, 3,500 files under its disk, 5 backup files, 3 containers, 2 units
+(the mount and the slice), the lineage, its database on the cluster; after,
+**0 files** under its disk (unmounted, its image gone), **0 backups**, **0
+containers** and 0 networks, **0 units**, the **lineage deleted** (live,
+archive, renewal), 0 databases on the cluster, 0 entries in the files, its 2
+users gone, and **1 entry** in the access log (2 instances, 5 backup files of
+2.2 MB, 116.9 MB used on its disk, 1 schedule, 1 destination, 1 credential,
+2 users).
 
 ### Modules from the catalogs
 

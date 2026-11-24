@@ -5677,6 +5677,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         ws = a_workspace(workspace)
         if workspaceops.docker_missing():
             return refuse(workspaceops.docker_missing())
+        if handovers_out.state(ws.name).get("phase") == "committed":
+            # a stopped copy that is deleted on its day (AD-013): nothing new is made in it
+            return refuse(f"{ws.name} is handed over to the customer: its copy here is stopped until it is deleted; "
+                          "Light the copy again… first")
         instance = str(payload.get("instance") or "").strip()
         if not WORKSPACE_NAME.fullmatch(instance):
             return refuse("An instance's name is 1-32 lower case letters, digits and -")
@@ -7306,6 +7310,51 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         await asyncio.to_thread(stagings.save, stagings_file, data)
         return {"ok": True}
 
+    async def instance_removed(job, ws: Workspace, name: str, who: str, role: str) -> None:
+        """An instance of ws removed (its containers, data and folders, then its server, its CI, its staging
+        record), as Remove does it; also the deletion of a workspace handed over (AD-013)."""
+        instance = name[len(ws.name) + 1:]
+        # its database on the cluster of a linked OmniaCLI (read before its record goes): that machine takes it back
+        production = settings.servers[name].production
+        linked = linked_database(production) if production is not None and on_remote_db(production) else None
+        if linked is not None and (instance_meta(production).get("promoted_from") or {}).get("dedicated"):
+            # on the promoted copy of its own dedicated database (UX-011 §D): no cluster there to take a database
+            # back; the copy stays on that machine, which drops it from its Database tab once this instance is gone
+            linked = None
+        # on a promoted copy (of the machine's cluster, or of its own database): the provider's machine, whose
+        # address the job, which the workspace's users read, does not say
+        provider = production is not None and on_remote_db(production) and bool(instance_meta(production).get("promoted_from"))
+        # its webhooks on GitHub and the token they were made with, read while it is here
+        gh_urls, gh_scopes = await github_urls_of([name]), github_scopes([name])
+        if linked is None and provider:
+            await workspaceops.remove_instance(job, ws, instance, linked=True)
+            job.log("Its database stays on its copy on another machine of the provider, which drops it there")
+        elif linked is None:
+            await workspaceops.remove_instance(job, ws, instance)
+        else:
+            await workspaceops.remove_instance(job, ws, instance, linked=True)
+            await linked_release(job, linked["link"], linked["major"], linked["database"], who, role)
+        async with config_lock:
+            error = await store({k: v for k, v in settings.servers.items() if k != name})
+        if error is not None:
+            raise JobFailed(f"the instance is removed, but the servers file was not written: {error.body.decode()}")
+        await rename_in_workspaces(name, None)
+        await asyncio.to_thread(forget_server_files, name)
+        job.log(f"Server {name} removed")
+        # its CI goes with it: a webhook made for it is taken away where nothing else here follows it with the
+        # CI on (23/11/2026: a deleted staging's stayed on GitHub, and in github-hooks.json)
+        await github_after_removal(job, [name], gh_urls, gh_scopes)
+        # a staging is no longer one; the stagings of a removed parent stay, saying whose copy they were
+        known = stagings.load(stagings_file)
+        if known.pop(name, None) is not None:
+            await asyncio.to_thread(stagings.save, stagings_file, known)
+        current = settings.workspaces.get(ws.name)
+        if current is not None:
+            try:
+                await publish_names(job, current)
+            except JobFailed as exc:
+                job.log(f"The names of the workspace are not published again: {exc}")
+
     @app.post("/api/workspaces/{workspace}/instances/delete", dependencies=[Depends(admin)])
     async def instance_delete(workspace: str, payload: dict = Body(...), me: Principal = Depends(current_user)):
         """An instance of the workspace removed: its containers, data and
@@ -7327,50 +7376,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return refuse(f"A job is running on {name}: try again when it ends")
         if handover_frozen(name):
             return refuse(handover_frozen(name))
-        instance = name[len(prefix):]
-        # its database on the cluster of a linked OmniaCLI (read before its record goes): that machine takes it back
-        production = settings.servers[name].production
-        linked = linked_database(production) if production is not None and on_remote_db(production) else None
-        if linked is not None and (instance_meta(production).get("promoted_from") or {}).get("dedicated"):
-            # on the promoted copy of its own dedicated database (UX-011 §D): no cluster there to take a database
-            # back; the copy stays on that machine, which drops it from its Database tab once this instance is gone
-            linked = None
-        # on a promoted copy (of the machine's cluster, or of its own database): the provider's machine, whose
-        # address the job, which the workspace's users read, does not say
-        provider = production is not None and on_remote_db(production) and bool(instance_meta(production).get("promoted_from"))
 
         async def action(job):
-            # its webhooks on GitHub and the token they were made with, read while it is here
-            gh_urls, gh_scopes = await github_urls_of([name]), github_scopes([name])
-            if linked is None and provider:
-                await workspaceops.remove_instance(job, ws, instance, linked=True)
-                job.log("Its database stays on its copy on another machine of the provider, which drops it there")
-            elif linked is None:
-                await workspaceops.remove_instance(job, ws, instance)
-            else:
-                await workspaceops.remove_instance(job, ws, instance, linked=True)
-                await linked_release(job, linked["link"], linked["major"], linked["database"],
-                                     me.on_behalf or me.name, me.role)
-            async with config_lock:
-                error = await store({k: v for k, v in settings.servers.items() if k != name})
-            if error is not None:
-                raise JobFailed(f"the instance is removed, but the servers file was not written: {error.body.decode()}")
-            await rename_in_workspaces(name, None)
-            await asyncio.to_thread(forget_server_files, name)
-            job.log(f"Server {name} removed")
-            # its CI goes with it: a webhook made for it is taken away where nothing else here follows it with the
-            # CI on (23/11/2026: a deleted staging's stayed on GitHub, and in github-hooks.json)
-            await github_after_removal(job, [name], gh_urls, gh_scopes)
-            # a staging is no longer one; the stagings of a removed parent stay, saying whose copy they were
-            known = stagings.load(stagings_file)
-            if known.pop(name, None) is not None:
-                await asyncio.to_thread(stagings.save, stagings_file, known)
-            current = settings.workspaces.get(ws.name)
-            if current is not None:
-                try:
-                    await publish_names(job, current)
-                except JobFailed as exc:
-                    job.log(f"The names of the workspace are not published again: {exc}")
+            await instance_removed(job, ws, name, me.on_behalf or me.name, me.role)
 
         job = jobs.submit(f"Remove {name}", [f"{name}/production", f"{name}/test"], f"manual: {me}", action,
                           workspace=ws.name)
@@ -24141,7 +24149,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 # handed over, the day the copy here is deleted (D-A3: 7 days after the switch)
                 "switch": switch_public(switch_of(state)) if state.get("switch") else None,
                 "committed": state.get("committed"),
-                "delete_after": handover.iso(float(state["delete_after"])) if state.get("delete_after") else None}
+                "delete_after": handover.iso(float(state["delete_after"])) if state.get("delete_after") else None,
+                # after the switch (AD-013): its deletion running, begun (no Light again then), partial with why
+                "deletion": {"job": handover_deletion(state).get("job"), "running": handover_deleting(state),
+                             "began": bool(handover_deletion(state).get("tries")),
+                             "partial": handover_deletion(state).get("partial"),
+                             "tried": handover.iso(float(handover_deletion(state)["tried"]))
+                             if handover_deletion(state).get("tried") else None}
+                if phase == "committed" else None}
 
     def handover_people(ws: Workspace) -> dict:
         """Who of the workspace passes (its users of role workspace) and what of them does not (AD-009): the
@@ -24229,6 +24244,18 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     "ready": "The customer is ready to switch", "expired": "The code of the handover expired",
                     "switching": "The customer is switching", "committed": "Handed over to the customer"}
             text = word.get(out.get("phase") or "")
+            if out.get("phase") == "committed":
+                # the copy stopped here: the day it is deleted, to look at the day before or once its deletion is
+                # partial (A7: «una copia che domani si cancella»)
+                deletion = out.get("deletion") or {}
+                if deletion.get("running"):
+                    return {"text": i18n.gettext(lang, "The copy handed over is being deleted"), "level": 0}
+                if deletion.get("partial"):
+                    return {"text": i18n.gettext(lang, "The deletion of the copy is partial"), "level": 1}
+                until = out.get("delete_after") or ""
+                soon = bool(until) and handover.epoch_of(until) - handover.now() < 86400
+                return {"text": i18n.gettext(lang, "Handed over to the customer: a stopped copy until {when}",
+                                             when=clock.shown(str(until))), "level": 1 if soon else 0}
             # a handover prepared and never used once its code expired is to look at (A7)
             return {"text": i18n.gettext(lang, text), "level": 1 if out.get("phase") == "expired" else 0} if text else None
         return None
@@ -25474,6 +25501,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 elif sw.get("phase") == "aborting" and (running is None or running.status in FINISHED):
                     handover_switch_abort(ws, str(sw.get("why") or "aborted"), "handover: start",
                                           phase=str(sw.get("ends_as") or "aborted"))
+            # a copy handed over whose day passed is deleted (D-A3: 7 days after the switch); one whose deletion
+            # ended partial (a staging on a machine that did not answer) is tried again each hour (AD-013)
+            if ws is not None and handover_delete_due(state):
+                handover_delete_job(ws, "handover: the copy's day")
         for hid, state in handovers_in.all().items():
             # a switch whose job is not running any more (OmniaCLI stopped during it, or the job ended without
             # writing its end): «interrupted», with Retry (AD-011 «Idempotenza e ripresa»); the first look runs at
@@ -25910,6 +25941,298 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return jobs.submit(f"Handover of {ws.name}: handed over", [f"{s}/production" for s in state.get("instances") or []
                                                                    if s in settings.servers],
                            source, action, workspace=ws.name, frozen_ok=True)
+
+    # --- after the switch (AD-013, step 9 of §9 of docs/adr/AD-008-consegna-e-spostamento.md; UX-014 A7, A10): the
+    # copy handed over stays here stopped until delete_after (7 days, D-A3); the hourly round (or Delete the copy
+    # now…) deletes it whole, with the helpers that exist (remove, the backups' folders, drop: the site, the forward,
+    # the lineage, the customer's certificate, the disk's unit and slice) and the workspace's entries; Light the copy
+    # again… (the name written) runs it here again before that, when the customer's machine is gone.
+
+    # how often a deletion that ended partial is tried again (a link that did not answer for a staging there)
+    HANDOVER_DELETE_EVERY = float(os.environ.get("OMNIACLI_HANDOVER_DELETE_EVERY", "3600"))
+
+    def handover_deletion(state: dict) -> dict:
+        return dict(state.get("deletion") or {}) if isinstance(state, dict) else {}
+
+    def handover_deleting(state: dict) -> bool:
+        """The deletion of the copy has a job running now."""
+        running = jobs.get(str(handover_deletion(state).get("job") or ""))
+        return running is not None and running.status not in FINISHED
+
+    def handover_delete_due(state: dict, at: float | None = None) -> bool:
+        """The hourly round deletes this copy now: handed over, its day passed (or a deletion begun that ended
+        partial, or was interrupted), the last try at least HANDOVER_DELETE_EVERY ago, none running."""
+        if state.get("phase") != "committed" or handover_deleting(state):
+            return False
+        at = handover.now() if at is None else at
+        deletion = handover_deletion(state)
+        if not deletion.get("tries") and at < float(state.get("delete_after") or 0):
+            return False
+        last = jobs.get(str(deletion.get("job") or ""))
+        if last is not None and last.status == INTERRUPTED:
+            return True
+        return at - float(deletion.get("tried") or 0) >= HANDOVER_DELETE_EVERY
+
+    def size_text(size: int) -> str:
+        """Bytes as the job and the access log say them: MB below a GB, GB from it."""
+        return f"{size / workspaceops.GB:.2f} GB" if size >= workspaceops.GB else f"{size / (1 << 20):.1f} MB"
+
+    def tree_size(folder: Path) -> tuple[int, int]:
+        """(files, bytes) under folder, links not followed."""
+        files = size = 0
+        for root, _dirs, names in os.walk(folder):
+            for name in names:
+                with contextlib.suppress(OSError):
+                    size += os.lstat(os.path.join(root, name)).st_size
+                    files += 1
+        return files, size
+
+    async def handover_stagings_away(job, servers: list[str]) -> list[str]:
+        """The stagings of servers' productions on the linked machines deleted there (each link's /api/instances,
+        then its Remove, followed): what did not go, a line each (a link that did not answer, a refusal)."""
+        here, failed = here_name(), []
+        for name, link in sorted(settings.link_targets.items()):
+            headers = {**link_headers(link, "omniacli", "admin"), "Accept": "application/json"}
+            client = link_clients.client(link)
+            try:
+                resp = await client.get("/api/instances", headers=headers, timeout=LIST_TIMEOUT)
+                data = resp.json() if resp.status_code == 200 else None
+                why = f"answered HTTP {resp.status_code}"
+            except (httpx.HTTPError, ValueError) as exc:
+                data, why = None, describe_error(exc)
+            if not isinstance(data, dict):
+                failed.append(f"{name} did not say its stagings: {why}")
+                continue
+            for srv in data.get("servers") or []:
+                if not (isinstance(srv, dict) and srv.get("parent") in servers and srv.get("parent_machine") == here):
+                    continue
+                staging, there = str(srv.get("name") or ""), str(srv.get("workspace") or "")
+                try:
+                    resp = await client.post(f"/api/workspaces/{quote(there)}/instances/delete",
+                                             headers={**headers, "Content-Type": "application/json"},
+                                             json={"server": staging}, timeout=60)
+                    got = resp.json() if resp.status_code == 200 else {}
+                    if not got.get("job"):
+                        raise JobFailed(f"answered HTTP {resp.status_code}")
+                    await linkcopy.follow(job, client, link, headers, str(got["job"]), f"the deletion of {staging}")
+                    job.log(f"The staging {staging} of {srv.get('parent')} on {name}: deleted there")
+                except (httpx.HTTPError, ValueError, JobFailed) as exc:
+                    failed.append(f"the staging {staging} on {name} is not deleted: "
+                                  f"{describe_error(exc) if isinstance(exc, httpx.HTTPError) else exc}")
+        return failed
+
+    async def handover_entries_away(job, ws: Workspace, servers: list[str]) -> list[str]:
+        """The workspace's entries in the files of this machine (AD-013): its schedules, destinations, git
+        credentials (its own and its servers'), deploys; its users that are of it only, with their two-step
+        verification, passkeys and sessions (store_access). What went, a word each."""
+        gone = []
+        async with schedules_lock:
+            kept = {k: v for k, v in scheduler.schedules.items() if v.instance.partition("/")[0] not in servers}
+            if kept != scheduler.schedules:
+                gone.append(f"{len(scheduler.schedules) - len(kept)} schedules")
+                await asyncio.to_thread(schedules.save_schedules, settings.schedules_file, kept)
+                scheduler.schedules = kept
+                scheduler.history.keep_only(kept)
+        async with destinations_lock:
+            found = await asyncio.to_thread(load_destinations)
+            mine = [n for n, d in found.items() if d.workspace == ws.name]
+            if mine:
+                await asyncio.to_thread(destinations.save_destinations, settings.destinations_file,
+                                        {n: d for n, d in found.items() if n not in mine})
+                gone.append(f"{len(mine)} destinations")
+        async with credentials_lock:
+            found = await asyncio.to_thread(gitcredentials.load, settings.credentials_file)
+            scopes = [f"workspace:{ws.name}", *(f"server:{s}" for s in servers)]
+            dropped = sum(len(found.get(s) or {}) for s in scopes)
+            if any(s in found for s in scopes):
+                await asyncio.to_thread(gitcredentials.save, settings.credentials_file,
+                                        {k: v for k, v in found.items() if k not in scopes})
+                await asyncio.to_thread(gitcredentials.bind, settings)
+            if dropped:
+                gone.append(f"{dropped} git credentials")
+        for server in servers:
+            for role in ROLES:
+                await asyncio.to_thread(deploys.remove, deploys_folder, f"{server}/{role}")
+        people = sorted(m for m in ws.members if only_here(m, ws.name))
+        if people:
+            async with access_lock:
+                web = web_copy()
+                for name in people:
+                    web.users.pop(name, None)
+                    web.roles.pop(name, None)
+                refused = await store_access(web)
+                if refused is not None:
+                    raise JobFailed(f"its users are not deleted: {refused.body.decode()}")
+                for name in people:
+                    await drop_invitations(name)
+                    await asyncio.to_thread(bell_reads.forget, name)
+            gone.append(f"{len(people)} users ({', '.join(people)})")
+        return gone
+
+    def handover_delete_job(ws: Workspace, source: str) -> Job:
+        """The deletion of the copy handed over (AD-013 «Cancellazione»): its stagings on other machines through
+        their links, each instance removed (remove: its containers, database, files), its backups' folders, its
+        entries and users, the workspace's record, its disk with drop (its site, the forward of its names, the
+        lineage of Let's Encrypt, the customer's certificate, the mount unit and the slice), the handover's
+        record; at the end one entry in the access log with what went. A staging that cannot be deleted leaves
+        the job warned (partial): the workspace's record stays, with its banner, and the round tries again each
+        hour; delete_after does not move."""
+        state = handovers_out.state(ws.name)
+        deletion = handover_deletion(state)
+        servers = list(deletion.get("servers") or [s for s in ws.servers if s.startswith(f"{ws.name}-")])
+        handovers_out.update(ws.name, deletion={**deletion, "servers": servers, "tried": handover.now(),
+                                                "tries": int(deletion.get("tries") or 0) + 1, "source": source})
+
+        async def action(job):
+            job.log(f"--- the copy of {ws.name} handed over to the customer on {state.get('committed')}: deleted "
+                    + ("now, before its day" if handover.now() < float(state.get("delete_after") or 0)
+                       else "on its day"))
+            counted = dict(handover_deletion(handovers_out.state(ws.name)).get("counted") or {})
+            try:
+                found = await workspaceops.space()
+                fill = workspaceops.filled(workspaceops.room(found, settings.workspaces, ws.storage, ws.name), ws)
+            except workspaceops.SpaceError:
+                fill = None
+            if fill and not counted.get("disk"):
+                counted["disk"] = int(fill.get("used") or 0)
+            failed = await handover_stagings_away(job, servers)
+            for server in servers:
+                if server in settings.servers:
+                    await instance_removed(job, ws, server, "omniacli", "admin")
+                folder = settings.backup_dir / server
+                if folder.is_dir() and not folder.is_symlink():
+                    files, size = await asyncio.to_thread(tree_size, folder)
+                    await asyncio.to_thread(shutil.rmtree, folder)
+                    counted["backups"] = int(counted.get("backups") or 0) + files
+                    counted["backup_bytes"] = int(counted.get("backup_bytes") or 0) + size
+                    job.log(f"The backups of {server}: {files} files, {size_text(size)} deleted")
+            # what went at a try that ended partial is said with the rest at the end
+            gone = [*(handover_deletion(handovers_out.state(ws.name)).get("gone") or []),
+                    *await handover_entries_away(job, ws, servers)]
+            handovers_out.update(ws.name, deletion={**handover_deletion(handovers_out.state(ws.name)), "gone": gone,
+                                                    "counted": counted, "partial": "; ".join(failed) or None})
+            if failed:
+                for line in failed:
+                    job.warn(line)
+                job.warn(f"The deletion of {ws.name} is partial: the round tries again every "
+                         f"{int(HANDOVER_DELETE_EVERY // 60)} minutes; its instances and backups here are gone")
+                return
+            async with workspaces_lock:
+                if ws.name in settings.workspaces:
+                    refused = await store_workspaces({n: w for n, w in settings.workspaces.items() if n != ws.name})
+                    if refused:
+                        raise JobFailed(f"the workspace's record is not deleted: {refused.body.decode()}")
+            hosted.put(ws.name, None)
+            if ws.storage:
+                said = await workspaceops.drop_disk(job, ws)
+                job.log(said[:1].upper() + said[1:])
+                if said.startswith("its disk stays"):
+                    job.warn(f"The disk of {ws.name} is not deleted: {said}")
+            ended = handovers_out.state(ws.name)
+            handovers_out.forget(ws.name)
+            what = (f"{len(servers)} instances ({', '.join(servers) or 'none'}), "
+                    f"{counted.get('backups', 0)} backup files ({size_text(counted.get('backup_bytes') or 0)}), "
+                    f"its disk ({size_text(counted.get('disk') or 0)} used)"
+                    + (", " + ", ".join(gone) if gone else ""))
+            access_log.record("handover", "handover", str(ended.get("id") or ""), "",
+                              f"the copy of {ws.name} handed over to the customer deleted ({source}): {what}",
+                              workspace=ws.name, context=False)
+            job.result = {**job.result, "deleted": {"servers": servers, **counted}}
+            job.log(f"Deleted: {what}")
+        job = jobs.submit(f"Handover of {ws.name}: the copy deleted",
+                          [f"{s}/{r}" for s in servers if s in settings.servers for r in ROLES
+                           if getattr(settings.servers[s], r) is not None], source, action, workspace=ws.name,
+                          frozen_ok=True)
+        handovers_out.update(ws.name, deletion={**handover_deletion(handovers_out.state(ws.name)), "job": job.id})
+        return job
+
+    def handover_relight_job(ws: Workspace, who: str, source: str) -> Job:
+        """Light the copy again (AD-013 «Riaccendi», UX-014 A10): the names served here again (forward off, then
+        the site), each database of its own started where it stopped, the instances started, the maintenance page
+        taken away at the first 200, the schedules suspended at the switch on again; the tokens stay revoked and the
+        customer is not told (there is no channel). The handover's record goes: the workspace is this machine's
+        again, its people log in here again."""
+        state = handovers_out.state(ws.name)
+        sw = switch_of(state)
+
+        async def action(job):
+            job.log(f"--- {ws.name} runs here again as it was at the switch, {state.get('committed')}: what the "
+                    "customer wrote after that on its machine is not here")
+            with contextlib.suppress(JobFailed):
+                await handover_names_forward(job, ws, "off", "")
+            for server, _instance, inst in handover_switch_servers(ws, state):
+                key = dedicated_key(inst)
+                if key:
+                    with contextlib.suppress(JobFailed):
+                        await workspaceops._helper(job, "machine-db-replica-stop", key, "resume", timeout=MACHINE_TIMEOUT)
+                await ops.run(job, workspaceops.compose(inst.restart.service, "start"), timeout=workspaceops.HELPER_TIMEOUT)
+                job.log(f"{server} started")
+            # the commit could not close a database of its own to the customer's machine (it was stopped for the
+            # switch: machine-db-replica-drop wants it running); started again, it is closed now, before any visitor
+            await handover_close(job, ws, state)
+            await handover_schedules_on(job, list(sw.get("suspended") or []))
+            failing = []
+            for server, _instance, inst in handover_switch_servers(ws, state):
+                site = zerodowntime.site(inst)
+                if await zerodowntime.answers(inst.options.http_port):
+                    job.log(f"{server} answers /web/login")
+                else:
+                    failing.append(server)
+                    job.warn(f"{server} did not answer /web/login within {zerodowntime.HEALTH_TIMEOUT} s")
+                if site is not None:
+                    await zerodowntime.maintenance(job, site, False)
+            current = settings.workspaces.get(ws.name)
+            if current is not None:
+                try:
+                    await publish_names(job, current)
+                except JobFailed as exc:
+                    job.warn(f"The names of {ws.name} are not published again: {exc}")
+            handovers_out.forget(ws.name)
+            access_log.record("handover", "handover", str(state.get("id") or ""), "",
+                              f"the copy of {ws.name} handed over on {state.get('committed')} lit again by {who}: "
+                              f"{len(handover_switch_servers(ws, state))} instances started"
+                              + (f", {', '.join(failing)} not answering" if failing else "")
+                              + "; its tokens stay revoked, the customer is not told", workspace=ws.name, context=False)
+            job.log(f"{ws.name} is this machine's again: its people log in here; its tokens stay revoked, and its "
+                    "names come back here only where their DNS leads here. The customer is not told")
+        return jobs.submit(f"Handover of {ws.name}: the copy lit again",
+                           [f"{s}/production" for s in state.get("instances") or [] if s in settings.servers],
+                           source, action, workspace=ws.name, frozen_ok=True)
+
+    def handover_after_refusal(ws: Workspace, state: dict) -> str:
+        """Why the copy of ws is neither deleted nor lit again now ("" when it may)."""
+        if state.get("phase") != "committed":
+            return f"{ws.name} is not handed over to the customer: there is no stopped copy of it here"
+        if handover_deleting(state):
+            return f"The copy of {ws.name} is being deleted"
+        return ""
+
+    @app.post("/api/workspaces/{workspace}/handover/delete")
+    async def handover_delete(request: Request, workspace: str, me: Principal = Depends(current_user)):
+        """Delete the copy now (UX-014 A7): what the hourly round does on its day, before it. It cannot be undone."""
+        handover_admin(me)
+        ws = a_workspace(workspace)
+        why = handover_after_refusal(ws, handovers_out.state(ws.name))
+        if why:
+            return refuse(why)
+        return {"job": handover_delete_job(ws, f"manual: {me}").id}
+
+    @app.post("/api/workspaces/{workspace}/handover/relight")
+    async def handover_relight(request: Request, workspace: str, payload: dict = Body(...),
+                               me: Principal = Depends(current_user)):
+        """Light the copy again (UX-014 A10), the workspace's name written: before it is deleted, when the
+        customer's machine is gone."""
+        handover_admin(me)
+        ws = a_workspace(workspace)
+        state = handovers_out.state(ws.name)
+        why = handover_after_refusal(ws, state)
+        if why:
+            return refuse(why)
+        if handover_deletion(state).get("tries"):
+            return refuse(f"The deletion of the copy of {ws.name} began: its instances are gone, it cannot run again")
+        if str(payload.get("confirm") or "") != ws.name:
+            return refuse(f"Write the name of the workspace, {ws.name}, to light its copy again")
+        return {"job": handover_relight_job(ws, str(me), f"manual: {me}").id}
 
     @handover_public_route("POST", HANDOVER_API + "/{handover_id}/switch/commit")
     async def handover_switch_commit(request: Request, handover_id: str, payload: dict):

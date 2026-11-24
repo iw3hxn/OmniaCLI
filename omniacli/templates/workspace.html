@@ -12,7 +12,9 @@
    external services), every list read; a new instance, a user, a key and the notices in a dialog. The repositories,
    the Odoo options and the deletion of an instance are on the instance's page (UX-006 › Settings). #}
 {% set denied = denied or {} %}
-{% set new_instance = not storage_problem and not docker_missing and can_create and not (instances_left is not none and instances_left <= 0) and templates and not denied.instances %}
+{# a copy handed over to the customer is stopped until it is deleted (AD-013): nothing new is made in it #}
+{% set handed_over = handover_out and handover_out.phase == "committed" %}
+{% set new_instance = not storage_problem and not docker_missing and can_create and not (instances_left is not none and instances_left <= 0) and templates and not denied.instances and not handed_over %}
 {# an administrator of the machine (not of this workspace only): the form of its limits is theirs (/workspaces?edit=) #}
 {% set machine_admin = not scoped %}
 {% set limits_url = prefix ~ "/workspaces?edit=" ~ (ws.name | urlencode) %}
@@ -21,6 +23,7 @@
 {# why no instance can be made now: on the Instances tab, and in the title of the disabled primary #}
 {% set why_not | trim %}
 {% if denied.instances %}{{ tr(denied.instances) }}
+{% elif handed_over %}{{ _("{ws} is handed over to the customer: its copy here is stopped until it is deleted. Light the copy again… to make instances in it again.", ws=ws.name) }}
 {% elif storage_problem %}{{ _("This workspace cannot be used: {problem}.", problem=tr(storage_problem)) }}
 {% elif docker_missing %}{{ _("Docker is not installed on this machine: the instances of a workspace are Docker Compose projects. Install it (the Checks page says how), then new instances can be made here.") }}
 {% elif not can_create %}{{ _("New instances need a storage and a disk limit for the workspace: the machine's administrators set them.") }}
