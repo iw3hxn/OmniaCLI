@@ -44,6 +44,7 @@
  "Its copy stopped: {why}": "La sua copia si è interrotta: {why}",
  "Light the copy again": "Riaccendi la copia",
  "Light the copy again…": "Riaccendi la copia…",
+ "Lit again: something to take back from the customer's machine": "Riaccesa: qualcosa da riprendere dalla macchina del cliente",
  "MCP and API tokens, OAuth accesses: their clients point to this address.": "Token MCP e API, accessi OAuth: i loro client puntano a questo indirizzo.",
  "Makes a new code; the one of before stops being valid. What the customer has copied already stays valid: with the new code it goes on from there.": "Crea un codice nuovo; quello di prima smette di valere. Quello che il cliente ha già copiato resta valido: con il codice nuovo riprende da lì.",
  "Makes the code of the handover: here nothing stops": "Crea il codice della consegna: qui non si ferma niente",
@@ -58,6 +59,7 @@
  "Opens the instances of the workspace: each one moves to another machine of yours from its page, More › Move to another machine…": "Apre le istanze del workspace: ognuna si sposta su un'altra tua macchina dalla sua pagina, Altro › Sposta su un'altra macchina…",
  "Opens the job of the deletion, with what it deletes": "Apre il job della cancellazione, con quello che cancella",
  "Opens the job of the reception, with its steps": "Apre il job della ricezione, con i suoi passi",
+ "Opens the job that lights the copy again, with what it did and what is left": "Apre il job che riaccende la copia, con quello che ha fatto e quello che resta",
  "Passkeys: bound to the address of this panel, registered again there.": "Passkey: legate all'indirizzo di questo pannello, si registrano di nuovo là.",
  "Prepare the handover": "Prepara la consegna",
  "Prepare the handover…": "Prepara la consegna…",
@@ -104,6 +106,7 @@
  "The code of the handover your provider gave you": "Il codice di consegna che ti ha dato il fornitore",
  "The code stops being valid and the customer's machine deletes what it copied. Here nothing changes.": "Il codice smette di valere e la macchina del cliente cancella quello che ha copiato. Qui non cambia niente.",
  "The copy handed over is being deleted": "La copia consegnata si sta cancellando",
+ "The copy handed over is being lit again": "La copia consegnata si sta riaccendendo",
  "The customer is ready to switch": "Il cliente è pronto per passare",
  "The customer is ready to switch: the instances here stop when the customer chooses so.": "Il cliente è pronto per passare: le istanze qui si fermeranno quando lo sceglie lui.",
  "The customer is receiving": "Il cliente sta ricevendo",
@@ -126,6 +129,7 @@
  "The steps of the handover": "I passi della consegna",
  "The steps of the reception": "I passi della ricezione",
  "The stopped copy of {ws} is being deleted: its instances, its backups here and the workspace's entries.": "La copia ferma di {ws} si sta cancellando: le sue istanze, i suoi backup qui e le voci del workspace.",
+ "The stopped copy of {ws} is being lit again: its instances start here as they were at the switch.": "La copia ferma di {ws} si sta riaccendendo: le sue istanze ripartono qui com'erano al passaggio.",
  "The stopped copy of {ws} is deleted now, instead of {until}: its instances with their databases and files, its backups here, its stagings on other machines, its schedules, destinations and credentials, its users of it only, its disk and its names. One entry in the access log says what went. It cannot be undone.": "La copia ferma di {ws} si cancella adesso, invece del {until}: le sue istanze con i database e i file, i suoi backup qui, le sue staging su altre macchine, le pianificazioni, le destinazioni e le credenziali, gli utenti che sono solo suoi, il disco e i nomi. Una voce nel registro degli accessi dice cosa è stato cancellato. Non si annulla.",
  "The switch stopped: Retry": "Passaggio interrotto: Riprova",
  "The switch stopped: {why}": "Il passaggio si è interrotto: {why}",
@@ -165,5 +169,6 @@
  "{total} to receive, this machine has {free} free: Receive is off.": "{total} da ricevere, questa macchina ne ha {free} liberi: Ricevi è spento.",
  "{t} MCP/API tokens and {o} OAuth accesses do not pass: their clients point to this address, the customer makes them again on its panel.": "{t} token MCP/API e {o} accessi OAuth non passano: i loro client puntano a questo indirizzo, il cliente li rifà sul suo pannello.",
  "{ws} is handed over to the customer: its copy here is stopped until it is deleted. Light the copy again… to make instances in it again.": "{ws} è consegnato al cliente: la sua copia qui è ferma fino alla cancellazione. Riaccendi la copia… per farci di nuovo istanze.",
+ "{ws} runs here again, but not all that the switch passed to the customer's machine is taken back: {left}. It is tried again every minute.": "{ws} gira di nuovo qui, ma non tutto quello che il passaggio ha dato alla macchina del cliente è stato ripreso: {left}. Si riprova ogni minuto.",
  "{ws} starts here again as it was on {when}: what the customer wrote after that on its machine is not here. Its names come back here only where their DNS leads here; its tokens stay revoked; the customer is not told. The copy is then this machine's again, and is not deleted.": "Riparte {ws} com'era il {when}: quello che il cliente ha scritto dopo sulla sua macchina qui non c'è. I nomi tornano qui solo se il DNS punta qui; i token restano revocati; il cliente non viene avvisato. La copia torna di questa macchina, e non si cancella."
 }

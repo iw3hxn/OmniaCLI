@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from omniacli import handover, machinedb, workspaceops
-from omniacli.jobs import SUCCESS
+from omniacli.jobs import SUCCESS, JobFailed
 
 from .test_app import AUTH, HOST
 from .test_handover import customer, prepare, provider, provider_trees, receive  # noqa: F401 - fixtures
@@ -185,3 +185,154 @@ async def test_light_again_runs_the_copy_here_with_the_name_written(switch, prov
     # nothing to delete or light any more
     resp = await provider.post("/api/workspaces/acme/handover/delete", headers=POST, json={})
     assert resp.status_code == 400 and "not handed over" in resp.json()["error"]
+
+
+# --- the review of step 9: a deletion never follows a relight, a disk that stays is a partial deletion, a relight
+# that did not close everything keeps its record and is finished by the look
+
+def failing_helper(monkeypatch, refused: dict) -> None:
+    """workspaceops._helper with the helpers named in refused failing (name, or (name, last word): why)."""
+    inner = workspaceops._helper
+
+    async def helper(job, *args, timeout=None, input=None):
+        why = refused.get((args[0], args[-1])) or refused.get(args[0])
+        if why:
+            raise JobFailed(why)
+        return await inner(job, *args, timeout=timeout, input=input)
+    monkeypatch.setattr(workspaceops, "_helper", helper)
+
+
+async def test_a_deletion_never_follows_a_relight(switch, provider, env, dropped):
+    settings = env["settings"]
+    await committed(switch, provider, env)
+    app = provider._transport.app.app
+    out = handover.Out(settings.jobs_dir.parent)
+    resp = await provider.post("/api/workspaces/acme/handover/relight", headers=POST, json={"confirm": "acme"})
+    assert resp.status_code == 200, resp.text
+    relight = resp.json()["job"]
+    # while it runs: Delete the copy now… refused, and the round does not delete it even past its day
+    resp = await provider.post("/api/workspaces/acme/handover/delete", headers=POST, json={})
+    assert resp.status_code == 400 and "lit again" in resp.json()["error"], resp.text
+    out.save("acme", {**out.state("acme"), "delete_after": time.time() - 1})
+    await app.state.handover_look()
+    assert not out.state("acme").get("deletion")
+    # a deletion submitted all the same (its check passed just before) deletes nothing once the relight ran
+    late = app.state.handover_delete_job(settings.workspaces["acme"], "handover: the copy's day")
+    job = await wait_job(provider, relight)
+    assert job["status"] == SUCCESS, job["lines"]
+    job = await wait_job(provider, late.id)
+    assert job["status"] != SUCCESS and "nothing deleted" in "\n".join(job["lines"]), job["lines"]
+    assert "acme" in settings.workspaces and "acme-odoo" in settings.servers and not dropped
+    assert not [a for a in provider.root.asked("remove") if a[1] == "acme"]
+    assert not access_lines(settings, "handed over to the customer deleted")
+
+
+async def test_light_again_is_refused_once_the_copys_day_passed(switch, provider, env, dropped):
+    settings = env["settings"]
+    await committed(switch, provider, env)
+    out = handover.Out(settings.jobs_dir.parent)
+    out.save("acme", {**out.state("acme"), "delete_after": time.time() - 1})
+    resp = await provider.post("/api/workspaces/acme/handover/relight", headers=POST, json={"confirm": "acme"})
+    assert resp.status_code == 400 and "day" in resp.json()["error"], resp.text
+
+
+async def test_a_disk_that_stays_leaves_the_deletion_partial_and_the_round_ends_it(switch, provider, env, monkeypatch):
+    settings = env["settings"]
+    await committed(switch, provider, env)
+    app = provider._transport.app.app
+    out = handover.Out(settings.jobs_dir.parent)
+    down = settings.link_targets.pop("down")
+    answers = ["its disk stays: the disk of acme holds odoo: remove its instances first"]
+    gone = []
+
+    async def drop_disk(job, ws):
+        if answers:
+            return answers.pop()
+        gone.append(ws.name)
+        return "its disk (4 GB) taken away"
+    monkeypatch.setattr(workspaceops, "drop_disk", drop_disk)
+    resp = await provider.post("/api/workspaces/acme/handover/delete", headers=POST, json={})
+    job = await wait_job(provider, resp.json()["job"])
+    assert job["status"] == SUCCESS and job["result"].get("warnings"), job["lines"]
+    # its record and the workspace's stay, partial with why; no entry says the disk went
+    state = out.state("acme")
+    assert state["phase"] == "committed" and "its disk stays" in state["deletion"]["partial"]
+    assert "acme" in settings.workspaces and "acme-odoo" not in settings.servers
+    assert not access_lines(settings, "handed over to the customer deleted")
+    # an hour later the round tries again and ends it: one entry
+    out.save("acme", {**state, "deletion": {**state["deletion"], "tried": time.time() - 3601}})
+    await app.state.handover_look()
+    job = await wait_job(provider, out.state("acme")["deletion"]["job"])
+    assert job["status"] == SUCCESS and not job["result"].get("warnings"), job["lines"]
+    assert gone == ["acme"] and "acme" not in settings.workspaces and not out.state("acme")
+    rows = access_lines(settings, "handed over to the customer deleted")
+    assert len(rows) == 1 and "its disk" in rows[0]["detail"] and "users (" in rows[0]["detail"], rows
+    settings.link_targets["down"] = down
+
+
+async def test_a_deletion_stopped_after_the_workspaces_record_is_ended_by_the_round(switch, provider, env, dropped,
+                                                                                    monkeypatch):
+    settings = env["settings"]
+    await committed(switch, provider, env)
+    app = provider._transport.app.app
+    out = handover.Out(settings.jobs_dir.parent)
+    down = settings.link_targets.pop("down")
+    # OmniaCLI stops between the workspace's record deleted and the handover's (here: forget fails once)
+    real = handover.Out.forget
+    stops = [RuntimeError("OmniaCLI stopped")]
+
+    def forget(self, workspace):
+        if stops:
+            raise stops.pop()
+        return real(self, workspace)
+    monkeypatch.setattr(handover.Out, "forget", forget)
+    resp = await provider.post("/api/workspaces/acme/handover/delete", headers=POST, json={})
+    job = await wait_job(provider, resp.json()["job"])
+    assert job["status"] != SUCCESS, job["lines"]
+    assert "acme" not in settings.workspaces and out.state("acme")["phase"] == "committed"
+    state = out.state("acme")
+    out.save("acme", {**state, "deletion": {**state["deletion"], "tried": time.time() - 3601}})
+    await app.state.handover_look()
+    job = await wait_job(provider, out.state("acme")["deletion"]["job"])
+    assert job["status"] == SUCCESS, job["lines"]
+    assert not out.state("acme") and dropped[-1] == "acme"
+    assert len(access_lines(settings, "handed over to the customer deleted")) == 1
+    settings.link_targets["down"] = down
+
+
+@pytest.mark.parametrize("refused", [("forward", "off"), "machine-db-replica-drop"])
+async def test_a_relight_that_did_not_close_everything_keeps_its_record_and_the_look_ends_it(
+        switch, provider, env, dropped, monkeypatch, refused):
+    settings = env["settings"]
+    await committed(switch, provider, env)
+    app = provider._transport.app.app
+    out = handover.Out(settings.jobs_dir.parent)
+    state = out.state("acme")
+    # the names passed to the customer's machine at the commit, its database still open to it (lab3, 24/11)
+    out.save("acme", {**state, "switch": {**state["switch"], "forward": "full"}})
+    folder = Path(provider.root.projects["acme.main.odoo"]) / machinedb.DEDICATED_FOLDER
+    (folder / machinedb.REPLICA_FILE).write_text(json.dumps({"link": f"handover:{state['id']}",
+                                                             "address": "203.0.113.40", "state": "stopped"}))
+    why = {refused: "workspace-helper: refused"}
+    failing_helper(monkeypatch, why)
+    resp = await provider.post("/api/workspaces/acme/handover/relight", headers=POST, json={"confirm": "acme"})
+    job = await wait_job(provider, resp.json()["job"])
+    assert job["result"].get("warnings") or job["status"] != SUCCESS, job["lines"]
+    # the record stays, saying what is left; the workspace is not handed over any more (its people log in)
+    state = out.state("acme")
+    assert state.get("phase") == "relit" and state["relight"]["left"], state
+    assert not app.state.jobs.frozen("acme-odoo/production")
+    assert not access_lines(settings, "lit again by")
+    page = (await provider.get("/workspaces/acme", headers={"Authorization": AUTH})).text
+    assert 'data-phase="relit"' in page and 'id="handover-delete"' not in page and "runs here again, but not all" in page
+    resp = await provider.post("/api/workspaces/acme/handover/delete", headers=POST, json={})
+    assert resp.status_code == 400
+    # the look of the minute finishes it once the helper answers
+    why.clear()
+    await app.state.handover_look()
+    job = await wait_job(provider, out.state("acme")["relight"]["job"])
+    assert job["status"] == SUCCESS, job["lines"]
+    assert not out.state("acme")
+    assert [a for a in provider.root.asked("forward") if a[-1] == "off"]
+    assert not (folder / machinedb.REPLICA_FILE).exists()
+    assert len(access_lines(settings, "lit again by")) == 1

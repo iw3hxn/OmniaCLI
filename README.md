@@ -4075,17 +4075,24 @@ days (D-A3, decided by Carlo), then it is deleted whole (AD-013).
   its CI), the folders of its backups (all of them, the switch's dumps too),
   its schedules, destinations, git credentials (its own and its servers'),
   deploys, its users of this workspace only (with their two-step
-  verification, passkeys and sessions), the workspace's record, then `drop`
-  of its disk (the site, the forward of its names and its record, the
-  lineage `omniacli-<ws>` of Let's Encrypt, the customer's certificate, the
-  mount unit, docker's drop-in and the slice) and the handover's record; at
-  the end **one entry in the access log** says what went (the instances,
-  how many backup files and GB, the GB its disk used, the schedules,
-  destinations, credentials and users). A link that does not answer for its
-  stagings leaves it **partial**: the instances and backups here are gone,
-  the workspace's record stays with its banner, the round tries again every
-  hour (`OMNIACLI_HANDOVER_DELETE_EVERY`, 3600 s), and `delete_after` does
-  not move.
+  verification, passkeys and sessions), then `drop` of its disk (the site,
+  the forward of its names and its record, the lineage `omniacli-<ws>` of
+  Let's Encrypt, the customer's certificate, the mount unit, docker's
+  drop-in and the slice), the workspace's record, and last the handover's
+  record; just before it **one entry in the access log** says what went
+  (the instances, how many backup files and GB, the GB its disk used, the
+  schedules, destinations, credentials and users), written once. A link that
+  does not answer for its stagings, or a disk `drop` refuses (*its disk
+  stays: …*), leaves it **partial**: the instances and backups here are
+  gone, the workspace's record stays with its banner saying why, no entry is
+  written, the round tries again every hour
+  (`OMNIACLI_HANDOVER_DELETE_EVERY`, 3600 s), and `delete_after` does not
+  move. The deletion writes at its submit the workspace's name and storage:
+  if OmniaCLI stops after the workspace's record went and before the
+  handover's, the round ends it from them. A deletion waiting behind a
+  relight (both hold the instances) reads the handover again when it starts,
+  and deletes nothing unless the copy is still handed over and the deletion
+  is still its own.
 - **Light the copy again…** (before the deletion began; the workspace's name
   written) is for a customer's machine that is gone: the names served here
   again (`forward off`, then the site), each database of its own started
@@ -4096,7 +4103,17 @@ days (D-A3, decided by Carlo), then it is deleted whole (AD-013).
   where their DNS leads here, the customer is not told (there is no
   channel); what the customer wrote after the switch is not here. The
   handover's record goes: the workspace is this machine's again, its people
-  log in here, and it may be handed over again.
+  log in here, and it may be handed over again. The relight is written in the
+  handover's record at its submit: while it waits or runs, Delete the copy
+  now… is refused and the round deletes nothing (the banner says the copy is
+  being lit again, with See the job ›); once `delete_after` passed it is
+  refused (the round deletes it). If the `forward off` or the closing of a
+  database to the customer's machine fails, the record stays as **relit**
+  (the workspace is this machine's again, its people log in, nothing frozen)
+  with what is left; the banner says it (warn), the look of every minute
+  takes it back (`Handover of <ws>: the copy lit again, finished`), and only
+  then the record goes and the access log says *lit again*. A relit
+  workspace is not handed over again, nor deleted, until that ends.
 
 Routes: `POST /api/workspaces/<ws>/handover/delete` and
 `POST /api/workspaces/<ws>/handover/relight` (`{"confirm": "<ws>"}`), the

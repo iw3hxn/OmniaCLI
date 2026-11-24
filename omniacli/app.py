@@ -5437,6 +5437,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if name not in settings.workspaces:
             return refuse(f"No workspace {name}", status.HTTP_404_NOT_FOUND)
         # a handover under way (AD-008): the customer's machine learns it is over from its cancel only
+        if handover.phase_of(handovers_out.state(name)) == "relit":
+            return refuse(f"The copy of {name} was lit again, and something is still to take back from the customer's "
+                          "machine: the look of every minute finishes it, then it can be deleted")
         if handover.phase_of(handovers_out.state(name)) not in ("", "cancelled"):
             return refuse(f"The handover of {name} to the customer is under way: Cancel the handover… first")
         received = handovers_in.of_workspace(name)
@@ -24156,7 +24159,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                              "partial": handover_deletion(state).get("partial"),
                              "tried": handover.iso(float(handover_deletion(state)["tried"]))
                              if handover_deletion(state).get("tried") else None}
-                if phase == "committed" else None}
+                if phase == "committed" else None,
+                # Light the copy again: running (no deletion then), or ended with something still passed to the
+                # customer's machine (relit), which the look of the minute takes back
+                "relight": {"job": handover_relight(state).get("job"), "running": handover_relighting(state),
+                            "left": handover_relight(state).get("left") or []}
+                if phase in ("committed", "relit") and handover_relight(state) else None}
 
     def handover_people(ws: Workspace) -> dict:
         """Who of the workspace passes (its users of role workspace) and what of them does not (AD-009): the
@@ -24242,12 +24250,15 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if out:
             word = {"prepared": "Handover prepared", "receiving": "The customer is receiving",
                     "ready": "The customer is ready to switch", "expired": "The code of the handover expired",
-                    "switching": "The customer is switching", "committed": "Handed over to the customer"}
+                    "switching": "The customer is switching", "committed": "Handed over to the customer",
+                    "relit": "Lit again: something to take back from the customer's machine"}
             text = word.get(out.get("phase") or "")
             if out.get("phase") == "committed":
                 # the copy stopped here: the day it is deleted, to look at the day before or once its deletion is
                 # partial (A7: «una copia che domani si cancella»)
                 deletion = out.get("deletion") or {}
+                if (out.get("relight") or {}).get("running"):
+                    return {"text": i18n.gettext(lang, "The copy handed over is being lit again"), "level": 0}
                 if deletion.get("running"):
                     return {"text": i18n.gettext(lang, "The copy handed over is being deleted"), "level": 0}
                 if deletion.get("partial"):
@@ -24257,7 +24268,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 return {"text": i18n.gettext(lang, "Handed over to the customer: a stopped copy until {when}",
                                              when=clock.shown(str(until))), "level": 1 if soon else 0}
             # a handover prepared and never used once its code expired is to look at (A7)
-            return {"text": i18n.gettext(lang, text), "level": 1 if out.get("phase") == "expired" else 0} if text else None
+            return {"text": i18n.gettext(lang, text), "level": 1 if out.get("phase") in ("expired", "relit") else 0} \
+                if text else None
         return None
 
     def handover_bands(ws: Workspace) -> dict:
@@ -24392,6 +24404,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         payload = payload if isinstance(payload, dict) else {}
         if str(payload.get("confirm") or "") != ws.name:
             return refuse(f"Write the name of the workspace, {ws.name}, to prepare its handover")
+        if handover.phase_of(handovers_out.state(ws.name)) == "relit":
+            return refuse(f"The copy of {ws.name} was lit again, and something is still to take back from the "
+                          "customer's machine: the look of every minute finishes it, then the handover can be prepared")
         if handover.phase_of(handovers_out.state(ws.name)) not in ("", "cancelled"):
             # an expired one too: its customer's machine still holds what it copied, and learns of a cancel only
             return refuse(f"The handover of {ws.name} is prepared already: Redo the code, or cancel it first")
@@ -24456,9 +24471,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return {"code": handover.make_code(url, state["id"], secret, pin),
                 "handover": handover_public(ws, state, request_language(request))}
 
-    async def handover_close(job, ws: Workspace, state: dict) -> None:
+    async def handover_close(job, ws: Workspace, state: dict) -> list[str]:
         """What the provider opened for the customer's machine closed: the port of each database of its own let
-        in for it (machine-db-replica-drop)."""
+        in for it (machine-db-replica-drop). What is still open, a line each (warned)."""
+        left = []
         for server in state.get("instances") or []:
             srv = settings.servers.get(server)
             key = dedicated_key(srv.production) if srv is not None and srv.production is not None else ""
@@ -24468,7 +24484,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     await workspaceops._helper(job, "machine-db-replica-drop", key, timeout=MACHINE_TIMEOUT)
                     job.log(f"The database of {server}: closed again to the customer's machine")
                 except JobFailed as exc:
+                    left.append(f"the database of {server} is still open to the customer's machine: {exc}")
                     job.warn(f"The database of {server} is still open to the customer's machine: {exc}")
+        return left
 
     def handover_cancel_job(ws: Workspace, why: str, source: str, phase: str = "cancelled") -> Job:
         state = handovers_out.state(ws.name)
@@ -25503,8 +25521,16 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                           phase=str(sw.get("ends_as") or "aborted"))
             # a copy handed over whose day passed is deleted (D-A3: 7 days after the switch); one whose deletion
             # ended partial (a staging on a machine that did not answer) is tried again each hour (AD-013)
+            if ws is None and handover_deletion(state).get("tries"):
+                # OmniaCLI stopped after the workspace's record went and before the handover's: ended from what the
+                # deletion wrote at its submit
+                was = handover_deletion(state).get("workspace") or {}
+                ws = Workspace(name=workspace, storage=str(was.get("storage") or ""))
             if ws is not None and handover_delete_due(state):
                 handover_delete_job(ws, "handover: the copy's day")
+            # a relight that could not take back all the switch passed to the customer's machine: finished here
+            if ws is not None and state.get("phase") == "relit" and not handover_relighting(state):
+                handover_relit_job(ws, "handover: the look")
         for hid, state in handovers_in.all().items():
             # a switch whose job is not running any more (OmniaCLI stopped during it, or the job ended without
             # writing its end): «interrupted», with Retry (AD-011 «Idempotenza e ripresa»); the first look runs at
@@ -25962,7 +25988,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     def handover_delete_due(state: dict, at: float | None = None) -> bool:
         """The hourly round deletes this copy now: handed over, its day passed (or a deletion begun that ended
         partial, or was interrupted), the last try at least HANDOVER_DELETE_EVERY ago, none running."""
-        if state.get("phase") != "committed" or handover_deleting(state):
+        if state.get("phase") != "committed" or handover_deleting(state) or handover_relighting(state):
             return False
         at = handover.now() if at is None else at
         deletion = handover_deletion(state)
@@ -26080,10 +26106,19 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         state = handovers_out.state(ws.name)
         deletion = handover_deletion(state)
         servers = list(deletion.get("servers") or [s for s in ws.servers if s.startswith(f"{ws.name}-")])
+        # what the round needs to end it once the workspace's record is gone (OmniaCLI stopped after deleting it)
         handovers_out.update(ws.name, deletion={**deletion, "servers": servers, "tried": handover.now(),
-                                                "tries": int(deletion.get("tries") or 0) + 1, "source": source})
+                                                "tries": int(deletion.get("tries") or 0) + 1, "source": source,
+                                                "workspace": {"name": ws.name, "storage": ws.storage}})
 
         async def action(job):
+            # the state at the submit may be old: a relight ran in between (both wait for the same instances), or
+            # another try of the deletion took its place; then nothing is done
+            now_state = handovers_out.state(ws.name)
+            if now_state.get("phase") != "committed" or handover_deletion(now_state).get("job") != job.id \
+                    or handover_relighting(now_state):
+                raise JobFailed(f"{ws.name} is no longer a copy handed over waiting for this deletion (lit again, "
+                                "or another deletion took its place): nothing deleted")
             job.log(f"--- the copy of {ws.name} handed over to the customer on {state.get('committed')}: deleted "
                     + ("now, before its day" if handover.now() < float(state.get("delete_after") or 0)
                        else "on its day"))
@@ -26117,26 +26152,42 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 job.warn(f"The deletion of {ws.name} is partial: the round tries again every "
                          f"{int(HANDOVER_DELETE_EVERY // 60)} minutes; its instances and backups here are gone")
                 return
+            # its disk before the workspace's record: a disk that stays leaves the deletion partial, with the record
+            # and its banner, and the round tries again (drop is asked again only until it answered)
+            if ws.storage and not handover_deletion(handovers_out.state(ws.name)).get("dropped"):
+                try:
+                    said = await workspaceops.drop_disk(job, ws)
+                except JobFailed as exc:
+                    said = f"its disk stays: {exc}"
+                if said.startswith("its disk stays"):
+                    handovers_out.update(ws.name, deletion={**handover_deletion(handovers_out.state(ws.name)),
+                                                            "partial": said})
+                    job.warn(f"The disk of {ws.name} is not deleted: {said}")
+                    job.warn(f"The deletion of {ws.name} is partial: the round tries again every "
+                             f"{int(HANDOVER_DELETE_EVERY // 60)} minutes; its instances and backups here are gone")
+                    return
+                job.log(said[:1].upper() + said[1:])
+                handovers_out.update(ws.name, deletion={**handover_deletion(handovers_out.state(ws.name)),
+                                                        "dropped": said})
             async with workspaces_lock:
                 if ws.name in settings.workspaces:
                     refused = await store_workspaces({n: w for n, w in settings.workspaces.items() if n != ws.name})
                     if refused:
                         raise JobFailed(f"the workspace's record is not deleted: {refused.body.decode()}")
             hosted.put(ws.name, None)
-            if ws.storage:
-                said = await workspaceops.drop_disk(job, ws)
-                job.log(said[:1].upper() + said[1:])
-                if said.startswith("its disk stays"):
-                    job.warn(f"The disk of {ws.name} is not deleted: {said}")
             ended = handovers_out.state(ws.name)
-            handovers_out.forget(ws.name)
             what = (f"{len(servers)} instances ({', '.join(servers) or 'none'}), "
                     f"{counted.get('backups', 0)} backup files ({size_text(counted.get('backup_bytes') or 0)}), "
                     f"its disk ({size_text(counted.get('disk') or 0)} used)"
                     + (", " + ", ".join(gone) if gone else ""))
-            access_log.record("handover", "handover", str(ended.get("id") or ""), "",
-                              f"the copy of {ws.name} handed over to the customer deleted ({source}): {what}",
-                              workspace=ws.name, context=False)
+            # one entry, written once: a try after OmniaCLI stopped between it and the record's end does not repeat
+            # it; the handover's record goes last, so that the round ends a deletion stopped before
+            if not handover_deletion(ended).get("logged"):
+                access_log.record("handover", "handover", str(ended.get("id") or ""), "",
+                                  f"the copy of {ws.name} handed over to the customer deleted ({source}): {what}",
+                                  workspace=ws.name, context=False)
+                handovers_out.update(ws.name, deletion={**handover_deletion(ended), "logged": True})
+            handovers_out.forget(ws.name)
             job.result = {**job.result, "deleted": {"servers": servers, **counted}}
             job.log(f"Deleted: {what}")
         job = jobs.submit(f"Handover of {ws.name}: the copy deleted",
@@ -26146,33 +26197,77 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         handovers_out.update(ws.name, deletion={**handover_deletion(handovers_out.state(ws.name)), "job": job.id})
         return job
 
+    def handover_relight(state: dict) -> dict:
+        return dict(state.get("relight") or {}) if isinstance(state, dict) else {}
+
+    def handover_relighting(state: dict) -> bool:
+        """Light the copy again has a job submitted or running now (no deletion then: AD-013)."""
+        running = jobs.get(str(handover_relight(state).get("job") or ""))
+        return running is not None and running.status not in FINISHED
+
+    async def handover_relight_close(job, ws: Workspace, state: dict) -> list[str]:
+        """What the switch passed to the customer's machine taken back after a relight: the names served here
+        (forward off) and each database of its own closed to it again. What is left, a line each (warned)."""
+        left = []
+        try:
+            await handover_names_forward(job, ws, "off", "")
+        except JobFailed as exc:
+            left.append(f"its names are still passed to the customer's machine: {exc}")
+            job.warn(f"The names of {ws.name} are still passed to the customer's machine: {exc}")
+        return [*left, *await handover_close(job, ws, state)]
+
+    def handover_relit(job, ws: Workspace, state: dict, who: str, left: list[str]) -> None:
+        """The end of a relight: with nothing left the handover's record goes and the access log says it, once;
+        with something left the record stays as «relit», saying what, and the look of the minute finishes it."""
+        if left:
+            handovers_out.update(ws.name, phase="relit", relight={**handover_relight(handovers_out.state(ws.name)),
+                                                                  "job": job.id, "who": who, "left": left,
+                                                                  "tried": handover.now()})
+            job.warn(f"{ws.name} runs here again, but not all the switch passed to the customer's machine is taken "
+                     "back: the look of every minute tries again")
+            return
+        handovers_out.forget(ws.name)
+        access_log.record("handover", "handover", str(state.get("id") or ""), "",
+                          f"the copy of {ws.name} handed over on {state.get('committed')} lit again by {who}: "
+                          f"{len(handover_relight(state).get('servers') or [])} instances started"
+                          + (f", {', '.join(handover_relight(state).get('failing') or [])} not answering"
+                             if handover_relight(state).get("failing") else "")
+                          + "; its tokens stay revoked, the customer is not told", workspace=ws.name, context=False)
+
     def handover_relight_job(ws: Workspace, who: str, source: str) -> Job:
         """Light the copy again (AD-013 «Riaccendi», UX-014 A10): the names served here again (forward off, then
         the site), each database of its own started where it stopped, the instances started, the maintenance page
         taken away at the first 200, the schedules suspended at the switch on again; the tokens stay revoked and the
         customer is not told (there is no channel). The handover's record goes: the workspace is this machine's
-        again, its people log in here again."""
+        again, its people log in here again. Recorded at the submit: no deletion while it waits or runs; what it
+        could not take back (the forward, a database still open to the customer's machine) keeps the record as
+        «relit», finished by the look of the minute."""
         state = handovers_out.state(ws.name)
         sw = switch_of(state)
 
         async def action(job):
+            # the state at the submit may be old: a deletion began in between; then nothing is done
+            now_state = handovers_out.state(ws.name)
+            if now_state.get("phase") != "committed" or handover_deletion(now_state).get("tries") \
+                    or handover_relight(now_state).get("job") != job.id:
+                raise JobFailed(f"the copy of {ws.name} is no longer handed over and whole (its deletion began, or "
+                                "it was lit again): nothing started")
             job.log(f"--- {ws.name} runs here again as it was at the switch, {state.get('committed')}: what the "
                     "customer wrote after that on its machine is not here")
-            with contextlib.suppress(JobFailed):
-                await handover_names_forward(job, ws, "off", "")
-            for server, _instance, inst in handover_switch_servers(ws, state):
+            servers = handover_switch_servers(ws, state)
+            for server, _instance, inst in servers:
                 key = dedicated_key(inst)
                 if key:
                     with contextlib.suppress(JobFailed):
                         await workspaceops._helper(job, "machine-db-replica-stop", key, "resume", timeout=MACHINE_TIMEOUT)
                 await ops.run(job, workspaceops.compose(inst.restart.service, "start"), timeout=workspaceops.HELPER_TIMEOUT)
                 job.log(f"{server} started")
-            # the commit could not close a database of its own to the customer's machine (it was stopped for the
-            # switch: machine-db-replica-drop wants it running); started again, it is closed now, before any visitor
-            await handover_close(job, ws, state)
+            # the forward off; the commit could not close a database of its own to the customer's machine (it was
+            # stopped for the switch: machine-db-replica-drop wants it running), started again it is closed now
+            left = await handover_relight_close(job, ws, state)
             await handover_schedules_on(job, list(sw.get("suspended") or []))
             failing = []
-            for server, _instance, inst in handover_switch_servers(ws, state):
+            for server, _instance, inst in servers:
                 site = zerodowntime.site(inst)
                 if await zerodowntime.answers(inst.options.http_port):
                     job.log(f"{server} answers /web/login")
@@ -26187,22 +26282,48 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     await publish_names(job, current)
                 except JobFailed as exc:
                     job.warn(f"The names of {ws.name} are not published again: {exc}")
-            handovers_out.forget(ws.name)
-            access_log.record("handover", "handover", str(state.get("id") or ""), "",
-                              f"the copy of {ws.name} handed over on {state.get('committed')} lit again by {who}: "
-                              f"{len(handover_switch_servers(ws, state))} instances started"
-                              + (f", {', '.join(failing)} not answering" if failing else "")
-                              + "; its tokens stay revoked, the customer is not told", workspace=ws.name, context=False)
+            ended = handovers_out.update(ws.name, relight={**handover_relight(handovers_out.state(ws.name)),
+                                                           "servers": [s for s, _i, _inst in servers],
+                                                           "failing": failing})
+            handover_relit(job, ws, ended, who, left)
             job.log(f"{ws.name} is this machine's again: its people log in here; its tokens stay revoked, and its "
                     "names come back here only where their DNS leads here. The customer is not told")
-        return jobs.submit(f"Handover of {ws.name}: the copy lit again",
-                           [f"{s}/production" for s in state.get("instances") or [] if s in settings.servers],
-                           source, action, workspace=ws.name, frozen_ok=True)
+        job = jobs.submit(f"Handover of {ws.name}: the copy lit again",
+                          [f"{s}/production" for s in state.get("instances") or [] if s in settings.servers],
+                          source, action, workspace=ws.name, frozen_ok=True)
+        handovers_out.update(ws.name, relight={"job": job.id, "who": who, "at": handover.now()})
+        return job
+
+    def handover_relit_job(ws: Workspace, source: str) -> Job:
+        """A relight that left something (the forward, a database open to the customer's machine) finished: what is
+        left taken back again, then the record goes and the access log says the copy is lit again."""
+        state = handovers_out.state(ws.name)
+
+        async def action(job):
+            now_state = handovers_out.state(ws.name)
+            if now_state.get("phase") != "relit":
+                raise JobFailed(f"{ws.name} has no relight to finish: nothing done")
+            job.log(f"--- what the switch of {ws.name} passed to the customer's machine, taken back: "
+                    + "; ".join(handover_relight(now_state).get("left") or []))
+            left = await handover_relight_close(job, ws, now_state)
+            handover_relit(job, ws, handovers_out.state(ws.name), str(handover_relight(now_state).get("who") or ""),
+                           left)
+            if not left:
+                job.log(f"The relight of {ws.name} is finished: nothing of it passes to the customer's machine")
+        job = jobs.submit(f"Handover of {ws.name}: the copy lit again, finished",
+                          [f"{s}/production" for s in state.get("instances") or [] if s in settings.servers],
+                          source, action, workspace=ws.name)
+        handovers_out.update(ws.name, relight={**handover_relight(handovers_out.state(ws.name)), "job": job.id})
+        return job
 
     def handover_after_refusal(ws: Workspace, state: dict) -> str:
         """Why the copy of ws is neither deleted nor lit again now ("" when it may)."""
+        if state.get("phase") == "relit":
+            return f"The copy of {ws.name} was lit again: it is this machine's again"
         if state.get("phase") != "committed":
             return f"{ws.name} is not handed over to the customer: there is no stopped copy of it here"
+        if handover_relighting(state):
+            return f"The copy of {ws.name} is being lit again"
         if handover_deleting(state):
             return f"The copy of {ws.name} is being deleted"
         return ""
@@ -26218,8 +26339,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return {"job": handover_delete_job(ws, f"manual: {me}").id}
 
     @app.post("/api/workspaces/{workspace}/handover/relight")
-    async def handover_relight(request: Request, workspace: str, payload: dict = Body(...),
-                               me: Principal = Depends(current_user)):
+    async def handover_relight_route(request: Request, workspace: str, payload: dict = Body(...),
+                                     me: Principal = Depends(current_user)):
         """Light the copy again (UX-014 A10), the workspace's name written: before it is deleted, when the
         customer's machine is gone."""
         handover_admin(me)
@@ -26230,6 +26351,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return refuse(why)
         if handover_deletion(state).get("tries"):
             return refuse(f"The deletion of the copy of {ws.name} began: its instances are gone, it cannot run again")
+        # its day passed: the round of the minute deletes it now, a relight would race it
+        if handover.now() >= float(state.get("delete_after") or 0):
+            return refuse(f"The day of the copy of {ws.name} passed: it is being deleted, it cannot run again")
         if str(payload.get("confirm") or "") != ws.name:
             return refuse(f"Write the name of the workspace, {ws.name}, to light its copy again")
         return {"job": handover_relight_job(ws, str(me), f"manual: {me}").id}
@@ -27752,6 +27876,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     app.state.moved_look = moved_look
     app.state.moved_seen = moved_seen
     app.state.handover_look = handover_look
+    app.state.handover_delete_job = handover_delete_job
     app.state.cluster_archive_tick = cluster_archive_tick
 
     return app

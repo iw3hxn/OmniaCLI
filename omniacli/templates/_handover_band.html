@@ -18,10 +18,12 @@
 @media (max-width: 767.98px) { .hv-band .hv-actions { width: 100%; } .hv-band .hv-actions button, .hv-band .hv-actions a.button, #hv-redo-dialog .actions button { min-height: 44px; } }
 </style>
 {% if handover_out %}{% set ho = handover_out %}{% set rc = ho.receiver or {} %}
-{% set dl = ho.deletion or {} %}
-<div class="banner {{ 'warn' if ho.phase == 'expired' or dl.partial else 'info' }} hv-band" role="status" id="handover-band" data-phase="{{ ho.phase }}"{% if ho.phase == "committed" %} data-deletion="{{ 'running' if dl.running else 'partial' if dl.partial else 'began' if dl.began else 'none' }}"{% endif %}>
+{% set dl = ho.deletion or {} %}{% set rl = ho.relight or {} %}
+<div class="banner {{ 'warn' if ho.phase in ('expired', 'relit') or dl.partial else 'info' }} hv-band" role="status" id="handover-band" data-phase="{{ ho.phase }}"{% if ho.phase == "committed" %} data-deletion="{{ 'running' if dl.running else 'partial' if dl.partial else 'began' if dl.began else 'none' }}"{% endif %}>
   <span class="hv-text">
-  {% if ho.phase == "committed" and dl.running %}{{ _("The stopped copy of {ws} is being deleted: its instances, its backups here and the workspace's entries.", ws=ws.name) }}
+  {% if ho.phase == "relit" %}{{ _("{ws} runs here again, but not all that the switch passed to the customer's machine is taken back: {left}. It is tried again every minute.", ws=ws.name, left=tr((rl.left or []) | join('; '))) }}
+  {% elif ho.phase == "committed" and rl.running %}{{ _("The stopped copy of {ws} is being lit again: its instances start here as they were at the switch.", ws=ws.name) }}
+  {% elif ho.phase == "committed" and dl.running %}{{ _("The stopped copy of {ws} is being deleted: its instances, its backups here and the workspace's entries.", ws=ws.name) }}
   {% elif ho.phase == "committed" and dl.partial %}{{ _("The deletion of the copy is partial since {when}: {why}. Its instances and backups here are gone; the deletion is tried again every hour.", when=dl.tried | moment, why=tr(dl.partial)) }}
   {% elif ho.phase == "committed" %}{{ _("Handed over to the customer on {when}. Here a stopped copy stays until {until}.", when=ho.committed | moment, until=ho.delete_after | moment) }}
   {% elif ho.phase == "switching" %}{{ _("The customer is switching: the instances here are stopped behind the maintenance page since {when}; if the customer's machine does not commit by {until}, they run here again by themselves.", when=(ho.switch or {}).began | moment, until=(ho.switch or {}).deadline | moment) }}
@@ -35,8 +37,9 @@
   {% if ho.phase in ("prepared", "expired") %}
     <button type="button" id="handover-redo" data-restarts="{{ (ho.restarts or []) | join(', ') }}" title="{{ _('Makes a new code; the one of before stops being valid. What the customer has copied already stays valid: with the new code it goes on from there.') }}">{{ _("Redo the code…") }}</button>
   {% endif %}
+  {% if (ho.phase == "relit" or rl.running) and rl.job %}<a class="button" href="{{ prefix }}/jobs/{{ rl.job }}" title="{{ _('Opens the job that lights the copy again, with what it did and what is left') }}">{{ _("See the job") }} ›</a>{% endif %}
   {% if ho.phase == "committed" and dl.running and dl.job %}<a class="button" href="{{ prefix }}/jobs/{{ dl.job }}" title="{{ _('Opens the job of the deletion, with what it deletes') }}">{{ _("See the job") }} ›</a>{% endif %}
-  {% if ho.phase == "committed" and not dl.running %}
+  {% if ho.phase == "committed" and not dl.running and not rl.running %}
     <button type="button" class="small danger" id="handover-delete" data-until="{{ ho.delete_after | moment }}" title="{{ _('Deletes now the stopped copy of {ws}, its backups here and its stagings on other machines, instead of {until}. It cannot be undone.', ws=ws.name, until=ho.delete_after | moment) if not dl.partial else _('Tries the deletion of the copy of {ws} again now, instead of at the next round.', ws=ws.name) }}">{{ _("Delete the copy now…") }}</button>
     {% if not dl.began %}<button type="button" class="small danger" id="handover-relight" data-committed="{{ ho.committed | moment }}" title="{{ _('Starts {ws} here again as it was at the switch, if the customer\'s machine is gone. What the customer wrote after that is not here. Asks the name of the workspace.', ws=ws.name) }}">{{ _("Light the copy again…") }}</button>{% endif %}
   {% endif %}

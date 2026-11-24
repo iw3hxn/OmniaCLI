@@ -388,11 +388,12 @@ def retired(state: dict, field: str, secret: str) -> bool:
 
 def phase_of(state: dict, at: float | None = None) -> str:
     """The provider's word for a handover: prepared (code not used yet), receiving, ready, cancelled, expired;
-    switching and committed (the switch: it closes by its own deadline, past the code's 72 hours, AD-008)."""
+    switching and committed (the switch: it closes by its own deadline, past the code's 72 hours, AD-008); relit (the
+    copy lit again here, with something the switch passed to the customer's machine still to take back, AD-013)."""
     if not state:
         return ""
     phase = str(state.get("phase") or "prepared")
-    if phase in ("cancelled", "expired", "switching", "committed"):
+    if phase in ("cancelled", "expired", "switching", "committed", "relit"):
         return phase
     if float(state.get("expires") or 0) < (at if at is not None else now()):
         return "expired"
