@@ -77,7 +77,6 @@
  "container {name} started {when}": "container {name} avviato {when}",
  "done: OmniaCLI {to}, the panel was away {seconds} s": "fatto: OmniaCLI {to}, il pannello è stato via {seconds} s",
  "failed: {error}": "fallito: {error}",
- "its OmniaCLI cannot update itself from here yet: once by hand (README, Update OmniaCLI)": "il suo OmniaCLI non si aggiorna ancora da qui: una volta a mano (README, Update OmniaCLI)",
  "no key to verify the package with: self_update.public_key (or plugins.public_key) of the main configuration is empty": "nessuna chiave per verificare il pacchetto: self_update.public_key (o plugins.public_key) della configurazione principale è vuota",
  "no outcome of the install after {seconds} s: see journalctl -u {unit}": "nessun esito dell'installazione dopo {seconds} s: vedi journalctl -u {unit}",
  "no version before {version} is kept (it is kept {days} days)": "non è tenuta nessuna versione prima della {version} (si tiene {days} giorni)",
@@ -105,6 +104,5 @@
  "{url} is version {new}, and {installed} is installed: nothing newer": "{url} è la versione {new}, ed è installata la {installed}: niente di più nuovo",
  "{url}: {why}: not installed": "{url}: {why}: non installato",
  "{url}{file} has no signature next to it ({signature}): not installed": "{url}{file} non ha la firma accanto ({signature}): non installato",
- "{version} available": "{version} disponibile",
- "{version} published, not installable from here": "{version} pubblicata, non installabile da qui"
+ "{version} available": "{version} disponibile"
 }

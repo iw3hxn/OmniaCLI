@@ -296,7 +296,6 @@
     openTitle: {{ _("Opens the instances of {name}") | tojson }},
     // OmniaCLI's own update (README, Update OmniaCLI): on the machine's page, which the card links to
     available: {{ _("{version} available") | tojson }}, update: {{ _("Update OmniaCLI…") | tojson }},
-    unsigned: {{ _("{version} published, not installable from here") | tojson }},
     updateTitle: {{ _("Opens the page of {name} with the dialog of the update: what the new version brings, then install it there") | tojson }},
     uaGo: {{ _("Update {n} machines") | tojson }},
     uaGoTitle: {{ _("Starts the updates one after the other; the job of each one is among the jobs of its machine") | tojson }},
@@ -304,7 +303,6 @@
     uaWaiting: {{ _("waiting") | tojson }}, uaRunning: {{ _("updating…") | tojson }},
     uaDone: {{ _("done: OmniaCLI {to}, the panel was away {seconds} s") | tojson }}, uaFailed: {{ _("failed: {error}") | tojson }},
     uaSkipped: {{ _("not started: an update before it failed") | tojson }}, uaAway: {{ _("updating… (its panel does not answer for {seconds} s)") | tojson }},
-    byHand: {{ _("its OmniaCLI cannot update itself from here yet: once by hand (README, Update OmniaCLI)") | tojson }},
     logTitle: {{ _("Opens the log of the job that prepares this server") | tojson }},
     retryTitle: {{ _("Opens the steps again with this server's address, to prepare it once more") | tojson }},
     testTitle: {{ _("Asks the OmniaCLI of this server whether it answers through the link. It changes nothing.") | tojson }},
@@ -447,15 +445,11 @@
     if (s.cores) facts.append(el("span", {text: fill(T.cores, {count: s.cores})}));
     if (s.version) facts.append(el("span", {text: fill(T.version, {version: s.version})}));
     const newer = newerOf(s);
-    if (newer) {
-      const unsigned = s.update && !s.update.signed;
-      const said = {class: "m-newer", text: fill(unsigned ? T.unsigned : T.available, {version: newer})};
-      if (unsigned && s.update.error) said.title = s.update.error;
-      facts.append(el("span", said));
-      if (s.update && s.update.signed && !s.update.unavailable) {
-        facts.append(el("a", {href: `${baseOf(card)}/#omniacli-update`, text: T.update,
-                              title: fill(T.updateTitle, {name: card.local ? T.here : card.name})}));
-      } else if (!s.update) facts.append(el("span", {text: T.byHand}));
+    // a newer version is said only where it can be installed from here: one that cannot is no use to the reader
+    if (newer && s.update && s.update.signed && !s.update.unavailable) {
+      facts.append(el("span", {class: "m-newer", text: fill(T.available, {version: newer})}));
+      facts.append(el("a", {href: `${baseOf(card)}/#omniacli-update`, text: T.update,
+                            title: fill(T.updateTitle, {name: card.local ? T.here : card.name})}));
     }
     box.append(facts);
     if (s.portal) {
@@ -592,13 +586,9 @@
     const version = el("td", {class: "m-ver"});
     if (ok && s.version) version.append(el("span", {class: "mono", text: s.version}));
     const newer = ok ? newerOf(s) : null;
-    if (newer) {
-      if (s.update && s.update.signed && !s.update.unavailable) {
-        version.append(el("a", {class: "m-newer", href: `${baseOf(card)}/#omniacli-update`, text: fill(T.available, {version: newer}),
-                                title: fill(T.updateTitle, {name: nameOf(card)})}));
-      } else if (s.update) {
-        version.append(el("span", {class: "m-newer", text: fill(T.unsigned, {version: newer}), title: s.update.error || T.byHand}));
-      } else version.append(el("span", {class: "m-newer", text: fill(T.available, {version: newer}), title: T.byHand}));
+    if (newer && s.update && s.update.signed && !s.update.unavailable) {
+      version.append(el("a", {class: "m-newer", href: `${baseOf(card)}/#omniacli-update`, text: fill(T.available, {version: newer}),
+                              title: fill(T.updateTitle, {name: nameOf(card)})}));
     }
     if (!version.childNodes.length) version.append(dash());
     cells.push(version);

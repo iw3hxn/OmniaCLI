@@ -134,11 +134,9 @@
     if (!info) return;
     const fact = document.getElementById("omniacli-update-fact");
     const update = document.getElementById("omniacli-update-open"), back = document.getElementById("omniacli-back-open");
-    if (fact && info.available) {
-      // one not signed with this machine's key is said, with why, and offers no button
-      fact.textContent = (info.signed ? {{ _("{version} available") | tojson }}
-                          : {{ _("{version} published, not installable from here") | tojson }}).replace("{version}", info.available);
-      fact.title = info.signed ? "" : (info.error || "");
+    // a newer version is said only when it can be installed from here: one that cannot is no use to the reader
+    if (fact && info.available && info.signed && !info.unavailable) {
+      fact.textContent = {{ _("{version} available") | tojson }}.replace("{version}", info.available);
       fact.hidden = false;
     }
     if (update) update.hidden = !info.available || !info.signed || !!info.unavailable;
