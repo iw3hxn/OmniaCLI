@@ -114,6 +114,9 @@ HOME_TOOLS = {"move_status", "move_instance", "move_back"}
 # the tools a CI's token never uses, whatever its role (apiguard.machine_refusal): not in its list
 NOT_FOR_CI = {"handover_status", "prepare_handover", "receive_workspace", "reception_status", "switch_workspace",
               "move_status", "move_instance", "move_back"}
+# the tools that act on a whole workspace or on the machine (a handover, a reception, a switch): never for a token
+# limited to some servers, which reaches the move of its own servers only (app.machine_act says why)
+NOT_FOR_LIMITED = {"handover_status", "prepare_handover", "receive_workspace", "reception_status", "switch_workspace"}
 # the role of the token of the request being served, for the list of tools,
 # and the workspace it is bound to (empty: the machine's)
 _ROLE = contextvars.ContextVar("omniacli_mcp_role", default="user")
@@ -126,6 +129,9 @@ _WHO = contextvars.ContextVar("omniacli_mcp_who", default="")
 # its grant and its CI mark are the contextvars', not a token's of this machine
 _DELEGATED = contextvars.ContextVar("omniacli_mcp_delegated", default=False)
 _CI = contextvars.ContextVar("omniacli_mcp_ci", default=False)
+# a token of this machine limited to some servers (Settings › Users › API and AI assistants › Servers): the tools of
+# a whole workspace or of the machine (NOT_FOR_LIMITED) are not in its list
+_LIMITED = contextvars.ContextVar("omniacli_mcp_limited", default=False)
 # the home's scope of that token (placement.scope_decode): its provider's label and its members, for the redaction
 _FOUND = contextvars.ContextVar("omniacli_mcp_found", default=None)
 # the headers a link sends with who acts through it and the most it may do
@@ -302,6 +308,8 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         role, scope, grant = _ROLE.get(), _SCOPE.get(), _GRANT.get()
         return [t for t in await every_tool() if allowed(t.name, role) and not (scope and t.name in MACHINE_TOOLS)
                 and not (_CI.get() and t.name in NOT_FOR_CI)
+                and not ((_LIMITED.get() or (grant is not None and grant.servers is not None))
+                         and t.name in NOT_FOR_LIMITED)
                 and not (grant is not None and (grant.lacks(capabilities.TOOLS.get(t.name)) or (
                     grant.servers is not None and t.name in capabilities.WHOLE_TOOLS)))]
     server.list_tools = list_tools
@@ -1331,6 +1339,7 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
             # this machine's tokens' mark itself)
             _CI.set(bool(delegated.get("ci")) if delegated is not None
                     else bool(kind == "mcp" and settings.token_ci(name)))
+            _LIMITED.set(bool(kind == "mcp" and settings.token_servers(name)))
             _FOUND.set(delegated)
             _GRANT.set(settings.token_grant(name) if kind == "mcp" else _delegated_grant(delegated, role))
             _WHO.set(who)

@@ -269,3 +269,48 @@ async def test_the_rest_document_lists_the_new_routes_with_their_descriptions(tw
     # a workspace's token reads the routes of its workspace only: the handover and the move are not among them
     from omniacli.app import WORKSPACE_ROUTES
     assert not {p for _m, p in apiv1.V1_MACHINE_TOOLS} & set(WORKSPACE_ROUTES)
+
+
+async def test_a_token_limited_to_some_servers_reaches_their_moves_only_and_no_handover(two, acme, env, mcp):
+    """A machine's admin token limited to some servers (Settings › Users › API e assistenti AI › Servers): the move of
+    another server answered as the rest of /api/v1 answers an instance it does not reach (404, no plan, no job), the
+    same through MCP; a handover, a reception and a switch act on a whole workspace or on the machine: refused to it,
+    and their tools not listed to it. The move of a server of its list: read, done and followed as the token's."""
+    other = await token(two, "lim", "admin", servers=["srv"])
+    mine = await token(two, "lim2", "admin", servers=["acme-odoo"])
+    moves = placement.Moves(env["settings"].jobs_dir.parent)
+    moves.save("acme-odoo", {"link": "far", "state": "failed", "workspace": "acme", "instance": "odoo",
+                             "kind": "cluster"})
+    jobs = two._transport.app.app.state.jobs
+    count = len(jobs.jobs)
+    whole = {"handover_status", "prepare_handover", "receive_workspace", "reception_status", "switch_workspace"}
+    # as the rest of /api/v1 refuses an instance out of its list
+    unseen = await two.get(V1 + "/instances/acme-odoo/production", headers=other)
+    assert unseen.status_code == 404
+    for method, path, body, tool, arguments in STEPS:
+        status, rest_code, rest_message = rest_error(await rest(two, other, method, path, body))
+        mcp_code, mcp_message = mcp_error(await call(two, tool, headers={**HEADERS, **other}, **arguments))
+        if tool in whole:
+            assert (status, rest_code, mcp_code) == (403, "forbidden", "forbidden"), (path, rest_code, mcp_code)
+            assert "some servers only" in rest_message, rest_message
+        else:
+            assert (status, rest_code, mcp_code) == (404, "not_found", "not_found"), (path, rest_code, mcp_code)
+            assert rest_message == unseen.json()["error"]["message"]
+        assert rest_message == mcp_message, path
+    # a token of acme-odoo's alone is refused the handover of its workspace all the same
+    status, rest_code, _ = rest_error(await rest(two, mine, "GET", "/workspaces/acme/handover", None))
+    assert (status, rest_code) == (403, "forbidden")
+    assert len(jobs.jobs) == count
+    # its tools: the move's (of the servers it reaches), never the whole workspace's or the machine's
+    for headers in (other, mine):
+        listed = {t["name"] for t in (await rpc(two, "tools/list", headers={**HEADERS, **headers})).json()[
+            "result"]["tools"]}
+        assert listed & NEW_TOOLS == NEW_TOOLS - whole, listed & NEW_TOOLS
+    # the move of its own server: read, done, and its job followed by the token that started it
+    assert (await two.get(V1 + "/moves/acme-odoo", headers=mine)).status_code == 200
+    done = await two.post(V1 + "/moves/acme-odoo/cancel", headers=mine, json={"confirm": "acme-odoo"})
+    assert done.status_code == 202, done.text
+    job_id = done.json()["job"]["id"]
+    assert jobs.get(job_id).source == "api: token lim2"
+    assert (await two.get(V1 + f"/jobs/{job_id}", headers=mine)).status_code == 200
+    assert (await two.get(V1 + f"/jobs/{job_id}", headers=other)).status_code == 404

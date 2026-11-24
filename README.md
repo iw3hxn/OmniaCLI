@@ -5509,6 +5509,12 @@ Every POST answers `202` with the job (`{"job": {...}, "follow", "log"}`).
 the tokens of the machine with the production level only (`admin`), never a
 CI token's, never a workspace's (`machine_token_required`), and every write
 with `"confirm"` = the name the dialog asks typed. Each has its MCP tool.
+A token limited to some servers (*Servers* on its line of *API and AI
+assistants*) reaches the move of those servers only: another server's is
+`404 not_found`, as every route of an instance it does not reach, and its
+jobs are not in its lists; the handover, the reception and the switch act on
+a whole workspace or on the machine, so they are `403 forbidden` to it, and
+MCP does not list it their tools.
 
 | Route | What it does | `confirm` |
 |---|---|---|

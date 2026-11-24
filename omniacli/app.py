@@ -27899,6 +27899,21 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         what = MACHINE_ACTS[op][0]
         ci = bool(me.ci or (me.kind == "token" and settings.token_ci(me.name)))
         named = machine_named(op, server, workspace, handover_id)
+        # who may (the token's kind and level) first, then what it reaches, then the name typed
+        refused = apiguard.machine_refusal(me.scoped, me.role, ci, what)
+        if refused is not None:
+            return refused.status, {"error": refused.message, "code": refused.code}
+        # a token limited to some servers (Settings › Users › API and AI assistants › Servers): the move of one of
+        # them only, answered as the rest of /api/v1 answers an instance it does not reach (api_instance); a
+        # handover, a reception or a switch acts on a whole workspace or on the machine, never for it (as
+        # capabilities.WHOLE_TOOLS for a person limited to some instances)
+        if settings.token_servers(me.name):
+            if MACHINE_ACTS[op][1] == "server" or op == "move_status":
+                if not api_reaches(me, server):
+                    return 404, {"error": f"No instance {server}/production for this token", "code": "not_found"}
+            else:
+                return 403, {"error": f"{what}: this token reaches some servers only, and it acts on a whole "
+                                      "workspace or on the machine", "code": "forbidden"}
         refused = apiguard.machine_refusal(me.scoped, me.role, ci, what, None if named is None else (confirm or ""),
                                            named or "")
         if refused is not None:
