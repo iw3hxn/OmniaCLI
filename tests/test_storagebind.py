@@ -4,6 +4,8 @@
 bound on the root path of its name by its unit, at every boot from the
 folder named then, its identity kept. The system commands are faked; a bind
 is a mounted path and the folder bound there."""
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -135,6 +137,36 @@ def test_another_folder_at_the_same_path_is_refused(binds):
     with pytest.raises(HelperError, match="not the folder set up|did not bind"):
         workspacehelper.workspace("acme", "mine")
     assert str(target) not in binds["mounted"]
+
+
+def test_a_storage_recorded_by_its_device_survives_a_new_device_number(binds):
+    """Carlo's lab1 and lab2 (24/11/2026): the machine started again and its file system had another device
+    number; the record of before the markers ("<st_dev> <st_ino>") refused the storage and every instance stayed
+    stopped. Its inode matches: taken, marked (root's alone, 600) and recorded by the marker."""
+    source, target = binds["source"], binds["target"]
+    workspacehelper.bind_storage("mine")
+    (source / workspacehelper.STORAGE_MARKER).unlink()
+    st = os.stat(source)
+    (binds["ids"] / "mine.id").write_text(f"{st.st_dev + 7} {st.st_ino}\n{source}\n")
+    binds["mounted"].clear()
+    assert workspacehelper.storage_check("mine")["folder"] == str(source)
+    assert binds["mounted"][str(target)] == str(source)
+    marker = source / workspacehelper.STORAGE_MARKER
+    assert stat.S_IMODE(marker.stat().st_mode) == 0o600 and len(marker.read_text().strip()) == 32
+    assert (binds["ids"] / "mine.id").read_text().split("\n")[0] == "id:" + marker.read_text().strip()
+
+
+def test_a_folder_put_in_place_of_a_marked_one_is_refused(binds):
+    """A folder moved or replaced under the storage's path has no marker (it cannot copy one it cannot read):
+    not bound, whatever its device and inode."""
+    source = binds["source"]
+    workspacehelper.bind_storage("mine")
+    binds["mounted"].clear()
+    source.rename(source.with_name("moved-away"))
+    source.mkdir()
+    with pytest.raises(HelperError, match="not the folder set up"):
+        workspacehelper.storage_check("mine")
+    assert str(binds["target"]) not in binds["mounted"]
 
 
 def test_a_storage_others_may_write_is_refused(binds):

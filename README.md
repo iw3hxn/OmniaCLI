@@ -1502,8 +1502,12 @@ first), at every boot from the folder `workspaces.storage` names then,
 before the workspaces' disks and docker: a bind holds the folder, not its
 path, so renaming a folder above the storage changes nothing for root, and
 the path of root's cannot be moved. At a boot the path counts again, so the
-identity of the folder bound (device and inode) and its path are kept (in
-`/var/lib/omniacli-storage/.ids/`): another folder at the same path is not
+identity of the folder bound and its path are kept (in
+`/var/lib/omniacli-storage/.ids/`). The identity is a random marker inside the
+folder, `.omniacli-storage-id`, root's alone: a machine that starts again with
+another device number (btrfs, ZFS, LVM, disks in another order) keeps its
+storage, and a record of before the markers (device and inode) is taken by its
+inode and marked. Another folder at the same path has no marker and is not
 bound, the path beneath is immutable, and nothing of the workspaces starts on
 it (tried: a container restarted by docker fails to create its mount instead
 of writing there); a folder changed in the main configuration (root's) is the

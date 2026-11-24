@@ -564,9 +564,42 @@ def storage_unit_text(storage: str, target: Path) -> str:
             "[Install]\nWantedBy=multi-user.target\n")
 
 
+# The identity of a storage's folder is a random marker file inside it, root's
+# alone (600): a folder put in its place (moved or replaced, by anyone who may
+# write above it) has none, and cannot copy one it cannot read. The device
+# number of before ("<st_dev> <st_ino>", still read from the records written
+# then) changes when a machine starts again on btrfs, ZFS, LVM or another
+# order of its disks, and every container restart of the lab: the storage was
+# refused, and every instance on it stayed stopped (Carlo's lab1 and lab2,
+# 24/11/2026). A record of before still matches by its inode alone (a folder
+# put in its place on the same file system is another inode; one on another
+# file system needs a mount, root's), and is written again with the marker.
+STORAGE_MARKER = ".omniacli-storage-id"
+
+
 def _identity(path: Path) -> str:
-    st = os.stat(path)
-    return f"{st.st_dev} {st.st_ino}"
+    """The marker of the folder at path ("id:<hex>"), else its device and inode (a folder not marked yet)."""
+    try:
+        return "id:" + (Path(path) / STORAGE_MARKER).read_text(encoding="ascii").strip()
+    except (OSError, UnicodeDecodeError):
+        st = os.stat(path)
+        return f"{st.st_dev} {st.st_ino}"
+
+
+def _same_folder(kept: str, now: str) -> bool:
+    """now (_identity of a folder today) is the folder kept: the same marker, or, for a record of before the
+    markers and a folder not marked yet, the same inode (its device may have changed since)."""
+    if kept == now:
+        return True
+    old, new = kept.split(), now.split()
+    return not kept.startswith("id:") and not now.startswith("id:") and len(old) == len(new) == 2 and old[1] == new[1]
+
+
+def _mark(folder: Path) -> None:
+    """The marker written in folder when it has none (root's alone, 600)."""
+    marker = folder / STORAGE_MARKER
+    if not marker.exists():
+        _write(marker, secrets.token_hex(16) + "\n", mode=0o600)
 
 
 def _id_file(target: Path) -> Path:
@@ -610,7 +643,7 @@ def bound_problem(storage: str, target: Path) -> str | None:
     if problem:
         return f"the storage {storage}: {problem}"
     kept = _recorded(target)
-    if kept and kept[1] == str(folder) and kept[0] != _identity(target):
+    if kept and kept[1] == str(folder) and not _same_folder(kept[0], _identity(target)):
         return (f"the storage {storage} ({folder}) is not the folder set up there (it was moved or replaced): "
                 f"unbound; if the change is wanted, run as root: omniacli workspace-helper storage-reset {storage}")
     if folder.is_dir() and _identity(folder) != _identity(target):
@@ -635,7 +668,7 @@ def _bind_now(storage: str, target: Path) -> None:
     if problem:
         raise HelperError(f"the storage {storage}: {problem}: make it root's (chown root: …; chmod go-w …)")
     kept = _recorded(target)
-    if kept and kept[1] == str(folder) and kept[0] != _identity(folder):
+    if kept and kept[1] == str(folder) and not _same_folder(kept[0], _identity(folder)):
         raise HelperError(f"the storage {storage} ({folder}) is not the folder set up there (it was moved or "
                           f"replaced): not bound; if the change is wanted, run as root: "
                           f"omniacli workspace-helper storage-reset {storage}")
@@ -699,7 +732,9 @@ def _record(target: Path, folder: Path) -> None:
     """The identity and the folder of the storage bound on target, kept when
     there is none yet or the folder is another (the main configuration changed)."""
     kept = _recorded(target)
-    if kept is None or kept[1] != str(folder):
+    if kept is None or kept[1] != str(folder) or not kept[0].startswith("id:"):
+        # a folder recorded by its device and inode (before the markers) is marked now, and recorded so
+        _mark(folder)
         STORAGE_IDS.mkdir(mode=0o700, parents=True, exist_ok=True)
         _write(_id_file(target), f"{_identity(target)}\n{folder}\n", mode=0o600)
 

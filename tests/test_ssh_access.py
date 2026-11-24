@@ -304,6 +304,17 @@ async def test_through_a_link_a_person_may_a_machine_alone_may_not(panel):
         assert resp.status_code == 403, (url, resp.text)
 
 
+async def test_a_page_gone_opened_through_a_link_is_a_page(panel):
+    """A workspace that is not there, opened in a person's browser through another panel's link (Carlo,
+    24/11/2026): the error page in its layout, not the JSON an API's caller reads; the machine alone, JSON."""
+    html = {**PERSON, "Accept": "text/html,application/xhtml+xml"}
+    resp = await panel.get("/workspaces/nobody", headers=html)
+    assert resp.status_code == 404 and resp.headers["content-type"].startswith("text/html"), resp.text[:200]
+    assert "<html" in resp.text.lower() and '"detail"' not in resp.text
+    resp = await panel.get("/workspaces/nobody", headers={**ALONE, "Accept": "text/html"})
+    assert resp.status_code == 404 and resp.headers["content-type"].startswith("application/json")
+
+
 async def test_a_customer_sees_nothing_of_it(panel):
     client = panel
     page = (await client.get("/", headers=MARIO)).text

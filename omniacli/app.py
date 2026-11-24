@@ -1428,7 +1428,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return RedirectResponse(f"/login?next={quote(target)}", status.HTTP_303_SEE_OTHER)
         if (exc.status_code in (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND)
                 and "text/html" in request.headers.get("accept", "")
-                and not request.headers.get("authorization")):
+                # a page of this machine another panel asks for a person's browser carries its link's token and
+                # that person's menu: a page too (Carlo 24/11/2026: a workspace gone, opened through a link, was
+                # its JSON on the screen)
+                and (not request.headers.get("authorization") or _MENU_HEADER in request.headers)):
             # a page the browser opened (or a form it sent): a page in the
             # site's layout and language with the way back, not the JSON of
             # an API's caller (a script's fetch, a token, a link: their JSON)
