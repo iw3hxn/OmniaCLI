@@ -1,7 +1,8 @@
 {# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
-{# The move of an instance to another machine (UX-014 part B, AD-015; step 4 of §9 of AD-008): the banner of a move
-   under way or done, with the action of its state, and the dialog «Move to another machine…» with the machines and
-   the plan. For the admins of the machine only (server_page's move). #}
+{# The move of an instance to another machine (UX-014 part B, AD-015; steps 4 and 6 of §9 of AD-008): the banner of
+   a move under way or done, with the action of its state (its return too: Back to <here>…, Complete the return…),
+   and the dialog «Move to another machine…» with the machines and the plan. For the admins of the machine only
+   (server_page's move). #}
 {% from "_icons.html" import icon, dialog_x with context %}
 <style>
 .move-band { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0 0 16px; padding: 10px 12px;
@@ -22,18 +23,42 @@
 .mv-plan-title { margin: 10px 0 2px; font-weight: var(--fw-semibold); }
 @media (max-width: 767.98px) { .move-band .move-actions { width: 100%; } .move-band .move-actions button, #move-dialog .actions button { min-height: 44px; } }
 </style>
-{% if move.state %}{% set ms = move.state %}
-<div class="move-band{{ ' failed' if ms.state == 'failed' }}" role="status" id="move-band" data-state="{{ ms.state }}">
+{% if move.state %}{% set ms = move.state %}{% set mb = ms.back or {} %}{% set back = mb.state if ms.state == "placed" and mb.state in ("preparing", "ready", "completing", "failed") else "" %}
+<div class="move-band{{ ' failed' if ms.state == 'failed' or back == 'failed' }}" role="status" id="move-band" data-state="{{ ms.state }}" data-back="{{ back }}">
   <span class="move-text">
+  {% if back == "preparing" %}{{ icon("hourglass") }} {{ _("Coming back from {machine}: the copy is under way, there everything runs.", machine=ms.link) }}
+  {% elif back == "ready" %}{{ icon("server") }} {{ _("Ready to come back from {machine} since {when}: the database here is {lag} s behind.", machine=ms.link, when=mb.ready_at | moment, lag=mb.lag if mb.lag is not none else "—") if mb.kind == "dedicated" else _("Ready to come back from {machine} since {when}: the database comes here at the completion.", machine=ms.link, when=mb.ready_at | moment) }}
+  {% elif back == "completing" %}{{ icon("hourglass") }} {{ _("The return from {machine} is completing: the instance is stopped there.", machine=ms.link) }}
+  {% elif back == "failed" %}{{ icon("triangle-alert") }} {{ _("The return from {machine} did not end: {why} The instance runs there.", machine=ms.link, why=tr(mb.error or "")) }}
+  {% elif ms.state == "placed" and ms.get("copy") == "deleted" %}{{ icon("server") }} {{ _("On {machine} since {when}: its copy here was deleted. Back to {here}… makes it here again and copies it whole.", machine=ms.link, when=ms.placed_at | moment, here=move.here) }}
+  {% elif ms.state == "returned" %}{{ icon("server") }} {{ _("Back here from {machine} since {when}: its copy there stays stopped and passes its names here until {until}.", machine=ms.link, when=ms.returned_at | moment, until=ms.there_until | moment) }}{% if ms.unserved %} {{ _("Without service for {n} s at the return.", n=ms.unserved.seconds) }}{% endif %}
+  {% else %}
   {% if ms.state == "preparing" %}{{ icon("hourglass") }} {{ _("Moving to {machine}: the copy is under way, here everything runs.", machine=ms.link) }}
   {% elif ms.state == "ready" %}{{ icon("server") }} {{ _("Ready on {machine} since {when}: the database there is {lag} s behind.", machine=ms.link, when=ms.ready_at | moment, lag=ms.lag if ms.lag is not none else "—") if ms.kind == "dedicated" else _("Ready on {machine} since {when}: the database goes there at the completion.", machine=ms.link, when=ms.ready_at | moment) }}
   {% elif ms.state == "completing" %}{{ icon("hourglass") }} {{ _("The move to {machine} is completing: the instance is stopped here.", machine=ms.link) }}
   {% elif ms.state == "placed" %}{{ icon("server") }} {{ _("On {machine} since {when}: the stopped copy stays here until {until}.", machine=ms.link, when=ms.placed_at | moment, until=ms.copy_until | moment) }}{% if ms.unserved %} {{ _("Without service for {n} s at the move.", n=ms.unserved.seconds) }}{% endif %}
-  {% else %}{{ icon("triangle-alert") }} {{ _("The move to {machine} was not prepared: {why}", machine=ms.link, why=tr(ms.error or "")) }}{% endif %}
+  {% else %}{{ icon("triangle-alert") }} {{ _("The move to {machine} was not prepared: {why}", machine=ms.link, why=tr(ms.error or "")) }}{% endif %}{% endif %}
   {% if ms.job and ms.state in ("preparing", "completing") %}<a href="{{ prefix }}/jobs/{{ ms.job }}" title="{{ _('Opens the job of the move, with its steps') }}">{{ _("See the job") }}</a>{% endif %}
+  {% if mb.job and back in ("preparing", "completing") %}<a href="{{ prefix }}/jobs/{{ mb.job }}" title="{{ _('Opens the job of the return, with its steps') }}">{{ _("See the job") }}</a>{% endif %}
   {% if ms.state == "placed" %}<a href="{{ prefix }}/placed/{{ server.name }}/servers/{{ server.name }}" title="{{ _('Opens its page on {machine}, through this machine: what its workspace sees and does there', machine=ms.link) }}">{{ _("Open it there") }}</a>{% endif %}
   </span>
   <span class="move-actions">
+  {% if back == "ready" %}
+    <button type="button" class="primary" id="move-back-complete" data-machine="{{ ms.link }}" {% if move.busy %}disabled{% endif %}
+            title="{{ _('Stops the instance on {machine} with the maintenance page, starts it here and serves its names here again. A stop of about {n} seconds. It asks the name of the instance.', machine=ms.link, n=move.stop_seconds) }}">{{ _("Complete the return…") }}</button>
+  {% endif %}
+  {% if back in ("ready", "failed") %}
+    <button type="button" class="small danger" id="move-back-cancel" data-machine="{{ ms.link }}" {% if move.busy %}disabled{% endif %}
+            title="{{ _('Deletes what the return copied here and closes the database there to this machine. The instance goes on running on {machine}.', machine=ms.link) }}">{{ _("Cancel the return…") }}</button>
+  {% endif %}
+  {% if ms.state == "placed" and not back %}
+    <button type="button" id="move-back" data-machine="{{ ms.link }}" {% if move.busy %}disabled{% endif %}
+            title="{{ _('Makes the instance here again and copies it whole from {machine} while it runs there, then Complete the return… stops it there. It asks the name of the instance.', machine=ms.link) if ms.get('copy') == 'deleted' else _('Brings the instance back to {here} with the changes made since: it copies it while it runs on {machine}, then Complete the return… stops it there. It asks the name of the instance.', here=move.here, machine=ms.link) }}">{{ _("Back to {here}…", here=move.here) }}</button>
+  {% endif %}
+  {% if ms.state == "returned" %}
+    <button type="button" class="small danger" id="move-back-delete" data-machine="{{ ms.link }}" {% if move.busy %}disabled{% endif %}
+            title="{{ _('Deletes at once its stopped copy on {machine}, instead of on {until}: who still has the old DNS no longer reaches it through there. It cannot be undone.', machine=ms.link, until=ms.there_until | moment) }}">{{ _("Delete the copy on {machine}…", machine=ms.link) }}</button>
+  {% endif %}
   {% if ms.state == "ready" %}
     <button type="button" class="primary" id="move-complete" data-machine="{{ ms.link }}" {% if move.busy %}disabled{% endif %}
             title="{{ _('Stops the instance here with the maintenance page, starts it on the new machine and passes its names there. A stop of about {n} seconds. It asks the name of the instance.', n=move.stop_seconds) }}">{{ _("Complete the move…") }}</button>
@@ -42,7 +67,7 @@
     <button type="button" class="small danger" id="move-cancel" data-machine="{{ ms.link }}" {% if move.busy %}disabled{% endif %}
             title="{{ _('Deletes the copy on the chosen machine. The instance stays here as it is.') }}">{{ _("Cancel the move…") }}</button>
   {% endif %}
-  {% if ms.state == "placed" %}
+  {% if ms.state == "placed" and not back and ms.get("copy") != "deleted" %}
     <button type="button" class="small danger" id="move-delete-copy" data-machine="{{ ms.link }}" {% if move.busy %}disabled{% endif %}
             title="{{ _('Deletes at once the stopped copy here and its backups here, instead of on {until}. The instance on the other machine does not change. It cannot be undone.', until=ms.copy_until | moment) }}">{{ _("Delete the copy…") }}</button>
   {% endif %}
@@ -108,6 +133,16 @@
     cancelGo: {{ _("Cancel the move") | tojson }},
     deleteAsk: {{ _("The stopped copy of {name} here and its backups here are deleted now. The instance on {machine} does not change. It cannot be undone.") | tojson }},
     deleteGo: {{ _("Delete the copy") | tojson }},
+    backAsk: {{ _("{name} is copied back here with the changes made since, while it runs on {machine}: nothing stops yet. Write its name to bring it back.") | tojson }},
+    backGo: {{ _("Bring it back") | tojson }},
+    backGoTitle: {{ _("Copies the instance back here; Complete the return… stops it there") | tojson }},
+    backCompleteAsk: {{ _("{name} stops on {machine} for about {n} seconds, with the maintenance page, then starts again here. There its copy stays stopped until {until}. Write its name to complete.") | tojson }},
+    backCompleteGo: {{ _("Complete the return") | tojson }},
+    backCompleteGoTitle: {{ _("Stops the instance there and starts it here") | tojson }},
+    backCancelAsk: {{ _("What the return copied here is deleted and the database on {machine} is no longer followed. {name} goes on running there.") | tojson }},
+    backCancelGo: {{ _("Cancel the return") | tojson }},
+    backDeleteAsk: {{ _("The stopped copy of {name} on {machine} is deleted now: who still has the old DNS no longer reaches it through there. It cannot be undone.") | tojson }},
+    backDeleteGo: {{ _("Delete the copy there") | tojson }},
   };
   const lang = document.documentElement.lang || "en";
   const num = (n, d = 1) => (n === null || n === undefined) ? "—" : Number(n).toLocaleString(lang, {maximumFractionDigits: d, minimumFractionDigits: 0});
@@ -150,6 +185,43 @@
     if (!await window.omniaAsk(fill(T.deleteAsk, {machine: b.dataset.machine, name: SERVER}), T.deleteGo, {danger: true, goTitle: b.title})) return;
     b.disabled = true;
     const got = await post(`${API}/delete-copy`, {});
+    if (got.error) { b.disabled = false; say(got.error); return; }
+    toJob(got);
+  });
+
+  // the return (AD-015 «Torna su»)
+  document.getElementById("move-back")?.addEventListener("click", async (event) => {
+    const b = event.currentTarget;
+    const typed = await window.omniaTypeName(fill(T.backAsk, {name: SERVER, machine: b.dataset.machine}), SERVER, T.backGo, T.backGoTitle);
+    if (!typed) return;
+    b.disabled = true;
+    const got = await post(`${API}/back`, {confirm: SERVER});
+    if (got.error) { b.disabled = false; say(got.error); return; }
+    toJob(got);
+  });
+  document.getElementById("move-back-complete")?.addEventListener("click", async (event) => {
+    const b = event.currentTarget;
+    const typed = await window.omniaTypeName(fill(T.backCompleteAsk, {name: SERVER, n: {{ (move.stop_seconds or 40) | tojson }},
+      machine: b.dataset.machine, until: {{ (move.until or "") | tojson }}}), SERVER, T.backCompleteGo, T.backCompleteGoTitle);
+    if (!typed) return;
+    b.disabled = true;
+    const got = await post(`${API}/back/complete`, {confirm: SERVER});
+    if (got.error) { b.disabled = false; say(got.error); return; }
+    toJob(got);
+  });
+  document.getElementById("move-back-cancel")?.addEventListener("click", async (event) => {
+    const b = event.currentTarget;
+    if (!await window.omniaAsk(fill(T.backCancelAsk, {machine: b.dataset.machine, name: SERVER}), T.backCancelGo, {danger: true, goTitle: b.title})) return;
+    b.disabled = true;
+    const got = await post(`${API}/back/cancel`, {});
+    if (got.error) { b.disabled = false; say(got.error); return; }
+    toJob(got);
+  });
+  document.getElementById("move-back-delete")?.addEventListener("click", async (event) => {
+    const b = event.currentTarget;
+    if (!await window.omniaAsk(fill(T.backDeleteAsk, {machine: b.dataset.machine, name: SERVER}), T.backDeleteGo, {danger: true, goTitle: b.title})) return;
+    b.disabled = true;
+    const got = await post(`${API}/back/delete-copy`, {});
     if (got.error) { b.disabled = false; say(got.error); return; }
     toJob(got);
   });

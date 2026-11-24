@@ -397,7 +397,8 @@
     document.getElementById("bk-next").disabled = page >= pages - 1;
   }
   async function load(machine) {
-    const url = "/api/backups" + (machine.link ? `?link=${encodeURIComponent(machine.link)}` : "");
+    // under the prefix of the panel that shows this page (a central panel's link): the backups of this machine
+    const url = {{ prefix | tojson }} + "/api/backups" + (machine.link ? `?link=${encodeURIComponent(machine.link)}` : "");
     try {
       const resp = await fetch(url, {headers: {Accept: "application/json"}});
       const data = await resp.json().catch(() => ({}));

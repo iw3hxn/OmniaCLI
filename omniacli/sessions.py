@@ -190,6 +190,17 @@ class SessionStore:
                 self._save()
         return len(gone)
 
+    def keep(self, users) -> int:
+        """Only the sessions of the users that exist: a deleted user's (from Users, or a member of a workspace
+        deleted with it) go with it, from the file too. How many ended."""
+        with self._lock:
+            gone = [k for k, v in self._sessions.items() if v.get("user") not in users]
+            for k in gone:
+                del self._sessions[k]
+            if gone:
+                self._save()
+        return len(gone)
+
     def drop(self, token: str | None) -> None:
         if not token:
             return

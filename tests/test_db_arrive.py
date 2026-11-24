@@ -160,11 +160,89 @@ def test_the_helper_says_the_steps_and_the_firewall_follows(arriving, monkeypatc
     monkeypatch.setattr(workspacehelper, "db_firewall", lambda: applied.append(1) or {})
     monkeypatch.setattr(workspacehelper.sys, "stdin", type("In", (), {"read": lambda self, n: json.dumps(SPEC)})())
     assert workspacehelper.machine_db_arrive(KEY, "prepare")["net"] == 100 and applied == [1]
-    with pytest.raises(HelperError, match="prepare, copy, start, state, wait, promote or cancel"):
-        workspacehelper.machine_db_arrive(KEY, "purge")
+    with pytest.raises(HelperError, match="prepare, copy, start, state, wait, promote, cancel, aside, unaside or purge"):
+        workspacehelper.machine_db_arrive(KEY, "bogus")
     with pytest.raises(HelperError, match="machine-db-arrive <workspace>.<storage>.<instance>"):
         workspacehelper.machine_db_arrive("17", "state")
     assert workspacehelper.ACTIONS["machine-db-arrive"][1] == 2 and workspacehelper.ACTIONS["machine-db-replica-stop"][1] == 2
+
+
+def test_the_stopped_copy_of_a_moved_instance_is_set_aside_for_its_return(arriving):
+    """AD-015 «Torna su»: the data of the stopped copy here go aside, with its record of the copy that followed it,
+    the database of the other machine arrives in their place; a return that goes back puts them back as they were,
+    one that ends deletes them."""
+    pgdata, folder = arriving.project / "data" / "pgdata", arriving.folder
+    aside = pgdata.with_name("pgdata.aside")
+    (pgdata / "PG_VERSION").write_text("17\n")
+    (pgdata / "base").mkdir()
+    (pgdata / "base" / "1").write_text("the copy of before the move")
+    folder.mkdir(exist_ok=True)
+    (folder / "replica.json").write_text(json.dumps({"link": "lab4", "address": "172.30.0.14", "state": "stopped"}))
+    arriving.projects.state["production"] = "running"
+    with pytest.raises(machinedb.ClusterError, match="runs: the data of a stopped copy only is set aside"):
+        managedreplica.arrive_aside(KEY)
+    arriving.projects.state["production"] = "exited"
+    done = managedreplica.arrive_aside(KEY)
+    assert done["aside"] and done["moved"] and done["bytes"] > 0
+    assert list(pgdata.iterdir()) == [] and (aside / "base" / "1").is_file()
+    assert not (folder / "replica.json").exists() and (folder / "replica.json.aside").is_file()
+    # asked again: nothing more is set aside, the data aside are not touched
+    assert managedreplica.arrive_aside(KEY)["moved"] is False and (aside / "base" / "1").is_file()
+    # the database arrives in the empty folder
+    managedreplica.arrive_prepare(KEY, SPEC)
+    managedreplica.arrive_copy(KEY)
+    assert any(pgdata.iterdir())
+    # the return goes back: what arrived is deleted, the stopped copy is as it was, its record with it
+    back = managedreplica.arrive_unaside(KEY)
+    assert back["restored"] and back["freed"] > 0
+    assert (pgdata / "base" / "1").read_text() == "the copy of before the move" and not aside.exists()
+    assert json.loads((folder / "replica.json").read_text())["state"] == "stopped"
+    assert not (folder / "arrive").exists() and not (folder / "arrive.json").exists() and managedreplica.arrivals() == {}
+    # asked again (the return went back, then it is cancelled): the stopped copy is not touched
+    assert managedreplica.arrive_unaside(KEY)["untouched"] is True
+    assert (pgdata / "base" / "1").read_text() == "the copy of before the move"
+    # set aside again, arrived, promoted: the data aside are deleted only once it took the writes
+    managedreplica.arrive_aside(KEY)
+    managedreplica.arrive_prepare(KEY, SPEC)
+    managedreplica.arrive_copy(KEY)
+    with pytest.raises(machinedb.ClusterError, match="has not taken the writes: what was set aside is kept"):
+        managedreplica.arrive_purge(KEY)
+    arriving.sql.answers["pg_stat_wal_receiver"] = "streaming\n"
+    managedreplica.arrive_start(KEY)
+    arriving.sql.answers["pg_is_in_recovery"] = "f\n"
+    managedreplica.arrive_promote(KEY)
+    purged = managedreplica.arrive_purge(KEY)
+    assert purged["freed"] > 0 and not aside.exists() and not (folder / "replica.json.aside").exists()
+    assert not (folder / "replica.json").exists() and not (folder / "arrive.json").exists()
+
+
+def test_an_instance_made_again_for_its_return_is_emptied_when_it_goes_back(arriving):
+    """With its copy deleted the instance is made here again: nothing is set aside, and a return that goes back
+    leaves its data folder empty, as it was made."""
+    pgdata = arriving.project / "data" / "pgdata"
+    assert managedreplica.arrive_aside(KEY) == {"aside": False, "moved": False, "bytes": 0}
+    managedreplica.arrive_prepare(KEY, SPEC)
+    managedreplica.arrive_copy(KEY)
+    done = managedreplica.arrive_unaside(KEY)
+    assert done["restored"] is False and list(pgdata.iterdir()) == [] and pgdata.is_dir()
+    assert managedreplica.arrive_prepare(KEY, SPEC)["net"] == 100
+
+
+def test_a_database_of_the_cluster_is_emptied_for_the_dump_of_its_return(monkeypatch, tmp_path):
+    asked = []
+    monkeypatch.setattr(workspacehelper, "_database_place", lambda *a: (tmp_path, "acme_erp", {"major": "17", "role": "acme_erp"}))
+    monkeypatch.setattr(workspacehelper, "_odoo_runs", lambda project: False)
+    monkeypatch.setattr(machinedb, "project_of", lambda major: tmp_path)
+    monkeypatch.setattr(machinedb, "sql", lambda project, db, q: asked.append((db, q)) or "42\n")
+    assert workspacehelper.db_empty("acme", "default", "erp") == {"database": "acme_erp", "emptied": 42}
+    assert "DROP SCHEMA IF EXISTS public CASCADE" in asked[-1][1] and asked[-1][0] == "acme_erp"
+    monkeypatch.setattr(workspacehelper, "_odoo_runs", lambda project: True)
+    with pytest.raises(HelperError, match="runs: a database is emptied only under an Odoo that is stopped"):
+        workspacehelper.db_empty("acme", "default", "erp")
+    monkeypatch.setattr(workspacehelper, "_database_place", lambda *a: (tmp_path, "odoo", None))
+    with pytest.raises(HelperError, match="is its own: it is not emptied"):
+        workspacehelper.db_empty("acme", "default", "erp")
+    assert workspacehelper.ACTIONS["db-empty"][1] == 3
 
 
 # --- on the source's machine (P) -------------------------------------------------------------

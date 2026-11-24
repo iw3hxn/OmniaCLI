@@ -29,6 +29,7 @@ from .accesslog import AccessLog
 from .auth import ROLES as ACCESS_ROLES
 from .auth import Authenticator
 from .config import ConfigError, Instance, Settings, server_to_dict
+from .customerview import CustomerView
 from .jobs import FINISHED, Job, JobFailed, JobManager, filter_jobs
 from .logtail import last_lines
 from .plugin_api import ActionRefused
@@ -150,6 +151,10 @@ def _refusal(response) -> str:
     except ValueError:
         data = None
     return str(data.get("error")) if isinstance(data, dict) and data.get("error") else "Refused"
+
+
+# the folders of this machine taken out of a text (customerview.py), for a workspace's token
+_NO_PATHS = CustomerView(provider="", elsewhere="")
 
 
 def _job_dict(job: Job, tail: int = 0) -> dict:
@@ -346,6 +351,16 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
                             else f"No active server {name} with a {role} instance")
         return found
 
+    def described(ctx: Context, inst) -> dict:
+        """What the plugin tells of an instance; to a workspace's token no folder of this machine (a compose
+        project's folder is its service too), as the REST API and the pages."""
+        found = inst.plugin.describe(inst)
+        return {k: v for k, v in found.items() if k != "project"} if scope_of(ctx) else found
+
+    def service_of(ctx: Context, inst) -> str | None:
+        service = inst.restart.service or None
+        return None if scope_of(ctx) and str(service or "").startswith("/") else service
+
     @server.tool()
     def list_servers(ctx: Context) -> list[dict]:
         """Every configured server: type (odoo...), status (active or draft),
@@ -355,8 +370,8 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
             {
                 "name": srv.name, "type": srv.type, "status": srv.status, "incomplete": srv.error,
                 "instances": {
-                    role: {**i.plugin.describe(i), "restart": i.restart.type,
-                           "service": i.restart.service or None,
+                    role: {**described(ctx, i), "restart": i.restart.type,
+                           "service": service_of(ctx, i),
                            "repositories": [r.name for r in i.repositories]}
                     for role, i in srv.instances.items()
                 },
@@ -381,9 +396,9 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
                 pid = ops.managed_pid(inst)
                 odoo = {"started_by": "OmniaCLI", "running": pid is not None, "pid": pid}
             result[role] = {
-                **inst.plugin.describe(inst),
+                **described(ctx, inst),
                 "repositories": {r.name: s for r, s in zip(inst.repositories, repos)},
-                "odoo": odoo or {"started_by": f"{inst.restart.type} {inst.restart.service}"},
+                "odoo": odoo or {"started_by": " ".join(p for p in (inst.restart.type, service_of(ctx, inst)) if p)},
                 "load": series[-1] if series else None,
                 "load_measured_on": sampler.source.get(inst.key),
                 "auto_update": {"enabled": inst.auto_update.enabled,
@@ -391,6 +406,9 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
                                 "last_check": updater.state.get(inst.key)},
                 "job_running": jobs.is_busy(inst.key),
             }
+            if scope_of(ctx):
+                # a working copy that is not there says its folder: a workspace's token reads …/<its last part>
+                result[role] = _NO_PATHS.data(result[role])
         result["last_jobs"] = [_job_dict(j) for j in filter_jobs(jobs.recent(len(jobs.jobs)), server_name)[:5]]
         return result
 

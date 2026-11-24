@@ -754,7 +754,8 @@ class DockerPlugin(ServicePlugin):
                    tooltip=UPDATE_TOOLTIP),
             Action("pull-image", "Pull image", self._pull_image, group="service", icon="download",
                    tooltip="docker compose pull, then up -d: the containers made again with the newer images",
-                   confirm=lambda inst: f"Pull the newer images of {inst.restart.service} and make its "
+                   # the instance, not its project folder: a customer reads no folder of the machine
+                   confirm=lambda inst: f"Pull the newer images of {inst.key} and make its "
                                         "containers again?",
                    title=lambda inst, params: f"Pull image {inst.key}"),
         ]

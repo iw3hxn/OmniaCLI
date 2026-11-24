@@ -5302,7 +5302,7 @@ def tree_prune(name: str, storage: str, instance: str, role: str) -> dict:
 
 def machine_db_arrive(key: str, step: str) -> dict:
     """machine-db-arrive <workspace>.<storage>.<instance> prepare | copy |
-    start | state | wait | promote | cancel: the dedicated database of an
+    start | state | wait | promote | cancel | aside | unaside | purge: the dedicated database of an
     instance of another machine arrives in that instance of this one (made
     for it, never started), followed read only until it takes the writes.
     prepare takes its values as JSON on the input (the password of the
@@ -5324,12 +5324,20 @@ def machine_db_arrive(key: str, step: str) -> dict:
         return _cluster(managedreplica.arrive_state, key)
     if step == "wait":
         return _cluster(managedreplica.arrive_wait, key, str(_input_json("an arrival").get("checkpoint") or ""))
-    if step in ("promote", "cancel"):
+    if step in ("promote", "cancel", "unaside"):
         try:
-            return _cluster(managedreplica.arrive_promote if step == "promote" else managedreplica.arrive_cancel, key)
+            return _cluster({"promote": managedreplica.arrive_promote, "cancel": managedreplica.arrive_cancel,
+                             "unaside": managedreplica.arrive_unaside}[step], key)
         finally:
             db_firewall()
-    raise HelperError("machine-db-arrive <key> prepare, copy, start, state, wait, promote or cancel")
+    # the return of a moved instance (AD-015): the data of its stopped copy set aside for the database that
+    # arrives, deleted once it took the writes
+    if step == "aside":
+        return _cluster(managedreplica.arrive_aside, key)
+    if step == "purge":
+        return _cluster(managedreplica.arrive_purge, key)
+    raise HelperError("machine-db-arrive <key> prepare, copy, start, state, wait, promote, cancel, aside, unaside or "
+                      "purge")
 
 
 def machine_db_replica_stop(key: str, mode: str) -> dict:
@@ -5459,6 +5467,26 @@ def db_restore(name: str, storage: str, instance: str) -> dict:
             "cluster": env["major"] if env is not None else None}
 
 
+def db_empty(name: str, storage: str, instance: str) -> dict:
+    """db-empty <workspace> <storage> <instance>: the database of the
+    production on the machine's cluster emptied (its schema public dropped
+    and made again), for a dump of the same instance to be restored into it:
+    the return of a moved instance whose copy here is stopped (AD-015).
+    Refused for a database of its own (it arrives in its data folder) and
+    while its Odoo runs."""
+    project, database, env = _database_place(name, storage, instance)
+    if env is None:
+        raise HelperError(f"the database of {instance} is its own: it is not emptied, its data folder takes the copy")
+    if _odoo_runs(project):
+        raise HelperError(f"{instance} runs: a database is emptied only under an Odoo that is stopped")
+    cluster = machinedb.project_of(env["major"])
+    before = _cluster(machinedb.sql, cluster, database,
+                      "SELECT count(*) FROM pg_class WHERE relnamespace = 'public'::regnamespace;\n")
+    _cluster(machinedb.sql, cluster, database, "DROP SCHEMA IF EXISTS public CASCADE;\n"
+                                               "CREATE SCHEMA public AUTHORIZATION pg_database_owner;\n")
+    return {"database": database, "emptied": int((before or "0").strip() or 0)}
+
+
 # what writes its own output (a manifest, a tar, a dump): main prints nothing after it
 STREAMS = frozenset({"tree-list", "tree-read", "db-dump"})
 
@@ -5467,7 +5495,7 @@ ACTIONS = {"disk": (disk, 3), "drop": (drop, 2), "limits": (limits, 3), "create"
            "tree-list": (tree_list, 4), "tree-read": (tree_read, 4), "tree-write": (tree_write, 4),
            "tree-prune": (tree_prune, 4), "machine-db-arrive": (machine_db_arrive, 2),
            "machine-db-replica-stop": (machine_db_replica_stop, 2), "db-dump": (db_dump, 3), "db-restore": (db_restore, 3),
-           "db-counts": (db_counts, 3),
+           "db-counts": (db_counts, 3), "db-empty": (db_empty, 3),
            "web": (web, 3), "web-names": (web_taken, 1), "upstream": (upstream, 6), "maintenance": (maintenance, 5), "forward": (forward, 3), "owncert": (owncert, 2), "owncert-read": (owncert_read, 2), "firewall": (firewall, 1), "template-install": (template_install, 1),
            "conf": (conf, 5), "space": (space, 0),
            "storage-setup": (storage_setup, 0), "storage-check": (storage_check, 1), "storage-reset": (storage_reset, 1),

@@ -3135,6 +3135,94 @@ def arrive_cancel(key: str) -> dict:
     return {"cancelled": True, "freed": freed, "link": back.get("link")}
 
 
+# --- the return of a moved instance (AD-015 «Torna su»): its stopped copy here is the place a database arrives in
+
+def _record_aside(place) -> Path:
+    return place.folder / (RECORD + ASIDE)
+
+
+def arrive_aside(key: str) -> dict:
+    """The data of the stopped copy of an instance set aside (its data
+    folder renamed beside it, its record of the copy that followed it on the
+    other machine with it), so that the database of the other machine
+    arrives in an empty folder (ArrivePlace). Asked again, nothing more is
+    set aside. Refused while a service of the instance runs."""
+    place = arrive_place(key)
+    if place.instance_runs():
+        raise ClusterError(f"{place.name} runs: the data of a stopped copy only is set aside")
+    if place.running():
+        raise ClusterError(f"the database that arrives in {place.name} runs already: cancel that arrival first")
+    aside = _aside(place.pgdata)
+    moved = False
+    if place.pgdata.is_dir() and not place.pgdata.is_symlink() and any(place.pgdata.iterdir()) and not aside.exists():
+        found = place.pgdata.stat()
+        os.rename(place.pgdata, aside)
+        machinedb._folder(place.pgdata, 0o700, found.st_uid, found.st_gid)
+        moved = True
+    rec = place.folder / RECORD
+    if rec.is_file() and not _record_aside(place).exists():
+        os.replace(rec, _record_aside(place))
+        (place.folder / LAG_FILE).unlink(missing_ok=True)
+    return {"aside": aside.is_dir(), "moved": moved, "bytes": tree_size(aside) if aside.is_dir() else 0}
+
+
+def arrive_unaside(key: str) -> dict:
+    """What arrived taken away (its PostgreSQL stopped, the arrival's project
+    with it, the instance's database service stopped too: it took the writes
+    or not) and the data set aside put back, with its record: the stopped
+    copy as it was. With nothing set aside (an instance made for the return),
+    the data folder is emptied: as it was made. Nothing arrived and nothing
+    set aside (asked again: a return that went back, then cancelled): the
+    data folder is the stopped copy's, and nothing is touched."""
+    place = arrive_place(key)
+    if not place.record() and not _aside(place.pgdata).exists() and not _record_aside(place).exists():
+        return {"restored": False, "freed": 0, "untouched": True}
+    place.stop()
+    machinedb._run(place.project, "stop", "-t", "120", timeout=300, check=False)
+    if place.running() or place.instance_runs():
+        raise ClusterError(f"the database of {place.name} did not stop: what arrived is not deleted under it")
+    aside = _aside(place.pgdata)
+    freed = 0
+    if place.pgdata.is_dir() and not place.pgdata.is_symlink():
+        for child in list(place.pgdata.iterdir()):
+            freed += tree_size(child) if child.is_dir() and not child.is_symlink() else child.lstat().st_size
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child, ignore_errors=True)
+            else:
+                child.unlink(missing_ok=True)
+    if aside.is_dir() and not aside.is_symlink():
+        place.pgdata.rmdir()
+        os.rename(aside, place.pgdata)
+    if _record_aside(place).is_file():
+        os.replace(_record_aside(place), place.folder / RECORD)
+    place.cancelled()
+    place.save(None)
+    if (place.folder / "conf").is_dir():
+        with contextlib.suppress(ClusterError):
+            place.src._write_hba_file()
+    return {"restored": place.pgdata.is_dir() and any(place.pgdata.iterdir()), "freed": freed}
+
+
+def arrive_purge(key: str) -> dict:
+    """The data set aside deleted, once the database that arrived took the
+    writes and is the instance's own: its record of the copy that followed it
+    with it, and its pg_hba.conf for the project's network only again."""
+    place = arrive_place(key)
+    if (place.record() or {}).get("state") != "done":
+        raise ClusterError(f"the database that arrives in {place.name} has not taken the writes: what was set aside "
+                           "is kept")
+    aside = _aside(place.pgdata)
+    freed = tree_size(aside) if aside.is_dir() and not aside.is_symlink() else 0
+    if freed or aside.is_dir():
+        shutil.rmtree(aside, ignore_errors=True)
+    _record_aside(place).unlink(missing_ok=True)
+    place.save(None)
+    if (place.folder / "conf").is_dir():
+        with contextlib.suppress(ClusterError):
+            place.src.write_hba()
+    return {"freed": freed}
+
+
 def arriving_state() -> dict:
     """{bridge: {"from": [], "to": [[address, port]]}} of the databases that
     arrive here: the network each follows its source from goes out to that

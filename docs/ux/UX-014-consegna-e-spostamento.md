@@ -419,8 +419,11 @@ Spento, con il motivo, se lab1 o lab2 non risponde, o se l'istanza non è al pas
 - **DNS**: la tabella dei nomi di §A8, nella banner dell'istanza dopo il completamento, con «Ricontrolla». lab1 inoltra
   finché tutti i nomi puntano a lab2 o finché la copia c'è. Opzione nel piano: «Lascia i nomi su lab1» (lab1 resta il
   davanti, come un relay, e nessun record cambia), D-B3.
-- **Torna su lab1…** (banner, finché la copia c'è): lo stesso Prepara/Completa al contrario. Con la copia ferma come
-  base, si copia solo quello che è cambiato su lab2. Nome dell'istanza scritto.
+- **Torna su lab1…** (banner): lo stesso Prepara/Completa al contrario. Con la copia ferma come base, dei **file** si
+  copia solo quello che è cambiato su lab2; il **database dedicato** torna intero (Carlo, 23/11/2026, AD-015). Copia
+  già eliminata: l'istanza si rifà su lab1 dal suo template e si copia tutta (la pagina dell'istanza resta su lab1
+  per i suoi admin, con la banner). Dopo il ritorno lab2 tiene la sua copia ferma e inoltra i nomi a lab1 finché
+  qualcuno non preme **Elimina la copia su lab2…** (il DNS può puntare a lab2). Nome dell'istanza scritto.
 - **Elimina la copia su lab1…**: conferma semplice, prima della scadenza.
 - **Il cliente** (PB2) legge nella sua pagina, durante il completamento, lo stato «in manutenzione» come per un
   aggiornamento, e poi un job «Spostata su un'altra macchina del fornitore». Nessun nome di macchina. Il portale e le

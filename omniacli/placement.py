@@ -22,6 +22,17 @@ the database in step), completing, placed (it serves on the host; the copy
 here is stopped until copy_until), failed (Prepare did not end: Cancel
 takes away what it made).
 
+The return (AD-015 «Torna su», step 6 of §9): the home pulls the
+instance back from its host, the same Prepare and Complete the other way.
+Its state is "back" in the move's state ({state: preparing|ready|
+completing|failed, mode: copy (the stopped copy here is its base: the
+files by difference, the data of its database of its own set aside) or
+full (the copy was deleted: the instance made here again, everything
+copied), job, since, ...}); the move stays placed until the return
+completes (the people of the workspace reach it there), then it is
+returned: the host keeps its copy stopped, its names passed here (the DNS
+may lead there), until Delete the copy there (hosted state returned).
+
 The delegated scope (AD-014, step 5 of §9): the people and the tokens of
 the workspace keep reaching a placed instance through its home. The home
 serves the host's pages and answers under /placed/<server> (its link, the
@@ -57,7 +68,11 @@ FILES_FRESH = 600
 STOP_MOST = 90
 # a line the plan estimates a copy with when none was measured yet (megabytes per second)
 RATE_GUESS = 50.0
-STATES = ("preparing", "ready", "completing", "placed", "failed")
+STATES = ("preparing", "ready", "completing", "placed", "failed", "returned")
+# the states of a return (the move's "back")
+BACK_STATES = ("preparing", "ready", "completing", "failed")
+# the host's copy of an instance that goes or went back to its home: stopped, nothing runs on it
+HOSTED_STOPPED = ("returning", "returned")
 # the delegated scope (AD-014 §3): a header of the home, read by the host from the home's link only
 SCOPE_HEADER = "X-OmniaCLI-Scope"
 # the prefix the home serves a placed instance's pages and answers under (AD-014 §2)

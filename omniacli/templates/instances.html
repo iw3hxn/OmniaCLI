@@ -260,7 +260,8 @@
   draw();
   // every machine at once: each row group is drawn when its machine answers
   for (const m of MACHINES) {
-    const url = "/api/instances" + (m.link ? `?link=${encodeURIComponent(m.link)}` : "");
+    // under the prefix of the panel that shows this page (a central panel's link): the instances of this machine
+    const url = {{ prefix | tojson }} + "/api/instances" + (m.link ? `?link=${encodeURIComponent(m.link)}` : "");
     fetch(url, {headers: {Accept: "application/json"}})
       .then(async (resp) => {
         const data = await resp.json().catch(() => ({}));

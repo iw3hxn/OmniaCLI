@@ -152,6 +152,9 @@ NOT_SENSITIVE = frozenset({
     # machines' load and room, the instance's sizes, its names) and what a machine says of itself to the one that
     # would move an instance there; Prepare, Complete, Cancel and Delete the copy are actions, logged
     "/api/servers/{server}/move", "/api/placements/host",
+    # what the host of a placed instance says of it to its home before and during its return (AD-015 «Torna su»):
+    # its template, repositories, deploys and how far behind the copy of its database is; no secret
+    "/api/placements/{workspace}/{instance}/back",
 })
 
 

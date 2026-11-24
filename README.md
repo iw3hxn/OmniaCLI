@@ -3548,8 +3548,8 @@ record (`/etc/omniacli/forward/<workspace>.json`), full for the instances
 placed there, else the challenges for those prepared. An instance **without
 a test** moves (one with a test: a later step); a staging is not moved (it is
 made again there); a database on the cluster with the extension vector moves
-only to a cluster with pgvector. Back to <here> is step 6 and the move's own
-REST and MCP step 10.
+only to a cluster with pgvector. Back to <here> is below; the move's own REST
+and MCP are step 10.
 
 Measured on the lab pair (lab3 → lab4 through SSH links, a central panel of
 the proof linked to both, 23/11/2026; names asked every 100 ms through
@@ -3617,8 +3617,10 @@ asks, then asks the host through its link.
   Delete the copy (the workspace keeps naming it, its token limits and
   members' servers may name it).
 - **The machine's admins** keep the page of the stopped copy while it is here
-  (its banner: Delete the copy…, and **Open it there**, the host's page
-  through the home); once it is gone they are sent there too.
+  (its banner: Delete the copy…, Back to <here>…, and **Open it there**, the
+  host's page through the home); once it is gone the instance's page here
+  says where it is (Open it there, Back to <here>…), its other pages are
+  sent there.
 - **Schedules and destinations.** At the completion the instance's schedules
   (its automatic backups and the others that act on it, not a copy from a
   link nor a script) and the workspace's destinations they copy to, with
@@ -3649,6 +3651,71 @@ person and token; a user token's restart over MCP was refused there for its
 role. lab4's panel stopped: Odoo there answered 200, the customer's row and
 page said «The machine of the provider does not answer: Odoo goes on serving
 its users», the admin's page through the central panel which machine and why.
+
+#### Back to <here>
+
+A moved instance comes back to its home with the same Prepare and Complete,
+the other way: the home pulls (`treesync`'s pull driver), the host answers
+`/api/placements/<workspace>/<instance>/back…` to the home's link only (AD-015
+«Torna su», step 6 of §9). For the machine's admins, from the banner of the
+instance's page; with its copy here deleted the page stays the home's for
+them (where it is, **Open it there**, **Back to <here>…**), while its people
+are sent to its page there.
+
+- **Back to <here>…** (the instance's name written; a job: Checks · Instance
+  on <here> · Copy · In step), nothing stops there. With the **stopped copy
+  here** as its base, the trees come **by difference** (what the host has
+  that this copy has not, or has different; their bytes in the job, «The
+  filestore: 4 of its 26 files copied, 2 of 14 MB»); a database of its own
+  comes **whole** (Carlo, 23/11/2026): the data of the copy here are set
+  aside (`machine-db-arrive … aside`, its record of the copy that followed it
+  with them), the host lets this machine in (its `allow`) and the copy
+  follows it here (`ArrivePlace`). With the **copy deleted**, the instance is
+  made here again from its template (the host says which), never started,
+  its names held, and everything is copied whole. Its repositories, in its
+  odoo.conf, and its deploys as they went on there come back too.
+- **Complete the return…** (the banner, the name written; a job: Maintenance
+  on <host> · Last changes · Start on <here> · Names · Stop on <host>): the
+  maintenance page there and Odoo stopped there; its database of its own
+  stopped clean there and its last record waited for here, then it takes the
+  writes here; one on the cluster dumped there, brought by the last round of
+  the backups, restored here (the stopped copy's database emptied first,
+  `db-empty`; installed modules, users and partners compared); its crons off,
+  its Odoo started and asked `/web/login`; then its names are served here
+  again (`forward off`), the maintenance page goes, its crons come back, the
+  schedules switched off when it was placed run here again, and the data set
+  aside are deleted. The host keeps its copy **stopped and frozen** for 7
+  days and **passes its names here** (`forward full`: who still has the DNS
+  of the host is served here); its schedules and the destinations only they
+  used go there. The stop is measured through the name every 100 ms, in the
+  job's last line and in the deploys. If anything fails before the names,
+  the instance runs there again (`back/resume`: its database started again,
+  no longer followed) and what arrived here goes (`unaside`: the stopped copy
+  as it was, or an instance made again emptied). A database on the cluster
+  is the exception: the stopped copy's was emptied for the dump, and is not
+  put back (the instance runs there; the next return brings it whole).
+- **Cancel the return…** (prepared, or not ended): the database there closed
+  to this machine, what arrived here taken away; with the copy deleted, the
+  instance made here again deleted again.
+- **Delete the copy on <host>…** (after the return): its stopped copy there
+  taken away, its forward of the names with it; the host's workspace goes
+  when the move made it and nothing else is in it, with the git credentials
+  its home gave it. A new move of the instance waits for it.
+
+Measured on the lab pair (lab3 the home, lab4 the host, 24/11/2026, through a
+central panel of the proof; a workspace with two people and a token, its
+names with a certificate of a test CA; names asked every 100 ms through the
+nginx of both machines): a partner written on lab4 before Back to lab3 and a
+second one after it were on lab3 after the return **3 times out of 3** with
+a database of its own (11.6, 11.5 and 11.7 s without a 200, the last after
+Delete the copy, everything copied whole: 30 of 30 files of the filestore)
+and **3 times out of 3** on the machine's cluster (6.3, 6.2 and 6.4 s, its
+dump of 1 MB); with the copy here, 4 of 26 files of the filestore (2 of 14
+MB) came, the ones written there; **0 answers 502**, only 200 and the
+maintenance page (503), through lab3's nginx and lab4's (its forward to lab3
+once back). The same from the pages, clicked: 11.1 s and 6.4 s. The
+workspace's people and token read the same 118 statuses of the 38 GET routes
+of a server before the move and after the return.
 
 ### Modules from the catalogs
 

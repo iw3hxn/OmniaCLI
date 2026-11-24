@@ -1,0 +1,13 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{# The page of an instance placed on another machine of the provider whose stopped copy here was deleted, for the
+   machine's admins (UX-014 B6, AD-015 «Torna su»): where it runs, Open it there, Back to <here>… (it is made here
+   again and copied whole). Its workspace's people are sent to its page there. -#}
+{% extends "base.html" %}
+{% block title %}{{ server.name }} · {{ brand.name }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>{{ server.name }}</h1>
+    <p class="muted">{{ _("It runs on another machine of the provider, and its copy here was deleted.") }}</p></div>
+</div>
+{% include "_move.html" %}
+{% endblock %}

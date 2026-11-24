@@ -2454,6 +2454,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         found = await asyncio.gather(*(one(link) for link in settings.link_targets.values()))
         return [row for rows in found for row in rows]
 
+    def customer_text(text: str) -> str:
+        """A search text without the folders of this machine (customerview's paths: …/<last part>)."""
+        return CustomerView(provider="", elsewhere="").text(text)
+
     async def server_sections(request: Request, q: str, me: Principal) -> dict:
         """The Dashboard's server table: this instance's live servers (a
         linked instance's are on its own Dashboard, opened from Linked),
@@ -2472,7 +2476,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 "state": {r: states[i.key] for r, i in srv.instances.items()},
                 "restart": {r: i.restart.type for r, i in srv.instances.items()},
                 "web": {r: url for r, i in srv.instances.items() if (url := i.web_url)},
-                "text": server_text(srv),
+                "text": customer_text(server_text(srv)) if me.scoped else server_text(srv),
             }
             for srv in live
         ]
@@ -2556,6 +2560,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         """An instance's page (UX-003, UX-004 of docs/ux): one copy at a time,
         its production by default; its test at ?view=test; a staging shows
         its production only (its test is stopped, it is not offered)."""
+        if server not in settings.servers:
+            # an instance placed on another machine, its copy here deleted: its move's page, for the machine's admins
+            away = moved_away_page(request, server)
+            if away is not None:
+                return away
         srv = active_server(server)
         staging_of = stagings.load(stagings_file).get(srv.name)
         if view == "both" or (staging_of and view == "test" and srv.production is not None):
@@ -6260,8 +6269,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return refuse(f"The template {server} was made from is not on this machine any more")
         size = await staging_size(prod)
         new_instance = stagings.instance_name(instance, datetime.datetime.now(), set(ws.instances()))
-        out = {"size": size, "address": staging_address(ws, new_instance), "template": template.name, "here": here_name(),
-               "workspace": ws.name, "machines": [], "unlisted": []}
+        # this machine's name only for who chooses a machine: a customer is not told which machine it is on
+        out = {"size": size, "address": staging_address(ws, new_instance), "template": template.name,
+               "here": here_name() if chooses_machine(me) else "", "workspace": ws.name, "machines": [], "unlisted": []}
         # said before the click: a name the DNS does not lead here, and what the staging is opened at instead
         out["address_problem"] = await name_problem(ws, new_instance, "production", [out["address"]]) if out["address"] else None
         if chooses_machine(me):
@@ -9804,6 +9814,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             # and its passkeys, and what its provider's identity pointed to
             await asyncio.to_thread(passkey_store.keep, set(settings.users))
             await asyncio.to_thread(sso_store.keep, set(settings.workspaces), set(settings.users))
+            # and its sessions (sessions.json): a deleted user's are never valid, and are not kept either
+            await asyncio.to_thread(sessions.keep, set(settings.users))
         except OSError as exc:
             _logger.error("The second factors of the deleted users are not removed: %s", exc)
         return None
@@ -20667,8 +20679,19 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     moves = placement.Moves(settings.jobs_dir.parent)
     hosted = placement.Hosted(settings.jobs_dir.parent)
-    # a moved instance's copy here is stopped: no job but the move's own runs on it (backups, updates, schedules)
-    jobs.frozen = lambda key: moves.frozen(key.partition("/")[0])
+    # a moved instance's copy here is stopped: no job but the move's own runs on it (backups, updates, schedules);
+    # on the host, the copy of an instance that went back to its home, kept stopped while it passes its names there
+    jobs.frozen = lambda key: moves.frozen(key.partition("/")[0]) or hosted_frozen(key.partition("/")[0])
+
+    def hosted_frozen(server: str) -> str:
+        """Why nothing but the return's own jobs acts on server here (the host's side), "" when they may."""
+        for workspace, entry in hosted.all().items():
+            for instance, row in (entry.get("instances") or {}).items():
+                if f"{workspace}-{instance}" == server and isinstance(row, dict) and \
+                        row.get("state") in placement.HOSTED_STOPPED:
+                    return (f"{server} went back to the machine of its workspace: its copy here is stopped, and "
+                            "nothing runs on it")
+        return ""
 
     # --- the delegated scope (AD-014, step 5 of §9): the people and the tokens of a workspace keep reaching an
     # instance placed on another machine through this one, its home. A request of a placed server's path
@@ -20703,11 +20726,18 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return "", ""
 
     def placed_for(scope) -> bool:
-        """Whether a request of a placed server's path is the host's: always once its copy here is gone; while
-        it is here, for a user or a token of a workspace (the machine's admins keep the copy's page)."""
+        """Whether a request of a placed server's path is the host's: always once its copy here is gone (but the
+        page of the instance for the machine's admins: its move's banner, Back to <here>…); while it is here, for
+        a user or a token of a workspace (the machine's admins keep the copy's page)."""
         server, _link = placed_target(scope["path"])
         if not moves.copy_here(server):
-            return True
+            if scope["path"] != f"/servers/{server}" or scope.get("method") not in ("GET", "HEAD"):
+                return True
+            try:
+                who = identify(HTTPConnection(scope))
+            except HTTPException:
+                return True
+            return who.scoped or not machine_admin(who)
         try:
             return identify(HTTPConnection(scope)).scoped
         except HTTPException:
@@ -21103,6 +21133,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     and rec.get("link") == moves.state(inst.server).get("link")):
                 why.append(f"The database of {inst.server} has a copy on {rec.get('link')} already: one copy per "
                            "database, drop it first")
+        if moves.state(inst.server).get("state") == "returned":
+            why.append(f"{inst.server} came back from {moves.state(inst.server).get('link')}, which keeps its copy "
+                       "stopped: Delete the copy there… first")
         if busy and server_busy(inst.server):
             why.append(f"A job is running on {inst.server}: wait for it")
         return why
@@ -21144,7 +21177,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     def move_public(state: dict) -> dict:
         """A move's state as the page reads it (nothing of it is a secret)."""
         keep = ("link", "state", "since", "copy_until", "kind", "job", "error", "copied", "lag", "ready_at",
-                "placed_at", "unserved", "copy", "names", "workspace_made", "sizes", "stop_s")
+                "placed_at", "unserved", "copy", "names", "workspace_made", "sizes", "stop_s", "back", "returned_at",
+                "there_until", "deleted_at")
         return {k: state.get(k) for k in keep if k in state}
 
     def move_page(srv, view: str, staging_of, me: Principal) -> dict | None:
@@ -21157,12 +21191,27 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         state = moves.state(srv.name)
         if state.get("copy") == "deleted":
             state = {}
+        return move_view(srv.name, state, move_kind(srv.production))
+
+    def move_view(server: str, state: dict, kind: str) -> dict:
+        """The banner and the dialog of a move (_move.html), from its state."""
         sizes = state.get("sizes") or {}
-        kind = state.get("kind") or move_kind(srv.production)
+        kind = state.get("kind") or kind
         stop = placement.plan(sizes, kind, None)["stop_seconds"] if state else 40
         return {"state": move_public(state) if state else None, "can": not state, "here": here_name(),
-                "busy": server_busy(srv.name), "stop_seconds": stop,
+                "busy": server_busy(server), "stop_seconds": stop,
                 "until": placement._date(placement.copy_until())}
+
+    def moved_away_page(request: Request, server: str):
+        """The page of an instance placed on another machine whose copy here was deleted, for the machine's admins
+        (UX-014 B6): where it is, Open it there, Back to <here>… (None: not such a page)."""
+        me = getattr(request.state, "user", None)
+        state = moves.state(server)
+        if me is None or me.scoped or not machine_admin(me) or state.get("state") != "placed" \
+                or state.get("copy") != "deleted" or workspace_of(server) is None:
+            return None
+        return _TEMPLATES.TemplateResponse(request, "moved_away.html", {
+            "server": {"name": server}, "move": move_view(server, state, str(state.get("kind") or "cluster"))})
 
     def move_headers(link: LinkTarget, me: Principal) -> dict:
         return {**link_headers(link, me.on_behalf or me.name, me.role), "Accept": "application/json"}
@@ -21357,7 +21406,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     def move_other_link(ws: Workspace, server: str) -> str:
         """The machine another instance of the workspace moves or was moved to (its copy here), "" for none."""
         return next((str(row.get("link") or "") for s, row in moves.placements().items()
-                     if s != server and row.get("copy") != "deleted" and moves.state(s).get("workspace") == ws.name), "")
+                     if s != server and row.get("copy") != "deleted" and row.get("state") != "returned"
+                     and moves.state(s).get("workspace") == ws.name), "")
 
     def move_forward_wanted(ws: Workspace) -> tuple[str, str, list[str]]:
         """(mode, to, names) of the forward of the workspace's names from its moves now (placement.forward_wanted)."""
@@ -21800,8 +21850,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return found
         ws, instance, inst = found
         state = moves.state(server)
-        if state.get("state") != "placed" or state.get("copy") == "deleted":
+        if state.get("state") != "placed" or state.get("copy") in ("deleted", "back"):
             return refuse(f"{server} has no stopped copy here of a move")
+        if (state.get("back") or {}).get("state") in placement.BACK_STATES:
+            return refuse(f"The return of {server} is under way: cancel it first")
         return {"job": move_delete_job(ws, instance, inst, state, f"manual: {me}").id}
 
     def move_delete_job(ws: Workspace, instance: str, inst: Instance, state: dict, source: str) -> Job:
@@ -21841,6 +21893,546 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                           workspace=ws.name, frozen_ok=True)
         job.result["customer"] = {"hidden": True}  # the provider's own: not in its customer's lists
         return job
+
+    # --- the return (AD-015 «Torna su <home>», step 6 of §9): the instance placed on another machine comes back
+    # here, the same Prepare and Complete the other way, this machine pulling (treesync's pull). With its stopped
+    # copy here as the base its files come by difference and the data of its database of its own are set aside for
+    # the whole copy that arrives (ArrivePlace); with the copy deleted it is made here again from its template and
+    # copied whole. The move stays placed until the return completes: the workspace's people reach it there
+
+    def back_source(server: str):
+        """(workspace, instance, the move's state, its link) of a server that may come back, or the refusal."""
+        state = moves.state(server)
+        found = workspace_of(server)
+        if not state or found is None:
+            return refuse(f"No move of {server} here", status.HTTP_404_NOT_FOUND)
+        link = move_link(state.get("link"))
+        if not isinstance(link, LinkTarget):
+            return link
+        return found[0], found[1], state, link
+
+    def back_instance(server: str) -> Instance | None:
+        srv = settings.servers.get(server)
+        return srv.production if srv is not None else None
+
+    async def host_back_facts(link: LinkTarget, me: Principal, ws: Workspace, instance: str) -> tuple[dict | None, str]:
+        """What the host says of the instance it serves (GET /api/placements/<ws>/<instance>/back there), or why not."""
+        try:
+            resp = await link_clients.client(link).get(f"/api/placements/{ws.name}/{instance}/back",
+                                                       headers=move_headers(link, me), timeout=LIST_TIMEOUT * 4)
+        except httpx.HTTPError:
+            return None, "does not answer"
+        if resp.status_code in (404, 405):
+            return None, "has no such instance, or its OmniaCLI is older: update it"
+        if resp.status_code != 200:
+            return None, f"answered HTTP {resp.status_code}"
+        try:
+            data = resp.json()
+        except ValueError:
+            return None, "did not answer JSON"
+        return (data, "") if isinstance(data, dict) else (None, "did not answer JSON")
+
+    def back_update(server: str, **values) -> dict:
+        """The return's part of the move's state, values written into it."""
+        return moves.update(server, back={**(moves.state(server).get("back") or {}), **values})
+
+    async def back_copy(job, link: LinkTarget, me: Principal, inst: Instance, prune: bool) -> dict:
+        """One round of each tree pulled from the same instance on the machine of the link (treesync.py): what
+        this copy has not, or has different (the difference, with the stopped copy here as its base)."""
+        done = {}
+        headers = {**link_headers(link, me.on_behalf or me.name, me.role), "Accept": "*/*"}
+        private.backup_folder(backup_folder(inst))
+        for tree in MOVE_TREES:
+            there = treesync.RemoteTree(link_clients.client(link), headers, inst.server, "production", tree)
+            here = treesync_end({"server": inst.server, "role": "production", "tree": tree})
+            work = treesync_dir() / "copies" / f"back-{inst.server}-{tree}"
+            try:
+                found = await treesync.Copy(work).run(there, here, job.log, prune=prune, flows=MOVE_FLOWS)
+            except (treesync.TreeError, httpx.HTTPError) as exc:
+                raise JobFailed(treesync_refused(link, exc)) from None
+            if found.get("refused"):
+                job.warn(f"{len(found['refused'])} files of the {tree} were refused here: they are named in the log")
+            done[tree] = {k: found.get(k) for k in ("round", "copied_files", "copied_bytes", "seconds", "rate_mbs",
+                                                    "source_files", "source_bytes")}
+            job.log(f"The {tree}: {found.get('copied_files') or 0} of its {found.get('source_files') or 0} files copied, "
+                    f"{int(found.get('copied_bytes') or 0) >> 20} of {int(found.get('source_bytes') or 0) >> 20} MB")
+        return done
+
+    async def back_given(job, ws: Workspace, instance: str, inst: Instance, facts: dict) -> None:
+        """What the instance had there that is no tree, here again: its repositories (their working copies came
+        with its addons) in its odoo.conf, its deploys as they went on there."""
+        project = Path(inst.restart.service)
+        rows = [{"name": str(r.get("name")), "path": str(project / "addons" / str(r.get("name"))),
+                 "branch": str(r.get("branch")), "remote": str(r.get("remote") or "origin")}
+                for r in facts.get("repositories") or [] if isinstance(r, dict)
+                and workspacehelper.REPOSITORY.fullmatch(str(r.get("name") or ""))
+                and (project / "addons" / str(r.get("name")) / ".git").is_dir()]
+        await set_repositories(inst.server, {"production": rows})
+        await workspaceops.write_conf(job, ws, instance, "production", [r["name"] for r in rows])
+        if isinstance(facts.get("deploys"), dict):
+            await asyncio.to_thread(deploys.save, deploys_folder, inst.key, facts["deploys"])
+        job.log(f"Its repositories: {', '.join(r['name'] for r in rows) or 'none'}; its deploys as they went on there "
+                f"({len((facts.get('deploys') or {}).get('deploys') or [])})")
+
+    async def back_lag(link: LinkTarget, me: Principal, ws: Workspace, instance: str, wait: float = 300) -> int | None:
+        """The seconds the copy here is behind the database there, once it is at most placement.LAG_MOST (or the
+        last read after wait): the host says it, as the source of the copy."""
+        end = time.monotonic() + wait
+        lag = None
+        while True:
+            facts, _why = await host_back_facts(link, me, ws, instance)
+            lag = ((facts or {}).get("db") or {}).get("lag")
+            if lag is not None and int(lag) <= placement.LAG_MOST:
+                return int(lag)
+            if time.monotonic() > end:
+                return None if lag is None else int(lag)
+            await asyncio.sleep(3)
+
+    async def back_schedules(job, server: str, names: list) -> None:
+        """The schedules of the instance this machine switched off when it was placed, on again (AD-014)."""
+        async with schedules_lock:
+            updated, on = {}, []
+            for name, sch in scheduler.schedules.items():
+                if name in names and sch.instance.partition("/")[0] == server and not sch.enabled:
+                    sch = dataclasses.replace(sch, enabled=True)
+                    on.append(name)
+                updated[name] = sch
+            if on:
+                await asyncio.to_thread(schedules.save_schedules, settings.schedules_file, updated)
+                scheduler.schedules = updated
+        if on:
+            job.log(f"Its schedules run here again: {', '.join(sorted(on))}")
+
+    def back_works(server: str) -> None:
+        """The state of the copies of its trees, both ways: the copy they followed is gone or is this one."""
+        for tree in MOVE_TREES:
+            for way in ("move", "back"):
+                shutil.rmtree(treesync_dir() / "copies" / f"{way}-{server}-{tree}", ignore_errors=True)
+
+    @app.post("/api/servers/{server}/move/back")
+    async def move_back_prepare(server: str, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """Back to <home>… (UX-014 B6, AD-015): the instance placed on the
+        machine of the link copied back here while it runs there, this
+        machine pulling: with its stopped copy here, only what changed (its
+        database of its own copied whole, the data of the copy set aside);
+        with the copy deleted, made here again from its template and copied
+        whole. Its database of its own followed here. Asks the instance's
+        name (confirm). A job: Checks · Instance on <here> · Copy · In step."""
+        mover(me)
+        found = back_source(server)
+        if not isinstance(found, tuple):
+            return found
+        ws, instance, state, link = found
+        back = state.get("back") or {}
+        if state.get("state") != "placed":
+            return refuse(f"{server} is not on another machine: there is nothing to bring back")
+        if back.get("state") in ("preparing", "ready", "completing"):
+            return refuse(f"The return of {server} is under way already: complete or cancel it")
+        if back.get("state") == "failed":
+            return refuse(f"The return of {server} did not end: Cancel the return… first, then bring it back again")
+        if str((payload if isinstance(payload, dict) else {}).get("confirm") or "") != server:
+            return refuse(f"Type {server} to bring it back")
+        if server_busy(server):
+            return refuse(f"A job is running on {server}: wait for it")
+        facts, why = await host_back_facts(link, me, ws, instance)
+        if facts is None:
+            return refuse(f"{link.name} {why}: the instance comes back with both machines answering")
+        mode = "full" if state.get("copy") == "deleted" or back_instance(server) is None else "copy"
+        kind = "dedicated" if facts.get("kind") == "dedicated" else "cluster"
+        template = None
+        if mode == "full":
+            template = (await asyncio.to_thread(workspaceops.templates)).get(str(facts.get("template") or ""))
+            if template is None:
+                return refuse(f"The template {facts.get('template') or '?'} of {server} is not on this machine: install "
+                              "it first (Settings › Templates)")
+        who = me.on_behalf or me.name
+
+        async def action(job):
+            move_progress(job, MOVE_STEPS_PREPARE, link.name, here_name())
+            job.result["transfer"] = {"from": link.name, "to": ""}
+            started = time.monotonic()
+            back_update(server, state="preparing", job=job.id, mode=mode, kind=kind, error=None,
+                        since=datetime.datetime.now().isoformat(timespec="seconds"))
+            try:
+                job.log(f"--- {server} comes back from {link.name}: there everything goes on running")
+                move_step(job, "there")
+                if mode == "full":
+                    job.log(f"Its copy here was deleted: {server} is made here again from {template.name}, never "
+                            "started, and copied whole")
+                    await placement_make(job, ws.name, instance, template)
+                    moves.update(server, copy="back")
+                    current = settings.workspaces[ws.name]
+                    if current.domain:
+                        held = await asyncio.to_thread(placement_held, current)
+                        await publish_names(job, current, {**held, instance: ["production"]})
+                inst = back_instance(server)
+                if inst is None:
+                    raise JobFailed(f"{server} is not in the servers file here")
+                key = dedicated_key(inst)
+                if bool(key) != (kind == "dedicated"):
+                    raise JobFailed(f"The database of {server} is {'its own' if key else 'on the cluster'} here and "
+                                    f"{'its own' if kind == 'dedicated' else 'on the cluster'} on {link.name}: it does "
+                                    "not come back by itself")
+                if key:
+                    aside = await workspaceops._helper(job, "machine-db-arrive", key, "aside", timeout=MACHINE_TIMEOUT)
+                    if aside.get("aside"):
+                        job.log(f"The data of its stopped copy here set aside ({int(aside.get('bytes') or 0) >> 20} MB): "
+                                f"its database arrives whole from {link.name} in their place")
+                move_step(job, "copy")
+                copied = await back_copy(job, link, me, inst, prune=False)
+                await back_given(job, ws, instance, inst, facts)
+                lag = None
+                if key:
+                    there, here = own_address_to(link)
+                    password = stacktemplates.new_password()
+                    allowed = (await link_post(job, link, move_headers(link, me),
+                                               f"/api/placements/{ws.name}/{instance}/back/allow",
+                                               {"address": here, "reached_as": there,
+                                                "verifier": linkedcluster.scram_verifier(password)},
+                                               "the database there opened to this machine")).get("allowed") or {}
+                    job.log(f"--- the database of {server} on {link.name} ({there}) copied whole and followed here, "
+                            "over TLS")
+                    await workspaceops._helper(job, "machine-db-arrive", key, "prepare", timeout=MACHINE_TIMEOUT,
+                                               input=json.dumps({
+                                                   "link": link.name, "by": who, "host": there, "port": allowed.get("port"),
+                                                   "ca": allowed.get("ca"), "password": password,
+                                                   "size": allowed.get("size") or 0, "major": allowed.get("major") or "",
+                                                   "database": allowed.get("database") or "", "reserve_gb": 0}).encode())
+                    made = await workspaceops._helper(job, "machine-db-arrive", key, "copy",
+                                                      timeout=managedreplica.COPY_TIMEOUT + 60)
+                    job.log(f"Copied: {int(made.get('size') or 0) >> 20} MB in {made.get('seconds')} s")
+                    up = await workspaceops._helper(job, "machine-db-arrive", key, "start", timeout=MACHINE_TIMEOUT)
+                    job.log(f"The copy follows {link.name}, read only (started in {up.get('seconds')} s)")
+                    move_step(job, "step")
+                    lag = await back_lag(link, me, ws, instance)
+                    if lag is None or lag > placement.LAG_MOST:
+                        raise JobFailed(f"The copy of the database here is not in step with {link.name} after 300 s")
+                    job.log(f"The database here is {lag} s behind the one on {link.name}")
+                move_step(job, "step")
+                seconds = round(time.monotonic() - started, 1)
+                back_update(server, state="ready", ready_at=datetime.datetime.now().isoformat(timespec="seconds"),
+                            copied=copied, lag=lag, prepare_s=seconds)
+                job.log(f"Ready to come back in {seconds} s: Complete the return… stops {server} on {link.name} and "
+                        "starts it here")
+                job.result = {**job.result, "back": {"copied": copied, "lag": lag, "seconds": seconds, "mode": mode}}
+            except BaseException as exc:
+                back_update(server, state="failed", error=str(exc) or type(exc).__name__)
+                if not isinstance(exc, asyncio.CancelledError):
+                    job.log(f"--- Prepare the return did not end: Cancel the return… takes away what it made here; on "
+                            f"{link.name} nothing changed")
+                raise
+        job = jobs.submit(f"Bring {server} back from {link.name}: prepare", [f"{server}/production"], f"manual: {me}",
+                          action, workspace=ws.name, frozen_ok=True)
+        job.result["customer"] = {"hidden": True}  # the provider's own: not in its customer's lists
+        back_update(server, state="preparing", job=job.id, mode=mode, kind=kind, error=None,
+                    since=datetime.datetime.now().isoformat(timespec="seconds"))
+        return {"job": job.id}
+
+    @app.post("/api/servers/{server}/move/back/complete")
+    async def move_back_complete(server: str, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """Complete the return (UX-014 B6, AD-011 the other way): the
+        instance stops on the machine of the link behind its maintenance
+        page, its last changes come here, it starts here without its crons
+        and is checked, its names are served here again, its crons come
+        back; there its copy stays stopped and passes its names here. If it
+        does not start here, it runs there again and nothing is lost. The
+        stop is measured through its name, every 100 ms, and written in the
+        job and in its deploys. Asks the instance's name (confirm)."""
+        mover(me)
+        found = back_source(server)
+        if not isinstance(found, tuple):
+            return found
+        ws, instance, state, link = found
+        back = state.get("back") or {}
+        if state.get("state") != "placed" or back.get("state") != "ready":
+            return refuse(f"The return of {server} is not ready: Back to {here_name()}… first")
+        if str((payload if isinstance(payload, dict) else {}).get("confirm") or "") != server:
+            return refuse(f"Type {server} to complete its return")
+        inst = back_instance(server)
+        if inst is None:
+            return refuse(f"{server} is not in the servers file here: cancel the return and bring it back again")
+        if server_busy(server):
+            return refuse(f"A job is running on {server}: wait for it")
+        facts, why = await host_back_facts(link, me, ws, instance)
+        if facts is None:
+            return refuse(f"{link.name} {why}: the return completes with both machines answering")
+        key = dedicated_key(inst)
+        if key:
+            lag = (facts.get("db") or {}).get("lag")
+            if lag is None or int(lag) > placement.LAG_MOST:
+                return refuse(f"The copy of the database here is not in step with {link.name} (more than "
+                              f"{placement.LAG_MOST} s behind): wait, or Cancel the return and bring it back again")
+        headers = move_headers(link, me)
+        base = f"/api/placements/{ws.name}/{instance}"
+        site = zerodowntime.site(inst)
+        mode = back.get("mode") or "copy"
+
+        async def action(job):
+            move_progress(job, MOVE_STEPS_COMPLETE, link.name, here_name())
+            job.result["transfer"] = {"from": link.name, "to": ""}
+            # what its customer reads of it (customerview: no machine's name, UX-014 B6)
+            job.result["customer"] = {"title": f"{server} moved to another machine of the provider", "lines": [
+                "In maintenance: the instance moves to another machine of the provider"]}
+            back_update(server, state="completing", job=job.id)
+            probe = zerodowntime.Probe(site.url).start() if site is not None else None
+            started = time.monotonic()
+            dumped = None
+            ids = ""
+            try:
+                job.log(f"--- {server} stops on {link.name}: its users read the maintenance page")
+                stopped = await link_post(job, link, headers, f"{base}/back/stop", {}, "the stop there")
+                dumped = stopped.get("dumped")
+                move_step(job, "last")
+                copied = await back_copy(job, link, me, inst, prune=True)
+                now_facts, _why = await host_back_facts(link, me, ws, instance)
+                if now_facts is not None:
+                    await back_given(job, ws, instance, inst, now_facts)
+                if key:
+                    checkpoint = str((stopped.get("stopped") or {}).get("checkpoint") or "")
+                    waited = await workspaceops._helper(job, "machine-db-arrive", key, "wait", timeout=MACHINE_TIMEOUT,
+                                                        input=json.dumps({"checkpoint": checkpoint}).encode())
+                    if not waited.get("arrived"):
+                        raise JobFailed(f"The last record of {link.name} did not arrive within "
+                                        f"{managedreplica.BACK_WAIT} s")
+                    done = await workspaceops._helper(job, "machine-db-arrive", key, "promote", timeout=MACHINE_TIMEOUT)
+                    job.log(f"Its last record applied in {waited.get('seconds')} s; the copy took the writes in "
+                            f"{done.get('promote_s')} s, its own service started in {done.get('own_service_s')} s")
+                else:
+                    if not dumped:
+                        raise JobFailed(f"{link.name} did not say the dump of its database")
+                    if mode == "copy":
+                        emptied = await workspaceops._helper(job, "db-empty", ws.name, ws.storage, instance)
+                        job.log(f"The database of the stopped copy here emptied ({emptied.get('emptied')} relations): "
+                                "the dump of the one there takes its place")
+                    await back_restore(job, ws, instance, inst, dumped)
+                move_step(job, "start")
+                opts = inst.options
+                code, out = await ops.capture(inst.restart.command("crons", opts.db_service, opts.database, "off"),
+                                              timeout=workspaceops.HELPER_TIMEOUT)
+                if code:
+                    raise JobFailed(f"the crons of {server} were not switched off: {out[-300:]}")
+                ids = next((line.strip() for line in reversed(out.splitlines())
+                            if re.fullmatch(r"[0-9,]*", line.strip())), "")
+                job.log(f"Its crons switched off before it starts ({len([i for i in ids.split(',') if i])}): they "
+                        "come back once its names lead here")
+                began = time.monotonic()
+                await ops.run(job, workspaceops.compose(inst.restart.service, "start"), timeout=workspaceops.HELPER_TIMEOUT)
+                if not await zerodowntime.answers(opts.http_port, MOVE_START_WAIT):
+                    raise JobFailed(f"{server} did not answer /web/login within {MOVE_START_WAIT} s here")
+                odoo_s = round(time.monotonic() - began, 1)
+                job.log(f"{server} answers here, without its crons ({odoo_s} s from its start)")
+            except BaseException as exc:
+                if isinstance(exc, asyncio.CancelledError):
+                    job.log("--- stopped: the return goes back")
+                await asyncio.shield(back_undo(job, link, headers, base, inst, key, dumped,
+                                               str(exc) or type(exc).__name__))
+                if probe is not None:
+                    found = await probe.stop()
+                    zerodowntime.said(job, found, "the return that went back", site.url)
+                job.result["customer"] = {"title": f"{server} moved to another machine of the provider", "error": True,
+                                          "lines": [*job.result["customer"]["lines"],
+                                                    "The move did not end: the instance runs where it ran, as before"]}
+                raise
+            move_step(job, "names")
+            # from here the instance is this machine's again (its database took the writes here): what fails after is
+            # said and done again here, never taken back there
+            returned_at = datetime.datetime.now()
+            moves.update(server, state="returned", returned_at=returned_at.isoformat(timespec="seconds"),
+                         there_until=placement.copy_until(returned_at), copy=None,
+                         back={**(moves.state(server).get("back") or {}), "state": "done", "job": job.id})
+            placed_jobs.forget(server)
+            try:
+                await move_forward(job, ws)
+            except JobFailed as exc:
+                job.warn(f"The names of {server} were not taken back from the forward to {link.name} ({exc}): "
+                         "Publish on its workspace serves them here again")
+            current = settings.workspaces.get(ws.name) or ws
+            if mode == "full" and current.domain:
+                with contextlib.suppress(JobFailed):
+                    held = await asyncio.to_thread(placement_held, current)
+                    await publish_names(job, current, {k: v for k, v in held.items() if k != instance})
+            if site is not None:
+                await zerodowntime.maintenance(job, site, False)
+            try:
+                await link_post(job, link, headers, f"{base}/back/leave",
+                                {"to": str(state.get("home_address") or ""), "names": move_names(ws, instance),
+                                 "file": (dumped or {}).get("file") or ""}, "its names passed here from there")
+            except JobFailed as exc:
+                job.warn(f"{link.name} did not pass the names of {server} here ({exc}): who has the old DNS reaches its "
+                         f"stopped copy there until the DNS leads here")
+            if ids:
+                code, out = await ops.capture(inst.restart.command("crons", inst.options.db_service, inst.options.database,
+                                                                   "on", ids), timeout=workspaceops.HELPER_TIMEOUT)
+                if code:
+                    job.warn(f"The crons of {server} were not switched on again ({out[-300:]}): they are off, their ids "
+                             f"{ids}")
+                else:
+                    job.log(f"Its crons on again: {ids}")
+            move_step(job, "stop")
+            if probe is not None:
+                await probe.settle()
+                found = await probe.stop()
+                zerodowntime.said(job, found, "the return", site.url)
+            else:
+                found = None
+            if key and mode == "copy":
+                with contextlib.suppress(JobFailed):
+                    freed = await workspaceops._helper(job, "machine-db-arrive", key, "purge", timeout=MACHINE_TIMEOUT)
+                    job.log(f"The data of the stopped copy here, set aside, deleted ({int(freed.get('freed') or 0) >> 20} "
+                            "MB)")
+            await back_schedules(job, server, list(state.get("suspended") or []))
+            back_works(server)
+            seconds = round(time.monotonic() - started, 1)
+            line = (f"Without service for {found['seconds']:.1f} s" if found else
+                    f"{server} has no name of its own here: its stop was not measured through a name")
+            job.log(line)
+            entry = {"id": job.id, "job": job.id, "kind": "move", "title": job.title, "by": job.source,
+                     "started": job.started, "finished": datetime.datetime.now().isoformat(timespec="seconds"),
+                     "outcome": "success", "error": None, "repositories": [], "state": None, "backup": None,
+                     "back_to": None, "unserved": {**found, "how": "the return"} if found else None,
+                     "moved": {"from": link.name, "to": here_name()}}
+            await asyncio.to_thread(deploys.record, deploys_folder, inst.key, entry)
+            moves.update(server, unserved=found or None, back_stop_s=seconds, copied_back=copied)
+            job.result["customer"] = {"title": f"{server} moved to another machine of the provider", "lines": [
+                *job.result["customer"]["lines"], line if found else "Its stop was not measured through a name",
+                "It runs on another machine of the provider: the same addresses, the same users"]}
+            job.log(f"Here from now; on {link.name} its copy stays stopped until "
+                    f"{placement._date(placement.copy_until(returned_at))}, passing its names here, then Delete the "
+                    f"copy on {link.name}… frees it")
+            job.result = {**job.result, "back": {"unserved": found, "seconds": seconds, "copied": copied}}
+        job = jobs.submit(f"Bring {server} back from {link.name}: complete", [inst.key], f"manual: {me}", action,
+                          workspace=ws.name, frozen_ok=True)
+        return {"job": job.id}
+
+    async def back_restore(job, ws: Workspace, instance: str, inst: Instance, dumped: dict) -> None:
+        """The dump of the database there, brought by the last round of the backups, restored here."""
+        item = treesync.checked_entry({"p": dumped.get("file"), "s": dumped.get("size"), "h": dumped.get("hash"), "m": 0})
+        path = backup_folder(inst) / item["p"]
+        try:
+            digest = hashlib.sha256()
+            with open(path, "rb") as fh:
+                for chunk in iter(lambda: fh.read(treesync.CHUNK), b""):
+                    digest.update(chunk)
+            if "sha256:" + digest.hexdigest() != item["h"]:
+                raise JobFailed(f"The dump {item['p']} here is not the one dumped there (its SHA-256)")
+            restored = await workspaceops._helper(job, "db-restore", ws.name, ws.storage, instance, timeout=6 * 3600,
+                                                  input=path.read_bytes())
+        finally:
+            path.unlink(missing_ok=True)
+        if restored.get("counts") != dumped.get("counts"):
+            raise JobFailed(f"The copy does not hold what the database holds (installed modules|users|partners: "
+                            f"{dumped.get('counts')} there, {restored.get('counts')} here)")
+        job.log(f"Restored in {restored.get('seconds')} s ({restored.get('counts')} installed modules|users|partners, as "
+                "there)")
+
+    async def back_undo(job, link: LinkTarget, headers: dict, base: str, inst: Instance, key: str,
+                        dumped: dict | None, why: str) -> None:
+        """A Complete of the return that did not reach the names: the instance runs there again on the database it
+        had (nobody wrote here), what arrived here is taken away and the stopped copy is as it was."""
+        server = inst.server
+        job.log(f"--- the return goes back ({why}): {server} runs on {link.name} again, here what arrived is taken away")
+        with contextlib.suppress(JobFailed):
+            await ops.run(job, workspaceops.compose(inst.restart.service, "stop"), timeout=workspaceops.HELPER_TIMEOUT)
+        if key:
+            try:
+                await workspaceops._helper(job, "machine-db-arrive", key, "unaside", timeout=MACHINE_TIMEOUT)
+            except JobFailed as exc:
+                job.warn(f"What arrived of its database is not taken away here ({exc})")
+        if dumped:
+            (backup_folder(inst) / str(dumped.get("file") or "-")).unlink(missing_ok=True)
+        left = ""
+        try:
+            await link_post(job, link, headers, f"{base}/back/resume", {"file": (dumped or {}).get("file") or ""},
+                            "its start there again")
+        except JobFailed as exc:
+            left = str(exc)
+            job.warn(f"{link.name} did not start it again ({exc}): start it from its page there (Open it there)")
+        back_update(server, state="failed", error=f"{why}" + (f"; {link.name}: {left}" if left else ""))
+        job.log(f"{server} runs on {link.name} as before; Cancel the return… takes away what it made here")
+
+    @app.post("/api/servers/{server}/move/back/cancel")
+    async def move_back_cancel(server: str, me: Principal = Depends(current_user)):
+        """Cancel the return (before its Complete): the database there no
+        longer followed, what arrived here taken away (the data of the stopped
+        copy put back; the instance made here again for it deleted). The
+        instance goes on running there."""
+        mover(me)
+        found = back_source(server)
+        if not isinstance(found, tuple):
+            return found
+        ws, instance, state, link = found
+        back = state.get("back") or {}
+        if state.get("state") != "placed" or back.get("state") not in ("preparing", "ready", "failed"):
+            return refuse(f"{server} has no return to cancel")
+        if back.get("state") == "preparing" and server_busy(server):
+            return refuse(f"Prepare the return runs on {server}: stop its job first")
+        mode = back.get("mode") or "copy"
+
+        async def action(job):
+            job.log(f"--- the return of {server} from {link.name} cancelled: it goes on running there")
+            try:
+                await link_post(job, link, move_headers(link, me), f"/api/placements/{ws.name}/{instance}/back/drop", {},
+                                "the database there closed to this machine")
+            except JobFailed as exc:
+                job.warn(f"{link.name} did not close its database to this machine ({exc})")
+            inst = back_instance(server)
+            key = dedicated_key(inst) if inst is not None else ""
+            if key:
+                with contextlib.suppress(JobFailed):
+                    done = await workspaceops._helper(job, "machine-db-arrive", key, "unaside", timeout=MACHINE_TIMEOUT)
+                    if done.get("untouched"):
+                        job.log("Nothing of its database is here from the return: the stopped copy is as it was")
+                    else:
+                        job.log(f"What arrived of its database taken away ({int(done.get('freed') or 0) >> 20} MB)"
+                                + ("; the data of the stopped copy put back" if done.get("restored") else ""))
+            if mode == "full" and inst is not None:
+                await workspaceops.remove_instance(job, ws, instance)
+                async with config_lock:
+                    error = await store({k: v for k, v in settings.servers.items() if k != server})
+                if error is not None:
+                    raise JobFailed(f"the instance is removed, but the servers file was not written: {error.body.decode()}")
+                await asyncio.to_thread(deploys.remove, deploys_folder, f"{server}/production")
+                shutil.rmtree(settings.backup_dir / server, ignore_errors=True)
+                moves.update(server, copy="deleted")
+                current = settings.workspaces.get(ws.name)
+                if current is not None and current.domain:
+                    with contextlib.suppress(JobFailed):
+                        held = await asyncio.to_thread(placement_held, current)
+                        await publish_names(job, current, {k: v for k, v in held.items() if k != instance})
+                job.log(f"{server} made here for the return deleted again")
+            for tree in MOVE_TREES:
+                shutil.rmtree(treesync_dir() / "copies" / f"back-{server}-{tree}", ignore_errors=True)
+            moves.update(server, back=None)
+            job.log(f"{server} stays on {link.name}, as it was")
+        job = jobs.submit(f"Bring {server} back from {link.name}: cancel", [f"{server}/production"], f"manual: {me}",
+                          action, workspace=ws.name, frozen_ok=True)
+        job.result["customer"] = {"hidden": True}  # the provider's own: not in its customer's lists
+        return {"job": job.id}
+
+    @app.post("/api/servers/{server}/move/back/delete-copy")
+    async def move_back_delete_copy(server: str, me: Principal = Depends(current_user)):
+        """Delete the copy on <host>… (after a return): the copy the other
+        machine kept stopped, passing the names of the instance here, taken
+        away there. The instance here does not change."""
+        mover(me)
+        found = back_source(server)
+        if not isinstance(found, tuple):
+            return found
+        ws, instance, state, link = found
+        if state.get("state") != "returned":
+            return refuse(f"{server} has no stopped copy on another machine after a return")
+
+        async def action(job):
+            job.log(f"--- the stopped copy of {server} on {link.name} taken away: it runs here")
+            await link_post(job, link, move_headers(link, me), f"/api/placements/{ws.name}/{instance}/back/delete", {},
+                            "its copy there taken away")
+            moves.forget(server)
+            back_works(server)
+            job.log(f"Nothing of {server} is left on {link.name}")
+        job = jobs.submit(f"Delete the copy of {server} on {link.name}", [f"{server}/production"], f"manual: {me}",
+                          action, workspace=ws.name)
+        job.result["customer"] = {"hidden": True}  # the provider's own: not in its customer's lists
+        return {"job": job.id}
 
     # --- the host's side: the routes the home of a workspace asks through its link (AD-014 consequence 1)
 
@@ -22344,6 +22936,229 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         action = {"start": start, "release": release, "crons": crons, "abort": abort}[step]
         job = jobs.submit(f"{name} from {me.name}: {step}", [f"{name}/production"], f"manual: {me}", action,
                           workspace=workspace)
+        job.result["customer"] = {"hidden": True}  # the provider's own: not in its customer's lists
+        return {"job": job.id}
+
+    # --- the host's side of the return (AD-015 «Torna su», step 6 of §9): the home pulls the instance back,
+    # asking here what it was made from, letting it follow its database, stopping it here, and at the end passing
+    # its names there while its copy stays here stopped (the DNS may lead here), until the home deletes it
+
+    def hosted_row(workspace: str, instance: str, **values) -> dict:
+        """The line of an instance in hosted-workspaces.json, values written into it."""
+        current = hosted.get(workspace)
+        rows = dict(current.get("instances") or {})
+        rows[instance] = {**(rows.get(instance) or {}), **values}
+        hosted.put(workspace, {**current, "instances": rows})
+        return rows[instance]
+
+    def hosted_meta(ws: Workspace, instance: str) -> dict:
+        try:
+            meta = json.loads((workspaceops.storage_path(ws) / ws.name / instance / workspacehelper.INSTANCE_FILE)
+                              .read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return meta if isinstance(meta, dict) else {}
+
+    @app.get("/api/placements/{workspace}/{instance}/back")
+    async def placement_back_facts(workspace: str, instance: str, me: Principal = Depends(current_user)):
+        """What the home asks of an instance placed here before and during
+        its return (AD-015): the template it was made from, whether its
+        database is its own, its repositories and its deploys (no secret),
+        and the copy of its database the home follows (connected, seconds
+        behind)."""
+        found = placed_here(workspace, instance, me)
+        if not isinstance(found, tuple):
+            return found
+        _w, entry, name = found
+        srv = settings.servers.get(name)
+        if srv is None or srv.production is None:
+            return refuse(f"No {name} here", status.HTTP_404_NOT_FOUND)
+        inst = srv.production
+        ws = settings.workspaces[workspace]
+        key = dedicated_key(inst)
+        row = (entry.get("instances") or {}).get(instance) or {}
+        out = {"server": name, "template": str(hosted_meta(ws, instance).get("template") or ""),
+               "kind": "dedicated" if key else "cluster", "state": row.get("state"),
+               "repositories": [{"name": r.name, "branch": r.branch, "remote": r.remote} for r in inst.repositories],
+               "deploys": await asyncio.to_thread(deploys.load, deploys_folder, inst.key)}
+        if key:
+            try:
+                state = await workspaceops.ask("machine-db-replica-state", key, timeout=pgtuning.READ_TIMEOUT * 4)
+            except JobFailed as exc:
+                state = {"error": str(exc)}
+            out["db"] = {"connected": bool(state.get("connected")), "state": state.get("state"),
+                         "lag": state.get("lag") if state.get("connected") else None}
+        return out
+
+    BACK_OPS = ("allow", "stop", "resume", "drop", "leave", "delete")
+
+    async def hosted_forward(job, workspace: str) -> None:
+        """The names of the workspace's instances that went back to their home, passed there from here (forward
+        full to the home), or none (off): the copies here are stopped, the DNS may still lead here."""
+        ws = settings.workspaces.get(workspace)
+        if ws is None or not ws.storage:
+            return
+        rows = [r for r in (hosted.get(workspace).get("instances") or {}).values()
+                if isinstance(r, dict) and r.get("state") == "returned" and r.get("to")]
+        names = sorted({str(n) for r in rows for n in r.get("names") or []})
+        mode, to = ("full", str(rows[0]["to"])) if names else ("off", "")
+        spec = {"to": to, "names": names, "moved": {}, "web": json.loads(workspaceops.web_spec(ws))}
+        made = await workspaceops._helper(job, "forward", ws.name, ws.storage, mode, input=json.dumps(spec).encode())
+        job.log(f"The names {', '.join(names)}: passed to {to}, verified" if names
+                else f"The names of workspace {ws.name} are all served here")
+        if mode == "full" and not made.get("https"):
+            job.warn("This machine has no certificate for those names: only port 80 is passed")
+
+    async def hosted_unschedule(job, workspace: str, server: str) -> None:
+        """The schedules of an instance that went back to its home taken away here (the home runs its own again),
+        and the destinations of its workspace no other schedule here copies to."""
+        async with schedules_lock:
+            gone = [n for n, sch in scheduler.schedules.items() if sch.instance.partition("/")[0] == server]
+            if gone:
+                updated = {n: s for n, s in scheduler.schedules.items() if n not in gone}
+                await asyncio.to_thread(schedules.save_schedules, settings.schedules_file, updated)
+                scheduler.schedules = updated
+        used = {s.backup.destination for s in scheduler.schedules.values() if s.backup is not None and s.backup.destination}
+        async with destinations_lock:
+            found = await asyncio.to_thread(load_destinations)
+            dropped = [n for n, d in found.items() if d.workspace == workspace and n not in used]
+            if dropped:
+                await asyncio.to_thread(destinations.save_destinations, settings.destinations_file,
+                                        {n: d for n, d in found.items() if n not in dropped})
+        if gone or dropped:
+            job.log(f"Its schedules here taken away ({', '.join(sorted(gone)) or 'none'}), and the destinations of its "
+                    f"workspace only they used ({', '.join(sorted(dropped)) or 'none'}): its home runs its own again")
+
+    async def hosted_credentials_gone(job, workspace: str) -> None:
+        """The git credentials its home gave the workspace here, once the workspace is gone from here."""
+        async with credentials_lock:
+            creds = await asyncio.to_thread(gitcredentials.load, settings.credentials_file)
+            if creds.pop(f"workspace:{workspace}", None) is not None:
+                await asyncio.to_thread(gitcredentials.save, settings.credentials_file, creds)
+                await asyncio.to_thread(gitcredentials.bind, settings)
+                job.log(f"The git credentials of workspace {workspace} its home gave here taken away")
+
+    @app.post("/api/placements/{workspace}/{instance}/back/{op}")
+    async def placement_back(workspace: str, instance: str, op: str, payload: dict = Body(default={}),
+                             me: Principal = Depends(current_user)):
+        """The return of an instance placed here to its home (AD-015):
+        allow (its database of its own followed by the home, which this
+        machine lets in), stop (its maintenance page, Odoo stopped, its
+        database stopped clean for its last record or dumped among its
+        backups), resume (a return that did not end: it runs here again),
+        drop (a return cancelled: the home no longer follows its database),
+        leave (back there: its schedules go, its names pass to the home, its
+        copy stays stopped), delete (its copy here taken away). Jobs of this
+        machine."""
+        found = placed_here(workspace, instance, me)
+        if not isinstance(found, tuple):
+            return found
+        _w, _entry, name = found
+        if op not in BACK_OPS:
+            return refuse("A return lets the home in, stops, resumes, drops, leaves or deletes", status.HTTP_404_NOT_FOUND)
+        if name not in settings.servers or settings.servers[name].production is None:
+            return refuse(f"No {name} here", status.HTTP_404_NOT_FOUND)
+        payload = payload if isinstance(payload, dict) else {}
+        inst = settings.servers[name].production
+        ws = settings.workspaces[workspace]
+        key = dedicated_key(inst)
+        site = zerodowntime.site(inst)
+        who = me.on_behalf or me.name
+
+        async def allow(job):
+            if not key:
+                raise JobFailed(f"The database of {name} is on the machine's cluster: it goes back as a dump")
+            job.log(f"--- the database of {name}: {me.name} ({payload.get('address')}) is let in to copy it whole and "
+                    "follow it, over TLS")
+            allowed = await workspaceops._helper(job, "machine-db-replica-allow", key, timeout=MACHINE_TIMEOUT,
+                                                 input=json.dumps({
+                                                     "address": str(payload.get("address") or ""),
+                                                     "verifier": str(payload.get("verifier") or ""),
+                                                     "reached_as": str(payload.get("reached_as") or ""), "link": me.name,
+                                                     "by": who, "cap_gb": None, "restart": True, "arrives": True}).encode())
+            if allowed.get("restarted_s") is not None:
+                job.log(f"The PostgreSQL of {name} was restarted once to open its port over TLS "
+                        f"({allowed.get('restarted_s')} s): Odoo lost its connections for those seconds")
+            facts_db = await workspaceops.ask("machine-db-replica-facts", key, timeout=pgtuning.READ_TIMEOUT * 4)
+            job.result = {**job.result, "allowed": {
+                "port": allowed.get("port"), "ca": allowed.get("ca"), "size": allowed.get("size") or facts_db.get("size") or 0,
+                "major": str(allowed.get("major") or facts_db.get("major") or ""),
+                "database": str(facts_db.get("database") or "")}}
+
+        async def stop(job):
+            hosted_row(workspace, instance, state="returning", returning_since=datetime.datetime.now().isoformat(
+                timespec="seconds"))
+            job.log(f"--- {name} stops here for its return to {me.name}: its users read the maintenance page")
+            if site is not None:
+                await zerodowntime.maintenance(job, site, True)
+            await ops.run(job, inst.restart.command("stop-service", inst.options.odoo_service),
+                          timeout=workspaceops.HELPER_TIMEOUT)
+            if key:
+                stopped = await workspaceops._helper(job, "machine-db-replica-stop", key, "stop", timeout=MACHINE_TIMEOUT)
+                job.log(f"Its database stopped clean in {stopped.get('seconds')} s, its last record at "
+                        f"{stopped.get('checkpoint')}")
+                job.result = {**job.result, "stopped": {"checkpoint": stopped.get("checkpoint"),
+                                                        "seconds": stopped.get("seconds")}}
+            else:
+                job.result = {**job.result, "dumped": await move_dump(job, ws, instance, inst)}
+
+        async def resume(job):
+            job.log(f"--- the return of {name} to {me.name} did not end: it runs here again, as before")
+            if key and (replica_record(key) or {}).get("state") == "stopped":
+                await workspaceops._helper(job, "machine-db-replica-stop", key, "resume", timeout=MACHINE_TIMEOUT)
+            await ops.run(job, workspaceops.compose(inst.restart.service, "start"), timeout=workspaceops.HELPER_TIMEOUT)
+            if key and (replica_record(key) or {}).get("link") == me.name:
+                with contextlib.suppress(JobFailed):
+                    await workspaceops._helper(job, "machine-db-replica-drop", key, timeout=MACHINE_TIMEOUT)
+            dumped = str(payload.get("file") or "")
+            if dumped:
+                with contextlib.suppress(treesync.TreeError, OSError):
+                    (backup_folder(inst) / treesync.safe_rel(dumped)).unlink(missing_ok=True)
+            if not await zerodowntime.answers(inst.options.http_port):
+                job.warn(f"{name} did not answer /web/login within {zerodowntime.HEALTH_TIMEOUT} s")
+            if site is not None:
+                await zerodowntime.maintenance(job, site, False)
+            hosted_row(workspace, instance, state="placed")
+            job.log(f"{name} runs here as before its return")
+
+        async def drop(job):
+            job.log(f"--- the return of {name} to {me.name} cancelled: here nothing changes")
+            rec = replica_record(key) if key else None
+            if rec and rec.get("link") == me.name and rec.get("state") != "stopped":
+                done = await workspaceops._helper(job, "machine-db-replica-drop", key, timeout=MACHINE_TIMEOUT)
+                job.log(f"The database of {name} keeps nothing for its copy there any more "
+                        f"({int(done.get('freed') or 0) >> 20} MB freed)")
+
+        async def leave(job):
+            names = [str(n) for n in payload.get("names") or [] if isinstance(n, str)]
+            job.log(f"--- {name} serves on {me.name} again: its copy here stays stopped"
+                    + (", its names passed there" if names else ""))
+            await hosted_unschedule(job, workspace, name)
+            now = datetime.datetime.now()
+            hosted_row(workspace, instance, state="returned", returned_at=now.isoformat(timespec="seconds"),
+                       copy_until=placement.copy_until(now), names=names, to=str(payload.get("to") or ""))
+            if names:
+                await hosted_forward(job, workspace)
+            dumped = str(payload.get("file") or "")
+            if dumped:
+                with contextlib.suppress(treesync.TreeError, OSError):
+                    (backup_folder(inst) / treesync.safe_rel(dumped)).unlink(missing_ok=True)
+
+        async def delete(job):
+            job.log(f"--- the stopped copy of {name} taken away here: it serves on {me.name}")
+            hosted_row(workspace, instance, state="deleting")
+            with contextlib.suppress(JobFailed):
+                await hosted_forward(job, workspace)
+            await placement_abort(job, workspace, instance)
+            if workspace not in settings.workspaces:
+                await hosted_credentials_gone(job, workspace)
+
+        if op == "delete" and ((hosted.get(workspace).get("instances") or {}).get(instance) or {}).get("state") \
+                not in ("returned", "deleting"):
+            return refuse(f"{name} serves here: only the copy of an instance that went back is deleted")
+        action = {"allow": allow, "stop": stop, "resume": resume, "drop": drop, "leave": leave, "delete": delete}[op]
+        job = jobs.submit(f"{name} back to {me.name}: {op}", [f"{name}/production"], f"manual: {me}", action,
+                          workspace=workspace, frozen_ok=True)
         job.result["customer"] = {"hidden": True}  # the provider's own: not in its customer's lists
         return {"job": job.id}
 
