@@ -768,6 +768,15 @@ Le route vanno in `app.py`, come per le staging.
 - **Un nome di utente che il cliente ha già**: entra come `<nome>.<ws>`. UX-014 non lo prevede: serve una riga nel
   passo 2 di §A5.
 
+- **Una persona membro anche di un altro nostro workspace** (revisione del passo 8, 24/11): con l'hash e il segreto
+  TOTP consegnati, chi gestisce la macchina del cliente passerebbe il secondo fattore di quella persona da noi, e
+  potrebbe forzare l'hash fuori linea, arrivando a un workspace di un altro cliente.
+  - Raccomandata, costruita come ipotesi: passa la password, **non** il segreto dell'app; la persona riconfigura l'app
+    dal cliente (una volta). Il riepilogo di Prepara la nomina e dice che chi da noi non ha la verifica in due
+    passaggi cambi la password qui dopo il passaggio.
+  - Alternativa: passa tutto (D-A5 intero per lei); al commit, da noi, il suo secondo fattore si azzera e le si chiede
+    di cambiare la password. La riconfigurazione la fa da noi invece che dal cliente.
+
 ### Decise da Carlo (23/11/2026)
 
 Backup locali nello spostamento B: viaggiano tutti. L'inoltro decifrato fino a 7 giorni (AD-012 A) va bene, il

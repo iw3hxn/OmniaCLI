@@ -547,6 +547,25 @@ def names_map(wanted, taken, workspace: str) -> dict[str, str]:
     return out
 
 
+def destination_names_map(wanted, taken, workspace: str) -> dict[str, str]:
+    """{name there: name here} of the destinations that arrive: a name taken here arrives as <name>-<workspace> (a
+    destination's name has no dot: 1-32 lower case letters, digits, _ and -), cut to 32, and -2, -3… after it."""
+    out: dict[str, str] = {}
+    used = set(taken)
+    for name in wanted:
+        new, n = name, 2
+        if new in used:
+            new = f"{name}-{workspace}"[:32].rstrip("-_")
+        base = new
+        while new in used:
+            tail = f"-{n}"
+            new = base[:32 - len(tail)].rstrip("-_") + tail
+            n += 1
+        out[name] = new
+        used.add(new)
+    return out
+
+
 def cron_shifted(cron: str, hours: int) -> str:
     """A crontab expression whose hour is one number moved by hours: the same instant on a machine in another
     zone (UX-014 A11); any other hour (*/2, 1-5, a list) stays as it is."""

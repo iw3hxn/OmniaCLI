@@ -81,8 +81,10 @@
     people: {{ _("{n} users of the workspace, {r} custom roles: they come in with the same password and the same app of the two-step verification.") | tojson }},
     passkeys: {{ _("{n} passkeys are registered again: they are bound to the address of this panel.") | tojson }},
     providers: {{ _("{n} people of the provider who are members of the workspace stay here.") | tojson }},
+    shared1: {{ _("{names} is a member of other workspaces here too: its app of the two-step verification does not pass, it sets it up again on the customer's machine. Its password passes: without two-step verification here, it changes it here after the switch.") | tojson }},
+    shared: {{ _("{names} are members of other workspaces here too: their app of the two-step verification does not pass, they set it up again on the customer's machine. Their password passes: who has no two-step verification here changes it here after the switch.") | tojson }},
     tokens: {{ _("{t} MCP/API tokens and {o} OAuth accesses do not pass: their clients point to this address, the customer makes them again on its panel.") | tojson }},
-    names: {{ _("Names and subdomains ({n}), the customer's certificate; schedules, destinations of the backups, notices, git credentials and the history of the deploys: they pass at the switch.") | tojson }},
+    names: {{ _("Names and subdomains ({n}), the customer's certificate; schedules, destinations of the backups, git credentials and the history of the deploys: they pass at the switch.") | tojson }},
     backups: {{ _("Of each environment its last backup passes; the older ones stay here and are deleted with the copy.") | tojson }},
     log: {{ _("The access log of the workspace passes as a file for its NIS 2 compliance; this machine's log stays here.") | tojson }},
     total: {{ _("{total} are handed over. The copy takes about {time} (an estimate at 22 MB/s), while the instances run.") | tojson }},
@@ -109,6 +111,7 @@
       {{ _("Passkeys: bound to the address of this panel, registered again there.") | tojson }},
       {{ _("MCP and API tokens, OAuth accesses: their clients point to this address.") | tojson }},
       {{ _("Sessions and invitations not accepted yet: they lead here.") | tojson }},
+      {{ _("The addresses told of problems, of the workspace and of its schedules: they may be your people's, the customer sets its own.") | tojson }},
       {{ _("The older backups, the history of the jobs, this machine's access log, the load measured: they stay here.") | tojson }},
       {{ _("The brand of the provider: the customer's panel is OmniaCLI as it installs it.") | tojson }},
       {{ _("An instance with a test environment, one on another machine of yours, one whose database is on another machine: not in this version, each says why.") | tojson }},
@@ -159,7 +162,8 @@
     }) : [el("p", {className: "muted", textContent: T.none})]));
     const p = answer.people || {};
     of("hv-people").replaceChildren(...[fill(T.people, {n: p.users || 0, r: p.roles || 0}), p.passkeys ? fill(T.passkeys, {n: p.passkeys}) : null,
-      p.providers ? fill(T.providers, {n: p.providers}) : null, fill(T.tokens, {t: answer.tokens || 0, o: answer.oauth || 0})]
+      p.providers ? fill(T.providers, {n: p.providers}) : null,
+      (p.shared_names || []).length ? fill(p.shared_names.length === 1 ? T.shared1 : T.shared, {names: p.shared_names.join(", ")}) : null, fill(T.tokens, {t: answer.tokens || 0, o: answer.oauth || 0})]
       .filter(Boolean).map((t) => el("p", {className: "hv-sub", textContent: t})));
     of("hv-services").replaceChildren(...[fill(T.names, {n: answer.names || 0}), T.backups, T.log].map((t) => el("p", {className: "hv-sub", textContent: t})));
     of("hv-not").replaceChildren(...T.notPassed.map((t) => el("li", {textContent: t})));

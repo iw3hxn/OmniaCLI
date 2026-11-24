@@ -24147,9 +24147,60 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         """Who of the workspace passes (its users of role workspace) and what of them does not (AD-009): the
         provider's own people that are members stay here."""
         people = [m for m in ws.members if settings.user_role(m) == WORKSPACE_ROLE]
-        return {"users": len(people), "totp": sum(1 for m in people if second_factors.on(m)),
+        shared = handover_shared(ws, [m for m in people if m in settings.users])
+        return {"users": len(people), "totp": sum(1 for m in people if second_factors.on(m) and m not in shared),
                 "passkeys": sum(1 for m in people if passkey_store.count(m) > 0),
-                "providers": len([m for m in ws.members if m not in people]), "roles": len(ws.roles)}
+                "providers": len([m for m in ws.members if m not in people]), "roles": len(ws.roles),
+                # members of another workspace here too: their app of two-step verification does not pass; how
+                # many (the customer's machine reads no more than that of the provider's other workspaces)
+                "shared": len(shared)}
+
+    def handover_shared_names(ws: Workspace) -> list[str]:
+        """The names handover_people counts in shared: the summary of Prepare says them to the machine's admins."""
+        return handover_shared(ws, [m for m in ws.members if settings.user_role(m) == WORKSPACE_ROLE
+                                    and m in settings.users])
+
+    def handover_shared(ws: Workspace, people) -> list[str]:
+        """The passing people of ws who are members of another workspace here too: they keep reaching it at this
+        machine, so the secret of their app of two-step verification does not pass (they set it up again at the
+        customer's), and the summary of Prepare names them."""
+        return sorted(m for m in people if any(m in other.members for other in settings.workspaces.values()
+                                               if other.name != ws.name))
+
+    def handover_deploys_redacted(data: dict, view: CustomerView) -> dict:
+        """The history of an instance's deploys as its customer reads it (AD-009, §8.6): who started each one and
+        who paused them by the customerview's rules (the provider's people, links and machines not named), its
+        titles and errors without them; the commits as they are."""
+        def entry(row: dict) -> dict:
+            row = dict(row)
+            for key in ("title", "error"):
+                if isinstance(row.get(key), str):
+                    row[key] = view.text(row[key])
+            if isinstance(row.get("by"), str):
+                row["by"] = view.source(row["by"])
+            if isinstance(row.get("unserved"), dict):
+                row["unserved"] = view.data(row["unserved"])
+            return row
+        out = {**data, "deploys": [entry(d) for d in data.get("deploys") or [] if isinstance(d, dict)]}
+        for key in ("paused", "zero_downtime"):
+            if isinstance(out.get(key), dict) and isinstance(out[key].get("by"), str):
+                out[key] = {**out[key], "by": view.who(out[key]["by"])}
+        return out
+
+    def handover_deploys_renamed(data: dict, mapping: dict) -> dict:
+        """The history of an instance's deploys with the name map of the people that arrived (AD-009: a person who
+        arrived as <name>.<workspace> started its deploys under that name here)."""
+        def who(value):
+            kind, sep, name = str(value).partition(": ")
+            if sep and name in mapping:
+                return f"{kind}: {mapping[name]}"
+            return mapping.get(str(value), value)
+        out = {**data, "deploys": [{**d, "by": who(d["by"])} if isinstance(d.get("by"), str) else d
+                                   for d in data.get("deploys") or [] if isinstance(d, dict)]}
+        for key in ("paused", "zero_downtime"):
+            if isinstance(out.get(key), dict) and isinstance(out[key].get("by"), str):
+                out[key] = {**out[key], "by": who(out[key]["by"])}
+        return out
 
     def handover_word(ws: Workspace, lang: str) -> dict | None:
         """The State of a workspace's row in the list (UX-014 A5, A7): {"text", "level"}, None for none."""
@@ -24222,7 +24273,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         tokens = sum(1 for n in settings.tokens if settings.token_workspace(n) == ws.name)
         now = handover.now()
         return {"workspace": ws.name, "label": ws.label, "domain": ws.domain, "url_why": i18n.tr(lang, why) if why else "",
-                "rows": rows, "people": handover_people(ws),
+                "rows": rows, "people": {**handover_people(ws), "shared_names": handover_shared_names(ws)},
                 "tokens": tokens, "provider": handover_provider_label(lang),
                 "expires": handover.iso(now + handover.CODE_HOURS * 3600),
                 # the copy here goes 7 days after the switch (D-A3): the day said for a switch made today
@@ -25237,9 +25288,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         state = handover_in_mine(handover_id)
         if state.get("phase") == "interrupted":
             # a switch that stopped without its end known: the provider is asked how it ended, then this machine
-            # finishes it (committed there) or takes back what it did (aborted or expired there)
-            job = jobs.submit(f"Switch {state.get('workspace')} to this machine: again", [], f"manual: {me}",
-                              lambda job: handover_switch_resume(job, handover_id, me),
+            # finishes it (committed there) or takes back what it did (aborted or expired there); every server of
+            # the workspace busy meanwhile (AD-011), and any failure of it «interrupted» again, with Retry
+            job = jobs.submit(f"Switch {state.get('workspace')} to this machine: again", handover_in_keys(state),
+                              f"manual: {me}",
+                              lambda job: handover_switch_guard(job, handover_id,
+                                                                lambda: handover_switch_resume(job, handover_id, me)),
                               workspace=str(state.get("workspace") or ""))
             handovers_in.update(handover_id, phase="switching", job=job.id)
             return {"job": job.id}
@@ -25421,6 +25475,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     handover_switch_abort(ws, str(sw.get("why") or "aborted"), "handover: start",
                                           phase=str(sw.get("ends_as") or "aborted"))
         for hid, state in handovers_in.all().items():
+            # a switch whose job is not running any more (OmniaCLI stopped during it, or the job ended without
+            # writing its end): «interrupted», with Retry (AD-011 «Idempotenza e ripresa»); the first look runs at
+            # the start of OmniaCLI
+            if state.get("phase") == "switching":
+                running = jobs.get(str(state.get("job") or ""))
+                if running is None or running.status in FINISHED:
+                    handover_switch_interrupted(hid, "its job did not end it: OmniaCLI stopped during it")
+                    state = handovers_in.state(hid)
             # a session the provider refused is not asked again every minute: each ask would be a failed try there
             if state.get("phase") in ("ready", "out_of_step") and state.get("stale") != "refused":
                 await handover_look_in(hid, state)
@@ -25449,6 +25511,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     # a commit whose answer is lost is asked again (the same switch_id: the same answer) every this many seconds
     COMMIT_EVERY = 3
     COMMIT_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
+    # an instance here answers /web/login within this many seconds when it runs (the finish of a switch starts one
+    # that does not)
+    START_CHECK = 5
     # where the customer's machine keeps the extract of the provider's access log (AD-009, D-A8)
     access_archive = settings.jobs_dir.parent / "access-archive"
 
@@ -25577,20 +25642,24 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     site = zerodowntime.site(inst)
                     if site is not None:
                         await zerodowntime.maintenance(job, site, True)
+                    # from now its users read the maintenance page: the customer measures the stop of its names from
+                    # this moment (this machine's wall clock)
+                    maintenance_at = round(time.time(), 3)
                     await ops.run(job, inst.restart.command("stop-service", inst.options.odoo_service),
                                   timeout=workspaceops.HELPER_TIMEOUT)
                     key = dedicated_key(inst)
                     if key:
-                        facts[server] = {"kind": "dedicated", "stopping": True}
+                        facts[server] = {"kind": "dedicated", "stopping": True, "maintenance_at": maintenance_at}
                         handover_switch_note(ws.name, instances=facts)
                         stopped = await workspaceops._helper(job, "machine-db-replica-stop", key, "stop",
                                                              timeout=MACHINE_TIMEOUT)
-                        facts[server] = {"kind": "dedicated", "checkpoint": stopped.get("checkpoint")}
+                        facts[server] = {"kind": "dedicated", "checkpoint": stopped.get("checkpoint"),
+                                         "maintenance_at": maintenance_at}
                         job.log(f"The database of {server} stopped clean in {stopped.get('seconds')} s, its last "
                                 f"record at {stopped.get('checkpoint')}")
                     else:
                         dumped = await move_dump(job, ws, instance, inst, prefix=f"handover-{hid}")
-                        facts[server] = {"kind": "cluster", "dump": dumped}
+                        facts[server] = {"kind": "cluster", "dump": dumped, "maintenance_at": maintenance_at}
                     handover_switch_note(ws.name, instances=facts)
                 if claim_ip:
                     with contextlib.suppress(JobFailed):
@@ -25723,7 +25792,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         extract of the access log. Never written here."""
         servers = [s for s in state.get("instances") or []]
         people = [m for m in ws.members if settings.user_role(m) == WORKSPACE_ROLE and m in settings.users]
-        users = {m: {"hash": settings.users[m], "second_factor": second_factors.record(m)} for m in people}
+        # a person who is a member of another workspace here too keeps reaching it at this machine: the secret of
+        # its app of two-step verification does not pass (whoever runs the customer's machine would pass that
+        # person's second step here); it sets the app up again there (handover_shared)
+        shared = set(handover_shared(ws, people))
+        users = {m: {"hash": settings.users[m], "second_factor": None if m in shared else second_factors.record(m)}
+                 for m in people}
         workspace = {"name": ws.name, "label": ws.label, "domain": ws.domain, "main": ws.main,
                      "subdomains": ws.subdomains, "certificate": ws.certificate, "aliases": ws.aliases,
                      "redirects": ws.redirects, "roles": ws.roles, "parameter_bounds": ws.parameter_bounds,
@@ -25731,7 +25805,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                      "member_roles": {m: r for m, r in ws.member_roles.items() if m in people},
                      "member_servers": {m: [s for s in v if s in servers] for m, v in ws.member_servers.items()
                                         if m in people},
-                     "notify": [n for n in ws.notify if n in people or "@" in n]}
+                     # the addresses told of its problems are set by the machine's admins and may be the provider's
+                     # people's: none passes, the customer sets its own (AD-009, the redaction of §8.6)
+                     "notify": []}
+        # who acted on its deploys and made its schedules, as a customer reads it (customerview): its passing
+        # people by name, the provider's people, links and machines as the provider and «another machine»
+        view = dataclasses.replace(customer_view_of({ws.name}, "en"), members=frozenset(people))
         own = None
         if ws.domain and ws.certificate == "own":
             own = await workspaceops.ask("owncert-read", ws.name, ws.storage)
@@ -25740,19 +25819,26 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         for name, sch in scheduler.schedules.items():
             if sch.instance.partition("/")[0] in servers and sch.copy is None and sch.script is None:
                 sch = dataclasses.replace(sch, enabled=True) if name in suspended else sch
-                sched[name] = schedules.schedule_to_dict(sch)
+                data = schedules.schedule_to_dict(sch)
+                # its maker passes when it passes; its addresses never (they may be the provider's people's)
+                if data.get("user") not in people:
+                    data.pop("user", None)
+                data.pop("notify", None)
+                sched[name] = data
         dests = {n: d.to_dict() for n, d in load_destinations().items() if d.workspace == ws.name}
         creds = await asyncio.to_thread(gitcredentials.load, settings.credentials_file)
         given = {scope: [gitcredentials._entry(c) for c in entries.values()]
                  for scope, entries in creds.items()
                  if scope == f"workspace:{ws.name}" or scope in {f"server:{s}" for s in servers}}
-        found_deploys = {s: await asyncio.to_thread(deploys.load, deploys_folder, f"{s}/production") for s in servers}
-        view = customer_view_of({ws.name}, "en")
+        found_deploys = {s: handover_deploys_redacted(await asyncio.to_thread(deploys.load, deploys_folder,
+                                                                              f"{s}/production"), view)
+                         for s in servers}
         verified = await asyncio.to_thread(access_log.verify)
         extract = await asyncio.to_thread(handover.log_extract, access_files(access_log.path), ws.name, view,
                                           verified)
         offset = datetime.datetime.now().astimezone().utcoffset()
-        return {"format": 1, "workspace": workspace, "users": users, "own_certificate": own, "schedules": sched,
+        return {"format": 1, "workspace": workspace, "users": users, "shared": sorted(shared & set(users)),
+                "own_certificate": own, "schedules": sched,
                 "destinations": dests, "credentials": given, "deploys": found_deploys, "access_log": extract,
                 "offset_s": int(offset.total_seconds()) if offset else 0}
 
@@ -25941,11 +26027,52 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return refuse("This machine is not reached from outside on its ports 80 and 443: it needs a public address, "
                           "or a relay of its own (the provider's relay does not pass with the handover)")
         switch_id = secrets.token_hex(8)
-        job = jobs.submit(f"Switch {name} to this machine", [], f"manual: {me}",
-                          lambda job: handover_switch_job(job, handover_id, switch_id, me), workspace=name)
+        # every server of the workspace busy for the switch (AD-011): no other job enters them meanwhile; any failure
+        # that leaves the switch «switching» is «interrupted», with Retry
+        job = jobs.submit(f"Switch {name} to this machine", handover_in_keys(state), f"manual: {me}",
+                          lambda job: handover_switch_guard(job, handover_id,
+                                                            lambda: handover_switch_job(job, handover_id, switch_id, me)),
+                          workspace=name)
         handovers_in.update(handover_id, phase="switching", job=job.id, error=None,
                             switch={"id": switch_id, "since": handover.iso(handover.now())})
         return {"job": job.id}
+
+    def handover_keep_crons(hid: str, server: str, ids: str) -> None:
+        """The ids of the crons a start here switched off, kept with those of a start before (a start again after an
+        interruption finds them off already: their ids are not lost)."""
+        sw = handovers_in.state(hid).get("switch") or {}
+        crons = dict(sw.get("crons") or {})
+        both = sorted({i for i in f"{crons.get(server) or ''},{ids or ''}".split(",") if i.strip().isdigit()}, key=int)
+        handover_in_note(hid, crons={**crons, server: ",".join(both)})
+
+    def handover_in_keys(state: dict) -> list[str]:
+        """The keys of the jobs of the reception's servers here (each instance's production): busy for the switch."""
+        workspace = str(state.get("workspace") or "")
+        return sorted({f"{workspace}-{i['instance']}/production" for i in state.get("items") or []
+                       if isinstance(i, dict) and i.get("instance")})
+
+    def handover_switch_interrupted(hid: str, why: str) -> None:
+        """A switch that stopped with its end unknown here: «interrupted», with Retry. Committed already (the
+        provider's answer arrived), Retry finishes it without asking the provider again."""
+        state = handovers_in.state(hid)
+        if state.get("phase") != "switching":
+            return
+        label = str(state.get("provider") or "the provider")
+        if (state.get("switch") or {}).get("committed_at"):
+            error = f"The switch was committed at {label}'s and stopped here ({why}): Retry finishes it"
+        else:
+            error = f"The switch stopped with its end not known ({why}): Retry asks {label} how it ended"
+        handovers_in.update(hid, phase="interrupted", error=error)
+
+    async def handover_switch_guard(job, hid: str, work) -> None:
+        """The switch's job (or its Retry): whatever stops it while the reception still reads «switching» leaves
+        it «interrupted», with Retry, never «switching» with no job (AD-011 «Idempotenza e ripresa»)."""
+        try:
+            await work()
+        except BaseException as exc:
+            handover_switch_interrupted(hid, str(exc) or type(exc).__name__)
+            raise
+        handover_switch_interrupted(hid, "its job ended without its end")
 
     def handover_switch_steps(job) -> None:
         job.result["progress"] = {"steps": [{"id": i, "label": label} for i, label in SWITCH_STEPS],
@@ -25981,7 +26108,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 if code != 200:
                     raise SwitchRefused(handover_said(url, label, str(got.get("error") or f"{label} answered HTTP {code}")))
                 sw = await handover_frozen_wait(job, client, hid, auth, url, label)
-                handover_in_note(hid, frozen_at=handover.iso(handover.now()), deadline=sw.get("deadline"))
+                # the moment each instance's maintenance page went up there: the stop of each name is measured from it
+                handover_in_note(hid, frozen_at=handover.iso(handover.now()), deadline=sw.get("deadline"),
+                                 maintenance={s: f["maintenance_at"] for s, f in (sw.get("instances") or {}).items()
+                                              if isinstance(f, dict) and f.get("maintenance_at")})
                 job.log(f"{label}'s instances are stopped ({round(time.monotonic() - began, 1)} s); it waits for this "
                         f"machine until {clock.shown(str(sw.get('deadline') or ''))}")
                 # 2. Last changes: the secrets, the last round, the databases, the names held
@@ -26012,8 +26142,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 for n, item in enumerate(items, 1):
                     server = f"{ws.name}-{item['instance']}"
                     ids, _seconds = await start_without_crons(
-                        job, server, lambda ids, s=server: handover_in_note(hid, crons={
-                            **(handovers_in.state(hid).get("switch") or {}).get("crons", {}), s: ids}))
+                        job, server, lambda ids, s=server: handover_keep_crons(hid, s, ids))
                     job.log(f"{n} of {len(items)} answer here")
                 # 4. Names and certificates: the commit, asked again while its answer is lost
                 move_step(job, "names")
@@ -26174,17 +26303,20 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             job.warn(f"{label} was not reached: {exc}")
         if ended == "committed":
             job.log(f"{label} had committed the switch (its answer was lost): this machine finishes it")
-            blob = handover_blob(hid, switch_id)
-            await handover_switch_finish(job, hid, blob, {}, None)
+            handover_in_note(hid, committed_at=handover.iso(handover.now()))
+            await handover_switch_finish(job, hid, {}, {}, None)
             return
-        await handover_stop_here(job, hid)
         if not ended:
+            # its end unknown: the instances here are left as they are, held (no user reaches them before the
+            # names are released), so that a switch committed there after all finishes with them; aborted there,
+            # Retry stops them and takes back what the switch did
             handovers_in.update(hid, phase="interrupted",
                                 error=f"The switch stopped and {label} did not answer: Retry asks it how it ended "
                                       f"({why})")
             job.warn(f"{label} did not answer: its instances may still be stopped there until its deadline. Retry asks "
                      "it how the switch ended, then goes on or back")
             return
+        await handover_stop_here(job, hid)
         await handover_undo_here(job, hid)
         handovers_in.update(hid, phase="failed",
                             error=f"{why}. The instances run at {label}'s again, nothing is lost; Retry copies again, "
@@ -26239,13 +26371,23 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         sw = state.get("switch") or {}
         switch_id = str(sw.get("id") or "")
         label = str(state.get("provider") or "the provider")
+        handover_switch_steps(job)
+        if sw.get("committed_at"):
+            # its commit answered here before the switch stopped: finished without asking the provider again
+            job.log(f"{label} committed the switch at {sw.get('committed_at')}: this machine finishes it")
+            await handover_switch_finish(job, hid, {}, {}, me)
+            return
         parts, auth = handover_session_of(hid)
-        async with handover_open(parts["u"], parts["p"], label) as client:
-            code, got = await handover_call(client, "GET", f"{HANDOVER_API}/{hid}/switch", auth)
+        try:
+            async with handover_open(parts["u"], parts["p"], label) as client:
+                code, got = await handover_call(client, "GET", f"{HANDOVER_API}/{hid}/switch", auth)
+        except JobFailed:
+            raise JobFailed(f"{label} does not answer") from None
         there = (got.get("switch") or {}) if code == 200 else {}
         if there.get("switch_id") == switch_id and there.get("phase") == "committed":
             job.log(f"{label} committed the switch: this machine finishes it")
-            await handover_switch_finish(job, hid, handover_blob(hid, switch_id), {}, me)
+            handover_in_note(hid, committed_at=handover.iso(handover.now()))
+            await handover_switch_finish(job, hid, {}, {}, me)
             return
         await handover_switch_back(job, hid, switch_id, f"the switch was {there.get('phase') or 'not known'} at "
                                                         f"{label}'s")
@@ -26263,16 +26405,28 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         job.log(f"--- committed: {label} passes the names of {state.get('source')} to this machine until the DNS "
                 "leads here")
         if not state.get("imported"):
-            imported = await handover_import(job, hid, ws, blob, label, me)
+            imported = await handover_import(job, hid, ws, blob if blob else handover_blob(hid, str(sw.get("id") or "")),
+                                             label, me)
             handovers_in.update(hid, imported=imported)
         ws = settings.workspaces[ws.name]
         items = [i for i in state.get("items") or [] if isinstance(i, dict)]
+        # each instance answers here before its names are released: a switch interrupted and committed there
+        # meanwhile (its answer lost, OmniaCLI stopped) finds them as they were left, and starts again, its crons
+        # off, one that does not answer
+        for item in items:
+            server = f"{ws.name}-{item['instance']}"
+            if await zerodowntime.answers(settings.servers[server].production.options.http_port, START_CHECK):
+                continue
+            job.log(f"{server} does not answer here: it starts again before its names lead here")
+            await start_without_crons(job, server, lambda ids, s=server: handover_keep_crons(hid, s, ids))
+        sw = handovers_in.state(hid).get("switch") or {}
         probes = []
         if ws.domain:
             for item in items:
                 found = environment_names(ws, str(item["instance"]), "production")
                 if found:
-                    probes.append(zerodowntime.Probe(f"https://{found[0]}").start())
+                    probes.append((found[0], str(item.get("server") or ""),
+                                   zerodowntime.Probe(f"https://{found[0]}").start()))
         released = time.monotonic()
         made = await publish_names(job, ws, {})
         job.result.update(made)
@@ -26286,20 +26440,27 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         line = "No name of its own to measure the stop through"
         unserved = None
         if probes:
-            for probe in probes:
+            for _name, _server, probe in probes:
                 await probe.settle()
             began = float(sw.get("began_at") or 0)
-            first = []
-            for probe in probes:
+            # each name from the moment the provider put its instance's maintenance page up (its wall clock, said in
+            # «frozen»), else from the begin asked here, to its first 200 here (the probe's monotonic time, read on
+            # the wall clock now)
+            maintenance = sw.get("maintenance") or {}
+            wall, mono = time.time(), time.monotonic()
+            per_name = {}
+            for name, server, probe in probes:
                 await probe.stop()
                 ok = [moment for moment, good in probe.points if good and moment >= released]
-                first.append(ok[0] if ok else time.monotonic())
-            # from the begin (the maintenance page there, a wall clock's time) to the first 200 here through every
-            # name (the probes' monotonic times, read on the wall clock now)
-            wall, mono = time.time(), time.monotonic()
-            lost = round(max(wall - (mono - f) for f in first) - began, 1) if began else 0.0
-            unserved = {"seconds": lost, "asked": sum(len(p.points) for p in probes), "names": len(probes)}
+                first = wall - (mono - (ok[0] if ok else time.monotonic()))
+                since = float(maintenance.get(server) or began or 0)
+                per_name[name] = round(first - since, 1) if since else 0.0
+            lost = max(per_name.values())
+            unserved = {"seconds": lost, "asked": sum(len(p.points) for _n, _s, p in probes), "names": len(probes),
+                        "per_name": per_name}
             line = f"Without service for {lost:.1f} s"
+            if len(per_name) > 1:
+                job.log("Without service, name by name: " + ", ".join(f"{n} {s:.1f} s" for n, s in per_name.items()))
         job.log(line)
         for name in ("claim.key", "secrets.sealed", "session", "code"):
             (handovers_in.folder(hid) / name).unlink(missing_ok=True)
@@ -26328,7 +26489,19 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         source = str(state.get("source") or ws.name)
         given = blob.get("workspace") or {}
         users = {str(k): v for k, v in (blob.get("users") or {}).items() if isinstance(v, dict) and v.get("hash")}
-        rename = lambda s: handover.server_renamed(str(s), source, ws.name)  # noqa: E731
+        # what the provider's blob writes stays inside the received workspace (AD-009: «chi riceve non si fida del
+        # contenuto»): a server is one of the reception's instances here, renamed, or nothing; anything else is
+        # left out and said
+        received = frozenset(f"{ws.name}-{i['instance']}" for i in state.get("items") or []
+                             if isinstance(i, dict) and i.get("instance"))
+        left_out: list[str] = []
+
+        def rename(server) -> str | None:
+            found = handover.server_renamed(str(server), source, ws.name)
+            if found in received:
+                return found
+            left_out.append(str(server)[:80])
+            return None
         async with access_lock, workspaces_lock:
             taken = set(settings.users) | set(settings.fixed.users)
             mapping = state.get("user_map") or handover.names_map(sorted(users), taken, ws.name)
@@ -26347,10 +26520,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                        "roles": {**current.roles, **(given.get("roles") or {})},
                        "member_roles": {**current.member_roles, **{mapping[m]: r for m, r in
                                                                   (given.get("member_roles") or {}).items() if m in mapping}},
-                       "member_servers": {**current.member_servers, **{mapping[m]: [rename(s) for s in v] for m, v in
-                                                                      (given.get("member_servers") or {}).items()
-                                                                      if m in mapping}},
-                       "notify": sorted({*current.notify, *(mapping.get(n, n) for n in given.get("notify") or [])})}
+                       "member_servers": {**current.member_servers, **{
+                           mapping[m]: [r for r in (rename(s) for s in (v if isinstance(v, list) else [])) if r]
+                           for m, v in (given.get("member_servers") or {}).items() if m in mapping}}}
             try:
                 parsed = parse_workspaces({**{n: w.to_dict() for n, w in settings.workspaces.items()}, ws.name: changed},
                                           settings.storage_roots)
@@ -26371,13 +26543,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         for old, new in sorted(mapping.items()):
             if new != old:
                 job.log(f"The user {old} arrives as {new}: a user of that name is here already")
-        # its destinations, with their keys: a name this machine has already arrives as <name>.<workspace>
+        # its destinations, with their keys
         dests = blob.get("destinations") or {}
         dest_map = {}
         async with destinations_lock:
             found = await asyncio.to_thread(load_destinations)
-            dest_map = handover.names_map(sorted(dests), [n for n in found if n not in (state.get("dest_map") or {})
-                                                          .values()], ws.name) \
+            # a name this machine has already arrives as <name>-<workspace> (a destination's name has no dot)
+            dest_map = handover.destination_names_map(sorted(dests), [n for n in found if n not in
+                                                                      (state.get("dest_map") or {}).values()], ws.name) \
                 if not state.get("dest_map") else dict(state["dest_map"])
             for old, new in dest_map.items():
                 data = dests.get(old)
@@ -26399,14 +26572,29 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                                                  (state.get("sched_map") or {}).values()], ws.name)
             kept = []
             for old, new in sched_map.items():
-                data = dict(given_sched.get(old) or {})
+                data = dict(given_sched.get(old) or {}) if isinstance(given_sched.get(old), dict) else {}
                 server, _, role = str(data.get("instance") or "").partition("/")
-                data["instance"] = f"{rename(server)}/{role or 'production'}"
+                role = role or "production"
+                here = rename(server)
+                # one of the received instances' environments only, a backup to one of the destinations that
+                # came with it only, never a copy or a script, never its maker unless a person that passed
+                if here is None or role not in ROLES or getattr(settings.servers.get(here), role, None) is None:
+                    job.warn(f"The schedule {old} is left out: it is not of an instance of {ws.name}")
+                    continue
+                if data.get("copy") or data.get("script"):
+                    job.warn(f"The schedule {old} is left out: a copy or a script does not pass")
+                    continue
+                data["instance"] = f"{here}/{role}"
                 if isinstance(data.get("backup"), dict) and data["backup"].get("destination"):
-                    data["backup"] = {**data["backup"], "destination": dest_map.get(data["backup"]["destination"],
-                                                                                    data["backup"]["destination"])}
-                if data.get("user"):
-                    data["user"] = mapping.get(str(data["user"]), str(data["user"]))
+                    if data["backup"]["destination"] not in dest_map:
+                        job.warn(f"The schedule {old} is left out: its destination did not come with {ws.name}")
+                        continue
+                    data["backup"] = {**data["backup"], "destination": dest_map[data["backup"]["destination"]]}
+                data.pop("notify", None)
+                if str(data.get("user") or "") in mapping:
+                    data["user"] = mapping[str(data["user"])]
+                else:
+                    data.pop("user", None)
                 if data.get("cron") and shift:
                     data["cron"] = handover.cron_shifted(str(data["cron"]), shift)
                 try:
@@ -26431,7 +26619,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 creds = await asyncio.to_thread(gitcredentials.load, settings.credentials_file)
                 for scope, entries in given_creds.items():
                     kind, _, name = str(scope).partition(":")
-                    here = f"workspace:{ws.name}" if kind == "workspace" else f"server:{rename(name)}"
+                    server = rename(name) if kind == "server" else None
+                    if kind != "workspace" and server is None:
+                        if kind != "server":
+                            left_out.append(str(scope)[:80])
+                        continue
+                    here = f"workspace:{ws.name}" if kind == "workspace" else f"server:{server}"
                     mine = dict(creds.get(here, {}))
                     for entry in entries if isinstance(entries, list) else []:
                         with contextlib.suppress(gitcredentials.CredentialError, AttributeError):
@@ -26446,8 +26639,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 await asyncio.to_thread(gitcredentials.bind, settings)
         # the deploys of its instances, and the extract of the access log for its NIS 2 record
         for server, data in (blob.get("deploys") or {}).items():
-            if isinstance(data, dict) and rename(server) in settings.servers:
-                await asyncio.to_thread(deploys.save, deploys_folder, f"{rename(server)}/production", data)
+            here = rename(server)
+            if isinstance(data, dict) and here is not None and here in settings.servers:
+                await asyncio.to_thread(deploys.save, deploys_folder, f"{here}/production",
+                                        handover_deploys_renamed(data, mapping))
+        if left_out:
+            job.warn(f"Left out, not of the instances of {ws.name}: {', '.join(sorted(set(left_out))[:10])}")
+        for name in sorted(set(blob.get("shared") or []) & set(mapping)):
+            job.log(f"The app of two-step verification of {mapping[name]} did not pass: it sets it up again here")
         extract = str(blob.get("access_log") or "")
         archive = ""
         if extract:

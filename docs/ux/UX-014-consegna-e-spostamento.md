@@ -126,7 +126,7 @@ quelli dell'esempio di Cliente1, letti prima di aprire il dialogo:
 | **Persone** | 6 utenti, 1 ruolo personalizzato | ✓ | «Entrano con la stessa password e la stessa app di verifica (D-A5). 1 passkey va registrata di nuovo: è legata all'indirizzo di questo pannello» |
 | | 2 token MCP/API, 1 accesso OAuth (Claude) | — non selezionabile | «Non passano: i client puntano a questo indirizzo. Il cliente li rifà sul suo pannello» (D-A6) |
 | **Servizi** | nomi e sottodomini, certificato del cliente | ✓ | §A8 |
-| | 2 pianificazioni, 1 destinazione dei backup (S3), avvisi, credenziali git, webhook della CI su 3 repository | ✓ | «I webhook li rifà la sua macchina con il token GitHub che passa con le credenziali» |
+| | 2 pianificazioni, 1 destinazione dei backup (S3), credenziali git, webhook della CI su 3 repository | ✓ | «I webhook li rifà la sua macchina con il token GitHub che passa con le credenziali». Gli indirizzi degli avvisi non passano: li mettono gli admin della macchina e possono essere delle nostre persone (revisione del passo 8, 24/11) |
 | | storico dei deploy | ✓ | — |
 | | backup di questa macchina: l'ultimo di ogni ambiente, 2,4 GB | ✓ | D-A7. «I 36 più vecchi (57 GB) restano qui e si cancellano con la copia» |
 | | registro degli accessi del workspace: 4.210 righe dal 12/09/2026 | ✓ | «Un file per la sua conformità NIS 2. Il nostro registro resta da noi» (D-A8) |
@@ -273,9 +273,9 @@ Nella lista Workspace (UX-013) la colonna Stato dice la stessa parola, senza pul
 | Passa | Non passa, e perché |
 |---|---|
 | Istanze scelte: produzione e test, database, filestore, repository con la storia, moduli caricati, opzioni di Odoo | Staging su altre macchine nostre: si cancellano con la copia |
-| Utenti del workspace con ruolo, ruoli personalizzati, hash delle password e segreti della verifica in due passaggi (D-A5) | Passkey (legate all'indirizzo del pannello), sessioni, inviti non ancora accettati (il link punta a noi) |
+| Utenti del workspace con ruolo, ruoli personalizzati, hash delle password e segreti della verifica in due passaggi (D-A5; chi è membro anche di un altro nostro workspace passa senza l'app, e il riepilogo di Prepara lo nomina) | Passkey (legate all'indirizzo del pannello), sessioni, inviti non ancora accettati (il link punta a noi) |
 | Nomi, sottodomini, indirizzi in più e rinvii, certificato del cliente | Nomi sotto il nostro dominio; certificati Let's Encrypt (se ne fanno di nuovi) |
-| Pianificazioni (all'ora del cliente: §A11), destinazioni con le loro chiavi, avvisi, credenziali git, storico dei deploy | Token MCP e API, accessi OAuth (D-A6); replica di un database su una nostra macchina (si cancella) |
+| Pianificazioni (all'ora del cliente: §A11), destinazioni con le loro chiavi, credenziali git, storico dei deploy (chi li ha fatti letto come lo legge il cliente) | Indirizzi degli avvisi (li mette il cliente); token MCP e API, accessi OAuth (D-A6); replica di un database su una nostra macchina (si cancella) |
 | L'ultimo backup di ogni ambiente (D-A7) e l'archivio del registro degli accessi del workspace (D-A8) | Gli altri backup locali, lo storico dei job, il nostro registro degli accessi, il carico misurato |
 | Odoo Enterprise e moduli a pagamento, con la conferma del cliente | Il marchio del fornitore (`brand_name`, logo): il pannello del cliente è OmniaCLI, AGPL-3.0, come lo installa |
 

@@ -3946,25 +3946,54 @@ all or nothing.
   the same app; a name this machine has already arrives as
   `<name>.<workspace>`, said in the job and in the banner), the members, roles
   and custom roles, the schedules of the instances (the same instant in this
-  machine's zone), the destinations with their keys, the git credentials, the
+  machine's zone), the destinations with their keys (a destination's name this
+  machine has already arrives as `<name>-<workspace>`: its names have no
+  dot), the git credentials, the
   deploys, and the **extract of the provider's access log**: the workspace's
   entries, the provider's people as the provider, other machines as «another
   machine», each with `orig` (the SHA-256 of its line there, the `prev` of the
   next one: the provider can show it is in its log) and a head with the period
   and the provider's `verify()`, kept apart from this machine's own log
-  (`/var/lib/omniacli/access-archive/<workspace>-<moment>.jsonl`, 600). Its
-  names released, its crons on again by id, the stop measured through its
-  names, from the begin to the first 200 («Without service for N s»), the
-  claim's key, the sealed secrets and the session deleted.
+  (`/var/lib/omniacli/access-archive/<workspace>-<moment>.jsonl`, 600). Each
+  instance answers `/web/login` before its names are released (one that does
+  not, after an interrupted switch, starts again with its crons off), then its
+  names released, its crons on again by id, the stop measured name by name
+  from the moment the provider put that instance's maintenance page up (its
+  clock, said in *frozen*) to the first 200 here («Without service for N s»,
+  the longest; the others on the line before), the claim's key, the sealed
+  secrets and the session deleted.
+- **What the provider's blob may write here** (AD-009, «chi riceve non si fida
+  del contenuto»): only the received workspace. A schedule, a git credential,
+  a deploy history or a person's instances name one of the reception's
+  instances (renamed) or they are left out and said in the job; a schedule
+  backs up only to a destination that came with the workspace, and a copy or a
+  script never passes. Who started each deploy and who paused them read as the
+  customer reads its jobs (customerview: the provider's people as the provider,
+  its links and machines as «another machine»); a schedule keeps its maker
+  only when that person passed. The addresses told of problems (the
+  workspace's and its schedules') do not pass: the machine's admins set them
+  and they may be the provider's people's; the customer sets its own. A person
+  who is also a member of another workspace at the provider's passes with the
+  password but without the app of two-step verification (it sets it up again
+  at the customer's): whoever runs the customer's machine must not hold its
+  second step at the provider's; the summary of Prepare names them.
 - **Going back.** Anything that fails before the commit asks the provider to
   **abort** (its databases started again where they stopped, Odoo started,
   the maintenance page taken away at its first 200, the schedules on, the
   dumps deleted, the names served there again, *ready* again); here the
   instances stop, a database that took the writes is emptied (Retry copies it
-  again) and nothing is imported. The provider not answering: *interrupted*,
-  and **Retry** asks it how the switch ended, then finishes here (committed
-  there) or goes back. The deadline passed with neither commit nor abort, the
-  provider aborts by itself (its look every minute) and a late commit is 409.
+  again) and nothing is imported. The provider not answering: *interrupted*
+  (the instances here left as they are, held, so that a switch committed there
+  finishes with them), and **Retry** asks it how the switch ended, then
+  finishes here (committed there) or goes back. A switch never stays
+  *switching* without its job: any failure of the job or of its Retry (the
+  provider not answering, an import or a publication that fails after the
+  commit) leaves it *interrupted*, and so does the look at the start of
+  OmniaCLI for one whose job is gone; once its commit answered here, Retry
+  finishes it without asking the provider. Both jobs hold every server of the
+  workspace (no other job enters them meanwhile). The deadline passed with
+  neither commit nor abort, the provider aborts by itself (its look every
+  minute) and a late commit is 409.
 - **At the provider's after it.** The banner says *handed over on …, a
   stopped copy until …* (the next step deletes it); no job but the handover's
   own runs on its instances; a person of the workspace who logs in here
@@ -4000,6 +4029,28 @@ its deadline (663.6 s of 503, 0 × 502, then 200); a late commit was 409
 («expired») and Retry on lab4 went back. A commit whose answer lab3 dropped
 for 45 s: lab4 asked again twice (a read timeout at 30 s, a connect timeout)
 and the third answer was the same switch, committed once on lab3.
+
+After the review of the step (24/11/2026, the same pair, the data of UX-014's
+criteria: 6 people, one with a custom role limited to one instance, one with
+a passkey, two with two-step verification, one of them also a member of
+another workspace at lab3): an instance made not to answer on lab4 (its port
+refused on lab4's loopback): both instances 200 on lab3 again after 321.8 s
+and 321.7 s of 503 (0 × 502), and **0 rows written** on lab4 from the start
+of each instance to its database emptied (`pg_stat_user_tables`, every 2 s:
+only the 2 crons switched off before the start). The switch then: **16.3 s and
+14.8 s** without a 200 through lab3's nginx, the job's lines **16.5 s and
+15.0 s** name by name (within 0.2 s); on lab4 the 6 users (anna of lab3 as
+`anna.hv8`), the custom role with its member and its instance, 0 passkeys,
+the two with the app logged in with their password and a code of it, the one
+of two workspaces asked to set its app up. A second workspace: lab3 dropping
+every answer to lab4 once it committed, and lab4's OmniaCLI restarted during
+the commit: after the start lab4 read *interrupted* (its job interrupted), a
+Retry while cut failed and left it *interrupted*; with the instance stopped on
+lab4 and lab3 answering again, Retry found it committed, started the instance
+(its crons off, then on again by id), and ended *switched*, `/web/login` 200;
+its deploys started by lab3's admin read «the provider» and «another machine»,
+its schedule had no maker and no address, its destination arrived as
+`hv9-sftp-hv9` beside lab4's own `hv9-sftp`.
 
 ### Modules from the catalogs
 
