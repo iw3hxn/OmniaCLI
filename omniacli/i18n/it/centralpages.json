@@ -1,0 +1,12 @@
+{
+ "No model of a page {page}": "Nessun modello della pagina {page}",
+ "Off, the other instance writes its own pages again: the way back, without a release.": "Spento, l'altra istanza torna a scrivere le sue pagine: il ritorno indietro, senza un rilascio.",
+ "On: this panel writes the pages of the other instance with its own version, from the data the other instance gives; a fix of a page arrives without updating it. Off: the other instance writes its own pages, as before.": "Acceso: questo pannello scrive le pagine dell'altra istanza con la sua versione, dai dati che l'altra istanza gli dà; la correzione di una pagina arriva senza aggiornarla. Spento: l'altra istanza scrive le sue pagine, come prima.",
+ "Page written by {machine} ({version}): its plugins are not those of the panel ({plugins})": "Pagina scritta da {machine} ({version}): i suoi plugin non sono quelli del pannello ({plugins})",
+ "Page written by {machine} ({version}): the panel is older than the machine": "Pagina scritta da {machine} ({version}): il pannello è più vecchio della macchina",
+ "Page written by {machine} ({version}): update it to see the new one": "Pagina scritta da {machine} ({version}): aggiornala per vedere quella nuova",
+ "Pages written by this panel": "Pagine scritte da questo pannello",
+ "The certificate authority to trust, and who writes the pages of the other instance": "L'autorità di certificazione di cui fidarsi, e chi scrive le pagine dell'altra istanza",
+ "The model of a page is for the panel of a link only": "Il modello di una pagina è solo per il pannello di un collegamento",
+ "{name} answered {type} where this panel takes data only: refused": "{name} ha risposto {type} dove questo pannello accetta solo dati: rifiutato"
+}

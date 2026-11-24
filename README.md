@@ -1065,6 +1065,36 @@ proxy, a VPN, or an SSH tunnel (`http://` is accepted for a tunnel or a VPN,
 but then the token travels in clear). Both instances need a version with
 links (the Test link button says so).
 
+### A linked machine's pages, written here
+
+A linked machine's pages are written by **this** panel, with its own version
+(AD-017), from the data the machine gives: a fix of a page reaches every
+linked machine when this panel is updated, without updating them. The pages
+written here so far are Disks, the instance's Log, OmniaCLI's own Log,
+Instances, Backups, Servers (machines), Discover, a Publication's connection,
+the shells, Help, About and Settings; the others are still the machine's own.
+
+- **The contract.** `GET /api/info` of a machine says `agent_api` (1 from this
+  version) and its `plugins` (`{name: version}`, `built-in` for the package's
+  own); a machine that does not say it is 0. Each page here needs an
+  `agent_api` (`omniacli/centralpages.py`), and this panel reads its own and
+  the one before. When the machine's number is outside that, or it has a
+  plugin this panel has not at the same version, its own page passes as
+  before, with a line on top: «Page written by lab4 (2026.1.5513): update it to
+  see the new one», or «… the panel is older than the machine». The number is
+  read by **Try** and again when older than 10 minutes, kept in memory, and
+  read again right after an **Update OmniaCLI** asked from here.
+- **The model.** The machine answers each page's data at
+  `GET /api/pages/<page>` (to a link's token only, with the page's own role,
+  its fields by name: no object, no secret); the page's script calls
+  `/links/<name>/api/…` as before.
+- **Only data.** For such a link this panel takes from the machine JSON, files
+  to save and WebSockets; an HTML or script answer is refused (and in the
+  access log), but for the pages not written here yet and the line's way back.
+- **The way back**: on the link's **Edit… › Advanced**, untick **Pages written
+  by this panel** (`pages: machine` in the links file): the machine writes its
+  own pages again, as before, without a release.
+
 ### Links through SSH
 
 A customer's server that shows only SSH (and Odoo) still has its OmniaCLI

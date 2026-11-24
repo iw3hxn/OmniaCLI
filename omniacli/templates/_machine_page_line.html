@@ -1,0 +1,12 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{# AD-017 §17.2: the line on top of a page a linked machine wrote itself, put in its HTML by this panel; styled
+   inline, the machine's own style may be of any version #}
+<div role="status" data-machine-page-line style="margin: 0; padding: 8px 16px; background: var(--warn-soft, rgb(255 244 224)); color: var(--text, rgb(74 51 0)); border-bottom: 1px solid var(--warn, rgb(224 176 96)); font: 14px/20px system-ui, sans-serif;">
+{%- if why == "ahead" -%}
+{{ _("Page written by {machine} ({version}): the panel is older than the machine", machine=machine, version=version) }}
+{%- elif why == "plugins" -%}
+{{ _("Page written by {machine} ({version}): its plugins are not those of the panel ({plugins})", machine=machine, version=version, plugins=plugins) }}
+{%- else -%}
+{{ _("Page written by {machine} ({version}): update it to see the new one", machine=machine, version=version) }}
+{%- endif -%}
+</div>

@@ -67,6 +67,7 @@ from . import github
 from . import moduleupload, selfupdate, sshkeys
 from . import bell, brand, osupdates
 from . import dumpinfo
+from . import centralpages
 from . import totp
 from . import capabilities
 from . import clock
@@ -277,6 +278,10 @@ def _page_context(request: Request) -> dict:
         "puller_connections": sorted(settings.connections) if settings else [],
         # the panel under another name (brand.py, README Whitelabel); nothing set: today's look
         "brand": _brand_of(settings),
+        # a linked machine's page drawn by this panel (AD-017 §17.1): the machine's name, "" otherwise
+        "drawn_here": "",
+        # and what the machine says of who looks there (its role there, its kind): drawn_for, below
+        **(getattr(request.state, "drawn_for", None) or {}),
     }
 
 
@@ -326,6 +331,8 @@ _CHECKLIST_VALUE = re.compile(r"[A-Za-z0-9_.$:-]{1,200}")
 # the terminal of the shell page: xterm.js 6.0.0 and its fit addon 0.11.0
 # (npm @xterm/xterm and @xterm/addon-fit, MIT), served after the login
 _STATIC_FILES = {"xterm.js": "text/javascript", "xterm.css": "text/css", "addon-fit.js": "text/javascript"}
+# Update OmniaCLI of a linked machine, asked through its link: its agent_api is read again right after (AD-017 §17.2)
+SELF_UPDATE_PATH = "api/machine/omniacli-update"
 # served without login: the icons, and the background of the login page
 _PUBLIC_FILES = {"/favicon.ico": ("favicon.ico", "image/x-icon"),
                  "/icon-180.png": ("icon-180.png", "image/png"),
@@ -2844,7 +2851,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return {"app": "OmniaCLI", "version": _version(), "caller": str(user), "role": user.role,
                 "portal": portal_url() or ("" if settings.storage_roots else None),
                 # which machine it is (Replica on another server… finds its link to it by it); none for a customer
-                "machine": shown_name(user)}
+                "machine": shown_name(user),
+                # the contract of the pages a panel draws for this machine (AD-017 §17.2): the API it speaks and its
+                # plugins; a machine that does not say them is 0
+                "agent_api": centralpages.AGENT_API, "plugins": centralpages.plugin_versions()}
 
     @app.get("/api/servers")
     async def server_list(request: Request):
@@ -2958,7 +2968,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     @app.get("/disks")
     async def disks_page(request: Request):
         """The history of this machine's disks, and when each will be full."""
-        return _TEMPLATES.TemplateResponse(request, "disks.html", {})
+        return _TEMPLATES.TemplateResponse(request, "disks.html", await page_context("disks", request))
 
     async def pull_choice(request: Request, instance: Instance) -> set[str] | None:
         """The repositories chosen in the pull dialog (fields repo, with
@@ -3690,8 +3700,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     @app.get("/servers/{server}/{role}/log")
     async def log_page(request: Request, server: str, role: str):
         return _TEMPLATES.TemplateResponse(
-            request, "log.html", {"instance": get_instance(server, role)}
-        )
+            request, "log.html", await page_context("log", request, {"server": server, "role": role}))
 
     @app.get("/api/servers/{server}/{role}/log")
     async def log_read(
@@ -3755,7 +3764,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     @app.get("/omniacli/log", dependencies=[Depends(admin)])
     async def own_log_page(request: Request):
-        return _TEMPLATES.TemplateResponse(request, "own_log.html", {"log_file": own_log_file})
+        return _TEMPLATES.TemplateResponse(request, "own_log.html", await page_context("own_log", request))
 
     @app.get("/api/omniacli/log", dependencies=[Depends(admin)])
     async def own_log_read(pos: Optional[int] = None, inode: Optional[int] = None):
@@ -4255,7 +4264,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     @app.get("/config/discover", dependencies=[Depends(admin)])
     async def config_discover(request: Request):
-        return _TEMPLATES.TemplateResponse(request, "discover.html", {"roles": ROLES})
+        return _TEMPLATES.TemplateResponse(request, "discover.html", await page_context("discover", request))
 
     @app.get("/api/servers/discover", dependencies=[Depends(admin)])
     async def discover_list(request: Request):
@@ -9995,9 +10004,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     @app.get("/help", dependencies=[Depends(developer)])
     async def help_page(request: Request):
         """How to create a link and how to connect an MCP client."""
-        # seen through a link, the address the browser knows is the other instance's
-        base = portal_url() or ("https://<address of this OmniaCLI>" if prefix_of(request) else str(request.base_url).rstrip("/"))
-        return _TEMPLATES.TemplateResponse(request, "help.html", {"base_url": base})
+        return _TEMPLATES.TemplateResponse(request, "help.html", await page_context("help", request))
 
     @app.get("/plugins", dependencies=[Depends(admin)])
     async def plugins_page(request: Request):
@@ -10825,9 +10832,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 return refuse(f"A link named {name} already exists")
             if not new and name not in settings.link_targets:
                 return refuse(f"No link {name}", status.HTTP_404_NOT_FOUND)
-            data = {k: payload.get(k) for k in ("url", "token", "ca_file", "ssh")}
+            data = {k: payload.get(k) for k in ("url", "token", "ca_file", "ssh", "pages")}
             if not new and not str(data["token"] or "").strip():
                 data["token"] = settings.link_targets[name].token
+            if not new and "pages" not in payload:
+                # who does not say where its pages are drawn keeps it as it was
+                data["pages"] = settings.link_targets[name].pages
             try:
                 link = parse_link(name, data)
             except ConfigError as exc:
@@ -10847,8 +10857,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if new_name in settings.link_targets:
                 return refuse(f"A link named {new_name} already exists")
             try:
-                renamed = parse_link(new_name, {"url": link.url, "token": link.token, "ca_file": link.ca_file,
-                                                "ssh": link.ssh.to_dict() if link.ssh else None})
+                renamed = parse_link(new_name, link.to_dict())
             except ConfigError as exc:
                 return refuse(str(exc))
             uses = [inst for srv in settings.servers.values() for inst in srv.instances.values()
@@ -10924,24 +10933,15 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             info = None
         if not info or info.get("app") != "OmniaCLI":
             return {"ok": False, "error": f"no OmniaCLI with links there (HTTP {resp.status_code})"}
+        # its contract (AD-017 §17.2): read at Try the link, and when older than centralpages.READ_EVERY
+        agent_remember(name, info)
         return {"ok": True, **info}
 
     # --- machines prepared from here (machines.py) ------------------------
 
     @app.get("/machines", dependencies=[Depends(admin)])
     async def machines_page(request: Request):
-        # the provisioning key, made the first time the page is opened: one step less
-        try:
-            provision_key = await sshlinks.ensure_key(ssh_tunnels.folder, sshlinks.PROVISION_KEY_NAME)
-        except (sshlinks.SshError, OSError):
-            provision_key = None
-        return _TEMPLATES.TemplateResponse(request, "machines.html", {
-            "provision_key": provision_key,
-            "package_url": machines.PACKAGE_URL, "link_user": machines.LINK_USER,
-            "machines": machine_cards(request_language(request)),
-            # the linked servers' groups (Edit groups, the Dashboard's Linked): the machines are links
-            "groups": [g.to_dict() for g in settings.groups.get("links", [])],
-        })
+        return _TEMPLATES.TemplateResponse(request, "machines.html", await page_context("machines", request))
 
     def machine_cards(lang: str = "en") -> list[dict]:
         """The machines linked from here (their link's user is LINK_USER) and
@@ -11199,17 +11199,138 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return {"url": f"{request.url.scheme}://{here}{loginas.LOGIN_PATH}?t={token}", "login": data.get("login"),
                 "seconds": loginas.TOKEN_SECONDS, "tunnel": f"http://{odoo.netloc}/"}
 
+    # --- the pages of a linked machine drawn here (AD-017 §17.1-17.2) ---------------------------------------
+
+    # what each link's machine says of its contract (centralpages.agent_of), with when it was read: in memory,
+    # read at Try the link and again when older than centralpages.READ_EVERY
+    agents: dict[str, dict] = {}
+    app.state.link_agents = agents
+
+    def agent_remember(name: str, info: dict) -> dict:
+        found = {**centralpages.agent_of(info), "at": time.monotonic(),
+                 "soon_until": (agents.get(name) or {}).get("soon_until", 0.0)}
+        agents[name] = found
+        return found
+
+    def agent_forget(name: str) -> None:
+        if name in agents:
+            agents[name]["at"] = float("-inf")
+
+    def agent_updated(name: str) -> None:
+        """Update OmniaCLI asked of a machine from here: its agent_api is read again right after it, and for
+        a while at every page (it restarts with its new version a little later)."""
+        known = agents.setdefault(name, {"agent_api": 0, "plugins": {}, "version": "?"})
+        known["at"] = float("-inf")
+        known["soon_until"] = time.monotonic() + centralpages.READ_EVERY
+
+    async def agent_seen(link: LinkTarget, me: Principal) -> dict | None:
+        """The link's contract, read again when it is old; None: its machine does not answer /api/info."""
+        known = agents.get(link.name)
+        now = time.monotonic()
+        every = (centralpages.READ_AFTER_UPDATE if known and known.get("soon_until", 0.0) > now
+                 else centralpages.READ_EVERY)
+        if known and now - known.get("at", float("-inf")) < every:
+            return known
+        found = await probe_link(link, me.name, me.role)
+        return agents.get(link.name) if found["ok"] else None
+
+    def machine_page_line(request: Request, link: LinkTarget, agent: dict, why: str) -> str:
+        """The line on top of a page the machine wrote (the way back of AD-017 §17.2): who wrote it and why."""
+        lang = request_language(request)
+        return _TEMPLATES.get_template("_machine_page_line.html").render(
+            _=functools.partial(i18n.gettext, lang), machine=link.name, version=agent.get("version") or "?",
+            why=why, plugins=", ".join(centralpages.plugins_apart(agent.get("plugins") or {},
+                                                                  centralpages.plugin_versions())))
+
+    async def draw_linked_page(request: Request, link: LinkTarget, me: Principal, page: centralpages.Page,
+                               params: dict) -> Response | None:
+        """A page of the machine of link drawn with this panel's template, from the model the machine answers
+        for me (its role there, its fields by name); None when the machine has no model of it."""
+        headers = {**link_headers(link, me.name, me.role), "Accept": "application/json",
+                   "Accept-Language": request_language(request), _MENU_HEADER: ",".join(menu_places(me))}
+        try:
+            resp = await link_clients.client(link).get(f"/api/pages/{page.name}", params=params, headers=headers)
+        except httpx.HTTPError as exc:
+            return link_failure(request, link, describe_error(exc))
+        try:
+            data = resp.json()
+        except ValueError:
+            data = None
+        if not isinstance(data, dict):
+            return None if resp.status_code == 404 else link_failure(
+                request, link, f"its model of the page answered {resp.status_code}, not JSON")
+        if resp.status_code == 404 and data.get("detail") == "Not Found":
+            return None
+        if resp.status_code == 401:
+            return link_failure(request, link, "the other instance refused the token: ask for a new one")
+        if resp.status_code != 200:
+            raise HTTPException(resp.status_code if resp.status_code in (403, 404) else status.HTTP_502_BAD_GATEWAY,
+                                str(data.get("detail") or data.get("error") or f"{link.name}: {resp.status_code}"))
+        model = data.get("context")
+        if not isinstance(model, dict):
+            return link_failure(request, link, "its model of the page has no context")
+        # its fields by name: nothing else the machine sends enters the template
+        context = {k: model[k] for k in page.fields if k in model}
+        if page.name == "settings":
+            context = translated_settings(context, request_language(request))
+        role = data.get("role") if data.get("role") in ACCESS_ROLES else "user"
+        request.state.prefix = f"/links/{link.name}"
+        # this panel's menu, as a machine draws it for a person of a link (_MENU_HEADER)
+        request.state.central_menu = tuple(menu_places(me))
+        # what who looks may do there: the machine's word (its role there), never more than here
+        role = min(role, me.role, key=ACCESS_ROLES.index) if me.role in ACCESS_ROLES else role
+        request.state.drawn_for = {
+            "drawn_here": link.name, "can_act": reaches(role, "developer"), "is_admin": reaches(role, "admin"),
+            "own_user_shells": bool(data.get("development")), "scoped": False, "my_workspaces": [],
+            "central_user": me.name}
+        return _TEMPLATES.TemplateResponse(request, page.template, context)
+
     @app.api_route("/links/{name}/{path:path}", methods=["GET", "HEAD", "POST"])
     async def link_proxy(request: Request, name: str, path: str, me: Principal = Depends(current_user)):
-        """The other instance's page or API, as the link, with at most our role."""
+        """The other instance's page or API, as the link, with at most our role. With the link's pages: here
+        (AD-017 §17.2) a page of centralpages.PAGES is drawn by this panel when the machine's contract allows it;
+        else the machine's page passes with a line that says why. What else the machine answers passes only as
+        data (JSON, a file to save), but for its pages this panel does not draw yet."""
         if me.kind != "user":
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Only a user who logs in here may use a link")
         link = a_link(name)
         client = link_clients.client(link)
+        here = link.pages == centralpages.PAGES_HERE
+        api = path == "api" or path.startswith("api/")
+        drawn = centralpages.match(path) if here and not api else None
+        line = ""
+        if here and request.method == "POST" and path == SELF_UPDATE_PATH:
+            # an update made from this panel: its agent_api is read again soon after
+            agent_updated(link.name)
+        if here and path.startswith("static/") and path[len("static/"):] in _STATIC_FILES:
+            # the files of this panel's pages: its own, never the machine's script
+            return await static_file(path[len("static/"):])
+        page_asked = request.method == "GET" and "text/html" in request.headers.get("accept", "")
+        # the machine's own HTML passes: on a link with pages: machine, for a page this panel does not draw (yet:
+        # AD-017 §9, slices 3-5), and as the way back of §17.2 when the contract does not allow drawing it
+        machine_html = not here or (not api and drawn is None)
+        if here and not api and (drawn is not None or page_asked):
+            agent = await agent_seen(link, me)
+            page = drawn[0] if drawn else None
+            why = "" if agent is None else centralpages.contract(
+                page.needs_agent_api if page else centralpages.LEAST_NEEDED, agent["agent_api"], agent["plugins"],
+                centralpages.plugin_versions())
+            if page is not None and agent is not None and not why and request.method == "GET":
+                response = await draw_linked_page(request, link, me, page, drawn[1])
+                if response is not None:
+                    return response
+                # no model there: an older machine than it said (an update undone)
+                agent_forget(link.name)
+                why = centralpages.BEHIND
+            if agent is None or why:
+                # it does not answer its contract, or the contract does not allow drawing: the way back
+                machine_html = True
+            if why and (page_asked or (page is not None and request.method == "GET")):
+                line = machine_page_line(request, link, agent, why)
         headers = {k: request.headers[k] for k in _LINK_REQUEST_HEADERS if k in request.headers}
         # the body is passed on raw: ask only the encodings the browser accepts
         # (httpx would ask gzip by itself, and an nginx there would gzip)
-        headers["accept-encoding"] = request.headers.get("accept-encoding", "identity")
+        headers["accept-encoding"] = "identity" if line else request.headers.get("accept-encoding", "identity")
         # the pages there in this browser's language (its cookie is this site's)
         headers["accept-language"] = request_language(request)
         headers.update(link_headers(link, me.name, me.role))
@@ -11237,6 +11358,24 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             await resp.aclose()
             return link_failure(request, link, "the other instance refused the token: ask for a new one")
         kept = {k: resp.headers[k] for k in _LINK_RESPONSE_HEADERS if k in resp.headers}
+        if not machine_html and not centralpages.is_data(resp.headers.get("content-type", ""),
+                                                         resp.headers.get("content-disposition", ""),
+                                                         resp.headers.get("content-length", "1") != "0"):
+            # a page this panel draws, or an answer that is not data: never the machine's document or script
+            # under this panel's origin (AD-017 §17.5 decision 1)
+            await resp.aclose()
+            access_log.record("failed", "link", link.name, request.client.host if request.client else "",
+                              f"{resp.headers.get('content-type', '')[:60]} of {request.method} /{path[:120]} refused: "
+                              "its pages are drawn here")
+            return link_failure(request, link, f"{link.name} answered {resp.headers.get('content-type') or 'no type'} "
+                                               "where this panel takes data only: refused")
+        if line and "text/html" in resp.headers.get("content-type", ""):
+            try:
+                body = await resp.aread()
+            finally:
+                await resp.aclose()
+            kept.pop("content-length", None)
+            return Response(centralpages.with_line(body, line), status_code=resp.status_code, headers=kept)
         return StreamingResponse(resp.aiter_raw(), status_code=resp.status_code, headers=kept,
                                  background=BackgroundTask(resp.aclose))
 
@@ -11308,14 +11447,22 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return instance
 
     async def shell_page(request: Request, server: str, role: str, kind: str):
+        return _TEMPLATES.TemplateResponse(request, "shell.html", await page_context(
+            "shell", request, {"server": server, "role": role, "kind": kind}))
+
+    def shell_context(server: str, role: str, kind: str) -> dict:
+        """The shell page's fields (AD-017 §17.1: values, not the instance)."""
+        if kind not in shell_kinds:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"No shell {kind}")
         instance = shell_instance(server, role, kind)
         folder, run = shell_kinds[kind]
         command, _, stay = run(instance)
-        return _TEMPLATES.TemplateResponse(request, "shell.html", {
-            "instance": instance, "folder": folder(instance), "kind": kind, "command": command, "stay": stay,
-            "system_user": pwd.getpwuid(os.getuid()).pw_name, "shell": shell.login_shell()[0],
-            "drops": shell.drops_folder(instance.server, instance.role), "drop_days": shell.DROP_DAYS,
-            "drop_max": shell.DROP_MAX})
+        where = folder(instance)
+        return {"instance": {"server": instance.server, "role": instance.role, "key": instance.key},
+                "folder": str(where) if where else None, "kind": kind, "command": command, "stay": stay,
+                "system_user": pwd.getpwuid(os.getuid()).pw_name, "shell": shell.login_shell()[0],
+                "drops": str(shell.drops_folder(instance.server, instance.role)), "drop_days": shell.DROP_DAYS,
+                "drop_max": shell.DROP_MAX}
 
     async def shell_socket(websocket: WebSocket, server: str, role: str, kind: str, me: Principal):
         """A login shell of the user running OmniaCLI, in the instance's first
@@ -11842,9 +11989,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     async def connection_page(request: Request, name: str):
         """The instance a puller connection reaches: its state, disks, load,
         commands and jobs, as its reports told them."""
-        run = a_connection(name)
-        return _TEMPLATES.TemplateResponse(request, "connection.html", {
-            "name": name, "connection": run.connection, "commands": PUBLISHED_COMMANDS})
+        return _TEMPLATES.TemplateResponse(request, "connection.html",
+                                           await page_context("connection", request, {"name": name}))
 
     @app.get("/api/connections/{name}")
     async def connection_json(name: str):
@@ -11906,8 +12052,15 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     async def settings_page(request: Request, me: Principal = Depends(current_user)):
         """What the sidebar listed before (docs/ux/REVIEW-2026-11-18.md): each
         place with what it is for, the admins' ones for the admins."""
-        lang = request_language(request)
-        t = functools.partial(i18n.gettext, lang)
+        context = await page_context("settings", request)
+        return _TEMPLATES.TemplateResponse(request, "settings.html",
+                                           translated_settings(context, request_language(request)))
+
+    def settings_groups(request: Request, me: Principal) -> list[dict]:
+        """The places of the Settings page me sees, in English (who draws the page says them in its words)."""
+        def t(text: str) -> str:
+            return text
+
         admin_here = me.can("admin") and not me.scoped
 
         def group(title, *cards):
@@ -11939,7 +12092,96 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                   ("/options", t("Options"), t("Consoles, tunnels and the other options of this OmniaCLI"), admin_here),
                   ("/help", t("Help"), t("How OmniaCLI works, section by section"), True)),
         ]
-        return _TEMPLATES.TemplateResponse(request, "settings.html", {"groups": [g for g in groups if g]})
+        return [g for g in groups if g]
+
+    # --- the pages' models (AD-017 §17.1): what a page of class A takes, by name ---------------------------
+
+    # the least role of each page's model (its page route asks the same)
+    PAGE_ROLES = {"own_log": "admin", "machines": "admin", "discover": "admin", "shell": "developer",
+                  "help": "developer", "settings": "developer"}
+
+    def translated_settings(context: dict, lang: str) -> dict:
+        """The Settings page's groups in lang: the model says them in English, who draws the page in its words."""
+        return {"groups": [{"title": i18n.gettext(lang, str(g.get("title") or "")),
+                            "cards": [{"path": str(c.get("path") or ""),
+                                       "title": i18n.gettext(lang, str(c.get("title") or "")),
+                                       "text": i18n.gettext(lang, str(c.get("text") or ""))}
+                                      for c in g.get("cards") or [] if isinstance(c, dict)]}
+                           for g in context.get("groups") or [] if isinstance(g, dict)]}
+
+    async def page_context(page: str, request: Request, params: dict | None = None) -> dict:
+        """The context of a page of class A for the caller: plain values (no object, no secret), the same for
+        this machine's page and for the model a panel draws it from (GET /api/pages/{page})."""
+        me: Principal = request.state.user
+        params = params or {}
+        if page in ("disks", "about"):
+            return {}
+        if page == "log":
+            instance = get_instance(str(params.get("server") or ""), str(params.get("role") or ""))
+            return {"instance": {"server": instance.server, "role": instance.role, "key": instance.key,
+                                 "log_label": instance.log_label}}
+        if page == "own_log":
+            return {"log_file": str(own_log_file)}
+        if page == "instances":
+            links = listed_links(me)
+            return {"here_name": shown_name(me), "links": links, "quick_instance": new_instance_here(me),
+                    # Open ↗ beside Log in as… on the rows (UX-013 D5)
+                    "open_in_rows": OPEN_IN_INSTANCE_ROWS,
+                    # the new instance on a link's machine too (the dialog asks each one its versions)
+                    "ni_links": links if me.can("admin") else []}
+        if page == "backups":
+            if not sees_backups(me):
+                raise HTTPException(status.HTTP_403_FORBIDDEN, "The developer role is required")
+            links = listed_links(me)
+            return {"here_name": shown_name(me), "links": links,
+                    # Upload a backup…: to a workspace of this machine, or of a link (the machine's admins), each asked
+                    "upload_here": bool(import_workspaces(me)),
+                    "upload_links": links if not me.scoped and me.can("admin") else []}
+        if page == "machines":
+            # the provisioning key, made the first time the page is opened: one step less
+            try:
+                provision_key = await sshlinks.ensure_key(ssh_tunnels.folder, sshlinks.PROVISION_KEY_NAME)
+            except (sshlinks.SshError, OSError):
+                provision_key = None
+            return {"provision_key": provision_key, "package_url": machines.PACKAGE_URL,
+                    "link_user": machines.LINK_USER, "machines": machine_cards(request_language(request)),
+                    # the linked servers' groups (Edit groups, the Dashboard's Linked): the machines are links
+                    "groups": [g.to_dict() for g in settings.groups.get("links", [])]}
+        if page == "discover":
+            return {"roles": list(ROLES)}
+        if page == "connection":
+            name = str(params.get("name") or "")
+            run = a_connection(name)
+            return {"name": name, "connection": {"puller": run.connection.puller, "link": run.connection.link},
+                    "commands": list(PUBLISHED_COMMANDS)}
+        if page == "shell":
+            return shell_context(str(params.get("server") or ""), str(params.get("role") or ""),
+                                 str(params.get("kind") or ""))
+        if page == "help":
+            # seen through a link, the address the browser knows is the other instance's
+            return {"base_url": portal_url() or ("https://<address of this OmniaCLI>" if prefix_of(request)
+                                                 else str(request.base_url).rstrip("/"))}
+        if page == "settings":
+            return {"groups": settings_groups(request, me)}
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"No model of a page {page}")
+
+    @app.get("/api/pages/{page}")
+    async def page_model(request: Request, page: str, me: Principal = Depends(current_user)):
+        """The model of a page of this machine, for the panel that draws it with its own templates (AD-017
+        §17.1, a link with pages: here): the token of a link only, with the role the page asks, its fields by
+        name; who looks and the role are the link's (X-OmniaCLI-User, X-OmniaCLI-Role-Cap). Not a function of
+        the product: no twin in /api/v1 and MCP (§17.1 constraint 3)."""
+        if me.kind != "link":
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "The model of a page is for the panel of a link only")
+        if page not in centralpages.BY_NAME:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"No model of a page {page}")
+        needed = PAGE_ROLES.get(page)
+        if needed and not me.can(needed):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, f"The {needed} role is required")
+        context = await page_context(page, request, dict(request.query_params))
+        return {"agent_api": centralpages.AGENT_API, "page": page, "role": me.role,
+                # a shell of OmniaCLI's own user: not on a server (the pages' own_user_shells)
+                "development": settings.machine == MACHINE_DEVELOPMENT, "context": context}
 
     # --- options of the system ------------------------------------------
 
@@ -13992,13 +14234,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     async def instances_page(request: Request, me: Principal = Depends(current_user)):
         """The instances of every machine: this one's and each link's, their
         stagings under them, whether each production backs up by itself."""
-        links = listed_links(me)
-        return _TEMPLATES.TemplateResponse(request, "instances.html", {
-            "here_name": shown_name(me), "links": links, "quick_instance": new_instance_here(me),
-            # Open ↗ beside Log in as… on the rows (UX-013 D5)
-            "open_in_rows": OPEN_IN_INSTANCE_ROWS,
-            # the new instance on a link's machine too (the dialog asks each one its versions)
-            "ni_links": links if me.can("admin") else []})
+        return _TEMPLATES.TemplateResponse(request, "instances.html", await page_context("instances", request))
 
     @app.get("/api/instances")
     async def instances_list(request: Request, link: str = "", me: Principal = Depends(current_user)):
@@ -14082,14 +14318,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     @app.get("/backups")
     async def backups_page(request: Request, me: Principal = Depends(current_user)):
         """The backups of every machine: this one's and each link's."""
-        if not sees_backups(me):
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "The developer role is required")
-        links = listed_links(me)
-        return _TEMPLATES.TemplateResponse(request, "backups.html", {
-            "here_name": shown_name(me), "links": links,
-            # Upload a backup…: to a workspace of this machine, or of a link (the machine's admins), each asked
-            "upload_here": bool(import_workspaces(me)),
-            "upload_links": links if not me.scoped and me.can("admin") else []})
+        return _TEMPLATES.TemplateResponse(request, "backups.html", await page_context("backups", request))
 
     @app.get("/api/backups")
     async def backups_list(request: Request, link: str = "", me: Principal = Depends(current_user)):

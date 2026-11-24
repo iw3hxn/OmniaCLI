@@ -1037,6 +1037,9 @@ class LinkTarget:
     ssh: SshRoute | None = None
     # with ssh: the port of this machine its tunnel listens on (sshlinks.py)
     local_port: int = field(default=0, compare=False, repr=False)
+    # its pages: drawn by this panel with its own templates (here), or the machine's own as before (machine: the
+    # switch that undoes it without a release, AD-017 §17.3)
+    pages: str = "here"
 
     @property
     def address(self) -> str:
@@ -1058,6 +1061,8 @@ class LinkTarget:
             data["ca_file"] = self.ca_file
         if self.ssh is not None:
             data["ssh"] = self.ssh.to_dict()
+        if self.pages != "here":
+            data["pages"] = self.pages
         return data
 
 
@@ -1117,7 +1122,10 @@ def parse_link(name: str, data: dict) -> LinkTarget:
         # the tunnel ends on this machine: a certificate would not match it
         raise ConfigError(f"links.{name}: through SSH the url is http://, as the SSH server reaches OmniaCLI "
                           "(http://127.0.0.1:8090); SSH encrypts it")
-    return LinkTarget(name, url, token, ca_file, ssh)
+    pages = str(data.get("pages") or "here").strip()
+    if pages not in ("here", "machine"):
+        raise ConfigError(f"links.{name}.pages: here (its pages drawn by this panel) or machine (its own), not {pages!r}")
+    return LinkTarget(name, url, token, ca_file, ssh, pages=pages)
 
 
 def load_links(path: Path) -> dict[str, LinkTarget]:

@@ -627,7 +627,7 @@ summary { cursor: pointer; color: var(--muted); }
   {# shown through a link of a newer OmniaCLI: the menu of who looks, its own
      places (central_menu, prefix-less), the same in every page #}
   {% set central = central_menu is not none %}
-  <a class="brand" href="{{ '' if central else prefix }}/"><img src="{{ prefix ~ brand.logo if brand.logo else '/icon-180.png' }}" alt="">
+  <a class="brand" href="{{ '' if central else prefix }}/"><img src="{{ ('' if drawn_here else prefix) ~ brand.logo if brand.logo else '/icon-180.png' }}" alt="">
     {%- if brand.custom %}<span class="brand-name">{{ brand.name }}</span>{% else %}<span class="brand-name">Omnia<span>CLI</span></span>{% endif %}</a>
   <button type="button" class="menu-toggle" id="menu-toggle" aria-expanded="false" aria-controls="topnav"
           title="{{ _('Opens and closes the menu: the places of OmniaCLI') }}">{{ icon("menu", 20) }}{{ _("Menu") }}</button>

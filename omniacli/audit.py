@@ -103,6 +103,9 @@ NOT_SENSITIVE = frozenset({
     "/api/servers/{server}/modules/catalog", "/api/servers/{server}/modules/plan",
     "/api/servers/{server}/{role}/modules", "/api/servers/{server}/modules/uploaded", "/users", "/help", "/plugins", "/api/plugins/available",
     "/links", "/machines", "/api/machines", "/links/{name}",
+    # the model of a page of class A a panel draws (AD-017 §17.1): the same plain values its page shows, which is
+    # not sensitive either (disks, the log's file, the lists' links, the settings' places, a shell's folder)
+    "/api/pages/{page}",
     # through a link: the linked OmniaCLI logs it, with who acts here
     "/links/{name}/{path:path}",
     "/static/{name}", "/servers/{server}/{role}/shell", "/servers/{server}/{role}/claude",

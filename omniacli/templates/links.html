@@ -40,7 +40,7 @@
     {% set s = ssh.get(link.name) %}
     {% set tunnel = s.status.state if s and s.status else "" %}
     <tbody {{ item(link.name ~ " " ~ link.url ~ " " ~ (link.ssh.user ~ "@" ~ link.ssh.host if link.ssh else "")) }}>
-    <tr data-link="{{ link.name }}" data-url="{{ link.url }}" data-ca="{{ link.ca_file }}" data-tunnel="{{ tunnel }}"
+    <tr data-link="{{ link.name }}" data-url="{{ link.url }}" data-ca="{{ link.ca_file }}" data-tunnel="{{ tunnel }}" data-pages="{{ link.pages }}"
         {% if link.ssh %}data-ssh-host="{{ link.ssh.host }}" data-ssh-port="{{ link.ssh.port }}" data-ssh-user="{{ link.ssh.user }}"
         data-ssh-key="{{ link.ssh.host_key }}" data-fingerprint="{{ s.fingerprint }}"{% endif %}>
       <td><strong><a href="/links/{{ link.name }}/">{{ link.name }}</a></strong></td>
@@ -130,12 +130,15 @@
       </details>
     </div>
     <details id="ld-advanced">
-      <summary title="{{ _('The certificate authority to trust, for an instance with a certificate of its own') }}">{{ _("Advanced") }}</summary>
+      <summary title="{{ _('The certificate authority to trust, and who writes the pages of the other instance') }}">{{ _("Advanced") }}</summary>
       <div class="form-grid" style="margin-top: 8px">
         <label for="ld-ca">{{ _("Authority's certificate") }}</label>
         <div><input type="text" id="ld-ca" class="mono" placeholder="{{ _('empty: the system ones') }}">
           <span class="muted field-help">{{ _("The path, on this machine, of the file with the authority that signed the other instance's certificate.") }}</span></div>
       </div>
+      <label class="ld-switch" title="{{ _('On: this panel writes the pages of the other instance with its own version, from the data the other instance gives; a fix of a page arrives without updating it. Off: the other instance writes its own pages, as before.') }}">
+        <input type="checkbox" id="ld-pages" checked> {{ _("Pages written by this panel") }}</label>
+      <span class="muted field-help">{{ _("Off, the other instance writes its own pages again: the way back, without a release.") }}</span>
     </details>
     <p class="error" id="ld-error" role="alert"></p>
     <div class="actions">
@@ -204,7 +207,7 @@
 
   // the dialog of a link: a new one, or one of the list with its SSH server and what its server needs
   let editing = null, before = "";
-  const fields = ["ld-name", "ld-url", "ld-token", "ld-ssh", "ld-host", "ld-port", "ld-user", "ld-host-key", "ld-ca"];
+  const fields = ["ld-name", "ld-url", "ld-token", "ld-ssh", "ld-host", "ld-port", "ld-user", "ld-host-key", "ld-ca", "ld-pages"];
   const values = () => JSON.stringify(fields.map((id) => $(id).type === "checkbox" ? $(id).checked : $(id).value));
   function changed() {
     $("ld-ssh-fields").hidden = !$("ld-ssh").checked;
@@ -221,7 +224,8 @@
     $("ld-ssh").checked = !!d.sshHost;
     $("ld-host").value = d.sshHost || ""; $("ld-port").value = d.sshPort || 22; $("ld-user").value = d.sshUser || "omniacli-link";
     $("ld-host-key").value = d.sshKey || ""; $("ld-fingerprint").textContent = d.fingerprint || T.notFetched;
-    $("ld-ca").value = d.ca || ""; $("ld-advanced").open = !!d.ca;
+    $("ld-ca").value = d.ca || ""; $("ld-pages").checked = d.pages !== "machine";
+    $("ld-advanced").open = !!d.ca || d.pages === "machine";
     let shown = false;
     for (const box of dialog.querySelectorAll("[data-server-side]")) { box.hidden = box.dataset.serverSide !== editing; shown = shown || !box.hidden; }
     $("ld-server-new").hidden = shown;
@@ -250,6 +254,7 @@
     const host = $("ld-host").value.trim(), viaSsh = $("ld-ssh").checked && host;
     const name = $("ld-name").value.trim();
     const body = {name, url: $("ld-url").value.trim(), token: $("ld-token").value.trim(), ca_file: $("ld-ca").value.trim(),
+                  pages: $("ld-pages").checked ? "here" : "machine",
                   ssh: viaSsh ? {host, port: Number($("ld-port").value) || 22, user: $("ld-user").value.trim(), host_key: $("ld-host-key").value} : null};
     if (!editing) body.new = true;
     if (!(await post("save", body, $("ld-error")))) return;
