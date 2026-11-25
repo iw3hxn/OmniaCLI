@@ -57,6 +57,10 @@ from pathlib import Path
 STATE_FILE = "state.json"
 PLACEMENTS = "placements.json"
 HOSTED = "hosted-workspaces.json"
+# the native workspaces whose home is a central panel (AD-018 §18.2 point 2, slice 2): {workspace: {link, at, by}}
+CENTRAL_HOME = "central-home.json"
+# the workspaces one scope may carry (a person of several workspaces of one machine, through its central panel)
+SCOPE_WORKSPACES = 64
 MOVE_FOLDER = "move"
 # the copy stopped here after Complete, kept this many days (D-B4)
 COPY_DAYS = 7
@@ -211,6 +215,34 @@ class Hosted:
         return str(self.get(workspace).get("home") or "")
 
 
+class CentralHomes:
+    """The native workspaces of this machine whose people a central panel serves (AD-018 §18.2 point 2, slice 2):
+    {workspace: {link, at, by}}, link the name of the central panel's incoming link (auth.links), the only one whose
+    scope this machine takes for that workspace. Written by that link only (POST /api/identity/v1/home); it changes
+    nothing else: the workspace keeps its members, its login here and its pages, and it is no move (AD-018 vincolo
+    8.2: no copy, no Back, no forward)."""
+
+    def __init__(self, base: Path):
+        self.path = base / CENTRAL_HOME
+
+    def all(self) -> dict:
+        return {str(k): v for k, v in _read(self.path).items() if isinstance(v, dict) and isinstance(v.get("link"), str)}
+
+    def of(self, workspace: str) -> str:
+        return str((self.all().get(workspace) or {}).get("link") or "")
+
+    def put(self, workspace: str, entry: dict | None) -> None:
+        found = self.all()
+        if entry is None:
+            found.pop(workspace, None)
+        else:
+            found[workspace] = entry
+        if found:
+            _write(self.path, found)
+        else:
+            self.path.unlink(missing_ok=True)
+
+
 def forward_wanted(moves: Moves, workspace: str, names_of) -> tuple[str, str, list[str]]:
     """(mode, to, names) of the forward of a workspace's names from its moves now (AD-012), names_of(instance)
     its names: full for the names of its instances placed on another machine (or completing), whose copy is
@@ -298,9 +330,25 @@ def scope_encode(scope: dict) -> str:
     return base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
 
+def _scope_grant(grant, role: str):
+    """A grant of a scope checked: {role, capabilities, servers|None}, None for none; False when it is not one."""
+    if grant is None:
+        return None
+    if not isinstance(grant, dict) or not isinstance(grant.get("capabilities"), list):
+        return False
+    servers = grant.get("servers")
+    if servers is not None and not (isinstance(servers, list) and all(isinstance(s, str) for s in servers)):
+        return False
+    return {"role": str(grant.get("role") or role)[:64], "capabilities": [str(c) for c in grant["capabilities"]],
+            "servers": None if servers is None else [str(s) for s in servers]}
+
+
 def scope_decode(value: str) -> dict | None:
     """The scope of the header checked, None when it is not one: {ws, person, kind (user|token), role, grant
-    ({role, capabilities, servers|None}|None), members, provider, ci (a CI's token)}. Nothing of it widens what the link may do."""
+    ({role, capabilities, servers|None}|None), members, provider, ci (a CI's token), also}. also: the other
+    workspaces of the same person on this machine ([{ws, role, grant}], AD-018 slice 2: a person of two workspaces
+    of one machine, through its central panel), each one taken only as the first is. Nothing of it widens what the
+    link may do."""
     if not isinstance(value, str) or not value or len(value) > 16384:
         return None
     try:
@@ -313,20 +361,31 @@ def scope_decode(value: str) -> dict | None:
     if not (isinstance(ws, str) and _WORKSPACE.fullmatch(ws) and isinstance(person, str) and _NAME.fullmatch(person)
             and kind in ("user", "token") and role in _ROLES):
         return None
-    grant = data.get("grant")
-    if grant is not None:
-        if not isinstance(grant, dict) or not isinstance(grant.get("capabilities"), list):
+    grant = _scope_grant(data.get("grant"), role)
+    if grant is False:
+        return None
+    also, seen = [], {ws}
+    given = data.get("also")
+    if given is not None:
+        if not isinstance(given, list) or len(given) > SCOPE_WORKSPACES or kind != "user":
+            # a token is of one workspace
             return None
-        servers = grant.get("servers")
-        if servers is not None and not (isinstance(servers, list) and all(isinstance(s, str) for s in servers)):
-            return None
-        grant = {"role": str(grant.get("role") or role)[:64], "capabilities": [str(c) for c in grant["capabilities"]],
-                 "servers": None if servers is None else [str(s) for s in servers]}
+        for entry in given:
+            other = entry.get("ws") if isinstance(entry, dict) else None
+            if not (isinstance(other, str) and _WORKSPACE.fullmatch(other) and other not in seen
+                    and entry.get("role") in _ROLES):
+                return None
+            found = _scope_grant(entry.get("grant"), entry["role"])
+            if found is False:
+                return None
+            seen.add(other)
+            also.append({"ws": other, "role": entry["role"], "grant": found})
     members = data.get("members")
     members = [m for m in members if isinstance(m, str) and _NAME.fullmatch(m)] if isinstance(members, list) else []
     provider = data.get("provider")
     return {"ws": ws, "person": person, "kind": kind, "role": role, "grant": grant, "members": members,
-            "provider": provider[:100] if isinstance(provider, str) else "", "ci": data.get("ci") is True}
+            "provider": provider[:100] if isinstance(provider, str) else "", "ci": data.get("ci") is True,
+            "also": also}
 
 
 def server_of_path(path: str) -> tuple[str, str]:

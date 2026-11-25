@@ -46,6 +46,31 @@
   </div>
 </section>
 
+{% set home = idn.home or {} %}
+<section class="panel" aria-labelledby="idn-home-title" id="idn-home-panel" data-on="{{ 'yes' if home.on else 'no' }}">
+  <h2 id="idn-home-title">{{ _("This panel as the home of its workspaces") }}</h2>
+  <p class="muted">{{ _("Switched on, the people and the tokens of the imported workspaces log in on this panel, with the same password and the same app; each request of theirs goes to the machine with their scope, and the machine checks it again. Their login on the machine stays.") }}</p>
+  {% if home.on %}
+  <dl class="idn-facts">
+    <dt>{{ _("Switched on") }}</dt><dd>{{ home.at | moment }} · {{ home.by }}</dd>
+    <dt>{{ _("Workspaces served") }}</dt><dd>{% for w in home.workspaces %}<span class="mono">{{ w }}</span>{{ ", " if not loop.last }}{% else %}{{ _("none") }}{% endfor %}</dd>
+    <dt>{{ _("People") }}</dt><dd>{{ _("{people} people, {tokens} tokens", people=home.people | length, tokens=home.tokens) }}</dd>
+  </dl>
+  {% else %}
+  <p id="idn-home-off">{{ _("Switched off: the people of this machine log in on the machine only.") }}</p>
+  {% endif %}
+  {% if home.refused %}<p class="warn-line" data-refused="{{ home.refused | join(',') }}">{{ _("Never served while their name is one of this panel's or of another machine's: {names}. Rename them on the machine and import again.", names=home.refused | join(", ")) }}</p>{% endif %}
+  <div class="actions">
+    {% if home.on %}
+    <button type="button" class="danger" id="idn-home"
+            title="{{ _('This panel stops serving the people of this machine: their sessions here end, the machine is told, and they log in on the machine as before. It asks first.') }}">{{ _("Stop serving them here…") }}</button>
+    {% else %}
+    <button type="button" id="idn-home" {{ "disabled" if not done }}
+            title="{{ _('The people and tokens of the imported workspaces log in on this panel from now; the machine is told to take this panel for them. It asks first.') }}">{{ _("Serve them here…") }}</button>
+    {% endif %}
+  </div>
+</section>
+
 {% if plan %}
 <section class="panel" aria-labelledby="idn-dry-title">
   <h2 id="idn-dry-title">{{ _("The dry run, item by item") }}</h2>
@@ -112,13 +137,15 @@
   const API = {{ (prefix ~ "/api/identities/" ~ link) | tojson }}, LINK = {{ link | tojson }};
   const T = {refused: {{ _("Refused") | tojson }},
              importQ: {{ _("Import the identities of {link} on this panel, with the same hashes and secrets? The machine is not changed.", link=link) | tojson }},
-             deleteQ: {{ _("Delete on this panel what was imported from {link}? The machine and its people are not touched.", link=link) | tojson }}};
+             deleteQ: {{ _("Delete on this panel what was imported from {link}? The machine and its people are not touched.", link=link) | tojson }},
+             homeOnQ: {{ _("Serve the people of {link}'s workspaces on this panel? They log in here with the same password and app; the machine is told.", link=link) | tojson }},
+             homeOffQ: {{ _("Stop serving the people of {link} on this panel? Their sessions here end; they log in on the machine as before.", link=link) | tojson }}};
   const $ = (id) => document.getElementById(id), error = $("idn-error");
-  async function post(path, button) {
+  async function post(path, button, more) {
     button.disabled = true;
     try {
       const resp = await fetch(API + path, {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
-                                            body: JSON.stringify({confirm: LINK})});
+                                            body: JSON.stringify(Object.assign({confirm: LINK}, more || {}))});
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok) { error.textContent = data.error || data.detail || T.refused; error.hidden = false; return; }
       window.location.reload();
@@ -130,6 +157,10 @@
   });
   if (del) del.addEventListener("click", async () => {
     if (await window.omniaAsk(T.deleteQ, del, {danger: true})) post("/delete", del);
+  });
+  const home = $("idn-home"), on = $("idn-home-panel").dataset.on === "yes";
+  home.addEventListener("click", async () => {
+    if (await window.omniaAsk(on ? T.homeOffQ : T.homeOnQ, home, on ? {danger: true} : {})) post("/home", home, {on: !on});
   });
 })();
 </script>

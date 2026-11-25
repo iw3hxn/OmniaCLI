@@ -63,7 +63,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
-from . import centralpages, destinations, identityimport, pullcrypto
+from . import centralpages, destinations, identityimport, pullcrypto, remotehome
 from .config import ConfigError, invitations_file_of, load_links
 from .jobs import Job, JobFailed
 from .schedules import rotation_kept
@@ -335,6 +335,7 @@ INVENTORY = (
     Slot("sso", "the single sign-on of the workspaces"),
     Slot("oauth", "the OAuth clients and grants of MCP"),
     Slot("identity_imports", "the identities of the linked machines' workspaces imported here (AD-018)", folder=True),
+    Slot("workspace_homes", "the links whose machines' workspaces this panel serves (AD-018 slice 2)"),
     Slot("options", "the options of this panel"),
     Slot("groups", "the groups the lists are arranged in"),
     Slot("destinations", "the backup destinations, this backup's own among them, with their keys"),
@@ -366,6 +367,7 @@ def slot_paths(settings) -> dict[str, Path]:
         "sso": private / "sso.json",
         "oauth": settings.jobs_dir.parent / "oauth.json",
         "identity_imports": settings.jobs_dir.parent / identityimport.FOLDER,
+        "workspace_homes": data_dir / remotehome.HOMES_FILE,
         "options": settings.options_file or settings.servers_file.parent / "options.yaml",
         "groups": settings.groups_file or settings.servers_file.parent / "groups.yaml",
         "destinations": settings.destinations_file or settings.servers_file.parent / "destinations.yaml",

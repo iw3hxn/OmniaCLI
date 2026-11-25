@@ -102,6 +102,11 @@ case "$1" in
         # slice 1): their hashes and secrets (600); a package staged by the first build of it (none is any more)
         rm -rf /var/lib/omniacli/identity-imports
         rm -f /var/lib/omniacli/.identity-package-*
+        # the central panel as the home of those workspaces (remotehome.py, AD-018 slice 2): its switch per link, the
+        # sessions of the people it serves; on a machine, the workspaces whose people a central panel serves
+        rm -f /var/lib/omniacli/workspace-homes.json /var/lib/omniacli/workspace-homes.json.*.tmp \
+            /var/lib/omniacli/remote-sessions.json /var/lib/omniacli/remote-sessions.json.tmp \
+            /var/lib/omniacli/central-home.json /var/lib/omniacli/central-home.json.tmp
         # the moves of instances to other machines (placement.py, AD-015): their states, the instances placed
         # elsewhere, the workspaces hosted here for their home
         rm -rf /var/lib/omniacli/move

@@ -57,7 +57,7 @@ from . import (backupcheck, backupchoices, checks, deployhooks, destinations, en
                workspaceops)
 from .accesslog import REQUEST as AUDIT_REQUEST, AccessLog
 from .accesslog import numbered as access_files
-from . import audit, centralbackup, identityimport, siem
+from . import audit, centralbackup, identityimport, remotehome, siem
 from . import apiguard, apiv1
 from .apiguard import ApiError
 from . import i18n, loginas, machines, modulecatalog, pgreport, pgtuning, stagings, workspaceweb
@@ -165,6 +165,7 @@ from . import metricshistory
 from .metricshistory import MetricsHistory, MetricsRecorder
 from .scheduler import AutoUpdater
 from .sessions import COOKIE, LIFETIME, LoginLimiter, SessionStore, device
+from .sessions import _digest as _digest_session, sid
 
 
 def request_language(request: HTTPConnection) -> str:
@@ -505,6 +506,18 @@ WORKSPACE_ROUTES = frozenset({
     *(path for _, path in apiv1.V1_WORKSPACE_TOOLS), *(path for _, path in apiv1.DOCUMENT_ROUTES),
 })
 V1_MACHINE_PATHS = frozenset(path for _, path in apiv1.V1_MACHINE_TOOLS)
+# what a person of a workspace served by this central panel (AD-018 slice 2) reaches of this panel itself: its
+# account read, its logout, the files of the pages
+REMOTE_OWN_ROUTES = frozenset({"/logout", "/account", "/static/{name}", "/x/{plugin}/static/{path:path}",
+                               *(path for _, path in apiv1.DOCUMENT_ROUTES)})
+# a change of its account (its password, its second step, its passkeys, its sessions, a connector): where its
+# identity lives now; slice 5 brings it here
+REMOTE_PASSKEY_LATER = ("Your second step is a passkey: on this portal it comes with its name. Log in where you "
+                        "logged in before for now")
+REMOTE_SETUP_LATER = ("This portal asks a second step and you have none yet: set it up where you logged in before, "
+                      "then log in here")
+REMOTE_ACCOUNT_LATER = ("Your account is changed where you logged in before: it comes to this portal with your "
+                        "workspace's move")
 
 
 _logger = logging.getLogger(__name__)
@@ -792,6 +805,54 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     own_log_file = settings.logs_dir / "omniacli.log"
     # the browsers' logins: next to the jobs, like the access log
     sessions = SessionStore(settings.jobs_dir.parent / "sessions.json")
+    # the central panel as the home of its linked machines' workspaces (AD-018 slice 2, remotehome.py): the switch of
+    # each link (off by default), and the sessions of the people it serves, apart from this panel's own
+    workspace_homes = remotehome.Homes((settings.links_file or settings.servers_file).parent / remotehome.HOMES_FILE)
+    remote_sessions = SessionStore(settings.jobs_dir.parent / remotehome.SESSIONS_FILE)
+    serving_cache: dict = {}
+
+    def serving() -> remotehome.Served:
+        """What this panel serves now (remotehome.served), read again when an import, the switches, this panel's
+        users or workspaces changed."""
+        stamps = []
+        for link in identity_store.links():
+            with contextlib.suppress(OSError):
+                st = identity_store.path(link).stat()
+                stamps.append((link, st.st_mtime_ns, st.st_size))
+        key = (workspace_homes.stamp(), tuple(stamps), id(settings.users), tuple(sorted(settings.users)),
+               tuple(sorted(settings.workspaces)))
+        if serving_cache.get("key") != key:
+            imports = {link: identity_store.load(link) for link in identity_store.links()}
+            serving_cache.update(key=key, found=remotehome.served(imports, workspace_homes.all(),
+                                                                  settings.workspaces, settings.users))
+        return serving_cache["found"]
+
+    def remote_hashes() -> dict[str, str]:
+        """{name: hash} of the people served (their sessions are read against these)."""
+        return {n: p.hash for n, p in serving().people.items()}
+
+    def remote_person(name: str) -> Principal | None:
+        """The Principal of a person served here, None for none (AD-018 slice 2)."""
+        person = serving().people.get(name)
+        if person is None or not settings.link_targets.get(person.link):
+            return None
+        return Principal(name, "user", workspaces=person.workspaces, scoped=True,
+                         grants=tuple((w, capabilities.Grant(g["role"], frozenset(g["capabilities"]),
+                                                             None if g["servers"] is None else frozenset(g["servers"])))
+                                      for w, g in person.grants), remote=person.link)
+
+    def remote_token(token: str) -> Principal | None:
+        """The Principal of a token of a served workspace, None for none: it reads, and acts through the REST API
+        and MCP, at its machine (whose rules for a token apply there)."""
+        found = remotehome.token_of(serving(), token)
+        if found is None or not settings.link_targets.get(found.link):
+            return None
+        grant = found.grant
+        return Principal(found.name, "user", "token", workspaces=((found.workspace, found.role),), scoped=True,
+                         grants=((found.workspace, capabilities.Grant(
+                             grant["role"], frozenset(grant["capabilities"]),
+                             None if grant["servers"] is None else frozenset(grant["servers"]))),)
+                         if grant is not None else (), remote=found.link, ci=found.ci)
     tunnels = tunnel.TunnelManager(
         lambda: settings.options, link_headers,
         lambda user, detail: access_log.record("tunnel", "user", user, "", detail))
@@ -803,6 +864,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         settings.users_file.with_name("second-factor.json") if settings.users_file
         else settings.jobs_dir.parent / "second-factor.json")
     pending_logins = totp.PendingLogins()
+    # the logins of the people served for a linked machine (AD-018 slice 2) still owing their code: apart, read
+    # against their imported hashes only
+    remote_pending = totp.PendingLogins()
     account_setups: dict[str, tuple[str, float]] = {}
     # the passkeys (passkeys.py) and the single sign-on of the workspaces (sso.py), next to the users file
     private_dir = settings.users_file.parent if settings.users_file else settings.jobs_dir.parent
@@ -936,6 +1000,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 return Principal(name, settings.token_role(name), "token")
             name = authenticator.link_name(token)
             if name is None:
+                remote = remote_token(token)
+                if remote is not None:
+                    # a token of a workspace this panel serves (AD-018 slice 2): its machine's rules for a token
+                    # apply there; here it reaches what RemoteRoutes asks there for it
+                    return remote
                 raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token",
                                     headers={"WWW-Authenticate": "Bearer"})
             # a linked instance: no browser sends its token by itself, so no
@@ -959,6 +1028,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         # a browser: the session of the login form
         name = sessions.user(request.cookies.get(COOKIE), settings.users)
         if name is None:
+            remote = remote_session(request)
+            if remote is not None:
+                if method not in ("GET", "HEAD") and not _same_origin(request):
+                    raise HTTPException(status.HTTP_403_FORBIDDEN, "Cross-site request refused")
+                return remote
             # marked, so the pages' scripts tell it from a link's or a token's 401
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Login required", headers={_LOGIN_HEADER: "required"})
         # its last activity and address, for the person's list of sessions (Account)
@@ -974,14 +1048,32 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                              grants=settings.grants(name))
         return Principal(name, role)
 
+    def remote_session(request: HTTPConnection) -> Principal | None:
+        """The person of a session of a workspace this panel serves (remote_sessions), None for none."""
+        cookie = request.cookies.get(COOKIE)
+        if not cookie:
+            return None
+        name = remote_sessions.user(cookie, remote_hashes())
+        if name is None:
+            return None
+        remote_sessions.seen(cookie, request.client.host if request.client else "")
+        return remote_person(name)
+
     def delegated_scope(link: str, value: str) -> dict | None:
         """The scope a link sends (X-OmniaCLI-Scope), when this machine takes it: the link is the home of the
-        scope's workspace in hosted-workspaces.json, with the admin role (AD-014 §3); None otherwise."""
+        scope's workspace in hosted-workspaces.json (AD-014 §3), or the central panel that serves the people of this
+        machine's own workspace (central-home.json, AD-018 §18.2), with the admin role; every other workspace the
+        scope carries (also) the same; None otherwise."""
         found = placement.scope_decode(value)
-        if found is None or found["ws"] not in settings.workspaces or link not in settings.links:
+        if found is None or link not in settings.links or settings.links[link].role != "admin":
             return None
-        if hosted.home_of(found["ws"]) != link or settings.links[link].role != "admin":
-            return None
+        for ws in (found["ws"], *(a["ws"] for a in found["also"])):
+            if ws not in settings.workspaces:
+                return None
+            home = hosted.home_of(ws)
+            if home != link and (home or central_homes.of(ws) != link):
+                # a workspace hosted for another home is never the central panel's, nor another link's
+                return None
         return found
 
     def delegated(request: HTTPConnection, link: str, link_role: str, value: str, method: str) -> Principal:
@@ -993,22 +1085,23 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             access_log.record("failed", "link", link, ip, f"a delegated scope refused: {method} {request.url.path}"[:200])
             raise HTTPException(status.HTTP_403_FORBIDDEN, "A workspace's scope is taken from the link of the machine "
                                                            "of that workspace only")
-        ws = found["ws"]
-        role = min(found["role"], link_role, key=ACCESS_ROLES.index)
-        grant = found["grant"]
-        if grant is not None:
-            servers = grant["servers"]
-            grant = capabilities.Grant(grant["role"], frozenset(c for c in grant["capabilities"]
-                                                                if c in capabilities.PRESETS[role]),
-                                       None if servers is None else frozenset(servers))
+        roles, grants = [], []
+        for entry in (found, *found["also"]):
+            role = min(entry["role"], link_role, key=ACCESS_ROLES.index)
+            grant = entry["grant"]
+            if grant is not None:
+                servers = grant["servers"]
+                grants.append((entry["ws"], capabilities.Grant(
+                    grant["role"], frozenset(c for c in grant["capabilities"] if c in capabilities.PRESETS[role]),
+                    None if servers is None else frozenset(servers))))
+            roles.append((entry["ws"], role))
         if found["kind"] == "token":
             # the rules of a token here too (identify): it reads, and acts through the REST API only
             if method not in ("GET", "HEAD") and not request.url.path.startswith(apiv1.PREFIX + "/"):
                 raise HTTPException(status.HTTP_403_FORBIDDEN, "A token may only read")
         request.state.delegated = {**found, "link": link}
-        return Principal(found["person"], "user", found["kind"], workspaces=((ws, role),), scoped=True,
-                         grants=((ws, grant),) if grant is not None else (), via=link,
-                         person=found["kind"] == "user", ci=bool(found.get("ci")))
+        return Principal(found["person"], "user", found["kind"], workspaces=tuple(roles), scoped=True,
+                         grants=tuple(grants), via=link, person=found["kind"] == "user", ci=bool(found.get("ci")))
 
     def in_workspaces(request: HTTPConnection, user: Principal) -> Principal:
         """A user of workspaces only reaches the routes of WORKSPACE_ROUTES,
@@ -1018,10 +1111,24 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         route = request.scope.get("route")
         path = getattr(route, "path", None)
         params = request.scope.get("path_params") or {}
+        if user.remote:
+            # a person or a token of a workspace this panel serves for a linked machine (AD-018 slice 2): its requests
+            # go there (remote_proxy, which checks them on the route asked); here only its login, its account and
+            # this panel's files
+            if path == REMOTE_PREFIX + "/{path:path}" or (user.kind == "user" and path in REMOTE_OWN_ROUTES):
+                return user
+            if user.kind == "user" and path in WORKSPACE_ROUTES and (path or "").startswith("/api/account/") \
+                    or path == "/api/oauth/grants/revoke":
+                raise HTTPException(status.HTTP_409_CONFLICT, REMOTE_ACCOUNT_LATER)
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Not open to the users of workspaces")
         if path == placement.PLACED_PREFIX + "/{server}/{path:path}" and moves.host_of(str(params.get("server") or "")):
             # a placed instance's page or answer (AD-014): checked by its route on the route it asks there
             # (placed_caller, the same rules), before anything is asked or done
             return user
+        if path == "/api/pages/{page}" and user.via and user.kind == "user":
+            # the model of a page for a person of a workspace, asked by the central panel that serves its people
+            # (AD-018 slice 2): checked on the route of the page itself, with the page's names, as its page is
+            return in_workspaces(customer_page_probe(request, str(params.get("page") or "")), user)
         if path in V1_MACHINE_PATHS:
             # the handover and the move through the REST API: said as MCP says it (apiguard.machine_refusal)
             raise apiguard.machine_refusal(True, user.role, False, "")
@@ -1071,6 +1178,18 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             roles.append(role)
         # a job of several servers: the lowest of its roles there
         return dataclasses.replace(user, role=min(roles, key=ACCESS_ROLES.index))
+
+    def customer_page_probe(request: HTTPConnection, page: str) -> HTTPConnection:
+        """The request of a page's model as the request of the page (centralpages.CUSTOMER_ROUTES): its route and
+        its names from the model's query; a page a person of a workspace does not open is refused."""
+        template = centralpages.CUSTOMER_ROUTES.get(page)
+        names = re.findall(r"\{(\w+)\}", template or "")
+        query = request.query_params
+        if template is None or any(not query.get(n) for n in names):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Not open to the users of workspaces")
+        probe = {**request.scope, "route": types.SimpleNamespace(path=template), "method": "GET",
+                 "path_params": {n: query[n] for n in names}}
+        return HTTPConnection(probe)
 
     def refusal(user: Principal | None, capability: str | None, workspace: str | None = None, servers=(),
                 whole: bool = False) -> str | None:
@@ -1405,7 +1524,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         finally:
             JOBS_STARTED.reset(mark)
         user = getattr(request.state, "user", None)
-        if user is None:
+        if user is None or getattr(request.state, "remote_audited", False):
+            # (a request of a person served for a linked machine: its own entry, remote_record)
             return response
         ip = request.client.host if request.client else ""
         kind, name, on_behalf = audit_actor(user)
@@ -1555,6 +1675,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         token = request.cookies.get(totp.STEP_COOKIE)
         found = pending_logins.get(token, settings.users)
         if found is None:
+            remote = remote_pending.get(token, remote_hashes())
+            if remote is not None:
+                return await remote_step(request, token, remote)
             # none, ended, used up, or the password changed meanwhile: the password again
             return RedirectResponse("/login", status.HTTP_303_SEE_OTHER)
         if found.setup != (request.url.path == "/login/setup"):
@@ -1607,6 +1730,48 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         open_session(request, response, name, step_how(found, "recovery code" if result[0] == "recovery" else "code"))
         return response
 
+    async def remote_step(request: Request, token: str, found: totp.Pending):
+        """The code of a person served here (AD-018 slice 2): the same app as on its machine, a code accepted once
+        (identityimport.Store.check_code). Recovery codes are its machine's until its workspace moves (slice 5)."""
+        if request.url.path != "/login/code":
+            return RedirectResponse("/login/code", status.HTTP_303_SEE_OTHER)
+        if request.method == "GET":
+            return login_page(request, found.next_path, step="code", user=found.user, totp_on=True, passkey_step=False)
+        if not _same_origin(request):
+            return HTMLResponse("Cross-site login refused", status_code=403)
+        form = parse_qs((await request.body()).decode("utf-8", "replace"))
+        code = (form.get("code") or [""])[0].strip()[:64]
+        ip = request.client.host if request.client else ""
+        name = found.user
+        person = serving().people.get(name)
+        wait = limiter.wait(ip, name)
+        if wait:
+            access_log.record("failed", "user", name, ip, f"second step: too many failed logins: wait {wait} s")
+            return login_page(request, found.next_path, f"Too many failed logins: try again in {wait} seconds.", 429,
+                              step="code", user=name, totp_on=True, passkey_step=False)
+        ok = person is not None and await asyncio.to_thread(identity_store.check_code, person.link, name, code,
+                                                            person.hash)
+        if not ok:
+            limiter.failed(ip, name)
+            left = remote_pending.failed(token)
+            access_log.record("failed", "user", name, ip, "second step: wrong code" + (
+                "" if left else ", the password is asked again"), via=person.link if person else "")
+            if not left:
+                response = login_page(request, found.next_path, "Too many wrong codes: log in again with your password.",
+                                      401)
+                response.delete_cookie(totp.STEP_COOKIE, path="/login")
+                return response
+            return login_page(request, found.next_path, "Wrong code.", 401, step="code", user=name, totp_on=True,
+                              passkey_step=False)
+        limiter.succeeded(ip, name)
+        remote_pending.drop(token)
+        access_log.record("login", "user", name, ip, f"{found.via}, second step: code", role=WORKSPACE_ROLE,
+                          via=person.link, workspaces=[w for w, _ in person.workspaces])
+        response = RedirectResponse(found.next_path, status.HTTP_303_SEE_OTHER)
+        response.delete_cookie(totp.STEP_COOKIE, path="/login")
+        open_remote_session(request, response, person, "password + code")
+        return response
+
     def step_how(found: totp.Pending, second: str) -> str:
         """How a session made after a second step was opened (Account's list)."""
         first = found.via[len("single sign-on "):] if found.via.startswith("single sign-on ") else "password"
@@ -1617,7 +1782,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         LIFETIME, failed tries limited per address and user name."""
         if request.method == "GET":
             next_path = _next_path(request.query_params.get("next", "/"))
-            if sessions.user(request.cookies.get(COOKIE), settings.users):
+            if sessions.user(request.cookies.get(COOKIE), settings.users) or remote_session(request) is not None:
                 return RedirectResponse(next_path, status.HTTP_303_SEE_OTHER)
             return login_page(request, next_path)
         if not _same_origin(request):
@@ -1632,6 +1797,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             access_log.record("failed", "user", name, ip, f"too many failed logins: wait {wait} s")
             return login_page(request, next_path, f"Too many failed logins: try again in {wait} seconds.", 429)
         if not name or not await asyncio.to_thread(authenticator.check, name, password):
+            # a person of a workspace this panel serves for a linked machine (AD-018 slice 2): its imported hash; a
+            # name of neither pays a dummy hash there too, so the time does not say who was imported
+            remote = await asyncio.to_thread(remote_password, name, password) if name else None
+            if remote is not None:
+                return remote_login(request, remote, next_path, ip)
             limiter.failed(ip, name)
             access_log.record("failed", "user", name, ip, "login form")
             return login_page(request, next_path, "Wrong user name or password.", 401)
@@ -1653,6 +1823,48 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         response = RedirectResponse(next_path, status.HTTP_303_SEE_OTHER)
         open_session(request, response, name)
         return response
+
+    def remote_password(name: str, password: str) -> remotehome.Person | None:
+        """The person served here whose name and password these are, None otherwise (a dummy hash paid)."""
+        person = serving().people.get(name)
+        if person is None or name in settings.users:
+            verify_password(password, identityimport._dummy())
+            return None
+        encoded = identity_store.check_password(person.link, name, password)
+        return person if encoded is not None and encoded == person.hash else None
+
+    def remote_login(request: Request, person: remotehome.Person, next_path: str, ip: str):
+        """The password of a person served here was right: its app's code next if it has one (the same secret as on
+        its machine); none, the session. A passkey as its only second step is the portal's name's (slice 3): refused
+        with why; a second step this panel asks of everybody and it has none: refused too, its set-up is an identity
+        change, made where it logged in before (slice 5)."""
+        via = f"login form, workspaces of {person.link}"
+        if person.second == remotehome.TOTP:
+            token = remote_pending.create(person.name, next_path, person.hash, False, via)
+            response = RedirectResponse("/login/code", status.HTTP_303_SEE_OTHER)
+            response.set_cookie(totp.STEP_COOKIE, token, max_age=totp.PENDING_SECONDS, httponly=True,
+                                samesite="strict", secure=request.url.scheme == "https", path="/login")
+            return response
+        refused = ""
+        if person.second == remotehome.PASSKEY_ONLY:
+            refused = REMOTE_PASSKEY_LATER
+        elif settings.options.second_factor == "everybody" or (settings.options.second_factor == "portal"
+                                                                and settings.options.portal_address):
+            refused = REMOTE_SETUP_LATER
+        if refused:
+            access_log.record("failed", "user", person.name, ip, f"{via}: {refused}"[:300], via=person.link)
+            return login_page(request, next_path, refused, 403)
+        limiter.succeeded(ip, person.name)
+        access_log.record("login", "user", person.name, ip, via, role=WORKSPACE_ROLE, via=person.link,
+                          workspaces=[w for w, _ in person.workspaces])
+        response = RedirectResponse(next_path, status.HTTP_303_SEE_OTHER)
+        open_remote_session(request, response, person, "password")
+        return response
+
+    def open_remote_session(request: Request, response, person: remotehome.Person, how: str) -> None:
+        token = remote_sessions.create(person.name, person.hash, request.headers.get("user-agent", ""),
+                                       request.client.host if request.client else "", how)
+        set_session_cookie(request, response, token)
 
     def set_session_cookie(request: Request, response, token: str) -> None:
         response.set_cookie(COOKIE, token, max_age=LIFETIME, httponly=True, samesite="strict",
@@ -2401,7 +2613,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     @app.post("/logout")
     async def logout(request: Request, me: Principal = Depends(current_user)):
-        sessions.drop(request.cookies.get(COOKIE))
+        (remote_sessions if me.remote else sessions).drop(request.cookies.get(COOKIE))
         access_log.record("logout", me.kind, me.name, request.client.host if request.client else "")
         response = RedirectResponse("/login", status.HTTP_303_SEE_OTHER)
         response.delete_cookie(COOKIE, path="/")
@@ -12212,6 +12424,384 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return StreamingResponse(resp.aiter_raw(), status_code=resp.status_code, headers=kept,
                                  background=BackgroundTask(resp.aclose))
 
+    # --- the people of the workspaces this panel serves (AD-018 §18.2, slice 2; remotehome.py) ----------------------
+    # A person or a token of a workspace of a linked machine whose link has its switch on logs in here; every request
+    # of theirs (RemoteRoutes) is checked here first, on the same route and with the same rules as on the machine
+    # (remote_check: WORKSPACE_ROUTES, its workspaces, its servers, its custom role), then asked of the machine through
+    # the link with its scope (X-OmniaCLI-Scope), which the machine checks again (delegated_scope, in_workspaces). Its
+    # pages are drawn here from the machine's models (AD-017); from the machine only data passes, never its HTML
+    # (§18.6.4). Its account is this panel's (the identity lives here): in this slice it reads it, and changes it
+    # where it logged in before (slice 5 moves the changes here).
+
+    REMOTE_PREFIX = "/.remote"
+    # what a person served here asks of this panel itself, never of its machine
+    REMOTE_HERE = re.compile(r"/(?:login(?:/.*)?|logout|account|api/account/.*|api/oauth/.*|static/[^/]+"
+                             r"|x/[^/]+/static/.+|brand/logo|favicon\.ico|icon-180\.png|login-background\.jpg"
+                             r"|api/v1/docs|api/v1/openapi\.json|language/[A-Za-z_-]+|about)")
+    # the lists (AD-018 §8.9, as AD-017 8.4): within LIST_TIMEOUT; a page's model and any other read within 60 s
+    REMOTE_LISTS = frozenset({"/api/servers", "/api/instances", "/api/backups", "/api/jobs", "/api/bell", "/api/metrics",
+                              "/api/map", "/api/workspaces/list", "/api/imports/places"})
+    REMOTE_PAGE_TIMEOUT = 60
+    # an action (a backup's upload, a restore asked) keeps the link's own time
+    REMOTE_ACTION_TIMEOUT = 600
+    # the servers of a person's workspaces, as its machine listed them: {(link, person): (when, {server: workspace})}
+    remote_servers_seen: dict = {}
+    REMOTE_SERVERS_FRESH = 60
+
+    def remote_caller(conn: HTTPConnection) -> bool:
+        """Whether a request is of a person or a token this panel serves for a linked machine (AD-018 slice 2)."""
+        scheme, _, token = conn.headers.get("authorization", "").partition(" ")
+        if scheme.lower() == "bearer":
+            token = token.strip()
+            return (bool(token) and authenticator.token_name(token) is None and authenticator.link_name(token) is None
+                    and remote_token(token) is not None)
+        if scheme:
+            return False
+        cookie = conn.cookies.get(COOKIE)
+        return (bool(cookie) and sessions.user(cookie, settings.users) is None
+                and remote_sessions.user(cookie, remote_hashes()) is not None)
+
+    class RemoteRoutes:
+        """The requests of the people served here, to REMOTE_PREFIX (the same dict, which the access log reads), but
+        what this panel answers itself (REMOTE_HERE: the login, the account, the static files)."""
+
+        def __init__(self, inner):
+            self.inner = inner
+
+        async def __call__(self, scope, receive, send):
+            if scope["type"] == "http":
+                path = scope.get("path") or ""
+                if (not path.startswith(REMOTE_PREFIX + "/") and not REMOTE_HERE.fullmatch(path)
+                        and remote_caller(HTTPConnection(scope))):
+                    moved = REMOTE_PREFIX + path
+                    scope["path"], scope["raw_path"] = moved, moved.encode()
+            await self.inner(scope, receive, send)
+
+    def remote_entry(me: Principal) -> remotehome.Person | remotehome.Token | None:
+        """What remotehome serves of me now (a switch turned off meanwhile: None)."""
+        found = serving()
+        if me.kind == "token":
+            return next((t for t in found.tokens.values() if t.name == me.name and t.link == me.remote), None)
+        person = found.people.get(me.name)
+        return person if person is not None and person.link == me.remote else None
+
+    async def remote_servers(link: LinkTarget, me: Principal, entry, fresh: bool = False) -> dict[str, str]:
+        """{server: workspace} of me's workspaces, as its machine lists them for it (GET /api/servers with its scope,
+        within LIST_TIMEOUT), kept REMOTE_SERVERS_FRESH seconds; read again when asked fresh."""
+        key = (link.name, me.kind, me.name)
+        seen = remote_servers_seen.get(key)
+        if seen is not None and not fresh and time.monotonic() - seen[0] < REMOTE_SERVERS_FRESH:
+            return seen[1]
+        found: dict[str, str] = {}
+        mine = {w for w, _ in me.workspaces}
+        try:
+            resp = await asyncio.wait_for(link_clients.client(link).get(
+                "/api/servers", timeout=LIST_TIMEOUT, headers={**remote_headers(link, me, entry, ""),
+                                                               "Accept": "application/json"}),
+                LIST_TIMEOUT)
+            rows = resp.json() if resp.status_code == 200 else []
+        except (httpx.HTTPError, asyncio.TimeoutError, ValueError):
+            rows = None
+        if rows is None:
+            return seen[1] if seen is not None else {}
+        for row in rows if isinstance(rows, list) else []:
+            if isinstance(row, dict) and isinstance(row.get("name"), str) and row.get("workspace") in mine:
+                found[row["name"]] = row["workspace"]
+        remote_servers_seen[key] = (time.monotonic(), found)
+        return found
+
+    def remote_headers(link: LinkTarget, me: Principal, entry, workspace: str) -> dict[str, str]:
+        """What the machine is asked with for a person or a token served here: the link's token, who acts (its name
+        here, a label), its role in the request's workspace as the cap, its scope; no prefix (its pages are this
+        panel's own paths) and no address of the machine (nothing a customer reads names it)."""
+        headers = link_headers(link, me.name, remote_cap(me, workspace))
+        headers.pop("X-OmniaCLI-Prefix", None)
+        headers.pop("X-OmniaCLI-Address", None)
+        headers[placement.SCOPE_HEADER] = remote_scope(entry, workspace)
+        return headers
+
+    def remote_cap(me: Principal, workspace: str) -> str:
+        """The role the link acts with for me (X-OmniaCLI-Role-Cap): its role in the workspace of the request, else
+        its highest; the scope narrows it again on the machine, workspace by workspace."""
+        mine = dict(me.workspaces)
+        if workspace in mine:
+            return mine[workspace]
+        return max(mine.values(), key=ACCESS_ROLES.index) if mine else "user"
+
+    def remote_scope(entry, workspace: str) -> str:
+        """The header's value of the scope of entry for its machine, first its workspace of the request."""
+        members = serving().members.get(entry.link, {})
+        return placement.scope_encode(remotehome.scope_of(entry, workspace, settings.options.provider_label, members))
+
+    async def remote_check(request: Request, me: Principal, link: LinkTarget, entry, route, params: dict,
+                           inner: str) -> str:
+        """The first of the two checks (AD-014 §4, AD-018 §18.2.3): the route is one of WORKSPACE_ROUTES (a token's:
+        those and MCP), its workspace one of me's, its server one of me's workspaces' (as the machine listed them),
+        and what its custom role and its servers allow (capabilities.py). The workspace of the request, "" for a
+        list or a job (the machine checks a job on its own). Refused as 403, as in_workspaces refuses."""
+        template = getattr(route, "path", None)
+        if route is None or template is None:
+            if any(inner_route(m, inner)[0] is not None for m in ("GET", "POST", "PUT", "DELETE") if m != request.method):
+                # a route of another method: as its machine (Starlette) answers it
+                raise HTTPException(status.HTTP_405_METHOD_NOT_ALLOWED, "Method Not Allowed")
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Not Found")
+        # (a person on the REST API: asked all the same, its machine refuses a session there as it does here)
+        allowed = template in WORKSPACE_ROUTES or (template == "/mcp" and me.kind == "token") or (
+            template.startswith("/x/") and "server" in params and "role" in params)
+        if not allowed or REMOTE_HERE.fullmatch(inner) or template in V1_MACHINE_PATHS:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Not open to the users of workspaces")
+        mine = dict(me.workspaces)
+        needed = capabilities.of_route(request.method, template)
+        if needed == capabilities.PLUGIN_ACTION:
+            needed = None
+        workspace = ""
+        if "workspace" in params:
+            workspace = str(params["workspace"])
+            if workspace not in mine:
+                raise HTTPException(status.HTTP_403_FORBIDDEN, "Not a workspace of yours")
+            why = capabilities.refusal(me.grant(workspace), needed, (), capabilities.whole_workspace(template))
+            if why is not None:
+                raise HTTPException(status.HTTP_403_FORBIDDEN, why)
+        if "server" in params:
+            server = str(params["server"])
+            servers = await remote_servers(link, me, entry)
+            if server not in servers:
+                servers = await remote_servers(link, me, entry, fresh=True)
+            if server not in servers:
+                raise HTTPException(status.HTTP_403_FORBIDDEN, "Not a server of your workspaces")
+            workspace = servers[server]
+            why = capabilities.refusal(me.grant(workspace), needed, [server])
+            if why is not None:
+                raise HTTPException(status.HTTP_403_FORBIDDEN, why)
+        return workspace
+
+    def remote_down(request: Request, me: Principal, why: str):
+        """The machine of a person served here that does not answer: the provider's machine, never its name, and
+        that Odoo goes on serving (placed_failure's words)."""
+        access_log.record("failed", me.kind, me.name, request.client.host if request.client else "",
+                          f"{request.method} {placement.inner_path(request.url.path)[:120]}: its machine {me.remote} "
+                          f"did not answer ({why[:120]})"[:300], via=me.remote)
+        return placed_failure(request, me, me.remote, why)
+
+    def remote_session_id(request: Request, me: Principal) -> str:
+        """Which session or token a request of a person served here came with (the access log, §8.8)."""
+        if me.kind == "token":
+            return f"token {me.name}"
+        cookie = request.cookies.get(COOKIE)
+        return f"session {sid(_digest_session(cookie))}" if cookie else ""
+
+    def remote_record(request: Request, me: Principal, inner: str, workspace: str, answered: int, link: LinkTarget):
+        """The central's side of the access log of a forwarded request (AD-018 §18.6.6, §8.8): who, its workspace,
+        its session or token, the link it was asked through. Every write; a read once in READ_GAP."""
+        ip = request.client.host if request.client else ""
+        reading = request.method in ("GET", "HEAD")
+        if reading and not access_log.first_read((me.kind, me.name, ip, inner)):
+            return
+        workspace = workspace or (me.workspaces[0][0] if len(me.workspaces) == 1 else "")
+        access_log.record("read" if reading else "action", me.kind, me.name, ip,
+                          f"{request.method} {inner} -> {answered} (asked of {link.name})"[:300],
+                          context=False, method=request.method, route=inner[:200], status=answered,
+                          workspace=workspace, workspaces=[w for w, _ in me.workspaces],
+                          session=remote_session_id(request, me), via=link.name)
+
+    async def remote_page(request: Request, link: LinkTarget, me: Principal, entry, page: centralpages.Page,
+                          params: dict, workspace: str):
+        """A page of a person served here, drawn with this panel's template from the model its machine answers for
+        its scope (AD-017 §17.1, AD-018 §18.2.4): its addresses under this panel's own (no prefix), the menus and
+        the controls of a person of a workspace, as its machine draws them for it. A page without a model there is
+        «not available» (AD-018 vincolo 8.4)."""
+        lang = request_language(request)
+        headers = {**remote_headers(link, me, entry, workspace), "Accept": "application/json",
+                   "Accept-Language": lang}
+        params = {**params, **{k: request.query_params[k] for k in page.query if k in request.query_params}}
+        try:
+            resp = await asyncio.wait_for(link_clients.client(link).get(
+                f"/api/pages/{page.name}", params=params, headers=headers, timeout=REMOTE_PAGE_TIMEOUT),
+                REMOTE_PAGE_TIMEOUT)
+        except (httpx.HTTPError, asyncio.TimeoutError) as exc:
+            return remote_down(request, me, describe_error(exc) if isinstance(exc, httpx.HTTPError) else
+                               "it did not answer in time")
+        try:
+            data = resp.json()
+        except ValueError:
+            data = None
+        if resp.status_code == 401:
+            return remote_down(request, me, "the other instance refused the token")
+        if not isinstance(data, dict):
+            return remote_down(request, me, f"its model of the page answered {resp.status_code}, not JSON")
+        if resp.status_code != 200:
+            said = str(data.get("detail") or data.get("error") or "")
+            if resp.status_code == 404 and said in ("Not Found", f"No model of a page {page.name}"):
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "This page is not available here yet")
+            raise HTTPException(resp.status_code if resp.status_code in (403, 404) else status.HTTP_502_BAD_GATEWAY,
+                                placed_text(said[:300], placed_names_of(link), lang, me) or f"{resp.status_code}")
+        if "moved" in data or "moved_away" in data:
+            # an instance placed on another machine (AD-015): its pages are its host's, which this slice does not
+            # draw for a customer (AD-018 §9 slice 6); never the HTML of a machine
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "This page is not available here yet")
+        mine = [r for _, r in me.workspaces]
+        top = max(mine, key=ACCESS_ROLES.index) if mine else "user"
+        role = data.get("role") if data.get("role") in ACCESS_ROLES else "user"
+        # what it may do there: the machine's word, never more than its highest role of its workspaces here
+        role = min(role, top, key=ACCESS_ROLES.index)
+        zone = str(data.get("server_zone") or "")
+        zone = zone if clock.is_zone(zone) else ""
+        model = data.get("context")
+        if not isinstance(model, dict):
+            return remote_down(request, me, "its model of the page has no context")
+        context = {k: model[k] for k in page.fields if k in model}
+        request.state.prefix = ""
+        request.state.user = dataclasses.replace(me, role=role)
+        request.state.drawn_for = {"server_zone": zone} if zone else None
+        mark = clock.HERE.set(zone) if zone else None
+        try:
+            if page.name == "server":
+                context = centralpages.server_view(context, "")
+            else:
+                theirs = (agents.get(link.name) or {}).get("plugins")
+                context = centralpages.page_view(page.name, context, "", lang, theirs if isinstance(theirs, dict) else {})
+            if page.name == "server" and (context.get("server") or {}).get("name") != params.get("server"):
+                raise ValueError("its page is of another instance")
+            if page.name == "job" and (context.get("job") or {}).get("id") != params.get("job_id"):
+                raise ValueError("its page is of another job")
+            if page.name in ("destinations", "access", "workspace") and (
+                    (context.get("ws") or {}).get("name") or "") != params.get("workspace", ""):
+                raise ValueError("its page is of another workspace")
+            if page.name == "index":
+                context = {**context, "update_need": ""}
+            if "api_base" in context:
+                # where its tokens' clients reach REST and MCP, and its provider returns its people: this panel (they
+                # never call the machine, §18.5.3; 18.3.3)
+                context = {**context, "api_base": public_base(request), "oauth_reach": await oauth_reach(request)}
+            if page.name == "workspace":
+                ws_name = (context.get("ws") or {}).get("name") or ""
+                context = {**context, "sso_redirect": sso_redirect_uri(request, ws_name),
+                           "sso_login": f"{public_base(request)}/login?sso={quote(ws_name)}"}
+            drawn = _TEMPLATES.TemplateResponse(request, page.template, context)
+            if zone:
+                drawn.headers[clock.HEADER] = zone
+            return drawn
+        except (jinja2.TemplateError, TypeError, ValueError, AttributeError, KeyError) as exc:
+            _logger.warning("the page %s of %s for %s: %s", page.name, link.name, me.name, exc)
+            return remote_down(request, me, f"its model of the page {page.name} is not the one this panel reads")
+        finally:
+            if mark is not None:
+                clock.HERE.reset(mark)
+
+    def placed_names_of(link: LinkTarget) -> list[str]:
+        """The names of a machine of the provider that its answers may say (its link's name, its address)."""
+        found = {link.name, urlsplit(link.url).hostname or "", link.ssh.host if link.ssh is not None else ""}
+        return sorted(n for n in found if n and n not in ("localhost", "127.0.0.1"))
+
+    @app.api_route(REMOTE_PREFIX + "/{path:path}", methods=["GET", "HEAD", "POST", "PUT", "DELETE"],
+                   include_in_schema=False)
+    async def remote_proxy(request: Request, path: str, me: Principal = Depends(current_user)):
+        """A request of a person or a token served here (RemoteRoutes): checked here (remote_check), then a page
+        drawn here from its model, or the machine's answer asked with its scope and passed as data only."""
+        if not me.remote:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Not Found")
+        request.state.remote_audited = True
+        entry = remote_entry(me)
+        link = settings.link_targets.get(me.remote)
+        if entry is None or link is None:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Login required", headers={_LOGIN_HEADER: "required"})
+        inner = "/" + path
+        query = f"?{request.url.query}" if request.url.query else ""
+        route, params = inner_route(request.method if request.method != "HEAD" else "GET", inner)
+        try:
+            workspace = await remote_check(request, me, link, entry, route, params, inner)
+        except HTTPException as exc:
+            remote_record(request, me, inner, str(params.get("workspace") or ""), exc.status_code, link)
+            raise
+        template = getattr(route, "path", "")
+        if me.kind != "token" and template.startswith(apiv1.PREFIX + "/"):
+            # the REST API takes a token: a person's session is refused here as its machine refuses it (api_token)
+            raise ApiError(401, "unauthorized", "The REST API takes a token: Authorization: Bearer <token>, made on "
+                                                "Settings › Users › API and AI assistants or on a workspace's page")
+        drawn = centralpages.match(path) if request.method == "GET" else None
+        html = "text/html" in request.headers.get("accept", "")
+        if drawn is not None and html and drawn[0].name in centralpages.CUSTOMER_ROUTES and me.kind != "token":
+            response = await remote_page(request, link, me, entry, drawn[0], drawn[1], workspace)
+            remote_record(request, me, inner, workspace, response.status_code, link)
+            return response
+        if html and request.method == "GET" and template not in apiv1_paths() and not template.startswith("/api/"):
+            # a page with no model here (a plugin's own): never the machine's HTML (AD-018 vincolo 8.4)
+            if not template.startswith("/backups/"):
+                remote_record(request, me, inner, workspace, 404, link)
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "This page is not available here yet")
+        headers = {k: request.headers[k] for k in PLACED_REQUEST_HEADERS if k in request.headers}
+        headers.update(remote_headers(link, me, entry, workspace))
+        headers["accept-encoding"] = "identity"
+        headers["accept-language"] = request_language(request)
+        if html:
+            # an answer of an action or a file: the machine's reason as data, never its error page
+            headers["accept"] = "application/json"
+        mcp = template == "/mcp"
+        if mcp:
+            headers["accept"] = request.headers.get("accept", "application/json, text/event-stream")
+        timeout = (LIST_TIMEOUT if template in REMOTE_LISTS
+                   else REMOTE_PAGE_TIMEOUT if request.method in ("GET", "HEAD") else REMOTE_ACTION_TIMEOUT)
+        body = await request.body() or None
+        client = link_clients.client(link)
+        resp = None
+        for last in (False, True) if request.method in ("GET", "HEAD") else (True,):
+            try:
+                resp = await asyncio.wait_for(client.send(client.build_request(
+                    request.method, inner + query, headers=headers, content=body, timeout=timeout), stream=True),
+                    timeout)
+                break
+            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError, httpx.CloseError) as exc:
+                if last:
+                    remote_record(request, me, inner, workspace, 502, link)
+                    return remote_down(request, me, describe_error(exc))
+            except (httpx.HTTPError, asyncio.TimeoutError) as exc:
+                remote_record(request, me, inner, workspace, 502, link)
+                return remote_down(request, me, describe_error(exc) if isinstance(exc, httpx.HTTPError)
+                                   else "it did not answer in time")
+        if resp.status_code == 401:
+            await resp.aclose()
+            remote_record(request, me, inner, workspace, 502, link)
+            return remote_down(request, me, "the other instance refused the token")
+        kept = {k: resp.headers[k] for k in _LINK_RESPONSE_HEADERS if k in resp.headers and k != "content-length"}
+        kind = resp.headers.get("content-type", "")
+        no_body = resp.status_code in (204, 304) or resp.headers.get("content-length") == "0"
+        media = kind.split(";", 1)[0].strip().lower()
+        if not (centralpages.is_data(kind, resp.headers.get("content-disposition", ""), not no_body)
+                or (mcp and media == "text/event-stream")):
+            # a machine's document or script never under this panel's origin (AD-018 §18.6.4)
+            await resp.aclose()
+            access_log.record("failed", "link", link.name, request.client.host if request.client else "",
+                              f"{kind[:60]} of {request.method} {inner[:120]} for {me.name} refused: the pages of "
+                              "the people served here are drawn here, data only passes")
+            remote_record(request, me, inner, workspace, 502, link)
+            return remote_down(request, me, f"it answered {kind[:60] or 'no type'} where this panel takes data only")
+        kept["x-content-type-options"] = "nosniff"
+        location = resp.headers.get("location", "")
+        if location and not (location.startswith("/") and not location.startswith("//")):
+            # a redirect elsewhere than this panel's own paths: not followed for a customer
+            kept.pop("location", None)
+        size = int(resp.headers.get("content-length") or 0)
+        if not (("json" in media or media.startswith("text/")) and size <= PLACED_READ_MOST):
+            if "content-length" in resp.headers:
+                kept["content-length"] = resp.headers["content-length"]
+            remote_record(request, me, inner, workspace, resp.status_code, link)
+            return StreamingResponse(resp.aiter_raw(), status_code=resp.status_code, headers=kept,
+                                     background=BackgroundTask(resp.aclose))
+        try:
+            raw = await resp.aread()
+        except httpx.HTTPError as exc:
+            return remote_down(request, me, describe_error(exc))
+        finally:
+            await resp.aclose()
+        # the names of the provider's machines taken out, its own kept (placed_text)
+        raw = placed_text(raw.decode("utf-8", errors="replace"), placed_names_of(link), request_language(request),
+                          me).encode()
+        remote_record(request, me, inner, workspace, resp.status_code, link)
+        return Response(raw, status_code=resp.status_code, headers=kept)
+
+    def apiv1_paths() -> frozenset:
+        return frozenset(path for _, path in apiv1.V1_WORKSPACE_TOOLS)
+
     # --- the shell of an instance ---------------------------------------
 
     @app.get("/static/{name}")
@@ -13041,7 +13631,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         §17.1, a link with pages: here): the token of a link only, with the role the page asks, its fields by
         name; who looks and the role are the link's (X-OmniaCLI-User, X-OmniaCLI-Role-Cap). Not a function of
         the product: no twin in /api/v1 and MCP (§17.1 constraint 3)."""
-        if me.kind != "link":
+        if me.kind != "link" and not (me.via and me.person):
+            # a link's; or a person of a workspace through the central panel that serves its people (AD-018 slice 2),
+            # whose page in_workspaces checked as the page itself
             raise HTTPException(status.HTTP_403_FORBIDDEN, "The model of a page is for the panel of a link only")
         if page not in centralpages.BY_NAME:
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"No model of a page {page}")
@@ -13058,10 +13650,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         finally:
             # every read of a page's model, with who looks through the link (AD-017 §17.5 decision 5), each time
             server = str(params.get("server") or "")
-            access_log.record("read", "link", me.name, request.client.host if request.client else "",
+            kind, name, on_behalf = audit_actor(me)
+            access_log.record("read", kind, name, request.client.host if request.client else "",
                               (f"model of the page {page}: GET {request.url.path}"
                                + (f"?{request.url.query}" if request.url.query else "") + f" -> {answered}"
-                               + (f" for {me.on_behalf}" if me.on_behalf else ""))[:300],
+                               + (f" for {on_behalf}" if on_behalf else ""))[:300],
                               what=f"model of the page {page}", status=answered, server=server,
                               workspace=(settings.workspace_of(server) or "") if server else "")
 
@@ -15424,6 +16017,47 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                     lambda: identityimport.export(identity_sources(), dict(oauth_store.clients)))
         return JSONResponse(found, headers={"Cache-Control": "no-store"})
 
+    @app.get(identityimport.API + "/home")
+    async def identity_home_get(request: Request, me: Principal = Depends(current_user)):
+        """The workspaces of this machine whose people the central panel of this link serves (AD-018 slice 2)."""
+        return await identity_read(request, me, "workspaces served by the central panel",
+                                   lambda: {"workspaces": sorted(w for w, e in central_homes.all().items()
+                                                                 if e.get("link") == me.name)})
+
+    @app.post(identityimport.API + "/home")
+    async def identity_home_set(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """The central panel of this link serves the people of these workspaces of this machine from now (on), or
+        no more (off): its scope is taken for them (delegated_scope), nothing else changes here (AD-018 slice 2: no
+        freeze, the login here stays, no move). on: exactly the workspaces given (the others of this link are no
+        more its); a workspace hosted here for another machine is refused. The central panel's link only."""
+        identity_link_only(me)
+        wanted = payload.get("workspaces")
+        on = payload.get("on") is True
+        if not isinstance(wanted, list) or not all(isinstance(w, str) for w in wanted) or len(wanted) > 1000:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "workspaces: a list of the names of workspaces")
+        wanted = sorted(set(wanted)) if on else []
+        for ws in wanted:
+            if ws not in settings.workspaces:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, f"No workspace {ws[:64]} here")
+            if hosted.home_of(ws):
+                raise HTTPException(status.HTTP_409_CONFLICT, f"{ws} is hosted here for another machine: its people "
+                                                              "are that machine's")
+            other = central_homes.of(ws)
+            if other and other != me.name:
+                raise HTTPException(status.HTTP_409_CONFLICT, f"The people of {ws} are served by another link")
+        now = datetime.datetime.now().isoformat(timespec="seconds")
+        for ws, entry in central_homes.all().items():
+            if entry.get("link") == me.name and ws not in wanted:
+                central_homes.put(ws, None)
+        for ws in wanted:
+            if central_homes.of(ws) != me.name:
+                central_homes.put(ws, {"link": me.name, "at": now, "by": me.on_behalf or me.name})
+        served = sorted(w for w, e in central_homes.all().items() if e.get("link") == me.name)
+        access_log.record("action", "link", me.name, request.client.host if request.client else "",
+                          (f"the people of {', '.join(served) or 'no workspace'} served by the central panel of this "
+                           f"link (AD-018 slice 2)" + (f" for {me.on_behalf}" if me.on_behalf else ""))[:300])
+        return {"workspaces": served}
+
     def identity_refusal(me: Principal) -> tuple[int, dict] | None:
         """Who carries a machine's identities here: this panel's admins, a person here or a token of the machine;
         never a workspace's token, a CI's or a link (it is done on the central panel)."""
@@ -15505,8 +16139,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return refused
         body = dict(body or {})
         link = settings.link_targets.get(name)
-        if op in ("import", "delete") and str(body.get("confirm") or "") != name:
+        if op in ("import", "delete", "home") and str(body.get("confirm") or "") != name:
             return 400, {"error": f"Type the name of the link, {name}, to confirm", "code": "confirm_required"}
+        if op == "delete" and workspace_homes.on(name):
+            return 409, {"error": f"This panel serves the workspaces of {name}: switch it off first", "code": "conflict"}
         if op == "delete":
             async with identity_lock:
                 try:
@@ -15538,11 +16174,20 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                               f"identities of the workspaces of {name} (dry run)" + (f": {error}" if error else ""),
                               what="identities of a linked machine (dry run)")
             return 200, {"link": name, "reached": shown is not None, "error": error, "plan": shown,
-                         "imported": identity_summary(name)}
+                         "imported": identity_summary(name), "home": home_said(name)}
         if op == "import":
             package, error = await identity_ask(link, me, "/export")
             if package is None:
                 return 502, {"error": f"The identities of {name} were not read: {error}", "code": "failed"}
+            spaces = package.get("workspaces") if isinstance(package, dict) else None
+            taken = sorted(w for w, at in serving().workspaces.items()
+                           if at != name and isinstance(spaces, dict) and w in spaces)
+            if taken:
+                # a workspace this panel serves for another machine: its people would lose it (remotehome.served)
+                access_log.record("action", me.kind, me.name, ip, f"the identities of {name} refused: "
+                                  f"{', '.join(taken)} served here for another machine"[:300], status="failed")
+                return 409, {"error": f"The identities of {name} were not imported: this panel serves a workspace "
+                                      f"{', '.join(taken)} of another machine already", "code": "conflict"}
             async with identity_lock:
                 try:
                     record = identityimport.imported(
@@ -15564,9 +16209,84 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                               f"workspaces {', '.join(done['workspaces']) or 'none'}"
                               + (f"; renamed {said}" if said else "") + "; its machine unchanged")
             return 200, {"ok": True, "link": name, "imported": done}
+        if op == "home":
+            return await home_act(name, link, me, ip, body)
         return 404, {"error": f"No {op} here", "code": "not_found"}
 
+    def home_said(name: str) -> dict:
+        """The switch of a link (AD-018 slice 2) as the page, the REST API and MCP say it: on, since when and by
+        whom, the workspaces served and those refused (a name taken here), the people served. No secret."""
+        entry = workspace_homes.all().get(name)
+        found = serving()
+        record = identity_store.load(name) or {}
+        taken = sorted(remotehome.taken_workspaces({n: identity_store.load(n) for n in identity_store.links()}, name,
+                                                   settings.workspaces)) if record else []
+        return {"on": entry is not None, "at": (entry or {}).get("at") or "", "by": (entry or {}).get("by") or "",
+                "workspaces": sorted(w for w, at in found.workspaces.items() if at == name),
+                "refused": taken, "people": sorted(n for n, p in found.people.items() if p.link == name),
+                "tokens": len([t for t in found.tokens.values() if t.link == name])}
+
+    async def home_act(name: str, link: LinkTarget, me: Principal, ip: str, body: dict) -> tuple[int, dict]:
+        """The switch of a link (AD-018 slice 2): on, this panel serves the people of its machine's imported
+        workspaces (its machine told to take this panel's scope for them, POST /api/identity/v1/home); off, no more
+        (the machine told too, and this panel stops whatever it answers). Its people's sessions here end with it."""
+        on = body.get("on") is True
+        record = identity_store.load(name)
+        before = [n for n, p in serving().people.items() if p.link == name]
+        if on and not record:
+            return 409, {"error": f"Import the identities of {name} first", "code": "conflict"}
+        taken = remotehome.taken_workspaces({n: identity_store.load(n) for n in identity_store.links()}, name,
+                                            settings.workspaces) if record else set()
+        # a workspace named like one here or of another import's is refused, never renamed (remotehome.py): the
+        # machine is told the others only, and the page says which and why
+        workspaces = sorted(w for w in (record or {}).get("workspaces") or {} if w not in taken)
+        if on and not workspaces:
+            if taken:
+                return 409, {"error": f"The workspaces {', '.join(sorted(taken))} of {name} have the name of one here "
+                                      "or of another machine's: rename them on the machine, import again, then switch "
+                                      "it on", "code": "conflict"}
+            return 409, {"error": f"{name} has no workspace imported", "code": "conflict"}
+        try:
+            resp = await link_clients.client(link).post(
+                identityimport.API + "/home", timeout=LIST_TIMEOUT * 6,
+                json={"workspaces": workspaces if on else [], "on": on},
+                headers={**link_headers(link, me.name, me.role), "Accept": "application/json"})
+            told = resp.json() if resp.status_code == 200 else None
+            why = "" if told is not None else f"{name} answered {resp.status_code}"
+            if resp.status_code == 404:
+                why = f"{name} has no home for a central panel: its OmniaCLI is older, update it first"
+            elif told is None:
+                with contextlib.suppress(ValueError):
+                    said = resp.json()
+                    why += f": {str(said.get('detail') or said.get('error') or '')[:200]}" if isinstance(said, dict) else ""
+        except (httpx.HTTPError, ValueError) as exc:
+            told, why = None, describe_error(exc) if isinstance(exc, httpx.HTTPError) else f"{name} did not answer JSON"
+        if on and told is None:
+            access_log.record("action", me.kind, me.name, ip, f"this panel as the home of {name}'s workspaces "
+                              f"refused: {why}"[:300], status="failed")
+            return 502, {"error": f"{name} was not switched on: {why}", "code": "failed"}
+        now = datetime.datetime.now().isoformat(timespec="seconds")
+        if on:
+            workspace_homes.put(name, {"at": now, "by": str(me), "workspaces": workspaces})
+        else:
+            workspace_homes.put(name, None)
+        # its people's sessions here end with a switch (on again: they log in again)
+        for person in before:
+            remote_sessions.drop_user(person)
+        remote_servers_seen.clear()
+        access_log.record("action", me.kind, me.name, ip,
+                          (f"this panel the home of the workspaces {', '.join(workspaces)} of {name}: their people "
+                           "log in here, their machine takes this panel's scope for them (AD-018 slice 2)"
+                           + (f"; refused, a name taken here: {', '.join(sorted(taken))}" if taken else "") if on else
+                           f"this panel no more the home of the workspaces of {name}"
+                           + (f" (its machine not told: {why})" if told is None else ""))[:300])
+        return 200, {"ok": True, "link": name, "home": home_said(name),
+                     **({"warning": f"{name} was not told: {why}"} if not on and told is None else {})}
+
     api_hooks["identity"] = identity_act
+    # the tests' way in: the imports, and what this panel serves of them (AD-018 slice 2)
+    app.state.identity_store = identity_store
+    app.state.serving = serving
 
     @app.get("/identities/{name}", dependencies=[Depends(admin)])
     async def identities_page(request: Request, name: str, me: Principal = Depends(current_user)):
@@ -15590,6 +16310,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     async def identities_import(request: Request, name: str, payload: dict = Body(...),
                                 me: Principal = Depends(current_user)):
         return identity_answer(request, *await identity_act("import", name, me, f"manual: {me}", central_ip(request),
+                                                            payload))
+
+    @app.post("/api/identities/{name}/home", dependencies=[Depends(admin)])
+    async def identities_home(request: Request, name: str, payload: dict = Body(...),
+                              me: Principal = Depends(current_user)):
+        return identity_answer(request, *await identity_act("home", name, me, f"manual: {me}", central_ip(request),
                                                             payload))
 
     @app.post("/api/identities/{name}/delete", dependencies=[Depends(admin)])
@@ -17696,6 +18422,16 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     @app.get("/account")
     async def account_page(request: Request, me: Principal = Depends(current_user)):
+        if me.remote:
+            # a person served for a linked machine (AD-018 slice 2): its account as this panel keeps it, read only
+            person = serving().people.get(me.name)
+            if person is None:
+                raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Login required", headers={_LOGIN_HEADER: "required"})
+            return _TEMPLATES.TemplateResponse(request, "remote_account.html", {
+                "person": me.name, "workspaces": [{"name": w, "role": r} for w, r in person.workspaces],
+                "totp": person.second == remotehome.TOTP,
+                "sessions": session_rows(remote_sessions.listed(me.name, request.cookies.get(COOKIE)),
+                                         request_language(request))})
         return _TEMPLATES.TemplateResponse(request, "account.html", await account_context(request, {}))
 
     _SECOND_SAID = {"code": "and a code of the app", "recovery code": "and a recovery code", "passkey": "and a passkey"}
@@ -22510,6 +23246,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     moves = placement.Moves(settings.jobs_dir.parent)
     hosted = placement.Hosted(settings.jobs_dir.parent)
+    # the native workspaces whose people a central panel serves (AD-018 slice 2): its link's scope is taken for them
+    central_homes = placement.CentralHomes(settings.jobs_dir.parent)
     # a moved instance's copy here is stopped: no job but the move's own runs on it (backups, updates, schedules);
     # on the host, the copy of an instance that went back to its home, kept stopped while it passes its names there
     # and, at the provider's, the instances of a handover being switched or handed over (AD-011, AD-013): stopped,
@@ -22605,7 +23343,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         """(route, its parameters) of this machine that answers method on path, (None, {}) for none."""
         probe = {"type": "http", "path": path, "method": method, "root_path": "", "query_string": b"", "headers": []}
         for route in app.router.routes:
-            if str(getattr(route, "path", "") or "").startswith(placement.PLACED_PREFIX + "/") or not hasattr(route, "matches"):
+            if str(getattr(route, "path", "") or "").startswith((placement.PLACED_PREFIX + "/", REMOTE_PREFIX + "/")) \
+                    or not hasattr(route, "matches"):
                 continue
             if hasattr(route, "original_router") and hasattr(route, "_match"):
                 # a router included (the REST API, a plugin's): the route it hands the request to, as it does
@@ -22938,6 +23677,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return Response(raw, status_code=resp.status_code, headers=kept)
 
     app.add_middleware(PlacedRoutes)
+    # the people of the workspaces this panel serves for its linked machines (AD-018 slice 2): outside the placed
+    # paths' own, so that their requests are theirs before anything else reads the path
+    app.add_middleware(RemoteRoutes)
     MOVE_FLOWS = 2
     # the trees of the instance copied, in this order: its code first (its modules), then its files, its backups
     MOVE_TREES = ("addons", "filestore", "backups")
@@ -29988,6 +30730,18 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                     name: str = PathParam(description="The link's name (Links page)"),
                                     me: Principal = Depends(api_token)):
         return api_central_answer(request, *await identity_act("import", name, me, f"api: {me}", api_ip(request),
+                                                               body.model_dump()))
+
+    @api_router.post(P + "/links/{name}/identities/home", summary="This panel the home of a machine's workspaces",
+                     description="on: true, the people and the tokens of the linked machine's imported workspaces log "
+                                 "in on this panel, and their requests go to the machine with their scope (the machine "
+                                 "is told to take this panel's scope for them; its own login stays). on: false, no "
+                                 "more. A workspace named like one of this panel's or of another import's refuses it. "
+                                 "confirm = the link's name.")
+    async def api_identities_home(request: Request, body: apiv1.IdentityHomeBody,
+                                  name: str = PathParam(description="The link's name (Links page)"),
+                                  me: Principal = Depends(api_token)):
+        return api_central_answer(request, *await identity_act("home", name, me, f"api: {me}", api_ip(request),
                                                                body.model_dump()))
 
     @api_router.post(P + "/links/{name}/identities/delete", summary="Delete the import of a machine's identities",

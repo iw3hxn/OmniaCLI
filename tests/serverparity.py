@@ -8,6 +8,7 @@ the switches of its scripts. Used by tests/test_central_pages.py for the roles a
 OMNIACLI_PARITY=1 turns it on for every test of the suite (tests/conftest.py)."""
 
 import json
+import re
 
 from omniacli import app as app_module
 from omniacli import centralpages, clock
@@ -121,3 +122,20 @@ def first_difference(own: str, theirs: str) -> str:
     """Where two pages part, with some text around."""
     at = next((i for i, (a, b) in enumerate(zip(own, theirs)) if a != b), min(len(own), len(theirs)))
     return f"at {at}:\nmachine: {own[max(0, at - 200):at + 200]!r}\nmodel:   {theirs[max(0, at - 200):at + 200]!r}"
+
+
+def controls(main: str) -> dict:
+    """What a person may press on a page's <main>: its buttons with their state and title, its links' addresses,
+    its forms' actions."""
+    return {"buttons": re.findall(r"<button\b[^>]*>", main), "links": re.findall(r'href="([^"]*)"', main),
+            "forms": re.findall(r'action="([^"]*)"', main), "disabled": main.count(" disabled")}
+
+
+def same_controls(own: str, theirs: str, where=None, whole: bool = True) -> None:
+    """The parity of the people of a workspace served by a central panel (AD-018 slice 2, constraint 3): a page of a
+    person through the central has the same controls as on its machine (its buttons with their state and title, its
+    links, its forms) and, whole, the same <main> (not for a page of what the request itself adds to: an access log,
+    the jobs)."""
+    assert controls(own) == controls(theirs), (where, first_difference(own, theirs))
+    if whole:
+        assert own == theirs, (where, first_difference(own, theirs))

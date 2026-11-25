@@ -214,6 +214,15 @@ BY_MODEL = CLASS_B + CLASS_C
 # refuses their model as it refuses their page (404, 403); drawn here as this panel's error page, never with a
 # context (the person's own are this panel's /account and /tunnels; AD-018 brings the customers' account here)
 PERSON_PAGES = frozenset({"account", "tunnels"})
+# the pages a person of a workspace opens (app.WORKSPACE_ROUTES), by the route of the machine's own page: the central
+# panel that serves the people of a machine's workspaces (AD-018 slice 2) asks their models for them through its link
+# with their scope, and the machine checks the model on that route as it checks the page (destinations and the access
+# log of a workspace only: without one they are the machine's). A person's own pages (Account) are the central's.
+CUSTOMER_ROUTES = {"index": "/", "dashboard_servers": "/dashboard/servers", "instances": "/instances",
+                   "backups": "/backups", "log": "/servers/{server}/{role}/log", "jobs": "/jobs",
+                   "job": "/jobs/{job_id}", "workspaces": "/workspaces",
+                   "destinations": "/workspaces/{workspace}/destinations", "access": "/workspaces/{workspace}/audit",
+                   "workspace": "/workspaces/{workspace}", "server": "/servers/{server}"}
 
 
 # the only pages of a linked machine whose HTML passes through a link whose pages are drawn here (AD-017 slice 5),
