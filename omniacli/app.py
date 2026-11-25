@@ -12485,7 +12485,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         person = found.people.get(me.name)
         return person if person is not None and person.link == me.remote else None
 
-    async def remote_servers(link: LinkTarget, me: Principal, entry, fresh: bool = False) -> dict[str, str]:
+    async def served_servers(link: LinkTarget, me: Principal, entry, fresh: bool = False) -> dict[str, str]:
         """{server: workspace} of me's workspaces, as its machine lists them for it (GET /api/servers with its scope,
         within LIST_TIMEOUT), kept REMOTE_SERVERS_FRESH seconds; read again when asked fresh."""
         key = (link.name, me.kind, me.name)
@@ -12564,9 +12564,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 raise HTTPException(status.HTTP_403_FORBIDDEN, why)
         if "server" in params:
             server = str(params["server"])
-            servers = await remote_servers(link, me, entry)
+            servers = await served_servers(link, me, entry)
             if server not in servers:
-                servers = await remote_servers(link, me, entry, fresh=True)
+                servers = await served_servers(link, me, entry, fresh=True)
             if server not in servers:
                 raise HTTPException(status.HTTP_403_FORBIDDEN, "Not a server of your workspaces")
             workspace = servers[server]
