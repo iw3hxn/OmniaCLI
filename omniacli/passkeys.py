@@ -107,6 +107,34 @@ def origins_of(host_header: str) -> list[str]:
     return found
 
 
+def _under(name: str, domain: str) -> bool:
+    return bool(name and domain) and (name == domain or name.endswith("." + domain))
+
+
+def rp_here(host_header: str, domain: str, names) -> str | None:
+    """The RP ID of a ceremony on this Host (AD-018 §18.4.3): domain (the
+    setting, Options.passkey_domain) on one of this OmniaCLI's own names
+    under it (the portal's, the staff's panel's), so a passkey made on one
+    of them works on the other and on a name that takes its place within the
+    domain; on any other name, its own (rp_of)."""
+    own = rp_of(host_header)
+    if own and domain and own in set(names) and _under(own, domain):
+        return domain
+    return own
+
+
+def origins_here(host_header: str, rp: str | None, names) -> list[str]:
+    """The origins an answer of a ceremony of rp may come from: the RP ID's
+    own name's (origins_of) when it is the Host's; for the domain of the
+    setting, only this OmniaCLI's own names under it, never another name of
+    the domain (a stranger subdomain: an Odoo of a customer under the same
+    domain may ask the browser for an assertion of this RP ID, and it is
+    refused here by its origin)."""
+    if not rp or rp == rp_of(host_header):
+        return origins_of(host_header)
+    return [f"https://{n}" for n in sorted(set(names)) if _under(n, rp)]
+
+
 def clean_name(value) -> str:
     text = " ".join(str(value or "").split())
     return "".join(c for c in text if c.isprintable())[:NAME_MAX]
@@ -241,6 +269,11 @@ class Ceremony:
     expires: float
     name: str = ""
     handle: bytes = b""
+    # the origins its answer may come from (origins_here); none: the Host's (origins_of)
+    origins: tuple = ()
+
+    def expected_origins(self) -> list[str]:
+        return list(self.origins) or origins_of(self.host)
 
 
 class Ceremonies:
@@ -250,7 +283,8 @@ class Ceremonies:
         self._lock = threading.Lock()
         self._found: dict[str, Ceremony] = {}
 
-    def start(self, kind: str, user: str, rp: str, host: str, name: str = "", handle: bytes = b"") -> tuple[str, bytes]:
+    def start(self, kind: str, user: str, rp: str, host: str, name: str = "", handle: bytes = b"",
+              origins=()) -> tuple[str, bytes]:
         """(the token for the browser's cookie, the challenge)."""
         token, challenge, now = secrets.token_urlsafe(32), secrets.token_bytes(32), time.time()
         with self._lock:
@@ -258,7 +292,8 @@ class Ceremonies:
             if len(self._found) > 5000:  # a flood of ceremonies never finished: the oldest go
                 for k in sorted(self._found, key=lambda k: self._found[k].expires)[:1000]:
                     del self._found[k]
-            self._found[_digest(token)] = Ceremony(kind, user, rp, host, challenge, now + CEREMONY_SECONDS, name, handle)
+            self._found[_digest(token)] = Ceremony(kind, user, rp, host, challenge, now + CEREMONY_SECONDS, name, handle,
+                                                   tuple(origins))
         return token, challenge
 
     def take(self, token: str | None, kind: str) -> Ceremony | None:
@@ -303,12 +338,20 @@ def verify_registration(credential: dict, ceremony: Ceremony):
     """The library's VerifiedRegistration; WebAuthnException when it is not one."""
     return webauthn.verify_registration_response(
         credential=credential, expected_challenge=ceremony.challenge, expected_rp_id=ceremony.rp,
-        expected_origin=origins_of(ceremony.host), require_user_verification=True)
+        expected_origin=ceremony.expected_origins(), require_user_verification=True)
 
 
 def verify_assertion(credential: dict, ceremony: Ceremony, key: dict, verification: bool):
     """The library's VerifiedAuthentication (new_sign_count); WebAuthnException when it is not one."""
+    return verify_given(credential, ceremony.challenge, ceremony.rp, ceremony.expected_origins(), key, verification)
+
+
+def verify_given(credential: dict, challenge: bytes, rp: str, origins: list[str], key: dict, verification: bool):
+    """verify_assertion of a ceremony held elsewhere: a central panel's, for a person whose passkeys live on this
+    machine (AD-018 slice 3), with its challenge, its RP ID and its own origins."""
+    if not origins:
+        raise WebAuthnException("no origin to expect")
     return webauthn.verify_authentication_response(
-        credential=credential, expected_challenge=ceremony.challenge, expected_rp_id=ceremony.rp,
-        expected_origin=origins_of(ceremony.host), credential_public_key=unb64(key["key"]),
-        credential_current_sign_count=int(key.get("count") or 0), require_user_verification=verification)
+        credential=credential, expected_challenge=challenge, expected_rp_id=rp, expected_origin=list(origins),
+        credential_public_key=unb64(key["key"]), credential_current_sign_count=int(key.get("count") or 0),
+        require_user_verification=verification)

@@ -537,6 +537,106 @@ Per ogni fetta: il rilascio, la prova su lab3/lab4, come si annulla, la stima. l
      stesso RP ID, ed è rifiutata su un nome di un altro dominio. Il personale è rifiutato sul portale e i clienti sul
      pannello, con 403 nel registro. Con OmniaCLI fermato su lab3, nginx risponde con la pagina statica.
    - *Stima*: 2 g.
+
+   **Com'è nel codice (fetta 3).** `config.py` (`Options.portal_panel`, `Options.passkey_domain`), `passkeys.py`
+   (`rp_here`, `origins_here`, `verify_given`), `workspaceweb.py` (il sito con due nomi e la pagina di manutenzione),
+   `workspacehelper.portal`, e in `app.py` `portal_admits`, `portal_act`, il login delle persone servite con passkey.
+   - **Due nomi, un sito.** *Opzioni › Indirizzo del portale* ha in più **Pannello del personale**. **Pubblica**
+     chiama `workspace-helper portal <portale>,<pannello>` (un argomento, la virgola: le righe di sudoers non
+     cambiano): un solo `omniacli-_portal.conf` con `server_name` dei due nomi, un certificato di Let's Encrypt per
+     tutti e due se tutti e due portano a questo nginx, altrimenti uno della macchina con i due nomi nel SAN. Le
+     Opzioni salvano `portal.panel`; il Salva delle Opzioni non lo cambia (cambia solo con la pubblicazione); una
+     pubblicazione che non dice `panel` tiene quello di adesso. I nomi delle istanze Odoo non cambiano.
+   - **`portal_admits` nei due versi.** Sul nome del portale il personale è rifiutato dopo la password giusta, come
+     prima; sul nome del pannello i clienti: gli utenti dei workspace del centrale e le persone servite per una
+     macchina collegata (fetta 2). 403 «Questo indirizzo è il pannello del personale del fornitore…», nel registro
+     un `failed` con `status: 403` («a user of a workspace at the staff's panel»); una password sbagliata resta un
+     401. Vale per il modulo, la passkey (dopo la verifica), la sessione (`identify`: il cookie di un cliente sul
+     pannello è 403) e per le persone servite (dopo che la macchina ha detto sì).
+   - **RP ID come impostazione** (`portal.passkeys`, *Dominio delle passkey*, REST `POST /api/v1/portal/passkeys`, MCP
+     `portal_passkeys`). `passkey_rp` dà il dominio quando il nome della richiesta è uno dei due nomi del centrale e
+     sta sotto il dominio; su ogni altro nome il nome stesso, come prima. Le origini attese di una cerimonia sono
+     solo quelle dei due nomi sotto il dominio (`Ceremony.origins`): un sottodominio estraneo (un Odoo dello stesso
+     dominio) ottiene dal browser un'asserzione dell'RP ID, e il centrale la rifiuta per l'origine. Il dominio vuole
+     almeno due etichette e i due nomi sotto; cambiarlo quando passkey fatte finora smetterebbero di funzionare
+     chiede `confirm` = il dominio (o `off`) e dice quante. La prova a vuoto della fetta 1 confronta le passkey con
+     questo RP ID (`plan(rp_id=…)`).
+   - **Le passkey delle persone servite** (lasciate aperte dalla fetta 2). Il centrale fa la cerimonia, la macchina
+     verifica. `POST /api/identity/v1/login` con `rp`, dopo la password, risponde `need: passkey` con uno `step` e gli
+     id delle passkey di quell'RP ID; poi `passkey` (credenziale, challenge, RP ID e origini del centrale) con lo
+     `step` (secondo passaggio) o senza (accesso senza password, verifica dell'utente obbligatoria). La macchina
+     controlla con la sua chiave e il suo contatore (uno solo, il suo), l'handle e l'appartenenza, e registra
+     «<persona> through the central panel: passkey «…»». Il centrale trova la persona di un accesso senza password
+     dall'id della credenziale importato (`Person.passkeys`: solo id e RP ID). Una passkey fatta su un altro nome
+     non è di questo RP ID: la persona lo legge dopo la password («una passkey fatta su un altro indirizzo»).
+   - **`public_base`** resta il portale anche sul nome del pannello: invito di un cliente, URL MCP e risorsa OAuth,
+     ritorno dello SSO, Aiuto. L'invito di una persona del personale porta al pannello.
+   - **La pagina di manutenzione** è nel sito stesso: `error_page 502 503 504 =503 @omniacli_maintenance` e
+     `return 503 '<html…>'` (nessun file da tenere né da cancellare nel purge), in italiano e in inglese, con HSTS,
+     `Cache-Control: no-store` e `Retry-After: 30`. Solo gli errori di nginx: le risposte di OmniaCLI passano come
+     sono (niente `proxy_intercept_errors`).
+   - **REST e MCP**: `GET /api/v1/portal`, `POST /api/v1/portal/publish` (un job, 202), `POST /api/v1/portal/passkeys`;
+     `portal_status`, `portal_publish`, `portal_passkeys`. Solo gli admin della macchina, mai un token di CI, di un
+     workspace o un collegamento; ogni scrittura nel registro.
+   - **Provato.** Nei test (`tests/test_portal_names.py`, 14 test: 13 falliscono su `6ea4649`, il quattordicesimo è
+     `nginx -t`, saltato dove nginx non c'è). Su lab3 (centrale) e lab4 (macchina), il 25/11/2026, con il codice di
+     questo ramo, i nomi `portale.172-30-0-13.sslip.io` e `pannello.172-30-0-13.sslip.io`, l'RP ID
+     `172-30-0-13.sslip.io` e Chromium con l'autenticatore virtuale:
+     - una passkey fatta sul pannello (RP ID del dominio) entra sul pannello e sul portale (200 su `/api/servers`).
+       Su `pannello.172-30-0-13.nip.io` (altro dominio, ripubblicato per la prova) l'RP ID è il nome stesso e il
+       browser non la offre (`NotAllowedError`; l'RP ID del dominio da lì: `SecurityError`). Da
+       `odoo.172-30-0-13.sslip.io` il browser dà l'asserzione e il centrale risponde 401;
+     - l'admin sul portale: 403 dopo la password. `cliente-s3` (acme di lab3) sul pannello: 403, con una password
+       sbagliata 401. Nel registro di lab3, `failed` con `status: 403` per tutti e due;
+     - una persona di beta di lab4 fa la passkey sul portale di lab4 (`macchina.172-30-0-13.sslip.io`, stesso
+       dominio). lab3 importa e serve beta (acme rifiutato: lab3 ne ha uno). La persona entra su lab3 senza
+       password e come secondo passaggio, e vede solo `beta-shop`; sul pannello ha 403, con la password e con la
+       passkey. Nel registro di lab4: «cliente-beta through the central panel: passkey «Telefono di beta», without
+       password» e «… password + passkey …»;
+     - OmniaCLI fermato su lab3: i due nomi rispondono 503 con la pagina statica (anche un POST all'API), a 1440 e
+       375, chiaro e scuro. Riacceso, `/login` risponde 200;
+     - le Opzioni in italiano, a 1440 e 375, chiaro e scuro: 0 errori di pagina, 0 dialoghi del browser, 1 pulsante
+       primario, nessuno scorrimento orizzontale. lab3 e lab4 sono tornati alla 2026.1.5525 con i loro file di prima.
+   - **Scostamenti.** (1) La pagina di manutenzione sta nel sito del portale di ogni macchina che lo pubblica, non
+     solo del VPS: è la stessa riga di nginx, e anche una macchina con il portale la usa. (2) Tolto dalla revisione
+     (sotto): il secondo fattore sul pannello è per persona, obbligatorio di default. (3) I connettori OAuth
+     del personale: la risorsa MCP è quella del portale anche sul pannello, dove il personale non dà il consenso, e
+     il personale usa i token Bearer. (4) Una passkey di un cliente usata sul pannello viene rifiutata dopo la
+     verifica della macchina, che registra il login prima del rifiuto del centrale: le due voci si leggono insieme.
+   - **La revisione (dopo `423da12`).**
+     - **Il secondo fattore sul pannello, per persona** (la risposta 2 di Carlo; toglie lo scostamento 2). Sul nome
+       del pannello un utente della macchina dà il secondo passaggio, qualunque sia la politica, salvo che un altro
+       admin lo abbia reso facoltativo per lui (`portal.panel_optional`; *Utenti* › «Pannello senza secondo
+       passaggio…», REST `POST /api/v1/portal/panel-second-factor`, MCP `portal_panel_second_factor`, nel registro
+       come `second-factor`). **Il default è obbligatorio**: il pannello è su internet e la sessione di una persona
+       del personale raggiunge tutte le macchine dei clienti, quindi una password rubata da sola non deve bastare
+       finché qualcuno non sceglie altrimenti, con il nome e la data nel registro. Nessuno se lo toglie da solo (è
+       la prima cosa che farebbe chi ha rubato la password). La pagina Utenti lo dice accanto a chi ce l'ha
+       facoltativo, e in più se non ha un secondo fattore. Sull'indirizzo della macchina (collegamento, tunnel) non
+       cambia nulla.
+     - **Il certificato di Let's Encrypt non si cancella mai prima del nuovo.** Prima, pubblicare portale e
+       pannello con il DNS del pannello non ancora fatto cancellava il certificato buono del portale e serviva uno
+       della macchina dietro HSTS di un anno: i clienti restavano fuori. Ora certbot gira con `--cert-name` e i
+       nomi di adesso solo quando tutti portano qui, e sostituisce lo stesso lineage solo se lo rilascia; se no il
+       certificato di prima continua a servire e il job dice il nome che manca (`kept.without`).
+     - **Un nome che il sito non ha.** Il sito del portale è il primo di `conf.d`, quindi il server di default di
+       nginx: un `Host` qualsiasi (un indirizzo IP, un nome del client) arrivava a OmniaCLI e saltava sia
+       `portal_admits` sia il secondo passaggio. Ora una `map $host` con i due nomi: 421 sulla 443 e 444 sulla 80
+       per ogni altro nome; i siti delle istanze hanno i loro `server_name` e non passano di lì. E OmniaCLI, se
+       arrivasse comunque in https su un altro nome con il portale pubblicato, lo tratta come il portale (il
+       personale rifiutato, il secondo passaggio del portale): chiuso, non «tutti come prima».
+     - **Un token di alcuni server** non tocca il portale anche via REST (prima solo MCP lo rifiutava).
+     - **Un suffisso pubblico** (`sslip.io`, `nip.io`, `co.uk`, `github.io`…) non è un dominio delle passkey:
+       una lista incorporata dei più comuni (nessuna dipendenza nuova: la Public Suffix List intera non c'è fra
+       quelle di oggi).
+     - Prova: 5 test nuovi e uno cambiato in `tests/test_portal_names.py`, che falliscono su `423da12`.
+   - **Resta aperto.**
+     - le passkey fatte sul nome di una macchina (18.4.5: il nome vecchio servito per 90 giorni, oppure rifatte con
+       il link monouso della fetta 5);
+     - una passkey nuova fatta sul centrale da una persona servita (il suo account sul centrale si legge e non si
+       cambia: fetta 5);
+     - i connettori OAuth del personale sul pannello;
+     - il login SSO delle persone servite.
 4. **Webhook della CI sul nome dell'istanza** (18.5.1).
    - *Prova*: un webhook sull'indirizzo del portale viene riscritto sul nome dell'istanza, con lo stesso id. Con lab3
      fermo, un push fa il deploy della test su lab4.

@@ -331,6 +331,29 @@ PORTAL_TIMEOUT = "3600s"
 PORTAL_LOGIN_RATE = "10r/m"
 PORTAL_LOGIN_BURST = 5
 PORTAL_HSTS = "max-age=31536000"
+# the page nginx answers itself while OmniaCLI does not (AD-018 §18.5.2): static, in Italian and in English, in the
+# site's own configuration (no file to keep, nothing of OmniaCLI's own to load: it is down); no ', $ or \ in it
+MAINTENANCE_LOCATION = "@omniacli_maintenance"
+MAINTENANCE_RETRY = "30"
+MAINTENANCE_IT = "Il portale è momentaneamente fermo. I vostri siti Odoo funzionano normalmente."
+MAINTENANCE_EN = "The portal is down for a moment. Your Odoo sites work as usual."
+MAINTENANCE_HTML = f"""<!doctype html>
+<html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex"><title>Portale fermo · Portal down</title>
+<style>
+:root {{ color-scheme: light dark; --bg: #f6f7f9; --fg: #1f2328; --muted: #57606a; --card: #ffffff; --line: #d0d7de; }}
+@media (prefers-color-scheme: dark) {{ :root {{ --bg: #0e1117; --fg: #e6edf3; --muted: #9da7b3; --card: #161b22;
+--line: #30363d; }} }}
+body {{ margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--bg); color: var(--fg);
+font: 16px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 16px; box-sizing: border-box; }}
+main {{ max-width: 34rem; background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+padding: 24px; }}
+h1 {{ font-size: 1.25rem; margin: 0 0 8px; }} p {{ margin: 0 0 16px; }} .en {{ color: var(--muted); margin: 0; }}
+</style></head><body><main>
+<h1>{MAINTENANCE_IT}</h1>
+<p>Riprovate tra qualche minuto.</p>
+<p class="en" lang="en">{MAINTENANCE_EN} Please try again in a few minutes.</p>
+</main></body></html>"""
 
 # the panel is the edge here: the address and the scheme are nginx's own,
 # never one a client sent (uvicorn trusts them from 127.0.0.1 only: cli.py)
@@ -343,16 +366,27 @@ _PORTAL_HEADERS = (
 )
 
 
-def portal_conf_text(host: str, tls: tuple[str, str] | None, ipv6: bool, omniacli: str) -> str:
+def maintenance_return() -> str:
+    """nginx's return of the maintenance page: the HTML in one quoted line
+    (no ' and no $ in it: nginx would read them)."""
+    text = " ".join(line.strip() for line in MAINTENANCE_HTML.splitlines() if line.strip())
+    return f"return 503 '{text}';"
+
+
+def portal_conf_text(host: str | list[str], tls: tuple[str, str] | None, ipv6: bool, omniacli: str) -> str:
     """The portal's site: port 80 answers Let's Encrypt's challenges and
     sends the rest to https; 443 passes the whole panel to OmniaCLI (omniacli:
     host:port, omniacli_address), its websockets too, with HSTS, the body of
-    a backup upload and a limit on the login form. Without a certificate
-    (tls None) port 80 answers 503 and there is no 443."""
+    a backup upload and a limit on the login form, and the maintenance page
+    when OmniaCLI does not answer (AD-018 §18.5.2). host: its name, or its
+    names (the customers' portal and the staff's panel, AD-018 §18.4: one
+    site, one certificate). Without a certificate (tls None) port 80 answers
+    503 and there is no 443."""
+    names = " ".join([host] if isinstance(host, str) else host)
     listen80 = ["    listen 80;"] + (["    listen [::]:80;"] if ipv6 else [])
     out = ["# written by omniacli workspace-helper: the customers' portal, OmniaCLI's own panel.",
            "# Changed here, it is written again when the portal's address is published (Options).", "",
-           "server {", *listen80, f"    server_name {host};",
+           "server {", *listen80, f"    server_name {names};",
            "    location /.well-known/acme-challenge/ {", f"        root {ACME_ROOT};", "    }",
            "    location / {", "        return 301 https://$host$request_uri;" if tls else "        return 503;",
            "    }", "}"]
@@ -371,9 +405,18 @@ def portal_conf_text(host: str, tls: tuple[str, str] | None, ipv6: bool, omniacl
            # counted, but for a form sent
            "map $request_method $omniacli_portal_form {", "    POST $binary_remote_addr;", '    default "";', "}",
            f"limit_req_zone $omniacli_portal_form zone=omniacli_portal_login:1m rate={PORTAL_LOGIN_RATE};",
-           "map $http_upgrade $omniacli_portal_upgrade {", "    default upgrade;", '    "" "";', "}", "",
-           *out[3:], "",
-           "server {", *listen443, f"    server_name {host};",
+           "map $http_upgrade $omniacli_portal_upgrade {", "    default upgrade;", '    "" "";', "}",
+           # its own names: when this site is nginx's default server (the first of conf.d, no default_server
+           # elsewhere), another Host (an address, a name of the client's) lands here, and is not passed on
+           "map $host $omniacli_portal_name {", '    default "";',
+           *(f"    {n} 1;" for n in names.split()), "}", "",
+           *out[3:5 + len(listen80)],
+           # port 80: closed without an answer for a name it does not have; the challenges and the 301 for its own
+           '    if ($omniacli_portal_name = "") {', "        return 444;", "    }",
+           *out[5 + len(listen80):], "",
+           "server {", *listen443, f"    server_name {names};",
+           # port 443: 421 Misdirected Request for a name it does not have (it never reaches OmniaCLI)
+           '    if ($omniacli_portal_name = "") {', "        return 421;", "    }",
            f"    ssl_certificate {tls[0]};", f"    ssl_certificate_key {tls[1]};",
            "    ssl_protocols TLSv1.2 TLSv1.3;",
            f"    client_max_body_size {PORTAL_MAX_BODY};",
@@ -382,6 +425,15 @@ def portal_conf_text(host: str, tls: tuple[str, str] | None, ipv6: bool, omniacl
            # one HSTS, nginx's, on its own errors (502) too
            "    proxy_hide_header Strict-Transport-Security;",
            f'    add_header Strict-Transport-Security "{PORTAL_HSTS}" always;',
+           # OmniaCLI stopped (an update by hand, the process fallen): nginx's own 502/503/504 only, never
+           # OmniaCLI's answers (no proxy_intercept_errors); always said as 503 (without =503 nginx keeps its 502);
+           # a location's add_header replaces the server's: HSTS again
+           f"    error_page 502 503 504 =503 {MAINTENANCE_LOCATION};",
+           f"    location {MAINTENANCE_LOCATION} {{", '        default_type "text/html; charset=utf-8";',
+           f'        add_header Strict-Transport-Security "{PORTAL_HSTS}" always;',
+           '        add_header Cache-Control "no-store" always;',
+           f'        add_header Retry-After "{MAINTENANCE_RETRY}" always;',
+           f"        {maintenance_return()}", "    }",
            "    location = /login {", *form, "    }",
            "    location ^~ /invite/ {", *form, "    }",
            "    location / {", *passed("        "),
@@ -397,8 +449,14 @@ def portal_conf_text(host: str, tls: tuple[str, str] | None, ipv6: bool, omniacl
 
 def portal_name_in(text: str) -> str:
     """The name the portal's site answers on (its first server_name), "" for none."""
+    found = portal_names_in(text)
+    return found[0] if found else ""
+
+
+def portal_names_in(text: str) -> list[str]:
+    """The names the portal's site answers on (its first server_name: the portal's, then the staff's panel's)."""
     match = _SERVER_NAME.search(text or "")
-    return match.group(1).split()[0] if match and match.group(1).split() else ""
+    return match.group(1).split() if match else []
 
 
 _FILE = re.compile(r"^# configuration file (.+):$")

@@ -1497,9 +1497,14 @@ by default, link by link, and **Stop serving them here…** switches it off.
   access log).
   When the machine's word differs from the import (another password, other
   workspaces or roles) this panel reads the import again before the session.
-  Passkeys and single sign-on stay the machine's until the workspace moves
-  here: a person whose second step is a passkey only, or who has none while a
-  second step is asked, is told so and logs in on the machine as before. Its
+  A passkey made with this panel's RP ID (the passkeys' domain of the portal,
+  below) is used here too, as the second step or without a password: this
+  panel runs the ceremony and the machine checks the answer with its own key
+  and counter, the challenge, the RP ID and this panel's origins (`passkey`
+  of `POST /api/identity/v1/login`). A passkey made on another name is not of
+  this RP ID: a person whose second step is only such a passkey, or who has
+  none while a second step is asked, is told so and logs in on the machine as
+  before; single sign-on stays the machine's until the workspace moves. Its
   sessions here are this panel's (`remote-sessions.json`, 600), apart from the
   staff's; its Account here is read only.
 - **The machine's own records decide.** For a workspace whose people this
@@ -1535,6 +1540,67 @@ by default, link by link, and **Stop serving them here…** switches it off.
 - **Not yet:** an instance placed on another machine (AD-015) is reached
   through its home's machine for data, and its pages say not available; the
   OAuth connectors of the assistants are made again on this panel's portal.
+
+#### The two names of the central panel
+
+The central panel answers on two names of its own (AD-018 slice 3): the
+**customers' portal**, one name for every customer, and the **staff panel**.
+*Options › Address of the portal* takes both: **Staff panel** is the second
+name, published with the portal's by the same **Publish** (`workspace-helper
+portal <portal>,<panel>`): one site of nginx whose `server_name` is the two
+names, one certificate of Let's Encrypt for both when both lead to this nginx
+(else one of the machine's own with both names, said in the job). The names of
+the Odoo instances do not change.
+
+- **Who logs in where.** On the portal's name the users of this machine are
+  refused after their right password, as before; on the staff panel's the
+  customers are: the users of this panel's workspaces and the people it serves
+  for a linked machine (403 «This address is the provider's staff panel…», a
+  *Failed login* with status 403 in the access log; a wrong password stays a
+  401, so nothing tells a name of the other side). A session made on one name
+  never opens the other.
+- **The second step on the staff panel** is per person and **required by
+  default**, whatever the policy of Two-step verification: the panel is on the
+  internet and a member of the staff reaches every machine. Another admin may
+  make it optional for a user (*Users* › **Panel without second step…**, REST
+  `POST /api/v1/portal/panel-second-factor`, MCP `portal_panel_second_factor`;
+  never for oneself, in the access log); the Users page says it beside that
+  user, and more when it has no second step at all.
+- **Any other name** reaching the site (nginx's default server when it is the
+  first of `conf.d`: an IP address, a name of the client's) gets 421 on 443 and
+  no answer on 80 (444); the instances' sites have their own names and are not
+  touched. Should it reach OmniaCLI anyway over https, it is taken as the
+  portal (the staff refused, the portal's second step).
+- **Certificates**: Let's Encrypt's of now is never taken away before the new
+  one is issued (the portal is behind HSTS): with a name whose DNS record is not
+  made yet it serves on, the job says which name it lacks, and the next
+  Publish once the name leads here gives the same lineage both names.
+- **The addresses a person is given** are the portal's, also when the page is
+  opened on the staff panel: a customer's invitation, a workspace's MCP URL
+  and its OAuth resource, single sign-on's return, Help. A member of the staff
+  invited is sent to the staff panel.
+- **The passkeys' domain** (*Passkeys' domain*, **Set the domain**): the RP ID
+  of the passkeys made on the two names, a domain both are under, chosen once
+  (`portale.esempio.it` and `pannello.esempio.it` under `esempio.it`). A
+  passkey made on one name works on the other, and on a name that takes its
+  place within the domain. Only this OmniaCLI's own names may use an assertion
+  of it: another name of the domain (an Odoo of a customer under it) can ask the
+  browser for one, and it is refused here by its origin. Setting it, or taking
+  it away, when passkeys made until now would stop working asks to confirm (the
+  domain typed again) and says how many; empty, each name has its own. A public
+  suffix (`sslip.io`, `nip.io`, `co.uk`, `github.io`…: a list of the common
+  ones) is refused: anybody has names under it.
+- **While OmniaCLI does not answer** (an update by hand, the process fallen)
+  nginx answers its own page, in Italian and in English: «Il portale è
+  momentaneamente fermo. I vostri siti Odoo funzionano normalmente.» (503,
+  `Retry-After`). It is in the site itself (`error_page 502 503 504`), only for
+  nginx's own errors: OmniaCLI's answers pass as they are.
+- **REST and MCP**: `GET /api/v1/portal`, `POST /api/v1/portal/publish`
+  (`host`, `panel`: a job), `POST /api/v1/portal/passkeys` (`domain`,
+  `confirm`), `POST /api/v1/portal/panel-second-factor` (`user`, `required`);
+  MCP `portal_status`, `portal_publish`, `portal_passkeys`,
+  `portal_panel_second_factor`. The machine's admin tokens only, never a CI's,
+  a workspace's nor one of some servers only; in the access log.
 
 ### Links through SSH
 
@@ -6335,7 +6401,9 @@ may be the passkey's device.
 - **The address**: the RP ID is the name the browser opened OmniaCLI on (the
   Host without the port). The panel's name and the customers' portal are two
   RP IDs: a passkey made on one works there only, and is listed with it;
-  make one on each. WebAuthn wants a name over HTTPS: on an IP address no
+  make one on each. With a passkeys' domain (Options, *The two names of the
+  central panel*) the portal's and the staff panel's names share it as their
+  RP ID, and only those two names' origins are accepted. WebAuthn wants a name over HTTPS: on an IP address no
   passkey is offered; `localhost` over http (an SSH tunnel to the panel)
   works.
 - **Through a link**: a passkey is of the machine that serves the login

@@ -195,6 +195,9 @@ NOT_SENSITIVE = frozenset({
     # a machine's SSH through a relay (AD-017 §17.6): the relay, its port and host key's fingerprint, the tunnel,
     # the fingerprints of the keys let in; no secret. Publishing and stopping are actions, logged
     "/agent-relay", "/api/agent-relay", "/api/v1/agent-relay",
+    # the portal's names and its passkeys' domain (AD-018 slice 3), as /api/portal: names and counts, no secret;
+    # publishing and setting the domain are actions, logged
+    "/api/v1/portal",
 })
 
 

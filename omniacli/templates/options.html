@@ -37,6 +37,24 @@
       </div><small class="hint" id="portal-address-hint">{{ _('A host name of yours that points to this machine, e.g. portale.esempio.it') }}</small>
       <p id="portal-dns" class="muted" style="font-size: var(--fs-14); margin: 6px 0 0; line-height: var(--lh-20);" aria-live="polite"></p>
     </div>
+    <label for="portal-panel">{{ _("Staff panel") }}</label>
+    <div>
+      <input type="text" id="portal-panel" class="mono" style="width: 100%; max-width: 420px" value="{{ options.portal_panel }}" placeholder="pannello.esempio.it"
+             autocomplete="off" spellcheck="false" aria-describedby="portal-panel-hint">
+      <small class="hint" id="portal-panel-hint">{{ _("Optional: a second name, published with the portal's, for the provider's staff. The customers are refused there, as the staff are on the portal's. Empty: none.") }}</small>
+      {% if options.portal_panel %}<p id="panel-now" style="margin: 6px 0 0">{{ _("The staff log in at") }} <a class="mono" href="https://{{ options.portal_panel }}" target="_blank" rel="noopener">https://{{ options.portal_panel }}</a></p>{% endif %}
+      <p id="panel-dns" class="muted" style="font-size: var(--fs-14); margin: 6px 0 0; line-height: var(--lh-20);" aria-live="polite"></p>
+    </div>
+    <label for="passkey-domain">{{ _("Passkeys' domain") }}</label>
+    <div>
+      <div style="display: flex; gap: 8px; flex-wrap: wrap">
+        <input type="text" id="passkey-domain" class="mono" style="flex: 1; min-width: 200px; max-width: 320px" value="{{ options.passkey_domain }}" placeholder="esempio.it"
+               autocomplete="off" spellcheck="false" aria-describedby="passkey-domain-hint">
+        <button type="button" id="passkey-set" title="{{ _('Saves the domain the passkeys made on the portal and on the staff panel belong to. It asks first when passkeys made until now would stop working.') }}">{{ _("Set the domain") }}</button>
+      </div>
+      <small class="hint" id="passkey-domain-hint">{{ _("Optional, chosen once: a domain both names are under, e.g. esempio.it. A passkey made on one name then works on the other, and on a new name within the domain. Empty: each name its own passkeys.") }}</small>
+      <p id="passkey-said" class="muted" style="font-size: var(--fs-14); margin: 6px 0 0; line-height: var(--lh-20);" aria-live="polite"></p>
+    </div>
   </div>
   <div id="portal-error" class="banner" hidden style="margin-top: 10px"></div>
   {% endif %}
@@ -354,7 +372,11 @@ document.getElementById("form").addEventListener("submit", async (ev) => {
              taken: {{ _("{name} is not free: {taken}") | tojson }}, nginx: {{ _("The other sites of nginx cannot be read: {error}") | tojson }},
              empty: {{ _("Write the address of the portal") | tojson }}, unreachable: {{ _("OmniaCLI cannot be reached") | tojson }},
              remove: {{ _("Take the customers' portal away from {name}? Its site and certificate are removed: the customers no longer log in from the internet, and the invitations made from now carry the address you see now.") | tojson }},
-             removeGo: {{ _("Take away") | tojson }}};
+             removeGo: {{ _("Take away") | tojson }},
+             same: {{ _("The staff panel needs a name of its own, not the portal's.") | tojson }},
+             domainGo: {{ _("Change the domain") | tojson }},
+             domainSet: {{ _("Saved: the passkeys made on the portal and on the staff panel belong to {domain}.") | tojson }},
+             domainOff: {{ _("Saved: each name has its own passkeys.") | tojson }}};
   const dns = document.getElementById("portal-dns"), box = document.getElementById("portal-error");
   const fill = (text, values) => text.replace(/\{(\w+)\}/g, (m, k) => (k in values ? values[k] : m));
   async function send(url, body) {
@@ -364,31 +386,57 @@ document.getElementById("form").addEventListener("submit", async (ev) => {
     return {ok: !!resp && resp.ok, data, reached: !!resp};
   }
   function said(text) { box.textContent = text; box.hidden = !text; }
-  async function check() {
-    said(""); dns.textContent = "";
-    const host = input.value.trim();
-    if (!host) { said(T.empty); return null; }
+  const panelInput = document.getElementById("portal-panel"), panelDns = document.getElementById("panel-dns");
+  // one name checked: free here, and where its DNS points (said under its field)
+  async function checkOne(host, where) {
+    where.textContent = "";
     const {ok, data, reached} = await send("{{ prefix }}/api/portal/check", {host});
     if (!ok) { said(data.error || (reached ? "" : T.unreachable)); return null; }
     if (data.error) { said(data.error); return null; }
     if (data.taken) { said(fill(T.taken, {name: data.name, taken: data.taken})); return null; }
     const values = {name: data.name, addresses: (data.addresses || []).join(", "), here: (data.here || []).join(", ")};
     if (data.dns === "none") values.here = values.here ? ` (${values.here})` : "";
-    dns.textContent = fill(T[data.dns] || "", values) + (data.nginx_error ? " " + fill(T.nginx, {error: data.nginx_error}) : "");
+    where.textContent = fill(T[data.dns] || "", values) + (data.nginx_error ? " " + fill(T.nginx, {error: data.nginx_error}) : "");
     return data;
   }
-  async function publish(host) {
+  // the portal's name and, when written, the staff panel's: {host, panel} or null
+  async function check() {
+    said(""); dns.textContent = ""; panelDns.textContent = "";
+    const host = input.value.trim(), panel = panelInput.value.trim();
+    if (!host) { said(T.empty); return null; }
+    if (panel && panel.toLowerCase() === host.toLowerCase()) { said(T.same); return null; }
+    const first = await checkOne(host, dns);
+    if (!first) return null;
+    const second = panel ? await checkOne(panel, panelDns) : null;
+    if (panel && !second) return null;
+    return {host: first.name, panel: second ? second.name : ""};
+  }
+  async function publish(host, panel) {
     said("");
-    const {ok, data, reached} = await send("{{ prefix }}/api/portal/publish", {host});
+    const {ok, data, reached} = await send("{{ prefix }}/api/portal/publish", {host, panel});
     if (ok && data.job && omniaJobPage(data.job)) { location.href = `${omniaJobPage(data.job)}?back=${encodeURIComponent(location.pathname)}`; return; }
     said(data.error || (reached ? "" : T.unreachable));
   }
   document.getElementById("portal-check").addEventListener("click", check);
-  input.addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); check(); } });
+  for (const field of [input, panelInput]) field.addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); check(); } });
   document.getElementById("portal-publish").addEventListener("click", async () => {
     const data = await check();
-    if (data) await publish(data.name);
+    if (data) await publish(data.host, data.panel);
   });
+  // the passkeys' domain: saved at once; when passkeys made until now would stop working, asked first in the page
+  const domain = document.getElementById("passkey-domain"), domainSaid = document.getElementById("passkey-said");
+  async function setDomain(confirm) {
+    said(""); domainSaid.textContent = "";
+    const value = domain.value.trim();
+    const {ok, data, reached} = await send("{{ prefix }}/api/portal/passkeys", {domain: value, confirm: confirm || ""});
+    if (!ok && data.code === "confirm_required" && !confirm) {
+      if (await omniaAsk(data.error, T.domainGo, {danger: true})) await setDomain(value || "off");
+      return;
+    }
+    if (!ok) { said(data.error || (reached ? "" : T.unreachable)); return; }
+    domainSaid.textContent = value ? fill(T.domainSet, {domain: value}) : T.domainOff;
+  }
+  document.getElementById("passkey-set").addEventListener("click", () => setDomain(""));
   const remove = document.getElementById("portal-remove");
   if (remove) remove.addEventListener("click", async () => {
     if (!await omniaAsk(fill(T.remove, {name: {{ options.portal_address | tojson }}}), T.removeGo, {danger: true})) return;

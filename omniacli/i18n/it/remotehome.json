@@ -25,7 +25,7 @@
  "Your account on this portal: your workspaces, your second step and your sessions.": "Il tuo account su questo portale: i tuoi workspace, il secondo passaggio e le tue sessioni.",
  "Your password cannot be checked now: try again in a few minutes": "La password ora non si può controllare: riprova tra qualche minuto",
  "Your password, your second step and your passkeys are changed where you logged in before: they come to this portal with your workspace's move.": "Password, secondo passaggio e passkey si cambiano dove entravi prima: arrivano su questo portale con il passaggio del tuo workspace.",
- "Your second step is a passkey: on this portal it comes with its name. Log in where you logged in before for now": "Il tuo secondo passaggio è una passkey: su questo portale arriva con il suo nome. Per ora entra dove entravi prima",
+ "Your second step is a passkey made on another address, which this portal cannot use. Log in where you logged in before for now": "Il tuo secondo passaggio è una passkey fatta su un altro indirizzo, che questo portale non può usare. Per ora entra dove entravi prima",
  "Your sessions here": "Le tue sessioni qui",
  "this browser": "questo browser",
  "{name} has no home for a central panel: its OmniaCLI is older, update it first": "{name} non accetta un pannello centrale come casa: il suo OmniaCLI è più vecchio, aggiornalo prima",
