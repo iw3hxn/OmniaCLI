@@ -6206,13 +6206,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     QUICK_DISK_GB = (10, 200)
 
     @app.get("/api/instances/versions", dependencies=[Depends(admin)])
-    async def quick_versions():
+    async def quick_versions(me: Principal = Depends(current_user)):
         """The Odoo versions a new instance may have: the templates odoo-<major> here."""
         found = await asyncio.to_thread(workspaceops.templates)
         majors = sorted((int(n.split("-", 1)[1]) for n in found if re.fullmatch(r"odoo-\d+", n)), reverse=True)
         # the disk a new instance would get (quick_room) and the least it needs:
         # the New instance dialog turns off a machine without it before the form
         free_gb = room_gb = None
+        short = {}
         storage = next(iter(settings.storage_roots), None)
         try:
             space = await workspaceops.space() if storage else None
@@ -6221,6 +6222,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if space is not None:
             room = workspaceops.room(space, settings.workspaces, storage, None) or {}
             free_gb, room_gb = int(room.get("allowed", 0) / workspaceops.GB), quick_room(space)
+            if room and room_gb < QUICK_DISK_GB[0]:
+                short = room_short(space, storage, room, me)
         # the database (AD-001, AD-007): the machine's cluster by default when it
         # is there and the version has a template on it, dedicated otherwise
         clusters = sorted(machinedb.registry())
@@ -6235,7 +6238,31 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return {"versions": versions,
                 "storage": bool(settings.storage_roots), "address": await asyncio.to_thread(public_address),
                 "free_gb": free_gb, "room_gb": room_gb, "min_gb": QUICK_DISK_GB[0], "cluster": bool(clusters),
-                "cluster_postgres": clusters}
+                "cluster_postgres": clusters, **short}
+
+    def room_short(space: dict, storage: str, room: dict, me: Principal) -> dict:
+        """Why a new workspace has less room than a new instance needs, for the dialog to say it in a person's
+        words: the room free on the real disk (disk_free_gb), what the disks there were promised and do not take
+        yet (reserved_gb), and those disks, the most first (promised): {name, promised_gb, used_gb, free_gb, the
+        room free inside its own disk, new_instance, whether an instance fits there}; of the workspaces me sees
+        only (a person of workspaces: those it is admin of), a disk no workspace names for the machine's own."""
+        mine = set(admin_workspaces(me)) if me.scoped else None
+        gb = workspaceops.GB
+        promised = []
+        for disk in workspaceops.promised_room(space, settings.workspaces, storage):
+            ws = settings.workspaces.get(disk["name"])
+            if mine is not None and (ws is None or ws.name not in mine):
+                continue
+            inside = disk["inside"]
+            fits = (ws is not None and inside is not None and inside >= QUICK_DISK_GB[0] * gb
+                    and bool(ws.limits.get("disk_gb")) and not settings.storage_problem(ws)
+                    and not (ws.limits.get("instances")
+                             and len([n for n in ws.servers if n in settings.servers]) >= ws.limits["instances"]))
+            promised.append({"name": disk["name"], "workspace": ws is not None,
+                             "promised_gb": round(disk["promised"] / gb), "used_gb": round(disk["used"] / gb, 1),
+                             "free_gb": None if inside is None else int(inside / gb), "new_instance": fits})
+        return {"disk_free_gb": int(room["free"] / gb), "reserved_gb": int(room["reserved"] / gb),
+                "promised": promised}
 
     def quick_machine_postgres(found: dict, major, clusters: list[str]) -> str:
         """The PostgreSQL Odoo <major> needs when the machine's cluster (its

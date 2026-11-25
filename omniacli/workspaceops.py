@@ -275,6 +275,25 @@ def room(found: dict, workspaces: dict[str, Workspace], storage: str, name: str 
             "allowed": max(info["free"] + own["used"] - reserved, 0), "physical": info["free"] + own["used"]}
 
 
+def promised_room(found: dict, workspaces: dict[str, Workspace], storage: str) -> list[dict]:
+    """The disks on the real disk of storage that were promised room they do not take yet, the most first: what
+    room's reserved adds up, {name, promised, used, inside} in bytes; inside is the room free in a workspace's
+    own disk (filled), where an instance of it still fits, None for an image no workspace names any more."""
+    info = next((r for r in found.get("roots", []) if r.get("root") == storage), None)
+    if info is None or info.get("missing"):
+        return []
+    shown = []
+    for (root, name), disk in _disks(found, workspaces, info["device"]).items():
+        if disk["promised"] <= disk["used"]:
+            continue
+        ws = workspaces.get(name)
+        ws = ws if ws is not None and ws.storage == root else None
+        inside = filled(room(found, workspaces, root, name), ws) if ws is not None else None
+        shown.append({"name": name, "promised": disk["promised"], "used": disk["used"],
+                      "inside": inside["free"] if inside else None})
+    return sorted(shown, key=lambda d: (d["used"] - d["promised"], d["name"]))
+
+
 def filled(r: dict | None, ws: Workspace) -> dict | None:
     """{used, size, free} of ws's disk as its users see it (r: room of ws):
     the file system inside it, as df on its mount, when it is mounted;

@@ -40,6 +40,11 @@
 .ni-server.off { color: var(--muted); cursor: not-allowed; }
 .ni-server .ni-why { font-size: var(--fs-12); color: var(--muted); line-height: var(--lh-18);}
 .ni-server .ni-why.warn-line { color: var(--warn); }
+.ni-room { margin: 0 0 8px 24px; font-size: var(--fs-12); color: var(--muted); line-height: var(--lh-18); }
+.ni-room p { margin: 0 0 4px; }
+.ni-room ul { margin: 0; padding-left: 16px; }
+.ni-room li { margin: 4px 0; font-size: var(--fs-14); line-height: var(--lh-20); }
+.ni-room a { color: var(--link); text-decoration: underline; }
 @media (max-width: 575.98px) { .ni-fields { grid-template-columns: 1fr; } }
 </style>
 <dialog id="new-instance" aria-labelledby="ni-title">
@@ -134,7 +139,13 @@
              notAdmin: {{ _("the link is not an admin there") | tojson }},
              older: {{ _("an older OmniaCLI: update it to make instances there from here") | tojson }},
              noRoom: {{ _("the room of the disk cannot be read") | tojson }},
-             low: {{ _("{free} GB free, a new instance needs {min} GB at least") | tojson }},
+             low: {{ _("{free} GB free on the disk, a new instance needs {min} GB at least") | tojson }},
+             promisedOne: {{ _("{free} GB free on the disk, but {promised} are promised to the workspace {names}: a new instance needs {min} GB at least") | tojson }},
+             promisedMany: {{ _("{free} GB free on the disk, but {promised} are promised to the workspaces {names}: a new instance needs {min} GB at least") | tojson }},
+             inside: {{ _("It can be made inside a workspace that has room in its own disk:") | tojson }},
+             makeInside: {{ _("Create inside {name} ({free} GB free)") | tojson }},
+             makeInsideTitle: {{ _("Opens the page of the workspace {name} with its New instance form: the instance is made inside its disk, which has {free} GB free") | tojson }},
+             noWay: {{ _("No workspace has room for one inside its own disk: lower the disk of a workspace in Workspaces › Limits and disk, or free room on the disk.") | tojson }},
              free: {{ _("{free} GB free") | tojson }},
              hereTitle: {{ _("Makes the instance on this machine") | tojson }},
              serverTitle: {{ _("Makes the instance on {name}, through its link: its job opens there") | tojson }},
@@ -174,9 +185,50 @@
     if (!("free_gb" in data)) return {data, why: T.older};
     if (data.free_gb === null) return {data, why: T.noRoom};
     const free = String(data.free_gb);
-    if (data.room_gb < data.min_gb) return {data, why: T.low.replace("{free}", free).replace("{min}", data.min_gb)};
+    if (data.room_gb < data.min_gb) return {data, why: lowRoom(data), advice: roomAdvice(data, machine.base)};
     return {data, note: T.free.replace("{free}", free)};
   }
+  // room-advice: why a machine has less room than a new instance needs, in a person's words, and where one fits
+  // instead: inside a workspace whose own disk has room (its page's New instance, under the machine's base)
+  const fill = (text, values) => text.replace(/\{(\w+)\}/g, (all, key) => key in values ? String(values[key]) : all);
+  const WORKSPACE = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
+  function lowRoom(data) {
+    // an OmniaCLI before 25/11/2026 says only the room left
+    const names = (data.promised || []).filter((p) => p.workspace).map((p) => p.name);
+    if (!data.reserved_gb || !names.length || !("disk_free_gb" in data))
+      return fill(T.low, {free: data.free_gb, min: data.min_gb});
+    return fill(names.length === 1 ? T.promisedOne : T.promisedMany,
+                {free: data.disk_free_gb, promised: data.reserved_gb, names: names.join(", "), min: data.min_gb});
+  }
+  function roomAdvice(data, base) {
+    if (!Array.isArray(data.promised)) return null;
+    const ways = [];
+    for (const p of data.promised) {
+      if (!p || !p.workspace || !p.new_instance || typeof p.name !== "string" || !WORKSPACE.test(p.name)) continue;
+      const href = omniaPath(`${base}/workspaces/${encodeURIComponent(p.name)}#new-instance-panel`, base);
+      if (href) ways.push({name: p.name, free: Number(p.free_gb) || 0, href});
+    }
+    return {ways, text: ways.length ? T.inside : T.noWay};
+  }
+  // the advice drawn under a machine's row: a line, and a link for each workspace with room
+  function adviceBox(advice) {
+    const box = Object.assign(document.createElement("div"), {className: "ni-room"});
+    box.append(Object.assign(document.createElement("p"), {textContent: advice.text}));
+    if (advice.ways.length) {
+      const list = document.createElement("ul");
+      for (const way of advice.ways) {
+        const link = Object.assign(document.createElement("a"), {href: way.href,
+          textContent: fill(T.makeInside, {name: way.name, free: way.free}),
+          title: fill(T.makeInsideTitle, {name: way.name, free: way.free})});
+        const item = document.createElement("li");
+        item.append(link);
+        list.append(item);
+      }
+      box.append(list);
+    }
+    return box;
+  }
+  // room-advice end
   // the machines, each on its row: asked all at once, drawn in their order
   async function askMachines() {
     const list = document.getElementById("ni-server-list");
@@ -199,6 +251,7 @@
       row.label.classList.toggle("off", !!a.why);
       row.why.textContent = a.why || "· " + a.note;
       row.why.classList.toggle("warn-line", !!a.why);
+      if (a.advice) row.label.after(adviceBox(a.advice));
       row.label.title = a.why ? T.offTitle.replace("{why}", a.why) : row.m.name ? T.serverTitle.replace("{name}", row.m.name) : T.hereTitle;
     });
     const first = rows.find((row) => !row.input.disabled);
