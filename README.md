@@ -1353,7 +1353,8 @@ person who logs in here; never through a link):
 3. **Back up now** does what the night does, in a job.
 
 What a backup holds: the links (`links.yaml`), `ssh/`, `link-agents.json`,
-`link-panels.json`, the people of this panel (`users.yaml`, `invitations.yaml`,
+`link-panels.json`, `workspace-homes.json` (the links whose workspaces it
+serves), the people of this panel (`users.yaml`, `invitations.yaml`,
 `second-factor.json`, `passkeys.json`, `sso.json`, `oauth.json`), the options
 and the groups, the destinations (with their keys), the puller connections
 (`connections.yaml`), its own setup (`central-backup.json`), the CA files of
@@ -1468,8 +1469,72 @@ the panel holds a secret: only counts, names and the verdicts. REST
 `POST …/identities/delete`, each write with `confirm` = the link's name) and
 MCP (`identity_import_status`, `identity_import`, `identity_import_delete`) do
 the same with an admin token of this panel, never a CI's nor a workspace's.
-The freeze of the machine, the central as the workspaces' home and the people's
-login there are the next slices of AD-018.
+The freeze of the machine and its login switched off are later slices of
+AD-018.
+
+#### This panel as the home of a machine's workspaces
+
+Once imported, the people of a machine's workspaces may log in on this panel
+(AD-018 slice 2). **Links › Identità › Serve them here…** (asked in the page;
+REST `POST /api/v1/links/{name}/identities/home` with `confirm` = the link's
+name and `on`, MCP `identity_home`) switches it on for that link; it is off
+by default, link by link, and **Stop serving them here…** switches it off.
+
+- **The machine is told** (`POST /api/identity/v1/home`, the central panel's
+  admin link only): it keeps `central-home.json` beside its data (600), the
+  workspaces whose people this panel serves, and takes the scope of a person
+  for them from this panel's link only. Nothing else changes there: its
+  people keep logging in on it, its pages and its members stay, and it is no
+  move (no copy, no Back, no forward). Switched off, the file goes.
+- **The login.** A person of a served workspace logs in on this panel's login
+  page with its password and, if it has one, the code of its authenticator
+  app or a recovery code: the machine checks them (`POST
+  /api/identity/v1/login`, the central panel's link only), where its identity
+  still lives, so a password changed there, a code used there, a member
+  removed there count at once; the code's counter is the machine's alone, and
+  so are its failed logins (one window with its own login form). A machine
+  that does not answer is said as a wrong password (the reason is in the
+  access log).
+  When the machine's word differs from the import (another password, other
+  workspaces or roles) this panel reads the import again before the session.
+  Passkeys and single sign-on stay the machine's until the workspace moves
+  here: a person whose second step is a passkey only, or who has none while a
+  second step is asked, is told so and logs in on the machine as before. Its
+  sessions here are this panel's (`remote-sessions.json`, 600), apart from the
+  staff's; its Account here is read only.
+- **The machine's own records decide.** For a workspace whose people this
+  panel serves, the machine checks every scope against what it has now: the
+  person still a member, with no more than its role and its custom role there;
+  the token still of the workspace, with no more than its level there (never
+  more than its person's role) and its servers. A workspace the person has
+  left there is no more in its scope; the others stay. This panel reads the import
+  again after a change of the people made through it (members, tokens, roles,
+  single sign-on), and by itself when the import is older than 10 minutes.
+- **Every request of theirs** is checked here first, on the same route with
+  the same rules as on the machine (the routes of a person of a workspace,
+  its workspaces, its servers as the machine lists them, its custom role),
+  then asked of the machine through the link with its scope
+  (`X-OmniaCLI-Scope`, every workspace of the person on that machine), and
+  the machine checks it again. Its pages are drawn here from the machine's
+  models (AD-017): the machine's HTML never passes, only data (JSON, files to
+  save); a page without a model says it is not available yet. Lists answer
+  within 5 s, pages within 60 s; a machine that does not answer is «the
+  machine of the provider», never its name. The addresses its clients use
+  (MCP, REST, single sign-on's return) are this panel's.
+- **REST and MCP.** A workspace's token imported with it calls this panel's
+  `/api/v1` and `/mcp` as before; each call is asked of its machine with its
+  scope (the machine's rules for a token there).
+- **Both access logs.** Here: the person or the token, its workspace, its
+  session or token, the link it was asked of (`session`, `via`). There: the
+  link acting for the person (`on_behalf`), in the workspace.
+- **A workspace named like one of this panel's** or of another machine's
+  import is never served nor told to the machine (refused, never renamed:
+  the machine knows it by its name); its people get the others, and the page
+  says which. With all of them taken the switch is refused, and an import
+  that would take a workspace already served for another machine is refused.
+- **Not yet:** an instance placed on another machine (AD-015) is reached
+  through its home's machine for data, and its pages say not available; the
+  OAuth connectors of the assistants are made again on this panel's portal.
 
 ### Links through SSH
 

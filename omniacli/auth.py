@@ -96,6 +96,9 @@ class Principal:
     via: str = ""
     # such a token, when its home marks it a CI's: it never acts on a production (apiguard.production_refusal)
     ci: bool = False
+    # a person or a token of a workspace of a linked machine whose people this central panel serves (AD-018 slice 2,
+    # remotehome.py): the name of that machine's link; every request of theirs is asked there with their scope
+    remote: str = ""
 
     def can(self, role: str) -> bool:
         return ROLES.index(self.role) >= ROLES.index(role)

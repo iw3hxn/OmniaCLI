@@ -84,12 +84,14 @@ V1_RELAY_TOOLS = {
     ("POST", "/api/v1/agent-relay/remove"): ("agent_relay_remove",),
     ("POST", "/api/v1/links/{name}/relay"): ("link_relay",),
 }
-# the identities of a linked machine's workspaces carried to this central panel (AD-018 slice 1): the dry run, the
-# import with the same hashes and secrets, its undo; the machine's admin tokens only, never a workspace's nor a CI's
+# the identities of a linked machine's workspaces carried to this central panel (AD-018 slices 1-2): the dry run, the
+# import with the same hashes and secrets, its undo, this panel as their home; the machine's admin tokens only, never
+# a workspace's nor a CI's
 V1_IDENTITY_TOOLS = {
     ("GET", "/api/v1/links/{name}/identities"): ("identity_import_status",),
     ("POST", "/api/v1/links/{name}/identities/import"): ("identity_import",),
     ("POST", "/api/v1/links/{name}/identities/delete"): ("identity_import_delete",),
+    ("POST", "/api/v1/links/{name}/identities/home"): ("identity_home",),
 }
 V1_TOOLS = {**V1_WORKSPACE_TOOLS, **V1_MACHINE_TOOLS, **V1_CENTRAL_TOOLS, **V1_RELAY_TOOLS, **V1_IDENTITY_TOOLS}
 # the steps of a move and of its return as MCP's move_instance and move_back name them: what follows move/ (or
@@ -288,6 +290,12 @@ class CentralConfirmBody(_Model):
 class IdentityConfirmBody(_Model):
     confirm: str = Field(description="The name of the link, typed: the import (or its undo) of that machine's "
                                      "identities")
+
+
+class IdentityHomeBody(_Model):
+    confirm: str = Field(description="The name of the link, typed")
+    on: bool = Field(description="true: this panel serves the people of the machine's imported workspaces; false: no "
+                                 "more")
 
 
 class AgentRelayBody(_Model):

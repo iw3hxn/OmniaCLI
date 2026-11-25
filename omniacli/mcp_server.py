@@ -88,7 +88,11 @@ by the user, as for any SSH link).
 The identities of a linked machine's workspaces carried to this central
 panel (admin token): identity_import_status (the dry run, item by item),
 identity_import with confirm=<link> (the same hashes and secrets; the
-machine unchanged), identity_import_delete with confirm=<link> (the undo)."""
+machine unchanged), identity_import_delete with confirm=<link> (the undo),
+identity_home with confirm=<link> and on (this panel the home of the
+machine's imported workspaces: their people and tokens log in here).
+A workspace's token of a machine whose workspaces this panel serves calls
+this /mcp as before: its tools are asked of its machine with its scope."""
 
 
 def _instructions() -> str:
@@ -121,18 +125,20 @@ TOOL_ROLES = {"update_test": "developer", "backup_test": "developer",
               **{t: "admin" for t in ("agent_relay_status", "agent_relay_publish", "agent_relay_remove",
                                       "link_relay")},
               # a linked machine's identities carried to the central panel (AD-018 slice 1): its admins only
-              **{t: "admin" for t in ("identity_import_status", "identity_import", "identity_import_delete")}}
+              **{t: "admin" for t in ("identity_import_status", "identity_import", "identity_import_delete",
+                                      "identity_home")}}
 CENTRAL_TOOLS = {"central_backup_status", "central_backup_configure", "central_backup_new_key",
                  "central_backup_confirm_key", "central_backup_run",
                  "agent_relay_status", "agent_relay_publish", "agent_relay_remove", "link_relay",
-                 "identity_import_status", "identity_import", "identity_import_delete"}
+                 "identity_import_status", "identity_import", "identity_import_delete", "identity_home"}
 # the tools that change something: a write in the rate limit of a token (apiguard.RateLimiter)
 WRITE_TOOLS = {"update_test", "backup_test", "backup", "add_draft_server", "restart_instance", "start_instance",
                "stop_instance", "run_action", "verify_backup", "full_archive", "stop_job", "update_production",
                "upload_backup", "restore_new_instance", "create_staging", "deploy_back",
                "prepare_handover", "receive_workspace", "switch_workspace", "move_instance", "move_back",
                "central_backup_configure", "central_backup_new_key", "central_backup_confirm_key", "central_backup_run",
-               "agent_relay_publish", "agent_relay_remove", "link_relay", "identity_import", "identity_import_delete"}
+               "agent_relay_publish", "agent_relay_remove", "link_relay", "identity_import", "identity_import_delete",
+               "identity_home"}
 # the tools of the machine's tokens only: a workspace's token never reaches them
 MACHINE_TOOLS = {"read_server", "add_draft_server", "list_links", "linked_tools", "call_linked",
                  "handover_status", "prepare_handover", "receive_workspace", "reception_status", "switch_workspace",
@@ -1200,6 +1206,17 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         touched. confirm = the link's name."""
         return await identities(ctx, "delete", link, confirm=confirm)
 
+    @server.tool()
+    async def identity_home(link: str, confirm: str, on: bool, ctx: Context) -> dict:
+        """(admin token of the central panel, never a CI's) on=true: this
+        panel becomes the home of the imported workspaces of the machine of
+        link (AD-018 slice 2): their people log in here with the same password
+        and app, their tokens call this panel's REST API and MCP, and every
+        request goes to the machine with their scope (the machine is told; its
+        own login stays). on=false: no more. A workspace named like one here
+        or of another import's refuses it. confirm = the link's name."""
+        return await identities(ctx, "home", link, confirm=confirm, on=on)
+
     # --- the protection of this panel (AD-017 slice 7): the pages' code (app.central_backup_act), the same answers
 
     async def central(ctx: Context, op: str, wait_seconds: int = 0, **body) -> dict:
@@ -1543,6 +1560,10 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
             _LIMITED.set(bool(kind == "mcp" and settings.token_servers(name)))
             _FOUND.set(delegated)
             _GRANT.set(settings.token_grant(name) if kind == "mcp" else _delegated_grant(delegated, role))
+            if delegated is not None and delegated.get("token_servers"):
+                # a token of some servers only, of a workspace whose people a central panel serves (AD-018 slice 2)
+                _GRANT.set((_GRANT.get() or capabilities.Grant(role, frozenset(capabilities.PRESETS[role])))
+                           .narrowed(servers=delegated["token_servers"]))
             _WHO.set(who)
             sent = False
 

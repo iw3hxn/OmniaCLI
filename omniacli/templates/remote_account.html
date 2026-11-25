@@ -1,0 +1,41 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{# The account of a person of a workspace this central panel serves for a linked machine (AD-018 slice 2): what this
+   panel keeps of it, read only; its changes are made where it logged in before until its workspace moves here. -#}
+{% extends "base.html" %}
+{% block title %}{{ _("Account") }} · {{ brand.name }}{% endblock %}
+{% block content %}
+{% set role_names = {"user": _("user"), "developer": _("developer"), "admin": _("admin")} %}
+<div class="page-head">
+  <div>
+    <h1>{{ person }}</h1>
+    <p>{{ _("Your account on this portal: your workspaces, your second step and your sessions.") }}</p>
+  </div>
+</div>
+<div class="stack" style="max-width: 520px">
+<div class="banner info" role="status">{{ _("Your password, your second step and your passkeys are changed where you logged in before: they come to this portal with your workspace's move.") }}</div>
+<section class="panel" aria-labelledby="ra-access">
+  <h2 id="ra-access">{{ _("Access") }}</h2>
+  <p class="muted" style="margin-bottom: 0">{% for w in workspaces %}{% if loop.first %}{{ _("Workspaces:") }}{% endif %} <strong>{{ w.name }}</strong> ({{ role_names.get(w.role, w.role) }}){{ "," if not loop.last }}{% endfor %}</p>
+</section>
+<section class="panel" aria-labelledby="ra-two-step">
+  <h2 id="ra-two-step">{{ _("Two-step verification") }}</h2>
+  <p style="margin: 0">{% if totp %}<span class="badge ok">{{ _("switched on") }}</span> {{ _("After the password, the login asks a code of your authenticator app.") }}{% else %}<span class="badge">{{ _("off") }}</span> {{ _("The login asks your password only.") }}{% endif %}</p>
+</section>
+<section class="panel" aria-labelledby="ra-sessions">
+  <h2 id="ra-sessions">{{ _("Your sessions here") }}</h2>
+  <div class="scroll">
+  <table>
+    <thead><tr><th scope="col">{{ _("Device") }}</th><th scope="col">{{ _("How") }}</th><th scope="col">{{ _("Since") }}</th><th scope="col">{{ _("Address") }}</th></tr></thead>
+    <tbody>
+    {% for s in sessions %}
+    <tr data-session="{{ s.id }}"><td>{{ s.device }}{% if s.current %} <span class="badge">{{ _("this browser") }}</span>{% endif %}</td><td>{{ s.how_said }}</td><td>{{ s.since }}</td><td class="mono">{{ s.ip }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+<form method="post" action="{{ prefix }}/logout" class="actions">
+  <button type="submit" class="primary" title="{{ _('Ends this session of this browser: the login asks your password again') }}">{{ _("Log out") }}</button>
+</form>
+</div>
+{% endblock %}

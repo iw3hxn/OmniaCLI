@@ -436,6 +436,102 @@ Per ogni fetta: il rilascio, la prova su lab3/lab4, come si annulla, la stima. l
      voce `on_behalf` è nel registro di lab4.
    - *Si annulla*: con il rilascio di prima. Il record di casa su lab4 torna com'era.
    - *Stima*: 5 g.
+
+   **Com'è nel codice (fetta 2).** `remotehome.py`, più il codice in `app.py` accanto all'import della fetta 1 e
+   all'ambito delegato di AD-014.
+   - **L'interruttore, per collegamento, spento di default.** Su Collegamenti › Identità «Servili qui…» (REST
+     `POST /api/v1/links/{name}/identities/home`, MCP `identity_home`, con `confirm` = il nome del collegamento e
+     `on`) scrive `workspace-homes.json` sul centrale (600, nel backup cifrato e nel purge) e lo dice alla macchina
+     con `POST /api/identity/v1/home`: solo il collegamento admin del centrale, mai una persona, un token o un ambito.
+     La macchina tiene `central-home.json` (600, nel purge): i W nativi la cui casa è quel collegamento. Non è
+     `hosted-workspaces.json`: un W nativo non incontra mai il codice degli spostamenti (vincolo 8.2). Il login, le
+     pagine e i membri della macchina restano (niente congelamento: fetta 5). Spento, il file sulla macchina si
+     toglie e le sessioni sul centrale si chiudono.
+   - **La regola dei W con lo stesso nome** (il MUST della fetta 1): **rifiutati, mai rinominati.** Un W dell'import
+     con il nome di un W del centrale o di un altro import non si legge e non si dice alla macchina; le sue persone
+     hanno gli altri W, e la pagina dice quali e perché. Con tutti presi, l'interruttore è rifiutato; un import che
+     prenderebbe un W già servito per un'altra macchina è rifiutato (409). *Perché non rinominare*: la macchina
+     conosce il W col suo nome (percorsi, job, registro, modelli delle pagine); un nome tradotto nei due versi su ogni
+     risposta è una mappa che la parità a 0 differenze non può provare, e il cliente leggerebbe un nome diverso da
+     quello dei suoi record. Rinominare, se serve, si fa sulla macchina, poi un nuovo import. A runtime la regola è
+     *fail closed*: un W che diventa preso dopo (un W nuovo del centrale) non si serve più per nessuno dei due.
+   - **Il login.** Sul login del centrale, dopo un utente del centrale, una persona servita: lo stesso hash
+     (`Store.check_password`, un nome sconosciuto paga un hash finto) e, se l'aveva, lo stesso segreto TOTP
+     (`Store.check_code`: un codice vale una volta). La politica di Carlo: il cliente tiene quello che aveva. Chi ha
+     solo una passkey, o nessun fattore mentre il centrale ne chiede uno, è rifiutato col motivo e entra sulla
+     macchina come prima (passkey e attivazione: fette 3 e 5). Le sessioni sono `remote-sessions.json`, separate da
+     quelle del personale: un cookie dell'una non si legge mai come dell'altra. Un nome che è anche un utente del
+     centrale non è mai servito (vince il centrale). L'account del cliente sul centrale si legge e non si cambia:
+     password, fattori e sessioni si cambiano ancora sulla macchina (409 col motivo).
+   - **Le richieste** (`RemoteRoutes`, poi `/.remote/<percorso>`): il primo controllo è del centrale, sulla stessa
+     route con le stesse regole (`WORKSPACE_ROUTES`, i suoi W, i server dei suoi W come la macchina li elenca per
+     lui, il ruolo personalizzato); poi la macchina con l'ambito (`X-OmniaCLI-Scope`, con `also`: gli altri W della
+     stessa persona sulla stessa macchina), il tetto del ruolo è il suo nel W della richiesta, e la macchina
+     ricontrolla (`delegated_scope` accetta `central-home.json`). Senza prefisso e senza l'indirizzo della macchina:
+     i percorsi sono quelli del centrale. Le pagine (`CUSTOMER_ROUTES`) si disegnano dal modello di AD-017, che la
+     macchina ora dà anche a una persona delegata, controllato sulla route della pagina; dalla macchina passano solo
+     dati (`is_data`), `nosniff`, nessun `Set-Cookie`, nessun `Location` fuori dal centrale; i nomi del fornitore
+     tolti (`placed_text`). Gli indirizzi che il cliente usa (MCP, REST, ritorno dello SSO) sono del centrale. Il
+     ruolo che il modello dice non supera mai il più alto della persona.
+   - **REST e MCP**: un token di W importato chiama `/api/v1` e `/mcp` del centrale; si chiede alla macchina con
+     l'ambito `kind: token` e il nome del token sulla macchina; le regole di un token sono quelle della macchina.
+   - **Liste e tempi**: le liste (`/api/servers`, `/api/instances`, `/api/backups`, `/api/jobs`, `/api/bell`…)
+     entro `LIST_TIMEOUT` (5 s), le pagine e le altre letture entro 60 s, le azioni 600 s. Ogni persona viene da un
+     solo import (i nomi sono unici fra gli import), quindi le sue righe sono di una macchina: l'unione è quella che
+     fa la macchina (anche dei suoi server spostati, AD-014). Una macchina che non risponde è «la macchina del
+     fornitore», mai il nome.
+   - **Registro**: sul centrale ogni richiesta inoltrata (le scritture tutte, le letture una volta in `READ_GAP`)
+     con persona o token, workspace, `session` (`session <sid>` o `token <nome>`) e `via` (il collegamento); sulla
+     macchina il collegamento con `on_behalf` = la persona, nel workspace.
+   - **Provato.** Nei test (`tests/test_remote_home.py`, 17): la parità del vincolo 3 su 176 route di
+     `WORKSPACE_ROUTES` × admin, developer, user e un ruolo personalizzato, 644 richieste, 36 pagine con gli stessi
+     controlli e lo stesso `<main>` (le pagine che la richiesta stessa cambia, registro e job, con gli stessi
+     controlli), **0 differenze**; una persona di beta su ogni route coi nomi di acme e viceversa: 0 raggiunte, la
+     macchina mai chiesta. Su lab3/lab4 (25/11/2026, codice di questo ramo): `acme` di lab4 rifiutato (lab3 ha il suo
+     `acme`), `beta` servito con 4 persone (admin con app, developer, user, ruolo personalizzato senza i log) e 1
+     token; 57 route GET × 4 persone, 228 richieste, 32 pagine uguali, **0 differenze**; la persona di beta sui nomi
+     di acme: 0 raggiunte; il token di beta su lab3: `/api/v1/instances` → solo `beta-shop`, l'istanza di acme 403,
+     MCP `list_servers` → `beta-shop`, un token sbagliato 401; nel registro di lab4 `link lab3, on_behalf t-dario,
+     workspace beta, server beta-shop`; le due catene integre (`verify-access-log`).
+   - **Scostamenti.** (1) I W con lo stesso nome si rifiutano uno per uno invece di rifiutare il collegamento intero.
+     (2) Il record di casa sulla macchina è `central-home.json`, non `hosted-workspaces.json` (vincolo 8.2). (3) Le
+     modifiche d'identità del cliente (password, fattori, sessioni, revoca OAuth) restano sulla macchina fino alla
+     fetta 5; quelle del W fatte dalla pagina del W (membri, token, ruoli, SSO) vanno alla macchina, e arrivano sul
+     centrale col prossimo import. (4) Il login delle persone servite lo controlla la macchina: col centrale acceso e la macchina ferma non entrano (prima,
+     con l'hash importato, sì; ma allora la macchina non serve comunque le loro pagine).
+   - **La revisione (dopo `133fa50`).** Il centrale non è la fonte delle identità finché la macchina non passa
+     (fetta 5): la macchina lo è, e decide.
+     - **Sulla macchina** `delegated_scope` (anche per MCP) ricontrolla l'ambito di un W in `central-home.json`
+       contro i suoi record di adesso, `also` compreso: la persona è ancora membro (ruolo `workspace`), il ruolo è al
+       più il suo lì, il ruolo personalizzato è il suo `ws.grant`; il token esiste ancora ed è di quel W, il livello è
+       al più `token_role` (mai più del ruolo della sua persona), CI e server sono i suoi (`token_servers`: la REST lo
+       controlla per nome, le letture delle pagine lo rifiutano come `identify`, MCP restringe il grant). Altrimenti
+       l'ambito è rifiutato (403, nel registro).
+     - **Sul centrale** il livello di un token servito è al più il ruolo della sua persona (come `config.token_role`).
+       Il login lo controlla la macchina (`POST /api/identity/v1/login`, solo il collegamento admin del centrale):
+       password, poi il codice con lo step che la password ha aperto lì (anche un codice di recupero), un solo
+       contatore dei codici, quello della macchina. Se la risposta (impronta dell'hash, mai l'hash; W e ruoli) non è
+       l'import, il centrale rilegge l'import prima della sessione. Dopo una scrittura inoltrata riuscita sulle
+       persone di un W (membri, token, ruoli, SSO) il centrale rilegge l'import prima di rispondere; un import più
+       vecchio di 10 minuti si rilegge da solo in background. Un `Location` della macchina passa solo se, letto come un
+       browser (controlli e spazi tolti, `\` come `/`), è un percorso del centrale: niente schema, niente host.
+     - Prova: `tests/test_remote_home_review.py`, 15 test, 10 falliscono su `133fa50` (token cancellato dal centrale e
+       sulla macchina, membro tolto dal centrale e sulla macchina, ruolo abbassato e password cambiata sulla macchina,
+       codice usato sulla macchina e codice di recupero, token oltre il ruolo della persona, redirect con `\`,
+       import vecchio riletto).
+   - **La terza lettura (dopo `d4e5e49`).** (1) Con la macchina ferma o lenta il login di un nome servito risponde come
+     una password sbagliata (401, l'hash finto pagato), la ragione resta nel registro: prima della password niente
+     distingue un nome servito da uno sconosciuto. (2) `/api/identity/v1/login` usa il `LoginLimiter` della macchina:
+     gli errori dal centrale e dal modulo della macchina contano nella stessa finestra per nome (per indirizzo a parte,
+     `central:<link>:<persona>`), e una persona in attesa lì è rifiutata anche dal centrale. (3) Un W che la persona
+     (o il token) non ha più sulla macchina si toglie dall'ambito, gli altri restano suoi; senza nessun W rimasto il
+     rifiuto lo dice («Non sei più membro di questo workspace»). Prova: 3 test in più in
+     `tests/test_remote_home_review.py`, che falliscono su `d4e5e49`.
+   - **Resta aperto.** (a) **Il server spostato direttamente all'host** (punto 7 di 18.2): l'host prende l'ambito
+     solo dalla casa scritta in `hosted-workspaces.json`, che è la macchina di partenza; cambiarla è 18.7 (fetta 6).
+     Oggi i dati passano per la macchina di partenza (due salti) e le pagine di un server spostato dicono «non
+     disponibile». (b) I grant OAuth importati (legati all'URL MCP della macchina) non si inoltrano. (c) Il login con
+     SSO e con passkey delle persone servite (fetta 3). (d) I websocket: nessuna route di `WORKSPACE_ROUTES` ne usa.
 3. **Nomi e bordo**: due nomi, `portal_admits` nei due versi, RP ID come impostazione, pagina di manutenzione nginx.
    - *Prova*: una passkey (autenticatore virtuale di Playwright) fatta sul nome A vale su A e su un altro nome dello
      stesso RP ID, ed è rifiutata su un nome di un altro dominio. Il personale è rifiutato sul portale e i clienti sul

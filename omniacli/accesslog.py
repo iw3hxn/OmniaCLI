@@ -55,7 +55,7 @@ BURST_TOTAL = 300
 # recorded while serving it takes its role, workspace and route from
 REQUEST: contextvars.ContextVar[dict | None] = contextvars.ContextVar("omniacli_audit_request", default=None)
 # the fields an entry may carry besides the first seven, in this order
-FIELDS = ("on_behalf", "role", "workspace", "workspaces", "method", "route", "server", "env", "status",
+FIELDS = ("on_behalf", "role", "workspace", "workspaces", "method", "route", "server", "env", "status", "session", "via",
           "job", "what", "source")
 # the last line of a file is read from its last TAIL_BYTES
 TAIL_BYTES = 64 * 1024

@@ -80,6 +80,11 @@ AUDITED_BY_ROUTE = frozenset({
     "/identities/{name}",
     "/api/identities/{name}",
     "/api/v1/links/{name}/identities",
+    # the workspaces whose people the central panel serves, read by it through its link (AD-018 slice 2): every read
+    "/api/identity/v1/home",
+    # a request of a person or a token of a workspace the central panel serves for a linked machine (AD-018 slice
+    # 2): logged by the route with its workspace, its session or token and the link it was asked of (remote_record)
+    "/.remote/{path:path}",
 })
 
 # pages and data that are neither customer data nor security data: the
