@@ -1700,6 +1700,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         pitr_tasks.append(asyncio.get_running_loop().create_task(productions_by_hand()))
         # the databases uploaded to the workspaces, kept IMPORT_KEEP_DAYS (defined further down)
         pitr_tasks.append(asyncio.get_running_loop().create_task(imports_sweep()))
+        # the passes of linked machines whose answer was lost, settled by this panel (AD-018 slice 5)
+        pitr_tasks.append(asyncio.get_running_loop().create_task(passing_loop()))
         postgres_tasks.append(asyncio.get_running_loop().create_task(postgres_loop()))
         # defined further down, with the Database tab's code
         replica_tasks.append(asyncio.get_running_loop().create_task(replica_loop()))
@@ -18009,7 +18011,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         done = sorted(w for w, p in found.items() if p.get("state") == identitypass.PASSED)
         if passed is None and done:
             ours = passing is not None and all(found[w].get("id") == passing.get("id") for w in done)
-            if ours and not any(found[w].get("purged") for w in done):
+            if ours:
+                # this panel's own pass, even after the machine deleted the secrets of its 7 days: its import of
+                # that pass is the identities' source, and the return stays refused (its 7 days are over)
                 return {"action": "adopt", "state": "passed_there", "workspaces": done}
             return {"action": "", "state": "mismatch", "workspaces": done}
         if passed is None and frozen:
@@ -18018,15 +18022,21 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return {"action": "", "state": "mismatch", "workspaces": sorted(set(passed.get("workspaces") or []) ^ set(done))}
         return {"action": "", "state": "same", "workspaces": []}
 
-    async def reconcile_act(name: str, link: LinkTarget, me: Principal, ip: str) -> tuple[int, dict]:
+    async def reconcile_act(name: str, link: LinkTarget, me: Principal, ip: str,
+                            auto: bool = False) -> tuple[int, dict]:
         """The pass of name as the machine says it, made the same here (AD-018 slice 5): a pass whose answer was
         lost, with this panel's id, ends here too; a freeze with no pass under way here is taken back (the machine's
-        own id carried); any other disagreement is said, and nothing is done. Its admins, confirmed."""
+        own id carried); any other disagreement is said, and nothing is done. Its admins, confirmed; auto: by this
+        panel itself (settle_passing), which takes back only a freeze of its own pass under way."""
         found = await machine_passes(link, me)
         if found is None:
             return 502, {"error": f"{name} did not say its passes", "code": "failed"}
         plan = reconcile_plan(name, found)
         spaces = plan["workspaces"]
+        if auto and plan["action"] == "thaw":
+            passing = identity_store.passing(name) or {}
+            if not passing or any(found[w].get("id") != passing.get("id") for w in spaces):
+                return 200, {"ok": True, "link": name, "done": "", "home": home_said(name)}
         if plan["action"] == "adopt":
             passing = identity_store.passing(name) or {}
             first = found[spaces[0]]
@@ -18129,6 +18139,39 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     # what this panel keeps of a served machine's people is read again from it at most this old (a member removed or
     # a role changed there with no request of theirs through here)
     REMOTE_REFRESH_SECONDS = 600
+
+    # a pass under way whose step's answer was lost (the «passing» note of the import): settled by this panel itself,
+    # each PASSING_EVERY seconds, as «Reconcile with the machine» does, never waiting for an admin to open the page
+    PASSING_EVERY = 60
+
+    async def settle_passing(name: str) -> str:
+        """The pass under way of name settled from its machine's state: "adopted", "thawed", or "" (nothing done:
+        none under way, the machine silent, or a disagreement left to the admins)."""
+        link = settings.link_targets.get(name)
+        if link is None or identity_store.passing(name) is None:
+            return ""
+        async with pass_locks.setdefault(name, asyncio.Lock()):
+            # read again under the lock: a pass that was running meanwhile has ended
+            if identity_store.passing(name) is None or identity_store.passed(name) is not None:
+                if identity_store.passed(name) is not None:
+                    await asyncio.to_thread(identity_store.set_passing, name, None)
+                return ""
+            code, data = await reconcile_act(name, link, Principal(f"reconcile of {name}", "admin"), "", auto=True)
+        return str(data.get("done") or "") if code == 200 else ""
+
+    async def passing_loop() -> None:
+        while True:
+            try:
+                for name in identity_store.links():
+                    if identity_store.passing(name) is not None:
+                        await settle_passing(name)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - the loop must survive
+                _logger.exception("the passes under way of the linked machines were not settled")
+            await asyncio.sleep(PASSING_EVERY)
+
+    app.state.settle_passing = settle_passing
 
     async def identity_refresh(name: str, why: str) -> bool:
         """The import of the link name done again by this panel (AD-018 slice 2): after a change of its people made

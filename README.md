@@ -1598,8 +1598,10 @@ pass's id: the pass ends here too; else its freeze is taken back). When even
 that cannot be read, the Identities page says how the machine and this panel
 disagree and offers **Reconcile with the machine…** (REST
 `…/identities/reconcile`, MCP `identity_reconcile`): a pass of this panel's
-ends here, a freeze with no pass under way is taken back, and a pass this
-panel did not make is never adopted.
+ends here (even after the machine deleted its secrets: then the way back
+stays refused), a freeze with no pass under way is taken back, and a pass
+this panel did not make is never adopted. This panel also settles a pass
+under way by itself every minute, without waiting for the page.
 
 **Back to the machine…** (REST `…/identities/return`, MCP `identity_return`),
 within the 7 days, is asked here by an admin, never by the machine: this

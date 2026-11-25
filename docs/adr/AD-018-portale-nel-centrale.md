@@ -852,6 +852,12 @@ Per ogni fetta: il rilascio, la prova su lab3/lab4, come si annulla, la stima. l
      `identity_reconcile`, conferma nella pagina, nel registro): un passaggio con l'id di questo pannello si chiude
      qui, un congelamento senza passaggio in corso si annulla; un passaggio che questo pannello non ha fatto non si
      adotta mai (detto, 409). Prova: `tests/test_identity_pass_lost.py`, 5 test, tutti falliscono su `a60ccb2`.
+   - **La terza revisione (dopo `5afee4c`).** Un passaggio di questo pannello (il suo id) si adotta anche dopo che la
+     macchina ha cancellato i segreti dei 7 giorni: il suo import è la fonte delle identità, e «Torna» resta rifiutato.
+     Prima diventava «disaccordo» e nessuno entrava più, né sulla macchina né sul centrale. E il centrale chiude da
+     solo un passaggio in corso (la nota `passing`) ogni 60 s (`passing_loop`, `settle_passing`), sotto lo stesso lock
+     del passaggio, come «Riallinea»; da solo annulla solo un congelamento del suo passaggio. Prova: 2 test in più in
+     `tests/test_identity_pass_lost.py`, che falliscono su `5afee4c`.
 6. **Consegna e spostamento con l'identità centrale** (18.7).
    - *Prova*: con il NAT simulato di AD-008 §9 passo 7, una consegna da lab4 il cui codice punta a un nome del
      workspace. Il congelamento a `ready`. Le persone importate con hash e TOTP dalla macchina che riceve. Al commit

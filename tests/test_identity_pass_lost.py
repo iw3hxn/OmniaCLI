@@ -3,8 +3,11 @@
 """AD-018 slice 5, the review of a60ccb2: a machine's answer lost after it made a step. Each pass has an id that every
 step carries: a lost answer of the pass is settled from the machine's state (passed with this pass's id: the pass ends
 on the central too), a lost answer of the freeze takes back that freeze only, a retried pass takes over a freeze of its
-link that did not end, and the Identities page says when the machine and the central disagree and reconciles them."""
+link that did not end, and the Identities page says when the machine and the central disagree and reconciles them.
+The review of 5afee4c: a lost pass of the central's own is adopted even after the machine purged it, and the central
+settles a pass under way by itself."""
 
+import datetime
 import json
 
 import httpx
@@ -119,3 +122,50 @@ async def test_a_pass_the_central_did_not_make_is_never_adopted(home):
     assert status["reconcile"]["state"] == "mismatch" and status["reconcile"]["action"] == ""
     refused = await home.post("/api/identities/lab4/reconcile", headers=ADMIN, json={"confirm": "lab4"})
     assert refused.status_code == 409 and status["home"]["pass"] is None
+
+
+def lose_everything_of_the_pass(c):
+    """The pass made there, but its answer, the thaw's and every read of the machine's state lost."""
+    async def hook(request):
+        body = json.loads(request.content or b"{}")
+        resp = await c.machine.asgi.handle_async_request(request)
+        if body.get("op") in ("pass", "thaw"):
+            await resp.aread()
+            raise httpx.ReadTimeout("lost", request=request)
+        return resp
+
+    def down(request):
+        raise httpx.ConnectError("down", request=request)
+    c.machine.answer["/api/identity/v1/pass"] = hook
+    c.machine.answer["/api/identity/v1/home"] = down
+
+
+async def test_a_lost_pass_is_adopted_even_after_the_machine_purged(home):
+    assert (await switch(home, True)).status_code == 200
+    lose_everything_of_the_pass(home)
+    assert (await home.post("/api/identities/lab4/pass", headers=ADMIN, json={"confirm": "lab4"})).status_code == 502
+    del home.machine.answer["/api/identity/v1/pass"], home.machine.answer["/api/identity/v1/home"]
+    # nobody reconciles within the 7 days; the machine's job deletes the secrets
+    lines = await home.machine_app.state.purge_passed(datetime.datetime.now() + datetime.timedelta(days=8))
+    assert lines
+    status = (await home.get("/api/identities/lab4", headers=ADMIN)).json()
+    assert status["reconcile"]["action"] == "adopt"
+    done = await home.post("/api/identities/lab4/reconcile", headers=ADMIN, json={"confirm": "lab4"})
+    assert done.status_code == 200 and done.json()["done"] == "adopted"
+    # the central's import of that pass is the source: its people log in there; the way back stays refused
+    _, central = await login(home, "elena")
+    assert central.status_code == 303
+    assert (await home.post("/api/identities/lab4/return", headers=ADMIN, json={"confirm": "lab4"})).status_code == 409
+
+
+async def test_the_central_settles_a_lost_pass_by_itself(home):
+    assert (await switch(home, True)).status_code == 200
+    lose_everything_of_the_pass(home)
+    assert (await home.post("/api/identities/lab4/pass", headers=ADMIN, json={"confirm": "lab4"})).status_code == 502
+    del home.machine.answer["/api/identity/v1/pass"], home.machine.answer["/api/identity/v1/home"]
+    # its loop, with no admin opening the page
+    assert await home.app.state.settle_passing("lab4") == "adopted"
+    assert (await home.get("/api/identities/lab4", headers=ADMIN)).json()["home"]["pass"] is not None
+    _, central = await login(home, "elena")
+    assert central.status_code == 303
+    assert await home.app.state.settle_passing("lab4") == ""
