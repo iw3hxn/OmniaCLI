@@ -201,6 +201,9 @@ NOT_SENSITIVE = frozenset({
     # the portal's names and its passkeys' domain (AD-018 slice 3), as /api/portal: names and counts, no secret;
     # publishing and setting the domain are actions, logged
     "/api/v1/portal",
+    # where the backups go off site (AD-016 §16.1): the default, the destinations' names, kinds and folders, the
+    # instances' choices; no secret (whether a key was shown is a yes or no). Choosing is an action, logged
+    "/api/v1/destinations", "/api/v1/instances/{server}/{role}/destination",
 })
 
 

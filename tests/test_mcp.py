@@ -47,7 +47,9 @@ async def test_token_required(client):
                      "database_report",
                      # what the REST API does too (README, REST API): a production's still asks admin and confirm
                      "backup", "list_backups", "update_production", "create_staging", "list_deploys", "deploy_back",
-                     "job_log"}
+                     "job_log",
+                     # where an instance's backups go off site (AD-016 §16.1)
+                     "instance_destination", "set_instance_destination"}
     # the token reads pages but never acts on them
     assert (await client.get("/jobs", headers=BEARER)).status_code == 200
     assert (await client.post("/servers/srv/test/pull", headers={**BEARER, "Origin": f"http://{HOST}"})).status_code == 403

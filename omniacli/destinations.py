@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -35,7 +36,7 @@ from typing import Callable
 
 import yaml
 
-from . import ops, pullcrypto
+from . import ops, pullcrypto, stagings
 from .config import ConfigError
 from .jobs import Job, JobFailed
 
@@ -214,13 +215,32 @@ def parse_destination(name: str, data) -> Destination:
     return Destination(name, kind, path, str(data.get("workspace") or ""), settings, key)
 
 
-def load_destinations(path: Path) -> dict[str, Destination]:
-    if not path.exists():
+def _read(path: Path | None) -> dict:
+    if path is None or not path.exists():
         return {}
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except (OSError, yaml.YAMLError) as exc:
         raise ConfigError(f"cannot read {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ConfigError(f"{path}: a mapping")
+    return data
+
+
+def _write(path: Path, data: dict) -> None:
+    """Mode 600 from the start: the file holds passwords and tokens."""
+    text = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+
+
+def load_destinations(path: Path) -> dict[str, Destination]:
+    data = _read(path)
     found = data.get("destinations") or {}
     if not isinstance(found, dict):
         raise ConfigError(f"{path}: destinations must be a mapping")
@@ -231,16 +251,149 @@ def load_destinations(path: Path) -> dict[str, Destination]:
 
 
 def save_destinations(path: Path, destinations: dict[str, Destination]) -> None:
-    """Mode 600 from the start: the file holds passwords and tokens."""
-    text = yaml.safe_dump({"destinations": {n: d.to_dict() for n, d in sorted(destinations.items())}},
-                          sort_keys=False, allow_unicode=True)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(text)
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
+    """The destinations written, the choices of the file (CHOICE_KEYS) kept as they are."""
+    try:
+        kept = {k: v for k, v in _read(path).items() if k in CHOICE_KEYS}
+    except ConfigError:
+        kept = {}
+    _write(path, {"destinations": {n: d.to_dict() for n, d in sorted(destinations.items())}, **kept})
+
+
+# --- where the backups of each instance go (AD-016 §16.1) -------------------
+# Beside the destinations, in the same file: the machine's default (a destination of the machine, with when it was
+# chosen) and the instances that chose another one ({<server>/<role>: {destination, since}}); an instance not there
+# follows the default. The release before this one reads neither: it reads the destination still written in the
+# backup step of the schedules (schedules.mirror_offsite), and its save of the destinations leaves these keys out.
+
+CHOICE_KEYS = ("default", "instances", "keys_shown", "migrated")
+# why an instance has the destination it has (or none)
+FROM_TEST, FROM_STAGING, FROM_INSTANCE, FROM_DEFAULT, FROM_NONE = "test", "staging", "instance", "default", "none"
+
+
+@dataclass
+class Choices:
+    default: str = ""
+    default_since: str = ""
+    # <server>/<role>: {"destination": name, "since": ISO time}
+    instances: dict = field(default_factory=dict)
+    # a destination's name: the fingerprint of the key that was shown (a destination made again has another key)
+    keys_shown: dict = field(default_factory=dict)
+    # when the destinations of the backup steps were carried here (the first start of this release)
+    migrated: str = ""
+
+    def choice(self, key: str) -> str:
+        return str((self.instances.get(key) or {}).get("destination") or "")
+
+    def to_dict(self) -> dict:
+        data = {}
+        if self.default:
+            data["default"] = {"destination": self.default, "since": self.default_since}
+        if self.instances:
+            data["instances"] = {k: dict(v) for k, v in sorted(self.instances.items())}
+        if self.keys_shown:
+            data["keys_shown"] = dict(sorted(self.keys_shown.items()))
+        if self.migrated:
+            data["migrated"] = self.migrated
+        return data
+
+
+def load_choices(path: Path | None) -> Choices:
+    """The choices of the file; a part that is not what it should be is left out (a broken file loses no
+    destination for it)."""
+    try:
+        data = _read(path)
+    except ConfigError:
+        return Choices()
+    found = Choices()
+    default = data.get("default")
+    if isinstance(default, dict) and NAME.fullmatch(str(default.get("destination") or "")):
+        found.default, found.default_since = str(default["destination"]), str(default.get("since") or "")
+    given = data.get("instances")
+    for key, value in (given.items() if isinstance(given, dict) else ()):
+        if isinstance(value, dict) and NAME.fullmatch(str(value.get("destination") or "")) and "/" in str(key):
+            found.instances[str(key)] = {"destination": str(value["destination"]),
+                                         "since": str(value.get("since") or "")}
+    shown = data.get("keys_shown")
+    if isinstance(shown, dict):
+        found.keys_shown = {str(k): str(v) for k, v in shown.items()}
+    found.migrated = str(data.get("migrated") or "")
+    return found
+
+
+def save_choices(path: Path, choices: Choices) -> None:
+    """The choices written, the destinations of the file kept as they are. A choice written by this release marks the
+    migration done (schedules.migrate_offsite): from then a backup step's destination is the mirror of the effective
+    one, never a choice to carry."""
+    choices.migrated = choices.migrated or now()
+    _write(path, {"destinations": _read(path).get("destinations") or {}, **choices.to_dict()})
+
+
+def now() -> str:
+    return datetime.datetime.now().isoformat(timespec="seconds")
+
+
+def key_fingerprint(key: str) -> str:
+    """What says a key was shown without being it: 16 hex characters of its SHA-256."""
+    return hashlib.sha256(key.encode()).hexdigest()[:16]
+
+
+def key_shown(choices: Choices, dest: Destination) -> bool:
+    return choices.keys_shown.get(dest.name) == key_fingerprint(dest.key)
+
+
+@dataclass(frozen=True)
+class Effective:
+    """An instance's destination (None: none) and why (FROM_*); chosen, the name the instance chose when it has a
+    choice (one it may no longer use, too)."""
+
+    destination: Destination | None
+    why: str
+    chosen: str = ""
+
+    @property
+    def name(self) -> str:
+        return self.destination.name if self.destination is not None else ""
+
+
+def staging_servers(settings) -> set:
+    """The servers the stagings file knows, as the map reads them."""
+    base = settings.links_file or settings.servers_file
+    return set(stagings.load(base.parent / stagings.FILE)) if base is not None else set()
+
+
+def usable(dest: Destination | None, instance, settings) -> bool:
+    """Whether instance's backups may go to dest: the machine's, or of a workspace its server is part of."""
+    if dest is None:
+        return False
+    if not dest.workspace:
+        return True
+    ws = settings.workspaces.get(dest.workspace)
+    return ws is not None and instance.server in ws.servers
+
+
+def effective(settings, instance, found: dict | None = None, choices: Choices | None = None,
+              staging: set | None = None) -> Effective:
+    """THE destination of an instance's backups (AD-016 §16.1), the one function every reader asks (the
+    schedule's copy, the Backups tab, the map, the Destinations page): a test or a staging none; else the
+    instance's choice when that destination is there and it may use it; else the machine's default; else none."""
+    if instance.role == "test":
+        return Effective(None, FROM_TEST)
+    if instance.server in (staging if staging is not None else staging_servers(settings)):
+        return Effective(None, FROM_STAGING)
+    path = settings.destinations_file
+    if found is None:
+        try:
+            found = load_destinations(path) if path is not None else {}
+        except ConfigError:
+            found = {}
+    choices = choices if choices is not None else load_choices(path)
+    chosen = choices.choice(instance.key)
+    if chosen and usable(found.get(chosen), instance, settings):
+        return Effective(found[chosen], FROM_INSTANCE, chosen)
+    default = found.get(choices.default) if choices.default else None
+    if default is not None and not default.workspace:
+        return Effective(default, FROM_DEFAULT, chosen)
+    return Effective(None, FROM_NONE, chosen)
 
 
 # --- rclone ---------------------------------------------------------------

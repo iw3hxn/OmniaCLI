@@ -153,7 +153,9 @@ PAGES = (
           "users", "user_roles", "system_config", "roles", "limits", "templates_index"), needs_agent_api=3,
          query=("edit", "new")),
     Page("destinations", rf"(?:workspaces/(?P<workspace>{_SEGMENT})/)?destinations", "destinations.html",
-         ("rows", "kinds", "api", "workspace", "ws", "rclone", "file"), needs_agent_api=3),
+         # default and productions: the machine's default destination of the backups and how many productions follow
+         # it (AD-016 §16.1), an addition within agent_api 4 (§16.9): a machine without them draws the page as before
+         ("rows", "kinds", "api", "workspace", "ws", "rclone", "file", "default", "productions"), needs_agent_api=3),
     Page("access", rf"access|workspaces/(?P<workspace>{_SEGMENT})/audit", "access.html",
          ("entries", "total", "q", "since", "until", "who", "event", "ws", "log_file", "failed_file", "status"),
          needs_agent_api=3, query=("q", "since", "until", "who", "event")),
@@ -721,7 +723,7 @@ _NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._~@+-]*")
 _NAMES_AT = {
     "jobs": ("jobs[].id",),
     "job": ("job.id", "live[]", "job.instances[]"),
-    "destinations": ("rows[].name", "rows[].workspace", "workspace", "ws.name"),
+    "destinations": ("rows[].name", "rows[].workspace", "workspace", "ws.name", "default.name"),
     "access": ("entries[].job[]", "ws.name"),
     "config": ("servers[].name",),
     "enterprise": ("copies[].users[]",),

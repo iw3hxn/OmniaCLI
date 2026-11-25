@@ -2836,8 +2836,43 @@ cannot be read on another machine; a new destination may be given the key
 of before, to read the copies another OmniaCLI made. The Backups tab of an
 instance lists the copies in its destination: **Bring back** downloads one,
 decrypts it into the instance's backups, from where it is restored as any
-other. A destination in use by an instance's automatic backups is not
-deleted.
+other. A destination that is the default, or that an instance's backups go
+to, is not deleted.
+
+**Where each instance's backups go** (AD-016 §16.1). A machine has one
+**default** destination (one of the machine's, never a workspace's): on
+**Settings › Backup destinations** its row has the badge *Default*, the
+others **Make default…**, a dialog that says how many productions follow
+the default and how many chose their own; when the key of that destination
+was never shown here, the dialog shows it first and asks *I saved the key
+out of here* before its button. **No longer the default…** asks in the page
+and says how many productions are left without a copy. Without a default a
+note says how many productions keep their backups on the machine only. An
+instance may choose another destination in its **Backups** tab, **Off-site
+copy to**, out of *Automatic backups*: *Server's default: wasabi* first
+(the value of every instance), then the machine's other destinations (its
+admins), then the workspace's (*of the workspace: dropbox-acme*); no
+«nowhere» for a production; a test or a staging has no field and no copy.
+It counts from the next backup. A workspace's admin reads *Server's
+default* without its name, and only the workspace's destinations (the
+machine's names are never in its pages or answers). Who chooses: the
+default, an admin of the machine; an instance's, who sets its backups (an
+admin for a production). Both are in `destinations.yaml` (`default`,
+`instances`: `{server/role: {destination, since}}`, an instance not there
+follows the default), each change in the access log (*Default
+destination*, *Destination of an instance*). The REST API and MCP do the
+same: `GET /api/v1/destinations` and `POST /api/v1/destinations/default`
+(`destinations_status`, `set_default_destination`: the machine's admin
+tokens, never a CI's; `key_saved: true` when its key was never shown
+here), `GET|POST /api/v1/instances/{server}/{role}/destination`
+(`instance_destination`, `set_instance_destination`, `""` the default).
+Today the copies are those of the automatic backups, made to the
+instance's destination; every other kind of backup follows with the queue
+(AD-016 slice 2). At its first start this release carries each «Copy also
+to» of the automatic backups into `instances`, once, and from then writes
+the instance's destination back into each backup step of
+`schedules.yaml`: the release before reads only that, so going back to it
+copies where this one does.
 
 **Notifications**: *When it fails, tell* of the automatic backups (the
 schedule's `notify`: emails and `https://` webhook URLs) is told when a run

@@ -80,6 +80,11 @@ destination (admin token of the machine): central_backup_status,
 central_backup_configure, central_backup_new_key (its recovery passphrase
 comes once: the user keeps it offline), central_backup_confirm_key with the
 passphrase typed back, central_backup_run.
+Where the backups go off site: instance_destination and
+set_instance_destination ("" the server's default; a production's with an
+admin token); the machine's default destination (admin token of the machine,
+never a CI's): destinations_status, set_default_destination (its key shown
+once, or key_saved=true when the user kept it).
 A machine behind NAT managed from a central panel (admin token): on the
 machine agent_relay_status, agent_relay_publish (its SSH through a relay, one
 of its links) and agent_relay_remove; on the central panel link_relay, the
@@ -126,6 +131,10 @@ TOOL_ROLES = {"update_test": "developer", "backup_test": "developer",
               "update_production": "developer",
               # what the REST API does too (README, REST API): the same rules
               "create_staging": "developer", "list_deploys": "developer", "deploy_back": "developer",
+              # where the backups go off site (AD-016 §16.1): an instance's by who sets its backups (a production's
+              # admin, checked by the pages' code), the machine's default by its admins
+              "instance_destination": "developer", "set_instance_destination": "developer",
+              "destinations_status": "admin", "set_default_destination": "admin",
               "database_report": "developer", "upload_backup": "admin", "restore_new_instance": "admin",
               # the handover and the move (AD-008 §9 step 10): the machine's admin tokens, never a CI's
               # (apiguard.machine_refusal)
@@ -159,18 +168,20 @@ WRITE_TOOLS = {"update_test", "backup_test", "backup", "add_draft_server", "rest
                "agent_relay_publish", "agent_relay_remove", "link_relay", "identity_import", "identity_import_delete",
                "identity_home", "identity_pass", "identity_return", "identity_factor_link", "identity_reconcile",
                "portal_publish",
-               "portal_passkeys", "portal_panel_second_factor"}
+               "portal_passkeys", "portal_panel_second_factor", "set_instance_destination", "set_default_destination"}
 # the tools of the machine's tokens only: a workspace's token never reaches them
 MACHINE_TOOLS = {"read_server", "add_draft_server", "list_links", "linked_tools", "call_linked",
                  "handover_status", "prepare_handover", "receive_workspace", "reception_status", "switch_workspace",
                  "move_status", "move_instance", "move_back", *CENTRAL_TOOLS,
+                 "destinations_status", "set_default_destination",
                  "portal_status", "portal_publish", "portal_passkeys",
                  "portal_panel_second_factor"}
 # the tools of a move asked of the home of a placed instance, never of the machine it is on (its move is the home's)
 HOME_TOOLS = {"move_status", "move_instance", "move_back"}
 # the tools a CI's token never uses, whatever its role (apiguard.machine_refusal): not in its list
 NOT_FOR_CI = {"handover_status", "prepare_handover", "receive_workspace", "reception_status", "switch_workspace",
-              "move_status", "move_instance", "move_back", *CENTRAL_TOOLS}
+              "move_status", "move_instance", "move_back", *CENTRAL_TOOLS, "destinations_status",
+              "set_default_destination"}
 # the tools that act on a whole workspace or on the machine (a handover, a reception, a switch): never for a token
 # limited to some servers, which reaches the move of its own servers only (app.machine_act says why)
 NOT_FOR_LIMITED = {"handover_status", "prepare_handover", "receive_workspace", "reception_status", "switch_workspace",
@@ -1401,6 +1412,68 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         """(admin token of the machine, never a CI's) Back this panel up now,
         as at night: a job (get_job)."""
         return await central(ctx, "run", wait_seconds)
+
+    # --- where the backups go off site (AD-016 §16.1): the pages' code (app.offsite_act), the same answers
+
+    async def offsite(ctx: Context, op: str, **body) -> dict:
+        if api.get("offsite") is None:
+            raise ToolError("This OmniaCLI has no destinations of the backups through MCP")
+        code, data = await api["offsite"](op, as_principal(ctx), "", body)
+        if code >= 400:
+            raise ToolError(f"{data.get('code') or apiv1.code_of(code)}: {data.get('error') or 'Refused'}")
+        return data
+
+    def offsite_machine(ctx: Context) -> None:
+        if token_of(ctx) is None:
+            raise ToolError("forbidden: the default destination of a machine is set on that machine, not through a "
+                            "link")
+        if settings.token_servers(token_of(ctx)):
+            raise ToolError("forbidden: this token reaches some servers only, and the default destination is the "
+                            "machine's")
+        if ci_of(ctx):
+            raise ToolError("forbidden: a CI token never sets the destinations of the backups")
+
+    @server.tool()
+    async def instance_destination(server_name: str, role: str, ctx: Context) -> dict:
+        """(developer token) Where the instance's backups are copied off site,
+        encrypted: value (its choice; "" the server's default), effective (the
+        destination now; empty for a workspace's token when it is the server's),
+        why (instance, default, none, test, staging) and options, the
+        destinations it may choose."""
+        need(ctx, "instance_destination")
+        inst = instance(server_name, role, ctx)
+        return (await offsite(ctx, "view", server=inst.server, role=inst.role))
+
+    @server.tool()
+    async def set_instance_destination(server_name: str, role: str, destination: str, ctx: Context) -> dict:
+        """(admin token for a production, developer for a test) Choose where
+        every backup of the instance is copied, encrypted, from the next one:
+        a destination of instance_destination's options, or "" for the
+        server's default. The copies made before stay where they are."""
+        need(ctx, "set_instance_destination")
+        inst = instance(server_name, role, ctx)
+        return await offsite(ctx, "instance", server=inst.server, role=inst.role, destination=destination)
+
+    @server.tool()
+    async def destinations_status(ctx: Context) -> dict:
+        """(admin token of the machine) The machine's default destination of
+        the backups (since when), every destination (kind, folder, workspace,
+        whether its key was ever shown) and where each instance's backups go.
+        No secret."""
+        need(ctx, "destinations_status")
+        offsite_machine(ctx)
+        return await offsite(ctx, "status")
+
+    @server.tool()
+    async def set_default_destination(destination: str, ctx: Context, key_saved: bool = False) -> dict:
+        """(admin token of the machine, never a CI's) Make a destination of
+        the machine the default: the productions that choose none copy every
+        backup there from the next one; "" none. When its key was never shown
+        on the page, ask the user to keep it (Show the key) and pass
+        key_saved=true: without the key the copies cannot be read elsewhere."""
+        need(ctx, "set_default_destination")
+        offsite_machine(ctx)
+        return await offsite(ctx, "default", destination=destination, key_saved=key_saved)
 
     @server.tool()
     def list_actions(server_name: str, role: str, ctx: Context) -> list[dict]:

@@ -295,6 +295,52 @@ Totale ≈ 20 giornate (19,5). Le fette 1-3 (9 g) danno a Carlo «ogni backup va
 3. **Le destinazioni del workspace del cliente nel centrale:** sì, sotto lo stesso interruttore per collegamento, cancellate subito quando il cliente le toglie (la raccomandata).
 4. **Il backup automatico che non aspetta la sua copia:** sì, la copia va nel suo job e la riga della pianificazione prende il suo esito (la raccomandata).
 
+## Com'è nel codice (fetta 1)
+
+Fetta 1, «La scelta», sul ramo `ad016-s1-choice` da `131847a`.
+
+- **Il file.** `destinations.yaml` tiene accanto a `destinations` le chiavi `default` (`{destination, since}`),
+  `instances` (`{<server>/<role>: {destination, since}}`), `keys_shown` (per destinazione l'impronta, 16 caratteri
+  dello SHA-256, della chiave mostrata: una destinazione rifatta con un'altra chiave torna «mai mostrata») e
+  `migrated`. `save_destinations` le conserva, `save_choices` conserva le destinazioni; il file resta 600.
+- **La funzione sola.** `destinations.effective(settings, instance)` dà destinazione e motivo (`test`, `staging`,
+  `instance`, `default`, `none`) come 16.1. La usano la copia della pianificazione (`Scheduler.run`), la scheda Backup
+  (`offsite_view`, `remote_of`), la mappa (`backup_of`), la pagina Destinazioni (`destination_rows`,
+  `offsite_counts`), il rifiuto di Elimina, lo spostamento e la consegna. Le 17 letture di `BackupStep.destination`
+  sono scese a quelle della migrazione e dello specchio (`schedules.migrate_offsite`, `mirror_offsite`), più
+  `parse_schedule` e `schedule_to_dict` che lo scrivono, e `offsite_adopt`, che porta nelle scelte la destinazione
+  del workspace di una pianificazione ricevuta da un'altra macchina (spostamento, consegna).
+- **La migrazione** gira in `create_app`, dopo `scheduler.load()`, una volta: ogni `BackupStep.destination` non vuoto
+  diventa la scelta della sua istanza (prima quella di `backup.<server>.<role>`), con `since` adesso. Il segno è
+  `migrated`, scritto anche da ogni salvataggio delle scelte: da lì un passo di backup dice lo specchio, e rileggerlo
+  come scelta inchioderebbe le istanze che seguono la predefinita.
+- **Lo specchio** (`mirror_offsite`) riscrive in ogni passo di backup la destinazione effettiva (vuota per un test o
+  una staging) all'avvio e dopo ogni cambio di predefinita, di scelta, di pianificazione. Il form «Copy also to» del
+  rilascio di prima, disegnato da un centrale di quel rilascio, resta servito: `destination` e `destinations` in
+  `backup-schedule` sono la destinazione effettiva se chi guarda può leggerne il nome; se la cambia, diventa la scelta
+  dell'istanza. Lo stesso per una destinazione data a `POST /api/schedules/save` (uno script, la pagina
+  Pianificazioni di un rilascio di prima); quella di un test o di una staging cade.
+- **Chi sceglie.** `offsite_act` (pagine, REST, MCP): `default` solo `machine_admin` (mai un token di workspace, di CI
+  o limitato a dei server); `instance` chi ha `backup_role`, fra le opzioni di `offsite_view`. Una persona di
+  workspace legge «Predefinita del server» senza nome; una scelta fra quelle della macchina le arriva come «Una
+  destinazione del server» (`*`), e così il registro del workspace («a destination of the machine»).
+- **Route.** `POST /api/destinations/default`, `POST /api/servers/{server}/{role}/backup-destination` (in
+  `WORKSPACE_ROUTES` e `capabilities.ROUTES` «backup»); REST `GET /api/v1/destinations`,
+  `POST /api/v1/destinations/default`, `GET|POST /api/v1/instances/{server}/{role}/destination`; MCP
+  `destinations_status`, `set_default_destination`, `instance_destination`, `set_instance_destination`. Registro:
+  «default destination», «instance destination», più la riga d'azione di ogni POST.
+- **Contratto.** Il modello della pagina Destinazioni prende `default` e `productions`, un'aggiunta in `agent_api` 4:
+  il template li mostra solo se ci sono. Nessun segreto: `key_shown` è un sì o un no.
+- **Prova.** `tests/test_offsite_choice.py` (7 test, rossi su `131847a`). Sul lab (lab3, lab4, `sftp-a` e `sftp-ws`
+  usa e getta): «Copia anche in» impostata su 2026.1.5527 (`acme-odoo` → `sftp-a`, `acme-zipt` → `sftp-ws`), poi il
+  codice nuovo: le due scelte migrate, i passi invariati; `sftp-a` predefinita (rifiutata prima di mostrarne la
+  chiave), `acme-odoo` alla predefinita; tornati a 2026.1.5527, il rilascio di prima legge `sftp-a` e `sftp-ws` nei
+  passi e il backup automatico di `acme-zipt` finisce in `sftp-ws`; di nuovo il codice nuovo, `acme-odoo` segue
+  ancora la predefinita. Criteri 1 e 2 di UX-016 §18 con Playwright, 1440 e 375, chiaro e scuro, admin e P2.
+- **Resta per le fette dopo.** La coda e gli altri tipi di backup (fetta 2), gli avvisi «da guardare» e la
+  campanella, `places`. Un centrale di questo rilascio che disegna la scheda Backup di una macchina del rilascio di
+  prima non mostra il campo (il modello non ha `offsite`): la scelta lì si fa dalla pagina della macchina.
+
 ## 11. Alternative scartate
 
 - **B. Il centrale fa le copie.** Ogni notte 16 GB passerebbero dal VPS, e senza centrale niente andrebbe fuori sede, contro AD-017 17.4 e AD-018 18.7.1.

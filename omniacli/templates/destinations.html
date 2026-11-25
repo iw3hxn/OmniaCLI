@@ -14,6 +14,11 @@
 #dest-dialog .form-grid textarea { min-height: 90px; font-family: var(--mono, monospace); font-size: var(--fs-12); line-height: var(--lh-18);}
 #dest-dialog .help { grid-column: 2; margin: -6px 0 4px; font-size: var(--fs-12); line-height: var(--lh-18);}
 .key-box { word-break: break-all; }
+.note-box { border-left: var(--bw-4) solid var(--info); background: var(--info-soft); padding: 10px 12px; border-radius: var(--r); margin: 0 0 16px; }
+.note-box.warn { border-left-color: var(--warn); background: var(--warn-soft); }
+#default-dialog { --dialog-w: 560px; }
+#default-dialog .df-line { margin: 0 0 8px; }
+.dest-name { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 </style>
 <div class="page-head">
   <div>
@@ -25,6 +30,11 @@
   <div class="actions"><button type="button" class="primary" id="dest-new" {{ "disabled" if not rclone }} title="{{ _('Opens the form of a new destination: nothing is created until you save there. Not available when rclone is not installed on this machine.') }}">{{ icon("plus") }}{{ _("New destination") }}</button></div>
 </div>
 {% if not rclone %}<div class="banner">{{ _("rclone is not installed on this machine: install it (apt install rclone) to copy the backups out.") }}</div>{% endif %}
+{% set has_default = default is defined %}
+{% if has_default and not workspace and not default %}
+<div class="note-box warn" id="no-default">{{ _("No default destination: the backups of the {count} productions of this server that choose none stay here only. If the server stops, they stop with it.", count=productions.following if productions is defined else 0) }}
+  {% if not rows | selectattr("workspace", "equalto", "") | list %}<a href="#" id="dest-new-link" title="{{ _('Opens the form of a new destination of this machine: nothing is created until you save there') }}">+ {{ _("New destination") }}</a>{% endif %}</div>
+{% endif %}
 <div id="error" class="banner" hidden></div>
 <div id="key-box" class="banner info" hidden>
   <p style="margin-top: 0"><strong>{{ _("The key of") }} <span id="key-name"></span>.</strong>
@@ -36,21 +46,23 @@
     <tr><th scope="col">{{ _("Name") }}</th><th scope="col">{{ _("Kind") }}</th><th scope="col">{{ _("Folder") }}</th>{% if not workspace %}<th scope="col">{{ _("Of") }}</th>{% endif %}<th scope="col">{{ _("Used by") }}</th><th scope="col"></th></tr>
     {% for d in rows %}
     <tr data-name="{{ d.name }}">
-      <td><strong>{{ d.name }}</strong></td><td>{{ tr(d.label) }}</td><td class="mono">{{ d.path }}</td>
+      <td><span class="dest-name"><strong>{{ d.name }}</strong>{% if d.default %} <span class="badge ok" title="{{ _('The productions of this server that choose no other destination copy every backup here, encrypted') }}">{{ _("Default") }}</span>{% endif %}</span></td><td>{{ tr(d.label) }}</td><td class="mono">{{ d.path }}</td>
       {% if not workspace %}<td>{% if d.workspace %}<a href="{{ prefix }}/workspaces/{{ d.workspace }}/destinations">{{ d.workspace }}</a>{% else %}{{ _("this machine") }}{% endif %}</td>{% endif %}
       <td class="muted">{{ d.used_by | join(", ") or "—" }}</td>
       <td>{% if (d.workspace or "") == workspace %}<div class="actions" style="margin: 0">
         <button type="button" data-check title="{{ _('Reaches the destination now: makes its folder when missing, writes a small file there and removes it, then says how many files the folder holds. The copies there are not touched.') }}">{{ _("Try") }}</button>
         <button type="button" data-edit title="{{ _('Opens the form of this destination to change its kind, folder or settings. Its name and its key stay as they are; a password left empty keeps the saved one.') }}">{{ _("Edit") }}</button>
         <button type="button" data-key title="{{ _('Shows here above the key the copies of this destination are encrypted with, to keep somewhere else too. It changes nothing; the access log records who asked.') }}">{{ _("Show the key") }}</button>
-        <button type="button" class="danger" data-delete {{ "disabled" if d.used_by }} title="{{ _('Deletes this destination from OmniaCLI: the copies already there stay there. It asks before. Not available while the automatic backups of an instance go to it.') }}">{{ _("Delete") }}</button>
+        {% if has_default and not workspace %}{% if d.default %}<button type="button" class="small danger" data-undefault title="{{ _('The productions that used it stay without an off-site copy until they choose one: they are to be looked at. The copies made stay.') }}">{{ _("No longer the default…") }}</button>
+        {% else %}<button type="button" class="small" data-default title="{{ _('The productions of this server that choose no other one copy every backup here, encrypted, from the next one. The copies already made stay where they are.') }}">{{ _("Make default…") }}</button>{% endif %}{% endif %}
+        <button type="button" class="danger" data-delete {{ "disabled" if d.used_by or d.default or d.chosen_by }} title="{{ _('Deletes this destination from OmniaCLI: the copies already there stay there. It asks before. Not available while it is the default or the backups of an instance go to it.') }}">{{ _("Delete") }}</button>
       </div><div class="muted dest-result" style="font-size: var(--fs-14); line-height: var(--lh-20);"></div>{% endif %}</td>
     </tr>
     {% else %}
     <tr><td colspan="6" class="muted">{{ _("No destinations yet: the backups stay on this machine.") }}</td></tr>
     {% endfor %}
   </table></div>
-  <p class="muted" style="font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("Choose a destination in the automatic backups of an instance (its Backups tab): every backup is copied there and kept by the same rotation.") }}
+  <p class="muted" style="font-size: var(--fs-14); line-height: var(--lh-20);">{% if has_default and not workspace %}{{ _("The productions copy their backups to the default, unless one chooses another in its Backups tab (Off-site copy to): kept there by the same rotation as here.") }}{% else %}{{ _("Choose a destination in the automatic backups of an instance (its Backups tab): every backup is copied there and kept by the same rotation.") }}{% endif %}
     {% if file %}{{ _("Saved in {file}, readable by its owner only.", file=file) }}{% endif %}</p>
 </section>
 <dialog id="dest-dialog" aria-labelledby="dest-title">
@@ -77,13 +89,42 @@
   </form>
 {{ dialog_x() }}
 </dialog>
+{% if has_default and not workspace %}
+<dialog id="default-dialog" aria-labelledby="df-title">
+  <form method="dialog" id="df-form">
+    <h2 id="df-title"></h2>
+    <p class="df-line" id="df-follow"></p>
+    <p class="df-line" id="df-chosen"></p>
+    <p class="df-line muted">{{ _("The copies already made stay where they are.") }}</p>
+    <div id="df-key" hidden>
+      <p class="df-line">{{ _("Its key was never shown here: without it the copies cannot be read back on another machine. Keep it out of here first (a password manager).") }}</p>
+      <div class="actions"><button type="button" id="df-show" title="{{ _('Shows the key here, in this dialog: the access log records who asked') }}">{{ _("Show the key here") }}</button></div>
+      <pre class="copyable key-box mono" id="df-key-text" hidden></pre>
+      <label><input type="checkbox" id="df-saved" disabled> {{ _("I saved the key out of here") }}</label>
+    </div>
+    <p class="error" id="df-error"></p>
+    <div class="actions" style="justify-content: flex-end">
+      <button type="button" id="df-cancel" title="{{ _('Closes without changing anything') }}">{{ _("Cancel") }}</button>
+      <button type="submit" class="primary" id="df-go" title="{{ _('From the next backup the productions that follow the default copy to this destination') }}">{{ _("Make it the default") }}</button>
+    </div>
+  </form>
+{{ dialog_x() }}
+</dialog>
+{% endif %}
 <script>
 (function () {
   const API = {{ (prefix ~ api) | tojson }}, KINDS = {{ kinds | tojson }}, ROWS = {{ rows | tojson }};
+  const PROD = {{ (productions if productions is defined else {}) | tojson }};
   const T = {edit: {{ _("Edit {name}") | tojson }},
              deleteQ: {{ _("Delete the destination {name}? The copies already there stay there.") | tojson }},
              trying: {{ _("Trying…") | tojson }}, kept: {{ _("set: empty keeps it") | tojson }},
-             refused: {{ _("Refused") | tojson }}};
+             refused: {{ _("Refused") | tojson }},
+             dfTitle: {{ _("{name} as the default destination") | tojson }},
+             dfFollow: {{ _("Productions that follow the default: {count}. From their next backup they copy to {name}.") | tojson }},
+             dfChosen: {{ _("Productions that chose another destination: {count}. They do not change.") | tojson }},
+             undefaultQ: {{ _("{name} is no longer the default? Productions that follow the default: {count}. Their backups stay on this machine only until they choose a destination, and they are to be looked at. The copies made stay.") | tojson }},
+             undefaultGo: {{ _("No longer the default") | tojson }}};
+  const fill = (text, values) => text.replace(/\{(\w+)\}/g, (m, k) => (k in values ? values[k] : m));
   const dialog = document.getElementById("dest-dialog"), error = document.getElementById("error");
   let editing = null;
   async function post(path, body) {
@@ -130,6 +171,45 @@
   }
   document.getElementById("d-kind").addEventListener("change", (e) => drawSettings(e.target.value, editing));
   document.getElementById("dest-new").addEventListener("click", () => open(null));
+  document.getElementById("dest-new-link")?.addEventListener("click", (e) => { e.preventDefault(); open(null); });
+  // the machine's default (UX-016 §4): its key shown before, the numbers of what changes
+  const dfDialog = document.getElementById("default-dialog");
+  let dfName = "";
+  function dfReady() {
+    const keyBox = document.getElementById("df-key");
+    document.getElementById("df-go").disabled = !keyBox.hidden && !document.getElementById("df-saved").checked;
+  }
+  function openDefault(row) {
+    dfName = row.name;
+    document.getElementById("df-title").textContent = fill(T.dfTitle, {name: row.name});
+    document.getElementById("df-follow").textContent = fill(T.dfFollow, {count: PROD.following ?? 0, name: row.name});
+    document.getElementById("df-chosen").textContent = fill(T.dfChosen, {count: PROD.chosen ?? 0});
+    document.getElementById("df-key").hidden = !!row.key_shown;
+    document.getElementById("df-key-text").hidden = true; document.getElementById("df-key-text").textContent = "";
+    document.getElementById("df-saved").checked = false; document.getElementById("df-saved").disabled = true;
+    document.getElementById("df-show").disabled = false;
+    document.getElementById("df-error").textContent = "";
+    dfReady();
+    dfDialog.showModal();
+  }
+  if (dfDialog) {
+    document.getElementById("df-cancel").addEventListener("click", () => dfDialog.close());
+    document.getElementById("df-saved").addEventListener("change", dfReady);
+    document.getElementById("df-show").addEventListener("click", async (event) => {
+      const {ok, data} = await post("key", {name: dfName});
+      if (!ok) { document.getElementById("df-error").textContent = data.error || data.detail || T.refused; return; }
+      const text = document.getElementById("df-key-text");
+      text.textContent = data.key; text.hidden = false;
+      event.target.disabled = true; document.getElementById("df-saved").disabled = false;
+    });
+    document.getElementById("df-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const {ok, data} = await post("default", {destination: dfName, key_saved: document.getElementById("df-saved").checked});
+      if (!ok) { document.getElementById("df-error").textContent = data.error || data.detail || T.refused; return; }
+      dfDialog.close();
+      location.reload();
+    });
+  }
   document.getElementById("d-cancel").addEventListener("click", () => dialog.close());
   document.getElementById("dest-form").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -162,6 +242,14 @@
     const name = tr.dataset.name, row = ROWS.find((r) => r.name === name), result = tr.querySelector(".dest-result");
     tr.querySelector("[data-edit]")?.addEventListener("click", () => open(row));
     tr.querySelector("[data-key]")?.addEventListener("click", () => showKey(name));
+    tr.querySelector("[data-default]")?.addEventListener("click", () => openDefault(row));
+    tr.querySelector("[data-undefault]")?.addEventListener("click", async (event) => {
+      if (!await omniaAsk(fill(T.undefaultQ, {name, count: PROD.following ?? 0}), T.undefaultGo,
+                          {danger: true, goTitle: event.target.title})) return;
+      const {ok, data} = await post("default", {destination: ""});
+      if (!ok) { error.textContent = data.error || data.detail || T.refused; error.hidden = false; return; }
+      location.reload();
+    });
     tr.querySelector("[data-check]")?.addEventListener("click", async (event) => {
       event.target.disabled = true; result.textContent = T.trying; result.className = "muted dest-result";
       const {ok, data} = await post("check", {name});
