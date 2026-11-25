@@ -1007,6 +1007,24 @@ Per ogni fetta: il rilascio, la prova su lab3/lab4, come si annulla, la stima.
        «Salva» del dialogo, come prima).
    - Alla fine lab3 e lab4 reinstallati dal pacchetto 2026.1.5521, il NAT tolto, `lab5` eliminato.
 
+   **La revisione di `b58dcf3`** (non pronta: una bloccante, una importante, una minore), corretta così:
+   - **Una porta per tunnel** (bloccante). `relay_host` sceglieva la porta dei nomi di un workspace evitando i
+     tunnel dei nomi e le porte in ascolto, non quelle degli agenti: con il tunnel di una macchina M giù, i nomi del
+     cliente V prendevano la sua 31000, e M poteva vincere l'ascolto e ricevere i visitatori di V in HTTP dietro il
+     TLS del relay. Ora le porte prese sono quelle di tutti i tunnel, dei due tipi (un tunnel giù tiene la sua), e
+     `relay.authorized_keys` rifiuta una porta due volte.
+   - **Un nome per macchina** (importante). I collegamenti «Acme.1» e «acme_1» danno sul relay lo stesso nome
+     `acme-1`: il secondo prendeva porta, riga e chiavi ammesse del primo, che non poteva più toglierle (403). Ora il
+     secondo è rifiutato («è il tunnel di un'altra macchina qui»), per gli agenti e per i nomi dei workspace.
+   - **Una chiave per tunnel** (minore). Una macchina poteva registrare la chiave del tunnel di un'altra: sshd legge
+     la prima riga che combacia, e il tunnel della vittima finiva sulla porta dell'altra. Ora una chiave già di un
+     tunnel, dei due tipi, è rifiutata, e `relay.authorized_keys` non la scrive due volte.
+   - **Il monitor** guarda anche il tunnel della macchina: non connesso per due controlli di fila è un problema
+     della macchina (`agent-relay`, l'evento `relay.down` con `agent: true`).
+   - **Resta**: la riga della chiave del centrale non può dire `permitlisten="none"` (una riga di `authorized_keys`
+     non lo accetta, README «Links through SSH»); il `-R` lo rifiuta il blocco `Match` (`AllowTcpForwarding local`,
+     `PermitListen none`), provato sul lab.
+
    **Dove la fetta si discosta dal piano.**
    - **La seconda porta porta l'SSH della macchina, non la sua API** (sopra). Costa che la macchina ammetta la chiave
      del centrale come per ogni collegamento SSH; dà il token mai in chiaro sul relay.

@@ -19,10 +19,11 @@ import pytest
 import yaml
 
 from omniacli import apiv1, relay, sshlinks, workspacehelper, workspaceops
+from omniacli import monitor as monitor_module
 from omniacli.app import create_app
 from omniacli.auth import Principal, hash_token
 from omniacli.composehelper import HelperError
-from omniacli.config import ConfigError, LinkTarget, parse_link, parse_settings
+from omniacli.config import ConfigError, LinkTarget, Options, parse_link, parse_settings
 
 from .conftest import LINK_TOKEN, USER_HASH
 from .test_api_v1 import token
@@ -50,7 +51,7 @@ RELAY_KEY = ed25519(4)
 def test_the_agents_lines_on_the_relay():
     agents = {"lab4": {"public_key": PUBLIC, "port": 31002, "allowed": [CENTRAL]},
               "lab6": {"public_key": ed25519(9), "port": 31001, "allowed": [CENTRAL, OTHER_CENTRAL]}}
-    keys = relay.authorized_keys({"lab4.acme": {"public_key": PUBLIC, "port": 31000}}, agents)
+    keys = relay.authorized_keys({"lab4.acme": {"public_key": ed25519(8), "port": 31000}}, agents)
     lines = [line for line in keys.splitlines() if not line.startswith("#")]
     # the agent's tunnel: its own line, listening on its port only, as a workspace's
     assert f'restrict,port-forwarding,permitlisten="127.0.0.1:31002",command="/bin/false" {PUBLIC} ' \
@@ -199,7 +200,7 @@ def agents_root(relay_root, monkeypatch):
 def test_the_relay_hosts_an_agents_tunnel(agents_root, monkeypatch):
     monkeypatch.setattr(workspacehelper, "_reaches_here", lambda name: False)
     # a workspace's names already there: the agent takes the next port, both lines in the same file
-    assert host(monkeypatch)["port"] == 31000
+    assert host(monkeypatch, public_key=ed25519(8))["port"] == 31000
     made = agent_host(monkeypatch)
     assert (made["port"], made["user"], made["jump_user"], made["host_key"], made["ssh_port"]) == \
         (31001, "omniacli-relay", "omniacli-relay-jump", HOST_KEY, 2222)
@@ -256,6 +257,95 @@ def test_the_relay_refuses_an_agent(agents_root, monkeypatch):
         agent_host(monkeypatch)
     assert workspacehelper._agents() == {} and agents_root["SSHD_CONFIG"].read_text() == "Port 22\n"
     assert not (agents_root["JUMP_HOME"] / ".ssh" / "authorized_keys").exists()
+
+
+# --- the review of b58dcf3: one port, one name, one key per tunnel -----------------------------------------------
+
+def test_a_workspaces_names_never_take_an_agents_port(agents_root, monkeypatch):
+    """An agent's tunnel down (its port not listening) keeps its port: a workspace's names published then take
+    another. Before, both lines could listen on 31000, and the agent's machine could take the visitors of the
+    names behind the relay's TLS."""
+    monkeypatch.setattr(workspacehelper, "_reaches_here", lambda name: False)
+    agent = agent_host(monkeypatch, label="mallory", link="mallory", public_key=ed25519(9))
+    names = host(monkeypatch, key="victim.acme", link="victim", workspace="acme", public_key=ed25519(10))
+    assert (agent["port"], names["port"]) == (31000, 31001)
+    keys = (agents_root["RELAY_HOME"] / ".ssh" / "authorized_keys").read_text()
+    assert keys.count('permitlisten="127.0.0.1:31000"') == 1 and keys.count('permitlisten="127.0.0.1:31001"') == 1
+    # the file is never written with one port twice, whoever asks
+    with pytest.raises(relay.RelayError, match="two tunnels on one port \\(31000\\)"):
+        relay.authorized_keys({"v.acme": {"public_key": ed25519(10), "port": 31000}},
+                              {"mallory": {"public_key": ed25519(9), "port": 31000}})
+
+
+def test_two_links_with_one_name_on_the_relay(agents_root, monkeypatch):
+    """Links «Acme.1» and «acme_1» give one name on the relay: the second is refused, the first keeps its port,
+    its key line and its allowed keys (before, the second took them and the first could not remove them)."""
+    monkeypatch.setattr(workspacehelper, "_reaches_here", lambda name: False)
+    assert relay.label_of("Acme.1") == relay.label_of("acme_1") == "acme-1"
+    first = agent_host(monkeypatch, label="acme-1", link="Acme.1", public_key=ed25519(9), allowed=[CENTRAL])
+    with pytest.raises(HelperError, match="acme-1 is the tunnel of another machine here \\(Acme.1\\)"):
+        agent_host(monkeypatch, label="acme-1", link="acme_1", public_key=ed25519(11), allowed=[OTHER_CENTRAL])
+    rec = json.loads(agents_root["AGENTS"].read_text())["acme-1"]
+    assert (rec["link"], rec["port"], rec["public_key"], rec["allowed"]) == ("Acme.1", first["port"], ed25519(9), [CENTRAL])
+    keys = (agents_root["RELAY_HOME"] / ".ssh" / "authorized_keys").read_text()
+    assert ed25519(9) in keys and ed25519(11) not in keys
+    assert OTHER_CENTRAL not in (agents_root["JUMP_HOME"] / ".ssh" / "authorized_keys").read_text()
+    # the same machine again keeps its own; a workspace's names under one name the same way
+    assert agent_host(monkeypatch, label="acme-1", link="Acme.1", public_key=ed25519(9))["port"] == first["port"]
+    host(monkeypatch, key="acme-1.shop", link="Acme.1", workspace="shop", public_key=ed25519(12))
+    with pytest.raises(HelperError, match="tunnel of another machine here"):
+        host(monkeypatch, key="acme-1.shop", link="acme_1", workspace="shop", public_key=ed25519(13))
+
+
+def test_a_tunnels_key_is_its_own(agents_root, monkeypatch):
+    """A key another tunnel has is refused, agents and workspaces' names together: sshd reads the first line
+    that matches, so the victim's tunnel would be taken."""
+    monkeypatch.setattr(workspacehelper, "_reaches_here", lambda name: False)
+    victim = agent_host(monkeypatch, label="victim", link="victim", public_key=ed25519(20))
+    with pytest.raises(HelperError, match="the key of another tunnel here"):
+        agent_host(monkeypatch, label="aaa", link="aaa", public_key=ed25519(20))
+    with pytest.raises(HelperError, match="the key of another tunnel here"):
+        host(monkeypatch, key="aaa.acme", link="aaa", workspace="acme", public_key=ed25519(20))
+    host(monkeypatch, key="shop.acme", link="shop", workspace="acme", public_key=ed25519(21))
+    with pytest.raises(HelperError, match="the key of another tunnel here"):
+        agent_host(monkeypatch, label="aaa", link="aaa", public_key=ed25519(21))
+    lines = [line for line in (agents_root["RELAY_HOME"] / ".ssh" / "authorized_keys").read_text().splitlines()
+             if ed25519(20) in line]
+    assert lines == [f'restrict,port-forwarding,permitlisten="127.0.0.1:{victim["port"]}",command="/bin/false" '
+                     f"{ed25519(20)} omniacli-relay:victim.agent"]
+    with pytest.raises(relay.RelayError, match="two tunnels with one key"):
+        relay.authorized_keys({}, {"a": {"public_key": ed25519(20), "port": 31000},
+                                   "b": {"public_key": ed25519(20), "port": 31001}})
+
+
+async def test_the_monitor_watches_the_agents_tunnel(env, tmp_path, monkeypatch):
+    """This machine's tunnel to its relay not connected for two checks in a row: a problem of the machine,
+    told (relay.down, agent); gone when it is connected again or no longer published."""
+    settings = env["settings"]
+    told = []
+
+    async def send(options, recipients, subject, text, event=None, language=""):
+        told.append(event)
+        return []
+    monkeypatch.setattr(monitor_module.notify, "send", send)
+    settings.options = Options(monitor_notify=["ops@acme.it"])
+    mon = monitor_module.Monitor(settings, None, None, tmp_path / "monitor.json")
+    record = settings.servers_file.parent / relay.AGENT_RECORD
+    record.write_text(json.dumps({"link": "lab5", "remote_port": 31000}))
+    state = {"state": "down"}
+    monkeypatch.setattr(relay, "read_tunnel", lambda workspace, baseline=0, unit="": {
+        "state": state["state"], "since": None, "last_drop": None, "restarts": 0, "nrestarts": 0})
+    await mon.check_relays()
+    assert not mon.machine.get("agent-relay", {}).get("problem")
+    await mon.check_relays()
+    assert "SSH tunnel to lab5 is not connected" in mon.machine["agent-relay"]["problem"]
+    assert told and told[-1]["event"] == "relay.down" and told[-1]["agent"] is True
+    state["state"] = "connected"
+    await mon.check_relays()
+    assert not mon.machine["agent-relay"]["problem"]
+    record.unlink()
+    await mon.check_relays()
+    assert "agent-relay" not in mon.machine
 
 
 # --- the root helper on the machine behind NAT -------------------------------------------------------------

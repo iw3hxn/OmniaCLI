@@ -45,7 +45,7 @@ def test_the_key_may_listen_on_its_port_only():
         relay.authorized_line("ssh-rsa AAAA", 31000, "lab4.acme")
     with pytest.raises(relay.RelayError, match="name of a tunnel"):
         relay.authorized_line(PUBLIC, 31000, 'x" ,command="/bin/sh')
-    keys = relay.authorized_keys({"b.x": {"public_key": PUBLIC, "port": 31001}, "a.y": {"public_key": PUBLIC, "port": 31000}})
+    keys = relay.authorized_keys({"b.x": {"public_key": HOST_KEY, "port": 31001}, "a.y": {"public_key": PUBLIC, "port": 31000}})
     assert [line.split('"')[1] for line in keys.splitlines() if not line.startswith("#")] == \
         ["127.0.0.1:31000", "127.0.0.1:31001"]
 
@@ -260,7 +260,8 @@ def test_the_relay_hosts_a_tunnel_and_takes_it_away(relay_root, monkeypatch):
     assert (relay_root["tmp"] / "certs" / "relay-lab4.acme" / "fullchain.pem").is_file()
     # the same again: the same port; another machine's tunnel: the next one
     assert host(monkeypatch)["port"] == 31000
-    other = host(monkeypatch, key="lab5.beta", link="lab5", workspace="beta", names=["beta.it"], redirects={})
+    other = host(monkeypatch, key="lab5.beta", link="lab5", workspace="beta", names=["beta.it"], redirects={},
+                 public_key=HOST_KEY)
     assert other["port"] == 31001
     assert workspacehelper.relay_hosted()["hosted"]["lab4.acme"]["listening"] is False
     relay_root["tcp"].write_text("  sl  local_address rem_address   st\n   0: 0100007F:7918 00000000:0000 0A\n")

@@ -59,6 +59,8 @@ SAVE_EVERY = 600
 # the share of the window the sampler's points must cover before a level is read from them
 COVERED = 0.8
 METRIC_LABELS = {"cpu": "CPU", "ram": "Memory"}
+# the machine's problem of its SSH tunnel to a relay (AD-017 §17.6): never «relay <workspace>», a name of a workspace
+AGENT_RELAY = "agent-relay"
 
 
 def level_of(value: float, limits) -> str | None:
@@ -393,6 +395,30 @@ class Monitor:
             await self.machine_problem(f"relay {name}", problem, server=None, level="warning",
                                        event={"event": "relay.down", "workspace": name, "relay": rec.get("link"),
                                               "state": state["state"]})
+        await self.check_agent_relay()
+
+    async def check_agent_relay(self) -> None:
+        """This machine's SSH published through a relay for its central panel (AD-017 §17.6): its tunnel not
+        connected for two checks in a row is a problem of the machine, «agent-relay», told as the workspaces'
+        ones (event relay.down with agent: true); gone when it is connected again or the publication taken away."""
+        try:
+            rec = json.loads((self.settings.servers_file.parent / relay.AGENT_RECORD).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            rec = None
+        if not isinstance(rec, dict) or not rec.get("link"):
+            self.machine.pop(AGENT_RELAY, None)
+            self._relay_misses.pop(AGENT_RELAY, None)
+            return
+        state = await asyncio.to_thread(relay.read_tunnel, "", int(rec.get("restarts_base") or 0), relay.AGENT_UNIT)
+        down = state["state"] != "connected"
+        self._relay_misses[AGENT_RELAY] = self._relay_misses.get(AGENT_RELAY, 0) + 1 if down else 0
+        if down and self._relay_misses[AGENT_RELAY] < 2:
+            return
+        problem = (f"this machine's SSH tunnel to {rec.get('link')} is not connected: the central panel does not "
+                   "reach it") if down else ""
+        await self.machine_problem(AGENT_RELAY, problem, server=None, level="warning",
+                                   event={"event": "relay.down", "agent": True, "relay": rec.get("link"),
+                                          "state": state["state"]})
 
     async def round(self) -> None:
         async with httpx.AsyncClient(follow_redirects=False) as client:

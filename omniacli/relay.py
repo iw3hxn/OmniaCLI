@@ -165,6 +165,15 @@ def authorized_line(public_key: str, port: int, key: str) -> str:
 def authorized_keys(hosted: dict, agents: dict | None = None) -> str:
     """The relay's authorized_keys: the tunnels of the names (hosted) and of
     the agents' SSH (agents, AD-017 §17.6), one line each, its port only."""
+    every = [*hosted.values(), *(agents or {}).values()]
+    ports = [int(r.get("port") or 0) for r in every]
+    keys = [check_public_key(r.get("public_key")) for r in every]
+    # two lines that may listen on one port: either machine could take the other's visitors; one key twice: sshd
+    # reads the first line, the other tunnel is lost
+    if len(set(ports)) != len(ports):
+        raise RelayError(f"two tunnels on one port ({', '.join(str(p) for p in sorted({p for p in ports if ports.count(p) > 1}))})")
+    if len(set(keys)) != len(keys):
+        raise RelayError("two tunnels with one key")
     out = ["# written by omniacli workspace-helper: the tunnels of the machines published through this one.",
            "# Changed here, it is written again at the next publication."]
     for key in sorted(hosted):

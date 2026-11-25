@@ -1305,11 +1305,25 @@ container, 25/11/2026) the tunnel's ssh killed 5 times in a row: the central
 panel read lab4 again after 15.6-16.1 s each time (40.3 s the third time
 before that rule).
 
-Limits: the relay's sshd must let `omniacli-relay` and `omniacli-relay-jump`
-in (`AllowUsers`, `AllowGroups`); a process of the relay can connect to the
-port on its loopback, where it meets the machine's sshd as anyone would if
-the machine were not behind NAT (its own rules: keys, passwords); a central panel whose key is not in the link user's file when the
-machine publishes is let in at the next **Publish again**.
+**One port, one name, one key.** On a relay each tunnel, of a workspace's
+names or of a machine's SSH, has a port no other has (a tunnel that is down
+keeps its own), a name no other machine has (two links whose names give the
+same name there, `Acme.1` and `acme_1`, are refused the second time: rename
+that link on the relay) and a key no other tunnel has; `authorized_keys` is
+never written with one port or one key twice. The monitor watches the
+machine's tunnel as the workspaces' ones: not connected for two checks in a
+row is a problem of the machine (`agent-relay`, the event `relay.down` with
+`agent: true` for the webhooks).
+
+Limits: the NAT machine's sshd is reachable from the relay's loopback, on
+its port: any process of the relay meets it there, under its own rules
+(keys, passwords), as anyone would without the NAT; the jump user's key
+line cannot say `permitlisten="none"` (not accepted in a key line), so its
+`-R` is refused by the `Match` block (`AllowTcpForwarding local`,
+`PermitListen none`), not by the line; the relay's sshd must let
+`omniacli-relay` and `omniacli-relay-jump` in (`AllowUsers`,
+`AllowGroups`); a central panel whose key is not in the link user's file
+when the machine publishes is let in at the next **Publish again**.
 
 ### Protection of the central panel
 

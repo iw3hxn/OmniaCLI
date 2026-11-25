@@ -55,9 +55,12 @@
  "the central panel's link names it": "la indica il collegamento del pannello centrale",
  "the port the machine's page Reached through a relay says, after it published its SSH": "la porta che dice la pagina Raggiungibile attraverso un relay della macchina, dopo che ha pubblicato il suo SSH",
  "the relay {host}:{port} did not open the machine's port {tunnel}": "il relay {host}:{port} non ha aperto la porta {tunnel} della macchina",
+ "the tunnel's key is the key of another tunnel here: each tunnel has a key of its own": "la chiave del tunnel è la chiave di un altro tunnel qui: ogni tunnel ha una chiave sua",
+ "this machine's SSH tunnel to {relay} is not connected: the central panel does not reach it": "il tunnel SSH di questa macchina verso {relay} non è connesso: il pannello centrale non la raggiunge",
  "through the relay {relay}, port {port}": "attraverso il relay {relay}, porta {port}",
  "{count} drops since it was published, the last {time}": "{count} interruzioni da quando è pubblicato, l'ultima {time}",
  "{name} cannot be the relay: {reason}": "{name} non può fare da relay: {reason}",
  "{name} goes through no SSH server: give it its SSH server first (Links page), then the relay": "{name} non passa da nessun server SSH: prima dagli il suo server SSH (pagina Collegamenti), poi il relay",
- "{name} has no public IPv4: the central panels reach it at {host}, from its network only": "{name} non ha un IPv4 pubblico: i pannelli centrali lo raggiungono a {host}, solo dalla sua rete"
+ "{name} has no public IPv4: the central panels reach it at {host}, from its network only": "{name} non ha un IPv4 pubblico: i pannelli centrali lo raggiungono a {host}, solo dalla sua rete",
+ "{name} is the tunnel of another machine here ({link}): this machine's link needs another name on this relay": "{name} è il tunnel di un'altra macchina qui ({link}): il collegamento di questa macchina ha bisogno di un altro nome su questo relay"
 }

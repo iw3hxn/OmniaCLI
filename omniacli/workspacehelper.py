@@ -5084,14 +5084,7 @@ def relay_host(key: str) -> dict:
     with _relay_lock():
         hosted = _hosted()
         before = hosted.get(key)
-        taken = {int(r.get("port") or 0) for k, r in hosted.items() if k != key}
-        if before and int(before.get("port") or 0) in relay.RELAY_PORTS:
-            port = int(before["port"])
-        else:
-            busy = _listening()
-            port = next((p for p in relay.RELAY_PORTS if p not in taken and p not in busy and _free(p)), None)
-        if port is None:
-            raise HelperError(f"no port free in {relay.RELAY_PORTS.start}-{relay.RELAY_PORTS.stop - 1}")
+        port = _relay_port("hosted", key, spec, hosted, _agents())
         path = _relay_site(key)
         dump = subprocess.run([_tool("nginx"), "-T"], env=ENV, capture_output=True, text=True)
         if dump.returncode:
@@ -5114,7 +5107,7 @@ def relay_host(key: str) -> dict:
         sshd = False
         agents = _agents()
         try:
-            _write(keys_file, relay.authorized_keys(hosted, agents), mode=0o644)
+            _write(keys_file, _authorized_keys(hosted, agents), mode=0o644)
             sshd = _sshd_config(relay.with_block(SSHD_CONFIG.read_text(encoding="utf-8"), relay.agent_ports(agents)))
             Path(workspaceweb.ACME_ROOT).mkdir(mode=0o755, exist_ok=True)
             tls = _tls(f"relay-{key}", "letsencrypt")
@@ -5180,7 +5173,7 @@ def relay_unhost(key: str) -> dict:
         keys_file = RELAY_HOME / ".ssh" / "authorized_keys"
         agents = _agents()
         if hosted or agents:
-            _write(keys_file, relay.authorized_keys(hosted, agents), mode=0o644)
+            _write(keys_file, _authorized_keys(hosted, agents), mode=0o644)
             if hosted:
                 _write(HOSTED, json.dumps(hosted, indent=1, sort_keys=True) + "\n", mode=0o600)
             elif HOSTED.exists():
@@ -5225,6 +5218,37 @@ def _relay_gone() -> list[str]:
     return removed
 
 
+def _relay_port(kind: str, name: str, spec: dict, hosted: dict, agents: dict) -> int:
+    """The port of the tunnel name (of hosted: a workspace's names; of agents: a machine's SSH) asked by the
+    machine spec["link"]: its own of before, else one no other tunnel of either kind has and nothing listens on.
+    Refused: a name another machine's tunnel has (two links whose names give the same name here: the second
+    would take the first's port and key line), and a key another tunnel has (sshd takes the first line that
+    matches: that tunnel would be taken from its machine)."""
+    mine = (hosted if kind == "hosted" else agents).get(name)
+    if mine and mine.get("link") != spec["link"]:
+        raise HelperError(f"{name} is the tunnel of another machine here ({mine.get('link')}): this machine's link "
+                          "needs another name on this relay")
+    others = [r for k, r in hosted.items() if (kind, k) != ("hosted", name)] + \
+        [r for k, r in agents.items() if (kind, k) != ("agents", name)]
+    if any(r.get("public_key") == spec["public_key"] for r in others):
+        raise HelperError("the tunnel's key is the key of another tunnel here: each tunnel has a key of its own")
+    taken = {int(r.get("port") or 0) for r in others}
+    if mine and int(mine.get("port") or 0) in relay.RELAY_PORTS and int(mine["port"]) not in taken:
+        return int(mine["port"])
+    busy = _listening()
+    port = next((p for p in relay.RELAY_PORTS if p not in taken and p not in busy and _free(p)), None)
+    if port is None:
+        raise HelperError(f"no port free in {relay.RELAY_PORTS.start}-{relay.RELAY_PORTS.stop - 1}")
+    return port
+
+
+def _authorized_keys(hosted: dict, agents: dict) -> str:
+    try:
+        return relay.authorized_keys(hosted, agents)
+    except relay.RelayError as exc:
+        raise HelperError(f"the relay's authorized_keys is not written: {exc}") from None
+
+
 def relay_hosted() -> dict:
     """The tunnels hosted here: whose (the link, its workspace), the port,
     the names, and whether the tunnel listens now; the agents' too (whose,
@@ -5258,7 +5282,7 @@ def _relay_keys_written(hosted: dict, agents: dict) -> bool:
     """The two authorized_keys of the relay and its Match blocks as hosted
     and agents say; True when sshd_config changed."""
     _relay_user()
-    _write(RELAY_HOME / ".ssh" / "authorized_keys", relay.authorized_keys(hosted, agents), mode=0o644)
+    _write(RELAY_HOME / ".ssh" / "authorized_keys", _authorized_keys(hosted, agents), mode=0o644)
     if relay.agent_ports(agents):
         _jump_user()
         _write(JUMP_HOME / ".ssh" / "authorized_keys", relay.jump_keys(agents), mode=0o644)
@@ -5281,15 +5305,7 @@ def relay_agent_host(label: str) -> dict:
     with _relay_lock():
         hosted, agents = _hosted(), _agents()
         before = agents.get(label)
-        taken = {int(r.get("port") or 0) for r in hosted.values()} | \
-            {int(r.get("port") or 0) for k, r in agents.items() if k != label}
-        if before and int(before.get("port") or 0) in relay.RELAY_PORTS:
-            port = int(before["port"])
-        else:
-            busy = _listening()
-            port = next((p for p in relay.RELAY_PORTS if p not in taken and p not in busy and _free(p)), None)
-        if port is None:
-            raise HelperError(f"no port free in {relay.RELAY_PORTS.start}-{relay.RELAY_PORTS.stop - 1}")
+        port = _relay_port("agents", label, spec, hosted, agents)
         agents[label] = {**spec, "port": port,
                          "created": (before or {}).get("created") or time.strftime("%Y-%m-%dT%H:%M:%S")}
         kept = {p: p.read_text(encoding="utf-8") if p.is_file() else None
