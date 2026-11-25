@@ -96,7 +96,9 @@ identities live here from now, their login there is off, their secrets
 deleted there after 7 days; links: one-time links of a second step, shown
 once), identity_return with confirm=<link> (back to the machine within the
 7 days, with what changed here) and identity_factor_link with
-confirm=<link> and person (a new one-time link of a second step).
+confirm=<link> and person (a new one-time link of a second step);
+identity_reconcile with confirm=<link> (a pass whose answer was lost made
+the same on both sides: identity_import_status says it first).
 A workspace's token of a machine whose workspaces this panel serves calls
 this /mcp as before: its tools are asked of its machine with its scope.
 The names of this OmniaCLI (admin token): portal_status, portal_publish
@@ -138,7 +140,8 @@ TOOL_ROLES = {"update_test": "developer", "backup_test": "developer",
                                       "link_relay")},
               # a linked machine's identities carried to the central panel (AD-018 slice 1): its admins only
               **{t: "admin" for t in ("identity_import_status", "identity_import", "identity_import_delete",
-                                      "identity_home", "identity_pass", "identity_return", "identity_factor_link")},
+                                      "identity_home", "identity_pass", "identity_return", "identity_factor_link",
+                                      "identity_reconcile")},
               # the portal's names and its passkeys' domain (AD-018 slice 3): the machine's admins only
               **{t: "admin" for t in ("portal_status", "portal_publish", "portal_passkeys",
                                       "portal_panel_second_factor")}}
@@ -146,7 +149,7 @@ CENTRAL_TOOLS = {"central_backup_status", "central_backup_configure", "central_b
                  "central_backup_confirm_key", "central_backup_run",
                  "agent_relay_status", "agent_relay_publish", "agent_relay_remove", "link_relay",
                  "identity_import_status", "identity_import", "identity_import_delete", "identity_home",
-                 "identity_pass", "identity_return", "identity_factor_link"}
+                 "identity_pass", "identity_return", "identity_factor_link", "identity_reconcile"}
 # the tools that change something: a write in the rate limit of a token (apiguard.RateLimiter)
 WRITE_TOOLS = {"update_test", "backup_test", "backup", "add_draft_server", "restart_instance", "start_instance",
                "stop_instance", "run_action", "verify_backup", "full_archive", "stop_job", "update_production",
@@ -154,7 +157,8 @@ WRITE_TOOLS = {"update_test", "backup_test", "backup", "add_draft_server", "rest
                "prepare_handover", "receive_workspace", "switch_workspace", "move_instance", "move_back",
                "central_backup_configure", "central_backup_new_key", "central_backup_confirm_key", "central_backup_run",
                "agent_relay_publish", "agent_relay_remove", "link_relay", "identity_import", "identity_import_delete",
-               "identity_home", "identity_pass", "identity_return", "identity_factor_link", "portal_publish",
+               "identity_home", "identity_pass", "identity_return", "identity_factor_link", "identity_reconcile",
+               "portal_publish",
                "portal_passkeys", "portal_panel_second_factor"}
 # the tools of the machine's tokens only: a workspace's token never reaches them
 MACHINE_TOOLS = {"read_server", "add_draft_server", "list_links", "linked_tools", "call_linked",
@@ -1271,6 +1275,17 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         made.url is shown once and works 72 hours, once. confirm = the
         link's name."""
         return await identities(ctx, "factor_link", link, confirm=confirm, person=person)
+
+    @server.tool()
+    async def identity_reconcile(link: str, confirm: str, ctx: Context) -> dict:
+        """(admin token of the central panel, never a CI's) The pass of the
+        machine of link made the same here as the machine says it (AD-018
+        slice 5): a pass whose answer was lost, with this panel's id, ends
+        here too (links: the one-time links, shown once); a freeze with no
+        pass under way here is taken back. Any other disagreement is refused
+        and said. identity_import_status says first what it would do
+        (reconcile). confirm = the link's name."""
+        return await identities(ctx, "reconcile", link, confirm=confirm)
 
     # --- the portal's names and its passkeys' domain (AD-018 slice 3): the pages' code (app.portal_act)
 

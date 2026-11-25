@@ -90,11 +90,22 @@
   {% else %}
   <p id="idn-pass-none">{% if home.on %}{{ _("Not passed: the machine is still the place of their identities, and checks each login.") }}{% else %}{{ _("Serve them here first.") }}{% endif %}</p>
   {% endif %}
+  {% set rec = idn.reconcile or {} %}
+  {% if rec.state in ("passed_there", "frozen_there", "mismatch") %}
+  <p class="warn-line" id="idn-reconcile-said" data-reconcile="{{ rec.state }}">
+    {% if rec.state == "passed_there" %}{{ _("The machine passed {names}, but its answer did not reach this panel: reconcile, and the pass ends here too.", names=rec.workspaces | join(", ")) }}
+    {% elif rec.state == "frozen_there" %}{{ _("The machine keeps {names} frozen with no pass under way here: reconcile, and the freeze is taken back.", names=rec.workspaces | join(", ")) }}
+    {% else %}{{ _("The machine and this panel disagree on the pass of {names}: look at both before acting.", names=rec.workspaces | join(", ")) }}{% endif %}</p>
+  {% endif %}
   <div id="idn-links" class="banner info" role="status" hidden>
     <p style="margin-top: 0"><strong>{{ _("One-time links of a second step") }}</strong> · {{ _("Shown only now: give each to its person. With it and the password, the person sets up the code of an app on the portal.") }}</p>
     <ul id="idn-links-list" style="margin-bottom: 0"></ul>
   </div>
   <div class="actions">
+    {% if rec.action %}
+    <button type="button" id="idn-reconcile"
+            title="{{ _('Makes the pass the same here as the machine says it: a pass whose answer was lost ends here too, a freeze with no pass under way here is taken back. It asks first.') }}">{{ _("Reconcile with the machine…") }}</button>
+    {% endif %}
     {% if passed %}
     <button type="button" class="danger" id="idn-return" {{ "disabled" if passed.over }}
             title="{{ _('Sends back to the machine the people who changed here since the pass (password, app, passkeys); their login there is switched on again and this panel serves them no more. It asks first.') }}">{{ _("Back to the machine…") }}</button>
@@ -182,6 +193,7 @@
              passQ: {{ _("Pass the identities of {link}'s workspaces to this panel? Their login on the machine is switched off and their changes are made here; their secrets on the machine are deleted after 7 days.", link=link) | tojson }},
              returnQ: {{ _("Bring the people of {link} back to the machine? What they changed here goes with them, their login there is switched on again, and this panel serves them no more.", link=link) | tojson }},
              linkQ: {{ _("Make a new one-time link of a second step for this person? The link of before ends.") | tojson }},
+             reconcileQ: {{ _("Make the pass of {link} the same here as the machine says it?", link=link) | tojson }},
              until: {{ _("until {date}") | tojson }}};
   const $ = (id) => document.getElementById(id), error = $("idn-error");
   async function post(path, button, more, then) {
@@ -218,7 +230,10 @@
   if (del) del.addEventListener("click", async () => {
     if (await window.omniaAsk(T.deleteQ, del, {danger: true})) post("/delete", del);
   });
-  const pass = $("idn-pass"), back = $("idn-return"), linkNew = $("idn-link-new");
+  const pass = $("idn-pass"), back = $("idn-return"), linkNew = $("idn-link-new"), reconcile = $("idn-reconcile");
+  if (reconcile) reconcile.addEventListener("click", async () => {
+    if (await window.omniaAsk(T.reconcileQ, reconcile)) post("/reconcile", reconcile, {}, (data) => showLinks(data.links));
+  });
   if (pass) pass.addEventListener("click", async () => {
     if (await window.omniaAsk(T.passQ, pass)) post("/pass", pass, {}, (data) => showLinks(data.links));
   });

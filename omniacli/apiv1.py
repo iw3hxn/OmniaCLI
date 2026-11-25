@@ -96,6 +96,7 @@ V1_IDENTITY_TOOLS = {
     ("POST", "/api/v1/links/{name}/identities/pass"): ("identity_pass",),
     ("POST", "/api/v1/links/{name}/identities/return"): ("identity_return",),
     ("POST", "/api/v1/links/{name}/identities/factor-link"): ("identity_factor_link",),
+    ("POST", "/api/v1/links/{name}/identities/reconcile"): ("identity_reconcile",),
 }
 # the portal's names and its passkeys' domain (AD-018 slice 3): the customers' portal and the staff's panel, one site
 # and one certificate; the RP ID of the passkeys made on them; the machine's admin tokens only

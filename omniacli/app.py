@@ -367,6 +367,8 @@ _ROLE_CAP_HEADER = "x-omniacli-role-cap"
 _PREFIX = re.compile(r"(/[A-Za-z0-9._~-]+)+")
 _ON_BEHALF = re.compile(r"[A-Za-z0-9._@-]{1,64}")
 # the portal of a central panel a machine is told of (AD-018 slice 4): where GitHub calls a webhook it forwards
+# the id of a pass of a machine's workspaces to the central panel (AD-018 slice 5): the central panel's, per pass
+PASS_ID = re.compile(r"[A-Za-z0-9_-]{8,64}")
 CENTRAL_PORTAL = re.compile(r"https://[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){0,10}(?::[0-9]{1,5})?")
 # the id of a webhook OmniaCLI made on GitHub (secrets.token_urlsafe(9)): what the central panel forwards
 _GITHUB_RID = re.compile(r"[A-Za-z0-9_-]{8,64}")
@@ -17277,7 +17279,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     def pass_said(found: dict) -> dict:
         """A workspace's pass as the central panel reads it (GET /api/identity/v1/home): no secret, no snapshot."""
-        return {k: found.get(k) for k in ("state", "at", "until", "purged", "portal") if found.get(k) is not None}
+        return {k: found.get(k) for k in ("state", "at", "until", "purged", "portal", "id", "passed")
+                if found.get(k) is not None}
 
     # every step of a pass, its return and the purge after the 7 days, one at a time (each reads the state it changes
     # under it: a freeze, a thaw, a return or a purge never meets another half done)
@@ -17323,6 +17326,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             access_log.record("action", "link", me.name, ip, (text + (f" for {me.on_behalf}" if me.on_behalf else ""))[:300],
                               workspaces=wanted)
 
+        # the pass's id, the central panel's for each pass it makes: a step asked again with it (its answer was lost)
+        # is the same step, and a thaw takes back only the freeze of its own pass
+        pass_id = payload.get("id")
+        if not isinstance(pass_id, str) or not PASS_ID.fullmatch(pass_id):
+            if op != "return":
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "id: the id of the pass (8 to 64 letters, digits, - _)")
+            pass_id = ""
+
         if op == "freeze":
             portal = payload.get("portal") or ""
             if not isinstance(portal, str) or (portal and not CENTRAL_PORTAL.fullmatch(portal)):
@@ -17336,29 +17347,41 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                                               "that do not pass: they pass together or not at all")
             if any(pass_of(w).get("state") == identitypass.PASSED for w in wanted):
                 raise HTTPException(status.HTTP_409_CONFLICT, "These workspaces passed already")
-            if any(pass_of(w).get("state") for w in wanted):
-                # a second freeze while one is under way: the pass of another request, never taken over
-                raise HTTPException(status.HTTP_409_CONFLICT, "These workspaces are passing already")
+            # a freeze of this link with another id is one of its passes that did not end (its answer lost, the central
+            # panel restarted): the central panel makes one pass of a link at a time, so this one takes it over
+            taken = sorted(w for w in wanted if pass_of(w).get("state") == identitypass.FROZEN
+                           and pass_of(w).get("id") != pass_id)
             for ws in wanted:
                 entry = central_homes.all()[ws]
+                if pass_of(ws).get("id") == pass_id:
+                    continue
                 central_homes.put(ws, {**entry, identitypass.PASS_KEY: {"state": identitypass.FROZEN, "at": stamp,
-                                                                         "by": by, "portal": portal}})
+                                                                         "by": by, "portal": portal, "id": pass_id}})
             said(f"the identities of {', '.join(wanted)} frozen: they pass to {identitypass.portal_said(portal)} "
-                 "(AD-018 slice 5)")
-            return {"workspaces": wanted, "state": identitypass.FROZEN}
+                 "(AD-018 slice 5)" + (f"; the freeze of a pass that did not end taken over ({', '.join(taken)})"
+                                       if taken else ""))
+            return {"workspaces": wanted, "state": identitypass.FROZEN, "id": pass_id}
         if op == "thaw":
             # a pass that did not end (its import failed, its workspaces changed): the freeze taken back, the home
             # record of slice 2 kept as it was; never a pass that ended (that is the return)
             if any(pass_of(w).get("state") != identitypass.FROZEN for w in wanted):
                 raise HTTPException(status.HTTP_409_CONFLICT, "Only a freeze is taken back: these workspaces are not "
                                                               "frozen")
+            if any(pass_of(w).get("id") != pass_id for w in wanted):
+                raise HTTPException(status.HTTP_409_CONFLICT, "This is not the freeze of this pass")
             for ws in wanted:
                 entry = central_homes.all()[ws]
                 central_homes.put(ws, {k: v for k, v in entry.items() if k != identitypass.PASS_KEY})
             said(f"the freeze of the identities of {', '.join(wanted)} taken back: they did not pass (AD-018 slice 5)")
             return {"workspaces": wanted, "state": ""}
         if op == "pass":
-            if any(pass_of(w).get("state") != identitypass.FROZEN for w in wanted):
+            done = [pass_of(w) for w in wanted]
+            if all(p.get("state") == identitypass.PASSED and p.get("id") == pass_id for p in done):
+                # asked again (its answer was lost): the same pass, the same answer
+                gone = set().union(*(identitypass.people_in(p.get("snapshot") or {}) for p in done))
+                return {"workspaces": wanted, "state": identitypass.PASSED, "until": done[0].get("until"),
+                        "people": len(gone), "passed": done[0].get("passed")}
+            if any(p.get("state") != identitypass.FROZEN or p.get("id") != pass_id for p in done):
                 raise HTTPException(status.HTTP_409_CONFLICT, "Freeze these workspaces first")
             revision = payload.get("revision", 1)
             if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
@@ -17733,7 +17756,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return refused
         body = dict(body or {})
         link = settings.link_targets.get(name)
-        if op in ("import", "delete", "home", "pass", "return", "factor_link") and str(body.get("confirm") or "") != name:
+        if op in ("import", "delete", "home", "pass", "return", "factor_link", "reconcile") and \
+                str(body.get("confirm") or "") != name:
             return 400, {"error": f"Type the name of the link, {name}, to confirm", "code": "confirm_required"}
         if op == "import" and identity_store.passed(name) is not None:
             # this panel is the source of their identities since the pass (AD-018 slice 5): the machine's word would
@@ -17776,8 +17800,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             access_log.record("read", me.kind, me.name, ip,
                               f"identities of the workspaces of {name} (dry run)" + (f": {error}" if error else ""),
                               what="identities of a linked machine (dry run)")
+            found = await machine_passes(link, me) if identity_store.load(name) is not None else None
             return 200, {"link": name, "reached": shown is not None, "error": error, "plan": shown,
-                         "imported": identity_summary(name), "home": home_said(name)}
+                         "imported": identity_summary(name), "home": home_said(name),
+                         # the pass as the machine says it and as this panel recorded it: a step whose answer was
+                         # lost leaves them apart, and the page offers to reconcile them (AD-018 slice 5)
+                         "reconcile": reconcile_plan(name, found)}
         if op == "import":
             package, error = await identity_ask(link, me, "/export")
             if package is None:
@@ -17798,6 +17826,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                         datetime.datetime.now().isoformat(timespec="seconds"), identity_tokens_taken(name),
                         {*oauth_store.grants, *(g.get("name", "") for g in oauth_store.grants.values()),
                          *identity_store.grants_of_others(name)})
+                    # a pass under way (slice 5) stays written in the record the import replaces
+                    left = (identity_store.load(name) or {}).get("passing")
+                    if isinstance(left, dict):
+                        record["passing"] = left
                     # said before it is saved: a record the pages could not read is never kept
                     done = identityimport.summary(record)
                 except (ValueError, TypeError, AttributeError, KeyError) as exc:
@@ -17820,6 +17852,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return await return_act(name, link, me, ip)
         if op == "factor_link":
             return await factor_link_act(name, me, ip, str(body.get("person") or ""))
+        if op == "reconcile":
+            async with pass_locks.setdefault(name, asyncio.Lock()):
+                return await reconcile_act(name, link, me, ip)
         return 404, {"error": f"No {op} here", "code": "not_found"}
 
     # --- the pass of a machine and its return (AD-018 slice 5, identitypass.py): on this panel ----------------------
@@ -17888,14 +17923,33 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                               status="failed")
             return code, {"error": f"The workspaces of {name} did not pass: {why}", "code": apiv1.code_of(code)}
 
-        async def thaw() -> None:
-            code, _, why = await pass_call(link, me, {"op": "thaw", "workspaces": spaces})
-            if code != 200:
-                _logger.warning("the freeze of %s not taken back: %s", name, why)
+        # the id of this pass: each step carries it, a step asked again is the same step, and the state the machine
+        # says after a lost answer is read against it
+        pass_id = secrets.token_urlsafe(18)
 
-        code, _, why = await pass_call(link, me, {"op": "freeze", "workspaces": spaces, "portal": portal})
+        async def thaw() -> None:
+            code, _, why = await pass_call(link, me, {"op": "thaw", "workspaces": spaces, "id": pass_id})
+            if code != 200:
+                # its answer lost too, or the pass made there after all: while the machine keeps anything of this
+                # pass (or says nothing), the pass under way stays written here, for the page to reconcile
+                found = await machine_passes(link, me)
+                if found is None or any((found.get(w) or {}).get("id") == pass_id for w in spaces):
+                    _logger.warning("the freeze of %s not taken back: %s", name, why)
+                    return
+            await asyncio.to_thread(identity_store.set_passing, name, None)
+
+        await asyncio.to_thread(identity_store.set_passing, name, {
+            "id": pass_id, "at": datetime.datetime.now().isoformat(timespec="seconds"), "workspaces": spaces,
+            "portal": portal, "by": str(me)})
+        code, _, why = await pass_call(link, me, {"op": "freeze", "workspaces": spaces, "portal": portal,
+                                                  "id": pass_id})
+        if code == 409:
+            await asyncio.to_thread(identity_store.set_passing, name, None)
+            return failed(why, 409)
         if code != 200:
-            return failed(why, 409 if code == 409 else 502)
+            # its answer lost: the freeze may be there, it is taken back (only this pass's)
+            await thaw()
+            return failed(why, 502)
         code, data = await identity_act("import", name, me, f"pass: {me}", ip, {"confirm": name})
         if code != 200:
             await thaw()
@@ -17904,10 +17958,17 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             # the import again serves other workspaces (one renamed there meanwhile): nothing passes
             await thaw()
             return failed("its workspaces changed during the pass: look at them and pass again", 409)
-        code, said, why = await pass_call(link, me, {"op": "pass", "workspaces": spaces, "revision": 1})
+        code, said, why = await pass_call(link, me, {"op": "pass", "workspaces": spaces, "revision": 1, "id": pass_id})
         if code != 200:
-            await thaw()
-            return failed(why, 409 if code == 409 else 502)
+            # the machine may have passed and its answer been lost: its state says, read again; passed with this
+            # pass's id, the pass ends here too; else its freeze is taken back
+            found = await machine_passes(link, me) or {}
+            done = [found.get(w) or {} for w in spaces]
+            if all(p.get("state") == identitypass.PASSED and p.get("id") == pass_id for p in done):
+                said = {"until": done[0].get("until"), "passed": done[0].get("passed")}
+            else:
+                await thaw()
+                return failed(why, 409 if code == 409 else 502)
         info = {"at": datetime.datetime.now().isoformat(timespec="seconds"),
                 "until": str(said.get("until") or identitypass.until()), "by": str(me), "revision": 1,
                 "workspaces": spaces, "portal": portal,
@@ -17915,11 +17976,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 "machine_passed": str(said.get("passed") or "")}
         async with identity_lock:
             await asyncio.to_thread(identity_store.set_passed, name, info)
-        rp, required = passkey_domain_here(), portal_asks_second()
-        record = identity_store.load(name) or {}
-        served = {n for n, p in serving().people.items() if p.link == name}
-        links = [factor_link_of(name, person, me) for person, data in sorted((record.get("people") or {}).items())
-                 if person in served and isinstance(data, dict) and identitypass.needs_link(data, rp, required)]
+        links = pass_links(name, me)
         access_log.record("action", me.kind, me.name, ip,
                           (f"the workspaces {', '.join(spaces)} of {name} passed to this panel (AD-018 slice 5): their "
                            f"people log in here only, their identities live here; their secrets are deleted on the "
@@ -17927,6 +17984,87 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                            f"again" + (f" ({', '.join(x['person'] for x in links)})" if links else ""))[:300],
                           workspaces=spaces, via=name)
         return 200, {"ok": True, "link": name, "home": home_said(name), "links": links}
+
+    async def machine_passes(link: LinkTarget, me: Principal) -> dict | None:
+        """The passes of the machine's workspaces served by this panel, as it says them (GET /api/identity/v1/home):
+        {workspace: {state, id, passed, until, purged}}; None when it does not answer."""
+        try:
+            resp = await asyncio.wait_for(link_clients.client(link).get(
+                identityimport.API + "/home", timeout=LIST_TIMEOUT * 6,
+                headers={**link_headers(link, me.name, me.role), "Accept": "application/json"}), LIST_TIMEOUT * 6)
+            data = resp.json() if resp.status_code == 200 else None
+        except (httpx.HTTPError, asyncio.TimeoutError, ValueError):
+            return None
+        passes = data.get("passes") if isinstance(data, dict) else None
+        return {str(w): p for w, p in passes.items() if isinstance(p, dict)} if isinstance(passes, dict) else None
+
+    def reconcile_plan(name: str, found: dict | None) -> dict:
+        """What reconciling the pass of name would do, from the machine's word (found): adopt (the machine passed
+        with the id of the pass this panel made, whose answer was lost: the pass ends here too), thaw (a freeze
+        there with no pass under way here), mismatch (they disagree otherwise: said, nothing done), or nothing."""
+        if found is None:
+            return {"action": "", "state": "unknown", "workspaces": []}
+        passed, passing = identity_store.passed(name), identity_store.passing(name)
+        frozen = sorted(w for w, p in found.items() if p.get("state") == identitypass.FROZEN)
+        done = sorted(w for w, p in found.items() if p.get("state") == identitypass.PASSED)
+        if passed is None and done:
+            ours = passing is not None and all(found[w].get("id") == passing.get("id") for w in done)
+            if ours and not any(found[w].get("purged") for w in done):
+                return {"action": "adopt", "state": "passed_there", "workspaces": done}
+            return {"action": "", "state": "mismatch", "workspaces": done}
+        if passed is None and frozen:
+            return {"action": "thaw", "state": "frozen_there", "workspaces": frozen}
+        if passed is not None and sorted(passed.get("workspaces") or []) != done:
+            return {"action": "", "state": "mismatch", "workspaces": sorted(set(passed.get("workspaces") or []) ^ set(done))}
+        return {"action": "", "state": "same", "workspaces": []}
+
+    async def reconcile_act(name: str, link: LinkTarget, me: Principal, ip: str) -> tuple[int, dict]:
+        """The pass of name as the machine says it, made the same here (AD-018 slice 5): a pass whose answer was
+        lost, with this panel's id, ends here too; a freeze with no pass under way here is taken back (the machine's
+        own id carried); any other disagreement is said, and nothing is done. Its admins, confirmed."""
+        found = await machine_passes(link, me)
+        if found is None:
+            return 502, {"error": f"{name} did not say its passes", "code": "failed"}
+        plan = reconcile_plan(name, found)
+        spaces = plan["workspaces"]
+        if plan["action"] == "adopt":
+            passing = identity_store.passing(name) or {}
+            first = found[spaces[0]]
+            info = {"at": datetime.datetime.now().isoformat(timespec="seconds"),
+                    "until": str(first.get("until") or identitypass.until()), "by": str(me), "revision": 1,
+                    "workspaces": spaces, "portal": str(passing.get("portal") or ""),
+                    "machine_passed": str(first.get("passed") or "")}
+            async with identity_lock:
+                await asyncio.to_thread(identity_store.set_passed, name, info)
+            links = pass_links(name, me)
+            access_log.record("action", me.kind, me.name, ip,
+                              (f"the pass of {name} reconciled: the machine passed {', '.join(spaces)} and its answer "
+                               f"was lost; this panel takes it over (AD-018 slice 5); {len(links)} one-time links")[:300],
+                              workspaces=spaces, via=name)
+            return 200, {"ok": True, "link": name, "done": "adopted", "home": home_said(name), "links": links}
+        if plan["action"] == "thaw":
+            ids = {str(found[w].get("id") or "") for w in spaces}
+            for pass_id in sorted(ids):
+                group = [w for w in spaces if str(found[w].get("id") or "") == pass_id]
+                code, _, why = await pass_call(link, me, {"op": "thaw", "workspaces": group, "id": pass_id})
+                if code != 200:
+                    return 502, {"error": f"The freeze of {name} was not taken back: {why}", "code": "failed"}
+            await asyncio.to_thread(identity_store.set_passing, name, None)
+            access_log.record("action", me.kind, me.name, ip,
+                              f"the pass of {name} reconciled: the freeze of {', '.join(spaces)} taken back, no pass "
+                              "was under way here (AD-018 slice 5)"[:300], workspaces=spaces, via=name)
+            return 200, {"ok": True, "link": name, "done": "thawed", "home": home_said(name)}
+        if plan["state"] == "mismatch":
+            return 409, {"error": f"The machine and this panel disagree on the pass of {', '.join(spaces)}: look at "
+                                  "both before acting", "code": "conflict"}
+        return 200, {"ok": True, "link": name, "done": "", "home": home_said(name)}
+
+    def pass_links(name: str, me: Principal) -> list[dict]:
+        rp, required = passkey_domain_here(), portal_asks_second()
+        record = identity_store.load(name) or {}
+        served = {n for n, p in serving().people.items() if p.link == name}
+        return [factor_link_of(name, person, me) for person, data in sorted((record.get("people") or {}).items())
+                if person in served and isinstance(data, dict) and identitypass.needs_link(data, rp, required)]
 
     async def return_act_locked(name: str, link: LinkTarget, me: Principal, ip: str) -> tuple[int, dict]:
         """«Back to the machine» (AD-018 §18.3.2): the people of the machine of name who changed here since the pass
@@ -18161,6 +18299,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     async def identities_factor_link(request: Request, name: str, payload: dict = Body(...),
                                      me: Principal = Depends(current_user)):
         return identity_answer(request, *await identity_act("factor_link", name, me, f"manual: {me}",
+                                                            central_ip(request), payload))
+
+    @app.post("/api/identities/{name}/reconcile", dependencies=[Depends(admin)])
+    async def identities_reconcile(request: Request, name: str, payload: dict = Body(...),
+                                   me: Principal = Depends(current_user)):
+        return identity_answer(request, *await identity_act("reconcile", name, me, f"manual: {me}",
                                                             central_ip(request), payload))
 
     @app.post("/api/identities/{name}/delete", dependencies=[Depends(admin)])
@@ -32837,6 +32981,18 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                          me: Principal = Depends(api_token)):
         return api_central_answer(request, *await identity_act("factor_link", name, me, f"api: {me}",
                                                                api_ip(request), body.model_dump()))
+
+    @api_router.post(P + "/links/{name}/identities/reconcile", summary="Reconcile the pass with its machine",
+                     description="AD-018 slice 5: the pass of the machine's workspaces as the machine says it, made the "
+                                 "same here: a pass whose answer was lost (with this panel's id) ends here too, a "
+                                 "freeze with no pass under way here is taken back; any other disagreement is "
+                                 "refused (409) and said. GET …/identities says it first (reconcile). confirm = the "
+                                 "link's name.")
+    async def api_identities_reconcile(request: Request, body: apiv1.IdentityConfirmBody,
+                                       name: str = PathParam(description="The link's name (Links page)"),
+                                       me: Principal = Depends(api_token)):
+        return api_central_answer(request, *await identity_act("reconcile", name, me, f"api: {me}", api_ip(request),
+                                                               body.model_dump()))
 
     @api_router.post(P + "/links/{name}/identities/delete", summary="Delete the import of a machine's identities",
                      description="The undo: what was imported from the machine deleted on this panel; the machine is "

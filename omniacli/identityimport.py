@@ -681,6 +681,24 @@ class Store:
                         person.pop("changed", None)
             else:
                 record["passed"] = info
+                record.pop("passing", None)
+            _write_private(self.path(link), record)
+
+    def passing(self, link: str) -> dict | None:
+        """The pass of link's machine under way ({id, at, workspaces, portal}): asked and not ended here (its answer
+        lost, this panel restarted), None for none."""
+        found = (self.load(link) or {}).get("passing")
+        return found if isinstance(found, dict) else None
+
+    def set_passing(self, link: str, info: dict | None) -> None:
+        with self._lock:
+            record = self.load(link)
+            if record is None:
+                raise IdentityImportError(f"Nothing was imported from {link}")
+            if info is None:
+                record.pop("passing", None)
+            else:
+                record["passing"] = info
             _write_private(self.path(link), record)
 
     def mutate(self, link: str, name: str, change):

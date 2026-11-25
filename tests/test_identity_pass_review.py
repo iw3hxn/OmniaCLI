@@ -67,7 +67,8 @@ async def test_the_machine_refuses_a_second_freeze_and_a_return_of_another_pass(
     from .test_remote_home import CENTRAL_LINK_TOKEN
     await passed(home)
     link = {"Authorization": f"Bearer {CENTRAL_LINK_TOKEN}"}
-    for body in ({"op": "freeze", "workspaces": ["acme", "beta"]}, {"op": "thaw", "workspaces": ["acme", "beta"]},
+    for body in ({"op": "freeze", "workspaces": ["acme", "beta"], "id": "another-pass-1"},
+                 {"op": "thaw", "workspaces": ["acme", "beta"], "id": "another-pass-1"},
                  {"op": "return", "workspaces": ["acme", "beta"], "people": {}},
                  {"op": "return", "workspaces": ["acme", "beta"], "people": {}, "passed": "2020-01-01T00:00:00"}):
         resp = await home.on_machine.post("/api/identity/v1/pass", headers=link, json=body)

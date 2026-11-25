@@ -840,6 +840,18 @@ Per ogni fetta: il rilascio, la prova su lab3/lab4, come si annulla, la stima. l
      6. Lo SSO di un W congelato o passato non crea più utenti né membri: rifiutato prima di `sso_person`.
 
      Prova: `tests/test_identity_pass_review.py`, 9 test, tutti falliscono su `fb3867d`.
+   - **La seconda revisione (dopo `a60ccb2`): una risposta persa.** Ogni passaggio ha un id del centrale, che ogni
+     passo porta (`freeze`, `pass`, `thaw`) e che la macchina tiene nel suo stato (detto dalla GET `/home`, senza
+     segreti). Un passo chiesto di nuovo con lo stesso id è lo stesso passo (la stessa risposta); `thaw` annulla solo
+     il congelamento del suo id; un passaggio del collegamento prende il congelamento di un suo passaggio non finito
+     (il centrale ne fa uno alla volta). Sul centrale il passaggio in corso è scritto nell'import (`passing`) finché
+     non finisce. Se la risposta di `pass` si perde, il centrale rilegge lo stato: passato con il suo id, il
+     passaggio si chiude anche qui; altrimenti si annulla. Se si perde quella di `freeze`, il congelamento si annulla.
+     Se non si legge nemmeno lo stato, la pagina Identità lo dice al prossimo caricamento («La macchina ha passato…» o
+     «… tiene congelati…») e offre **Riallinea con la macchina…** (REST `…/identities/reconcile`, MCP
+     `identity_reconcile`, conferma nella pagina, nel registro): un passaggio con l'id di questo pannello si chiude
+     qui, un congelamento senza passaggio in corso si annulla; un passaggio che questo pannello non ha fatto non si
+     adotta mai (detto, 409). Prova: `tests/test_identity_pass_lost.py`, 5 test, tutti falliscono su `a60ccb2`.
 6. **Consegna e spostamento con l'identità centrale** (18.7).
    - *Prova*: con il NAT simulato di AD-008 §9 passo 7, una consegna da lab4 il cui codice punta a un nome del
      workspace. Il congelamento a `ready`. Le persone importate con hash e TOTP dalla macchina che riceve. Al commit
