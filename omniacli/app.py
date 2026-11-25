@@ -14747,7 +14747,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     "confirmed_by": state.get("confirmed_by") or ""},
                 "why_not": centralbackup.ready(state), "next": centralbackup.next_run(state),
                 "last": state.get("last") or None,
-                "running": bool(central_backup_running["job"]) or central_backup_lock.locked(),
+                "running": central_backup_busy(),
                 "folder": centralbackup.folder_of(settings),
                 "destinations": [{"name": d.name, "label": d.label, "path": d.path}
                                  for d in sorted(load_destinations().values(), key=lambda d: d.name)
@@ -14774,6 +14774,23 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     # taken only when the job runs)
     central_backup_running = {"job": ""}
     NIGHTLY_SOURCE = "schedule central-backup"
+
+    def central_backup_busy() -> bool:
+        """A run of this panel's backup is going: the job of the last start is there and not finished (a job
+        stopped before it ran never reaches central_backup_job's finally, so the mark alone would stay for good)."""
+        if central_backup_lock.locked():
+            return True
+        mark = central_backup_running["job"]
+        if mark == "starting":
+            return True
+        if not mark:
+            return False
+        job = jobs.get(mark)
+        # a job cancelled while queued stays "queued" but its task is gone (_running drops it when done)
+        if job is None or job.finished_flag or mark not in jobs._running:
+            central_backup_running["job"] = ""
+            return False
+        return True
 
     async def central_backup_job(job, name: str) -> None:
         try:
@@ -14816,7 +14833,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         why = centralbackup.ready({**state, "enabled": True})
         if why:
             return 409, {"error": f"The backup of this panel cannot run: {why}", "code": "conflict"}
-        if central_backup_running["job"] or central_backup_lock.locked():
+        if central_backup_busy():
             return 409, {"error": "A backup of this panel is running already", "code": "conflict"}
         name = state["destination"]
         central_backup_running["job"] = "starting"
@@ -14896,8 +14913,19 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return 200, answer
 
     api_hooks["central_backup"] = central_backup_act
+    def central_backup_not_started(why: str) -> None:
+        """The night's backup could not even start: told as a failed one is (nobody watches the night)."""
+        async def tell() -> None:
+            try:
+                await monitor.tell(None, "the backup of this panel did not start", why,
+                                   event={"event": "schedule.failed", "level": "critical",
+                                          "schedule": "central-backup", "instance": ""})
+            except Exception:  # noqa: BLE001 - the log says it all the same
+                _logger.exception("The failure of the nightly backup of this panel was not told")
+        asyncio.get_running_loop().create_task(tell())
+
     central_backup_nightly = centralbackup.Nightly(
-        central_backup_state, lambda: central_backup_start(NIGHTLY_SOURCE))
+        central_backup_state, lambda: central_backup_start(NIGHTLY_SOURCE), central_backup_not_started)
 
     def central_backup_answer(status_code: int, data: dict):
         return JSONResponse(data, status_code=status_code) if status_code >= 300 else data

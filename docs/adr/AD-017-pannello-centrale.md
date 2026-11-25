@@ -924,6 +924,15 @@ Per ogni fetta: il rilascio, la prova su lab3/lab4, come si annulla, la stima.
    - **Una notte fallita** è un avviso del monitor (`monitor.tell`, `schedule.failed`, schedule `central-backup`),
      ai destinatari di Opzioni › Monitoraggio.
 
+   Il secondo giro della revisione (25/11/2026) ha trovato un'altra cosa importante e una minore:
+   - **Un backup fermato prima di partire bloccava i backup.** Il segno del giro si toglieva solo alla fine del job.
+     Un job fermato mentre era in coda non ci arriva mai, e ogni giro dopo, notte compresa, rispondeva 409.
+     Ora «è in corso» si legge dal job: c'è, non è finito e il suo task è vivo (`central_backup_busy`).
+   - **Una notte che non parte** (un 409, un errore) è anche lei un avviso del monitor, «did not start»: prima
+     restava una riga nel log del servizio.
+   - **Un posto cambiato durante il ripristino** (l'utente del servizio scambia `ssh/` dopo i controlli): il
+     rifiuto resta, e il messaggio dice cosa è già scritto e che si finisce con `--replace`.
+
    Sul lab, con questo codice (25/11/2026, lab3 al pacchetto 2026.1.5520 con il codice, destinazione SFTP su lab4):
    - **La pagina**: chiave nuova dalla pagina, Playwright 1440 e 375, chiaro e scuro, 0 errori, 0 dialoghi, un
      primario per vista. Il backup è di 222 KiB, senza il token di lab4 e senza la chiave SSH in chiaro.

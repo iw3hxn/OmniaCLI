@@ -636,3 +636,72 @@ async def test_two_asks_at_once_start_one_run_and_a_failed_night_is_told(client,
     assert (await wait_job(client, job.id))["status"] == "failed"
     assert told and told[0][0] == ["ops@example.com"] and "the backup of this panel failed" in told[0][1]
     assert told[0][2]["event"] == "schedule.failed" and told[0][2]["schedule"] == "central-backup"
+
+
+async def test_a_run_stopped_before_it_starts_does_not_lock_the_backup(client, rclone):  # noqa: F811
+    _nas(client, rclone["root"])
+    hook = client.app.state.api_hooks["central_backup"]
+    me = Principal("admin", "admin")
+    await hook("save", me, "manual: admin", "", {"destination": "nas", "time": "01:30"})
+    made = (await hook("new_key", me, "manual: admin"))[1]
+    await hook("confirm_key", me, "manual: admin", "", {"passphrase": made["passphrase"]})
+    first = await hook("run", me, "manual: admin")
+    assert first[0] == 202
+    jobs = client.app.state.jobs
+    assert jobs.stop(first[1]["job"], "admin")
+    for _ in range(100):
+        if first[1]["job"] not in jobs._running:
+            break
+        await asyncio.sleep(0.02)
+    assert not (await hook("status", me, ""))[1]["running"]
+    again = await hook("run", me, "manual: admin")
+    assert again[0] == 202, again
+    await wait_job(client, again[1]["job"])
+
+
+async def test_a_night_that_cannot_start_is_told(client, rclone, monkeypatch):  # noqa: F811
+    _nas(client, rclone["root"])
+    hook = client.app.state.api_hooks["central_backup"]
+    me = Principal("admin", "admin")
+    await hook("save", me, "manual: admin", "", {"destination": "nas", "time": "01:30"})
+    made = (await hook("new_key", me, "manual: admin"))[1]
+    await hook("confirm_key", me, "manual: admin", "", {"passphrase": made["passphrase"]})
+    told = []
+
+    async def send(options, recipients, subject, text, event=None, language=""):
+        told.append((recipients, subject, event))
+        return []
+    monkeypatch.setattr(notify, "send", send)
+    client.app.state.settings.options.monitor_notify = ["ops@example.com"]
+    nightly = client.app.state.central_backup_nightly
+    monkeypatch.setattr(nightly, "fire", lambda: (409, {"error": "A backup of this panel is running already"}))
+    assert not nightly.tick(datetime.datetime(2026, 11, 27, 1, 30))
+    for _ in range(100):
+        if told:
+            break
+        await asyncio.sleep(0.02)
+    assert told and told[0][0] == ["ops@example.com"] and "did not start" in told[0][1]
+    assert told[0][2]["event"] == "schedule.failed" and told[0][2]["schedule"] == "central-backup"
+
+
+def test_a_place_changed_during_the_restore_says_to_finish_with_replace(tmp_path, monkeypatch):
+    backup, key, old_config = sealed_backup(tmp_path)
+    (tmp_path / "old" / "ca" / "lab4.pem").unlink()
+    _, config = central_dir(tmp_path / "new", links=False)
+    fresh = settings_of(config)
+    write = centralbackup._write
+    seen = []
+
+    def swapped(path, *args, **kwargs):
+        # the service user swaps a folder after the checks: the second place written is refused
+        seen.append(path)
+        if len(seen) == 2:
+            raise centralbackup.CentralBackupError(f"{path} is a symbolic link")
+        return write(path, *args, **kwargs)
+    monkeypatch.setattr(centralbackup, "_write", swapped)
+    calls = []
+    with pytest.raises(centralbackup.CentralBackupError, match="--replace"):
+        centralbackup.restore(backup, "abcde-fghjk-mnpqr-stuvw-xyz23-45678", fresh, config,
+                              stop=lambda: calls.append("stop"), start=lambda: calls.append("start"),
+                              now=datetime.datetime(2026, 11, 25, 9, 0))
+    assert calls == ["stop", "start"]

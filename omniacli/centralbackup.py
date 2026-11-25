@@ -516,9 +516,12 @@ class Nightly:
     it once; a time in the hour they skip (02:00-02:59 in Europe in spring) has no run that night, which is why
     the default is 01:30."""
 
-    def __init__(self, state: Callable[[], dict], fire: Callable[[], object]):
+    def __init__(self, state: Callable[[], dict], fire: Callable[[], object],
+                 not_started: Optional[Callable[[str], object]] = None):
         self.state = state
         self.fire = fire
+        # told when the night's run cannot start (a run said to be going, a refusal, an error): nobody watches
+        self.not_started = not_started
         self._task: Optional[asyncio.Task] = None
         # the day it last started: never twice the same day
         self.fired: Optional[datetime.date] = None
@@ -539,13 +542,24 @@ class Nightly:
         self.fired = minute.date()
         try:
             answer = self.fire()
-        except Exception:  # noqa: BLE001 - the loop must survive
+        except Exception as exc:  # noqa: BLE001 - the loop must survive
             _logger.exception("The nightly backup of this panel did not start")
+            self._tell(f"it raised: {exc}")
             return False
         if isinstance(answer, tuple) and answer and answer[0] >= 300:
-            _logger.warning("The nightly backup of this panel did not start: %s", answer[1].get("error"))
+            why = str((answer[1] or {}).get("error") or answer[0])
+            _logger.warning("The nightly backup of this panel did not start: %s", why)
+            self._tell(why)
             return False
         return True
+
+    def _tell(self, why: str) -> None:
+        if self.not_started is None:
+            return
+        try:
+            self.not_started(why)
+        except Exception:  # noqa: BLE001 - the loop must survive
+            _logger.exception("The failure of the nightly backup of this panel was not told")
 
     async def _loop(self) -> None:
         last = None
@@ -861,6 +875,12 @@ def restore(backup: Path, passphrase: str, settings, config_path: Path, replace:
                 _write(config_path, config_data, group, mode)
             else:
                 _write(config_target, config_data, (0, 0) if owner else None, 0o600)
+    except (CentralBackupError, OSError) as exc:
+        # a place changed under the restore after its check (the service user's folder): what is written stays,
+        # so the way to finish is said
+        raise CentralBackupError(f"{exc}; part of this panel's state is already written"
+                                 f"{' (' + ', '.join(restored) + ')' if restored else ''}: "
+                                 "run central-restore again with --replace") from exc
     finally:
         start()
     return {"made": header.get("made"), "host": header.get("host"), "version": header.get("version"),
