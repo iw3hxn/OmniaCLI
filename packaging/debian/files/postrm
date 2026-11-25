@@ -107,6 +107,9 @@ case "$1" in
         rm -f /var/lib/omniacli/workspace-homes.json /var/lib/omniacli/workspace-homes.json.*.tmp \
             /var/lib/omniacli/remote-sessions.json /var/lib/omniacli/remote-sessions.json.tmp \
             /var/lib/omniacli/central-home.json /var/lib/omniacli/central-home.json.tmp
+        # the one-time links of a second step to set up again after a machine passed (identitypass.py, AD-018 slice
+        # 5): their hashes, 600; on the machine the pass is kept in central-home.json, above
+        rm -f /var/lib/omniacli/second-factor-links.json /var/lib/omniacli/second-factor-links.json.*.tmp
         # the moves of instances to other machines (placement.py, AD-015): their states, the instances placed
         # elsewhere, the workspaces hosted here for their home
         rm -rf /var/lib/omniacli/move

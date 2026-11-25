@@ -57,7 +57,7 @@ from . import (backupcheck, backupchoices, checks, deployhooks, destinations, en
                workspaceops)
 from .accesslog import REQUEST as AUDIT_REQUEST, AccessLog
 from .accesslog import numbered as access_files
-from . import audit, centralbackup, identityimport, remotehome, siem
+from . import audit, centralbackup, identityimport, identitypass, remotehome, siem
 from . import apiguard, apiv1
 from .apiguard import ApiError
 from . import i18n, loginas, machines, modulecatalog, pgreport, pgtuning, stagings, workspaceweb
@@ -525,6 +525,12 @@ V1_MACHINE_PATHS = frozenset(path for _, path in apiv1.V1_MACHINE_TOOLS)
 # account read, its logout, the files of the pages
 REMOTE_OWN_ROUTES = frozenset({"/logout", "/account", "/static/{name}", "/x/{plugin}/static/{path:path}",
                                *(path for _, path in apiv1.DOCUMENT_ROUTES)})
+# what of its account a person whose machine passed changes on the central panel (AD-018 slice 5): its password, its
+# app, its passkeys, its sessions (its connectors of AI assistants not yet)
+PASSED_ACCOUNT_ROUTES = frozenset({
+    "/api/account/password", "/api/account/second-factor/start", "/api/account/second-factor/confirm",
+    "/api/account/second-factor/disable", "/api/account/passkeys/options", "/api/account/passkeys/register",
+    "/api/account/passkeys/delete", "/api/account/sessions/end"})
 # a change of its account (its password, its second step, its passkeys, its sessions, a connector): where its
 # identity lives now; slice 5 brings it here
 REMOTE_PASSKEY_LATER = ("Your second step is a passkey made on another address, which this portal cannot use. Log in "
@@ -533,6 +539,10 @@ REMOTE_SETUP_LATER = ("This portal asks a second step and you have none yet: set
                       "then log in here")
 SCOPE_GONE = "You are no longer a member of this workspace"
 REMOTE_CHECK_DOWN = ("Your password cannot be checked now: try again in a few minutes")
+# a person whose machine passed to the central panel and whose second step did not pass (AD-018 slice 5, vincolo
+# 8.5): never set up here with the password only
+PASSED_FACTOR_LINK = ("Your second step has to be set up again on this portal: open the link you were sent for it "
+                      "(your administrator can send a new one)")
 REMOTE_ACCOUNT_LATER = ("Your account is changed where you logged in before: it comes to this portal with your "
                         "workspace's move")
 
@@ -1051,6 +1061,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     raise HTTPException(status.HTTP_403_FORBIDDEN,
                                         "This token reaches some servers only: use /api/v1 or /mcp")
                 workspace = settings.token_workspace(name)
+                if workspace and pass_of(workspace).get("state") == identitypass.PASSED:
+                    # a token of a workspace passed to the central panel (AD-018 slice 5): it calls the central only
+                    raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token",
+                                        headers={"WWW-Authenticate": "Bearer"})
                 if workspace:
                     # a workspace's token (its admin made it for an assistant) reads
                     # that workspace only, with its role there, as a user of it does
@@ -1089,6 +1103,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                              person=menu is not None and bool(request.state.prefix))
         # a browser: the session of the login form
         name = sessions.user(request.cookies.get(COOKIE), settings.users)
+        if name is not None and passed_away(name):
+            # its workspaces passed to the central panel (AD-018 slice 5): its login here is off
+            name = None
         if name is None:
             remote = remote_session(request)
             if remote is not None:
@@ -1141,7 +1158,13 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if home != link and (home or central_homes.of(ws) != link):
                 # a workspace hosted for another home is never the central panel's, nor another link's
                 return None
-            if not home and not own_records(found, entry):
+            passed = pass_of(ws) if not home else {}
+            if passed.get("state") == identitypass.PASSED:
+                # the central panel is the source of its people now (AD-018 slice 5): checked against what this
+                # machine kept of them at the pass, its people's records here being off (and deleted after 7 days)
+                if not passed_records(found, entry, passed):
+                    continue
+            elif not home and not own_records(found, entry):
                 # a workspace the person (or the token) is no more of here: left out, the others stay theirs; a
                 # request of it is refused as one of a workspace not theirs
                 continue
@@ -1181,6 +1204,122 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         entry["grant"] = None if own is None else {"role": own.role, "capabilities": sorted(own.caps),
                                                    "servers": None if own.servers is None else sorted(own.servers)}
         return True
+
+    # --- the pass of this machine's workspaces to the central panel (AD-018 slice 5, identitypass.py) -----------
+
+    def pass_of(ws: str) -> dict:
+        """The pass of a workspace of this machine (central-home.json, under "pass"): {} for none."""
+        found = (central_homes.all().get(ws) or {}).get(identitypass.PASS_KEY)
+        return found if isinstance(found, dict) else {}
+
+    def passes() -> dict[str, dict]:
+        """{workspace: its pass} of the workspaces frozen or passed here."""
+        return {w: e[identitypass.PASS_KEY] for w, e in central_homes.all().items()
+                if isinstance(e.get(identitypass.PASS_KEY), dict)}
+
+    def passed_records(found: dict, entry: dict, passed: dict) -> bool:
+        """own_records for a workspace passed to the central panel: the person or the token as the pass kept them
+        (identitypass.snapshot), with the same rules (a token's level capped by its person's role, its grant no more
+        than its level's preset)."""
+        ws = ((passed.get("snapshot") or {}).get("workspaces") or {}).get(entry["ws"])
+        if not isinstance(ws, dict):
+            return False
+        person = found["person"]
+        members = ws.get("members") or {}
+        if found["kind"] == "token":
+            token = (ws.get("tokens") or {}).get(person)
+            if not isinstance(token, dict) or token.get("role") not in ACCESS_ROLES:
+                return False
+            owner = (ws.get("token_people") or {}).get(person)
+            level = token["role"]
+            if owner is not None:
+                level = min(level, members.get(owner, ACCESS_ROLES[0]), key=ACCESS_ROLES.index)
+            entry["role"] = min(entry["role"], level, key=ACCESS_ROLES.index)
+            own = None
+            if owner is not None:
+                if owner not in members:
+                    own = {"role": owner, "capabilities": [], "servers": []}
+                else:
+                    grant = remotehome._grant(ws, owner)
+                    if grant is not None:
+                        own = {**grant, "capabilities": sorted(set(grant["capabilities"])
+                                                               & capabilities.PRESETS[level])}
+            found["token_servers"] = list(token.get("servers") or ())
+            found["ci"] = bool(found.get("ci")) or bool(token.get("ci"))
+        else:
+            if members.get(person) not in ACCESS_ROLES:
+                return False
+            entry["role"] = min(entry["role"], members[person], key=ACCESS_ROLES.index)
+            own = remotehome._grant(ws, person)
+        entry["grant"] = own
+        return True
+
+    def frozen_of(ws: str) -> str:
+        """The refusal of an identity change of a workspace frozen or passed («This workspace passes to <portal>»);
+        "" when it is not."""
+        found = pass_of(ws)
+        return identitypass.frozen_text(str(found.get("portal") or "")) if found.get("state") else ""
+
+    def frozen_person(name: str) -> str:
+        """The same refusal for a person of such a workspace (its account, its user on the Users page)."""
+        if not name or settings.user_role(name) != WORKSPACE_ROLE:
+            return ""
+        for ws, found in passes().items():
+            people = identitypass.people_in(found.get("snapshot") or {})
+            if name in people or (ws in settings.workspaces and name in settings.workspaces[ws].members):
+                return identitypass.frozen_text(str(found.get("portal") or ""))
+        return ""
+
+    def frozen_token(name: str) -> str:
+        return frozen_of(settings.token_workspace(name)) if name in settings.tokens else ""
+
+    def passed_away(name: str) -> str:
+        """The portal a person of this machine logs in at now (its workspaces passed: AD-018 slice 5), "" when it
+        logs in here."""
+        if not name or settings.user_role(name) != WORKSPACE_ROLE:
+            return ""
+        for ws, found in passes().items():
+            if found.get("state") != identitypass.PASSED:
+                continue
+            if name in identitypass.people_in(found.get("snapshot") or {}) or (
+                    ws in settings.workspaces and name in settings.workspaces[ws].members):
+                return str(found.get("portal") or "") or "the central panel"
+        return ""
+
+    def passed_refusal(name: str) -> str:
+        """What a person whose workspaces passed reads at the login here (after its right password)."""
+        portal = passed_away(name)
+        return f"Your access moved to {identitypass.portal_said(portal)}: log in there" if portal else ""
+
+    # the identity changes refused while a workspace passes (AD-018 §18.3.1 step 2): by its {workspace} in the
+    # route, or by the person who changes its own account
+    FREEZE_WORKSPACE_ROUTES = frozenset({
+        "/api/workspaces/{workspace}/members/save", "/api/workspaces/{workspace}/members/delete",
+        "/api/workspaces/{workspace}/members/invitation/resend", "/api/workspaces/{workspace}/members/invitation/revoke",
+        "/api/workspaces/{workspace}/members/second-factor/reset", "/api/workspaces/{workspace}/tokens/save",
+        "/api/workspaces/{workspace}/tokens/delete", "/api/workspaces/{workspace}/roles/save",
+        "/api/workspaces/{workspace}/roles/delete", "/api/workspaces/{workspace}/sso/save",
+        "/api/workspaces/{workspace}/sso/delete"})
+    FREEZE_ACCOUNT_ROUTES = frozenset({
+        "/api/account/password", "/api/account/second-factor/start", "/api/account/second-factor/confirm",
+        "/api/account/second-factor/disable", "/api/account/passkeys/options", "/api/account/passkeys/register",
+        "/api/account/passkeys/delete", "/api/oauth/grants/revoke"})
+
+    def frozen_route(request: HTTPConnection, user: Principal) -> str:
+        """The refusal of the freeze for this request, "" for none (the reads and the instances' actions pass)."""
+        if request.scope.get("method", "GET") in ("GET", "HEAD") or not central_homes.path.exists():
+            return ""
+        path = getattr(request.scope.get("route"), "path", "")
+        params = request.scope.get("path_params") or {}
+        if path in FREEZE_WORKSPACE_ROUTES:
+            return frozen_of(str(params.get("workspace") or ""))
+        if path in FREEZE_ACCOUNT_ROUTES and user.kind == "user" and not user.remote:
+            return frozen_person(user.name)
+        return ""
+
+    def frozen_refused(text: str):
+        """The answer of a change the freeze refuses (409), in the access log by the caller."""
+        return refuse(text, status.HTTP_409_CONFLICT) if text else None
 
     def delegated(request: HTTPConnection, link: str, link_role: str, value: str, method: str) -> Principal:
         """The person or the token of the workspace a home acts for (AD-014 §3): its role there, no more than the
@@ -1234,6 +1373,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             # go there (remote_proxy, which checks them on the route asked); here only its login, its account and
             # this panel's files
             if path == REMOTE_PREFIX + "/{path:path}" or (user.kind == "user" and path in REMOTE_OWN_ROUTES):
+                return user
+            if user.kind == "user" and path in PASSED_ACCOUNT_ROUTES and identity_store.passed(user.remote) is not None:
+                # its machine passed (AD-018 slice 5): its account is changed here (passed_account)
                 return user
             if user.kind == "user" and path in WORKSPACE_ROUTES and (path or "").startswith("/api/account/") \
                     or path == "/api/oauth/grants/revoke":
@@ -1448,6 +1590,13 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 if isinstance(request, WebSocket):
                     raise WebSocketException(1008, exc.detail) from None
                 raise
+        frozen = frozen_route(request, user)
+        if frozen:
+            # a workspace passing to the central panel (AD-018 slice 5): its identities are changed there
+            access_log.record("failed", user.kind, user.name, ip,
+                              f"{request.scope.get('method')} {request.url.path}: {frozen}"[:300], status=409,
+                              **({"on_behalf": user.name, "via": user.via} if user.via else {}))
+            raise HTTPException(status.HTTP_409_CONFLICT, frozen)
         request.state.user = user
         return user
 
@@ -1521,6 +1670,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                              # the scope a home sends taken from that home's link only
                                              "placed": lambda *a, **k: mcp_placed(*a, **k),
                                              "delegated": lambda *a, **k: live_scope(delegated_scope(*a, **k)),
+                                             # a token of a workspace passed to the central panel (AD-018 slice 5)
+                                             "token_off": lambda n: pass_of(settings.token_workspace(n)).get(
+                                                 "state") == identitypass.PASSED,
                                              # a workspace's token reads its jobs as its people do (customerview)
                                              "view": lambda *a, **k: mcp_view(*a, **k)})
 
@@ -1552,6 +1704,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         replica_tasks.append(asyncio.get_running_loop().create_task(moved_loop()))
         # the handovers of workspaces, on both sides (AD-008): codes expired, a cancel seen from the other side
         replica_tasks.append(asyncio.get_running_loop().create_task(handover_loop()))
+        # the passes of workspaces to a central panel whose 7 days are over (AD-018 slice 5)
+        replica_tasks.append(asyncio.get_running_loop().create_task(pass_loop()))
         catalog_tasks.append(asyncio.get_running_loop().create_task(catalog_loop()))
         disk_recorder.start()
         load_recorder.start()
@@ -1948,6 +2102,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             limiter.failed(ip, name)
             access_log.record("failed", "user", name, ip, "login form")
             return login_page(request, next_path, "Wrong user name or password.", 401)
+        if passed_away(name):
+            # its workspaces passed to the central panel (AD-018 slice 5): said once the password is right
+            access_log.record("failed", "user", name, ip, "login form: its workspaces passed to the central panel",
+                              status=403)
+            return login_page(request, next_path, passed_refusal(name) + ".", 403)
         if not portal_admits(request, name):
             # the password was right: said only once it is, as a wrong one would be otherwise
             said, logged = refused_here(request)
@@ -1978,7 +2137,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     async def machine_login(person: remotehome.Person, body: dict) -> dict | None:
         """The machine's word on a login of person (POST /api/identity/v1/login through its link): {ok, need, step,
-        workspaces, fingerprint, second} or {down: why}; None for a refusal."""
+        workspaces, fingerprint, second} or {down: why}; None for a refusal. Once its machine passed (AD-018 slice 5),
+        this panel's own word: the identity lives here."""
+        if identity_store.passed(person.link) is not None:
+            return await passed_login(person, body)
         link = settings.link_targets.get(person.link)
         if link is None:
             return {"down": "no link"}
@@ -1998,6 +2160,109 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if resp.status_code != 200 or not isinstance(data, dict):
             return None if resp.status_code in (401, 403) else {"down": f"it answered {resp.status_code}"}
         return data
+
+    # the steps a password opened for a person whose machine passed (AD-018 slice 5): {digest: [person, until, tries,
+    # code|passkey]}, as the machine kept them before (identity_steps)
+    passed_steps: dict[str, list] = {}
+
+    def portal_asks_second() -> bool:
+        """The customers' portal asks a second step of everybody (Options, Two-step verification)."""
+        policy = settings.options.second_factor
+        return policy == "everybody" or (policy == "portal" and bool(settings.options.portal_address))
+
+    def passed_person(person: remotehome.Person) -> dict | None:
+        found = ((identity_store.load(person.link) or {}).get("people") or {}).get(person.name)
+        return found if isinstance(found, dict) and isinstance(found.get("hash"), str) else None
+
+    async def passed_login(person: remotehome.Person, body: dict) -> dict | None:
+        """The login of a person whose machine passed, checked here where its identity lives now (AD-018 slice 5):
+        the answer machine_login reads from its machine (identity_login's), from its record of the import. Its
+        password, then its app's code (or a recovery code) or a passkey of this RP ID, each step once, struck out
+        here. A second step that did not pass (a passkey of another name, none where the portal asks one) is never
+        activated with the password: need is said, and the person uses its one-time link (identitypass)."""
+        found = passed_person(person)
+        now = time.time()
+        for key in [k for k, v in passed_steps.items() if v[1] <= now]:
+            passed_steps.pop(key, None)
+
+        def answer(second: str = "", record: dict | None = None) -> dict:
+            hashed = (record or found or {}).get("hash") or ""
+            return {"ok": True, "person": person.there, "workspaces": dict(person.workspaces), "second": second,
+                    "fingerprint": hashlib.sha256(hashed.encode()).hexdigest()[:32]}
+
+        def open_step(kind: str) -> str:
+            opened = secrets.token_urlsafe(32)
+            passed_steps[_digest_session(opened)] = [person.name, now + IDENTITY_STEP_SECONDS, 0, kind]
+            return opened
+
+        step = body.get("step")
+        if isinstance(body.get("passkey"), dict):
+            return await passed_passkey(person, body["passkey"], step, answer)
+        if isinstance(step, str) and step:
+            opened = passed_steps.get(_digest_session(step))
+            if opened is None or opened[0] != person.name or opened[2] >= totp.MAX_TRIES or opened[3] != "code":
+                return {"ok": False}
+            code = str(body.get("code") or "")[:64]
+            result = await asyncio.to_thread(identity_store.mutate, person.link, person.name,
+                                             lambda p: identitypass.totp_check(p, code))
+            if result is None:
+                opened[2] += 1
+                return {"ok": False}
+            passed_steps.pop(_digest_session(step), None)
+            return answer("recovery code" if result[0] == "recovery" else "code")
+        password = str(body.get("password") or "")
+        if found is None:
+            await asyncio.to_thread(verify_password, password, identityimport._dummy())
+            return {"ok": False}
+        if not await asyncio.to_thread(verify_password, password, found["hash"]):
+            return {"ok": False}
+        if identitypass.totp_on(found):
+            return {"ok": False, "need": "code", "step": open_step("code")}
+        if identitypass.passkey_keys(found):
+            rp = str(body.get("rp") or "")[:253]
+            keys = identitypass.passkey_keys(found, rp) if rp else []
+            if keys:
+                return {"ok": False, "need": "passkey", "step": open_step("passkey"), "keys": [k["id"] for k in keys]}
+            return {"ok": False, "need": "passkey"}
+        if portal_asks_second():
+            return {"ok": False, "need": "setup"}
+        return answer()
+
+    async def passed_passkey(person: remotehome.Person, given: dict, step, answer) -> dict:
+        """A passkey's answer of a person whose machine passed, checked here with its key and its counter as
+        imported (identity_passkey's checks, on this panel)."""
+        credential = given.get("credential") if isinstance(given.get("credential"), dict) else {}
+        rp = str(given.get("rp") or "")[:253]
+        origins = [str(o)[:300] for o in given.get("origins") or [] if isinstance(o, str)][:8] if isinstance(
+            given.get("origins"), list) else []
+        second = isinstance(step, str) and bool(step)
+        opened = passed_steps.get(_digest_session(step)) if second else None
+        if second and (opened is None or opened[0] != person.name or opened[2] >= totp.MAX_TRIES
+                       or opened[3] != "passkey"):
+            return {"ok": False}
+        found = passed_person(person) or {}
+        key = next((k for k in identitypass.passkey_keys(found, rp) if rp and hmac.compare_digest(
+            str(k.get("id") or ""), str(credential.get("id") or ""))), None)
+        handle = (credential.get("response") or {}).get("userHandle") if isinstance(credential.get("response"),
+                                                                                    dict) else None
+        own = str((found.get("passkeys") or {}).get("handle") or "") if isinstance(found.get("passkeys"), dict) else ""
+        wrong = key is None or (bool(handle) and not hmac.compare_digest(str(handle), own))
+        if not wrong:
+            try:
+                verified = await asyncio.to_thread(passkeys.verify_given, credential,
+                                                   passkeys.unb64(str(given.get("challenge") or "")), rp, origins, key,
+                                                   not second)
+            except (passkeys.WebAuthnException, ValueError, KeyError, TypeError):
+                wrong = True
+        if wrong:
+            if opened is not None:
+                opened[2] += 1
+            return {"ok": False}
+        await asyncio.to_thread(identity_store.mutate, person.link, person.name,
+                                lambda p: identitypass.passkey_used(p, key["id"], verified.new_sign_count))
+        if second:
+            passed_steps.pop(_digest_session(step), None)
+        return answer(f"passkey «{key.get('name')}»") if second else answer()
 
     async def remote_login(request: Request, person: remotehome.Person, password: str, next_path: str, ip: str):
         """The password of a person served here, checked by its machine (one source of truth: a password changed
@@ -2037,7 +2302,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                 samesite="strict", secure=request.url.scheme == "https", path="/login")
             return response
         refused = ""
-        if need == "passkey":
+        if identity_store.passed(person.link) is not None and need:
+            # its machine passed (AD-018 slice 5): its second step is set up with its one-time link, never here with
+            # the password only (vincolo 8.5)
+            refused = PASSED_FACTOR_LINK
+        elif need == "passkey":
             refused = REMOTE_PASSKEY_LATER
         elif need or settings.options.second_factor == "everybody" or (settings.options.second_factor == "portal"
                                                                         and settings.options.portal_address):
@@ -2214,6 +2483,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             verified = await asyncio.to_thread(passkeys.verify_assertion, credential, ceremony, key, not second)
         except (passkeys.WebAuthnException, ValueError, KeyError, TypeError) as exc:
             return refused(f"«{key.get('name')}» not verified: {exc}")
+        if passed_away(name):
+            access_log.record("failed", "user", name, ip, "passkey: its workspaces passed to the central panel",
+                              status=403)
+            return login_json(passed_refusal(name) + ".", 403)
         if not second and not portal_admits(request, name):
             said, logged = refused_here(request)
             access_log.record("failed", "user", name, ip, f"passkey: {logged}", status=403)
@@ -2388,6 +2661,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if problem:
             return refused(problem, "Your user cannot log in with this provider: ask the administrator of the "
                                     "workspace.", 403, email)
+        if passed_away(name):
+            # its workspaces passed to the central panel (AD-018 slice 5): its login here is off
+            return refused("its workspaces passed to the central panel", passed_refusal(name) + ".", 403, email)
         role = settings.user_role(name)
         if made:
             access_log.record("sso", "user", name, ip, f"user made by the single sign-on of {said}: role "
@@ -11189,6 +11465,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if invited:
             password = ""
         answer: dict = {"ok": True}
+        if not new and frozen_person(name):
+            # a person of a workspace passing to the central panel (AD-018 slice 5)
+            return frozen_refused(frozen_person(name))
         async with access_lock:
             web = web_copy()
             refused = (check_name("User", name, settings.fixed.users, settings.users, new)
@@ -11223,6 +11502,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     @app.post("/api/access/users/delete")
     async def user_delete(payload: dict = Body(...), me: Principal = Depends(admin)):
         name = str(payload.get("name") or "")
+        if frozen_person(name):
+            return frozen_refused(frozen_person(name))
         async with access_lock:
             refused = check_name("User", name, settings.fixed.users, settings.users, False)
             if refused:
@@ -11371,6 +11652,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         """A new link for a user still invited (the one of before no longer
         valid), for INVITATION_HOURS again."""
         name, email = str(payload.get("name") or ""), str(payload.get("email") or "").strip()
+        if frozen_person(name):
+            return frozen_refused(frozen_person(name))
         async with access_lock:
             refused = pending_user(name)
             if refused:
@@ -11384,6 +11667,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     async def invitation_revoke(request: Request, payload: dict = Body(...), me: Principal = Depends(admin)):
         """The link no longer valid, and the user, who never got in, deleted."""
         name = str(payload.get("name") or "")
+        if frozen_person(name):
+            return frozen_refused(frozen_person(name))
         async with access_lock:
             refused = pending_user(name) or await revoke_user(name)
             if refused:
@@ -11476,6 +11761,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 "invite": bool(payload.get("invite")), "password": str(payload.get("password") or "")}
         if not WORKSPACE_NAME.fullmatch(workspace):
             return refuse("Choose the workspace of the user")
+        if not machine and frozen_of(workspace):
+            return frozen_refused(frozen_of(workspace))
         if not machine:
             answer = await member_save(request, workspace, {**body, "email": email}, me)
             if isinstance(answer, dict):
@@ -11529,6 +11816,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         state = found.state(time.time()) if found else "unknown"
         if found is not None and state == "pending" and found.name not in settings.web.users:
             state = "unknown"
+        if found is not None and state == "pending" and (frozen_of(found.workspace) or frozen_person(found.name)):
+            # its workspace passes to the central panel (AD-018 slice 5): an invitation is sent again from there
+            state = "unknown"
         if request.method == "GET" or state != "pending":
             if request.method == "POST":
                 access_log.record("failed", "user", found.name if found else "", ip, f"invitation: {state}")
@@ -11565,6 +11855,86 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return response
 
     app.add_route("/invite/{token}", invitation_page, methods=["GET", "POST"])
+
+    # --- the one-time link of a second step to set up again (AD-018 slice 5, vincolo 8.5): a person whose machine
+    # passed to this panel and whose second step did not pass (a passkey made on another name, none where the portal
+    # asks one) sets up the code of an app here, with this link and its password, never with the password alone
+
+    # {digest of the link's token: (the secret shown, until)}: the secret of the app being set up with a link
+    factor_setups: dict[str, tuple[str, float]] = {}
+
+    def factor_page(request: Request, state: str, person: str = "", error: str = "", code: int = 200,
+                    secret: str = "", recovery: list | None = None, expires: float = 0):
+        uri = totp.otpauth_uri(secret, f"{person}@{request.url.hostname}") if secret else ""
+        return _TEMPLATES.TemplateResponse(
+            request, "second_factor_link.html",
+            {"state": state, "name": person, "error": error, "secret": secret, "qr": totp.qr_svg(uri) if uri else "",
+             "recovery": recovery or [], "expires": moment(expires) if expires else ""},
+            status_code=code, headers={"Cache-Control": "no-store"})
+
+    async def factor_link_page(request: Request):
+        """/second-factor/<token>: the page of a one-time link (GET: the app's QR code), where the person gives its
+        password and a code of the app (POST): its app switched on here, its recovery codes shown once."""
+        token = request.path_params["token"]
+        ip = request.client.host if request.client else ""
+        found = factor_links.get(token)
+        person = serving().people.get(found["person"]) if found else None
+        if found is None or person is None or person.link != found.get("link") or \
+                identity_store.passed(person.link) is None:
+            if request.method == "POST":
+                access_log.record("failed", "user", (found or {}).get("person", ""), ip,
+                                  "a one-time link of a second step: not valid")
+            return factor_page(request, "invalid", code=410)
+        name = person.name
+        key = _digest_session(token)
+        now = time.time()
+        for old in [k for k, v in factor_setups.items() if v[1] <= now]:
+            factor_setups.pop(old, None)
+        if request.method == "GET":
+            secret = (factor_setups.get(key) or (None,))[0] or totp.new_secret()
+            factor_setups[key] = (secret, now + totp.PENDING_SECONDS)
+            return factor_page(request, "pending", name, secret=secret, expires=found["expires"])
+        if not _same_origin(request):
+            return HTMLResponse("Cross-site form refused", status_code=403)
+        setup = factor_setups.get(key)
+        if setup is None:
+            return factor_page(request, "pending", name, "The set-up has expired: start it again", 400,
+                               secret=_new_factor_secret(key), expires=found["expires"])
+        form = parse_qs((await request.body()).decode("utf-8", "replace"))
+        password, code = (form.get("password") or [""])[0], (form.get("code") or [""])[0].strip()[:64]
+        wait = limiter.wait(ip, name)
+        if wait:
+            access_log.record("failed", "user", name, ip, f"a one-time link of a second step: too many failed "
+                              f"tries: wait {wait} s", via=person.link)
+            return factor_page(request, "pending", name, f"Too many failed logins: try again in {wait} seconds.", 429,
+                               secret=setup[0], expires=found["expires"])
+        record = passed_person(person) or {}
+        right = await asyncio.to_thread(verify_password, password, record.get("hash") or identityimport._dummy())
+        used = totp.code_step(setup[0], code) if right else None
+        if not right or used is None:
+            limiter.failed(ip, name)
+            access_log.record("failed", "user", name, ip, "a one-time link of a second step: wrong "
+                              + ("password" if not right else "code"), via=person.link)
+            return factor_page(request, "pending", name, "Wrong password or code." if not right else
+                               "Wrong code: type the one the app shows now (check the clock of the phone)", 401,
+                               secret=setup[0], expires=found["expires"])
+        if not factor_links.use(token):
+            return factor_page(request, "invalid", code=410)
+        factor_setups.pop(key, None)
+        async with identity_lock:
+            codes = await asyncio.to_thread(identity_store.mutate, person.link, name,
+                                            lambda p: identitypass.totp_enable(p, setup[0], used))
+        limiter.succeeded(ip, name)
+        access_log.record("second-factor", "user", name, ip, "switched on with its one-time link (AD-018 slice 5)",
+                          role=WORKSPACE_ROLE, via=person.link, workspaces=[w for w, _ in person.workspaces])
+        return factor_page(request, "done", name, recovery=codes or [])
+
+    def _new_factor_secret(key: str) -> str:
+        secret = totp.new_secret()
+        factor_setups[key] = (secret, time.time() + totp.PENDING_SECONDS)
+        return secret
+
+    app.add_route(identitypass.LINK_PATH + "{token}", factor_link_page, methods=["GET", "POST"])
 
     @app.post("/api/access/links/save", dependencies=[Depends(admin)])
     async def link_save(payload: dict = Body(...)):
@@ -11608,6 +11978,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         name = str(payload.get("name") or "").strip()
         role = str(payload.get("role") or TOKEN_DEFAULT_ROLE)
         new = bool(payload.get("new"))
+        if not new and frozen_token(name):
+            return frozen_refused(frozen_token(name))
         async with access_lock:
             refused = check_name("Token", name, settings.fixed.tokens, settings.tokens, new) or check_role(role)
             if refused:
@@ -11629,6 +12001,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"No {kind}")
         name = str(payload.get("name") or "")
         label = "Link" if kind == "links" else "Token"
+        if kind == "tokens" and frozen_token(name):
+            return frozen_refused(frozen_token(name))
         async with access_lock:
             fixed, current = getattr(settings.fixed, kind), getattr(settings, kind)
             refused = check_name(label, name, fixed, current, False)
@@ -12760,7 +13134,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     REMOTE_PREFIX = "/.remote"
     # what a person served here asks of this panel itself, never of its machine
-    REMOTE_HERE = re.compile(r"/(?:login(?:/.*)?|logout|account|api/account/.*|api/oauth/.*|static/[^/]+"
+    REMOTE_HERE = re.compile(r"/(?:login(?:/.*)?|logout|account|api/account/.*|api/oauth/.*|static/[^/]+|second-factor/[^/]+"
                              r"|x/[^/]+/static/.+|brand/logo|favicon\.ico|icon-180\.png|login-background\.jpg"
                              r"|api/v1/docs|api/v1/openapi\.json|language/[A-Za-z_-]+|about)")
     # the lists (AD-018 §8.9, as AD-017 8.4): within LIST_TIMEOUT; a page's model and any other read within 60 s
@@ -12993,6 +13367,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if page.name in ("destinations", "access", "workspace") and (
                     (context.get("ws") or {}).get("name") or "") != params.get("workspace", ""):
                 raise ValueError("its page is of another workspace")
+            if page.name == "access" and params.get("workspace"):
+                context = merged_audit(request, link, me, context, str(params["workspace"]))
             if page.name == "index":
                 context = {**context, "update_need": ""}
             if "api_base" in context:
@@ -13013,6 +13389,20 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         finally:
             if mark is not None:
                 clock.HERE.reset(mark)
+
+    def merged_audit(request: Request, link: LinkTarget, me: Principal, context: dict, workspace: str) -> dict:
+        """The access log of a workspace served here, as its admin reads it (AD-018 §18.6.6, slice 5): the machine's
+        entries and this panel's (logins, second steps, account changes, the requests asked of the machine), filtered
+        the same way, in order of time, each log as it was written (neither side rewrites the other's). The names of
+        the provider's machines taken out of this panel's lines (AD-018 vincolo 8.10)."""
+        given = {k: str(request.query_params.get(k) or "") for k in ("since", "until", "who", "event", "q")}
+        ours = audit_entries(given["since"], given["until"], given["who"], given["event"], given["q"], workspace)
+        names, lang = placed_names_of(link), request_language(request)
+        here = [{k: v for k, v in e.items() if k not in ("via", "prev", "hash")}
+                | {"detail": placed_text(str(e.get("detail") or ""), names, lang, me), "side": "central"} for e in ours]
+        theirs = [e for e in context.get("entries") or [] if isinstance(e, dict)]
+        merged = sorted([*theirs, *here], key=lambda e: str(e.get("utc") or e.get("time") or ""), reverse=True)
+        return {**context, "entries": merged[:500], "total": int(context.get("total") or len(theirs)) + len(here)}
 
     def own_location(location: str) -> bool:
         """Whether a machine's redirect stays on this panel: a path of its own, as a browser reads it (the controls
@@ -15278,7 +15668,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if why is None:
                 return address + github.HOOK_PATH, "", str(central.get("link") or "")
             reasons.append(f"the central panel: {why}")
-            if portal and github.unreachable(portal) is None:
+            # this machine's portal is the last way only until its workspace passes (AD-018 slice 5): then the
+            # customers' portal is the central panel's alone
+            passed = (central.get(identitypass.PASS_KEY) or {}).get("state") == identitypass.PASSED
+            if portal and not passed and github.unreachable(portal) is None:
                 return portal + github.HOOK_PATH, "", ""
         # the first reason only: one sentence, which the reader's language translates whole
         said = reasons[0] if reasons else "the portal has no address and the instance no name"
@@ -16749,7 +17142,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             invited = load_invitations(invitations_path) if invitations_path else []
         except ConfigError as exc:
             raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, str(exc)) from None
-        return {"workspaces": dict(settings.workspaces), "users": dict(settings.users),
+        # a workspace passed (AD-018 slice 5): its copy here is off and read by nobody, the central included
+        spaces = {w: o for w, o in settings.workspaces.items() if pass_of(w).get("state") != identitypass.PASSED}
+        return {"workspaces": spaces, "users": dict(settings.users),
                 "user_roles": dict(settings.user_roles), "second_factors": second_factors, "passkeys": passkey_store,
                 "sso": sso_store, "grants": oauth_store.listed(), "tokens": tokens, "invitations": invited,
                 "webhooks": deployhooks.load(github_hooks_file), "portal": portal_url(), "now": time.time()}
@@ -16806,7 +17201,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                                                  if e.get("link") == me.name),
                                             # the ids of the webhooks GitHub calls on its portal (AD-018 slice 4):
                                             # it forwards those here; never their secrets
-                                            "hooks": github_forwarded(me.name)})
+                                            "hooks": github_forwarded(me.name),
+                                            # the passes of its workspaces (AD-018 slice 5): their state, no secret
+                                            "passes": {w: pass_said(p) for w, p in passes().items()
+                                                       if central_homes.of(w) == me.name}})
 
     @app.post(identityimport.API + "/home")
     async def identity_home_set(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
@@ -16855,6 +17253,216 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         moved = {w: w in after for w in set(before) | set(after) if before.get(w) != after.get(w)}
         job = github_hooks_moved(moved, f"link: {me.name}" + (f" for {me.on_behalf}" if me.on_behalf else ""))
         return {"workspaces": served, **({"hooks_job": job.id} if job is not None else {})}
+
+    def pass_said(found: dict) -> dict:
+        """A workspace's pass as the central panel reads it (GET /api/identity/v1/home): no secret, no snapshot."""
+        return {k: found.get(k) for k in ("state", "at", "until", "purged", "portal") if found.get(k) is not None}
+
+    @app.post(identityimport.API + "/pass")
+    async def identity_pass(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """The pass of workspaces of this machine to the central panel of this link (AD-018 slice 5,
+        identitypass.py), op: freeze (their identity changes refused here), pass (what this machine keeps of their
+        people, never a secret, and their login here off; their secrets deleted after PASS_DAYS) or return (the
+        people the central panel sends back, of those workspaces only, taken; their login here on again; the
+        workspaces no more served). The central panel's admin link only, of workspaces whose home it is; each step
+        in the access log."""
+        identity_link_only(me)
+        op = str(payload.get("op") or "")
+        wanted = payload.get("workspaces")
+        if op not in ("freeze", "pass", "return"):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "op: freeze, pass or return")
+        if not isinstance(wanted, list) or not wanted or len(wanted) > 1000 or not all(
+                isinstance(w, str) for w in wanted):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "workspaces: a list of the names of workspaces")
+        wanted = sorted(set(wanted))
+        ip = request.client.host if request.client else ""
+        by = me.on_behalf or me.name
+        for ws in wanted:
+            if ws not in settings.workspaces:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, f"No workspace {ws[:64]} here")
+            if central_homes.of(ws) != me.name:
+                raise HTTPException(status.HTTP_409_CONFLICT, f"The people of {ws} are not served by this link")
+        now = datetime.datetime.now()
+        stamp = now.isoformat(timespec="seconds")
+        user_roles, users = dict(settings.user_roles), dict(settings.users)
+
+        def people(ws: str) -> list[str]:
+            return identityimport.people_of(settings.workspaces[ws], user_roles, users)
+
+        def said(text: str) -> None:
+            access_log.record("action", "link", me.name, ip, (text + (f" for {me.on_behalf}" if me.on_behalf else ""))[:300],
+                              workspaces=wanted)
+
+        if op == "freeze":
+            portal = payload.get("portal") or ""
+            if not isinstance(portal, str) or (portal and not CENTRAL_PORTAL.fullmatch(portal)):
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "portal: https://<name> of the central panel's portal")
+            mine = {p for w in wanted for p in people(w)}
+            # a person of a workspace that does not pass would lose its login there with the others: refused
+            crossing = sorted({p for p in mine for w, o in settings.workspaces.items() if w not in wanted
+                               and p in o.members})
+            if crossing:
+                raise HTTPException(status.HTTP_409_CONFLICT, f"{', '.join(crossing[:5])} also belong to workspaces "
+                                                              "that do not pass: they pass together or not at all")
+            if any(pass_of(w).get("state") == identitypass.PASSED for w in wanted):
+                raise HTTPException(status.HTTP_409_CONFLICT, "These workspaces passed already")
+            for ws in wanted:
+                entry = central_homes.all()[ws]
+                central_homes.put(ws, {**entry, identitypass.PASS_KEY: {"state": identitypass.FROZEN, "at": stamp,
+                                                                         "by": by, "portal": portal}})
+            said(f"the identities of {', '.join(wanted)} frozen: they pass to {identitypass.portal_said(portal)} "
+                 "(AD-018 slice 5)")
+            return {"workspaces": wanted, "state": identitypass.FROZEN}
+        if op == "pass":
+            if any(pass_of(w).get("state") != identitypass.FROZEN for w in wanted):
+                raise HTTPException(status.HTTP_409_CONFLICT, "Freeze these workspaces first")
+            revision = payload.get("revision", 1)
+            if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "revision: a whole number from 1")
+            tokens = {t: {"workspace": settings.token_workspace(t), "role": settings.token_roles.get(t, TOKEN_DEFAULT_ROLE),
+                          "ci": settings.token_ci(t), "servers": list(settings.token_servers(t))}
+                      for t in settings.tokens if settings.token_workspace(t) in wanted and not t.startswith("oauth:")}
+            end = identitypass.until(now)
+            gone = set()
+            for ws in wanted:
+                entry = central_homes.all()[ws]
+                found = entry[identitypass.PASS_KEY]
+                snap = identitypass.snapshot(settings.workspaces, [ws], people, tokens, revision)
+                central_homes.put(ws, {**entry, identitypass.PASS_KEY: {
+                    **found, "state": identitypass.PASSED, "passed": stamp, "until": end, "snapshot": snap}})
+                gone |= identitypass.people_in(snap)
+            # their sessions here end at once: their login is the central panel's from now
+            for person in gone:
+                sessions.drop_user(person)
+            said(f"the people of {', '.join(wanted)} passed to {identitypass.portal_said(pass_of(wanted[0]).get('portal') or '')}: "
+                 f"their login here is off, their secrets here deleted on {end} (AD-018 slice 5)")
+            return {"workspaces": wanted, "state": identitypass.PASSED, "until": end, "people": len(gone)}
+        # return: the people back, as the central panel kept them (only those of these workspaces)
+        found = {w: pass_of(w) for w in wanted}
+        if any(not f.get("state") for f in found.values()):
+            raise HTTPException(status.HTTP_409_CONFLICT, "These workspaces did not pass")
+        if any(f.get("purged") for f in found.values()):
+            raise HTTPException(status.HTTP_409_CONFLICT, "The secrets of these people were deleted here after the "
+                                                          "7 days: they come back with a handover")
+        allowed = set()
+        for ws, f in found.items():
+            allowed |= identitypass.people_in(f.get("snapshot") or {}) if f.get("snapshot") else set(people(ws))
+        try:
+            back = identitypass.returned(payload.get("people") or {}, allowed)
+        except identityimport.IdentityImportError as exc:
+            access_log.record("failed", "link", me.name, ip, f"a return refused: {exc}"[:300], status=400)
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from None
+        async with access_lock:
+            web = web_copy()
+            for name, data in back.items():
+                if name in web.users and settings.user_role(name) == WORKSPACE_ROLE:
+                    web.users[name] = data["hash"]
+            refused = await store_access(web) if back else None
+            if refused is not None:
+                raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "The users file was not written")
+        for name, data in back.items():
+            if data["second_factor"]:
+                await asyncio.to_thread(second_factors.adopt, name, data["second_factor"])
+            else:
+                await asyncio.to_thread(second_factors.disable, name)
+            await asyncio.to_thread(passkey_store.adopt, name, data["passkeys"])
+        before = {w: (e.get("link"), e.get("portal") or "") for w, e in central_homes.all().items()}
+        for ws in wanted:
+            central_homes.put(ws, None)
+        moved = {w: False for w in wanted if w in before}
+        job = github_hooks_moved(moved, f"link: {me.name}" + (f" for {me.on_behalf}" if me.on_behalf else ""))
+        said(f"the people of {', '.join(wanted)} back on this machine from the central panel: "
+             f"{len(back)} changed there taken ({', '.join(sorted(back)) or 'none'}); their login here is on again "
+             "(AD-018 slice 5)")
+        return {"workspaces": wanted, "returned": sorted(back), **({"hooks_job": job.id} if job is not None else {})}
+
+    async def purge_passed(now: datetime.datetime | None = None) -> list[str]:
+        """The 7 days of a pass over (AD-018 §18.3.1 step 6): the secrets of its people deleted from this machine,
+        lines of what went: their hashes (their users, when they are of no other workspace), their apps, passkeys
+        and sessions, the workspace's single sign-on with its client secret, its tokens, its grants and its
+        invitations; their names leave its members. What this machine keeps of them (the pass's snapshot, no
+        secret) stays: the central panel's scope is checked against it."""
+        due = sorted(w for w, p in passes().items() if p.get("state") == identitypass.PASSED and not p.get("purged")
+                     and identitypass.expired(p, now) and w in settings.workspaces)
+        lines = []
+        for ws in due:
+            lines += await purge_one(ws)
+        return lines
+
+    async def purge_one(ws: str) -> list[str]:
+        found = pass_of(ws)
+        people = sorted(identitypass.people_in(found.get("snapshot") or {}))
+        others = {p for w, o in settings.workspaces.items() if w != ws and pass_of(w).get("state") != identitypass.PASSED
+                  for p in o.members}
+        users = [p for p in people if p in settings.users and settings.user_role(p) == WORKSPACE_ROLE
+                 and p not in others and p not in settings.fixed.users]
+        tokens = sorted(t for t in settings.tokens if settings.token_workspace(t) == ws and t not in settings.fixed.tokens)
+        lines = []
+        workspace = settings.workspaces[ws]
+        kept = dataclasses.replace(
+            workspace, members={n: r for n, r in workspace.members.items() if n not in people},
+            member_roles={n: r for n, r in workspace.member_roles.items() if n not in people},
+            member_servers={n: r for n, r in workspace.member_servers.items() if n not in people},
+            token_people={t: p for t, p in workspace.token_people.items() if t not in tokens and p not in people})
+        apps = sum(1 for p in people if second_factors.on(p))
+        keys = sum(passkey_store.count(p) for p in people)
+        grants = [g for g in oauth_store.listed(workspace=ws)]
+        dropped = [i for i in invitations if not i.used and (i.workspace == ws or i.name in people)]
+        sso_gone = sso_store.provider(ws) is not None
+        async with access_lock, workspaces_lock:
+            refused = await store_workspaces({**settings.workspaces, ws: kept})
+            web = web_copy()
+            for name in users:
+                web.users.pop(name, None)
+                web.roles.pop(name, None)
+            for token in tokens:
+                for kind in (web.tokens, web.token_roles, web.token_workspaces, web.token_ci, web.token_servers):
+                    kind.pop(token, None)
+            refused = refused or await store_access(web)
+            if refused is None and dropped:
+                refused = await store_invitations([i for i in invitations if i not in dropped])
+        if refused is not None:
+            raise RuntimeError(f"the secrets of the people of {ws} were not deleted: "
+                               f"{json.loads(refused.body).get('error')}")
+        # a person of this workspace who stays a user here (a member of another one passed too): its secrets go
+        for p in people:
+            await asyncio.to_thread(second_factors.disable, p)
+            await asyncio.to_thread(passkey_store.drop_user, p)
+            sessions.drop_user(p)
+        await asyncio.to_thread(sso_store.remove, ws)
+        for grant in grants:
+            oauth_store.revoke(str(grant.get("id")), "its workspace passed to the central panel")
+        entry = central_homes.all().get(ws) or {}
+        stamp = (datetime.datetime.now()).isoformat(timespec="seconds")
+        central_homes.put(ws, {**entry, identitypass.PASS_KEY: {**found, "purged": stamp}})
+        lines.append(f"{ws}: the 7 days of its pass are over, the secrets of its people deleted here: {len(users)} "
+                     f"passwords' hashes, {apps} authenticator apps, {keys} passkeys, {len(tokens)} tokens, "
+                     f"{len(grants)} grants, {len(dropped)} invitations"
+                     + (", its single sign-on with its client secret" if sso_gone else ""))
+        access_log.record("action", "system", "", "", lines[-1][:300], workspace=ws)
+        return lines
+
+    async def pass_loop() -> None:
+        """The passes whose 7 days are over, looked at every hour: their secrets deleted in a job."""
+        while True:
+            try:
+                due = sorted(w for w, p in passes().items() if p.get("state") == identitypass.PASSED
+                             and not p.get("purged") and identitypass.expired(p))
+                if due:
+                    async def action(job):
+                        for line in await purge_passed():
+                            job.log(line)
+                    jobs.submit(f"Secrets of the people of {', '.join(due)} deleted after their pass", [],
+                                "system: AD-018, 7 days after a pass", action,
+                                workspace=due[0] if len(due) == 1 else "")
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - the loop must survive
+                _logger.exception("the look at the passes to the central panel failed")
+            await asyncio.sleep(PASS_EVERY)
+
+    PASS_EVERY = 3600
+    app.state.purge_passed = purge_passed
 
     # the steps a password opened for the central panel's login of a person (POST /api/identity/v1/login): {digest of
     # the step: (person, until, tries)}; the code comes back with it, checked here (one counter of the codes used)
@@ -16934,6 +17542,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             said(True, first + (f" + {second}" if second else ""))
             return {"ok": True, "person": person, "workspaces": mine, "second": second,
                     "fingerprint": hashlib.sha256(settings.users[person].encode()).hexdigest()[:32]}
+        if passed_away(person):
+            # its workspaces passed (AD-018 slice 5): the central panel checks its login itself, nothing here
+            said(False, "its workspaces passed to the central panel: checked there")
+            return {"ok": False, "passed": True}
         now = time.time()
         for key in [k for k, v in identity_steps.items() if v[1] <= now]:
             identity_steps.pop(key, None)
@@ -17068,8 +17680,13 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return refused
         body = dict(body or {})
         link = settings.link_targets.get(name)
-        if op in ("import", "delete", "home") and str(body.get("confirm") or "") != name:
+        if op in ("import", "delete", "home", "pass", "return", "factor_link") and str(body.get("confirm") or "") != name:
             return 400, {"error": f"Type the name of the link, {name}, to confirm", "code": "confirm_required"}
+        if op == "import" and identity_store.passed(name) is not None:
+            # this panel is the source of their identities since the pass (AD-018 slice 5): the machine's word would
+            # take back what its people changed here, or bring what a machine not trusted writes
+            return 409, {"error": f"The workspaces of {name} passed to this panel: their identities live here now; "
+                                  "bring them back to the machine first", "code": "conflict"}
         if op == "delete" and workspace_homes.on(name):
             return 409, {"error": f"This panel serves the workspaces of {name}: switch it off first", "code": "conflict"}
         if op == "delete":
@@ -17144,7 +17761,156 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return 200, {"ok": True, "link": name, "imported": done}
         if op == "home":
             return await home_act(name, link, me, ip, body)
+        if op == "pass":
+            return await pass_act(name, link, me, ip)
+        if op == "return":
+            return await return_act(name, link, me, ip)
+        if op == "factor_link":
+            return await factor_link_act(name, me, ip, str(body.get("person") or ""))
         return 404, {"error": f"No {op} here", "code": "not_found"}
+
+    # --- the pass of a machine and its return (AD-018 slice 5, identitypass.py): on this panel ----------------------
+
+    factor_links = identitypass.FactorLinks(settings.jobs_dir.parent / identitypass.LINKS_FILE)
+
+    async def pass_call(link: LinkTarget, me: Principal, body: dict) -> tuple[int, dict, str]:
+        """POST /api/identity/v1/pass of the machine: (its status, its answer, why it failed)."""
+        try:
+            resp = await asyncio.wait_for(link_clients.client(link).post(
+                identityimport.API + "/pass", json=body, timeout=identityimport.TIMEOUT,
+                headers={**link_headers(link, me.name, me.role), "Accept": "application/json"}), identityimport.TIMEOUT)
+        except (httpx.HTTPError, asyncio.TimeoutError) as exc:
+            return 502, {}, describe_error(exc) if isinstance(exc, httpx.HTTPError) else f"{link.name} did not answer"
+        try:
+            data = resp.json()
+        except ValueError:
+            data = {}
+        data = data if isinstance(data, dict) else {}
+        if resp.status_code == 404 and data.get("detail") == "Not Found":
+            return 404, data, f"{link.name} has no pass to a central panel: its OmniaCLI is older, update it first"
+        if resp.status_code != 200:
+            return resp.status_code, data, f"{link.name} answered {resp.status_code}: " + str(
+                data.get("detail") or data.get("error") or "")[:300]
+        return 200, data, ""
+
+    def passkey_domain_here() -> str:
+        """The RP ID of the passkeys of the customers' portal (slice 3), "" without a portal."""
+        if not settings.options.portal_address:
+            return ""
+        return passkeys.rp_here(settings.options.portal_address, settings.options.passkey_domain, own_names()) or ""
+
+    def factor_link_of(name: str, person: str, me: Principal) -> dict:
+        token, end = factor_links.create(name, person, str(me))
+        path = identitypass.LINK_PATH + token
+        return {"person": person, "path": path, "url": (portal_url() + path) if portal_url() else "",
+                "expires": datetime.datetime.fromtimestamp(end).isoformat(timespec="seconds")}
+
+    async def pass_act(name: str, link: LinkTarget, me: Principal, ip: str) -> tuple[int, dict]:
+        """The pass of the machine of name (AD-018 §18.3.1 steps 2-6): its workspaces served here frozen there,
+        imported again, passed (its people's login off there, their secrets deleted there after 7 days); from now
+        their identities live here. The people whose second step did not pass get a one-time link each, shown once."""
+        if not workspace_homes.on(name):
+            return 409, {"error": f"Serve the workspaces of {name} here first", "code": "conflict"}
+        if identity_store.passed(name) is not None:
+            return 409, {"error": f"The workspaces of {name} passed already", "code": "conflict"}
+        spaces = home_said(name)["workspaces"]
+        if not spaces:
+            return 409, {"error": f"{name} has no workspace served here", "code": "conflict"}
+        portal = portal_url()
+
+        def failed(why: str, code: int = 502) -> tuple[int, dict]:
+            access_log.record("action", me.kind, me.name, ip, f"the pass of {name} refused: {why}"[:300],
+                              status="failed")
+            return code, {"error": f"The workspaces of {name} did not pass: {why}", "code": apiv1.code_of(code)}
+
+        async def thaw() -> None:
+            code, _, why = await pass_call(link, me, {"op": "return", "workspaces": spaces, "people": {}})
+            if code != 200:
+                _logger.warning("the freeze of %s not taken back: %s", name, why)
+
+        code, _, why = await pass_call(link, me, {"op": "freeze", "workspaces": spaces, "portal": portal})
+        if code != 200:
+            return failed(why, 409 if code == 409 else 502)
+        code, data = await identity_act("import", name, me, f"pass: {me}", ip, {"confirm": name})
+        if code != 200:
+            await thaw()
+            return failed(str(data.get("error") or code))
+        if sorted(home_said(name)["workspaces"]) != sorted(spaces):
+            # the import again serves other workspaces (one renamed there meanwhile): nothing passes
+            await thaw()
+            return failed("its workspaces changed during the pass: look at them and pass again", 409)
+        code, said, why = await pass_call(link, me, {"op": "pass", "workspaces": spaces, "revision": 1})
+        if code != 200:
+            await thaw()
+            return failed(why, 409 if code == 409 else 502)
+        info = {"at": datetime.datetime.now().isoformat(timespec="seconds"),
+                "until": str(said.get("until") or identitypass.until()), "by": str(me), "revision": 1,
+                "workspaces": spaces, "portal": portal}
+        async with identity_lock:
+            await asyncio.to_thread(identity_store.set_passed, name, info)
+        rp, required = passkey_domain_here(), portal_asks_second()
+        record = identity_store.load(name) or {}
+        served = {n for n, p in serving().people.items() if p.link == name}
+        links = [factor_link_of(name, person, me) for person, data in sorted((record.get("people") or {}).items())
+                 if person in served and isinstance(data, dict) and identitypass.needs_link(data, rp, required)]
+        access_log.record("action", me.kind, me.name, ip,
+                          (f"the workspaces {', '.join(spaces)} of {name} passed to this panel (AD-018 slice 5): their "
+                           f"people log in here only, their identities live here; their secrets are deleted on the "
+                           f"machine on {info['until']}; {len(links)} one-time links of a second step to set up "
+                           f"again" + (f" ({', '.join(x['person'] for x in links)})" if links else ""))[:300],
+                          workspaces=spaces)
+        return 200, {"ok": True, "link": name, "home": home_said(name), "links": links}
+
+    async def return_act(name: str, link: LinkTarget, me: Principal, ip: str) -> tuple[int, dict]:
+        """«Back to the machine» (AD-018 §18.3.2): the people of the machine of name who changed here since the pass
+        (their hashes, apps and passkeys), of its workspaces only, sent to it; their login there is on again and
+        this panel serves them no more. Asked here by an admin, never by the machine. After the 7 days the machine
+        refuses it: the way back is a handover."""
+        passed = identity_store.passed(name)
+        if passed is None:
+            return 409, {"error": f"The workspaces of {name} did not pass", "code": "conflict"}
+        record = identity_store.load(name) or {}
+        back = {str(p.get("from") or n): {"hash": p["hash"], "second_factor": p.get("second_factor"),
+                                          "passkeys": p.get("passkeys")}
+                for n, p in sorted((record.get("people") or {}).items()) if isinstance(p, dict) and p.get("changed")}
+        spaces = list(passed.get("workspaces") or [])
+        code, said, why = await pass_call(link, me, {"op": "return", "workspaces": spaces, "people": back})
+        if code != 200:
+            access_log.record("action", me.kind, me.name, ip, f"the return of {name} refused: {why}"[:300],
+                              status="failed")
+            return (409 if code == 409 else 502), {"error": f"The workspaces of {name} did not go back: {why}",
+                                                   "code": "conflict" if code == 409 else "failed"}
+        before = [n for n, p in serving().people.items() if p.link == name]
+        async with identity_lock:
+            await asyncio.to_thread(identity_store.set_passed, name, None)
+        workspace_homes.put(name, None)
+        for person in before:
+            remote_sessions.drop_user(person)
+        dropped = factor_links.drop_link(name)
+        remote_servers_seen.clear()
+        central_hook_read.pop("at", None)
+        central_hook_absent.clear()
+        access_log.record("action", me.kind, me.name, ip,
+                          (f"the workspaces {', '.join(spaces)} of {name} back on their machine (AD-018 slice 5): "
+                           f"{len(back)} people changed here sent back ({', '.join(sorted(back)) or 'none'}); this "
+                           f"panel serves them no more" + (f"; {dropped} one-time links ended" if dropped else ""))[:300],
+                          workspaces=spaces)
+        return 200, {"ok": True, "link": name, "returned": [str(x) for x in said.get("returned") or []][:5000],
+                     "home": home_said(name),
+                     **({"hooks_job": str(said["hooks_job"])[:64]} if said.get("hooks_job") else {})}
+
+    async def factor_link_act(name: str, me: Principal, ip: str, person: str) -> tuple[int, dict]:
+        """A new one-time link of a second step for person, a person of the machine of name that passed (the one of
+        before ends): shown once."""
+        if identity_store.passed(name) is None:
+            return 409, {"error": f"The workspaces of {name} did not pass", "code": "conflict"}
+        found = serving().people.get(person)
+        if found is None or found.link != name:
+            return 404, {"error": f"{person[:64]} is no person of {name} served here", "code": "not_found"}
+        made = factor_link_of(name, person, me)
+        access_log.record("action", me.kind, me.name, ip, f"a one-time link of a second step made for {person} "
+                          f"(AD-018 slice 5), valid until {made['expires']}", workspaces=[w for w, _ in found.workspaces])
+        return 200, {"ok": True, "link": name, "made": made}
 
     identity_refreshing: dict[str, asyncio.Lock] = {}
     # what this panel keeps of a served machine's people is read again from it at most this old (a member removed or
@@ -17157,6 +17923,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         time per link; in the access log as any import."""
         if identity_store.load(name) is None or name not in settings.link_targets:
             return False
+        if identity_store.passed(name) is not None:
+            # its identities live here since the pass (AD-018 slice 5): nothing to read from the machine
+            return False
         lock = identity_refreshing.setdefault(name, asyncio.Lock())
         async with lock:
             code, data = await identity_act("import", name, Principal(f"refresh of {name}", "admin"),
@@ -17168,6 +17937,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     def identity_stale(name: str) -> bool:
         record = identity_store.load(name) or {}
+        if isinstance(record.get("passed"), dict):
+            return False
         try:
             at = datetime.datetime.fromisoformat(str(record.get("at") or ""))
         except ValueError:
@@ -17182,7 +17953,16 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         record = identity_store.load(name) or {}
         taken = sorted(remotehome.taken_workspaces({n: identity_store.load(n) for n in identity_store.links()}, name,
                                                    settings.workspaces)) if record else []
+        passed = identity_store.passed(name)
         return {"on": entry is not None, "at": (entry or {}).get("at") or "", "by": (entry or {}).get("by") or "",
+                # the pass (AD-018 slice 5): when, by whom, until when the machine keeps its copy, the links pending
+                "pass": None if passed is None else {
+                    **{k: passed.get(k) for k in ("at", "until", "by", "revision", "workspaces")},
+                    "over": identitypass.expired(passed),
+                    "changed": sorted(n for n, p in (record.get("people") or {}).items()
+                                      if isinstance(p, dict) and p.get("changed")),
+                    "links": {p: datetime.datetime.fromtimestamp(e).isoformat(timespec="seconds")
+                              for p, e in sorted(factor_links.pending(name).items())}},
                 "workspaces": sorted(w for w, at in found.workspaces.items() if at == name),
                 "refused": taken, "people": sorted(n for n, p in found.people.items() if p.link == name),
                 "tokens": len([t for t in found.tokens.values() if t.link == name])}
@@ -17194,6 +17974,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         on = body.get("on") is True
         record = identity_store.load(name)
         before = [n for n, p in serving().people.items() if p.link == name]
+        if not on and identity_store.passed(name) is not None:
+            # switched off, its people would log in nowhere: their login is off on the machine (AD-018 slice 5)
+            return 409, {"error": f"The workspaces of {name} passed to this panel: bring them back to the machine "
+                                  "instead", "code": "conflict"}
         if on and not record:
             return 409, {"error": f"Import the identities of {name} first", "code": "conflict"}
         taken = remotehome.taken_workspaces({n: identity_store.load(n) for n in identity_store.links()}, name,
@@ -17285,6 +18069,24 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                               me: Principal = Depends(current_user)):
         return identity_answer(request, *await identity_act("home", name, me, f"manual: {me}", central_ip(request),
                                                             payload))
+
+    @app.post("/api/identities/{name}/pass", dependencies=[Depends(admin)])
+    async def identities_pass(request: Request, name: str, payload: dict = Body(...),
+                              me: Principal = Depends(current_user)):
+        return identity_answer(request, *await identity_act("pass", name, me, f"manual: {me}", central_ip(request),
+                                                            payload))
+
+    @app.post("/api/identities/{name}/return", dependencies=[Depends(admin)])
+    async def identities_return(request: Request, name: str, payload: dict = Body(...),
+                                me: Principal = Depends(current_user)):
+        return identity_answer(request, *await identity_act("return", name, me, f"manual: {me}", central_ip(request),
+                                                            payload))
+
+    @app.post("/api/identities/{name}/factor-link", dependencies=[Depends(admin)])
+    async def identities_factor_link(request: Request, name: str, payload: dict = Body(...),
+                                     me: Principal = Depends(current_user)):
+        return identity_answer(request, *await identity_act("factor_link", name, me, f"manual: {me}",
+                                                            central_ip(request), payload))
 
     @app.post("/api/identities/{name}/delete", dependencies=[Depends(admin)])
     async def identities_delete(request: Request, name: str, payload: dict = Body(...),
@@ -19390,6 +20192,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     @app.get("/account")
     async def account_page(request: Request, me: Principal = Depends(current_user)):
+        if me.remote and identity_store.passed(me.remote) is not None:
+            # a person whose machine passed (AD-018 slice 5): its account is this panel's, changed here
+            return _TEMPLATES.TemplateResponse(request, "account.html", passed_account_context(request, me))
         if me.remote:
             # a person served for a linked machine (AD-018 slice 2): its account as this panel keeps it, read only
             person = serving().people.get(me.name)
@@ -19461,10 +20266,196 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                               role=settings.user_role(name) if name in settings.users else "")
         return ended
 
+    # --- the account of a person whose machine passed to this panel (AD-018 slice 5): its identity lives here, in
+    # its record of the import (identityimport.Store.mutate: each change marked, carried back by «Back to the
+    # machine»), changed as an account of this panel is (the same rules, the same answers)
+
+    def passed_entry(me: Principal) -> remotehome.Person:
+        person = serving().people.get(me.name)
+        if person is None or person.link != me.remote or identity_store.passed(me.remote) is None:
+            raise HTTPException(status.HTTP_409_CONFLICT, REMOTE_ACCOUNT_LATER)
+        return person
+
+    def passed_record(person: remotehome.Person) -> dict:
+        return passed_person(person) or {}
+
+    def passed_rows(request: Request, record: dict) -> list[dict]:
+        rp = passkey_rp(request)
+        return [{"id": k["id"], "name": k.get("name") or "", "rp": k.get("rp", ""), "here": k.get("rp") == rp,
+                 "created": moment(k["created"]) if k.get("created") else "",
+                 "used": moment(k["used"]) if k.get("used") else "", "synced": bool(k.get("synced"))}
+                for k in identitypass.passkey_keys(record)]
+
+    def passed_account_context(request: Request, me: Principal) -> dict:
+        """account.html's context for a person whose machine passed: what this panel keeps of it."""
+        person = passed_entry(me)
+        record = passed_record(person)
+        state = identitypass.totp_state(record)
+        return {"name": me.name, "role": WORKSPACE_ROLE, "workspaces": person.workspaces, "fixed": False,
+                "two_step": {**state, "since": moment(state["since"]) if state["since"] else "",
+                             "required": portal_asks_second()},
+                # its connectors of AI assistants are not served here yet (AD-018: the grants of the people served)
+                "grants": [], "mcp_url": mcp_resource(request),
+                "sessions": session_rows(remote_sessions.listed(me.name, request.cookies.get(COOKIE)),
+                                         request_language(request)),
+                "passkeys": passed_rows(request, record), "passkey_rp": passkey_rp(request),
+                "passkeys_available": passkeys.available()}
+
+    async def passed_account(op: str, request: Request, me: Principal, payload: dict):
+        """A change of its own account by a person whose machine passed (AD-018 slice 5): the routes of Account,
+        with the rules of an account of this panel, on its record here. In this panel's access log with its
+        workspaces and the link of its machine."""
+        person = passed_entry(me)
+        name, link = me.name, me.remote
+        ip = request.client.host if request.client else ""
+        record = passed_record(person)
+        spaces = [w for w, _ in person.workspaces]
+
+        def logged(event: str, text: str) -> None:
+            access_log.record(event, "user", name, ip, text[:300], role=WORKSPACE_ROLE, via=link, workspaces=spaces)
+
+        async def change(fn):
+            async with identity_lock:
+                return await asyncio.to_thread(identity_store.mutate, link, name, fn)
+
+        if op == "sessions_end":
+            current = request.cookies.get(COOKIE)
+            mine = {r["id"] for r in remote_sessions.listed(name, current) if r["current"]}
+            targets = ([r["id"] for r in remote_sessions.listed(name) if r["id"] not in mine] if payload.get("all")
+                       else [str(payload.get("id") or "")])
+            if not payload.get("all") and targets[0] in mine:
+                return refuse("This is the session of this browser: Log out ends it")
+            ended = 0
+            for session in targets:
+                gone = remote_sessions.end(name, session) if session not in mine else None
+                if gone is not None:
+                    ended += 1
+                    logged("session", f"session ended by {name} (Account): {session_said(gone)}")
+            if not ended and not payload.get("all"):
+                return refuse("No such session: it has ended already", status.HTTP_404_NOT_FOUND)
+            return {"ok": True, "ended": ended}
+        if op == "password":
+            current, password = str(payload.get("current") or ""), str(payload.get("password") or "")
+            if not await asyncio.to_thread(verify_password, current, record.get("hash") or identityimport._dummy()):
+                return refuse("The current password is wrong")
+            if len(password) < _MIN_PASSWORD:
+                return refuse(f"The password needs at least {_MIN_PASSWORD} characters")
+            hashed = await asyncio.to_thread(hash_password, password)
+            await change(lambda p: p.__setitem__("hash", hashed))
+            # the new password ends every session of the person: a new one for this browser
+            remote_sessions.drop_user(name)
+            logged("action", "password changed (Account)")
+            response = JSONResponse({"ok": True})
+            fresh = serving().people.get(name)
+            if fresh is not None:
+                open_remote_session(request, response, fresh, "password")
+            return response
+        if op == "second_factor_start":
+            if identitypass.totp_on(record):
+                return refuse("Two-step verification is on already")
+            secret = totp.new_secret()
+            account_setups[f"passed:{name}"] = (secret, time.time() + totp.PENDING_SECONDS)
+            uri = totp.otpauth_uri(secret, f"{name}@{request.url.hostname}")
+            return JSONResponse({"secret": secret, "uri": uri, "qr": totp.qr_svg(uri)},
+                                headers={"Cache-Control": "no-store"})
+        if op == "second_factor_confirm":
+            found = account_setups.get(f"passed:{name}")
+            if found is None or found[1] < time.time():
+                return refuse("The set-up has expired: start it again")
+            refused = code_refused(request, me)
+            if refused:
+                return refused
+            used = totp.code_step(found[0], str(payload.get("code") or ""))
+            if used is None:
+                return code_failed(request, me, "two-step set-up")
+            account_setups.pop(f"passed:{name}", None)
+            codes = await change(lambda p: identitypass.totp_enable(p, found[0], used))
+            logged("second-factor", "switched on (Account)")
+            return JSONResponse({"ok": True, "recovery": codes}, headers={"Cache-Control": "no-store"})
+        if op == "second_factor_disable":
+            if not identitypass.totp_on(record):
+                return refuse("Two-step verification is not on")
+            if portal_asks_second():
+                return refuse("Two-step verification is required for you on this machine: it cannot be switched off",
+                              status.HTTP_403_FORBIDDEN)
+            refused = code_refused(request, me)
+            if refused:
+                return refused
+            code = str(payload.get("code") or "")[:64]
+
+            def off(p: dict):
+                result = identitypass.totp_check(p, code)
+                if result is not None:
+                    p["second_factor"] = None
+                return result
+            result = await change(off)
+            if result is None:
+                return code_failed(request, me, "two-step switch-off")
+            remote_sessions.drop_user(name, keep=request.cookies.get(COOKIE))
+            logged("second-factor", "switched off (Account)" + (", with a recovery code" if result[0] == "recovery"
+                                                                 else ""))
+            return {"ok": True}
+        if op == "passkey_options":
+            refused = passkey_refused(request)
+            if refused:
+                return refused
+            label = passkeys.clean_name(payload.get("name"))
+            if not label:
+                return refuse("Give the passkey a name: where it is (Laptop, Phone…)")
+            if len(identitypass.passkey_keys(record)) >= passkeys.MAX_PER_USER:
+                return refuse(f"At most {passkeys.MAX_PER_USER} passkeys: remove one first")
+            rp, host = passkey_rp(request), request.headers.get("host", "")
+            handle = identitypass.passkey_handle(record)
+            token, challenge = ceremonies.start("register", f"passed:{name}", rp, host, label, handle)
+            options = passkeys.registration_options(rp, name, handle, challenge, identitypass.passkey_keys(record, rp))
+            response = JSONResponse({"publicKey": options}, headers={"Cache-Control": "no-store"})
+            response.set_cookie(passkeys.COOKIE, token, max_age=passkeys.CEREMONY_SECONDS, httponly=True,
+                                samesite="strict", secure=request.url.scheme == "https", path="/api/account/passkeys")
+            return response
+        if op == "passkey_register":
+            ceremony = ceremonies.take(request.cookies.get(passkeys.COOKIE), "register")
+            if ceremony is None or ceremony.user != f"passed:{name}" or ceremony.host != request.headers.get("host", ""):
+                return refuse("The request of the passkey has expired: start again")
+            credential = payload.get("credential") if isinstance(payload.get("credential"), dict) else {}
+            try:
+                verified = await asyncio.to_thread(passkeys.verify_registration, credential, ceremony)
+                key = {"id": passkeys.b64(verified.credential_id), "key": passkeys.b64(verified.credential_public_key),
+                       "count": int(verified.sign_count), "name": passkeys.clean_name(ceremony.name), "rp": ceremony.rp,
+                       "created": time.time(), "used": None,
+                       "transports": [str(t) for t in (credential.get("response") or {}).get("transports") or []][:6],
+                       "synced": bool(verified.credential_backed_up)}
+                if remotehome.passkey_person(serving(), key["id"], key["rp"]) is not None or passkey_store.find(
+                        key["id"], key["rp"]) is not None:
+                    raise ValueError("This passkey is registered already")
+                await change(lambda p: identitypass.passkey_add(p, ceremony.handle, key))
+            except (passkeys.WebAuthnException, ValueError, KeyError, TypeError) as exc:
+                access_log.record("failed", "user", name, ip, f"passkey not registered: {exc}"[:300], via=link)
+                return refuse("The passkey was not registered: try again")
+            logged("passkey", f"passkey «{key['name']}» registered for {key['rp']}")
+            response = JSONResponse({"ok": True, "id": key["id"]})
+            response.delete_cookie(passkeys.COOKIE, path="/api/account/passkeys")
+            return response
+        if op == "passkey_delete":
+            key_id = str(payload.get("id") or "")
+            key = next((k for k in identitypass.passkey_keys(record) if k["id"] == key_id), None)
+            if key is None:
+                return refuse("No such passkey", status.HTTP_404_NOT_FOUND)
+            if portal_asks_second() and not identitypass.totp_on(record) and len(identitypass.passkey_keys(record)) <= 1:
+                return refuse("Two-step verification is required for you on this machine and this passkey is your only "
+                              "second step: add another passkey or switch on the code of an app first",
+                              status.HTTP_403_FORBIDDEN)
+            await change(lambda p: identitypass.passkey_remove(p, key_id))
+            logged("passkey", f"passkey «{key.get('name')}» of {key.get('rp')} removed (Account)")
+            return {"ok": True}
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Not Found")
+
     @app.post("/api/account/sessions/end")
     async def account_session_end(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
         """End one of its sessions (another browser's: this one logs out); all: every other one."""
         password_user(me)
+        if me.remote:
+            # a person whose machine passed to this panel (AD-018 slice 5): its identity lives here
+            return await passed_account("sessions_end", request, me, payload)
         if payload.get("all"):
             return {"ok": True, "ended": end_sessions(request, me, me.name, None, " (Account)")}
         session = str(payload.get("id") or "")
@@ -19507,6 +20498,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     async def passkey_register_options(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
         """The options of navigator.credentials.create() for a new passkey named as the person says."""
         password_user(me)
+        if me.remote:
+            # a person whose machine passed to this panel (AD-018 slice 5): its identity lives here
+            return await passed_account("passkey_options", request, me, payload)
         refused = passkey_refused(request)
         if refused:
             return refused
@@ -19527,6 +20521,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     @app.post("/api/account/passkeys/register")
     async def passkey_register(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
         password_user(me)
+        if me.remote:
+            # a person whose machine passed to this panel (AD-018 slice 5): its identity lives here
+            return await passed_account("passkey_register", request, me, payload)
         ceremony = ceremonies.take(request.cookies.get(passkeys.COOKIE), "register")
         if ceremony is None or ceremony.user != me.name or ceremony.host != request.headers.get("host", ""):
             return refuse("The request of the passkey has expired: start again")
@@ -19551,6 +20548,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     async def passkey_delete(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
         """A passkey away; not the last second step of a user who must have one."""
         password_user(me)
+        if me.remote:
+            # a person whose machine passed to this panel (AD-018 slice 5): its identity lives here
+            return await passed_account("passkey_delete", request, me, payload)
         key_id = str(payload.get("id") or "")
         key = next((k for k in passkey_store.keys(me.name) if k["id"] == key_id), None)
         if key is None:
@@ -19592,6 +20592,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         """A new secret for the app (its QR code and as text), kept until it is
         confirmed with a code, PENDING_SECONDS at most."""
         password_user(me)
+        if me.remote:
+            # a person whose machine passed to this panel (AD-018 slice 5): its identity lives here
+            return await passed_account("second_factor_start", request, me, {})
         if second_factors.on(me.name):
             return refuse("Two-step verification is on already")
         secret = totp.new_secret()
@@ -19603,6 +20606,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     async def second_factor_confirm(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
         """On, once a code of the new secret is right: the recovery codes, once."""
         password_user(me)
+        if me.remote:
+            # a person whose machine passed to this panel (AD-018 slice 5): its identity lives here
+            return await passed_account("second_factor_confirm", request, me, payload)
         found = account_setups.get(me.name)
         if found is None or found[1] < time.time():
             return refuse("The set-up has expired: start it again")
@@ -19622,6 +20628,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     async def second_factor_disable(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
         """Off with a code of the app or a recovery code; not where it is required."""
         password_user(me)
+        if me.remote:
+            # a person whose machine passed to this panel (AD-018 slice 5): its identity lives here
+            return await passed_account("second_factor_disable", request, me, payload)
         if not second_factors.on(me.name):
             return refuse("Two-step verification is not on")
         if second_step_required(request, me.name):
@@ -19663,6 +20672,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         name = str(payload.get("name") or "")
         if name not in settings.users:
             return refuse(f"No user {name}", status.HTTP_404_NOT_FOUND)
+        if frozen_person(name):
+            return frozen_refused(frozen_person(name))
         return await reset_second_factor(request, me, name, " (Users)")
 
     @app.post("/api/workspaces/{workspace}/members/second-factor/reset", dependencies=[Depends(admin)])
@@ -19717,6 +20728,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     @app.post("/api/account/password")
     async def account_password(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
         password_user(me)
+        if me.remote:
+            # a person whose machine passed to this panel (AD-018 slice 5): its identity lives here
+            return await passed_account("password", request, me, payload)
         current, password = str(payload.get("current") or ""), str(payload.get("password") or "")
         async with access_lock:
             if me.name in settings.fixed.users:
@@ -31713,6 +32727,41 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                   me: Principal = Depends(api_token)):
         return api_central_answer(request, *await identity_act("home", name, me, f"api: {me}", api_ip(request),
                                                                body.model_dump()))
+
+    @api_router.post(P + "/links/{name}/identities/pass", summary="Pass a machine's workspaces to this panel",
+                     description="AD-018 slice 5: the workspaces this panel serves for the machine are frozen there "
+                                 "(their identity changes refused), imported again, and passed: their people's login "
+                                 "there is off, their identities live on this panel from now (password, app and "
+                                 "passkeys changed here), their secrets are deleted on the machine after 7 days. A "
+                                 "person whose second step did not pass gets a one-time link (links: url, shown once), "
+                                 "never a second step set up with the password alone. confirm = the link's name.")
+    async def api_identities_pass(request: Request, body: apiv1.IdentityConfirmBody,
+                                  name: str = PathParam(description="The link's name (Links page)"),
+                                  me: Principal = Depends(api_token)):
+        return api_central_answer(request, *await identity_act("pass", name, me, f"api: {me}", api_ip(request),
+                                                               body.model_dump()))
+
+    @api_router.post(P + "/links/{name}/identities/return", summary="Bring a machine's workspaces back to it",
+                     description="AD-018 slice 5, «Back to the machine», within the 7 days of a pass: the people of "
+                                 "the machine who changed here since the pass (password, app, passkeys) are sent back, "
+                                 "of its workspaces only; their login there is on again and this panel serves them no "
+                                 "more. After the 7 days the machine refuses it (a handover then). confirm = the "
+                                 "link's name.")
+    async def api_identities_return(request: Request, body: apiv1.IdentityConfirmBody,
+                                    name: str = PathParam(description="The link's name (Links page)"),
+                                    me: Principal = Depends(api_token)):
+        return api_central_answer(request, *await identity_act("return", name, me, f"api: {me}", api_ip(request),
+                                                               body.model_dump()))
+
+    @api_router.post(P + "/links/{name}/identities/factor-link", summary="A new one-time link of a second step",
+                     description="AD-018 slice 5: a person of a machine that passed sets up its second step again "
+                                 "with this link and its password (the link of before ends). made.url is shown once; "
+                                 "it works 72 hours, once. confirm = the link's name.")
+    async def api_identities_factor_link(request: Request, body: apiv1.IdentityFactorLinkBody,
+                                         name: str = PathParam(description="The link's name (Links page)"),
+                                         me: Principal = Depends(api_token)):
+        return api_central_answer(request, *await identity_act("factor_link", name, me, f"api: {me}",
+                                                               api_ip(request), body.model_dump()))
 
     @api_router.post(P + "/links/{name}/identities/delete", summary="Delete the import of a machine's identities",
                      description="The undo: what was imported from the machine deleted on this panel; the machine is "

@@ -170,6 +170,9 @@ NOT_SENSITIVE = frozenset({
     "/x/odoo/servers/{server}/{role}/addons", "/x/odoo/servers/{server}/{role}/addons/versions",
     # an invitation's form (its use is logged by the route) and where a user of a customer may be made
     "/invite/{token}", "/api/access/workspaces", "/api/access/workspace-choices",
+    # the one-time link of a second step to set up again after a machine's pass (AD-018 slice 5): its form, whose
+    # use (the app switched on, a wrong password or code) the route logs
+    "/second-factor/{token}",
     # the REST API (README, REST API): its document, and the lists of instances, jobs and deploys, as the pages'
     "/api/v1/openapi.json", "/api/v1/docs", "/api/v1/instances", "/api/v1/instances/{server}/{role}", "/api/v1/jobs",
     "/api/v1/jobs/{job_id}", "/api/v1/jobs/{job_id}/log", "/api/v1/instances/{server}/{role}/deploys",

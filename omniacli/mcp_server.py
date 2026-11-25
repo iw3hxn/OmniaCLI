@@ -90,7 +90,13 @@ panel (admin token): identity_import_status (the dry run, item by item),
 identity_import with confirm=<link> (the same hashes and secrets; the
 machine unchanged), identity_import_delete with confirm=<link> (the undo),
 identity_home with confirm=<link> and on (this panel the home of the
-machine's imported workspaces: their people and tokens log in here).
+machine's imported workspaces: their people and tokens log in here),
+identity_pass with confirm=<link> (the machine's workspaces pass: their
+identities live here from now, their login there is off, their secrets
+deleted there after 7 days; links: one-time links of a second step, shown
+once), identity_return with confirm=<link> (back to the machine within the
+7 days, with what changed here) and identity_factor_link with
+confirm=<link> and person (a new one-time link of a second step).
 A workspace's token of a machine whose workspaces this panel serves calls
 this /mcp as before: its tools are asked of its machine with its scope.
 The names of this OmniaCLI (admin token): portal_status, portal_publish
@@ -132,14 +138,15 @@ TOOL_ROLES = {"update_test": "developer", "backup_test": "developer",
                                       "link_relay")},
               # a linked machine's identities carried to the central panel (AD-018 slice 1): its admins only
               **{t: "admin" for t in ("identity_import_status", "identity_import", "identity_import_delete",
-                                      "identity_home")},
+                                      "identity_home", "identity_pass", "identity_return", "identity_factor_link")},
               # the portal's names and its passkeys' domain (AD-018 slice 3): the machine's admins only
               **{t: "admin" for t in ("portal_status", "portal_publish", "portal_passkeys",
                                       "portal_panel_second_factor")}}
 CENTRAL_TOOLS = {"central_backup_status", "central_backup_configure", "central_backup_new_key",
                  "central_backup_confirm_key", "central_backup_run",
                  "agent_relay_status", "agent_relay_publish", "agent_relay_remove", "link_relay",
-                 "identity_import_status", "identity_import", "identity_import_delete", "identity_home"}
+                 "identity_import_status", "identity_import", "identity_import_delete", "identity_home",
+                 "identity_pass", "identity_return", "identity_factor_link"}
 # the tools that change something: a write in the rate limit of a token (apiguard.RateLimiter)
 WRITE_TOOLS = {"update_test", "backup_test", "backup", "add_draft_server", "restart_instance", "start_instance",
                "stop_instance", "run_action", "verify_backup", "full_archive", "stop_job", "update_production",
@@ -147,8 +154,8 @@ WRITE_TOOLS = {"update_test", "backup_test", "backup", "add_draft_server", "rest
                "prepare_handover", "receive_workspace", "switch_workspace", "move_instance", "move_back",
                "central_backup_configure", "central_backup_new_key", "central_backup_confirm_key", "central_backup_run",
                "agent_relay_publish", "agent_relay_remove", "link_relay", "identity_import", "identity_import_delete",
-               "identity_home", "portal_publish", "portal_passkeys",
-               "portal_panel_second_factor"}
+               "identity_home", "identity_pass", "identity_return", "identity_factor_link", "portal_publish",
+               "portal_passkeys", "portal_panel_second_factor"}
 # the tools of the machine's tokens only: a workspace's token never reaches them
 MACHINE_TOOLS = {"read_server", "add_draft_server", "list_links", "linked_tools", "call_linked",
                  "handover_status", "prepare_handover", "receive_workspace", "reception_status", "switch_workspace",
@@ -1232,6 +1239,39 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         same secrets. confirm = the link's name."""
         return await identities(ctx, "home", link, confirm=confirm, on=on)
 
+    @server.tool()
+    async def identity_pass(link: str, confirm: str, ctx: Context) -> dict:
+        """(admin token of the central panel, never a CI's) The pass of the
+        machine of link (AD-018 slice 5): the workspaces this panel serves
+        for it are frozen there, imported again and passed. Their people log
+        in here only from now, with the same password and app, and change
+        them here; their login on the machine is off and their secrets there
+        are deleted after 7 days. links: the one-time links of a second step
+        to set up again (a passkey made on another name, none where the
+        portal asks one), each shown once: give each to its person, never
+        print it elsewhere. confirm = the link's name."""
+        return await identities(ctx, "pass", link, confirm=confirm)
+
+    @server.tool()
+    async def identity_return(link: str, confirm: str, ctx: Context) -> dict:
+        """(admin token of the central panel, never a CI's) «Back to the
+        machine» (AD-018 slice 5), within the 7 days of the pass of link's
+        machine: the people who changed here since (password, app, passkeys)
+        go back to it, their login there is on again and this panel serves
+        them no more. After the 7 days it is refused: a handover then.
+        confirm = the link's name."""
+        return await identities(ctx, "return", link, confirm=confirm)
+
+    @server.tool()
+    async def identity_factor_link(link: str, confirm: str, person: str, ctx: Context) -> dict:
+        """(admin token of the central panel, never a CI's) A new one-time
+        link of a second step for person (its name here), a person of the
+        machine of link that passed (AD-018 slice 5): with it and its password
+        the person sets up the code of an app. The link of before ends;
+        made.url is shown once and works 72 hours, once. confirm = the
+        link's name."""
+        return await identities(ctx, "factor_link", link, confirm=confirm, person=person)
+
     # --- the portal's names and its passkeys' domain (AD-018 slice 3): the pages' code (app.portal_act)
 
     async def portal(ctx: Context, op: str, **body) -> dict:
@@ -1545,6 +1585,9 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
             headers = dict(scope.get("headers") or [])
             scheme, _, token = headers.get(b"authorization", b"").decode(errors="replace").partition(" ")
             name = authenticator.token_name(token.strip()) if scheme.lower() == "bearer" else None
+            if name is not None and api.get("token_off") is not None and api["token_off"](name):
+                # a token of a workspace passed to its central panel (AD-018 slice 5): it calls the central only
+                name = None
             ip = (scope.get("client") or ("",))[0]
             role, workspace, who, kind = settings.token_role(name or ""), settings.token_workspace(name or ""), "", "mcp"
             link = authenticator.link_name(token.strip()) if scheme.lower() == "bearer" and name is None else None

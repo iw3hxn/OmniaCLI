@@ -1469,8 +1469,7 @@ the panel holds a secret: only counts, names and the verdicts. REST
 `POST …/identities/delete`, each write with `confirm` = the link's name) and
 MCP (`identity_import_status`, `identity_import`, `identity_import_delete`) do
 the same with an admin token of this panel, never a CI's nor a workspace's.
-The freeze of the machine and its login switched off are later slices of
-AD-018.
+The freeze of the machine and its login switched off are its pass, below.
 
 #### This panel as the home of a machine's workspaces
 
@@ -1506,7 +1505,7 @@ by default, link by link, and **Stop serving them here…** switches it off.
   none while a second step is asked, is told so and logs in on the machine as
   before; single sign-on stays the machine's until the workspace moves. Its
   sessions here are this panel's (`remote-sessions.json`, 600), apart from the
-  staff's; its Account here is read only.
+  staff's; its Account here is read only until its machine passes (below).
 - **The machine's own records decide.** For a workspace whose people this
   panel serves, the machine checks every scope against what it has now: the
   person still a member, with no more than its role and its custom role there;
@@ -1540,6 +1539,66 @@ by default, link by link, and **Stop serving them here…** switches it off.
 - **Not yet:** an instance placed on another machine (AD-015) is reached
   through its home's machine for data, and its pages say not available; the
   OAuth connectors of the assistants are made again on this panel's portal.
+
+#### The pass of a machine and its return
+
+Serving a machine's workspaces (above) leaves their identities on the
+machine, which checks every login. **Links › Identità › Pass them to this
+panel…** (asked in the page; REST `POST /api/v1/links/{name}/identities/pass`
+with `confirm` = the link's name, MCP `identity_pass`; this panel's admins
+only, each step in both access logs) makes this panel their only place
+(AD-018 slice 5):
+
+1. **Freeze.** The machine refuses every identity change of those workspaces
+   with «This workspace passes to <portal>» (409, in its access log): their
+   members, tokens, custom roles, single sign-on, invitations, and the
+   passwords, apps, passkeys and connectors of their people, from its pages,
+   its Users page and its account pages. The instances' actions go on. A
+   person who is also a member of a workspace of the machine that does not
+   pass refuses the pass (they pass together or not at all).
+2. **Import again**, after the freeze: nothing changes in between.
+3. **Pass.** The machine keeps what its people were (`central-home.json`,
+   under `pass`: members, roles, custom roles, servers, tokens' levels, a
+   revision; never a hash or a secret) and checks this panel's scope against
+   it from now. Their login there is off: the form, the passkeys, the single
+   sign-on, the invitations, their sessions (ended), their tokens on its REST
+   API and MCP (401), this panel's login through the link; their copy is read
+   by nobody (its export leaves them out). Their secrets stay there, off, 7
+   days (AD-013's stopped copy); then a job of the machine deletes them: the
+   hashes (their users, when they are of no other workspace), apps, passkeys,
+   sessions, the workspace's single sign-on with its client secret, its
+   tokens, grants and invitations, and their names leave its members; the
+   line of the job says how many of each. After the pass the machine's own
+   portal is no more a way for their CI's webhooks.
+4. **This panel decides.** Their login is checked here, on the import: the
+   same password, the same app (a code used once, a recovery code), a passkey
+   of the portal's RP ID with its counter. Their Account here is theirs to
+   change: password, app, passkeys, sessions. Each change is marked in the
+   import with the pass's revision. Importing the machine again and switching
+   it off are refused while it is passed.
+5. **A second step that did not pass** (a passkey made on the machine's
+   name, or none while the portal asks one of everybody) is never set up with
+   the password only: the pass makes a one-time link for each such person,
+   shown once to the admin who passed (`second-factor-links.json`, 600, their
+   hashes only, in the nightly backup and the purge). With the link
+   (`/second-factor/<token>`, 72 hours, once) and the password, the person
+   sets up the code of an app and reads its recovery codes; its login here
+   says so until then. **New link of a second step…** (REST `…/factor-link`,
+   MCP `identity_factor_link`) makes another one, ending the one of before.
+
+**Back to the machine…** (REST `…/identities/return`, MCP `identity_return`),
+within the 7 days, is asked here by an admin, never by the machine: this
+panel sends the people of that machine who changed here since the pass
+(their hashes, apps and passkeys), of its workspaces only; the machine takes
+nobody else (a name not among the people it kept at the pass refuses the
+whole return), switches their login on again and is no more served by this
+panel, and its people's sessions here end. After the 7 days the machine
+refuses it: their secrets are gone there, and the way back is a handover.
+
+The access log of a served workspace, as its admin reads it here, joins both
+sides in order of time: the machine's entries and this panel's (logins,
+second steps, account changes, requests asked of the machine), each as its own
+log wrote it, without the names of the provider's machines.
 
 #### The two names of the central panel
 

@@ -1,0 +1,113 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{# The one-time link of a second step to set up again (AD-018 slice 5): a person whose machine passed to this panel
+   and whose second step did not pass sets up the code of an app here, with this link and its password (never the
+   password alone, AD-018 vincolo 8.5). The invitation's look (invite.html). -#}
+<!doctype html>
+<html lang="{{ lang }}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ _("Two-step verification") }} · {{ brand.name }}</title>
+<link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48 64x64">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<script>
+// the theme chosen with the menu's button (base.html), before the page paints; none: the system's
+try { const t = localStorage.getItem("omniacli.theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
+{% include "_tokens.html" %}
+<style>
+/* the invitation's look (invite.html), with the set-up of the login page (login.html); the tokens are _tokens.html's */
+:root { --card: color-mix(in srgb, var(--panel) 92%, transparent); }
+* { box-sizing: border-box; }
+html, body { min-height: 100%; margin: 0; }
+body { font: var(--fs-16)/var(--lh-24) var(--font); color: var(--text); -webkit-font-smoothing: antialiased; min-height: 100vh;
+  background: var(--bg) url("/login-background.jpg") no-repeat;
+  background-size: min(100vh, 62vw) auto; background-position: 4vw center;
+  display: flex; align-items: center; justify-content: flex-end; padding: 24px 6vw; }
+.card { width: min(400px, 100%); background: var(--card); backdrop-filter: blur(6px);
+  border: 1px solid var(--border); border-radius: var(--r-lg); padding: 32px 32px 24px; box-shadow: var(--shadow-lg); }
+.card-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 4px; }
+h1 { margin: 0; font-size: var(--fs-24); font-weight: var(--fw-bold); letter-spacing: -.02em; line-height: var(--lh-32);}
+h1 span { color: var(--accent); }
+.lead { margin: 0 0 24px; color: var(--muted); font-size: var(--fs-14); line-height: var(--lh-20);}
+.lang-switch { display: inline-flex; border: 1px solid var(--border-strong); border-radius: var(--r); overflow: hidden; flex: none; }
+.lang-switch a { padding: 4px 10px; font-size: var(--fs-12); font-weight: var(--fw-semibold); color: var(--muted); text-decoration: none; line-height: var(--lh-18);}
+.lang-switch a:hover { color: var(--text); }
+.lang-switch a[aria-current="true"] { background: var(--panel-2); color: var(--text); }
+label { display: block; font-size: var(--fs-14); font-weight: var(--fw-regular); color: var(--muted); margin: 16px 0 4px; line-height: var(--lh-20);}
+input[type=text], input[type=password] { width: 100%; font: inherit; padding: 10px 12px; border: 1px solid var(--border-input);
+  border-radius: var(--r); background: var(--panel); color: var(--text); transition: border-color var(--dur-200) var(--ease-out); }
+input:hover { border-color: var(--muted); }
+button { width: 100%; margin-top: 24px; padding: 12px; font: inherit; font-weight: var(--fw-semibold); border: 1px solid var(--accent);
+  border-radius: var(--r); background: var(--accent); color: var(--on-accent); cursor: pointer; transition: background var(--dur-200) var(--ease-out); }
+button:hover { background: var(--accent-hover); }
+.error { margin: 0 0 6px; padding: 8px 12px; border: 1px solid var(--err); border-radius: var(--r); color: var(--err);
+  background: var(--err-soft); font-size: var(--fs-14); line-height: var(--lh-20);}
+.foot { margin: 20px 0 0; font-size: var(--fs-12); color: var(--muted); line-height: var(--lh-18);}
+.foot a { color: var(--muted); }
+@media (max-width: 767.98px) {
+  /* the image above the form */
+  body { background-size: min(70vw, 42vh) auto; background-position: center 16px;
+    flex-direction: column; justify-content: flex-start; padding: calc(min(70vw, 42vh) + 24px) 16px 24px; }
+}
+.note { margin: 0 0 6px; padding: 8px 12px; border: 1px solid var(--border-strong); border-radius: var(--r);
+  background: var(--panel-2); font-size: var(--fs-14); line-height: var(--lh-20);}
+.help { margin: 4px 0 0; font-size: var(--fs-12); color: var(--muted); line-height: var(--lh-18);}
+a.button { display: block; text-align: center; margin-top: 20px; padding: 12px; border-radius: var(--r); border: 1px solid var(--accent);
+  background: var(--accent); color: var(--on-accent); font-weight: var(--fw-semibold); text-decoration: none; }
+.code-input { font-family: ui-monospace, "SFMono-Regular", Menlo, monospace !important; font-size: var(--fs-20) !important; letter-spacing: .12em; line-height: var(--lh-28);}
+.qr { display: flex; justify-content: center; margin: 12px 0 4px; }
+.qr svg { background: var(--white); border-radius: var(--r); max-width: 100%; height: auto; }
+.secret-line { font-size: var(--fs-14); color: var(--muted); margin: 8px 0 0; line-height: var(--lh-20);}
+.secret { font: var(--fs-14)/var(--lh-20) ui-monospace, Menlo, monospace; color: var(--text); word-break: break-all; user-select: all; }
+.codes { font: var(--fs-16)/var(--lh-24) ui-monospace, Menlo, monospace; background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: var(--r); padding: 10px 12px; columns: 2; user-select: all; margin: 12px 0 0; }
+</style>
+{% if brand.css or brand.logo or brand.custom %}<style id="brand-style">{{ brand.css | safe }}
+h1 { display: flex; align-items: center; gap: 10px; min-width: 0; overflow-wrap: anywhere; }
+h1 img { width: 34px; height: 34px; border-radius: var(--r); object-fit: contain; flex: none; }
+{%- if brand.custom %}
+/* the panel under another name: not OmniaCLI's picture beside the form */
+body { background-image: none; justify-content: center; }
+@media (max-width: 767.98px) { body { padding: 24px 16px; justify-content: flex-start; } }
+{%- endif %}</style>{% endif -%}
+</head>
+<body>
+<main class="card">
+  <div class="card-top">
+    {% if brand.logo or brand.custom %}<h1>{% if brand.logo %}<img src="{{ brand.logo }}" alt="">{% endif %}{% if brand.custom %}{{ brand.name }}{% else %}<span class="brand-word">Omnia<span>CLI</span></span>{% endif %}</h1>
+    {%- else %}<h1>Omnia<span>CLI</span></h1>{% endif %}
+    <span class="lang-switch" role="group" aria-label="{{ _('Language') }}">
+      {% for code, name in languages.items() %}<a href="{{ prefix }}/language/{{ code }}?next={{ request.url.path | urlencode }}" title="{{ name }}"
+        {% if code == lang %}aria-current="true"{% endif %}>{{ code | upper }}</a>{% endfor %}
+    </span>
+  </div>
+  {% if state == "pending" %}
+  <p class="lead">{{ _("{name}, your workspace moved to this portal and your second step has to be set up again here: scan the QR code with an authenticator app, then give your password and the code it shows.", name=name) }}</p>
+  {% if error %}<p class="error" role="alert">{{ tr(error) }}</p>{% endif %}
+  <form method="post">
+    {% if qr %}<div class="qr" role="img" aria-label="{{ _('QR code of the secret') }}">{{ qr | safe }}</div>{% endif %}
+    <p class="secret-line">{{ _("Or type this secret in the app:") }}<br><code class="secret" id="secret">{{ secret }}</code></p>
+    <label for="username">{{ _("User name") }}</label>
+    <input type="text" id="username" name="username" value="{{ name }}" autocomplete="username" readonly>
+    <label for="password">{{ _("Password") }}</label>
+    <input type="password" id="password" name="password" autocomplete="current-password" required autofocus>
+    <label for="code">{{ _("Code shown by the app") }}</label>
+    <input type="text" id="code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="10" required
+           placeholder="123456" class="code-input">
+    <button title="{{ _('Checks your password and the code, and switches two-step verification on; then it shows your recovery codes once. The link then works no more.') }}">{{ _("Switch it on") }}</button>
+  </form>
+  <p class="foot">{{ _("The link works once, until {date}.", date=expires) }}</p>
+  {% elif state == "done" %}
+  <p class="lead">{{ _("Two-step verification is on.") }} {{ _("Each one logs you in once without the app (a lost phone). They are shown only now: keep them somewhere safe.") }}</p>
+  <pre class="codes" id="recovery-codes">{% for c in recovery %}{{ c }}
+{% endfor %}</pre>
+  <a class="button" href="{{ prefix }}/login" id="fl-login" title="{{ _('Opens the login page: your password, then a code of the app') }}">{{ _("Log in") }}</a>
+  {% else %}
+  <p class="note" role="alert">{{ _("This link is not valid: it was used already, replaced by a newer one or expired. Ask your administrator for a new one.") }}</p>
+  <a class="button" href="{{ prefix }}/login" title="{{ _('Opens the login page') }}">{{ _("Log in") }}</a>
+  {% endif %}
+  <p class="foot"><a href="{{ prefix }}/about" title="{{ _('Who made OmniaCLI, its license (GNU AGPL v3) and where its source code is') }}">{{ _("About") }}</a></p>
+</main>
+</body>
+</html>

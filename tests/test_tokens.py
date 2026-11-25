@@ -97,7 +97,8 @@ async def test_the_pages_carry_the_tokens_once(client):  # noqa: F811
 
 def test_red_is_the_primarys_and_the_dangers_only():
     """UX-017 §5.2: the accent (and its hover) only in the rules of the primary button; on the login and
-    the invitation also their own primary and the brand's mark; never a link, a tab, a chosen state."""
+    the invitation (and the one-time link of a second step, its sibling) also their own primary and the brand's
+    mark; never a link, a tab, a chosen state."""
     wrong = []
     for page in TEMPLATES.glob("*.html"):
         if page.name == "_tokens.html":
@@ -106,7 +107,7 @@ def test_red_is_the_primarys_and_the_dangers_only():
         for selector, body in re.findall(r"([^{}]+)\{([^{}]*)\}", text):
             if re.search(r"var\(--accent(?:-hover|-soft)?\)", body):
                 selector = " ".join(selector.split())[-120:]
-                if "primary" in selector or page.name in ("login.html", "invite.html") and (
+                if "primary" in selector or page.name in ("login.html", "invite.html", "second_factor_link.html") and (
                         selector.endswith(("button", "button:hover", "a.button", "h1 span"))):
                     continue
                 wrong.append(f"{page.name}: {selector}")

@@ -661,6 +661,45 @@ class Store:
             path.unlink()
             return True
 
+    # --- the import as the source of the identities once its machine passed (AD-018 slice 5, identitypass.py)
+
+    def passed(self, link: str) -> dict | None:
+        """The pass of link's machine ({at, until, by, revision, workspaces, portal}), None while it has none."""
+        found = (self.load(link) or {}).get("passed")
+        return found if isinstance(found, dict) else None
+
+    def set_passed(self, link: str, info: dict | None) -> None:
+        """The pass of link's machine written in its import (None: its return; the marks of what changed go)."""
+        with self._lock:
+            record = self.load(link)
+            if record is None:
+                raise IdentityImportError(f"Nothing was imported from {link}")
+            if info is None:
+                record.pop("passed", None)
+                for person in (record.get("people") or {}).values():
+                    if isinstance(person, dict):
+                        person.pop("changed", None)
+            else:
+                record["passed"] = info
+            _write_private(self.path(link), record)
+
+    def mutate(self, link: str, name: str, change):
+        """change(person) run on name's record of link's import under the lock and saved, the person marked changed
+        and the pass's revision one more (what «Torna sulla macchina» carries back): its answer, None for no such
+        person. change raising leaves the record as it was."""
+        with self._lock:
+            record = self.load(link)
+            person = ((record or {}).get("people") or {}).get(name)
+            if not isinstance(person, dict):
+                return None
+            answer = change(person)
+            person["changed"] = True
+            passed = record.get("passed")
+            if isinstance(passed, dict):
+                passed["revision"] = int(passed.get("revision") or 1) + 1
+            _write_private(self.path(link), record)
+            return answer
+
     # the proof of slice 1 (AD-018 §9.1): a person imported here with the same password and the same app
     def check(self, link: str, name: str, password: str, code: str, at: float | None = None) -> bool:
         """Whether name, imported from link, logs in with password and a code of its app of two-step verification:

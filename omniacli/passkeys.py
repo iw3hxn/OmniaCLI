@@ -191,6 +191,17 @@ class PasskeyStore:
         found = self._users.get(user)
         return json.loads(json.dumps(found)) if found and found.get("keys") else None
 
+    def adopt(self, user: str, record: dict | None) -> None:
+        """user's passkeys as the central panel kept them (AD-018 §18.3.2, the return): its handle and keys with
+        their counters; None or none: no passkey."""
+        with self._lock:
+            if not record or not record.get("keys"):
+                self._users.pop(user, None)
+            else:
+                self._users[user] = {"handle": str(record.get("handle") or b64(secrets.token_bytes(32))),
+                                     "keys": [dict(k) for k in record["keys"]]}
+            self._save()
+
     def add(self, user: str, handle: bytes, rp: str, credential_id: bytes, public_key: bytes, sign_count: int,
             name: str, transports: list, backed_up: bool) -> dict:
         now = self.clock()

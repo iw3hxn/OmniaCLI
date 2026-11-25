@@ -92,6 +92,10 @@ V1_IDENTITY_TOOLS = {
     ("POST", "/api/v1/links/{name}/identities/import"): ("identity_import",),
     ("POST", "/api/v1/links/{name}/identities/delete"): ("identity_import_delete",),
     ("POST", "/api/v1/links/{name}/identities/home"): ("identity_home",),
+    # the pass of the machine and its return (AD-018 slice 5), and a new one-time link of a second step
+    ("POST", "/api/v1/links/{name}/identities/pass"): ("identity_pass",),
+    ("POST", "/api/v1/links/{name}/identities/return"): ("identity_return",),
+    ("POST", "/api/v1/links/{name}/identities/factor-link"): ("identity_factor_link",),
 }
 # the portal's names and its passkeys' domain (AD-018 slice 3): the customers' portal and the staff's panel, one site
 # and one certificate; the RP ID of the passkeys made on them; the machine's admin tokens only
@@ -305,6 +309,12 @@ class IdentityHomeBody(_Model):
     confirm: str = Field(description="The name of the link, typed")
     on: bool = Field(description="true: this panel serves the people of the machine's imported workspaces; false: no "
                                  "more")
+
+
+class IdentityFactorLinkBody(_Model):
+    confirm: str = Field(description="The name of the link, typed")
+    person: str = Field(description="The person served here (its name on this panel) whose second step is set up "
+                                    "again with a new one-time link")
 
 
 class PortalPublishBody(_Model):

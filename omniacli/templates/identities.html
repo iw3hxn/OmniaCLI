@@ -39,7 +39,7 @@
   <p class="muted" id="idn-none">{{ _("Nothing imported from this machine yet.") }}</p>
   {% endif %}
   <div class="actions">
-    <button type="button" class="primary" id="idn-import" {{ "disabled" if not idn.reached }}
+    <button type="button" class="primary" id="idn-import" {{ "disabled" if not idn.reached or (idn.home or {}).pass }}
             title="{{ _('Reads the package of the identities through the link and keeps it on this panel, with the same hashes and secrets: the import of before is replaced. The machine is not changed. It asks first.') }}">{{ _("Import again") if done else _("Import here") }}</button>
     {% if done %}<button type="button" class="danger" id="idn-delete"
             title="{{ _('Deletes on this panel what was imported from this machine: the machine and its people are not touched. It asks first.') }}">{{ _("Delete the import…") }}</button>{% endif %}
@@ -68,6 +68,44 @@
     {% else %}
     <button type="button" id="idn-home" {{ "disabled" if not done }}
             title="{{ _('The people and tokens of the imported workspaces log in on this panel from now; the machine is told to take this panel for them. It asks first.') }}">{{ _("Serve them here…") }}</button>
+    {% endif %}
+  </div>
+</section>
+
+{% set passed = home.pass %}
+<section class="panel" aria-labelledby="idn-pass-title" id="idn-pass-panel" data-passed="{{ 'yes' if passed else 'no' }}">
+  <h2 id="idn-pass-title">{{ _("The machine's identities living here") }}</h2>
+  <p class="muted">{{ _("The pass makes this panel the only place of their identities: the machine freezes their changes, this panel imports them again, and from then their people log in here only and change their password, app and passkeys here. Their login on the machine is switched off; their secrets stay there, off, for 7 days, then the machine deletes them.") }}</p>
+  {% if passed %}
+  <dl class="idn-facts" id="idn-passed">
+    <dt>{{ _("Passed") }}</dt><dd>{{ passed.at | moment }} · {{ passed.by }}</dd>
+    <dt>{{ _("Workspaces") }}</dt><dd>{% for w in passed.workspaces %}<span class="mono">{{ w }}</span>{{ ", " if not loop.last }}{% endfor %}</dd>
+    <dt>{{ _("Copy on the machine") }}</dt><dd>{% if passed.over %}{{ _("Deleted by the machine after {date}: the way back is a handover.", date=passed.until | moment) }}{% else %}{{ _("Off until {date}, then deleted by the machine.", date=passed.until | moment) }}{% endif %}</dd>
+    <dt>{{ _("Changed here") }}</dt><dd>{% for n in passed.changed %}<span class="mono">{{ n }}</span>{{ ", " if not loop.last }}{% else %}{{ _("nobody yet") }}{% endfor %}</dd>
+  </dl>
+  {% if passed.links %}
+  <p>{{ _("One-time links of a second step not used yet:") }}</p>
+  <ul class="idn-links-pending">{% for person, until in passed.links.items() %}<li data-link-person="{{ person }}"><span class="mono">{{ person }}</span> · {{ _("until {date}", date=until | moment) }}</li>{% endfor %}</ul>
+  {% endif %}
+  {% else %}
+  <p id="idn-pass-none">{% if home.on %}{{ _("Not passed: the machine is still the place of their identities, and checks each login.") }}{% else %}{{ _("Serve them here first.") }}{% endif %}</p>
+  {% endif %}
+  <div id="idn-links" class="banner info" role="status" hidden>
+    <p style="margin-top: 0"><strong>{{ _("One-time links of a second step") }}</strong> · {{ _("Shown only now: give each to its person. With it and the password, the person sets up the code of an app on the portal.") }}</p>
+    <ul id="idn-links-list" style="margin-bottom: 0"></ul>
+  </div>
+  <div class="actions">
+    {% if passed %}
+    <button type="button" class="danger" id="idn-return" {{ "disabled" if passed.over }}
+            title="{{ _('Sends back to the machine the people who changed here since the pass (password, app, passkeys); their login there is switched on again and this panel serves them no more. It asks first.') }}">{{ _("Back to the machine…") }}</button>
+    {% if home.people %}
+    <select id="idn-link-person" style="width: auto" aria-label="{{ _('Person') }}">{% for p in home.people %}<option value="{{ p }}">{{ p }}</option>{% endfor %}</select>
+    <button type="button" id="idn-link-new"
+            title="{{ _('Makes a new one-time link for this person to set up the second step again, valid 72 hours, shown once; the link of before ends. It asks first.') }}">{{ _("New link of a second step…") }}</button>
+    {% endif %}
+    {% else %}
+    <button type="button" id="idn-pass" {{ "disabled" if not home.on }}
+            title="{{ _('Freezes the identity changes on the machine, imports them again and makes this panel their only place: their login on the machine is switched off. It asks first.') }}">{{ _("Pass them to this panel…") }}</button>
     {% endif %}
   </div>
 </section>
@@ -140,17 +178,38 @@
              importQ: {{ _("Import the identities of {link} on this panel, with the same hashes and secrets? The machine is not changed.", link=link) | tojson }},
              deleteQ: {{ _("Delete on this panel what was imported from {link}? The machine and its people are not touched.", link=link) | tojson }},
              homeOnQ: {{ _("Serve the people of {link}'s workspaces on this panel? They log in here with the same password and app; the machine is told.", link=link) | tojson }},
-             homeOffQ: {{ _("Stop serving the people of {link} on this panel? Their sessions here end; they log in on the machine as before.", link=link) | tojson }}};
+             homeOffQ: {{ _("Stop serving the people of {link} on this panel? Their sessions here end; they log in on the machine as before.", link=link) | tojson }},
+             passQ: {{ _("Pass the identities of {link}'s workspaces to this panel? Their login on the machine is switched off and their changes are made here; their secrets on the machine are deleted after 7 days.", link=link) | tojson }},
+             returnQ: {{ _("Bring the people of {link} back to the machine? What they changed here goes with them, their login there is switched on again, and this panel serves them no more.", link=link) | tojson }},
+             linkQ: {{ _("Make a new one-time link of a second step for this person? The link of before ends.") | tojson }},
+             until: {{ _("until {date}") | tojson }}};
   const $ = (id) => document.getElementById(id), error = $("idn-error");
-  async function post(path, button, more) {
+  async function post(path, button, more, then) {
     button.disabled = true;
     try {
       const resp = await fetch(API + path, {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
                                             body: JSON.stringify(Object.assign({confirm: LINK}, more || {}))});
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok) { error.textContent = data.error || data.detail || T.refused; error.hidden = false; return; }
+      if (then && then(data)) return;
       window.location.reload();
     } finally { button.disabled = false; }
+  }
+  // the one-time links, shown once: each with its person, its address to copy and its end (never in the page again)
+  function showLinks(links) {
+    if (!links || !links.length) return false;
+    const list = $("idn-links-list");
+    list.textContent = "";
+    for (const made of links) {
+      const item = document.createElement("li"), field = document.createElement("input");
+      field.type = "text"; field.readOnly = true; field.className = "mono"; field.style.width = "100%";
+      field.value = made.url || (window.location.origin + made.path);
+      field.setAttribute("aria-label", made.person);
+      item.append(made.person + " · " + T.until.replace("{date}", window.whenText ? window.whenText(made.expires) : made.expires), field);
+      list.append(item);
+    }
+    $("idn-links").hidden = false;
+    return true;
   }
   const imp = $("idn-import"), del = $("idn-delete");
   imp.addEventListener("click", async () => {
@@ -158,6 +217,17 @@
   });
   if (del) del.addEventListener("click", async () => {
     if (await window.omniaAsk(T.deleteQ, del, {danger: true})) post("/delete", del);
+  });
+  const pass = $("idn-pass"), back = $("idn-return"), linkNew = $("idn-link-new");
+  if (pass) pass.addEventListener("click", async () => {
+    if (await window.omniaAsk(T.passQ, pass)) post("/pass", pass, {}, (data) => showLinks(data.links));
+  });
+  if (back) back.addEventListener("click", async () => {
+    if (await window.omniaAsk(T.returnQ, back, {danger: true})) post("/return", back);
+  });
+  if (linkNew) linkNew.addEventListener("click", async () => {
+    if (await window.omniaAsk(T.linkQ, linkNew)) post("/factor-link", linkNew, {person: $("idn-link-person").value},
+                                                     (data) => showLinks(data.made ? [data.made] : []));
   });
   const home = $("idn-home"), on = $("idn-home-panel").dataset.on === "yes";
   home.addEventListener("click", async () => {

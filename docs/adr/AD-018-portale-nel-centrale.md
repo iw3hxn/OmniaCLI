@@ -730,6 +730,95 @@ Per ogni fetta: il rilascio, la prova su lab3/lab4, come si annulla, la stima. l
      - «Torna sulla macchina» porta indietro una password cambiata su lab3;
      - dopo i 7 giorni (orologio finto) su lab4 ci sono 0 segreti di persone.
    - *Stima*: 3,5 g.
+
+   **Com'è nel codice (fetta 5).** `identitypass.py`, più il codice in `app.py` accanto all'interruttore della fetta 2
+   (sulla macchina e sul centrale), `identityimport.Store` (`passed`, `set_passed`, `mutate`), `PasskeyStore.adopt`.
+   - **Sulla macchina** una POST interna, `/api/identity/v1/pass` con `op`, solo il collegamento admin del centrale che
+     è la casa di quei W (come `/home`), ogni passo nel registro:
+     - `freeze`: lo stato `frozen` nel record di casa (`central-home.json`, sotto `pass`). Da lì le modifiche
+       d'identità di quei W sono rifiutate con 409 «Questo workspace passa a <portale>», nel registro: le route
+       `{workspace}` di membri, inviti, reset del secondo fattore, token, ruoli, SSO (anche quando arrivano dal centrale
+       con l'ambito), l'Account delle loro persone (password, app, passkey, revoca OAuth), e da Utenti le persone e i
+       token di quei W. Le azioni sulle istanze no. Una persona che è anche in un W della macchina che non passa
+       rifiuta il passaggio: passano insieme o per niente.
+     - `pass`: lo stato `passed`, con lo `snapshot` (membri, ruoli, ruoli personalizzati, server, token con livello,
+       CI e server, `revision`; mai un hash o un segreto) e `until` = 7 giorni (`placement.COPY_DAYS`). Da lì
+       `delegated_scope` controlla l'ambito del centrale contro lo snapshot (`passed_records`, le stesse regole di
+       `own_records`), il login di quelle persone è spento (modulo dopo la password giusta, «Il tuo accesso è passato a
+       <portale>», passkey, SSO, inviti, sessioni chiuse e non più lette, token su REST e MCP 401,
+       `/api/identity/v1/login` del centrale `{ok: false, passed: true}`), e l'export e la prova a vuoto non le
+       contengono più (la copia è illeggibile, anche per il centrale). Il portale della macchina non è più l'ultima
+       strada dei webhook della loro CI.
+     - `return`: le persone mandate dal centrale (`identitypass.returned`: solo nomi dello snapshot, hash, app e
+       passkey con i controlli dell'import; altrimenti 400 e niente cambia), prese (`users.yaml`, `second_factors.adopt`,
+       `PasskeyStore.adopt`); il record di casa si toglie, il login locale si riaccende, il job dei webhook li riporta.
+       Dopo la cancellazione: 409, «tornano con una consegna».
+     - **I 7 giorni**: `pass_loop` guarda ogni ora (e all'avvio); un job «Segreti delle persone di <W> cancellati dopo
+       il passaggio» toglie hash (l'utente, se non è di un altro W che resta), app, passkey, sessioni, SSO con il client
+       secret, token del W, grant, inviti, e i loro nomi dai membri; la riga del job e il registro dicono quanti.
+   - **Sul centrale** `identity_act` ha `pass`, `return`, `factor_link` (pagina Identità, REST
+     `POST /api/v1/links/{name}/identities/pass|return|factor-link`, MCP `identity_pass`, `identity_return`,
+     `identity_factor_link`; solo admin del centrale, `confirm` = il nome del collegamento):
+     - **Passa**: congela, importa di nuovo (dopo il congelamento), controlla che i W serviti siano gli stessi, passa;
+       un errore a metà scongela (`return` senza persone). L'import porta `passed` e da lì è la fonte: un nuovo import
+       e lo spegnimento dell'interruttore sono rifiutati (409), la rilettura della fetta 2 non parte più.
+     - **Il login** delle persone passate lo controlla il centrale (`passed_login` risponde come la macchina, così
+       `remote_login`, `remote_step` e `remote_passkey` non cambiano): l'hash, il codice dell'app con il passo
+       segnato (o un codice di recupero), la passkey del suo RP ID con chiave e contatore importati.
+     - **L'Account** di una persona passata è `account.html` con i suoi dati: password, app, passkey e sessioni si
+       cambiano sul centrale (`passed_account`), con le stesse regole dell'Account; ogni cambio è segnato `changed` e
+       alza la `revision` del passaggio.
+     - **Vincolo 8.5**: chi ha solo una passkey di un altro RP ID, o nessun secondo fattore dove il portale ne chiede
+       uno, al passaggio riceve un link monouso (`/second-factor/<token>`, 72 ore, una volta; il token mostrato una
+       volta all'admin, conservato come hash in `second-factor-links.json`, 600, nel backup cifrato e nel purge). Con il
+       link **e** la password imposta l'app e vede i codici di recupero; con la sola password il login dice di usare
+       il link, e non apre mai l'attivazione.
+     - **Torna sulla macchina** manda solo le persone di quel collegamento segnate `changed`, con i loro nomi sulla
+       macchina; poi interruttore spento, sessioni chiuse, link finiti.
+     - **Il registro unito**: la pagina del registro di un W servito unisce le voci della macchina e quelle del
+       centrale con quel W, in ordine di tempo, senza i nomi delle macchine (`placed_text`).
+   - **Provato.** Nei test (`tests/test_identity_pass.py`, 9 test, tutti falliscono sul commit di partenza `61c5426`).
+     Su lab3 (centrale) e lab4 (macchina), il 25/11/2026, codice di questo ramo sul pacchetto 2026.1.5525: lab4 con
+     `beta` di 3 persone (`b-anna` admin con app, `b-bruno` sviluppatore con solo una passkey su
+     `omnia-lab4.example.net`, scritta nel file per la prova, `b-elena` utente senza secondo fattore); `acme` rifiutato
+     (lab3 ne ha uno). Import, «Servili qui», «Passale»: 2 link monouso (b-bruno, b-elena: il portale di lab3 chiede il
+     secondo passaggio).
+     - `b-anna` entra su lab3 con la stessa password e lo stesso TOTP (303, 303, vede `beta-shop`); su lab4 403 «Il tuo
+       accesso è passato a omnia-lab3.example.net: entra da lì.»; le voci «through the central panel» nel registro di
+       lab4 restano 5 (nessun login chiesto alla macchina);
+     - `b-bruno` con la sola password: 403 «Il secondo passaggio va impostato di nuovo su questo portale…», nessuna
+       sessione, `/login/setup` non si apre; dal link: password sbagliata 401, password e codice 200 con i codici di
+       recupero, di nuovo 410; poi password + codice 303. Lo stesso per `b-elena`;
+     - `b-anna` cambia la password su lab3 (200); su lab4 l'hash vecchio resta (vecchia sì, nuova no); «Torna sulla
+       macchina»: 3 persone rimandate; su lab4 la password nuova + lo stesso TOTP 303, la vecchia 401; `b-bruno` entra
+       su lab4 con l'app impostata su lab3; su lab3 non è più servita (401);
+     - di nuovo servito e passato; orologio finto (`until` del passaggio su lab4 portato a ieri, servizio riavviato):
+       job `success`, «beta: … 3 hash di password, 3 app, 1 passkey, 0 token, 0 grant, 0 inviti»; dei 37 valori
+       segreti di quelle persone presi prima (hash, segreti TOTP, codici di recupero, chiavi di passkey) **0** restano
+       in qualunque file di `/var/lib/omniacli` e `/etc/omniacli`; 0 utenti, 0 membri, 0 app, 0 passkey. `b-anna` entra
+       ancora su lab3 e vede `beta-shop`; «Torna» dopo i 7 giorni: 409;
+     - il registro di `beta` visto da `b-anna` su lab3: 500 righe dei due lati, 0 volte «lab4»;
+     - `verify-access-log`: catene integre su lab3 (4.612 voci) e lab4 (3.760);
+     - Playwright in italiano, 1440 e 375, chiaro e scuro, 20 viste (Identità del personale con la conferma nella
+       pagina, Account e registro del cliente, la pagina del link, il login su lab4): 0 errori di pagina, 0 dialoghi
+       del browser, 1 pulsante primario dove c'è un'azione, nessuno scorrimento orizzontale. Fra 8,8 MB di pagine e
+       JSON visti, password, nuova password e segreti delle app: 0; il token del link compare solo nella sua stessa
+       pagina (i link della lingua, come `/invite`).
+   - **Scostamenti.** (1) Lo stato del passaggio sulla macchina sta nel record di casa della fetta 2
+     (`central-home.json`), non in `hosted-workspaces.json` (vincolo 8.2). (2) Il link monouso imposta l'app, non una
+     passkey: la passkey si aggiunge poi dall'Account del centrale. (3) Il link chiede anche la password (link e
+     password, mai la sola password). (4) Lo `snapshot` ha una `revision` ma il centrale non ne manda di nuove: membri,
+     token, ruoli e SSO di un W passato restano congelati finché non si gestiscono dal centrale (sotto).
+     (5) «Torna» manda chi ha cambiato qualcosa sul centrale, compresi un codice usato o un contatore di passkey.
+     (6) La copia ferma «illeggibile dalle pagine» è letta come: export e prova a vuoto la escludono, le pagine non hanno
+     mai mostrato segreti.
+   - **Resta aperto.**
+     - Gestire dal centrale membri, inviti, token, ruoli personalizzati e SSO di un W passato (con `sync` dello
+       snapshot e la sua `revision`): oggi sono congelati (409 dalla macchina).
+     - Il login SSO e i connettori OAuth delle persone passate (le grant importate non si servono).
+     - Il nome del portale di una macchina servito dal centrale per 90 giorni (18.4.5): oggi le passkey di quel nome
+       si rifanno con il link.
+     - Il webhook di un'istanza senza nome pubblico di un W passato dipende dal centrale (come nella fetta 4).
 6. **Consegna e spostamento con l'identità centrale** (18.7).
    - *Prova*: con il NAT simulato di AD-008 §9 passo 7, una consegna da lab4 il cui codice punta a un nome del
      workspace. Il congelamento a `ready`. Le persone importate con hash e TOTP dalla macchina che riceve. Al commit
