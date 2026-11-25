@@ -140,8 +140,8 @@
              older: {{ _("an older OmniaCLI: update it to make instances there from here") | tojson }},
              noRoom: {{ _("the room of the disk cannot be read") | tojson }},
              low: {{ _("{free} GB free on the disk, a new instance needs {min} GB at least") | tojson }},
-             promisedOne: {{ _("{free} GB free on the disk, but {promised} are promised to the workspace {names}: a new instance needs {min} GB at least") | tojson }},
-             promisedMany: {{ _("{free} GB free on the disk, but {promised} are promised to the workspaces {names}: a new instance needs {min} GB at least") | tojson }},
+             promisedOne: {{ _("{name} has a disk of its own of {size} GB (it uses {used}): on this machine, outside that disk, {left} GB are left, and a new workspace needs {min}") | tojson }},
+             promisedMany: {{ _("The workspaces {names} have disks of their own, {size} GB in all (they use {used}): on this machine, outside those disks, {left} GB are left, and a new workspace needs {min}") | tojson }},
              inside: {{ _("It can be made inside a workspace that has room in its own disk:") | tojson }},
              makeInside: {{ _("Create inside {name} ({free} GB free)") | tojson }},
              makeInsideTitle: {{ _("Opens the page of the workspace {name} with its New instance form: the instance is made inside its disk, which has {free} GB free") | tojson }},
@@ -191,14 +191,20 @@
   // room-advice: why a machine has less room than a new instance needs, in a person's words, and where one fits
   // instead: inside a workspace whose own disk has room (its page's New instance, under the machine's base)
   const fill = (text, values) => text.replace(/\{(\w+)\}/g, (all, key) => key in values ? String(values[key]) : all);
+  // a number of GB as the reader writes it (10,5 in Italian), one decimal at most
+  const gb = (value) => (Number(value) || 0).toLocaleString({{ lang | tojson }}, {maximumFractionDigits: 1});
   const WORKSPACE = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
   function lowRoom(data) {
     // an OmniaCLI before 25/11/2026 says only the room left
     const names = (data.promised || []).filter((p) => p.workspace).map((p) => p.name);
     if (!data.reserved_gb || !names.length || !("disk_free_gb" in data))
       return fill(T.low, {free: data.free_gb, min: data.min_gb});
+    // said as boxes: each workspace's own disk, what it uses, and what is left outside them all
+    const own = (data.promised || []).filter((p) => p.workspace);
+    const sum = (key) => Math.round(own.reduce((total, p) => total + (Number(p[key]) || 0), 0) * 10) / 10;
     return fill(names.length === 1 ? T.promisedOne : T.promisedMany,
-                {free: data.disk_free_gb, promised: data.reserved_gb, names: names.join(", "), min: data.min_gb});
+                {name: names[0], names: names.join(", "), size: gb(sum("promised_gb")), used: gb(sum("used_gb")),
+                 left: gb(data.free_gb), min: data.min_gb});
   }
   function roomAdvice(data, base) {
     if (!Array.isArray(data.promised)) return null;
@@ -218,8 +224,8 @@
       const list = document.createElement("ul");
       for (const way of advice.ways) {
         const link = Object.assign(document.createElement("a"), {href: way.href,
-          textContent: fill(T.makeInside, {name: way.name, free: way.free}),
-          title: fill(T.makeInsideTitle, {name: way.name, free: way.free})});
+          textContent: fill(T.makeInside, {name: way.name, free: gb(way.free)}),
+          title: fill(T.makeInsideTitle, {name: way.name, free: gb(way.free)})});
         const item = document.createElement("li");
         item.append(link);
         list.append(item);

@@ -89,13 +89,15 @@ async def test_the_dialog_says_it_and_offers_the_workspace(workspaces, client, e
     data = (await client.get("/api/instances/versions", headers={"Authorization": AUTH})).json()
     # in Italian, the disk's free room and whose promise takes it
     shown = run_advice(page, data, "")
-    assert shown["why"] == ("121 GB liberi sul disco, ma 117 sono promessi ai workspace odoo19, small: "
-                            "una nuova istanza ne vuole almeno 10")
+    # said as boxes: each workspace's own disk, what it uses, what is left outside them (Italian decimals)
+    assert shown["why"] == ("I workspace odoo19, small hanno dischi loro, 139 GB in tutto (ne usano 22): sulla "
+                            "macchina, fuori da quei dischi, restano 4 GB, e un workspace nuovo ne vuole 10")
     # New instance inside odoo19, the only one with room, on its page
     assert shown["advice"] == {"text": "Si può creare dentro un workspace che ha spazio nel suo disco:",
                                "ways": [{"name": "odoo19", "free": 116, "href": "/workspaces/odoo19#new-instance-panel"}]}
     one = {**data, "promised": data["promised"][:1]}
-    assert run_advice(page, one, "")["why"].startswith("121 GB liberi sul disco, ma 117 sono promessi al workspace odoo19:")
+    assert run_advice(page, one, "")["why"] == ("odoo19 ha un disco suo da 127 GB (ne usa 10,5): sulla macchina, fuori "
+                                                "da quel disco, restano 4 GB, e un workspace nuovo ne vuole 10")
     # the link's text, as the dialog draws it
     assert "Crea dentro {name} ({free} GB liberi)" in page
     # through a link: under its prefix (the central panel draws the machine's Overview there)
