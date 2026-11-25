@@ -1,0 +1,133 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{# The identities of a linked machine's workspaces carried to this central panel (AD-018 slice 1): the dry run said
+   item by item, the import with the same hashes and secrets, its undo. No secret ever reaches this page. -#}
+{% extends "base.html" %}
+{% set link = idn.link %}
+{% set plan = idn.plan %}
+{% set done = idn.imported %}
+{% block title %}{{ _("Identities of {link}", link=link) }} · {{ brand.name }}{% endblock %}
+{% block crumbs %}{% from "_crumbs.html" import crumbs with context %}{{ crumbs([(_("Links"), "/links"), (link, "/links/" ~ link ~ "/"), (_("Identities"), None)]) }}{% endblock %}
+{% block content %}
+<style>
+.idn-verdict.same { color: var(--success-fg, inherit); }
+.idn-verdict.redo { font-weight: var(--fw-semibold); }
+.idn-facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0 0 12px; }
+.idn-facts dt { font-weight: var(--fw-semibold); }
+.idn-facts dd { margin: 0; overflow-wrap: anywhere; }
+.idn-count { text-align: right; font-variant-numeric: tabular-nums; }
+</style>
+<div class="page-head">
+  <div>
+    <h1>{{ _("Identities of {link}", link=link) }}</h1>
+    <p>{{ _("The people of this machine's workspaces, with their passwords, second factors, passkeys, single sign-on and tokens, carried to this panel. The dry run reads the machine and changes nothing.") }}
+       {{ _("The import keeps here the same hashes and the same secrets; the machine is not changed, and its people go on logging in there.") }}</p>
+  </div>
+</div>
+<div id="idn-error" class="banner warn" role="alert" hidden></div>
+{% if not idn.reached %}<div class="banner warn" role="status">{{ _("The machine did not answer the dry run: {why}", why=tr(idn.error)) }}</div>{% endif %}
+
+<section class="panel" aria-labelledby="idn-import-title">
+  <h2 id="idn-import-title">{{ _("The import on this panel") }}</h2>
+  {% if done %}
+  <dl class="idn-facts" id="idn-done">
+    <dt>{{ _("Imported") }}</dt><dd>{{ done.at | moment }} · {{ done.by }}</dd>
+    <dt>{{ _("People") }}</dt><dd>{{ _("{people} people: {totp} with an authenticator app, {passkeys} passkeys", people=done.people, totp=done.totp, passkeys=done.passkeys) }}</dd>
+    <dt>{{ _("Workspaces") }}</dt><dd>{% for name, w in done.workspaces.items() %}<span class="mono">{{ name }}</span> ({{ _("{members} people, {tokens} tokens", members=w.members, tokens=w.tokens) }}){{ ", " if not loop.last }}{% endfor %}</dd>
+    {% if done.renamed %}<dt>{{ _("Renamed") }}</dt><dd>{% for old, new in done.renamed.items() %}<span class="mono">{{ old }}</span> → <span class="mono">{{ new }}</span>{{ ", " if not loop.last }}{% endfor %}</dd>{% endif %}
+  </dl>
+  {% else %}
+  <p class="muted" id="idn-none">{{ _("Nothing imported from this machine yet.") }}</p>
+  {% endif %}
+  <div class="actions">
+    <button type="button" class="primary" id="idn-import" {{ "disabled" if not idn.reached }}
+            title="{{ _('Reads the package of the identities through the link and keeps it on this panel, with the same hashes and secrets: the import of before is replaced. The machine is not changed. It asks first.') }}">{{ _("Import again") if done else _("Import here") }}</button>
+    {% if done %}<button type="button" class="danger" id="idn-delete"
+            title="{{ _('Deletes on this panel what was imported from this machine: the machine and its people are not touched. It asks first.') }}">{{ _("Delete the import…") }}</button>{% endif %}
+  </div>
+</section>
+
+{% if plan %}
+<section class="panel" aria-labelledby="idn-dry-title">
+  <h2 id="idn-dry-title">{{ _("The dry run, item by item") }}</h2>
+  <p class="muted">{% if plan.portal %}{{ _("The portal of this panel: {portal}", portal=plan.portal) }}{% else %}{{ _("This panel has no portal's address yet: passkeys and connectors are made again on the portal's name, once it has one.") }}{% endif %}</p>
+  {% set labels = {"people": _("People and their passwords"), "renamed": _("Names already taken here"),
+                   "roles": _("Roles"), "custom_roles": _("Custom roles"),
+                   "totp": _("Authenticator apps and recovery codes"), "passkeys": _("Passkeys"),
+                   "sso": _("Single sign-on"), "sso_identities": _("Identities linked by single sign-on"),
+                   "tokens": _("REST and MCP tokens"), "grants": _("Connectors of AI assistants (OAuth)"),
+                   "invitations": _("Invitations not accepted yet"), "webhooks": _("GitHub webhooks on the portal's address"),
+                   "staff": _("The machine's own people")} %}
+  {% for ws in plan.workspaces %}
+  <h3>{{ _("Workspace {name}", name=ws.name) }}{% if ws.label and ws.label != ws.name %} · {{ ws.label }}{% endif %}</h3>
+  {% if ws.taken_here %}<p class="warn-line">{{ _("A workspace of this name is on this panel already.") }}</p>{% endif %}
+  <div class="scroll">
+  <table data-workspace="{{ ws.name }}">
+    <thead><tr><th scope="col">{{ _("Item") }}</th><th scope="col" class="idn-count">{{ _("How many") }}</th><th scope="col">{{ _("What happens") }}</th></tr></thead>
+    <tbody>
+    {% for row in ws["items"] %}
+    <tr data-item="{{ row.item }}" data-count="{{ row.count }}" data-verdict="{{ row.verdict }}">
+      <td>{{ labels[row.item] }}{% if row.rp %} · <span class="mono">{{ row.rp }}</span>{% endif %}</td>
+      <td class="idn-count">{{ row.count }}</td>
+      <td class="idn-verdict {{ row.verdict }}">
+        {% if row.verdict == "same" %}{{ _("Passes the same") }}
+        {% elif row.verdict == "stays" %}{{ _("Stays on the machine") }}
+        {% elif row.item == "renamed" %}{{ _("Each logs in with the new name below, the same password") }}
+        {% elif row.who == "provider_admin" %}{% if row.uri %}{{ _("The admin of the customer's provider adds the return address {uri}", uri=row.uri) }}{% else %}{{ _("The admin of the customer's provider adds the return address of the portal, once this panel has one") }}{% endif %}
+        {% elif row.who == "workspace_admin" %}{{ _("To be sent again from this panel, by the workspace's admin") }}
+        {% elif row.who == "switch" %}{{ _("Rewritten on the instance's name when the machine passes") }}
+        {% elif row.item == "grants" %}{{ _("Authorized again by the person: a consent, no new password") }}
+        {% else %}{{ _("Made again by the person") }}{% endif %}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% if ws.people %}
+  <details>
+    <summary title="{{ _('Each person of the workspace who passes, with the name it arrives as') }}">{{ _("Its people ({count})", count=ws.people | length) }}</summary>
+    <div class="scroll">
+    <table>
+      <thead><tr><th scope="col">{{ _("Person") }}</th><th scope="col">{{ _("Role") }}</th><th scope="col">{{ _("Arrives as") }}</th><th scope="col">{{ _("Authenticator app") }}</th><th scope="col">{{ _("Passkeys") }}</th><th scope="col">{{ _("Single sign-on") }}</th></tr></thead>
+      <tbody>
+      {% for p in ws.people %}
+      <tr data-person="{{ p.name }}"><td class="mono">{{ p.name }}</td><td>{{ p.custom_role or p.role }}</td>
+        <td class="mono">{{ p.arrives_as }}{% if p.arrives_as != p.name %} <span class="warn-line">({{ _("renamed") }})</span>{% endif %}</td>
+        <td>{{ _("yes") if p.totp else _("no") }}</td><td>{{ p.passkeys.values() | sum }}</td><td>{{ _("yes") if p.sso else _("no") }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </details>
+  {% endif %}
+  {% else %}
+  <p class="muted">{{ _("This machine has no workspace.") }}</p>
+  {% endfor %}
+</section>
+{% endif %}
+<script>
+(function () {
+  const API = {{ (prefix ~ "/api/identities/" ~ link) | tojson }}, LINK = {{ link | tojson }};
+  const T = {refused: {{ _("Refused") | tojson }},
+             importQ: {{ _("Import the identities of {link} on this panel, with the same hashes and secrets? The machine is not changed.", link=link) | tojson }},
+             deleteQ: {{ _("Delete on this panel what was imported from {link}? The machine and its people are not touched.", link=link) | tojson }}};
+  const $ = (id) => document.getElementById(id), error = $("idn-error");
+  async function post(path, button) {
+    button.disabled = true;
+    try {
+      const resp = await fetch(API + path, {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
+                                            body: JSON.stringify({confirm: LINK})});
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) { error.textContent = data.error || data.detail || T.refused; error.hidden = false; return; }
+      window.location.reload();
+    } finally { button.disabled = false; }
+  }
+  const imp = $("idn-import"), del = $("idn-delete");
+  imp.addEventListener("click", async () => {
+    if (await window.omniaAsk(T.importQ, imp)) post("/import", imp);
+  });
+  if (del) del.addEventListener("click", async () => {
+    if (await window.omniaAsk(T.deleteQ, del, {danger: true})) post("/delete", del);
+  });
+})();
+</script>
+{% endblock %}

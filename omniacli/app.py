@@ -57,7 +57,7 @@ from . import (backupcheck, backupchoices, checks, deployhooks, destinations, en
                workspaceops)
 from .accesslog import REQUEST as AUDIT_REQUEST, AccessLog
 from .accesslog import numbered as access_files
-from . import audit, centralbackup, siem
+from . import audit, centralbackup, identityimport, siem
 from . import apiguard, apiv1
 from .apiguard import ApiError
 from . import i18n, loginas, machines, modulecatalog, pgreport, pgtuning, stagings, workspaceweb
@@ -1276,6 +1276,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                              # a machine behind NAT and its central panel (AD-017 §17.6)
                                              "agent_relay": lambda *a, **k: api_hooks["agent_relay"](*a, **k),
                                              "link_relay": lambda *a, **k: api_hooks["link_relay"](*a, **k),
+                                             # a linked machine's identities carried here (AD-018 slice 1)
+                                             "identity": lambda *a, **k: api_hooks["identity"](*a, **k),
                                              # AD-014 §6: a tool on an instance placed elsewhere asked there, and
                                              # the scope a home sends taken from that home's link only
                                              "placed": lambda *a, **k: mcp_placed(*a, **k),
@@ -12017,9 +12019,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if me.kind != "user":
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Only a user who logs in here may use a link")
         link = a_link(name)
-        if path == "api/pages" or path.startswith("api/pages/"):
+        if (path == "api/pages" or path.startswith("api/pages/")
+                or path.startswith("api/identity/")):
             # the models of the pages are read by this panel, never by a browser through the link (they are drawn
-            # here with the role of who looks, and its script has nothing to do with them)
+            # here with the role of who looks, and its script has nothing to do with them); so are the identities
+            # of the machine's workspaces (AD-018 slice 1): their package carries secrets
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Not Found")
         client = link_clients.client(link)
         api = path == "api" or path.startswith("api/")
@@ -15338,6 +15342,217 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     @app.post("/api/central-backup/run", dependencies=[Depends(admin)])
     async def central_backup_run(request: Request, me: Principal = Depends(current_user)):
         return central_backup_answer(*await central_backup_act("run", me, f"manual: {me}", central_ip(request)))
+
+    # --- the identities of the workspaces carried to the central panel (AD-018 slice 1, §18.3.1 steps 1-3) -----
+    # On the machine: the dry run and the package, through the central's admin link only (identityimport.API, no
+    # twin in /api/v1 nor MCP, AD-018 §8.7), every read in the access log with who asked through the link. On the
+    # central: the dry run said item by item, the import (the same hashes and secrets) and its undo, from the page,
+    # the REST API and MCP (identity_act). Nothing is written on the machine.
+
+    identity_store = identityimport.Store(settings.jobs_dir.parent)
+    identity_lock = asyncio.Lock()
+    # the package can be large (every person's passkeys, every grant): its time, as a page's (AD-018 §8.9)
+    IDENTITY_TIMEOUT = 60.0
+
+    def identity_sources() -> dict:
+        """What identityimport reads of this machine: the workspaces, the people, their stores, the tokens of a
+        workspace, the OAuth grants, the invitations, the webhooks GitHub calls on the portal's address."""
+        tokens = {}
+        for token, hashed in settings.tokens.items():
+            ws = settings.token_workspace(token)
+            if not ws or token.startswith("oauth:"):
+                continue
+            tokens[token] = {"hash": hashed, "workspace": ws, "role": settings.token_roles.get(token, TOKEN_DEFAULT_ROLE),
+                             "ci": settings.token_ci(token), "servers": list(settings.token_servers(token)),
+                             "person": settings.token_person(token) or ""}
+        try:
+            invited = load_invitations(invitations_path) if invitations_path else []
+        except ConfigError as exc:
+            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, str(exc)) from None
+        return {"workspaces": dict(settings.workspaces), "users": dict(settings.users),
+                "user_roles": dict(settings.user_roles), "second_factors": second_factors, "passkeys": passkey_store,
+                "sso": sso_store, "grants": oauth_store.listed(), "tokens": tokens, "invitations": invited,
+                "webhooks": deployhooks.load(github_hooks_file), "portal": portal_url(), "now": time.time()}
+
+    def identity_link_only(me: Principal) -> None:
+        """The identities of the workspaces are read by the central panel, through its link with the admin role:
+        never a person (here, or through the link's pages), a token, a workspace's scope."""
+        if me.kind != "link" or me.via or me.person:
+            raise HTTPException(status.HTTP_403_FORBIDDEN,
+                                "The identities of the workspaces are read by the central panel's link only")
+        if me.role != "admin":
+            raise HTTPException(status.HTTP_403_FORBIDDEN,
+                                f"The identities of the workspaces are read by a link with the admin role; this one "
+                                f"is {me.role}")
+
+    async def identity_read(request: Request, me: Principal, what: str, make):
+        """A read of the identities through the link, in the access log with who asked through it, each time."""
+        answered = status.HTTP_200_OK
+        try:
+            identity_link_only(me)
+            return await asyncio.to_thread(make)
+        except HTTPException as exc:
+            answered = exc.status_code
+            raise
+        except Exception:
+            answered = status.HTTP_500_INTERNAL_SERVER_ERROR
+            raise
+        finally:
+            access_log.record("read", me.kind, me.name, request.client.host if request.client else "",
+                              (f"{what}: GET {request.url.path} -> {answered}"
+                               + (f" for {me.on_behalf}" if me.on_behalf else ""))[:300],
+                              what=what, status=answered)
+
+    @app.get(identityimport.API + "/inventory")
+    async def identity_inventory(request: Request, me: Principal = Depends(current_user)):
+        """The dry run (AD-018 §18.3.1 step 1): what each workspace holds of identities, counts and fields that are
+        no secret, for the central panel's link only."""
+        return await identity_read(request, me, "identities of the workspaces (dry run)",
+                                   lambda: identityimport.inventory(identity_sources()))
+
+    @app.get(identityimport.API + "/export")
+    async def identity_export(request: Request, me: Principal = Depends(current_user)):
+        """The package (AD-018 §18.3.1 step 3): the people of the workspaces with the hashes of their passwords and
+        their secrets, for the central panel's link only; written nowhere here."""
+        found = await identity_read(request, me, "identities of the workspaces (export, with their secrets)",
+                                    lambda: identityimport.export(identity_sources(), dict(oauth_store.clients)))
+        return JSONResponse(found, headers={"Cache-Control": "no-store"})
+
+    def identity_refusal(me: Principal) -> tuple[int, dict] | None:
+        """Who carries a machine's identities here: this panel's admins, a person here or a token of the machine;
+        never a workspace's token, a CI's or a link (it is done on the central panel)."""
+        if me.kind == "link" or me.via:
+            return 403, {"error": "The identities of a machine are imported on the central panel, not through a link",
+                         "code": "forbidden"}
+        if me.scoped:
+            return 403, {"error": "The identities of a machine are imported with a token of the machine: a "
+                                  "workspace's token never reaches them", "code": "machine_token_required"}
+        if me.ci or (me.kind == "token" and settings.token_ci(me.name)):
+            return 403, {"error": "A CI token never imports the identities of a machine", "code": "forbidden"}
+        if not me.can("admin"):
+            return 403, {"error": f"The identities of a machine need the admin role; this one is {me.role}",
+                         "code": "forbidden"}
+        return None
+
+    async def identity_ask(link: LinkTarget, me: Principal, path: str) -> tuple[httpx.Response | None, str]:
+        """The machine's answer to path through the link, or why there is none."""
+        try:
+            resp = await link_clients.client(link).get(
+                identityimport.API + path, timeout=IDENTITY_TIMEOUT,
+                headers={**link_headers(link, me.name, me.role), "Accept": "application/json"})
+        except httpx.HTTPError as exc:
+            return None, describe_error(exc)
+        if resp.status_code == 404:
+            return None, f"{link.name} has no export of identities: its OmniaCLI is older, update it first"
+        if resp.status_code != 200:
+            try:
+                found = resp.json()
+                said = str(found.get("detail") or found.get("error") or "")
+            except (ValueError, AttributeError):
+                said = ""
+            return None, f"{link.name} answered {resp.status_code}" + (f": {said}" if said else "")
+        return resp, ""
+
+    async def identity_act(op: str, name: str, me: Principal, source: str, ip: str = "",
+                           body: Optional[dict] = None) -> tuple[int, dict]:
+        """(status, answer) of op on the identities of the link name's machine: status (the dry run said item by
+        item, and what was imported), import, delete (the undo). As the page, the REST API and MCP ask it."""
+        refused = identity_refusal(me)
+        if refused is not None:
+            return refused
+        body = dict(body or {})
+        link = settings.link_targets.get(name)
+        if op in ("import", "delete") and str(body.get("confirm") or "") != name:
+            return 400, {"error": f"Type the name of the link, {name}, to confirm", "code": "confirm_required"}
+        if op == "delete":
+            async with identity_lock:
+                try:
+                    gone = await asyncio.to_thread(identity_store.delete, name)
+                except identityimport.IdentityImportError as exc:
+                    return 404, {"error": str(exc), "code": "not_found"}
+            if not gone:
+                return 404, {"error": f"Nothing was imported from {name}", "code": "not_found"}
+            access_log.record("action", me.kind, me.name, ip,
+                              f"the identities imported from {name} deleted on this panel: its machine unchanged")
+            return 200, {"ok": True, "link": name, "imported": None}
+        if link is None:
+            return 404, {"error": f"No link {name}", "code": "not_found"}
+        if op == "status":
+            resp, error = await identity_ask(link, me, "/inventory")
+            dry = None
+            if resp is not None:
+                try:
+                    dry = resp.json()
+                except ValueError:
+                    error = f"{name} did not answer JSON"
+            shown = None
+            if isinstance(dry, dict) and dry.get("format") == identityimport.FORMAT:
+                shown = identityimport.plan(dry, identity_store.taken(name, settings.users), portal_url(),
+                                            sorted(settings.workspaces))
+            elif not error:
+                error = f"{name} answered a dry run this panel does not read"
+            access_log.record("read", me.kind, me.name, ip,
+                              f"identities of the workspaces of {name} (dry run)" + (f": {error}" if error else ""),
+                              what="identities of a linked machine (dry run)")
+            return 200, {"link": name, "reached": shown is not None, "error": error, "plan": shown,
+                         "imported": identityimport.summary(identity_store.load(name))}
+        if op == "import":
+            async with identity_lock:
+                resp, error = await identity_ask(link, me, "/export")
+                if resp is None:
+                    return 502, {"error": f"The identities of {name} were not read: {error}", "code": "failed"}
+                staged = await asyncio.to_thread(identity_store.stage, name, resp.content)
+                try:
+                    package = json.loads(staged.read_bytes())
+                    record = identityimport.imported(package, identity_store.taken(name, settings.users), name,
+                                                     str(me), datetime.datetime.now().isoformat(timespec="seconds"))
+                    await asyncio.to_thread(identity_store.save, name, record)
+                except ValueError as exc:
+                    return 502, {"error": f"The identities of {name} were not imported: {exc}", "code": "failed"}
+                finally:
+                    # the package goes as soon as it is read: what stays is the record of the import (600)
+                    staged.unlink(missing_ok=True)
+            done = identityimport.summary(record)
+            said = ", ".join(f"{o} as {n}" for o, n in done["renamed"].items())
+            access_log.record("action", me.kind, me.name, ip,
+                              f"the identities of {name} imported on this panel: {done['people']} people "
+                              f"({done['totp']} with two-step verification, {done['passkeys']} passkeys), "
+                              f"workspaces {', '.join(done['workspaces']) or 'none'}"
+                              + (f"; renamed {said}" if said else "") + "; its machine unchanged")
+            return 200, {"ok": True, "link": name, "imported": done}
+        return 404, {"error": f"No {op} here", "code": "not_found"}
+
+    api_hooks["identity"] = identity_act
+
+    @app.get("/identities/{name}", dependencies=[Depends(admin)])
+    async def identities_page(request: Request, name: str, me: Principal = Depends(current_user)):
+        """The identities of a linked machine's workspaces: the dry run item by item, the import here, its undo."""
+        code, data = await identity_act("status", name, me, "", central_ip(request))
+        if code >= 400:
+            raise HTTPException(code, data["error"])
+        return _TEMPLATES.TemplateResponse(request, "identities.html", {"idn": data})
+
+    def identity_answer(request: Request, status_code: int, data: dict):
+        """The page's answer: a refusal, or why the machine did not answer, in the reader's language."""
+        if data.get("error"):
+            data = {**data, "error": i18n.tr(request_language(request), data["error"])}
+        return central_backup_answer(status_code, data)
+
+    @app.get("/api/identities/{name}", dependencies=[Depends(admin)])
+    async def identities_get(request: Request, name: str, me: Principal = Depends(current_user)):
+        return identity_answer(request, *await identity_act("status", name, me, "", central_ip(request)))
+
+    @app.post("/api/identities/{name}/import", dependencies=[Depends(admin)])
+    async def identities_import(request: Request, name: str, payload: dict = Body(...),
+                                me: Principal = Depends(current_user)):
+        return identity_answer(request, *await identity_act("import", name, me, f"manual: {me}", central_ip(request),
+                                                            payload))
+
+    @app.post("/api/identities/{name}/delete", dependencies=[Depends(admin)])
+    async def identities_delete(request: Request, name: str, payload: dict = Body(...),
+                                me: Principal = Depends(current_user)):
+        return identity_answer(request, *await identity_act("delete", name, me, f"manual: {me}", central_ip(request),
+                                                            payload))
 
     # --- the lists of every machine: Instances and Backups (docs/ux/UX-008 §4) --
     # this machine's lists, and each link's asked through it, one request a
@@ -29704,6 +29919,41 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                              name: str = PathParam(description="The link's name (Links page)"),
                              me: Principal = Depends(api_token)):
         return api_central_answer(request, *await link_relay_act(name, me, api_ip(request), body.model_dump()))
+
+    # --- the identities of a linked machine's workspaces carried here (AD-018 slice 1): the pages' code
+    # (identity_act), for a token of the machine with the admin role, never a workspace's or a CI's
+
+    @api_router.get(P + "/links/{name}/identities", summary="Dry run of a machine's identities",
+                    description="What each workspace of the linked machine holds of identities, item by item (people, "
+                                "roles, custom roles, two-step verification, passkeys by RP ID, single sign-on, tokens, "
+                                "OAuth grants, invitations, GitHub webhooks on the portal's address), each said "
+                                "«same» (it passes the same), «redo» (with who does it again) or «stays», and the name "
+                                "each person arrives with here (a name taken here: <name>.<workspace>); and what was "
+                                "imported from it. No secret. Nothing changes, there or here.")
+    async def api_identities(request: Request, name: str = PathParam(description="The link's name (Links page)"),
+                             me: Principal = Depends(api_token)):
+        return api_central_answer(request, *await identity_act("status", name, me, f"api: {me}", api_ip(request)))
+
+    @api_router.post(P + "/links/{name}/identities/import", summary="Import a machine's identities",
+                     description="The package of the machine's identities read through the link (the same hashes of "
+                                 "the passwords, the same TOTP secrets with their last step and recovery codes, the "
+                                 "passkeys with their counters, the SSO with its client secret, the tokens' and the "
+                                 "grants' hashes) and kept on this panel; nothing changes on the machine. Again: the "
+                                 "import of before is replaced. confirm = the link's name.")
+    async def api_identities_import(request: Request, body: apiv1.IdentityConfirmBody,
+                                    name: str = PathParam(description="The link's name (Links page)"),
+                                    me: Principal = Depends(api_token)):
+        return api_central_answer(request, *await identity_act("import", name, me, f"api: {me}", api_ip(request),
+                                                               body.model_dump()))
+
+    @api_router.post(P + "/links/{name}/identities/delete", summary="Delete the import of a machine's identities",
+                     description="The undo: what was imported from the machine deleted on this panel; the machine is "
+                                 "not touched. confirm = the link's name.")
+    async def api_identities_delete(request: Request, body: apiv1.IdentityConfirmBody,
+                                    name: str = PathParam(description="The link's name (Links page)"),
+                                    me: Principal = Depends(api_token)):
+        return api_central_answer(request, *await identity_act("delete", name, me, f"api: {me}", api_ip(request),
+                                                               body.model_dump()))
 
     api_openapi_cache: dict = {}
 

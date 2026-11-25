@@ -72,6 +72,14 @@ AUDITED_BY_ROUTE = frozenset({
     # the model of a page a panel draws for a link (AD-017 §17.1, §17.5 decision 5): every read, with who looks
     # through the link (on_behalf) and the server of the page
     "/api/pages/{page}",
+    # the identities of a machine's workspaces, read by the central panel through its link (AD-018 slice 1): the
+    # dry run and the package with their secrets, every read with who asked through the link (on_behalf)
+    "/api/identity/v1/inventory",
+    "/api/identity/v1/export",
+    # on the central panel, the dry run of a linked machine's identities: logged by the route with the link
+    "/identities/{name}",
+    "/api/identities/{name}",
+    "/api/v1/links/{name}/identities",
 })
 
 # pages and data that are neither customer data nor security data: the

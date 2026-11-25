@@ -157,6 +157,12 @@ class PasskeyStore:
     def count(self, user: str) -> int:
         return len((self._users.get(user) or {}).get("keys") or [])
 
+    def record(self, user: str) -> dict | None:
+        """user's passkeys as they are kept (its handle, each key with its RP ID and counter), for the import of its
+        workspace on the central panel (AD-018 §18.3.1); None when it has none."""
+        found = self._users.get(user)
+        return json.loads(json.dumps(found)) if found and found.get("keys") else None
+
     def add(self, user: str, handle: bytes, rp: str, credential_id: bytes, public_key: bytes, sign_count: int,
             name: str, transports: list, backed_up: bool) -> dict:
         now = self.clock()

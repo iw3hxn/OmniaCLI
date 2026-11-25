@@ -237,6 +237,11 @@ class SsoStore:
                         "last": self.clock()}
             self._save()
 
+    def identities_of(self, workspace: str) -> dict[str, dict]:
+        """The identities linked in workspace ({issuer|sub: {user, email, first, last}}), for the import of its
+        workspace on the central panel (AD-018 §18.3.1)."""
+        return json.loads(json.dumps(self._data["identities"].get(workspace) or {}))
+
     def users_of(self, workspace: str) -> dict[str, str]:
         """{user: e-mail} of the people of workspace who logged in with its provider."""
         return {i["user"]: i.get("email", "") for i in (self._data["identities"].get(workspace) or {}).values()}

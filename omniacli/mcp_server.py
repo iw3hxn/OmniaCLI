@@ -84,7 +84,11 @@ A machine behind NAT managed from a central panel (admin token): on the
 machine agent_relay_status, agent_relay_publish (its SSH through a relay, one
 of its links) and agent_relay_remove; on the central panel link_relay, the
 link's SSH through that relay (the relay's key and the machine's confirmed
-by the user, as for any SSH link)."""
+by the user, as for any SSH link).
+The identities of a linked machine's workspaces carried to this central
+panel (admin token): identity_import_status (the dry run, item by item),
+identity_import with confirm=<link> (the same hashes and secrets; the
+machine unchanged), identity_import_delete with confirm=<link> (the undo)."""
 
 
 def _instructions() -> str:
@@ -115,17 +119,20 @@ TOOL_ROLES = {"update_test": "developer", "backup_test": "developer",
                                       "central_backup_confirm_key", "central_backup_run")},
               # a machine behind NAT and its central panel (AD-017 §17.6): the machine's admins only
               **{t: "admin" for t in ("agent_relay_status", "agent_relay_publish", "agent_relay_remove",
-                                      "link_relay")}}
+                                      "link_relay")},
+              # a linked machine's identities carried to the central panel (AD-018 slice 1): its admins only
+              **{t: "admin" for t in ("identity_import_status", "identity_import", "identity_import_delete")}}
 CENTRAL_TOOLS = {"central_backup_status", "central_backup_configure", "central_backup_new_key",
                  "central_backup_confirm_key", "central_backup_run",
-                 "agent_relay_status", "agent_relay_publish", "agent_relay_remove", "link_relay"}
+                 "agent_relay_status", "agent_relay_publish", "agent_relay_remove", "link_relay",
+                 "identity_import_status", "identity_import", "identity_import_delete"}
 # the tools that change something: a write in the rate limit of a token (apiguard.RateLimiter)
 WRITE_TOOLS = {"update_test", "backup_test", "backup", "add_draft_server", "restart_instance", "start_instance",
                "stop_instance", "run_action", "verify_backup", "full_archive", "stop_job", "update_production",
                "upload_backup", "restore_new_instance", "create_staging", "deploy_back",
                "prepare_handover", "receive_workspace", "switch_workspace", "move_instance", "move_back",
                "central_backup_configure", "central_backup_new_key", "central_backup_confirm_key", "central_backup_run",
-               "agent_relay_publish", "agent_relay_remove", "link_relay"}
+               "agent_relay_publish", "agent_relay_remove", "link_relay", "identity_import", "identity_import_delete"}
 # the tools of the machine's tokens only: a workspace's token never reaches them
 MACHINE_TOOLS = {"read_server", "add_draft_server", "list_links", "linked_tools", "call_linked",
                  "handover_status", "prepare_handover", "receive_workspace", "reception_status", "switch_workspace",
@@ -1148,6 +1155,50 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
                 "tunnel_port": tunnel_port or None, "machine_host_key": machine_host_key or None,
                 "fetch_machine_key": fetch_machine_key}
         return await through_relay(ctx, "link_relay", lambda act: act(link, as_principal(ctx), "", body))
+
+    # --- a linked machine's identities carried to this central panel (AD-018 slice 1): the pages' code
+    # (app.identity_act), the same answers
+
+    async def identities(ctx: Context, op: str, link: str, **body) -> dict:
+        if api.get("identity") is None:
+            raise ToolError("This OmniaCLI has no import of identities through MCP")
+        if token_of(ctx) is None:
+            raise ToolError("forbidden: the identities of a machine are imported on the central panel, not through "
+                            "a link")
+        if settings.token_servers(token_of(ctx)):
+            raise ToolError("forbidden: this token reaches some servers only, and this is the central panel's")
+        code, data = await api["identity"](op, link, as_principal(ctx), source_of(ctx), "", body)
+        if code >= 400:
+            raise ToolError(f"{data.get('code') or apiv1.code_of(code)}: {data.get('error') or 'Refused'}")
+        return data
+
+    @server.tool()
+    async def identity_import_status(link: str, ctx: Context) -> dict:
+        """(admin token of the central panel) The dry run of the identities
+        of the workspaces of the machine of link (AD-018): for each workspace
+        its items (people, roles, custom roles, two-step verification,
+        passkeys by RP ID, single sign-on, tokens, OAuth grants, invitations,
+        GitHub webhooks on the portal) with their count and verdict: same (it
+        passes the same), redo (who does it again) or stays; each person with
+        the name it arrives as (a name taken here: <name>.<workspace>); and
+        what was imported (imported). No secret; nothing changes."""
+        return await identities(ctx, "status", link)
+
+    @server.tool()
+    async def identity_import(link: str, confirm: str, ctx: Context) -> dict:
+        """(admin token of the central panel, never a CI's) Import the
+        identities of the machine of link here, with the same password
+        hashes and secrets (TOTP, passkeys, SSO, tokens, grants); the machine
+        is not changed. confirm = the link's name. Run
+        identity_import_status first and tell the user the people renamed."""
+        return await identities(ctx, "import", link, confirm=confirm)
+
+    @server.tool()
+    async def identity_import_delete(link: str, confirm: str, ctx: Context) -> dict:
+        """(admin token of the central panel, never a CI's) Delete what was
+        imported from the machine of link (the undo); the machine is not
+        touched. confirm = the link's name."""
+        return await identities(ctx, "delete", link, confirm=confirm)
 
     # --- the protection of this panel (AD-017 slice 7): the pages' code (app.central_backup_act), the same answers
 
