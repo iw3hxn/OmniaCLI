@@ -191,6 +191,25 @@ def test_disk(root):
             workspacehelper.disk(*args)
 
 
+def test_a_disk_already_mounted_is_not_started_again(root):
+    """A disk already mounted is enabled, not started: a start of its mount
+    unit waits for the loop device's unit, which a machine without udev (a
+    container) never sees, 90 s on every job (25/11/2026, lab3: 90.25 s of
+    90.34 in «systemctl enable --now»). Grown, it is grown as before."""
+    storage = str(root["storage"])
+    workspacehelper.disk("acme", storage, "2")
+    assert ["systemctl", "enable", "--now", "srv-acme.mount"] in root["calls"]
+    for size in ("2", "3"):
+        root["calls"].clear()
+        made = workspacehelper.disk("acme", storage, size)
+        assert made == {"workspace": "acme", "image": str(root["storage"] / ".disks" / "acme.img"),
+                        "mount": str(root["storage"] / "acme"), "unit": "srv-acme.mount", "size_gb": int(size)}
+        assert ["systemctl", "enable", "srv-acme.mount"] in root["calls"]
+        assert not [c for c in root["calls"] if c[:2] in (["systemctl", "start"], ["systemctl", "restart"])
+                    or c[:3] == ["systemctl", "enable", "--now"]]
+    assert ["resize2fs", "/dev/loop9"] in root["calls"]
+
+
 def test_a_disk_must_fit_in_the_room_free(root, monkeypatch):
     """Made or grown, a disk fits whole in what the real disk has free now;
     the same size again asks nothing."""

@@ -529,7 +529,13 @@ The package:
   `admin`; upgrades never change it;
 - keeps the servers file, the jobs and the backups in `/var/lib/omniacli`;
 - installs `/etc/sudoers.d/omniacli`, all comments, to be completed;
-- on purge, deletes configuration and jobs but keeps the backups.
+- on purge, deletes configuration and jobs but keeps the backups; the units
+  its helpers wrote in `/etc/systemd/system` (the workspaces' firewall, the
+  storages' binds, the workspaces' disks and slices, docker's drop-ins, the
+  units of the machine's PostgreSQL, the Log in as path's timer, the relays'
+  tunnels) are disabled and deleted. A disk, a storage's bind and a slice are
+  not stopped: the instances on them keep running, with their disks mounted,
+  until the machine starts again.
 
 ### First setup on a machine where Odoo already runs
 

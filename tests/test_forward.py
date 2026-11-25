@@ -5,12 +5,14 @@ its §9): forward acme|full|off on the machine that has them, hold on the one th
 what they keep, and the firewall's entry of an instance removed."""
 import io
 import json
+import os
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from omniacli import machinedb, managedreplica, workspacehelper, workspaceops, workspaceweb
+from omniacli import machinedb, managedreplica, relay, workspacehelper, workspaceops, workspaceweb
 from omniacli.composehelper import HelperError
 
 from .test_app import AUTH, POST, client, wait_job  # noqa: F401 - the client fixture
@@ -291,3 +293,77 @@ def test_the_purge_takes_what_the_names_and_the_firewall_kept():
     left = {"machine-db.json"}
     missing = [w for w in sorted(written - left) if w.removesuffix(".json") not in purge]
     assert not missing, missing
+
+
+def _units_the_helpers_write(monkeypatch, systemd: Path) -> dict[str, str]:
+    """{path under /etc/systemd/system: its text} of every unit the package's helpers write there, from their
+    own writers: a workspace acme on storage default, the relay's tunnels, the machine's PostgreSQL."""
+    mount = Path("/var/lib/omniacli-storage/default/acme")
+    image = Path("/var/lib/omniacli-storage/default/.disks/acme.img")
+    mount_unit = "var-lib-omniacli\\x2dstorage-default-acme.mount"
+    tunnel = dict(relay="r1", host="relay.example.com", ssh_port=22, remote_port=relay.RELAY_PORTS[0],
+                  folder="/etc/omniacli/relay/acme")
+    units = {
+        workspacehelper.FIREWALL_UNIT: workspacehelper.firewall_unit_text(),
+        workspacehelper.check_unit_name(mount.parent): workspacehelper.storage_unit_text("default", mount.parent),
+        mount_unit: workspacehelper.unit_text(image, mount, "acme"),
+        "docker.service.d/omniacli-acme.conf": workspacehelper.docker_dropin_text("acme", mount_unit),
+        workspacehelper.slice_name("acme"): workspacehelper.slice_text("acme", 2, 4),
+        machinedb.SLICE: machinedb.slice_text(),
+        machinedb.MOUNTS_UNIT: machinedb.mounts_unit_text(["/var/lib/omniacli-storage/default"], "/usr/bin/omniacli"),
+        relay.unit_name("acme"): relay.tunnel_unit_text("acme", local_port=relay.LOCAL_PORTS[0], **tunnel),
+        relay.AGENT_UNIT: relay.agent_unit_text(local_port=22, **tunnel),
+    }
+    # the Log in as path's service and timer, written by login-path keep on itself
+    monkeypatch.setattr(workspacehelper, "SYSTEMD", systemd)
+    monkeypatch.setattr(workspacehelper, "_run", lambda *cmd, check=True: "")
+    monkeypatch.setattr(workspacehelper, "login_path", lambda action, target: {})
+    monkeypatch.setattr(workspacehelper.os, "chown", lambda *args: None)
+    workspacehelper._login_path_keep("on")
+    for path in workspacehelper._keep_units():
+        units[path.name] = path.read_text()
+    return units
+
+
+def test_the_purge_takes_every_unit_the_helpers_wrote(monkeypatch, tmp_path):
+    """Every unit the package's helpers write under /etc/systemd/system goes with the purge, the firewall of the
+    workspaces among them (25/11/2026: omniacli-workspaces-firewall.service left after apt purge), disabled and
+    deleted; stopped too, but a storage's bind, a workspace's disk and a slice, which hold the instances the
+    purge leaves running. A unit of anyone else stays. The purge's block runs here, on a copy of the folder,
+    with a systemctl that records what it is asked."""
+    systemd = tmp_path / "systemd"
+    systemd.mkdir()
+    units = _units_the_helpers_write(monkeypatch, systemd)
+    # every unit text of the code is in the list above: a new one is added there (and so to the purge)
+    code = "".join(p.read_text() for p in Path(workspacehelper.__file__).parent.rglob("*.py"))
+    assert code.count("[Unit]") == 10, "a unit written by the code that this test does not list"
+    (systemd / "docker.service.d").mkdir()
+    for name, text in units.items():
+        assert text.startswith("# written by omniacli workspace-helper"), name
+        (systemd / name).write_text(text)
+    foreign = {"odoo.service": "[Unit]\n", "srv-data.mount": "[Mount]\nWhat=/dev/sdb1\n",
+               "docker.service.d/override.conf": "[Service]\n",
+               "docker.service.d/omniacli-mine.conf": "# my own, not the helper's\n[Unit]\n"}
+    for name, text in foreign.items():
+        (systemd / name).write_text(text)
+    postrm = (Path(workspacehelper.__file__).parent.parent / "packaging" / "debian" / "files" / "postrm").read_text()
+    purge = postrm.split("    purge)", 1)[1]
+    if "# (begin of the helpers' units)" not in purge:
+        pytest.fail(f"the purge has no block for the units the helpers write: {sorted(units)}")
+    block = purge.split("# (begin of the helpers' units)\n", 1)[1].split("# (end of the helpers' units)", 1)[0]
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "systemctl").write_text('#!/bin/sh\necho "$*" >> "%s"\n' % (tmp_path / "calls"))
+    (bin_dir / "systemctl").chmod(0o755)
+    script = "set -e\n" + block.replace("/etc/systemd/system", str(systemd))
+    done = subprocess.run(["sh", "-c", script], env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"},
+                          capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    left = sorted(str(p.relative_to(systemd)) for p in systemd.rglob("*") if p.is_file())
+    assert left == sorted(foreign), f"left by the purge: {sorted(set(left) - set(foreign))}"
+    calls = (tmp_path / "calls").read_text().splitlines()
+    held = {workspacehelper.check_unit_name(Path("default")), "var-lib-omniacli\\x2dstorage-default-acme.mount",
+            workspacehelper.slice_name("acme"), machinedb.SLICE}
+    expected = sorted(f"disable {name}" if name in held else f"disable --now {name}"
+                      for name in units if "/" not in name)
+    assert sorted(calls) == expected, calls

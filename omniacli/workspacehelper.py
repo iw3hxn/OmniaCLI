@@ -862,6 +862,11 @@ def unit_text(image: Path, mount: Path, name: str) -> str:
             "[Install]\nWantedBy=multi-user.target\n")
 
 
+def docker_dropin_text(name: str, unit: str) -> str:
+    return (f"# written by omniacli workspace-helper: docker after the disk of workspace {name}\n"
+            f"[Unit]\nAfter={unit}\n")
+
+
 def _write(path: Path, text: str, mode: int = 0o644, uid: int = 0, gid: int = 0) -> None:
     tmp = path.with_name(path.name + ".tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, mode)
@@ -957,11 +962,15 @@ def disk(name: str, storage: str, size_gb: str) -> dict:
     _write(SYSTEMD / unit, unit_text(image, mount, name))
     dropin = SYSTEMD / "docker.service.d"
     dropin.mkdir(mode=0o755, exist_ok=True)
-    _write(dropin / f"omniacli-{name}.conf",
-           f"# written by omniacli workspace-helper: docker after the disk of workspace {name}\n"
-           f"[Unit]\nAfter={unit}\n")
+    _write(dropin / f"omniacli-{name}.conf", docker_dropin_text(name, unit))
     _run("systemctl", "daemon-reload")
-    _run("systemctl", "enable", "--now", unit)
+    # a disk already mounted is only enabled: once mounted, its unit requires
+    # the loop device's unit, and a start waits for it, 90 s where no udev
+    # announces loop devices (a container); the mount itself stays as it is
+    if mounted(image, mount):
+        _run("systemctl", "enable", unit)
+    else:
+        _run("systemctl", "enable", "--now", unit)
     if not mounted(image, mount):
         raise HelperError(f"{unit} did not mount {image} on {mount}")
     _harden_mount(mount)
