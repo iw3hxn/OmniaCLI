@@ -124,9 +124,10 @@ def test_the_helper_publishes_two_names_with_one_certificate(portal_root):
         with pytest.raises(workspacehelper.HelperError):
             workspacehelper.portal(bad)
     assert workspaceweb.portal_names_in(portal_root["portal"].read_text()) == [PORTAL, PANEL]
-    # back to one name: the certificate of the two is not kept for it
+    # back to one name: certbot gives the same lineage that one name; the certificate is never deleted first
     workspacehelper.portal(PORTAL)
-    assert ["certbot", "delete", "--cert-name", "omniacli-_portal", "--non-interactive"] in portal_root["calls"]
+    assert [c for c in state["commands"] if c[0].endswith("certbot")][-1][-2:] == ["-d", PORTAL]
+    assert not [c for c in portal_root["calls"] if c[:2] == ["certbot", "delete"]]
 
 
 @pytest.mark.skipif(shutil.which("openssl") is None, reason="openssl is not installed")
@@ -187,11 +188,12 @@ async def test_publish_both_names_from_the_page_and_the_api(client, env, monkeyp
 
 async def test_staff_refused_on_the_portal_customers_on_the_panel(env, workspaces):
     settings = env["settings"]
-    settings.options = parse_options({"portal": {"address": PORTAL, "panel": PANEL, "second_factor": "nobody"}})
+    settings.options = parse_options({"portal": {"address": PORTAL, "panel": PANEL, "second_factor": "nobody",
+                                                 "panel_optional": ["admin"]}})
     app = create_app(settings)
     async with browser(app, PANEL) as panel, browser(app, PORTAL) as portal:
         # the staff at the panel: in; a customer there: refused after the right password, 403 in the access log
-        assert (await log_in(panel, "admin")).status_code == 303
+        assert (await log_in(panel, "admin")).headers["location"] == "/"
         panel.cookies.clear()
         resp = await log_in(panel, "mario")
         assert resp.status_code == 403 and "staff panel" in resp.text and "set-cookie" not in resp.headers
@@ -247,7 +249,7 @@ def test_rp_and_origins_of_the_domain():
 async def test_a_passkey_of_the_domain_works_on_both_names_and_nowhere_else(env, workspaces):
     settings = env["settings"]
     settings.options = parse_options({"portal": {"address": PORTAL, "panel": PANEL, "passkeys": DOMAIN,
-                                                 "staff": True, "second_factor": "nobody"}})
+                                                 "staff": True, "second_factor": "nobody", "panel_optional": ["admin"]}})
     app = create_app(settings)
     key = SoftKey()
     async with browser(app, PANEL) as c:
@@ -411,3 +413,114 @@ async def test_the_addresses_given_are_the_portals_even_from_the_panel(client, e
     for host in (PANEL, PORTAL):
         meta = (await client.get("/.well-known/oauth-protected-resource/mcp", headers={"Host": host})).json()
         assert meta["resource"] == f"https://{PORTAL}/mcp"
+
+
+# --- the review of 423da12 ---------------------------------------------------------------------------------------------
+
+async def test_the_staff_give_a_second_step_on_the_panel_unless_an_admin_said_not(client, env, workspaces):
+    """Carlo, 24/11/2026 (AD-018 answer 2): the staff panel open to the internet, the second factor optional per
+    person. Required by default, whatever the policy; optional only when another admin says so; audited."""
+    settings = env["settings"]
+    for policy in ("portal", "nobody"):
+        settings.options = parse_options({"portal": {"address": PORTAL, "panel": PANEL, "second_factor": policy}})
+        app = create_app(settings)
+        async with browser(app, PANEL) as panel:
+            resp = await log_in(panel, "dev")
+            assert resp.status_code == 303 and resp.headers["location"] == "/login/setup", (policy, resp.headers)
+            assert (await panel.get("/api/servers", headers={"Accept": "application/json"})).status_code == 401
+    # the machine's own address (a link, a tunnel): as before
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8090") as here:
+        resp = await here.post("/login", data={"username": "dev", "password": PASSWORD, "next": "/"},
+                               headers={"Origin": "http://127.0.0.1:8090"})
+        assert resp.headers["location"] == "/"
+    # made optional by an admin (from Users), never by itself
+    on_panel = {**JSON, "Host": PANEL, "Origin": f"https://{PANEL}"}
+    resp = await client.post("/api/portal/panel-second-factor", headers=JSON, json={"user": "dev", "required": False})
+    assert resp.status_code == 200 and settings.options.panel_optional == ["dev"], resp.text
+    assert load_options(settings.options_file).panel_optional == ["dev"]
+    resp = await client.post("/api/portal/panel-second-factor", headers=on_panel, json={"user": "admin", "required": False})
+    assert resp.status_code == 403 and "another administrator" in resp.json()["error"]
+    resp = await client.post("/api/portal/panel-second-factor", headers=JSON, json={"user": "mario", "required": False})
+    assert resp.status_code == 400
+    async with browser(client.app, PANEL) as panel:
+        assert (await log_in(panel, "dev")).headers["location"] == "/"
+    entry = [e for e in client.app.state.access_log.recent() if e["event"] == "second-factor"][0]
+    assert entry["detail"] == "the second step of dev on the staff's panel: optional (a password alone opens the panel)"
+    # the Users page says it, beside who has none
+    page = (await client.get("/users", headers={"Authorization": AUTH})).text
+    assert "data-panel-optional" in page and "a stolen password opens the staff panel" in page
+    assert 'data-panel-second="true"' in page
+    # the Options' Save keeps it; REST and MCP: the same code, never a CI's token
+    assert (await client.post("/api/options/save", headers=JSON, json={"portal": {"provider": "x"}})).json()["ok"]
+    assert settings.options.panel_optional == ["dev"]
+    admin = await token(client, "boss", "admin")
+    ci = await token(client, "ci-bot", "admin", ci=True)
+    v1 = apiv1.PREFIX + "/portal/panel-second-factor"
+    assert (await client.post(v1, headers=ci, json={"user": "dev", "required": True})).json()["error"]["code"] == "forbidden"
+    assert (await client.post(v1, headers=admin, json={"user": "dev", "required": True})).json()["changed"]
+    assert settings.options.panel_optional == []
+    done = await call(client, "portal_panel_second_factor", headers={**HEADERS, **admin}, user="dev", required=False)
+    assert done["portal"]["panel_second_factor"]["dev"] == "optional"
+    assert (await client.get(apiv1.PREFIX + "/portal", headers=admin)).json()["panel_second_factor"]["admin"] == "required"
+
+
+async def test_a_name_the_portals_site_does_not_have_is_refused(env, workspaces):
+    """A Host other than the two names reaching OmniaCLI through nginx (the portal's site as its default server): nginx
+    answers 421 (444 on port 80) and never passes it; OmniaCLI, if it came anyway, takes it as the portal."""
+    tls = ("/etc/letsencrypt/live/omniacli-_portal/fullchain.pem", "/etc/letsencrypt/live/omniacli-_portal/privkey.pem")
+    site = workspaceweb.portal_conf_text([PORTAL, PANEL], tls, False, "127.0.0.1:8090")
+    port80, port443 = site.split("listen 443 ssl;")
+    assert f"map $host $omniacli_portal_name {{\n    default \"\";\n    {PORTAL} 1;\n    {PANEL} 1;\n}}" in site
+    assert 'if ($omniacli_portal_name = "") {\n        return 444;' in port80
+    head443 = port443.split("location", 1)[0]
+    assert 'if ($omniacli_portal_name = "") {\n        return 421;' in head443
+    settings = env["settings"]
+    settings.options = parse_options({"portal": {"address": PORTAL, "panel": PANEL, "second_factor": "nobody"}})
+    app = create_app(settings)
+    async with browser(app, "203.0.113.5") as other:
+        resp = await log_in(other, "admin")
+        assert resp.status_code == 403 and "customers&#39; portal" in resp.text
+        assert failed(app, "a user of the machine at a name the portal's site does not have")[0]["status"] == 403
+        # a customer: the portal's rules (its second step with the default policy)
+        assert (await log_in(other, "mario")).headers["location"] == "/"
+    settings.options = parse_options({"portal": {"address": PORTAL, "panel": PANEL}})
+    app = create_app(settings)
+    async with browser(app, "203.0.113.5") as other:
+        assert (await log_in(other, "mario")).headers["location"] in ("/login/setup", "/login/code")
+
+
+async def test_a_token_of_some_servers_never_sets_the_portal(client, env, monkeypatch):
+    settings = env["settings"]
+    published(monkeypatch, settings, [])
+    limited = await token(client, "only-srv", "admin", servers=["srv"])
+    for path, body in (("/portal/publish", {"host": PORTAL, "panel": PANEL}), ("/portal/passkeys", {"domain": DOMAIN}),
+                       ("/portal/panel-second-factor", {"user": "dev", "required": False})):
+        resp = await client.post(apiv1.PREFIX + path, headers=limited, json=body)
+        assert resp.status_code == 403 and "some servers only" in resp.text, (path, resp.text)
+    assert settings.options.portal_panel == "" and settings.options.passkey_domain == ""
+
+
+def test_a_public_suffix_is_no_passkeys_domain():
+    for suffix in ("sslip.io", "nip.io", "co.uk", "github.io"):
+        with pytest.raises(ConfigError, match="public suffix"):
+            parse_options({"portal": {"passkeys": suffix}})
+    assert parse_options({"portal": {"passkeys": "1-2-3-4.sslip.io"}}).passkey_domain == "1-2-3-4.sslip.io"
+
+
+def test_lets_encrypts_certificate_is_never_taken_away_before_the_new_one(portal_root):
+    state = portal_root["web"]
+    assert workspacehelper.portal(PORTAL)["certificate"] == "letsencrypt"
+    live = portal_root["tmp"] / "letsencrypt" / "omniacli-_portal" / "fullchain.pem"
+    # the panel's DNS record not made yet: Let's Encrypt's of now serves on, the missing name said
+    state["dns"] = {PORTAL}
+    made = workspacehelper.portal(f"{PORTAL},{PANEL}")
+    assert not [c for c in portal_root["calls"] if c[:2] == ["certbot", "delete"]]
+    assert made["certificate"] == "letsencrypt" and made["kept"]["without"] == [PANEL]
+    assert f"{PANEL} is not in DNS yet" == made["certificate_error"]
+    assert f"ssl_certificate {live};" in portal_root["portal"].read_text() and live.exists()
+    # once it is: certbot gives the same lineage both names
+    state["dns"] = None
+    made = workspacehelper.portal(f"{PORTAL},{PANEL}")
+    assert made["certificate"] == "letsencrypt" and made["certificate_error"] is None and "kept" not in made
+    certbot = [c for c in state["commands"] if c[0].endswith("certbot")][-1]
+    assert certbot[certbot.index("--cert-name") + 1] == "omniacli-_portal" and certbot[-4:] == ["-d", PORTAL, "-d", PANEL]

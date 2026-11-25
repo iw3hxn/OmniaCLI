@@ -99,6 +99,7 @@ V1_PORTAL_TOOLS = {
     ("GET", "/api/v1/portal"): ("portal_status",),
     ("POST", "/api/v1/portal/publish"): ("portal_publish",),
     ("POST", "/api/v1/portal/passkeys"): ("portal_passkeys",),
+    ("POST", "/api/v1/portal/panel-second-factor"): ("portal_panel_second_factor",),
 }
 V1_TOOLS = {**V1_WORKSPACE_TOOLS, **V1_MACHINE_TOOLS, **V1_CENTRAL_TOOLS, **V1_RELAY_TOOLS, **V1_IDENTITY_TOOLS,
             **V1_PORTAL_TOOLS}
@@ -311,6 +312,11 @@ class PortalPublishBody(_Model):
                                   "empty: the portal and the staff's panel taken away")
     panel: Optional[str] = Field(None, description="The staff's panel's name, published with the portal's (one site, "
                                                    "one certificate); empty: none; not given: the one of now")
+
+
+class PanelSecondFactorBody(_Model):
+    user: str = Field(description="A user of this machine (not of the workspaces)")
+    required: bool = Field(description="true: a second step at the staff panel (the default); false: a password alone")
 
 
 class PortalPasskeysBody(_Model):

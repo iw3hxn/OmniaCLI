@@ -1559,6 +1559,22 @@ the Odoo instances do not change.
   *Failed login* with status 403 in the access log; a wrong password stays a
   401, so nothing tells a name of the other side). A session made on one name
   never opens the other.
+- **The second step on the staff panel** is per person and **required by
+  default**, whatever the policy of Two-step verification: the panel is on the
+  internet and a member of the staff reaches every machine. Another admin may
+  make it optional for a user (*Users* › **Panel without second step…**, REST
+  `POST /api/v1/portal/panel-second-factor`, MCP `portal_panel_second_factor`;
+  never for oneself, in the access log); the Users page says it beside that
+  user, and more when it has no second step at all.
+- **Any other name** reaching the site (nginx's default server when it is the
+  first of `conf.d`: an IP address, a name of the client's) gets 421 on 443 and
+  no answer on 80 (444); the instances' sites have their own names and are not
+  touched. Should it reach OmniaCLI anyway over https, it is taken as the
+  portal (the staff refused, the portal's second step).
+- **Certificates**: Let's Encrypt's of now is never taken away before the new
+  one is issued (the portal is behind HSTS): with a name whose DNS record is not
+  made yet it serves on, the job says which name it lacks, and the next
+  Publish once the name leads here gives the same lineage both names.
 - **The addresses a person is given** are the portal's, also when the page is
   opened on the staff panel: a customer's invitation, a workspace's MCP URL
   and its OAuth resource, single sign-on's return, Help. A member of the staff
@@ -1571,7 +1587,9 @@ the Odoo instances do not change.
   of it: another name of the domain (an Odoo of a customer under it) can ask the
   browser for one, and it is refused here by its origin. Setting it, or taking
   it away, when passkeys made until now would stop working asks to confirm (the
-  domain typed again) and says how many; empty, each name has its own.
+  domain typed again) and says how many; empty, each name has its own. A public
+  suffix (`sslip.io`, `nip.io`, `co.uk`, `github.io`…: a list of the common
+  ones) is refused: anybody has names under it.
 - **While OmniaCLI does not answer** (an update by hand, the process fallen)
   nginx answers its own page, in Italian and in English: «Il portale è
   momentaneamente fermo. I vostri siti Odoo funzionano normalmente.» (503,
@@ -1579,9 +1597,10 @@ the Odoo instances do not change.
   nginx's own errors: OmniaCLI's answers pass as they are.
 - **REST and MCP**: `GET /api/v1/portal`, `POST /api/v1/portal/publish`
   (`host`, `panel`: a job), `POST /api/v1/portal/passkeys` (`domain`,
-  `confirm`); MCP `portal_status`, `portal_publish`, `portal_passkeys`. The
-  machine's admin tokens only, never a CI's nor a workspace's; in the access
-  log.
+  `confirm`), `POST /api/v1/portal/panel-second-factor` (`user`, `required`);
+  MCP `portal_status`, `portal_publish`, `portal_passkeys`,
+  `portal_panel_second_factor`. The machine's admin tokens only, never a CI's,
+  a workspace's nor one of some servers only; in the access log.
 
 ### Links through SSH
 

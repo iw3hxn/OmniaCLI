@@ -598,14 +598,39 @@ Per ogni fetta: il rilascio, la prova su lab3/lab4, come si annulla, la stima. l
      - le Opzioni in italiano, a 1440 e 375, chiaro e scuro: 0 errori di pagina, 0 dialoghi del browser, 1 pulsante
        primario, nessuno scorrimento orizzontale. lab3 e lab4 sono tornati alla 2026.1.5525 con i loro file di prima.
    - **Scostamenti.** (1) La pagina di manutenzione sta nel sito del portale di ogni macchina che lo pubblica, non
-     solo del VPS: è la stessa riga di nginx, e anche una macchina con il portale la usa. (2) Il secondo fattore
-     facoltativo per ogni persona del personale (la risposta 2 di Carlo) **non** è in questa fetta: sul pannello
-     vale la politica di oggi (`portal`: nessun obbligo per il personale fuori dal portale). (3) I connettori OAuth
+     solo del VPS: è la stessa riga di nginx, e anche una macchina con il portale la usa. (2) Tolto dalla revisione
+     (sotto): il secondo fattore sul pannello è per persona, obbligatorio di default. (3) I connettori OAuth
      del personale: la risorsa MCP è quella del portale anche sul pannello, dove il personale non dà il consenso, e
      il personale usa i token Bearer. (4) Una passkey di un cliente usata sul pannello viene rifiutata dopo la
      verifica della macchina, che registra il login prima del rifiuto del centrale: le due voci si leggono insieme.
+   - **La revisione (dopo `423da12`).**
+     - **Il secondo fattore sul pannello, per persona** (la risposta 2 di Carlo; toglie lo scostamento 2). Sul nome
+       del pannello un utente della macchina dà il secondo passaggio, qualunque sia la politica, salvo che un altro
+       admin lo abbia reso facoltativo per lui (`portal.panel_optional`; *Utenti* › «Pannello senza secondo
+       passaggio…», REST `POST /api/v1/portal/panel-second-factor`, MCP `portal_panel_second_factor`, nel registro
+       come `second-factor`). **Il default è obbligatorio**: il pannello è su internet e la sessione di una persona
+       del personale raggiunge tutte le macchine dei clienti, quindi una password rubata da sola non deve bastare
+       finché qualcuno non sceglie altrimenti, con il nome e la data nel registro. Nessuno se lo toglie da solo (è
+       la prima cosa che farebbe chi ha rubato la password). La pagina Utenti lo dice accanto a chi ce l'ha
+       facoltativo, e in più se non ha un secondo fattore. Sull'indirizzo della macchina (collegamento, tunnel) non
+       cambia nulla.
+     - **Il certificato di Let's Encrypt non si cancella mai prima del nuovo.** Prima, pubblicare portale e
+       pannello con il DNS del pannello non ancora fatto cancellava il certificato buono del portale e serviva uno
+       della macchina dietro HSTS di un anno: i clienti restavano fuori. Ora certbot gira con `--cert-name` e i
+       nomi di adesso solo quando tutti portano qui, e sostituisce lo stesso lineage solo se lo rilascia; se no il
+       certificato di prima continua a servire e il job dice il nome che manca (`kept.without`).
+     - **Un nome che il sito non ha.** Il sito del portale è il primo di `conf.d`, quindi il server di default di
+       nginx: un `Host` qualsiasi (un indirizzo IP, un nome del client) arrivava a OmniaCLI e saltava sia
+       `portal_admits` sia il secondo passaggio. Ora una `map $host` con i due nomi: 421 sulla 443 e 444 sulla 80
+       per ogni altro nome; i siti delle istanze hanno i loro `server_name` e non passano di lì. E OmniaCLI, se
+       arrivasse comunque in https su un altro nome con il portale pubblicato, lo tratta come il portale (il
+       personale rifiutato, il secondo passaggio del portale): chiuso, non «tutti come prima».
+     - **Un token di alcuni server** non tocca il portale anche via REST (prima solo MCP lo rifiutava).
+     - **Un suffisso pubblico** (`sslip.io`, `nip.io`, `co.uk`, `github.io`…) non è un dominio delle passkey:
+       una lista incorporata dei più comuni (nessuna dipendenza nuova: la Public Suffix List intera non c'è fra
+       quelle di oggi).
+     - Prova: 5 test nuovi e uno cambiato in `tests/test_portal_names.py`, che falliscono su `423da12`.
    - **Resta aperto.**
-     - il secondo fattore per persona sul pannello;
      - le passkey fatte sul nome di una macchina (18.4.5: il nome vecchio servito per 90 giorni, oppure rifatte con
        il link monouso della fetta 5);
      - una passkey nuova fatta sul centrale da una persona servita (il suo account sul centrale si legge e non si

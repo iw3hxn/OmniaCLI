@@ -926,20 +926,33 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         host = request.headers.get("host", "").lower()
         return bool(address) and (host == address or host == f"{address}:443")
 
+    def on_stranger(request: HTTPConnection) -> bool:
+        """The request came through nginx (https: OmniaCLI itself answers http only, nginx says X-Forwarded-Proto
+        https from this machine) on a name that is neither the portal's nor the staff's panel's, while the portal is
+        published: what the portal's site would pass when it is nginx's default server and a client sends another
+        Host (an address, a name of its own). The site answers 421 to it (workspaceweb.portal_conf_text); here it is
+        the portal, fail closed (the staff refused, the portal's second step), never «everyone as before»."""
+        return (bool(settings.options.portal_address) and request.url.scheme == "https"
+                and not on_portal(request) and not on_panel(request))
+
     def portal_admits(request: HTTPConnection, name: str) -> bool:
-        """name may log in where this request came from: on the portal, the
+        """name may log in where this request came from: on the portal (and
+        on a name the portal's site should not have passed: on_stranger), the
         users of the workspaces only, unless the machine's users were let in
         there too (Options); on the staff's panel (AD-018 §18.4), the users of
-        the machine only; everywhere else, everyone as before."""
+        the machine only; everywhere else (a link, a tunnel, the machine's own
+        address), everyone as before."""
         customer = settings.user_role(name) == WORKSPACE_ROLE
         if on_panel(request):
             return not customer
-        return not on_portal(request) or settings.options.portal_staff or customer
+        return not (on_portal(request) or on_stranger(request)) or settings.options.portal_staff or customer
 
     def refused_here(request: HTTPConnection) -> tuple[str, str]:
         """(what the person reads, what the access log says) of a refusal by portal_admits on this request's name."""
         if on_panel(request):
             return PANEL_CUSTOMER_REFUSED, "a user of a workspace at the staff's panel"
+        if on_stranger(request):
+            return PORTAL_STAFF_REFUSED, "a user of the machine at a name the portal's site does not have"
         return PORTAL_STAFF_REFUSED, "a user of the machine at the customers' portal"
 
     def own_names() -> list[str]:
@@ -951,12 +964,18 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         verification): everybody; or, with the portal's policy and once the
         machine has a portal, whoever logs in at its address and the users of
         the workspaces wherever they log in (the machine's own address is no
-        way around it). No portal address: nobody, as before."""
+        way around it). No portal address: nobody, as before. On the staff's
+        panel (AD-018 §18.4, on the internet) a user of the machine gives a
+        second step unless an admin made it optional for that person
+        (Options.panel_optional, Users), whatever the policy."""
         policy = settings.options.second_factor
         if policy == "everybody":
             return True
+        customer = settings.user_role(name) == WORKSPACE_ROLE
+        if on_panel(request) and not customer:
+            return name not in settings.options.panel_optional
         if policy == "portal" and settings.options.portal_address:
-            return on_portal(request) or settings.user_role(name) == WORKSPACE_ROLE
+            return on_portal(request) or on_stranger(request) or customer
         return False
 
     def public_base(request: Request) -> str:
@@ -10914,8 +10933,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                        "workspaces": sorted(w.name for w in settings.workspaces.values() if n in w.members),
                        "invitation": None if n in fixed.users else invitation_state(n),
                        "two_step": second_factors.on(n) or passkey_store.count(n) > 0,
-                       "passkeys": passkey_store.count(n), "sessions": open_sessions.get(n, 0)}
+                       "passkeys": passkey_store.count(n), "sessions": open_sessions.get(n, 0),
+                       # the second step at the staff's panel made optional by an admin (AD-018 slice 3)
+                       "panel_optional": n in settings.options.panel_optional}
                       for n in sorted(settings.users)],
+            "staff_panel": settings.options.portal_panel,
             "links": [{"name": n, "role": link.role, "fixed": n in fixed.links}
                       for n, link in sorted(settings.links.items())],
             "tokens": [{"name": n, "role": settings.token_role(n), "fixed": n in fixed.tokens,
@@ -14080,6 +14102,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         # and so does the staff's panel's, published with it; the passkeys' domain is set on its own (portal_act)
         payload = {**payload, "portal": {**portal, "address": current.portal_address,
                                          "panel": current.portal_panel, "passkeys": current.passkey_domain,
+                                         # the second step on the staff's panel: per person, from Users (panel_act)
+                                         "panel_optional": list(current.panel_optional),
                                          "staff": portal.get("staff", current.portal_staff),
                                          "second_factor": portal.get("second_factor", current.second_factor)}}
         if not isinstance(payload.get("brand"), dict):
@@ -14263,6 +14287,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 # the RP ID each name's passkeys are made on: the domain when the name is under it, else the name
                 "rp": {n: passkeys.rp_here(n, options.passkey_domain, names) for n in names},
                 "passkeys_of_domain": passkey_store_count(options.passkey_domain) if options.passkey_domain else 0,
+                # the second step on the staff's panel, per user of the machine: required unless an admin said not
+                "panel_second_factor": {n: "optional" if n in options.panel_optional else "required"
+                                        for n in sorted(settings.users) if settings.user_role(n) != WORKSPACE_ROLE},
                 "refused": portal_refusal(me)}
 
     def passkey_store_count(rp: str) -> int:
@@ -14277,6 +14304,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return 403, {"error": "A workspace's token never sets the portal's names", "code": "machine_token_required"}
         if me.ci or (me.kind == "token" and settings.token_ci(me.name)):
             return 403, {"error": "A CI token never sets the portal's names", "code": "forbidden"}
+        if me.kind == "token" and settings.token_servers(me.name):
+            # as MCP says it: a token of some servers only never reaches what is the machine's
+            return 403, {"error": "This token reaches some servers only, and the portal is the machine's",
+                         "code": "forbidden"}
         if not machine_admin(me):
             return 403, {"error": "Only the administrators of the machine publish the customers' portal",
                          "code": "forbidden"}
@@ -14293,10 +14324,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         host empty, taken away); passkeys (the passkeys' domain: the RP ID of the passkeys made on those names, under
         which both must be; confirm = the domain when passkeys of the domain of before stop working)."""
         body = dict(body or {})
-        if op == "status":
+        if op in ("status", "panel_second_factor"):
             refused = portal_api_refusal(me, nginx=False)
             if refused is not None:
                 return refused
+            if op == "panel_second_factor":
+                return await panel_second_factor_act(me, ip, body)
             return 200, portal_said(me)
         refused = portal_api_refusal(me)
         if refused is not None:
@@ -14306,6 +14339,38 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if op == "passkeys":
             return await portal_passkeys_act(me, ip, body)
         return 404, {"error": f"No such action: {op}", "code": "not_found"}
+
+    async def panel_second_factor_act(me: Principal, ip: str, body: dict) -> tuple[int, dict]:
+        """The second step of user on the staff's panel (AD-018, Carlo's answer 2: optional per person): required
+        (the default) or not. An admin of the machine sets it for another user of the machine, never for itself:
+        whoever holds a stolen password would switch it off first. In the access log."""
+        user = str(body.get("user") or "")
+        required = body.get("required")
+        if not isinstance(required, bool):
+            return 400, {"error": "Say required: true or false", "code": "invalid"}
+        if user not in settings.users:
+            return 404, {"error": f"No user {user}", "code": "not_found"}
+        if settings.user_role(user) == WORKSPACE_ROLE:
+            return 400, {"error": f"{user} is a user of the workspaces: the staff's panel refuses it anyway",
+                         "code": "invalid"}
+        if me.kind == "user" and me.name == user:
+            return 403, {"error": "Your own second step on the staff's panel is set by another administrator",
+                         "code": "forbidden"}
+        options = settings.options
+        now = user not in options.panel_optional
+        if now == required:
+            return 200, {"ok": True, "changed": False, "portal": portal_said(me)}
+        optional = sorted(set(options.panel_optional) - {user}) if required else sorted({*options.panel_optional, user})
+        new = dataclasses.replace(options, panel_optional=optional)
+        try:
+            await asyncio.to_thread(save_options, settings.options_file, new)
+        except OSError as exc:
+            return 500, {"error": f"{settings.options_file} is not written: {exc}", "code": "failed"}
+        settings.options = new
+        access_log.record("second-factor", me.kind, me.name, ip,
+                          f"the second step of {user} on the staff's panel: "
+                          + ("required" if required else "optional (a password alone opens the panel)"))
+        return 200, {"ok": True, "changed": True, "portal": portal_said(me)}
 
     async def portal_passkeys_act(me: Principal, ip: str, body: dict) -> tuple[int, dict]:
         """The passkeys' domain set (empty: each name its own again). The portal's name, and the staff's panel's when
@@ -14356,6 +14421,13 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     async def portal_get(me: Principal = Depends(current_user)):
         """The portal's names, its passkeys' domain and whether it may be published here."""
         return portal_said(me)
+
+    @app.post("/api/portal/panel-second-factor", dependencies=[Depends(admin)])
+    async def portal_panel_second_factor(request: Request, payload: dict = Body(...),
+                                         me: Principal = Depends(current_user)):
+        """The second step of a user of the machine on the staff's panel, from Users."""
+        code, data = await portal_act("panel_second_factor", me, f"manual: {me}", central_ip(request), payload)
+        return identity_answer(request, code, data)
 
     @app.post("/api/portal/passkeys", dependencies=[Depends(admin)])
     async def portal_passkeys(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
@@ -14444,6 +14516,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             elif not made.get("https"):
                 job.warn(f"{shown} {'have' if panel else 'has'} no certificate yet: "
                          f"{why or 'openssl did not make one'}")
+            elif (made.get("kept") or {}).get("without"):
+                # Let's Encrypt's of before serves on (HSTS: never taken away first); a name lacks it until published
+                # again once it leads here
+                lacking = ", ".join(made["kept"]["without"])
+                job.warn(f"Let's Encrypt's certificate of now is kept; {lacking} is not in it yet, publish again once "
+                         f"{lacking} points here" + (f" ({why})" if why else ""))
             domain = settings.options.passkey_domain
             outside = [n for n in names if domain and not config_under(n, domain)]
             if outside:
@@ -31381,6 +31459,15 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                  "customers. host empty: both taken away. A job (202).")
     async def api_portal_publish(request: Request, body: apiv1.PortalPublishBody, me: Principal = Depends(api_token)):
         return api_central_answer(request, *await portal_act("publish", me, f"api: {me}", api_ip(request),
+                                                             body.model_dump()))
+
+    @api_router.post(P + "/portal/panel-second-factor", summary="The second step of a user on the staff panel",
+                     description="Whether user (a user of this machine, not a workspace's) must give a second step "
+                                 "when logging in at the staff panel's name: required: true (the default) or false "
+                                 "(a password alone opens it). Never for the token's own person; in the access log.")
+    async def api_portal_panel_second_factor(request: Request, body: apiv1.PanelSecondFactorBody,
+                                             me: Principal = Depends(api_token)):
+        return api_central_answer(request, *await portal_act("panel_second_factor", me, f"api: {me}", api_ip(request),
                                                              body.model_dump()))
 
     @api_router.post(P + "/portal/passkeys", summary="Set the passkeys' domain of the portal",

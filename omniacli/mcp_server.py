@@ -96,7 +96,9 @@ this /mcp as before: its tools are asked of its machine with its scope.
 The names of this OmniaCLI (admin token): portal_status, portal_publish
 (the customers' portal and the staff's panel, one site and one
 certificate: a job), portal_passkeys (the passkeys' domain, their RP ID,
-with confirm when passkeys of before would stop working)."""
+with confirm when passkeys of before would stop working),
+portal_panel_second_factor (a user's second step on the staff's panel,
+required by default)."""
 
 
 def _instructions() -> str:
@@ -132,7 +134,8 @@ TOOL_ROLES = {"update_test": "developer", "backup_test": "developer",
               **{t: "admin" for t in ("identity_import_status", "identity_import", "identity_import_delete",
                                       "identity_home")},
               # the portal's names and its passkeys' domain (AD-018 slice 3): the machine's admins only
-              **{t: "admin" for t in ("portal_status", "portal_publish", "portal_passkeys")}}
+              **{t: "admin" for t in ("portal_status", "portal_publish", "portal_passkeys",
+                                      "portal_panel_second_factor")}}
 CENTRAL_TOOLS = {"central_backup_status", "central_backup_configure", "central_backup_new_key",
                  "central_backup_confirm_key", "central_backup_run",
                  "agent_relay_status", "agent_relay_publish", "agent_relay_remove", "link_relay",
@@ -144,12 +147,14 @@ WRITE_TOOLS = {"update_test", "backup_test", "backup", "add_draft_server", "rest
                "prepare_handover", "receive_workspace", "switch_workspace", "move_instance", "move_back",
                "central_backup_configure", "central_backup_new_key", "central_backup_confirm_key", "central_backup_run",
                "agent_relay_publish", "agent_relay_remove", "link_relay", "identity_import", "identity_import_delete",
-               "identity_home", "portal_publish", "portal_passkeys"}
+               "identity_home", "portal_publish", "portal_passkeys",
+               "portal_panel_second_factor"}
 # the tools of the machine's tokens only: a workspace's token never reaches them
 MACHINE_TOOLS = {"read_server", "add_draft_server", "list_links", "linked_tools", "call_linked",
                  "handover_status", "prepare_handover", "receive_workspace", "reception_status", "switch_workspace",
                  "move_status", "move_instance", "move_back", *CENTRAL_TOOLS,
-                 "portal_status", "portal_publish", "portal_passkeys"}
+                 "portal_status", "portal_publish", "portal_passkeys",
+                 "portal_panel_second_factor"}
 # the tools of a move asked of the home of a placed instance, never of the machine it is on (its move is the home's)
 HOME_TOOLS = {"move_status", "move_instance", "move_back"}
 # the tools a CI's token never uses, whatever its role (apiguard.machine_refusal): not in its list
@@ -1266,6 +1271,15 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         stop working the answer says how many: send confirm = the domain
         (or off) after telling the user."""
         return await portal(ctx, "passkeys", domain=domain, confirm=confirm)
+
+    @server.tool()
+    async def portal_panel_second_factor(user: str, required: bool, ctx: Context) -> dict:
+        """(admin token of the machine, never a CI's) Whether user, a user
+        of this machine, gives a second step when logging in at the staff's
+        panel's name: required=true (the default) or false (a password
+        alone opens the panel: say to the user that a stolen password then
+        reaches every machine)."""
+        return await portal(ctx, "panel_second_factor", user=user, required=required)
 
     # --- the protection of this panel (AD-017 slice 7): the pages' code (app.central_backup_act), the same answers
 

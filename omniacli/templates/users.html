@@ -55,12 +55,16 @@
       <td><strong>{{ u.name }}</strong>{% if u.name == account %} <span class="muted">({{ _("you") }})</span>{% endif %}
         {% if u.fixed %} <span class="badge" title="{{ _('It is changed in the main configuration file of the machine, not from here') }}">{{ _("main config") }}</span>{% endif %}
         {% if u.two_step %} <span class="badge ok" title="{{ _('After the password, the login asks a code of an authenticator app') }}">{{ _("two-step on") }}</span>{% endif %}
+        {% if staff_panel and u.role != "workspace" and u.panel_optional %} <span class="badge warn" data-panel-optional title="{{ _('At the staff panel, on the internet, this user logs in with the password alone: a stolen password reaches every machine.') }}">{{ _("panel: second step optional") }}</span>{% if not u.two_step %} <span class="small-note">{{ _("no second step: a stolen password opens the staff panel") }}</span>{% endif %}{% endif %}
         {% if u.invitation and u.invitation.state == "pending" %} <span class="badge warn" title="{{ _('The person has not set a password yet: until then it cannot log in. Invited by {by}.', by=u.invitation.by) }}">{{ _("invitation waiting, until {date}", date=u.invitation.expires) }}</span>
         {% elif u.invitation %} <span class="badge error" title="{{ _('The link was not used in time: the person cannot log in. Send it again or revoke it.') }}">{{ _("invitation expired on {date}", date=u.invitation.expires) }}</span>{% endif %}</td>
       <td>{{ role_names.get(u.role, u.role) }}
         {% if u.workspaces %}<span class="small-note">{% for w in u.workspaces %}<a href="{{ prefix }}/workspaces/{{ w }}#users">{{ w }}</a>{% if not loop.last %}, {% endif %}{% endfor %}</span>{% endif %}</td>
       <td>{% if u.sessions and u.name != account %}<div class="actions" style="margin: 0 0 4px; justify-content: flex-end">
         <button type="button" class="small" data-sessions title="{{ _('The browsers where this user is logged in now (device, address, since when), each to end at once') }}">{{ _("Sessions ({count})…", count=u.sessions) }}</button></div>{% endif %}
+        {% if staff_panel and u.role != "workspace" and u.name != account %}<div class="actions" style="margin: 0 0 4px; justify-content: flex-end">
+        {% if u.panel_optional %}<button type="button" class="small" data-panel-second="true" title="{{ _('From the next login at the staff panel this user gives a second step too (it sets one up if it has none). It goes in the access log.') }}">{{ _("Require the second step on the panel") }}</button>
+        {% else %}<button type="button" class="small" data-panel-second="false" title="{{ _('This user logs in at the staff panel with the password alone. It asks first; it goes in the access log.') }}">{{ _("Panel without second step…") }}</button>{% endif %}</div>{% endif %}
         {% if u.fixed and u.two_step and u.name != account %}<div class="actions" style="margin: 0; justify-content: flex-end">
         <button type="button" class="small" data-reset-two-step title="{{ _('Switches the two-step verification of this user off, for a lost phone: it sets it up again, at its next login where it is required. It goes in the access log.') }}">{{ _("Reset two-step…") }}</button></div>{% endif %}
         {% if not u.fixed %}<div class="actions" style="margin: 0; justify-content: flex-end">
@@ -424,6 +428,20 @@
       const name = button.closest("tr").dataset.user;
       if (!await omniaAsk({{ _("Reset the two-step verification of {name}? Its app and recovery codes stop working; it sets it up again at its next login where it is required.") | tojson }}.replace("{name}", name), button, {danger: true})) return;
       if (await post("users/second-factor/reset", {name}, errorBox)) location.reload();
+    };
+  }
+  // the second step at the staff panel, per user of the machine (required by default; never one's own)
+  for (const button of document.querySelectorAll("[data-panel-second]")) {
+    button.onclick = async () => {
+      const name = button.closest("tr").dataset.user, required = button.dataset.panelSecond === "true";
+      if (!required && !await omniaAsk({{ _("Let {name} log in at the staff panel with the password alone? The panel is on the internet: whoever has its password reaches every machine.") | tojson }}.replace("{name}", name), button, {danger: true})) return;
+      errorBox.hidden = true;
+      const resp = await fetch("{{ prefix }}/api/portal/panel-second-factor", {method: "POST",
+        headers: {"Content-Type": "application/json", Accept: "application/json"},
+        body: JSON.stringify({user: name, required})}).catch(() => null);
+      const data = resp ? await resp.json().catch(() => ({})) : {};
+      if (resp && resp.ok) { location.reload(); return; }
+      errorBox.textContent = data.error || (T.error + " " + (resp ? resp.status : "")); errorBox.hidden = false;
     };
   }
   // a user's sessions: listed in their dialog, ended one by one or all

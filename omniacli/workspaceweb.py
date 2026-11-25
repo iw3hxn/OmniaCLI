@@ -405,9 +405,18 @@ def portal_conf_text(host: str | list[str], tls: tuple[str, str] | None, ipv6: b
            # counted, but for a form sent
            "map $request_method $omniacli_portal_form {", "    POST $binary_remote_addr;", '    default "";', "}",
            f"limit_req_zone $omniacli_portal_form zone=omniacli_portal_login:1m rate={PORTAL_LOGIN_RATE};",
-           "map $http_upgrade $omniacli_portal_upgrade {", "    default upgrade;", '    "" "";', "}", "",
-           *out[3:], "",
+           "map $http_upgrade $omniacli_portal_upgrade {", "    default upgrade;", '    "" "";', "}",
+           # its own names: when this site is nginx's default server (the first of conf.d, no default_server
+           # elsewhere), another Host (an address, a name of the client's) lands here, and is not passed on
+           "map $host $omniacli_portal_name {", '    default "";',
+           *(f"    {n} 1;" for n in names.split()), "}", "",
+           *out[3:5 + len(listen80)],
+           # port 80: closed without an answer for a name it does not have; the challenges and the 301 for its own
+           '    if ($omniacli_portal_name = "") {', "        return 444;", "    }",
+           *out[5 + len(listen80):], "",
            "server {", *listen443, f"    server_name {names};",
+           # port 443: 421 Misdirected Request for a name it does not have (it never reaches OmniaCLI)
+           '    if ($omniacli_portal_name = "") {', "        return 421;", "    }",
            f"    ssl_certificate {tls[0]};", f"    ssl_certificate_key {tls[1]};",
            "    ssl_protocols TLSv1.2 TLSv1.3;",
            f"    client_max_body_size {PORTAL_MAX_BODY};",

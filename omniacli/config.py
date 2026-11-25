@@ -1393,7 +1393,27 @@ def passkey_domain(where: str, value) -> str:
     name = str(value or "").strip().lower().rstrip(".")
     if not DOMAIN_NAME.fullmatch(name) or "." not in name:
         raise ConfigError(f"{where}: {name!r} is not a domain (as esempio.it)")
+    if name in PUBLIC_SUFFIXES:
+        # a suffix under which anybody has names: every one of them could use the passkeys of this panel
+        raise ConfigError(f"{where}: {name} is a public suffix, under which anybody has names: choose a domain of "
+                          "yours under it")
     return name
+
+
+# public suffixes (the Public Suffix List's, the common ones: no dependency on the whole list): the two-label ones
+# of the countries most often met, and the services that give names under their domain to anybody (a name of the IP
+# address, a host of pages or of applications); a one-label domain (a TLD) is refused before
+PUBLIC_SUFFIXES = frozenset({
+    "co.uk", "org.uk", "me.uk", "ltd.uk", "plc.uk", "net.uk", "ac.uk", "gov.uk", "sch.uk",
+    "com.au", "net.au", "org.au", "edu.au", "gov.au", "co.nz", "net.nz", "org.nz",
+    "co.jp", "ne.jp", "or.jp", "ac.jp", "go.jp", "com.br", "net.br", "org.br", "com.cn", "net.cn", "org.cn",
+    "com.mx", "co.za", "co.in", "net.in", "org.in", "com.tr", "com.ar", "com.es", "com.pt", "com.pl", "co.it",
+    "gov.it", "edu.it", "co.at", "or.at", "com.sg", "com.hk", "co.kr", "co.il", "com.ua", "com.ru",
+    "sslip.io", "nip.io", "xip.io", "nip.at", "traefik.me", "duckdns.org", "ddns.net", "dynv6.net", "no-ip.org",
+    "ngrok.io", "ngrok-free.app", "trycloudflare.com", "github.io", "gitlab.io", "herokuapp.com", "vercel.app",
+    "netlify.app", "pages.dev", "workers.dev", "web.app", "firebaseapp.com", "appspot.com", "azurewebsites.net",
+    "cloudfront.net", "amazonaws.com", "onrender.com", "fly.dev", "glitch.me", "repl.co",
+})
 
 
 def under(name: str, domain: str) -> bool:
@@ -2048,6 +2068,9 @@ class Options:
     # the RP ID of the passkeys made on the portal's and the panel's names (AD-018 §18.4.3): a domain both are under,
     # chosen once, so a name may change within it and keep its passkeys; "" for each name its own (passkeys.rp_of)
     passkey_domain: str = ""
+    # the staff's panel is on the internet (Carlo, 24/11/2026: open, the second factor optional per person): the users
+    # of this machine who log in there with a password only; every other one must give a second step there
+    panel_optional: list = field(default_factory=list)
     # who logs in with a second step (totp.py, README Two-step verification):
     # nobody; portal: at the portal's address, and the users of the workspaces
     # anywhere once the machine has one (else they would skip it by the
@@ -2231,6 +2254,9 @@ def parse_options(data) -> Options:
     if panel and panel == address:
         raise ConfigError("portal.panel: the staff's panel needs a name of its own, not the portal's")
     domain = passkey_domain("portal.passkeys", portal["passkeys"]) if portal.get("passkeys") else ""
+    optional = portal.get("panel_optional") or []
+    if not isinstance(optional, list) or any(not isinstance(n, str) or not MEMBER_NAME.fullmatch(n) for n in optional):
+        raise ConfigError("portal.panel_optional: a list of user names")
     second = str(portal.get("second_factor") or SECOND_FACTOR_DEFAULT)
     if second not in SECOND_FACTOR_POLICIES:
         raise ConfigError(f"portal.second_factor: one of {', '.join(SECOND_FACTOR_POLICIES)}")
@@ -2257,6 +2283,7 @@ def parse_options(data) -> Options:
                    audit_retention_days=retention, syslog_host=syslog_host, syslog_port=syslog_port,
                    syslog_protocol=protocol, syslog_ca_file=ca_file, provider_label=provider,
                    portal_address=address, portal_staff=staff, portal_panel=panel, passkey_domain=domain,
+                   panel_optional=sorted(set(optional)),
                    second_factor=second)
 
 
@@ -2292,7 +2319,8 @@ def save_options(path: Path, options: Options) -> None:
             data["audit"]["syslog"] = {"host": options.syslog_host, "port": options.syslog_port,
                                        "protocol": options.syslog_protocol, "ca_file": options.syslog_ca_file}
     portal = {"provider": options.provider_label, "address": options.portal_address, "staff": options.portal_staff,
-              "panel": options.portal_panel, "passkeys": options.passkey_domain}
+              "panel": options.portal_panel, "passkeys": options.passkey_domain,
+              "panel_optional": sorted(options.panel_optional)}
     portal = {key: value for key, value in portal.items() if value}
     if options.second_factor != SECOND_FACTOR_DEFAULT:
         portal["second_factor"] = options.second_factor

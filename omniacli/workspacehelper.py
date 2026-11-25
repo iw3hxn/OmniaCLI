@@ -2952,20 +2952,22 @@ def portal(host: str) -> dict:
     _hash_bucket(dump.stdout)
     Path(workspaceweb.ACME_ROOT).mkdir(mode=0o755, exist_ok=True)
     before = workspaceweb.portal_names_in(path.read_text(encoding="utf-8")) if path.is_file() else []
-    lineage = LETSENCRYPT / f"omniacli-{workspaceweb.PORTAL}"
-    if before and before != names and lineage.exists():
-        # the certificate of the names of before: other names get their own
-        _run("certbot", "delete", "--cert-name", f"omniacli-{workspaceweb.PORTAL}", "--non-interactive", check=False)
     ipv6 = Path("/proc/net/if_inet6").exists()
     omniacli = omniacli_address()
-    tls = _tls(workspaceweb.PORTAL, "letsencrypt") if before == names else None
+    # Let's Encrypt's certificate of now is never taken away before the new one is issued: the portal is behind HSTS
+    # (a year), and a certificate of the machine's own there would lock the customers out until it comes. It serves
+    # on, also for names it does not have yet (a name whose DNS record is not made), and certbot replaces it only
+    # once it issued one with every name (--cert-name: the same lineage, its names those of now)
+    tls = _tls(workspaceweb.PORTAL, "letsencrypt")
+    covered = (_certificate_names(tls[0]) or before) if tls else []
     kind = "letsencrypt" if tls else ""
     if tls is None:
         tls = _self_signed(names)
         kind = "self-signed" if tls else ""
     made["nginx"] = _put_site(path, workspaceweb.portal_conf_text(names, tls, ipv6, omniacli))
+    ready = kind == "letsencrypt" and set(names) <= set(covered)
     missing = [n for n in names if not _resolves(n)]
-    away = [] if missing or kind == "letsencrypt" else [n for n in names if not _reaches_here(n)]
+    away = [] if missing or ready else [n for n in names if not _reaches_here(n)]
     if missing:
         made["certificate_error"] = f"{', '.join(missing)} {'is' if len(missing) == 1 else 'are'} not in DNS yet"
     elif away:
@@ -2977,8 +2979,21 @@ def portal(host: str) -> dict:
         if found and found != tls:
             tls, kind = found, "letsencrypt"
             made["nginx"] = _put_site(path, workspaceweb.portal_conf_text(names, tls, ipv6, omniacli))
+    if kind == "letsencrypt" and made["certificate_error"]:
+        # the names its certificate of now does not have yet: said, the certificate kept
+        lacking = [n for n in names if n not in (_certificate_names(tls[0]) or covered)]
+        made["kept"] = {"certificate": "letsencrypt", "without": lacking}
     made["https"], made["certificate"] = tls is not None, kind
     return made
+
+
+def _certificate_names(chain: str) -> list[str]:
+    """The DNS names of the first certificate of a chain (its subjectAltName), [] when it is not readable."""
+    done = subprocess.run([_tool("openssl"), "x509", "-in", chain, "-noout", "-ext", "subjectAltName"],
+                          env=ENV, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    if done.returncode:
+        return []
+    return [part.strip()[4:] for part in done.stdout.replace("\n", ",").split(",") if part.strip().startswith("DNS:")]
 
 
 def portal_taken() -> dict:
