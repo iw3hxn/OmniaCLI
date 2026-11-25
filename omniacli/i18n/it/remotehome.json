@@ -19,6 +19,7 @@
  "This panel stops serving the people of this machine: their sessions here end, the machine is told, and they log in on the machine as before. It asks first.": "Questo pannello smette di servire le persone di questa macchina: le loro sessioni qui si chiudono, la macchina viene avvisata, ed entrano sulla macchina come prima. Prima chiede conferma.",
  "This portal asks a second step and you have none yet: set it up where you logged in before, then log in here": "Questo portale chiede un secondo passaggio e non ne hai ancora uno: attivalo dove entravi prima, poi entra qui",
  "Workspaces served": "Workspace serviti",
+ "You are no longer a member of this workspace": "Non sei più membro di questo workspace",
  "Your account is changed where you logged in before: it comes to this portal with your workspace's move": "Il tuo account si cambia dove entravi prima: arriva su questo portale con il passaggio del tuo workspace",
  "Your account on this portal: your workspaces, your second step and your sessions.": "Il tuo account su questo portale: i tuoi workspace, il secondo passaggio e le tue sessioni.",
  "Your password cannot be checked now: try again in a few minutes": "La password ora non si può controllare: riprova tra qualche minuto",

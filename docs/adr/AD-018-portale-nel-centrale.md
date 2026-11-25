@@ -519,6 +519,14 @@ Per ogni fetta: il rilascio, la prova su lab3/lab4, come si annulla, la stima. l
        sulla macchina, membro tolto dal centrale e sulla macchina, ruolo abbassato e password cambiata sulla macchina,
        codice usato sulla macchina e codice di recupero, token oltre il ruolo della persona, redirect con `\`,
        import vecchio riletto).
+   - **La terza lettura (dopo `d4e5e49`).** (1) Con la macchina ferma o lenta il login di un nome servito risponde come
+     una password sbagliata (401, l'hash finto pagato), la ragione resta nel registro: prima della password niente
+     distingue un nome servito da uno sconosciuto. (2) `/api/identity/v1/login` usa il `LoginLimiter` della macchina:
+     gli errori dal centrale e dal modulo della macchina contano nella stessa finestra per nome (per indirizzo a parte,
+     `central:<link>:<persona>`), e una persona in attesa lì è rifiutata anche dal centrale. (3) Un W che la persona
+     (o il token) non ha più sulla macchina si toglie dall'ambito, gli altri restano suoi; senza nessun W rimasto il
+     rifiuto lo dice («Non sei più membro di questo workspace»). Prova: 3 test in più in
+     `tests/test_remote_home_review.py`, che falliscono su `d4e5e49`.
    - **Resta aperto.** (a) **Il server spostato direttamente all'host** (punto 7 di 18.2): l'host prende l'ambito
      solo dalla casa scritta in `hosted-workspaces.json`, che è la macchina di partenza; cambiarla è 18.7 (fetta 6).
      Oggi i dati passano per la macchina di partenza (due salti) e le pagine di un server spostato dicono «non

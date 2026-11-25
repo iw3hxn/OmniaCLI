@@ -206,3 +206,57 @@ async def test_an_old_record_is_read_again_by_itself(home):
             break
         await __import__("asyncio").sleep(0.1)
     assert "carla" not in store.load("lab4")["people"]
+
+
+# --- the third look: nothing said before the password, one window of failures, a workspace left -----------------
+
+async def test_a_machine_that_does_not_answer_is_said_as_a_wrong_password(home):
+    await switch(home, True)
+    home.machine.down = True
+    served = await refused_login(home, "elena", "wrong-password")
+    nobody = await refused_login(home, "nobody", "wrong-password")
+    assert served.status_code == nobody.status_code == 401
+    assert "Wrong user name or password" in served.text and "checked now" not in served.text
+    failed = [e for e in home.app.state.access_log.recent(20) if e.get("event") == "failed" and e.get("name") == "elena"]
+    assert any("did not answer" in e.get("detail", "") for e in failed)
+
+
+async def test_failures_through_the_central_and_on_the_machine_share_one_window(home):
+    await switch(home, True)
+    machine = httpx.AsyncClient(transport=httpx.ASGITransport(app=home.machine_app), base_url="http://lab4.test")
+    for _ in range(3):
+        wrong = await machine.post("/login", data={"username": "elena", "password": "nope", "next": "/"},
+                                   headers={"Origin": "http://lab4.test"})
+        assert wrong.status_code == 401
+    for _ in range(2):
+        assert (await refused_login(home, "elena", "nope")).status_code == 401
+    # five in the window, counted there: its own form waits now, and the right password through the central too
+    held = await machine.post("/login", data={"username": "elena", "password": PASSWORD, "next": "/"},
+                              headers={"Origin": "http://lab4.test"})
+    assert held.status_code == 429
+    through = await refused_login(home, "elena")
+    assert through.status_code == 401
+    failed = [e for e in home.machine_app.state.access_log.recent(30) if e.get("event") == "failed"]
+    assert any("too many failed logins" in e.get("detail", "") for e in failed)
+
+
+async def test_a_person_who_left_one_workspace_keeps_the_others(home):
+    m = home.machine_app.state.settings
+    beta = m.workspaces["beta"]
+    m.workspaces["beta"] = dataclasses.replace(beta, members={**beta.members, "elena": "user"})
+    assert (await home.post("/api/identities/lab4/import", headers=ADMIN, json={"confirm": "lab4"})).status_code == 200
+    await switch(home, True)
+    elena = await logged_in(home, "elena")
+    rows = (await elena.get("/api/servers", headers={"Accept": "application/json"})).json()
+    assert sorted(r["name"] for r in rows) == ["bsrv", "srv"]
+    m.workspaces["beta"] = dataclasses.replace(beta, members={"dario": "admin"})
+    # beta left on the machine: acme stays hers through the central at once, beta is not
+    rows = (await elena.get("/api/servers", headers={"Accept": "application/json"})).json()
+    assert [r["name"] for r in rows] == ["srv"]
+    assert (await elena.get("/servers/srv", headers={"Accept": "text/html"})).status_code == 200
+    assert (await elena.get("/servers/bsrv", headers={"Accept": "text/html"})).status_code == 403
+    # none left: said so
+    acme = m.workspaces["acme"]
+    m.workspaces["acme"] = dataclasses.replace(acme, members={k: v for k, v in acme.members.items() if k != "elena"})
+    gone = await elena.get("/api/servers", headers={"Accept": "application/json"})
+    assert gone.status_code == 403 and "no longer a member" in gone.text

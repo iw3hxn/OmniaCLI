@@ -1491,7 +1491,10 @@ by default, link by link, and **Stop serving them here…** switches it off.
   app or a recovery code: the machine checks them (`POST
   /api/identity/v1/login`, the central panel's link only), where its identity
   still lives, so a password changed there, a code used there, a member
-  removed there count at once; the code's counter is the machine's alone.
+  removed there count at once; the code's counter is the machine's alone, and
+  so are its failed logins (one window with its own login form). A machine
+  that does not answer is said as a wrong password (the reason is in the
+  access log).
   When the machine's word differs from the import (another password, other
   workspaces or roles) this panel reads the import again before the session.
   Passkeys and single sign-on stay the machine's until the workspace moves
@@ -1503,7 +1506,8 @@ by default, link by link, and **Stop serving them here…** switches it off.
   panel serves, the machine checks every scope against what it has now: the
   person still a member, with no more than its role and its custom role there;
   the token still of the workspace, with no more than its level there (never
-  more than its person's role) and its servers. This panel reads the import
+  more than its person's role) and its servers. A workspace the person has
+  left there is no more in its scope; the others stay. This panel reads the import
   again after a change of the people made through it (members, tokens, roles,
   single sign-on), and by itself when the import is older than 10 minutes.
 - **Every request of theirs** is checked here first, on the same route with

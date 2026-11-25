@@ -516,6 +516,7 @@ REMOTE_PASSKEY_LATER = ("Your second step is a passkey: on this portal it comes 
                         "logged in before for now")
 REMOTE_SETUP_LATER = ("This portal asks a second step and you have none yet: set it up where you logged in before, "
                       "then log in here")
+SCOPE_GONE = "You are no longer a member of this workspace"
 REMOTE_CHECK_DOWN = ("Your password cannot be checked now: try again in a few minutes")
 REMOTE_ACCOUNT_LATER = ("Your account is changed where you logged in before: it comes to this portal with your "
                         "workspace's move")
@@ -1071,6 +1072,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         found = placement.scope_decode(value)
         if found is None or link not in settings.links or settings.links[link].role != "admin":
             return None
+        kept = []
         for entry in (found, *found["also"]):
             ws = entry["ws"]
             if ws not in settings.workspaces:
@@ -1080,8 +1082,19 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 # a workspace hosted for another home is never the central panel's, nor another link's
                 return None
             if not home and not own_records(found, entry):
-                return None
-        return found
+                # a workspace the person (or the token) is no more of here: left out, the others stay theirs; a
+                # request of it is refused as one of a workspace not theirs
+                continue
+            kept.append(dict(entry))
+        if not kept:
+            return {**found, "also": [], "gone": True}
+        first, *rest = kept
+        return {**found, "ws": first["ws"], "role": first["role"], "grant": first["grant"],
+                "also": [{"ws": e["ws"], "role": e["role"], "grant": e["grant"]} for e in rest]}
+
+    def live_scope(found: dict | None) -> dict | None:
+        """A scope MCP takes: none of its workspaces left here is none."""
+        return None if found is None or found.get("gone") else found
 
     def own_records(found: dict, entry: dict) -> bool:
         """A workspace of this machine whose people a central panel serves (AD-018 slice 2): the scope as this
@@ -1118,6 +1131,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             access_log.record("failed", "link", link, ip, f"a delegated scope refused: {method} {request.url.path}"[:200])
             raise HTTPException(status.HTTP_403_FORBIDDEN, "A workspace's scope is taken from the link of the machine "
                                                            "of that workspace only")
+        if found.get("gone"):
+            ip = request.client.host if request.client else ""
+            access_log.record("failed", "link", link, ip, f"a delegated scope refused, {found['person']} is of none of "
+                              f"its workspaces here any more: {method} {request.url.path}"[:300])
+            raise HTTPException(status.HTTP_403_FORBIDDEN, SCOPE_GONE)
         roles, grants = [], []
         for entry in (found, *found["also"]):
             role = min(entry["role"], link_role, key=ACCESS_ROLES.index)
@@ -1440,7 +1458,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                              # AD-014 §6: a tool on an instance placed elsewhere asked there, and
                                              # the scope a home sends taken from that home's link only
                                              "placed": lambda *a, **k: mcp_placed(*a, **k),
-                                             "delegated": lambda *a, **k: delegated_scope(*a, **k),
+                                             "delegated": lambda *a, **k: live_scope(delegated_scope(*a, **k)),
                                              # a workspace's token reads its jobs as its people do (customerview)
                                              "view": lambda *a, **k: mcp_view(*a, **k)})
 
@@ -1906,10 +1924,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         panel asks of everybody and it has none: refused too, its set-up is made where it logged in before."""
         via = f"login form, workspaces of {person.link}"
         answer = await machine_login(person, {"password": password})
-        if answer is not None and answer.get("down"):
-            access_log.record("failed", "user", person.name, ip, f"{via}: its machine did not answer "
-                                                                 f"({answer['down']})"[:300], via=person.link)
-            return login_page(request, next_path, REMOTE_CHECK_DOWN, 502)
+        if answer is not None and (answer.get("down") or answer.get("wait")):
+            # said as a wrong password: before the password is proven, nothing tells a name served here from one
+            # unknown (the reason is in the access log)
+            limiter.failed(ip, person.name)
+            access_log.record("failed", "user", person.name, ip, f"{via}: " + (
+                f"its machine did not answer ({answer['down']})" if answer.get("down") else
+                f"too many failed logins there: wait {answer['wait']} s")[:200], via=person.link)
+            return login_page(request, next_path, "Wrong user name or password.", 401)
         need = (answer or {}).get("need")
         if answer is None or not (answer.get("ok") or need):
             limiter.failed(ip, person.name)
@@ -16205,6 +16227,13 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         now = time.time()
         for key in [k for k, v in identity_steps.items() if v[1] <= now]:
             identity_steps.pop(key, None)
+        # the failed logins counted with the person's own on this machine's form (per name), and apart by address
+        # for the central's: guesses through the central and here share one window
+        key = f"central:{me.name}:{person}"
+        wait = limiter.wait(key, person)
+        if wait:
+            said(False, f"too many failed logins: wait {wait} s")
+            return {"ok": False, "wait": wait}
         step = payload.get("step")
         if isinstance(step, str) and step:
             found = identity_steps.get(_digest_session(step))
@@ -16214,12 +16243,15 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             result = await asyncio.to_thread(second_factors.check, person, str(payload.get("code") or "")[:64])
             if result is None:
                 found[2] += 1
+                limiter.failed(key, person)
                 said(False, "second step: wrong code")
                 return {"ok": False}
             identity_steps.pop(_digest_session(step), None)
+            limiter.succeeded(key, person)
             return answer("recovery code" if result[0] == "recovery" else "code")
         ok = await asyncio.to_thread(authenticator.check, person, str(payload.get("password") or ""))
         if not ok or not member:
+            limiter.failed(key, person)
             said(False, "password" if member or not ok else "not a member of its workspaces served")
             return {"ok": False}
         if second_factors.on(person):
@@ -16232,6 +16264,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if second_step_required(request, person):
             said(False, "a second step is required and it has none")
             return {"ok": False, "need": "setup"}
+        limiter.succeeded(key, person)
         return answer()
 
     def identity_refusal(me: Principal) -> tuple[int, dict] | None:
