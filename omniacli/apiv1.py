@@ -76,7 +76,15 @@ V1_CENTRAL_TOOLS = {
     ("POST", "/api/v1/central-backup/key/confirm"): ("central_backup_confirm_key",),
     ("POST", "/api/v1/central-backup/run"): ("central_backup_run",),
 }
-V1_TOOLS = {**V1_WORKSPACE_TOOLS, **V1_MACHINE_TOOLS, **V1_CENTRAL_TOOLS}
+# a machine behind NAT managed from a central panel (AD-017 §17.6): its SSH published through a relay, and the
+# central's link to it through that relay; the machine's admin tokens only, never a workspace's nor a CI's
+V1_RELAY_TOOLS = {
+    ("GET", "/api/v1/agent-relay"): ("agent_relay_status",),
+    ("POST", "/api/v1/agent-relay"): ("agent_relay_publish",),
+    ("POST", "/api/v1/agent-relay/remove"): ("agent_relay_remove",),
+    ("POST", "/api/v1/links/{name}/relay"): ("link_relay",),
+}
+V1_TOOLS = {**V1_WORKSPACE_TOOLS, **V1_MACHINE_TOOLS, **V1_CENTRAL_TOOLS, **V1_RELAY_TOOLS}
 # the steps of a move and of its return as MCP's move_instance and move_back name them: what follows move/ (or
 # move/back/) in the REST path
 MOVE_STEPS = {"prepare": "", "complete": "complete", "cancel": "cancel", "delete_copy": "delete-copy"}
@@ -268,6 +276,24 @@ class CentralKeyBody(_Model):
 class CentralConfirmBody(_Model):
     passphrase: str = Field(description="The recovery passphrase the new key's answer gave, typed back (in the body: "
                                         "a password, never in a URL)")
+
+
+class AgentRelayBody(_Model):
+    relay: str = Field(description="The link of this machine to the relay (a machine with a public address it "
+                                   "reaches): this machine's SSH is published on a port of its loopback")
+
+
+class LinkRelayBody(_Model):
+    host: str = Field("", description="The relay's address (its sshd); empty: the link's SSH goes directly again")
+    port: int = Field(22, description="The relay's SSH port")
+    host_key: Optional[str] = Field(None, description="The relay's host key, \"<type> <base64>\"; without it the "
+                                                      "answer gives it (saved: false), to be compared and sent back")
+    tunnel_port: Optional[int] = Field(None, description="The port of the relay's loopback the machine's tunnel "
+                                                         "listens on (31000-31999: the machine's page says it)")
+    machine_host_key: Optional[str] = Field(None, description="The machine's own SSH host key, when it changes "
+                                                              "(default: the link's, kept)")
+    fetch_machine_key: bool = Field(False, description="true: read the machine's host key through the relay and "
+                                                       "give it (saved: false), to be compared and sent back")
 
 
 class HandoverPrepared(BaseModel):

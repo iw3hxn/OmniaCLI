@@ -116,6 +116,8 @@ from .config import (
     load_settings,
     matches,
     parse_link,
+    parse_relay_hop,
+    check_ssh_address,
     parse_connection,
     parse_notify,
     MONITOR_METRICS,
@@ -1271,6 +1273,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                              "machine": lambda *a, **k: api_hooks["machine"](*a, **k),
                                              # the protection of this panel (AD-017 slice 7): the pages' code
                                              "central_backup": lambda *a, **k: api_hooks["central_backup"](*a, **k),
+                                             # a machine behind NAT and its central panel (AD-017 §17.6)
+                                             "agent_relay": lambda *a, **k: api_hooks["agent_relay"](*a, **k),
+                                             "link_relay": lambda *a, **k: api_hooks["link_relay"](*a, **k),
                                              # AD-014 §6: a tool on an instance placed elsewhere asked there, and
                                              # the scope a home sends taken from that home's link only
                                              "placed": lambda *a, **k: mcp_placed(*a, **k),
@@ -7848,10 +7853,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         # no menu header: on the relay this is the machine acting by itself (a_machine), never a person
         return {**link_headers(link, who, role), "Accept": "application/json"}
 
-    async def relay_facts_of(link: LinkTarget) -> dict:
+    async def relay_facts_of(link: LinkTarget, agent: bool = False) -> dict:
         """Whether the link's machine can be a relay: {name, can, reason, address, private}. address: its
         public IPv4, or the address this machine reaches it at (private: only machines of its network
-        reach it there)."""
+        reach it there). agent: as the relay of this machine's SSH (AD-017 §17.6), which needs its sshd only,
+        not its nginx."""
         out = {"name": link.name, "can": False, "reason": "", "address": "", "private": False}
         try:
             resp = await link_clients.client(link).get("/api/relay/facts", headers=relay_link_headers(link),
@@ -7872,10 +7878,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if resp.status_code != 200 or not isinstance(facts, dict):
             out["reason"] = f"it answered {resp.status_code}"
             return out
-        if not facts.get("ours"):
+        if not agent and not facts.get("ours"):
             out["reason"] = "OmniaCLI does not keep its nginx (no workspaces there)"
             return out
-        if not facts.get("nginx"):
+        if not agent and not facts.get("nginx"):
             out["reason"] = "nginx is not installed there"
             return out
         public = next((a for a in facts.get("addresses") or [] if ":" not in str(a)), "")
@@ -8137,12 +8143,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         """The tunnels hosted here and whether each listens now: a machine reads its own only."""
         relay_admin(me)
         try:
-            found = (await workspaceops.ask("relay-hosted")).get("hosted") or {}
+            told = await workspaceops.ask("relay-hosted")
         except JobFailed as exc:
             return refuse(str(exc).removeprefix("workspace-helper: "), status.HTTP_503_SERVICE_UNAVAILABLE)
+        found, agents = told.get("hosted") or {}, told.get("agents") or {}
         if a_machine(me):
             found = {k: v for k, v in found.items() if v.get("link") == me.name}
-        return {"hosted": found}
+            agents = {k: v for k, v in agents.items() if v.get("link") == me.name}
+        return {"hosted": found, "agents": agents}
 
     @app.post("/api/relay/hosted")
     async def relay_host_here(payload: dict = Body(...), me: Principal = Depends(current_user)):
@@ -8215,6 +8223,287 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         job = jobs.submit(f"Names of {rec.get('link')} no longer published through this machine",
                           [f"{MACHINE_KEY}/relay"], f"manual: {me}", action)
         return {"job": job.id}
+
+    # --- the agent's SSH through a relay (AD-017 §17.6; README, Agent mode) ----------------------------------
+    # The relay's side: a machine behind NAT asks, through its link, that its tunnel may listen on a port of this
+    # loopback and that the keys of the central panels it names may open that port and nothing else
+    # (relay-agent-host). Nothing of what passes is read here: it is the machine's SSH.
+
+    @app.post("/api/relay/agents")
+    async def relay_agent_host_here(payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """A machine's SSH published here through its tunnel (AD-017 §17.6): a job of the root helper. Its
+        result: the port the tunnel listens on, this sshd's port and host key, its user of the central panels."""
+        relay_admin(me)
+        if not a_machine(me):
+            return refuse("A machine publishes its SSH here by itself, through its link", status.HTTP_403_FORBIDDEN)
+        try:
+            label = relay.label_of(me.name)
+            spec = {"link": me.name, "public_key": relay.check_public_key(payload.get("public_key")),
+                    "allowed": relay.check_allowed(payload.get("allowed"))}
+        except relay.RelayError as exc:
+            return refuse(str(exc))
+
+        async def action(job):
+            job.log(f"--- the SSH of {me.name} published here through its tunnel, for {len(spec['allowed'])} central "
+                    "panel(s)")
+            made = await workspaceops._helper(job, "relay-agent-host", label, input=json.dumps(spec).encode())
+            job.log(f"Its key may listen on port {made.get('port')} of this machine's loopback and do nothing else "
+                    f"(user {made.get('user')}); the keys it names may open that port only (user "
+                    f"{made.get('jump_user')}), {made.get('sshd')}")
+            job.result = {**job.result, "agent": {k: made.get(k) for k in (
+                "label", "port", "host_key", "ssh_port", "user", "jump_user", "addresses", "allowed", "new")}}
+            access_log.record("relay", "link", me.name, "", f"the SSH of {me.name} hosted: port {made.get('port')}, "
+                              f"{made.get('allowed')} central panel key(s) may open it", context=False)
+        job = jobs.submit(f"SSH of {me.name} published through this machine", [f"{MACHINE_KEY}/relay"],
+                          f"manual: {me}", action)
+        return {"job": job.id}
+
+    @app.post("/api/relay/agents/{label}/remove")
+    async def relay_agent_unhost_here(label: str, me: Principal = Depends(current_user)):
+        """A machine's SSH no longer published here: by that machine, or by an admin of this one."""
+        relay_admin(me)
+        try:
+            relay.check_label(label)
+            found = (await workspaceops.ask("relay-hosted")).get("agents") or {}
+        except relay.RelayError as exc:
+            return refuse(str(exc), status.HTTP_404_NOT_FOUND)
+        except JobFailed as exc:
+            return refuse(str(exc).removeprefix("workspace-helper: "), status.HTTP_503_SERVICE_UNAVAILABLE)
+        rec = found.get(label)
+        if rec is None:
+            return {"ok": True, "gone": True}
+        if a_machine(me) and rec.get("link") != me.name:
+            return refuse(f"{label} is the tunnel of another machine here: it is not touched", status.HTTP_403_FORBIDDEN)
+
+        async def action(job):
+            done = await workspaceops._helper(job, "relay-agent-unhost", label)
+            job.log("Taken away: " + (", ".join(done.get("removed") or []) or "nothing was left"))
+            job.result = {**job.result, "unhost": done}
+            access_log.record("relay", me.kind, me.name, "", f"the SSH of {rec.get('link')} no longer hosted: "
+                              + ", ".join(done.get("removed") or []), context=False)
+        job = jobs.submit(f"SSH of {rec.get('link')} no longer published through this machine",
+                          [f"{MACHINE_KEY}/relay"], f"manual: {me}", action)
+        return {"job": job.id}
+
+    # The machine's side: this machine's SSH published through one of its links (the relay), so that the central
+    # panels whose keys its link user lets in reach it through there (their link «through a relay»). The page
+    # (/agent-relay), the REST API and MCP call the same code (agent_relay_act).
+
+    agent_relay_file = settings.servers_file.parent / relay.AGENT_RECORD
+
+    def agent_relay_record() -> dict:
+        try:
+            data = json.loads(agent_relay_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) and data.get("link") else {}
+
+    def agent_relay_save(rec: dict | None) -> None:
+        if rec is None:
+            agent_relay_file.unlink(missing_ok=True)
+            return
+        tmp = agent_relay_file.with_name(agent_relay_file.name + ".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec, indent=1, sort_keys=True) + "\n")
+        os.replace(tmp, agent_relay_file)
+
+    async def agent_relay_view(with_choices: bool) -> dict:
+        """What the page, the REST API and MCP read: through which link, the port the central panels name,
+        the tunnel now, the keys let in (fingerprints), and the links that may be the relay. No secret."""
+        rec = agent_relay_record()
+        tunnel = await asyncio.to_thread(relay.read_tunnel, "", int(rec.get("restarts_base") or 0),
+                                         relay.AGENT_UNIT) if rec else {
+            "state": "none", "since": None, "last_drop": None, "restarts": 0}
+        tunnel.pop("nrestarts", None)
+        out = {"published": bool(rec), "link": rec.get("link") or "", "address": rec.get("host") or "",
+               "ssh_port": rec.get("ssh_port") or 0, "tunnel_port": rec.get("remote_port") or 0,
+               "relay_key": rec.get("host_key_fingerprint") or "", "local_port": rec.get("local_port") or 0,
+               "user": rec.get("user") or relay.LINK_USER, "allowed": rec.get("allowed") or [],
+               "published_at": rec.get("published") or "", "by": rec.get("by") or "", "tunnel": tunnel,
+               "unit": relay.AGENT_UNIT, "running": agent_relay_busy()}
+        if with_choices:
+            found = await asyncio.gather(*(relay_facts_of(link, agent=True)
+                                           for link in settings.link_targets.values()))
+            out["choices"] = [{k: f.get(k) for k in ("name", "can", "reason", "address", "private")}
+                              for f in sorted(found, key=lambda f: (not f["can"], f["name"]))]
+        return out
+
+    agent_relay_running = {"job": ""}
+
+    def agent_relay_busy() -> bool:
+        """A publication or a removal runs: the job of the last one is there, not finished, and its task alive."""
+        mark = agent_relay_running["job"]
+        job = jobs.get(mark) if mark else None
+        return job is not None and not job.finished_flag and mark in jobs._running
+
+    def agent_relay_refusal(me: Principal) -> tuple[int, dict] | None:
+        """Who publishes this machine's SSH through a relay: its admins, a person here or a token of the machine;
+        never through a link (the link may be the one that rides on it), a workspace's token or a CI's."""
+        if me.kind == "link" or me.via:
+            return 403, {"error": "This machine's SSH is published through a relay from this machine, not through "
+                                  "a link", "code": "forbidden"}
+        if me.scoped or me.workspaces:
+            return 403, {"error": "Publishing this machine's SSH is for the machine's admins: a workspace never "
+                                  "reaches it", "code": "machine_token_required"}
+        if me.ci or (me.kind == "token" and settings.token_ci(me.name)):
+            return 403, {"error": "A CI token never publishes this machine's SSH", "code": "forbidden"}
+        if not me.can("admin"):
+            return 403, {"error": f"Publishing this machine's SSH needs the admin role; this one is {me.role}",
+                         "code": "forbidden"}
+        return None
+
+    async def agent_relay_teardown(job, rec: dict, why: str) -> None:
+        """This machine's SSH no longer published through its relay: here the unit and the key, there its
+        lines (a relay that does not answer: what stays there is said)."""
+        job.log(f"--- this machine's SSH no longer published through {rec.get('link')}: {why}")
+        done = await workspaceops._helper(job, "agent-relay-tunnel", "off")
+        job.log("Taken away here: " + (", ".join(done.get("removed") or []) or "nothing was left"))
+        label = relay.label_of(str(rec.get("label") or rec.get("link") or "x"))
+        link = settings.link_targets.get(str(rec.get("link") or ""))
+        stays = (f"the lines of its tunnel and of the central panels' keys: an admin there removes them with "
+                 f"workspace-helper relay-agent-unhost {label}")
+        if link is None:
+            job.warn(f"The link {rec.get('link')} is no longer here: on that machine stay {stays}")
+        else:
+            try:
+                result = await relay_call(job, link, f"/api/relay/agents/{label}/remove", {}, "the removal")
+            except JobFailed as exc:
+                job.warn(f"{link.name} did not take its part back ({exc}): on it stay {stays}")
+            else:
+                gone = (result.get("unhost") or {}).get("removed") or []
+                job.log(f"Taken away on {link.name}: " + (", ".join(gone) if gone else "nothing was left there"))
+        await asyncio.to_thread(agent_relay_save, None)
+        access_log.record("relay", "system", "relay", "", f"this machine's SSH no longer published through "
+                          f"{rec.get('link')} ({why})", context=False)
+
+    async def agent_relay_publish(job, link: LinkTarget, who: str) -> None:
+        before = agent_relay_record()
+        if before and before.get("link") != link.name:
+            await agent_relay_teardown(job, before, f"published through {link.name} now")
+        job.log(f"--- this machine's SSH published through {link.name}")
+        keyed = await workspaceops._helper(job, "agent-relay-key")
+        allowed = list(keyed.get("allowed") or [])
+        if not allowed:
+            raise JobFailed(f"No central panel is let in on this machine yet: the line its Links page prints goes "
+                            f"in ~{keyed.get('user') or relay.LINK_USER}/.ssh/authorized_keys first (README, Links "
+                            "through SSH), then publish again")
+        job.log(f"The central panels let in (the keys of {keyed.get('user')} that may forward): "
+                + ", ".join(sshlinks.fingerprint(k) for k in allowed))
+        facts = await relay_facts_of(link, agent=True)
+        if not facts["can"]:
+            raise JobFailed(f"{link.name} cannot be the relay: {facts['reason']}")
+        result = await relay_call(job, link, "/api/relay/agents", {"public_key": keyed["public_key"],
+                                                                   "allowed": allowed}, "the tunnel's port")
+        hosted = result.get("agent") or {}
+        if not hosted.get("port") or not hosted.get("host_key"):
+            raise JobFailed(f"{link.name} gave no port for the tunnel")
+        host = facts["address"]
+        tunnel = await workspaceops._helper(job, "agent-relay-tunnel", "on", input=json.dumps({
+            "relay": link.name, "host": host, "ssh_port": hosted.get("ssh_port") or 22,
+            "remote_port": hosted["port"], "host_key": hosted["host_key"]}).encode())
+        job.log(f"The tunnel: {tunnel.get('unit')}, ssh to {host}:{hosted.get('ssh_port') or 22} as "
+                f"{relay.RELAY_USER}, port {hosted['port']} of its loopback to this sshd's port "
+                f"{tunnel.get('local_port')}, started again by systemd {relay.RESTART_SECONDS} s after any drop")
+        rec = {"link": link.name, "label": hosted.get("label") or relay.label_of(link.name), "host": host,
+               "ssh_port": hosted.get("ssh_port") or 22, "remote_port": hosted["port"],
+               "host_key_fingerprint": sshlinks.fingerprint(hosted["host_key"]),
+               "local_port": tunnel.get("local_port") or 22, "user": keyed.get("user") or relay.LINK_USER,
+               "allowed": [sshlinks.fingerprint(k) for k in allowed], "private": facts["private"], "by": who,
+               "published": datetime.datetime.now().isoformat(timespec="seconds")}
+        await asyncio.to_thread(agent_relay_save, rec)
+        access_log.record("relay", "system", "relay", "", f"this machine's SSH published through {link.name}: "
+                          f"port {hosted['port']}, {len(allowed)} central panel key(s) let in", context=False)
+        listening = None
+        for _ in range(RELAY_WAIT):
+            listening = await agent_relay_listening(link, rec["label"])
+            if listening:
+                break
+            await asyncio.sleep(1)
+        rec["restarts_base"] = (await asyncio.to_thread(relay.read_tunnel, "", 0, relay.AGENT_UNIT))["nrestarts"]
+        await asyncio.to_thread(agent_relay_save, rec)
+        if listening:
+            job.log(f"The tunnel is connected: {link.name} listens on its port {hosted['port']}")
+        else:
+            job.warn(f"The tunnel is not connected yet after {RELAY_WAIT} s: its unit retries every "
+                     f"{relay.RESTART_SECONDS} s; journalctl -u {relay.AGENT_UNIT} says why")
+        job.log(f"On the central panel: the link of this machine, Edit…, SSH «through a relay»: the relay {host} "
+                f"(SSH port {rec['ssh_port']}, its key {rec['host_key_fingerprint']}) and the port {hosted['port']}")
+        if facts["private"]:
+            job.warn(f"{link.name} has no public IPv4: the central panels reach it at {host}, from its network only")
+        job.result = {**job.result, "agent_relay": {k: rec[k] for k in ("link", "host", "ssh_port", "remote_port",
+                                                                        "host_key_fingerprint", "allowed")},
+                      "connected": bool(listening)}
+
+    async def agent_relay_listening(link: LinkTarget, label: str) -> bool | None:
+        try:
+            resp = await link_clients.client(link).get("/api/relay/hosted", headers=relay_link_headers(link),
+                                                       timeout=LIST_TIMEOUT)
+            found = (resp.json().get("agents") or {}).get(label) if resp.status_code == 200 else None
+        except (httpx.HTTPError, ValueError, AttributeError):
+            return None
+        return bool(found.get("listening")) if isinstance(found, dict) else False
+
+    async def agent_relay_act(op: str, me: Principal, source: str, ip: str = "",
+                              body: Optional[dict] = None) -> tuple[int, dict]:
+        """(status, answer) of op (status, publish, remove), as the page's routes, the REST API and MCP ask it
+        ({"error", "code"} for a refusal)."""
+        refused = agent_relay_refusal(me)
+        if refused is not None:
+            return refused
+        body = dict(body or {})
+        if op == "status":
+            return 200, await agent_relay_view(with_choices=True)
+        if agent_relay_busy():
+            return 409, {"error": "A publication of this machine's SSH is running: try again when it ends",
+                         "code": "busy"}
+        if op == "publish":
+            name = str(body.get("relay") or "").strip()
+            link = settings.link_targets.get(name)
+            if link is None:
+                return 404, {"error": f"No link {name}: the relay is one of this machine's links", "code": "not_found"}
+            job = jobs.submit(f"This machine's SSH published through {name}", [f"{MACHINE_KEY}/agent-relay"], source,
+                              lambda job: agent_relay_publish(job, link, str(me)))
+        elif op == "remove":
+            rec = agent_relay_record()
+            if not rec:
+                return 200, {"ok": True, "gone": True}
+            job = jobs.submit(f"This machine's SSH no longer published through {rec.get('link')}",
+                              [f"{MACHINE_KEY}/agent-relay"], source,
+                              lambda job: agent_relay_teardown(job, rec, f"asked by {me}"))
+        else:
+            return 400, {"error": f"No operation {op}", "code": "invalid"}
+        agent_relay_running["job"] = job.id
+        access_log.record("action", me.kind, me.name, ip, f"this machine's SSH through a relay: {op}"
+                          + (f" ({body.get('relay')})" if op == "publish" else ""))
+        return 200, {"ok": True, "job": job.id}
+
+    api_hooks["agent_relay"] = agent_relay_act
+
+    def agent_relay_answer(status_code: int, data: dict):
+        return JSONResponse(data, status_code=status_code) if status_code >= 300 else data
+
+    @app.get("/agent-relay", dependencies=[Depends(admin)])
+    async def agent_relay_page(request: Request, me: Principal = Depends(current_user)):
+        """This machine's SSH through a relay, for the central panel that manages it (AD-017 §17.6)."""
+        status_code, data = await agent_relay_act("status", me, "")
+        if status_code >= 400:
+            raise HTTPException(status_code, data["error"])
+        return _TEMPLATES.TemplateResponse(request, "agent_relay.html", {"ar": data})
+
+    @app.get("/api/agent-relay", dependencies=[Depends(admin)])
+    async def agent_relay_get(me: Principal = Depends(current_user)):
+        return agent_relay_answer(*await agent_relay_act("status", me, ""))
+
+    @app.post("/api/agent-relay/publish", dependencies=[Depends(admin)])
+    async def agent_relay_post(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        return agent_relay_answer(*await agent_relay_act("publish", me, f"manual: {me}",
+                                                         request.client.host if request.client else "", payload))
+
+    @app.post("/api/agent-relay/remove", dependencies=[Depends(admin)])
+    async def agent_relay_remove(request: Request, me: Principal = Depends(current_user)):
+        return agent_relay_answer(*await agent_relay_act("remove", me, f"manual: {me}",
+                                                         request.client.host if request.client else ""))
 
     def instance_name_problem(ws: Workspace, instance: str) -> str | None:
         """Why a new instance may not be named instance: one of the names it
@@ -10957,7 +11246,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if link.ssh is not None:
                 ssh[link.name] = {"status": ssh_tunnels.status(link.name), "fingerprint": sshlinks.fingerprint(
                     link.ssh.host_key), "line": sshlinks.authorized_line(public, link) if public else "",
-                    "block": sshlinks.sshd_block(link)}
+                    "block": sshlinks.sshd_block(link),
+                    # behind NAT (AD-017 §17.6): the relay's key it fixed
+                    "relay_fingerprint": sshlinks.fingerprint(link.ssh.relay.host_key) if link.ssh.relay else ""}
         return {"links": list(settings.link_targets.values()), "links_file": settings.links_file,
                 "public_key": public, "ssh": ssh,
                 # the links whose machine said panel: agent, remembered here (AD-017 §17.3)
@@ -10977,7 +11268,17 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     @app.post("/api/links/ssh/host-key", dependencies=[Depends(admin)])
     async def link_ssh_host_key(payload: dict = Body(...)):
-        """The SSH server's key, to be compared with the customer's before saving."""
+        """The SSH server's key, to be compared with the customer's before saving; with relay (a machine behind
+        NAT, AD-017 §17.6) read through the relay, at the port its tunnel listens on."""
+        if payload.get("relay"):
+            try:
+                hop = parse_relay_hop("link", payload["relay"])
+                key = await sshlinks.fetch_host_key_via(hop, ssh_tunnels.folder)
+            except ConfigError as exc:
+                return refuse(str(exc).removeprefix("link."))
+            except sshlinks.SshError as exc:
+                return refuse(str(exc))
+            return {"ok": True, "host_key": key, "fingerprint": sshlinks.fingerprint(key)}
         port = payload.get("port") or 22
         if isinstance(port, bool) or not str(port).isdigit():
             return refuse(f"{port!r} is not a port")
@@ -10987,8 +11288,73 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return refuse(str(exc))
         return {"ok": True, "host_key": key, "fingerprint": sshlinks.fingerprint(key)}
 
+    def relay_said(link: LinkTarget | None) -> str:
+        hop = link.ssh.relay if link is not None and link.ssh is not None else None
+        return f"through the relay {hop.host}:{hop.port}, its port {hop.tunnel_port}" if hop else "directly"
+
+    async def link_relay_act(name: str, me: Principal, ip: str, body: dict) -> tuple[int, dict]:
+        """A link's SSH through a relay (AD-017 §17.6), as the REST API and MCP set it: host, port, host_key (the
+        relay's: without it the answer gives it to be confirmed), tunnel_port; an empty host: directly again.
+        machine_host_key replaces the machine's key; fetch_machine_key reads it through the relay to be confirmed."""
+        if me.kind == "link" or me.via:
+            return 403, {"error": "A link of this panel is set on this panel, not through a link", "code": "forbidden"}
+        if me.scoped or me.workspaces:
+            return 403, {"error": "The links are the machine's: a workspace's token never reaches them",
+                         "code": "machine_token_required"}
+        if me.ci or (me.kind == "token" and settings.token_ci(me.name)):
+            return 403, {"error": "A CI token never changes a link", "code": "forbidden"}
+        if not me.can("admin"):
+            return 403, {"error": f"The links need the admin role; this one is {me.role}", "code": "forbidden"}
+        async with links_lock:
+            link = settings.link_targets.get(name)
+            if link is None:
+                return 404, {"error": f"No link {name}", "code": "not_found"}
+            if link.ssh is None:
+                return 409, {"error": f"{name} goes through no SSH server: give it its SSH server first (Links "
+                                      "page), then the relay", "code": "conflict"}
+            hop = None
+            if str(body.get("host") or "").strip():
+                if not body.get("host_key"):
+                    try:
+                        host, port = check_ssh_address("relay", body.get("host"), body.get("port"))
+                        key = await sshlinks.fetch_host_key(host, port)
+                    except (ConfigError, sshlinks.SshError) as exc:
+                        return 400, {"error": str(exc), "code": "invalid"}
+                    return 200, {"saved": False, "host_key": key, "fingerprint": sshlinks.fingerprint(key),
+                                 "hint": "compare the fingerprint with the relay's (ssh-keygen -lf "
+                                         "/etc/ssh/ssh_host_ed25519_key.pub there), then send host_key back"}
+                try:
+                    hop = parse_relay_hop("link", {k: body.get(k) for k in ("host", "port", "host_key",
+                                                                             "tunnel_port")})
+                except ConfigError as exc:
+                    return 400, {"error": str(exc).removeprefix("link."), "code": "invalid"}
+                if body.get("fetch_machine_key"):
+                    try:
+                        key = await sshlinks.fetch_host_key_via(hop, ssh_tunnels.folder)
+                    except sshlinks.SshError as exc:
+                        return 502, {"error": str(exc), "code": "unreachable"}
+                    return 200, {"saved": False, "machine_host_key": key, "fingerprint": sshlinks.fingerprint(key),
+                                 "hint": "compare it with the machine's, then send it back as machine_host_key"}
+            data = link.to_dict()
+            data["ssh"] = {**data["ssh"], "relay": hop.to_dict() if hop else None}
+            if body.get("machine_host_key"):
+                data["ssh"]["host_key"] = body["machine_host_key"]
+            try:
+                changed = parse_link(name, data)
+            except ConfigError as exc:
+                return 400, {"error": str(exc), "code": "invalid"}
+            refused = await store_links({**settings.link_targets, name: changed})
+            if refused is not None:
+                return 500, {"error": json.loads(refused.body).get("error") or "not saved", "code": "failed"}
+        access_log.record("action", me.kind, me.name, ip, f"link {name}: its SSH {relay_said(changed)} (was "
+                          f"{relay_said(link)})")
+        return 200, {"ok": True, "saved": True, "link": name, "relay": hop.to_dict() if hop else None,
+                     "fingerprint": sshlinks.fingerprint(changed.ssh.host_key)}
+
+    api_hooks["link_relay"] = link_relay_act
+
     @app.post("/api/links/save", dependencies=[Depends(admin)])
-    async def link_target_save(payload: dict = Body(...)):
+    async def link_target_save(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
         """Create a link (new: true) or change it; a blank token keeps the one saved."""
         name, new = str(payload.get("name") or "").strip(), bool(payload.get("new"))
         async with links_lock:
@@ -11017,6 +11383,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 # then (a new token, a CA, a host key are the same machine: after an incident too, a machine that
                 # said agent does not lift it by saying full; «Forget the agent mode» does it on purpose)
                 agent_drop(name, panel_too=before is None or another_machine(before, link))
+                if relay_said(before) != relay_said(link):
+                    # a machine behind NAT reached through a relay, or no longer (AD-017 §17.6)
+                    access_log.record("action", me.kind, me.name, request.client.host if request.client else "",
+                                      f"link {name}: its SSH {relay_said(link)} (was {relay_said(before)})")
             return refused or {"ok": True}
 
     def another_machine(before: LinkTarget, after: LinkTarget) -> bool:
@@ -12544,6 +12914,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                   ("/destinations", t("Backup destinations"), t("Where the automatic backups are copied, encrypted: SFTP, FTP, S3, Drive, Dropbox…"), admin_here),
                   # this panel's own (AD-017 slice 7): set on it, never through a link
                   ("/central-backup", t("Protection of this panel"), t("Its own state sealed every night on a destination, and the way back on a new machine"), admin_here and me.kind == "user"),
+                  # this machine's SSH through a relay, for the central panel that manages it (AD-017 §17.6)
+                  ("/agent-relay", t("Reached through a relay"), t("Behind NAT: this machine's SSH published through a relay, for the central panel that manages it"), admin_here and me.kind == "user"),
                   ("/tunnels", t("Tunnels"), t("Ports of the instances reached from your computer"), me.kind == "user" and not getattr(request.state, "prefix", ""))),
             group(t("People and access"),
                   ("/users", t("Users"), t("Who logs in, with which role"), admin_here),
@@ -29292,6 +29664,46 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                  "it to the destination, the older copies there out of the rotation.")
     async def api_central_backup_run(request: Request, me: Principal = Depends(api_token)):
         return api_central_answer(request, *await central_backup_act("run", me, f"api: {me}", api_ip(request)))
+
+    # --- a machine behind NAT managed from a central panel (AD-017 §17.6): the pages' code (agent_relay_act,
+    # link_relay_act), for a token of the machine with the admin role, never a workspace's or a CI's
+
+    @api_router.get(P + "/agent-relay", summary="Read this machine's SSH through a relay",
+                    description="Whether this machine's SSH is published through a relay for the central panel that "
+                                "manages it: the link to the relay, its address and SSH port, the port of its loopback "
+                                "the central panel names (tunnel_port), the tunnel now, the fingerprints of the keys "
+                                "let in; choices: the links that may be the relay, or why not. No secret.")
+    async def api_agent_relay(request: Request, me: Principal = Depends(api_token)):
+        return api_central_answer(request, *await agent_relay_act("status", me, f"api: {me}", api_ip(request)))
+
+    @api_router.post(P + "/agent-relay", status_code=202, response_model=apiv1.Accepted,
+                     summary="Publish this machine's SSH through a relay",
+                     description="A job: the tunnel's key made here, the relay (a link of this machine) asked to let it "
+                                 "listen on one port of its loopback and to let the keys of the central panels this "
+                                 "machine's link user lets in open that port and nothing else, then the unit that keeps "
+                                 "the tunnel up. The central panel's link then goes «through a relay».")
+    async def api_agent_relay_publish(request: Request, body: apiv1.AgentRelayBody,
+                                      me: Principal = Depends(api_token)):
+        return api_central_answer(request, *await agent_relay_act("publish", me, f"api: {me}", api_ip(request),
+                                                                  {"relay": body.relay}))
+
+    @api_router.post(P + "/agent-relay/remove", status_code=202, response_model=apiv1.Accepted,
+                     summary="Stop publishing this machine's SSH through a relay",
+                     description="A job: the unit and the key taken away here, the lines on the relay too; the central "
+                                 "panels reach this machine through the relay no more.")
+    async def api_agent_relay_remove(request: Request, me: Principal = Depends(api_token)):
+        return api_central_answer(request, *await agent_relay_act("remove", me, f"api: {me}", api_ip(request)))
+
+    @api_router.post(P + "/links/{name}/relay", summary="Reach a linked machine through a relay",
+                     description="The link's SSH (it has one) goes through a relay to a machine behind NAT: the "
+                                 "relay's address, port and host key, and the port of its loopback the machine's "
+                                 "tunnel listens on (the machine's page says it). Without host_key the answer gives "
+                                 "the relay's (saved: false) to be compared and sent back; fetch_machine_key reads "
+                                 "the machine's own key through the relay the same way. An empty host: directly again.")
+    async def api_link_relay(request: Request, body: apiv1.LinkRelayBody,
+                             name: str = PathParam(description="The link's name (Links page)"),
+                             me: Principal = Depends(api_token)):
+        return api_central_answer(request, *await link_relay_act(name, me, api_ip(request), body.model_dump()))
 
     api_openapi_cache: dict = {}
 

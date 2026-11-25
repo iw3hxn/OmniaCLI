@@ -953,6 +953,69 @@ Per ogni fetta: il rilascio, la prova su lab3/lab4, come si annulla, la stima.
      relay porta le pagine della fetta 3; il tunnel ucciso torna entro 35 s.
    - *Stima*: 3 g.
 
+   **Com'è nel codice (fetta 8).**
+   - **Cosa porta la seconda porta: l'SSH della macchina, non la sua API.** La macchina pubblica sul loopback del
+     relay il suo `sshd`, e il collegamento del centrale resta quello di oggi verso la macchina (il suo utente
+     `omniacli-link`, la sua chiave dell'host fissata, il token) con un salto in più: `ProxyCommand` è l'`ssh -W
+     127.0.0.1:<porta>` del relay. La sessione SSH è quindi tra il centrale e la macchina, da un capo all'altro: il
+     relay inoltra byte cifrati. È l'ultima frase di §17.6 («il relay vede solo il traffico SSH cifrato») presa alla
+     lettera; con l'API sulla porta il relay avrebbe avuto il token e le pagine in chiaro dentro il suo `sshd`.
+   - **Sul relay** (`relay.py`, `workspacehelper relay-agent-host|unhost`, `POST /api/relay/agents`, solo una
+     macchina attraverso il suo collegamento): la chiave del tunnel della macchina ha la sua riga nel file di
+     `omniacli-relay`, `restrict,port-forwarding,permitlisten="127.0.0.1:<porta>",command="/bin/false"`, come i
+     tunnel dei nomi, nello stesso intervallo 31000-31999. Le chiavi dei pannelli centrali che la macchina ammette
+     vanno a un secondo utente, `omniacli-relay-jump`: una riga per chiave (sshd legge la prima che combacia), con un
+     `permitopen="127.0.0.1:<porta>"` per ogni macchina che la ammette, niente shell, comando, pty, `-R`. Il blocco
+     `Match User omniacli-relay-jump` ripete `PermitOpen` delle sole porte degli agenti, `PermitListen none`,
+     `ForceCommand /bin/false`: devono permettere tutti e due. Lo stato è in `/etc/omniacli/relay-agents.json`
+     (root, 600); con l'ultimo agente va via l'utente, con l'ultimo tunnel di ogni tipo tutto il relay.
+   - **Chi è ammesso lo dice la macchina**: le chiavi delle righe con `permitopen` di `~omniacli-link/.ssh/
+     authorized_keys`, cioè i pannelli che già la operano via SSH, mai la chiave di una persona. Il centrale non ha
+     bisogno di un collegamento al relay.
+   - **Sulla macchina**: Impostazioni › Raggiungibile attraverso un relay (`/agent-relay`), REST `/api/v1/agent-relay`
+     (`…/remove`), MCP `agent_relay_status|publish|remove`, lo stesso codice (`agent_relay_act`). Solo un admin della
+     macchina che entra lì o un suo token, mai attraverso un collegamento (potrebbe essere quello che ci viaggia),
+     mai una CI o un workspace. L'unità `omniacli-agent-relay.service` (`ssh -R` come `omniacli-tunnel`,
+     `Restart=always` 5 s), la chiave in `/etc/omniacli/agent-relay/`, il record in `agent-relay.json` (600). Ogni
+     pubblicazione e rimozione è nel registro degli accessi delle due macchine.
+   - **Sul centrale**: il collegamento ha `ssh.relay: {host, port, host_key, tunnel_port}`. La pagina Collegamenti
+     lo imposta («La macchina è dietro NAT: attraverso un relay», la chiave del relay letta e confrontata, la chiave
+     della macchina riletta attraverso il relay); REST `POST /api/v1/links/<nome>/relay`, MCP `link_relay`, con le
+     chiavi date da confermare (`saved: false`) prima di salvarle. Un cambio di relay va nel registro.
+   - **Il ritorno entro 35 s.** Il tunnel del centrale cade con quello della macchina e ripartiva con l'attesa
+     cresciuta dalle cadute prima (5, 10, 20, 40 s): al terzo kill di fila 40,3 s. Ora una caduta dopo un tunnel
+     salito riparte dalla prima attesa (`sshlinks`, `came_up`).
+   - **Sul lab** (25/11/2026; lab3 centrale e lab4 al pacchetto 2026.1.5520 con il codice della fetta; `lab5`, un
+     contenitore nuovo come quelli di `dev-lab.sh` a 172.30.0.15, il relay, con lo stesso pacchetto e il codice; lab4
+     dietro un NAT simulato: una catena `S8NAT` in testa a `INPUT` di lab4 che scarta ogni connessione nuova della
+     rete del lab, tranne quelle dell'host, l'«ufficio»; nessuna regola nuova in entrata):
+     - lab3 → lab4:22 e lab5 → lab4:22 senza risposta; lab3 riavviato, il collegamento lab4 resta «starting»;
+     - dalla pagina di lab4 (Playwright, italiano): «Pubblica l'SSH» attraverso lab5, il job dice la porta 31000 e
+       il tunnel connesso in 1 s; dalla pagina Collegamenti di lab3: il relay, la sua chiave (la stessa impronta
+       letta su lab5), la porta; la chiave di lab4 riletta attraverso il relay è quella fissata prima del NAT; salvato,
+       il collegamento risponde;
+     - la pagina dell'istanza `acme-odoo` di lab4 e la sezione della macchina, scritte da lab3 attraverso il relay;
+     - il tunnel ucciso (`systemctl kill -s KILL`) 5 volte di fila: lab3 legge di nuovo `/links/lab4/api/info` dopo
+       15,6, 15,6, 16,0, 15,7 e 16,1 s (prima della correzione 16,0, 20,6 e 40,3 s);
+     - la chiave del centrale su lab5: `-W 127.0.0.1:31000` dà il banner SSH di lab4; `-W` verso 22, 8090, 31005 (con
+       qualcosa in ascolto), 31999 e 172.30.0.14:22 rifiutati («request was denied» nel giornale di sshd), un comando
+       e una shell rifiutati, `-R` rifiutato, `-L` verso 8090 rifiutato;
+     - una cattura del loopback di lab5 sulla porta 31000 durante tre letture di pagina: 48 KB, né il token né
+       `Bearer` né `HTTP/1.1`; nessun file di lab5 contiene il token;
+     - il giro con Playwright (italiano, 1440 e 375, chiaro e scuro, 20 pagine): 0 errori di pagina, 0 dialoghi del
+       browser, un pulsante primario per pagina (due su Collegamenti con il dialogo aperto: «Nuovo collegamento» e il
+       «Salva» del dialogo, come prima).
+   - Alla fine lab3 e lab4 reinstallati dal pacchetto 2026.1.5521, il NAT tolto, `lab5` eliminato.
+
+   **Dove la fetta si discosta dal piano.**
+   - **La seconda porta porta l'SSH della macchina, non la sua API** (sopra). Costa che la macchina ammetta la chiave
+     del centrale come per ogni collegamento SSH; dà il token mai in chiaro sul relay.
+   - **Il collegamento «via relay» non nomina un collegamento al relay**: ne dice indirizzo, porta, chiave e porta del
+     tunnel. Il centrale non ha bisogno di un token sul relay, e il relay non sa chi è il centrale se non dalla
+     chiave.
+   - **Il tunnel della macchina è un'unità sua**, non quello dei nomi: ha la sua chiave e la sua riga, e una
+     macchina senza workspace pubblicati lo ha lo stesso.
+
 Totale ≈ 30 giornate. Le fette 0-3 (9 g) bastano per il caso di oggi e per la pagina che Carlo usa di più.
 
 ## 10. Da confermare con Carlo (la raccomandata per prima)
@@ -1029,8 +1092,10 @@ Totale ≈ 30 giornate. Le fette 0-3 (9 g) bastano per il caso di oggi e per la 
   di AD-008.
 - ~~Che `_machine_database.html` (2.115 righe, 565 `{{`, 1 `fetch`) sia soprattutto JS~~: verificato nella fetta 5. È
   JavaScript: dal contesto legge solo `prefix` (le 565 `{{` sono testi `_()`), i dati vengono da `/api/postgres`.
-- Che `ssh -R` sul relay regga due porte per macchina (nomi di Odoo e agente) senza cambiare `relay-hosted.json`: il
-  formato è letto, la prova no.
+- ~~Che `ssh -R` sul relay regga due porte per macchina (nomi di Odoo e agente) senza cambiare `relay-hosted.json`~~:
+  nella fetta 8 gli agenti stanno in `relay-agents.json`, accanto; una macchina con i nomi di un workspace e il suo
+  SSH sullo stesso relay ha due porte e due righe, provato nei test (`test_the_relay_hosts_an_agents_tunnel`). Sul
+  lab lab4 aveva solo il tunnel dell'agente.
 - ~~Il tempo del ripristino del centrale: nessuna misura~~: misurato nella fetta 7 sul lab. 4 s
   dall'installazione pulita a lab4 aperto, 39 s dal purge. Su un VPS vero contano anche il download del pacchetto e
   il trasferimento del backup dalla destinazione: non misurati.

@@ -48,6 +48,9 @@
     omniacli workspace-helper relay-facts | relay-hosted | relay-host <key> | relay-unhost <key>   (on a relay)
     omniacli workspace-helper relay-key <workspace> | relay-tunnel <workspace> on|off   (behind NAT)
     (relay-host and relay-tunnel on take their values, JSON, on the input; README, Published through another machine)
+    omniacli workspace-helper relay-agent-host <machine> | relay-agent-unhost <machine>   (on a relay)
+    omniacli workspace-helper agent-relay-key | agent-relay-tunnel on|off   (behind NAT: this machine's SSH)
+    (relay-agent-host and agent-relay-tunnel on take their values, JSON, on the input; README, Agent mode)
 
 OmniaCLI runs it with sudo (sudoers: README, Workspaces). It takes no path
 and no command of the caller's: a workspace and an instance are names
@@ -4820,6 +4823,9 @@ def enterprise_switch(name: str, storage: str, instance: str, mode: str) -> dict
 HOSTED = Path(relay.HOSTED_FILE)
 RELAY_HOME = Path(relay.RELAY_HOME)
 TUNNELS = Path(relay.TUNNEL_ROOT)
+AGENTS = Path(relay.AGENTS_FILE)
+JUMP_HOME = Path(relay.JUMP_HOME)
+AGENT_ROOT = Path(relay.AGENT_ROOT)
 SSHD_CONFIG = Path("/etc/ssh/sshd_config")
 SSH_HOST_KEYS = (Path("/etc/ssh/ssh_host_ed25519_key.pub"), Path("/etc/ssh/ssh_host_ecdsa_key.pub"),
                  Path("/etc/ssh/ssh_host_rsa_key.pub"))
@@ -4848,6 +4854,19 @@ def _hosted() -> dict:
     if not isinstance(data, dict):
         return {}
     return {k: v for k, v in data.items() if isinstance(v, dict) and relay.KEY.fullmatch(k)}
+
+
+def _agents() -> dict:
+    """The agents' tunnels hosted here (AD-017 §17.6): {label: {link, public_key, port, allowed, created}}."""
+    if AGENTS.is_symlink() or not AGENTS.is_file():
+        return {}
+    try:
+        data = json.loads(AGENTS.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise HelperError(f"{AGENTS} cannot be read") from None
+    if not isinstance(data, dict):
+        return {}
+    return {k: v for k, v in data.items() if isinstance(v, dict) and relay.LABEL.fullmatch(k)}
 
 
 def _listening() -> set[int]:
@@ -4917,6 +4936,48 @@ def _relay_user() -> None:
         folder.mkdir(mode=0o755, exist_ok=True)
         os.chown(folder, 0, 0)
         os.chmod(folder, 0o755)
+
+
+def _jump_user() -> None:
+    """The relay's user of the central panels (omniacli-relay-jump): as
+    omniacli-relay, a system user without a shell nor a password, its home
+    and authorized_keys root's."""
+    try:
+        pwd.getpwnam(relay.JUMP_USER)
+    except KeyError:
+        _run("useradd", "--system", "--user-group", "--home-dir", str(JUMP_HOME), "--no-create-home",
+             "--shell", "/usr/sbin/nologin", "--comment", "OmniaCLI relay, central panels to their agents only",
+             relay.JUMP_USER)
+    _run("usermod", "-p", "*", relay.JUMP_USER)
+    for folder in (JUMP_HOME, JUMP_HOME / ".ssh"):
+        if folder.is_symlink():
+            raise HelperError(f"{folder} is a link: nothing is written")
+        folder.mkdir(mode=0o755, exist_ok=True)
+        os.chown(folder, 0, 0)
+        os.chmod(folder, 0o755)
+
+
+def _jump_user_removed() -> list[str]:
+    """omniacli-relay-jump, its home and its keys taken away (no machine lets a central panel in any more)."""
+    removed = []
+    try:
+        pwd.getpwnam(relay.JUMP_USER)
+    except KeyError:
+        pass
+    else:
+        # a central panel still connected keeps the user busy
+        _run("pkill", "-KILL", "-u", relay.JUMP_USER, check=False)
+        _run("userdel", relay.JUMP_USER)
+        removed.append(f"the user {relay.JUMP_USER}")
+    keys = JUMP_HOME / ".ssh" / "authorized_keys"
+    if keys.exists() and not keys.is_symlink():
+        keys.unlink()
+        removed.append(str(keys))
+    for folder in (JUMP_HOME / ".ssh", JUMP_HOME):
+        if folder.is_dir() and not folder.is_symlink():
+            folder.rmdir()
+            removed.append(str(folder))
+    return removed
 
 
 def _relay_site(key: str) -> Path:
@@ -5051,9 +5112,10 @@ def relay_host(key: str) -> dict:
             return relay.relay_site_text(key, spec["names"], spec["redirects"], port, found, ipv6,
                                          workspaceweb.ACME_ROOT, workspaceweb.MAX_BODY, workspaceweb.TIMEOUT)
         sshd = False
+        agents = _agents()
         try:
-            _write(keys_file, relay.authorized_keys(hosted), mode=0o644)
-            sshd = _sshd_config(relay.with_block(SSHD_CONFIG.read_text(encoding="utf-8")))
+            _write(keys_file, relay.authorized_keys(hosted, agents), mode=0o644)
+            sshd = _sshd_config(relay.with_block(SSHD_CONFIG.read_text(encoding="utf-8"), relay.agent_ports(agents)))
             Path(workspaceweb.ACME_ROOT).mkdir(mode=0o755, exist_ok=True)
             tls = _tls(f"relay-{key}", "letsencrypt")
             kind = "letsencrypt" if tls else ""
@@ -5069,7 +5131,7 @@ def relay_host(key: str) -> dict:
                     keys_file.unlink(missing_ok=True)
                 else:
                     _write(keys_file, kept, mode=0o644)
-                if sshd and not hosted:
+                if sshd and not hosted and not agents:
                     # the Match block this first tunnel added goes with it
                     _sshd_config(relay.without_block(SSHD_CONFIG.read_text(encoding="utf-8")))
             raise
@@ -5116,48 +5178,285 @@ def relay_unhost(key: str) -> dict:
             done["nginx"] = "no site"
         done["removed"] += _relay_certs_removed(key)
         keys_file = RELAY_HOME / ".ssh" / "authorized_keys"
-        if hosted:
-            _write(keys_file, relay.authorized_keys(hosted), mode=0o644)
-            _write(HOSTED, json.dumps(hosted, indent=1, sort_keys=True) + "\n", mode=0o600)
+        agents = _agents()
+        if hosted or agents:
+            _write(keys_file, relay.authorized_keys(hosted, agents), mode=0o644)
+            if hosted:
+                _write(HOSTED, json.dumps(hosted, indent=1, sort_keys=True) + "\n", mode=0o600)
+            elif HOSTED.exists():
+                HOSTED.unlink()
             if found:
                 done["removed"].append(f"its line of {keys_file}")
-            done["left"] = len(hosted)
+            done["left"] = len(hosted) + len(agents)
             return done
-        # the last one: nothing of the relay stays
-        if SSHD_CONFIG.is_file() and _sshd_config(relay.without_block(SSHD_CONFIG.read_text(encoding="utf-8"))):
-            done["removed"].append("the Match block of omniacli-relay in sshd_config")
-        try:
-            pwd.getpwnam(relay.RELAY_USER)
-        except KeyError:
-            pass
-        else:
-            # its sessions end first: a tunnel still connected keeps the user busy
-            _run("pkill", "-KILL", "-u", relay.RELAY_USER, check=False)
-            _run("userdel", relay.RELAY_USER)
-            done["removed"].append(f"the user {relay.RELAY_USER}")
-        if keys_file.exists():
-            keys_file.unlink()
-            done["removed"].append(str(keys_file))
-        for folder in (RELAY_HOME / ".ssh", RELAY_HOME):
-            if folder.is_dir() and not folder.is_symlink():
-                folder.rmdir()
-                done["removed"].append(str(folder))
-        if HOSTED.exists():
-            HOSTED.unlink()
-            done["removed"].append(str(HOSTED))
-        HOSTED.with_name(".relay.lock").unlink(missing_ok=True)
+        done["removed"] += _relay_gone()
         done["left"] = 0
         return done
 
 
+def _relay_gone() -> list[str]:
+    """The last tunnel taken away (of names or of an agent): nothing of the relay stays."""
+    removed = []
+    keys_file = RELAY_HOME / ".ssh" / "authorized_keys"
+    if SSHD_CONFIG.is_file() and _sshd_config(relay.without_block(SSHD_CONFIG.read_text(encoding="utf-8"))):
+        removed.append("the Match blocks of the relay in sshd_config")
+    try:
+        pwd.getpwnam(relay.RELAY_USER)
+    except KeyError:
+        pass
+    else:
+        # its sessions end first: a tunnel still connected keeps the user busy
+        _run("pkill", "-KILL", "-u", relay.RELAY_USER, check=False)
+        _run("userdel", relay.RELAY_USER)
+        removed.append(f"the user {relay.RELAY_USER}")
+    if keys_file.exists():
+        keys_file.unlink()
+        removed.append(str(keys_file))
+    for folder in (RELAY_HOME / ".ssh", RELAY_HOME):
+        if folder.is_dir() and not folder.is_symlink():
+            folder.rmdir()
+            removed.append(str(folder))
+    removed += _jump_user_removed()
+    for path in (HOSTED, AGENTS):
+        if path.exists():
+            path.unlink()
+            removed.append(str(path))
+    HOSTED.with_name(".relay.lock").unlink(missing_ok=True)
+    return removed
+
+
 def relay_hosted() -> dict:
     """The tunnels hosted here: whose (the link, its workspace), the port,
-    the names, and whether the tunnel listens now. It reads only."""
+    the names, and whether the tunnel listens now; the agents' too (whose,
+    the port, how many central panels they let in). It reads only."""
     listening = _listening()
     return {"hosted": {k: {"link": r.get("link"), "workspace": r.get("workspace"), "port": r.get("port"),
                            "names": r.get("names") or [], "redirects": r.get("redirects") or {},
                            "created": r.get("created"), "listening": int(r.get("port") or 0) in listening}
-                       for k, r in sorted(_hosted().items())}}
+                       for k, r in sorted(_hosted().items())},
+            "agents": {k: {"link": r.get("link"), "port": r.get("port"), "allowed": len(r.get("allowed") or []),
+                           "created": r.get("created"), "listening": int(r.get("port") or 0) in listening}
+                       for k, r in sorted(_agents().items())}}
+
+
+def _relay_agent_spec() -> dict:
+    spec = _input_json("the agent's tunnel")
+    try:
+        public_key = relay.check_public_key(spec.get("public_key"))
+        allowed = relay.check_allowed(spec.get("allowed"))
+    except relay.RelayError as exc:
+        raise HelperError(str(exc)) from None
+    if public_key in allowed:
+        raise HelperError("the tunnel's key is not one of the central panels' keys")
+    link = str(spec.get("link") or "")
+    if not re.fullmatch(r"[A-Za-z0-9._@-]{1,64}", link):
+        raise HelperError("link: the name of the machine behind NAT")
+    return {"public_key": public_key, "allowed": allowed, "link": link}
+
+
+def _relay_keys_written(hosted: dict, agents: dict) -> bool:
+    """The two authorized_keys of the relay and its Match blocks as hosted
+    and agents say; True when sshd_config changed."""
+    _relay_user()
+    _write(RELAY_HOME / ".ssh" / "authorized_keys", relay.authorized_keys(hosted, agents), mode=0o644)
+    if relay.agent_ports(agents):
+        _jump_user()
+        _write(JUMP_HOME / ".ssh" / "authorized_keys", relay.jump_keys(agents), mode=0o644)
+    return _sshd_config(relay.with_block(SSHD_CONFIG.read_text(encoding="utf-8"), relay.agent_ports(agents)))
+
+
+def relay_agent_host(label: str) -> dict:
+    """An agent's tunnel hosted here (AD-017 §17.6): the machine's key may
+    listen on one port of this loopback (a line of omniacli-relay, as a
+    workspace's tunnel), and the keys of the central panels it names may
+    open that port and nothing else (omniacli-relay-jump: one line a key,
+    its permitopen; the Match block's PermitOpen). No site, no certificate:
+    what passes is the machine's SSH. Again for the same machine: the same
+    port, its keys as given now."""
+    try:
+        relay.check_label(label)
+    except relay.RelayError as exc:
+        raise HelperError(str(exc)) from None
+    spec = _relay_agent_spec()
+    with _relay_lock():
+        hosted, agents = _hosted(), _agents()
+        before = agents.get(label)
+        taken = {int(r.get("port") or 0) for r in hosted.values()} | \
+            {int(r.get("port") or 0) for k, r in agents.items() if k != label}
+        if before and int(before.get("port") or 0) in relay.RELAY_PORTS:
+            port = int(before["port"])
+        else:
+            busy = _listening()
+            port = next((p for p in relay.RELAY_PORTS if p not in taken and p not in busy and _free(p)), None)
+        if port is None:
+            raise HelperError(f"no port free in {relay.RELAY_PORTS.start}-{relay.RELAY_PORTS.stop - 1}")
+        agents[label] = {**spec, "port": port,
+                         "created": (before or {}).get("created") or time.strftime("%Y-%m-%dT%H:%M:%S")}
+        kept = {p: p.read_text(encoding="utf-8") if p.is_file() else None
+                for p in (RELAY_HOME / ".ssh" / "authorized_keys", JUMP_HOME / ".ssh" / "authorized_keys")}
+        try:
+            sshd = _relay_keys_written(hosted, agents)
+        except BaseException:
+            # the files of before: a refused sshd_config is back already (_sshd_config)
+            for path, text in kept.items():
+                if text is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    _write(path, text, mode=0o644)
+            raise
+        _write(AGENTS, json.dumps(agents, indent=1, sort_keys=True) + "\n", mode=0o600)
+    return {"label": label, "port": port, "user": relay.RELAY_USER, "jump_user": relay.JUMP_USER,
+            "host_key": _host_key(), "ssh_port": _sshd_port(),
+            "addresses": sorted(workspaceweb.machine_addresses(shutil.which("ip", path=ENV["PATH"]))),
+            "allowed": len(spec["allowed"]), "new": before is None,
+            "sshd": "the Match blocks of the relay written, sshd reloaded" if sshd else "sshd unchanged"}
+
+
+def relay_agent_unhost(label: str) -> dict:
+    """An agent's tunnel taken away: its line, the central panels' lines
+    for its port (a key that opens no port any more goes); with the last
+    agent the user omniacli-relay-jump, with the last tunnel of any kind
+    the relay's user too. One no longer here: nothing to do."""
+    try:
+        relay.check_label(label)
+    except relay.RelayError as exc:
+        raise HelperError(str(exc)) from None
+    with _relay_lock():
+        hosted, agents = _hosted(), _agents()
+        found = agents.pop(label, None)
+        done = {"label": label, "was": bool(found), "removed": []}
+        if not found:
+            done["left"] = len(hosted) + len(agents)
+            return done
+        if not hosted and not agents:
+            done["removed"] += _relay_gone()
+            done["left"] = 0
+            return done
+        if not relay.agent_ports(agents):
+            done["removed"] += _jump_user_removed()
+        _relay_keys_written(hosted, agents)
+        if agents:
+            _write(AGENTS, json.dumps(agents, indent=1, sort_keys=True) + "\n", mode=0o600)
+        elif AGENTS.exists():
+            AGENTS.unlink()
+            done["removed"].append(str(AGENTS))
+        done["removed"].append(f"its lines of {RELAY_HOME / '.ssh' / 'authorized_keys'} and of the central panels")
+        done["left"] = len(hosted) + len(agents)
+        return done
+
+
+def _agent_folder() -> Path:
+    for folder in (AGENT_ROOT.parent, AGENT_ROOT):
+        if folder.is_symlink():
+            raise HelperError(f"{folder} is a link: nothing is written")
+        folder.mkdir(mode=0o755, exist_ok=True)
+    os.chown(AGENT_ROOT, 0, 0)
+    os.chmod(AGENT_ROOT, 0o755)
+    return AGENT_ROOT
+
+
+def _link_user_keys() -> list[str]:
+    """The keys the link user of this machine (omniacli-link) lets forward:
+    the central panels that operate it through SSH (README, Links through SSH)."""
+    try:
+        home = Path(pwd.getpwnam(relay.LINK_USER).pw_dir)
+    except KeyError:
+        return []
+    path = home / ".ssh" / "authorized_keys"
+    try:
+        if path.is_symlink():
+            return []
+        return relay.link_keys(path.read_text(encoding="utf-8"))
+    except OSError:
+        return []
+
+
+def agent_relay_key() -> dict:
+    """This machine's SSH through a relay (AD-017 §17.6), before the relay
+    is asked: the tunnel's key (made the first time: ed25519, 600, never
+    sent: its public half only), the keys of the central panels its link
+    user lets in (they go to the relay, which lets them open this tunnel's
+    port only) and the port of this sshd the tunnel leads to."""
+    folder = _agent_folder()
+    key = folder / "id_ed25519"
+    if not key.is_file() or not key.with_suffix(".pub").is_file():
+        key.unlink(missing_ok=True)
+        key.with_suffix(".pub").unlink(missing_ok=True)
+        _run("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", f"omniacli-agent-relay@{socket.gethostname()}",
+             "-f", str(key))
+        os.chmod(key, 0o600)
+    return {"public_key": relay.check_public_key(key.with_suffix(".pub").read_text(encoding="utf-8")),
+            "allowed": _link_user_keys(), "user": relay.LINK_USER, "ssh_port": _sshd_port()}
+
+
+def _tunnel_user():
+    try:
+        return pwd.getpwnam(relay.TUNNEL_USER)
+    except KeyError:
+        _run("useradd", "--system", "--user-group", "--home-dir", "/nonexistent", "--no-create-home",
+             "--shell", "/usr/sbin/nologin", "--comment", "OmniaCLI, tunnels to a relay", relay.TUNNEL_USER)
+        return pwd.getpwnam(relay.TUNNEL_USER)
+
+
+def agent_relay_tunnel(mode: str) -> dict:
+    """on: the unit that keeps this machine's SSH published through its
+    relay (omniacli-agent-relay.service: ssh -R from its port of the relay
+    to this sshd; its values on the input: relay, host, ssh_port,
+    remote_port, host_key), started again now; off: the unit stopped and
+    taken away, with the key and the relay's host key."""
+    if mode not in ("on", "off"):
+        raise HelperError("usage: agent-relay-tunnel on|off")
+    unit = SYSTEMD / relay.AGENT_UNIT
+    if mode == "off":
+        removed = []
+        if unit.exists():
+            _run("systemctl", "disable", "--now", unit.name, check=False)
+            unit.unlink()
+            _run("systemctl", "daemon-reload")
+            removed.append(str(unit))
+        if AGENT_ROOT.is_dir() and not AGENT_ROOT.is_symlink():
+            for item in ("id_ed25519", "id_ed25519.pub", "known_hosts"):
+                if (AGENT_ROOT / item).exists():
+                    (AGENT_ROOT / item).unlink()
+                    removed.append(str(AGENT_ROOT / item))
+            AGENT_ROOT.rmdir()
+            removed.append(str(AGENT_ROOT))
+        if not TUNNELS.is_dir():
+            # no workspace's tunnel either: the tunnels' user goes too
+            try:
+                pwd.getpwnam(relay.TUNNEL_USER)
+            except KeyError:
+                pass
+            else:
+                _run("userdel", relay.TUNNEL_USER)
+                removed.append(f"the user {relay.TUNNEL_USER}")
+        return {"unit": unit.name, "removed": removed}
+    spec = _input_json("the tunnel")
+    folder = _agent_folder()
+    if not (folder / "id_ed25519").is_file():
+        raise HelperError("this machine has no key for its tunnel yet (agent-relay-key)")
+    try:
+        host, ssh_port = relay.check_host(spec.get("host")), relay.check_port(spec.get("ssh_port"))
+        line = relay.known_hosts_line(host, ssh_port, spec.get("host_key"))
+        local = _sshd_port()
+        text = relay.agent_unit_text(str(spec.get("relay") or ""), host, ssh_port, spec.get("remote_port"), local,
+                                     str(folder))
+    except relay.RelayError as exc:
+        raise HelperError(str(exc)) from None
+    user = _tunnel_user()
+    # the key the tunnel's ssh reads: the tunnels' user's, nobody else's
+    os.chown(folder / "id_ed25519", user.pw_uid, user.pw_gid)
+    os.chmod(folder / "id_ed25519", 0o600)
+    known = folder / "known_hosts"
+    changed = not unit.is_file() or unit.read_text(encoding="utf-8") != text \
+        or not known.is_file() or known.read_text(encoding="utf-8") != line
+    _write(known, line)
+    _write(unit, text)
+    _run("systemctl", "daemon-reload")
+    _run("systemctl", "enable", unit.name)
+    if changed or _run("systemctl", "is-active", unit.name, check=False).strip() != "active":
+        _run("systemctl", "restart", unit.name)
+    return {"unit": unit.name, "changed": changed, "host": host, "ssh_port": ssh_port, "local_port": local}
 
 
 def relay_local_port(name: str, make: bool = True) -> int:
@@ -5239,7 +5538,8 @@ def relay_tunnel(name: str, mode: str) -> dict:
             removed.append(str(folder))
         if TUNNELS.is_dir() and not any(TUNNELS.iterdir()):
             TUNNELS.rmdir()
-            # the last tunnel: its user goes too
+        if not TUNNELS.is_dir() and not AGENT_ROOT.is_dir():
+            # the last tunnel (the agent's too): its user goes too
             try:
                 pwd.getpwnam(relay.TUNNEL_USER)
             except KeyError:
@@ -5640,7 +5940,9 @@ ACTIONS = {"disk": (disk, 3), "drop": (drop, 2), "limits": (limits, 3), "create"
            "machine-db-replica-listen": (machine_db_replica_listen, 1),
            "enterprise-sync": (enterprise_sync, 1), "enterprise": (enterprise_switch, 4),
            "relay-facts": (relay_facts, 0), "relay-host": (relay_host, 1), "relay-unhost": (relay_unhost, 1),
-           "relay-hosted": (relay_hosted, 0), "relay-key": (relay_key, 1), "relay-tunnel": (relay_tunnel, 2)}
+           "relay-hosted": (relay_hosted, 0), "relay-key": (relay_key, 1), "relay-tunnel": (relay_tunnel, 2),
+           "relay-agent-host": (relay_agent_host, 1), "relay-agent-unhost": (relay_agent_unhost, 1),
+           "agent-relay-key": (agent_relay_key, 0), "agent-relay-tunnel": (agent_relay_tunnel, 1)}
 
 
 def run(argv: list[str]) -> dict:

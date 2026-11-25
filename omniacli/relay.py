@@ -162,19 +162,142 @@ def authorized_line(public_key: str, port: int, key: str) -> str:
             f'command="/bin/false" {check_public_key(public_key)} omniacli-relay:{check_key(key)}')
 
 
-def authorized_keys(hosted: dict) -> str:
+def authorized_keys(hosted: dict, agents: dict | None = None) -> str:
+    """The relay's authorized_keys: the tunnels of the names (hosted) and of
+    the agents' SSH (agents, AD-017 §17.6), one line each, its port only."""
     out = ["# written by omniacli workspace-helper: the tunnels of the machines published through this one.",
            "# Changed here, it is written again at the next publication."]
     for key in sorted(hosted):
         rec = hosted[key]
         out.append(authorized_line(rec["public_key"], rec["port"], key))
+    for label in sorted(agents or {}):
+        rec = agents[label]
+        out.append(authorized_line(rec["public_key"], rec["port"], f"{check_label(label)}.{AGENT_SUFFIX}"))
     return "\n".join(out) + "\n"
 
 
-def sshd_block() -> str:
-    """The Match block of sshd_config for the relay's user: remote forwards
-    only (to the loopback: GatewayPorts no), the keepalives that free the
-    port of a tunnel whose machine went away, nothing else."""
+# --- the agent's SSH through the relay (AD-017 §17.6) -------------------------------------------------------
+# A machine behind NAT managed from a central panel: its tunnel (its own key, its own permitlisten line, the
+# same user omniacli-relay) carries its sshd to a port of the relay's loopback; the central reaches that port
+# with ssh -W as the relay's second user, omniacli-relay-jump, whose key may open the ports of the machines that
+# let it in and nothing else, and goes on to the machine's sshd as its link user, end to end: the relay passes
+# SSH it cannot read (the link's token and pages never in clear there).
+
+# the relay's user the central panels come in as: a direct-tcpip to the agents' ports, nothing else
+JUMP_USER = "omniacli-relay-jump"
+JUMP_HOME = "/var/lib/omniacli-relay-jump"
+# the agents' tunnels hosted on the relay, root's: {label: {link, public_key, port, allowed, created}}
+AGENTS_FILE = "/etc/omniacli/relay-agents.json"
+# the comment of an agent's line in authorized_keys (omniacli-relay:<label>.agent)
+AGENT_SUFFIX = "agent"
+# a machine's label on the relay: its link's name made one
+LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?")
+# on the machine behind NAT: its tunnel's key (600, the tunnels' user's) and the relay's host key
+AGENT_ROOT = "/etc/omniacli/agent-relay"
+AGENT_UNIT = "omniacli-agent-relay.service"
+# its record, the service's, next to the servers file: {link, label, host, ssh_port, remote_port, local_port,
+# allowed, published, restarts_base}
+AGENT_RECORD = "agent-relay.json"
+# the user of the machine whose keys (the links of the panels that operate it through SSH) come through the relay
+LINK_USER = "omniacli-link"
+# central panels one machine lets in through its tunnel
+MAX_ALLOWED = 20
+
+
+def label_of(link: str) -> str:
+    """A machine's label on the relay: the link it comes through there, made a label."""
+    label = re.sub(r"[^a-z0-9]+", "-", link.lower()).strip("-")[:64].strip("-")
+    return check_label(label or "machine")
+
+
+def check_label(label: str) -> str:
+    if not LABEL.fullmatch(label or ""):
+        raise RelayError(f"{label!r} is not the name of a machine on the relay")
+    return label
+
+
+def link_keys(text: str) -> list[str]:
+    """The keys of the link user's authorized_keys that may open a forward
+    (permitopen): the central panels that operate this machine through SSH.
+    A line without permitopen (a person's key) is not one of them."""
+    found = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "permitopen=" not in line:
+            continue
+        match = PUBLIC_KEY.search(line)
+        if match and match.group(0) not in found:
+            found.append(match.group(0))
+    return found
+
+
+def check_allowed(value) -> list[str]:
+    """The keys a machine lets in through its tunnel: ed25519 public keys, one at least."""
+    if not isinstance(value, list) or not value or len(value) > MAX_ALLOWED:
+        raise RelayError(f"allowed: the public keys of the central panels, 1 to {MAX_ALLOWED}")
+    return list(dict.fromkeys(check_public_key(k) for k in value))
+
+
+def jump_keys(agents: dict) -> str:
+    """The authorized_keys of omniacli-relay-jump: one line a key (sshd
+    reads the first that matches), with a permitopen for the port of each
+    machine that lets that key in, and nothing else (no shell, command, pty,
+    agent, -R)."""
+    ports: dict[str, list[int]] = {}
+    for label in sorted(agents):
+        rec = agents[label]
+        port = check_port(rec["port"], RELAY_PORTS)
+        for key in rec.get("allowed") or []:
+            opened = ports.setdefault(check_public_key(key), [])
+            if port not in opened:
+                opened.append(port)
+    out = ["# written by omniacli workspace-helper: the central panels that reach a machine behind NAT through "
+           "this one.", "# Changed here, it is written again at the next publication of such a machine."]
+    for key in sorted(ports):
+        opens = ",".join(f'permitopen="127.0.0.1:{p}"' for p in sorted(ports[key]))
+        out.append(f'restrict,port-forwarding,{opens},command="/bin/false" {key} {JUMP_USER}')
+    return "\n".join(out) + "\n"
+
+
+def agent_ports(agents: dict) -> list[int]:
+    """The ports the central panels may open: those of the agents that let a key in."""
+    return sorted({check_port(r["port"], RELAY_PORTS) for r in agents.values() if r.get("allowed")})
+
+
+def agent_unit_text(relay: str, host: str, ssh_port: int, remote_port: int, local_port: int, folder: str) -> str:
+    """The unit that keeps the agent's tunnel up: ssh -R from its port of the
+    relay's loopback to this machine's sshd (local_port), as the tunnels' user."""
+    return _tunnel_unit(f"this machine's SSH (its OmniaCLI for the central panel) published through {relay}",
+                        f"the tunnel of this machine's SSH to {relay}", relay, host, ssh_port, remote_port,
+                        check_port(local_port), folder)
+
+
+def sshd_block(open_ports=()) -> str:
+    """The Match blocks of sshd_config for the relay's users: omniacli-relay
+    remote forwards only (to the loopback: GatewayPorts no), with the
+    keepalives that free the port of a tunnel whose machine went away; and,
+    while a machine lets central panels in, omniacli-relay-jump local
+    forwards to those ports only (PermitOpen: with the key's permitopen, both
+    must allow it), nothing else."""
+    jump = []
+    if open_ports:
+        jump = [
+            f"Match User {JUMP_USER}",
+            "    AllowTcpForwarding local",
+            "    PermitOpen " + " ".join(f"127.0.0.1:{check_port(p, RELAY_PORTS)}" for p in open_ports),
+            "    PermitListen none",
+            "    GatewayPorts no",
+            "    ForceCommand /bin/false",
+            "    PermitTTY no",
+            "    X11Forwarding no",
+            "    AllowAgentForwarding no",
+            "    AllowStreamLocalForwarding no",
+            "    PermitTunnel no",
+            "    PasswordAuthentication no",
+            "    KbdInteractiveAuthentication no",
+            f"    ClientAliveInterval {ALIVE_SECONDS}",
+            f"    ClientAliveCountMax {ALIVE_COUNT}",
+        ]
     return "\n".join([
         SSHD_START,
         f"Match User {RELAY_USER}",
@@ -191,6 +314,7 @@ def sshd_block() -> str:
         "    KbdInteractiveAuthentication no",
         f"    ClientAliveInterval {ALIVE_SECONDS}",
         f"    ClientAliveCountMax {ALIVE_COUNT}",
+        *jump,
         SSHD_END,
     ])
 
@@ -204,9 +328,9 @@ def without_block(text: str) -> str:
     return head.rstrip("\n") + "\n" + tail.lstrip("\n")
 
 
-def with_block(text: str) -> str:
-    """sshd_config with the relay's Match block, at the end (a Match block lasts to the next one)."""
-    return without_block(text).rstrip("\n") + "\n\n" + sshd_block() + "\n"
+def with_block(text: str, open_ports=()) -> str:
+    """sshd_config with the relay's Match blocks, at the end (a Match block lasts to the next one)."""
+    return without_block(text).rstrip("\n") + "\n\n" + sshd_block(open_ports) + "\n"
 
 
 def _passed(indent: str, port: int) -> list[str]:
@@ -277,9 +401,15 @@ def tunnel_unit_text(workspace: str, relay: str, host: str, ssh_port: int, remot
     (StrictHostKeyChecking with its own known_hosts), started again
     RESTART_SECONDS after any end, without a limit."""
     unit_name(workspace)
+    return _tunnel_unit(f"the names of workspace {workspace} published through {relay}",
+                        f"the tunnel of workspace {workspace} to {relay}", relay, host, ssh_port, remote_port,
+                        check_port(local_port, LOCAL_PORTS), folder)
+
+
+def _tunnel_unit(description: str, what: str, relay: str, host: str, ssh_port: int, remote_port: int,
+                 local_port: int, folder: str) -> str:
     host = check_host(host)
     ssh_port, remote_port = check_port(ssh_port), check_port(remote_port, RELAY_PORTS)
-    local_port = check_port(local_port, LOCAL_PORTS)
     if not re.fullmatch(r"[A-Za-z0-9._@-]{1,64}", relay):
         raise RelayError(f"{relay!r} is not the name of a link")
     target = f"[{host}]" if ":" in host else host
@@ -291,9 +421,9 @@ def tunnel_unit_text(workspace: str, relay: str, host: str, ssh_port: int, remot
                "-o", "ConnectTimeout=10", "-o", "TCPKeepAlive=yes", "-p", str(ssh_port),
                "-R", f"127.0.0.1:{remote_port}:127.0.0.1:{local_port}", f"{RELAY_USER}@{target}"]
     return "\n".join([
-        f"# written by omniacli workspace-helper: the tunnel of workspace {workspace} to {relay}.",
+        f"# written by omniacli workspace-helper: {what}.",
         "[Unit]",
-        f"Description=OmniaCLI: the names of workspace {workspace} published through {relay}",
+        f"Description=OmniaCLI: {description}",
         "After=network-online.target",
         "Wants=network-online.target",
         "StartLimitIntervalSec=0",
@@ -380,10 +510,10 @@ def tunnel_state(show: str, now_monotonic_us: int, baseline: int = 0) -> dict:
     return {"state": state, "since": since, "last_drop": last, "restarts": restarts, "nrestarts": count}
 
 
-def read_tunnel(workspace: str, baseline: int = 0) -> dict:
-    """tunnel_state of the workspace's unit, read now (no root needed)."""
+def read_tunnel(workspace: str, baseline: int = 0, unit: str = "") -> dict:
+    """tunnel_state of the workspace's unit (or of unit: the agent's), read now (no root needed)."""
     try:
-        done = subprocess.run(["systemctl", "show", unit_name(workspace), "-p", ",".join(SHOWN)],
+        done = subprocess.run(["systemctl", "show", unit or unit_name(workspace), "-p", ",".join(SHOWN)],
                               capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.SubprocessError, RelayError):
         return {"state": "none", "since": None, "last_drop": None, "restarts": 0, "nrestarts": 0}

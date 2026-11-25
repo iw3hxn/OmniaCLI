@@ -1,0 +1,98 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{% extends "base.html" %}
+{% block title %}{{ _("Reached through a relay") }} · {{ brand.name }}{% endblock %}
+{% block crumbs %}{% from "_crumbs.html" import crumbs with context %}{{ crumbs([(_("Settings"), "/settings"), (_("Reached through a relay"), None)]) }}{% endblock %}
+{% block content %}
+{# a machine behind NAT managed from a central panel (AD-017 §17.6): its SSH published through a relay #}
+<style>
+.ar-facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0 0 12px; }
+.ar-facts dt { font-weight: var(--fw-semibold); }
+.ar-facts dd { margin: 0; overflow-wrap: anywhere; }
+.ar-steps li { margin-bottom: 8px; }
+</style>
+<div class="page-head">
+  <div>
+    <h1>{{ _("Reached through a relay") }}</h1>
+    <p>{{ _("Behind NAT nobody reaches this machine. Its SSH can be published through a relay, a machine with a public address it reaches: the central panel that manages it then opens its pages through there, and no port is opened here.") }}
+       {{ _("The relay passes the SSH encrypted end to end and lets in only the keys of the central panels this machine already lets in (the SSH links' user, {user}).", user=ar.user) }}</p>
+  </div>
+</div>
+<div id="ar-error" class="banner warn" role="alert" hidden></div>
+
+<section class="panel" aria-labelledby="ar-now-title">
+  <h2 id="ar-now-title">{{ _("The relay") }}</h2>
+  {% if ar.published %}
+  {% set states = {"connected": _("connected"), "connecting": _("connecting"), "down": _("down"), "none": _("not running")} %}
+  <dl class="ar-facts" id="ar-facts">
+    <dt>{{ _("Through") }}</dt><dd>{{ ar.link }} · <span class="mono">{{ ar.address }}{% if ar.ssh_port != 22 %}:{{ ar.ssh_port }}{% endif %}</span></dd>
+    <dt>{{ _("Port on the relay") }}</dt><dd><strong class="mono" id="ar-port">{{ ar.tunnel_port }}</strong> · {{ _("the central panel's link names it") }}</dd>
+    <dt>{{ _("Relay's key") }}</dt><dd class="mono">{{ ar.relay_key }}</dd>
+    <dt>{{ _("The tunnel") }}</dt><dd><span class="status {{ 'success' if ar.tunnel.state == 'connected' else 'failed' if ar.tunnel.state == 'down' else '' }}" id="ar-tunnel">{{ states.get(ar.tunnel.state, ar.tunnel.state) }}</span>
+      {% if ar.tunnel.since %}· {{ _("since {time}", time=ar.tunnel.since | moment) }}{% endif %}
+      {% if ar.tunnel.restarts %}· {{ _("{count} drops since it was published, the last {time}", count=ar.tunnel.restarts, time=ar.tunnel.last_drop | moment) }}{% endif %}</dd>
+    <dt>{{ _("Central panels let in") }}</dt><dd class="mono">{% for f in ar.allowed %}{{ f }}{{ "<br>" | safe if not loop.last }}{% else %}{{ _("none") }}{% endfor %}</dd>
+    <dt>{{ _("Published") }}</dt><dd>{{ ar.published_at | moment }}{% if ar.by %} · {{ ar.by }}{% endif %}</dd>
+  </dl>
+  {% else %}
+  <p class="muted">{{ _("Not published: only who reaches this machine's address opens it.") }}</p>
+  {% endif %}
+  <form id="ar-form" autocomplete="off">
+    <div class="form-grid">
+      <label for="ar-relay">{{ _("Relay") }}</label>
+      <div><select id="ar-relay" aria-describedby="ar-relay-hint">
+        {% for c in ar.choices %}<option value="{{ c.name }}" {{ "selected" if c.name == ar.link }} {{ "disabled" if not c.can }}>{{ c.name }}{% if c.can %} · {{ c.address }}{% else %} · {{ tr(c.reason) }}{% endif %}</option>{% endfor %}
+      </select><small class="hint" id="ar-relay-hint">{{ _("One of this machine's links, to a machine with a public address") }}</small>
+      {% if not ar.choices %}<p class="muted" style="margin: 4px 0 0">{{ _("No link yet: the relay is one of this machine's links.") }} <a href="{{ prefix }}/links">{{ _("Links") }}</a></p>{% endif %}</div>
+    </div>
+    <div class="actions">
+      <button type="submit" class="primary" id="ar-publish" {{ "disabled" if ar.running or not (ar.choices | selectattr("can") | list) }}
+              title="{{ _('A job: the tunnel key made here, the relay asked for a port of its loopback and to let in the central panels keys for it only, then the unit that keeps the tunnel up. The job says the port.') }}">{{ _("Publish again") if ar.published else _("Publish the SSH") }}</button>
+      {% if ar.published %}<button type="button" class="danger" id="ar-remove" {{ "disabled" if ar.running }}
+              title="{{ _('A job: the tunnel taken away here and its lines on the relay. The central panel reaches this machine through the relay no more. It asks first.') }}">{{ _("Stop publishing…") }}</button>{% endif %}
+    </div>
+  </form>
+</section>
+
+<section class="panel" aria-labelledby="ar-central-title">
+  <h2 id="ar-central-title">{{ _("On the central panel") }}</h2>
+  <ol class="ar-steps">
+    <li>{{ _("The central panel's SSH key is let in here first, as for any link through SSH: its Links page prints the line for {file}.", file="~" ~ ar.user ~ "/.ssh/authorized_keys") }}</li>
+    <li>{{ _("Publish the SSH here: the job says the port on the relay.") }}</li>
+    <li>{{ _("On the central panel: Links, this machine's link, Edit…, «The machine is behind NAT: through a relay»: the relay's address, its key, the port; then the server's key read again through the relay.") }}</li>
+  </ol>
+  <p class="muted">{{ _("The tunnel is kept up by {unit}, started again 5 s after any drop.", unit=ar.unit) }}</p>
+</section>
+<script>
+(function () {
+  const API = {{ (prefix ~ "/api/agent-relay") | tojson }};
+  const T = {refused: {{ _("Refused") | tojson }},
+             removeQ: {{ _("Stop publishing this machine's SSH through the relay? The central panel that reaches it through there loses it until it is published again.") | tojson }},
+             removeGo: {{ _("Stop publishing") | tojson }}};
+  const $ = (id) => document.getElementById(id), error = $("ar-error");
+  async function post(path, body) {
+    const resp = await fetch(API + path, {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
+                                          body: JSON.stringify(body || {})}).catch(() => null);
+    const data = resp ? await resp.json().catch(() => ({})) : {};
+    if (!resp || !resp.ok) { error.textContent = data.error || data.detail || T.refused; error.hidden = false; return null; }
+    error.hidden = true;
+    return data;
+  }
+  const go = (data) => { if (data && data.job) location.href = {{ (prefix ~ "/jobs/") | tojson }} + encodeURIComponent(data.job); };
+  $("ar-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    $("ar-publish").disabled = true;
+    const data = await post("/publish", {relay: $("ar-relay").value});
+    if (!data) { $("ar-publish").disabled = false; return; }
+    go(data);
+  });
+  const remove = $("ar-remove");
+  if (remove) remove.addEventListener("click", async () => {
+    if (!await omniaAsk(T.removeQ, T.removeGo, {danger: true})) return;
+    remove.disabled = true;
+    const data = await post("/remove", {});
+    if (!data) { remove.disabled = false; return; }
+    go(data);
+  });
+})();
+</script>
+{% endblock %}

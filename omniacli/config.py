@@ -1021,6 +1021,23 @@ SSH_HOST = re.compile(r"[A-Za-z0-9][A-Za-z0-9.-]{0,252}|\[?[0-9A-Fa-f:]+\]?")
 SSH_USER = re.compile(r"[a-z_][a-z0-9_.-]{0,31}")
 
 
+@dataclass(frozen=True)
+class RelayHop:
+    """A machine behind NAT reached through a relay (AD-017 §17.6): its SSH
+    is published on tunnel_port of the relay's loopback, and the link's ssh
+    goes there through the relay's sshd (ssh -W as its user of the central
+    panels, with the relay's own host key), then on to the machine's sshd
+    end to end."""
+
+    host: str
+    host_key: str  # the relay's key: no other is accepted
+    tunnel_port: int  # the port of the relay's loopback the machine's tunnel listens on
+    port: int = 22
+
+    def to_dict(self) -> dict:
+        return {"host": self.host, "port": self.port, "host_key": self.host_key, "tunnel_port": self.tunnel_port}
+
+
 @dataclass
 class SshRoute:
     """The SSH server a link goes through: OmniaCLI keeps ssh -L open to it
@@ -1030,9 +1047,14 @@ class SshRoute:
     user: str
     host_key: str  # the server's key, "<type> <base64>": no other is accepted
     port: int = 22
+    # behind NAT: the server's SSH reached through a relay, never at host (AD-017 §17.6)
+    relay: RelayHop | None = None
 
     def to_dict(self) -> dict:
-        return {"host": self.host, "port": self.port, "user": self.user, "host_key": self.host_key}
+        data = {"host": self.host, "port": self.port, "user": self.user, "host_key": self.host_key}
+        if self.relay is not None:
+            data["relay"] = self.relay.to_dict()
+        return data
 
 
 @dataclass
@@ -1087,6 +1109,44 @@ def check_ssh_address(where: str, host, port) -> tuple[str, int]:
     return host, int(port)
 
 
+# the ports of a relay's loopback a machine's tunnel listens on (relay.RELAY_PORTS)
+RELAY_TUNNEL_PORTS = range(31000, 32000)
+
+
+def parse_relay_hop(where: str, data) -> RelayHop | None:
+    """A link's ssh.relay: the relay's host, port, host key and the port of
+    its loopback the machine's tunnel listens on; empty is none."""
+    if not data:
+        return None
+    if not isinstance(data, dict):
+        raise ConfigError(f"{where}.ssh.relay must be a mapping")
+    host, port = check_ssh_address(f"{where}.relay", data.get("host"), data.get("port"))
+    host_key = _host_key(f"{where}.ssh.relay", data.get("host_key"))
+    tunnel = data.get("tunnel_port")
+    if isinstance(tunnel, bool) or not str(tunnel or "").isdigit() or int(tunnel) not in RELAY_TUNNEL_PORTS:
+        raise ConfigError(f"{where}.ssh.relay.tunnel_port: {tunnel!r} is not a port of a relay's tunnel "
+                          f"({RELAY_TUNNEL_PORTS.start}-{RELAY_TUNNEL_PORTS.stop - 1}: the machine's page says it)")
+    return RelayHop(host.strip("[]"), host_key, int(tunnel), port)
+
+
+def _host_key(where: str, value) -> str:
+    """An SSH host key, "<type> <base64>", whose bytes say that type."""
+    host_key = " ".join(str(value or "").split()[:2])
+    if not SSH_HOST_KEY.fullmatch(host_key):
+        raise ConfigError(f"{where}.host_key: the server's key is missing (Fetch host key)")
+    try:
+        # the key names its own type first
+        raw = base64.b64decode(host_key.split()[1], validate=True)
+        ok = raw[4:4 + int.from_bytes(raw[:4], "big")].decode() == host_key.split()[0]
+        # an ed25519 key is its type and 32 bytes
+        ok = ok and (host_key.split()[0] != "ssh-ed25519" or len(raw) == 51)
+    except (ValueError, UnicodeDecodeError):
+        ok = False
+    if not ok:
+        raise ConfigError(f"{where}.host_key: not a key of type {host_key.split()[0]}")
+    return host_key
+
+
 def parse_ssh_route(where: str, data) -> SshRoute | None:
     """A link's ssh: host, port, user and the host key; empty is no SSH."""
     if not data:
@@ -1097,20 +1157,8 @@ def parse_ssh_route(where: str, data) -> SshRoute | None:
     user = str(data.get("user") or "").strip()
     if not SSH_USER.fullmatch(user):
         raise ConfigError(f"{where}.ssh.user: {user!r} is not a user name")
-    host_key = " ".join(str(data.get("host_key") or "").split()[:2])
-    if not SSH_HOST_KEY.fullmatch(host_key):
-        raise ConfigError(f"{where}.ssh.host_key: the server's key is missing (Fetch host key)")
-    try:
-        # the key names its own type first
-        raw = base64.b64decode(host_key.split()[1], validate=True)
-        ok = raw[4:4 + int.from_bytes(raw[:4], "big")].decode() == host_key.split()[0]
-        # an ed25519 key is its type and 32 bytes
-        ok = ok and (host_key.split()[0] != "ssh-ed25519" or len(raw) == 51)
-    except (ValueError, UnicodeDecodeError):
-        ok = False
-    if not ok:
-        raise ConfigError(f"{where}.ssh.host_key: not a key of type {host_key.split()[0]}")
-    return SshRoute(host.strip("[]"), user, host_key, port)
+    host_key = _host_key(f"{where}.ssh", data.get("host_key"))
+    return SshRoute(host.strip("[]"), user, host_key, port, parse_relay_hop(where, data.get("relay")))
 
 
 def parse_link(name: str, data: dict) -> LinkTarget:

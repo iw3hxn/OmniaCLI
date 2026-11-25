@@ -179,6 +179,9 @@ NOT_SENSITIVE = frozenset({
     # the protection of a central panel (AD-017 slice 7): the destination, the time, the key's fingerprint, the last
     # run; no secret (the sealed key is not shown). Making the key, confirming it and a run are actions, logged
     "/central-backup", "/api/central-backup", "/api/v1/central-backup",
+    # a machine's SSH through a relay (AD-017 §17.6): the relay, its port and host key's fingerprint, the tunnel,
+    # the fingerprints of the keys let in; no secret. Publishing and stopping are actions, logged
+    "/agent-relay", "/api/agent-relay", "/api/v1/agent-relay",
 })
 
 

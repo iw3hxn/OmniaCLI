@@ -22,13 +22,16 @@ import contextlib
 import ctypes
 import hashlib
 import logging
+import os
+import shlex
 import signal
 import socket
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .config import SSH_HOST_KEY, ConfigError, LinkTarget, check_ssh_address
+from .config import SSH_HOST_KEY, ConfigError, LinkTarget, RelayHop, check_ssh_address
 
 _logger = logging.getLogger(__name__)
 
@@ -42,9 +45,12 @@ SSH_COMMAND = "ssh"
 READY_SECONDS = 25.0
 # the wait before a restart doubles up to the last one
 RETRY_SECONDS = (5, 10, 20, 40, 60)
-# up this long, the next failure starts from the first wait again
+# up this long, the next failure starts from the first wait again; so does a drop of a tunnel that was up (a
+# machine behind NAT whose tunnel to the relay dropped is back within seconds: AD-017 §17.6)
 STABLE_SECONDS = 120.0
 KEYSCAN_TIMEOUT = 15
+# the relay's user a central panel comes in as, to reach a machine behind NAT (relay.JUMP_USER; AD-017 §17.6)
+JUMP_USER = "omniacli-relay-jump"
 # the order a host key is chosen in
 KEY_TYPES = ("ssh-ed25519", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521", "ssh-rsa")
 PR_SET_PDEATHSIG = 1
@@ -164,7 +170,11 @@ def free_port() -> int:
 def ssh_command(link: LinkTarget, key: Path, known_hosts: Path, port: int, ssh: str = "ssh") -> list[str]:
     """ssh -N -L for the link: no configuration, no agent, no known_hosts of
     the user, only the saved key of the server, and an exit when the forward
-    cannot be made or the server stops answering."""
+    cannot be made or the server stops answering. Through a relay (a
+    machine behind NAT, AD-017 §17.6) the connection to the server is the
+    relay's ssh -W to the port its tunnel listens on: the relay's own host
+    key only, its user of the central panels, the same key; the session
+    with the server is end to end, the relay passes it encrypted."""
     route = link.ssh
     host, remote_port = link.remote
     target = f"[{host}]" if ":" in host else host
@@ -175,6 +185,8 @@ def ssh_command(link: LinkTarget, key: Path, known_hosts: Path, port: int, ssh: 
         "UpdateHostKeys": "no", "ExitOnForwardFailure": "yes", "ServerAliveInterval": "15",
         "ServerAliveCountMax": "3", "ConnectTimeout": "15", "ClearAllForwardings": "no",
     }
+    if route.relay is not None:
+        options["ProxyCommand"] = proxy_command(route.relay, relay_alias(link), key, known_hosts, ssh)
     cmd = [ssh, "-N", "-F", "/dev/null", "-i", str(key)]
     for name, value in options.items():
         cmd += ["-o", f"{name}={value}"]
@@ -182,8 +194,80 @@ def ssh_command(link: LinkTarget, key: Path, known_hosts: Path, port: int, ssh: 
                   route.host]
 
 
+def proxy_command(hop: RelayHop, host_alias: str, key: Path, known_hosts: Path, ssh: str = "ssh") -> str:
+    """The relay's ssh -W 127.0.0.1:<tunnel port>, as ProxyCommand: what
+    ssh_command asks of the relay and nothing else (no session, no other
+    forward), with the same options as the link's own ssh."""
+    host = f"[{hop.host}]" if ":" in hop.host else hop.host
+    cmd = [ssh, "-F", "/dev/null", "-i", str(key), "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none",
+           "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={known_hosts}",
+           "-o", "GlobalKnownHostsFile=/dev/null", "-o", f"HostKeyAlias={host_alias}", "-o", "CheckHostIP=no",
+           "-o", "UpdateHostKeys=no", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
+           "-o", "ConnectTimeout=15", "-W", f"127.0.0.1:{hop.tunnel_port}", "-p", str(hop.port),
+           "-l", JUMP_USER, hop.host]
+    # ssh expands % in a ProxyCommand: the paths and the host have none (check_ssh_address, the folder's name)
+    return " ".join(shlex.quote(part) for part in cmd).replace("%", "%%")
+
+
 def alias(link: LinkTarget) -> str:
     return f"omniacli-link-{link.name}"
+
+
+def relay_alias(link: LinkTarget) -> str:
+    return f"omniacli-relay-{link.name}"
+
+
+def known_hosts_text(link: LinkTarget) -> str:
+    """The known_hosts of the link's ssh: the server's key, and through a relay the relay's too."""
+    text = f"{alias(link)} {link.ssh.host_key}\n"
+    if link.ssh.relay is not None:
+        text += f"{relay_alias(link)} {link.ssh.relay.host_key}\n"
+    return text
+
+
+def ssh_env() -> dict:
+    """ssh's environment: a ProxyCommand runs in $SHELL, and the service's user has none (nologin)."""
+    return {**os.environ, "SHELL": "/bin/sh"}
+
+
+async def fetch_host_key_via(hop: RelayHop, folder: Path, ssh: str | None = None) -> str:
+    """The key of a machine's SSH behind NAT, read through its relay: an ssh
+    -L to the relay's port of the machine's tunnel (the relay's own host
+    key, this panel's key, as the link will), then fetch_host_key on it."""
+    key = key_file(folder)
+    if not key.exists():
+        raise SshError("OmniaCLI has no SSH key yet: open the Links page to make it")
+    with tempfile.TemporaryDirectory(prefix="omniacli-relay-") as tmp:
+        known = Path(tmp) / "known_hosts"
+        known.write_text(f"omniacli-relay-fetch {hop.host_key}\n", encoding="utf-8")
+        port = free_port()
+        host = f"[{hop.host}]" if ":" in hop.host else hop.host
+        cmd = [ssh or SSH_COMMAND, "-N", "-F", "/dev/null", "-i", str(key), "-o", "IdentitiesOnly=yes",
+               "-o", "IdentityAgent=none", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
+               "-o", f"UserKnownHostsFile={known}", "-o", "GlobalKnownHostsFile=/dev/null",
+               "-o", "HostKeyAlias=omniacli-relay-fetch", "-o", "CheckHostIP=no", "-o", "UpdateHostKeys=no",
+               "-o", "ExitOnForwardFailure=yes", "-o", "ConnectTimeout=15",
+               "-L", f"127.0.0.1:{port}:127.0.0.1:{hop.tunnel_port}", "-p", str(hop.port), "-l", JUMP_USER, host]
+        proc = await asyncio.create_subprocess_exec(*cmd, stdin=asyncio.subprocess.DEVNULL,
+                                                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+                                                    preexec_fn=_die_with_parent)
+        try:
+            deadline = time.monotonic() + KEYSCAN_TIMEOUT
+            while proc.returncode is None and time.monotonic() < deadline:
+                if await _listening(port):
+                    return await fetch_host_key("127.0.0.1", port)
+                await asyncio.sleep(0.3)
+            err = (await proc.stderr.read()).decode(errors="replace").strip() if proc.returncode is not None else ""
+            raise SshError(f"the relay {hop.host}:{hop.port} did not open the machine's port {hop.tunnel_port}"
+                           + (f": {err.splitlines()[-1]}" if err else ""))
+        finally:
+            if proc.returncode is None:
+                proc.terminate()
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(proc.wait(), 3)
+                if proc.returncode is None:
+                    proc.kill()
+                    await proc.wait()
 
 
 def _die_with_parent() -> None:
@@ -212,6 +296,8 @@ class _Tunnel:
     detail: str = ""
     since: float = field(default_factory=time.time)
     task: asyncio.Task | None = None
+    # its last run reached the forward: the drop after it waits the first wait, not the next one
+    came_up: bool = False
     process: asyncio.subprocess.Process | None = None
     errors: collections.deque = field(default_factory=lambda: collections.deque(maxlen=5))
 
@@ -275,8 +361,9 @@ class SshTunnels:
         try:
             while True:
                 started = time.monotonic()
+                tunnel.came_up = False
                 await self._run_once(tunnel)
-                if time.monotonic() - started >= STABLE_SECONDS:
+                if tunnel.came_up or time.monotonic() - started >= STABLE_SECONDS:
                     failures = 0
                 wait = RETRY_SECONDS[min(failures, len(RETRY_SECONDS) - 1)]
                 failures += 1
@@ -295,7 +382,7 @@ class SshTunnels:
         if not key.exists():
             self._set(tunnel, "down", "OmniaCLI has no SSH key yet: open the Links page to make it")
             return
-        known_hosts.write_text(f"{alias(link)} {link.ssh.host_key}\n", encoding="utf-8")
+        known_hosts.write_text(known_hosts_text(link), encoding="utf-8")
         if not await _free(tunnel.port):
             tunnel.port = free_port()
             link.local_port = tunnel.port
@@ -305,7 +392,7 @@ class SshTunnels:
             tunnel.process = await asyncio.create_subprocess_exec(
                 *ssh_command(link, key, known_hosts, tunnel.port, self.ssh),
                 stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.PIPE, preexec_fn=_die_with_parent)
+                stderr=asyncio.subprocess.PIPE, preexec_fn=_die_with_parent, env=ssh_env())
         except OSError as exc:
             self._set(tunnel, "down", f"ssh did not start: {exc}")
             return
@@ -314,7 +401,9 @@ class SshTunnels:
             deadline = time.monotonic() + READY_SECONDS
             while tunnel.process.returncode is None and time.monotonic() < deadline:
                 if await _listening(tunnel.port):
-                    self._set(tunnel, "up", f"127.0.0.1:{tunnel.port} → {link.ssh.host}")
+                    via = f" through the relay {link.ssh.relay.host}" if link.ssh.relay is not None else ""
+                    self._set(tunnel, "up", f"127.0.0.1:{tunnel.port} → {link.ssh.host}{via}")
+                    tunnel.came_up = True
                     break
                 await asyncio.sleep(0.3)
             else:
@@ -362,5 +451,5 @@ async def _free(port: int) -> bool:
     return True
 
 
-__all__ = ["SshError", "SshTunnels", "authorized_line", "ensure_key", "fetch_host_key", "fingerprint",
-           "public_key", "ssh_command", "sshd_block"]
+__all__ = ["SshError", "SshTunnels", "authorized_line", "ensure_key", "fetch_host_key", "fetch_host_key_via",
+           "fingerprint", "proxy_command", "public_key", "ssh_command", "sshd_block"]

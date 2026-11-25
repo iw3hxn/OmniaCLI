@@ -21,6 +21,7 @@
 #link-dialog { --dialog-w: 680px; }
 #link-dialog .field-help { display: block; font-size: var(--fs-14); margin-top: 4px; line-height: var(--lh-20);}
 #link-dialog details { margin-top: 12px; } #link-dialog summary { font-weight: var(--fw-semibold); color: var(--text); }
+#ld-fingerprint, #ld-relay-fingerprint { overflow-wrap: anywhere; }
 #link-dialog .ld-switch { display: flex; gap: 8px; align-items: center; margin: 16px 0 8px; font-weight: var(--fw-semibold); }
 .links-foot { margin-top: 12px; } .links-foot details { margin-bottom: 6px; }
 </style>
@@ -42,9 +43,13 @@
     <tbody {{ item(link.name ~ " " ~ link.url ~ " " ~ (link.ssh.user ~ "@" ~ link.ssh.host if link.ssh else "")) }}>
     <tr data-link="{{ link.name }}" data-url="{{ link.url }}" data-ca="{{ link.ca_file }}" data-tunnel="{{ tunnel }}" data-pages="{{ link.pages }}" data-agent="{{ 'agent' if link.name in (agent_links or []) else '' }}"
         {% if link.ssh %}data-ssh-host="{{ link.ssh.host }}" data-ssh-port="{{ link.ssh.port }}" data-ssh-user="{{ link.ssh.user }}"
-        data-ssh-key="{{ link.ssh.host_key }}" data-fingerprint="{{ s.fingerprint }}"{% endif %}>
+        data-ssh-key="{{ link.ssh.host_key }}" data-fingerprint="{{ s.fingerprint }}"
+        {% if link.ssh.relay %}data-relay-host="{{ link.ssh.relay.host }}" data-relay-port="{{ link.ssh.relay.port }}"
+        data-relay-key="{{ link.ssh.relay.host_key }}" data-relay-tunnel="{{ link.ssh.relay.tunnel_port }}" data-relay-fingerprint="{{ s.relay_fingerprint }}"{% endif %}{% endif %}>
       <td><strong><a href="{{ prefix }}/links/{{ link.name }}/">{{ link.name }}</a></strong></td>
-      <td class="link-how">{% if link.ssh %}{{ _("Through SSH") }} · <span class="mono">{{ link.ssh.host }}{% if link.ssh.port != 22 %}:{{ link.ssh.port }}{% endif %}</span>
+      <td class="link-how">{% if link.ssh and link.ssh.relay %}{{ _("Through SSH, behind NAT") }} · <span class="mono">{{ link.ssh.host }}</span>
+        <br><span class="mono">{{ _("through the relay {relay}, port {port}", relay=link.ssh.relay.host ~ ("" if link.ssh.relay.port == 22 else ":" ~ link.ssh.relay.port), port=link.ssh.relay.tunnel_port) }}</span>
+        {% elif link.ssh %}{{ _("Through SSH") }} · <span class="mono">{{ link.ssh.host }}{% if link.ssh.port != 22 %}:{{ link.ssh.port }}{% endif %}</span>
         {% else %}{{ _("Direct") }} · <span class="mono">{{ link.url }}</span>{% endif %}
         {% if link.url.startswith("http://") and not link.ssh %}<br><span class="error">{{ _("http: the token travels in clear, use it only through a VPN or an SSH tunnel") }}</span>{% endif %}
         {% if link.ssh and not public_key %}<br><span class="error">{{ _("OmniaCLI's SSH key is missing: Edit… makes it") }}</span>{% endif %}</td>
@@ -110,6 +115,26 @@
           <span class="mono" id="ld-fingerprint">{{ _("not fetched") }}</span>
           <button type="button" class="small" id="ld-fetch" title="{{ _('Asks the SSH server for its key and shows its fingerprint: compare it with the one the customer reads on the server. It is kept at the save, and from then only that one is accepted.') }}">{{ _("Read the server's key") }}</button>
           <span class="muted field-help">{{ _("Compare it with {command} run on that server: only this key is accepted.", command="ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub") }}</span></div>
+      </div>
+      {# a machine behind NAT (AD-017 §17.6): its SSH published on a port of a relay, reached through the relay's sshd #}
+      <label class="ld-switch" title="{{ _('For a machine behind NAT that published its SSH through a relay (its page Reached through a relay): the tunnel goes through the relay, which passes the SSH encrypted end to end and opens no other port.') }}">
+        <input type="checkbox" id="ld-relay"> {{ _("The machine is behind NAT: through a relay") }}</label>
+      <div id="ld-relay-fields" hidden>
+        <div class="form-grid">
+          <label for="ld-relay-host">{{ _("Relay") }}</label>
+          <div><input type="text" id="ld-relay-host" class="mono">
+            <span class="muted field-help">{{ _("the address of the relay, a machine with a public address") }}</span></div>
+          <label for="ld-relay-port">{{ _("Relay's SSH port") }}</label>
+          <div><input type="number" id="ld-relay-port" class="mono" min="1" max="65535" value="22"></div>
+          <label for="ld-relay-tunnel">{{ _("Port on the relay") }}</label>
+          <div><input type="number" id="ld-relay-tunnel" class="mono" min="31000" max="31999">
+            <span class="muted field-help">{{ _("the port the machine's page Reached through a relay says, after it published its SSH") }}</span></div>
+          <label>{{ _("Relay's key") }}</label>
+          <div><input type="hidden" id="ld-relay-key">
+            <span class="mono" id="ld-relay-fingerprint">{{ _("not fetched") }}</span>
+            <button type="button" class="small" id="ld-relay-fetch" title="{{ _('Asks the relay for its SSH key and shows its fingerprint: compare it with the one its admin reads there. Only that key is accepted.') }}">{{ _("Read the relay's key") }}</button></div>
+        </div>
+        <p class="muted field-help">{{ _("Then read the server's key again: through the relay it is the machine's own. Server is then only the machine's name.") }}</p>
       </div>
       {% if not public_key %}
       <p class="error" style="margin: 10px 0 6px">{{ _("First this OmniaCLI needs its SSH key.") }}
@@ -213,10 +238,12 @@
 
   // the dialog of a link: a new one, or one of the list with its SSH server and what its server needs
   let editing = null, before = "";
-  const fields = ["ld-name", "ld-url", "ld-token", "ld-ssh", "ld-host", "ld-port", "ld-user", "ld-host-key", "ld-ca", "ld-pages"];
+  const fields = ["ld-name", "ld-url", "ld-token", "ld-ssh", "ld-host", "ld-port", "ld-user", "ld-host-key", "ld-ca", "ld-pages",
+                  "ld-relay", "ld-relay-host", "ld-relay-port", "ld-relay-tunnel", "ld-relay-key"];
   const values = () => JSON.stringify(fields.map((id) => $(id).type === "checkbox" ? $(id).checked : $(id).value));
   function changed() {
     $("ld-ssh-fields").hidden = !$("ld-ssh").checked;
+    $("ld-relay-fields").hidden = !$("ld-relay").checked;
     $("ld-url-help").hidden = !$("ld-ssh").checked;
     $("ld-save").disabled = values() === before;
   }
@@ -230,6 +257,9 @@
     $("ld-ssh").checked = !!d.sshHost;
     $("ld-host").value = d.sshHost || ""; $("ld-port").value = d.sshPort || 22; $("ld-user").value = d.sshUser || "omniacli-link";
     $("ld-host-key").value = d.sshKey || ""; $("ld-fingerprint").textContent = d.fingerprint || T.notFetched;
+    $("ld-relay").checked = !!d.relayHost; $("ld-relay-host").value = d.relayHost || "";
+    $("ld-relay-port").value = d.relayPort || 22; $("ld-relay-tunnel").value = d.relayTunnel || "";
+    $("ld-relay-key").value = d.relayKey || ""; $("ld-relay-fingerprint").textContent = d.relayFingerprint || T.notFetched;
     $("ld-ca").value = d.ca || ""; $("ld-pages").checked = d.pages !== "machine";
     $("ld-advanced").open = !!d.ca || d.pages === "machine" || d.agent === "agent";
     $("ld-agent").hidden = d.agent !== "agent";
@@ -249,10 +279,23 @@
     if (await post(`${encodeURIComponent(editing)}/forget-agent`, {}, $("ld-error"))) location.reload();
   };
   $("ld-cancel").onclick = () => dialog.close();
+  // the relay of a machine behind NAT, when it is chosen
+  const relay = () => $("ld-relay").checked && $("ld-relay-host").value.trim() ? {host: $("ld-relay-host").value.trim(),
+    port: Number($("ld-relay-port").value) || 22, host_key: $("ld-relay-key").value, tunnel_port: Number($("ld-relay-tunnel").value) || 0} : null;
+  $("ld-relay-fetch").onclick = async () => {
+    const print = $("ld-relay-fingerprint");
+    print.textContent = T.asking;
+    const data = await post("ssh/host-key", {host: $("ld-relay-host").value.trim(), port: Number($("ld-relay-port").value) || 22}, $("ld-error"));
+    if (!data) { print.textContent = T.notFetched; return; }
+    $("ld-relay-key").value = data.host_key;
+    print.textContent = `${data.host_key.split(" ")[0]} ${data.fingerprint} ${T.keep}`;
+    changed();
+  };
   $("ld-fetch").onclick = async () => {
     const print = $("ld-fingerprint");
     print.textContent = T.asking;
-    const data = await post("ssh/host-key", {host: $("ld-host").value.trim(), port: Number($("ld-port").value) || 22}, $("ld-error"));
+    const through = relay();
+    const data = await post("ssh/host-key", through ? {relay: through} : {host: $("ld-host").value.trim(), port: Number($("ld-port").value) || 22}, $("ld-error"));
     if (!data) { print.textContent = T.notFetched; return; }
     $("ld-host-key").value = data.host_key;
     print.textContent = `${data.host_key.split(" ")[0]} ${data.fingerprint} ${T.keep}`;
@@ -266,7 +309,8 @@
     const name = $("ld-name").value.trim();
     const body = {name, url: $("ld-url").value.trim(), token: $("ld-token").value.trim(), ca_file: $("ld-ca").value.trim(),
                   pages: $("ld-pages").checked ? "here" : "machine",
-                  ssh: viaSsh ? {host, port: Number($("ld-port").value) || 22, user: $("ld-user").value.trim(), host_key: $("ld-host-key").value} : null};
+                  ssh: viaSsh ? {host, port: Number($("ld-port").value) || 22, user: $("ld-user").value.trim(), host_key: $("ld-host-key").value,
+                                 relay: relay()} : null};
     if (!editing) body.new = true;
     if (!(await post("save", body, $("ld-error")))) return;
     // a link through SSH just made: its dialog again, open on what its server needs

@@ -657,7 +657,9 @@ def link_model(link) -> dict:
     ssh = link.ssh
     return {"name": link.name, "url": link.url, "ca_file": link.ca_file, "pages": link.pages,
             "remote": list(link.remote) if ssh is not None else [],
-            "ssh": {"host": ssh.host, "port": ssh.port, "user": ssh.user, "host_key": ssh.host_key}
+            "ssh": {"host": ssh.host, "port": ssh.port, "user": ssh.user, "host_key": ssh.host_key,
+                    # behind NAT, through a relay (AD-017 §17.6): its address, port, host key and the tunnel's port
+                    "relay": ssh.relay.to_dict() if ssh.relay is not None else None}
             if ssh is not None else None}
 
 

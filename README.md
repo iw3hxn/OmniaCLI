@@ -1231,6 +1231,86 @@ same way. No data moves: they never left the machine.
   this panel») while its `agent_api` is what the central panel's pages ask;
   below it the machine writes its own section, with the line, as needed.
 
+#### Behind NAT: through a relay
+
+A machine nobody reaches (an office server behind NAT) still has its pages
+on the central panel, like every other (AD-017 §17.6): it publishes **its
+SSH** on a port of a **relay**, a machine with a public address that it
+reaches (one of its links, an OmniaCLI), and the central panel's link to it
+goes through there. The machine opens the tunnel outward; the central panel
+opens no port; nothing new comes in to the machine. Pullers stay for whoever
+wants neither.
+
+1. **On the machine** the central panel's link key is let in first, as for
+   any link through SSH (the line its Links page prints, in
+   `~omniacli-link/.ssh/authorized_keys`). Then **Settings › Reached through
+   a relay** (`/agent-relay`, an admin who logs in there; REST `POST
+   /api/v1/agent-relay`, MCP `agent_relay_publish`): choose the relay,
+   **Publish the SSH**. The job:
+   - makes the tunnel's key (`/etc/omniacli/agent-relay/id_ed25519`, 600,
+     the tunnels' user's; only its public half leaves) and reads the keys
+     the link user lets forward (`permitopen` lines: the central panels,
+     never a person's key);
+   - asks the relay through the link (`POST /api/relay/agents`, a job there,
+     `relay-agent-host`): a port of its loopback (31000-31999, the same
+     range as the names of the workspaces), a line for the tunnel's key in
+     `omniacli-relay`'s `authorized_keys`, `restrict,port-forwarding,
+     permitlisten="127.0.0.1:<port>",command="/bin/false"` (its own key, its
+     own line), and for every central panel's key a line of the relay's
+     second user, `omniacli-relay-jump` (no shell, its home root's):
+     `restrict,port-forwarding,permitopen="127.0.0.1:<port>",command="/bin/false"`,
+     one line a key with one `permitopen` for each machine that lets it in;
+     the `Match User omniacli-relay-jump` block of `sshd_config` says the
+     same (`AllowTcpForwarding local`, `PermitOpen` of those ports only,
+     `PermitListen none`, `ForceCommand /bin/false`, no TTY, no agent): both
+     must allow a forward, so the key opens those ports and nothing else,
+     not the ports of the workspaces' names, not the relay's sshd or
+     OmniaCLI;
+   - writes `omniacli-agent-relay.service`: `ssh -N -R
+     127.0.0.1:<port>:127.0.0.1:<this sshd's port> omniacli-relay@<relay>`
+     as `omniacli-tunnel`, the relay's host key only, keepalives every
+     10 s, `Restart=always` 5 s after any end; then waits for the relay to
+     see the port listening and says the port.
+
+   The page shows the relay, **the port on the relay**, the relay's key
+   fingerprint, the tunnel now (connected since, the drops), the central
+   panels let in (their fingerprints). **Stop publishing…** (asked in the
+   page; `POST /api/v1/agent-relay/remove`, MCP `agent_relay_remove`)
+   takes it away on both machines. Never through a link: the link may be
+   the one that rides on it.
+2. **On the central panel**, Links › the machine › **Edit…** › *The machine
+   is behind NAT: through a relay*: the relay's address and SSH port, **Read
+   the relay's key** (compared with its admin's), the port on the relay;
+   then **Read the server's key** again, read now through the relay (it is
+   the machine's own: on the lab the same fingerprint as before the NAT).
+   Saved in `links.yaml` as `ssh.relay: {host, port, host_key,
+   tunnel_port}`, and in the access log. REST `POST
+   /api/v1/links/<name>/relay`, MCP `link_relay` (without the relay's key
+   the answer gives it, `saved: false`, to be compared and sent back;
+   `fetch_machine_key` the same for the machine's).
+
+The link's ssh then runs with `ProxyCommand` = the relay's `ssh -W
+127.0.0.1:<port> omniacli-relay-jump@<relay>` (the relay's host key only,
+the same key, `SHELL=/bin/sh`: the service's user has none), and the session
+is the machine's own, end to end: its host key, its link user, the forward to
+its OmniaCLI. The relay passes SSH it cannot read: the link's token and the
+pages are never in clear there (on the lab a capture of the relay's loopback
+during page loads had neither the token, nor `Bearer`, nor `HTTP/1.1`).
+
+**When the line drops** the machine's unit starts ssh again 5 s after it
+ends, and the central panel's tunnel, which drops with it, tries again
+after its first wait (5 s, then 10 s): a tunnel that was up starts from the
+first wait again. On the lab (lab4 behind a simulated NAT, the relay a third
+container, 25/11/2026) the tunnel's ssh killed 5 times in a row: the central
+panel read lab4 again after 15.6-16.1 s each time (40.3 s the third time
+before that rule).
+
+Limits: the relay's sshd must let `omniacli-relay` and `omniacli-relay-jump`
+in (`AllowUsers`, `AllowGroups`); a process of the relay can connect to the
+port on its loopback, where it meets the machine's sshd as anyone would if
+the machine were not behind NAT (its own rules: keys, passwords); a central panel whose key is not in the link user's file when the
+machine publishes is let in at the next **Publish again**.
+
 ### Protection of the central panel
 
 A central panel holds what opens every machine it manages: the links' tokens

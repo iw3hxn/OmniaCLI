@@ -79,7 +79,12 @@ The protection of this panel, its own state sealed every night on a
 destination (admin token of the machine): central_backup_status,
 central_backup_configure, central_backup_new_key (its recovery passphrase
 comes once: the user keeps it offline), central_backup_confirm_key with the
-passphrase typed back, central_backup_run."""
+passphrase typed back, central_backup_run.
+A machine behind NAT managed from a central panel (admin token): on the
+machine agent_relay_status, agent_relay_publish (its SSH through a relay, one
+of its links) and agent_relay_remove; on the central panel link_relay, the
+link's SSH through that relay (the relay's key and the machine's confirmed
+by the user, as for any SSH link)."""
 
 
 def _instructions() -> str:
@@ -107,15 +112,20 @@ TOOL_ROLES = {"update_test": "developer", "backup_test": "developer",
               "move_instance": "admin", "move_back": "admin",
               # the protection of this panel (AD-017 slice 7): its admins only
               **{t: "admin" for t in ("central_backup_status", "central_backup_configure", "central_backup_new_key",
-                                      "central_backup_confirm_key", "central_backup_run")}}
+                                      "central_backup_confirm_key", "central_backup_run")},
+              # a machine behind NAT and its central panel (AD-017 §17.6): the machine's admins only
+              **{t: "admin" for t in ("agent_relay_status", "agent_relay_publish", "agent_relay_remove",
+                                      "link_relay")}}
 CENTRAL_TOOLS = {"central_backup_status", "central_backup_configure", "central_backup_new_key",
-                 "central_backup_confirm_key", "central_backup_run"}
+                 "central_backup_confirm_key", "central_backup_run",
+                 "agent_relay_status", "agent_relay_publish", "agent_relay_remove", "link_relay"}
 # the tools that change something: a write in the rate limit of a token (apiguard.RateLimiter)
 WRITE_TOOLS = {"update_test", "backup_test", "backup", "add_draft_server", "restart_instance", "start_instance",
                "stop_instance", "run_action", "verify_backup", "full_archive", "stop_job", "update_production",
                "upload_backup", "restore_new_instance", "create_staging", "deploy_back",
                "prepare_handover", "receive_workspace", "switch_workspace", "move_instance", "move_back",
-               "central_backup_configure", "central_backup_new_key", "central_backup_confirm_key", "central_backup_run"}
+               "central_backup_configure", "central_backup_new_key", "central_backup_confirm_key", "central_backup_run",
+               "agent_relay_publish", "agent_relay_remove", "link_relay"}
 # the tools of the machine's tokens only: a workspace's token never reaches them
 MACHINE_TOOLS = {"read_server", "add_draft_server", "list_links", "linked_tools", "call_linked",
                  "handover_status", "prepare_handover", "receive_workspace", "reception_status", "switch_workspace",
@@ -1073,6 +1083,71 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
             raise ToolError(f"step is one of {', '.join(apiv1.MOVE_STEPS)}")
         return await once(ctx, "move_back", idempotency_key, {"server_name": server_name, "step": step},
                           lambda: machine(ctx, f"back:{step}", wait_seconds, server=server_name, confirm=confirm))
+
+    # --- a machine behind NAT and its central panel (AD-017 §17.6): the pages' code (app.agent_relay_act,
+    # app.link_relay_act), the same answers
+
+    async def through_relay(ctx: Context, hook: str, call, wait_seconds: int = 0) -> dict:
+        if api.get(hook) is None:
+            raise ToolError("This OmniaCLI has no relay of the central panel through MCP")
+        if token_of(ctx) is None:
+            raise ToolError("forbidden: this is set on the machine itself, not through a link")
+        if settings.token_servers(token_of(ctx)):
+            raise ToolError("forbidden: this token reaches some servers only, and this is the machine's")
+        code, data = await call(api[hook])
+        if code >= 400:
+            raise ToolError(f"{data.get('code') or apiv1.code_of(code)}: {data.get('error') or 'Refused'}")
+        job = jobs.get(str(data.get("job") or "")) if data.get("job") else None
+        if job is None:
+            return data
+        await _wait(job, wait_seconds)
+        return job_dict(ctx, job, tail=30)
+
+    @server.tool()
+    async def agent_relay_status(ctx: Context) -> dict:
+        """(admin token of the machine) Whether this machine's SSH is
+        published through a relay for the central panel that manages it
+        (AD-017 §17.6): the link to the relay, its address, the port of its
+        loopback (tunnel_port) the central's link names, the tunnel now, the
+        fingerprints of the central panels' keys let in, and choices (the
+        links that may be the relay, or why not). No secret."""
+        return await through_relay(ctx, "agent_relay", lambda act: act("status", as_principal(ctx), source_of(ctx)))
+
+    @server.tool()
+    async def agent_relay_publish(relay: str, ctx: Context, wait_seconds: int = 0) -> dict:
+        """(admin token of the machine, never a CI's) Publish this machine's
+        SSH through relay (one of its links, a machine with a public address
+        it reaches): a job that makes the tunnel's key, asks the relay to let
+        it listen on one port and to let the central panels this machine's
+        link user lets in open that port only, then keeps the tunnel up. Its
+        result says the port to give the central's link (link_relay)."""
+        return await through_relay(ctx, "agent_relay", lambda act: act("publish", as_principal(ctx), source_of(ctx),
+                                                                       "", {"relay": relay}), wait_seconds)
+
+    @server.tool()
+    async def agent_relay_remove(ctx: Context, wait_seconds: int = 0) -> dict:
+        """(admin token of the machine, never a CI's) Stop publishing this
+        machine's SSH through its relay: a job that takes the tunnel away
+        here and its lines on the relay."""
+        return await through_relay(ctx, "agent_relay", lambda act: act("remove", as_principal(ctx), source_of(ctx)),
+                                   wait_seconds)
+
+    @server.tool()
+    async def link_relay(link: str, ctx: Context, relay_host: str = "", relay_port: int = 22,
+                         tunnel_port: int = 0, relay_host_key: str = "", machine_host_key: str = "",
+                         fetch_machine_key: bool = False) -> dict:
+        """(admin token of the machine, never a CI's) Reach the machine of
+        link (an SSH link) through a relay, behind NAT: relay_host and
+        relay_port its sshd, tunnel_port the port of its loopback the
+        machine's tunnel listens on (the machine's agent_relay_status says
+        it). Without relay_host_key the answer gives the relay's key
+        (saved: false): show its fingerprint to the user to compare, then
+        call again with it. fetch_machine_key=true reads the machine's own
+        key through the relay the same way. relay_host empty: directly again."""
+        body = {"host": relay_host, "port": relay_port, "host_key": relay_host_key or None,
+                "tunnel_port": tunnel_port or None, "machine_host_key": machine_host_key or None,
+                "fetch_machine_key": fetch_machine_key}
+        return await through_relay(ctx, "link_relay", lambda act: act(link, as_principal(ctx), "", body))
 
     # --- the protection of this panel (AD-017 slice 7): the pages' code (app.central_backup_act), the same answers
 

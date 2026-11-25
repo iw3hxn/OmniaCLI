@@ -23,6 +23,12 @@ case "$1" in
             rm -f "$unit"
         done
         rm -rf /etc/omniacli/relay
+        # this machine's SSH published through a relay for its central panel (AD-017 §17.6): its unit and key
+        if [ -e /etc/systemd/system/omniacli-agent-relay.service ]; then
+            systemctl disable --now omniacli-agent-relay.service >/dev/null 2>&1 || true
+            rm -f /etc/systemd/system/omniacli-agent-relay.service
+        fi
+        rm -rf /etc/omniacli/agent-relay
         if id omniacli-tunnel >/dev/null 2>&1; then userdel omniacli-tunnel || true; fi
         rm -f /etc/nginx/conf.d/omniacli-relay-*.conf
         rm -rf /etc/omniacli/certs/relay-*
@@ -30,7 +36,13 @@ case "$1" in
             [ -e "$lineage" ] || continue
             certbot delete --cert-name "$(basename "$lineage")" --non-interactive >/dev/null 2>&1 || true
         done
-        rm -f /etc/omniacli/relay-hosted.json /etc/omniacli/.relay.lock
+        rm -f /etc/omniacli/relay-hosted.json /etc/omniacli/relay-agents.json /etc/omniacli/.relay.lock
+        # as a relay of machines' SSH: the user the central panels come in as, its home and keys
+        if id omniacli-relay-jump >/dev/null 2>&1; then
+            pkill -KILL -u omniacli-relay-jump || true
+            userdel omniacli-relay-jump || true
+        fi
+        rm -rf /var/lib/omniacli-relay-jump
         if id omniacli-relay >/dev/null 2>&1; then
             pkill -KILL -u omniacli-relay || true
             userdel omniacli-relay || true
@@ -141,6 +153,7 @@ case "$1" in
             /var/lib/omniacli/api-idempotency.json /var/lib/omniacli/api-idempotency.json.tmp \
             /var/lib/omniacli/credentials.yaml /var/lib/omniacli/credentials.yaml.tmp \
             /var/lib/omniacli/relays.json /var/lib/omniacli/relays.json.tmp \
+            /var/lib/omniacli/agent-relay.json /var/lib/omniacli/agent-relay.json.tmp \
             /var/lib/omniacli/workspaces.yaml /var/lib/omniacli/workspaces.yaml.tmp
         if [ -d /var/lib/omniacli/backups ] && [ -n "$(ls -A /var/lib/omniacli/backups)" ]; then
             echo "omniacli: the database backups are kept in /var/lib/omniacli/backups"
