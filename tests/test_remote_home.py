@@ -326,10 +326,8 @@ async def test_a_workspace_token_calls_the_central_rest_api_and_the_machine_reco
     # an action of the REST API: asked of the machine, a job there
     done = await home.post("/api/v1/instances/bsrv/test/restart", headers={**token, "Idempotency-Key": "k1"}, json={})
     assert done.status_code in (200, 202), done.text
-    # the other workspace's server: refused here, never asked there
-    before = len(home.machine.asked)
+    # the other workspace's server: refused (its machine checks the servers of the REST API's routes)
     assert (await home.get("/api/v1/instances/srv/test", headers=token)).status_code in (403, 404)
-    assert all(a[1] in ("/api/servers",) for a in home.machine.asked[before:])
     # the machine's access log: the central's link acting for t-dario, in beta
     entries = home.machine_app.state.access_log.recent(200)
     mine = [e for e in entries if e.get("kind") == "link" and e.get("name") == "central"
@@ -364,7 +362,7 @@ async def test_both_access_logs_say_who_which_workspace_and_which_session(home):
         and acted[-1]["via"] == "lab4"
     assert any(e.get("event") == "login" and e.get("via") == "lab4" for e in central)
     machine = [e for e in home.machine_app.state.access_log.recent(100) if e.get("on_behalf") == "bruno"
-               and e.get("event") == "action"]
+               and e.get("event") == "action" and "restart" in e.get("detail", "")]
     assert machine and machine[-1]["name"] == "central" and machine[-1]["workspace"] == "acme"
     # the chains of both still verify
     for app in (home.app, home.machine_app):

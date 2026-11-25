@@ -56,7 +56,7 @@ class Person:
     workspaces: tuple = ()
     # ((workspace, {role, capabilities, servers|None}), ...): where a custom role or some servers apply
     grants: tuple = ()
-    # the record's second factor's secret is read by identityimport.Store.check_code, never kept here
+    # its password and its code are checked by its machine (POST /api/identity/v1/login): no secret here
 
 
 @dataclass(frozen=True)
@@ -198,15 +198,20 @@ def served(imports: dict, homes: dict, here_workspaces, here_users) -> Served:
                     continue
                 person = (data.get("token_people") or {}).get(token)
                 grant = None
+                role = info["role"]
                 if person is not None:
-                    level = capabilities.PRESETS[info["role"]]
+                    # a token of a person: never more than the person's role there (none: it reads), as
+                    # config.token_role says it on the machine
+                    cap = (data.get("members") or {}).get(person, ROLES[0])
+                    role = min(role, cap if cap in ROLES else ROLES[0], key=ROLES.index)
+                    level = capabilities.PRESETS[role]
                     if person not in (data.get("members") or {}):
                         grant = {"role": person, "capabilities": [], "servers": []}
                     else:
                         found = _grant(data, person)
                         if found is not None:
                             grant = {**found, "capabilities": sorted(set(found["capabilities"]) & level)}
-                out.tokens[info["hash"]] = Token(token, token_back.get(token, token), link, ws, info["role"],
+                out.tokens[info["hash"]] = Token(token, token_back.get(token, token), link, ws, role,
                                                  bool(info.get("ci")), grant)
     return out
 

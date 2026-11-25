@@ -1560,6 +1560,10 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
             _LIMITED.set(bool(kind == "mcp" and settings.token_servers(name)))
             _FOUND.set(delegated)
             _GRANT.set(settings.token_grant(name) if kind == "mcp" else _delegated_grant(delegated, role))
+            if delegated is not None and delegated.get("token_servers"):
+                # a token of some servers only, of a workspace whose people a central panel serves (AD-018 slice 2)
+                _GRANT.set((_GRANT.get() or capabilities.Grant(role, frozenset(capabilities.PRESETS[role])))
+                           .narrowed(servers=delegated["token_servers"]))
             _WHO.set(who)
             sent = False
 

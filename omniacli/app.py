@@ -516,6 +516,7 @@ REMOTE_PASSKEY_LATER = ("Your second step is a passkey: on this portal it comes 
                         "logged in before for now")
 REMOTE_SETUP_LATER = ("This portal asks a second step and you have none yet: set it up where you logged in before, "
                       "then log in here")
+REMOTE_CHECK_DOWN = ("Your password cannot be checked now: try again in a few minutes")
 REMOTE_ACCOUNT_LATER = ("Your account is changed where you logged in before: it comes to this portal with your "
                         "workspace's move")
 
@@ -867,6 +868,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     # the logins of the people served for a linked machine (AD-018 slice 2) still owing their code: apart, read
     # against their imported hashes only
     remote_pending = totp.PendingLogins()
+    # {digest of the step cookie: the step its machine opened}: the code goes with it to the machine
+    remote_steps: dict[str, str] = {}
+    REMOTE_LOGIN_TIMEOUT = 15
     account_setups: dict[str, tuple[str, float]] = {}
     # the passkeys (passkeys.py) and the single sign-on of the workspaces (sso.py), next to the users file
     private_dir = settings.users_file.parent if settings.users_file else settings.jobs_dir.parent
@@ -1067,14 +1071,43 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         found = placement.scope_decode(value)
         if found is None or link not in settings.links or settings.links[link].role != "admin":
             return None
-        for ws in (found["ws"], *(a["ws"] for a in found["also"])):
+        for entry in (found, *found["also"]):
+            ws = entry["ws"]
             if ws not in settings.workspaces:
                 return None
             home = hosted.home_of(ws)
             if home != link and (home or central_homes.of(ws) != link):
                 # a workspace hosted for another home is never the central panel's, nor another link's
                 return None
+            if not home and not own_records(found, entry):
+                return None
         return found
+
+    def own_records(found: dict, entry: dict) -> bool:
+        """A workspace of this machine whose people a central panel serves (AD-018 slice 2): the scope as this
+        machine's own records say it now, never only the central's word (its import may be older). The person
+        still a member of the workspace, with no more than its role here and its grant here; the token still of
+        the workspace, with no more than its level here (its person's role caps it, config.token_role), its grant
+        and its mark of a CI here. entry is narrowed in place; False: refused."""
+        ws = settings.workspaces[entry["ws"]]
+        person = found["person"]
+        if found["kind"] == "token":
+            if person not in settings.tokens or settings.token_workspace(person) != entry["ws"]:
+                return False
+            entry["role"] = min(entry["role"], settings.token_role(person), key=ACCESS_ROLES.index)
+            own = settings.token_grant(person)
+            # a token of some servers only: the REST API checks them by its name here (api_reaches), the pages'
+            # reads refuse it (delegated), MCP narrows its grant to them
+            found["token_servers"] = list(settings.token_servers(person))
+            found["ci"] = bool(found.get("ci")) or settings.token_ci(person)
+        else:
+            if person not in ws.members or settings.user_role(person) != WORKSPACE_ROLE:
+                return False
+            entry["role"] = min(entry["role"], ws.members[person], key=ACCESS_ROLES.index)
+            own = ws.grant(person)
+        entry["grant"] = None if own is None else {"role": own.role, "capabilities": sorted(own.caps),
+                                                   "servers": None if own.servers is None else sorted(own.servers)}
+        return True
 
     def delegated(request: HTTPConnection, link: str, link_role: str, value: str, method: str) -> Principal:
         """The person or the token of the workspace a home acts for (AD-014 §3): its role there, no more than the
@@ -1099,6 +1132,13 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             # the rules of a token here too (identify): it reads, and acts through the REST API only
             if method not in ("GET", "HEAD") and not request.url.path.startswith(apiv1.PREFIX + "/"):
                 raise HTTPException(status.HTTP_403_FORBIDDEN, "A token may only read")
+            limited = found.get("token_servers") or ()
+            template = getattr(request.scope.get("route"), "path", "")
+            if limited and not request.url.path.startswith(apiv1.PREFIX + "/") and not (
+                    template == "/backups/{server}/{role}/{name}"
+                    and (request.scope.get("path_params") or {}).get("server") in limited):
+                raise HTTPException(status.HTTP_403_FORBIDDEN,
+                                    "This token reaches some servers only: use /api/v1 or /mcp")
         request.state.delegated = {**found, "link": link}
         return Principal(found["person"], "user", found["kind"], workspaces=tuple(roles), scoped=True,
                          grants=tuple(grants), via=link, person=found["kind"] == "user", ci=bool(found.get("ci")))
@@ -1731,8 +1771,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return response
 
     async def remote_step(request: Request, token: str, found: totp.Pending):
-        """The code of a person served here (AD-018 slice 2): the same app as on its machine, a code accepted once
-        (identityimport.Store.check_code). Recovery codes are its machine's until its workspace moves (slice 5)."""
+        """The code of a person served here (AD-018 slice 2), checked by its machine (POST /api/identity/v1/login with
+        the step its password opened there): one counter of the codes used, the machine's, so a code used there is
+        not taken again here, nor one used here there; a recovery code too."""
         if request.url.path != "/login/code":
             return RedirectResponse("/login/code", status.HTTP_303_SEE_OTHER)
         if request.method == "GET":
@@ -1749,27 +1790,30 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             access_log.record("failed", "user", name, ip, f"second step: too many failed logins: wait {wait} s")
             return login_page(request, found.next_path, f"Too many failed logins: try again in {wait} seconds.", 429,
                               step="code", user=name, totp_on=True, passkey_step=False)
-        ok = person is not None and await asyncio.to_thread(identity_store.check_code, person.link, name, code,
-                                                            person.hash)
-        if not ok:
+        step = remote_steps.get(_digest_session(token), "")
+        answer = await machine_login(person, {"step": step, "code": code}) if person is not None and step else None
+        if answer is not None and answer.get("down"):
+            return login_page(request, found.next_path, REMOTE_CHECK_DOWN, 502, step="code", user=name, totp_on=True,
+                              passkey_step=False)
+        if not (answer or {}).get("ok"):
             limiter.failed(ip, name)
             left = remote_pending.failed(token)
             access_log.record("failed", "user", name, ip, "second step: wrong code" + (
                 "" if left else ", the password is asked again"), via=person.link if person else "")
             if not left:
+                remote_steps.pop(_digest_session(token), None)
                 response = login_page(request, found.next_path, "Too many wrong codes: log in again with your password.",
                                       401)
                 response.delete_cookie(totp.STEP_COOKIE, path="/login")
                 return response
             return login_page(request, found.next_path, "Wrong code.", 401, step="code", user=name, totp_on=True,
                               passkey_step=False)
-        limiter.succeeded(ip, name)
         remote_pending.drop(token)
-        access_log.record("login", "user", name, ip, f"{found.via}, second step: code", role=WORKSPACE_ROLE,
-                          via=person.link, workspaces=[w for w, _ in person.workspaces])
-        response = RedirectResponse(found.next_path, status.HTTP_303_SEE_OTHER)
+        remote_steps.pop(_digest_session(token), None)
+        response = await remote_logged_in(request, person, answer, found.next_path, ip,
+                                          f"{found.via}, second step: {answer.get('second') or 'code'}",
+                                          f"password + {answer.get('second') or 'code'}")
         response.delete_cookie(totp.STEP_COOKIE, path="/login")
-        open_remote_session(request, response, person, "password + code")
         return response
 
     def step_how(found: totp.Pending, second: str) -> str:
@@ -1797,11 +1841,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             access_log.record("failed", "user", name, ip, f"too many failed logins: wait {wait} s")
             return login_page(request, next_path, f"Too many failed logins: try again in {wait} seconds.", 429)
         if not name or not await asyncio.to_thread(authenticator.check, name, password):
-            # a person of a workspace this panel serves for a linked machine (AD-018 slice 2): its imported hash; a
-            # name of neither pays a dummy hash there too, so the time does not say who was imported
-            remote = await asyncio.to_thread(remote_password, name, password) if name else None
+            # a person of a workspace this panel serves for a linked machine (AD-018 slice 2): its machine checks its
+            # password, its code and that it is a member still (one source of truth: no stale copy here)
+            remote = remote_named(name, password)
             if remote is not None:
-                return remote_login(request, remote, next_path, ip)
+                return await remote_login(request, remote, password, next_path, ip)
             limiter.failed(ip, name)
             access_log.record("failed", "user", name, ip, "login form")
             return login_page(request, next_path, "Wrong user name or password.", 401)
@@ -1824,41 +1868,89 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         open_session(request, response, name)
         return response
 
-    def remote_password(name: str, password: str) -> remotehome.Person | None:
-        """The person served here whose name and password these are, None otherwise (a dummy hash paid)."""
-        person = serving().people.get(name)
-        if person is None or name in settings.users:
+    def remote_named(name: str, password: str) -> remotehome.Person | None:
+        """The person served here of that name, None for none (a dummy hash paid: the time of a name of neither is
+        a wrong password's here too)."""
+        person = serving().people.get(name) if name and name not in settings.users else None
+        if person is None:
             verify_password(password, identityimport._dummy())
-            return None
-        encoded = identity_store.check_password(person.link, name, password)
-        return person if encoded is not None and encoded == person.hash else None
+        return person
 
-    def remote_login(request: Request, person: remotehome.Person, next_path: str, ip: str):
-        """The password of a person served here was right: its app's code next if it has one (the same secret as on
-        its machine); none, the session. A passkey as its only second step is the portal's name's (slice 3): refused
-        with why; a second step this panel asks of everybody and it has none: refused too, its set-up is an identity
-        change, made where it logged in before (slice 5)."""
+    async def machine_login(person: remotehome.Person, body: dict) -> dict | None:
+        """The machine's word on a login of person (POST /api/identity/v1/login through its link): {ok, need, step,
+        workspaces, fingerprint, second} or {down: why}; None for a refusal."""
+        link = settings.link_targets.get(person.link)
+        if link is None:
+            return {"down": "no link"}
+        try:
+            resp = await asyncio.wait_for(link_clients.client(link).post(
+                identityimport.API + "/login", json={"person": person.there, **body}, timeout=REMOTE_LOGIN_TIMEOUT,
+                headers={**link_headers(link, person.name, "admin"), "Accept": "application/json"}),
+                REMOTE_LOGIN_TIMEOUT)
+        except (httpx.HTTPError, asyncio.TimeoutError) as exc:
+            return {"down": describe_error(exc) if isinstance(exc, httpx.HTTPError) else "no answer in time"}
+        try:
+            data = resp.json()
+        except ValueError:
+            data = None
+        if resp.status_code == 404:
+            return {"down": "its OmniaCLI has no login for a central panel"}
+        if resp.status_code != 200 or not isinstance(data, dict):
+            return None if resp.status_code in (401, 403) else {"down": f"it answered {resp.status_code}"}
+        return data
+
+    async def remote_login(request: Request, person: remotehome.Person, password: str, next_path: str, ip: str):
+        """The password of a person served here, checked by its machine (one source of truth: a password changed
+        there, a member removed there count at once): its app's code next if it has one there; none, the session.
+        A passkey as its only second step is the portal's name's (slice 3): refused with why; a second step this
+        panel asks of everybody and it has none: refused too, its set-up is made where it logged in before."""
         via = f"login form, workspaces of {person.link}"
-        if person.second == remotehome.TOTP:
+        answer = await machine_login(person, {"password": password})
+        if answer is not None and answer.get("down"):
+            access_log.record("failed", "user", person.name, ip, f"{via}: its machine did not answer "
+                                                                 f"({answer['down']})"[:300], via=person.link)
+            return login_page(request, next_path, REMOTE_CHECK_DOWN, 502)
+        need = (answer or {}).get("need")
+        if answer is None or not (answer.get("ok") or need):
+            limiter.failed(ip, person.name)
+            access_log.record("failed", "user", person.name, ip, via, via=person.link)
+            return login_page(request, next_path, "Wrong user name or password.", 401)
+        if need == "code" and isinstance(answer.get("step"), str):
             token = remote_pending.create(person.name, next_path, person.hash, False, via)
+            remote_steps[_digest_session(token)] = answer["step"]
             response = RedirectResponse("/login/code", status.HTTP_303_SEE_OTHER)
             response.set_cookie(totp.STEP_COOKIE, token, max_age=totp.PENDING_SECONDS, httponly=True,
                                 samesite="strict", secure=request.url.scheme == "https", path="/login")
             return response
         refused = ""
-        if person.second == remotehome.PASSKEY_ONLY:
+        if need == "passkey":
             refused = REMOTE_PASSKEY_LATER
-        elif settings.options.second_factor == "everybody" or (settings.options.second_factor == "portal"
-                                                                and settings.options.portal_address):
+        elif need or settings.options.second_factor == "everybody" or (settings.options.second_factor == "portal"
+                                                                        and settings.options.portal_address):
             refused = REMOTE_SETUP_LATER
         if refused:
             access_log.record("failed", "user", person.name, ip, f"{via}: {refused}"[:300], via=person.link)
             return login_page(request, next_path, refused, 403)
+        return await remote_logged_in(request, person, answer, next_path, ip, via, "password")
+
+    async def remote_logged_in(request: Request, person: remotehome.Person, answer: dict, next_path: str, ip: str,
+                               via: str, how: str):
+        """The machine said yes: what this panel keeps of the person read again from the machine when it differs
+        from its word (its password changed there, its workspaces or roles), then the session."""
+        name, link = person.name, person.link
+        fingerprint = hashlib.sha256(person.hash.encode()).hexdigest()[:32]
+        theirs = answer.get("workspaces") if isinstance(answer.get("workspaces"), dict) else {}
+        if answer.get("fingerprint") != fingerprint or theirs != dict(person.workspaces):
+            await identity_refresh(link, f"the login of {name}")
+            person = serving().people.get(name)
+            if person is None or person.link != link:
+                access_log.record("failed", "user", name, ip, f"{via}: no workspace served any more", via=link)
+                return login_page(request, next_path, "Wrong user name or password.", 401)
         limiter.succeeded(ip, person.name)
         access_log.record("login", "user", person.name, ip, via, role=WORKSPACE_ROLE, via=person.link,
                           workspaces=[w for w, _ in person.workspaces])
         response = RedirectResponse(next_path, status.HTTP_303_SEE_OTHER)
-        open_remote_session(request, response, person, "password")
+        open_remote_session(request, response, person, how)
         return response
 
     def open_remote_session(request: Request, response, person: remotehome.Person, how: str) -> None:
@@ -12562,7 +12654,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             why = capabilities.refusal(me.grant(workspace), needed, (), capabilities.whole_workspace(template))
             if why is not None:
                 raise HTTPException(status.HTTP_403_FORBIDDEN, why)
-        if "server" in params:
+        if "server" in params and not template.startswith(apiv1.PREFIX + "/"):
+            # (the REST API says its own «no instance for this token», 404: its machine checks its servers)
             server = str(params["server"])
             servers = await served_servers(link, me, entry)
             if server not in servers:
@@ -12688,6 +12781,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if mark is not None:
                 clock.HERE.reset(mark)
 
+    def own_location(location: str) -> bool:
+        """Whether a machine's redirect stays on this panel: a path of its own, as a browser reads it (the controls
+        and the spaces it drops taken out, a backslash a slash): no scheme, no host, one slash in front."""
+        seen = re.sub(r"[\x00-\x20]", "", location).replace("\\", "/")
+        parts = urlsplit(seen)
+        return bool(seen) and seen.startswith("/") and not seen.startswith("//") and not parts.scheme \
+            and not parts.netloc
+
     def placed_names_of(link: LinkTarget) -> list[str]:
         """The names of a machine of the provider that its answers may say (its link's name, its address)."""
         found = {link.name, urlsplit(link.url).hostname or "", link.ssh.host if link.ssh is not None else ""}
@@ -12777,7 +12878,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return remote_down(request, me, f"it answered {kind[:60] or 'no type'} where this panel takes data only")
         kept["x-content-type-options"] = "nosniff"
         location = resp.headers.get("location", "")
-        if location and not (location.startswith("/") and not location.startswith("//")):
+        if location and not own_location(location):
             # a redirect elsewhere than this panel's own paths: not followed for a customer
             kept.pop("location", None)
         size = int(resp.headers.get("content-length") or 0)
@@ -12785,6 +12886,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if "content-length" in resp.headers:
                 kept["content-length"] = resp.headers["content-length"]
             remote_record(request, me, inner, workspace, resp.status_code, link)
+            await remote_after(request, link, template, resp.status_code)
             return StreamingResponse(resp.aiter_raw(), status_code=resp.status_code, headers=kept,
                                      background=BackgroundTask(resp.aclose))
         try:
@@ -12793,11 +12895,25 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return remote_down(request, me, describe_error(exc))
         finally:
             await resp.aclose()
+        await remote_after(request, link, template, resp.status_code)
         # the names of the provider's machines taken out, its own kept (placed_text)
         raw = placed_text(raw.decode("utf-8", errors="replace"), placed_names_of(link), request_language(request),
                           me).encode()
         remote_record(request, me, inner, workspace, resp.status_code, link)
         return Response(raw, status_code=resp.status_code, headers=kept)
+
+    async def remote_after(request: Request, link: LinkTarget, template: str, answered: int) -> None:
+        """What this panel keeps of a machine's people, read again after a change of them made through here (its
+        members, tokens, roles, single sign-on, a second factor reset: done before the answer, so the next request
+        meets it), and in the background when older than REMOTE_REFRESH_SECONDS."""
+        if request.method not in ("GET", "HEAD") and 200 <= answered < 300 and REMOTE_PEOPLE_ROUTES.match(template):
+            await identity_refresh(link.name, f"{request.method} {template}")
+        elif identity_stale(link.name) and not identity_refreshing.get(link.name, asyncio.Lock()).locked():
+            refresh_tasks.add(task := asyncio.create_task(identity_refresh(link.name, "older than its time")))
+            task.add_done_callback(refresh_tasks.discard)
+
+    refresh_tasks: set = set()
+    REMOTE_PEOPLE_ROUTES = re.compile(r"/api/workspaces/\{workspace\}/(?:members|tokens|roles|sso)/.*")
 
     def apiv1_paths() -> frozenset:
         return frozenset(path for _, path in apiv1.V1_WORKSPACE_TOOLS)
@@ -16058,6 +16174,66 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                            f"link (AD-018 slice 2)" + (f" for {me.on_behalf}" if me.on_behalf else ""))[:300])
         return {"workspaces": served}
 
+    # the steps a password opened for the central panel's login of a person (POST /api/identity/v1/login): {digest of
+    # the step: (person, until, tries)}; the code comes back with it, checked here (one counter of the codes used)
+    identity_steps: dict[str, list] = {}
+    IDENTITY_STEP_SECONDS = totp.PENDING_SECONDS
+
+    @app.post(identityimport.API + "/login")
+    async def identity_login(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """The login of a person of a workspace whose people the central panel of this link serves (AD-018 slice
+        2), checked here, where its identity lives: its password, then the code of its app (or a recovery code) with
+        the step its password opened, struck out here as at a login here; a member of those workspaces only. The
+        answer says its workspaces there with their roles and the fingerprint of its hash (never the hash): the
+        central reads it again when it differs. The central panel's link only; in the access log either way."""
+        identity_link_only(me)
+        person = str(payload.get("person") or "")[:64]
+        ip = request.client.host if request.client else ""
+        served = sorted(w for w, e in central_homes.all().items() if e.get("link") == me.name and w in settings.workspaces)
+        mine = {w: settings.workspaces[w].members[person] for w in served if person in settings.workspaces[w].members}
+        member = bool(mine) and person in settings.users and settings.user_role(person) == WORKSPACE_ROLE
+
+        def said(ok: bool, what: str) -> None:
+            access_log.record("login" if ok else "failed", "link", me.name, ip,
+                              f"{person} through the central panel: {what}"[:300], on_behalf=person,
+                              workspaces=sorted(mine))
+
+        def answer(second: str = "") -> dict:
+            said(True, "password" + (f" + {second}" if second else ""))
+            return {"ok": True, "person": person, "workspaces": mine, "second": second,
+                    "fingerprint": hashlib.sha256(settings.users[person].encode()).hexdigest()[:32]}
+        now = time.time()
+        for key in [k for k, v in identity_steps.items() if v[1] <= now]:
+            identity_steps.pop(key, None)
+        step = payload.get("step")
+        if isinstance(step, str) and step:
+            found = identity_steps.get(_digest_session(step))
+            if found is None or found[0] != person or found[2] >= totp.MAX_TRIES or not member:
+                said(False, "second step: none open")
+                return {"ok": False}
+            result = await asyncio.to_thread(second_factors.check, person, str(payload.get("code") or "")[:64])
+            if result is None:
+                found[2] += 1
+                said(False, "second step: wrong code")
+                return {"ok": False}
+            identity_steps.pop(_digest_session(step), None)
+            return answer("recovery code" if result[0] == "recovery" else "code")
+        ok = await asyncio.to_thread(authenticator.check, person, str(payload.get("password") or ""))
+        if not ok or not member:
+            said(False, "password" if member or not ok else "not a member of its workspaces served")
+            return {"ok": False}
+        if second_factors.on(person):
+            opened = secrets.token_urlsafe(32)
+            identity_steps[_digest_session(opened)] = [person, now + IDENTITY_STEP_SECONDS, 0]
+            return {"ok": False, "need": "code", "step": opened}
+        if passkey_store.keys(person):
+            said(False, "its second step is a passkey")
+            return {"ok": False, "need": "passkey"}
+        if second_step_required(request, person):
+            said(False, "a second step is required and it has none")
+            return {"ok": False, "need": "setup"}
+        return answer()
+
     def identity_refusal(me: Principal) -> tuple[int, dict] | None:
         """Who carries a machine's identities here: this panel's admins, a person here or a token of the machine;
         never a workspace's token, a CI's or a link (it is done on the central panel)."""
@@ -16212,6 +16388,34 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if op == "home":
             return await home_act(name, link, me, ip, body)
         return 404, {"error": f"No {op} here", "code": "not_found"}
+
+    identity_refreshing: dict[str, asyncio.Lock] = {}
+    # what this panel keeps of a served machine's people is read again from it at most this old (a member removed or
+    # a role changed there with no request of theirs through here)
+    REMOTE_REFRESH_SECONDS = 600
+
+    async def identity_refresh(name: str, why: str) -> bool:
+        """The import of the link name done again by this panel (AD-018 slice 2): after a change of its people made
+        through here, a login whose machine says otherwise, a record older than REMOTE_REFRESH_SECONDS. One at a
+        time per link; in the access log as any import."""
+        if identity_store.load(name) is None or name not in settings.link_targets:
+            return False
+        lock = identity_refreshing.setdefault(name, asyncio.Lock())
+        async with lock:
+            code, data = await identity_act("import", name, Principal(f"refresh of {name}", "admin"),
+                                            f"refresh: {why}", "", {"confirm": name})
+        if code != 200:
+            _logger.warning("the identities of %s not read again (%s): %s", name, why, data.get("error"))
+        remote_servers_seen.clear()
+        return code == 200
+
+    def identity_stale(name: str) -> bool:
+        record = identity_store.load(name) or {}
+        try:
+            at = datetime.datetime.fromisoformat(str(record.get("at") or ""))
+        except ValueError:
+            return True
+        return (datetime.datetime.now() - at).total_seconds() > REMOTE_REFRESH_SECONDS
 
     def home_said(name: str) -> dict:
         """The switch of a link (AD-018 slice 2) as the page, the REST API and MCP say it: on, since when and by

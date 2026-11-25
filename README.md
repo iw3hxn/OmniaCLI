@@ -1487,13 +1487,25 @@ by default, link by link, and **Stop serving them here…** switches it off.
   people keep logging in on it, its pages and its members stay, and it is no
   move (no copy, no Back, no forward). Switched off, the file goes.
 - **The login.** A person of a served workspace logs in on this panel's login
-  page with the same password and, if it had one there, the same
-  authenticator app (a code accepted once). Recovery codes, passkeys and
-  single sign-on stay the machine's until the workspace moves here: a person
-  whose second step is a passkey only, or who has none while this panel asks
-  one, is told so and logs in on the machine as before. Its sessions here are
-  this panel's (`remote-sessions.json`, 600), apart from the staff's; its
-  Account here is read only (its workspaces, its second step, its sessions).
+  page with its password and, if it has one, the code of its authenticator
+  app or a recovery code: the machine checks them (`POST
+  /api/identity/v1/login`, the central panel's link only), where its identity
+  still lives, so a password changed there, a code used there, a member
+  removed there count at once; the code's counter is the machine's alone.
+  When the machine's word differs from the import (another password, other
+  workspaces or roles) this panel reads the import again before the session.
+  Passkeys and single sign-on stay the machine's until the workspace moves
+  here: a person whose second step is a passkey only, or who has none while a
+  second step is asked, is told so and logs in on the machine as before. Its
+  sessions here are this panel's (`remote-sessions.json`, 600), apart from the
+  staff's; its Account here is read only.
+- **The machine's own records decide.** For a workspace whose people this
+  panel serves, the machine checks every scope against what it has now: the
+  person still a member, with no more than its role and its custom role there;
+  the token still of the workspace, with no more than its level there (never
+  more than its person's role) and its servers. This panel reads the import
+  again after a change of the people made through it (members, tokens, roles,
+  single sign-on), and by itself when the import is older than 10 minutes.
 - **Every request of theirs** is checked here first, on the same route with
   the same rules as on the machine (the routes of a person of a workspace,
   its workspaces, its servers as the machine lists them, its custom role),

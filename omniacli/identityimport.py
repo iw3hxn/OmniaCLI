@@ -677,20 +677,10 @@ class Store:
             return False
         return self.check_code(link, name, code, encoded, at)
 
-    def check_password(self, link: str, name: str, password: str) -> str | None:
-        """The hash of name, imported from link, when password is its password; None otherwise (an unknown name
-        pays a dummy hash's time, never an exception). The login of the people of a served workspace (slice 2)."""
-        person = ((self.load(link) or {}).get("people") or {}).get(name)
-        encoded = person.get("hash") if isinstance(person, dict) and isinstance(person.get("hash"), str) else None
-        found = _PBKDF2.fullmatch(encoded or "")
-        if found is None or not MIN_ITERATIONS <= int(found.group(1)) <= MAX_ITERATIONS:
-            verify_password(password, _dummy())
-            return None
-        return encoded if verify_password(password, encoded) else None
-
     def check_code(self, link: str, name: str, code: str, encoded: str, at: float | None = None) -> bool:
         """Whether code is a code of the app of name, imported from link, whose hash is still encoded (the
-        password was verified against it): accepted once (its step struck out under the lock)."""
+        password was verified against it): accepted once (its step struck out under the lock). The login of the
+        people a central panel serves (slice 2) is checked by their machine instead (one counter of the codes)."""
         with self._lock:
             # read again: a code accepted meanwhile is struck out already
             record = self.load(link)

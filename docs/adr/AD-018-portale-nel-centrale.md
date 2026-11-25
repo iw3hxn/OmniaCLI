@@ -497,7 +497,28 @@ Per ogni fetta: il rilascio, la prova su lab3/lab4, come si annulla, la stima. l
      (2) Il record di casa sulla macchina è `central-home.json`, non `hosted-workspaces.json` (vincolo 8.2). (3) Le
      modifiche d'identità del cliente (password, fattori, sessioni, revoca OAuth) restano sulla macchina fino alla
      fetta 5; quelle del W fatte dalla pagina del W (membri, token, ruoli, SSO) vanno alla macchina, e arrivano sul
-     centrale col prossimo import. (4) I codici di recupero non valgono ancora sul centrale.
+     centrale col prossimo import. (4) Il login delle persone servite lo controlla la macchina: col centrale acceso e la macchina ferma non entrano (prima,
+     con l'hash importato, sì; ma allora la macchina non serve comunque le loro pagine).
+   - **La revisione (dopo `133fa50`).** Il centrale non è la fonte delle identità finché la macchina non passa
+     (fetta 5): la macchina lo è, e decide.
+     - **Sulla macchina** `delegated_scope` (anche per MCP) ricontrolla l'ambito di un W in `central-home.json`
+       contro i suoi record di adesso, `also` compreso: la persona è ancora membro (ruolo `workspace`), il ruolo è al
+       più il suo lì, il ruolo personalizzato è il suo `ws.grant`; il token esiste ancora ed è di quel W, il livello è
+       al più `token_role` (mai più del ruolo della sua persona), CI e server sono i suoi (`token_servers`: la REST lo
+       controlla per nome, le letture delle pagine lo rifiutano come `identify`, MCP restringe il grant). Altrimenti
+       l'ambito è rifiutato (403, nel registro).
+     - **Sul centrale** il livello di un token servito è al più il ruolo della sua persona (come `config.token_role`).
+       Il login lo controlla la macchina (`POST /api/identity/v1/login`, solo il collegamento admin del centrale):
+       password, poi il codice con lo step che la password ha aperto lì (anche un codice di recupero), un solo
+       contatore dei codici, quello della macchina. Se la risposta (impronta dell'hash, mai l'hash; W e ruoli) non è
+       l'import, il centrale rilegge l'import prima della sessione. Dopo una scrittura inoltrata riuscita sulle
+       persone di un W (membri, token, ruoli, SSO) il centrale rilegge l'import prima di rispondere; un import più
+       vecchio di 10 minuti si rilegge da solo in background. Un `Location` della macchina passa solo se, letto come un
+       browser (controlli e spazi tolti, `\` come `/`), è un percorso del centrale: niente schema, niente host.
+     - Prova: `tests/test_remote_home_review.py`, 15 test, 10 falliscono su `133fa50` (token cancellato dal centrale e
+       sulla macchina, membro tolto dal centrale e sulla macchina, ruolo abbassato e password cambiata sulla macchina,
+       codice usato sulla macchina e codice di recupero, token oltre il ruolo della persona, redirect con `\`,
+       import vecchio riletto).
    - **Resta aperto.** (a) **Il server spostato direttamente all'host** (punto 7 di 18.2): l'host prende l'ambito
      solo dalla casa scritta in `hosted-workspaces.json`, che è la macchina di partenza; cambiarla è 18.7 (fetta 6).
      Oggi i dati passano per la macchina di partenza (due salti) e le pagine di un server spostato dicono «non
