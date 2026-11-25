@@ -118,7 +118,7 @@ def test_the_rule_of_the_contract(needs, agent_api, theirs, why):
 
 def test_a_machine_that_says_nothing_is_zero():
     assert centralpages.agent_of({"app": "OmniaCLI", "version": "2026.1.5513"}) == {
-        "agent_api": 0, "plugins": {}, "version": "2026.1.5513"}
+        "agent_api": 0, "plugins": {}, "version": "2026.1.5513", "panel": "full"}
     assert centralpages.agent_of({"agent_api": True, "plugins": "x"})["agent_api"] == 0
     assert centralpages.agent_of({"agent_api": 1, "plugins": {"odoo": "built-in", "x": 3}})["plugins"] == {
         "odoo": "built-in"}

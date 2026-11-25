@@ -1446,6 +1446,9 @@ window.omniaMarked = (name, text, className = "") => {
 })();
 </script>{% endif %}
 <main>
+{# a machine in agent mode (AD-017 §17.3): its own pages are its reserve, said to the people of the machine who log in
+   here; never on a page drawn by a central panel, never to a customer #}
+{% if managed_from and not drawn_here %}<div class="banner info" id="managed-from" role="status">{{ _("This machine is managed from {central}: these pages are its reserve, for when that panel cannot be reached.", central=managed_from if managed_from != "-" else _("a central panel")) }}</div>{% endif %}
 {% if false %}{% block crumbs %}{% endblock %}{% endif %}
 {% set page_crumbs = self.crumbs() %}
 {% if page_crumbs | trim %}{{ page_crumbs }}{% elif central_menu is not none %}{% from "_crumbs.html" import crumbs with context %}{{ crumbs([]) }}{% endif %}

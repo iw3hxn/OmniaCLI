@@ -51,6 +51,12 @@ MACHINE_SERVER = "server"
 MACHINE_DEVELOPMENT = "development"
 MACHINE_KINDS = (MACHINE_SERVER, MACHINE_DEVELOPMENT)
 
+# what the machine's own panel is (AD-017 §17.3): full, everything as before; agent, managed from a central
+# panel through its link, its own pages kept as the reserve (§17.4.2), which needs an admin of its own
+PANEL_FULL = "full"
+PANEL_AGENT = "agent"
+PANEL_MODES = (PANEL_FULL, PANEL_AGENT)
+
 
 class ConfigError(Exception):
     pass
@@ -386,6 +392,9 @@ class Settings:
     storage_roots: dict[str, str] = field(default_factory=dict)
     storage_error: str = ""
     machine: str = MACHINE_SERVER
+    # panel of the main configuration (parse_panel) and the name its pages say it is managed from (central:)
+    panel: str = PANEL_FULL
+    central: str = ""
     token_roles: dict[str, str] = field(default_factory=dict)
     token_workspaces: dict[str, str] = field(default_factory=dict)
     token_cis: dict[str, bool] = field(default_factory=dict)
@@ -1774,6 +1783,53 @@ def parse_machine(value, service_user: str | None = None) -> str:
     return MACHINE_DEVELOPMENT if service_user and service_user != "omniacli" else MACHINE_SERVER
 
 
+def parse_panel(value) -> str:
+    """panel of the main configuration (root writes it): full (none: as before) or agent."""
+    if value in (None, ""):
+        return PANEL_FULL
+    if value not in PANEL_MODES:
+        raise ConfigError(f"panel: {value!r} is not one of {', '.join(PANEL_MODES)}")
+    return value
+
+
+def local_admins(users: dict, roles: dict, invited: set[str] = frozenset()) -> list[str]:
+    """The admins of the machine who log in on it with a password of their own: of users ({name: hash}), role
+    admin in roles (admin when missing, as Settings.user_role), not a person invited who has not set its password
+    yet (invited)."""
+    return sorted(n for n in users if roles.get(n, "admin") == "admin" and n not in invited)
+
+
+def invited_names(path: Path | None) -> set[str]:
+    """The names of the invitations not used (pending or expired): who has no password of its own yet."""
+    if path is None:
+        return set()
+    return {i.name for i in load_invitations(path) if not i.used}
+
+
+def central_name(settings: "Settings") -> str:
+    """The central panel a machine in agent mode is managed from, as its pages say it: central of the main
+    configuration, else the names of the links of role admin it is reached by (who links in), else ""."""
+    if settings.central:
+        return settings.central
+    return ", ".join(sorted(n for n, link in settings.links.items() if link.role == "admin"))
+
+
+def check_panel(settings: "Settings") -> None:
+    """panel: agent with no local admin is refused, with words (AD-017 §17.4.2)."""
+    if settings.panel != PANEL_AGENT:
+        return
+    try:
+        invited = invited_names(invitations_file_of(settings.users_file)) if settings.users_file else set()
+    except ConfigError:
+        # unreadable: the panel reads none either (app.py), so none is pending
+        invited = set()
+    if not local_admins(settings.users, settings.user_roles, invited):
+        # its reserve would have nobody to open it
+        raise ConfigError("panel: agent needs an admin of this machine who logs in on it with a password (its "
+                          "reserve, opened with ssh -L when the central panel cannot be reached), and it has none: "
+                          "add one first (Settings › Users, role admin, with a password), or leave panel: full")
+
+
 # the storage the workspaces live in when the main configuration lists none
 # (workspaces.storage missing): root's, made by the package (postinst) when
 # the workspaces are allowed
@@ -2542,10 +2598,13 @@ def parse_settings(data: dict, base_dir: Path = Path(".")) -> Settings:
         storage_roots=storage_roots,
         storage_error=storage_error,
         machine=parse_machine(data.get("machine"), os.environ.get("OMNIACLI_USER")),
+        panel=parse_panel(data.get("panel")),
+        central=str(data.get("central") or "").strip()[:80],
         fixed=fixed,
         sso_networks=parse_sso_networks(data.get("sso")),
     )
     settings.set_web_access(load_access(users_file))
+    check_panel(settings)
     apply_sites(settings.servers, settings.workspaces, load_web_names(servers_file.parent / WEB_NAMES_FILE))
     return settings
 

@@ -66,6 +66,19 @@ AGENT_DOWN = 60
 SEEN_FILE = "link-agents.json"
 # a built-in plugin comes with the package: the package's agent_api answers for it, not its version
 BUILT_IN = "built-in"
+# the links whose machine said panel: agent (AD-017 §17.3), beside the links file: kept once said, so a machine
+# that says full afterwards (one compromised) does not lift what this panel refuses it; forgotten when an admin
+# here saves or deletes the link
+PANELS_FILE = "link-panels.json"
+PANEL_AGENT = "agent"
+PANEL_FULL = "full"
+# why a page of a machine in agent mode is not shown (agent_refused.html says it): this panel older than the
+# machine, a plugin apart, an invitation or a plugin's own page (its HTML), no /api/info
+REFUSED_AHEAD = AHEAD
+REFUSED_PLUGINS = PLUGINS
+REFUSED_INVITE = "invite"
+REFUSED_PLUGIN_PAGE = "plugin_page"
+REFUSED_NO_INFO = "no_info"
 
 _SEGMENT = r"[A-Za-z0-9._~-]+"
 
@@ -90,7 +103,7 @@ class Page:
 
 # the context of the machine's section (index.html, with its Database and SSH access tabs), by name
 INDEX_FIELDS = ("rows", "sections", "total", "q", "machine", "machine_links", "linked_sections", "quick_instance",
-                "jobs", "load_workspaces", "machine_database", "machine_ssh", "audit", "machine_version")
+                "jobs", "load_workspaces", "machine_database", "machine_ssh", "audit", "machine_version", "update_need")
 
 # the context of an instance's page (server.html and its partials) its model carries, by name (AD-017 §17.1
 # constraint 1): app.server_context makes it with the live objects, server_model takes each one as plain values
@@ -184,6 +197,8 @@ PAGES = (
 BY_NAME = {p.name: p for p in PAGES}
 # the least any page here needs: below it, every page of the machine is its own
 LEAST_NEEDED = min(p.needs_agent_api for p in PAGES)
+# the most any page here needs: a machine in agent mode below it is offered Update OmniaCLI as needed (AD-017 §17.3)
+NEWEST_NEEDED = max(p.needs_agent_api for p in PAGES)
 # the pages of class B (slice 4): drawn from page_view, and the parity harness draws each again from its model
 CLASS_B = tuple(BY_NAME[name] for name in (
     "account", "jobs", "job", "workspaces", "destinations", "access", "config", "credentials", "enterprise", "links",
@@ -246,12 +261,23 @@ def plugin_versions(registry: plugins.Registry | None = None) -> dict[str, str]:
 
 def agent_of(info: dict) -> dict:
     """What a machine's GET /api/info says of the contract: agent_api (0 when it says nothing or nonsense),
-    plugins ({name: version}, only strings), its version."""
+    plugins ({name: version}, only strings), its version, its panel (PANEL_AGENT, else full: one that says
+    nothing is full, as before)."""
     api = info.get("agent_api")
     found = info.get("plugins")
     return {"agent_api": api if isinstance(api, int) and not isinstance(api, bool) and api >= 0 else 0,
             "plugins": {str(k): str(v) for k, v in found.items() if isinstance(v, str)} if isinstance(found, dict) else {},
-            "version": str(info.get("version") or "?")}
+            "version": str(info.get("version") or "?"),
+            "panel": PANEL_AGENT if info.get("panel") == PANEL_AGENT else PANEL_FULL}
+
+
+def update_need(agent: dict | None, agent_mode: bool) -> str:
+    """How Update OmniaCLI is offered for a linked machine (AD-017 §17.3 point 3): "needed" for a machine in
+    agent mode whose agent_api is behind what the pages here ask (NEWEST_NEEDED), "info" for one that is not
+    (a newer version is information, not a need); "" for a full machine (as on its own page)."""
+    if not agent_mode:
+        return ""
+    return "needed" if (agent or {}).get("agent_api", 0) < NEWEST_NEEDED else "info"
 
 
 def contract(needs: int, agent_api: int, theirs: dict[str, str], ours: dict[str, str]) -> str:
@@ -279,6 +305,24 @@ _DATA_TYPES = frozenset({
     "application/zip", "application/x-tar", "application/gzip", "application/sql",
     "image/png", "image/jpeg", "image/gif", "image/webp", "image/x-icon", "image/vnd.microsoft.icon",
 })
+
+
+def load_panels(path: Path) -> set[str]:
+    """The links whose machine said panel: agent; none yet, or unreadable, is none."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    return {str(k) for k, v in data.items() if v == PANEL_AGENT} if isinstance(data, dict) else set()
+
+
+def save_panels(path: Path, agents: set[str]) -> None:
+    """Write it atomically, readable by its owner only (it names the links)."""
+    tmp = path.with_name(path.name + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps({name: PANEL_AGENT for name in sorted(agents)}, indent=1) + "\n")
+    os.replace(tmp, path)
 
 
 def load_seen(path: Path) -> dict[str, int]:

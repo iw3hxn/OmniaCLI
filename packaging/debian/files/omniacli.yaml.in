@@ -29,6 +29,14 @@ auth:
 # otherwise server.
 # machine: server
 
+# full (the default): this panel is all there is. agent: this machine is
+# managed from a central panel through its link (README, Agent mode); its own
+# pages stay as its reserve, and need an admin of its own (users above, role
+# admin): without one OmniaCLI does not start. central: the name its pages say
+# it is managed from (none: the names of the links of role admin).
+# panel: full
+# central: omniasolutions
+
 # required: where the backups and the jobs' logs go
 backup_dir: /var/lib/omniacli/backups
 jobs_dir: /var/lib/omniacli/jobs

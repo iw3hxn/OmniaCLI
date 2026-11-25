@@ -290,12 +290,15 @@
 <script>
 (function () {
   const PREFIX = {{ prefix | tojson }};
+  // the agent_api this panel's pages ask of a linked machine at most (AD-017 §17.3)
+  const AGENT_API_ASKED = {{ agent_api_asked | tojson }};
   const T = {
     up: {{ _("Online") | tojson }}, starting: {{ _("Starting") | tojson }}, down: {{ _("Offline") | tojson }},
     preparing: {{ _("Preparing") | tojson }}, failed: {{ _("Not prepared") | tojson }},
     openTitle: {{ _("Opens the instances of {name}") | tojson }},
     // OmniaCLI's own update (README, Update OmniaCLI): on the machine's page, which the card links to
     available: {{ _("{version} available") | tojson }}, update: {{ _("Update OmniaCLI…") | tojson }},
+    availableInfo: {{ _("{version} available, not needed by this panel") | tojson }},
     updateTitle: {{ _("Opens the page of {name} with the dialog of the update: what the new version brings, then install it there") | tojson }},
     uaGo: {{ _("Update {n} machines") | tojson }},
     uaGoTitle: {{ _("Starts the updates one after the other; the job of each one is among the jobs of its machine") | tojson }},
@@ -447,7 +450,8 @@
     const newer = newerOf(s);
     // a newer version is said only where it can be installed from here: one that cannot is no use to the reader
     if (newer && s.update && s.update.signed && !s.update.unavailable) {
-      facts.append(el("span", {class: "m-newer warn-line", text: fill(T.available, {version: newer})}));
+      facts.append(el("span", {class: s.notNeeded ? "m-newer muted" : "m-newer warn-line",
+                               text: fill(s.notNeeded ? T.availableInfo : T.available, {version: newer})}));
       facts.append(el("a", {href: `${baseOf(card)}/#omniacli-update`, text: T.update,
                             title: fill(T.updateTitle, {name: card.local ? T.here : card.name})}));
     }
@@ -591,7 +595,8 @@
     if (ok && s.version) version.append(el("span", {class: "mono", text: s.version}));
     const newer = ok ? newerOf(s) : null;
     if (newer && s.update && s.update.signed && !s.update.unavailable) {
-      version.append(el("a", {class: "m-newer warn-line", href: `${baseOf(card)}/#omniacli-update`, text: fill(T.available, {version: newer}),
+      version.append(el("a", {class: s.notNeeded ? "m-newer muted" : "m-newer warn-line", href: `${baseOf(card)}/#omniacli-update`,
+                              text: fill(s.notNeeded ? T.availableInfo : T.available, {version: newer}),
                               title: fill(T.updateTitle, {name: nameOf(card)})}));
     }
     if (!version.childNodes.length) version.append(dash());
@@ -757,6 +762,9 @@
     const root = all.find((d) => d.mount === "/") || all[0];
     stats[card.name] = {
       version: info.version, cores: metrics && metrics.cores, update,
+      // a machine in agent mode whose API is what this panel's pages ask: its update is information, not a need
+      // (AD-017 §17.3); one behind it, or a full one, as before
+      notNeeded: !card.local && info.panel === "agent" && (info.agent_api || 0) >= AGENT_API_ASKED,
       // where its customers log in: "" none yet, undefined an OmniaCLI of before
       portal: info.portal,
       cpu: recent.length ? recent.reduce((a, b) => a + b, 0) / recent.length : null, cpuSeries: points.slice(-180),

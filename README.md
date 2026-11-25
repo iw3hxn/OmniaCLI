@@ -1083,7 +1083,8 @@ workspace's page, Users, Pullers, a server's form (new, change, clone) and
 Options. A person's own Account and Tunnels are the panel's where the person
 logged in: through a link the machine refuses them (404, 403), and this panel
 says so with its own error page. Still the machine's own: what only who logs
-in there opens (an invitation) and a plugin's own pages (under `/x/`).
+in there opens (an invitation) and a plugin's own pages (under `/x/`), and for
+a machine in agent mode not even those (see Agent mode).
 
 - **The contract.** `GET /api/info` of a machine says `agent_api` (4 from this
   version, 3 from 2026.1.5518, 2 from 2026.1.5517, 1 from 2026.1.5515) and its `plugins` (`{name: version}`,
@@ -1171,7 +1172,54 @@ in there opens (an invitation) and a plugin's own pages (under `/x/`).
   id is a name, a page of the machine under `/links/<name>/`.
 - **The way back**: on the link's **Edit… › Advanced**, untick **Pages written
   by this panel** (`pages: machine` in the links file): the machine writes its
-  own pages again, as before, without a release.
+  own pages again, as before, without a release. Not for a machine in agent
+  mode (below): its pages are always written here.
+
+### Agent mode
+
+A machine managed from a central panel (AD-017 §17.3) says so in its main
+configuration, which root writes:
+
+```yaml
+panel: agent        # full (the default, without the line): everything as before
+central: omniasolutions   # optional: the name its pages say; none: the names of its links of role admin
+```
+
+and OmniaCLI is restarted (`systemctl restart omniacli`); back to `full` the
+same way. No data moves: they never left the machine.
+
+- **What stays.** Odoo, the schedules and their backups, the monitor and its
+  notices, the webhooks of the CI, the customers' portal, REST and MCP with
+  the machine's tokens: all on the machine, with or without the central panel.
+- **Its own pages are its reserve.** They keep working, for when the central
+  panel cannot be reached: `ssh -L 8090:127.0.0.1:8090 <the machine>` and
+  `http://localhost:8090` with an admin of the machine. On top of each one
+  its people read «This machine is managed from <central>: these pages are its
+  reserve…» (never a customer, never through a link).
+- **An admin of its own, always.** `panel: agent` needs an admin who logs in
+  on the machine with a password: of the main configuration or of Settings ›
+  Users, role admin, not one invited who has not set a password yet. Without
+  one OmniaCLI does not start, and `omniacli check-config` says why
+  («Configuration error: panel: agent needs an admin of this machine…»).
+  While it is in agent mode the last such admin is never deleted or given
+  another role (from the central panel through its link too).
+- **The central panel takes data only.** `GET /api/info` says `panel` (an
+  addition within `agent_api` 4: a machine that does not say it is `full`).
+  For a machine that said `agent` the central panel writes its pages whatever
+  the link says (`pages: machine` is refused when saved) and lets through no
+  HTML of it, the way back of a machine behind apart (its own page with «…
+  update it to see the new one»): a page this panel is too old for, or of a
+  plugin apart, is this panel's page that says why; an invitation and a
+  plugin's own page (`/x/…`) are not even asked of it, they are opened on the
+  machine (the invitation by whom it was sent to, at the machine's address).
+  The central panel keeps `agent` once said (`link-panels.json` beside the
+  links file, 600, gone with the purge): a machine that says `full`
+  afterwards does not lift it; an administrator of the central panel saving
+  the link takes the machine's word again, deleting it forgets it.
+- **Update OmniaCLI** of such a machine, on its section in the central panel
+  and on Servers there, is information («2026.1.5520 available, not needed by
+  this panel») while its `agent_api` is what the central panel's pages ask;
+  below it the machine writes its own section, with the line, as needed.
 
 ### Links through SSH
 

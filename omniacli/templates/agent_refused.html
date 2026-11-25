@@ -1,0 +1,31 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{# AD-017 §17.3: a page of a linked machine in agent mode that this panel does not draw: from such a machine only
+   data passes (the way back of a machine behind apart), and this panel says why here, never with its HTML -#}
+{% extends "base.html" %}
+{% block title %}{{ _("Page of {machine} not let through", machine=machine) }} · {{ brand.name }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>{{ _("Page of {machine} not let through", machine=machine) }}</h1>
+    <p>{{ _("{machine} is managed from this panel (panel: agent): this panel takes data from it, never a page it writes itself.", machine=machine) }}</p></div>
+</div>
+<section class="panel" id="agent-refused" data-why="{{ why }}">
+  <p style="margin-top: 0">
+  {%- if why == "ahead" -%}
+    {{ _("This panel is older than {machine} ({version}) and does not draw this page yet: update this panel to see it.", machine=machine, version=version) }}
+  {%- elif why == "plugins" -%}
+    {{ _("The plugins of {machine} are not those of this panel ({plugins}): install them here, at the same versions, to see this page.", machine=machine, plugins=plugins) }}
+  {%- elif why == "invite" -%}
+    {{ _("An invitation is opened by the person it was sent to, at the address of {machine} itself.", machine=machine) }}
+  {%- elif why == "plugin_page" -%}
+    {{ _("A page of its own of the plugin {plugin} is opened on {machine} itself, from its reserve.", plugin=plugin, machine=machine) }}
+  {%- else -%}
+    {{ _("{machine} does not say what it is (GET /api/info does not answer): no page of it is shown until it answers.", machine=machine) }}
+  {%- endif -%}
+  </p>
+  <p class="muted">{{ _("The reserve of a machine in agent mode: its own pages, opened through ssh -L 8090:127.0.0.1:8090 with an admin of its own (README, Agent mode).") }}</p>
+  <div class="actions">
+    <a class="button primary" href="{{ prefix }}/" title="{{ _('Opens the section of this machine, drawn by this panel') }}">{{ _("Open {machine}", machine=machine) }}</a>
+    <a class="button" href="/instances" title="{{ _('Opens the list of the instances you can reach') }}">{{ _("Back to the instances") }}</a>
+  </div>
+</section>
+{% endblock %}

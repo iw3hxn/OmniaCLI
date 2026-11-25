@@ -43,7 +43,8 @@
       {% if linked_name %}<span class="state-dot running">{{ _("Connected") }}</span>{% endif %}
       <span class="cores-fact" hidden></span>
       {% if machine %}<span>OmniaCLI {{ machine_version }}</span>{% endif %}
-      {% if machine and is_admin %}<span class="ou-fact-new warn-line" id="omniacli-update-fact" hidden></span>{% endif %}
+      {# needed or information for a machine in agent mode (AD-017 §17.3): update_need, of the panel that draws it #}
+      {% if machine and is_admin %}<span class="ou-fact-new warn-line" id="omniacli-update-fact" data-need="{{ update_need | default('') }}" hidden></span>{% endif %}
     </div>
   </div>
   <div class="actions">

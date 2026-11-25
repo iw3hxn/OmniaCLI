@@ -100,7 +100,10 @@ from .config import (
     WORKSPACE_LIMITS,
     Access,
     CERTIFICATES,
+    PANEL_AGENT,
     ConfigError,
+    central_name,
+    local_admins,
     Instance,
     LinkAccess,
     LinkSource,
@@ -279,6 +282,12 @@ def _page_context(request: Request) -> dict:
         "puller_connections": sorted(settings.connections) if settings else [],
         # the panel under another name (brand.py, README Whitelabel); nothing set: today's look
         "brand": _brand_of(settings),
+        # a machine in agent mode (AD-017 §17.3): the central panel it is managed from, said on top of its own
+        # pages to the people of the machine who log in on it (its reserve), never to a customer or a link
+        "managed_from": ((central_name(settings) or "-") if settings and settings.panel == PANEL_AGENT and user
+                         and user.kind == "user" and not user.scoped else ""),
+        # the agent_api the pages of this panel ask of a linked machine at most (Update OmniaCLI needed or not)
+        "agent_api_asked": centralpages.NEWEST_NEEDED,
         # a linked machine's page drawn by this panel (AD-017 §17.1): the machine's name, "" otherwise
         "drawn_here": "",
         # and what the machine says of who looks there (its role there, its kind): drawn_for, below
@@ -2610,6 +2619,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             "audit": await asyncio.to_thread(audit_status) if shown is None and machine_admin(me) else None,
             # the OmniaCLI of this machine (its facts): through a link, the machine's, not the panel's that draws it
             "machine_version": _version(),
+            # Update OmniaCLI needed or information (AD-017 §17.3): the word of the panel that draws the page; on
+            # the machine's own, "" (as before)
+            "update_need": "",
         })
         return context
 
@@ -2878,7 +2890,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 "machine": shown_name(user),
                 # the contract of the pages a panel draws for this machine (AD-017 §17.2): the API it speaks and its
                 # plugins; a machine that does not say them is 0
-                "agent_api": centralpages.AGENT_API, "plugins": centralpages.plugin_versions()}
+                "agent_api": centralpages.AGENT_API, "plugins": centralpages.plugin_versions(),
+                # full or agent (AD-017 §17.3): an addition within agent_api 4, a machine that says nothing is full;
+                # a central keeps agent once said (centralpages.PANELS_FILE)
+                "panel": settings.panel}
 
     @app.get("/api/servers")
     async def server_list(request: Request):
@@ -10035,7 +10050,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                       dict(web.token_workspaces), dict(web.token_ci), dict(web.token_servers))
 
     async def store_access(web: Access):
-        """Write the users file and make it current; a response on error."""
+        """Write the users file and make it current; a response on error. On a machine in agent mode the last
+        admin who logs in on it is never taken away (AD-017 §17.4.2: its reserve)."""
+        if settings.panel == PANEL_AGENT:
+            if not local_admins({**web.users, **settings.fixed.users}, {**web.roles, **settings.fixed.roles},
+                                {i.name for i in invitations if not i.used}):
+                return refuse(f"This machine is managed from {central_name(settings) or 'a central panel'} "
+                              "(panel: agent): it keeps at least one admin who logs in on it with a password, its "
+                              "reserve when that panel cannot be reached. Add another admin first")
         try:
             await asyncio.to_thread(save_access, settings.users_file, web)
         except OSError as exc:
@@ -10973,14 +10995,19 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if not new and "pages" not in payload:
                 # who does not say where its pages are drawn keeps it as it was
                 data["pages"] = settings.link_targets[name].pages
+            if data["pages"] == centralpages.PAGES_MACHINE and name in agent_panels:
+                # its own pages are its reserve, never shown here (AD-017 §17.3)
+                return refuse(f"{name} is managed from this panel (panel: agent): its pages are drawn here, never "
+                              "its own. Its own pages are its reserve, opened on the machine with ssh -L")
             try:
                 link = parse_link(name, data)
             except ConfigError as exc:
                 return refuse(str(exc))
             refused = await store_links({**settings.link_targets, name: link})
             if refused is None:
-                # another address may be another machine: its contract read again
-                agent_drop(name)
+                # another address may be another machine: its contract read again, and its panel (an admin's act:
+                # a machine put back to full is taken at its word again, once)
+                agent_drop(name, panel_too=True)
             return refused or {"ok": True}
 
     @app.post("/api/links/rename", dependencies=[Depends(admin)])
@@ -11014,10 +11041,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 return failed
             # the same machine under its new name: the highest agent_api it said goes with it, the rest read again
             seen = agents_seen.get(name, 0)
-            agent_drop(name, seen_too=True)
+            was_agent = name in agent_panels
+            agent_drop(name, seen_too=True, panel_too=True)
             if seen:
                 agent_remember(new_name, {"agent_api": seen})
                 agent_drop(new_name)
+            if was_agent:
+                agent_panels.add(new_name)
+                panels_save()
             before = [(inst, inst.from_link) for inst in uses]
             try:
                 if publications != settings.publications:
@@ -11048,7 +11079,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             links = {k: v for k, v in settings.link_targets.items() if k != name}
             refused = await store_links(links)
             if refused is None:
-                agent_drop(name, seen_too=True)
+                agent_drop(name, seen_too=True, panel_too=True)
             return refused or {"ok": True}
 
     @app.post("/api/links/{name}/test")
@@ -11360,11 +11391,26 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     agents_seen_file = (settings.links_file or settings.servers_file).parent / centralpages.SEEN_FILE
     agents_seen: dict[str, int] = centralpages.load_seen(agents_seen_file)
     app.state.link_agents_seen = agents_seen
+    # the links whose machine said panel: agent, kept on disk once said (AD-017 §17.3): from such a machine this
+    # panel takes data only, and a machine that says full afterwards does not lift it; an admin here saving or
+    # deleting the link forgets it
+    agent_panels_file = agents_seen_file.with_name(centralpages.PANELS_FILE)
+    agent_panels: set[str] = centralpages.load_panels(agent_panels_file)
+    app.state.link_agent_panels = agent_panels
+
+    def panels_save() -> None:
+        try:
+            centralpages.save_panels(agent_panels_file, agent_panels)
+        except OSError as exc:
+            _logger.warning("%s: %s", agent_panels_file, exc)
 
     def agent_remember(name: str, info: dict) -> dict:
         found = {**centralpages.agent_of(info), "at": time.monotonic(),
                  "soon_until": (agents.get(name) or {}).get("soon_until", 0.0)}
         agents[name] = found
+        if found["panel"] == centralpages.PANEL_AGENT and name not in agent_panels:
+            agent_panels.add(name)
+            panels_save()
         if found["agent_api"] > agents_seen.get(name, 0):
             agents_seen[name] = found["agent_api"]
             try:
@@ -11373,9 +11419,13 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 _logger.warning("%s: %s", agents_seen_file, exc)
         return found
 
-    def agent_drop(name: str, seen_too: bool = False) -> None:
-        """A link saved, renamed or deleted: what its machine said is read again (and with seen_too forgotten)."""
+    def agent_drop(name: str, seen_too: bool = False, panel_too: bool = False) -> None:
+        """A link saved, renamed or deleted: what its machine said is read again (and with seen_too forgotten;
+        with panel_too its panel: agent, read again from the machine)."""
         agents.pop(name, None)
+        if panel_too and name in agent_panels:
+            agent_panels.discard(name)
+            panels_save()
         if seen_too and agents_seen.pop(name, None) is not None:
             try:
                 centralpages.save_seen(agents_seen_file, agents_seen)
@@ -11433,6 +11483,25 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             "machine": link.name, "seen": seen, "now": agent.get("agent_api", 0) if agent else 0,
             "version": (agent or {}).get("version") or "?", "no_models": bool(agent and agent.get("no_models"))},
             status_code=status.HTTP_502_BAD_GATEWAY)
+
+    def agent_refused(request: Request, link: LinkTarget, me: Principal, why: str, agent: dict | None, path: str):
+        """A page of a machine in agent mode (AD-017 §17.3) that this panel does not draw and whose HTML it does
+        not let through: its own page saying why, under the link (JSON for a script); recorded as failed."""
+        access_log.record("failed", "link", link.name, request.client.host if request.client else "",
+                          f"{request.method} /{path[:120]} refused: {link.name} is managed from here (panel: agent), "
+                          f"its HTML does not pass ({why})")
+        own = why in (centralpages.REFUSED_INVITE, centralpages.REFUSED_PLUGIN_PAGE)
+        code = status.HTTP_403_FORBIDDEN if own else status.HTTP_502_BAD_GATEWAY
+        if "text/html" not in request.headers.get("accept", ""):
+            return JSONResponse({"error": f"link {link.name}: managed from this panel (panel: agent), its page "
+                                          f"/{path[:120]} is not let through ({why})"}, status_code=code)
+        as_drawn_here(request, link, me, "user", False)
+        plugin = path.split("/", 2)[1] if why == centralpages.REFUSED_PLUGIN_PAGE else ""
+        return _TEMPLATES.TemplateResponse(request, "agent_refused.html", {
+            "machine": link.name, "why": why, "version": (agent or {}).get("version") or "?", "plugin": plugin,
+            "plugins": ", ".join(centralpages.plugins_apart((agent or {}).get("plugins") or {},
+                                                            centralpages.plugin_versions()))},
+            status_code=code)
 
     async def draw_linked_page(request: Request, link: LinkTarget, me: Principal, page: centralpages.Page,
                                params: dict) -> Response | None:
@@ -11517,6 +11586,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                         or (not form and given)):
                     raise ValueError(f"its form is of {str(model.get('original') or given)[:60]!r} "
                                      f"({str(context.get('title'))[:60]!r}), not of {name or 'a new server'}")
+            if page.name == "index":
+                # Update OmniaCLI needed or information (AD-017 §17.3 point 3): this panel's word, never the machine's
+                context = {**context, "update_need": centralpages.update_need(agents.get(link.name),
+                                                                              link.name in agent_panels)}
             drawn = _TEMPLATES.TemplateResponse(request, template, context)
             if zone:
                 # the machine's clock, which its moments are written by, as its own page says it (ZoneScope)
@@ -11546,8 +11619,16 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             # here with the role of who looks, and its script has nothing to do with them)
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Not Found")
         client = link_clients.client(link)
-        here = link.pages == centralpages.PAGES_HERE
         api = path == "api" or path.startswith("api/")
+        if not api and link.name not in agent_panels and (link.pages != centralpages.PAGES_HERE
+                                                          or centralpages.machine_own(path)):
+            # where the machine's HTML would pass, its panel first (read every 10 minutes): a machine in agent mode
+            # never has it shown (AD-017 §17.3); its word once said is kept here (agent_panels)
+            await agent_seen(link, me)
+        # a machine in agent mode: its pages drawn here whatever its link says (pages: machine is refused at
+        # saving), only data from it, the way back of §17.2 for a machine behind the only HTML
+        agent_mode = link.name in agent_panels
+        here = link.pages == centralpages.PAGES_HERE or agent_mode
         drawn = centralpages.match(path) if here and not api else None
         line = ""
         if here and request.method == "POST" and path == SELF_UPDATE_PATH:
@@ -11560,8 +11641,13 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         # (centralpages.MACHINE_OWN: an invitation, a plugin's own pages), with the line that says whose page it
         # is; and as the way back of §17.2 for a machine that never said agent_api 1 or more. Any other path of a
         # here link is data (an action's answer, a file) or this panel's own «not found»
-        own = here and not api and drawn is None and centralpages.machine_own(path)
+        own = here and not agent_mode and not api and drawn is None and centralpages.machine_own(path)
         unmatched = here and not api and drawn is None and not own
+        if (agent_mode and unmatched and request.method == "GET" and centralpages.machine_own(path)
+                and "text/html" in request.headers.get("accept", "")):
+            # an invitation or a plugin's own page of a machine in agent mode: not asked of it, never shown here
+            return agent_refused(request, link, me, centralpages.REFUSED_INVITE if path.startswith("invite/")
+                                 else centralpages.REFUSED_PLUGIN_PAGE, agents.get(link.name), path)
         machine_html = not here or own
         if own and request.method == "GET":
             line = machine_page_line(request, link, await agent_seen(link, me) or {}, centralpages.OWN)
@@ -11571,6 +11657,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             seen = agents_seen.get(link.name, 0)
             why = "" if agent is None else centralpages.contract(
                 page.needs_agent_api, agent["agent_api"], agent["plugins"], centralpages.plugin_versions())
+            if agent_mode and (agent is None or why in (centralpages.AHEAD, centralpages.PLUGINS)):
+                # a machine in agent mode: its HTML only as the way back of a machine behind, never for this panel
+                # older or a plugin apart, never on its word when it does not answer
+                return agent_refused(request, link, me, centralpages.REFUSED_NO_INFO if agent is None else why,
+                                     agent, path)
             if not why and agent is not None and agent.get("no_models"):
                 why = centralpages.BEHIND
             if not why and agent is not None and request.method == "GET":

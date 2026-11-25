@@ -268,7 +268,8 @@ pagine scritte dal centrale la macchina fornisce solo JSON, inserito con l'autoe
    riga `failed` nel registro. A una richiesta `/api` del browser il centrale chiede `Accept: application/json`, così
    la macchina risponde con il suo motivo e non con la sua pagina d'errore.
 
-   **Cosa passa ancora come HTML della macchina:** dalla fetta 5 (con la revisione) solo due pagine che il
+   **Cosa passa ancora come HTML della macchina:** per una macchina in `agent` (fetta 6) solo il ritorno di 17.2 di
+   una macchina indietro; per le altre, dalla fetta 5 (con la revisione) solo due pagine che il
    centrale non scrive, con la riga «una pagina della macchina che questo pannello non scrive»: quella di un invito
    (`/invite/<token>`, di chi entra lì) e le pagine proprie di un plugin (`/x/<plugin>/…`,
    `centralpages.MACHINE_OWN`); il logo SVG della macchina come immagine (`Content-Security-Policy: sandbox`); con
@@ -634,6 +635,99 @@ Per ogni fetta: il rilascio, la prova su lab3/lab4, come si annulla, la stima.
      - con lab3 spento Odoo risponde su lab4 e un backup pianificato parte all'ora.
    - *Si annulla*: con `panel: full`.
    - *Stima*: 2 g.
+
+   **Com'è nel codice (fetta 6).**
+   - **La riga di `omniacli.yaml`.** `panel: full | agent` (`config.parse_panel`, default `full`; un valore diverso è
+     un errore di configurazione) e `central:` facoltativo, il nome che le pagine dicono. Senza `central:` il nome
+     sono i collegamenti di ruolo admin con cui la macchina è raggiunta (`auth.links` e il file degli utenti), cioè
+     il nome che il centrale ha dato al suo token (`omniacli new-link-token <nome>`).
+   - **L'admin locale** (`config.local_admins`): un utente della configurazione principale o del file degli utenti,
+     di ruolo admin, che non ha un invito non usato (chi è invitato non ha ancora una password sua). Una persona di
+     un workspace (`role: workspace`) non lo è. Il secondo fattore non è chiesto: vedi «Dove si discosta».
+   - **Il rifiuto del passaggio.** `parse_settings` chiama `check_panel` dopo aver letto il file degli utenti: con
+     `panel: agent` e nessun admin locale è un `ConfigError` con le parole («panel: agent needs an admin of this
+     machine who logs in on it with a password… add one first… or leave panel: full»). Lo dicono `omniacli
+     check-config` (uscita 2) e `omniacli serve`, che legge la configurazione prima di uvicorn: il servizio non
+     parte e il giornale di systemd ha la riga. Non c'è una route né un comando che scriva `panel:`: la riga la
+     scrive root, come `machine:`. In esercizio l'invariante la tiene `store_access`, da cui passano tutte e 17 le
+     scritture del file degli utenti: in `agent` un cambio che lascia la macchina senza admin locale (togliere il
+     ruolo, cancellare l'utente, anche dal centrale attraverso il collegamento, anche con un altro admin solo
+     invitato) è rifiutato con le parole, in italiano anche. In `full` resta il controllo di prima («l'ultimo
+     admin»), che conta anche un admin invitato.
+   - **La scritta in testa.** `base.html`, in cima a `<main>`: «Questa macchina si gestisce da <centrale>: queste
+     pagine sono la sua riserva, per quando quel pannello non si raggiunge.» La vede chi entra sulla macchina con
+     una password e non è di un workspace (`managed_from` in `_page_context`); mai un cliente, mai un collegamento
+     (il centrale scrive le sue pagine), mai un token, mai su una pagina scritta da un centrale.
+   - **Il contratto: niente `AGENT_API` nuovo.** `GET /api/info` dice `panel` in più. È un'aggiunta dentro
+     `agent_api` 4 (17.2: dentro un numero l'API cresce solo aggiungendo): una macchina che non lo dice è `full`,
+     cioè quello che era fino a oggi, e nessun modello di pagina cambia. Alzare il numero avrebbe fatto tornare
+     alle loro pagine, con la riga, le macchine a 3 (2026.1.5518) per la regola N e N−1, senza un motivo.
+     `OLDEST_READ` resta 3.
+   - **Il controllo lo fa il centrale, e la parola resta.** `centralpages.agent_of` legge `panel`; appena una
+     macchina dice `agent` il centrale lo scrive in `link-panels.json` (accanto ai collegamenti, 600, nel purge) e
+     lo tiene: una macchina compromessa che poi dice `full` non lo toglie. Lo dimentica solo un amministratore del
+     centrale: salvando il collegamento (la parola della macchina vale di nuovo, una volta) o cancellandolo; con un
+     cambio di nome il ricordo segue il collegamento. Per un collegamento `pages: machine` il centrale legge
+     `/api/info` (ogni 10 minuti, come per gli altri) prima di far passare l'HTML della macchina.
+   - **Cosa passa da una macchina `agent`** (`link_proxy`, `agent_mode`): le pagine si scrivono sempre qui, anche
+     con `pages: machine`, che il salvataggio del collegamento rifiuta per una macchina `agent` («le sue pagine
+     sono la sua riserva»). Dalla macchina passano solo i dati di `is_data` (fette 1-2: JSON, testo, CSV, immagini
+     raster, file da scaricare, risposte senza corpo), i websocket (shell, tunnel) e il logo SVG come immagine con
+     `sandbox`. L'HTML passa solo nel ritorno di 17.2 per una macchina **indietro** rispetto alla pagina (la sua
+     pagina con «aggiornala»), con le regole di prima (una macchina che dice meno di quanto aveva detto ha la
+     pagina del centrale). Un centrale più vecchio della macchina, un plugin diverso, una macchina che non risponde
+     a `/api/info` danno la pagina del centrale che lo dice (`agent_refused.html`, 502), mai la pagina della
+     macchina con la riga, come invece per una macchina `full`.
+   - **Invito e pagine `/x/` di una macchina `agent` (la decisione di §9.5, ultimo punto): rifiutati, e non chiesti
+     alla macchina.** Un invito è della persona a cui è stato mandato, e si apre all'indirizzo della macchina (il
+     portale): attraverso il collegamento lo aprirebbe una persona del centrale, che non è l'invitato. Una pagina
+     propria di un plugin è HTML e script del plugin sotto l'origine del centrale, cioè il rischio di 17.5 che la
+     modalità toglie; si apre sulla macchina, dalla riserva. Il centrale risponde con la sua pagina (403, con il
+     motivo) a un browser che li apre; una richiesta di uno script a quei percorsi è un dato come ogni altro
+     percorso non scritto qui (JSON sì, HTML no). Quando il portale passa nel centrale (AD-018) l'invito diventa
+     del centrale.
+   - **«Aggiorna OmniaCLI»** (`centralpages.update_need`). Nella sezione della macchina scritta dal centrale il
+     modello porta `update_need`, che il centrale sovrascrive con la sua parola: `info` per una macchina `agent`
+     al `agent_api` che le pagine del centrale chiedono al massimo (`NEWEST_NEEDED`, oggi 4), e la versione nuova
+     si legge «2026.1.5520 disponibile, non serve a questo pannello», senza il colore dell'avviso; `""` per una
+     macchina `full`, come prima. Sotto quel numero la sezione è la pagina della macchina con la riga «aggiornala»,
+     cioè l'aggiornamento proposto come necessario. Nella pagina Server del centrale (le schede delle macchine)
+     vale lo stesso, letto da `/api/info` della macchina (`AGENT_API_ASKED`).
+   - **Sul lab** (lab3 centrale `full`, lab4 macchina; 2026.1.5519 più il codice della fetta, 25/11/2026):
+     - `panel: agent` con l'unico admin locale di lab4 reso developer: il servizio resta `activating` (si riavvia e
+       si ferma), il giornale dice «Configuration error: panel: agent needs an admin of this machine…»,
+       `check-config` esce con 2; rimessa la configurazione, lab4 risponde dopo 16 s;
+     - lab4 in `agent` (con il suo admin): lab3 legge `panel=agent agent_api=4`, `link-panels.json` di lab3 è
+       `{"lab4": "agent"}` (600); la sezione, Dischi, l'istanza, Job, Utenti e Opzioni sono scritte da lab3; la
+       sezione dice `data-need="info"`; l'invito e la pagina di un plugin sono la pagina di lab3 (403) e lab4 non è
+       stato chiesto (0 richieste nel suo giornale); `/login`, che lab4 risponde in HTML, è la pagina «non
+       trovata» di lab3; 3 righe `failed` nel registro di lab3; salvare lab4 con `pages: machine` è rifiutato, in
+       italiano;
+     - lab4 con `AGENT_API` 5: le tre pagine provate sono la pagina di lab3 «più vecchio» (502); con 3 (e lab3 che
+       non ricorda il 4): la sezione è di lab4 con «Pagina scritta da lab4 (2026.1.5519): aggiornala per vedere
+       quella nuova» (il ritorno), Dischi e l'istanza scritte da lab3;
+     - la riserva: `ssh -L 18094:127.0.0.1:8090 root@lab4` e l'admin locale, le pagine di lab4 con la scritta «Questa
+       macchina si gestisce da lab3»;
+     - il giro con Playwright (italiano, 1440 e 375, chiaro e scuro, 48 pagine): 0 errori di pagina, 0 dialoghi del
+       browser; la scritta su 20 pagine di 20 della riserva e su 0 di quelle scritte da lab3; 8 pagine di rifiuto
+       con un solo pulsante primario. Le sole risposte 5xx sono `GET /api/servers/acme-odoo/pitr` di lab4 (502,
+       anche sulla sua pagina: «the disk of workspace acme is not mounted», il disco del workspace del lab, senza
+       udev);
+     - con lab3 fermo (`docker stop lab3`, il contenitore intero): `acme-odoo` di lab4 risponde 200 a
+       `/web/login` e la pianificazione `s6-offline`, messa per le 01:27, ha fatto partire il suo backup alle 01:27:00
+       (job `Schedule s6-offline on acme-odoo/production (backup)`, riuscito in 1 s, 528 kB); poi pianificazione,
+       backup e istanza tolti o fermati come prima, lab3 riacceso;
+     - alla fine lab3 e lab4 reinstallati dal pacchetto 2026.1.5519, `panel` tolto (`full`), `link-panels.json` di
+       lab3 tolto.
+
+   **Dove la fetta si discosta dal piano.**
+   - **Il secondo fattore dell'admin locale non è chiesto** (17.4.2 dice «con il secondo fattore»). Renderlo una
+     condizione del passaggio vorrebbe dire leggere `second-factor.json` e le passkey in `parse_settings`, e un
+     servizio che non parte per un secondo fattore non ancora attivato. Resta da decidere con Carlo (§10.4).
+   - **Nessun comando per il passaggio.** Il piano diceva «si cambia una riga e si riavvia», ed è così: il rifiuto è
+     nella lettura della configurazione, quindi vale per ogni modo di scriverla.
+   - **`pages: machine` non vale per una macchina `agent`**, invece di restare l'interruttore che annulla tutto: per
+     una macchina `agent` quello che annulla è la riserva (le sue pagine via `ssh -L`) o `panel: full` su di lei.
 7. **La protezione del centrale**: il backup cifrato notturno e il ripristino.
    - *Prova*: il ripristino su un lab nuovo apre lab4 (tempo misurato); il backup non si legge senza la passphrase.
    - *Stima*: 1,5 g.
@@ -709,7 +803,9 @@ Totale ≈ 30 giornate. Le fette 0-3 (9 g) bastano per il caso di oggi e per la 
 ## Non verificato
 
 - Che ogni macchina abbia oggi un admin locale con il secondo fattore: chi arriva da un altro pannello è admin di lì
-  (`a_machine(me)`), quindi potrebbe non esserci nessuno di locale. Si legge alla fetta 6.
+  (`a_machine(me)`), quindi potrebbe non esserci nessuno di locale. Dalla fetta 6 una macchina senza admin locale
+  non parte in `agent` (lo dice al passaggio); il secondo fattore non è controllato, e le 7 macchine non sono state
+  lette.
 - I plugin di terzi installati sulle macchine (`pluginstore.py`): non contati. Dicono quante pagine resterebbero della
   macchina per la regola di 17.2.
 - La quota di commit «solo pagina» in una settimana senza helper nuovi: misurata solo dal 17/11, durante la costruzione

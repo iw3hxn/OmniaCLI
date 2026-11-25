@@ -136,7 +136,14 @@
     const update = document.getElementById("omniacli-update-open"), back = document.getElementById("omniacli-back-open");
     // a newer version is said only when it can be installed from here: one that cannot is no use to the reader
     if (fact && info.available && info.signed && !info.unavailable) {
-      fact.textContent = {{ _("{version} available") | tojson }}.replace("{version}", info.available);
+      // a machine in agent mode whose API is what this panel asks (AD-017 §17.3): a newer version is information,
+      // not a need; behind it, needed (update_need, this panel's word)
+      const need = fact.dataset.need || "";
+      fact.textContent = (need === "info" ? {{ _("{version} available, not needed by this panel") | tojson }}
+        : need === "needed" ? {{ _("{version} available, needed by this panel to draw every page") | tojson }}
+        : {{ _("{version} available") | tojson }}).replace("{version}", info.available);
+      fact.classList.toggle("warn-line", need !== "info");
+      fact.classList.toggle("muted", need === "info");
       fact.hidden = false;
     }
     if (update) update.hidden = !info.available || !info.signed || !!info.unavailable;
