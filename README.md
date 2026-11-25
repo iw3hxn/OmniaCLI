@@ -1401,6 +1401,69 @@ put it in place), the access log of the backup in `logs/before-restore-<date>/`
 `central_backup_confirm_key`, `central_backup_run`) do the same with an admin
 token of the machine, never a CI's nor a workspace's; a save changes only what
 it is given (a time alone leaves the destination and the switch as they are).
+The backup also carries the identities imported from the linked machines
+(`identity-imports/`, the next section).
+
+### Identities of a linked machine on the central panel
+
+The customers' portal goes to the central panel (AD-018): the people of every
+workspace of a machine, with their passwords and second factors, are carried
+there machine by machine. This first step reads and copies, and changes
+nothing on the machine: its people go on logging in there, and the central
+panel does not log them in yet. **Links › Identità** on a link's row
+(`/identities/<link>`, the admins of this panel; never through a link):
+
+1. **The dry run.** The panel asks the machine, through its link, what each
+   workspace holds and says it item by item, with the count and what happens:
+   *passes the same* (people and their password hashes, roles, custom roles,
+   authenticator apps with their recovery codes, the identities linked by
+   single sign-on, REST/MCP tokens), or *to be done again, by whom* (a passkey
+   made on another name than this panel's portal: by the person; single
+   sign-on on another name: the customer's provider admin adds the return
+   address `https://<portal>/sso/<workspace>/callback`; an assistant's OAuth
+   connector bound to another MCP address: the person consents again;
+   invitations not accepted: sent again from this panel; GitHub webhooks on
+   the machine's portal: rewritten on the instance's name when the machine
+   passes), or *stays on the machine* (its own people who are members). Each
+   person is listed with the name it arrives as: a name this panel has
+   already, or that another machine's import brought, arrives as
+   `<name>.<workspace>` (its first workspace by name), then `-2`, `-3`. A
+   workspace whose name this panel has already is pointed out.
+2. **Import here.** The machine's package (the same PBKDF2 hashes, the TOTP
+   secrets with the step of their last code, the recovery codes' hashes, the
+   passkeys with their RP ID and counter, the SSO providers with their client
+   secret, the tokens' and grants' hashes) is read through the link into
+   memory, never on a disk: 64 MiB and 60 s at most, whatever the machine
+   drips, and outside the lock an undo takes. It is checked before anything is
+   kept, since a machine is not trusted with what it writes here: its people
+   are exactly the members of its workspaces, every reference to a person (a
+   custom role, servers, a token, an SSO identity, a grant) is one of them,
+   every name is a user name, every role `user`, `developer` or `admin`, every
+   hash a PBKDF2-SHA256 this panel verifies (1,000 to 1,200,000 iterations),
+   every value of its type and size; anything else refuses the whole package
+   (502, in the access log) and nothing is saved. What stays is
+   `identity-imports/<link>.json` (600, in a 700 folder) beside the other data
+   of this panel, in its nightly backup, in the purge. Again replaces the import
+   of before. Only the people of role `workspace` and the tokens of a workspace
+   pass; the machine's own people, its tokens and its links never. A workspace
+   another machine's import brought is pointed out as one of this panel's is.
+3. **Delete the import…** is the undo: the file goes, the machine is not
+   touched.
+
+On the machine the two reads (`GET /api/identity/v1/inventory`, the dry run,
+counts and names only; `GET /api/identity/v1/export`, the package) answer only
+the central panel's link with the admin role: never a person (here or through
+the link's pages, whose proxy refuses `api/identity/` as it does the pages'
+models), a token, a workspace's scope. Each read is in the machine's access log
+with who asked through the link (`… -> 200 for <person>`), and the panel's dry
+runs, imports and deletes are in its own. No page, JSON, REST or MCP answer of
+the panel holds a secret: only counts, names and the verdicts. REST
+(`GET /api/v1/links/{name}/identities`, `POST …/identities/import`,
+`POST …/identities/delete`, each write with `confirm` = the link's name) and
+MCP (`identity_import_status`, `identity_import`, `identity_import_delete`) do
+the same with an admin token of this panel, never a CI's nor a workspace's.
+The freeze of the machine, the central as the workspaces' home and the people's
+login there are the next slices of AD-018.
 
 ### Links through SSH
 

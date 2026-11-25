@@ -60,6 +60,7 @@
         <span class="link-detail">{{ tr(s.status.detail) if tunnel and tunnel != "up" else "" }}</span></td>
       <td><div class="actions" style="margin: 0; justify-content: flex-end; flex-wrap: nowrap">
         <button type="button" class="small" data-test title="{{ _('Asks the other instance who you are there: it answers with its version and the role you have. It changes nothing. With SSH, it first looks whether the tunnel is up.') }}">{{ _("Try") }}</button>
+        <a class="button small" href="{{ prefix }}/identities/{{ link.name }}" data-identities title="{{ _('The people of its workspaces, their second factors, passkeys, single sign-on and tokens: a dry run, item by item, and their import on this panel') }}">{{ _("Identities") }}</a>
         <button type="button" class="small" data-edit title="{{ _('Changes the address, the token, the SSH server and the certificate of the link. A token left empty stays the one saved.') }}">{{ _("Edit…") }}</button>
         <button type="button" class="small danger" data-delete title="{{ _('Takes the link out of this OmniaCLI: its instances leave the Dashboard and its SSH tunnel is closed. On the other instance the token stays valid until it is revoked there.') }}">{{ _("Delete…") }}</button>
       </div></td>

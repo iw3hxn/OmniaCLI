@@ -84,7 +84,14 @@ V1_RELAY_TOOLS = {
     ("POST", "/api/v1/agent-relay/remove"): ("agent_relay_remove",),
     ("POST", "/api/v1/links/{name}/relay"): ("link_relay",),
 }
-V1_TOOLS = {**V1_WORKSPACE_TOOLS, **V1_MACHINE_TOOLS, **V1_CENTRAL_TOOLS, **V1_RELAY_TOOLS}
+# the identities of a linked machine's workspaces carried to this central panel (AD-018 slice 1): the dry run, the
+# import with the same hashes and secrets, its undo; the machine's admin tokens only, never a workspace's nor a CI's
+V1_IDENTITY_TOOLS = {
+    ("GET", "/api/v1/links/{name}/identities"): ("identity_import_status",),
+    ("POST", "/api/v1/links/{name}/identities/import"): ("identity_import",),
+    ("POST", "/api/v1/links/{name}/identities/delete"): ("identity_import_delete",),
+}
+V1_TOOLS = {**V1_WORKSPACE_TOOLS, **V1_MACHINE_TOOLS, **V1_CENTRAL_TOOLS, **V1_RELAY_TOOLS, **V1_IDENTITY_TOOLS}
 # the steps of a move and of its return as MCP's move_instance and move_back name them: what follows move/ (or
 # move/back/) in the REST path
 MOVE_STEPS = {"prepare": "", "complete": "complete", "cancel": "cancel", "delete_copy": "delete-copy"}
@@ -276,6 +283,11 @@ class CentralKeyBody(_Model):
 class CentralConfirmBody(_Model):
     passphrase: str = Field(description="The recovery passphrase the new key's answer gave, typed back (in the body: "
                                         "a password, never in a URL)")
+
+
+class IdentityConfirmBody(_Model):
+    confirm: str = Field(description="The name of the link, typed: the import (or its undo) of that machine's "
+                                     "identities")
 
 
 class AgentRelayBody(_Model):

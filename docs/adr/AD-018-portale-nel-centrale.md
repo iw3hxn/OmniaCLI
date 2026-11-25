@@ -360,6 +360,64 @@ Per ogni fetta: il rilascio, la prova su lab3/lab4, come si annulla, la stima. l
      segreto entra su lab3. Nel JSON delle pagine ci sono 0 segreti.
    - *Si annulla*: import cancellato, lab4 non toccato.
    - *Stima*: 3 g.
+
+   **Com'è nel codice (fetta 1).** `identityimport.py`, più il codice in `app.py` accanto alla protezione del centrale.
+   - **Sulla macchina** due GET interne, `/api/identity/v1/inventory` (la prova a vuoto) e `/api/identity/v1/export`
+     (il pacchetto). Rispondono solo a un collegamento con ruolo admin (dopo `X-OmniaCLI-Role-Cap`), mai a una persona
+     (né qui né dalle pagine del collegamento: `person`), a un token, a un ambito delegato. Ogni lettura, anche
+     rifiutata, va nel registro della macchina con `… -> <stato> for <persona>`. Il pacchetto non si scrive mai sulla
+     macchina e risponde con `Cache-Control: no-store`. Il proxy `/links/<m>/…` del centrale rifiuta `api/identity/`
+     con 404, come i modelli delle pagine.
+   - **Cosa entra.** Per ogni W: le persone di ruolo `workspace` (vincolo 8.1), con l'hash, il record TOTP
+     (`SecondFactors.record`: segreto, ultimo passo, sale, codici di recupero come hash), le passkey
+     (`PasskeyStore.record`: handle, RP ID, contatore); le cinque chiavi delle persone di `workspaces.yaml`; i token di
+     W con hash, ruolo, CI e server; SSO con client secret e identità (`SsoStore.identities_of`); i grant OAuth di W con
+     i loro client. Gli inviti e i webhook si contano soltanto. Personale, token della macchina e collegamenti no.
+   - **Sul centrale** `identity_act` (`status`, `import`, `delete`) serve la pagina `/identities/<link>` (da
+     Collegamenti › Identità), `/api/v1/links/{name}/identities[/import|/delete]` e i tool MCP `identity_import_status`,
+     `identity_import`, `identity_import_delete`. Solo admin del centrale, mai un collegamento, un token di W o di una CI;
+     le scritture vogliono `confirm` = il nome del collegamento. `plan()` dice ogni voce `same`, `redo` (con chi: la
+     persona, l'admin del provider, l'admin del workspace, il passaggio) o `stays`, contro il nome del portale del
+     centrale (`portal_url()`): passkey e grant passano uguali solo se il loro nome è quello. Nessun segreto nella
+     risposta: conteggi, nomi, verdetti.
+   - **I nomi.** `<nome>.<workspace>` (il primo W della persona, per nome), poi `-2`, `-3`: `handover.names_map`,
+     contro gli utenti del centrale **e** le persone importate da altri collegamenti.
+   - **Dove sta.** `identity-imports/<link>.json` (600, cartella 700) accanto ai dati del centrale, nello slot
+     `identity_imports` del backup notturno cifrato e nel purge. Il pacchetto resta solo in memoria: letto in streaming
+     con al massimo 64 MiB (`MAX_PACKAGE`) e 60 s in tutto (`TIMEOUT`, `asyncio.wait_for`: i timeout di httpx sono per
+     fase e una macchina che risponde un byte alla volta non li fa mai scattare), fuori da `identity_lock`, che tengono
+     solo il controllo e il salvataggio: una macchina lenta non blocca un altro import né un annullamento. Rifare
+     l'import sostituisce quello di prima; «Cancella l'import…» toglie il file e basta.
+   - **La macchina non è fidata** (la regola di AD-009, la revisione della fetta 1). `checked()` rifiuta tutto il
+     pacchetto se: le persone non sono esattamente i membri dei suoi W (prima una persona fuori dai membri teneva il
+     suo nome, anche quello di un admin del centrale, con l'hash della macchina); un riferimento a una persona (ruolo
+     personalizzato, server, token, identità SSO, grant) non è uno di quei membri; un nome non è un nome utente o di
+     workspace; un ruolo non è `user`, `developer` o `admin`; un hash non è PBKDF2-SHA256 da 1.000 a 1.200.000
+     iterazioni (o il segno di chi non ha ancora una password); un valore non è del suo tipo o della sua misura.
+     `summary()` gira prima del salvataggio, e ogni errore del pacchetto è un 502 nel registro, mai un record salvato.
+   - **Il proxy** decodifica il percorso (fino a tre volte) e rifiuta segmenti `.`, `..` e vuoti: prima
+     `api/%2e/identity/…` passava il blocco perché il client lo normalizza (la macchina lo rifiutava comunque,
+     `person`). Vale anche per `api/pages`.
+   - **La prova del TOTP** è a livello di funzione: `Store.check(link, persona, password, codice)` (lo stesso hash, lo
+     stesso segreto, il passo segnato: lo stesso codice non vale due volte). Il PBKDF2 gira fuori dal lock; un nome
+     sconosciuto paga un hash finto (come `Authenticator`); un hash fuori misura o un passo che non è un intero danno
+     `False`, mai un'eccezione. Il login delle persone importate sulle pagine del centrale è della fetta 2.
+   - **Provato** (25/11/2026, lab3 centrale e lab4 macchina, codice del ramo `ad018-s1-import`): lab4 con 2 W e 6
+     persone (2 app TOTP, 1 passkey su `omnia-lab4.example.net`, 1 SSO finto, 1 token di W, 1 grant, 1 ruolo
+     personalizzato), `mario` anche su lab3. La prova a vuoto di lab3 contro i file di lab4 letti senza il codice di
+     OmniaCLI: 14 voci confrontate, 0 differenze. Dopo l'import: 6 hash su 6 uguali, 2 segreti TOTP su 2, 1 chiave di
+     passkey su 1; `mario` arriva come `mario.beta`, il `mario` di lab3 resta il suo. Un codice calcolato dal segreto
+     importato passa `Store.check` su lab3, lo stesso codice una seconda volta no, una password sbagliata no. 41 valori
+     segreti cercati (per impronta) in 1 MB di pagine e JSON visti dal browser, in 4 viste (1440 e 375, chiaro e
+     scuro): 0 trovati; 0 errori di pagina, 0 dialoghi del browser, 1 pulsante primario. I file d'identità di lab4 sono
+     identici byte per byte prima e dopo 3 prove a vuoto, 3 import e 2 cancellazioni.
+   - **Scostamenti.** (1) Il pacchetto è JSON sul collegamento (che è SSH), non sigillato come quello della consegna:
+     il collegamento è già cifrato e autenticato, e la macchina non ha una chiave del centrale. (2) Gli inviti in
+     attesa si contano e non si importano (18.3.3 dice che si rifanno). (3) L'import vive in un file per collegamento,
+     non ancora in W del centrale: i W remoti sono la fetta 2. (4) Il nome di un grant OAuth (`oauth:<persona>:…`)
+     resta quello della macchina anche se la persona è rinominata; il campo `user` cambia.
+   - **Resta aperto.** Due macchine con un W dello stesso nome: la pagina lo segnala, la regola la decide la fetta 2.
+     Il nome del portale del centrale come RP ID è la fetta 3: oggi il confronto usa il nome esatto del portale.
 2. **Il centrale casa** (18.2): W remoti, ambito su ogni route, REST/MCP inoltrati, liste, spostati diretti all'host.
    - *Prova*: la parità del vincolo 3, con 0 differenze. Il token di W su lab3 chiama `/api/v1` di un server su lab4. La
      voce `on_behalf` è nel registro di lab4.

@@ -98,6 +98,10 @@ case "$1" in
         # and what omniacli central-restore wrote: the CA files of the links, a file it was writing when it stopped
         rm -rf /var/lib/omniacli/link-ca
         rm -f /var/lib/omniacli/.central-restore-*
+        # the identities of the linked machines' workspaces imported on a central panel (identityimport.py, AD-018
+        # slice 1): their hashes and secrets (600); a package staged by the first build of it (none is any more)
+        rm -rf /var/lib/omniacli/identity-imports
+        rm -f /var/lib/omniacli/.identity-package-*
         # the moves of instances to other machines (placement.py, AD-015): their states, the instances placed
         # elsewhere, the workspaces hosted here for their home
         rm -rf /var/lib/omniacli/move
