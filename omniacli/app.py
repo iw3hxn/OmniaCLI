@@ -137,6 +137,8 @@ from .config import (
     save_publications,
     ADDRESSES_MAX,
     address_name,
+    passkey_domain,
+    under as config_under,
     addresses_follow,
     address_taken,
     apply_sites,
@@ -379,6 +381,8 @@ NAME_NOT_AVAILABLE = "This name is not available: choose another one"
 # Options do not let them in there (docs/portale-clienti.md)
 PORTAL_STAFF_REFUSED = ("This address is the customers' portal: the users of this machine come in through "
                         "their link, not from here")
+# a user of a workspace (or a person served for a linked machine) at the staff's panel's name (AD-018 §18.4)
+PANEL_CUSTOMER_REFUSED = "This address is the provider's staff panel: the customers log in at their portal"
 # a user of a workspace handed over to the customer's own machine (UX-014 A12): nothing of the customer's address,
 # which this machine does not know as a public one
 HANDED_OVER = "Your workspace moved to another machine. Ask your administrator for the new address."
@@ -512,8 +516,8 @@ REMOTE_OWN_ROUTES = frozenset({"/logout", "/account", "/static/{name}", "/x/{plu
                                *(path for _, path in apiv1.DOCUMENT_ROUTES)})
 # a change of its account (its password, its second step, its passkeys, its sessions, a connector): where its
 # identity lives now; slice 5 brings it here
-REMOTE_PASSKEY_LATER = ("Your second step is a passkey: on this portal it comes with its name. Log in where you "
-                        "logged in before for now")
+REMOTE_PASSKEY_LATER = ("Your second step is a passkey made on another address, which this portal cannot use. Log in "
+                        "where you logged in before for now")
 REMOTE_SETUP_LATER = ("This portal asks a second step and you have none yet: set it up where you logged in before, "
                       "then log in here")
 SCOPE_GONE = "You are no longer a member of this workspace"
@@ -871,6 +875,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     remote_pending = totp.PendingLogins()
     # {digest of the step cookie: the step its machine opened}: the code goes with it to the machine
     remote_steps: dict[str, str] = {}
+    # {digest of the step cookie: the credential ids of its passkeys on this RP ID}: a step its machine opened for a
+    # passkey (AD-018 slice 3), whose answer goes there with the step, never a code
+    remote_step_keys: dict[str, list[str]] = {}
     REMOTE_LOGIN_TIMEOUT = 15
     account_setups: dict[str, tuple[str, float]] = {}
     # the passkeys (passkeys.py) and the single sign-on of the workspaces (sso.py), next to the users file
@@ -909,16 +916,35 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         """The request came through the portal's site: nginx passes its name as
         Host (a link, an SSH tunnel, a browser on the machine reach the service
         by its own address)."""
-        address = settings.options.portal_address
+        return _on_name(request, settings.options.portal_address)
+
+    def on_panel(request: HTTPConnection) -> bool:
+        """The request came through the staff's panel's name (AD-018 §18.4), published with the portal's."""
+        return _on_name(request, settings.options.portal_panel)
+
+    def _on_name(request: HTTPConnection, address: str) -> bool:
         host = request.headers.get("host", "").lower()
         return bool(address) and (host == address or host == f"{address}:443")
 
     def portal_admits(request: HTTPConnection, name: str) -> bool:
         """name may log in where this request came from: on the portal, the
         users of the workspaces only, unless the machine's users were let in
-        there too (Options); everywhere else, everyone as before."""
-        return (not on_portal(request) or settings.options.portal_staff
-                or settings.user_role(name) == WORKSPACE_ROLE)
+        there too (Options); on the staff's panel (AD-018 §18.4), the users of
+        the machine only; everywhere else, everyone as before."""
+        customer = settings.user_role(name) == WORKSPACE_ROLE
+        if on_panel(request):
+            return not customer
+        return not on_portal(request) or settings.options.portal_staff or customer
+
+    def refused_here(request: HTTPConnection) -> tuple[str, str]:
+        """(what the person reads, what the access log says) of a refusal by portal_admits on this request's name."""
+        if on_panel(request):
+            return PANEL_CUSTOMER_REFUSED, "a user of a workspace at the staff's panel"
+        return PORTAL_STAFF_REFUSED, "a user of the machine at the customers' portal"
+
+    def own_names() -> list[str]:
+        """The names this OmniaCLI is published on: the portal's and the staff's panel's."""
+        return [n for n in (settings.options.portal_address, settings.options.portal_panel) if n]
 
     def second_step_required(request: HTTPConnection, name: str) -> bool:
         """name must log in with a second step here (Options, Two-step
@@ -940,6 +966,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     # --- OAuth's addresses (oauth.py): the authorization server is this OmniaCLI, at the address its
     # clients reach (public_base), and the resource is its MCP URL there, exactly as the person enters it
+    # (the portal's also on the staff's panel's name, AD-018 §18.4.6: the address a customer is given)
 
     def oauth_issuer(request: HTTPConnection) -> str:
         return public_base(request)
@@ -1037,6 +1064,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if remote is not None:
                 if method not in ("GET", "HEAD") and not _same_origin(request):
                     raise HTTPException(status.HTTP_403_FORBIDDEN, "Cross-site request refused")
+                if on_panel(request):
+                    # a customer's session never opens the staff's panel (AD-018 §18.4), as a staff's the portal
+                    raise HTTPException(status.HTTP_403_FORBIDDEN, PANEL_CUSTOMER_REFUSED)
                 return remote
             # marked, so the pages' scripts tell it from a link's or a token's 401
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Login required", headers={_LOGIN_HEADER: "required"})
@@ -1045,7 +1075,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if method not in ("GET", "HEAD") and not _same_origin(request):
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Cross-site request refused")
         if not portal_admits(request, name):
-            raise HTTPException(status.HTTP_403_FORBIDDEN, PORTAL_STAFF_REFUSED)
+            raise HTTPException(status.HTTP_403_FORBIDDEN, refused_here(request)[0])
         role = settings.user_role(name)
         if role == WORKSPACE_ROLE:
             # its role is decided for each request (in_workspaces)
@@ -1455,6 +1485,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                              "link_relay": lambda *a, **k: api_hooks["link_relay"](*a, **k),
                                              # a linked machine's identities carried here (AD-018 slice 1)
                                              "identity": lambda *a, **k: api_hooks["identity"](*a, **k),
+                                             # the portal's names and its passkeys' domain (AD-018 slice 3)
+                                             "portal": lambda *a, **k: api_hooks["portal"](*a, **k),
                                              # AD-014 §6: a tool on an instance placed elsewhere asked there, and
                                              # the scope a home sends taken from that home's link only
                                              "placed": lambda *a, **k: mcp_placed(*a, **k),
@@ -1668,8 +1700,16 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     def passkey_rp(request: HTTPConnection) -> str | None:
         """The RP ID of a passkey here (passkeys.py): the name the browser
-        opened this page on; None without the library or on an address."""
-        return passkeys.rp_of(request.headers.get("host", "")) if passkeys.available() else None
+        opened this page on, or the passkeys' domain of Options on the
+        portal's and the staff's panel's names under it (AD-018 §18.4.3);
+        None without the library or on an address."""
+        if not passkeys.available():
+            return None
+        return passkeys.rp_here(request.headers.get("host", ""), settings.options.passkey_domain, own_names())
+
+    def passkey_origins(request: HTTPConnection, rp: str | None) -> tuple:
+        """The origins the answer of a ceremony of rp started on this request may come from: this OmniaCLI's own."""
+        return tuple(passkeys.origins_here(request.headers.get("host", ""), rp, own_names()))
 
     def sso_buttons(request: Request) -> list[dict]:
         """The «Log in with …» of the login page: the workspace of ?sso= and
@@ -1795,7 +1835,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if request.url.path != "/login/code":
             return RedirectResponse("/login/code", status.HTTP_303_SEE_OTHER)
         if request.method == "GET":
-            return login_page(request, found.next_path, step="code", user=found.user, totp_on=True, passkey_step=False)
+            # a step of a passkey (slice 3): the page offers the passkey only
+            keyed = bool(remote_step_keys.get(_digest_session(token)))
+            return login_page(request, found.next_path, step="code", user=found.user, totp_on=not keyed,
+                              passkey_step=keyed)
         if not _same_origin(request):
             return HTMLResponse("Cross-site login refused", status_code=403)
         form = parse_qs((await request.body()).decode("utf-8", "replace"))
@@ -1803,6 +1846,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         ip = request.client.host if request.client else ""
         name = found.user
         person = serving().people.get(name)
+        if remote_step_keys.get(_digest_session(token)):
+            # its step is a passkey's: a code is never taken for it
+            return login_page(request, found.next_path, "Use your passkey.", 400, step="code", user=name,
+                              totp_on=False, passkey_step=True)
         wait = limiter.wait(ip, name)
         if wait:
             access_log.record("failed", "user", name, ip, f"second step: too many failed logins: wait {wait} s")
@@ -1819,7 +1866,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             access_log.record("failed", "user", name, ip, "second step: wrong code" + (
                 "" if left else ", the password is asked again"), via=person.link if person else "")
             if not left:
-                remote_steps.pop(_digest_session(token), None)
+                forget_remote_step(token)
                 response = login_page(request, found.next_path, "Too many wrong codes: log in again with your password.",
                                       401)
                 response.delete_cookie(totp.STEP_COOKIE, path="/login")
@@ -1827,12 +1874,16 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return login_page(request, found.next_path, "Wrong code.", 401, step="code", user=name, totp_on=True,
                               passkey_step=False)
         remote_pending.drop(token)
-        remote_steps.pop(_digest_session(token), None)
+        forget_remote_step(token)
         response = await remote_logged_in(request, person, answer, found.next_path, ip,
                                           f"{found.via}, second step: {answer.get('second') or 'code'}",
                                           f"password + {answer.get('second') or 'code'}")
         response.delete_cookie(totp.STEP_COOKIE, path="/login")
         return response
+
+    def forget_remote_step(token: str | None) -> None:
+        remote_steps.pop(_digest_session(token or ""), None)
+        remote_step_keys.pop(_digest_session(token or ""), None)
 
     def step_how(found: totp.Pending, second: str) -> str:
         """How a session made after a second step was opened (Account's list)."""
@@ -1869,8 +1920,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return login_page(request, next_path, "Wrong user name or password.", 401)
         if not portal_admits(request, name):
             # the password was right: said only once it is, as a wrong one would be otherwise
-            access_log.record("failed", "user", name, ip, "login form: a user of the machine at the customers' portal")
-            return login_page(request, next_path, PORTAL_STAFF_REFUSED + ".", 403)
+            said, logged = refused_here(request)
+            access_log.record("failed", "user", name, ip, f"login form: {logged}", status=403)
+            return login_page(request, next_path, said + ".", 403)
         if handed_over(name):
             # its workspace was handed over to the customer's own machine (UX-014 A12): said after the password,
             # no session, no instance
@@ -1923,7 +1975,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         A passkey as its only second step is the portal's name's (slice 3): refused with why; a second step this
         panel asks of everybody and it has none: refused too, its set-up is made where it logged in before."""
         via = f"login form, workspaces of {person.link}"
-        answer = await machine_login(person, {"password": password})
+        # the RP ID of this name: the machine says which of the person's passkeys are of it (slice 3)
+        rp = passkey_rp(request)
+        answer = await machine_login(person, {"password": password, **({"rp": rp} if rp else {})})
         if answer is not None and (answer.get("down") or answer.get("wait")):
             # said as a wrong password: before the password is proven, nothing tells a name served here from one
             # unknown (the reason is in the access log)
@@ -1937,9 +1991,17 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             limiter.failed(ip, person.name)
             access_log.record("failed", "user", person.name, ip, via, via=person.link)
             return login_page(request, next_path, "Wrong user name or password.", 401)
-        if need == "code" and isinstance(answer.get("step"), str):
+        if on_panel(request):
+            # a customer at the staff's panel (AD-018 §18.4): said once the password is right, as a wrong one otherwise
+            return panel_refused(request, person, next_path, ip, via)
+        keys = [str(k) for k in answer.get("keys") or [] if isinstance(k, str) and k][:passkeys.MAX_PER_USER] if (
+            need == "passkey" and isinstance(answer.get("keys"), list)) else []
+        if need in ("code", "passkey") and isinstance(answer.get("step"), str) and (need == "code" or keys):
+            # a code, or a passkey of this name's RP ID (slice 3): the answer goes to the machine with its step
             token = remote_pending.create(person.name, next_path, person.hash, False, via)
             remote_steps[_digest_session(token)] = answer["step"]
+            if keys:
+                remote_step_keys[_digest_session(token)] = keys
             response = RedirectResponse("/login/code", status.HTTP_303_SEE_OTHER)
             response.set_cookie(totp.STEP_COOKIE, token, max_age=totp.PENDING_SECONDS, httponly=True,
                                 samesite="strict", secure=request.url.scheme == "https", path="/login")
@@ -1960,6 +2022,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         """The machine said yes: what this panel keeps of the person read again from the machine when it differs
         from its word (its password changed there, its workspaces or roles), then the session."""
         name, link = person.name, person.link
+        if on_panel(request):
+            return panel_refused(request, person, next_path, ip, via)
         fingerprint = hashlib.sha256(person.hash.encode()).hexdigest()[:32]
         theirs = answer.get("workspaces") if isinstance(answer.get("workspaces"), dict) else {}
         if answer.get("fingerprint") != fingerprint or theirs != dict(person.workspaces):
@@ -1967,13 +2031,28 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             person = serving().people.get(name)
             if person is None or person.link != link:
                 access_log.record("failed", "user", name, ip, f"{via}: no workspace served any more", via=link)
+                if passkey_path(request):
+                    return login_json("This passkey was not accepted.", 401)
                 return login_page(request, next_path, "Wrong user name or password.", 401)
         limiter.succeeded(ip, person.name)
         access_log.record("login", "user", person.name, ip, via, role=WORKSPACE_ROLE, via=person.link,
                           workspaces=[w for w, _ in person.workspaces])
-        response = RedirectResponse(next_path, status.HTTP_303_SEE_OTHER)
+        # a passkey's answer is the page's script's: it moves on to next by itself
+        response = (JSONResponse({"next": next_path}, headers={"Cache-Control": "no-store"}) if passkey_path(request)
+                    else RedirectResponse(next_path, status.HTTP_303_SEE_OTHER))
         open_remote_session(request, response, person, how)
         return response
+
+    def passkey_path(request: Request) -> bool:
+        return request.url.path.startswith(("/login/passkey", "/login/code/passkey"))
+
+    def panel_refused(request: Request, person: remotehome.Person, next_path: str, ip: str, via: str):
+        """A person served here at the staff's panel's name: refused after its right password (403, in the log)."""
+        access_log.record("failed", "user", person.name, ip, f"{via}: a user of a workspace at the staff's panel",
+                          via=person.link, status=403)
+        if passkey_path(request):
+            return login_json(PANEL_CUSTOMER_REFUSED + ".", 403)
+        return login_page(request, next_path, PANEL_CUSTOMER_REFUSED + ".", 403)
 
     def open_remote_session(request: Request, response, person: remotehome.Person, how: str) -> None:
         token = remote_sessions.create(person.name, person.hash, request.headers.get("user-agent", ""),
@@ -2014,17 +2093,32 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if rp is None:
             return login_json("Passkeys work on a name of this machine over HTTPS (or localhost), not on an address")
         host = request.headers.get("host", "")
+        origins = passkey_origins(request, rp)
         if request.url.path.startswith("/login/code/"):
-            found = pending_logins.get(request.cookies.get(totp.STEP_COOKIE), settings.users)
-            if found is None or found.setup:
+            step_token = request.cookies.get(totp.STEP_COOKIE)
+            found = pending_logins.get(step_token, settings.users)
+            if found is None:
+                # a person served for a linked machine whose machine opened a step for a passkey (slice 3): the ids
+                # its machine said of this RP ID
+                remote = remote_pending.get(step_token, remote_hashes())
+                ids = remote_step_keys.get(_digest_session(step_token or "")) if remote is not None else None
+                if not ids:
+                    return login_json("Log in again with your password", 401)
+                token, challenge = ceremonies.start("second", remote.user, rp, host, origins=origins)
+                options = passkeys.authentication_options(rp, challenge, [{"id": i} for i in ids], "preferred")
+                response = JSONResponse({"publicKey": options}, headers={"Cache-Control": "no-store"})
+                response.set_cookie(passkeys.COOKIE, token, max_age=passkeys.CEREMONY_SECONDS, httponly=True,
+                                    samesite="strict", secure=request.url.scheme == "https", path="/login")
+                return response
+            if found.setup:
                 return login_json("Log in again with your password", 401)
             keys = passkey_store.keys(found.user, rp)
             if not keys:
                 return login_json("You have no passkey for this address")
-            token, challenge = ceremonies.start("second", found.user, rp, host)
+            token, challenge = ceremonies.start("second", found.user, rp, host, origins=origins)
             options = passkeys.authentication_options(rp, challenge, keys, "preferred")
         else:
-            token, challenge = ceremonies.start("login", "", rp, host)
+            token, challenge = ceremonies.start("login", "", rp, host, origins=origins)
             options = passkeys.authentication_options(rp, challenge, None, "required")
         response = JSONResponse({"publicKey": options}, headers={"Cache-Control": "no-store"})
         response.set_cookie(passkeys.COOKIE, token, max_age=passkeys.CEREMONY_SECONDS, httponly=True,
@@ -2046,9 +2140,22 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return login_json("The request of the passkey has expired: try again")
         step_token = request.cookies.get(totp.STEP_COOKIE)
         pending = pending_logins.get(step_token, settings.users) if second else None
+        if second and pending is None:
+            remote = remote_pending.get(step_token, remote_hashes())
+            if remote is not None and remote.user == ceremony.user and remote_step_keys.get(
+                    _digest_session(step_token or "")):
+                return await remote_passkey(request, ceremony, credential, serving().people.get(remote.user), ip,
+                                            remote.next_path, f"{remote.via}, second step: passkey", step_token)
         if second and (pending is None or pending.user != ceremony.user):
             return login_json("Log in again with your password", 401)
         found = passkey_store.find(str(credential.get("id") or ""), ceremony.rp) if credential.get("id") else None
+        if found is None and not second:
+            # a passkey of a person served for a linked machine (slice 3): checked by its machine
+            person = remotehome.passkey_person(serving(), str(credential.get("id") or ""), ceremony.rp)
+            if person is not None and person.name not in settings.users:
+                return await remote_passkey(request, ceremony, credential, person, ip,
+                                            _next_path(str(body.get("next") or "/")),
+                                            f"passkey, without password, workspaces of {person.link}")
         name = found[0] if found else (pending.user if pending else "")
         wait = limiter.wait(ip, name)
         if wait:
@@ -2078,8 +2185,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         except (passkeys.WebAuthnException, ValueError, KeyError, TypeError) as exc:
             return refused(f"«{key.get('name')}» not verified: {exc}")
         if not second and not portal_admits(request, name):
-            access_log.record("failed", "user", name, ip, "passkey: a user of the machine at the customers' portal")
-            return login_json(PORTAL_STAFF_REFUSED + ".", 403)
+            said, logged = refused_here(request)
+            access_log.record("failed", "user", name, ip, f"passkey: {logged}", status=403)
+            return login_json(said + ".", 403)
         await asyncio.to_thread(passkey_store.used, name, key["id"], verified.new_sign_count)
         limiter.succeeded(ip, name)
         if second:
@@ -2094,6 +2202,45 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if second:
             response.delete_cookie(totp.STEP_COOKIE, path="/login")
         open_session(request, response, name, how)
+        return response
+
+    async def remote_passkey(request: Request, ceremony: passkeys.Ceremony, credential: dict,
+                             person: remotehome.Person | None, ip: str, next_path: str, via: str,
+                             step_token: str | None = None):
+        """The answer of a passkey of a person served for a linked machine (AD-018 slice 3), checked by its machine,
+        where the passkey lives with its counter: this ceremony's challenge, RP ID and origins go with it (a passkey
+        made on another name is never of this RP ID). step_token: the second step its password opened there; none,
+        a login without a password (the user's verification required)."""
+        name = person.name if person is not None else (ceremony.user or "")
+        wait = limiter.wait(ip, name)
+        if wait:
+            access_log.record("failed", "user", name, ip, f"passkey: too many failed logins: wait {wait} s")
+            return login_json(f"Too many failed logins: try again in {wait} seconds.", 429)
+        body = {"passkey": {"credential": credential, "challenge": passkeys.b64(ceremony.challenge), "rp": ceremony.rp,
+                            "origins": ceremony.expected_origins()}}
+        if step_token:
+            body["step"] = remote_steps.get(_digest_session(step_token), "")
+        answer = await machine_login(person, body) if person is not None and (body.get("step") or not step_token) else None
+        if answer is not None and answer.get("down"):
+            access_log.record("failed", "user", name, ip, f"{via}: its machine did not answer ({answer['down']})"[:300],
+                              via=person.link if person else "")
+            return login_json(REMOTE_CHECK_DOWN, 502)
+        if not (answer or {}).get("ok"):
+            limiter.failed(ip, name)
+            left = remote_pending.failed(step_token) if step_token else True
+            access_log.record("failed", "user", name, ip, f"{via}: not accepted" + (
+                "" if left else ", the password is asked again"), via=person.link if person else "")
+            if not left:
+                forget_remote_step(step_token)
+            return login_json("This passkey was not accepted.", 401)
+        if step_token:
+            remote_pending.drop(step_token)
+            forget_remote_step(step_token)
+        response = await remote_logged_in(request, person, answer, next_path, ip, via,
+                                          "password + passkey" if step_token else "passkey")
+        response.delete_cookie(passkeys.COOKIE, path="/login")
+        if step_token:
+            response.delete_cookie(totp.STEP_COOKIE, path="/login")
         return response
 
     # --- single sign-on of a workspace (sso.py; README, Single sign-on): «Log in with <provider>» sends
@@ -11130,7 +11277,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         base = str(request.base_url)
         # the customers' portal, where the person will log in: for a user of
         # the machine only when Options let them in there
-        portal = portal_url() if (settings.options.portal_staff or settings.user_role(name) == WORKSPACE_ROLE) else ""
+        customer = settings.user_role(name) == WORKSPACE_ROLE
+        portal = portal_url() if (settings.options.portal_staff or customer) else ""
+        if not customer and settings.options.portal_panel:
+            # a user of the machine where the staff's panel has a name (AD-018 §18.4): there
+            portal = f"https://{settings.options.portal_panel}"
         if portal:
             base = portal
         elif prefix_of(request):
@@ -13862,7 +14013,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     # what the Options page reads of the options, by name (AD-017 slice 5): never the SMTP password (whether it is
     # set), the webhooks of Monitoring by their site only (notices_shown, kept at saving by notices_kept)
     OPTIONS_SHOWN = ("audit_retention_days", "brand_color", "brand_name", "mail_from", "monitor_minutes",
-                     "monitor_thresholds", "notice_language", "portal_address", "portal_staff", "provider_label",
+                     "monitor_thresholds", "notice_language", "passkey_domain", "portal_address", "portal_panel",
+                     "portal_staff", "provider_label",
                      "restart_after", "restart_down", "restart_every", "second_factor", "shell_font_size", "smtp_host",
                      "smtp_port", "smtp_security", "smtp_user", "syslog_ca_file", "syslog_host", "syslog_port",
                      "syslog_protocol", "tunnel_bind", "tunnel_idle_hours", "tunnel_ports")
@@ -13925,7 +14077,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             portal = {"provider": current.provider_label}
         # the portal's address changes only when it is published (portal_publish):
         # its site is written with it
+        # and so does the staff's panel's, published with it; the passkeys' domain is set on its own (portal_act)
         payload = {**payload, "portal": {**portal, "address": current.portal_address,
+                                         "panel": current.portal_panel, "passkeys": current.passkey_domain,
                                          "staff": portal.get("staff", current.portal_staff),
                                          "second_factor": portal.get("second_factor", current.second_factor)}}
         if not isinstance(payload.get("brand"), dict):
@@ -14099,11 +14253,115 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                  if line.strip() and not line.startswith(("Saving debug log", "Ask for help"))]
         return "; ".join(lines)[:300]
 
+    def portal_said(me: Principal) -> dict:
+        """The portal's names and its passkeys' domain as the page, the REST API and MCP say them (AD-018 §18.4)."""
+        options = settings.options
+        names = own_names()
+        return {"address": options.portal_address, "url": portal_url(), "staff": options.portal_staff,
+                "panel": options.portal_panel, "panel_url": f"https://{options.portal_panel}" if options.portal_panel
+                else "", "passkey_domain": options.passkey_domain,
+                # the RP ID each name's passkeys are made on: the domain when the name is under it, else the name
+                "rp": {n: passkeys.rp_here(n, options.passkey_domain, names) for n in names},
+                "passkeys_of_domain": passkey_store_count(options.passkey_domain) if options.passkey_domain else 0,
+                "refused": portal_refusal(me)}
+
+    def passkey_store_count(rp: str) -> int:
+        return sum(len(passkey_store.keys(u, rp)) for u in settings.users)
+
+    def portal_api_refusal(me: Principal, nginx: bool = True) -> tuple[int, dict] | None:
+        """Who sets the portal's names and its passkeys' domain: this machine's admins (a person or a token of the
+        machine), never a link, a workspace's token or a CI's."""
+        if me.kind == "link" or me.via:
+            return 403, {"error": "The portal's names are set on its own panel, not through a link", "code": "forbidden"}
+        if me.scoped:
+            return 403, {"error": "A workspace's token never sets the portal's names", "code": "machine_token_required"}
+        if me.ci or (me.kind == "token" and settings.token_ci(me.name)):
+            return 403, {"error": "A CI token never sets the portal's names", "code": "forbidden"}
+        if not machine_admin(me):
+            return 403, {"error": "Only the administrators of the machine publish the customers' portal",
+                         "code": "forbidden"}
+        refused = portal_refusal(me)
+        if refused and nginx:
+            # where OmniaCLI does not keep nginx: the reason, as the Addresses dialog says it
+            return 400, {"error": refused, "code": "conflict"}
+        return None
+
+    async def portal_act(op: str, me: Principal, source: str, ip: str = "",
+                         body: Optional[dict] = None) -> tuple[int, dict]:
+        """(status, answer) of op on the portal (AD-018 slice 3), as the page, the REST API and MCP ask it: status;
+        publish (host and panel: the portal's name and the staff's panel's, one site and one certificate, as a job;
+        host empty, taken away); passkeys (the passkeys' domain: the RP ID of the passkeys made on those names, under
+        which both must be; confirm = the domain when passkeys of the domain of before stop working)."""
+        body = dict(body or {})
+        if op == "status":
+            refused = portal_api_refusal(me, nginx=False)
+            if refused is not None:
+                return refused
+            return 200, portal_said(me)
+        refused = portal_api_refusal(me)
+        if refused is not None:
+            return refused
+        if op == "publish":
+            return await portal_publish_act(me, source, ip, body)
+        if op == "passkeys":
+            return await portal_passkeys_act(me, ip, body)
+        return 404, {"error": f"No such action: {op}", "code": "not_found"}
+
+    async def portal_passkeys_act(me: Principal, ip: str, body: dict) -> tuple[int, dict]:
+        """The passkeys' domain set (empty: each name its own again). The portal's name, and the staff's panel's when
+        it has one, must be under it; a domain that would leave passkeys made on the one of before unusable asks
+        confirm = the new value (or "off")."""
+        given = str(body.get("domain") or "").strip().lower().rstrip(".")
+        try:
+            domain = passkey_domain("domain", given) if given else ""
+        except ConfigError as exc:
+            return 400, {"error": str(exc).removeprefix("domain: "), "code": "invalid"}
+        options = settings.options
+        if domain:
+            if not options.portal_address:
+                return 409, {"error": "Publish the portal's name first: the passkeys' domain is the one it is under",
+                             "code": "conflict"}
+            outside = [n for n in own_names() if not config_under(n, domain)]
+            if outside:
+                return 400, {"error": f"{', '.join(outside)} {'is' if len(outside) == 1 else 'are'} not under {domain}: "
+                                      "the passkeys' domain is one the portal's and the staff's panel's names are under",
+                             "code": "invalid"}
+        if domain == options.passkey_domain:
+            return 200, {"ok": True, "changed": False, "portal": portal_said(me)}
+        # the passkeys that stop working: those of the RP IDs the portal's names have now and will not have
+        names = own_names()
+        before = {passkeys.rp_here(n, options.passkey_domain, names) for n in names}
+        after = {passkeys.rp_here(n, domain, names) for n in names}
+        lost = sum(passkey_store_count(rp) for rp in before - after if rp)
+        if lost and str(body.get("confirm") or "") != (domain or "off"):
+            return 400, {"error": f"{lost} passkeys made on {', '.join(sorted(r for r in before - after if r))} stop "
+                                  f"working here: type {domain or 'off'} to confirm", "code": "confirm_required",
+                         "lost": lost}
+        new = dataclasses.replace(options, passkey_domain=domain)
+        try:
+            await asyncio.to_thread(save_options, settings.options_file, new)
+        except OSError as exc:
+            return 500, {"error": f"{settings.options_file} is not written: {exc}", "code": "failed"}
+        settings.options = new
+        access_log.record("action", me.kind, me.name, ip, (
+            f"the passkeys' domain of the portal set to {domain}" if domain else
+            "the passkeys' domain of the portal taken away: each name its own") + (
+            f" (from {options.passkey_domain})" if options.passkey_domain else "")
+            + (f"; {lost} passkeys of the RP IDs of before no longer work here" if lost else ""))
+        return 200, {"ok": True, "changed": True, "lost": lost, "portal": portal_said(me)}
+
+    api_hooks["portal"] = portal_act
+
     @app.get("/api/portal", dependencies=[Depends(admin)])
     async def portal_get(me: Principal = Depends(current_user)):
-        """The portal's address and whether it may be published here."""
-        return {"address": settings.options.portal_address, "url": portal_url(),
-                "staff": settings.options.portal_staff, "refused": portal_refusal(me)}
+        """The portal's names, its passkeys' domain and whether it may be published here."""
+        return portal_said(me)
+
+    @app.post("/api/portal/passkeys", dependencies=[Depends(admin)])
+    async def portal_passkeys(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """The passkeys' domain of the portal's names (AD-018 §18.4.3), from Options."""
+        code, data = await portal_act("passkeys", me, f"manual: {me}", central_ip(request), payload)
+        return identity_answer(request, code, data)
 
     @app.post("/api/portal/check", dependencies=[Depends(admin)])
     async def portal_check(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
@@ -14134,27 +14392,36 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return row
 
     @app.post("/api/portal/publish", dependencies=[Depends(admin)])
-    async def portal_publish(payload: dict = Body(...), me: Principal = Depends(current_user)):
-        """The portal published on host (empty: taken away), as a job: the
-        site, the certificate, then the address saved in the options."""
-        refused = portal_refusal(me)
-        if refused:
-            return refuse(refused)
-        given = str(payload.get("host") or "").strip()
+    async def portal_publish(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        """The portal published on host, with the staff's panel on panel (AD-018 §18.4; not given: the one of now),
+        as a job; host empty: taken away."""
+        code, data = await portal_act("publish", me, f"manual: {me}", central_ip(request), payload)
+        return identity_answer(request, code, data)
+
+    async def portal_publish_act(me: Principal, source: str, ip: str, body: dict) -> tuple[int, dict]:
+        """The portal published on host and the staff's panel on panel (one site of nginx, its server_name the two
+        names, one certificate: workspace-helper portal host,panel), as a job: the site, the certificate, then the
+        names saved in the options. host empty: both taken away. panel not given: the one of now."""
+        given = str(body.get("host") or "").strip()
+        wanted = str(settings.options.portal_panel if body.get("panel") is None else body["panel"]).strip()
         try:
             host = portal_name(given) if given else ""
+            panel = portal_name(wanted) if wanted and host else ""
         except ConfigError as exc:
-            return refuse(str(exc).removeprefix("address: "))
+            return 400, {"error": str(exc).removeprefix("address: "), "code": "invalid"}
+        if panel and panel == host:
+            return 400, {"error": "The staff's panel needs a name of its own, not the portal's", "code": "invalid"}
+        names = [n for n in (host, panel) if n]
 
         async def action(job):
             if host:
-                job.log(f"--- the customers' portal at {host}")
+                job.log(f"--- the customers' portal at {host}" + (f", the staff's panel at {panel}" if panel else ""))
             else:
                 job.log("--- the customers' portal taken away" + (f" from {settings.options.portal_address}"
                                                                  if settings.options.portal_address else ""))
-            made = await workspaceops._helper(job, "portal", host or "-")
+            made = await workspaceops._helper(job, "portal", ",".join(names) or "-")
             job.log(f"nginx: {made.get('nginx')}")
-            options = dataclasses.replace(settings.options, portal_address=host)
+            options = dataclasses.replace(settings.options, portal_address=host, portal_panel=panel)
             try:
                 await asyncio.to_thread(save_options, settings.options_file, options)
             except OSError as exc:
@@ -14163,18 +14430,30 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             job.result.update(made)
             if not host:
                 return
-            job.log(f"https://{host}")
-            why = portal_certificate_said(host, str(made.get("certificate_error") or ""))
+            for name in names:
+                job.log(f"https://{name}")
+            shown = " and ".join(names)
+            why = portal_certificate_said(shown, str(made.get("certificate_error") or ""))
             if made.get("certificate_error"):
                 job.log(f"Let's Encrypt: {made['certificate_error']}")
             if made.get("certificate") == "self-signed":
-                job.warn(f"{host} has a certificate of this machine's own for now, which the browsers warn about: "
-                         f"Let's Encrypt's comes once {host} points here and the portal is published again"
+                job.warn(f"{shown} {'have' if panel else 'has'} a certificate of this machine's own for now, which "
+                         f"the browsers warn about: Let's Encrypt's comes once {shown} "
+                         f"{'point' if panel else 'points'} here and the portal is published again"
                          + (f" ({why})" if why else ""))
             elif not made.get("https"):
-                job.warn(f"{host} has no certificate yet: {why or 'openssl did not make one'}")
-        title = f"Customers' portal at {host}" if host else "Customers' portal taken away"
-        return {"ok": True, "job": jobs.submit(title, [], f"manual: {me}", action).id}
+                job.warn(f"{shown} {'have' if panel else 'has'} no certificate yet: "
+                         f"{why or 'openssl did not make one'}")
+            domain = settings.options.passkey_domain
+            outside = [n for n in names if domain and not config_under(n, domain)]
+            if outside:
+                job.warn(f"{', '.join(outside)} {'is' if len(outside) == 1 else 'are'} not under the passkeys' "
+                         f"domain {domain}: the passkeys made there are of that name only")
+        title = (f"Customers' portal at {host}" + (f", staff's panel at {panel}" if panel else "")
+                 if host else "Customers' portal taken away")
+        access_log.record("action", me.kind, me.name, ip, (
+            f"the portal's names: {', '.join(names)} (a job)" if names else "the portal's names taken away (a job)"))
+        return 200, {"ok": True, "job": jobs.submit(title, [], source, action).id}
 
     # --- scheduled actions ----------------------------------------------
 
@@ -16228,6 +16507,56 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     identity_steps: dict[str, list] = {}
     IDENTITY_STEP_SECONDS = totp.PENDING_SECONDS
 
+    async def identity_passkey(me: Principal, person: str, member: bool, given: dict, step, key: str, said,
+                               answer) -> dict:
+        """A passkey's answer of a person for the central panel of this link (AD-018 slice 3), checked here where the
+        passkey lives with its counter, with the central's ceremony: its challenge, its RP ID (the passkey must be of
+        it) and its own origins. step: the second step its password opened here (a passkey step); none, a login
+        without a password (the user's verification required)."""
+        credential = given.get("credential") if isinstance(given.get("credential"), dict) else {}
+        rp = str(given.get("rp") or "")[:253]
+        origins = [str(o)[:300] for o in given.get("origins") or [] if isinstance(o, str)][:8] if isinstance(
+            given.get("origins"), list) else []
+        second = isinstance(step, str) and bool(step)
+        found = identity_steps.get(_digest_session(step)) if second else None
+        if second and (found is None or found[0] != person or found[2] >= totp.MAX_TRIES or found[3] != "passkey"):
+            said(False, "second step: no passkey step open")
+            return {"ok": False}
+
+        def wrong(why: str) -> dict:
+            if found is not None:
+                found[2] += 1
+            limiter.failed(key, person)
+            said(False, f"{'second step: ' if second else ''}passkey: {why}")
+            return {"ok": False}
+
+        if not member:
+            return wrong("not a member of its workspaces served")
+        mine = passkey_store.find(str(credential.get("id") or ""), rp) if credential.get("id") and rp else None
+        if mine is None or mine[0] != person:
+            return wrong(f"none of its own of {rp or 'no RP ID'}")
+        handle = (credential.get("response") or {}).get("userHandle") if isinstance(credential.get("response"),
+                                                                                    dict) else None
+        if handle:
+            try:
+                owner = passkey_store.owner(passkeys.unb64(str(handle)))
+            except ValueError:
+                owner = None
+            if owner != person:
+                return wrong("the passkey says another user")
+        try:
+            verified = await asyncio.to_thread(passkeys.verify_given, credential,
+                                               passkeys.unb64(str(given.get("challenge") or "")), rp, origins,
+                                               mine[1], not second)
+        except (passkeys.WebAuthnException, ValueError, KeyError, TypeError) as exc:
+            return wrong(f"«{mine[1].get('name')}» not verified: {exc}")
+        await asyncio.to_thread(passkey_store.used, person, mine[1]["id"], verified.new_sign_count)
+        if second:
+            identity_steps.pop(_digest_session(step), None)
+        limiter.succeeded(key, person)
+        return answer(f"passkey «{mine[1].get('name')}»") if second else answer(
+            first=f"passkey «{mine[1].get('name')}», without password")
+
     @app.post(identityimport.API + "/login")
     async def identity_login(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
         """The login of a person of a workspace whose people the central panel of this link serves (AD-018 slice
@@ -16247,8 +16576,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                               f"{person} through the central panel: {what}"[:300], on_behalf=person,
                               workspaces=sorted(mine))
 
-        def answer(second: str = "") -> dict:
-            said(True, "password" + (f" + {second}" if second else ""))
+        def answer(second: str = "", first: str = "password") -> dict:
+            said(True, first + (f" + {second}" if second else ""))
             return {"ok": True, "person": person, "workspaces": mine, "second": second,
                     "fingerprint": hashlib.sha256(settings.users[person].encode()).hexdigest()[:32]}
         now = time.time()
@@ -16262,9 +16591,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             said(False, f"too many failed logins: wait {wait} s")
             return {"ok": False, "wait": wait}
         step = payload.get("step")
+        if isinstance(payload.get("passkey"), dict):
+            return await identity_passkey(me, person, member, payload["passkey"], step, key, said, answer)
         if isinstance(step, str) and step:
             found = identity_steps.get(_digest_session(step))
-            if found is None or found[0] != person or found[2] >= totp.MAX_TRIES or not member:
+            if found is None or found[0] != person or found[2] >= totp.MAX_TRIES or not member or found[3] != "code":
                 said(False, "second step: none open")
                 return {"ok": False}
             result = await asyncio.to_thread(second_factors.check, person, str(payload.get("code") or "")[:64])
@@ -16283,10 +16614,18 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return {"ok": False}
         if second_factors.on(person):
             opened = secrets.token_urlsafe(32)
-            identity_steps[_digest_session(opened)] = [person, now + IDENTITY_STEP_SECONDS, 0]
+            identity_steps[_digest_session(opened)] = [person, now + IDENTITY_STEP_SECONDS, 0, "code"]
             return {"ok": False, "need": "code", "step": opened}
         if passkey_store.keys(person):
-            said(False, "its second step is a passkey")
+            # its passkeys of the RP ID the central panel's name has (slice 3): a step for one of them; none of it,
+            # the central says why (a passkey is of the name it was made on)
+            rp = str(payload.get("rp") or "")[:253]
+            keys = passkey_store.keys(person, rp) if rp else []
+            if keys:
+                opened = secrets.token_urlsafe(32)
+                identity_steps[_digest_session(opened)] = [person, now + IDENTITY_STEP_SECONDS, 0, "passkey"]
+                return {"ok": False, "need": "passkey", "step": opened, "keys": [k["id"] for k in keys]}
+            said(False, "its second step is a passkey" + (f", none of {rp}" if rp else ""))
             return {"ok": False, "need": "passkey"}
         if second_step_required(request, person):
             said(False, "a second step is required and it has none")
@@ -16401,7 +16740,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     shown = identityimport.plan(dry, identity_store.taken(name, settings.users), portal_url(),
                                                 sorted(set(settings.workspaces)
                                                        | identity_store.workspaces_of_others(name)),
-                                                identity_tokens_taken(name))
+                                                identity_tokens_taken(name),
+                                                # the portal's RP ID (slice 3): the passkeys' domain, when it is under
+                                                rp_id=passkeys.rp_here(settings.options.portal_address,
+                                                                       settings.options.passkey_domain, own_names())
+                                                if settings.options.portal_address else "")
                 except (ValueError, TypeError, AttributeError, KeyError):
                     shown = None
             if shown is None and not error:
@@ -31016,6 +31359,39 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                     me: Principal = Depends(api_token)):
         return api_central_answer(request, *await identity_act("delete", name, me, f"api: {me}", api_ip(request),
                                                                body.model_dump()))
+
+    # --- the portal's names and its passkeys' domain (AD-018 slice 3): the pages' code (portal_act), for a token of
+    # the machine with the admin role, never a workspace's or a CI's
+
+    @api_router.get(P + "/portal", summary="Read the portal's names",
+                    description="The customers' portal's name and the staff's panel's (one site of nginx, one "
+                                "certificate), whether the machine's users log in at the portal too, the passkeys' "
+                                "domain (their RP ID) and the RP ID each name's passkeys are made on, the passkeys of "
+                                "that domain, and why the portal may not be published here (refused, empty when it "
+                                "may). A token of the machine with the admin role.")
+    async def api_portal(request: Request, me: Principal = Depends(api_token)):
+        return api_central_answer(request, *await portal_act("status", me, f"api: {me}", api_ip(request)))
+
+    @api_router.post(P + "/portal/publish", summary="Publish the portal and the staff's panel",
+                     description="The customers' portal on host and the staff's panel on panel: one site of nginx "
+                                 "whose server_name is the two names, Let's Encrypt's certificate for both when they "
+                                 "lead here (else one of this machine's own, said in the job), the maintenance page "
+                                 "while OmniaCLI does not answer; then the names saved. On the portal's name the "
+                                 "machine's users are refused after their right password, on the panel's the "
+                                 "customers. host empty: both taken away. A job (202).")
+    async def api_portal_publish(request: Request, body: apiv1.PortalPublishBody, me: Principal = Depends(api_token)):
+        return api_central_answer(request, *await portal_act("publish", me, f"api: {me}", api_ip(request),
+                                                             body.model_dump()))
+
+    @api_router.post(P + "/portal/passkeys", summary="Set the passkeys' domain of the portal",
+                     description="The RP ID of the passkeys made on the portal's and the staff's panel's names: a "
+                                 "domain both are under, chosen once, so a name may change within it and keep its "
+                                 "passkeys; only this OmniaCLI's own names may use an assertion of it. Empty: each "
+                                 "name its own. When passkeys made on the RP IDs of now would stop working, the answer "
+                                 "says how many and asks confirm = the domain (or off).")
+    async def api_portal_passkeys(request: Request, body: apiv1.PortalPasskeysBody, me: Principal = Depends(api_token)):
+        return api_central_answer(request, *await portal_act("passkeys", me, f"api: {me}", api_ip(request),
+                                                             body.model_dump()))
 
     api_openapi_cache: dict = {}
 

@@ -93,7 +93,15 @@ V1_IDENTITY_TOOLS = {
     ("POST", "/api/v1/links/{name}/identities/delete"): ("identity_import_delete",),
     ("POST", "/api/v1/links/{name}/identities/home"): ("identity_home",),
 }
-V1_TOOLS = {**V1_WORKSPACE_TOOLS, **V1_MACHINE_TOOLS, **V1_CENTRAL_TOOLS, **V1_RELAY_TOOLS, **V1_IDENTITY_TOOLS}
+# the portal's names and its passkeys' domain (AD-018 slice 3): the customers' portal and the staff's panel, one site
+# and one certificate; the RP ID of the passkeys made on them; the machine's admin tokens only
+V1_PORTAL_TOOLS = {
+    ("GET", "/api/v1/portal"): ("portal_status",),
+    ("POST", "/api/v1/portal/publish"): ("portal_publish",),
+    ("POST", "/api/v1/portal/passkeys"): ("portal_passkeys",),
+}
+V1_TOOLS = {**V1_WORKSPACE_TOOLS, **V1_MACHINE_TOOLS, **V1_CENTRAL_TOOLS, **V1_RELAY_TOOLS, **V1_IDENTITY_TOOLS,
+            **V1_PORTAL_TOOLS}
 # the steps of a move and of its return as MCP's move_instance and move_back name them: what follows move/ (or
 # move/back/) in the REST path
 MOVE_STEPS = {"prepare": "", "complete": "complete", "cancel": "cancel", "delete_copy": "delete-copy"}
@@ -296,6 +304,20 @@ class IdentityHomeBody(_Model):
     confirm: str = Field(description="The name of the link, typed")
     on: bool = Field(description="true: this panel serves the people of the machine's imported workspaces; false: no "
                                  "more")
+
+
+class PortalPublishBody(_Model):
+    host: str = Field(description="The customers' portal's name (a host name whose DNS record points to this machine); "
+                                  "empty: the portal and the staff's panel taken away")
+    panel: Optional[str] = Field(None, description="The staff's panel's name, published with the portal's (one site, "
+                                                   "one certificate); empty: none; not given: the one of now")
+
+
+class PortalPasskeysBody(_Model):
+    domain: str = Field(description="The passkeys' domain (their RP ID): a domain the portal's and the staff's "
+                                    "panel's names are under, as esempio.it; empty: each name its own")
+    confirm: str = Field("", description="The domain typed again (or off), when passkeys made on the RP IDs of now "
+                                         "would stop working: the answer of before says how many")
 
 
 class AgentRelayBody(_Model):

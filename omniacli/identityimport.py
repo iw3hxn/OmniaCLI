@@ -193,12 +193,13 @@ def token_names_map(tokens_ws: dict[str, str], taken) -> dict[str, str]:
     return names_map(tokens_ws, taken)
 
 
-def plan(dry: dict, taken, central_portal: str, workspaces_here=(), taken_tokens=()) -> dict:
+def plan(dry: dict, taken, central_portal: str, workspaces_here=(), taken_tokens=(), rp_id: str = "") -> dict:
     """The dry run said item by item (AD-018 §18.3.1 step 1, §18.3.3): for each workspace its items with their
     count, «same», «redo» (who does it again) or «stays», and each person with the name it arrives as. A workspace
     whose name is taken here (this panel's, or another import's) is blocking: slice 1 only says it, slice 2 must
-    refuse or rename it before it reads the record. No secret in it: dry is inventory()'s answer."""
-    rp_here = passkeys.rp_of(_host(central_portal)) if central_portal else None
+    refuse or rename it before it reads the record. No secret in it: dry is inventory()'s answer. rp_id: the RP ID
+    of the central's portal (its passkeys' domain, slice 3); empty, its exact name."""
+    rp_here = rp_id or (passkeys.rp_of(_host(central_portal)) if central_portal else None)
     host_here = _host(central_portal)
     names = names_map(first_workspace(dry), taken)
     tokens_ws: dict[str, str] = {}

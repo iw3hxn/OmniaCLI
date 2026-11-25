@@ -92,7 +92,11 @@ machine unchanged), identity_import_delete with confirm=<link> (the undo),
 identity_home with confirm=<link> and on (this panel the home of the
 machine's imported workspaces: their people and tokens log in here).
 A workspace's token of a machine whose workspaces this panel serves calls
-this /mcp as before: its tools are asked of its machine with its scope."""
+this /mcp as before: its tools are asked of its machine with its scope.
+The names of this OmniaCLI (admin token): portal_status, portal_publish
+(the customers' portal and the staff's panel, one site and one
+certificate: a job), portal_passkeys (the passkeys' domain, their RP ID,
+with confirm when passkeys of before would stop working)."""
 
 
 def _instructions() -> str:
@@ -126,7 +130,9 @@ TOOL_ROLES = {"update_test": "developer", "backup_test": "developer",
                                       "link_relay")},
               # a linked machine's identities carried to the central panel (AD-018 slice 1): its admins only
               **{t: "admin" for t in ("identity_import_status", "identity_import", "identity_import_delete",
-                                      "identity_home")}}
+                                      "identity_home")},
+              # the portal's names and its passkeys' domain (AD-018 slice 3): the machine's admins only
+              **{t: "admin" for t in ("portal_status", "portal_publish", "portal_passkeys")}}
 CENTRAL_TOOLS = {"central_backup_status", "central_backup_configure", "central_backup_new_key",
                  "central_backup_confirm_key", "central_backup_run",
                  "agent_relay_status", "agent_relay_publish", "agent_relay_remove", "link_relay",
@@ -138,11 +144,12 @@ WRITE_TOOLS = {"update_test", "backup_test", "backup", "add_draft_server", "rest
                "prepare_handover", "receive_workspace", "switch_workspace", "move_instance", "move_back",
                "central_backup_configure", "central_backup_new_key", "central_backup_confirm_key", "central_backup_run",
                "agent_relay_publish", "agent_relay_remove", "link_relay", "identity_import", "identity_import_delete",
-               "identity_home"}
+               "identity_home", "portal_publish", "portal_passkeys"}
 # the tools of the machine's tokens only: a workspace's token never reaches them
 MACHINE_TOOLS = {"read_server", "add_draft_server", "list_links", "linked_tools", "call_linked",
                  "handover_status", "prepare_handover", "receive_workspace", "reception_status", "switch_workspace",
-                 "move_status", "move_instance", "move_back", *CENTRAL_TOOLS}
+                 "move_status", "move_instance", "move_back", *CENTRAL_TOOLS,
+                 "portal_status", "portal_publish", "portal_passkeys"}
 # the tools of a move asked of the home of a placed instance, never of the machine it is on (its move is the home's)
 HOME_TOOLS = {"move_status", "move_instance", "move_back"}
 # the tools a CI's token never uses, whatever its role (apiguard.machine_refusal): not in its list
@@ -1216,6 +1223,49 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         own login stays). on=false: no more. A workspace named like one here
         or of another import's refuses it. confirm = the link's name."""
         return await identities(ctx, "home", link, confirm=confirm, on=on)
+
+    # --- the portal's names and its passkeys' domain (AD-018 slice 3): the pages' code (app.portal_act)
+
+    async def portal(ctx: Context, op: str, **body) -> dict:
+        if api.get("portal") is None:
+            raise ToolError("This OmniaCLI has no portal's names through MCP")
+        if token_of(ctx) is None:
+            raise ToolError("forbidden: the portal's names are set on its own panel, not through a link")
+        if settings.token_servers(token_of(ctx)):
+            raise ToolError("forbidden: this token reaches some servers only, and the portal is the machine's")
+        code, data = await api["portal"](op, as_principal(ctx), source_of(ctx), "", body)
+        if code >= 400:
+            raise ToolError(f"{data.get('code') or apiv1.code_of(code)}: {data.get('error') or 'Refused'}")
+        return data
+
+    @server.tool()
+    async def portal_status(ctx: Context) -> dict:
+        """(admin token of the machine) The customers' portal's name and the
+        staff's panel's (one site, one certificate), whether the machine's
+        users log in at the portal too, the passkeys' domain (their RP ID)
+        and the RP ID each name's passkeys are made on."""
+        return await portal(ctx, "status")
+
+    @server.tool()
+    async def portal_publish(host: str, ctx: Context, panel: str | None = None) -> dict:
+        """(admin token of the machine, never a CI's) Publish the customers'
+        portal on host and the staff's panel on panel: one site of nginx with
+        the two names, Let's Encrypt's certificate for both when they lead
+        here, the maintenance page while OmniaCLI does not answer. On the
+        portal the machine's users are refused, on the panel the customers.
+        host empty: both taken away; panel not given: the one of now. A job:
+        follow it with get_job."""
+        return await portal(ctx, "publish", host=host, panel=panel)
+
+    @server.tool()
+    async def portal_passkeys(domain: str, ctx: Context, confirm: str = "") -> dict:
+        """(admin token of the machine, never a CI's) The passkeys' domain:
+        the RP ID of the passkeys made on the portal's and the staff's
+        panel's names, a domain both are under (as esempio.it), chosen once;
+        empty: each name its own. When passkeys of the RP IDs of now would
+        stop working the answer says how many: send confirm = the domain
+        (or off) after telling the user."""
+        return await portal(ctx, "passkeys", domain=domain, confirm=confirm)
 
     # --- the protection of this panel (AD-017 slice 7): the pages' code (app.central_backup_act), the same answers
 

@@ -57,6 +57,9 @@ class Person:
     # ((workspace, {role, capabilities, servers|None}), ...): where a custom role or some servers apply
     grants: tuple = ()
     # its password and its code are checked by its machine (POST /api/identity/v1/login): no secret here
+    # ((credential id, RP ID), ...) of its passkeys as imported: which person a passkey's answer is of, before its
+    # machine checks it with its own key and counter (AD-018 slice 3)
+    passkeys: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -190,8 +193,9 @@ def served(imports: dict, homes: dict, here_workspaces, here_users) -> Served:
             keys = ((data.get("passkeys") or {}).get("keys") or []) if isinstance(data.get("passkeys"), dict) else []
             second = TOTP if isinstance(factor, dict) and factor.get("secret") else (PASSKEY_ONLY if keys else NONE)
             grants = tuple((w, g) for w, _ in mine if (g := _grant(spaces[w], name)) is not None)
+            pairs = tuple((str(k.get("id")), str(k.get("rp"))) for k in keys if isinstance(k, dict) and k.get("id"))
             out.people[name] = Person(name, str(data.get("from") or back.get(name) or name), link, data["hash"],
-                                      second, mine, grants)
+                                      second, mine, grants, pairs)
         for ws, data in sorted(spaces.items()):
             for token, info in sorted((data.get("tokens") or {}).items()):
                 if not isinstance(info, dict) or not isinstance(info.get("hash"), str) or info.get("role") not in ROLES:
@@ -226,6 +230,19 @@ def token_of(found: Served, token: str) -> Token | None:
         # every hash compared: the time does not say which one it was
         if secrets.compare_digest(value, hashed):
             match = entry
+    return match
+
+
+def passkey_person(found: Served, credential_id: str, rp: str) -> Person | None:
+    """The served person a passkey (its credential id, made on rp) is of, None for none: the passkey itself is
+    checked by its machine, where it lives with its counter."""
+    if not credential_id or not rp:
+        return None
+    match = None
+    for person in found.people.values():
+        for key_id, key_rp in person.passkeys:
+            if key_rp == rp and secrets.compare_digest(key_id.encode(), credential_id.encode()):
+                match = person
     return match
 
 

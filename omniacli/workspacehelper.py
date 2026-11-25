@@ -2860,17 +2860,20 @@ def _portal_site() -> Path:
     return NGINX_SITES / f"omniacli-{workspaceweb.PORTAL}.conf"
 
 
-def _self_signed(host: str) -> tuple[str, str] | None:
-    """A certificate of the portal's own for host, while Let's Encrypt cannot
-    give one (no DNS yet, a machine on a private network): the browser warns,
-    the traffic is encrypted. Made again for another name or near its end;
-    None when openssl cannot make it."""
+def _self_signed(host: str | list[str]) -> tuple[str, str] | None:
+    """A certificate of the portal's own for host (or its names: the portal's
+    and the staff's panel's), while Let's Encrypt cannot give one (no DNS
+    yet, a machine on a private network): the browser warns, the traffic is
+    encrypted. Made again for other names or near its end; None when openssl
+    cannot make it."""
+    names = [host] if isinstance(host, str) else list(host)
+    host = names[0]
     folder = OWN_CERTS / workspaceweb.PORTAL
     chain, key, name = folder / "fullchain.pem", folder / "privkey.pem", folder / "name"
     fresh = chain.is_file() and subprocess.run(
         [_tool("openssl"), "x509", "-in", str(chain), "-noout", "-checkend", str(SELF_SIGNED_RENEW * 86400)],
         env=ENV, capture_output=True, stdin=subprocess.DEVNULL).returncode == 0
-    if fresh and key.is_file() and name.is_file() and name.read_text(encoding="utf-8").strip() == host:
+    if fresh and key.is_file() and name.is_file() and name.read_text(encoding="utf-8").split() == names:
         return str(chain), str(key)
     OWN_CERTS.mkdir(mode=0o700, parents=True, exist_ok=True)
     folder.mkdir(mode=0o700, exist_ok=True)
@@ -2879,7 +2882,8 @@ def _self_signed(host: str) -> tuple[str, str] | None:
     try:
         done = subprocess.run([_tool("openssl"), "req", "-x509", "-newkey", "ec", "-pkeyopt",
                                "ec_paramgen_curve:prime256v1", "-nodes", "-days", str(SELF_SIGNED_DAYS),
-                               "-subj", f"/CN={host}", "-addext", f"subjectAltName=DNS:{host}",
+                               "-subj", f"/CN={host}", "-addext",
+                               "subjectAltName=" + ",".join(f"DNS:{n}" for n in names),
                                "-keyout", str(new_key), "-out", str(new_chain)],
                               env=ENV, capture_output=True, text=True, stdin=subprocess.DEVNULL)
         if done.returncode or not new_chain.is_file() or not new_key.is_file():
@@ -2887,7 +2891,7 @@ def _self_signed(host: str) -> tuple[str, str] | None:
         os.chmod(new_key, 0o600)
         os.replace(new_chain, chain)
         os.replace(new_key, key)
-        _write(name, host + "\n", mode=0o600)
+        _write(name, "\n".join(names) + "\n", mode=0o600)
     finally:
         new_chain.unlink(missing_ok=True)
         new_key.unlink(missing_ok=True)
@@ -2907,55 +2911,72 @@ def _portal_removed(path: Path) -> str:
     return said
 
 
+PORTAL_NAMES_MAX = 2
+
+
 def portal(host: str) -> dict:
-    """The customers' portal on host, "-": none. Only where OmniaCLI keeps the
-    machine's nginx (workspaces.storage of the main configuration); host a
-    host name no other site of nginx answers on (nginx -T). The site, nginx
-    -t or the one before back; then, when host leads to this nginx, Let's
-    Encrypt's certificate, else a self-signed one (said in the result)."""
+    """The customers' portal on host, "-": none; host may be two names with a
+    comma, the portal's and the staff's panel's (AD-018 §18.4: one site, its
+    server_name a list, one certificate for both). Only where OmniaCLI keeps
+    the machine's nginx (workspaces.storage of the main configuration); each
+    a host name no other site of nginx answers on (nginx -T). The site, nginx
+    -t or the one before back; then, when every name leads to this nginx,
+    Let's Encrypt's certificate, else a self-signed one (said in the result).
+    The site answers the maintenance page while OmniaCLI does not
+    (workspaceweb.MAINTENANCE_HTML)."""
     if not storage_roots():
         raise HelperError(NOT_OUR_NGINX)
     path = _portal_site()
-    made = {"site": str(path), "address": "", "https": False, "certificate": "", "certificate_error": None}
+    made = {"site": str(path), "address": "", "panel": "", "https": False, "certificate": "",
+            "certificate_error": None}
     if host == "-":
         made["nginx"] = _portal_removed(path)
         return made
+    given = host.split(",")
+    if not 1 <= len(given) <= PORTAL_NAMES_MAX:
+        raise HelperError("portal <name>[,<staff's panel's name>]")
     try:
-        host = config.address_name("address", host)
+        names = [config.address_name("address", n) for n in given]
     except ConfigError as exc:
         raise HelperError(str(exc)) from None
-    made["address"] = host
+    if len(set(names)) != len(names):
+        raise HelperError("the staff's panel needs a name of its own, not the portal's")
+    host = names[0]
+    made["address"], made["panel"] = host, names[1] if len(names) > 1 else ""
     dump = subprocess.run([_tool("nginx"), "-T"], env=ENV, capture_output=True, text=True)
     if dump.returncode:
         raise HelperError(f"nginx -T: {dump.stderr.strip()}")
-    taken = workspaceweb.clashes([host], workspaceweb.names_elsewhere(dump.stdout, str(path)))
+    taken = workspaceweb.clashes(names, workspaceweb.names_elsewhere(dump.stdout, str(path)))
     if taken:
         raise HelperError("a name another site of nginx answers on: " + ", ".join(taken))
     _hash_bucket(dump.stdout)
     Path(workspaceweb.ACME_ROOT).mkdir(mode=0o755, exist_ok=True)
-    before = workspaceweb.portal_name_in(path.read_text(encoding="utf-8")) if path.is_file() else ""
+    before = workspaceweb.portal_names_in(path.read_text(encoding="utf-8")) if path.is_file() else []
     lineage = LETSENCRYPT / f"omniacli-{workspaceweb.PORTAL}"
-    if before and before != host and lineage.exists():
-        # the certificate of the name of before: another name gets its own
+    if before and before != names and lineage.exists():
+        # the certificate of the names of before: other names get their own
         _run("certbot", "delete", "--cert-name", f"omniacli-{workspaceweb.PORTAL}", "--non-interactive", check=False)
     ipv6 = Path("/proc/net/if_inet6").exists()
     omniacli = omniacli_address()
-    tls = _tls(workspaceweb.PORTAL, "letsencrypt") if before == host else None
+    tls = _tls(workspaceweb.PORTAL, "letsencrypt") if before == names else None
     kind = "letsencrypt" if tls else ""
     if tls is None:
-        tls = _self_signed(host)
+        tls = _self_signed(names)
         kind = "self-signed" if tls else ""
-    made["nginx"] = _put_site(path, workspaceweb.portal_conf_text(host, tls, ipv6, omniacli))
-    if not _resolves(host):
-        made["certificate_error"] = f"{host} is not in DNS yet"
-    elif kind != "letsencrypt" and not _reaches_here(host):
-        made["certificate_error"] = f"{host} does not lead to this machine's nginx"
+    made["nginx"] = _put_site(path, workspaceweb.portal_conf_text(names, tls, ipv6, omniacli))
+    missing = [n for n in names if not _resolves(n)]
+    away = [] if missing or kind == "letsencrypt" else [n for n in names if not _reaches_here(n)]
+    if missing:
+        made["certificate_error"] = f"{', '.join(missing)} {'is' if len(missing) == 1 else 'are'} not in DNS yet"
+    elif away:
+        made["certificate_error"] = (f"{', '.join(away)} {'does' if len(away) == 1 else 'do'} not lead to this "
+                                     "machine's nginx")
     else:
-        made["certificate_error"] = _certbot(workspaceweb.PORTAL, [host])
+        made["certificate_error"] = _certbot(workspaceweb.PORTAL, names)
         found = _tls(workspaceweb.PORTAL, "letsencrypt") if made["certificate_error"] is None else None
         if found and found != tls:
             tls, kind = found, "letsencrypt"
-            made["nginx"] = _put_site(path, workspaceweb.portal_conf_text(host, tls, ipv6, omniacli))
+            made["nginx"] = _put_site(path, workspaceweb.portal_conf_text(names, tls, ipv6, omniacli))
     made["https"], made["certificate"] = tls is not None, kind
     return made
 

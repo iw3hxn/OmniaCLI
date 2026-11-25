@@ -76,6 +76,22 @@ Se servirà, l'estensione costa poco. L'helper scrive già un `server_name`, che
 `address_taken` controlla già i nomi dei workspace. Mancherebbe solo il campo «etichetta» del workspace, con
 le sue regole.
 
+## Due nomi sul centrale (AD-018 fetta 3, 25/11/2026)
+
+Il centrale risponde su due nomi suoi: il portale dei clienti, uno solo per tutti, e il **pannello del
+personale**. Si pubblicano insieme da *Opzioni › Indirizzo del portale* (`workspace-helper portal
+<portale>,<pannello>`): un solo sito, `server_name` con i due nomi, un certificato per tutti e due.
+
+- Sul portale il personale è rifiutato dopo la password giusta, come prima; sul pannello i clienti (anche le
+  persone servite per una macchina collegata): 403, e nel registro un `failed` con `status: 403`.
+- *Dominio delle passkey*: l'RP ID delle passkey fatte sui due nomi, un dominio sotto cui stanno tutti e due.
+  Solo le origini dei due nomi sono accettate: un altro nome dello stesso dominio non può usare un'asserzione.
+- Gli indirizzi che OmniaCLI dà ai clienti restano quelli del portale anche quando la pagina è aperta sul pannello.
+- Con OmniaCLI fermo, nginx risponde con una pagina statica (503): «Il portale è momentaneamente fermo. I vostri siti
+  Odoo funzionano normalmente.», e la stessa frase in inglese.
+
+Dettagli e prove: README, *The two names of the central panel*, e AD-018, «Com'è nel codice (fetta 3)».
+
 ## I link che OmniaCLI dà a una persona
 
 - **Inviti** (`invite_url`):
