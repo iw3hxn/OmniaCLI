@@ -5,8 +5,8 @@
 Where the package comes from is the main configuration's (only root writes
 it): self_update.url, an https address of the OmniaCLI .deb (by default the
 latest release of this fork, machines.PACKAGE_URL), and the public key its
-signed manifest must verify with (self_update.public_key, else
-plugins.public_key). Next to the package the publisher puts its signed
+signed manifest must verify with (self_update.public_key, else the key of
+this package's own releases for its own repository, else plugins.public_key). Next to the package the publisher puts its signed
 manifest (packagesign.py: OmniaCLI.deb.json and .json.sig): a package whose
 manifest does not verify, or that is not the file the manifest signs, is
 never installed. Read also there: self_update.version_url, the package of one
@@ -64,6 +64,10 @@ from .packagesign import MANIFEST_SUFFIX, MAX_SMALL_FILE, SIGNATURE_SUFFIX, Sign
 
 PACKAGE = "omniacli"
 DEFAULT_URL = "https://github.com/iw3hxn/OmniaCLI/releases/latest/download/OmniaCLI.deb"
+# the key the releases of DEFAULT_URL's repository are signed with (its private half is the publisher's, in the
+# repository's secrets): a machine updating from there needs no key in its configuration
+RELEASES_REPO = "iw3hxn/OmniaCLI"
+RELEASES_PUBLIC_KEY = "ed25519:jXyBt0nj4amn3nOnxyAN/OP9i8gAaTGefKwUdEQRSQk="
 # root's folder of the packages kept and of the runs (purged by postrm); readable by the service
 STATE = Path(os.environ.get("OMNIACLI_SELF_UPDATE_DIR", "/var/lib/omniacli-self-update"))
 # the main configuration the root helper reads the source from: fixed, sudo passes no environment
@@ -119,8 +123,11 @@ def parse_source(data, plugins_key: str = "", default_url: str = DEFAULT_URL) ->
     """self_update of the main configuration, with its defaults."""
     data = data if isinstance(data, dict) else {}
     url = _https(data.get("url") or default_url, "url")
-    key = str(data.get("public_key") or plugins_key or "").strip()
     found = GITHUB.fullmatch(url)
+    # the releases of this package's own repository are verified with its key, before plugins.public_key (a
+    # plugin's publisher signs plugins, not OmniaCLI): self_update.public_key, written, still wins
+    ours = RELEASES_PUBLIC_KEY if found and f"{found['owner']}/{found['repo']}".lower() == RELEASES_REPO.lower() else ""
+    key = str(data.get("public_key") or ours or plugins_key or "").strip()
     version_url = data.get("version_url") or (
         f"https://github.com/{found['owner']}/{found['repo']}/releases/download/omniacli-v{{version}}/{found['file']}"
         if found else "")

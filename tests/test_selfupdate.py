@@ -151,7 +151,12 @@ def machine(tmp_path, monkeypatch):
 
 def test_the_source_https_only_and_its_defaults():
     found = selfupdate.parse_source({}, "ed25519:x")
-    assert found.url == selfupdate.DEFAULT_URL and found.public_key == "ed25519:x"
+    # the package's own releases: their own key, never a plugin publisher's
+    assert found.url == selfupdate.DEFAULT_URL and found.public_key == selfupdate.RELEASES_PUBLIC_KEY
+    assert selfupdate.parse_source({}).public_key == selfupdate.RELEASES_PUBLIC_KEY
+    other = selfupdate.parse_source({"url": "https://github.com/someone/fork/releases/latest/download/OmniaCLI.deb"},
+                                    "ed25519:x")
+    assert other.public_key == "ed25519:x"
     assert found.version_url == ("https://github.com/iw3hxn/OmniaCLI/releases/download/omniacli-v{version}/OmniaCLI.deb")
     assert found.releases == "https://api.github.com/repos/iw3hxn/OmniaCLI/releases?per_page=100"
     own = selfupdate.parse_source({"url": URL, "public_key": "ed25519:y", "version_url": VERSION_URL}, "ed25519:x")

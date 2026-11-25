@@ -648,7 +648,11 @@ What it does, and what makes it safe:
   (commented in the file): `url`, an https address of the OmniaCLI `.deb`
   (by default the latest release of this fork, `OMNIACLI_PACKAGE_URL` of the
   environment otherwise); `public_key`, the key its signature must verify
-  with (default: `plugins.public_key`); `version_url` (one version's
+  with (default: for this fork's own releases their publisher's key,
+  `ed25519:jXyBt0nj4amn3nOnxyAN/OP9i8gAaTGefKwUdEQRSQk=`, built into the
+  package, whose private half is in the repository's secrets
+  `OMNIACLI_PACKAGE_KEY` and `OMNIACLI_KEY_PASSPHRASE`; for another source
+  `plugins.public_key`); `version_url` (one version's
   package, `{version}` in it) and `releases` (the notes, GitHub's API), both
   derived from a GitHub release address. Only https, redirects included.
 - **Signed or not installed**: next to the package its signed manifest,
