@@ -606,6 +606,21 @@ Per ogni fetta: il rilascio, la prova su lab3/lab4, come si annulla, la stima. l
      - Un portale del centrale che cambia indirizzo si dice alla macchina solo rifacendo l'interruttore.
      - Un GitHub che rifiuta durante il job lascia il webhook dov'era, con il motivo, e lo riprova la notte
        (`github_retry`).
+   - **La revisione (dopo `5f417b1`).** Cinque correzioni:
+     1. Il portale del centrale è di tutte le macchine servite. Lì il webhook di una macchina è solo quello al suo
+        indirizzo esatto (base + il suo `rid`), mai un altro che comincia uguale. Prima una macchina prendeva il webhook
+        di un'altra sullo stesso repository (`PATCH` con il suo `rid` e il suo segreto), e con la CI spenta lo toglieva.
+     2. Il centrale non chiede più alle macchine al più ogni 30 s per tutti. Un id che non conosce le richiede: le
+        chiamate in attesa dividono una sola richiesta, al più una al secondo. Un id che nessuna elenca è rifiutato
+        subito per 30 s, quell'id soltanto. Prima un id a caso chiudeva la porta per 30 s anche al primo push di un
+        webhook appena fatto, e GitHub non riconsegna.
+     3. La macchina dice `{rid, id}`. Un `rid` elencato da due macchine non va a nessuna e il registro lo dice. Una
+        chiamata con un `X-GitHub-Hook-ID` diverso dall'`id` della macchina è rifiutata.
+     4. La riga del job dice il verso di ogni W: un interruttore può prenderne alcuni e restituirne altri.
+     5. Il corpo di una chiamata di webhook (questo e quello per istanza) oltre `deployhooks.MAX_BODY` (5 MiB) è
+        rifiutato con 413 prima di leggerlo, e non si inoltra.
+
+     Prova: 5 test in più in `tests/test_central_hooks.py`, che falliscono su `5f417b1`.
 5. **Il passaggio di una macchina e il ritorno** (18.3): congelamento, record di casa, login locale spento, inviti per il
    secondo fattore perso, 7 giorni, cancellazione dei segreti, registro unito.
    - *Prova* su lab4:

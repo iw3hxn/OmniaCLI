@@ -1733,9 +1733,17 @@ Modules tab is a warning: the CI depends on the central panel, until the
 instance has a name in Addresses and its CI is switched on again. Switched
 off, the same job puts the webhooks back on the machine's portal (or names).
 The central panel learns which webhooks it passes on from the machine
-(`GET /api/identity/v1/home`, its admin link only: their ids, never a
-secret), asked again at most every 30 s when GitHub calls one it does not
-know; one of nobody's is refused (403) and nothing reaches a machine. The
+(`GET /api/identity/v1/home`, its admin link only: each one's id in its
+address and the id GitHub gives it, never a secret). A call for an id it
+does not know asks the machines again (the calls waiting then share one
+ask, one at most each second: a webhook made a moment ago is found at its
+first push); an id none of them lists is refused (403) at once for 30 s,
+and nothing reaches a machine. An id two machines list goes to neither, and
+the access log says it; a call whose `X-GitHub-Hook-ID` is not the one the
+machine gave is refused. On the central panel's portal a machine's webhook
+is only the one at its exact address, never another machine's that starts
+the same. The body of a webhook's call (this one, the per-instance one) is
+refused above 5 MiB (413) before it is read, and is never forwarded. The
 answer of the switch (page, `POST /api/v1/links/{name}/identities/home`,
 MCP `identity_home`) carries the machine's job as `hooks_job`; the job and the
 forwarded calls are in the access logs of the machine and of the central

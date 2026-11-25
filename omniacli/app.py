@@ -371,8 +371,10 @@ _GITHUB_RID = re.compile(r"[A-Za-z0-9_-]{8,64}")
 # what of GitHub's call the central panel passes to the machine (the rest is the central's own: never its cookies)
 CENTRAL_HOOK_HEADERS = frozenset({"content-type", "user-agent", "x-hub-signature-256", "x-hub-signature",
                                   "x-github-event", "x-github-delivery", "x-github-hook-id"})
-# an unknown webhook asks the machines served again at most this often (seconds)
+# a webhook the machines served list not is refused at once this long (seconds), then asked again
 CENTRAL_HOOK_GAP = 30.0
+# the machines served are asked at most this often (seconds); the calls waiting meanwhile share one ask
+CENTRAL_HOOK_ASK = 1.0
 # users, links and MCP tokens created from the web interface
 _ACCESS_NAME = re.compile(r"[A-Za-z0-9._@-]{1,64}")
 # why a name of the Addresses dialog is taken, when it is so outside the
@@ -14735,6 +14737,25 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         parent = settings.servers.get(row.get("parent") or "") if not row.get("machine") else None
         return parent.production if parent is not None else None
 
+    async def hook_body(request: Request) -> bytes | None:
+        """The body of a webhook's call, None when larger than deployhooks.MAX_BODY: refused by its Content-Length
+        before it is read, else as soon as it passes it (a call without one); nothing larger is kept nor forwarded."""
+        length = request.headers.get("content-length")
+        if length is not None and (not length.strip().isdigit() or int(length) > deployhooks.MAX_BODY):
+            return None
+        chunks, size = [], 0
+        async for chunk in request.stream():
+            size += len(chunk)
+            if size > deployhooks.MAX_BODY:
+                return None
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+    def hook_too_large(kind: str, ip: str) -> JSONResponse:
+        access_log.record("failed", "hook", "", ip, f"{kind}: the body is larger than {deployhooks.MAX_BODY} bytes",
+                          status="refused")
+        return JSONResponse({"error": "The body of the call is too large"}, status_code=413)
+
     async def deploy_hook_call(request: Request):
         """A push told by GitHub, GitLab, Bitbucket or a CI: with the
         instance's secret, the repository pushed pulled if the instance (a
@@ -14745,9 +14766,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         server, role = request.path_params["server"], request.path_params["role"]
         instance = settings.instance(server, role) if role in ROLES else None
         hook = deployhooks.load(deploy_hooks_file).get(f"{server}/{role}") or {}
-        body = await request.body()
-        headers = {k.lower(): v for k, v in request.headers.items()}
         ip = request.client.host if request.client else ""
+        body = await hook_body(request)
+        if body is None:
+            return hook_too_large(f"deploy hook {server}/{role}", ip)
+        headers = {k.lower(): v for k, v in request.headers.items()}
         if instance is None or not deployhooks.verified(headers, body[:deployhooks.MAX_BODY], hook.get("secret", "")):
             access_log.record("failed", "hook", "", ip, f"deploy {server}/{role}")
             return JSONResponse({"error": "Unknown instance or wrong secret"}, status_code=403)
@@ -15012,8 +15035,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             secret = (record or {}).get("secret") or deployhooks.new_secret()
             async with github.Client(host, cred.token) as gh:
                 hooks = await gh.hooks(full)
+                # on the central panel's portal, shared by every machine it serves, only this machine's own address
+                # (base + its rid) is its webhook: the prefix is another machine's too (AD-018 slice 4)
                 mine = (next((h for h in hooks if h.get("id") == (record or {}).get("id")), None)
-                        or next((h for h in hooks if github_ours(h, rid, base)), None))
+                        or next((h for h in hooks if (str((h.get("config") or {}).get("url") or "") == url if central
+                                                      else github_ours(h, rid, base))), None))
                 if mine is not None:
                     await gh.change_hook(full, mine["id"], url, secret)
                     hook_id = mine["id"]
@@ -15096,15 +15122,19 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     # does; an instance with no public name onto the central panel's portal, which forwards each push here as it
     # came; switched off, back where they were. With the GitHub token the instances already have.
 
-    def github_forwarded(link: str) -> list[str]:
-        """The ids of the webhooks GitHub calls on the portal of the central panel of link (it forwards them here)."""
+    def github_forwarded(link: str) -> list[dict]:
+        """The webhooks GitHub calls on the portal of the central panel of link (it forwards them here): {rid, id},
+        the id GitHub gives it (its X-GitHub-Hook-ID, which the central panel checks); never a secret."""
         data = deployhooks.load(github_hooks_file)
-        return sorted(str(r["rid"]) for r in data.values()
-                      if isinstance(r, dict) and r.get("central") == link and r.get("id") and r.get("rid"))
+        return sorted(({"rid": str(r["rid"]), "id": r["id"]} for r in data.values()
+                       if isinstance(r, dict) and r.get("central") == link and r.get("id") and r.get("rid")),
+                      key=lambda h: h["rid"])
 
-    def github_hooks_moved(workspaces: list[str], on: bool, source: str) -> Job | None:
-        """The job that rewrites the webhooks of the instances of workspaces (their central panel changed); None
-        when none of their instances has the CI on nor a webhook OmniaCLI made."""
+    def github_hooks_moved(moved: dict[str, bool], source: str) -> Job | None:
+        """The job that rewrites the webhooks of the instances of the workspaces of moved ({workspace: served by a
+        central panel now}: their central panel changed); None when none of their instances has the CI on nor a
+        webhook OmniaCLI made."""
+        workspaces = sorted(moved)
         servers = {s for s in settings.servers if settings.workspace_of(s) in set(workspaces)}
         if not servers:
             return None
@@ -15117,10 +15147,15 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return None
 
         async def action(job):
-            job.log(f"The people of {', '.join(workspaces)} are served by a central panel now: the webhooks of "
-                    "their CI move onto the instances' own names, the same webhooks with the same secrets"
-                    if on else f"The people of {', '.join(workspaces)} are served here again: the webhooks of their "
-                    "CI move back to this machine's addresses, the same webhooks with the same secrets")
+            # each workspace with its own direction: one switch may take some and give others back
+            served = [w for w in workspaces if moved[w]]
+            back = [w for w in workspaces if not moved[w]]
+            if served:
+                job.log(f"The people of {', '.join(served)} are served by a central panel now: the webhooks of "
+                        "their CI move onto the instances' own names, the same webhooks with the same secrets")
+            if back:
+                job.log(f"The people of {', '.join(back)} are served here again: the webhooks of their CI move "
+                        "back to this machine's addresses, the same webhooks with the same secrets")
             urls = await github_urls_of(sorted(servers))
             if not urls:
                 job.log("No webhook of theirs on GitHub: nothing to rewrite")
@@ -15130,20 +15165,41 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return jobs.submit(f"GitHub webhooks of {', '.join(workspaces)}", [], source, action,
                            workspace=workspaces[0] if len(workspaces) == 1 else "")
 
-    # the webhooks the central panel forwards (its side): {rid: link}, read from the machines it serves
-    central_hook_links: dict[str, str] = {}
-    central_hook_read: dict[str, float] = {}
+    # the webhooks the central panel forwards (its side): {rid: (link, the id GitHub gives it)}, read from the
+    # machines it serves; {rid: when} of the ids asked and listed by none (refused at once for CENTRAL_HOOK_GAP);
+    # the ask of the machines shared by every call that waits for it, one at most each CENTRAL_HOOK_ASK seconds
+    central_hook_links: dict[str, tuple[str, object]] = {}
+    central_hook_absent: dict[str, float] = {}
+    central_hook_read: dict = {}
+    # the tests' way in
+    app.state.central_hook_links = central_hook_links
+    # the asks of the machines: wanted (an ask some call waits for), started, done; the calls wait on the condition
+    central_hook_count = {"wanted": 0, "started": 0, "done": 0}
+    central_hook_done = asyncio.Condition()
 
-    async def central_hook_link(rid: str) -> str:
-        """The link of the machine whose webhook rid GitHub calls on this panel's portal, "" for none: the machines
-        whose people this panel serves are asked again at most once in CENTRAL_HOOK_GAP seconds."""
-        found = central_hook_links.get(rid, "")
-        if found and workspace_homes.on(found):
-            return found
-        if time.monotonic() - central_hook_read.get("at", -CENTRAL_HOOK_GAP) < CENTRAL_HOOK_GAP:
-            return ""
+    async def central_hook_asks() -> None:
+        """The asks the calls wait for, one after the other, one at most each CENTRAL_HOOK_ASK seconds: every call
+        that arrived before an ask started is answered by it."""
+        while central_hook_count["wanted"] > central_hook_count["started"]:
+            wait = CENTRAL_HOOK_ASK - (time.monotonic() - central_hook_read.get("at", -CENTRAL_HOOK_ASK))
+            if wait > 0:
+                await asyncio.sleep(wait)
+            central_hook_count["started"] += 1
+            number = central_hook_count["started"]
+            try:
+                await central_hook_ask()
+            except Exception:  # noqa: BLE001 - a machine's odd answer: the calls are answered «none», and it is logged
+                _logger.exception("the webhooks of the machines served here could not be read")
+            central_hook_count["done"] = number
+            async with central_hook_done:
+                central_hook_done.notify_all()
+
+    async def central_hook_ask() -> None:
+        """The webhooks each machine served here says this panel's portal forwards to it (GET /api/identity/v1/home):
+        an id two machines list is forwarded to neither (one of them would get the other's pushes), and said."""
         central_hook_read["at"] = time.monotonic()
-        fresh: dict[str, str] = {}
+        fresh: dict[str, tuple[str, object]] = {}
+        twice: dict[str, list[str]] = {}
         for name in sorted(workspace_homes.all()):
             link = settings.link_targets.get(name)
             if link is None:
@@ -15155,14 +15211,52 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 hooks = resp.json().get("hooks") if resp.status_code == 200 else None
             except (httpx.HTTPError, ValueError, AttributeError):
                 hooks = None
-            if hooks is None:
+            if not isinstance(hooks, list):
                 # not answering: what it said before is kept
-                fresh.update({r: n for r, n in central_hook_links.items() if n == name})
-                continue
-            fresh.update({str(r): name for r in hooks if isinstance(r, str) and _GITHUB_RID.fullmatch(r)})
+                listed = [(r, entry) for r, entry in central_hook_links.items() if entry[0] == name]
+            else:
+                listed = [(str(h["rid"]), (name, h.get("id"))) for h in hooks
+                          if isinstance(h, dict) and isinstance(h.get("rid"), str) and _GITHUB_RID.fullmatch(h["rid"])]
+            for rid, entry in listed:
+                if rid in fresh and fresh[rid][0] != name:
+                    twice.setdefault(rid, [fresh[rid][0]]).append(name)
+                fresh[rid] = entry
+        for rid, names in twice.items():
+            fresh.pop(rid, None)
+            access_log.record("failed", "hook", "", "", f"GitHub webhook {rid[:6]}… listed by {' and '.join(names)}: "
+                                                        "forwarded to neither"[:300], status="refused")
         central_hook_links.clear()
         central_hook_links.update(fresh)
-        return central_hook_links.get(rid, "")
+
+    async def central_hook_link(rid: str) -> tuple[str, object]:
+        """(link, the id GitHub gives it) of the machine whose webhook rid GitHub calls on this panel's portal, ("",
+        None) for none. An id not known yet asks the machines (the calls waiting then share one ask, one at most each
+        CENTRAL_HOOK_ASK s: a webhook made a moment ago is found at its first push); one they list not is refused at
+        once for CENTRAL_HOOK_GAP s."""
+        found = central_hook_links.get(rid)
+        if found and workspace_homes.on(found[0]):
+            return found
+        now = time.monotonic()
+        if now - central_hook_absent.get(rid, -CENTRAL_HOOK_GAP) < CENTRAL_HOOK_GAP:
+            return "", None
+        # an ask that starts after this call: those that started before may have read before its webhook was made
+        target = central_hook_count["started"] + 1
+        central_hook_count["wanted"] = max(central_hook_count["wanted"], target)
+        worker = central_hook_read.get("worker")
+        if worker is None or worker.done():
+            central_hook_read["worker"] = asyncio.get_running_loop().create_task(central_hook_asks())
+        with contextlib.suppress(asyncio.TimeoutError):
+            async with central_hook_done:
+                await asyncio.wait_for(central_hook_done.wait_for(lambda: central_hook_count["done"] >= target),
+                                       CENTRAL_HOOK_ASK + LIST_TIMEOUT * (len(workspace_homes.all()) + 1))
+        found = central_hook_links.get(rid)
+        if found and workspace_homes.on(found[0]):
+            central_hook_absent.pop(rid, None)
+            return found
+        if len(central_hook_absent) >= 4096:
+            central_hook_absent.clear()
+        central_hook_absent[rid] = time.monotonic()
+        return "", None
 
     async def central_hook_forward(request: Request, rid: str, body: bytes, ip: str):
         """A push GitHub told this panel's portal for the webhook of an instance with no public name of a machine
@@ -15171,11 +15265,18 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         signature: this panel has no secret of it."""
         if not _GITHUB_RID.fullmatch(rid):
             return None
-        name = await central_hook_link(rid)
+        name, hook_id = await central_hook_link(rid)
         link = settings.link_targets.get(name) if name else None
         if link is None:
             return None
-        keep = {k: v for k, v in request.headers.items() if k.lower() in CENTRAL_HOOK_HEADERS}
+        said = request.headers.get("x-github-hook-id")
+        if said is not None and str(said).strip() != str(hook_id):
+            # GitHub says which of its webhooks calls: another one than the machine's (a machine that lists the id of
+            # another machine's webhook would get its pushes)
+            access_log.record("failed", "hook", "", ip, f"GitHub webhook {rid[:6]}… for {name}: not forwarded, "
+                                                        "GitHub's hook id is not the machine's"[:300], status="refused")
+            return JSONResponse({"error": "Unknown webhook or wrong signature"}, status_code=403)
+        keep ={k: v for k, v in request.headers.items() if k.lower() in CENTRAL_HOOK_HEADERS}
         try:
             resp = await link_clients.client(link).post(github.HOOK_PATH + rid, content=body, headers=keep,
                                                         timeout=LIST_TIMEOUT * 6)
@@ -15264,9 +15365,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         data = await asyncio.to_thread(deployhooks.load, github_hooks_file)
         key, record = next(((k, r) for k, r in data.items() if isinstance(r, dict) and r.get("rid") == rid
                             and r.get("secret")), (None, None))
-        body = await request.body()
-        headers = {k.lower(): v for k, v in request.headers.items()}
         ip = request.client.host if request.client else ""
+        body = await hook_body(request)
+        if body is None:
+            # neither read whole here nor forwarded to a machine
+            return hook_too_large(f"GitHub webhook {rid[:6]}…", ip)
+        headers = {k.lower(): v for k, v in request.headers.items()}
         if record is None and workspace_homes.all():
             # a webhook of a machine whose people this panel serves, of an instance with no public name (AD-018 slice 4)
             forwarded = await central_hook_forward(request, rid, body, ip)
@@ -16391,8 +16495,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                           (f"the people of {', '.join(served) or 'no workspace'} served by the central panel of this "
                            f"link (AD-018 slice 2)" + (f" for {me.on_behalf}" if me.on_behalf else ""))[:300])
         after = {w: (e.get("link"), e.get("portal") or "") for w, e in central_homes.all().items()}
-        moved = sorted(w for w in set(before) | set(after) if before.get(w) != after.get(w))
-        job = github_hooks_moved(moved, on, f"link: {me.name}" + (f" for {me.on_behalf}" if me.on_behalf else ""))
+        moved = {w: w in after for w in set(before) | set(after) if before.get(w) != after.get(w)}
+        job = github_hooks_moved(moved, f"link: {me.name}" + (f" for {me.on_behalf}" if me.on_behalf else ""))
         return {"workspaces": served, **({"hooks_job": job.id} if job is not None else {})}
 
     # the steps a password opened for the central panel's login of a person (POST /api/identity/v1/login): {digest of
@@ -16718,7 +16822,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                            f"this panel no more the home of the workspaces of {name}"
                            + (f" (its machine not told: {why})" if told is None else ""))[:300])
         # the webhooks it forwards are read again at the next call (AD-018 slice 4)
-        central_hook_read.clear()
+        central_hook_read.pop("at", None)
+        central_hook_absent.clear()
         return 200, {"ok": True, "link": name, "home": home_said(name),
                      # the machine's job that rewrites the webhooks of the CI of those workspaces (AD-018 slice 4)
                      **({"hooks_job": str(told["hooks_job"])[:64]} if isinstance(told, dict) and told.get("hooks_job")

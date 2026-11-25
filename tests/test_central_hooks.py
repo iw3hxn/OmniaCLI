@@ -9,13 +9,14 @@ to the machine as it came (body and signature) and says nothing of a webhook it 
 depends on the central panel. Switched off, the webhook goes back. No secret in the pages, the answers or the logs."""
 
 import asyncio
+import dataclasses
 import json
 from urllib.parse import urlsplit
 
 import httpx
 import pytest
 
-from omniacli import config, github, jobs as jobs_module, ops
+from omniacli import config, deployhooks, github, jobs as jobs_module, ops, remotehome
 from omniacli.jobs import FINISHED
 
 from .conftest import sh
@@ -201,3 +202,118 @@ async def test_the_forwarded_hooks_are_said_to_the_central_panels_link_only(lab)
             resp = await m.post("/api/identity/v1/home", headers=link,
                                 json={"workspaces": ["acme"], "on": True, "portal": bad})
             assert resp.status_code == 400, bad
+
+
+# --- the review of 5f417b1 -------------------------------------------------------------------------------------------
+
+async def ci_switched(home, enabled: bool) -> None:
+    resp = await home.on_machine.post("/api/servers/srv/test/deploy-hook", headers=basic("staff"),
+                                      json={"enabled": enabled})
+    assert resp.status_code == 200, resp.text
+    assert (await machine_job(home, resp.json()["github_job"])).status == "success"
+
+
+async def test_another_machines_webhook_on_the_central_portal_is_never_taken(lab):
+    """The central panel's portal is every served machine's: a webhook there of another machine (B's, for the same
+    repository) is not this machine's because its address starts the same. It keeps its address and its secret, this
+    machine makes its own, and this machine's CI off takes away its own only."""
+    home = lab
+    fake = home.ci["fake"]
+    theirs = {"id": 7, "name": "web", "active": True, "events": ["push"],
+              "config": {"url": "https://central.example.com/hooks/github/BBBBBBBBBBBB", "secret": "b-secret",
+                         "content_type": "json"}}
+    fake.hooks["acme/addons"] = {7: json.loads(json.dumps(theirs))}
+    assert (await switch(home, True)).status_code == 200
+    resp = await home.on_machine.post("/api/credentials/github/save", headers=basic("staff"),
+                                      json={"kind": "server", "name": "srv", "label": "Acme", "token": TOKEN})
+    assert resp.status_code == 200, resp.text
+    await ci_switched(home, True)
+    hooks = fake.hooks["acme/addons"]
+    assert hooks[7] == theirs, "B's webhook was changed"
+    (own,) = [h for k, h in hooks.items() if k != 7]
+    assert own["config"]["url"].startswith("https://central.example.com/hooks/github/")
+    assert own["config"]["url"] != theirs["config"]["url"]
+    await ci_switched(home, False)
+    assert fake.hooks["acme/addons"] == {7: theirs}
+
+
+async def test_a_webhook_made_just_after_an_ask_is_found_at_its_first_push(lab):
+    """An unknown id asks the machines; a webhook made a moment later (its CI switched on after the switch) is found
+    at its first push: an id nobody listed is no 30 s refusal of every other id."""
+    home = lab
+    assert (await switch(home, True)).status_code == 200
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=home.app), base_url="https://central.example.com") as gh:
+        assert (await gh.post("/hooks/github/randomrandom", content=b"{}")).status_code == 403
+        made = await ci_on(home)
+        assert made["url"].startswith("https://central.example.com/hooks/github/")
+        rid = made["url"].rsplit("/", 1)[1]
+        raw, headers = push(made["secret"], "a" * 40)
+        resp = await gh.post(f"/hooks/github/{rid}", content=raw, headers=headers)
+        assert resp.status_code == 202, resp.text
+        # the same unknown id again at once: refused without asking the machines
+        asked = len(home.machine.asked)
+        assert (await gh.post("/hooks/github/randomrandom", content=b"{}")).status_code == 403
+        assert len(home.machine.asked) == asked
+
+
+async def test_an_id_two_machines_list_goes_to_neither_and_githubs_hook_id_is_checked(lab):
+    home = lab
+    await ci_on(home)
+    await machine_job(home, (await switch(home, True)).json()["hooks_job"])
+    made = hook_of(home)
+    rid = made["url"].rsplit("/", 1)[1]
+    raw, headers = push(made["secret"], "b" * 40)
+
+    def posts() -> int:
+        return len([a for a in home.machine.asked if a[0] == "POST" and a[1].startswith("/hooks/")])
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=home.app), base_url="https://central.example.com") as gh:
+        # GitHub says which of its webhooks calls: another one than the machine's is not forwarded
+        before = posts()
+        resp = await gh.post(f"/hooks/github/{rid}", content=raw, headers={**headers, "X-GitHub-Hook-ID": "999"})
+        assert resp.status_code == 403 and posts() == before
+        resp = await gh.post(f"/hooks/github/{rid}", content=raw,
+                             headers={**headers, "X-GitHub-Hook-ID": str(made["id"])})
+        assert resp.status_code == 202, resp.text
+        # a second machine served here lists the same id (the same machine behind it, for the test): asked again,
+        # the id goes to neither, and it is said
+        home.central.link_targets["lab9"] = dataclasses.replace(home.central.link_targets["lab4"], name="lab9")
+        remotehome.Homes(home.central.links_file.parent / remotehome.HOMES_FILE).put(
+            "lab9", {"at": "now", "by": "test", "workspaces": ["gamma"]})
+        home.app.state.central_hook_links.clear()
+        before = posts()
+        resp = await gh.post(f"/hooks/github/{rid}", content=raw, headers=headers)
+        assert resp.status_code == 403 and posts() == before
+    assert any("listed by lab4 and lab9" in e.get("detail", "") for e in home.app.state.access_log.recent())
+
+
+async def test_each_workspace_with_its_own_direction_in_the_job(lab):
+    home = lab
+    await ci_on(home)
+    link = {"Authorization": f"Bearer {CENTRAL_LINK_TOKEN}", "Accept": "application/json"}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=home.machine_app), base_url="http://lab4.test") as m:
+        resp = await m.post("/api/identity/v1/home", headers=link, json={"workspaces": ["beta"], "on": True,
+                                                                         "portal": "https://central.example.com"})
+        assert resp.status_code == 200, resp.text
+        # acme taken, beta given back, in one call
+        resp = await m.post("/api/identity/v1/home", headers=link, json={"workspaces": ["acme"], "on": True,
+                                                                         "portal": "https://central.example.com"})
+        job = await machine_job(home, resp.json()["hooks_job"])
+    lines = " | ".join(job.lines)
+    assert "The people of acme are served by a central panel now" in lines, lines
+    assert "The people of beta are served here again" in lines, lines
+    assert "acme, beta" not in lines
+
+
+async def test_a_body_larger_than_a_webhook_may_be_is_refused_before_it_is_read(lab):
+    home = lab
+    await ci_on(home)
+    await machine_job(home, (await switch(home, True)).json()["hooks_job"])
+    rid = hook_of(home)["url"].rsplit("/", 1)[1]
+    big = b"x" * (deployhooks.MAX_BODY + 1)
+    for app in (home.app, home.machine_app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://x.example.com") as gh:
+            posted = len([a for a in home.machine.asked if a[0] == "POST"])
+            resp = await gh.post(f"/hooks/github/{rid}", content=big, headers={"X-GitHub-Event": "push"})
+            assert resp.status_code == 413
+            assert len([a for a in home.machine.asked if a[0] == "POST"]) == posted
+            assert (await gh.post("/.omniacli/hooks/deploy/srv/test", content=big)).status_code == 413
