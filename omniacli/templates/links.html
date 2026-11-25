@@ -40,7 +40,7 @@
     {% set s = ssh.get(link.name) %}
     {% set tunnel = s.status.state if s and s.status else "" %}
     <tbody {{ item(link.name ~ " " ~ link.url ~ " " ~ (link.ssh.user ~ "@" ~ link.ssh.host if link.ssh else "")) }}>
-    <tr data-link="{{ link.name }}" data-url="{{ link.url }}" data-ca="{{ link.ca_file }}" data-tunnel="{{ tunnel }}" data-pages="{{ link.pages }}"
+    <tr data-link="{{ link.name }}" data-url="{{ link.url }}" data-ca="{{ link.ca_file }}" data-tunnel="{{ tunnel }}" data-pages="{{ link.pages }}" data-agent="{{ 'agent' if link.name in (agent_links or []) else '' }}"
         {% if link.ssh %}data-ssh-host="{{ link.ssh.host }}" data-ssh-port="{{ link.ssh.port }}" data-ssh-user="{{ link.ssh.user }}"
         data-ssh-key="{{ link.ssh.host_key }}" data-fingerprint="{{ s.fingerprint }}"{% endif %}>
       <td><strong><a href="{{ prefix }}/links/{{ link.name }}/">{{ link.name }}</a></strong></td>
@@ -139,6 +139,11 @@
       <label class="ld-switch" title="{{ _('On: this panel writes the pages of the other instance with its own version, from the data the other instance gives; a fix of a page arrives without updating it. Off: the other instance writes its own pages, as before.') }}">
         <input type="checkbox" id="ld-pages" checked> {{ _("Pages written by this panel") }}</label>
       <span class="muted field-help">{{ _("Off, the other instance writes its own pages again: the way back, without a release.") }}</span>
+      {# a machine that said panel: agent (AD-017 §17.3): remembered here, whatever it says afterwards #}
+      <div id="ld-agent" hidden>
+        <p class="muted">{{ _("This machine said it is managed from this panel (panel: agent): its pages are written here and only its data passes, whatever it says afterwards. A new token keeps it so.") }}</p>
+        <button type="button" class="danger" id="ld-forget-agent" title="{{ _('Takes the word of the machine on its panel again: for a machine put back to panel: full on purpose. It goes in the access log.') }}">{{ _("Forget the agent mode…") }}</button>
+      </div>
     </details>
     <p class="error" id="ld-error" role="alert"></p>
     <div class="actions">
@@ -158,6 +163,7 @@
     up: {{ _("Answers") | tojson }}, down: {{ _("Does not answer") | tojson }}, starting: {{ _("Tunnel starting") | tojson }},
     trying: {{ _("Trying…") | tojson }}, as: {{ _("OmniaCLI {version} · there you are {role}") | tojson }},
     roles: {admin: {{ _("admin") | tojson }}, developer: {{ _("developer") | tojson }}, user: {{ _("user") | tojson }}},
+    forgetQ: {{ _("Forget that {name} is managed from this panel? Do it only if its panel was put back to full on purpose: a machine that is not what it says would show its own pages here again.") | tojson }},
     deleteQ: {{ _("Delete link {name}? Its servers leave the Dashboard and its SSH tunnel closes; on the other instance its token stays valid until you revoke it there.") | tojson }},
     error: {{ _("Error {status}") | tojson }},
   };
@@ -225,7 +231,8 @@
     $("ld-host").value = d.sshHost || ""; $("ld-port").value = d.sshPort || 22; $("ld-user").value = d.sshUser || "omniacli-link";
     $("ld-host-key").value = d.sshKey || ""; $("ld-fingerprint").textContent = d.fingerprint || T.notFetched;
     $("ld-ca").value = d.ca || ""; $("ld-pages").checked = d.pages !== "machine";
-    $("ld-advanced").open = !!d.ca || d.pages === "machine";
+    $("ld-advanced").open = !!d.ca || d.pages === "machine" || d.agent === "agent";
+    $("ld-agent").hidden = d.agent !== "agent";
     let shown = false;
     for (const box of dialog.querySelectorAll("[data-server-side]")) { box.hidden = box.dataset.serverSide !== editing; shown = shown || !box.hidden; }
     $("ld-server-new").hidden = shown;
@@ -237,6 +244,10 @@
   }
   for (const kind of ["input", "change"]) $("ld-form").addEventListener(kind, changed);
   $("link-new").onclick = () => openDialog(null);
+  $("ld-forget-agent").onclick = async () => {
+    if (!editing || !await omniaAsk(T.forgetQ.replace("{name}", editing), $("ld-forget-agent"), {danger: true})) return;
+    if (await post(`${encodeURIComponent(editing)}/forget-agent`, {}, $("ld-error"))) location.reload();
+  };
   $("ld-cancel").onclick = () => dialog.close();
   $("ld-fetch").onclick = async () => {
     const print = $("ld-fingerprint");

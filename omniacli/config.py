@@ -21,7 +21,7 @@ from urllib.parse import urlsplit
 import yaml
 
 from .auth import ROLES as ACCESS_ROLES
-from .auth import WORKSPACE_ROLE
+from .auth import WORKSPACE_ROLE, password_set
 from . import brand, capabilities, listgroups
 
 ROLES = ("production", "test")
@@ -1795,8 +1795,9 @@ def parse_panel(value) -> str:
 def local_admins(users: dict, roles: dict, invited: set[str] = frozenset()) -> list[str]:
     """The admins of the machine who log in on it with a password of their own: of users ({name: hash}), role
     admin in roles (admin when missing, as Settings.user_role), not a person invited who has not set its password
-    yet (invited)."""
-    return sorted(n for n in users if roles.get(n, "admin") == "admin" and n not in invited)
+    yet (invited), nor one whose password is unknown_password's (its invitation gone, kept INVITATION_KEPT_DAYS)."""
+    return sorted(n for n in users if roles.get(n, "admin") == "admin" and n not in invited
+                  and password_set(users[n]))
 
 
 def invited_names(path: Path | None) -> set[str]:
@@ -1820,9 +1821,10 @@ def check_panel(settings: "Settings") -> None:
         return
     try:
         invited = invited_names(invitations_file_of(settings.users_file)) if settings.users_file else set()
-    except ConfigError:
-        # unreadable: the panel reads none either (app.py), so none is pending
-        invited = set()
+    except ConfigError as exc:
+        # unreadable: who is invited without a password is not known, and none is taken for an admin of its own
+        raise ConfigError(f"panel: agent needs to know who is invited without a password yet, and {exc}: "
+                          "repair or remove the invitations file, or leave panel: full") from None
     if not local_admins(settings.users, settings.user_roles, invited):
         # its reserve would have nobody to open it
         raise ConfigError("panel: agent needs an admin of this machine who logs in on it with a password (its "

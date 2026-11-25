@@ -15,12 +15,15 @@ import yaml
 from omniacli import app as app_module
 from omniacli import centralpages, cli
 from omniacli.app import create_app
-from omniacli.auth import hash_token
+from omniacli import auth
+from omniacli.auth import hash_token, unknown_password, verify_password
 from omniacli.config import ConfigError, Invitation, invitations_file_of, parse_settings, save_invitations
 
 from .conftest import LINK_TOKEN, USER_HASH, BasicAsSession
 from .test_app import AUTH
+from .conftest import PASSWORD
 from .test_central_pages import JSON, PAGE, central, link_pages  # noqa: F401 - the central fixture
+from .test_delegated_scope import HEADERS_MCP, ORIGIN, as_user, pair  # noqa: F401 - the pair fixture
 
 N = centralpages.CENTRAL_AGENT_API
 ADMIN_TOKEN = "an-admin-token-of-the-machine"
@@ -114,6 +117,45 @@ async def test_the_reserve_says_whom_it_is_managed_from(tmp_path):
                 assert resp.status_code == 200 and 'id="managed-from"' not in resp.text
             info = (await c.get("/api/info", headers={"Authorization": AUTH, "Accept": "application/json"})).json()
             assert info["panel"] == panel and info["agent_api"] == centralpages.AGENT_API
+
+
+def test_an_admin_without_a_password_of_its_own_is_none(tmp_path):
+    """An admin whose invitation is gone (kept INVITATION_KEPT_DAYS) still has the password nobody knows: not an
+    admin of its own; an invitations file that cannot be read refuses agent (who is invited is not known)."""
+    users = {"dev": {"password": USER_HASH, "role": "developer"}}
+    data = machine_config(tmp_path, "agent", users, {"vecchio": {"password": unknown_password(), "role": "admin"}})
+    with pytest.raises(ConfigError, match="panel: agent needs an admin of this machine"):
+        parse_settings(data, base_dir=tmp_path / "conf")
+    assert not auth.password_set(unknown_password()) and auth.password_set(USER_HASH)
+    assert not verify_password("", unknown_password())
+    data = machine_config(tmp_path, "agent", {"admin": USER_HASH})
+    invitations_file_of(tmp_path / "conf" / "users.yaml").write_text("invitations: [\n")
+    with pytest.raises(ConfigError, match="panel: agent needs to know who is invited without a password yet"):
+        parse_settings(data, base_dir=tmp_path / "conf")
+    assert parse_settings({**data, "panel": "full"}, base_dir=tmp_path / "conf").panel == "full"
+
+
+async def test_an_admin_invited_long_ago_does_not_keep_the_reserve(tmp_path):
+    """An admin invited 31 days ago, its invitation pruned, and a real one: deleting the real one through the link
+    is refused (in full mode as before)."""
+    data = machine_config(tmp_path, "agent", {"viewer": {"password": USER_HASH, "role": "user"}},
+                          {"carla": {"password": USER_HASH, "role": "admin"}})
+    app = create_app(parse_settings(data, base_dir=tmp_path / "conf"))
+    boss = {"Authorization": f"Bearer {LINK_TOKEN}", "X-OmniaCLI-User": "carlo", "Accept": "application/json"}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://machine.test") as c:
+        made = await c.post("/api/access/users/save", headers=boss,
+                            json={"name": "vecchio", "role": "admin", "new": True, "invite": True})
+        assert made.status_code == 200, made.text
+        # 31 days later: the invitation is pruned when the file is written again
+        path = invitations_file_of(tmp_path / "conf" / "users.yaml")
+        old = time.time() - 31 * 86400
+        save_invitations(path, [Invitation("vecchio", hash_token("t"), old - 3600, old, "carlo")], time.time())
+        assert "vecchio" not in path.read_text()
+    # OmniaCLI started again: nothing says vecchio was invited but its password
+    app = create_app(parse_settings(data, base_dir=tmp_path / "conf"))
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://machine.test") as c:
+        resp = await c.post("/api/access/users/delete", headers=boss, json={"name": "carla"})
+        assert resp.status_code == 400 and "it keeps at least one admin" in resp.json()["error"]
 
 
 async def test_the_last_local_admin_is_never_taken_away(tmp_path):
@@ -243,7 +285,8 @@ async def test_pages_machine_does_not_lift_it(central):
 
 async def test_the_central_keeps_the_agent_mode_once_said(central):
     """The machine's word is kept on disk (link-panels.json, 600): one that says full afterwards (compromised) does
-    not get its HTML through; an admin here saving the link takes its word again; deleting it forgets it."""
+    not get its HTML through, not after a new token either (the answer to an incident); a link saved to another
+    machine, «Forget the agent mode» (an admin's, in the access log) and deleting it forget it."""
     agent(central)
     await central.get("/links/cliente/disks", headers=PAGE)
     folder = central.app.state.settings.links_file.parent
@@ -255,18 +298,98 @@ async def test_the_central_keeps_the_agent_mode_once_said(central):
     assert resp.status_code == 502 and 'data-why="ahead"' in resp.text and "/disks" not in central.machine.asked
     # a panel started again reads it
     assert centralpages.load_panels(kept) == {"cliente"}
-    # saved by an admin here: the machine's word again (full: its page with the line, as before)
+    # a new token, a CA: the same machine, still agent (two saves do not lift it, nor pages: machine after them)
     origin = {**JSON, "Origin": "http://central.test"}
-    assert (await central.post("/api/links/save", headers=origin,
-                               json={"name": "cliente", "url": "http://customer.test"})).status_code == 200
+    for change in ({"token": LINK_TOKEN}, {"ca_file": ""}):
+        assert (await central.post("/api/links/save", headers=origin, json={
+            "name": "cliente", "url": "http://customer.test", **change})).status_code == 200
+    assert json.loads(kept.read_text()) == {"cliente": "agent"}
+    resp = await central.get("/links/cliente/disks", headers=PAGE)
+    assert resp.status_code == 502 and 'data-why="ahead"' in resp.text
+    assert (await central.post("/api/links/save", headers=origin, json={
+        "name": "cliente", "url": "http://customer.test", "pages": "machine"})).status_code == 400
+    # the Links page says it, with the action that forgets it (its confirmation in the page, no browser dialog)
+    page = (await central.get("/links", headers=PAGE)).text
+    assert 'data-link="cliente"' in page and 'data-agent="agent"' in page and 'id="ld-forget-agent"' in page
+    assert "omniaAsk(T.forgetQ" in page and "confirm(" not in page
+    # forgotten on purpose by an admin here: the machine's word again (full: its page with the line, as before)
+    viewer = {"Authorization": "Basic " + __import__("base64").b64encode(f"viewer:{PASSWORD}".encode()).decode(),
+              "Accept": "application/json", "Origin": "http://central.test"}
+    assert (await central.post("/api/links/cliente/forget-agent", headers=viewer)).status_code == 403
+    assert (await central.post("/api/links/cliente/forget-agent", headers=origin)).status_code == 200
+    assert (await central.post("/api/links/cliente/forget-agent", headers=origin)).status_code == 400
+    log = (central.app.state.settings.logs_dir / "access.jsonl").read_text()
+    assert "agent mode of the link cliente forgotten" in log
     resp = await central.get("/links/cliente/disks", headers=PAGE)
     assert resp.status_code == 200 and "the panel is older than the machine" in resp.text
     assert json.loads(kept.read_text()) == {}
+    # said again, then the link saved to another machine: forgotten
+    agent(central)
+    await central.get("/links/cliente/disks", headers=PAGE)
+    assert json.loads(kept.read_text()) == {"cliente": "agent"}
+    assert (await central.post("/api/links/save", headers=origin, json={
+        "name": "cliente", "url": "http://other.test"})).status_code == 200
+    assert json.loads(kept.read_text()) == {}
+    assert (await central.post("/api/links/save", headers=origin, json={
+        "name": "cliente", "url": "http://customer.test"})).status_code == 200
     # said again, and the link deleted: forgotten
     agent(central)
     await central.get("/links/cliente/disks", headers=PAGE)
     assert (await central.post("/api/links/delete", headers=origin, json={"name": "cliente"})).status_code == 200
     assert json.loads(kept.read_text()) == {}
+
+
+async def test_the_first_page_after_a_new_link_is_already_checked(central):
+    """A link saved to another machine (or new) whose machine says agent and is newer than this panel, or has a
+    plugin apart: its very first page is this panel's refusal, never its HTML with the line (the mode is read before
+    the page is let through)."""
+    for info, why in (({"agent_api": N + 1, "plugins": {}}, "ahead"), ({"agent_api": N, "plugins": {"acme": "1.0"}},
+                                                                       "plugins")):
+        central.app.state.link_agent_panels.clear()
+        central.app.state.link_agents.clear()
+        central.machine.asgi.app.state.settings.panel = "agent"
+        central.machine.info = {**info, "panel": "agent"}
+        resp = await central.get("/links/cliente/disks", headers=PAGE)
+        assert resp.status_code == 502 and f'data-why="{why}"' in resp.text, why
+        assert "data-machine-page-line" not in resp.text, why
+
+
+async def test_a_server_placed_on_an_agent_host_passes_data_only(pair, monkeypatch):
+    """AD-014 and §17.3: a server placed on a machine in agent mode: through /placed/<server>/ only data passes (with
+    nosniff); the host's HTML or SVG is refused (this panel's page to the machine's people, the provider's words to
+    a customer), and its MCP answers only as MCP's (JSON, events)."""
+    pair.place()
+    pair.app.state.link_agent_panels.add("far")
+    sent = pair.transport.handle_async_request
+    answers = {}
+
+    async def host(request):
+        if request.url.path in answers:
+            kind, body = answers[request.url.path]
+            return httpx.Response(200, headers={"content-type": kind}, stream=httpx.ByteStream(body))
+        return await sent(request)
+    monkeypatch.setattr(pair.transport, "handle_async_request", host)
+    admin = {"Authorization": AUTH, "Accept": "text/html", "Origin": ORIGIN}
+    data = await pair.get("/placed/srv/api/servers/srv/production/summary", headers={**admin, "Accept": "application/json"})
+    assert data.status_code == 200 and data.headers["x-content-type-options"] == "nosniff"
+    page = await pair.get("/placed/srv/servers/srv", headers=admin)
+    assert page.status_code == 502 and 'data-why="placed"' in page.text and "srv runs on far" in page.text
+    for kind, body in (("text/html", b"<html><body><script>HOST-HTML</script></body></html>"),
+                       ("image/svg+xml", b"<svg><script>HOST-SVG</script></svg>"),
+                       ("application/xhtml+xml", b"<html><script>HOST-XHTML</script></html>"), ("", b"HOST-NO-TYPE")):
+        answers["/api/servers/srv/production/summary"] = (kind, body)
+        resp = await pair.get("/placed/srv/api/servers/srv/production/summary", headers=admin)
+        assert resp.status_code == 502 and b"HOST-" not in resp.content, kind
+        # a customer of the workspace: the provider's words, no machine's name
+        resp = await pair.get("/placed/srv/api/servers/srv/production/summary",
+                              headers={**as_user("mario"), "Accept": "text/html"})
+        assert resp.status_code == 502 and b"HOST-" not in resp.content and "far" not in resp.text, kind
+    # MCP through the home: the host's answer only as MCP's
+    answers["/mcp"] = ("text/html", b"<html><script>HOST-MCP</script></html>")
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                       "params": {"name": "server_status", "arguments": {"server_name": "srv"}}})
+    resp = await pair.post("/mcp", headers={**HEADERS_MCP, **pair.tokens["as-admin"]}, content=body)
+    assert b"HOST-MCP" not in resp.content and "text/html" not in resp.headers.get("content-type", "")
 
 
 def test_the_panels_file_is_purged():

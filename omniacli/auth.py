@@ -41,10 +41,22 @@ def verify_password(password: str, encoded: str) -> bool:
     return secrets.compare_digest(digest.hex(), expected)
 
 
+# the mark of the password of a user who has none yet (unknown_password): no password verifies with it
+UNSET = "unset"
+
+
 def unknown_password() -> str:
-    """The hash of a password nobody knows: an invited user's until the
-    person sets its own from the invitation's link (no login before)."""
-    return hash_password(secrets.token_urlsafe(32))
+    """The password of a user who has none yet: an invited user's until the
+    person sets its own from the invitation's link (no login before), a
+    person of a workspace made by its single sign-on. Marked, so that it is
+    known for one (password_set) also once its invitation is gone."""
+    return f"{UNSET}${secrets.token_hex(32)}"
+
+
+def password_set(encoded: str) -> bool:
+    """Whether encoded is the hash of a password someone set (not unknown_password's). A user invited before
+    AD-017 slice 6 has a hash of a random password instead: known only by its invitation, while it is kept."""
+    return bool(encoded) and not encoded.startswith(f"{UNSET}$")
 
 
 TOKEN_ALGORITHM = "sha256"

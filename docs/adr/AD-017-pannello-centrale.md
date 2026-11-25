@@ -642,8 +642,8 @@ Per ogni fetta: il rilascio, la prova su lab3/lab4, come si annulla, la stima.
      sono i collegamenti di ruolo admin con cui la macchina è raggiunta (`auth.links` e il file degli utenti), cioè
      il nome che il centrale ha dato al suo token (`omniacli new-link-token <nome>`).
    - **L'admin locale** (`config.local_admins`): un utente della configurazione principale o del file degli utenti,
-     di ruolo admin, che non ha un invito non usato (chi è invitato non ha ancora una password sua). Una persona di
-     un workspace (`role: workspace`) non lo è. Il secondo fattore non è chiesto: vedi «Dove si discosta».
+     di ruolo admin, che non ha un invito non usato (chi è invitato non ha ancora una password sua) e che ha una
+     password sua (`auth.password_set`). Una persona di un workspace (`role: workspace`) non lo è. Il secondo fattore non è chiesto: vedi «Dove si discosta».
    - **Il rifiuto del passaggio.** `parse_settings` chiama `check_panel` dopo aver letto il file degli utenti: con
      `panel: agent` e nessun admin locale è un `ConfigError` con le parole («panel: agent needs an admin of this
      machine who logs in on it with a password… add one first… or leave panel: full»). Lo dicono `omniacli
@@ -666,8 +666,12 @@ Per ogni fetta: il rilascio, la prova su lab3/lab4, come si annulla, la stima.
    - **Il controllo lo fa il centrale, e la parola resta.** `centralpages.agent_of` legge `panel`; appena una
      macchina dice `agent` il centrale lo scrive in `link-panels.json` (accanto ai collegamenti, 600, nel purge) e
      lo tiene: una macchina compromessa che poi dice `full` non lo toglie. Lo dimentica solo un amministratore del
-     centrale: salvando il collegamento (la parola della macchina vale di nuovo, una volta) o cancellandolo; con un
-     cambio di nome il ricordo segue il collegamento. Per un collegamento `pages: machine` il centrale legge
+     centrale: salvando il collegamento verso un'altra macchina (un altro indirizzo, un altro host o porta SSH),
+     cancellandolo, o con «Dimentica la modalità agent…» (Modifica… › Avanzate, conferma dentro la pagina,
+     `POST /api/links/<nome>/forget-agent`, nel registro degli accessi); con un cambio di nome il ricordo segue il
+     collegamento. Un token nuovo, una CA, la chiave dell'host lo lasciano: dopo un incidente la risposta è un token
+     nuovo, e la macchina compromessa non deve poter dire `full` subito dopo. Il ricordo si legge anche dopo
+     `/api/info` della prima pagina di un collegamento nuovo o salvato, prima di far passare qualcosa. Per un collegamento `pages: machine` il centrale legge
      `/api/info` (ogni 10 minuti, come per gli altri) prima di far passare l'HTML della macchina.
    - **Cosa passa da una macchina `agent`** (`link_proxy`, `agent_mode`): le pagine si scrivono sempre qui, anche
      con `pages: machine`, che il salvataggio del collegamento rifiuta per una macchina `agent` («le sue pagine
@@ -719,6 +723,29 @@ Per ogni fetta: il rilascio, la prova su lab3/lab4, come si annulla, la stima.
        backup e istanza tolti o fermati come prima, lab3 riacceso;
      - alla fine lab3 e lab4 reinstallati dal pacchetto 2026.1.5519, `panel` tolto (`full`), `link-panels.json` di
        lab3 tolto.
+
+   **La revisione di `3f3f3b6`** (non pronta: tre importanti, una minore), corretta così:
+   - **un server posizionato su una macchina `agent`** (AD-014): `placed_proxy` della casa inoltrava l'HTML
+     dell'host com'era, e gli altri tipi in streaming. Ora da un host `agent` passano solo i dati di `is_data`, con
+     `nosniff`; HTML, SVG, XHTML, una risposta senza tipo con un corpo danno la pagina del centrale (`placed`,
+     502) a chi è della macchina, le parole del fornitore senza nomi a un cliente; il MCP di un server
+     posizionato su un host `agent` passa solo `application/json` e `text/event-stream`;
+   - **un admin invitato da tempo**: dopo `INVITATION_KEPT_DAYS` l'invito sparisce dal file e l'utente restava con
+     una password che nessuno conosce, contato come admin locale. Ora `unknown_password` è segnata (`unset$…`,
+     nessuna password la verifica) e `local_admins` conta solo chi ha una password sua; un file degli inviti che
+     non si legge rifiuta `agent` (non si sa chi è invitato). Un utente invitato prima di questa versione ha
+     ancora l'hash di una password casuale: si riconosce solo finché c'è il suo invito;
+   - **il salvataggio non dimentica più `agent`**, salvo un'altra macchina (sopra): ruotare il token lasciava dire
+     `full` alla macchina, e due salvataggi aggiravano il rifiuto di `pages: machine`;
+   - la prima pagina dopo un collegamento nuovo o salvato leggeva la modalità prima di `/api/info`: ora dopo.
+
+   Sul lab (lab3 e lab4 con questo codice, 25/11/2026): due salvataggi di lab4 sulla stessa macchina lasciano
+   `{"lab4": "agent"}`, e `pages: machine` dopo di loro è rifiutato in italiano; «Dimentica la modalità agent…»
+   dalla pagina Collegamenti, con la conferma dentro la pagina (Playwright, italiano, 1440 e 375, chiaro e scuro,
+   0 errori, 0 dialoghi del browser), è una riga nel registro di lab3; con lab4 rimessa in `full`, lab3 tiene
+   `agent` (l'invito: la pagina di lab3, 403) finché non lo si dimentica, poi l'invito è la pagina di lab4 con la
+   riga (410). Il server posizionato su un host `agent` non è provato sul lab (nessuno spostamento tra lab3 e lab4
+   oggi; uno spostamento è un job lungo): lo provano i test.
 
    **Dove la fetta si discosta dal piano.**
    - **Il secondo fattore dell'admin locale non è chiesto** (17.4.2 dice «con il secondo fattore»). Renderlo una

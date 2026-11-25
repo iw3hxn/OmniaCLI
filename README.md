@@ -1198,7 +1198,9 @@ same way. No data moves: they never left the machine.
   reserve…» (never a customer, never through a link).
 - **An admin of its own, always.** `panel: agent` needs an admin who logs in
   on the machine with a password: of the main configuration or of Settings ›
-  Users, role admin, not one invited who has not set a password yet. Without
+  Users, role admin, not one invited who has not set a password yet (nor one
+  invited long ago whose invitation is gone: its password is marked as none).
+  An invitations file that cannot be read refuses `agent` too. Without
   one OmniaCLI does not start, and `omniacli check-config` says why
   («Configuration error: panel: agent needs an admin of this machine…»).
   While it is in agent mode the last such admin is never deleted or given
@@ -1214,8 +1216,16 @@ same way. No data moves: they never left the machine.
   machine (the invitation by whom it was sent to, at the machine's address).
   The central panel keeps `agent` once said (`link-panels.json` beside the
   links file, 600, gone with the purge): a machine that says `full`
-  afterwards does not lift it; an administrator of the central panel saving
-  the link takes the machine's word again, deleting it forgets it.
+  afterwards does not lift it, not after a new token either (the answer to an
+  incident). It is forgotten when the link is saved to another machine (its
+  address, or its SSH host or port), when it is deleted, and by **Forget the
+  agent mode…** on the link's **Edit… › Advanced** (an administrator of the
+  central panel, confirmed in the page, in the access log), for a machine put
+  back to `full` on purpose.
+- **A server placed on it** (AD-014): through `/placed/<server>/` of its home
+  only data passes, as above, with `nosniff`; its pages are opened on the
+  machine's section in the central panel. Its MCP answers only as MCP's (JSON
+  or events).
 - **Update OmniaCLI** of such a machine, on its section in the central panel
   and on Servers there, is information («2026.1.5520 available, not needed by
   this panel») while its `agent_api` is what the central panel's pages ask;

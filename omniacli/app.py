@@ -10954,7 +10954,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     link.ssh.host_key), "line": sshlinks.authorized_line(public, link) if public else "",
                     "block": sshlinks.sshd_block(link)}
         return {"links": list(settings.link_targets.values()), "links_file": settings.links_file,
-                "public_key": public, "ssh": ssh}
+                "public_key": public, "ssh": ssh,
+                # the links whose machine said panel: agent, remembered here (AD-017 §17.3)
+                "agent_links": sorted(n for n in agent_panels if n in settings.link_targets)}
 
     @app.get("/links", dependencies=[Depends(admin)])
     async def links_page(request: Request):
@@ -11003,12 +11005,32 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 link = parse_link(name, data)
             except ConfigError as exc:
                 return refuse(str(exc))
+            before = settings.link_targets.get(name)
             refused = await store_links({**settings.link_targets, name: link})
             if refused is None:
-                # another address may be another machine: its contract read again, and its panel (an admin's act:
-                # a machine put back to full is taken at its word again, once)
-                agent_drop(name, panel_too=True)
+                # another address may be another machine: its contract read again; its agent mode forgotten only
+                # then (a new token, a CA, a host key are the same machine: after an incident too, a machine that
+                # said agent does not lift it by saying full; «Forget the agent mode» does it on purpose)
+                agent_drop(name, panel_too=before is None or another_machine(before, link))
             return refused or {"ok": True}
+
+    def another_machine(before: LinkTarget, after: LinkTarget) -> bool:
+        """Whether a link saved goes to another machine: its address, or its SSH host or port."""
+        where = lambda t: (t.url, (t.ssh.host, t.ssh.port) if t.ssh is not None else None)  # noqa: E731
+        return where(before) != where(after)
+
+    @app.post("/api/links/{name}/forget-agent")
+    async def link_forget_agent(name: str, request: Request, me: Principal = Depends(admin)):
+        """An admin of this panel takes the machine's word again on its panel (AD-017 §17.3): a machine put back
+        to panel: full on purpose. In the access log."""
+        async with links_lock:
+            a_link(name)
+            if name not in agent_panels:
+                return refuse(f"{name} is not remembered in agent mode")
+            agent_drop(name, panel_too=True)
+        access_log.record("action", me.kind, me.name, request.client.host if request.client else "",
+                          f"agent mode of the link {name} forgotten: its machine's word on its panel is read again")
+        return {"ok": True}
 
     @app.post("/api/links/rename", dependencies=[Depends(admin)])
     async def link_target_rename(payload: dict = Body(...)):
@@ -11484,12 +11506,17 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             "version": (agent or {}).get("version") or "?", "no_models": bool(agent and agent.get("no_models"))},
             status_code=status.HTTP_502_BAD_GATEWAY)
 
-    def agent_refused(request: Request, link: LinkTarget, me: Principal, why: str, agent: dict | None, path: str):
+    def agent_refused(request: Request, link: LinkTarget, me: Principal, why: str, agent: dict | None, path: str,
+                      kind: str = "", server: str = ""):
         """A page of a machine in agent mode (AD-017 §17.3) that this panel does not draw and whose HTML it does
-        not let through: its own page saying why, under the link (JSON for a script); recorded as failed."""
+        not let through: its own page saying why, under the link (JSON for a script); recorded as failed. kind:
+        the type it answered; server: of a server placed on it (AD-014), whose page it is."""
         access_log.record("failed", "link", link.name, request.client.host if request.client else "",
                           f"{request.method} /{path[:120]} refused: {link.name} is managed from here (panel: agent), "
-                          f"its HTML does not pass ({why})")
+                          f"its HTML does not pass ({why}{', ' + kind[:60] if kind else ''})")
+        if why == centralpages.REFUSED_PLACED and (me is None or me.scoped):
+            # a customer: the provider's machine, never its name (placed_failure)
+            return placed_failure(request, me, link.name, "managed from this panel: its pages do not pass")
         own = why in (centralpages.REFUSED_INVITE, centralpages.REFUSED_PLUGIN_PAGE)
         code = status.HTTP_403_FORBIDDEN if own else status.HTTP_502_BAD_GATEWAY
         if "text/html" not in request.headers.get("accept", ""):
@@ -11499,6 +11526,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         plugin = path.split("/", 2)[1] if why == centralpages.REFUSED_PLUGIN_PAGE else ""
         return _TEMPLATES.TemplateResponse(request, "agent_refused.html", {
             "machine": link.name, "why": why, "version": (agent or {}).get("version") or "?", "plugin": plugin,
+            "server": server,
             "plugins": ", ".join(centralpages.plugins_apart((agent or {}).get("plugins") or {},
                                                             centralpages.plugin_versions()))},
             status_code=code)
@@ -11654,6 +11682,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if drawn is not None:
             page, params = drawn
             agent = await agent_seen(link, me)
+            # read now for a link saved or made since: its machine may have just said agent
+            agent_mode = agent_mode or link.name in agent_panels
             seen = agents_seen.get(link.name, 0)
             why = "" if agent is None else centralpages.contract(
                 page.needs_agent_api, agent["agent_api"], agent["plugins"], centralpages.plugin_versions())
@@ -21765,7 +21795,17 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             text = json.dumps(found)
             for job in re.findall(r'"(?:id|job)": "(\d{8}-\d{6}-[0-9a-f]{6})"', text):
                 placed_jobs.add(job, server)
-        return resp.status_code, resp.headers.get("content-type", "application/json"), raw
+        kind = resp.headers.get("content-type", "application/json")
+        if link.name in agent_panels and kind.split(";", 1)[0].strip().lower() not in ("application/json",
+                                                                                      "text/event-stream"):
+            # a host in agent mode (AD-017 §17.3): its answer is MCP's (JSON, events) or none
+            access_log.record("failed", "link", link.name, "", f"{kind[:60]} of /mcp for the placed server {server} "
+                              f"refused: {link.name} is managed from here (panel: agent)")
+            return 502, "application/json", json.dumps({
+                "jsonrpc": "2.0", "id": None, "error": {"code": -32000, "message": (
+                    "The machine of the provider this instance runs on does not answer now: its Odoo goes on serving")
+                    if workspace else f"{link.name} answered {kind[:60] or 'no type'}, not MCP's: refused"}}).encode()
+        return resp.status_code, kind, raw
 
     def placed_body_names(body: bytes | None, server: str) -> bool:
         """Whether a request's JSON body names server ({"server": server})."""
@@ -21971,6 +22011,16 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             await resp.aclose()
             return placed_failure(request, me, link.name, "the other instance refused the token: ask for a new one")
         kept = {k: resp.headers[k] for k in _LINK_RESPONSE_HEADERS if k in resp.headers and k != "content-length"}
+        if link.name in agent_panels:
+            # a host in agent mode (AD-017 §17.3): from it only data, never its document or script under this
+            # panel's origin; an answer without a type is data only without a body
+            kind = resp.headers.get("content-type", "")
+            no_body = resp.status_code in (204, 304) or resp.headers.get("content-length") == "0"
+            if not centralpages.is_data(kind, resp.headers.get("content-disposition", ""), not no_body):
+                await resp.aclose()
+                return agent_refused(request, link, me, centralpages.REFUSED_PLACED, agents.get(link.name),
+                                     f"{placement.PLACED_PREFIX.lstrip('/')}/{server}{inner}"[:160], kind, server)
+            kept["x-content-type-options"] = "nosniff"
         # an action that answers with its job's page (a 303 there): the job is the host's
         started = placement.job_of_path(placement.inner_path(urlsplit(resp.headers.get("location", "")).path[len(here):]))
         if started:

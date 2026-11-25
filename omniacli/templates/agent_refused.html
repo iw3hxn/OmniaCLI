@@ -16,6 +16,8 @@
     {{ _("The plugins of {machine} are not those of this panel ({plugins}): install them here, at the same versions, to see this page.", machine=machine, plugins=plugins) }}
   {%- elif why == "invite" -%}
     {{ _("An invitation is opened by the person it was sent to, at the address of {machine} itself.", machine=machine) }}
+  {%- elif why == "placed" -%}
+    {{ _("{server} runs on {machine}, which answered this page with something that is not data: this panel does not let it through.", server=server, machine=machine) }}
   {%- elif why == "plugin_page" -%}
     {{ _("A page of its own of the plugin {plugin} is opened on {machine} itself, from its reserve.", plugin=plugin, machine=machine) }}
   {%- else -%}

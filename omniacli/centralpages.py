@@ -79,6 +79,8 @@ REFUSED_PLUGINS = PLUGINS
 REFUSED_INVITE = "invite"
 REFUSED_PLUGIN_PAGE = "plugin_page"
 REFUSED_NO_INFO = "no_info"
+# a page of a server placed on it (AD-014), asked through /placed/<server>/ of this panel
+REFUSED_PLACED = "placed"
 
 _SEGMENT = r"[A-Za-z0-9._~-]+"
 
@@ -160,7 +162,7 @@ PAGES = (
          needs_agent_api=3),
     Page("enterprise", r"enterprise", "enterprise.html",
          ("source", "error", "default_url", "public_key", "file", "copies", "root", "helpers"), needs_agent_api=3),
-    Page("links", r"links", "links.html", ("links", "links_file", "public_key", "ssh"), needs_agent_api=3),
+    Page("links", r"links", "links.html", ("links", "links_file", "public_key", "ssh", "agent_links"), needs_agent_api=3),
     Page("tunnels", r"tunnels", "tunnels.html", needs_agent_api=3),
     Page("groups", r"groups", "groups.html", ("lists", "known", "groups_file"), needs_agent_api=3),
     Page("plugins", r"plugins", "plugins.html",
