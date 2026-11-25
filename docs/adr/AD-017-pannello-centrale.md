@@ -881,11 +881,64 @@ Per ogni fetta: il rilascio, la prova su lab3/lab4, come si annulla, la stima.
    - **La configurazione principale non torna al suo posto da sola**: va accanto. L'admin della nuova
      installazione entra con `/etc/omniacli/initial-admin-password` come su ogni macchina nuova. Le persone del
      backup tornano con il loro secondo fattore.
-   - **Nessun avviso quando il backup notturno fallisce**: lo dicono la pagina (l'ultimo backup) e il job. Mandare
-     un avviso con le notifiche è da fare.
+   - **L'avviso di una notte fallita** usa gli avvisi del monitor (Opzioni › Monitoraggio): non c'è un elenco di
+     destinatari suo.
    - **La «macchina nuova» sul lab** è lab3 dopo un purge e una reinstallazione, non un contenitore nuovo. Il purge
      del pacchetto 2026.1.5519/5520 non conosceva `central-backup.json` e lo lasciava. Il ripristino lo
      sovrascrive; il purge di questa versione lo toglie.
+   **La revisione di `f93855d`** (non pronta: due bloccanti, una importante, tre minori), corretta così:
+   - **Chi ha fatto il backup** (bloccante). Il sigillo X25519 dà la segretezza, non dice chi ha fatto il backup.
+     Nell'intestazione di ogni backup ci sono la chiave pubblica e la chiave privata sigillata. Chi tiene un backup
+     (la destinazione, una macchina di un cliente) poteva quindi sigillare un tar suo che la passphrase vera apriva
+     e che `--dry-run` dava per intatto. Il ripristino poi credeva ai percorsi CA del manifesto: un file di root
+     dove voleva, e persone admin sue.
+     - Ora, quando si crea la chiave, nasce anche una **chiave di chi fa i backup**: 32 byte casuali, HMAC-SHA256.
+       Il centrale la tiene in chiaro in `central-backup.json`; la passphrase la sigilla con la chiave privata (64
+       byte sigillati). Ogni backup porta in coda l'HMAC dell'intestazione e dell'hash del corpo.
+     - `open_sealed` apre la chiave con la passphrase e verifica l'HMAC prima di decifrare o di credere a una sola
+       riga. Il formato passa a 2 (`OCCB\x02`): una chiave o un backup della fetta di prima sono rifiutati con
+       «make a new key».
+     - **I file CA** vanno solo in `link-ca/<collegamento>.pem` accanto ai collegamenti, e il `ca_file` di
+       `links.yaml` viene riscritto: il percorso del backup non conta.
+     - **Prima di fermare il servizio** il manifesto è controllato contro il tar: ogni nome che elenca c'è, liste e
+       mappe sono tali, ogni parte YAML o JSON si legge. Il tar ha un tetto di 1 GiB scompattato e 20.000 voci.
+       I parametri scrypt di un'intestazione non vanno oltre quelli che questa versione scrive.
+   - **Root e i collegamenti simbolici** (bloccante). `central-restore` gira da root dentro `/var/lib/omniacli`,
+     che è dell'utente del servizio. Il nome temporaneo prevedibile e `chmod`/`chown` seguivano i collegamenti
+     simbolici, e anche `ssh/` come collegamento veniva seguito.
+     - Ora ogni cartella si apre parte per parte con `O_NOFOLLOW`, a partire da `/`.
+     - Il file nuovo ha un nome casuale (`.central-restore-<hex>`, `O_EXCL|O_NOFOLLOW`); modo e proprietario si
+       mettono sul suo descrittore, poi un `rename` lo porta al posto del vecchio.
+     - Un posto che è un collegamento, o che ne attraversa uno, è rifiutato prima di fermare il servizio.
+     - Non si abbassano i privilegi (`setresuid`): bastano i descrittori.
+   - **Un salvataggio cambia solo quello che riceve** (importante). Prima, un `{"time"}` per REST o MCP toglieva la
+     destinazione, e il `enabled=True` di default di MCP riaccendeva un backup spento. Ora MCP ha i parametri
+     `None` e li omette.
+   - **Due richieste insieme fanno partire un solo backup**: `central_backup_start` segna il giro prima di
+     restituire il job, e il job toglie il segno quando finisce.
+   - **Un archivio rotto** dà un messaggio pulito di `central-restore` (uscita 1), senza un servizio fermato a metà.
+     Nel purge vanno anche `link-ca/` e `.central-restore-*` (in `/var/lib/omniacli` e in `/etc/omniacli`).
+   - **I cambi d'ora.** L'ora di default è 01:30, prima della finestra 02:00-03:00. Il ciclo parte al massimo una
+     volta per data: nell'ora che torna indietro i minuti doppi fanno un giro solo. Un'ora scelta dentro l'ora
+     saltata in primavera quella notte non parte (detto nel docstring di `Nightly`).
+   - **Una notte fallita** è un avviso del monitor (`monitor.tell`, `schedule.failed`, schedule `central-backup`),
+     ai destinatari di Opzioni › Monitoraggio.
+
+   Sul lab, con questo codice (25/11/2026, lab3 al pacchetto 2026.1.5520 con il codice, destinazione SFTP su lab4):
+   - **La pagina**: chiave nuova dalla pagina, Playwright 1440 e 375, chiaro e scuro, 0 errori, 0 dialoghi, un
+     primario per vista. Il backup è di 222 KiB, senza il token di lab4 e senza la chiave SSH in chiaro.
+   - **I rifiuti**: un backup fatto su lab3 con la chiave pubblica di un backup vero e una chiave di chi fa i backup
+     sua (quello che può fare la destinazione) è rifiutato da `--dry-run` con la passphrase vera: «was not made by
+     the panel of this key…», uscita 1. Rifiutati anche la passphrase sbagliata, un byte cambiato e il pannello che
+     ha già lab4.
+   - **Il collegamento simbolico**: sull'installazione pulita l'utente `omniacli` mette `ssh -> /etc`.
+     `central-restore` lo rifiuta prima di fermare il servizio; `/etc` resta 755 root e il servizio resta attivo.
+   - **Il ripristino**: tolto il collegamento, il ripristino dura 0,5 s. lab3 legge `/links/lab4/api/info` **4 s**
+     dopo l'installazione pulita, **41 s** dopo il purge.
+   - **Lo stato dopo**: lab4 riapre lab3, il registro portato verifica intatto (3.154 voci), nessun
+     `.central-restore-*` rimasto, e il backup successivo si apre con la stessa passphrase.
+   - **Alla fine**: lab3 rimesso dallo stato salvato prima della prova, tutti e due al 2026.1.5520 (`as released`).
+
 8. **L'agente dietro NAT via relay** (17.6).
    - *Prova*: lab4 dietro il NAT simulato di AD-008 §9 passo 7, nessuna regola nuova in entrata; il collegamento SSH al
      relay porta le pagine della fetta 3; il tunnel ucciso torna entro 35 s.

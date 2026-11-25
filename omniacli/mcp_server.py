@@ -1103,13 +1103,15 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         return await central(ctx, "status")
 
     @server.tool()
-    async def central_backup_configure(ctx: Context, destination: str = "", time: str = "",
-                                       enabled: bool = True) -> dict:
+    async def central_backup_configure(ctx: Context, destination: str | None = None, time: str | None = None,
+                                       enabled: bool | None = None) -> dict:
         """(admin token of the machine, never a CI's) Set where (a destination
-        of the machine, central_backup_status lists them) and when (HH:MM,
-        every day) this panel's state is sealed and copied; enabled=false
-        stops the nightly run."""
-        return await central(ctx, "save", destination=destination, time=time or None, enabled=enabled)
+        of the machine, central_backup_status lists them; "" for none) and
+        when (HH:MM, every day, by the machine's clock) this panel's state is
+        sealed and copied; enabled=false stops the nightly run. What is not
+        given stays as it is."""
+        given = {"destination": destination, "time": time, "enabled": enabled}
+        return await central(ctx, "save", **{k: v for k, v in given.items() if v is not None})
 
     @server.tool()
     async def central_backup_new_key(ctx: Context, replace: bool = False) -> dict:

@@ -12,7 +12,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 
@@ -246,9 +245,10 @@ def _central_restore(args) -> int:
     passphrase = _restore_passphrase(args)
     started = time.monotonic()
     if args.dry_run:
-        with tempfile.TemporaryDirectory(prefix="omniacli-central-check-") as tmp:
-            centralbackup.open_sealed(backup, passphrase, Path(tmp) / "state.tar.gz")
-        print(f"it opens with this passphrase and is intact ({time.monotonic() - started:.1f} s): nothing restored")
+        _, manifest, _ = centralbackup.inspect(backup, passphrase)
+        print(f"it opens with this passphrase, was made by the panel of this key and is intact "
+              f"({time.monotonic() - started:.1f} s): links {', '.join(manifest.get('links', [])) or 'none'}; "
+              "nothing restored")
         return 0
     root = os.geteuid() == 0
     owner = None
@@ -387,6 +387,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Signing error: {exc}", file=sys.stderr)
         return 2
     except CentralBackupError as exc:
+        print(f"Not restored: {exc}", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        if args.command != "central-restore":
+            raise
         print(f"Not restored: {exc}", file=sys.stderr)
         return 1
 

@@ -4,7 +4,9 @@
 to a key whose passphrase only its admin keeps; the setup from the panel (admin only, logged), the REST API and MCP;
 and omniacli central-restore on a fresh install, which refuses another passphrase and a file changed."""
 
+import asyncio
 import datetime
+import io
 import json
 import os
 import stat
@@ -14,7 +16,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from omniacli import apiv1, centralbackup, cli, destinations, pullcrypto
+from omniacli import apiv1, centralbackup, cli, destinations, notify, pullcrypto
 from omniacli.auth import Principal
 from omniacli.config import load_links, parse_settings
 
@@ -94,9 +96,12 @@ def test_the_passphrase_and_the_key():
     assert centralbackup.new_passphrase() != passphrase
     key = centralbackup.new_key(passphrase)
     # what the panel keeps: a public key and the private key sealed, never the passphrase nor the key in clear
-    assert set(key) == {"public", "kdf", "nonce", "sealed"} and passphrase not in json.dumps(key)
+    # what the panel keeps: a public key, the private key and the maker's key sealed, the maker's key in clear;
+    # never the passphrase nor the private key in clear
+    assert set(key) == {"public", "kdf", "nonce", "sealed", "mac"} and passphrase not in json.dumps(key)
     assert key["kdf"] == {**key["kdf"], "name": "scrypt", "r": 8, "p": 1}
-    private = centralbackup.open_key(key, passphrase)
+    private, mac = centralbackup.open_key(key, passphrase)
+    assert mac == centralbackup._unb64(key["mac"])
     # typed with capitals, spaces or without the dashes it is the same
     centralbackup.open_key(key, " " + passphrase.upper().replace("-", " ") + " ")
     with pytest.raises(centralbackup.CentralBackupError, match="the passphrase does not open this key"):
@@ -185,6 +190,7 @@ def test_the_inventory_is_what_opens_the_machines_again(tmp_path):
 
 def test_restore_on_a_fresh_install_opens_the_links_again(tmp_path):
     backup, key, old_config = sealed_backup(tmp_path)
+    old_ssh = settings_of(old_config).link_targets["lab4"].ssh
     ca = tmp_path / "old" / "ca" / "lab4.pem"
     ca.unlink()
     _, config = central_dir(tmp_path / "new", links=False)
@@ -198,15 +204,18 @@ def test_restore_on_a_fresh_install_opens_the_links_again(tmp_path):
     assert calls == ["stop", "start"] and found["links"] == ["ext", "lab4"] and found["replaced"] == []
     var = tmp_path / "new" / "var"
     restored = settings_of(config)
-    old = settings_of(old_config)
     assert restored.link_targets["lab4"].token == LINK_SECRET
-    assert restored.link_targets["lab4"].ssh == old.link_targets["lab4"].ssh
+    assert restored.link_targets["lab4"].ssh == old_ssh
     assert (var / "ssh" / "id_ed25519").read_text() == SSH_KEY
     assert json.loads((var / "link-panels.json").read_text()) == {"lab4": "agent"}
     assert "carla" in restored.users and json.loads((var / "second-factor.json").read_text())["carla"]
     for path in (var / "links.yaml", var / "ssh" / "id_ed25519", var / "users.yaml", var / "second-factor.json"):
         assert stat.S_IMODE(path.stat().st_mode) == 0o600, path
-    assert ca.read_text().startswith("-----BEGIN CERTIFICATE-----") and stat.S_IMODE(ca.stat().st_mode) == 0o644
+    # the CA file goes to link-ca/ beside the links, never back to the path the backup names; the link says so
+    assert not ca.exists()
+    moved = var / "link-ca" / "ext.pem"
+    assert moved.read_text().startswith("-----BEGIN CERTIFICATE-----") and stat.S_IMODE(moved.stat().st_mode) == 0o600
+    assert restored.link_targets["ext"].ca_file == str(moved)
     # the access log of the backup beside the new one; the main configuration beside this one, not in its place
     assert (var / "logs" / "before-restore-20261125-090000" / "access.jsonl").exists()
     assert Path(found["config_beside"]) == config.with_name("omniacli.yaml.from-backup")
@@ -255,7 +264,7 @@ def test_the_command_central_restore(tmp_path, capsys):
     assert cli.main(args) == 1 and "readable by others" in capsys.readouterr().err
     secret.chmod(0o600)
     assert cli.main([*args, "--dry-run"]) == 0
-    assert "it opens with this passphrase and is intact" in capsys.readouterr().out
+    assert "was made by the panel of this key and is intact" in capsys.readouterr().out
     assert load_links(tmp_path / "new" / "var" / "links.yaml") == {}
     wrong = tmp_path / "wrong"
     wrong.write_text("not-it")
@@ -292,7 +301,8 @@ def test_the_purge_takes_its_files():
     purge = purge.split("    purge)", 1)[1]
     # invitations.yaml, which a backup carries, was left by the purge before this slice
     for path in (f"/var/lib/omniacli/{centralbackup.FILE}", "/etc/omniacli/omniacli.yaml.from-backup",
-                 "/var/lib/omniacli/invitations.yaml",
+                 "/var/lib/omniacli/invitations.yaml", "/var/lib/omniacli/link-ca",
+                 "/var/lib/omniacli/.central-restore-*", "/etc/omniacli/.central-restore-*",
                  "/var/lib/omniacli/.central-backup-*", "/var/lib/omniacli/logs"):
         assert path in purge, path
 
@@ -409,3 +419,220 @@ async def test_the_rest_api_and_mcp(client, rclone):  # noqa: F811
     link = await client.get("/api/central-backup", headers={"Authorization": f"Bearer {LINK_TOKEN}",
                                                              "Accept": "application/json"})
     assert link.status_code == 403
+
+
+# --- the review of f93855d: who made a backup, symbolic links, a partial save, twice, a broken archive, the clocks
+
+PASS = "abcde-fghjk-mnpqr-stuvw-xyz23-45678"
+
+
+def archive_of(tmp_path: Path, members: dict, name: str = "made.tar.gz") -> Path:
+    """A gzipped tar of members ({name: bytes})."""
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode="w:gz") as tar:
+        for member, data in members.items():
+            info = tarfile.TarInfo(member)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    path = tmp_path / name
+    path.write_bytes(raw.getvalue())
+    return path
+
+
+def evil_members(outside: Path) -> dict:
+    manifest = {"v": 1, "slots": {"users": {"folder": False}, "links": {"folder": False}}, "ca": {"x": str(outside)},
+                "access": [], "links": ["x"]}
+    return {"manifest.json": json.dumps(manifest).encode(),
+            "slots/users": yaml.safe_dump({"users": {"mallory": {"password": "x", "role": "admin"}}}).encode(),
+            "slots/links": yaml.safe_dump({"links": {"x": {"url": "https://x.test", "token": "t",
+                                                           "ca_file": str(outside)}}}).encode(),
+            "ca/x": b"echo pwned\n"}
+
+
+def test_a_backup_the_panel_did_not_make_is_refused(tmp_path):
+    """The forgery of the review: who holds a backup (the destination, a customer's machine) reads the public key
+    and the sealed key in its header and seals a tar of its own to it. Without the maker's key, which only the
+    panel and the passphrase have, the real passphrase does not open it, and nothing is written."""
+    genuine, _, _ = sealed_backup(tmp_path, PASS)
+    header, _, _ = centralbackup.read_header(genuine)
+    assert "mac" not in header["key"]
+    outside = tmp_path / "outside" / "etc-profile.d-evil.sh"
+    forged = tmp_path / "central_20261126_023000.occb"
+    # the header's key with a maker's key of the forger's own
+    centralbackup.seal({**header["key"], "mac": centralbackup._b64(os.urandom(32))},
+                       archive_of(tmp_path, evil_members(outside)), forged, {"made": "2026-11-26T02:30:00"})
+    with pytest.raises(centralbackup.CentralBackupError, match="was not made by the panel of this key"):
+        centralbackup.open_sealed(forged, PASS, tmp_path / "check.tar.gz")
+    _, config = central_dir(tmp_path / "new", links=False)
+    calls = []
+    with pytest.raises(centralbackup.CentralBackupError, match="was not made by the panel of this key"):
+        centralbackup.restore(forged, PASS, settings_of(config), config, stop=lambda: calls.append("stop"))
+    assert calls == [] and not outside.exists() and not (tmp_path / "new" / "var" / "users.yaml").exists()
+    # the genuine backup with its tag changed: refused the same
+    data = bytearray(genuine.read_bytes())
+    data[-1] ^= 1
+    genuine.write_bytes(bytes(data))
+    with pytest.raises(centralbackup.CentralBackupError, match="was not made by the panel of this key"):
+        centralbackup.open_sealed(genuine, PASS, tmp_path / "check.tar.gz")
+
+
+def test_a_ca_file_goes_only_to_link_ca(tmp_path):
+    """Even a backup the panel made (its maker's key) never writes a CA file at the path it names."""
+    _, key, _ = sealed_backup(tmp_path, PASS)
+    outside = tmp_path / "outside" / "evil.sh"
+    backup = tmp_path / "made.occb"
+    centralbackup.seal(key, archive_of(tmp_path, evil_members(outside)), backup, {"made": "now"})
+    _, config = central_dir(tmp_path / "new", links=False)
+    found = centralbackup.restore(backup, PASS, settings_of(config), config)
+    var = tmp_path / "new" / "var"
+    assert not outside.exists() and found["ca"] == ["x"]
+    assert (var / "link-ca" / "x.pem").read_bytes() == b"echo pwned\n"
+    assert yaml.safe_load((var / "links.yaml").read_text())["links"]["x"]["ca_file"] == str(var / "link-ca" / "x.pem")
+
+
+@pytest.mark.parametrize("members, why", [
+    ({"manifest.json": b"[]"}, "its manifest is not a mapping"),
+    ({"manifest.json": b'{"slots": {"links": {"folder": false}}}'}, "links is listed and not in it"),
+    ({"manifest.json": b'{"slots": {"ssh": {"folder": true, "files": ["id"]}}}'}, "the files of ssh are not in it"),
+    ({"manifest.json": b'{"slots": {"nope": {"folder": false}}}', "slots/nope": b"x"}, "an unknown part"),
+    ({"manifest.json": b'{"slots": {"users": {"folder": false}}}', "slots/users": b"- a\n- list\n"},
+     "users does not read"),
+    ({"manifest.json": b'{"slots": {}, "ca": {"x": "/etc/x"}}', "ca/x": b"x"}, "is not one of its links"),
+    ({"manifest.json": b'{"slots": {}, "access": ["access.jsonl"]}'}, "a file of its access log is not in it"),
+    ({"manifest.json": b'{"slots": {}, "access": "access.jsonl"}'}, "slots, ca or access"),
+])
+def test_a_broken_archive_is_refused_before_anything(tmp_path, members, why):
+    _, key, _ = sealed_backup(tmp_path, PASS)
+    backup = tmp_path / "broken.occb"
+    centralbackup.seal(key, archive_of(tmp_path, members), backup, {"made": "now"})
+    _, config = central_dir(tmp_path / "new", links=False)
+    calls = []
+    with pytest.raises(centralbackup.CentralBackupError, match=why):
+        centralbackup.restore(backup, PASS, settings_of(config), config, stop=lambda: calls.append("stop"))
+    assert calls == [] and not (tmp_path / "new" / "var" / "links.yaml").exists()
+
+
+def test_a_broken_archive_is_a_clean_message_of_the_command(tmp_path, capsys):
+    _, key, _ = sealed_backup(tmp_path, PASS)
+    backup = tmp_path / "broken.occb"
+    centralbackup.seal(key, archive_of(tmp_path, {"manifest.json": b'{"slots": {"links": {"folder": false}}}'}),
+                       backup, {"made": "now"})
+    _, config = central_dir(tmp_path / "new", links=False)
+    secret = tmp_path / "pass"
+    secret.write_text(PASS)
+    secret.chmod(0o600)
+    args = ["central-restore", str(backup), "-c", str(config), "--passphrase-file", str(secret), "--no-restart"]
+    assert cli.main([*args, "--dry-run"]) == 1 and "links is listed and not in it" in capsys.readouterr().err
+    assert cli.main(args) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("Not restored: the archive is not a central panel's backup") and "Traceback" not in err
+
+
+def test_an_archive_too_large_and_a_costly_header_are_refused(tmp_path, monkeypatch):
+    backup, key, _ = sealed_backup(tmp_path, PASS)
+    monkeypatch.setattr(centralbackup, "MAX_ARCHIVE", 1000)
+    with pytest.raises(centralbackup.CentralBackupError, match="larger than a central panel's state"):
+        centralbackup.inspect(backup, PASS)
+    # scrypt parameters above what this version writes: refused before scrypt runs
+    for kdf in ({"n": centralbackup.SCRYPT_N * 2}, {"r": centralbackup.SCRYPT_R + 1}, {"p": centralbackup.SCRYPT_P + 1}):
+        with pytest.raises(centralbackup.CentralBackupError, match="out of range"):
+            centralbackup.open_key({**key, "kdf": {**key["kdf"], **kdf}}, PASS)
+
+
+def test_symbolic_links_of_the_service_user_are_refused(tmp_path):
+    """The review's local escalation: the service user owns the data folder and plants links before root restores.
+    ssh/ or logs/ a link to a folder of root's: refused before the service stops, nothing written there; a link
+    with a temporary name of before: never followed (the names are random, made O_EXCL | O_NOFOLLOW)."""
+    backup, _, _ = sealed_backup(tmp_path, PASS)
+    _, config = central_dir(tmp_path / "new", links=False)
+    var = tmp_path / "new" / "var"
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "shadow").write_text("root:hash\n")
+    os.chmod(victim / "shadow", 0o640)
+    (victim / "keep.conf").write_text("x")
+    os.symlink(victim / "shadow", var / ".links.yaml.restore")
+    (var / "ssh").rmdir()
+    os.symlink(victim, var / "ssh")
+    calls = []
+    with pytest.raises(centralbackup.CentralBackupError, match="symbolic link"):
+        centralbackup.restore(backup, PASS, settings_of(config), config, stop=lambda: calls.append("stop"))
+    assert calls == [] and sorted(os.listdir(victim)) == ["keep.conf", "shadow"]
+    assert (victim / "shadow").read_text() == "root:hash\n" and stat.S_IMODE((victim / "shadow").stat().st_mode) == 0o640
+    # logs a link: refused the same
+    os.unlink(var / "ssh")
+    (var / "ssh").mkdir()
+    (var / "logs").mkdir(exist_ok=True)
+    (var / "logs").rename(var / "logs.gone")
+    os.symlink(victim, var / "logs")
+    with pytest.raises(centralbackup.CentralBackupError, match="symbolic link"):
+        centralbackup.restore(backup, PASS, settings_of(config), config, stop=lambda: calls.append("stop"))
+    assert calls == [] and sorted(os.listdir(victim)) == ["keep.conf", "shadow"]
+    # without the links, done; the planted temporary name is left as it is and its target untouched
+    os.unlink(var / "logs")
+    (var / "logs.gone").rename(var / "logs")
+    centralbackup.restore(backup, PASS, settings_of(config), config)
+    assert (victim / "shadow").read_text() == "root:hash\n" and stat.S_IMODE((victim / "shadow").stat().st_mode) == 0o640
+    assert os.path.islink(var / ".links.yaml.restore") and set(load_links(var / "links.yaml")) == {"ext", "lab4"}
+    assert not list(var.glob(".central-restore-*"))
+
+
+def test_the_clocks_moving():
+    """A time of the hour the clocks go back (its minutes twice): one run that day; the default is before 02:00."""
+    assert centralbackup.DEFAULT_TIME < "02:00"
+    state = {"key": {"x": 1}, "confirmed": "x", "destination": "nas", "time": "02:30"}
+    fired = []
+    nightly = centralbackup.Nightly(lambda: state, lambda: fired.append(1) or (202, {}))
+    night = datetime.datetime(2026, 10, 25, 2, 30)
+    assert nightly.tick(night) and not nightly.tick(night)
+    assert nightly.tick(night + datetime.timedelta(days=1)) and fired == [1, 1]
+
+
+async def test_a_save_changes_only_what_it_is_given(client, rclone):  # noqa: F811
+    _nas(client, rclone["root"])
+    admin = await token(client, "boss", "admin")
+    v1 = apiv1.PREFIX + "/central-backup"
+    assert (await client.post(v1, headers=admin, json={"destination": "nas", "time": "04:00"})).json()["enabled"]
+    off = (await client.post(v1, headers=admin, json={"enabled": False})).json()
+    assert off["destination"] == "nas" and off["time"] == "04:00" and not off["enabled"]
+    # a time alone through the REST API and through MCP: the destination stays, and so does off
+    again = (await client.post(v1, headers=admin, json={"time": "03:00"})).json()
+    assert again["destination"] == "nas" and again["time"] == "03:00" and not again["enabled"]
+    tools = {**HEADERS, **admin}
+    by_mcp = await call(client, "central_backup_configure", headers=tools, time="01:15")
+    assert by_mcp["destination"] == "nas" and by_mcp["time"] == "01:15" and not by_mcp["enabled"]
+    # "" says none, on purpose
+    assert (await client.post(v1, headers=admin, json={"destination": ""})).json()["destination"] == ""
+    assert (await client.get(v1, headers=admin)).json()["time"] == "01:15"
+
+
+async def test_two_asks_at_once_start_one_run_and_a_failed_night_is_told(client, rclone, monkeypatch):  # noqa: F811
+    _nas(client, rclone["root"])
+    hook = client.app.state.api_hooks["central_backup"]
+    me = Principal("admin", "admin")
+    await hook("save", me, "manual: admin", "", {"destination": "nas", "time": "01:30"})
+    made = (await hook("new_key", me, "manual: admin"))[1]
+    await hook("confirm_key", me, "manual: admin", "", {"passphrase": made["passphrase"]})
+    # two at once, before the first job has taken its lock
+    first, second = await hook("run", me, "manual: admin"), await hook("run", me, "manual: admin")
+    assert first[0] == 202 and second[0] == 409 and "running already" in second[1]["error"]
+    await wait_job(client, first[1]["job"])
+    for _ in range(100):
+        if not (await hook("status", me, ""))[1]["running"]:
+            break
+        await asyncio.sleep(0.05)
+    # the night, its destination gone: told to the monitor's notices
+    told = []
+
+    async def send(options, recipients, subject, text, event=None, language=""):
+        told.append((recipients, subject, event))
+        return []
+    monkeypatch.setattr(notify, "send", send)
+    settings = client.app.state.settings
+    settings.options.monitor_notify = ["ops@example.com"]
+    destinations.save_destinations(settings.destinations_file, {})
+    assert client.app.state.central_backup_nightly.tick(datetime.datetime(2026, 11, 26, 1, 30))
+    job = [j for j in client.app.state.jobs.recent() if j.source == "schedule central-backup"][0]
+    assert (await wait_job(client, job.id))["status"] == "failed"
+    assert told and told[0][0] == ["ops@example.com"] and "the backup of this panel failed" in told[0][1]
+    assert told[0][2]["event"] == "schedule.failed" and told[0][2]["schedule"] == "central-backup"

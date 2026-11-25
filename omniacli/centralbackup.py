@@ -35,8 +35,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import contextlib
 import datetime
+import errno
 import hashlib
+import hmac
 import io
 import json
 import logging
@@ -69,8 +72,8 @@ _logger = logging.getLogger(__name__)
 
 # the setup of this panel's backup, beside the links file (mode 600)
 FILE = "central-backup.json"
-FORMAT = 1
-MAGIC = b"OCCB\x01"
+FORMAT = 2
+MAGIC = b"OCCB\x02"
 SUFFIX = ".occb"
 # a backup's name there: its stamp as the destinations read it (destinations.STAMP)
 PREFIX = "central_"
@@ -78,17 +81,20 @@ PREFIX = "central_"
 FOLDER = "omniacli-central"
 # the rotation there: the newest of each of the last so many days, weeks, months
 ROTATION = {"daily": 14, "weekly": 8, "monthly": 12}
-# the time of the night it runs when none is chosen
-DEFAULT_TIME = "02:30"
+# the time of the night it runs when none is chosen: before 02:00, where the clocks of Europe move (summer time)
+DEFAULT_TIME = "01:30"
 TIME = re.compile(r"([01]\d|2[0-3]):[0-5]\d")
 # the passphrase: 6 groups of 5 letters and digits that cannot be read one for another (148 bits)
 ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"
 GROUPS, GROUP = 6, 5
-# scrypt of the passphrase: 128 MiB, about half a second; a header may ask at most MAX_N
+# scrypt of the passphrase: 128 MiB, about half a second; a header that asks more than these is refused
 SCRYPT_N, SCRYPT_R, SCRYPT_P = 1 << 17, 8, 1
-MAX_N = 1 << 20
-_KEY_AAD = b"omniacli central-backup key v1\0"
-_FILE_INFO = b"omniacli central-backup file v1"
+_KEY_AAD = b"omniacli central-backup key v2\0"
+_FILE_INFO = b"omniacli central-backup file v2"
+_MADE = b"omniacli central-backup made v2\0"
+# what the passphrase seals: the X25519 private key, then the key that signs who made a backup (HMAC-SHA256)
+_PRIVATE, _MAC = 32, 32
+_TAG = 32
 # a header is small: refuse one larger before reading it
 MAX_HEADER = 64 * 1024
 # the archive inside: what each slot is (a file, a folder), as manifest.json lists it
@@ -125,39 +131,48 @@ def normalized(passphrase: str) -> bytes:
 
 
 def _kek(passphrase: str, salt: bytes, n: int, r: int, p: int) -> bytes:
-    if not (1 < n <= MAX_N and n & (n - 1) == 0) or not 0 < r <= 32 or not 0 < p <= 4:
+    # never more than this version writes: a header cannot make a restore spend more memory or time
+    if not (1 < n <= SCRYPT_N and n & (n - 1) == 0) or not 0 < r <= SCRYPT_R or not 0 < p <= SCRYPT_P:
         raise CentralBackupError("the key's scrypt parameters are out of range")
     return Scrypt(salt=salt, length=32, n=n, r=r, p=p).derive(normalized(passphrase))
 
 
+# what of a key travels in a backup's header (never "mac", the maker's key in clear the panel keeps)
+SHARED = ("public", "kdf", "nonce", "sealed")
+
+
 def new_key(passphrase: str) -> dict:
-    """A new key pair: the public key, and the private key sealed with passphrase (what the panel keeps)."""
+    """A new key: the X25519 public key; the private key and a maker's key (32 random bytes that sign each backup
+    this panel makes) sealed with passphrase; the maker's key in clear too ("mac"): the panel signs with it and
+    cannot decrypt. Only "public", "kdf", "nonce" and "sealed" go in a backup."""
     private = X25519PrivateKey.generate()
     raw = private.private_bytes(serialization.Encoding.Raw, serialization.PrivateFormat.Raw,
                                 serialization.NoEncryption())
     public = private.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    mac = secrets.token_bytes(_MAC)
     salt, nonce = secrets.token_bytes(16), secrets.token_bytes(12)
-    sealed = AESGCM(_kek(passphrase, salt, SCRYPT_N, SCRYPT_R, SCRYPT_P)).encrypt(nonce, raw, _KEY_AAD + public)
+    sealed = AESGCM(_kek(passphrase, salt, SCRYPT_N, SCRYPT_R, SCRYPT_P)).encrypt(nonce, raw + mac, _KEY_AAD + public)
     return {"public": _b64(public), "kdf": {"name": "scrypt", "n": SCRYPT_N, "r": SCRYPT_R, "p": SCRYPT_P,
                                             "salt": _b64(salt)},
-            "nonce": _b64(nonce), "sealed": _b64(sealed)}
+            "nonce": _b64(nonce), "sealed": _b64(sealed), "mac": _b64(mac)}
 
 
 def check_key(key) -> dict:
-    """key as new_key made it, its fields there and of the right sizes; CentralBackupError otherwise."""
+    """key as new_key made it (its shared part), its fields there and of the right sizes; CentralBackupError
+    otherwise."""
     if not isinstance(key, dict) or not isinstance(key.get("kdf"), dict) or key["kdf"].get("name") != "scrypt":
         raise CentralBackupError("not a key of a central panel's backup")
     if len(_unb64(key.get("public"))) != 32 or len(_unb64(key.get("nonce"))) != 12 \
-            or len(_unb64(key["kdf"].get("salt"))) != 16 or len(_unb64(key.get("sealed"))) != 48:
-        raise CentralBackupError("not a key of a central panel's backup: a field of the wrong size")
+            or len(_unb64(key["kdf"].get("salt"))) != 16 or len(_unb64(key.get("sealed"))) != _PRIVATE + _MAC + 16:
+        raise CentralBackupError("not a key of this version of a central panel's backup: make a new key")
     for name in ("n", "r", "p"):
         if isinstance(key["kdf"].get(name), bool) or not isinstance(key["kdf"].get(name), int):
             raise CentralBackupError("not a key of a central panel's backup: its scrypt parameters")
     return key
 
 
-def open_key(key: dict, passphrase: str) -> X25519PrivateKey:
-    """The private key, opened with passphrase; CentralBackupError for another passphrase."""
+def open_key(key: dict, passphrase: str) -> tuple[X25519PrivateKey, bytes]:
+    """(the private key, the maker's key), opened with passphrase; CentralBackupError for another passphrase."""
     check_key(key)
     kdf, public = key["kdf"], _unb64(key["public"])
     try:
@@ -166,10 +181,10 @@ def open_key(key: dict, passphrase: str) -> X25519PrivateKey:
     except InvalidTag as exc:
         raise CentralBackupError("the passphrase does not open this key: another passphrase, or a key "
                                  "made again since") from exc
-    private = X25519PrivateKey.from_private_bytes(raw)
+    private = X25519PrivateKey.from_private_bytes(raw[:_PRIVATE])
     if private.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw) != public:
         raise CentralBackupError("the key opened is not the one of its public key")
-    return private
+    return private, raw[_PRIVATE:]
 
 
 def fingerprint(key: dict) -> str:
@@ -192,25 +207,37 @@ def _header_bytes(header: dict) -> bytes:
     return MAGIC + struct.pack(">I", len(data)) + data
 
 
+def _made_by(mac: bytes, head: bytes, body_digest: bytes) -> bytes:
+    """The maker's tag: who holds the maker's key signs the header and the body's hash."""
+    return hmac.new(mac, _MADE + hashlib.sha256(head).digest() + body_digest, hashlib.sha256).digest()
+
+
 def seal(key: dict, src: Path, dst: Path, about: dict) -> None:
-    """src sealed into dst (600) to key's public key: the panel cannot open dst. about: what the header says
-    of the backup (when, which panel, which version)."""
+    """src sealed into dst (600) to key's public key, signed with its maker's key: the panel cannot open dst, and
+    nobody without the maker's key (in clear on the panel, sealed in the backup) can make one the passphrase opens.
+    about: what the header says of the backup (when, which panel, which version)."""
     check_key(key)
+    mac = _unb64(key.get("mac"))
+    if len(mac) != _MAC:
+        raise CentralBackupError("this key has no maker's key: make a new key")
     public = _unb64(key["public"])
     ephemeral = X25519PrivateKey.generate()
     ephemeral_public = ephemeral.public_key().public_bytes(serialization.Encoding.Raw,
                                                            serialization.PublicFormat.Raw)
-    header = {"v": FORMAT, **about, "key": {k: key[k] for k in ("public", "kdf", "nonce", "sealed")},
-              "ephemeral": _b64(ephemeral_public)}
+    header = {"v": FORMAT, **about, "key": {k: key[k] for k in SHARED}, "ephemeral": _b64(ephemeral_public)}
     head = _header_bytes(header)
     file_key = _file_key(ephemeral.exchange(X25519PublicKey.from_public_bytes(public)), ephemeral_public, public)
     body = dst.with_name(dst.name + ".body")
     try:
         pullcrypto.encrypt_file(file_key, _context(head), src, body)
+        digest = hashlib.sha256()
         fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "wb") as out, open(body, "rb") as inp:
             out.write(head)
-            shutil.copyfileobj(inp, out)
+            for block in iter(lambda: inp.read(1 << 20), b""):
+                digest.update(block)
+                out.write(block)
+            out.write(_made_by(mac, head, digest.digest()))
     finally:
         body.unlink(missing_ok=True)
 
@@ -220,8 +247,11 @@ def read_header(path: Path) -> tuple[dict, bytes, int]:
     try:
         with open(path, "rb") as fh:
             magic = fh.read(len(MAGIC) + 4)
-            if len(magic) != len(MAGIC) + 4 or magic[:len(MAGIC)] != MAGIC:
+            if len(magic) != len(MAGIC) + 4 or magic[:4] != MAGIC[:4]:
                 raise CentralBackupError(f"{path.name} is not a backup of a central panel")
+            if magic[:len(MAGIC)] != MAGIC:
+                raise CentralBackupError(f"{path.name} is a backup of another version of the central panel's "
+                                         f"protection (format {magic[4]}, this one reads {FORMAT})")
             (size,) = struct.unpack(">I", magic[len(MAGIC):])
             if not 0 < size <= MAX_HEADER:
                 raise CentralBackupError(f"{path.name}: its header is damaged")
@@ -241,25 +271,41 @@ def read_header(path: Path) -> tuple[dict, bytes, int]:
 
 
 def open_sealed(path: Path, passphrase: str, dst: Path) -> dict:
-    """The archive in a backup, opened with passphrase into dst: its header. CentralBackupError for another
-    passphrase, or a file changed anywhere, cut short or lengthened (dst not written)."""
+    """The archive in a backup, opened with passphrase into dst: its header. Its maker checked first: refused
+    (CentralBackupError, dst not written) for another passphrase, a backup this key's panel did not make, or a
+    file changed anywhere, cut short or lengthened."""
     header, head, start = read_header(path)
-    private = open_key(header["key"], passphrase)
+    private, mac = open_key(header["key"], passphrase)
     ephemeral = _unb64(header.get("ephemeral"))
     if len(ephemeral) != 32:
         raise CentralBackupError(f"{path.name}: its header is damaged")
+    refused = (f"{path.name} was not made by the panel of this key, or was changed, cut short or damaged: it does "
+               "not open, nothing was restored")
+    size = path.stat().st_size
+    if size < start + _TAG:
+        raise CentralBackupError(refused)
     public = _unb64(header["key"]["public"])
     file_key = _file_key(private.exchange(X25519PublicKey.from_public_bytes(ephemeral)), ephemeral, public)
     body = dst.with_name(dst.name + ".body")
     try:
-        with open(path, "rb") as fh, open(body, "wb") as out:
+        digest, left = hashlib.sha256(), size - start - _TAG
+        with open(path, "rb") as fh, open(os.open(body, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb") as out:
             fh.seek(start)
-            shutil.copyfileobj(fh, out)
+            while left:
+                block = fh.read(min(left, 1 << 20))
+                if not block:
+                    raise CentralBackupError(refused)
+                digest.update(block)
+                out.write(block)
+                left -= len(block)
+            tag = fh.read(_TAG + 1)
+        # who made it, before anything of it is believed
+        if len(tag) != _TAG or not hmac.compare_digest(tag, _made_by(mac, head, digest.digest())):
+            raise CentralBackupError(refused)
         try:
             pullcrypto.decrypt_file(file_key, _context(head), body, dst)
         except pullcrypto.PullerCryptoError as exc:
-            raise CentralBackupError(f"{path.name} was changed, cut short or damaged: it does not open, "
-                                     "nothing was restored") from exc
+            raise CentralBackupError(refused) from exc
     finally:
         body.unlink(missing_ok=True)
     os.chmod(dst, 0o600)
@@ -465,12 +511,17 @@ def due(state: dict, minute: datetime.datetime) -> bool:
 
 class Nightly:
     """Starts the backup at its time every day, as the schedules do (schedules.Scheduler): each minute once; a
-    run missed while OmniaCLI was stopped is not made up; one that finds a run going is not started twice."""
+    run missed while OmniaCLI was stopped is not made up; one that finds a run going is not started twice. The
+    time is the machine's local clock: once a day at most, so the hour the clocks go back (its minutes twice) runs
+    it once; a time in the hour they skip (02:00-02:59 in Europe in spring) has no run that night, which is why
+    the default is 01:30."""
 
     def __init__(self, state: Callable[[], dict], fire: Callable[[], object]):
         self.state = state
         self.fire = fire
         self._task: Optional[asyncio.Task] = None
+        # the day it last started: never twice the same day
+        self.fired: Optional[datetime.date] = None
 
     def start(self) -> None:
         self._task = asyncio.get_running_loop().create_task(self._loop())
@@ -483,8 +534,9 @@ class Nightly:
 
     def tick(self, minute: datetime.datetime) -> bool:
         """The backup started when due at minute: whether it was."""
-        if not due(self.state(), minute):
+        if minute.date() == self.fired or not due(self.state(), minute):
             return False
+        self.fired = minute.date()
         try:
             answer = self.fire()
         except Exception:  # noqa: BLE001 - the loop must survive
@@ -547,41 +599,90 @@ async def run(job: Job, settings, config_path: Optional[Path], version: str,
 # --- the way back -----------------------------------------------------------------------------------------------
 
 _SAFE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@+=-]{0,200}")
+# what an archive may hold at most, unpacked: a restore does not fill the disk of a fresh install
+MAX_ARCHIVE = 1 << 30
+MAX_MEMBERS = 20000
+# the CA files of the links, where a restore puts them (beside the links file): never at a path the backup names
+CA_FOLDER = "link-ca"
+# the slots read as YAML or JSON before anything is written: a broken one stops the restore before it starts
+_YAML_SLOTS = {"links", "users", "invitations", "options", "groups", "destinations", "connections"}
+_JSON_SLOTS = {"link_agents", "link_panels", "second_factor", "passkeys", "sso", "oauth", "central_backup"}
+# the name of a file being written by a restore (in the purge)
+_TEMP = ".central-restore-"
 
 
 def _members(tar: tarfile.TarFile) -> dict[str, bytes]:
-    """The archive's regular files by name: nothing else, no name outside it."""
-    found = {}
-    for member in tar.getmembers():
+    """The archive's regular files by name: nothing else, no name outside it, no more than MAX_ARCHIVE unpacked."""
+    found, total = {}, 0
+    for count, member in enumerate(tar, 1):
         parts = member.name.split("/")
         if not member.isfile() or any(not _SAFE.fullmatch(p) for p in parts) or len(parts) > 3:
             raise CentralBackupError(f"the archive holds {member.name!r}: not one of a central panel's backup")
-        found[member.name] = tar.extractfile(member).read()
+        total += member.size
+        if count > MAX_MEMBERS or total > MAX_ARCHIVE:
+            raise CentralBackupError("the archive is larger than a central panel's state: refused")
+        data = tar.extractfile(member).read(member.size + 1)
+        if len(data) != member.size:
+            raise CentralBackupError(f"the archive's {member.name} is damaged")
+        found[member.name] = data
     return found
 
 
-def _write(path: Path, data: bytes, owner: Optional[tuple[int, int]], mode: int = 0o600) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.restore")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
-    with os.fdopen(fd, "wb") as fh:
-        fh.write(data)
-    os.chmod(tmp, mode)
-    if owner is not None:
-        os.chown(tmp, *owner)
-    os.replace(tmp, path)
+def _plan(files: dict[str, bytes]) -> dict:
+    """The manifest of an archive opened, checked against what it holds: every name it lists is there, each list
+    and mapping is one, every YAML and JSON part reads. Anything else is a CentralBackupError, before a byte is
+    written."""
+    def bad(why: str) -> CentralBackupError:
+        return CentralBackupError(f"the archive is not a central panel's backup: {why}")
+
+    try:
+        manifest = json.loads(files.get(MANIFEST, b""))
+    except ValueError as exc:
+        raise bad("no manifest") from exc
+    if not isinstance(manifest, dict):
+        raise bad("its manifest is not a mapping")
+    slots, ca, access = manifest.get("slots", {}), manifest.get("ca", {}), manifest.get("access", [])
+    if not isinstance(slots, dict) or not isinstance(ca, dict) or not isinstance(access, list):
+        raise bad("its manifest's slots, ca or access are not what they should be")
+    for name, given in slots.items():
+        slot = BY_SLOT.get(name)
+        if slot is None or not isinstance(given, dict) or given.get("folder", False) is not slot.folder:
+            raise bad(f"an unknown part {name!r}")
+        if slot.folder:
+            listed = given.get("files", [])
+            if not isinstance(listed, list) or any(not isinstance(f, str) or not _SAFE.fullmatch(f)
+                                                   or f"slots/{name}/{f}" not in files for f in listed):
+                raise bad(f"the files of {name} are not in it")
+            continue
+        data = files.get(f"slots/{name}")
+        if data is None:
+            raise bad(f"{name} is listed and not in it")
+        try:
+            if name in _YAML_SLOTS:
+                found = yaml.safe_load(data.decode("utf-8"))
+                if found is not None and not isinstance(found, dict):
+                    raise ValueError("not a mapping")
+            elif name in _JSON_SLOTS:
+                json.loads(data)
+        except (UnicodeDecodeError, ValueError, yaml.YAMLError) as exc:
+            raise bad(f"{name} does not read: {exc}") from exc
+    links = {}
+    if "links" in slots:
+        links = (yaml.safe_load(files["slots/links"].decode("utf-8")) or {}).get("links") or {}
+        if not isinstance(links, dict) or any(not isinstance(v, dict) for v in links.values()):
+            raise bad("its links are not a mapping")
+    for link, path in ca.items():
+        if not isinstance(link, str) or not _SAFE.fullmatch(link) or link not in links or not isinstance(path, str) \
+                or f"ca/{link}" not in files:
+            raise bad(f"the CA file of {link!r} is not one of its links'")
+    for name in access:
+        if not isinstance(name, str) or f"access/{name}" not in files:
+            raise bad("a file of its access log is not in it")
+    return manifest
 
 
-def restore(backup: Path, passphrase: str, settings, config_path: Path, replace: bool = False,
-            main_config: bool = False, owner: Optional[tuple[int, int]] = None,
-            stop: Callable[[], None] = lambda: None, start: Callable[[], None] = lambda: None,
-            now: Optional[datetime.datetime] = None) -> dict:
-    """The panel's state of backup put back where settings (this install's) keep it: what was restored.
-    Refused with another passphrase, a file changed or damaged, and on a panel that has links already (replace:
-    it is replaced). The main configuration of the backup goes beside this one (main_config: in its place). owner:
-    the (uid, gid) of what is written (root restores for the service's user). stop and start: the service, around
-    the writes."""
-    now = now or datetime.datetime.now()
+def inspect(backup: Path, passphrase: str) -> tuple[dict, dict, dict]:
+    """(header, manifest, files) of a backup opened with passphrase, its maker and its archive checked."""
     with tempfile.TemporaryDirectory(prefix="omniacli-central-restore-") as tmp:
         os.chmod(tmp, 0o700)
         archive = Path(tmp) / "state.tar.gz"
@@ -591,10 +692,109 @@ def restore(backup: Path, passphrase: str, settings, config_path: Path, replace:
                 files = _members(tar)
         except (tarfile.TarError, OSError, EOFError) as exc:
             raise CentralBackupError(f"{backup.name}: the archive inside does not read: {exc}") from exc
+    return header, _plan(files), files
+
+
+def _walk(path: Path, make: bool = False, owner: Optional[tuple[int, int]] = None, mode: int = 0o700) -> int:
+    """An fd of the folder path, each of its parts opened without following a symbolic link (a folder of the
+    service's user replaced by a link to one of root's is refused); the parts missing made with mode and owner
+    when make. Missing and not make: FileNotFoundError."""
+    path = Path(os.path.abspath(path))
+    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
     try:
-        manifest = json.loads(files.pop(MANIFEST))
-    except (KeyError, ValueError) as exc:
-        raise CentralBackupError(f"{backup.name}: no manifest in the archive") from exc
+        for part in path.parts[1:]:
+            try:
+                nxt = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            except FileNotFoundError:
+                if not make:
+                    raise
+                os.mkdir(part, mode, dir_fd=fd)
+                nxt = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                os.fchmod(nxt, mode)
+                if owner is not None:
+                    os.fchown(nxt, *owner)
+            except OSError as exc:
+                if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                    raise CentralBackupError(f"{path} is, or goes through, a symbolic link or a file: refused, "
+                                             "nothing written there") from exc
+                raise
+            os.close(fd)
+            fd = nxt
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _check_place(path: Path, folder: bool = False) -> None:
+    """Before anything is written: the folder that will hold path (or path, a folder) goes through no symbolic
+    link, as far as it exists."""
+    target = path if folder else path.parent
+    probe = target
+    while True:
+        try:
+            os.close(_walk(probe))
+            break
+        except FileNotFoundError:
+            if probe.parent == probe:
+                break
+            probe = probe.parent
+    if folder and os.path.islink(path):
+        raise CentralBackupError(f"{path} is a symbolic link: refused, nothing written")
+
+
+def _write(path: Path, data: bytes, owner: Optional[tuple[int, int]], mode: int = 0o600,
+           folder_mode: int = 0o700) -> None:
+    """data in path: a new file of a random name in its folder (O_EXCL, O_NOFOLLOW), its mode and owner set on it,
+    then renamed over path; the folder reached without following a symbolic link."""
+    dfd = _walk(path.parent, make=True, owner=owner, mode=folder_mode)
+    try:
+        temp = f"{_TEMP}{secrets.token_hex(8)}"
+        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode, dir_fd=dfd)
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+                fh.flush()
+                os.fchmod(fh.fileno(), mode)
+                if owner is not None:
+                    os.fchown(fh.fileno(), *owner)
+            os.replace(temp, path.name, src_dir_fd=dfd, dst_dir_fd=dfd)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(temp, dir_fd=dfd)
+            raise
+    finally:
+        os.close(dfd)
+
+
+def _empty(folder: Path, owner: Optional[tuple[int, int]]) -> None:
+    """folder made (700, owner) or emptied of its files, reached without following a symbolic link."""
+    dfd = _walk(folder, make=True, owner=owner)
+    try:
+        os.fchmod(dfd, 0o700)
+        if owner is not None:
+            os.fchown(dfd, *owner)
+        with os.scandir(dfd) as entries:
+            for entry in entries:
+                if not entry.is_dir(follow_symlinks=False):
+                    os.unlink(entry.name, dir_fd=dfd)
+    finally:
+        os.close(dfd)
+
+
+def restore(backup: Path, passphrase: str, settings, config_path: Path, replace: bool = False,
+            main_config: bool = False, owner: Optional[tuple[int, int]] = None,
+            stop: Callable[[], None] = lambda: None, start: Callable[[], None] = lambda: None,
+            now: Optional[datetime.datetime] = None) -> dict:
+    """The panel's state of backup put back where settings (this install's) keep it: what was restored.
+    Refused, before the service stops and before anything is written: another passphrase, a backup the panel of
+    its key did not make, a file changed or damaged, an archive that is not a panel's state, a place that goes
+    through a symbolic link, and a panel that has links already (replace: they are replaced). The CA files of the
+    links go to link-ca/ beside the links file, the links say so. The main configuration of the backup goes
+    beside this one (main_config: in its place). owner: the (uid, gid) of what is written (root restores for the
+    service's user). stop and start: the service, around the writes."""
+    now = now or datetime.datetime.now()
+    header, manifest, files = inspect(backup, passphrase)
     paths = slot_paths(settings)
     have = load_links(paths["links"]) if paths["links"].is_file() else {}
     if have and not replace:
@@ -611,61 +811,60 @@ def restore(backup: Path, passphrase: str, settings, config_path: Path, replace:
             raise CentralBackupError(f"the main configuration of the backup does not read: {exc}") from exc
         if not isinstance(data, dict):
             raise CentralBackupError("the main configuration of the backup is not a mapping")
+    slots = manifest.get("slots", {})
+    data_dir = paths["links"].parent
+    ca_dir = data_dir / CA_FOLDER
+    # the links, their CA files moved to ca_dir
+    links_data = files.get("slots/links")
+    ca = manifest.get("ca", {})
+    if links_data is not None and ca:
+        found = yaml.safe_load(links_data.decode("utf-8")) or {}
+        for link in ca:
+            found["links"][link]["ca_file"] = str(ca_dir / f"{link}.pem")
+        links_data = yaml.safe_dump(found, sort_keys=False, allow_unicode=True).encode("utf-8")
     stamp = now.strftime("%Y%m%d-%H%M%S")
-    restored, folders = [], []
+    access = settings.logs_dir / f"{BEFORE_RESTORE}{stamp}"
+    config_target = config_path if main_config else config_path.with_name(config_path.name + ".from-backup")
+    # every place checked before the service stops
+    for slot in INVENTORY:
+        if slot.name in slots:
+            _check_place(paths[slot.name], folder=slot.folder)
+    for place in ((ca_dir / "x") if ca else None, (access / "x") if manifest.get("access") else None,
+                  config_target if config_data is not None else None):
+        if place is not None:
+            _check_place(place)
+    restored = []
     stop()
     try:
         for slot in INVENTORY:
-            given = manifest.get("slots", {}).get(slot.name)
+            given = slots.get(slot.name)
             if given is None:
                 continue
             path = paths[slot.name]
             if slot.folder:
-                path.mkdir(parents=True, exist_ok=True)
-                os.chmod(path, 0o700)
-                if owner is not None:
-                    os.chown(path, *owner)
-                for old in path.iterdir():
-                    if old.is_file():
-                        old.unlink()
+                _empty(path, owner)
                 for name in given.get("files", []):
-                    data = files[f"slots/{slot.name}/{name}"]
-                    _write(path / name, data, owner, 0o644 if name.endswith(".pub") or
-                           name.startswith("known_hosts") else 0o600)
-                folders.append(slot.name)
+                    _write(path / name, files[f"slots/{slot.name}/{name}"], owner,
+                           0o644 if name.endswith(".pub") or name.startswith("known_hosts") else 0o600)
             else:
-                _write(path, files[f"slots/{slot.name}"], owner)
+                _write(path, links_data if slot.name == "links" else files[f"slots/{slot.name}"], owner)
             restored.append(slot.name)
-        for link, ca in manifest.get("ca", {}).items():
-            # a CA file at the path its link names, only where there is none: a file of this machine stays
-            if isinstance(ca, str) and ca.startswith("/") and not Path(ca).exists():
-                _write(Path(ca), files[f"ca/{link}"], owner, 0o644)
-        access = settings.logs_dir / f"{BEFORE_RESTORE}{stamp}"
-        if manifest.get("access"):
-            access.mkdir(parents=True, exist_ok=True)
-            os.chmod(access, 0o750)
-            if owner is not None:
-                os.chown(access, *owner)
-            for name in manifest["access"]:
-                target = access / name
-                if target.parent != access and not target.parent.exists():
-                    # the access log an earlier restore brought, in its own folder still
-                    target.parent.mkdir(mode=0o750)
-                    if owner is not None:
-                        os.chown(target.parent, *owner)
-                _write(target, files[f"access/{name}"], owner, 0o640)
-        config_beside = None
+        for link in ca:
+            _write(ca_dir / f"{link}.pem", files[f"ca/{link}"], owner, 0o600)
+        for name in manifest.get("access", []):
+            # the access log an earlier restore brought stays in its own folder
+            _write(access / name, files[f"access/{name}"], owner, 0o640, folder_mode=0o750)
         if config_data is not None:
-            mode = config_path.stat().st_mode & 0o777 if config_path.exists() else 0o640
-            group = (0, config_path.stat().st_gid if config_path.exists() else owner[1]) if owner else None
             if main_config:
+                mode = config_path.stat().st_mode & 0o777 if config_path.exists() else 0o640
+                group = (0, config_path.stat().st_gid if config_path.exists() else owner[1]) if owner else None
                 _write(config_path, config_data, group, mode)
             else:
-                config_beside = config_path.with_name(config_path.name + ".from-backup")
-                _write(config_beside, config_data, (0, 0) if owner else None, 0o600)
+                _write(config_target, config_data, (0, 0) if owner else None, 0o600)
     finally:
         start()
     return {"made": header.get("made"), "host": header.get("host"), "version": header.get("version"),
-            "links": manifest.get("links", []), "restored": restored, "access": str(access) if manifest.get(
-                "access") else "", "config_beside": str(config_beside) if config_beside else "",
-            "main_config": main_config, "replaced": sorted(have)}
+            "links": manifest.get("links", []), "restored": restored,
+            "access": str(access) if manifest.get("access") else "",
+            "config_beside": "" if main_config or config_data is None else str(config_target),
+            "main_config": main_config, "replaced": sorted(have), "ca": sorted(ca)}

@@ -14746,7 +14746,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     "by": state.get("key_by") or "", "confirmed": state.get("confirmed") or "",
                     "confirmed_by": state.get("confirmed_by") or ""},
                 "why_not": centralbackup.ready(state), "next": centralbackup.next_run(state),
-                "last": state.get("last") or None, "running": central_backup_lock.locked(),
+                "last": state.get("last") or None,
+                "running": bool(central_backup_running["job"]) or central_backup_lock.locked(),
                 "folder": centralbackup.folder_of(settings),
                 "destinations": [{"name": d.name, "label": d.label, "path": d.path}
                                  for d in sorted(load_destinations().values(), key=lambda d: d.name)
@@ -14769,28 +14770,45 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                          "code": "forbidden"}
         return None
 
+    # a run started and not ended yet: set when it is started, so that two asks at once start one (the lock is
+    # taken only when the job runs)
+    central_backup_running = {"job": ""}
+    NIGHTLY_SOURCE = "schedule central-backup"
+
     async def central_backup_job(job, name: str) -> None:
-        async with central_backup_lock:
-            stamp = datetime.datetime.now().isoformat(timespec="seconds")
-            last = {"time": stamp, "status": "failed", "job": job.id, "destination": name, "message": ""}
-            try:
-                dest = load_destinations().get(name)
-                if dest is None or dest.workspace:
-                    raise JobFailed(f"no destination {name} of this machine: choose one on the page of this "
-                                    "panel's protection")
-                found = await centralbackup.run(job, settings, central_backup_config(), _version(), dest,
-                                                central_backup_state())
-                job.result.update(found)
-                last.update(status="success", file=found["file"], size=found["size"])
-            except Exception as exc:
-                last["message"] = str(exc)[:300]
-                raise
-            finally:
-                async with central_backup_state_lock:
-                    state = central_backup_state()
-                    if state:
-                        state["last"] = last
-                        await asyncio.to_thread(centralbackup.save_state, central_backup_file, state)
+        try:
+            async with central_backup_lock:
+                stamp = datetime.datetime.now().isoformat(timespec="seconds")
+                last = {"time": stamp, "status": "failed", "job": job.id, "destination": name, "message": ""}
+                try:
+                    dest = load_destinations().get(name)
+                    if dest is None or dest.workspace:
+                        raise JobFailed(f"no destination {name} of this machine: choose one on the page of this "
+                                        "panel's protection")
+                    found = await centralbackup.run(job, settings, central_backup_config(), _version(), dest,
+                                                    central_backup_state())
+                    job.result.update(found)
+                    last.update(status="success", file=found["file"], size=found["size"])
+                except Exception as exc:
+                    last["message"] = str(exc)[:300]
+                    if job.source == NIGHTLY_SOURCE:
+                        # told as the monitor tells (Options › Monitoring, its notices): nobody watches the night
+                        try:
+                            await monitor.tell(None, "the backup of this panel failed",
+                                               f"{exc}\n\nJob {job.id}: {job.title}",
+                                               event={"event": "schedule.failed", "level": "critical",
+                                                      "schedule": "central-backup", "instance": ""})
+                        except Exception as told:  # noqa: BLE001 - the job says why it failed all the same
+                            job.warn(f"the failure was not told: {told}")
+                    raise
+                finally:
+                    async with central_backup_state_lock:
+                        state = central_backup_state()
+                        if state:
+                            state["last"] = last
+                            await asyncio.to_thread(centralbackup.save_state, central_backup_file, state)
+        finally:
+            central_backup_running["job"] = ""
 
     def central_backup_start(source: str) -> tuple[int, dict]:
         """The backup started now (the page's Run now, the REST API, MCP, the night): its job."""
@@ -14798,10 +14816,16 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         why = centralbackup.ready({**state, "enabled": True})
         if why:
             return 409, {"error": f"The backup of this panel cannot run: {why}", "code": "conflict"}
-        if central_backup_lock.locked():
+        if central_backup_running["job"] or central_backup_lock.locked():
             return 409, {"error": "A backup of this panel is running already", "code": "conflict"}
         name = state["destination"]
-        job = jobs.submit(f"Backup of this panel to {name}", [], source, lambda job: central_backup_job(job, name))
+        central_backup_running["job"] = "starting"
+        try:
+            job = jobs.submit(f"Backup of this panel to {name}", [], source, lambda job: central_backup_job(job, name))
+        except BaseException:
+            central_backup_running["job"] = ""
+            raise
+        central_backup_running["job"] = job.id
         return 202, {"ok": True, "job": job.id}
 
     async def central_backup_act(op: str, me: Principal, source: str, ip: str = "",
@@ -14821,16 +14845,21 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             state = central_backup_state()
             now = datetime.datetime.now().isoformat(timespec="seconds")
             if op == "save":
-                name = str(body.get("destination") or "").strip()
-                if name and name not in {d["name"] for d in central_backup_view()["destinations"]}:
-                    return 404, {"error": f"No destination {name} of this machine", "code": "not_found"}
+                # only what is given changes: a time alone leaves the destination and the switch as they are
+                if body.get("destination") is not None:
+                    name = str(body["destination"]).strip()
+                    if name and name not in {d["name"] for d in central_backup_view()["destinations"]}:
+                        return 404, {"error": f"No destination {name} of this machine", "code": "not_found"}
+                    state["destination"] = name
                 try:
-                    when = centralbackup.check_time(body.get("time") or state.get("time")
-                                                    or centralbackup.DEFAULT_TIME)
+                    state["time"] = centralbackup.check_time(body["time"] if body.get("time") is not None
+                                                             else state.get("time") or centralbackup.DEFAULT_TIME)
                 except ConfigError as exc:
                     return 400, {"error": str(exc), "code": "invalid_request"}
-                state.update(destination=name, time=when,
-                             enabled=bool(body["enabled"]) if "enabled" in body else bool(state.get("enabled", True)))
+                if body.get("enabled") is not None:
+                    state["enabled"] = bool(body["enabled"])
+                state.setdefault("enabled", True)
+                state.setdefault("destination", "")
             elif op == "new_key":
                 if state.get("key") and not body.get("replace"):
                     return 409, {"error": "This panel has a key already: the backups made with it open with its "
@@ -14868,7 +14897,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     api_hooks["central_backup"] = central_backup_act
     central_backup_nightly = centralbackup.Nightly(
-        central_backup_state, lambda: central_backup_start("schedule central-backup"))
+        central_backup_state, lambda: central_backup_start(NIGHTLY_SOURCE))
 
     def central_backup_answer(status_code: int, data: dict):
         return JSONResponse(data, status_code=status_code) if status_code >= 300 else data
@@ -29261,6 +29290,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     app.include_router(api_router)
     app.state.api_guard, app.state.api_hooks = guard, api_hooks
+    # the nightly backup of this panel (the tests start it at a minute of theirs)
+    app.state.central_backup_nightly = central_backup_nightly
     # OAuth (oauth.py): the grants and the limit on registrations and token requests (the tests' way in)
     app.state.oauth_store, app.state.oauth_limits = oauth_store, oauth_limits
 

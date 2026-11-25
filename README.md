@@ -1241,9 +1241,12 @@ Protection of this panel** (`/central-backup`, the admins of this panel, a
 person who logs in here; never through a link):
 
 1. **Where and when.** A destination of the machine (Settings › Backup
-   destinations), a time of the night, on or off; the copies go to its folder
-   `omniacli-central/<this panel's name>`, as `central_<date>_<time>.occb`, and
-   are kept 14 daily, 8 weekly, 12 monthly.
+   destinations), a time of the night (01:30 by default: before the hour the
+   clocks of Europe move; it runs once a day at most), on or off; the copies go
+   to its folder `omniacli-central/<this panel's name>`, as
+   `central_<date>_<time>.occb`, and are kept 14 daily, 8 weekly, 12 monthly. A
+   night that fails is told as the monitor tells (Options › Monitoring, its
+   notices: `schedule.failed`, schedule `central-backup`).
 2. **The recovery key.** **Make the key** shows the recovery passphrase once,
    on the page (six groups of five letters and digits): write it down out of
    the panel. The backups run only after it is typed back (**Confirm the
@@ -1264,9 +1267,13 @@ have their own backups).
 an X25519 public key (an ephemeral key per file, HKDF-SHA256, then the
 AES-256-GCM in chunks of the puller's files); the private key stays here only
 sealed with the passphrase (scrypt, 128 MiB), and that sealed key travels in
-every backup's header. The header is authenticated with the body: a byte
-changed anywhere and the backup does not open. Whoever takes the panel, or the
-destination, has copies and no passphrase.
+every backup's header. With it the passphrase seals a maker's key, which the
+panel also keeps in clear: every backup carries its HMAC-SHA256 over the
+header and the body. Whoever holds a backup (the destination, a machine it
+was copied to) can read the public key in its header, but not make a backup
+that the passphrase opens: a restore checks who made it before it believes
+anything in it. A byte changed anywhere and the backup does not open. Whoever
+takes the panel, or the destination, has copies and no passphrase.
 
 **Back on a new machine**: install OmniaCLI, bring the newest `.occb` from the
 destination (with the provider's own tools), then as root
@@ -1275,11 +1282,17 @@ destination (with the provider's own tools), then as root
 omniacli central-restore central_20261125_023000.occb   # asks the passphrase
 ```
 
-It refuses another passphrase, a file changed, cut short or lengthened, and a
-panel that has links already (`--replace` to put the backup's in their place);
-`--dry-run` only checks that it opens; `--passphrase-file <file 600>` instead
-of the question. It stops OmniaCLI, writes every file (600, the service's
-user), starts it again: the links open their machines. The admin of the new
+It refuses, before OmniaCLI stops and before anything is written: another
+passphrase, a backup the panel of its key did not make, a file changed, cut
+short or lengthened, an archive that is not a panel's state (each part it
+lists there and readable, at most 1 GiB unpacked), a place of the data folder
+that is or goes through a symbolic link, and a panel that has links already
+(`--replace` to put the backup's in their place); `--dry-run` only checks it
+all; `--passphrase-file <file 600>` instead of the question. It stops
+OmniaCLI, writes every file (600, the service's user; a new file of a random
+name, never following a link, renamed over the old one), starts it again: the
+links open their machines. The links' CA files go to `link-ca/<link>.pem`
+beside the links file, whatever path the backup says, and the links say so. The admin of the new
 install logs in as before (`/etc/omniacli/initial-admin-password`), with the
 people of the backup and their second factors; the main configuration of the
 backup goes beside this one (`omniacli.yaml.from-backup`, `--main-config` to
@@ -1288,7 +1301,8 @@ put it in place), the access log of the backup in `logs/before-restore-<date>/`
 (`/api/v1/central-backup`, `…/key`, `…/key/confirm`, `…/run`) and MCP
 (`central_backup_status`, `central_backup_configure`, `central_backup_new_key`,
 `central_backup_confirm_key`, `central_backup_run`) do the same with an admin
-token of the machine, never a CI's nor a workspace's.
+token of the machine, never a CI's nor a workspace's; a save changes only what
+it is given (a time alone leaves the destination and the switch as they are).
 
 ### Links through SSH
 
