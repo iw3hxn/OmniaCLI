@@ -57,7 +57,7 @@ from . import (backupcheck, backupchoices, checks, deployhooks, destinations, en
                workspaceops)
 from .accesslog import REQUEST as AUDIT_REQUEST, AccessLog
 from .accesslog import numbered as access_files
-from . import audit, siem
+from . import audit, centralbackup, siem
 from . import apiguard, apiv1
 from .apiguard import ApiError
 from . import i18n, loginas, machines, modulecatalog, pgreport, pgtuning, stagings, workspaceweb
@@ -1269,6 +1269,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                              "deploy_back": lambda *a, **k: api_hooks["deploy_back"](*a, **k),
                                              # the handover and the move (AD-008 §9 step 10): the pages' code
                                              "machine": lambda *a, **k: api_hooks["machine"](*a, **k),
+                                             # the protection of this panel (AD-017 slice 7): the pages' code
+                                             "central_backup": lambda *a, **k: api_hooks["central_backup"](*a, **k),
                                              # AD-014 §6: a tool on an instance placed elsewhere asked there, and
                                              # the scope a home sends taken from that home's link only
                                              "placed": lambda *a, **k: mcp_placed(*a, **k),
@@ -1312,6 +1314,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         pullers.start()
         publications.start()
         consumers.start()
+        # the nightly backup of this panel's own state (defined further down)
+        central_backup_nightly.start()
         # not nullcontext(): it is an async context manager only from Python 3.10
         if mcp_manager:
             async with mcp_manager.run():
@@ -1331,6 +1335,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                            # defined further down, with the map's code
                            ("the map's readings", lambda: stop_map()),
                            ("auto update", updater.stop), ("schedules", scheduler.stop),
+                           ("the nightly backup of this panel", lambda: central_backup_nightly.stop()),
                            ("link clients", link_clients.close)):
             # a task of its own, waited for and never cancelled from here: a
             # timeout cancelling this task (the lifespan's) would reach the
@@ -12537,6 +12542,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                   ("/pullers", t("Publications"), t("The instances that cannot be reached from outside: who publishes them, who relays, who operates them"), admin_here),
                   ("/schedules", t("Schedules"), t("Actions run at set times: backups, updates, restarts"), admin_here),
                   ("/destinations", t("Backup destinations"), t("Where the automatic backups are copied, encrypted: SFTP, FTP, S3, Drive, Dropbox…"), admin_here),
+                  # this panel's own (AD-017 slice 7): set on it, never through a link
+                  ("/central-backup", t("Protection of this panel"), t("Its own state sealed every night on a destination, and the way back on a new machine"), admin_here and me.kind == "user"),
                   ("/tunnels", t("Tunnels"), t("Ports of the instances reached from your computer"), me.kind == "user" and not getattr(request.state, "prefix", ""))),
             group(t("People and access"),
                   ("/users", t("Users"), t("Who logs in, with which role"), admin_here),
@@ -14707,6 +14714,201 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     async def workspace_destination_key(request: Request, workspace: str, payload: dict = Body(...),
                                         me: Principal = Depends(current_user)):
         return destination_key(request, me, a_workspace(workspace).name, payload)
+
+    # --- the protection of this panel (AD-017 §17.4.3, slice 7): its own state sealed every night on a
+    # destination, to a key whose passphrase only its admin keeps (centralbackup.py); the pages, the REST API and
+    # MCP call the same code (central_backup_act)
+
+    central_backup_file = centralbackup.state_file(settings)
+    # one run at a time; the setup read and written by one request at a time
+    central_backup_lock, central_backup_state_lock = asyncio.Lock(), asyncio.Lock()
+
+    def central_backup_config() -> Path | None:
+        """The main configuration this OmniaCLI was started with (omniacli serve sets it): in the backup."""
+        found = os.environ.get("OMNIACLI_CONFIG")
+        return Path(found).resolve() if found else None
+
+    def central_backup_state() -> dict:
+        try:
+            return centralbackup.load_state(central_backup_file)
+        except ConfigError as exc:
+            _logger.warning("%s", exc)
+            return {}
+
+    def central_backup_view() -> dict:
+        """The setup as the page, the REST API and MCP read it: no secret (the sealed key is not shown)."""
+        state = central_backup_state()
+        key = state.get("key")
+        return {"destination": state.get("destination") or "", "time": state.get("time") or centralbackup.DEFAULT_TIME,
+                "enabled": bool(state.get("enabled", True)),
+                "key": None if not key else {
+                    "fingerprint": centralbackup.fingerprint(key), "made": state.get("key_made") or "",
+                    "by": state.get("key_by") or "", "confirmed": state.get("confirmed") or "",
+                    "confirmed_by": state.get("confirmed_by") or ""},
+                "why_not": centralbackup.ready(state), "next": centralbackup.next_run(state),
+                "last": state.get("last") or None, "running": central_backup_lock.locked(),
+                "folder": centralbackup.folder_of(settings),
+                "destinations": [{"name": d.name, "label": d.label, "path": d.path}
+                                 for d in sorted(load_destinations().values(), key=lambda d: d.name)
+                                 if not d.workspace],
+                "file": str(central_backup_file)}
+
+    def central_backup_refusal(me: Principal) -> tuple[int, dict] | None:
+        """Who may set this panel's protection: its admins, a person here or a token of the machine; never a
+        workspace's token, a CI's or a link (a panel's protection is set on that panel)."""
+        if me.kind == "link" or me.via:
+            return 403, {"error": "The protection of a panel is set on that panel, not through a link",
+                         "code": "forbidden"}
+        if me.scoped:
+            return 403, {"error": "The protection of this panel is for a token of the machine: a workspace's token "
+                                  "never reaches it", "code": "machine_token_required"}
+        if me.ci or (me.kind == "token" and settings.token_ci(me.name)):
+            return 403, {"error": "A CI token never sets the protection of this panel", "code": "forbidden"}
+        if not me.can("admin"):
+            return 403, {"error": f"The protection of this panel needs the admin role; this one is {me.role}",
+                         "code": "forbidden"}
+        return None
+
+    async def central_backup_job(job, name: str) -> None:
+        async with central_backup_lock:
+            stamp = datetime.datetime.now().isoformat(timespec="seconds")
+            last = {"time": stamp, "status": "failed", "job": job.id, "destination": name, "message": ""}
+            try:
+                dest = load_destinations().get(name)
+                if dest is None or dest.workspace:
+                    raise JobFailed(f"no destination {name} of this machine: choose one on the page of this "
+                                    "panel's protection")
+                found = await centralbackup.run(job, settings, central_backup_config(), _version(), dest,
+                                                central_backup_state())
+                job.result.update(found)
+                last.update(status="success", file=found["file"], size=found["size"])
+            except Exception as exc:
+                last["message"] = str(exc)[:300]
+                raise
+            finally:
+                async with central_backup_state_lock:
+                    state = central_backup_state()
+                    if state:
+                        state["last"] = last
+                        await asyncio.to_thread(centralbackup.save_state, central_backup_file, state)
+
+    def central_backup_start(source: str) -> tuple[int, dict]:
+        """The backup started now (the page's Run now, the REST API, MCP, the night): its job."""
+        state = central_backup_state()
+        why = centralbackup.ready({**state, "enabled": True})
+        if why:
+            return 409, {"error": f"The backup of this panel cannot run: {why}", "code": "conflict"}
+        if central_backup_lock.locked():
+            return 409, {"error": "A backup of this panel is running already", "code": "conflict"}
+        name = state["destination"]
+        job = jobs.submit(f"Backup of this panel to {name}", [], source, lambda job: central_backup_job(job, name))
+        return 202, {"ok": True, "job": job.id}
+
+    async def central_backup_act(op: str, me: Principal, source: str, ip: str = "",
+                                 body: Optional[dict] = None) -> tuple[int, dict]:
+        """(status, answer) of op (status, save, new_key, confirm_key, run), as the page's routes, the REST API
+        and MCP ask it ({"error", "code"} for a refusal)."""
+        refused = central_backup_refusal(me)
+        if refused is not None:
+            return refused
+        body = dict(body or {})
+        if op == "status":
+            return 200, central_backup_view()
+        if op == "run":
+            return central_backup_start(source)
+        passphrase = ""
+        async with central_backup_state_lock:
+            state = central_backup_state()
+            now = datetime.datetime.now().isoformat(timespec="seconds")
+            if op == "save":
+                name = str(body.get("destination") or "").strip()
+                if name and name not in {d["name"] for d in central_backup_view()["destinations"]}:
+                    return 404, {"error": f"No destination {name} of this machine", "code": "not_found"}
+                try:
+                    when = centralbackup.check_time(body.get("time") or state.get("time")
+                                                    or centralbackup.DEFAULT_TIME)
+                except ConfigError as exc:
+                    return 400, {"error": str(exc), "code": "invalid_request"}
+                state.update(destination=name, time=when,
+                             enabled=bool(body["enabled"]) if "enabled" in body else bool(state.get("enabled", True)))
+            elif op == "new_key":
+                if state.get("key") and not body.get("replace"):
+                    return 409, {"error": "This panel has a key already: the backups made with it open with its "
+                                          "passphrase only. To make a new one, say replace", "code": "conflict"}
+                passphrase = centralbackup.new_passphrase()
+                state["key"] = await asyncio.to_thread(centralbackup.new_key, passphrase)
+                state.update(key_made=now, key_by=str(me), confirmed="", confirmed_by="")
+                access_log.record("central backup key", me.kind, me.name, ip,
+                                  f"a new key of this panel's backup ({centralbackup.fingerprint(state['key'])}): "
+                                  "its passphrase shown once")
+            elif op == "confirm_key":
+                if not state.get("key"):
+                    return 409, {"error": "No key to confirm: make one first", "code": "conflict"}
+                try:
+                    await asyncio.to_thread(centralbackup.open_key, state["key"], str(body.get("passphrase") or ""))
+                except centralbackup.CentralBackupError:
+                    access_log.record("central backup key", me.kind, me.name, ip,
+                                      "the passphrase typed back does not open the key", status="failed")
+                    return 400, {"error": "This is not the passphrase of the key: type it as it was shown, "
+                                          "or make a new key", "code": "refused"}
+                state.update(confirmed=now, confirmed_by=str(me))
+                access_log.record("central backup key", me.kind, me.name, ip,
+                                  f"the passphrase of the key {centralbackup.fingerprint(state['key'])} confirmed")
+            else:
+                return 404, {"error": f"No {op} here", "code": "not_found"}
+            try:
+                await asyncio.to_thread(centralbackup.save_state, central_backup_file, state)
+            except OSError as exc:
+                return 500, {"error": f"Cannot write {central_backup_file}: {exc}", "code": "failed"}
+        answer = {"ok": True, **central_backup_view()}
+        if passphrase:
+            # given once: only the public key and the private key sealed with it stay here
+            answer["passphrase"] = passphrase
+        return 200, answer
+
+    api_hooks["central_backup"] = central_backup_act
+    central_backup_nightly = centralbackup.Nightly(
+        central_backup_state, lambda: central_backup_start("schedule central-backup"))
+
+    def central_backup_answer(status_code: int, data: dict):
+        return JSONResponse(data, status_code=status_code) if status_code >= 300 else data
+
+    def central_ip(request: Request) -> str:
+        return request.client.host if request.client else ""
+
+    @app.get("/central-backup", dependencies=[Depends(admin)])
+    async def central_backup_page(request: Request, me: Principal = Depends(current_user)):
+        """This panel's protection: where and when its state goes every night, its key, the way back."""
+        status_code, data = await central_backup_act("status", me, "")
+        if status_code >= 400:
+            raise HTTPException(status_code, data["error"])
+        return _TEMPLATES.TemplateResponse(request, "central_backup.html", {
+            "cb": data, "inventory": [{"name": s.name, "why": s.why} for s in centralbackup.INVENTORY],
+            "left_out": list(centralbackup.LEFT_OUT), "rclone": destinations.rclone_path() is not None})
+
+    @app.get("/api/central-backup", dependencies=[Depends(admin)])
+    async def central_backup_get(me: Principal = Depends(current_user)):
+        return central_backup_answer(*await central_backup_act("status", me, ""))
+
+    @app.post("/api/central-backup", dependencies=[Depends(admin)])
+    async def central_backup_save(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        return central_backup_answer(*await central_backup_act("save", me, f"manual: {me}", central_ip(request),
+                                                               payload))
+
+    @app.post("/api/central-backup/key", dependencies=[Depends(admin)])
+    async def central_backup_key(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
+        return central_backup_answer(*await central_backup_act("new_key", me, f"manual: {me}", central_ip(request),
+                                                               payload))
+
+    @app.post("/api/central-backup/key/confirm", dependencies=[Depends(admin)])
+    async def central_backup_confirm(request: Request, payload: dict = Body(...),
+                                     me: Principal = Depends(current_user)):
+        return central_backup_answer(*await central_backup_act("confirm_key", me, f"manual: {me}",
+                                                               central_ip(request), payload))
+
+    @app.post("/api/central-backup/run", dependencies=[Depends(admin)])
+    async def central_backup_run(request: Request, me: Principal = Depends(current_user)):
+        return central_backup_answer(*await central_backup_act("run", me, f"manual: {me}", central_ip(request)))
 
     # --- the lists of every machine: Instances and Backups (docs/ux/UX-008 §4) --
     # this machine's lists, and each link's asked through it, one request a
@@ -28980,6 +29182,59 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                   "Before Complete: what the return's Prepare made here taken away; it goes on running there.")
     api_move_step("back", "delete_copy", "Delete the copy a return left",
                   "After the return: the stopped copy on the other machine deleted now (it cannot be undone).")
+
+    # --- the protection of this panel (AD-017 slice 7): the pages' code (central_backup_act), for a token of the
+    # machine with the admin role, never a workspace's or a CI's
+
+    def api_central_answer(request: Request, status_code: int, data: dict):
+        if status_code >= 400:
+            raise ApiError(status_code, data.get("code") or apiv1.code_of(status_code), data.get("error") or "Refused")
+        job = jobs.get(str(data.get("job") or "")) if data.get("job") else None
+        return JSONResponse(api_accepted(request, job), status_code=202) if job is not None else data
+
+    @api_router.get(P + "/central-backup", summary="Read the protection of this panel",
+                    description="The nightly backup of this panel's own state (AD-017 §17.4.3): the destination and "
+                                "the time, the key's fingerprint and whether its passphrase was confirmed, why it does "
+                                "not run (why_not, empty when it runs), the next run, the last one. No secret. A token "
+                                "of the machine with the admin role.")
+    async def api_central_backup(request: Request, me: Principal = Depends(api_token)):
+        return api_central_answer(request, *await central_backup_act("status", me, f"api: {me}", api_ip(request)))
+
+    @api_router.post(P + "/central-backup", summary="Set the protection of this panel",
+                     description="Where (a destination of the machine, GET lists them) and when (HH:MM, every day) "
+                                 "this panel's state is sealed and copied, and whether it runs (enabled). A token of "
+                                 "the machine with the admin role, never a CI token.")
+    async def api_central_backup_save(request: Request, body: apiv1.CentralBackupBody,
+                                      me: Principal = Depends(api_token)):
+        given = {k: v for k, v in body.model_dump().items() if v is not None}
+        return api_central_answer(request, *await central_backup_act("save", me, f"api: {me}", api_ip(request), given))
+
+    @api_router.post(P + "/central-backup/key", summary="Make the key of this panel's backup",
+                     description="A new key pair: the public key stays here and seals every backup; the private key "
+                                 "stays only sealed with the recovery passphrase, which the answer gives ONCE and this "
+                                 "panel forgets. The backups do not run until the passphrase is typed back "
+                                 "(key/confirm). With a key already, replace: true (the backups made before open with "
+                                 "the passphrase of before only).")
+    async def api_central_backup_key(request: Request, body: Optional[apiv1.CentralKeyBody] = None,
+                                     me: Principal = Depends(api_token)):
+        given = (body or apiv1.CentralKeyBody()).model_dump()
+        return api_central_answer(request, *await central_backup_act("new_key", me, f"api: {me}", api_ip(request),
+                                                                     given))
+
+    @api_router.post(P + "/central-backup/key/confirm", summary="Confirm the passphrase of the key",
+                     description="The recovery passphrase typed back, to show it was kept: checked by opening the "
+                                 "private key with it, then forgotten. From then the backup runs at its time.")
+    async def api_central_backup_confirm(request: Request, body: apiv1.CentralConfirmBody,
+                                         me: Principal = Depends(api_token)):
+        return api_central_answer(request, *await central_backup_act("confirm_key", me, f"api: {me}", api_ip(request),
+                                                                     {"passphrase": body.passphrase}))
+
+    @api_router.post(P + "/central-backup/run", status_code=202, response_model=apiv1.Accepted,
+                     summary="Back this panel up now",
+                     description="The backup of this panel now, as at night: a job that seals its state and copies "
+                                 "it to the destination, the older copies there out of the rotation.")
+    async def api_central_backup_run(request: Request, me: Principal = Depends(api_token)):
+        return api_central_answer(request, *await central_backup_act("run", me, f"api: {me}", api_ip(request)))
 
     api_openapi_cache: dict = {}
 

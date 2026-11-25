@@ -1231,6 +1231,65 @@ same way. No data moves: they never left the machine.
   this panel») while its `agent_api` is what the central panel's pages ask;
   below it the machine writes its own section, with the line, as needed.
 
+### Protection of the central panel
+
+A central panel holds what opens every machine it manages: the links' tokens
+in clear, the SSH keys of the links and the host keys pinned. Its reserve
+(AD-017 §17.4.3) is a backup of its own state, sealed every night on a backup
+destination, and a command that puts it back on a new machine. **Settings ›
+Protection of this panel** (`/central-backup`, the admins of this panel, a
+person who logs in here; never through a link):
+
+1. **Where and when.** A destination of the machine (Settings › Backup
+   destinations), a time of the night, on or off; the copies go to its folder
+   `omniacli-central/<this panel's name>`, as `central_<date>_<time>.occb`, and
+   are kept 14 daily, 8 weekly, 12 monthly.
+2. **The recovery key.** **Make the key** shows the recovery passphrase once,
+   on the page (six groups of five letters and digits): write it down out of
+   the panel. The backups run only after it is typed back (**Confirm the
+   passphrase**). **Replace the key…** (asked in the page) makes another: the
+   backups made before open with the passphrase of before only.
+3. **Back up now** does what the night does, in a job.
+
+What a backup holds: the links (`links.yaml`), `ssh/`, `link-agents.json`,
+`link-panels.json`, the people of this panel (`users.yaml`, `invitations.yaml`,
+`second-factor.json`, `passkeys.json`, `sso.json`, `oauth.json`), the options
+and the groups, the destinations (with their keys), the puller connections
+(`connections.yaml`), its own setup (`central-backup.json`), the CA files of
+the links, the access log and the main configuration. Not the sessions, the
+jobs, the histories, nor anything of the machines themselves (their instances
+have their own backups).
+
+**The panel encrypts without being able to decrypt.** Every backup is sealed to
+an X25519 public key (an ephemeral key per file, HKDF-SHA256, then the
+AES-256-GCM in chunks of the puller's files); the private key stays here only
+sealed with the passphrase (scrypt, 128 MiB), and that sealed key travels in
+every backup's header. The header is authenticated with the body: a byte
+changed anywhere and the backup does not open. Whoever takes the panel, or the
+destination, has copies and no passphrase.
+
+**Back on a new machine**: install OmniaCLI, bring the newest `.occb` from the
+destination (with the provider's own tools), then as root
+
+```
+omniacli central-restore central_20261125_023000.occb   # asks the passphrase
+```
+
+It refuses another passphrase, a file changed, cut short or lengthened, and a
+panel that has links already (`--replace` to put the backup's in their place);
+`--dry-run` only checks that it opens; `--passphrase-file <file 600>` instead
+of the question. It stops OmniaCLI, writes every file (600, the service's
+user), starts it again: the links open their machines. The admin of the new
+install logs in as before (`/etc/omniacli/initial-admin-password`), with the
+people of the backup and their second factors; the main configuration of the
+backup goes beside this one (`omniacli.yaml.from-backup`, `--main-config` to
+put it in place), the access log of the backup in `logs/before-restore-<date>/`
+(`omniacli verify-access-log --logs-dir` checks its chain). REST
+(`/api/v1/central-backup`, `…/key`, `…/key/confirm`, `…/run`) and MCP
+(`central_backup_status`, `central_backup_configure`, `central_backup_new_key`,
+`central_backup_confirm_key`, `central_backup_run`) do the same with an admin
+token of the machine, never a CI's nor a workspace's.
+
 ### Links through SSH
 
 A customer's server that shows only SSH (and Odoo) still has its OmniaCLI

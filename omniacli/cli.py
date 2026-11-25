@@ -9,12 +9,17 @@ import argparse
 import asyncio
 import getpass
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
 
 from .accesslog import AccessLog
 from .auth import ROLES, hash_password, hash_token, new_token
+from . import centralbackup
+from .centralbackup import CentralBackupError
 from .config import ConfigError, load_settings
 from .packagesign import SigningError, load_private_key, new_private_key, sign_file, verify_local
 
@@ -211,6 +216,65 @@ def _self_update(args) -> int:
     return selfupdate.helper_main(args.args)
 
 
+SYSTEM_CONFIG = "/etc/omniacli/omniacli.yaml"
+SERVICE = "omniacli"
+
+
+def _restore_passphrase(args) -> str:
+    """The recovery passphrase: from a file only its owner reads (--passphrase-file), else asked on the terminal;
+    never on the command line nor in the environment, where other users or the shell's history would see it."""
+    if args.passphrase_file:
+        path = Path(args.passphrase_file)
+        if path.stat().st_mode & 0o077:
+            raise CentralBackupError(f"{path} is readable by others: chmod 600 it first")
+        return path.read_text(encoding="utf-8").strip()
+    return getpass.getpass("Recovery passphrase of the backup: ")
+
+
+def _systemctl(action: str) -> None:
+    subprocess.run(["systemctl", action, SERVICE], check=False, capture_output=True)
+
+
+def _central_restore(args) -> int:
+    """A central panel's state put back on a fresh install from its sealed backup (centralbackup.py)."""
+    config = Path(args.config or (SYSTEM_CONFIG if Path(SYSTEM_CONFIG).exists() else "omniacli.yaml"))
+    settings = load_settings(config)
+    backup = Path(args.file)
+    header, _, _ = centralbackup.read_header(backup)
+    print(f"{backup.name}: the backup of {header.get('host') or '?'} made {header.get('made') or '?'} by OmniaCLI "
+          f"{header.get('version') or '?'}, key {centralbackup.fingerprint(header['key'])}")
+    passphrase = _restore_passphrase(args)
+    started = time.monotonic()
+    if args.dry_run:
+        with tempfile.TemporaryDirectory(prefix="omniacli-central-check-") as tmp:
+            centralbackup.open_sealed(backup, passphrase, Path(tmp) / "state.tar.gz")
+        print(f"it opens with this passphrase and is intact ({time.monotonic() - started:.1f} s): nothing restored")
+        return 0
+    root = os.geteuid() == 0
+    owner = None
+    if root:
+        data_dir = settings.servers_file.parent
+        owner = (data_dir.stat().st_uid, data_dir.stat().st_gid)
+    service = root and not args.no_restart and shutil.which("systemctl") is not None
+    found = centralbackup.restore(backup, passphrase, settings, config, replace=args.replace,
+                                  main_config=args.main_config, owner=owner,
+                                  stop=(lambda: _systemctl("stop")) if service else (lambda: None),
+                                  start=(lambda: _systemctl("start")) if service else (lambda: None))
+    print(f"restored in {time.monotonic() - started:.1f} s: {', '.join(found['restored'])}")
+    print(f"links: {', '.join(found['links']) or 'none'}" + (
+        f" (in place of {', '.join(found['replaced'])})" if found["replaced"] else ""))
+    if found["access"]:
+        print(f"the access log of the backup: {found['access']} (omniacli verify-access-log --logs-dir {found['access']})")
+    if found["config_beside"]:
+        print(f"the main configuration of the backup: {found['config_beside']}, beside {config}: compare them (diff) "
+              "and copy what this machine needs; the admin of this install logs in as before")
+    elif found["main_config"]:
+        print(f"the main configuration of the backup is {config} now")
+    print("OmniaCLI restarted: log in, then each link opens its machine as before" if service else
+          "start OmniaCLI again, then log in: each link opens its machine as before")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="omniacli")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -297,6 +361,22 @@ def main(argv: list[str] | None = None) -> int:
     verify_log.add_argument("--logs-dir", help="the folder of access.jsonl, instead of the configuration's")
     verify_log.set_defaults(func=_verify_access_log)
 
+    restore = sub.add_parser("central-restore",
+                             help="as root, on a fresh install: put back a central panel's state from its sealed "
+                                  "backup (Settings › Protection of this panel), asking its recovery passphrase")
+    restore.add_argument("file", help="the backup, central_<date>.occb, brought from its destination")
+    restore.add_argument("-c", "--config", help=f"the main configuration (default {SYSTEM_CONFIG})")
+    restore.add_argument("--passphrase-file", help="read the passphrase from this file (mode 600) instead of "
+                                                   "asking it")
+    restore.add_argument("--dry-run", action="store_true", help="only check that it opens and is intact")
+    restore.add_argument("--replace", action="store_true",
+                         help="on a panel that has links already: put the backup's in their place")
+    restore.add_argument("--main-config", action="store_true",
+                         help="put the backup's main configuration in place of this one (default: beside it, "
+                              ".from-backup)")
+    restore.add_argument("--no-restart", action="store_true", help="do not stop and start the service")
+    restore.set_defaults(func=_central_restore)
+
     args = parser.parse_args(argv)
     try:
         return args.func(args)
@@ -306,6 +386,9 @@ def main(argv: list[str] | None = None) -> int:
     except SigningError as exc:
         print(f"Signing error: {exc}", file=sys.stderr)
         return 2
+    except CentralBackupError as exc:
+        print(f"Not restored: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

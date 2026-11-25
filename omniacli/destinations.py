@@ -321,9 +321,10 @@ async def check(dest: Destination) -> str:
     return f"{len(found)} files in {dest.path}"
 
 
-async def listing(dest: Destination, folder: str) -> list[dict]:
-    """The copies in a folder of the destination: [{name, size, time}],
-    newest first; none when the folder is not there yet."""
+async def listing(dest: Destination, folder: str, suffix: str = SUFFIX) -> list[dict]:
+    """The copies in a folder of the destination (their names end with
+    suffix): [{name, size, time}], newest first; none when the folder is not
+    there yet."""
     try:
         out = await rclone(dest, "lsjson", "--files-only", "--no-mimetype", remote(dest, folder))
     except JobFailed as exc:
@@ -337,9 +338,9 @@ async def listing(dest: Destination, folder: str) -> list[dict]:
     found = []
     for row in rows:
         name = str(row.get("Name") or "")
-        if not name.endswith(SUFFIX):
+        if not name.endswith(suffix):
             continue
-        found.append({"name": name, "file": name[:-len(SUFFIX)], "size": int(row.get("Size") or 0),
+        found.append({"name": name, "file": name[:-len(suffix)], "size": int(row.get("Size") or 0),
                       "time": copy_time(name, str(row.get("ModTime") or ""))})
     return sorted(found, key=lambda r: r["time"], reverse=True)
 
@@ -380,10 +381,10 @@ async def upload(job: Job, dest: Destination, backup: Path, folder: str) -> str:
 
 
 async def rotate(job: Job, dest: Destination, folder: str, prefix: str,
-                 kept: Callable[[dict], set]) -> None:
+                 kept: Callable[[dict], set], suffix: str = SUFFIX) -> None:
     """The copies there whose name starts with prefix that kept ({name:
     datetime} -> the names kept: the schedule's rotation) does not keep, deleted."""
-    found = {r["name"]: datetime.datetime.fromisoformat(r["time"]) for r in await listing(dest, folder)
+    found = {r["name"]: datetime.datetime.fromisoformat(r["time"]) for r in await listing(dest, folder, suffix)
              if r["name"].startswith(prefix) and r["time"]}
     for name in sorted(set(found) - kept(found), key=lambda n: found[n]):
         job.log(f"--- delete {name} on {dest.name}: out of the rotation")

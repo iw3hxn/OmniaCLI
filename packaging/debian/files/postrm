@@ -64,6 +64,8 @@ case "$1" in
             rm -f "/etc/omniacli/$kept.json" "/etc/omniacli/$kept.json.tmp"
         done
         rm -f /etc/omniacli/omniacli.yaml /etc/omniacli/initial-admin-password
+        # the main configuration a central panel's backup brought beside this one (omniacli central-restore)
+        rm -f /etc/omniacli/omniacli.yaml.from-backup
         rm -f /etc/systemd/system/omniacli.service.d/omniacli-user.conf
         rmdir /etc/systemd/system/omniacli.service.d 2>/dev/null || true
         rmdir /etc/omniacli 2>/dev/null || true
@@ -79,6 +81,8 @@ case "$1" in
         # the copy engine of the handover and of the move (treesync.py): the state of its copies, their listings
         # and plans, the hashes of the files it read, a dump it brought here and had not restored yet
         rm -rf /var/lib/omniacli/treesync
+        # the protection of a central panel (centralbackup.py): what a backup left if it stopped half way
+        rm -rf /var/lib/omniacli/.central-backup-*
         # the moves of instances to other machines (placement.py, AD-015): their states, the instances placed
         # elsewhere, the workspaces hosted here for their home
         rm -rf /var/lib/omniacli/move
@@ -104,6 +108,8 @@ case "$1" in
             /var/lib/omniacli/links.yaml /var/lib/omniacli/links.yaml.tmp \
             /var/lib/omniacli/link-agents.json /var/lib/omniacli/link-agents.json.tmp \
             /var/lib/omniacli/link-panels.json /var/lib/omniacli/link-panels.json.tmp \
+            /var/lib/omniacli/central-backup.json /var/lib/omniacli/central-backup.json.tmp \
+            /var/lib/omniacli/invitations.yaml /var/lib/omniacli/invitations.yaml.tmp \
             /var/lib/omniacli/groups.yaml /var/lib/omniacli/groups.yaml.tmp \
             /var/lib/omniacli/options.yaml /var/lib/omniacli/options.yaml.tmp \
             /var/lib/omniacli/pullers.yaml /var/lib/omniacli/pullers.yaml.tmp \

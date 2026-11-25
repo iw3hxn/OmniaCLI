@@ -67,7 +67,16 @@ V1_MACHINE_TOOLS = {
     ("POST", "/api/v1/moves/{server}/back/cancel"): ("move_back",),
     ("POST", "/api/v1/moves/{server}/back/delete-copy"): ("move_back",),
 }
-V1_TOOLS = {**V1_WORKSPACE_TOOLS, **V1_MACHINE_TOOLS}
+# the protection of this panel (AD-017 slice 7): its nightly sealed backup and its key; the machine's admin tokens
+# only, never a workspace's nor a CI's (not in WORKSPACE_ROUTES either)
+V1_CENTRAL_TOOLS = {
+    ("GET", "/api/v1/central-backup"): ("central_backup_status",),
+    ("POST", "/api/v1/central-backup"): ("central_backup_configure",),
+    ("POST", "/api/v1/central-backup/key"): ("central_backup_new_key",),
+    ("POST", "/api/v1/central-backup/key/confirm"): ("central_backup_confirm_key",),
+    ("POST", "/api/v1/central-backup/run"): ("central_backup_run",),
+}
+V1_TOOLS = {**V1_WORKSPACE_TOOLS, **V1_MACHINE_TOOLS, **V1_CENTRAL_TOOLS}
 # the steps of a move and of its return as MCP's move_instance and move_back name them: what follows move/ (or
 # move/back/) in the REST path
 MOVE_STEPS = {"prepare": "", "complete": "complete", "cancel": "cancel", "delete_copy": "delete-copy"}
@@ -243,6 +252,22 @@ class ReceiveBody(_Model):
     name: Optional[str] = Field(None, description="The workspace's name here, when its own is taken (default: its "
                                                   "own, or <name>-2)")
     disk_gb: Optional[int] = Field(None, description="The workspace's disk here in GB (default: its own)")
+
+
+class CentralBackupBody(_Model):
+    destination: Optional[str] = Field(None, description="A destination of the machine (GET lists them); empty: none")
+    time: Optional[str] = Field(None, description="The time of every day it runs, HH:MM in the machine's clock")
+    enabled: Optional[bool] = Field(None, description="false: it does not run at night (Run now still does)")
+
+
+class CentralKeyBody(_Model):
+    replace: bool = Field(False, description="true: replace the key there is (the backups made with it open with "
+                                             "its passphrase only)")
+
+
+class CentralConfirmBody(_Model):
+    passphrase: str = Field(description="The recovery passphrase the new key's answer gave, typed back (in the body: "
+                                        "a password, never in a URL)")
 
 
 class HandoverPrepared(BaseModel):

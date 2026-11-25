@@ -74,7 +74,12 @@ customer as a password); on the customer's machine receive_workspace (first
 dry_run=true), reception_status, then switch_workspace with
 confirm=<workspace>; move an instance to the machine of a link (move_status,
 then move_instance step prepare, complete, cancel or delete_copy) and bring it
-back (move_back, the same steps), each step with confirm=<server name>."""
+back (move_back, the same steps), each step with confirm=<server name>.
+The protection of this panel, its own state sealed every night on a
+destination (admin token of the machine): central_backup_status,
+central_backup_configure, central_backup_new_key (its recovery passphrase
+comes once: the user keeps it offline), central_backup_confirm_key with the
+passphrase typed back, central_backup_run."""
 
 
 def _instructions() -> str:
@@ -99,24 +104,31 @@ TOOL_ROLES = {"update_test": "developer", "backup_test": "developer",
               # (apiguard.machine_refusal)
               "handover_status": "admin", "prepare_handover": "admin", "receive_workspace": "admin",
               "reception_status": "admin", "switch_workspace": "admin", "move_status": "admin",
-              "move_instance": "admin", "move_back": "admin"}
+              "move_instance": "admin", "move_back": "admin",
+              # the protection of this panel (AD-017 slice 7): its admins only
+              **{t: "admin" for t in ("central_backup_status", "central_backup_configure", "central_backup_new_key",
+                                      "central_backup_confirm_key", "central_backup_run")}}
+CENTRAL_TOOLS = {"central_backup_status", "central_backup_configure", "central_backup_new_key",
+                 "central_backup_confirm_key", "central_backup_run"}
 # the tools that change something: a write in the rate limit of a token (apiguard.RateLimiter)
 WRITE_TOOLS = {"update_test", "backup_test", "backup", "add_draft_server", "restart_instance", "start_instance",
                "stop_instance", "run_action", "verify_backup", "full_archive", "stop_job", "update_production",
                "upload_backup", "restore_new_instance", "create_staging", "deploy_back",
-               "prepare_handover", "receive_workspace", "switch_workspace", "move_instance", "move_back"}
+               "prepare_handover", "receive_workspace", "switch_workspace", "move_instance", "move_back",
+               "central_backup_configure", "central_backup_new_key", "central_backup_confirm_key", "central_backup_run"}
 # the tools of the machine's tokens only: a workspace's token never reaches them
 MACHINE_TOOLS = {"read_server", "add_draft_server", "list_links", "linked_tools", "call_linked",
                  "handover_status", "prepare_handover", "receive_workspace", "reception_status", "switch_workspace",
-                 "move_status", "move_instance", "move_back"}
+                 "move_status", "move_instance", "move_back", *CENTRAL_TOOLS}
 # the tools of a move asked of the home of a placed instance, never of the machine it is on (its move is the home's)
 HOME_TOOLS = {"move_status", "move_instance", "move_back"}
 # the tools a CI's token never uses, whatever its role (apiguard.machine_refusal): not in its list
 NOT_FOR_CI = {"handover_status", "prepare_handover", "receive_workspace", "reception_status", "switch_workspace",
-              "move_status", "move_instance", "move_back"}
+              "move_status", "move_instance", "move_back", *CENTRAL_TOOLS}
 # the tools that act on a whole workspace or on the machine (a handover, a reception, a switch): never for a token
 # limited to some servers, which reaches the move of its own servers only (app.machine_act says why)
-NOT_FOR_LIMITED = {"handover_status", "prepare_handover", "receive_workspace", "reception_status", "switch_workspace"}
+NOT_FOR_LIMITED = {"handover_status", "prepare_handover", "receive_workspace", "reception_status", "switch_workspace",
+                   *CENTRAL_TOOLS}
 # the role of the token of the request being served, for the list of tools,
 # and the workspace it is bound to (empty: the machine's)
 _ROLE = contextvars.ContextVar("omniacli_mcp_role", default="user")
@@ -1061,6 +1073,67 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
             raise ToolError(f"step is one of {', '.join(apiv1.MOVE_STEPS)}")
         return await once(ctx, "move_back", idempotency_key, {"server_name": server_name, "step": step},
                           lambda: machine(ctx, f"back:{step}", wait_seconds, server=server_name, confirm=confirm))
+
+    # --- the protection of this panel (AD-017 slice 7): the pages' code (app.central_backup_act), the same answers
+
+    async def central(ctx: Context, op: str, wait_seconds: int = 0, **body) -> dict:
+        if api.get("central_backup") is None:
+            raise ToolError("This OmniaCLI has no protection of its panel through MCP")
+        if token_of(ctx) is None:
+            raise ToolError("forbidden: the protection of a panel is set on that panel, not through a link")
+        if settings.token_servers(token_of(ctx)):
+            raise ToolError("forbidden: this token reaches some servers only, and the protection of this panel is "
+                            "the machine's")
+        code, data = await api["central_backup"](op, as_principal(ctx), source_of(ctx), "", body)
+        if code >= 400:
+            raise ToolError(f"{data.get('code') or apiv1.code_of(code)}: {data.get('error') or 'Refused'}")
+        job = jobs.get(str(data.get("job") or "")) if data.get("job") else None
+        if job is None:
+            return data
+        await _wait(job, wait_seconds)
+        return job_dict(ctx, job, tail=30)
+
+    @server.tool()
+    async def central_backup_status(ctx: Context) -> dict:
+        """(admin token of the machine) The protection of this panel: where
+        and when its own state (links and their tokens, SSH keys, people,
+        options, destinations, access log) is sealed and copied every night,
+        the key's fingerprint and whether its passphrase was confirmed,
+        why_not (empty when it runs), the next and the last run. No secret."""
+        return await central(ctx, "status")
+
+    @server.tool()
+    async def central_backup_configure(ctx: Context, destination: str = "", time: str = "",
+                                       enabled: bool = True) -> dict:
+        """(admin token of the machine, never a CI's) Set where (a destination
+        of the machine, central_backup_status lists them) and when (HH:MM,
+        every day) this panel's state is sealed and copied; enabled=false
+        stops the nightly run."""
+        return await central(ctx, "save", destination=destination, time=time or None, enabled=enabled)
+
+    @server.tool()
+    async def central_backup_new_key(ctx: Context, replace: bool = False) -> dict:
+        """(admin token of the machine, never a CI's) Make the key the backups
+        are sealed to. The answer has the recovery passphrase ONCE: this panel
+        forgets it and cannot open its own backups. Give it to the user to
+        keep offline (a password manager, paper in a safe), never in a chat
+        log of others; then central_backup_confirm_key with it typed back.
+        replace=true replaces a key there is (the backups made with it open
+        with its passphrase only)."""
+        return await central(ctx, "new_key", replace=replace)
+
+    @server.tool()
+    async def central_backup_confirm_key(passphrase: str, ctx: Context) -> dict:
+        """(admin token of the machine, never a CI's) The passphrase of the
+        new key typed back by the user, to show it was kept: from then the
+        backup runs at its time."""
+        return await central(ctx, "confirm_key", passphrase=passphrase)
+
+    @server.tool()
+    async def central_backup_run(ctx: Context, wait_seconds: int = 0) -> dict:
+        """(admin token of the machine, never a CI's) Back this panel up now,
+        as at night: a job (get_job)."""
+        return await central(ctx, "run", wait_seconds)
 
     @server.tool()
     def list_actions(server_name: str, role: str, ctx: Context) -> list[dict]:

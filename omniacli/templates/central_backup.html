@@ -1,0 +1,163 @@
+{# Copyright (C) 2026 OmniaSolutions S.n.c di Boscolo Matteo & C · SPDX-License-Identifier: AGPL-3.0-or-later -#}
+{% extends "base.html" %}
+{% block title %}{{ _("Protection of this panel") }} · {{ brand.name }}{% endblock %}
+{% block crumbs %}{% from "_crumbs.html" import crumbs with context %}{{ crumbs([(_("Settings"), "/settings"), (_("Protection of this panel"), None)]) }}{% endblock %}
+{% block content %}
+<style>
+.cb-pass { word-break: break-all; font-size: var(--fs-18); line-height: var(--lh-28); }
+.cb-facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0 0 12px; }
+.cb-facts dt { font-weight: var(--fw-semibold); }
+.cb-facts dd { margin: 0; }
+.cb-steps li { margin-bottom: 8px; }
+</style>
+<div class="page-head">
+  <div>
+    <h1>{{ _("Protection of this panel") }}</h1>
+    <p>{{ _("Every night the state of this panel (its links and their tokens, the SSH keys, its people with their second factors, the options, the destinations, the access log) is sealed and copied to a backup destination. With it and its recovery passphrase a new machine opens the linked machines again.") }}
+       {{ _("This panel seals the copies and cannot open them: the passphrase is shown once, and only you keep it.") }}</p>
+  </div>
+</div>
+{% if not rclone %}<div class="banner warn">{{ _("rclone is not installed on this machine: install it (apt install rclone) to copy the backups out.") }}</div>{% endif %}
+<div id="cb-error" class="banner warn" role="alert" hidden></div>
+
+<section class="panel" aria-labelledby="cb-where-title">
+  <h2 id="cb-where-title">{{ _("Where and when") }}</h2>
+  <form id="cb-form" autocomplete="off">
+    <div class="form-grid">
+      <label for="cb-dest">{{ _("Destination") }}</label>
+      <div><select id="cb-dest" aria-describedby="cb-dest-hint">
+        <option value="">{{ _("none: this panel is not backed up") }}</option>
+        {% for d in cb.destinations %}<option value="{{ d.name }}" {{ "selected" if d.name == cb.destination }}>{{ d.name }} · {{ tr(d.label) }} · {{ d.path }}</option>{% endfor %}
+      </select><small class="hint" id="cb-dest-hint">{{ _('A destination of this machine; the copies go to its folder {folder}', folder=cb.folder) }}</small>
+      {% if not cb.destinations %}<p class="muted" style="margin: 4px 0 0">{{ _("No destination of this machine yet:") }} <a href="{{ prefix }}/destinations">{{ _("Backup destinations") }}</a></p>{% endif %}</div>
+      <label for="cb-time">{{ _("Every day at") }}</label>
+      <div><input type="time" id="cb-time" value="{{ cb.time }}" data-server-value="{{ cb.time }}" data-server-time required style="width: auto" aria-describedby="cb-time-hint"><small class="hint" id="cb-time-hint">{{ _('By your clock: the server keeps it by its own') }}</small></div>
+      <label for="cb-enabled">{{ _("Nightly") }}</label>
+      <div><label style="display: inline-flex; gap: 6px; align-items: center"><input type="checkbox" id="cb-enabled" role="switch" style="width: auto" {{ "checked" if cb.enabled }} aria-describedby="cb-enabled-hint">
+        {{ _("Back this panel up every night") }}</label><small class="hint" id="cb-enabled-hint">{{ _('Off: only when you press Back up now') }}</small></div>
+    </div>
+    <div class="actions">
+      <button type="submit" class="primary" id="cb-save" title="{{ _('Saves the destination, the time and whether it runs every night. Nothing is copied now.') }}">{{ _("Save") }}</button>
+    </div>
+  </form>
+  <p id="cb-state" class="{{ 'muted' if not cb.why_not else 'warn-line' }}" aria-live="polite">
+    {% if cb.why_not %}{{ _("It does not run: {why}", why=tr(cb.why_not)) }}{% else %}{{ _("Next backup: {time}", time=cb.next | moment) }}{% endif %}</p>
+</section>
+
+<section class="panel" aria-labelledby="cb-key-title">
+  <h2 id="cb-key-title">{{ _("The recovery key") }}</h2>
+  {% if cb.key %}
+  <dl class="cb-facts" id="cb-facts">
+    <dt>{{ _("Fingerprint") }}</dt><dd class="mono">{{ cb.key.fingerprint }}</dd>
+    <dt>{{ _("Made") }}</dt><dd>{{ cb.key.made | moment }} · {{ cb.key.by }}</dd>
+    <dt>{{ _("Passphrase") }}</dt><dd>{% if cb.key.confirmed %}<span class="status success">{{ _("kept: confirmed {time} by {who}", time=cb.key.confirmed | moment, who=cb.key.confirmed_by) }}</span>{% else %}<span class="warn-line">{{ _("not confirmed yet: the backups do not run") }}</span>{% endif %}</dd>
+  </dl>
+  {% else %}
+  <p class="muted">{{ _("No key yet. Make it: the backups are sealed to it, and only its passphrase opens them.") }}</p>
+  {% endif %}
+  <div class="actions">
+    <button type="button" id="cb-key" class="{{ 'danger' if cb.key else '' }}" data-replace="{{ 'true' if cb.key else '' }}"
+            title="{{ _('Makes a new key and shows its passphrase once, here below. The backups made with the key of before open only with the passphrase of before. It asks first.') if cb.key else _('Makes the key the backups are sealed to and shows its passphrase once, here below: keep it offline.') }}">{{ _("Replace the key…") if cb.key else _("Make the key") }}</button>
+  </div>
+  <div id="cb-new" class="banner info" hidden>
+    <p style="margin-top: 0"><strong>{{ _("The recovery passphrase, shown only now.") }}</strong>
+      {{ _("Write it down and keep it out of this panel (a password manager, paper in a safe): without it no backup of this panel can be restored, and nobody can make it again.") }}</p>
+    <pre class="copyable mono cb-pass" id="cb-pass"></pre>
+    <form id="cb-confirm-form" autocomplete="off">
+      <div class="form-grid">
+        <label for="cb-confirm-input">{{ _("Type it back") }}</label>
+        <div><input type="text" id="cb-confirm-input" class="mono" required spellcheck="false" autocapitalize="off" aria-describedby="cb-confirm-hint"><small class="hint" id="cb-confirm-hint">{{ _('To show it was kept: the backups run only after this') }}</small></div>
+      </div>
+      <p class="error" id="cb-confirm-error"></p>
+      <div class="actions"><button type="submit" id="cb-confirm" title="{{ _('Checks that the passphrase typed opens the new key, then forgets it. From then the backup runs at its time.') }}">{{ _("Confirm the passphrase") }}</button></div>
+    </form>
+  </div>
+</section>
+
+<section class="panel" aria-labelledby="cb-last-title">
+  <h2 id="cb-last-title">{{ _("The last backup") }}</h2>
+  {% set last = cb.last %}
+  {% if last %}
+  <p>{% if last.status == "success" %}<span class="status success">{{ _("Copied {time}: {file} ({size}) to {dest}", time=last.time | moment, file=last.file, size=last.size | filesizeformat(true), dest=last.destination) }}</span>
+     {% else %}<span class="status failed">{{ _("Failed {time}: {why}", time=last.time | moment, why=tr(last.message)) }}</span>{% endif %}
+     {% if last.job %}· <a href="{{ prefix }}/jobs/{{ last.job }}">{{ _("its job") }}</a>{% endif %}</p>
+  {% else %}<p class="muted">{{ _("None yet.") }}</p>{% endif %}
+  <div class="actions">
+    <button type="button" id="cb-run" {{ "disabled" if cb.why_not and cb.why_not != "switched off" or cb.running }}
+            title="{{ _('Seals the state of this panel now and copies it to the destination, as at night: a job you follow. Not available before the key is confirmed and a destination chosen.') }}">{{ _("Back up now") }}</button>
+  </div>
+</section>
+
+<section class="panel" aria-labelledby="cb-back-title">
+  <h2 id="cb-back-title">{{ _("Back on a new machine") }}</h2>
+  <ol class="cb-steps">
+    <li>{{ _("Install OmniaCLI on the new machine, with its package, as any machine.") }}</li>
+    <li>{{ _("Bring there the newest backup of the destination: its folder {folder}, a file central_….occb.", folder=cb.folder) }}</li>
+    <li>{{ _("As root, run the command below: it asks the passphrase, refuses another one and a file changed, and restarts OmniaCLI.") }}
+      <pre class="copyable mono">sudo omniacli central-restore central_&lt;date&gt;.occb</pre></li>
+    <li>{{ _("Log in with the admin of the new install (or a person of this panel): each link opens its machine again.") }}</li>
+  </ol>
+  <details>
+    <summary>{{ _("What a backup holds, and what it leaves out") }}</summary>
+    <ul>{% for s in inventory %}<li>{{ tr(s.why) }}</li>{% endfor %}
+      <li>{{ _("the access log, beside the new one") }}</li><li>{{ _("the main configuration, beside the new one") }}</li></ul>
+    <p class="muted">{{ _("Left out:") }} {% for s in left_out %}{{ tr(s) }}{{ "; " if not loop.last }}{% endfor %}.</p>
+    <p class="muted">{{ _("Saved in {file}, readable by its owner only.", file=cb.file) }}</p>
+  </details>
+</section>
+<script>
+(function () {
+  const API = {{ (prefix ~ "/api/central-backup") | tojson }};
+  const T = {refused: {{ _("Refused") | tojson }},
+             replaceQ: {{ _("Replace the key of this panel's backup? The backups made with it open only with its passphrase: keep that one too. The new key's backups do not run until you confirm its passphrase.") | tojson }},
+             replaceGo: {{ _("Replace the key") | tojson }}};
+  const $ = (id) => document.getElementById(id), error = $("cb-error");
+  $("cb-time").value = window.toYourTime($("cb-time").dataset.serverValue);
+  async function post(path, body) {
+    const resp = await fetch(API + path, {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
+                                          body: JSON.stringify(body || {})});
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) { error.textContent = data.error || data.detail || T.refused; error.hidden = false; }
+    else error.hidden = true;
+    return {ok: resp.ok, data};
+  }
+  $("cb-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    // typed by the reader's clock, kept by the machine's (base.html: toYourTime, toServerTime)
+    const time = $("cb-time").value ? window.toServerTime($("cb-time").value) : "";
+    const {ok} = await post("", {destination: $("cb-dest").value, time, enabled: $("cb-enabled").checked});
+    if (ok) location.reload();
+  });
+  $("cb-key").addEventListener("click", async () => {
+    const replace = !!$("cb-key").dataset.replace;
+    if (replace && !await omniaAsk(T.replaceQ, T.replaceGo, {danger: true})) return;
+    $("cb-key").disabled = true;
+    const {ok, data} = await post("/key", {replace});
+    $("cb-key").disabled = false;
+    if (!ok) return;
+    $("cb-pass").textContent = data.passphrase;
+    // the key of before is not the one shown now: its facts come back with the page once this one is confirmed
+    if ($("cb-facts")) $("cb-facts").hidden = true;
+    $("cb-new").hidden = false;
+    $("cb-key").hidden = true;
+    $("cb-new").scrollIntoView({block: "center"});
+    $("cb-confirm-input").focus();
+  });
+  $("cb-confirm-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const resp = await fetch(API + "/key/confirm", {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
+                                                    body: JSON.stringify({passphrase: $("cb-confirm-input").value})});
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) { $("cb-confirm-error").textContent = data.error || data.detail || T.refused; return; }
+    $("cb-pass").textContent = "";
+    location.reload();
+  });
+  $("cb-run").addEventListener("click", async () => {
+    $("cb-run").disabled = true;
+    const {ok, data} = await post("/run", {});
+    if (ok && data.job) location.href = {{ (prefix ~ "/jobs/") | tojson }} + encodeURIComponent(data.job);
+    else $("cb-run").disabled = false;
+  });
+})();
+</script>
+{% endblock %}

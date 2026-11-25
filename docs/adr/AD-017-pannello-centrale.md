@@ -229,7 +229,8 @@ ogni macchina in `agent` ha almeno un admin locale. Il passaggio a `agent` lo ri
 
 **17.4.3: La protezione del centrale.**
 - Backup notturno cifrato dello stato del centrale (17 MB) su una destinazione esistente, sigillato come
-  `pullcrypto.py`, AES-256-GCM. La passphrase non resta sul centrale.
+  `pullcrypto.py`, AES-256-GCM. La passphrase non resta sul centrale. Nella fetta 7 il backup è sigillato a una
+  chiave pubblica X25519, e la chiave privata viaggia sigillata con la passphrase: com'è e perché, in §9 punto 7.
 - Ripristino provato: una macchina nuova, il backup, il centrale che apre una macchina. Tempo da misurare in F7, con
   obiettivo ≤ 15 min.
 - Un secondo centrale acceso è una scelta di Carlo (§10.5). Se c'è, ha **token suoi** su ogni macchina: si revoca da
@@ -325,7 +326,8 @@ questo. Il relay vede solo il traffico SSH cifrato.
    (`READ_TIMEOUT`). Nessuna cache nel centrale.
 5. Nel centrale, per i collegamenti `here`, si inoltrano solo JSON, download e websocket.
 6. Il purge (`postrm`) non cambia: non ci sono file nuovi sulla macchina. Nel centrale si aggiungono solo `pages` per
-   collegamento e la cartella del backup cifrato (F7).
+   collegamento e la cartella del backup cifrato (F7). Nella fetta 7 è un file solo, `central-backup.json`: le copie
+   stanno sulla destinazione, non sul centrale.
 7. Niente nomi del fornitore né di macchine nelle pagine del cliente: le pagine del cliente non cambiano posto.
 
 ## 9. Piano a fette (ognuna si rilascia da sola e si annulla; lab3 = centrale `full`, lab4 = agente)
@@ -758,6 +760,132 @@ Per ogni fetta: il rilascio, la prova su lab3/lab4, come si annulla, la stima.
 7. **La protezione del centrale**: il backup cifrato notturno e il ripristino.
    - *Prova*: il ripristino su un lab nuovo apre lab4 (tempo misurato); il backup non si legge senza la passphrase.
    - *Stima*: 1,5 g.
+
+   **Com'è nel codice (fetta 7).**
+   - **La chiave: il centrale cifra e non può decifrare** (`centralbackup.py`). La richiesta è «la passphrase non
+     resta sul centrale», e il backup deve partire ogni notte senza nessuno davanti. Una chiave simmetrica sul
+     centrale (come la chiave di una destinazione, `destinations.yaml`) decifrerebbe tutto: quindi una coppia di
+     chiavi.
+     - **Cifrare**: X25519. Ogni backup ha una coppia effimera sua; dallo scambio con la chiave pubblica del
+       centrale esce, con HKDF-SHA256, la chiave del file. Il corpo è sigillato con l'AES-256-GCM a blocchi di
+       `pullcrypto.encrypt_file`, con il blocco finale marcato: un file accorciato o allungato non si apre.
+     - **La chiave privata**: esiste in chiaro solo nel momento in cui viene creata. Poi resta sigillata con la
+       passphrase: scrypt (N 2^17, r 8, p 1, 128 MiB) e AES-256-GCM, con la chiave pubblica come dato associato.
+     - **Dove viaggia**: la chiave sigillata sta in `central-backup.json` (600, accanto ai collegamenti) e
+       nell'intestazione di ogni backup. Per ripristinare bastano il file e la passphrase: nessun secondo oggetto
+       da conservare.
+     - **L'intestazione è autenticata**: il suo SHA-256 entra nel contesto con cui si derivano le chiavi dei
+       blocchi. Un byte cambiato nell'intestazione o nel corpo, e il backup non si apre.
+     - **La passphrase** la genera il centrale (6 gruppi di 5 caratteri presi da 31, circa 148 bit). Si vede una
+       volta sola, nella pagina, e l'admin la riscrive per confermarla: il centrale la verifica aprendo la chiave,
+       poi la dimentica. Finché non è confermata il backup non parte.
+     - **Alternative scartate**:
+       - la passphrase sul centrale: decifra;
+       - la chiave privata come file da scaricare: le cose da conservare diventano due, il file e la sua
+         passphrase;
+       - `age` o GPG: un binario in più sul centrale e sulla macchina nuova, per la stessa costruzione;
+       - la chiave della destinazione: sta sul centrale.
+     - **Cosa resta al ladro**: chi prende il centrale ha la chiave privata sigillata e lo scrypt di una passphrase
+       casuale da 148 bit. Ha però già i token vivi. Il backup protegge le copie sulla destinazione, che il
+       fornitore della destinazione legge come byte cifrati.
+     - **Il limite**: un centrale compromesso può mettere una chiave pubblica sua, e da lì i backup nuovi sono suoi.
+       Lo dice l'impronta (16 cifre esadecimali), sulla pagina e in testa a `central-restore`.
+   - **Cosa c'è nel backup** (`INVENTORY`, misurato sul lab: 224 KiB, non i 17 MB stimati in §17.4.3):
+     - i collegamenti: `links.yaml`, con i token in chiaro;
+     - `ssh/`: le chiavi dei collegamenti e le chiavi degli host fissate;
+     - `link-agents.json` e `link-panels.json`: un centrale ripristinato non crede a una macchina che ora dice
+       `full`;
+     - le persone: `users.yaml` (ruoli, token MCP, collegamenti in entrata), `invitations.yaml`,
+       `second-factor.json`, `passkeys.json`, `sso.json`, `oauth.json`;
+     - `options.yaml` e `groups.yaml`;
+     - `destinations.yaml`, compresa la destinazione di questo backup;
+     - `connections.yaml`: i puller delle macchine dietro NAT, con le loro chiavi;
+     - `central-backup.json`: il centrale ripristinato continua a sigillare con la stessa chiave;
+     - i file `ca_file` dei collegamenti;
+     - il registro degli accessi, compreso quello che un ripristino precedente aveva portato;
+     - la configurazione principale.
+
+     **Fuori**: le sessioni (si rientra), i job, gli storici e il monitor, i server e i workspace delle istanze
+     della macchina stessa (hanno i loro backup), niente delle macchine collegate. Il job gira come utente
+     `omniacli`: se un file non si legge, è una riga di avviso nel job e un campo `unreadable` del manifesto.
+   - **La pagina** è Impostazioni › Protezione di questo pannello (`/central-backup`). La vedono gli admin, solo
+     una persona che entra qui: la scheda non compare a chi arriva attraverso un collegamento, e le route rifiutano
+     un collegamento.
+     - **Dove e quando**: la destinazione (della macchina) e l'ora (nell'ora di chi legge, tenuta in quella del
+       server, come gli aggiornamenti del sistema), acceso o spento. «Salva» è l'unico pulsante primario.
+     - **La chiave di ripristino**: l'impronta, chi l'ha fatta e quando, se è confermata. «Crea la chiave», oppure
+       «Sostituisci la chiave…» con la domanda dentro la pagina (`omniaAsk`, nessun dialogo del browser). Il
+       riquadro della passphrase si mostra una volta sola, con il campo per riscriverla.
+     - **L'ultimo backup**, con il suo job, e «Backup adesso».
+     - **Di nuovo su una macchina nuova**: i quattro passi e cosa contiene un backup.
+   - **REST e MCP, lo stesso codice** (`central_backup_act`):
+     - `GET/POST /api/v1/central-backup`, `POST …/key`, `…/key/confirm`, `…/run` (`apiv1.V1_CENTRAL_TOOLS`);
+     - gli strumenti `central_backup_status`, `central_backup_configure`, `central_backup_new_key`,
+       `central_backup_confirm_key`, `central_backup_run`;
+     - solo un token della macchina con ruolo admin: mai un token di un workspace, mai una CI, mai un token
+       limitato ad alcuni server, mai un collegamento.
+
+     Le letture (`/central-backup`, `/api/central-backup`, `/api/v1/central-backup`) sono in `audit.NOT_SENSITIVE`:
+     non portano segreti. Le route non sono in `WORKSPACE_ROUTES`, quindi non sono in `capabilities.ROUTES`.
+     Nel registro degli accessi vanno, oltre alle azioni, «a new key… its passphrase shown once», la conferma e
+     una passphrase sbagliata (`failed`); la passphrase non va mai in nessun registro.
+   - **La notte**: `centralbackup.Nightly` lavora come le pianificazioni. Un controllo al minuto; un giro perso a
+     OmniaCLI fermo non si recupera; un giro già in corso non parte due volte. Sulla destinazione la copia va in
+     `omniacli-central/<nome>/central_<data>_<ora>.occb`; la rotazione tiene 14 giornalieri, 8 settimanali e 12
+     mensili, l'ultima copia di ogni giorno.
+   - **Il ritorno**: `omniacli central-restore <file>`, da root sulla macchina nuova.
+     - Chiede la passphrase sul terminale, oppure `--passphrase-file` con un file 600.
+     - Rifiuta un'altra passphrase, un file cambiato, accorciato o allungato, e un pannello che ha già
+       collegamenti (`--replace` per sostituirli).
+     - `--dry-run` controlla soltanto che il backup si apra.
+     - Ferma OmniaCLI e scrive ogni file con modo 600, dell'utente del servizio. Un file CA lo scrive solo dove
+       non ce n'è già uno. Poi riavvia.
+     - La configurazione principale del backup va accanto (`omniacli.yaml.from-backup`, root 600; `--main-config`
+       per metterla al suo posto). Il registro degli accessi del backup va in `logs/before-restore-<data>/`, e lì
+       `verify-access-log` ne controlla la catena.
+     - Nel purge: `central-backup.json`, `omniacli.yaml.from-backup`, le cartelle `.central-backup-*` lasciate da
+       un giro interrotto. Il ripristino ha mostrato che mancava anche `invitations.yaml`, che il purge lasciava già
+       prima: aggiunto.
+   - **Sul lab**: lab3 è il centrale, la destinazione è SFTP su lab4 (un utente `s7backup`); 25/11/2026, il pacchetto
+     2026.1.5520 più il codice della fetta.
+     - **Dalla pagina** (Playwright, italiano, 1440 e 375, chiaro e scuro): destinazione e ora salvate, la chiave
+       creata (la passphrase passata dalla pagina a un file 600, mai stampata né fotografata), una passphrase
+       sbagliata rifiutata nella pagina, quella giusta confermata, «Backup adesso» riuscito. «Sostituisci la
+       chiave…» chiede dentro la pagina e «Annulla» non cambia niente. 0 errori di pagina, 0 dialoghi del browser,
+       1 pulsante primario su ognuna delle 4 viste.
+     - **Il file**: 224 KiB. Il token del collegamento lab4 e la chiave SSH non ci sono in chiaro, e nemmeno
+       l'intestazione `ustar` del tar.
+     - **I rifiuti di `central-restore --dry-run`**: una passphrase sbagliata dà «the passphrase does not open this
+       key» (uscita 1); un byte cambiato a metà file dà «was changed, cut short or damaged… nothing was restored»
+       (uscita 1); la passphrase di una chiave rifatta dopo è rifiutata; sul centrale che ha già lab4 il ripristino
+       vero è rifiutato.
+     - **La macchina nuova**: lab3 con `apt-get purge omniacli`, poi il pacchetto 2026.1.5520 e il codice della
+       fetta; il backup più recente portato da lab4 con `scp`; poi `central-restore`.
+       - Il ripristino dura 0,4 s.
+       - Dall'installazione pulita a lab3 che legge `/links/lab4/api/info` (200, `machine: lab4`) passano **4 s**.
+       - Dal purge, installazione compresa, **39 s**: l'obiettivo era ≤ 15 min.
+       - Lo stato dopo è quello di prima: collegamento `lab4`, `link-agents` `{"lab4": 4}`, il collegamento in
+         entrata di lab4 (da lab4 `/links/lab3/api/info` risponde 200), file 600 dell'utente `omniacli`.
+       - Il registro portato verifica intatto: 3.162 voci al primo ripristino; al secondo i due livelli, 13 e
+         3.162 voci.
+       - Il centrale ripristinato fa il suo backup con la stessa chiave, e quel backup si apre con la stessa
+         passphrase.
+     - **Alla fine**: lab3 rimesso dallo stato salvato prima della prova e dal pacchetto 2026.1.5520, lab4 al
+       2026.1.5520; l'utente `s7backup` e la destinazione tolti.
+
+   **Dove la fetta si discosta dal piano.**
+   - **Niente cartella del backup sul centrale** (§8 punto 6): le copie non restano sul centrale, vanno solo sulla
+     destinazione. Sul disco c'è soltanto `central-backup.json`.
+   - **La passphrase la genera il centrale**, non la sceglie l'admin: è l'unica difesa della chiave sigillata, e
+     una scelta a mano sarebbe più debole. Si conferma riscrivendola.
+   - **La configurazione principale non torna al suo posto da sola**: va accanto. L'admin della nuova
+     installazione entra con `/etc/omniacli/initial-admin-password` come su ogni macchina nuova. Le persone del
+     backup tornano con il loro secondo fattore.
+   - **Nessun avviso quando il backup notturno fallisce**: lo dicono la pagina (l'ultimo backup) e il job. Mandare
+     un avviso con le notifiche è da fare.
+   - **La «macchina nuova» sul lab** è lab3 dopo un purge e una reinstallazione, non un contenitore nuovo. Il purge
+     del pacchetto 2026.1.5519/5520 non conosceva `central-backup.json` e lo lasciava. Il ripristino lo
+     sovrascrive; il purge di questa versione lo toglie.
 8. **L'agente dietro NAT via relay** (17.6).
    - *Prova*: lab4 dietro il NAT simulato di AD-008 §9 passo 7, nessuna regola nuova in entrata; il collegamento SSH al
      relay porta le pagine della fetta 3; il tunnel ucciso torna entro 35 s.
@@ -841,7 +969,9 @@ Totale ≈ 30 giornate. Le fette 0-3 (9 g) bastano per il caso di oggi e per la 
   JavaScript: dal contesto legge solo `prefix` (le 565 `{{` sono testi `_()`), i dati vengono da `/api/postgres`.
 - Che `ssh -R` sul relay regga due porte per macchina (nomi di Odoo e agente) senza cambiare `relay-hosted.json`: il
   formato è letto, la prova no.
-- Il tempo del ripristino del centrale: nessuna misura.
+- ~~Il tempo del ripristino del centrale: nessuna misura~~: misurato nella fetta 7 sul lab. 4 s
+  dall'installazione pulita a lab4 aperto, 39 s dal purge. Su un VPS vero contano anche il download del pacchetto e
+  il trasferimento del backup dalla destinazione: non misurati.
 - Che ogni azione delle pagine di classe C abbia già un gemello in `/api/v1` e MCP: la regola vale per le funzioni nuove,
   e la parità di quelle esistenti non l'ho contata.
 

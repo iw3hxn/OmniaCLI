@@ -176,6 +176,9 @@ NOT_SENSITIVE = frozenset({
     # what the host of a placed instance says of it to its home before and during its return (AD-015 «Torna su»):
     # its template, repositories, deploys and how far behind the copy of its database is; no secret
     "/api/placements/{workspace}/{instance}/back",
+    # the protection of a central panel (AD-017 slice 7): the destination, the time, the key's fingerprint, the last
+    # run; no secret (the sealed key is not shown). Making the key, confirming it and a run are actions, logged
+    "/central-backup", "/api/central-backup", "/api/v1/central-backup",
 })
 
 
